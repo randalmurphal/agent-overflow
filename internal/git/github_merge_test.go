@@ -977,8 +977,17 @@ func TestGitHubPRStateMutations(t *testing.T) {
 			t.Fatal("a PR still draft read as ready")
 		}
 		fake.set("PRMergeTarget", forgeAPIAnswer{Status: http.StatusForbidden, Body: `{"message":"Resource not accessible by personal access token"}`})
-		if _, ok := errors.AsType[*forgeapi.ForbiddenError](core.MarkPRReady(t.Context(), githubTestRef(5))); !ok {
-			t.Fatal("the 403 lost its type")
+		refused := core.MarkPRReady(t.Context(), githubTestRef(5))
+		if forbidden, ok := errors.AsType[*forgeapi.ForbiddenError](refused); !ok || forbidden.Scope != "" {
+			t.Fatalf("the fine-grained token's 403 = %#v, want a ForbiddenError naming no scope", refused)
+		}
+		// A fine-grained token lacks a permission, not a classic scope: the
+		// action shows GitHub's text, a read the project.
+		if got := ExplainForgeError(githubTestRef(5), ActionReady, refused).Error(); got != "GitHub blocks this: Resource not accessible by personal access token" {
+			t.Fatalf("action sentence = %q", got)
+		}
+		if got := ExplainForgeError(githubTestRef(5), ActionRead, refused).Error(); !strings.HasPrefix(got, "No access to o/r on ") {
+			t.Fatalf("read sentence = %q", got)
 		}
 	})
 }

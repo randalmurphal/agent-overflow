@@ -2,14 +2,17 @@ package forgeapi
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestRedirectDropsCredentialsAcrossHosts(t *testing.T) {
@@ -248,5 +251,187 @@ func TestMutationUnauthorizedIsARefusalWhileTheLoginReads(t *testing.T) {
 	_, err = gl.Do(t.Context(), Request{Path: "projects/1/merge_requests/2"})
 	if !errors.As(err, &setup) || userProbes.Load() != probesBefore {
 		t.Fatalf("a read's second 401 = %v with %d probes, want unauthenticated and no probe", err, userProbes.Load()-probesBefore)
+	}
+}
+
+// Mutations that reach their second 401 together probe the login after
+// giving their host slots back: a probe that needed a slot while every
+// slot was held by a mutation waiting on its probe could never run.
+func TestConcurrentRefusedMutationsProbeOutsideTheirSlots(t *testing.T) {
+	t.Parallel()
+	var puts atomic.Int32
+	firstRound, secondRound := make(chan struct{}), make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/user") {
+			_, _ = fmt.Fprint(w, `{"id":1}`)
+			return
+		}
+		// Each round answers once every mutation is in flight, so all of
+		// them hold a slot when their 401 arrives.
+		n := int(puts.Add(1))
+		switch n {
+		case hostConcurrency:
+			close(firstRound)
+		case 2 * hostConcurrency:
+			close(secondRound)
+		}
+		round := firstRound
+		if n > hostConcurrency {
+			round = secondRound
+		}
+		select {
+		case <-round:
+		case <-r.Context().Done():
+			return
+		}
+		http.Error(w, `{"message":"401 Unauthorized"}`, http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	src := &testSource{tokens: []string{testSecret}, info: SourceInfo{Header: AuthPrivateToken}}
+	s, _ := liveService(t, src, srv)
+	gl := s.client(ForgeGitLab, "gitlab.example")
+
+	errs := make([]error, hostConcurrency)
+	start := time.Now()
+	var wg sync.WaitGroup
+	for i := range hostConcurrency {
+		wg.Go(func() {
+			_, errs[i] = gl.Do(t.Context(), Request{
+				Method:  http.MethodPut,
+				Path:    fmt.Sprintf("projects/1/merge_requests/%d/merge", i+1),
+				Body:    map[string]any{"sha": "abc"},
+				Timeout: 3 * time.Second,
+			})
+		})
+	}
+	wg.Wait()
+	for i, err := range errs {
+		var status *StatusError
+		if !errors.As(err, &status) || status.Status != http.StatusUnauthorized {
+			t.Fatalf("mutation %d = %v, want the 401 StatusError", i, err)
+		}
+		if _, setup := errors.AsType[*SetupError](err); setup {
+			t.Fatalf("mutation %d read as a login failure: %v", i, err)
+		}
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("the mutations settled after %v, waiting on slots", elapsed)
+	}
+}
+
+// The probe tells a refusal from a dead login only when it is answered:
+// a probe that fails any other way returns its own error, which the
+// caller retries, never "log in again".
+func TestMutationProbeFailureIsNotADeadLogin(t *testing.T) {
+	t.Parallel()
+	notSetup := func(t *testing.T, err error) {
+		t.Helper()
+		if _, setup := errors.AsType[*SetupError](err); setup {
+			t.Fatalf("a failed probe read as a dead login: %v", err)
+		}
+	}
+	cases := []struct {
+		name    string
+		user    func(w http.ResponseWriter, r *http.Request, arrived chan<- struct{})
+		timeout time.Duration
+		cancel  bool
+		check   func(t *testing.T, err error)
+	}{
+		{name: "probe 200 is the forge's refusal",
+			user: func(w http.ResponseWriter, _ *http.Request, _ chan<- struct{}) { _, _ = fmt.Fprint(w, `{"id":1}`) },
+			check: func(t *testing.T, err error) {
+				notSetup(t, err)
+				if status, ok := errors.AsType[*StatusError](err); !ok || status.Status != http.StatusUnauthorized {
+					t.Fatalf("err = %v, want the mutation's 401 StatusError", err)
+				}
+			}},
+		{name: "probe 401 is a dead login",
+			user: func(w http.ResponseWriter, _ *http.Request, _ chan<- struct{}) {
+				http.Error(w, `{"message":"401 Unauthorized"}`, http.StatusUnauthorized)
+			},
+			check: func(t *testing.T, err error) {
+				if setup, ok := errors.AsType[*SetupError](err); !ok || setup.Kind != SetupUnauthenticated || setup.Host != "gitlab.example" {
+					t.Fatalf("err = %v, want unauthenticated", err)
+				}
+				// The setup error carries the mutation's 401, not the probe's.
+				if status, ok := errors.AsType[*StatusError](err); !ok || !strings.Contains(status.URL, "/merge") {
+					t.Fatalf("err = %v, want the mutation's 401 underneath", err)
+				}
+			}},
+		{name: "probe 429 is rate limited",
+			user: func(w http.ResponseWriter, _ *http.Request, _ chan<- struct{}) {
+				w.Header().Set("Retry-After", "30")
+				w.WriteHeader(http.StatusTooManyRequests)
+			},
+			check: func(t *testing.T, err error) {
+				notSetup(t, err)
+				if _, ok := errors.AsType[*RateLimitedError](err); !ok {
+					t.Fatalf("err = %T %v, want *RateLimitedError", err, err)
+				}
+			}},
+		{name: "probe 503 is the forge failing",
+			user: func(w http.ResponseWriter, _ *http.Request, _ chan<- struct{}) {
+				http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			},
+			check: func(t *testing.T, err error) {
+				notSetup(t, err)
+				if status, ok := errors.AsType[*StatusError](err); !ok || status.Status != http.StatusServiceUnavailable || !strings.HasSuffix(status.URL, "/user") {
+					t.Fatalf("err = %v, want the probe's 503", err)
+				}
+			}},
+		{name: "probe timeout is transient", timeout: 300 * time.Millisecond,
+			user: func(_ http.ResponseWriter, r *http.Request, _ chan<- struct{}) { <-r.Context().Done() },
+			check: func(t *testing.T, err error) {
+				notSetup(t, err)
+				if _, ok := errors.AsType[*TransientError](err); !ok {
+					t.Fatalf("err = %T %v, want *TransientError", err, err)
+				}
+			}},
+		{name: "probe canceled is the cancellation", cancel: true,
+			user: func(_ http.ResponseWriter, r *http.Request, arrived chan<- struct{}) {
+				arrived <- struct{}{}
+				<-r.Context().Done()
+			},
+			check: func(t *testing.T, err error) {
+				notSetup(t, err)
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("err = %v, want the cancellation", err)
+				}
+			}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			arrived := make(chan struct{}, 1)
+			var merges, probes atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/user") {
+					probes.Add(1)
+					tc.user(w, r, arrived)
+					return
+				}
+				merges.Add(1)
+				http.Error(w, `{"message":"401 Unauthorized"}`, http.StatusUnauthorized)
+			}))
+			defer srv.Close()
+			s, _ := liveService(t, &testSource{tokens: []string{testSecret}, info: SourceInfo{Header: AuthPrivateToken}}, srv)
+			gl := s.client(ForgeGitLab, "gitlab.example")
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if tc.cancel {
+				go func() {
+					select {
+					case <-arrived:
+						cancel()
+					case <-ctx.Done():
+					}
+				}()
+			}
+			_, err := gl.Do(ctx, Request{Method: http.MethodPut, Path: "projects/1/merge_requests/2/merge", Body: map[string]any{"sha": "abc"}, Timeout: tc.timeout})
+			tc.check(t, err)
+			if merges.Load() != 2 || probes.Load() != 1 {
+				t.Fatalf("merge attempts %d (want 2), probes %d (want 1)", merges.Load(), probes.Load())
+			}
+		})
 	}
 }

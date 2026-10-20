@@ -92,6 +92,8 @@ func TestGitLabReadPRReadsTheMergeRequestOnce(t *testing.T) {
 			return forgeAPIAnswer{Body: gitlabJobs(1, 3)}
 		case gitlabTestProject:
 			return forgeAPIAnswer{Body: gitlabTestProjectSettings}
+		case "user":
+			return forgeAPIAnswer{Body: `{"username":"viewer"}`}
 		}
 		return forgeUnexpected(t, call)
 	})
@@ -100,8 +102,8 @@ func TestGitLabReadPRReadsTheMergeRequestOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	paths := gitlabPaths(calls)
-	if countPrefix(paths, "GET "+mr) != 1 || len(paths) != 6 {
-		t.Fatalf("requests = %q, want one MR read, the approvals, the project, two discussion pages and one jobs page", paths)
+	if countPrefix(paths, "GET "+mr) != 1 || len(paths) != 7 {
+		t.Fatalf("requests = %q, want one MR read, the approvals, the project, the viewer, two discussion pages and one jobs page", paths)
 	}
 	for _, call := range calls.all() {
 		if call.Host != testForgeHost || call.Header.Get("Private-Token") != "test-token" {
@@ -122,7 +124,8 @@ func TestGitLabReadPRReadsTheMergeRequestOnce(t *testing.T) {
 
 // A part not wanted costs no request; a merge request without a head
 // pipeline costs no jobs read. Threads and events share one discussions
-// read, and only the first detail reads the project's settings.
+// read, and only the first detail reads the project's settings and the
+// viewer.
 func TestGitLabReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
@@ -140,6 +143,8 @@ func TestGitLabReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 			return forgeAPIAnswer{Body: gitlabJobs(1, 1)}
 		case call.Path == gitlabTestProject:
 			return forgeAPIAnswer{Body: gitlabTestProjectSettings}
+		case call.Path == "user":
+			return forgeAPIAnswer{Body: `{"username":"viewer"}`}
 		}
 		return forgeUnexpected(t, call)
 	})
@@ -148,7 +153,7 @@ func TestGitLabReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 		pipeline int32
 		paths    []string
 	}{
-		{PRReadParts{Detail: true}, 77, []string{"GET " + mr, "GET " + mr + "/approvals", "GET " + gitlabTestProject}},
+		{PRReadParts{Detail: true}, 77, []string{"GET " + mr, "GET " + mr + "/approvals", "GET " + gitlabTestProject, "GET user"}},
 		{PRReadParts{Detail: true}, 77, []string{"GET " + mr, "GET " + mr + "/approvals"}},
 		{PRReadParts{Threads: true}, 77, []string{"GET " + mr, "GET " + mr + "/discussions?per_page=100"}},
 		{PRReadParts{Events: true}, 77, []string{"GET " + mr, "GET " + mr + "/discussions?per_page=100"}},

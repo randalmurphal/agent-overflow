@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -236,28 +237,28 @@ func TestGitLabMergeOptions(t *testing.T) {
 	settings := decodeGitLabSettings(t, gitlabTestProjectSettings)
 	ready := MergeReadiness{State: MergeStateReady}
 	approvals := gitlabTestApprovals(1, 0)
-	options := gitlabMergeOptions(decodeGitLabMR(t, nil), approvals, settings, ready, nil)
+	options := gitlabMergeOptions(decodeGitLabMR(t, nil), approvals, settings, ready, nil, false)
 	if strings.Join(options.Methods, ",") != "merge,squash" || !options.DeleteBranchOffered || !options.DeleteBranchDefault || !options.ViewerCanMerge ||
 		!options.ViewerCanApprove || options.ViewerApproved || options.AutoMerge != nil || !options.AutoMergeAvailable || options.CannotMergeReason != "" || options.CannotApproveReason != "" {
 		t.Fatalf("options = %+v", options)
 	}
-	if o := gitlabMergeOptions(decodeGitLabMR(t, map[string]any{"force_remove_source_branch": false}), approvals, settings, ready, nil); !o.DeleteBranchOffered || o.DeleteBranchDefault {
+	if o := gitlabMergeOptions(decodeGitLabMR(t, map[string]any{"force_remove_source_branch": false}), approvals, settings, ready, nil, false); !o.DeleteBranchOffered || o.DeleteBranchDefault {
 		t.Fatalf("the merge request's own choice: %+v", o)
 	}
-	if o := gitlabMergeOptions(decodeGitLabMR(t, map[string]any{"source_project_id": 99, "force_remove_source_branch": true}), approvals, settings, ready, nil); o.DeleteBranchOffered || o.DeleteBranchDefault {
+	if o := gitlabMergeOptions(decodeGitLabMR(t, map[string]any{"source_project_id": 99, "force_remove_source_branch": true}), approvals, settings, ready, nil, false); o.DeleteBranchOffered || o.DeleteBranchDefault {
 		t.Fatalf("fork: %+v", o)
 	}
 	denied := gitlabApprovalsRaw{UserCanApprove: false}
-	o := gitlabMergeOptions(decodeGitLabMR(t, map[string]any{"user": map[string]any{"can_merge": false}}), denied, settings, ready, nil)
+	o := gitlabMergeOptions(decodeGitLabMR(t, map[string]any{"user": map[string]any{"can_merge": false}}), denied, settings, ready, nil, false)
 	if o.ViewerCanMerge || o.CannotMergeReason != "You do not have merge access to main." || o.ViewerCanApprove || o.CannotApproveReason != "You are not an eligible approver." {
 		t.Fatalf("no rights: %+v", o)
 	}
 	reporter := decodeGitLabSettings(t, `{"merge_method":"merge","permissions":{"project_access":{"access_level":20}}}`)
-	if o := gitlabMergeOptions(decodeGitLabMR(t, map[string]any{"user": map[string]any{"can_merge": false}}), approvals, reporter, ready, nil); o.CannotMergeReason != "Your role in this project cannot merge." {
+	if o := gitlabMergeOptions(decodeGitLabMR(t, map[string]any{"user": map[string]any{"can_merge": false}}), approvals, reporter, ready, nil, false); o.CannotMergeReason != "Your role in this project cannot merge." {
 		t.Fatalf("reporter: %+v", o)
 	}
 	// Approved already: no approve, no reason.
-	if o := gitlabMergeOptions(decodeGitLabMR(t, nil), gitlabApprovalsRaw{UserHasApproved: true}, settings, ready, nil); !o.ViewerApproved || o.CannotApproveReason != "" {
+	if o := gitlabMergeOptions(decodeGitLabMR(t, nil), gitlabApprovalsRaw{UserHasApproved: true}, settings, ready, nil, false); !o.ViewerApproved || o.CannotApproveReason != "" {
 		t.Fatalf("approved: %+v", o)
 	}
 	armed := decodeGitLabMR(t, map[string]any{"merge_when_pipeline_succeeds": true, "squash": true, "merge_user": map[string]any{"username": "lead", "name": "Lead"}})
@@ -265,18 +266,18 @@ func TestGitLabMergeOptions(t *testing.T) {
 		{Kind: EventAutoMergeSet, At: "2026-01-01T00:00:00Z", Text: "enabled an automatic merge when all merge checks for 1111111 pass"},
 		{Kind: EventAutoMergeSet, At: "2026-01-02T00:00:00Z", Text: "enabled an automatic merge when all merge checks for abc1234 pass"},
 	}
-	auto := gitlabMergeOptions(armed, approvals, settings, ready, events).AutoMerge
+	auto := gitlabMergeOptions(armed, approvals, settings, ready, events, false).AutoMerge
 	if auto == nil || auto.Method != MergeMethodSquash || auto.ByLogin != "lead" || auto.ByName != "Lead" || auto.At != "2026-01-02T00:00:00Z" ||
 		auto.WaitsFor != "all merge checks for abc1234 pass" || !auto.CanCancel {
 		t.Fatalf("armed auto-merge = %+v", auto)
 	}
-	if auto := gitlabMergeOptions(armed, approvals, settings, ready, nil).AutoMerge; auto == nil || auto.At != "" || auto.WaitsFor != "all merge checks pass" {
+	if auto := gitlabMergeOptions(armed, approvals, settings, ready, nil, false).AutoMerge; auto == nil || auto.At != "" || auto.WaitsFor != "all merge checks pass" {
 		t.Fatalf("armed auto-merge without notes = %+v", auto)
 	}
 	// A merged merge request keeps merge_when_pipeline_succeeds; nothing is
 	// armed and nothing is offered.
 	merged := decodeGitLabMR(t, map[string]any{"state": "merged", "merge_when_pipeline_succeeds": true})
-	if o := gitlabMergeOptions(merged, approvals, settings, MergeReadiness{State: MergeStateMerged}, events); o.AutoMerge != nil || o.AutoMergeAvailable || o.DeleteBranchOffered {
+	if o := gitlabMergeOptions(merged, approvals, settings, MergeReadiness{State: MergeStateMerged}, events, false); o.AutoMerge != nil || o.AutoMergeAvailable || o.DeleteBranchOffered {
 		t.Fatalf("merged: %+v", o)
 	}
 }
@@ -357,6 +358,8 @@ func TestGitLabReadPREvents(t *testing.T) {
 			return forgeAPIAnswer{Body: `{"approvals_required":1,"approvals_left":0,"user_has_approved":true,"approved_by":[{"approved_at":"t","user":{"username":"lead","name":"Lead"}}]}`}
 		case gitlabTestProject:
 			return forgeAPIAnswer{Body: gitlabTestProjectSettings}
+		case "user":
+			return forgeAPIAnswer{Body: `{"username":"viewer"}`}
 		}
 		return forgeUnexpected(t, call)
 	})
@@ -384,8 +387,8 @@ func TestGitLabReadPREvents(t *testing.T) {
 	if d.Readiness.State != MergeStateMerged || d.MergedAt != "2026-01-01T00:00:05.000Z" || d.MergedBy != "lead" || d.ClosedAt != "" || d.Merge.AutoMerge != nil {
 		t.Fatalf("merged detail = %+v", d)
 	}
-	if n := len(calls.all()); n != 4 {
-		t.Fatalf("requests = %q, want the MR, one discussions page, the approvals and the project", gitlabPaths(calls))
+	if n := len(calls.all()); n != 5 {
+		t.Fatalf("requests = %q, want the MR, one discussions page, the approvals, the project and the viewer", gitlabPaths(calls))
 	}
 
 	// A closed merge request's close comes from closed_at, its id from the
@@ -437,6 +440,8 @@ func TestGitLabProjectSettingsCache(t *testing.T) {
 				return forgeAPIAnswer{Status: http.StatusNotModified, Header: http.Header{"ETag": {`W/"p1"`}}}
 			}
 			return forgeAPIAnswer{Body: gitlabTestProjectSettings, Header: http.Header{"ETag": {`W/"p1"`}}}
+		case "user":
+			return forgeAPIAnswer{Body: `{"username":"viewer"}`}
 		}
 		return forgeUnexpected(t, call)
 	})
@@ -463,7 +468,7 @@ func TestGitLabProjectSettingsCache(t *testing.T) {
 		return detail
 	}
 	read()
-	clock.advance(gitlabProjectSettingsTTL - time.Second)
+	clock.advance(gitlabCacheTTL - time.Second)
 	read()
 	if n := len(projectReads()); n != 1 {
 		t.Fatalf("project reads within the TTL = %d, want 1", n)
@@ -473,6 +478,97 @@ func TestGitLabProjectSettingsCache(t *testing.T) {
 	reads := projectReads()
 	if len(reads) != 2 || reads[1].Header.Get("If-None-Match") != `W/"p1"` {
 		t.Fatalf("project reads after the TTL = %d, second If-None-Match %q", len(reads), reads[len(reads)-1].Header.Get("If-None-Match"))
+	}
+}
+
+// GitLab lets a merge request's author cancel its auto-merge without merge
+// rights, and refuses the author's approval unless the project allows it.
+// The viewer's login is read once per host, not per read.
+func TestGitLabViewerIsAuthor(t *testing.T) {
+	t.Parallel()
+	mr := func(n int) string { return gitlabTestProject + "/merge_requests/" + strconv.Itoa(n) }
+	armedBy := func(author string) map[string]any {
+		return map[string]any{
+			"author": map[string]any{"username": author, "name": author}, "user": map[string]any{"can_merge": false},
+			"merge_when_pipeline_succeeds": true, "merge_user": map[string]any{"username": author, "name": author},
+		}
+	}
+	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		switch call.Path {
+		case "user":
+			return forgeAPIAnswer{Body: `{"id":5,"username":"dev","name":"Dev"}`}
+		case mr(7):
+			return forgeAPIAnswer{Body: gitlabMergeMR(t, armedBy("Dev"))}
+		case mr(8):
+			return forgeAPIAnswer{Body: gitlabMergeMR(t, armedBy("other"))}
+		case mr(7) + "/approvals", mr(8) + "/approvals":
+			return forgeAPIAnswer{Body: `{"approvals_required":1,"approvals_left":1,"user_can_approve":false,"user_has_approved":false}`}
+		case gitlabTestProject:
+			return forgeAPIAnswer{Body: gitlabTestProjectSettings}
+		}
+		return forgeUnexpected(t, call)
+	})
+	own, err := core.GetPRDetail(t.Context(), gitlabTestRef(7))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !own.ViewerIsAuthor || own.Merge.ViewerCanMerge || own.Merge.AutoMerge == nil || !own.Merge.AutoMerge.CanCancel ||
+		own.Merge.CannotApproveReason != "You cannot approve your own merge request." {
+		t.Fatalf("author's detail: author %v, merge %+v, auto-merge %+v", own.ViewerIsAuthor, own.Merge, own.Merge.AutoMerge)
+	}
+	other, err := core.GetPRDetail(t.Context(), gitlabTestRef(8))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.ViewerIsAuthor || other.Merge.AutoMerge == nil || other.Merge.AutoMerge.CanCancel ||
+		other.Merge.CannotApproveReason != "You are not an eligible approver." {
+		t.Fatalf("other's detail: author %v, merge %+v, auto-merge %+v", other.ViewerIsAuthor, other.Merge, other.Merge.AutoMerge)
+	}
+	if n := countPrefix(gitlabPaths(calls), "GET user"); n != 1 {
+		t.Fatalf("user reads over two detail reads = %d, want 1 (%q)", n, gitlabPaths(calls))
+	}
+	// A project that lets authors approve their own merge requests says
+	// so with user_can_approve: no reason then.
+	settings := decodeGitLabSettings(t, gitlabTestProjectSettings)
+	if o := gitlabMergeOptions(decodeGitLabMR(t, nil), gitlabTestApprovals(1, 1), settings, MergeReadiness{State: MergeStateBlocked}, nil, true); !o.ViewerCanApprove || o.CannotApproveReason != "" {
+		t.Fatalf("self-approval allowed: %+v", o)
+	}
+}
+
+// A user read the forge refuses leaves the viewer unknown for the cache's
+// TTL: the detail still reads, as nobody's, and the next read sends no
+// user request until the TTL passes.
+func TestGitLabViewerReadFailureLeavesTheViewerUnknown(t *testing.T) {
+	t.Parallel()
+	mr := gitlabTestProject + "/merge_requests/7"
+	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		switch call.Path {
+		case "user":
+			return forgeAPIAnswer{Status: http.StatusInternalServerError, Body: `{"message":"500 Internal Server Error"}`}
+		case mr:
+			return forgeAPIAnswer{Body: gitlabMergeMR(t, map[string]any{"author": map[string]any{"username": "dev"}})}
+		case mr + "/approvals":
+			return forgeAPIAnswer{Body: `{"approvals_required":0,"user_can_approve":true}`}
+		case gitlabTestProject:
+			return forgeAPIAnswer{Body: gitlabTestProjectSettings}
+		}
+		return forgeUnexpected(t, call)
+	})
+	clock := &testClockCore{t: time.Unix(1_700_000_000, 0)}
+	core.nowFn = clock.now
+	userReads := func() int { return countPrefix(gitlabPaths(calls), "GET user") }
+	for range 2 {
+		detail, err := core.GetPRDetail(t.Context(), gitlabTestRef(7))
+		if err != nil || detail.ViewerIsAuthor {
+			t.Fatalf("detail with the viewer unknown = %v, author %v", err, detail.ViewerIsAuthor)
+		}
+	}
+	if n := userReads(); n != 1 {
+		t.Fatalf("user reads within the TTL = %d, want 1", n)
+	}
+	clock.advance(gitlabCacheTTL)
+	if _, err := core.GetPRDetail(t.Context(), gitlabTestRef(7)); err != nil || userReads() != 2 {
+		t.Fatalf("after the TTL: %v, user reads %d, want 2", err, userReads())
 	}
 }
 
@@ -613,22 +709,25 @@ func TestGitLabMergeRefusesAMethodTheProjectDoesNotAllow(t *testing.T) {
 	}
 }
 
-// Auto-merge sends auto_merge; a server that answers 400 naming it gets
-// merge_when_pipeline_succeeds at once and on every later call to that
-// host. An armed answer is AutoMerge.
-func TestGitLabAutoMergeFallsBackToMergeWhenPipelineSucceeds(t *testing.T) {
+// Auto-merge sends auto_merge and merge_when_pipeline_succeeds in one
+// request: GitLab 17.11+ reads either, and an older server ignores the
+// auto_merge it does not know and arms on the second. An armed answer is
+// AutoMerge.
+func TestGitLabAutoMergeSendsBothParameters(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
 	core, calls := gitlabMergeForge(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
 		if call.Method != http.MethodPut || call.Path != mr+"/merge" {
 			return forgeAPIAnswer{}, false
 		}
+		// A server before 17.11: auto_merge is an undeclared parameter
+		// Grape drops, so only merge_when_pipeline_succeeds arms.
 		var body map[string]any
 		_ = json.Unmarshal(call.Body, &body)
-		if _, ok := body["auto_merge"]; ok {
-			return forgeAPIAnswer{Status: http.StatusBadRequest, Body: `{"error":"auto_merge does not have a valid value"}`}, true
+		if body["merge_when_pipeline_succeeds"] == true {
+			return forgeAPIAnswer{Body: `{"state":"opened","merge_when_pipeline_succeeds":true}`}, true
 		}
-		return forgeAPIAnswer{Body: `{"state":"opened","merge_when_pipeline_succeeds":true}`}, true
+		return forgeAPIAnswer{Status: http.StatusMethodNotAllowed, Body: `{"message":"405 Method Not Allowed"}`}, true
 	})
 	req := MergeRequest{Method: MergeMethodMerge, HeadSHA: "abc1234", AutoMerge: true}
 	for range 2 {
@@ -643,12 +742,15 @@ func TestGitLabAutoMergeFallsBackToMergeWhenPipelineSucceeds(t *testing.T) {
 			puts = append(puts, jsonBody(t, call))
 		}
 	}
-	if len(puts) != 3 || puts[0]["auto_merge"] != true || puts[1]["merge_when_pipeline_succeeds"] != true || puts[1]["auto_merge"] != nil ||
-		puts[2]["merge_when_pipeline_succeeds"] != true || puts[2]["auto_merge"] != nil || puts[2]["sha"] != "abc1234" {
-		t.Fatalf("merge bodies = %+v, want auto_merge refused once, then merge_when_pipeline_succeeds twice", puts)
+	if len(puts) != 2 {
+		t.Fatalf("merge bodies = %+v, want one PUT per auto-merge", puts)
 	}
-	// A server that knows auto_merge is sent it; a 400 about anything else
-	// is the caller's.
+	for _, body := range puts {
+		if body["auto_merge"] != true || body["merge_when_pipeline_succeeds"] != true || body["sha"] != "abc1234" {
+			t.Fatalf("merge body = %+v, want auto_merge and merge_when_pipeline_succeeds with the head", body)
+		}
+	}
+	// A refusal is the caller's, with no second attempt.
 	core2, calls2 := gitlabMergeForge(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
 		if call.Method == http.MethodPut {
 			return forgeAPIAnswer{Status: http.StatusBadRequest, Body: `{"message":"SHA must be provided when merging"}`}, true
@@ -660,7 +762,7 @@ func TestGitLabAutoMergeFallsBackToMergeWhenPipelineSucceeds(t *testing.T) {
 		t.Fatalf("other 400 = %v", err)
 	}
 	if n := countPrefix(gitlabPaths(calls2), "PUT "+mr+"/merge"); n != 1 {
-		t.Fatalf("PUTs = %d, want no fallback for another 400", n)
+		t.Fatalf("PUTs = %d, want one", n)
 	}
 }
 

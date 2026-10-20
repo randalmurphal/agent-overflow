@@ -3,10 +3,13 @@ package app
 import (
 	"context"
 	"errors"
+	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
 )
 
@@ -46,6 +49,60 @@ func TestPRActionRefreshPollsTheLivePump(t *testing.T) {
 	}
 	if got := len(script.calls()) - before; got != 1 {
 		t.Fatalf("polls after the action = %d, want 1", got)
+	}
+}
+
+// The refresh an action asks for polls as the person's request, so it may
+// spend the quota reserve background polling leaves; the ticker's polls
+// stay background.
+func TestPRActionRefreshPollsInteractively(t *testing.T) {
+	t.Parallel()
+	app := NewApp()
+	stubPRCIFetch(app)
+	app.prUpdates.interval = 5 * time.Millisecond
+	var mu sync.Mutex
+	var polls []bool
+	recorded := func() []bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(polls)
+	}
+	app.prUpdates.fetchFn = func(ctx context.Context, pr gitops.PRReference) (prUpdateSnapshot, error) {
+		mu.Lock()
+		polls = append(polls, forgeapi.IsInteractive(ctx))
+		mu.Unlock()
+		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: pr.Number, HeadSHA: "head"}}, nil
+	}
+	sub, err := app.SubscribePRUpdates(context.Background(), testPR)
+	if err != nil {
+		t.Fatalf("SubscribePRUpdates: %v", err)
+	}
+	defer func() {
+		if err := app.UnsubscribePRUpdates(context.Background(), sub.ID); err != nil {
+			t.Fatalf("UnsubscribePRUpdates: %v", err)
+		}
+		app.prUpdates.wg.Wait()
+	}()
+	// The subscribe's own fetch is the person's; the ticker's are not.
+	deadline := time.Now().Add(2 * time.Second)
+	for len(recorded()) < 3 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	got := recorded()
+	if len(got) < 3 || !got[0] || slices.Contains(got[1:], true) {
+		t.Fatalf("polls interactive = %v, want the subscribe's alone", got)
+	}
+	app.prUpdates.mu.Lock()
+	pump := app.livePRUpdatePumpLocked(sub.PRKey)
+	app.prUpdates.mu.Unlock()
+	pump.paused.Store(true)
+	if err := app.settlePRAction(context.Background(), testPR, gitops.ActionMerge, nil); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	// The pump is paused, so the last poll is the refresh, served before
+	// settlePRAction returned.
+	if got := recorded(); !got[len(got)-1] {
+		t.Fatalf("polls interactive = %v, want the refresh interactive", got)
 	}
 }
 

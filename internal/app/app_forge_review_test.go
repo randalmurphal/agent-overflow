@@ -786,14 +786,14 @@ func TestPollPRUpdateStoresNothingOnADeadPump(t *testing.T) {
 
 	// A snapshot that WOULD have been a change on a live pump.
 	head = "head-b"
-	if evt, changed := app.pollPRUpdate(pump); changed {
+	if evt, changed := app.pollPRUpdate(pump.ctx, pump); changed {
 		t.Fatalf("dead pump published a snapshot change: %+v", evt)
 	}
 	assertUnstamped("snapshot path")
 
 	// And a failure, which stamps through a second critical section.
 	fetchErr = errors.New("gh: boom")
-	if evt, changed := app.pollPRUpdate(pump); changed {
+	if evt, changed := app.pollPRUpdate(pump.ctx, pump); changed {
 		t.Fatalf("dead pump published a failure: %+v", evt)
 	}
 	assertUnstamped("error path")
