@@ -1861,10 +1861,10 @@ function createReviewPaneState(
         const fileLevel = submitDrafts.filter((comment) => comment.side === 'file');
         const unposted = new Set(fileLevel.slice(result.postedFileComments).map((comment) => comment.id));
         sent = submitDrafts.filter((comment) => !unposted.has(comment.id));
-        submitError = `Posting file-level comment for ${result.partialFailurePath} failed: ${result.partialFailure ?? 'unknown error'}`;
+        submitError = `The review posted, but its comment on ${result.partialFailurePath} did not. ${result.partialFailure ?? 'Unknown error.'}`;
       } else if (result.partialFailure) {
         // Everything posted; a follow-up step (GitLab approve) failed.
-        submitError = `Review posted, but a follow-up step failed: ${result.partialFailure}`;
+        submitError = `The review posted, but a step after it did not. ${result.partialFailure}`;
       }
       if (sent.length > 0) {
         await MarkDiffReviewCommentsSent(commentThreadId(), scope, sourceKey, sent.map((comment) => comment.id), `pr:${loadedPRHeadSHA}`);

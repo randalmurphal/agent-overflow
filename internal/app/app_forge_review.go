@@ -378,6 +378,7 @@ func mapSubmitPRReviewResult(pr gitops.PRReference, action gitops.ForgeAction, r
 			PostedFileComments: partial.PostedFileComments,
 			PartialFailurePath: partial.FailedPath,
 		}
+		mapped.PartialFailure = partial.Err.Error()
 		if explained, ok := errors.AsType[*gitops.ForgeActionError](gitops.ExplainForgeError(pr, action, partial.Err)); ok {
 			mapped.PartialFailure, mapped.PartialFailureKind = explained.Message, explained.Kind
 		}
