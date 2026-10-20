@@ -724,6 +724,7 @@ export interface SubmitPRReviewResult {
   postedFileComments: number;
   partialFailurePath?: string;
   partialFailure?: string;
+  partialFailureKind?: string;
 }
 
 export interface ProposedPlanComment {

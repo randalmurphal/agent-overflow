@@ -5436,7 +5436,14 @@ export class SubmitPRReviewResult {
     "postedReview": boolean;
     "postedFileComments": number;
     "partialFailurePath"?: string;
+
+    /**
+     * PartialFailure is the failed follow-up's sentence and
+     * PartialFailureKind its kind (git.ExplainForgeError), never the
+     * forge's raw text.
+     */
     "partialFailure"?: string;
+    "partialFailureKind"?: string;
 
     /** Creates a new SubmitPRReviewResult instance. */
     constructor($$source: Partial<SubmitPRReviewResult> = {}) {

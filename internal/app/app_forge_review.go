@@ -354,10 +354,17 @@ type SubmitPRReviewResult struct {
 	PostedReview       bool   `json:"postedReview"`
 	PostedFileComments int    `json:"postedFileComments"`
 	PartialFailurePath string `json:"partialFailurePath,omitempty"`
+	// PartialFailure is the failed follow-up's sentence and
+	// PartialFailureKind its kind (git.ExplainForgeError), never the
+	// forge's raw text.
 	PartialFailure     string `json:"partialFailure,omitempty"`
+	PartialFailureKind string `json:"partialFailureKind,omitempty"`
 }
 
-func mapSubmitPRReviewResult(result gitops.SubmitReviewResult, err error) (SubmitPRReviewResult, error) {
+// mapSubmitPRReviewResult turns a submit's result into the wire answer. A
+// review that landed with a failed follow-up is a result, not an error,
+// and carries the follow-up's failure explained for pr and action.
+func mapSubmitPRReviewResult(pr gitops.PRReference, action gitops.ForgeAction, result gitops.SubmitReviewResult, err error) (SubmitPRReviewResult, error) {
 	if err == nil {
 		return SubmitPRReviewResult{
 			PostedReview:       result.PostedReview,
@@ -366,12 +373,15 @@ func mapSubmitPRReviewResult(result gitops.SubmitReviewResult, err error) (Submi
 	}
 	var partial *gitops.PartialSubmitError
 	if errors.As(err, &partial) {
-		return SubmitPRReviewResult{
+		mapped := SubmitPRReviewResult{
 			PostedReview:       partial.PostedReview,
 			PostedFileComments: partial.PostedFileComments,
 			PartialFailurePath: partial.FailedPath,
-			PartialFailure:     partial.Err.Error(),
-		}, nil
+		}
+		if explained, ok := errors.AsType[*gitops.ForgeActionError](gitops.ExplainForgeError(pr, action, partial.Err)); ok {
+			mapped.PartialFailure, mapped.PartialFailureKind = explained.Message, explained.Kind
+		}
+		return mapped, nil
 	}
 	return SubmitPRReviewResult{}, err
 }
@@ -386,7 +396,7 @@ func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review 
 		return SubmitPRReviewResult{}, err
 	}
 	result, err := a.gitCore().SubmitReview(forgeapi.WithInteractive(ctx), pr, review)
-	mapped, err := mapSubmitPRReviewResult(result, err)
+	mapped, err := mapSubmitPRReviewResult(pr, gitops.ActionReview, result, err)
 	return mapped, gitops.ExplainForgeError(pr, gitops.ActionReview, err)
 }
 
