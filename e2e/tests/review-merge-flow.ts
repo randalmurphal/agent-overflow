@@ -134,29 +134,29 @@ async function openReview(page: Page, title: string, forge: Forge, compact: bool
 }
 
 /**
- * Holds the server's frames once armed: from the first pr:updated frame
- * after an ApprovePR call left the page, every server frame waits (in
- * order) until release, so a spec can read the pane between the action
- * and the pump's frame. Install before the page opens.
+ * Holds the pump's pr:updated frames once armed: from the first one after
+ * an ApprovePR call left the page, every pr:updated frame waits (in
+ * order) until release, while every other server frame, the call's own
+ * reply among them, passes. `replied` reports that reply delivered, so a
+ * spec can prove the pane is pending on the pump's answer and not on an
+ * unanswered call. Install before the page opens.
  */
 async function holdPumpFrames(page: Page) {
-  const state = { armed: false, sent: false, holding: false, held: [] as (() => void)[] };
+  const state = { armed: false, callId: '', replied: false, holding: false, held: [] as (() => void)[] };
   const carriesUpdate = (frame: { type?: string; channel?: string; events?: { channel?: string }[] }) =>
     (frame.type === 'event' && frame.channel === 'pr:updated') ||
     (frame.type === 'batch' && (frame.events ?? []).some((event) => event.channel === 'pr:updated'));
   await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
     const server = socket.connectToServer();
     socket.onMessage((message) => {
-      const frame = JSON.parse(String(message)) as { type?: string; methodId?: number };
-      if (state.armed && frame.type === 'rpc' && frame.methodId === APPROVE_PR_METHOD_ID) state.sent = true;
+      const frame = JSON.parse(String(message)) as { type?: string; id?: string; methodId?: number };
+      if (state.armed && frame.type === 'rpc' && frame.methodId === APPROVE_PR_METHOD_ID && frame.id) state.callId = frame.id;
       server.send(message);
     });
     server.onMessage((message) => {
-      if (state.holding) {
-        state.held.push(() => socket.send(message));
-        return;
-      }
-      if (state.armed && state.sent && carriesUpdate(JSON.parse(String(message)))) {
+      const frame = JSON.parse(String(message)) as { type?: string; id?: string; channel?: string; events?: { channel?: string }[] };
+      if (state.callId !== '' && frame.id === state.callId) state.replied = true;
+      if (state.armed && state.callId !== '' && carriesUpdate(frame)) {
         state.holding = true;
         state.held.push(() => socket.send(message));
         return;
@@ -171,9 +171,13 @@ async function holdPumpFrames(page: Page) {
     get holding() {
       return state.holding;
     },
+    get replied() {
+      return state.replied;
+    },
     release() {
       state.armed = false;
-      state.sent = false;
+      state.callId = '';
+      state.replied = false;
       state.holding = false;
       for (const send of state.held.splice(0)) send();
     },
@@ -229,9 +233,12 @@ export function reviewMergeFlow({ compact }: MergeSurface): void {
       }
 
       // Approve pends until the pump's frame lands, then reads Unapprove.
+      // The call's reply is through (the pane holds the seq it named); the
+      // frame carrying that seq is what it waits for.
       frames.arm();
       await press(approve);
       await expect.poll(() => frames.holding, { timeout: 15_000 }).toBe(true);
+      await expect.poll(() => frames.replied, { timeout: 15_000 }).toBe(true);
       await expect(approve).toHaveText('Approve');
       await expect(approve).toHaveAttribute('aria-busy', 'true');
       await expect(trigger).toBeDisabled();

@@ -696,29 +696,30 @@
     {:else if review.files.length === 0 && review.error}
       <!-- Nothing loaded: the banner above says why. An empty diff is not
            what the load found. -->
-    {:else if review.files.length === 0}
+    {:else if review.files.length === 0 && !overviewShown}
       <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-empty">No changed files.</div>
     {:else}
-      <!-- Relative: on the phone the open rail lays over the diff. -->
+      <!-- Relative: on the phone the open rail lays over the diff. The
+           overview (Merge, Description, Conversation) leads the list for
+           every PR, with no file rows under it when the diff is empty or
+           the filter hides every file; the rail stays while there are
+           files to unhide. -->
       <div class="relative flex min-h-0 flex-1">
-        <ReviewRail
-          files={review.files}
-          activeFileIndex={treeActiveFileIndex}
-          onSelectFile={jumpToFile}
-          commentCounts={commentCounts.byFile}
-          open={treeVisible}
-          onToggleOpen={toggleTree}
-          {activeExtensions}
-          {hideTests}
-          onHideTestsChange={(value) => { hideTests = value; }}
-          {filterDiff}
-          onFilterDiffChange={(value) => { filterDiff = value; }}
-        />
-        {#if diffFiles.length === 0}
-          <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-filter-empty">
-            No files match the filter.
-          </div>
-        {:else}
+        {#if review.files.length > 0}
+          <ReviewRail
+            files={review.files}
+            activeFileIndex={treeActiveFileIndex}
+            onSelectFile={jumpToFile}
+            commentCounts={commentCounts.byFile}
+            open={treeVisible}
+            onToggleOpen={toggleTree}
+            {activeExtensions}
+            {hideTests}
+            onHideTestsChange={(value) => { hideTests = value; }}
+            {filterDiff}
+            onFilterDiffChange={(value) => { filterDiff = value; }}
+          />
+        {/if}
         {#snippet leadRowContent()}
           {#if selectedCommit}
             <ReviewCommitCard commit={selectedCommit} ordinal={selectedCommitIndex + 1} count={review?.commits.length ?? 0} />
@@ -752,6 +753,13 @@
           overviewLead={leadRow ?? 'overview'}
           onOverviewOffChange={(off) => { overviewOff = off; }}
         >
+          {#snippet empty()}
+            {#if review?.files.length === 0}
+              <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-empty">No changed files.</div>
+            {:else}
+              <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-filter-empty">No files match the filter.</div>
+            {/if}
+          {/snippet}
           {#snippet draftEditor(anchor)}
             <ReviewDraftEditor
               {anchor}
@@ -798,7 +806,6 @@
             />
           {/snippet}
         </ReviewDiffBody>
-        {/if}
       </div>
     {/if}
     {#if !review.conflictView && review.drafts.length > 0}

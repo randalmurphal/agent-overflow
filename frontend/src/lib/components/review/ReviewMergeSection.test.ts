@@ -1,9 +1,13 @@
 import { fireEvent, waitFor, within } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { applyPRReviewUpdated } from '../../stores/eventsPRReview';
+import { applyPRThreads } from '../../stores/prReviewStore.svelte';
+import { HOME_BACKEND } from '../../transport/backendKey';
+import { composeWorkspaceKey } from '../../utils/workspaceKey';
+import { tick } from 'svelte';
 import { getToasts } from '../../stores/toast.svelte';
 import { TransportError } from '../../transport/wsClient';
-import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
 import { __seedGitStatusForTest } from '../../stores/gitStatusStore.svelte';
 import { PR_KEY, mountReviewPanePR, prDetailFixture, resetReviewPanePR, type ReviewPaneView } from '../../../test/helpers/reviewPanePR';
 import type { PRDetail } from '../../types/models';
@@ -83,7 +87,7 @@ describe('<ReviewMergeSection>', () => {
   });
 
   it('approves with the head the pane holds, stays pending until the frame lands, then offers Unapprove', async () => {
-    const approve = setBindingMock('ApprovePR', async () => undefined);
+    const approve = setBindingMock('ApprovePR', async () => ({ seq: 2 }));
     const view = await mountReviewPanePR(blocked());
     await openMergeSection(view);
     const button = view.getByTestId('review-merge-approve');
@@ -107,7 +111,7 @@ describe('<ReviewMergeSection>', () => {
     expect(view.getByTestId('review-merge-approve')).toBeEnabled();
     expect(view.getByTestId('review-merge-pill')).toHaveTextContent('Blocked · 1');
     expect(view.getByTestId('review-merge-you-approved')).toBeInTheDocument();
-    const unapprove = setBindingMock('UnapprovePR', async () => undefined);
+    const unapprove = setBindingMock('UnapprovePR', async () => ({ seq: 3 }));
     await fireEvent.click(view.getByTestId('review-merge-approve'));
     await waitFor(() => {
       expect(unapprove).toHaveBeenCalledTimes(1);
@@ -132,7 +136,7 @@ describe('<ReviewMergeSection>', () => {
   });
 
   it('merges with the method and toggles the menu shows, then follows the frame to merged', async () => {
-    const merge = setBindingMock('MergePR', async () => ({ merged: true, autoMerge: false, sha: 'm1' }));
+    const merge = setBindingMock('MergePR', async () => ({ seq: 2, outcome: { merged: true, autoMerge: false, sha: 'm1' } }));
     const view = await mountReviewPanePR(prDetailFixture());
     await openMergeSection(view);
     const trigger = view.getByTestId('review-merge-trigger');
@@ -188,7 +192,7 @@ describe('<ReviewMergeSection>', () => {
   });
 
   it('arms auto-merge from a blocked PR and shows the armed request with its cancel', async () => {
-    const merge = setBindingMock('MergePR', async () => ({ merged: false, autoMerge: true }));
+    const merge = setBindingMock('MergePR', async () => ({ seq: 2, outcome: { merged: false, autoMerge: true } }));
     const view = await mountReviewPanePR(blocked());
     await openMergeSection(view);
     const menu = await openMergeMenu(view);
@@ -206,7 +210,7 @@ describe('<ReviewMergeSection>', () => {
     const armed = view.getByTestId('review-merge-armed');
     expect(armed).toHaveTextContent('Auto-merge set by Octo Cat · Squash and merge');
     expect(armed).toHaveTextContent('Merges once the checks pass');
-    const cancel = setBindingMock('CancelPRAutoMerge', async () => undefined);
+    const cancel = setBindingMock('CancelPRAutoMerge', async () => ({ seq: 3 }));
     await fireEvent.click(within(armed).getByTestId('review-merge-row-cancel-auto'));
     await waitFor(() => {
       expect(cancel).toHaveBeenCalledTimes(1);
@@ -250,8 +254,8 @@ describe('<ReviewMergeSection>', () => {
   });
 
   it('offers the fixes of the rebase and draft blockers', async () => {
-    const update = setBindingMock('UpdatePRBranch', async () => undefined);
-    const ready = setBindingMock('MarkPRReady', async () => undefined);
+    const update = setBindingMock('UpdatePRBranch', async () => ({ seq: 3 }));
+    const ready = setBindingMock('MarkPRReady', async () => ({ seq: 2 }));
     const view = await mountReviewPanePR(blocked({
       readiness: { state: 'draft', blockers: [{ kind: 'draft', text: 'Still a draft' }, { kind: 'rebase', text: 'Behind main' }], settled: [] },
     }));
@@ -293,7 +297,7 @@ describe('<ReviewMergeSection>', () => {
     expect(rows[0]).toHaveTextContent('octocat');
     expect(rows[0]).toHaveTextContent('marked as ready');
     expect(rows[1]).toHaveTextContent('force-pushed');
-    expect(rows[1]).toHaveTextContent('abcdef1');
+    expect(within(rows[1]).getByText('abcdef1', { selector: '.font-mono' })).toBeInTheDocument();
     expect(view.getAllByTestId('review-conversation-verdict')).toHaveLength(1);
   });
 
@@ -321,7 +325,7 @@ describe('<ReviewMergeSection>', () => {
 
 describe('<ReviewMergeSection> guards', () => {
   it('withholds every action while the diff is stale or the pump is failing, and pins the head the diff was loaded at', async () => {
-    const approve = setBindingMock('ApprovePR', async () => undefined);
+    const approve = setBindingMock('ApprovePR', async () => ({ seq: 5 }));
     const view = await mountReviewPanePR(blocked());
     await openMergeSection(view);
     // A push the reader has not seen: the banner, and no action until Reload.
@@ -355,6 +359,7 @@ describe('<ReviewMergeSection> guards', () => {
     const approved = blocked({ merge: { ...blocked().merge, viewerApproved: true } });
     setBindingMock('ApprovePR', async () => {
       frame(approved, 2);
+      return { seq: 2 };
     });
     const view = await mountReviewPanePR(blocked());
     await openMergeSection(view);
@@ -366,8 +371,40 @@ describe('<ReviewMergeSection> guards', () => {
     expect(view.getByTestId('review-merge-trigger')).toBeEnabled();
   });
 
+  it('settles at once when the poll found nothing changed, and stays pending through a comments-only refresh', async () => {
+    // The pump polled and stamped nothing: its seq is the one already
+    // applied, so the old label is the forge's answer.
+    setBindingMock('ApprovePR', async () => ({ seq: 1 }));
+    const view = await mountReviewPanePR(blocked());
+    await openMergeSection(view);
+    await fireEvent.click(view.getByTestId('review-merge-approve'));
+    await waitFor(() => {
+      expect(getBindingMock('ApprovePR')).toHaveBeenCalledTimes(1);
+    });
+    expect(view.getByTestId('review-merge-approve')).toBeEnabled();
+    expect(view.getByTestId('review-merge-approve')).toHaveTextContent('Approve');
+
+    // A later action whose poll stamped seq 2: a thread refresh replaces
+    // the snapshot without a frame, so the action is still pending; the
+    // frame settles it.
+    setBindingMock('ApprovePR', async () => ({ seq: 2 }));
+    await fireEvent.click(view.getByTestId('review-merge-approve'));
+    await waitFor(() => {
+      expect(view.getByTestId('review-merge-approve')).toBeDisabled();
+    });
+    applyPRThreads(composeWorkspaceKey(HOME_BACKEND, PR_KEY), []);
+    await tick();
+    expect(view.getByTestId('review-merge-approve')).toBeDisabled();
+    expect(view.getByTestId('review-merge-trigger')).toBeDisabled();
+    frame(blocked({ merge: { ...blocked().merge, viewerApproved: true } }), 2);
+    await waitFor(() => {
+      expect(view.getByTestId('review-merge-approve')).toHaveTextContent('Unapprove');
+    });
+    expect(view.getByTestId('review-merge-approve')).toBeEnabled();
+  });
+
   it('sends no branch delete with a GitHub auto-merge and says so', async () => {
-    const merge = setBindingMock('MergePR', async () => ({ merged: false, autoMerge: true }));
+    const merge = setBindingMock('MergePR', async () => ({ seq: 2, outcome: { merged: false, autoMerge: true } }));
     const view = await mountReviewPanePR(blocked());
     await openMergeSection(view);
     let menu = await openMergeMenu(view);
@@ -404,5 +441,36 @@ describe('<ReviewMergeSection> guards', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(view.getByTestId('review-pr-readiness')).toHaveTextContent('Merged');
     expect(view.getByTestId('review-pr-merge')).toBeInTheDocument();
+  });
+
+  it('keeps the overview when the filter hides every file or the diff is empty', async () => {
+    setReviewDiffMock('OpenPRDiff', async () => [
+      'diff --git a/src/app.test.ts b/src/app.test.ts',
+      'index 1111111..2222222 100644',
+      '--- a/src/app.test.ts',
+      '+++ b/src/app.test.ts',
+      '@@ -1 +1 @@',
+      '-old',
+      '+new',
+    ].join('\n'));
+    const view = await mountReviewPanePR(blocked());
+    await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
+    await fireEvent.click(await waitFor(() => view.getByTestId('review-tree-filter-diff')));
+    await fireEvent.click(await waitFor(() => view.getByTestId('review-tree-hide-tests')));
+    await waitFor(() => {
+      expect(view.getByTestId('review-filter-empty')).toBeInTheDocument();
+    });
+    expect(view.getByTestId('review-overview')).toBeInTheDocument();
+    expect(view.getByTestId('review-pr-merge')).toBeInTheDocument();
+    expect(view.getByTestId('review-tree-ext-trigger')).toBeInTheDocument();
+
+    view.unmount();
+    resetReviewPanePR();
+    setReviewDiffMock('OpenPRDiff', async () => '');
+    const empty = await mountReviewPanePR(blocked());
+    expect(empty.getByTestId('review-empty')).toBeInTheDocument();
+    expect(empty.getByTestId('review-overview')).toBeInTheDocument();
+    expect(empty.getByTestId('review-pr-merge')).toBeInTheDocument();
+    expect(empty.queryByTestId('review-tree-ext-trigger')).toBeNull();
   });
 });

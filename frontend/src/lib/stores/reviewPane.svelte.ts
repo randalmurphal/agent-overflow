@@ -2712,6 +2712,7 @@ function userFacingError(err: unknown): string {
 export function __resetReviewPaneStateForTest(): void {
   for (const state of statesBySourcePane.values()) state.dispose();
   statesBySourcePane.clear();
+  heldPRByRow.clear();
 }
 
 export type { CommentAnchor };

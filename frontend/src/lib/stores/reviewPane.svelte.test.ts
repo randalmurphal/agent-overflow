@@ -1216,11 +1216,89 @@ describe('reviewPane store — PR scope', () => {
     // apply here — no banner, and no head quoted from another pull request.
     expect(state.prStale).toBe(false);
     expect(state.prHeadSHA).toBe('');
+    // Nor does any merge action run on #7 while its diff is not on screen:
+    // the controls are withheld, and the live head is never pinned in the
+    // loaded one's place.
+    expect(state.mergeWithheldReason).toBe('The diff is still loading.');
+    const approve = setBindingMock('ApprovePR', async () => ({ seq: 2 }));
+    await state.approvePR();
+    expect(approve).not.toHaveBeenCalled();
 
     releaseDiff(patchFor('src/app.ts', 3));
     await reloading;
     expect(state.prHeadSHA).toBe('sha-z');
     expect(state.prStale).toBe(false);
+    expect(state.mergeWithheldReason).toBeNull();
+  });
+
+  it('withholds the merge actions after the PR diff failed to load', async () => {
+    installPRMocks();
+    setReviewDiffMock('OpenPRDiff', async () => {
+      throw new Error('fetch pull request diff: HTTP 502');
+    });
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    await vi.waitFor(() => {
+      expect(state.error).toContain('HTTP 502');
+    });
+    expect(state.prDetail?.number).toBe(5);
+    expect(state.mergeWithheldReason).toBe('The diff has not loaded for this pull request. Reload it to act on it.');
+    const approve = setBindingMock('ApprovePR', async () => ({ seq: 2 }));
+    await state.approvePR();
+    expect(approve).not.toHaveBeenCalled();
+  });
+
+  it('refuses a second merge action until the pump\'s answer to the first is on screen', async () => {
+    installPRMocks();
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    const approve = setBindingMock('ApprovePR', async () => ({ seq: 2 }));
+    const unapprove = setBindingMock('UnapprovePR', async () => ({ seq: 3 }));
+    await state.approvePR();
+    expect(approve).toHaveBeenCalledTimes(1);
+    expect(state.mergeAction).toBe('approve');
+    // Still pending: the call answered, the frame it named has not landed.
+    await state.approvePR();
+    await state.unapprovePR();
+    expect(approve).toHaveBeenCalledTimes(1);
+    expect(unapprove).not.toHaveBeenCalled();
+    applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub(), threads: [], headSHA: 'sha-a', seq: 2 });
+    expect(state.mergeAction).toBeNull();
+  });
+
+  it('keeps the merged PR across the checkout move the worktree cleanup makes', async () => {
+    installPRMocks();
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    expect(state.prRef?.number).toBe(5);
+    // The PR merged: git status stops listing it, the pane holds it.
+    seedPaneWorkspaceStatus('pane-1', { forge: 'github' });
+    await tick();
+    expect(state.prRef?.number).toBe(5);
+    // The cleanup moves the thread to Base: the companion subject changes
+    // (its checkout is part of it) and this state is replaced by one for
+    // the new checkout, which must still show the merged PR.
+    const base: WorkspaceRef = { projectId: REVIEW_WS.projectId, workspacePath: '/tmp/base' };
+    const thread = { id: 'thread-1', projectId: REVIEW_WS.projectId } as Thread;
+    const baseSubject: ReviewSubject = {
+      identity: companionSubjectKey({ thread, workspace: base }),
+      threadId: 'thread-1',
+      rowId: 'thread-1',
+      workspace: base,
+    };
+    const moved = reviewStateForPane('pane-1', baseSubject);
+    expect(moved).not.toBe(state);
+    expect(moved.scope).toBe('pr');
+    expect(moved.prRef?.number).toBe(5);
+    await waitLoaded(moved);
+    // Closing the pane is the end of it: the next state starts clean.
+    disposeReviewStateForPane('pane-1', moved);
+    const fresh = reviewStateForPane('pane-1', baseSubject);
+    expect(fresh.prRef).toBeNull();
+    disposeReviewStateForPane('pane-1', fresh);
   });
 
   it('a pr:updated error surfaces as pane state and clears on the next good snapshot', async () => {

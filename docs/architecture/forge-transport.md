@@ -176,7 +176,10 @@ force pushes), the CI phase for `CI` alone on its own cadence. A merge
 action (`ApprovePR`, `UnapprovePR`, `MergePR`, `CancelPRAutoMerge`,
 `UpdatePRBranch`, `MarkPRReady`) that succeeds asks the PR's live pump for
 one snapshot poll at once (`prPumpRequest.snapshot`), so every pane on the
-PR follows the forge's answer without waiting out the interval; the
+PR follows the forge's answer without waiting out the interval, and
+answers with the pump's sequence after that poll (`PRActionResult.Seq`,
+zero with no pane on the PR) so the pane knows when the answer is on its
+screen; the
 readiness, merge options and events in the detail come from that read,
 never from the action's own response. `git.Core` keeps `GetPRDetail`, `ListReviewThreads` and
 `ListPRCIJobs` as one-part wrappers for the callers that need one part.

@@ -132,10 +132,12 @@ base's rulesets (`allowedMergeMethods`).
 - Approve: GitLab `POST .../approve` with the head `sha`; GitHub a review
   with the approve verdict (the existing `SubmitReview`). Unapprove:
   GitLab `POST .../unapprove`; GitHub `dismissPullRequestReview` on the
-  viewer's latest approval (`latestOpinionatedReviews` carries the review
-  id and `viewerDidAuthor`). A viewer who cannot approve (GitHub: the author;
-  GitLab: `user_can_approve` false) sees no button, and the approvals
-  blocker row says why.
+  viewer's own standing approval, which the forge adapter resolves from
+  `latestOpinionatedReviews` (`viewerDidAuthor`) for the pull request
+  named: the caller names no review, so nothing of another login's or
+  another pull request's can be dismissed. A viewer who cannot approve
+  (GitHub: the author; GitLab: `user_can_approve` false) sees no button,
+  and the approvals blocker row says why.
 - Merge now: GitLab `PUT .../merge` with `squash`,
   `should_remove_source_branch` and the head `sha`; GitHub
   `mergePullRequest` with `mergeMethod` and `expectedHeadOid`, then the
@@ -152,8 +154,19 @@ base's rulesets (`allowedMergeMethods`).
   as a settled row "Auto-merge set by X · method" with Cancel, and the
   button reads "Auto-merge set".
 - No optimistic state: a successful action asks the PR's pump to poll at
-  once and the pane follows the forge's answer. The button shows its
-  pending state until the pump's frame lands or the call fails.
+  once and the pane follows the forge's answer. The action answers with
+  the pump's sequence after that poll (`PRActionResult.Seq`); the button
+  shows its pending state until the pane's applied sequence reaches it
+  (the frame that carries the forge's answer) or the call fails. A poll
+  that found the snapshot unchanged stamped nothing, so the pane settles
+  at once: the label it shows is the forge's answer. A thread refresh,
+  which replaces the snapshot without a frame, does not settle it, and no
+  second action runs while one is pending.
+- Every action is withheld, with its reason as the controls' hover text,
+  until this PR's diff is on screen (loading, or a failed load), while
+  the diff predates the live head (the stale banner) and while the pump
+  is failing; the head-pinned actions send the head the diff was loaded
+  at, never the live one.
 - Merging from a thread's companion pane is the merge the worktree cleanup
   ruling (2026-10-13) reacts to: the thread moves to Base and the pane
   stays on the merged PR's snapshot until closed.
@@ -273,10 +286,11 @@ fake forge on desktop and compact.
 | Closed | `Closed` red | no actions | "Closed without merging · time" row |
 | Viewer cannot merge | as above | no Merge button | a row with `CannotMergeReason` |
 | Viewer is the author | as above | no Approve | the approvals blocker row carries no Approve; without one, a row with `CannotApproveReason` |
-| Action in flight | unchanged | the pressed button spins; every merge control disables until the pump's frame lands (or 15s) | unchanged |
+| Action in flight | unchanged | the pressed button spins; every merge control disables until the pump's answer is on screen: the action answers with the pump's seq after its poll and the pane waits for its watermark to reach it (a poll that found nothing changed settles at once) | unchanged |
 | Action failed (e2e: 403, 409) | unchanged | buttons re-enable | toast with sentence, Details, Reload when 409 |
-| Stale snapshot under a banner (the diff predates the live head, or the pump is failing) | last known | every action disabled, its hover text the reason; head-pinned actions always send the head the DIFF was loaded at | last known rows |
+| Stale snapshot under a banner (the diff predates the live head, or the pump is failing), or the PR's diff not loaded (loading, or its load failed) | last known | every action disabled, its hover text the reason; head-pinned actions always send the head the DIFF was loaded at | last known rows |
 | Commit picked (no overview row) | pill still shown; click opens the section for the next overview mount | n/a | n/a |
+| Empty diff, or every file hidden by the tree filter | as above | the overview still leads the (empty) list, Merge section included; the rail stays while there are files to unhide | as above |
 | PR detail failed to load | no pill | no section | n/a |
 | Compact (e2e, screenshot) | pill wraps with the refs line | header wraps: pill, then actions on their own row | rows wrap, fix buttons stay right |
 

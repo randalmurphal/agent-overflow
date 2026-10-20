@@ -41,7 +41,8 @@ PR stores; components own presentation and interaction.
   pill, which jumps to it, and both read `utils/reviewReadiness.ts` so
   they never disagree. Its actions go through the store
   (`approvePR`, `mergePR`, …), which holds `mergeAction` pending until the
-  pump's frame replaces the snapshot and toasts a failure as the
+  PR's applied seq reaches the one the action answered with (the pump's
+  seq after its poll) and toasts a failure as the
   backend's one sentence (code `forge_<kind>`; `forge_stale_head` offers
   Reload). Never render merged, approved or armed state from a call's
   success; the forge's answer arrives on the snapshot. Reading anchors
