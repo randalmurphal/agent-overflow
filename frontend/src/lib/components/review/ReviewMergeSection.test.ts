@@ -297,6 +297,18 @@ describe('<ReviewMergeSection>', () => {
     expect(view.getAllByTestId('review-conversation-verdict')).toHaveLength(1);
   });
 
+  it('labels a dismissed verdict as review dismissed', async () => {
+    const detail = prDetailFixture({
+      latestReviews: [{ authorLogin: 'alice', authorName: 'Alice', state: 'DISMISSED', submittedAt: '2026-10-20T09:00:00Z', body: 'Looked fine before the rewrite.', commitSHA: 'sha-a' }],
+    });
+    const view = await mountReviewPanePR(detail);
+    const conversation = view.getByTestId('review-pr-conversation');
+    await fireEvent.click(conversation.querySelector('button')!);
+    const row = await waitFor(() => view.getByTestId('review-conversation-verdict'));
+    expect(within(row).getAllByText('review dismissed')).toHaveLength(2);
+    expect(row).toHaveTextContent('Looked fine before the rewrite.');
+  });
+
   it('shows a forbidden pump failure in the login banner', async () => {
     const view = await mountReviewPanePR(prDetailFixture());
     applyPRReviewUpdated({ prKey: PR_KEY, error: 'Your github.com token lacks the `repo` scope, so the app cannot read owner/repo#5.', errorKind: 'forbidden', seq: 2 });
