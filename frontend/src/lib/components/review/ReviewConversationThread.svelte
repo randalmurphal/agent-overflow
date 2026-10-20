@@ -14,6 +14,10 @@
     THREAD_CARD_CLASS,
     THREAD_CHIP_CLASS,
     THREAD_HEAD_CLASS,
+    THREAD_OUTDATED_CARD_CLASS,
+    THREAD_OUTDATED_CHIP_CLASS,
+    outdatedTitle,
+    reviewThreadOutdated,
     reviewThreadState,
     threadBodyClass,
   } from '../../utils/reviewThreadStyle';
@@ -28,9 +32,10 @@
   // thread's state; the actions (reply, copy, resolve) sit at the foot
   // of the card, the way the forges place them. The state also reads from the edge, so a scan down
   // the feed tells unresolved (warning edge) from resolved (success
-  // edge) from outdated (dashed) without reading a word. The first
-  // comment always renders IN FULL; only the REPLIES fold, and only on
-  // settled threads. Anchored threads fold the code they were written
+  // edge) without reading a word; a dashed edge and an "outdated" chip
+  // mark a thread written against code that has since moved, whatever
+  // its state. The first comment always renders IN FULL; only the
+  // REPLIES fold, and only on settled threads. Anchored threads fold the code they were written
   // against under the header.
 
   interface Props {
@@ -51,7 +56,8 @@
 
   const repliesOpen = $derived(review.conversationThreadExpanded(thread.id));
   const threadState = $derived(reviewThreadState(thread));
-  const settled = $derived(threadState === 'resolved' || threadState === 'outdated');
+  const outdated = $derived(reviewThreadOutdated(thread));
+  const settled = $derived(threadState === 'resolved');
   const first = $derived(thread.comments[0]);
   const firstBody = $derived(visibleBody(first?.body ?? ''));
   const replyCount = $derived(Math.max(0, thread.comments.length - 1));
@@ -59,9 +65,13 @@
     const ms = Date.parse(first?.createdAt ?? '');
     return Number.isNaN(ms) ? '' : relativeTime(ms);
   });
-  const location = $derived(
-    thread.path === '' ? '' : thread.line ? `${thread.path}:${thread.line}` : thread.path,
-  );
+  // An outdated GitHub thread has no current line; it names the line it
+  // was written at instead.
+  const location = $derived.by(() => {
+    if (thread.path === '') return '';
+    const line = thread.line ?? thread.originalLine;
+    return line ? `${thread.path}:${line}` : thread.path;
+  });
   // The file bar above the diff already carries directories; the card
   // names the file, and the full path is the tooltip.
   const shortLocation = $derived.by(() => {
@@ -83,15 +93,18 @@
   data-testid="review-conversation-thread"
   data-thread-id={thread.id}
   data-state={threadState}
+  data-outdated={outdated ? 'true' : undefined}
 >
   <div class="relative z-10 rounded-full ring-[3px] ring-surface-0/70">
     <ReviewAvatar login={first?.authorLogin ?? ''} name={first?.authorName} size={28} />
   </div>
   <div
-    class="min-w-0 overflow-hidden rounded-[var(--radius-control)] border bg-surface-1 {THREAD_CARD_CLASS[threadState]}"
+    class="min-w-0 overflow-hidden rounded-[var(--radius-control)] border bg-surface-1 {THREAD_CARD_CLASS[threadState]} {outdated ? THREAD_OUTDATED_CARD_CLASS : ''}"
     {@attach jumpPulse(pulse)}
   >
-    <div class="flex min-w-0 items-center gap-1.5 py-1.5 px-3 text-[0.75rem] {THREAD_HEAD_CLASS[threadState]} {firstBody === '' && !contextFile ? '' : 'border-b border-border-subtle'}">
+    <!-- Wraps so the chips land on a second line in a narrow feed instead
+         of clipping. -->
+    <div class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 py-1.5 px-3 text-[0.75rem] {THREAD_HEAD_CLASS[threadState]} {firstBody === '' && !contextFile ? '' : 'border-b border-border-subtle'}">
       <span class="shrink-0 font-semibold text-fg" title={first ? `@${first.authorLogin}` : ''}>{first ? authorDisplayName(first) : ''}</span>
       {#if first && isBotLogin(first.authorLogin)}
         <span class="shrink-0 rounded-[var(--radius-field)] border border-border-subtle px-1 text-[0.625rem] leading-4 text-fg-muted">bot</span>
@@ -119,6 +132,9 @@
         <span class="shrink-0 text-fg-subtle">· {firstTime}</span>
       {/if}
       <span class="min-w-0 flex-1"></span>
+      {#if outdated}
+        <span class="shrink-0 rounded-full px-1.5 py-px text-[0.625rem] {THREAD_OUTDATED_CHIP_CLASS}" title={outdatedTitle(thread)} data-testid="review-thread-outdated">outdated</span>
+      {/if}
       {#if threadState !== 'none'}
         <span class="shrink-0 rounded-full px-1.5 py-px text-[0.625rem] {THREAD_CHIP_CLASS[threadState]}">{threadState}</span>
       {/if}
@@ -164,7 +180,7 @@
         onCloseReply={() => { replying = false; }}
         onBodyChange={(body) => review.setReplyBody(thread.id, body)}
         onSendReply={() => review.sendPRThreadReply(thread)}
-        onResolve={thread.isResolvable && !thread.isOutdated
+        onResolve={thread.isResolvable
           ? (resolved) => { void review.setPRThreadResolved(thread, resolved); }
           : undefined}
       />

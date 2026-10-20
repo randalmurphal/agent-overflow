@@ -103,7 +103,7 @@ func TestListCommitsSurvivesControlBytesInSubject(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	testutil.RunGit(t, repo, "checkout", "-b", "feature")
 	commitFile(t, repo, "a.txt", "a\n", "sep \x1f and \x1e inside")
-	commitFile(t, repo, "b.txt", "b\n", "clean subject")
+	commitFile(t, repo, "b.txt", "b\n", "clean subject\n\nA body with \x1f inside,\nand a second line.\n\n")
 
 	commits, err := ListCommits(context.Background(), repo, "main")
 	if err != nil {
@@ -117,6 +117,9 @@ func TestListCommitsSurvivesControlBytesInSubject(t *testing.T) {
 	}
 	if commits[1].AuthoredAt <= 0 {
 		t.Fatalf("fields shifted by control bytes: %+v", commits[1])
+	}
+	if commits[0].Body != "A body with \x1f inside,\nand a second line." || commits[1].Body != "" {
+		t.Fatalf("bodies mangled: %q %q", commits[0].Body, commits[1].Body)
 	}
 }
 

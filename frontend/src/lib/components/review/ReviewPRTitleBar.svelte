@@ -1,24 +1,28 @@
 <script lang="ts">
   import FileText from '@lucide/svelte/icons/file-text';
   import MessagesSquare from '@lucide/svelte/icons/messages-square';
-  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Icon from '../primitives/Icon.svelte';
   import ReviewAvatar from './ReviewAvatar.svelte';
   import ReviewCIChips from './ReviewCIChips.svelte';
   import ReviewUnresolvedStepper from './ReviewUnresolvedStepper.svelte';
   import { OpenExternalURL } from '../../stores/bindings';
+  import { truncateMiddle } from '../../utils/format';
   import { authorDisplayName } from '../../utils/reviewIdentity';
   import type { ForgeFailure } from '../../utils/forgeFailure';
   import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
   import type { CIJob, CIPipeline, PRDetail } from '../../types/models';
 
-  // The PR's fixed title bar above the rail and the diff: what the PR is
-  // (title, number, author) and where it stands (conflicts, CI, review
-  // decision). The Description and Conversation sections are NOT here:
-  // they are the overview row at the top of the diff list, which scrolls
-  // off under this bar. Once it has, the bar grows peek controls that
-  // scroll back to each section, and the unresolved stepper walks the
-  // diff's thread rows instead of the conversation's cards.
+  // The PR's fixed title bar above the rail and the diff, four lines that
+  // each say one thing: what the PR is (title, number), who opened it and
+  // where it stands (author, state), what it targets and who signed off
+  // (base ← head, conflicts, verdicts), and CI. Each line keeps a minimum
+  // height so chips arriving or leaving never shift the diff under the
+  // reader; a line's content wraps inside it on a narrow pane. The
+  // Description and Conversation sections are NOT here: they are the
+  // overview row at the top of the diff list, which scrolls off under
+  // this bar. Once it has, the title line grows peek controls that scroll
+  // back to each section, and the unresolved stepper walks the diff's
+  // thread rows instead of the conversation's cards.
 
   interface Props {
     detail: PRDetail;
@@ -69,6 +73,23 @@
     await OpenExternalURL(url);
   }
 
+  // The PR's state as the forge normalizes it (open, merged, closed,
+  // locked; internal/git/forge.go NormalizePRState), a draft reading as
+  // draft whatever its state.
+  const stateLabel = $derived(detail.draft ? 'draft' : detail.state.toLowerCase());
+  const STATE_PILL_CLASS: Record<string, string> = {
+    open: 'bg-success/12 text-success',
+    merged: 'bg-accent/12 text-accent',
+    closed: 'bg-error/12 text-error',
+    draft: 'bg-surface-2 text-fg-muted',
+  };
+  const statePillClass = $derived(STATE_PILL_CLASS[stateLabel] ?? 'bg-surface-2 text-fg-muted');
+
+  // A branch name's distinguishing part is usually its tail
+  // (BLITZ-664-action-queue), so a long one keeps both ends; the full
+  // pair is the line's tooltip.
+  const REF_MAX = 36;
+
   // Forge review states arrive as wire enums (APPROVED,
   // CHANGES_REQUESTED, REVIEW_REQUIRED, COMMENTED, ...): render them as
   // words with a semantic tint instead of raw constants.
@@ -88,12 +109,11 @@
   }
 
   const peekClass = 'inline-flex h-6 items-center gap-1.5 rounded-[var(--radius-field)] border px-2 text-[0.6875rem] font-medium compact:h-8';
+  const lineClass = 'flex min-h-6 min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 text-[0.75rem] text-fg-muted compact:min-h-8';
 </script>
 
-<section class="shrink-0 border-b border-border bg-surface-1 px-4 py-2.5" data-testid="review-pr-header">
-  <!-- Fixed-height rows: the peek controls (h-6) and the CI chips come
-       and go, and the bar must not breathe with them. -->
-  <div class="flex min-h-6 min-w-0 items-center gap-3">
+<section class="flex shrink-0 flex-col gap-1.5 border-b border-border bg-surface-1 px-4 py-2.5" data-testid="review-pr-header">
+  <div class="flex min-h-6 min-w-0 items-center gap-3 compact:min-h-8">
     <button
       type="button"
       class="min-w-0 flex-1 truncate text-left text-sm font-semibold text-fg hover:text-accent"
@@ -148,13 +168,27 @@
       </div>
     {/if}
   </div>
-  <div class="mt-1.5 flex min-h-6 flex-wrap items-center gap-x-2.5 gap-y-1 text-[0.75rem] text-fg-muted">
+
+  <div class={lineClass} data-testid="review-pr-author-line">
     <span class="inline-flex min-w-0 items-center gap-1.5" data-testid="review-pr-author">
       <ReviewAvatar login={detail.authorLogin} name={detail.authorName} size={16} />
       <span class="truncate font-medium text-fg">{authorDisplayName(detail)}</span>
       {#if detail.authorName}
         <span class="truncate text-fg-subtle">@{detail.authorLogin}</span>
       {/if}
+    </span>
+    <span class="inline-flex items-center rounded-full px-2 py-px text-[0.6875rem] {statePillClass}" data-testid="review-pr-state">{stateLabel}</span>
+  </div>
+
+  <div class={lineClass} data-testid="review-pr-refs-line">
+    <span
+      class="inline-flex min-w-0 items-center gap-1 font-mono text-[0.6875rem]"
+      title="{detail.baseRefName} ← {detail.headRefName}"
+      data-testid="review-pr-refs"
+    >
+      <span class="truncate text-fg">{truncateMiddle(detail.baseRefName, REF_MAX)}</span>
+      <span class="shrink-0 text-fg-subtle">←</span>
+      <span class="truncate text-fg">{truncateMiddle(detail.headRefName, REF_MAX)}</span>
     </span>
     {#if detail.mergeability === 'conflicts'}
       {#if hasWorkspace}
@@ -171,29 +205,6 @@
     {:else if detail.mergeability === 'checking'}
       <span class="text-fg-subtle">Checking mergeability...</span>
     {/if}
-    {#if onOpenCIJob}
-      <ReviewCIChips
-        pipeline={ciPipeline}
-        loading={ciLoading}
-        error={ciError}
-        failure={ciFailure}
-        {forge}
-        onOpenJob={onOpenCIJob}
-      />
-      {#if onRefreshCI}
-        <button
-          type="button"
-          class="inline-flex size-5 items-center justify-center rounded text-fg-subtle hover:bg-surface-2 hover:text-fg disabled:opacity-50"
-          aria-label="Refresh CI status"
-          title="Refresh CI status"
-          data-testid="review-ci-refresh"
-          disabled={ciRefreshing}
-          onclick={onRefreshCI}
-        >
-          <Icon icon={RefreshCw} size={12} class={ciRefreshing ? 'animate-spin' : ''} />
-        </button>
-      {/if}
-    {/if}
     <!-- The PR's decision, unless a reviewer's own verdict pill already
          says the same thing beside it. -->
     {#if detail.reviewDecision && !detail.latestReviews.some((verdict) => verdict.state.toUpperCase() === detail.reviewDecision.toUpperCase())}
@@ -209,4 +220,19 @@
       </span>
     {/each}
   </div>
+
+  {#if onOpenCIJob}
+    <div class={lineClass} data-testid="review-pr-ci-line">
+      <ReviewCIChips
+        pipeline={ciPipeline}
+        loading={ciLoading}
+        error={ciError}
+        failure={ciFailure}
+        {forge}
+        onOpenJob={onOpenCIJob}
+        onRefresh={onRefreshCI}
+        refreshing={ciRefreshing}
+      />
+    </div>
+  {/if}
 </section>

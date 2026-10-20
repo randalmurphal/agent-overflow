@@ -32,7 +32,7 @@ const (
 	githubActor          = `author { login ... on User { name } }`
 
 	githubThreadCommentFields = `id databaseId ` + githubActor + ` body createdAt replyTo { id databaseId }`
-	githubThreadFields        = `id isResolved isOutdated path line startLine diffSide startDiffSide subjectType ` +
+	githubThreadFields        = `id isResolved isOutdated path line startLine originalLine originalStartLine diffSide startDiffSide subjectType ` +
 		`comments(first: 100) { ` + githubPageInfoFields + ` nodes { ` + githubThreadCommentFields + ` } }`
 	githubCommentFields = `id databaseId ` + githubActor + ` body createdAt isMinimized`
 	githubContextFields = `__typename ` +
@@ -125,16 +125,18 @@ type githubThreadCommentsRaw struct {
 }
 
 type githubThreadRaw struct {
-	ID            string                  `json:"id"`
-	IsResolved    bool                    `json:"isResolved"`
-	IsOutdated    bool                    `json:"isOutdated"`
-	Path          string                  `json:"path"`
-	Line          *int                    `json:"line"`
-	StartLine     *int                    `json:"startLine"`
-	DiffSide      string                  `json:"diffSide"`
-	StartDiffSide string                  `json:"startDiffSide"`
-	SubjectType   string                  `json:"subjectType"`
-	Comments      githubThreadCommentsRaw `json:"comments"`
+	ID                string                  `json:"id"`
+	IsResolved        bool                    `json:"isResolved"`
+	IsOutdated        bool                    `json:"isOutdated"`
+	Path              string                  `json:"path"`
+	Line              *int                    `json:"line"`
+	StartLine         *int                    `json:"startLine"`
+	OriginalLine      *int                    `json:"originalLine"`
+	OriginalStartLine *int                    `json:"originalStartLine"`
+	DiffSide          string                  `json:"diffSide"`
+	StartDiffSide     string                  `json:"startDiffSide"`
+	SubjectType       string                  `json:"subjectType"`
+	Comments          githubThreadCommentsRaw `json:"comments"`
 }
 
 type githubThreadsRaw struct {
@@ -563,15 +565,17 @@ func githubReviewThreads(nodes []githubThreadRaw) []ReviewThread {
 			side = "file"
 		}
 		thread := ReviewThread{
-			ID:           node.ID,
-			Path:         node.Path,
-			Line:         node.Line,
-			StartLine:    node.StartLine,
-			Side:         side,
-			IsResolvable: true,
-			IsResolved:   node.IsResolved,
-			IsOutdated:   node.IsOutdated,
-			Comments:     make([]ReviewComment, 0, len(node.Comments.Nodes)),
+			ID:                node.ID,
+			Path:              node.Path,
+			Line:              node.Line,
+			StartLine:         node.StartLine,
+			OriginalLine:      node.OriginalLine,
+			OriginalStartLine: node.OriginalStartLine,
+			Side:              side,
+			IsResolvable:      true,
+			IsResolved:        node.IsResolved,
+			IsOutdated:        node.IsOutdated,
+			Comments:          make([]ReviewComment, 0, len(node.Comments.Nodes)),
 		}
 		for _, comment := range node.Comments.Nodes {
 			out := ReviewComment{

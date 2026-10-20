@@ -37,11 +37,34 @@ PR stores; components own presentation and interaction.
   state, section scroll offsets and the frozen feed live in the review
   store. Reading anchors name it as path `''`. `ReviewDiffBody` reports the
   row scrolling off (`onOverviewOffChange`); the title bar's peek buttons
-  return through `jumpToOverview`.
+  return through `jumpToOverview`. With a commit picked the lead row is
+  the commit card instead, which has no peek and no conversation to jump
+  to: `overviewOff` stays false and thread rows offer no conversation jump.
 - One state vocabulary per thread on every surface: classes from
-  `utils/reviewThreadStyle.ts`, author names, initials and tones from
+  `utils/reviewThreadStyle.ts` (`reviewThreadState` is unresolved,
+  resolved or none; `reviewThreadOutdated` is a marker layered on it,
+  never a state, so counts, the stepper and Resolve treat an outdated
+  thread by its resolve state), author names, initials and tones from
   `utils/reviewIdentity.ts` through `ReviewAvatar`. The Conversation card
   and the diff row (`ReviewPRThreadRow`) render the same card.
+- The toolbar holds the scope selectors, the diff's counts, collapse-all,
+  the view-options menu (whitespace, wrap, split), reload and close; no
+  comment tally (the tree badges, the Conversation header and the title
+  bar's stepper carry counts). Every selector is `ReviewToolbarMenu`, a
+  bordered trigger over the shared `Menu`; a trigger never truncates on
+  its own, a long value is shortened in the middle with the whole value as
+  hover text. The commit picker (`ReviewCommitPicker`) reads `All commits`
+  or `N/M <shortSha>` and never the subject; the subject, author, age and
+  body live in the menu rows and in the commit card (`ReviewCommitCard`),
+  which takes the overview's place as the diff list's lead row
+  (`lead: 'commit'`, key `REVIEW_COMMIT_CARD_ROW_KEY`) while a commit is
+  picked, so the fixed chrome never changes height for it. The
+  file-tree toggle lives in the rail (`ReviewRail`: the tree's header when
+  open, a strip when closed; on compact the open rail covers the diff and
+  a pick closes it). The conversation refresh is on the Conversation
+  section's header. The PR title bar (`ReviewPRTitleBar`) is four
+  fixed-minimum-height lines: title, author and state, refs and verdicts,
+  CI with its refresh inside the wrapping chip row.
 - A jump to a row inside a file lands under the sticky file bar: scroll it
   with `offset: -REVIEW_FILE_HEADER_BAR_PX`.
 - A jump to a thread pulses the destination card once and leaves nothing

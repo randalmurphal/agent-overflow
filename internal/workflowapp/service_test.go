@@ -307,6 +307,14 @@ func TestPRMessagesQuoteUntrustedDataAndKeepTheClosingFence(t *testing.T) {
 	if !strings.Contains(oversized, "[truncated]\n```") {
 		t.Fatalf("truncated message does not close its fence on a fresh line:\n%s", oversized[len(oversized)-300:])
 	}
+
+	original := 41
+	outdated := PRReviewCommentsMessage("https://github.com/owner/repo/pull/9", ref, []gitops.ReviewThread{{
+		ID: "thread-2", Path: "main.go", OriginalLine: &original, Side: "RIGHT", IsOutdated: true, Comments: comments[:1],
+	}})
+	if !strings.Contains(outdated, "Line: 41\n") || !strings.Contains(outdated, "Outdated: true\n") {
+		t.Fatalf("outdated thread does not name the line it was written at:\n%s", outdated)
+	}
 }
 
 func TestDispositionStateRejectsCalledAndRunningRuns(t *testing.T) {

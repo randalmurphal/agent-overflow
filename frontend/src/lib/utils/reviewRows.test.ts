@@ -9,6 +9,8 @@ import {
   REVIEW_FILE_HEADER_PX,
   REVIEW_LINE_BLOCK_MAX_LINES,
   REVIEW_LINE_HEIGHT_PX,
+  REVIEW_COMMIT_CARD_ESTIMATE_PX,
+  REVIEW_COMMIT_CARD_ROW_KEY,
   REVIEW_OVERVIEW_ESTIMATE_PX,
   REVIEW_OVERVIEW_ROW_KEY,
   REVIEW_SURFACE_END_PX,
@@ -16,6 +18,7 @@ import {
   buildReviewRows,
   reviewRowEstimate,
   type CommentAnchor,
+  type ReviewLeadRow,
   type ReviewRow,
 } from './reviewRows';
 
@@ -65,7 +68,7 @@ function prThread(overrides: Partial<ReviewThread> = {}): ReviewThread {
   return {
     id: overrides.id ?? 'prt-1',
     path: overrides.path ?? 'src/file.ts',
-    line: overrides.line ?? 2,
+    line: 'line' in overrides ? overrides.line : 2,
     startLine: overrides.startLine,
     side: overrides.side ?? 'right',
     isResolvable: overrides.isResolvable ?? true,
@@ -235,7 +238,7 @@ describe('buildReviewRows', () => {
     if (row.kind === 'pr-thread') expect(row.orphaned).toBe(false);
   });
 
-  it('groups outdated and unanchored PR threads under the file header', () => {
+  it('groups unanchored PR threads under the file header; an outdated one on a matching line stays inline', () => {
     const files = parseReviewFiles(addedPatch('src/file.ts', 2));
     const result = buildReviewRows({
       files,
@@ -244,15 +247,20 @@ describe('buildReviewRows', () => {
       drafts: [],
       openEditors: [],
       prThreads: [
-        prThread({ id: 'outdated', line: 1, isOutdated: true }),
+        prThread({ id: 'outdated-gone', line: null, isOutdated: true }),
         prThread({ id: 'missing', line: 99 }),
+        prThread({ id: 'outdated-here', line: 1, isOutdated: true }),
       ],
       expandedPRThreadIds: new Set(),
     });
 
-    expect(result.rows.map((row) => row.kind)).toEqual(['file-header', 'pr-thread', 'pr-thread', 'line-block', 'surface-end']);
+    expect(result.rows.map((row) => row.kind)).toEqual(['file-header', 'pr-thread', 'pr-thread', 'line-block', 'pr-thread', 'line-block', 'surface-end']);
     const prRows = result.rows.filter((row): row is Extract<ReviewRow, { kind: 'pr-thread' }> => row.kind === 'pr-thread');
-    expect(prRows.map((row) => row.orphaned)).toEqual([true, true]);
+    expect(prRows.map((row) => [row.thread.id, row.orphaned, row.collapsed]).sort()).toEqual([
+      ['missing', true, false],
+      ['outdated-gone', true, false],
+      ['outdated-here', false, false],
+    ]);
   });
 
   it('collapses resolved PR threads by default and expands from store state', () => {
@@ -467,7 +475,7 @@ describe('reviewRowEstimate', () => {
 });
 
 describe('buildReviewRows overview row', () => {
-  function build(overview: boolean | undefined) {
+  function build(overview: ReviewLeadRow | undefined) {
     return buildReviewRows({
       files: parseReviewFiles(twoFilePatch()),
       viewMode: 'stacked',
@@ -479,8 +487,8 @@ describe('buildReviewRows overview row', () => {
   }
 
   it('leads the list with the overview row, owned by no file', () => {
-    const result = build(true);
-    expect(result.rows[0]).toEqual({ kind: 'overview', fileIndex: -1 });
+    const result = build('overview');
+    expect(result.rows[0]).toEqual({ kind: 'overview', fileIndex: -1, lead: 'overview' });
     expect(result.rowKeys[0]).toBe(REVIEW_OVERVIEW_ROW_KEY);
     expect(REVIEW_OVERVIEW_ROW_KEY).toBe('overview');
     expect(result.fileOfRow[0]).toBe(-1);
@@ -491,7 +499,7 @@ describe('buildReviewRows overview row', () => {
   });
 
   it('estimates the overview row as a measured guess, not an exact height', () => {
-    const result = build(true);
+    const result = build('overview');
     const estimate = reviewRowEstimate(result, false);
     expect(estimate.at(0)).toBe(REVIEW_OVERVIEW_ESTIMATE_PX);
     // Its content (description, conversation) varies, so it is measured.
@@ -499,8 +507,20 @@ describe('buildReviewRows overview row', () => {
     expect(estimate.at(1)).toBe(REVIEW_FILE_HEADER_PX);
   });
 
-  it('starts with the first file header without the overview flag', () => {
-    for (const result of [build(undefined), build(false)]) {
+  it('leads with a commit card under its own key, estimated smaller than the overview', () => {
+    const result = build('commit');
+    expect(result.rows[0]).toEqual({ kind: 'overview', fileIndex: -1, lead: 'commit' });
+    expect(result.rowKeys[0]).toBe(REVIEW_COMMIT_CARD_ROW_KEY);
+    expect(REVIEW_COMMIT_CARD_ROW_KEY).not.toBe(REVIEW_OVERVIEW_ROW_KEY);
+    expect(result.firstRowOfFile[0]).toBe(1);
+    const estimate = reviewRowEstimate(result, false);
+    expect(estimate.at(0)).toBe(REVIEW_COMMIT_CARD_ESTIMATE_PX);
+    expect(REVIEW_COMMIT_CARD_ESTIMATE_PX).toBeLessThan(REVIEW_OVERVIEW_ESTIMATE_PX);
+    expect(estimate.isExact?.(0)).toBe(false);
+  });
+
+  it('starts with the first file header without a lead row', () => {
+    for (const result of [build(undefined)]) {
       expect(result.rows[0]).toEqual({ kind: 'file-header', fileIndex: 0, path: 'src/one.ts' });
       expect(result.rowKeys[0]).toBe('h:src/one.ts');
       expect(result.firstRowOfFile[0]).toBe(0);

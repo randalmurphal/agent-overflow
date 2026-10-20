@@ -223,8 +223,11 @@ func TestGitHubReadsParseThroughTheAppsForgeCode(t *testing.T) {
 	if file.Side != "file" || file.Line != nil {
 		t.Fatalf("file thread = %+v", file)
 	}
-	if !outdated.IsOutdated || outdated.Side != "left" {
+	if !outdated.IsOutdated || outdated.Side != "left" || outdated.Line != nil || outdated.OriginalLine == nil || *outdated.OriginalLine != 1 {
 		t.Fatalf("outdated thread = %+v", outdated)
+	}
+	if ranged.OriginalLine == nil || *ranged.OriginalLine != 3 || ranged.OriginalStartLine == nil || *ranged.OriginalStartLine != 2 {
+		t.Fatalf("range thread original lines = %v %v", ranged.OriginalLine, ranged.OriginalStartLine)
 	}
 	if last := threads[len(threads)-1]; last.Path != "" || last.Comments[0].Body != "conversation 129" {
 		t.Fatalf("last conversation comment = %+v", last)
@@ -427,7 +430,7 @@ func TestGitLabReadsParseThroughTheAppsForgeCode(t *testing.T) {
 		ranged.Comments[0].AuthorLogin != "dave" || ranged.Comments[0].AuthorName != "Dave Jones" {
 		t.Fatalf("range thread = %+v", ranged)
 	}
-	if !outdated.IsOutdated || outdated.Side != "left" || *outdated.Line != 1 {
+	if !outdated.IsOutdated || outdated.Side != "left" || *outdated.Line != 1 || outdated.OriginalLine != nil {
 		t.Fatalf("outdated thread = %+v", outdated)
 	}
 	if last := threads[61]; last.Path != "" || last.IsResolvable || last.Comments[0].Body != "note 39" {

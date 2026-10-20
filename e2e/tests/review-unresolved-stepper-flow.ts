@@ -1,8 +1,8 @@
 // The unresolved-thread stepper and the jump pulse in the PR review pane,
 // shared by the desktop and compact projects, through the shipped UI, the
-// real backend and the fake forge. The PR carries five unresolved threads
-// (four on the diff, one on a file the diff does not touch), a resolved
-// and an outdated thread, a PR-level comment and two verdicts. Covered:
+// real backend and the fake forge. The PR carries six unresolved threads
+// (four on the diff, one on a file the diff does not touch, one the forge
+// calls outdated), a resolved thread, a PR-level comment and two verdicts. Covered:
 // the Conversation section's count chip and the title bar's Conversation
 // peek are each one segmented control (one continuous 1px border, the
 // segments fill its content box edge to edge, the end segments round to
@@ -491,7 +491,7 @@ export function unresolvedStepperFlow({ compact }: StepperSurface): void {
     await press(review.getByTestId('review-pr-conversation').locator('button[aria-expanded]').first());
     await expect(review.getByTestId('review-pr-conversation')).toHaveAttribute('data-open', 'true');
     const chip = review.getByTestId('review-conversation-open-count');
-    await expect(chip).toContainText('5 unresolved');
+    await expect(chip).toContainText('6 unresolved');
     await chipShot(`${testInfo.project.name}-chip-rest`);
     const chipRest = await geometryOf(chip);
     if (!compact) {
@@ -567,7 +567,7 @@ export function unresolvedStepperFlow({ compact }: StepperSurface): void {
     // into one control.
     await scrollPastOverview(review);
     const bar = review.getByTestId('review-unresolved-stepper-bar');
-    await expect(bar.getByTestId('review-peek-conversation')).toContainText('5 unresolved');
+    await expect(bar.getByTestId('review-peek-conversation')).toContainText('6 unresolved');
     await headerShot(`${testInfo.project.name}-titlebar-rest`);
     const barRest = await geometryOf(bar);
     if (!compact) {

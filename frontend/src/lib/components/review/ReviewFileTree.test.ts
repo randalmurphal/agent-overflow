@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ReviewFileTree from './ReviewFileTree.svelte';
 import ReviewRail from './ReviewRail.svelte';
 import { appStorageGet, appStorageSet, resetAppStorageForTest } from '../../stores/appStorage';
+import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
+import { registerAirspaceSurface } from '../../utils/paneAirspace.svelte';
+import { createSurfaceDismissalEvent } from '../../utils/surfaceDismissal';
 import type { PatchFile } from '../../utils/patchFiles';
 
 function file(path: string, kind = 'modified', additions = 1, deletions = 0): PatchFile {
@@ -19,6 +22,7 @@ const FILES = [
 
 beforeEach(() => {
   resetAppStorageForTest();
+  setCompactLayoutForTest(false);
 });
 
 describe('<ReviewFileTree>', () => {
@@ -133,11 +137,13 @@ describe('<ReviewFileTree>', () => {
 });
 
 // Rail width/resize moved from the tree to the ReviewRail shell.
-function renderRail() {
+function renderRail(overrides: { open?: boolean; onToggleOpen?: () => void } = {}) {
   return render(ReviewRail, {
     files: FILES,
     onSelectFile: () => {},
     commentCounts: new Map(),
+    open: overrides.open ?? true,
+    onToggleOpen: overrides.onToggleOpen ?? (() => {}),
   });
 }
 
@@ -145,17 +151,140 @@ describe('<ReviewRail>', () => {
   it('reads the persisted rail width, clamped to bounds', () => {
     appStorageSet('reviewTreeWidth', '320');
     const view = renderRail();
-    expect(view.getByTestId('review-rail').style.width).toBe('320px');
+    expect(view.getByTestId('review-rail').style.getPropertyValue('--rail-w')).toBe('320px');
   });
 
   it('double-clicking the resize handle resets and persists the default width', async () => {
     appStorageSet('reviewTreeWidth', '9999');
     const view = renderRail();
     // Out-of-range stored values clamp on read.
-    expect(view.getByTestId('review-rail').style.width).toBe('480px');
+    expect(view.getByTestId('review-rail').style.getPropertyValue('--rail-w')).toBe('480px');
 
     await fireEvent.dblClick(view.getByTestId('review-tree-resize'));
-    expect(view.getByTestId('review-rail').style.width).toBe('240px');
+    expect(view.getByTestId('review-rail').style.getPropertyValue('--rail-w')).toBe('240px');
     expect(appStorageGet('reviewTreeWidth')).toBe('240');
+  });
+});
+
+describe('<ReviewRail> open and closed', () => {
+  it('closed, is a strip holding only the button that opens it', async () => {
+    const onToggleOpen = vi.fn();
+    const view = renderRail({ open: false, onToggleOpen });
+    expect(view.getByTestId('review-rail').getAttribute('data-open')).toBe('false');
+    expect(view.queryByTestId('review-file-tree')).toBeNull();
+    const toggle = view.getByTestId('review-tree-toggle');
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    await fireEvent.click(toggle);
+    expect(onToggleOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it('open, carries the same toggle in the tree header, pressed', async () => {
+    const onToggleOpen = vi.fn();
+    const view = renderRail({ open: true, onToggleOpen });
+    expect(view.getByTestId('review-rail').getAttribute('data-open')).toBe('true');
+    const toggle = view.getByTestId('review-tree-toggle');
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(view.getByTestId('review-file-tree')).toBeInTheDocument();
+    await fireEvent.click(toggle);
+    expect(onToggleOpen).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('<ReviewFileTree> hide tests', () => {
+  const WITH_TESTS = [
+    file('src/app.ts'),
+    file('src/app.test.ts'),
+    file('internal/git/forge_test.go'),
+    file('internal/git/forge.go'),
+  ];
+
+  it('offers "Hide tests" with the test-file count and drops them from the tree', async () => {
+    const onHideTestsChange = vi.fn();
+    const view = render(ReviewFileTree, {
+      files: WITH_TESTS,
+      onSelectFile: () => {},
+      hideTests: false,
+      onHideTestsChange,
+    });
+    expect(view.getAllByTestId('review-tree-file')).toHaveLength(4);
+    await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
+    const item = view.getByTestId('review-tree-hide-tests');
+    expect(item.textContent).toContain('2');
+    await fireEvent.click(item);
+    expect(onHideTestsChange).toHaveBeenCalledWith(true);
+    view.unmount();
+
+    const hidden = render(ReviewFileTree, {
+      files: WITH_TESTS,
+      onSelectFile: () => {},
+      hideTests: true,
+      onHideTestsChange,
+    });
+    expect(hidden.getAllByTestId('review-tree-file').map((node) => node.getAttribute('data-file-path')))
+      .toEqual(['internal/git/forge.go', 'src/app.ts']);
+    // The trigger counts the hidden-tests choice as one active filter.
+    expect(hidden.getByTestId('review-tree-ext-trigger').textContent).toContain('1');
+  });
+
+  it('shows the filter menu for tests alone, with one file type', () => {
+    const view = render(ReviewFileTree, {
+      files: [file('src/app.ts'), file('src/app.test.ts')],
+      onSelectFile: () => {},
+      onHideTestsChange: () => {},
+    });
+    expect(view.getByTestId('review-tree-ext-trigger')).toBeInTheDocument();
+  });
+
+  it('"Clear filters" also turns hide tests off', async () => {
+    const onHideTestsChange = vi.fn();
+    const view = render(ReviewFileTree, {
+      files: WITH_TESTS,
+      onSelectFile: () => {},
+      hideTests: true,
+      onHideTestsChange,
+    });
+    await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
+    await fireEvent.click(view.getByText('Clear filters'));
+    expect(onHideTestsChange).toHaveBeenCalledWith(false);
+  });
+});
+
+describe('<ReviewRail> on compact', () => {
+  it('closes the open tree on the Back ladder\'s dismissal, unless an overlay is up, and never off compact', () => {
+    const onToggleOpen = vi.fn();
+    const dismiss = () => {
+      const event = createSurfaceDismissalEvent();
+      document.body.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    // Desktop: the tree is beside the diff, not over it; Back is not its.
+    const desktop = renderRail({ open: true, onToggleOpen });
+    expect(dismiss()).toBe(false);
+    expect(onToggleOpen).not.toHaveBeenCalled();
+    desktop.unmount();
+
+    setCompactLayoutForTest(true);
+    const view = renderRail({ open: true, onToggleOpen });
+    // An overlay above the tree (the filter menu) takes the press.
+    const release = registerAirspaceSurface(document.createElement('div'));
+    expect(dismiss()).toBe(false);
+    expect(onToggleOpen).not.toHaveBeenCalled();
+    release();
+    expect(dismiss()).toBe(true);
+    expect(onToggleOpen).toHaveBeenCalledTimes(1);
+    view.unmount();
+
+    // Closed, the strip is not a layer: the press falls through.
+    const closed = renderRail({ open: false, onToggleOpen });
+    expect(dismiss()).toBe(false);
+    expect(onToggleOpen).toHaveBeenCalledTimes(1);
+    closed.unmount();
+    // A real Escape keystroke is not Back.
+    const again = renderRail({ open: true, onToggleOpen });
+    const plain = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    document.body.dispatchEvent(plain);
+    expect(plain.defaultPrevented).toBe(false);
+    expect(onToggleOpen).toHaveBeenCalledTimes(1);
+    again.unmount();
   });
 });

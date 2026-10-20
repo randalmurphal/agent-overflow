@@ -49,6 +49,12 @@ export class Commit {
     "sha": string;
     "shortSha": string;
     "subject": string;
+
+    /**
+     * Body is the message after the subject, trailing newlines trimmed;
+     * empty for a one-line message.
+     */
+    "body": string;
     "author": string;
     "authoredAt": number;
 
@@ -62,6 +68,9 @@ export class Commit {
         }
         if (!("subject" in $$source)) {
             this["subject"] = "";
+        }
+        if (!("body" in $$source)) {
+            this["body"] = "";
         }
         if (!("author" in $$source)) {
             this["author"] = "";

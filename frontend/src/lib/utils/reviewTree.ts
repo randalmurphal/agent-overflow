@@ -122,23 +122,74 @@ export function fileExtensionLabel(path: string): string {
   return name.slice(dot);
 }
 
+const JS_TEST_EXTENSIONS = new Set(['ts', 'tsx', 'js', 'jsx', 'mts', 'cts', 'mjs', 'cjs', 'svelte']);
+const C_TEST_EXTENSIONS = new Set(['c', 'cc', 'cpp', 'cxx']);
+/** Case-sensitive: lowercased, `Latest` and `Edit` would match. */
+const JAVA_TEST_STEM = /.(Test|Tests|IT)$/;
+
+/**
+ * Whether a path names a test file, by the naming conventions of the
+ * languages the backend highlights (internal/highlight/registry.go
+ * extensionToLang), plus `.bats`. A pure path heuristic: the basename is
+ * matched case-insensitively, except Java's CamelCase suffixes (`FooTest`,
+ * `FooIT`), and directory segments match exactly. Test helpers with
+ * non-test names are not detected.
+ */
+export function isTestPath(path: string): boolean {
+  const dirs = path.split('/');
+  const base = dirs.pop() ?? '';
+  const dot = base.lastIndexOf('.');
+  if (dot <= 0) return false;
+  const ext = base.slice(dot + 1).toLowerCase();
+  const stem = base.slice(0, dot).toLowerCase();
+  const inDir = (...names: string[]) => dirs.some((dir) => names.includes(dir));
+  if (JS_TEST_EXTENSIONS.has(ext)) {
+    return stem.endsWith('.test') || stem.endsWith('.spec') || inDir('__tests__', '__mocks__');
+  }
+  if (C_TEST_EXTENSIONS.has(ext)) {
+    return stem.endsWith('_test') || stem.startsWith('test_') || inDir('tests', 'test');
+  }
+  switch (ext) {
+    case 'go':
+      return stem.endsWith('_test');
+    case 'py':
+      return stem.startsWith('test_') || stem.endsWith('_test') || stem === 'conftest' || inDir('tests', 'test');
+    case 'java':
+      return (
+        JAVA_TEST_STEM.test(base.slice(0, dot)) ||
+        dirs.some((dir, i) => dir === 'src' && dirs[i + 1] === 'test')
+      );
+    case 'rs':
+      return stem.endsWith('_test') || stem === 'tests' || inDir('tests');
+    case 'bats':
+      return true;
+    case 'ps1':
+      return stem.endsWith('.tests');
+    default:
+      return false;
+  }
+}
+
 export interface FilteredReviewFiles<T extends DiffFileSummary = DiffFileSummary> {
   files: T[];
   /** Original (unfiltered) index of each kept file, for buildReviewTree. */
   fileIndexes: number[];
 }
 
-/** Case-insensitive path substring + extension-chip filter for the tree. */
+/** Case-insensitive path substring + extension-chip filter for the tree;
+ * `hideTests` also drops files `isTestPath` matches. */
 export function filterReviewFiles<T extends DiffFileSummary>(
   files: readonly T[],
   query: string,
   extensions: ReadonlySet<string>,
+  hideTests = false,
 ): FilteredReviewFiles<T> {
   const needle = query.trim().toLowerCase();
   const out: FilteredReviewFiles<T> = { files: [], fileIndexes: [] };
   files.forEach((file, index) => {
     if (needle && !file.path.toLowerCase().includes(needle)) return;
     if (extensions.size > 0 && !extensions.has(fileExtensionLabel(file.path))) return;
+    if (hideTests && isTestPath(file.path)) return;
     out.files.push(file);
     out.fileIndexes.push(index);
   });

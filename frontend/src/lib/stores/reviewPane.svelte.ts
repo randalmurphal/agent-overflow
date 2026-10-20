@@ -742,7 +742,7 @@ function createReviewPaneState(
     for (const entry of conversationFeedSource) {
       if (entry.item.kind !== 'thread') continue;
       const thread = entry.item.thread;
-      if (thread.isResolvable && !thread.isResolved && !thread.isOutdated) out.push(thread);
+      if (thread.isResolvable && !thread.isResolved) out.push(thread);
     }
     return out;
   });
@@ -1844,7 +1844,7 @@ function createReviewPaneState(
   // ------------------------------------------------------------------
 
   function threadSettled(thread: ReviewThread): boolean {
-    return thread.isResolvable && (thread.isResolved || thread.isOutdated);
+    return thread.isResolvable && thread.isResolved;
   }
 
   // Captures the feed order (chronological, newest first) and the

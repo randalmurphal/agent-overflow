@@ -609,6 +609,10 @@ export interface ReviewThread {
   path: string;
   line?: number | null;
   startLine?: number | null;
+  /** Set when the forge reports the line the thread was written against
+   * (GitHub outdated threads). */
+  originalLine?: number | null;
+  originalStartLine?: number | null;
   side: string;
   /** False for flat conversation comments with no resolve state. */
   isResolvable: boolean;

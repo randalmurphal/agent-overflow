@@ -527,6 +527,25 @@ and anti-changes that live only here:
 - Icon buttons with hovertext, never text buttons, for thread actions
   (owner preference, stated for the comments overhaul; applies to new
   review chrome).
+- The PR title bar reads one fact per line (title; author and state;
+  base ← head, conflicts and verdicts; CI with its refresh wrapping among
+  the chips) instead of one wrapped meta line; the toolbar keeps the diff's
+  own counts and folds whitespace, wrap and split into a view-options
+  menu; the file-tree toggle sits with the tree (a thin strip when hidden,
+  full width over the diff on compact); the conversation refresh sits on
+  the Conversation header. Files auto-collapse only past 5000 rows (or
+  lockfiles): a normal source file is never folded by default. The tree's
+  filter can hide test files by naming convention, accepting that helpers
+  without a test name are missed (ruling 2026-10-19).
+- The toolbar's selectors are one dropdown style (the app's menu), and the
+  commit picker's trigger is fixed-width content that never clips: `All
+  commits`, or the commit's ordinal and short hash once one is picked. The
+  subject, author, time and message belong where there is room: one row
+  per commit in the menu (with a previous/next stepper in its header), and
+  a commit card that leads the diff list and scrolls away with it; in
+  `All commits` there is no card. No always-present row for the picked
+  commit (a height shift with nothing to show in most states) and no
+  toolbar comment tally (ruling 2026-10-20).
 - PR comments live in the overview: Description (collapsed by default)
   and Conversation (also collapsed by default, and capped short enough
   that the diff stays visible under it), two collapsible sections that head
@@ -536,8 +555,11 @@ and anti-changes that live only here:
   the rail tab). The Conversation is one chronological feed (newest
   first) of thread cards on a timeline rail, review verdicts and commit
   pushes, mirroring the forge's overview; a card's edge and chip carry
-  its state (warning unresolved, success resolved, dashed outdated) and
-  the thread's row on the diff is the same card. A top-level comment is
+  its state (warning unresolved, success resolved); outdated is a marker
+  on either state (dashed edge, "outdated" chip, the line it was written
+  at), never a third state: a thread on moved code is still open or
+  settled, still counted, stepped and resolvable (ruling 2026-10-19). The
+  thread's row on the diff is the same card. A top-level comment is
   NEVER truncated or clamped; only settled threads' replies may fold.
   Reading is protected from updates: ordering freezes from the
   section's first render, arrivals wait behind an "N new" chip, and a

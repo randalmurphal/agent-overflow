@@ -25,6 +25,8 @@
     checkbox?: boolean;
     disabled?: boolean;
     title?: string;
+    /** `data-testid` on the row, for tests that drive a menu by hook. */
+    testId?: string;
     onSelect?: () => void;
     actionLabel?: string;
     actionPressed?: boolean;
@@ -56,6 +58,7 @@
     checkbox = false,
     disabled = false,
     title,
+    testId,
     onSelect,
     action,
     actionLabel,
@@ -155,6 +158,7 @@
   aria-checked={checkbox ? checked : undefined}
   aria-disabled={disabled ? 'true' : undefined}
   data-menuitem
+  data-testid={testId}
   data-disabled={disabled ? 'true' : undefined}
   tabindex={-1}
   title={title}

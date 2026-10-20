@@ -30,7 +30,7 @@
 
 <button
   type="button"
-  class="inline-flex size-6 shrink-0 items-center justify-center rounded-[var(--radius-control)] text-fg-muted hover:bg-surface-2 hover:text-fg disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-fg-muted"
+  class="inline-flex size-6 shrink-0 items-center justify-center rounded-[var(--radius-control)] text-fg-muted compact:size-8 hover:bg-surface-2 hover:text-fg disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-fg-muted"
   aria-label={label}
   title={disabled && disabledLabel ? disabledLabel : label}
   data-testid={testid}

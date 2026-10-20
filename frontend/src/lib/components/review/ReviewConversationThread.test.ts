@@ -71,18 +71,27 @@ function renderCard(t: ReviewThread, options: { inDiff?: boolean; review?: Retur
 }
 
 describe('<ReviewConversationThread> state', () => {
-  it('carries the thread state on data-state', () => {
-    const cases: [Partial<ReviewThread>, string][] = [
-      [{}, 'unresolved'],
-      [{ isResolved: true }, 'resolved'],
-      [{ isOutdated: true }, 'outdated'],
-      [{ isResolvable: false, path: '', line: null }, 'none'],
+  it('carries the thread state on data-state and outdated as a marker on data-outdated', () => {
+    const cases: [Partial<ReviewThread>, string, boolean][] = [
+      [{}, 'unresolved', false],
+      [{ isResolved: true }, 'resolved', false],
+      [{ isOutdated: true }, 'unresolved', true],
+      [{ isOutdated: true, isResolved: true }, 'resolved', true],
+      [{ isResolvable: false, path: '', line: null }, 'none', false],
     ];
-    for (const [overrides, state] of cases) {
-      const { card, unmount } = renderCard(thread(overrides));
-      expect(card.getAttribute('data-state')).toBe(state);
-      unmount();
+    for (const [overrides, state, outdated] of cases) {
+      const view = renderCard(thread(overrides));
+      expect(view.card.getAttribute('data-state')).toBe(state);
+      expect(view.card.getAttribute('data-outdated')).toBe(outdated ? 'true' : null);
+      expect(view.queryByTestId('review-thread-outdated') !== null).toBe(outdated);
+      view.unmount();
     }
+  });
+
+  it('names the line an outdated GitHub thread was written at', () => {
+    const view = renderCard(thread({ isOutdated: true, line: null, originalLine: 9 }));
+    expect(view.getByText('a.ts:9')).toBeTruthy();
+    expect(view.getByTestId('review-thread-outdated').getAttribute('title')).toBe('Written against an earlier revision, at line 9 then');
   });
 
   it('resolves a live thread from the footer', async () => {
@@ -103,10 +112,14 @@ describe('<ReviewConversationThread> state', () => {
     expect(view.review.setPRThreadResolved).toHaveBeenCalledWith(t, false);
   });
 
-  it('omits the resolve control when the thread is outdated or not resolvable', () => {
-    const outdated = renderCard(thread({ isOutdated: true }));
-    expect(outdated.queryByTestId('review-thread-resolve')).toBeNull();
-    outdated.unmount();
+  it('resolves an outdated thread: the code moved, the question is still open', async () => {
+    const t = thread({ isOutdated: true });
+    const view = renderCard(t);
+    await fireEvent.click(view.getByTestId('review-thread-resolve'));
+    expect(view.review.setPRThreadResolved).toHaveBeenCalledWith(t, true);
+  });
+
+  it('omits the resolve control when the thread is not resolvable', () => {
     const flat = renderCard(thread({ isResolvable: false, path: '', line: null }));
     expect(flat.queryByTestId('review-thread-resolve')).toBeNull();
   });
@@ -174,7 +187,7 @@ describe('<ReviewConversationThread> replies', () => {
   });
 
   it('says "1 reply" for a single reply', () => {
-    const view = renderCard(thread({ isOutdated: true, comments: withReplies(1) }));
+    const view = renderCard(thread({ isResolved: true, comments: withReplies(1) }));
     expect(view.getByTestId('review-conversation-replies').textContent).toContain('1 reply');
     expect(view.getByTestId('review-conversation-replies').textContent).not.toContain('replies');
   });

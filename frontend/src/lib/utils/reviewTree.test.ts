@@ -6,6 +6,7 @@ import {
   fileExtensionLabel,
   filterReviewFiles,
   flattenReviewTree,
+  isTestPath,
   sortFilesTreeOrder,
 } from './reviewTree';
 
@@ -190,5 +191,94 @@ describe('filterReviewFiles', () => {
     const result = filterReviewFiles(files, '  ', new Set());
     expect(result.files).toHaveLength(4);
     expect(result.fileIndexes).toEqual([0, 1, 2, 3]);
+  });
+  it('drops test files when hideTests is set, composed with the extension set', () => {
+    const mixed = [
+      file('internal/git/gitlab.go'),
+      file('internal/git/gitlab_test.go'),
+      file('src/app.ts'),
+      file('src/app.test.ts'),
+      file('e2e/tests/review-overview.spec.ts'),
+      file('docs/readme.md'),
+    ];
+    const shown = filterReviewFiles(mixed, '', new Set(['.ts', '.go']), true);
+    expect(shown.files.map((f) => f.path)).toEqual(['internal/git/gitlab.go', 'src/app.ts']);
+    expect(shown.fileIndexes).toEqual([0, 2]);
+
+    const all = filterReviewFiles(mixed, '', new Set(['.ts', '.go']));
+    expect(all.fileIndexes).toEqual([0, 1, 2, 3, 4]);
+  });
+});
+
+describe('isTestPath', () => {
+  it.each<[string, boolean]>([
+    // TS/JS/Svelte: .test or .spec right before the extension.
+    ['src/lib/utils/reviewTree.test.ts', true],
+    ['src/Panel.SPEC.tsx', true],
+    ['src/lib/Pane.test.svelte', true],
+    ['scripts/build.test.mjs', true],
+    ['e2e/tests/review-overview.spec.ts', true],
+    ['src/foo.testing.ts', false],
+    ['src/test.helpers.ts', false],
+    ['e2e/tests/forge-helpers.ts', false],
+    ['src/testing/helpers.ts', false],
+    ['src/latest.ts', false],
+    // TS/JS: __tests__ and __mocks__ directory segments, matched exactly.
+    ['src/__tests__/helpers.js', true],
+    ['src/__mocks__/fs.cjs', true],
+    ['src/__Tests__/helpers.js', false],
+    ['src/__tests__.ts', false],
+    // Go.
+    ['internal/git/gitlab_test.go', true],
+    ['internal/git/gitlab.go', false],
+    ['internal/git/latest.go', false],
+    // Python.
+    ['pkg/test_models.py', true],
+    ['pkg/models_test.py', true],
+    ['pkg/conftest.py', true],
+    ['tests/helpers.py', true],
+    ['pkg/test/fixtures.py', true],
+    ['src/contest.py', false],
+    ['src/testing/helpers.py', false],
+    ['pkg/models.py', false],
+    // Java: CamelCase suffixes and a src/test segment pair anywhere.
+    ['src/test/java/FooTest.java', true],
+    ['core/src/test/java/Helpers.java', true],
+    ['src/main/java/FooTest.java', true],
+    ['src/main/java/FooTests.java', true],
+    ['src/main/java/FooIT.java', true],
+    ['src/main/java/Latest.java', false],
+    ['src/main/java/Edit.java', false],
+    ['src/main/java/Foo.java', false],
+    ['test/src/main/Foo.java', false],
+    // C/C++.
+    ['lib/parser_test.c', true],
+    ['lib/test_parser.cpp', true],
+    ['lib/parser_TEST.cc', true],
+    ['tests/fixtures.cxx', true],
+    ['test/helpers.c', true],
+    ['lib/latest.cpp', false],
+    ['testsuite/helpers.c', false],
+    ['tests/fixtures.h', false],
+    // Rust.
+    ['tests/integration.rs', true],
+    ['src/parser_test.rs', true],
+    ['src/tests.rs', true],
+    ['test/integration.rs', false],
+    ['src/contests.rs', false],
+    // Bash and PowerShell.
+    ['test/cli.bats', true],
+    ['scripts/install.sh', false],
+    ['tests/install.sh', false],
+    ['scripts/Install.Tests.ps1', true],
+    ['scripts/Install.ps1', false],
+    ['scripts/InstallTests.ps1', false],
+    // Everything else.
+    ['latest_test_results.md', false],
+    ['tests/fixtures.json', false],
+    ['Makefile', false],
+    ['src/.test', false],
+  ])('%s -> %s', (path, expected) => {
+    expect(isTestPath(path)).toBe(expected);
   });
 });

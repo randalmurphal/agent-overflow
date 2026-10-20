@@ -17,6 +17,7 @@ import {
   type ReviewSubject,
 } from './reviewPane.svelte';
 import {
+  COLLAPSE_ROW_LIMIT,
   draftAnchorExists,
   EditFileMerge,
   reviewLineCommentForDraft,
@@ -414,7 +415,8 @@ describe('reviewPane store', () => {
     const patch = [
       patchFor('src/small.ts', 2),
       patchFor('pnpm-lock.yaml', 2),
-      patchFor('src/large.ts', 401),
+      patchFor('src/limit.ts', COLLAPSE_ROW_LIMIT),
+      patchFor('src/large.ts', COLLAPSE_ROW_LIMIT + 1),
     ].join('\n');
     setReviewDiffMock('OpenWorkspaceDiff', async () => patch);
 
@@ -423,6 +425,7 @@ describe('reviewPane store', () => {
 
     expect(state.collapsedPaths.has('src/small.ts')).toBe(false);
     expect(state.collapsedPaths.has('pnpm-lock.yaml')).toBe(true);
+    expect(state.collapsedPaths.has('src/limit.ts')).toBe(false);
     expect(state.collapsedPaths.has('src/large.ts')).toBe(true);
   });
 

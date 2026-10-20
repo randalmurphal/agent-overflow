@@ -12,6 +12,10 @@
     THREAD_CARD_CLASS,
     THREAD_CHIP_CLASS,
     THREAD_HEAD_CLASS,
+    THREAD_OUTDATED_CARD_CLASS,
+    THREAD_OUTDATED_CHIP_CLASS,
+    outdatedTitle,
+    reviewThreadOutdated,
     reviewThreadState,
     threadBodyClass,
   } from '../../utils/reviewThreadStyle';
@@ -75,7 +79,8 @@
   // svelte-ignore state_referenced_locally
   let replying = $state(body !== '');
 
-  const threadState = $derived(reviewThreadState(thread, orphaned));
+  const threadState = $derived(reviewThreadState(thread));
+  const outdated = $derived(reviewThreadOutdated(thread, orphaned));
   const first = $derived(thread.comments[0]);
   const firstBody = $derived(visibleBody(first?.body ?? ''));
   const summary = $derived(commentSnippet(first?.body ?? ''));
@@ -84,24 +89,28 @@
     const ms = Date.parse(first?.createdAt ?? '');
     return Number.isNaN(ms) ? '' : relativeTime(ms);
   });
-  const location = $derived(anchor.side === 'file'
-    ? anchor.filePath
-    : `${anchor.filePath}:${anchor.newLine || anchor.oldLine || ''}`);
+  // An orphaned thread names where it was written when the forge still
+  // knows (GitHub reports the original line once the thread is outdated).
+  const location = $derived.by(() => {
+    const line = anchor.side === 'file' ? thread.originalLine : (anchor.newLine || anchor.oldLine);
+    return line ? `${anchor.filePath}:${line}` : anchor.filePath;
+  });
 </script>
 
 <article
   class="mx-2 my-1.5 grid grid-cols-[20px_minmax(0,1fr)] gap-x-2 text-xs"
   data-testid="review-pr-thread"
   data-state={threadState}
+  data-outdated={outdated ? 'true' : undefined}
 >
   <div class="pt-1">
     <ReviewAvatar login={first?.authorLogin ?? ''} name={first?.authorName} size={20} />
   </div>
-  <div class="min-w-0 overflow-hidden rounded-[var(--radius-control)] border bg-surface-1 {THREAD_CARD_CLASS[threadState]}" {@attach jumpPulse(pulse)}>
+  <div class="min-w-0 overflow-hidden rounded-[var(--radius-control)] border bg-surface-1 {THREAD_CARD_CLASS[threadState]} {outdated ? THREAD_OUTDATED_CARD_CLASS : ''}" {@attach jumpPulse(pulse)}>
     <div class="flex min-w-0 items-center gap-1.5 py-1 pl-2.5 {onJumpToConversation ? 'pr-1' : 'pr-2.5'} text-[0.75rem] {THREAD_HEAD_CLASS[threadState]} {collapsed || firstBody === '' ? '' : 'border-b border-border-subtle'}">
       <button
         type="button"
-        class="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-left"
+        class="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-1 overflow-hidden text-left"
         aria-expanded={!collapsed}
         title={location}
         onclick={onToggle}
@@ -112,6 +121,9 @@
         {/if}
         {#if threadState !== 'none'}
           <span class="shrink-0 rounded-full px-1.5 py-px text-[0.625rem] {THREAD_CHIP_CLASS[threadState]}">{threadState}</span>
+        {/if}
+        {#if outdated}
+          <span class="shrink-0 rounded-full px-1.5 py-px text-[0.625rem] {THREAD_OUTDATED_CHIP_CLASS}" title={outdatedTitle(thread)} data-testid="review-thread-outdated">outdated</span>
         {/if}
         <!-- Basis-0 so the summary only takes leftover width: with basis
              auto its long text would absorb the row and crush the chips. -->

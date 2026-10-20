@@ -31,8 +31,7 @@
     onCloseReply: () => void;
     onBodyChange: (body: string) => void;
     onSendReply: () => Promise<void> | void;
-    /** Absent for outdated and non-resolvable threads: no resolve
-     *  control renders. */
+    /** Absent for non-resolvable threads: no resolve control renders. */
     onResolve?: (resolved: boolean) => void;
   }
 
