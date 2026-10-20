@@ -32,6 +32,10 @@ type Request struct {
 	// Attachment allows an absolute Path. Only the attachment fetchers set
 	// it.
 	Attachment bool
+
+	// expiryLookup marks the client's own token expiry lookup: it runs no
+	// lookup itself and a 401 is returned as is, without the token refresh.
+	expiryLookup bool
 }
 
 // Response is a forge answer. Whether the request was interactive comes
@@ -74,6 +78,12 @@ type Client struct {
 	failUntil time.Time
 	rest      *url.URL
 	graphQL   *url.URL
+	// expiryLookup is SourceInfo.ExpiryLookup of the current token.
+	expiryLookup bool
+
+	// expiry is what the client learned of the current token's expiry
+	// (expiry.go).
+	expiry expiryState
 }
 
 // Do sends r and returns the answer read whole. A GET whose URL the ETag
@@ -219,6 +229,8 @@ type exchange struct {
 	etag    *etagEntry
 	etagKey etagKey
 	body    bool // carries a body that cannot be resent
+	// noRefresh returns a 401 as is (Request.expiryLookup).
+	noRefresh bool
 }
 
 func (c *Client) call(ctx context.Context, r Request, graphQL bool) (*Response, error) {
@@ -273,6 +285,7 @@ func (c *Client) attempt(ctx context.Context, r Request, graphQL, refreshed bool
 func (c *Client) settle(ctx context.Context, ex *exchange, answered *http.Request, resp *http.Response, body []byte, refreshed bool) (*Response, bool, error) {
 	now := c.svc.now()
 	rate := c.observe(ex, resp.Header)
+	c.observeExpiry(ex.key.fingerprint, resp.Header)
 	result := classify(answer{
 		host: c.host, pool: ex.key.pool, method: ex.req.Method, url: c.redact(answered.URL),
 		status: resp.StatusCode, header: resp.Header, body: body, graphQL: ex.graphQL, now: now,
@@ -285,8 +298,11 @@ func (c *Client) settle(ctx context.Context, ex *exchange, answered *http.Reques
 		return nil, false, limited
 	case outcomeUnauthorized:
 		used := ex.key.fingerprint
+		if ex.noRefresh {
+			return nil, false, result.err
+		}
 		if refreshed {
-			return nil, false, UnauthenticatedError(c.forge, result.err)
+			return nil, false, c.unauthenticated(result.err, used)
 		}
 		if err := c.refresh(ctx, used); err != nil {
 			return nil, false, err

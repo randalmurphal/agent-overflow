@@ -23,9 +23,11 @@ type SetupError struct {
 	Err     error
 	// Host is the forge host the login is for, when the error is about one.
 	Host string
-	// ExpiredAt is when the host's token expired, when the source learned
-	// the expiry while the token still worked (GitLab personal access
-	// tokens report one); zero when unknown. Message names it when set.
+	// ExpiredAt is when the host's token expired, when the client learned
+	// the expiry while the token still worked (expiry.go: GitLab's
+	// personal_access_tokens/self, GitHub's
+	// GitHub-Authentication-Token-Expiration); zero when unknown or the
+	// token was revoked, which Message says. Message names it when set.
 	ExpiredAt time.Time
 }
 

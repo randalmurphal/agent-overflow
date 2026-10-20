@@ -19,6 +19,11 @@ import (
 // Core's forge API transport. Only CreatePR runs glab.
 type gitlabForge struct {
 	core *Core
+	// projects caches each project's merge settings (gitlab_merge_read.go).
+	projects gitlabProjectCache
+	// routes remembers, per host, the older merge-action routes a server
+	// answered (gitlab_merge.go).
+	routes gitlabRouteMemory
 }
 
 func (f *gitlabForge) ID() string         { return "gitlab" }
@@ -212,10 +217,13 @@ func gitlabDiscussionPath(ref PRReference, discussionID string) string {
 }
 
 // ReadPR reads the merge request once and derives every wanted part from
-// it: the detail adds the approvals, the threads the discussions (paged),
-// CI the head pipeline's jobs (paged). A part not wanted costs no request.
-// prev and stepsFor are unused: the pipeline's jobs list is one read the
-// previous observation cannot stand in for, and GitLab jobs have no steps.
+// it: the detail adds the approvals and the project's merge settings (read
+// once per project per gitlabProjectSettingsTTL), the threads and the
+// events the discussions (paged; the system notes are events, the rest
+// threads), CI the head pipeline's jobs (paged). A part not wanted costs no
+// request. prev and stepsFor are unused: the pipeline's jobs list is one
+// read the previous observation cannot stand in for, and GitLab jobs have
+// no steps.
 func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadParts, _ *CIPipeline, _ []string) (PRRead, error) {
 	client, err := f.core.gitlabAPI(ref.Host)
 	if err != nil {
@@ -226,17 +234,34 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		return PRRead{}, err
 	}
 	var out PRRead
+	var notes []gitlabNoteRaw
+	if want.Threads || want.Events {
+		threads, system, err := readGitLabDiscussions(ctx, client, ref, mr.headSHA())
+		if err != nil {
+			return PRRead{}, err
+		}
+		notes = system
+		if want.Threads {
+			out.Threads = threads
+		}
+	}
+	// The detail's armed auto-merge takes its time and wording from the
+	// latest auto-merge event when the same read has the notes.
+	events := gitlabEvents(mr, notes)
+	if want.Events {
+		out.Events = events
+	}
 	if want.Detail {
 		var approvals gitlabApprovalsRaw
 		if _, err := client.JSON(ctx, forgeapi.Request{Path: gitlabMRPath(ref) + "/approvals"}, &approvals); err != nil {
 			return PRRead{}, err
 		}
-		out.Detail = gitlabPRDetail(mr, gitlabApprovalVerdicts(approvals))
-	}
-	if want.Threads {
-		if out.Threads, err = readGitLabThreads(ctx, client, ref, mr.headSHA()); err != nil {
+		settings, err := f.projectSettings(ctx, client, ref)
+		if err != nil {
 			return PRRead{}, err
 		}
+		out.Detail = gitlabPRDetail(mr, gitlabApprovalVerdicts(approvals))
+		gitlabFillMerge(&out.Detail, mr, approvals, settings, events)
 	}
 	if want.CI {
 		if out.CI, err = readGitLabPipeline(ctx, client, ref, mr.HeadPipeline); err != nil {
@@ -279,6 +304,24 @@ type gitlabMRRaw struct {
 		StartSHA string `json:"start_sha"`
 	} `json:"diff_refs"`
 	HeadPipeline *gitlabPipelineRaw `json:"head_pipeline"`
+	// The merge fields (gitlab_merge_read.go). GitLab answers a user it
+	// has none for as an object of nulls.
+	ProjectID                   int64           `json:"project_id"`
+	SourceProjectID             int64           `json:"source_project_id"`
+	MergedAt                    string          `json:"merged_at"`
+	MergedBy                    gitlabAuthorRaw `json:"merged_by"`
+	ClosedAt                    string          `json:"closed_at"`
+	ClosedBy                    gitlabAuthorRaw `json:"closed_by"`
+	MergeUser                   gitlabAuthorRaw `json:"merge_user"`
+	MergeWhenPipelineSucceeds   bool            `json:"merge_when_pipeline_succeeds"`
+	MergeAfter                  string          `json:"merge_after"`
+	Squash                      bool            `json:"squash"`
+	ForceRemoveSourceBranch     *bool           `json:"force_remove_source_branch"`
+	BlockingDiscussionsResolved bool            `json:"blocking_discussions_resolved"`
+	MergeCommitSHA              string          `json:"merge_commit_sha"`
+	User                        struct {
+		CanMerge bool `json:"can_merge"`
+	} `json:"user"`
 }
 
 // gitlabPipelineRaw is a merge request's head pipeline.
@@ -302,7 +345,11 @@ func (m gitlabMRRaw) diffRefs() *PRDiffRefs {
 }
 
 type gitlabApprovalsRaw struct {
-	ApprovedBy []struct {
+	ApprovalsRequired int  `json:"approvals_required"`
+	ApprovalsLeft     int  `json:"approvals_left"`
+	UserHasApproved   bool `json:"user_has_approved"`
+	UserCanApprove    bool `json:"user_can_approve"`
+	ApprovedBy        []struct {
 		ApprovedAt string          `json:"approved_at"`
 		User       gitlabAuthorRaw `json:"user"`
 	} `json:"approved_by"`
@@ -384,14 +431,17 @@ func normalizeGitLabMergeability(hasConflicts bool, detailed string) string {
 	}
 }
 
-// readGitLabThreads reads every page of the merge request's discussions,
-// normalized against the MR's current head commit.
-func readGitLabThreads(ctx context.Context, client *forgeapi.Client, ref PRReference, headSHA string) ([]ReviewThread, error) {
+// readGitLabDiscussions reads every page of the merge request's
+// discussions: the human notes as threads normalized against the MR's
+// current head commit, and the system notes in GitLab's order, which are
+// the events' source (gitlabEvents).
+func readGitLabDiscussions(ctx context.Context, client *forgeapi.Client, ref PRReference, headSHA string) ([]ReviewThread, []gitlabNoteRaw, error) {
 	request := forgeapi.Request{
 		Path:  gitlabMRPath(ref) + "/discussions",
 		Query: url.Values{"per_page": {strconv.Itoa(gitlabPageSize)}},
 	}
 	var threads []ReviewThread
+	var system []gitlabNoteRaw
 	page := 1
 	err := client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
 		var discussions []gitlabDiscussionRaw
@@ -399,12 +449,19 @@ func readGitLabThreads(ctx context.Context, client *forgeapi.Client, ref PRRefer
 			return false, fmt.Errorf("GitLab merge request discussions: decode response: %w", err)
 		}
 		threads = append(threads, gitlabReviewThreads(discussions, headSHA)...)
+		for _, discussion := range discussions {
+			for _, note := range discussion.Notes {
+				if note.System {
+					system = append(system, note)
+				}
+			}
+		}
 		return advanceGitLabPage(resp, &page), nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return threads, nil
+	return threads, system, nil
 }
 
 func gitlabReviewThreads(discussions []gitlabDiscussionRaw, currentHeadSHA string) []ReviewThread {
