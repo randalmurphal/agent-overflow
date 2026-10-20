@@ -240,7 +240,7 @@ func (c *Client) call(ctx context.Context, r Request, graphQL bool) (*Response, 
 	for {
 		resp, retry, err := c.attempt(ctx, r, graphQL, refreshed)
 		if !retry {
-			return resp, err
+			return resp, c.settleProbe(ctx, err)
 		}
 		refreshed = true
 	}
@@ -281,7 +281,8 @@ func (c *Client) attempt(ctx context.Context, r Request, graphQL, refreshed bool
 }
 
 // settle classifies a read answer, updates the gate and the ETag store and
-// decides whether the call retries after a token refresh.
+// decides whether the call retries after a token refresh, or, for a
+// mutation's second 401, probes the login (probeNeeded).
 func (c *Client) settle(ctx context.Context, ex *exchange, answered *http.Request, resp *http.Response, body []byte, refreshed bool) (*Response, bool, error) {
 	now := c.svc.now()
 	rate := c.observe(ex, resp.Header)
@@ -302,8 +303,9 @@ func (c *Client) settle(ctx context.Context, ex *exchange, answered *http.Reques
 			return nil, false, result.err
 		}
 		if refreshed {
-			if c.refusedAction(ctx, ex) {
-				return nil, false, result.err
+			if mutation(ex.req.Method) {
+				// The probe runs once this attempt has released its slot.
+				return nil, false, &probeNeeded{unauthorized: result.err, fingerprint: used}
 			}
 			return nil, false, c.unauthenticated(result.err, used)
 		}
@@ -447,18 +449,47 @@ func drain(resp *http.Response) {
 	_ = resp.Body.Close()
 }
 
-// refusedAction tells a forge's 401 on a mutation from a dead login:
-// GitLab answers a merge the user may not perform with 401, the same
-// status an expired token gets. After the refresh left the token as it
-// was, one GET of the login's own user (the same path on both forges)
-// settles it: a token that still reads is live, so the 401 is the forge
-// refusing the action and reaches the caller as its StatusError. A probe
-// that fails for any reason leaves the verdict at unauthenticated.
-func (c *Client) refusedAction(ctx context.Context, ex *exchange) bool {
-	switch ex.req.Method {
+// probeNeeded is settle's answer to a mutation's 401 after the refresh
+// left the token as it was: GitLab answers a merge the user may not
+// perform with 401, the same status an expired token gets. The calling
+// loop settles it with settleProbe after the attempt released its host
+// slot, since the probe needs a slot of its own: probing inside the
+// attempt let mutations holding every slot wait on probes that could
+// never start.
+type probeNeeded struct {
+	unauthorized error // the mutation's 401 *StatusError
+	fingerprint  string
+}
+
+func (p *probeNeeded) Error() string { return p.unauthorized.Error() }
+
+func mutation(method string) bool {
+	switch method {
 	case http.MethodGet, http.MethodHead:
 		return false
 	}
-	_, err := c.Do(ctx, Request{Path: "user", Timeout: expiryLookupTimeout, expiryLookup: true})
-	return err == nil
+	return true
+}
+
+// settleProbe turns a probeNeeded into the call's error with one GET of
+// the login's own user (the same path on both forges); any other err is
+// returned as is. A probe answered 200 means the token is live, so the
+// 401 is the forge refusing the action and reaches the caller as its
+// *StatusError. A probe answered 401 is a dead login. A probe that failed
+// any other way (rate limited, a 5xx, unreachable, out of time,
+// cancelled) leaves the login's state unknown and returns its own error,
+// which the caller retries.
+func (c *Client) settleProbe(ctx context.Context, err error) error {
+	probe, ok := err.(*probeNeeded)
+	if !ok {
+		return err
+	}
+	_, probeErr := c.Do(ctx, Request{Path: "user", Timeout: expiryLookupTimeout, expiryLookup: true})
+	if probeErr == nil {
+		return probe.unauthorized
+	}
+	if status, ok := errors.AsType[*StatusError](probeErr); ok && status.Status == http.StatusUnauthorized {
+		return c.unauthenticated(probe.unauthorized, probe.fingerprint)
+	}
+	return probeErr
 }

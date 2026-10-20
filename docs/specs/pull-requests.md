@@ -142,9 +142,10 @@ base's rulesets (`allowedMergeMethods`).
   branch delete when asked and the repository does not do it itself. The
   head SHA is always sent: a push the pane has not seen yet is refused by
   the forge (409), not merged blind.
-- Auto-merge when ready: GitLab `PUT .../merge` with `auto_merge` (17.11+,
-  `merge_when_pipeline_succeeds` before; the server's answer decides which
-  checks it waits for, and the armed row shows the forge's own wording);
+- Auto-merge when ready: GitLab `PUT .../merge` with `auto_merge` (17.11+)
+  and `merge_when_pipeline_succeeds` (before) in one request; the server's
+  answer decides which checks it waits for, and the armed row shows the
+  forge's own wording;
   GitHub `enablePullRequestAutoMerge`. Cancel: GitLab
   `POST .../cancel_merge_when_pipeline_succeeds` (`cancel_auto_merge` on
   19.5+), GitHub `disablePullRequestAutoMerge`. An armed auto-merge shows
@@ -183,7 +184,7 @@ and correlation id stay behind "Details". The sentences:
 | CLI missing | existing `SetupError` text |
 | Not logged in | "Your `glab` login for HOST has no token. Run `glab auth login --hostname HOST`." |
 | Token expired | "Your GitLab token for HOST expired on DATE. Run `glab auth login --hostname HOST`." (the expiry is learned while the token works: GitLab `GET personal_access_tokens/self` once per personal token, GitHub the `GitHub-Authentication-Token-Expiration` header; see forge transport "Credentials") |
-| Token lacks scope | "Your HOST token lacks the `api` scope, so NAME cannot ACTION." (GitLab `insufficient_scope`; GitHub `X-Accepted-OAuth-Scopes` or "Resource not accessible by personal access token") |
+| Token lacks scope | "Your HOST token lacks the `api` scope, so NAME cannot ACTION." (GitLab `insufficient_scope`; GitHub `X-Accepted-OAuth-Scopes` none of which `X-OAuth-Scopes` grants. A fine-grained token's "Resource not accessible by personal access token" reads "GitHub blocks this: REASON" on an action and "No access" on a read) |
 | No access | "No access to PROJECT with this login." |
 | Project or PR gone | "PROJECT!N was not found on HOST." |
 | Head moved | "The branch moved after you loaded this MR. Reload and try again." (409) |
@@ -271,7 +272,7 @@ fake forge on desktop and compact.
 | Merged (e2e) | `Merged` accent | no actions | "Merged by X · time" row |
 | Closed | `Closed` red | no actions | "Closed without merging · time" row |
 | Viewer cannot merge | as above | no Merge button | a row with `CannotMergeReason` |
-| Viewer is the author (GitHub) | as above | no Approve | the approvals blocker row carries no Approve; without one, a row with `CannotApproveReason` |
+| Viewer is the author | as above | no Approve | the approvals blocker row carries no Approve; without one, a row with `CannotApproveReason` |
 | Action in flight | unchanged | the pressed button spins; every merge control disables until the pump's frame lands (or 15s) | unchanged |
 | Action failed (e2e: 403, 409) | unchanged | buttons re-enable | toast with sentence, Details, Reload when 409 |
 | Stale snapshot under a banner | last known | actions disabled with the banner's reason | last known rows |
@@ -284,9 +285,11 @@ fake forge on desktop and compact.
 - GitLab Free has no approval rules: `approvals_required` is 0 and
   `approved` is true with any approval; the approvals row then reads
   "N approvals" as a settled row, never a blocker.
-- GitLab before 17.11 has no `auto_merge`; the client sends
-  `merge_when_pipeline_succeeds` when the server rejects `auto_merge` with
-  a 400 naming it, once per host, remembered for the process.
+- GitLab before 17.11 has no `auto_merge` and ignores it as an undeclared
+  parameter (it never answers 400 for it), so auto-merge sends
+  `auto_merge` and `merge_when_pipeline_succeeds` together; 17.11+ reads
+  either. Cancel tries `cancel_auto_merge` and, on a 404 (before 19.5),
+  `cancel_merge_when_pipeline_succeeds`, remembered per host.
 - GitHub `latestReviews` lists each author's latest review, so a comment
   after an approval hides it; `latestOpinionatedReviews` lists each
   author's latest approval or change request, and the viewer's approval

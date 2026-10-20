@@ -2,7 +2,9 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,15 +19,14 @@ import (
 // settings, and the forge events from the system notes the discussions
 // read already carries. See docs/specs/pull-requests.md.
 
-// gitlabProjectSettingsTTL is how long one project's merge settings answer
-// every detail read. A read after it goes to the transport, which
-// revalidates it with the ETag GitLab sends on projects/P (a 304 while
+// gitlabCacheTTL is how long one project's merge settings, and one host's
+// viewer login, answer every detail read. A read after it goes to the
+// transport, which revalidates it with the ETag GitLab sends (a 304 while
 // unchanged).
-const gitlabProjectSettingsTTL = 10 * time.Minute
+const gitlabCacheTTL = 10 * time.Minute
 
-// gitlabProjectCacheMax bounds the cached projects; the oldest read goes
-// first.
-const gitlabProjectCacheMax = 256
+// gitlabCacheMax bounds each cache's entries; the oldest read goes first.
+const gitlabCacheMax = 256
 
 // gitlabProjectSettings is the subset of projects/P the merge options read.
 type gitlabProjectSettings struct {
@@ -60,33 +61,36 @@ func (s gitlabProjectSettings) accessLevel() int {
 	return level
 }
 
-type gitlabProjectCache struct {
+// gitlabCache holds values read from GitLab for gitlabCacheTTL, at most
+// gitlabCacheMax of them.
+type gitlabCache[V any] struct {
 	mu      sync.Mutex
-	entries map[string]gitlabProjectEntry
+	entries map[string]gitlabCacheEntry[V]
 }
 
-type gitlabProjectEntry struct {
-	settings gitlabProjectSettings
-	readAt   time.Time
+type gitlabCacheEntry[V any] struct {
+	value  V
+	readAt time.Time
 }
 
-func (c *gitlabProjectCache) get(key string, now time.Time) (gitlabProjectSettings, bool) {
+func (c *gitlabCache[V]) get(key string, now time.Time) (V, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	entry, ok := c.entries[key]
-	if !ok || now.Sub(entry.readAt) >= gitlabProjectSettingsTTL || now.Before(entry.readAt) {
-		return gitlabProjectSettings{}, false
+	if !ok || now.Sub(entry.readAt) >= gitlabCacheTTL || now.Before(entry.readAt) {
+		var zero V
+		return zero, false
 	}
-	return entry.settings, true
+	return entry.value, true
 }
 
-func (c *gitlabProjectCache) put(key string, settings gitlabProjectSettings, now time.Time) {
+func (c *gitlabCache[V]) put(key string, value V, now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.entries == nil {
-		c.entries = make(map[string]gitlabProjectEntry)
+		c.entries = make(map[string]gitlabCacheEntry[V])
 	}
-	if _, ok := c.entries[key]; !ok && len(c.entries) >= gitlabProjectCacheMax {
+	if _, ok := c.entries[key]; !ok && len(c.entries) >= gitlabCacheMax {
 		oldest, oldestAt := "", time.Time{}
 		for k, entry := range c.entries {
 			if oldest == "" || entry.readAt.Before(oldestAt) {
@@ -95,11 +99,11 @@ func (c *gitlabProjectCache) put(key string, settings gitlabProjectSettings, now
 		}
 		delete(c.entries, oldest)
 	}
-	c.entries[key] = gitlabProjectEntry{settings: settings, readAt: now}
+	c.entries[key] = gitlabCacheEntry[V]{value: value, readAt: now}
 }
 
 // projectSettings is ref's project's merge settings, read from projects/P
-// at most once per gitlabProjectSettingsTTL.
+// at most once per gitlabCacheTTL.
 func (f *gitlabForge) projectSettings(ctx context.Context, client *forgeapi.Client, ref PRReference) (gitlabProjectSettings, error) {
 	key := ref.Host + " " + ref.Project()
 	if settings, ok := f.projects.get(key, f.core.nowFn()); ok {
@@ -113,12 +117,41 @@ func (f *gitlabForge) projectSettings(ctx context.Context, client *forgeapi.Clie
 	return settings, nil
 }
 
-// gitlabFillMerge fills the detail's readiness, merge options and end of
-// life from the merge request, its approvals, the project's settings and
-// the read's events.
-func gitlabFillMerge(detail *PRDetail, mr gitlabMRRaw, approvals gitlabApprovalsRaw, settings gitlabProjectSettings, events []ReviewEvent) {
+// viewerLogin is the username host's login reads as (GET user), read at
+// most once per gitlabCacheTTL per host. It never fails the read it serves:
+// a refusal or an unreadable answer is logged and cached as unknown ("")
+// for the TTL, so a login that cannot read its user costs no request per
+// tick; a cancelled, rate-limited or unreachable read caches nothing and
+// the next read asks again.
+func (f *gitlabForge) viewerLogin(ctx context.Context, client *forgeapi.Client, host string) string {
+	if viewer, ok := f.viewers.get(host, f.core.nowFn()); ok {
+		return viewer
+	}
+	var user struct {
+		Username string `json:"username"`
+	}
+	if _, err := client.JSON(ctx, forgeapi.Request{Path: "user"}, &user); err != nil {
+		_, limited := errors.AsType[*forgeapi.RateLimitedError](err)
+		_, transient := errors.AsType[*forgeapi.TransientError](err)
+		if ctx.Err() != nil || limited || transient {
+			return ""
+		}
+		log.Printf("gitlab: reading the login on %s failed; merge requests read as not the viewer's for %s: %v", host, gitlabCacheTTL, err)
+		f.viewers.put(host, "", f.core.nowFn())
+		return ""
+	}
+	f.viewers.put(host, user.Username, f.core.nowFn())
+	return user.Username
+}
+
+// gitlabFillMerge fills the detail's readiness, merge options, end of
+// life and whether viewer (the login's username, empty when unknown)
+// authored it from the merge request, its approvals, the project's
+// settings and the read's events.
+func gitlabFillMerge(detail *PRDetail, mr gitlabMRRaw, approvals gitlabApprovalsRaw, settings gitlabProjectSettings, events []ReviewEvent, viewer string) {
+	detail.ViewerIsAuthor = viewer != "" && strings.EqualFold(viewer, mr.Author.Username)
 	detail.Readiness = gitlabReadiness(mr, approvals, settings)
-	detail.Merge = gitlabMergeOptions(mr, approvals, settings, detail.Readiness, events)
+	detail.Merge = gitlabMergeOptions(mr, approvals, settings, detail.Readiness, events, detail.ViewerIsAuthor)
 	switch NormalizePRState(mr.State) {
 	case "merged":
 		detail.MergedAt = mr.MergedAt
@@ -365,7 +398,11 @@ func gitlabMethods(settings gitlabProjectSettings, squash bool) []string {
 // gitlabAutoMergePrefix opens the system note of an armed auto-merge.
 const gitlabAutoMergePrefix = "enabled an automatic merge"
 
-func gitlabMergeOptions(mr gitlabMRRaw, approvals gitlabApprovalsRaw, settings gitlabProjectSettings, readiness MergeReadiness, events []ReviewEvent) MergeOptions {
+// gitlabMergeOptions derives the menu from the merge request's fields.
+// author is whether the viewer opened the merge request: GitLab lets the
+// author cancel an auto-merge without merge rights and refuses the
+// author's approval unless the project allows it (user_can_approve).
+func gitlabMergeOptions(mr gitlabMRRaw, approvals gitlabApprovalsRaw, settings gitlabProjectSettings, readiness MergeReadiness, events []ReviewEvent, author bool) MergeOptions {
 	open := NormalizePRState(mr.State) == "open"
 	fork := mr.SourceProjectID != 0 && mr.ProjectID != 0 && mr.SourceProjectID != mr.ProjectID
 	out := MergeOptions{
@@ -388,7 +425,7 @@ func gitlabMergeOptions(mr gitlabMRRaw, approvals gitlabApprovalsRaw, settings g
 	// could apply.
 	out.AutoMergeAvailable = mr.HeadPipeline != nil || readiness.State == MergeStateChecking || mr.User.CanMerge
 	if mr.MergeWhenPipelineSucceeds {
-		out.AutoMerge = gitlabAutoMerge(mr, out.Methods, events)
+		out.AutoMerge = gitlabAutoMerge(mr, out.Methods, events, author)
 	}
 	if !mr.User.CanMerge {
 		if level := settings.accessLevel(); level > 0 && level < gitlabDeveloperAccess {
@@ -399,14 +436,18 @@ func gitlabMergeOptions(mr gitlabMRRaw, approvals gitlabApprovalsRaw, settings g
 	}
 	if !approvals.UserCanApprove && !approvals.UserHasApproved {
 		out.CannotApproveReason = "You are not an eligible approver."
+		if author {
+			out.CannotApproveReason = "You cannot approve your own merge request."
+		}
 	}
 	return out
 }
 
 // gitlabAutoMerge is the armed auto-merge: who set it (merge_user), with
 // the method the merge will use, and when and for what from its latest
-// system note when the read has the notes.
-func gitlabAutoMerge(mr gitlabMRRaw, methods []string, events []ReviewEvent) *AutoMergeRequest {
+// system note when the read has the notes. A viewer who can merge, or
+// the author, can cancel it.
+func gitlabAutoMerge(mr gitlabMRRaw, methods []string, events []ReviewEvent, author bool) *AutoMergeRequest {
 	method := MergeMethodMerge
 	if mr.Squash {
 		method = MergeMethodSquash
@@ -418,7 +459,7 @@ func gitlabAutoMerge(mr gitlabMRRaw, methods []string, events []ReviewEvent) *Au
 		ByLogin:   mr.MergeUser.Username,
 		ByName:    mr.MergeUser.Name,
 		WaitsFor:  "all merge checks pass",
-		CanCancel: mr.User.CanMerge,
+		CanCancel: mr.User.CanMerge || author,
 	}
 	for i := len(events) - 1; i >= 0; i-- {
 		if events[i].Kind != EventAutoMergeSet {

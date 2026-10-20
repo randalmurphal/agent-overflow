@@ -19,10 +19,12 @@ import (
 // Core's forge API transport. Only CreatePR runs glab.
 type gitlabForge struct {
 	core *Core
-	// projects caches each project's merge settings (gitlab_merge_read.go).
-	projects gitlabProjectCache
-	// routes remembers, per host, the older merge-action routes a server
-	// answered (gitlab_merge.go).
+	// projects caches each project's merge settings and viewers each
+	// host's login (gitlab_merge_read.go).
+	projects gitlabCache[gitlabProjectSettings]
+	viewers  gitlabCache[string]
+	// routes remembers, per host, a server that answered the older cancel
+	// route (gitlab_merge.go).
 	routes gitlabRouteMemory
 }
 
@@ -217,8 +219,9 @@ func gitlabDiscussionPath(ref PRReference, discussionID string) string {
 }
 
 // ReadPR reads the merge request once and derives every wanted part from
-// it: the detail adds the approvals and the project's merge settings (read
-// once per project per gitlabProjectSettingsTTL), the threads and the
+// it: the detail adds the approvals, the project's merge settings (read
+// once per project per gitlabCacheTTL) and the viewer's login (once per
+// host per gitlabCacheTTL), the threads and the
 // events the discussions (paged; the system notes are events, the rest
 // threads), CI the head pipeline's jobs (paged). A part not wanted costs no
 // request. prev and stepsFor are unused: the pipeline's jobs list is one
@@ -261,7 +264,7 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 			return PRRead{}, err
 		}
 		out.Detail = gitlabPRDetail(mr, gitlabApprovalVerdicts(approvals))
-		gitlabFillMerge(&out.Detail, mr, approvals, settings, events)
+		gitlabFillMerge(&out.Detail, mr, approvals, settings, events, f.viewerLogin(ctx, client, ref.Host))
 	}
 	if want.CI {
 		if out.CI, err = readGitLabPipeline(ctx, client, ref, mr.HeadPipeline); err != nil {

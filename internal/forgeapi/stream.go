@@ -36,7 +36,7 @@ func (c *Client) Stream(ctx context.Context, r Request, dst io.Writer, limit int
 	for {
 		resp, retry, err := c.streamAttempt(ctx, r, dst, limit, refreshed)
 		if !retry {
-			return resp, err
+			return resp, c.settleProbe(ctx, err)
 		}
 		refreshed = true
 	}

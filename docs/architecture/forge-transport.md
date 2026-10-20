@@ -230,9 +230,11 @@ id.
 
 GitLab's `ReadPR` reads the merge request once
 (`projects/P/merge_requests/N`) and derives every part from it: `Detail`
-adds its approvals and the project's merge settings (`projects/P`, cached
+adds its approvals, the project's merge settings (`projects/P`, cached
 per project for 10 minutes, then revalidated through the ETag store: a
-`W/` ETag answered 304), `Threads` and `Events` its discussions
+`W/` ETag answered 304) and the viewer's login (`user`, cached per host
+for 10 minutes; the author may cancel an auto-merge, and a refused read
+is cached as an unknown viewer), `Threads` and `Events` its discussions
 (`per_page=100`, paged by `X-Next-Page`, positions normalized against
 `diff_refs.head_sha`; one read serves both, system notes are the events,
 and the merge request's `merged_at`/`closed_at` supply the merge and close
@@ -243,7 +245,7 @@ request (`StreamCIJobLog`, as on GitHub).
 
 | Tick | GitLab requests |
 |---|---|
-| Pump (`Detail`, `Threads`, `Events`) | 1 merge request + 1 approvals + 1 discussions page per 100 discussions; + 1 `projects/P` per project per 10 minutes |
+| Pump (`Detail`, `Threads`, `Events`) | 1 merge request + 1 approvals + 1 discussions page per 100 discussions; + 1 `projects/P` per project and 1 `user` per host per 10 minutes |
 | CI phase, a head pipeline | 1 merge request + 1 jobs page per 100 jobs |
 | CI phase, no head pipeline | 1 merge request |
 | Log follow, a followed running job (every 5s) | 1 trace (304 while unchanged) |
@@ -390,15 +392,16 @@ errors, success. Rate limited means 429; 403 with `X-RateLimit-Remaining:
 0`, a `Retry-After` header or a body matching `rate limit`; or a 200
 GraphQL envelope with a `RATE_LIMITED` error or errors beside
 `X-RateLimit-Remaining: 0`. Any other 403 (SSO enforcement, a missing
-scope) is a `*ForbiddenError`, never "unauthenticated".
+scope or permission) is a `*ForbiddenError`, never "unauthenticated".
 
 | Observation | Error | Caller behavior |
 |---|---|---|
 | CLI missing when the token is read | `*SetupError{Kind: "missing"}` | Setup banner, as today |
 | CLI present, no token for the host | `*SetupError{Kind: "unauthenticated", Host}` | Setup banner |
-| 401 after one token refresh, on a read, or on a mutation whose login no longer reads its own `user` (one probe GET; GitLab answers a merge the login may not perform with 401) | `*SetupError{Kind: "unauthenticated", Host, ExpiredAt}`: `ExpiredAt` when the token's remembered expiry (see Credentials) has passed; a remembered revocation leaves it zero and says "revoked" in `Message` | Setup banner; `git.ExplainForgeError` names the expiry date |
+| 401 after one token refresh, on a read, or on a mutation whose probe of the login's own `user` is answered 401 (one GET, sent after the mutation released its host slot; GitLab answers a merge the login may not perform with 401) | `*SetupError{Kind: "unauthenticated", Host, ExpiredAt}`: `ExpiredAt` when the token's remembered expiry (see Credentials) has passed; a remembered revocation leaves it zero and says "revoked" in `Message` | Setup banner; `git.ExplainForgeError` names the expiry date |
 | 401 after one token refresh on a mutation while the login still reads `user` | `*StatusError` (the forge refused the action) | `git.ExplainForgeError`: "FORGE did not let you ACTION NAME." |
-| 403 without rate-limit headers | `*ForbiddenError{Status, Scope, Message}`: `Scope` from an `insufficient_scope` body, `X-Accepted-OAuth-Scopes` or a fine-grained-token refusal; `Message` the body's | `git.ExplainForgeError` names the scope or the project; a merge action shows the forge's message |
+| 401 after one token refresh on a mutation whose `user` probe fails otherwise (rate limited, 5xx, unreachable, timeout, cancelled) | the probe's own error | Retry; never "log in again" |
+| 403 without rate-limit headers | `*ForbiddenError{Status, Scope, Message}`: `Scope` only with evidence the token lacks it, GitLab's `insufficient_scope` body or GitHub's `X-Accepted-OAuth-Scopes` beside an `X-OAuth-Scopes` granting none of them (the first accepted one); a fine-grained token's "Resource not accessible by personal access token" is a permission, no `Scope`; `Message` the body's | `git.ExplainForgeError` names the scope; else an action shows the forge's message and a read the project |
 | Rate limited (rules above), or refused for the reserve | `*RateLimitedError{Host, Pool, Until, Reserve}` | Pollers wait for `Until`; see below |
 | 404 on a PR-, job- or thread-scoped path | `*StatusError` matching `errors.Is(err, ErrNotFound)` | `ErrCIJobLogNotFound`, PR gone, log not published yet |
 | 404 on a repository- or project-scoped path | `*StatusError` | Reaches the user: wrong project or no access, never an empty list |

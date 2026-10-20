@@ -759,9 +759,10 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 	missedCI := false
 	// runSnapshot polls the detail, threads and events once and folds the
 	// answer into the retry curve; the ticker and a merge action's refresh
-	// request (servePRPumpRequest) both run it.
-	runSnapshot := func() {
-		event, changed := a.pollPRUpdate(pump)
+	// request (servePRPumpRequest) both run it. ctx is the pump's, marked
+	// interactive for the request.
+	runSnapshot := func(ctx context.Context) {
+		event, changed := a.pollPRUpdate(ctx, pump)
 		scheduleRetry()
 		if changed {
 			a.emitPRPumpEvent(pump, eventchan.PRUpdated, event)
@@ -837,15 +838,16 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 			}
 			continue
 		}
-		runSnapshot()
+		runSnapshot(pump.ctx)
 		if missedCI || a.prCIWantsPoll(pump) {
 			runCI(pump.ctx, nil, true)
 		}
 	}
 }
 
-// pollPRUpdate fetches one snapshot and folds it into the pump's change
-// detection. changed=false means the observation is identical to the last
+// pollPRUpdate fetches one snapshot under ctx (the pump's, marked
+// interactive when a person's action asked for the poll) and folds it
+// into the pump's change detection. changed=false means the observation is identical to the last
 // one broadcast — including a repeat of the same failure, which must not
 // re-emit every tick while a forge is down.
 //
@@ -856,8 +858,8 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 // after the replacement was created would outrank fresher content. With the
 // guard, a pump only stores while live and successive pumps' live windows
 // for a key cannot overlap.
-func (a *App) pollPRUpdate(pump *prUpdatePump) (PRUpdatedEvent, bool) {
-	snapshot, err := a.fetchPRUpdateSnapshot(pump.ctx, pump.pr)
+func (a *App) pollPRUpdate(ctx context.Context, pump *prUpdatePump) (PRUpdatedEvent, bool) {
+	snapshot, err := a.fetchPRUpdateSnapshot(ctx, pump.pr)
 	if err == nil {
 		var encoded []byte
 		encoded, err = encodePRUpdateSnapshot(snapshot)

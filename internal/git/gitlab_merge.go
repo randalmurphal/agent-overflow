@@ -19,30 +19,27 @@ import (
 // app layer explains it (ExplainForgeError). See
 // docs/specs/pull-requests.md#actions.
 
-// gitlabRouteMemory remembers, per host and for the process, which older
-// merge-action spelling a server answered: merge_when_pipeline_succeeds
-// for a server that refused auto_merge (before 17.11), and
-// cancel_merge_when_pipeline_succeeds for one without cancel_auto_merge
-// (before 19.5).
+// gitlabRouteMemory remembers, per host and for the process, a server
+// without cancel_auto_merge (before 19.5) that answered
+// cancel_merge_when_pipeline_succeeds.
 type gitlabRouteMemory struct {
-	mu              sync.Mutex
-	legacyAutoMerge map[string]bool
-	legacyCancel    map[string]bool
+	mu           sync.Mutex
+	legacyCancel map[string]bool
 }
 
-func (m *gitlabRouteMemory) get(set *map[string]bool, host string) bool {
+func (m *gitlabRouteMemory) get(host string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return (*set)[host]
+	return m.legacyCancel[host]
 }
 
-func (m *gitlabRouteMemory) remember(set *map[string]bool, host string) {
+func (m *gitlabRouteMemory) remember(host string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if *set == nil {
-		*set = make(map[string]bool)
+	if m.legacyCancel == nil {
+		m.legacyCancel = make(map[string]bool)
 	}
-	(*set)[host] = true
+	m.legacyCancel[host] = true
 }
 
 // Approve posts the viewer's approval of headSHA; GitLab refuses it when
@@ -84,11 +81,12 @@ type gitlabMergeAnswer struct {
 // Merge merges now or arms auto-merge with PUT .../merge. GitLab's merge
 // takes no method: the project's merge_method decides merge, rebase_merge
 // or fast-forward, so req.Method must be one the project allows
-// (gitlabMethods) and only squash is sent. Auto-merge sends auto_merge;
-// a server that answers 400 naming it is sent merge_when_pipeline_succeeds
-// from then on. The answer is the merge request: merged is Merged, an
-// armed merge_when_pipeline_succeeds is AutoMerge, and a merge request
-// still open with neither is a merge GitLab runs asynchronously, which the
+// (gitlabMethods) and only squash is sent. Auto-merge sends auto_merge
+// and merge_when_pipeline_succeeds together: 17.11+ reads either, and an
+// older server ignores the auto_merge it does not declare and arms on the
+// second. The answer is the merge request: merged is Merged, an armed
+// merge_when_pipeline_succeeds is AutoMerge, and a merge request still
+// open with neither is a merge GitLab runs asynchronously, which the
 // pump's next poll shows.
 func (f *gitlabForge) Merge(ctx context.Context, ref PRReference, req MergeRequest) (MergeOutcome, error) {
 	if err := req.Validate(); err != nil {
@@ -114,19 +112,12 @@ func (f *gitlabForge) Merge(ctx context.Context, ref PRReference, req MergeReque
 		"squash":                      req.Method == MergeMethodSquash,
 		"should_remove_source_branch": req.DeleteBranch,
 	}
-	legacy := req.AutoMerge && f.routes.get(&f.routes.legacyAutoMerge, ref.Host)
 	if req.AutoMerge {
-		gitlabAutoMergeParam(body, legacy)
+		body["auto_merge"] = true
+		body["merge_when_pipeline_succeeds"] = true
 	}
-	path := gitlabMRPath(ref) + "/merge"
 	var answer gitlabMergeAnswer
-	_, err = client.JSON(ctx, forgeapi.Request{Method: http.MethodPut, Path: path, Body: body}, &answer)
-	if err != nil && req.AutoMerge && !legacy && gitlabRefusedAutoMergeParam(err) {
-		f.routes.remember(&f.routes.legacyAutoMerge, ref.Host)
-		gitlabAutoMergeParam(body, true)
-		answer = gitlabMergeAnswer{}
-		_, err = client.JSON(ctx, forgeapi.Request{Method: http.MethodPut, Path: path, Body: body}, &answer)
-	}
+	_, err = client.JSON(ctx, forgeapi.Request{Method: http.MethodPut, Path: gitlabMRPath(ref) + "/merge", Body: body}, &answer)
 	if err != nil {
 		return MergeOutcome{}, err
 	}
@@ -146,21 +137,6 @@ func (f *gitlabForge) Merge(ctx context.Context, ref PRReference, req MergeReque
 	return MergeOutcome{}, nil
 }
 
-func gitlabAutoMergeParam(body map[string]any, legacy bool) {
-	if legacy {
-		delete(body, "auto_merge")
-		body["merge_when_pipeline_succeeds"] = true
-		return
-	}
-	body["auto_merge"] = true
-}
-
-// gitlabRefusedAutoMergeParam is a 400 whose body names auto_merge.
-func gitlabRefusedAutoMergeParam(err error) bool {
-	var status *forgeapi.StatusError
-	return errors.As(err, &status) && status.Status == http.StatusBadRequest && strings.Contains(status.Body, "auto_merge")
-}
-
 // CancelAutoMerge disarms an armed auto-merge with POST
 // .../cancel_auto_merge. A server without that route (404) is asked
 // .../cancel_merge_when_pipeline_succeeds, remembered for the host once it
@@ -172,7 +148,7 @@ func (f *gitlabForge) CancelAutoMerge(ctx context.Context, ref PRReference) erro
 	if err != nil {
 		return err
 	}
-	if !f.routes.get(&f.routes.legacyCancel, ref.Host) {
+	if !f.routes.get(ref.Host) {
 		_, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: gitlabMRPath(ref) + "/cancel_auto_merge"}, nil)
 		if !errors.Is(err, forgeapi.ErrNotFound) {
 			return err
@@ -182,7 +158,7 @@ func (f *gitlabForge) CancelAutoMerge(ctx context.Context, ref PRReference) erro
 			return err
 		}
 		if answered {
-			f.routes.remember(&f.routes.legacyCancel, ref.Host)
+			f.routes.remember(ref.Host)
 		}
 		return legacyErr
 	}

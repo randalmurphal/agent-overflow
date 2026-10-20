@@ -137,3 +137,49 @@ func TestParseRateLimitNamesThePool(t *testing.T) {
 		t.Fatal("no headers parsed as a quota")
 	}
 }
+
+// A 403 names a scope only with evidence the token lacks it: GitLab's
+// insufficient_scope, or GitHub's accepted scopes beside granted ones none
+// of which is accepted. X-Accepted-OAuth-Scopes alone names what the
+// endpoint checks, and a fine-grained token's refusal is a permission,
+// not a classic scope.
+func TestForbiddenErrorScopeNeedsEvidence(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		header  map[string]string
+		body    string
+		scope   string
+		message string
+	}{
+		{name: "GitHub fully scoped token refused", header: map[string]string{"X-Accepted-OAuth-Scopes": "repo", "X-OAuth-Scopes": "repo, read:org"},
+			body: `{"message":"Resource protected by organization SAML enforcement"}`, message: "Resource protected by organization SAML enforcement"},
+		{name: "GitHub token missing the scope", header: map[string]string{"X-Accepted-OAuth-Scopes": "repo", "X-OAuth-Scopes": "read:user"},
+			body: `{"message":"Not allowed"}`, scope: "repo", message: "Not allowed"},
+		{name: "GitHub accepted scopes without granted ones", header: map[string]string{"X-Accepted-OAuth-Scopes": "repo"},
+			body: `{"message":"Must have admin rights to Repository."}`, message: "Must have admin rights to Repository."},
+		{name: "GitHub endpoint that checks no scope", header: map[string]string{"X-Accepted-OAuth-Scopes": "", "X-OAuth-Scopes": "read:user"},
+			body: `{"message":"Forbidden"}`, message: "Forbidden"},
+		{name: "GitHub fine-grained token", header: map[string]string{"X-Accepted-OAuth-Scopes": "repo", "X-OAuth-Scopes": ""},
+			body: `{"message":"Resource not accessible by personal access token"}`, message: "Resource not accessible by personal access token"},
+		{name: "GitLab insufficient scope", body: `{"error":"insufficient_scope","error_description":"The request requires higher privileges than provided by the access token.","scope":"api read_user"}`,
+			scope: "api read_user", message: "The request requires higher privileges than provided by the access token."},
+		{name: "GitLab insufficient scope naming none", body: `{"error":"insufficient_scope"}`, scope: "api"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			header := http.Header{}
+			for k, v := range tc.header {
+				header[http.CanonicalHeaderKey(k)] = []string{v}
+			}
+			got := classify(answer{method: "PUT", url: "https://api.example/x", status: http.StatusForbidden, header: header, body: []byte(tc.body)})
+			forbidden, ok := got.err.(*ForbiddenError)
+			if !ok {
+				t.Fatalf("err = %T %v, want *ForbiddenError", got.err, got.err)
+			}
+			if forbidden.Scope != tc.scope || forbidden.Message != tc.message {
+				t.Fatalf("scope %q message %q, want %q %q", forbidden.Scope, forbidden.Message, tc.scope, tc.message)
+			}
+		})
+	}
+}

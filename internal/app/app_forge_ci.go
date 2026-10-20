@@ -297,16 +297,17 @@ func (a *App) requestPRPump(ctx context.Context, pump *prUpdatePump, req *prPump
 // asks for and emits what changed. Returns the pipeline poll's active
 // failure when the request asked for one. The polls run under the pump's
 // context, marked interactive: a person asked for them.
-func (a *App) servePRPumpRequest(pump *prUpdatePump, req *prPumpRequest, runSnapshot func(), runCI func(ctx context.Context, forced map[string]bool, pollPipeline bool)) {
+func (a *App) servePRPumpRequest(pump *prUpdatePump, req *prPumpRequest, runSnapshot func(ctx context.Context), runCI func(ctx context.Context, forced map[string]bool, pollPipeline bool)) {
+	ctx := forgeapi.WithInteractive(pump.ctx)
 	if req.snapshot {
-		runSnapshot()
+		runSnapshot(ctx)
 	}
 	forced := make(map[string]bool, len(req.jobIDs))
 	for _, jobID := range req.jobIDs {
 		forced[jobID] = true
 	}
 	// A moved snapshot marks the pipeline dirty; runCI polls it then.
-	runCI(forgeapi.WithInteractive(pump.ctx), forced, req.ci)
+	runCI(ctx, forced, req.ci)
 	if req.ci {
 		a.prUpdates.mu.Lock()
 		if pump.ciFail.failing() {
