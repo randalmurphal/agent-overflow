@@ -372,6 +372,15 @@ scope) is a `*ForbiddenError`, never "unauthenticated".
 `StatusError.Error()` carries the method, the redacted URL, the status and a
 bounded body (4 KiB). No forge error is classified from CLI stderr.
 
+A bound method that acts on a PR (`SubmitPRReview`, `ReplyToPRThread`,
+`SetPRThreadResolved`, the merge actions) returns its forge failure
+through `git.ExplainForgeError`: one sentence naming the cause and the
+fix, carried as reviewed prose under the code `forge_<kind>` (`transient`,
+`rate_limited`, `setup`, `forbidden`, `not_found`, `stale_head`, `refused`,
+`forge`) with the forge's own error in the detail chain. The client shows
+the sentence and keys its one action on the code (`forge_stale_head`
+offers Reload).
+
 ## Rate limits
 
 One gate per `(host, pool, fingerprint)`, owned by the `Service` and shared

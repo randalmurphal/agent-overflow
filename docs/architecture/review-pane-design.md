@@ -127,6 +127,18 @@ polling.
   Provider specifics stay in `github.go` / `gitlab.go`; the normalized
   types are ours (the same pattern `forge.go` already uses, not the
   Claude/Codex unified-abstraction anti-pattern).
+- **Merge lives in the overview.** The overview row leads every PR with
+  a Merge section: readiness as one state and a blocker list
+  (`PRDetail.Readiness`), the project's merge options
+  (`PRDetail.Merge`), approve, unapprove, merge now, auto-merge and its
+  cancel, update branch and mark ready as bound methods
+  (`app_forge_merge.go`) over `git.ForgeMerger`. The title bar's refs
+  line carries only the readiness pill, which jumps to the section.
+  Nothing is optimistic: a successful action asks the PR's pump for one
+  poll and the pane follows the frame. A failure is one sentence with a
+  kind (`git.ExplainForgeError`, code `forge_<kind>` on the wire). Forge
+  events (`PRRead.Events`) ride the same snapshot and join the
+  Conversation feed. Contract: [pull requests](../specs/pull-requests.md).
 - **Polling is Go-owned and keyed by the PR.** `SubscribePRUpdates` when a
   pane enters PR scope; the pump is refcounted per PR key
   (`PRReference.Key`), so N panes on one PR share one poll. Go

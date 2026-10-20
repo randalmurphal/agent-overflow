@@ -114,12 +114,12 @@ requires conversation resolution; a remainder is `rules`), `mergeable`,
 
 ### Merge options come from the project
 
-`PRDetail.Merge` is `{Methods, DefaultMethod, CanDeleteBranch,
-DeleteBranchDefault, AutoMergeAvailable, AutoMerge, ViewerCanMerge,
-ViewerCanApprove, ViewerApproved}`. `Methods` lists what the project
-allows (`merge`, `squash`, `rebase`; GitLab's `ff` is `rebase`), the
-project default first. `AutoMerge` is the armed request when one exists
-(`{Method, By, At}`). The menu shows exactly these. Project settings are
+`PRDetail.Merge` is `{Methods, DeleteBranchOffered, DeleteBranchDefault,
+AutoMergeAvailable, AutoMerge, ViewerCanMerge, ViewerCanApprove,
+ViewerApproved, CannotApproveReason, CannotMergeReason}`. `Methods` lists
+what the project allows (`merge`, `squash`, `rebase`; GitLab's `ff` is
+`rebase`), the project default first. `AutoMerge` is the armed request
+when one exists (`{Method, ByLogin, ByName, At, WaitsFor, CanCancel}`). The menu shows exactly these. Project settings are
 read once per repository and revalidated through the ETag store, never
 per tick.
 
@@ -261,17 +261,17 @@ fake forge on desktop and compact.
 |---|---|---|---|
 | Open, blocked (e2e) | `Blocked · N` amber | Approve or Unapprove · `Auto-merge when ready ▾` | one row per blocker with its fix, then settled rows |
 | Open, ready (e2e) | `Ready to merge` green | Unapprove · `Merge ▾` (Merge now primary) | settled rows only |
-| Checking | `Checking` grey | actions present, Merge now greyed "forge is checking" | "Checking mergeability" row |
+| Checking | `Checking…` grey | actions present, Merge now greyed | "The forge is checking whether this can merge." row |
 | Draft | `Draft` grey | Approve · `Auto-merge when ready ▾` | "Draft" row with Mark ready |
 | Auto-merge armed (e2e) | as blocked or ready | `Auto-merge set` button, menu offers Cancel | "Auto-merge set by X · method" row with Cancel |
 | Merged (e2e) | `Merged` accent | no actions | "Merged by X · time" row |
 | Closed | `Closed` red | no actions | "Closed by X · time" row |
-| Viewer cannot merge | as above | `Merge ▾` present, Merge now and auto-merge greyed "you cannot merge here" | unchanged |
-| Viewer is the author (GitHub) | as above | no Approve; approvals row says "authors cannot approve" | unchanged |
-| Action in flight | unchanged | the pressed button spins and disables; the other stays | unchanged |
+| Viewer cannot merge | as above | no Merge button | a row with `CannotMergeReason` |
+| Viewer is the author (GitHub) | as above | no Approve | the approvals blocker row carries no Approve; without one, a row with `CannotApproveReason` |
+| Action in flight | unchanged | the pressed button spins; every merge control disables until the pump's frame lands (or 15s) | unchanged |
 | Action failed (e2e: 403, 409) | unchanged | buttons re-enable | toast with sentence, Details, Reload when 409 |
 | Stale snapshot under a banner | last known | actions disabled with the banner's reason | last known rows |
-| Commit picked (no overview row) | pill still shown; click clears the commit, then jumps | n/a | n/a |
+| Commit picked (no overview row) | pill still shown; click opens the section for the next overview mount | n/a | n/a |
 | PR detail failed to load | no pill | no section | n/a |
 | Compact (e2e, screenshot) | pill wraps with the refs line | header wraps: pill, then actions on their own row | rows wrap, fix buttons stay right |
 
