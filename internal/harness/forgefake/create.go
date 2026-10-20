@@ -90,6 +90,9 @@ func (e *Engine) addPull(r *Repo, head CheckoutHead, req createRequest) (*Pull, 
 		return nil, err
 	}
 	r.defaultNodeID(&pull)
+	if err := pull.normalizeMerge(r, &e.ids); err != nil {
+		return nil, err
+	}
 	r.Pulls = append(r.Pulls, pull)
 	return &r.Pulls[len(r.Pulls)-1], nil
 }

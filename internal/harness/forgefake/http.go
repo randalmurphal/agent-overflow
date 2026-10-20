@@ -1,8 +1,10 @@
 package forgefake
 
 import (
+	"bytes"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -155,7 +157,7 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // the endpoint the invocation records and, for a request the fake cannot
 // map, the reason it is unhandled.
 func (e *Engine) httpCall(r *http.Request, forge, mount, rest string, body []byte) (*call, string, string) {
-	c := &call{http: &httpCall{host: strings.ToLower(r.Host)}, flags: map[string][]string{"method": {r.Method}}}
+	c := &call{http: &httpCall{host: strings.ToLower(r.Host), body: body}, flags: map[string][]string{"method": {r.Method}}}
 	if addr, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
 		c.http.base = "http://" + addr.String()
 	}
@@ -217,6 +219,38 @@ func (e *Engine) httpCall(r *http.Request, forge, mount, rest string, body []byt
 	}
 	c.positional = []string{endpoint}
 	return c, recorded, ""
+}
+
+// decodeRESTBody decodes a REST request's JSON body into out, refusing a
+// field out does not declare: a handler that ignored one would answer a
+// different request than the one sent. An empty body is allowed when
+// optional (a route whose body is all optional parameters), and decodes
+// as nothing.
+func decodeRESTBody(c *call, out any, optional bool) error {
+	body := bytes.TrimSpace(c.http.body)
+	if len(body) == 0 {
+		if optional {
+			return nil
+		}
+		return errors.New("the request has no JSON body")
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(out); err != nil {
+		return fmt.Errorf("request body: %w", err)
+	}
+	if dec.More() {
+		return errors.New("request body: more than one JSON value")
+	}
+	return nil
+}
+
+// noRESTBody refuses a body on a route whose request carries none.
+func noRESTBody(c *call) error {
+	if len(bytes.TrimSpace(c.http.body)) != 0 {
+		return errors.New("the route takes no request body")
+	}
+	return nil
 }
 
 // authorized reports whether r carries the fixed token in either header

@@ -101,21 +101,42 @@ func TestSeedFillsGeneratedIDsAndDefaults(t *testing.T) {
 
 func TestSeedRejectsMalformedFixtures(t *testing.T) {
 	cases := map[string]string{
-		"no repos":           `{"repos":[]}`,
-		"bad forge":          `{"repos":[{"forge":"bitbucket","project":"a/b"}]}`,
-		"github project":     `{"repos":[{"forge":"github","project":"a/b/c"}]}`,
-		"duplicate repo":     `{"repos":[{"forge":"github","project":"a/b"},{"forge":"github","project":"A/B"}]}`,
-		"duplicate pull":     `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x"},{"number":1,"title":"y"}]}]}`,
-		"line thread":        `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","threads":[{"path":"f","comments":[{"body":"b"}]}]}]}]}`,
-		"gitlab verdict":     `{"repos":[{"forge":"gitlab","project":"g/r","pulls":[{"number":1,"title":"x","reviews":[{"author":"a","state":"CHANGES_REQUESTED"}]}]}]}`,
-		"name without login": `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","comments":[{"authorName":"A","body":"b"}]}]}]}`,
-		"job status":         `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","ci":{"jobs":[{"name":"j","status":"green"}]}}]}]}`,
-		"step out of order":  `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","ci":{"jobs":[{"name":"j","status":"success","steps":[{"number":3,"name":"a","status":"success"},{"number":2,"name":"b","status":"success"}]}]}}]}]}`,
-		"gitlab upload key":  `{"repos":[{"forge":"gitlab","project":"g/r","attachments":[{"secret":"nothex","filename":"a.png","text":"x"}]}]}`,
-		"github upload key":  `{"repos":[{"forge":"github","project":"a/b","attachments":[{"secret":"0123456789abcdef0123456789abcdef","filename":"a","text":"x"}]}]}`,
-		"two contents":       `{"repos":[{"forge":"github","project":"a/b","attachments":[{"url":"https://github.com/x","text":"x","base64":"eA=="}]}]}`,
-		"padded project":     `{"repos":[{"forge":"github","project":"a/ b"}]}`,
-		"negative pr number": `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":-1,"title":"x"}]}]}`,
+		"no repos":            `{"repos":[]}`,
+		"bad forge":           `{"repos":[{"forge":"bitbucket","project":"a/b"}]}`,
+		"github project":      `{"repos":[{"forge":"github","project":"a/b/c"}]}`,
+		"duplicate repo":      `{"repos":[{"forge":"github","project":"a/b"},{"forge":"github","project":"A/B"}]}`,
+		"duplicate pull":      `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x"},{"number":1,"title":"y"}]}]}`,
+		"line thread":         `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","threads":[{"path":"f","comments":[{"body":"b"}]}]}]}]}`,
+		"gitlab verdict":      `{"repos":[{"forge":"gitlab","project":"g/r","pulls":[{"number":1,"title":"x","reviews":[{"author":"a","state":"CHANGES_REQUESTED"}]}]}]}`,
+		"name without login":  `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","comments":[{"authorName":"A","body":"b"}]}]}]}`,
+		"job status":          `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","ci":{"jobs":[{"name":"j","status":"green"}]}}]}]}`,
+		"step out of order":   `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","ci":{"jobs":[{"name":"j","status":"success","steps":[{"number":3,"name":"a","status":"success"},{"number":2,"name":"b","status":"success"}]}]}}]}]}`,
+		"gitlab upload key":   `{"repos":[{"forge":"gitlab","project":"g/r","attachments":[{"secret":"nothex","filename":"a.png","text":"x"}]}]}`,
+		"github upload key":   `{"repos":[{"forge":"github","project":"a/b","attachments":[{"secret":"0123456789abcdef0123456789abcdef","filename":"a","text":"x"}]}]}`,
+		"two contents":        `{"repos":[{"forge":"github","project":"a/b","attachments":[{"url":"https://github.com/x","text":"x","base64":"eA=="}]}]}`,
+		"padded project":      `{"repos":[{"forge":"github","project":"a/ b"}]}`,
+		"negative pr number":  `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":-1,"title":"x"}]}]}`,
+		"github permission":   `{"repos":[{"forge":"github","project":"a/b","merge":{"permission":"developer"}}]}`,
+		"gitlab permission":   `{"repos":[{"forge":"gitlab","project":"g/r","merge":{"permission":"WRITE"}}]}`,
+		"gitlab on github":    `{"repos":[{"forge":"github","project":"a/b","merge":{"mergeMethod":"ff"}}]}`,
+		"github on gitlab":    `{"repos":[{"forge":"gitlab","project":"g/r","merge":{"autoMergeAllowed":true}}]}`,
+		"no methods":          `{"repos":[{"forge":"github","project":"a/b","merge":{"methods":[]}}]}`,
+		"default not allowed": `{"repos":[{"forge":"github","project":"a/b","merge":{"methods":["squash"],"defaultMethod":"merge"}}]}`,
+		"merge method":        `{"repos":[{"forge":"gitlab","project":"g/r","merge":{"mergeMethod":"octopus"}}]}`,
+		"squash option":       `{"repos":[{"forge":"gitlab","project":"g/r","merge":{"squashOption":"sometimes"}}]}`,
+		"gitlab checks":       `{"repos":[{"forge":"gitlab","project":"g/r","pulls":[{"number":1,"title":"x","readiness":{"requiredChecks":["unit"]}}]}]}`,
+		"github can approve":  `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","readiness":{"viewerCanApprove":true}}]}]}`,
+		"negative approvals":  `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","readiness":{"requiredApprovals":-1}}]}]}`,
+		"armed merged pull":   `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","state":"merged","readiness":{"autoMerge":{}}}]}]}`,
+		"armed method":        `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","readiness":{"autoMerge":{"method":"ff"}}}]}]}`,
+		"gitlab behind":       `{"repos":[{"forge":"gitlab","project":"g/r","pulls":[{"number":1,"title":"x","readiness":{"behind":true}}]}]}`,
+		"merged by on open":   `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","mergedBy":"a"}]}]}`,
+		"closed at on open":   `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","closedAt":"2026-01-01T00:00:00Z"}]}]}`,
+		"event kind":          `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","events":[{"kind":"approved"}]}]}]}`,
+		"gitlab force push":   `{"repos":[{"forge":"gitlab","project":"g/r","pulls":[{"number":1,"title":"x","events":[{"kind":"force_pushed"}]}]}]}`,
+		"event time":          `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","events":[{"kind":"reopened","at":"yesterday"}]}]}]}`,
+		"event without ref":   `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","events":[{"kind":"base_changed"}]}]}]}`,
+		"gitlab event method": `{"repos":[{"forge":"gitlab","project":"g/r","pulls":[{"number":1,"title":"x","events":[{"kind":"auto_merge_set","method":"squash"}]}]}]}`,
 	}
 	for name, raw := range cases {
 		if _, err := seedJSON(New(Options{}), raw); err == nil {
@@ -816,7 +837,7 @@ func prTick(t *testing.T, srv *httptest.Server, host, owner, name string, number
 	t.Helper()
 	return graphQL(t, srv, host, "PRTick", map[string]any{
 		"owner": owner, "name": name, "number": number,
-		"wantDetail": detail, "wantThreads": threads, "wantChecks": checks,
+		"wantDetail": detail, "wantThreads": threads, "wantEvents": false, "wantChecks": checks,
 	})
 }
 
@@ -914,7 +935,7 @@ func TestHTTPMountsAnswerFromTheRouteTables(t *testing.T) {
 		t.Fatalf("PRTick = %+v", tick)
 	}
 	if got := lastInvocation(t, e); got.Path != "graphql" || got.Route != "gh graphql PRTick" || got.Operation != "PRTick" ||
-		string(got.Variables) != `{"name":"widgets","number":7,"owner":"acme","wantChecks":false,"wantDetail":false,"wantThreads":true}` {
+		string(got.Variables) != `{"name":"widgets","number":7,"owner":"acme","wantChecks":false,"wantDetail":false,"wantEvents":false,"wantThreads":true}` {
 		t.Fatalf("PRTick invocation = %+v (variables %s)", got, got.Variables)
 	}
 	missing := prTick(t, srv, "ghe.example:8443", "acme", "widgets", 7, true, true, true)
@@ -1001,10 +1022,13 @@ func TestHTTPRefusals(t *testing.T) {
 			t.Errorf("%s = %d, want an unhandled 404", path, got.status)
 		}
 	}
-	// GitLab's writes have no handler: a request for one is unhandled, not
-	// answered as if it changed something.
+	// GitLab's review writes have no handler: a request for one is
+	// unhandled, not answered as if it changed something. So is a write
+	// whose body carries a parameter its handler does not implement.
+	if got := httpRequest(t, srv, "POST", "gitlab.com", "/gitlab/api/v4/projects/grp%2Fsub%2Ftool/merge_requests/3/approve", `{"sha":"x","approval_password":"p"}`, nil); got.status != 404 || !lastInvocation(t, e).Unhandled {
+		t.Errorf("approve with an unimplemented parameter = %d, want an unhandled 404", got.status)
+	}
 	for _, write := range [][2]string{
-		{"POST", "projects/grp%2Fsub%2Ftool/merge_requests/3/approve"},
 		{"POST", "projects/grp%2Fsub%2Ftool/merge_requests/3/draft_notes"},
 		{"POST", "projects/grp%2Fsub%2Ftool/merge_requests/3/discussions/abc/notes"},
 		{"PUT", "projects/grp%2Fsub%2Ftool/merge_requests/3/discussions/abc"},
@@ -1381,7 +1405,7 @@ func TestGraphQLPagesEveryConnection(t *testing.T) {
 		t.Errorf("second thread comments page = %d nodes", len(p.Nodes))
 	}
 	commit := pull.Commits.Nodes[0].Commit
-	p = rest("RollupContextsPage", map[string]any{"commitID": commit.ID, "after": *commit.StatusCheckRollup.Contexts.PageInfo.EndCursor}, "node", "statusCheckRollup", "contexts")
+	p = rest("RollupContextsPage", map[string]any{"commitID": commit.ID, "number": 1, "after": *commit.StatusCheckRollup.Contexts.PageInfo.EndCursor}, "node", "statusCheckRollup", "contexts")
 	if len(p.Nodes) != 20 || p.Nodes[19]["name"] != "j119" {
 		t.Errorf("second contexts page = %d nodes", len(p.Nodes))
 	}
@@ -1390,7 +1414,7 @@ func TestGraphQLPagesEveryConnection(t *testing.T) {
 			t.Errorf("unknown thread = %s", got.body)
 		}
 	}
-	if got := graphQL(t, srv, "github.com", "RollupContextsPage", map[string]any{"commitID": "C_ao1_1", "after": "cursor:0"}); !strings.Contains(got.body, "NOT_FOUND") {
+	if got := graphQL(t, srv, "github.com", "RollupContextsPage", map[string]any{"commitID": "C_ao1_1", "number": 1, "after": "cursor:0"}); !strings.Contains(got.body, "NOT_FOUND") {
 		t.Errorf("unknown commit = %s", got.body)
 	}
 	for _, inv := range e.Invocations(0).Invocations {
@@ -1408,7 +1432,7 @@ func TestGraphQLRefusesADriftedOperation(t *testing.T) {
 	t.Parallel()
 	e, _ := seeded(t, Options{})
 	srv := testServer(t, e)
-	tick := map[string]any{"owner": "acme", "name": "widgets", "number": 7, "wantDetail": true, "wantThreads": false, "wantChecks": false}
+	tick := map[string]any{"owner": "acme", "name": "widgets", "number": 7, "wantDetail": true, "wantThreads": false, "wantEvents": false, "wantChecks": false}
 	send := func(query, op string, vars map[string]any) httpAnswer {
 		return httpRequest(t, srv, "POST", "github.com", "/github/graphql", mustJSON(t, map[string]any{"query": query, "operationName": op, "variables": vars}), nil)
 	}
@@ -1417,10 +1441,10 @@ func TestGraphQLRefusesADriftedOperation(t *testing.T) {
 		"unknown operation":   send(`query Viewer { viewer { login } }`, "Viewer", nil),
 		"another kind":        send(strings.Replace(doc, "query", "mutation", 1), "PRTick", tick),
 		"another name":        send(strings.Replace(doc, "PRTick", "PRRead", 1), "PRTick", tick),
-		"undeclared variable": send(doc, "PRTick", map[string]any{"owner": "acme", "name": "widgets", "number": 7, "wantDetail": true, "wantThreads": false, "wantChecks": false, "wantCI": true}),
+		"undeclared variable": send(doc, "PRTick", map[string]any{"owner": "acme", "name": "widgets", "number": 7, "wantDetail": true, "wantThreads": false, "wantEvents": false, "wantChecks": false, "wantCI": true}),
 		"missing variable":    send(doc, "PRTick", map[string]any{"owner": "acme", "name": "widgets", "number": 7, "wantDetail": true, "wantThreads": false}),
 		"declared extra":      send(strings.Replace(doc, "(", "($wantCI: Boolean!, ", 1), "PRTick", tick),
-		"mistyped variable":   send(doc, "PRTick", map[string]any{"owner": "acme", "name": "widgets", "number": "7", "wantDetail": true, "wantThreads": false, "wantChecks": false}),
+		"mistyped variable":   send(doc, "PRTick", map[string]any{"owner": "acme", "name": "widgets", "number": "7", "wantDetail": true, "wantThreads": false, "wantEvents": false, "wantChecks": false}),
 		"foreign cursor":      graphQL(t, srv, "github.com", "PRThreadsPage", map[string]any{"owner": "acme", "name": "widgets", "number": 7, "after": "Y3Vyc29y"}),
 		"no operation name":   send(doc, "", tick),
 		"GET":                 httpRequest(t, srv, "GET", "github.com", "/github/graphql", "", nil),
@@ -1650,5 +1674,522 @@ func TestGitHubPullLists(t *testing.T) {
 	}
 	if over := graphQL(t, srv, "github.com", "MergedPRs", map[string]any{"owner": "a", "name": "b", "first": 101}); over.status != 404 {
 		t.Fatalf("first over 100 = %+v, want unhandled", over)
+	}
+}
+
+// mergeFixture is a GitHub repository and a GitLab project whose pulls
+// the merge routes act on; the viewer is octo, neither pull's author.
+const mergeFixture = `{
+  "viewer": "octo",
+  "repos": [
+    {"forge": "github", "project": "acme/merge", "merge": {"autoMergeAllowed": true},
+     "pulls": [
+       {"number": 1, "title": "Plain", "headRef": "plain"},
+       {"number": 2, "title": "Guarded", "headRef": "guarded", "headSha": "2222222222222222222222222222222222222222",
+        "readiness": {"requiredApprovals": 1, "requiredChecks": ["unit", "e2e"], "resolveThreads": true},
+        "threads": [{"path": "a.go", "line": 1, "comments": [{"body": "fix"}]}],
+        "ci": {"jobs": [{"name": "unit", "status": "running"}, {"name": "lint", "status": "failed"}]}},
+       {"number": 3, "title": "Merged", "state": "merged", "headRef": "done"}
+     ]},
+    {"forge": "gitlab", "project": "grp/merge", "id": 7700, "merge": {"pipelineMustSucceed": true},
+     "pulls": [
+       {"number": 1, "title": "Plain", "headRef": "plain"},
+       {"number": 2, "title": "Guarded", "headRef": "guarded", "headSha": "3333333333333333333333333333333333333333",
+        "readiness": {"requiredApprovals": 1}, "ci": {"jobs": [{"name": "unit", "status": "running"}]}},
+       {"number": 3, "title": "draft: Drafty", "headRef": "drafty"}
+     ]}
+  ]
+}`
+
+func mergeEngine(t *testing.T) (*Engine, *httptest.Server) {
+	t.Helper()
+	e := New(Options{APIToken: testAPIToken})
+	if _, err := seedJSON(e, mergeFixture); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	return e, testServer(t, e)
+}
+
+func ghTick(t *testing.T, srv *httptest.Server, number int) map[string]any {
+	t.Helper()
+	var out struct {
+		Data struct {
+			Repository map[string]any `json:"repository"`
+		} `json:"data"`
+	}
+	decodeBody(t, graphQL(t, srv, "github.com", "PRTick", map[string]any{
+		"owner": "acme", "name": "merge", "number": number, "wantDetail": true, "wantThreads": false, "wantEvents": true, "wantChecks": true,
+	}), &out)
+	pull := out.Data.Repository["pullRequest"].(map[string]any)
+	pull["repository"] = out.Data.Repository
+	return pull
+}
+
+func glabJSON(t *testing.T, srv *httptest.Server, path string) map[string]any {
+	t.Helper()
+	var out map[string]any
+	decodeBody(t, glabGET(t, srv, "gitlab.com", path), &out)
+	return out
+}
+
+func glabSend(t *testing.T, srv *httptest.Server, method, path, body string) httpAnswer {
+	t.Helper()
+	return httpRequest(t, srv, method, "gitlab.com", "/gitlab/api/v4/"+path, body, http.Header{"Private-Token": {testAPIToken}})
+}
+
+// An open pull with nothing required reads as ready on both forges, as on
+// an unprotected branch; the requirements a seed declares block it the
+// way each forge reports them.
+func TestMergeReadinessDefaultsAndRequirements(t *testing.T) {
+	t.Parallel()
+	_, srv := mergeEngine(t)
+	plain := ghTick(t, srv, 1)
+	repo := plain["repository"].(map[string]any)
+	if plain["mergeStateStatus"] != "CLEAN" || plain["reviewDecision"] != nil || plain["autoMergeRequest"] != nil ||
+		plain["viewerCanEnableAutoMerge"] != true || plain["merged"] != false || plain["mergedAt"] != nil || plain["closedAt"] != nil ||
+		plain["baseRef"].(map[string]any)["refUpdateRule"] != nil || repo["viewerPermission"] != "WRITE" || repo["viewerDefaultMergeMethod"] != "MERGE" ||
+		repo["mergeCommitAllowed"] != true || repo["squashMergeAllowed"] != true || repo["rebaseMergeAllowed"] != true || repo["autoMergeAllowed"] != true {
+		t.Fatalf("plain pull = %v", plain)
+	}
+	if items := plain["timelineItems"].(map[string]any); len(items["nodes"].([]any)) != 0 || items["pageInfo"].(map[string]any)["hasPreviousPage"] != false {
+		t.Fatalf("plain timeline = %v", items)
+	}
+	guarded := ghTick(t, srv, 2)
+	rule := guarded["baseRef"].(map[string]any)["refUpdateRule"].(map[string]any)
+	if guarded["mergeStateStatus"] != "BLOCKED" || guarded["reviewDecision"] != "REVIEW_REQUIRED" ||
+		rule["requiredApprovingReviewCount"] != float64(1) || rule["requiresConversationResolution"] != true {
+		t.Fatalf("guarded pull = %v", guarded)
+	}
+	contexts := guarded["commits"].(map[string]any)["nodes"].([]any)[0].(map[string]any)["commit"].(map[string]any)["statusCheckRollup"].(map[string]any)["contexts"].(map[string]any)["nodes"].([]any)
+	if contexts[0].(map[string]any)["isRequired"] != true || contexts[1].(map[string]any)["isRequired"] != false {
+		t.Fatalf("contexts = %v", contexts)
+	}
+	merged := ghTick(t, srv, 3)
+	nodes := merged["timelineItems"].(map[string]any)["nodes"].([]any)
+	if merged["mergeStateStatus"] != "UNKNOWN" || merged["merged"] != true || merged["mergedBy"].(map[string]any)["login"] != "ao-author" ||
+		len(nodes) != 2 || nodes[0].(map[string]any)["__typename"] != "MergedEvent" || nodes[1].(map[string]any)["__typename"] != "ClosedEvent" {
+		t.Fatalf("merged pull = %v", merged)
+	}
+
+	if mr := glabJSON(t, srv, "projects/grp%2Fmerge/merge_requests/1"); mr["detailed_merge_status"] != "ci_must_pass" {
+		// A project that requires a pipeline blocks a merge request without one.
+		t.Fatalf("plain merge request = %v", mr)
+	}
+	mr := glabJSON(t, srv, "projects/grp%2Fmerge/merge_requests/2")
+	if mr["detailed_merge_status"] != "ci_still_running" || mr["user"].(map[string]any)["can_merge"] != true || mr["merge_when_pipeline_succeeds"] != false ||
+		mr["merged_by"].(map[string]any)["username"] != nil || mr["project_id"] != float64(7700) || mr["source_project_id"] != float64(7700) || mr["blocking_discussions_resolved"] != true {
+		t.Fatalf("guarded merge request = %v", mr)
+	}
+	approvals := glabJSON(t, srv, "projects/grp%2Fmerge/merge_requests/2/approvals")
+	if approvals["approvals_required"] != float64(1) || approvals["approvals_left"] != float64(1) || approvals["user_can_approve"] != true || approvals["user_has_approved"] != false {
+		t.Fatalf("approvals = %v", approvals)
+	}
+	if mr := glabJSON(t, srv, "projects/grp%2Fmerge/merge_requests/3"); mr["draft"] != true || mr["detailed_merge_status"] != "draft_status" {
+		t.Fatalf("a draft title = %v", mr)
+	}
+	project := glabJSON(t, srv, "projects/grp%2Fmerge")
+	if project["merge_method"] != "merge" || project["squash_option"] != "default_off" || project["only_allow_merge_if_pipeline_succeeds"] != true ||
+		project["permissions"].(map[string]any)["project_access"].(map[string]any)["access_level"] != float64(30) {
+		t.Fatalf("project = %v", project)
+	}
+	// GitLab's project read is conditional, as GitLab's is.
+	first := glabGET(t, srv, "gitlab.com", "projects/grp%2Fmerge")
+	again := httpRequest(t, srv, "GET", "gitlab.com", "/gitlab/api/v4/projects/grp%2Fmerge", "", http.Header{"Private-Token": {testAPIToken}, "If-None-Match": {first.header.Get("ETag")}})
+	if first.header.Get("ETag") == "" || again.status != http.StatusNotModified {
+		t.Fatalf("project revalidation = %d (ETag %q)", again.status, first.header.Get("ETag"))
+	}
+}
+
+// GitHub's merge mutations transition the pull and the next PRTick shows
+// it, each with its timeline item; a wrong expectedHeadOid answers
+// GitHub's own refusal and changes nothing.
+func TestGitHubMergeMutationsTransitionThePull(t *testing.T) {
+	t.Parallel()
+	e, srv := mergeEngine(t)
+	plain := ghTick(t, srv, 1)
+	id, head := plain["id"], plain["headRefOid"]
+	if id != nil {
+		t.Fatalf("PRTick selects no id: %v", id)
+	}
+	var target struct {
+		Data struct {
+			Repository struct {
+				DeleteBranchOnMerge bool `json:"deleteBranchOnMerge"`
+				PullRequest         struct {
+					ID          string `json:"id"`
+					HeadRefName string `json:"headRefName"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	decodeBody(t, graphQL(t, srv, "github.com", "PRMergeTarget", map[string]any{"owner": "acme", "name": "merge", "number": 1}), &target)
+	node := target.Data.Repository.PullRequest.ID
+	if node == "" || target.Data.Repository.PullRequest.HeadRefName != "plain" {
+		t.Fatalf("PRMergeTarget = %+v", target)
+	}
+
+	stale := graphQL(t, srv, "github.com", "MergePR", map[string]any{"pullRequestID": node, "method": "MERGE", "expectedHeadOid": strings.Repeat("f", 40)})
+	if !strings.Contains(stale.body, "Head branch was modified. Review and try the merge again.") || !strings.Contains(stale.body, `"mergePullRequest":null`) {
+		t.Fatalf("a stale merge = %s", stale.body)
+	}
+	if again := ghTick(t, srv, 1); again["merged"] != false || len(again["timelineItems"].(map[string]any)["nodes"].([]any)) != 0 {
+		t.Fatalf("a stale merge changed the pull: %v", again)
+	}
+	// A clean pull cannot be armed; auto-merge needs something to wait for.
+	if got := graphQL(t, srv, "github.com", "EnableAutoMerge", map[string]any{"pullRequestID": node, "method": "SQUASH", "expectedHeadOid": head}); !strings.Contains(got.body, "clean status") {
+		t.Fatalf("auto-merge of a clean pull = %s", got.body)
+	}
+	merged := graphQL(t, srv, "github.com", "MergePR", map[string]any{"pullRequestID": node, "method": "REBASE", "expectedHeadOid": head})
+	if !strings.Contains(merged.body, `"merged":true`) {
+		t.Fatalf("merge = %s", merged.body)
+	}
+	after := ghTick(t, srv, 1)
+	nodes := after["timelineItems"].(map[string]any)["nodes"].([]any)
+	if after["state"] != "MERGED" || after["mergedBy"].(map[string]any)["login"] != "octo" || after["mergedAt"] == nil || after["closedAt"] == nil ||
+		len(nodes) != 2 || nodes[0].(map[string]any)["__typename"] != "MergedEvent" || nodes[1].(map[string]any)["__typename"] != "ClosedEvent" {
+		t.Fatalf("after merge = %v", after)
+	}
+	if got := graphQL(t, srv, "github.com", "MergePR", map[string]any{"pullRequestID": node, "method": "MERGE", "expectedHeadOid": head}); !strings.Contains(got.body, "already merged") {
+		t.Fatalf("a second merge = %s", got.body)
+	}
+	// The branch delete: 204 once, then GitHub's 422.
+	del := func() httpAnswer {
+		return httpRequest(t, srv, "DELETE", "github.com", "/github/rest/repos/acme/merge/git/refs/heads/plain", "", nil)
+	}
+	if got := del(); got.status != http.StatusNoContent {
+		t.Fatalf("delete = %+v", got)
+	}
+	if got := del(); got.status != http.StatusUnprocessableEntity || !strings.Contains(got.body, "Reference does not exist") || lastInvocation(t, e).Route != "gh api delete branch" {
+		t.Fatalf("a second delete = %+v", got)
+	}
+
+	// The guarded pull: approve over REST, dismiss over GraphQL, arm and
+	// disarm auto-merge, each read back.
+	guarded := func() map[string]any { return ghTick(t, srv, 2) }
+	review := httpRequest(t, srv, "POST", "github.com", "/github/rest/repos/acme/merge/pulls/2/reviews", `{"event":"APPROVE","commit_id":"2222222222222222222222222222222222222222"}`, nil)
+	if review.status != 200 || !strings.Contains(review.body, `"state":"APPROVED"`) {
+		t.Fatalf("approve = %+v", review)
+	}
+	pull := guarded()
+	opinions := pull["latestOpinionatedReviews"].(map[string]any)["nodes"].([]any)
+	if pull["reviewDecision"] != "APPROVED" || len(opinions) != 1 || opinions[0].(map[string]any)["viewerDidAuthor"] != true || opinions[0].(map[string]any)["authorCanPushToRepository"] != true {
+		t.Fatalf("after approve = %v", pull)
+	}
+	if nodes := pull["timelineItems"].(map[string]any)["nodes"].([]any); len(nodes) != 1 || nodes[0].(map[string]any)["state"] != "APPROVED" {
+		t.Fatalf("after approve: timeline %v", nodes)
+	}
+	reviewID := opinions[0].(map[string]any)["id"].(string)
+	if got := graphQL(t, srv, "github.com", "ViewerApproval", map[string]any{"owner": "acme", "name": "merge", "number": 2}); !strings.Contains(got.body, reviewID) {
+		t.Fatalf("ViewerApproval = %s", got.body)
+	}
+	dismissed := graphQL(t, srv, "github.com", "DismissReview", map[string]any{"reviewID": reviewID, "message": "withdrawn"})
+	if !strings.Contains(dismissed.body, `"state":"DISMISSED"`) {
+		t.Fatalf("dismiss = %s", dismissed.body)
+	}
+	pull = guarded()
+	nodes = pull["timelineItems"].(map[string]any)["nodes"].([]any)
+	if pull["reviewDecision"] != "REVIEW_REQUIRED" || len(pull["latestOpinionatedReviews"].(map[string]any)["nodes"].([]any)) != 0 ||
+		len(nodes) != 2 || nodes[0].(map[string]any)["state"] != "DISMISSED" || nodes[1].(map[string]any)["dismissalMessage"] != "withdrawn" {
+		t.Fatalf("after dismiss = %v", pull)
+	}
+	decodeBody(t, graphQL(t, srv, "github.com", "PRMergeTarget", map[string]any{"owner": "acme", "name": "merge", "number": 2}), &target)
+	node = target.Data.Repository.PullRequest.ID
+	if got := graphQL(t, srv, "github.com", "MergePR", map[string]any{"pullRequestID": node, "method": "MERGE", "expectedHeadOid": "2222222222222222222222222222222222222222"}); !strings.Contains(got.body, "not mergeable") {
+		t.Fatalf("merge of a blocked pull = %s", got.body)
+	}
+	armed := graphQL(t, srv, "github.com", "EnableAutoMerge", map[string]any{"pullRequestID": node, "method": "SQUASH", "expectedHeadOid": "2222222222222222222222222222222222222222"})
+	if !strings.Contains(armed.body, `"enabledAt"`) {
+		t.Fatalf("auto-merge = %s", armed.body)
+	}
+	pull = guarded()
+	request := pull["autoMergeRequest"].(map[string]any)
+	if request["mergeMethod"] != "SQUASH" || request["enabledBy"].(map[string]any)["login"] != "octo" || pull["viewerCanEnableAutoMerge"] != false || pull["viewerCanDisableAutoMerge"] != true {
+		t.Fatalf("armed = %v", pull)
+	}
+	if nodes := pull["timelineItems"].(map[string]any)["nodes"].([]any); nodes[len(nodes)-1].(map[string]any)["__typename"] != "AutoSquashEnabledEvent" {
+		t.Fatalf("armed timeline = %v", nodes)
+	}
+	if got := graphQL(t, srv, "github.com", "DisableAutoMerge", map[string]any{"pullRequestID": node}); !strings.Contains(got.body, `"autoMergeRequest":null`) {
+		t.Fatalf("disarm = %s", got.body)
+	}
+	pull = guarded()
+	if nodes := pull["timelineItems"].(map[string]any)["nodes"].([]any); pull["autoMergeRequest"] != nil || nodes[len(nodes)-1].(map[string]any)["__typename"] != "AutoMergeDisabledEvent" {
+		t.Fatalf("disarmed = %v", pull)
+	}
+	if got := graphQL(t, srv, "github.com", "DisableAutoMerge", map[string]any{"pullRequestID": node}); !strings.Contains(got.body, "not enabled") {
+		t.Fatalf("a second disarm = %s", got.body)
+	}
+	// Review line comments are not implemented; an unknown pull is not found.
+	if got := httpRequest(t, srv, "POST", "github.com", "/github/rest/repos/acme/merge/pulls/2/reviews", `{"event":"COMMENT","body":"x","comments":[{"path":"a.go","line":1,"body":"y"}]}`, nil); got.status != 404 || !lastInvocation(t, e).Unhandled {
+		t.Fatalf("a review with comments = %+v", got)
+	}
+	if got := graphQL(t, srv, "github.com", "MarkPRReady", map[string]any{"pullRequestID": "PR_nope"}); !strings.Contains(got.body, "NOT_FOUND") || lastInvocation(t, e).Unhandled {
+		t.Fatalf("an unknown pull = %s", got.body)
+	}
+	if got := httpRequest(t, srv, "GET", "github.com", "/github/rest/user", "", nil); !strings.Contains(got.body, `"login":"octo"`) {
+		t.Fatalf("user = %+v", got)
+	}
+}
+
+// The timeline is read newest page first and backwards with before; the
+// thread states page forwards.
+func TestGitHubTimelineAndThreadStatesPage(t *testing.T) {
+	t.Parallel()
+	e := New(Options{APIToken: testAPIToken})
+	events := make([]map[string]any, 150)
+	for i := range events {
+		events[i] = map[string]any{"kind": "review_requested", "ref": fmt.Sprintf("r%d", i), "at": fmt.Sprintf("2026-01-01T%02d:%02d:00Z", i/60, i%60)}
+	}
+	threads := make([]map[string]any, 120)
+	for i := range threads {
+		threads[i] = map[string]any{"path": "a.go", "line": 1, "resolved": i != 110, "comments": []map[string]any{{"body": "x"}}}
+	}
+	fixture := mustJSON(t, map[string]any{"repos": []map[string]any{{"forge": "github", "project": "a/b", "pulls": []map[string]any{{"number": 1, "title": "x", "events": events, "threads": threads}}}}})
+	if _, err := seedJSON(e, fixture); err != nil {
+		t.Fatal(err)
+	}
+	srv := testServer(t, e)
+	var tick struct {
+		Data struct {
+			Repository struct {
+				PullRequest struct {
+					TimelineItems struct {
+						PageInfo struct {
+							HasPreviousPage bool   `json:"hasPreviousPage"`
+							StartCursor     string `json:"startCursor"`
+						} `json:"pageInfo"`
+						Nodes []map[string]any `json:"nodes"`
+					} `json:"timelineItems"`
+					ThreadStates struct {
+						PageInfo struct {
+							HasNextPage bool   `json:"hasNextPage"`
+							EndCursor   string `json:"endCursor"`
+						} `json:"pageInfo"`
+						Nodes []map[string]any `json:"nodes"`
+					} `json:"threadStates"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	decodeBody(t, graphQL(t, srv, "github.com", "PRTick", map[string]any{"owner": "a", "name": "b", "number": 1, "wantDetail": true, "wantThreads": false, "wantEvents": true, "wantChecks": false}), &tick)
+	items := tick.Data.Repository.PullRequest.TimelineItems
+	if len(items.Nodes) != 100 || !items.PageInfo.HasPreviousPage || items.Nodes[99]["requestedReviewer"].(map[string]any)["login"] != "r149" {
+		t.Fatalf("newest timeline page = %d nodes, previous %v", len(items.Nodes), items.PageInfo.HasPreviousPage)
+	}
+	var page struct {
+		Data struct {
+			Repository struct {
+				PullRequest struct {
+					TimelineItems struct {
+						PageInfo struct {
+							HasPreviousPage bool `json:"hasPreviousPage"`
+						} `json:"pageInfo"`
+						Nodes []map[string]any `json:"nodes"`
+					} `json:"timelineItems"`
+					ReviewThreads struct {
+						PageInfo struct {
+							HasNextPage bool `json:"hasNextPage"`
+						} `json:"pageInfo"`
+						Nodes []map[string]any `json:"nodes"`
+					} `json:"reviewThreads"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	decodeBody(t, graphQL(t, srv, "github.com", "PRTimelinePage", map[string]any{"owner": "a", "name": "b", "number": 1, "before": items.PageInfo.StartCursor}), &page)
+	older := page.Data.Repository.PullRequest.TimelineItems
+	if len(older.Nodes) != 50 || older.PageInfo.HasPreviousPage || older.Nodes[0]["requestedReviewer"].(map[string]any)["login"] != "r0" {
+		t.Fatalf("older timeline page = %d nodes", len(older.Nodes))
+	}
+	states := tick.Data.Repository.PullRequest.ThreadStates
+	if len(states.Nodes) != 100 || !states.PageInfo.HasNextPage {
+		t.Fatalf("thread states = %d nodes", len(states.Nodes))
+	}
+	decodeBody(t, graphQL(t, srv, "github.com", "PRThreadStatesPage", map[string]any{"owner": "a", "name": "b", "number": 1, "after": states.PageInfo.EndCursor}), &page)
+	if rest := page.Data.Repository.PullRequest.ReviewThreads; len(rest.Nodes) != 20 || rest.PageInfo.HasNextPage || rest.Nodes[10]["isResolved"] != false {
+		t.Fatalf("second thread states page = %+v", rest)
+	}
+}
+
+// GitLab's merge routes transition the merge request and the next read
+// shows it; a wrong sha answers 409 and changes nothing.
+func TestGitLabMergeRoutesTransitionTheMergeRequest(t *testing.T) {
+	t.Parallel()
+	e, srv := mergeEngine(t)
+	const mrPath = "projects/grp%2Fmerge/merge_requests/2"
+	const head = "3333333333333333333333333333333333333333"
+	if got := glabSend(t, srv, "POST", mrPath+"/approve", `{"sha":"`+strings.Repeat("0", 40)+`"}`); got.status != http.StatusConflict || !strings.Contains(got.body, "SHA does not match HEAD") {
+		t.Fatalf("a stale approve = %+v", got)
+	}
+	if approvals := glabJSON(t, srv, mrPath+"/approvals"); approvals["user_has_approved"] != false {
+		t.Fatalf("a stale approve approved: %v", approvals)
+	}
+	if got := glabSend(t, srv, "POST", mrPath+"/approve", `{"sha":"`+head+`"}`); got.status != http.StatusCreated || !strings.Contains(got.body, `"user_has_approved":true`) {
+		t.Fatalf("approve = %+v", got)
+	}
+	if approvals := glabJSON(t, srv, mrPath+"/approvals"); approvals["approvals_left"] != float64(0) || approvals["user_can_approve"] != false || approvals["approved"] != true {
+		t.Fatalf("after approve: %v", approvals)
+	}
+	if got := glabSend(t, srv, "POST", mrPath+"/approve", `{"sha":"`+head+`"}`); got.status != http.StatusUnauthorized {
+		t.Fatalf("a second approve = %+v", got)
+	}
+	notes := func() []string {
+		var discussions []struct {
+			Notes []struct {
+				Body   string `json:"body"`
+				System bool   `json:"system"`
+			} `json:"notes"`
+		}
+		decodeBody(t, glabGET(t, srv, "gitlab.com", mrPath+"/discussions?per_page=100"), &discussions)
+		var out []string
+		for _, d := range discussions {
+			for _, n := range d.Notes {
+				if n.System {
+					out = append(out, n.Body)
+				}
+			}
+		}
+		return out
+	}
+	if got := notes(); !slices.Equal(got, []string{"approved this merge request"}) {
+		t.Fatalf("after approve: notes %q", got)
+	}
+	if got := glabSend(t, srv, "POST", mrPath+"/unapprove", ""); got.status != http.StatusCreated || !strings.Contains(got.body, `"user_has_approved":false`) {
+		t.Fatalf("unapprove = %+v", got)
+	}
+	if got := glabSend(t, srv, "POST", mrPath+"/unapprove", ""); got.status != http.StatusNotFound {
+		t.Fatalf("a second unapprove = %+v", got)
+	}
+	// Blocked: a merge is refused, auto-merge arms.
+	if got := glabSend(t, srv, "PUT", mrPath+"/merge", `{"sha":"`+head+`","squash":false,"should_remove_source_branch":true}`); got.status != http.StatusMethodNotAllowed {
+		t.Fatalf("a merge while blocked = %+v", got)
+	}
+	if got := glabSend(t, srv, "PUT", mrPath+"/merge", `{"sha":"`+strings.Repeat("0", 40)+`","auto_merge":true}`); got.status != http.StatusConflict {
+		t.Fatalf("a stale auto-merge = %+v", got)
+	}
+	armed := glabSend(t, srv, "PUT", mrPath+"/merge", `{"sha":"`+head+`","squash":true,"should_remove_source_branch":true,"auto_merge":true,"merge_when_pipeline_succeeds":true}`)
+	if armed.status != 200 || !strings.Contains(armed.body, `"merge_when_pipeline_succeeds":true`) || !strings.Contains(armed.body, `"squash":true`) {
+		t.Fatalf("auto-merge = %+v", armed)
+	}
+	if mr := glabJSON(t, srv, mrPath); mr["merge_user"].(map[string]any)["username"] != "octo" || mr["force_remove_source_branch"] != true {
+		t.Fatalf("armed merge request = %v", mr)
+	}
+	if got := glabSend(t, srv, "POST", mrPath+"/cancel_auto_merge", ""); got.status != http.StatusCreated || !strings.Contains(got.body, `"merge_when_pipeline_succeeds":false`) {
+		t.Fatalf("cancel = %+v", got)
+	}
+	if got := glabSend(t, srv, "POST", mrPath+"/cancel_auto_merge", ""); got.status != http.StatusConflict {
+		t.Fatalf("a second cancel = %+v", got)
+	}
+	if got := notes(); !slices.Equal(got, []string{"approved this merge request", "unapproved this merge request", "enabled an automatic merge when all merge checks for " + head + " pass", "canceled the automatic merge"}) {
+		t.Fatalf("notes = %q", got)
+	}
+	// The pipeline finishes and someone approves (a reseed): mergeable,
+	// then merged.
+	ready := strings.Replace(mergeFixture, `"ci": {"jobs": [{"name": "unit", "status": "running"}]}}`, `"ci": {"jobs": [{"name": "unit", "status": "success"}]}, "reviews": [{"author": "bob", "state": "APPROVED"}]}`, 1)
+	if ready == mergeFixture {
+		t.Fatal("the ready fixture did not change")
+	}
+	if _, err := seedJSON(e, ready); err != nil {
+		t.Fatal(err)
+	}
+	if mr := glabJSON(t, srv, mrPath); mr["detailed_merge_status"] != "mergeable" {
+		t.Fatalf("ready merge request = %v", mr)
+	}
+	merged := glabSend(t, srv, "PUT", mrPath+"/merge", `{"sha":"`+head+`","squash":true,"should_remove_source_branch":true}`)
+	if merged.status != 200 || !strings.Contains(merged.body, `"state":"merged"`) {
+		t.Fatalf("merge = %+v", merged)
+	}
+	mr := glabJSON(t, srv, mrPath)
+	if mr["merged_at"] == nil || mr["merged_by"].(map[string]any)["username"] != "octo" || mr["merge_commit_sha"] == nil || mr["squash_commit_sha"] == nil || mr["detailed_merge_status"] != "not_open" {
+		t.Fatalf("merged merge request = %v", mr)
+	}
+	if got := glabSend(t, srv, "PUT", mrPath+"/merge", `{"sha":"`+head+`"}`); got.status != http.StatusMethodNotAllowed {
+		t.Fatalf("a second merge = %+v", got)
+	}
+	// A rebase moves the head; a title update clears the draft prefix.
+	if got := glabSend(t, srv, "PUT", "projects/grp%2Fmerge/merge_requests/1/rebase", ""); got.status != http.StatusAccepted || !strings.Contains(got.body, `"rebase_in_progress":true`) {
+		t.Fatalf("rebase = %+v", got)
+	}
+	if mr := glabJSON(t, srv, "projects/grp%2Fmerge/merge_requests/1"); mr["sha"] == "" || mr["sha"] == glabJSON(t, srv, "projects/grp%2Fmerge/merge_requests/2")["sha"] {
+		t.Fatalf("rebased merge request = %v", mr)
+	}
+	const draftPath = "projects/grp%2Fmerge/merge_requests/3"
+	if got := glabSend(t, srv, "PUT", draftPath, `{"title":"Drafty"}`); got.status != 200 || !strings.Contains(got.body, `"draft":false`) {
+		t.Fatalf("title update = %+v", got)
+	}
+	if got := glabSend(t, srv, "PUT", draftPath, `{"title":"Drafty","labels":"x"}`); got.status != 404 || !lastInvocation(t, e).Unhandled {
+		t.Fatalf("an update with an unimplemented field = %+v", got)
+	}
+	if got := glabGET(t, srv, "gitlab.com", "user"); !strings.Contains(got.body, `"username":"octo"`) {
+		t.Fatalf("user = %+v", got)
+	}
+}
+
+// The refusal knob answers one route as told, recorded under the route,
+// without running its handler, for its count or until cleared; it
+// refuses what it cannot be, and Reset clears it.
+func TestRefusalKnob(t *testing.T) {
+	t.Parallel()
+	e, srv := mergeEngine(t)
+	const approve = "projects/grp%2Fmerge/merge_requests/2/approve"
+	body := `{"sha":"3333333333333333333333333333333333333333"}`
+	for name, bad := range map[string]Refusal{
+		"unknown route":      {Route: "glab api approvals please", Status: 403},
+		"unknown operation":  {Route: "gh graphql Nope", Status: 403},
+		"a CLI command":      {Route: "gh pr create", Status: 403},
+		"status":             {Route: "glab api approve", Status: 500},
+		"200 on REST":        {Route: "glab api approve", Status: 200, Body: json.RawMessage(`{"errors":["x"]}`)},
+		"200 without errors": {Route: "gh graphql MergePR", Status: 200, Body: json.RawMessage(`{"data":{}}`)},
+		"content type":       {Route: "glab api approve", Status: 403, Header: map[string]string{"content-type": "text/plain"}},
+		"negative times":     {Route: "glab api approve", Status: 403, Times: -1},
+	} {
+		if err := e.SetRefusal(bad); err == nil {
+			t.Errorf("%s: accepted %+v", name, bad)
+		}
+	}
+	scope := `{"error":"insufficient_scope","error_description":"The request requires higher privileges than provided by the access token.","scope":"api"}`
+	if err := e.SetRefusal(Refusal{Route: "glab api approve", Status: 403, Body: json.RawMessage(scope), Times: 1}); err != nil {
+		t.Fatal(err)
+	}
+	got := glabSend(t, srv, "POST", approve, body)
+	inv := lastInvocation(t, e)
+	if got.status != 403 || got.body != scope || inv.Route != "glab api approve" || inv.Unhandled || inv.Status != 403 {
+		t.Fatalf("refused = %+v, invocation %+v", got, inv)
+	}
+	if approvals := glabJSON(t, srv, "projects/grp%2Fmerge/merge_requests/2/approvals"); approvals["user_has_approved"] != false {
+		t.Fatal("a refused approve approved")
+	}
+	if got := glabSend(t, srv, "POST", approve, body); got.status != http.StatusCreated {
+		t.Fatalf("after a one-time refusal = %+v", got)
+	}
+	// Until cleared, with headers, on a GraphQL operation too.
+	if err := e.SetRefusal(Refusal{Route: "gh api pull reviews", Status: 403, Header: map[string]string{"X-Accepted-OAuth-Scopes": "repo", "X-OAuth-Scopes": "read:org"}, Body: json.RawMessage(`{"message":"Resource not accessible by integration"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		got := httpRequest(t, srv, "POST", "github.com", "/github/rest/repos/acme/merge/pulls/2/reviews", `{"event":"APPROVE"}`, nil)
+		if got.status != 403 || got.header.Get("X-Accepted-OAuth-Scopes") != "repo" {
+			t.Fatalf("sticky refusal = %+v", got)
+		}
+	}
+	if err := e.SetRefusal(Refusal{Route: "gh api pull reviews"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := httpRequest(t, srv, "POST", "github.com", "/github/rest/repos/acme/merge/pulls/2/reviews", `{"event":"APPROVE"}`, nil); got.status != 200 {
+		t.Fatalf("after clearing = %+v", got)
+	}
+	headMoved := `{"data":{"mergePullRequest":null},"errors":[{"type":"UNPROCESSABLE","message":"Head branch was modified. Review and try the merge again."}]}`
+	if err := e.SetRefusal(Refusal{Route: "gh graphql MergePR", Status: 200, Body: json.RawMessage(headMoved)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := graphQL(t, srv, "github.com", "MergePR", map[string]any{"pullRequestID": "PR_x", "method": "MERGE", "expectedHeadOid": "abc1234"}); got.status != 200 || got.body != headMoved || lastInvocation(t, e).Route != "gh graphql MergePR" {
+		t.Fatalf("GraphQL refusal = %+v", got)
+	}
+	e.Reset()
+	if _, err := seedJSON(e, mergeFixture); err != nil {
+		t.Fatal(err)
+	}
+	if got := graphQL(t, srv, "github.com", "MergePR", map[string]any{"pullRequestID": "PR_x", "method": "MERGE", "expectedHeadOid": "abc1234"}); strings.Contains(got.body, "Head branch was modified") {
+		t.Fatalf("Reset kept a refusal: %s", got.body)
 	}
 }

@@ -4,20 +4,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 )
 
-// GitHub handlers. The PR reads, open and merged lists and the thread
-// resolve mutation are GraphQL operations (github_graphql.go); the REST
-// routes here serve repository identity, a run's jobs, job logs and
-// attachments, and `gh pr create` is the one gh command the app runs.
+// GitHub handlers. The PR reads, open and merged lists, the thread
+// resolve mutation and the merge actions are GraphQL operations
+// (github_graphql.go); the REST routes here serve repository identity, a
+// run's jobs, job logs, attachments, review submission, the head branch
+// delete and the viewer's own user, and `gh pr create` is the one gh
+// command the app runs.
 
-var (
-	githubMergeable  = map[string]string{"clean": "MERGEABLE", "conflicts": "CONFLICTING", "checking": "UNKNOWN"}
-	githubMergeState = map[string]string{"clean": "CLEAN", "conflicts": "DIRTY", "checking": "UNKNOWN"}
-)
+var githubMergeable = map[string]string{"clean": "MERGEABLE", "conflicts": "CONFLICTING", "checking": "UNKNOWN"}
 
 func githubPullURL(r *Repo, p *Pull) string {
 	return fmt.Sprintf("https://%s/%s/pull/%d", r.Host, r.Project, p.Number)
@@ -289,4 +290,111 @@ func ghPRCreate(e *Engine, c *call) response {
 		return response{exit: 1, stderr: "ao-mockforge: " + err.Error() + "\n"}
 	}
 	return response{stdout: []byte(githubPullURL(r, pull) + "\n")}
+}
+
+// githubReviewEvents maps a REST review event to the state it submits.
+var githubReviewEvents = map[string]string{"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED", "COMMENT": "COMMENTED"}
+
+// ghPullReview submits a review: `{event, body?, commit_id?}`. The review
+// is the viewer's, pinned to commit_id (the head when omitted), and is
+// the pull's latest review and its newest timeline item. GitHub refuses
+// the author's own approval or change request and a change request or
+// comment without a body (422). Line comments are not implemented.
+func ghPullReview(e *Engine, c *call, m []string) response {
+	var in struct {
+		Event    string          `json:"event"`
+		Body     string          `json:"body"`
+		CommitID string          `json:"commit_id"`
+		Comments json.RawMessage `json:"comments"`
+	}
+	if err := decodeRESTBody(c, &in, false); err != nil {
+		return unhandled("%v", err)
+	}
+	if len(in.Comments) > 0 {
+		return unhandled("review line comments are not implemented")
+	}
+	state, ok := githubReviewEvents[in.Event]
+	if !ok {
+		return unhandled("review event %q is not APPROVE, REQUEST_CHANGES or COMMENT", in.Event)
+	}
+	r := e.repoOn("github", c.http.host, m[1])
+	if r == nil {
+		return ghHTTPNotFound()
+	}
+	number, _ := strconv.Atoi(m[2])
+	p := r.pull(number)
+	if p == nil {
+		return ghHTTPNotFound()
+	}
+	commit := defaultString(in.CommitID, p.HeadSHA)
+	switch {
+	case in.CommitID != "" && !gitSHA.MatchString(in.CommitID):
+		return ghUnprocessable("commit_id is not part of the pull request")
+	case state != "COMMENTED" && strings.EqualFold(p.Author, e.viewer):
+		verb := map[string]string{"APPROVED": "approve", "CHANGES_REQUESTED": "request changes on"}[state]
+		return ghUnprocessable("Can not " + verb + " your own pull request")
+	case state != "APPROVED" && strings.TrimSpace(in.Body) == "":
+		return ghUnprocessable("Body is required for this review event")
+	}
+	review := Review{ID: e.ids.next(), Author: e.viewer, State: state, Body: in.Body, SubmittedAt: githubNow(), CommitSHA: commit}
+	p.Reviews = append(p.Reviews, review)
+	return jsonResponse(map[string]any{
+		"id":           review.ID,
+		"node_id":      githubReviewNodeID(review.ID),
+		"user":         map[string]any{"login": review.Author},
+		"body":         review.Body,
+		"state":        review.State,
+		"commit_id":    review.CommitSHA,
+		"submitted_at": review.SubmittedAt,
+		"html_url":     fmt.Sprintf("%s#pullrequestreview-%d", githubPullURL(r, p), review.ID),
+	})
+}
+
+var gitSHA = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
+
+// ghUnprocessable is GitHub REST's 422 with the reason in errors.
+func ghUnprocessable(reason string) response {
+	out, _ := json.Marshal(map[string]any{"message": "Unprocessable Entity", "errors": []string{reason}, "status": "422"})
+	return response{stdout: out, stderr: "422 " + reason, status: http.StatusUnprocessableEntity, header: http.Header{"Content-Type": {"application/json; charset=utf-8"}}}
+}
+
+// ghDeleteBranch deletes refs/heads/B, each path segment escaped: 204
+// while a pull names the branch and it is not deleted yet, then 422
+// "Reference does not exist", as for a branch the repository never had.
+func ghDeleteBranch(e *Engine, c *call, m []string) response {
+	if err := noRESTBody(c); err != nil {
+		return unhandled("%v", err)
+	}
+	r := e.repoOn("github", c.http.host, m[1])
+	if r == nil {
+		return ghHTTPNotFound()
+	}
+	segments := strings.Split(m[2], "/")
+	for i, segment := range segments {
+		name, err := url.PathUnescape(segment)
+		if err != nil || name == "" {
+			return unhandled("branch %q is not path-escaped segments", m[2])
+		}
+		segments[i] = name
+	}
+	branch := strings.Join(segments, "/")
+	if githubRoles[r.Merge.Permission] < githubRoles["WRITE"] {
+		out, _ := json.Marshal(map[string]any{"message": fmt.Sprintf("Permission to %s.git denied to %s.", r.Project, e.viewer), "status": "403"})
+		return response{stdout: out, stderr: "403 permission denied", status: http.StatusForbidden, header: http.Header{"Content-Type": {"application/json; charset=utf-8"}}}
+	}
+	if !r.branchExists(branch) {
+		out, _ := json.Marshal(map[string]any{"message": "Reference does not exist", "documentation_url": "https://docs.github.com/rest/git/refs#delete-a-reference", "status": "422"})
+		return response{stdout: out, stderr: "422 Reference does not exist", status: http.StatusUnprocessableEntity, header: http.Header{"Content-Type": {"application/json; charset=utf-8"}}}
+	}
+	r.deleteBranch(branch)
+	return response{status: http.StatusNoContent}
+}
+
+// forgeUser answers `GET user` on either forge with the fixture's viewer,
+// which the transport reads to tell a refused action from a dead login.
+func forgeUser(e *Engine, c *call, _ []string) response {
+	if c.cli == "glab" {
+		return glabOK(jsonResponse(map[string]any{"id": 1, "username": e.viewer, "name": e.viewer, "state": "active"}))
+	}
+	return jsonResponse(map[string]any{"login": e.viewer, "id": 1, "type": "User"})
 }

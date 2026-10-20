@@ -35,6 +35,8 @@ export interface ForgeThread {
 
 /** A submitted verdict; on GitLab only APPROVED has a counterpart (an approval). */
 export interface ForgeReview {
+  /** GitHub databaseId; generated when omitted. */
+  id?: number;
   author: string;
   authorName?: string;
   state: 'APPROVED' | 'CHANGES_REQUESTED' | 'COMMENTED';
@@ -74,6 +76,60 @@ export interface ForgePull {
   reviews?: ForgeReview[];
   /** The head pipeline (GitLab) or workflow run (GitHub Actions). */
   ci?: ForgePipeline;
+  /** What the base and project require beyond reviews, CI, threads and
+   * conflicts; omitted, nothing (an open pull is ready). */
+  readiness?: ForgeReadiness;
+  /** A merged pull's merger (defaults to its author) and merge commit. */
+  mergedBy?: string;
+  mergeCommitSha?: string;
+  /** A closed or merged pull's close, RFC 3339, and who closed it. */
+  closedAt?: string;
+  closedBy?: string;
+  /** GitHub timeline items or GitLab system notes besides the reviews. */
+  events?: ForgeEvent[];
+}
+
+/** A pull's merge box (forgefake Readiness). */
+export interface ForgeReadiness {
+  /** GitHub's base protection approvals, GitLab's approvals_required. */
+  requiredApprovals?: number;
+  /** GitHub only: CI job names the base requires to pass. */
+  requiredChecks?: string[];
+  /** GitHub only: the base requires conversation resolution. */
+  resolveThreads?: boolean;
+  /** The head is behind a base that requires it up to date (GitLab: a ff or rebase_merge project). */
+  behind?: boolean;
+  /** GitLab only: user_can_approve, overriding the role's. */
+  viewerCanApprove?: boolean;
+  autoMerge?: { method?: 'merge' | 'squash' | 'rebase'; by?: string; byName?: string; at?: string };
+}
+
+/** One timeline item (GitHub) or system note (GitLab); kinds per forge in forgefake Event. */
+export interface ForgeEvent {
+  id?: number;
+  kind: string;
+  actor?: string;
+  actorName?: string;
+  at?: string;
+  ref?: string;
+  method?: 'merge' | 'squash' | 'rebase';
+  text?: string;
+}
+
+/** A project's merge settings and the viewer's role (forgefake RepoMerge). */
+export interface ForgeRepoMerge {
+  /** GitHub READ..ADMIN (default WRITE); GitLab guest..owner (default developer). */
+  permission?: string;
+  /** GitHub: allowed methods (all by default), the viewer's default, "Allow auto-merge". */
+  methods?: ('merge' | 'squash' | 'rebase')[];
+  defaultMethod?: 'merge' | 'squash' | 'rebase';
+  autoMergeAllowed?: boolean;
+  deleteBranchOnMerge?: boolean;
+  /** GitLab: merge_method, squash_option, and the merge checks the project requires. */
+  mergeMethod?: 'merge' | 'rebase_merge' | 'ff';
+  squashOption?: 'default_off' | 'default_on' | 'always' | 'never';
+  pipelineMustSucceed?: boolean;
+  discussionsMustResolve?: boolean;
 }
 
 export interface ForgePipeline {
@@ -147,6 +203,8 @@ export interface ForgeRepo {
   host?: string;
   pulls?: ForgePull[];
   attachments?: ForgeAttachment[];
+  merge?: ForgeRepoMerge;
+  deletedBranches?: string[];
 }
 
 interface ForgeInvocationCommon {
@@ -212,6 +270,26 @@ export async function setForgeRateLimit(
   limit: { forge: 'github' | 'gitlab'; pool: string; remaining: number; reset: number },
 ): Promise<void> {
   await harness.rpc('HarnessForgeRateLimit', limit);
+}
+
+/**
+ * Make one fake forge route answer `status`, `header` and the JSON `body`
+ * in place of its handler, `times` requests or until cleared (0): 401,
+ * 403, 405, 409 or 422, or 200 with an `errors` body on a GraphQL
+ * operation. `route` is a REST route's name (`glab api approve`) or
+ * `gh graphql <operation>`. Nothing in the fixture changes; the request is
+ * recorded under its route. HarnessReset clears it.
+ */
+export async function refuseForgeRoute(
+  harness: HarnessApp,
+  refusal: { route: string; status: number; header?: Record<string, string>; body?: unknown; times?: number },
+): Promise<void> {
+  await harness.rpc('HarnessForgeRefuse', refusal);
+}
+
+/** Clear a route's refusal. */
+export async function clearForgeRefusal(harness: HarnessApp, route: string): Promise<void> {
+  await harness.rpc('HarnessForgeRefuse', { route, status: 0 });
 }
 
 export async function forgeInvocations(harness: HarnessApp): Promise<ForgeInvocation[]> {
