@@ -85,10 +85,10 @@
       <span class="min-w-0 flex-1 truncate" data-testid="review-commit-position">
         {#if selected}Commit {selectedIndex + 1} of {commits.length}{:else}{commits.length} {commits.length === 1 ? 'commit' : 'commits'}{/if}
       </span>
-      <button type="button" class={stepClass} aria-label="Previous commit" title="Previous commit" data-testid="review-commit-prev" disabled={!canStepPrev} onclick={() => step(-1)}>
+      <button type="button" class={stepClass} aria-label="Previous commit" title="Previous commit" data-testid="review-commit-prev" disabled={disabled || !canStepPrev} onclick={() => step(-1)}>
         <Icon icon={ChevronLeft} size={13} />
       </button>
-      <button type="button" class={stepClass} aria-label="Next commit" title="Next commit" data-testid="review-commit-next" disabled={!canStepNext} onclick={() => step(1)}>
+      <button type="button" class={stepClass} aria-label="Next commit" title="Next commit" data-testid="review-commit-next" disabled={disabled || !canStepNext} onclick={() => step(1)}>
         <Icon icon={ChevronRight} size={13} />
       </button>
     </div>
@@ -98,6 +98,7 @@
       label="All commits"
       suffix={String(commits.length)}
       checked={selected === null}
+      {disabled}
       testId="review-commit-all"
       onSelect={() => { close(); onSelect(null); }}
     />
@@ -108,6 +109,7 @@
         title={commit.subject}
         suffix={age(commit)}
         checked={index === selectedIndex}
+        {disabled}
         testId="review-commit-option"
         onSelect={() => { close(); onSelect(commit.sha); }}
       >

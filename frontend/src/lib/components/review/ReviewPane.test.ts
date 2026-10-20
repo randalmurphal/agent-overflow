@@ -869,6 +869,8 @@ describe('<ReviewPane>', () => {
     expect(card).toHaveTextContent('first');
     expect(card).toHaveTextContent('r');
     expect(view.queryByTestId('review-overview')).toBeNull();
+    // No peek back to an overview that is not there.
+    expect(view.queryByTestId('review-overview-peek')).toBeNull();
     expect(view.getAllByTestId('review-file-header')[0].compareDocumentPosition(card) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
 
     // Back to "All commits" restores the PR target (still selected) and

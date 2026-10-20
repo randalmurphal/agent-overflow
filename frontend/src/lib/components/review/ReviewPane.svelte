@@ -610,7 +610,7 @@
         onOpenCIJob={(stageName, job) => review?.openCIJobLog(stageName, job)}
         onRefreshCI={() => { void review?.refreshCI(); }}
         {review}
-        {overviewOff}
+        overviewOff={overviewShown && overviewOff}
       />
     {/if}
     {#if review.ciLogView}
