@@ -26,8 +26,9 @@ import {
   UpdatePRBranch,
   VerifyEditDiffs,
 } from './bindings';
-import { isCompanionOpen, openCompanion } from './companionPanes.svelte';
+import { addCompanionClosedObserver, openCompanion } from './companionPanes.svelte';
 import { peekGitStatus, peekGitStatusError } from './gitStatusStore.svelte';
+import { getTransportHelloFor } from './transportStatus.svelte';
 import { workspaceKeyForThread } from '../utils/workspaceKey';
 import { getPane } from './panes.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
@@ -47,7 +48,7 @@ import {
   overriddenPRThreads,
   peekPRError,
   peekPRFailure,
-  peekPRJoin,
+
   peekPRSeq,
   peekPRSnapshot,
   setPRThreadResolveOverride,
@@ -467,10 +468,16 @@ const statesBySourcePane = new Map<string, ReviewPaneState>();
 // The PR a pane in pr scope holds after the forge stops listing it, by
 // thread row. A merge from the companion pane moves the thread to Base
 // (the worktree cleanup), which replaces this state with one for the new
-// checkout; the held PR carries across so the pane stays on the merged
-// PR's snapshot until closed (docs/specs/pull-requests.md#actions).
-// Cleared when the pane leaves pr scope or closes.
+// checkout, and a thread switch hides the companion and reopens it later;
+// the held PR outlives both so the pane stays on the merged PR's snapshot
+// until closed (docs/specs/pull-requests.md#actions). It goes when the
+// pane leaves pr scope or the review companion closes for good.
 const heldPRByRow = new Map<string, PRRef>();
+addCompanionClosedObserver((sourcePaneId, kind, threadId) => {
+  if (kind !== 'review') return;
+  const row = threadId ?? statesBySourcePane.get(sourcePaneId)?.rowId;
+  if (row) heldPRByRow.delete(row);
+});
 
 // Stable identity for "this pane is on no PR": ReviewDiffBody re-anchors
 // the reader on a prThreads IDENTITY change, so a fresh [] per read would
@@ -547,14 +554,12 @@ export function reviewStateForPane(
 /**
  * Dispose `state` if it is still the pane's registered state. A state that
  * was already replaced was disposed by `reviewStateForPane`, and its
- * successor belongs to a newer mount. The held PR outlives the state while
- * the review companion stays open (a remount for a new checkout) and goes
- * with a closed companion.
+ * successor belongs to a newer mount. The held PR is the companion's, not
+ * the state's: it outlives a remount and a hidden companion.
  */
 export function disposeReviewStateForPane(sourcePaneId: string, state: ReviewPaneState): void {
   if (statesBySourcePane.get(sourcePaneId) !== state) return;
   statesBySourcePane.delete(sourcePaneId);
-  if (!isCompanionOpen(sourcePaneId, 'review')) heldPRByRow.delete(state.rowId);
   state.dispose();
 }
 
@@ -669,9 +674,14 @@ function createReviewPaneState(
   // The merge action in flight, then (mergeAwait) the one whose success
   // is waiting for the pump's answer: it reads as pending while the PR's
   // applied seq is below the seq the action answered with (the poll it
-  // asked for stamped that seq, or stamped nothing when unchanged).
+  // asked for stamped that seq, or stamped nothing when unchanged). The
+  // seq is the backend process's (its hello's launchId): a restarted
+  // backend's pump numbers from one again and its fresh snapshot is the
+  // forge's answer, so the wait ends with the launch; a re-subscribe to
+  // the same process (gap recovery) keeps it.
   let mergeAction = $state<MergeActionKind | null>(null);
-  let mergeAwait = $state<{ kind: MergeActionKind; key: string; seq: number; join: number } | null>(null);
+  let mergeAwait = $state<{ kind: MergeActionKind; key: string; seq: number; launch: string } | null>(null);
+  const backendLaunch = $derived(getTransportHelloFor(backend)?.launchId ?? '');
   const overviewScrollTops = new SvelteMap<ReviewSectionId, number>();
   let unresolvedCursor: string | null = $state(null);
   let conversationOrder: readonly string[] = $state([]);
@@ -761,7 +771,7 @@ function createReviewPaneState(
   // A poll that failed after the action is the pump's answer too: the
   // banner says why the forge's state is unknown, and the button is free.
   const mergeActionShown = $derived<MergeActionKind | null>(
-    mergeAction ?? (mergeAwait !== null && mergeAwait.key === prEntityKey && peekPRJoin(prEntityKey) === mergeAwait.join && peekPRSeq(prEntityKey) < mergeAwait.seq && prUpdateError === null ? mergeAwait.kind : null),
+    mergeAction ?? (mergeAwait !== null && mergeAwait.key === prEntityKey && backendLaunch === mergeAwait.launch && peekPRSeq(prEntityKey) < mergeAwait.seq && prUpdateError === null ? mergeAwait.kind : null),
   );
   // The live feed universe: every thread, verdict, and commit push the
   // section could show, chronological newest first. The frozen order is
@@ -1982,10 +1992,10 @@ function createReviewPaneState(
     if (scope !== 'pr' || !prRef || mergeActionShown !== null || mergeWithheldReason !== null) return;
     const ref = prRef;
     const key = prEntityKey;
-    // The seq the answer names is the pump's of this join: a re-subscribe
-    // (a backend restart) starts a new pump whose seqs start over, and its
-    // snapshot is the forge's answer.
-    const join = peekPRJoin(key);
+    // The seq the answer names is this backend process's; a restart (a
+    // new launch) starts a pump that numbers from one, whose snapshot is
+    // the forge's answer.
+    const launch = backendLaunch;
     mergeAction = kind;
     mergeAwait = null;
     let result: { seq: number };
@@ -2002,8 +2012,8 @@ function createReviewPaneState(
     }
     if (disposed) return;
     mergeAction = null;
-    if (key === null || peekPRJoin(key) !== join || peekPRSeq(key) >= result.seq) return;
-    mergeAwait = { kind, key, seq: result.seq, join };
+    if (key === null || backendLaunch !== launch || peekPRSeq(key) >= result.seq) return;
+    mergeAwait = { kind, key, seq: result.seq, launch };
   }
 
   // A head that moved under the action is fixed by reloading the diff;

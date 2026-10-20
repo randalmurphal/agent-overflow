@@ -49,7 +49,7 @@ type Response struct {
 	// NotModified is a 304. Do and JSON answer it from the ETag store with
 	// the stored body and the headers it came with.
 	NotModified bool
-	// Credential is the fingerprint of the token that got this answer
+	// Credential is the fingerprint of the token that was sent for this answer
 	// (CredentialFingerprint names the one the next request sends). A call
 	// re-reads its credential and retries after a 401, so the two can
 	// differ: a caller that caches what the answer says about the login
@@ -256,6 +256,33 @@ type exchange struct {
 	body    bool // carries a body that cannot be resent
 	// noRefresh returns a 401 as is (Request.expiryLookup).
 	noRefresh bool
+	// sent is written by authTransport with the fingerprint of the token
+	// it put on the wire, which is the client's CURRENT token at send time:
+	// a request prepared before a refresh and sent after it carries the
+	// new one, while key.fingerprint still names the old.
+	sent *sentCredential
+}
+
+// sentCredential is the exchange's slot for the credential that went out,
+// reached from the request's context by authTransport.
+type sentCredential struct {
+	mu sync.Mutex
+	fp string
+}
+
+type sentCredentialCtx struct{}
+
+// credential is the fingerprint of the token this exchange sent, or the
+// one it was prepared with when nothing went out (an unauthorized host).
+func (ex *exchange) credential() string {
+	if ex.sent != nil {
+		ex.sent.mu.Lock()
+		defer ex.sent.mu.Unlock()
+		if ex.sent.fp != "" {
+			return ex.sent.fp
+		}
+	}
+	return ex.key.fingerprint
 }
 
 func (c *Client) call(ctx context.Context, r Request, graphQL bool) (*Response, error) {
@@ -316,14 +343,14 @@ func (c *Client) settle(ctx context.Context, ex *exchange, answered *http.Reques
 		host: c.host, pool: ex.key.pool, method: ex.req.Method, url: c.redact(answered.URL),
 		status: resp.StatusCode, header: resp.Header, body: body, graphQL: ex.graphQL, now: now,
 	})
-	out := &Response{Status: resp.StatusCode, Header: resp.Header, Body: body, Rate: rate, Credential: ex.key.fingerprint}
+	out := &Response{Status: resp.StatusCode, Header: resp.Header, Body: body, Rate: rate, Credential: ex.credential()}
 	switch result.outcome {
 	case outcomeRateLimited:
 		limited := result.err.(*RateLimitedError)
 		limited.Until = c.svc.gates.limited(ex.lease, limited.Until, now)
 		return nil, false, limited
 	case outcomeUnauthorized:
-		used := ex.key.fingerprint
+		used := ex.credential()
 		if ex.noRefresh {
 			return nil, false, result.err
 		}

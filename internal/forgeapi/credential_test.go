@@ -481,3 +481,73 @@ func TestCredentialFingerprint(t *testing.T) {
 		t.Fatalf("without a login = %q, %v, want an error", fp, err)
 	}
 }
+
+// Response.Credential names the token that went out, not the one the
+// request was prepared with: a request that waited for a host slot across
+// a refresh sends the new token (authTransport reads the current one), and
+// a cache keyed on the credential must learn that one.
+func TestResponseCredentialIsTheTokenSent(t *testing.T) {
+	t.Parallel()
+	held := make(chan struct{})
+	var holding atomic.Int32
+	allHeld := make(chan struct{})
+	var fifth atomic.Value // the token the waiting request sent
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/held") {
+			if holding.Add(1) == hostConcurrency {
+				close(allHeld)
+			}
+			select {
+			case <-held:
+			case <-r.Context().Done():
+				return
+			}
+			_, _ = fmt.Fprint(w, `{}`)
+			return
+		}
+		fifth.Store(r.Header.Get("Private-Token"))
+		_, _ = fmt.Fprint(w, `{"id":1}`)
+	}))
+	defer srv.Close()
+	src := &testSource{tokens: []string{"alice-token", "bob-token"}, info: SourceInfo{Header: AuthPrivateToken}}
+	s, clock := liveService(t, src, srv)
+	gl := s.client(ForgeGitLab, "gitlab.example")
+
+	// Every slot is held by a request in flight.
+	var wg sync.WaitGroup
+	for range hostConcurrency {
+		wg.Go(func() {
+			if _, err := gl.Do(t.Context(), Request{Path: "held", Timeout: 5 * time.Second}); err != nil {
+				t.Errorf("held request: %v", err)
+			}
+		})
+	}
+	<-allHeld
+	// The fifth prepares with alice's token and waits for a slot.
+	var resp *Response
+	var fifthErr error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		resp, fifthErr = gl.Do(t.Context(), Request{Path: "user", Timeout: 5 * time.Second})
+	}()
+	time.Sleep(50 * time.Millisecond)
+	// The credential is re-read as bob's while the fifth still waits.
+	clock.advance(tokenRereadAfter + time.Second)
+	bob, err := gl.CredentialFingerprint(t.Context())
+	if err != nil || bob == fingerprint([]byte("alice-token")) {
+		t.Fatalf("fingerprint after the re-read = %q, %v", bob, err)
+	}
+	close(held)
+	wg.Wait()
+	<-done
+	if fifthErr != nil {
+		t.Fatal(fifthErr)
+	}
+	if sent, _ := fifth.Load().(string); sent != "bob-token" {
+		t.Fatalf("the waiting request sent %q, want bob's token", sent)
+	}
+	if resp.Credential != bob {
+		t.Fatalf("Response.Credential = %q, want bob's fingerprint %q", resp.Credential, bob)
+	}
+}

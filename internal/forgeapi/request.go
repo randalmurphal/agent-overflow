@@ -22,14 +22,15 @@ func (c *Client) prepare(ctx context.Context, r Request, graphQL bool) (*exchang
 	if !r.expiryLookup {
 		c.lookupExpiry(ctx)
 	}
-	req, replayable, err := c.build(ctx, r, graphQL)
+	sent := &sentCredential{}
+	req, replayable, err := c.build(context.WithValue(ctx, sentCredentialCtx{}, sent), r, graphQL)
 	if err != nil {
 		return nil, err
 	}
 	c.credMu.RLock()
 	fp := c.fp
 	c.credMu.RUnlock()
-	ex := &exchange{req: req, graphQL: graphQL, body: !replayable, noRefresh: r.expiryLookup}
+	ex := &exchange{req: req, graphQL: graphQL, body: !replayable, noRefresh: r.expiryLookup, sent: sent}
 	ex.key = gateKey{host: c.host, pool: c.pool(graphQL), fingerprint: fp}
 	ex.lease, err = c.svc.gates.check(ex.key, IsInteractive(ctx), c.svc.now())
 	if err != nil {

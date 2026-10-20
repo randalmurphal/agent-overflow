@@ -86,8 +86,9 @@ sequence, so both rank against one watermark per PR key, seeded by the
 `SubscribePRUpdates` result, and a join replays buffered frames in sequence
 order. A merge action answers with the pump's sequence after the poll it
 asked for; the pane reads as pending until the watermark reaches it, and
-gives the wait up when the subscription is reacquired (`peekPRJoin`), since
-a restarted backend's pump numbers from one again. CI is sourced only by
+gives the wait up when the backend's launch (its hello's `launchId`) changes, since
+a restarted backend's pump numbers from one again, while a re-subscribe to
+the same process keeps it. CI is sourced only by
 that subscription; the frontend never polls it.
 `pr:ci_log` frames carry a followed job's whole log state, its index and
 never its text, so the newest by sequence wins; the follow set lives on the

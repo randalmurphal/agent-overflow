@@ -1076,3 +1076,59 @@ func TestGitLabMergeActionsReturnTypedRefusals(t *testing.T) {
 		}
 	}
 }
+
+// A viewer read refused after a 401 inside it replaced the login caches
+// nothing: the refusal was the old login's, and the new login was never
+// asked. A refusal of the login the lookup saw is cached as unknown.
+func TestGitLabRefusedViewerIsCachedOnlyForTheRefusedLogin(t *testing.T) {
+	t.Parallel()
+	var accepted atomic.Value
+	accepted.Store("token-alice")
+	var userReads atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Private-Token") != accepted.Load().(string) {
+			http.Error(w, `{"message":"401 Unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		userReads.Add(1)
+		http.Error(w, `{"message":"403 Forbidden"}`, http.StatusForbidden)
+	}))
+	t.Cleanup(srv.Close)
+	source := &swappableTokenSource{apiHost: strings.TrimPrefix(srv.URL, "http://")}
+	source.token.Store("token-alice")
+	svc, err := forgeapi.New(forgeapi.Options{Version: "test", TokenSource: source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(svc.Close)
+	core := NewCore(WithForgeAPI(svc))
+	forge := core.ForgeByID("gitlab").(*gitlabForge)
+	host := gitlabTestRef(7).Host
+	client, err := forge.core.gitlabAPI(host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := func() int {
+		forge.viewers.mu.Lock()
+		defer forge.viewers.mu.Unlock()
+		return len(forge.viewers.entries)
+	}
+	// The client reads alice's token; it is revoked for bob's before the
+	// read, which is refused as bob after the 401 replaced the credential.
+	if _, err := client.CredentialFingerprint(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	source.token.Store("token-bob")
+	accepted.Store("token-bob")
+	if viewer := forge.viewerLogin(t.Context(), client, host); viewer != "" || userReads.Load() != 1 || entries() != 0 {
+		t.Fatalf("viewer = %q, user reads %d, cached entries %d; want unknown, one read, nothing cached", viewer, userReads.Load(), entries())
+	}
+	// Refused again as bob, the login the lookup saw: cached as unknown
+	// for the TTL, so the next read asks nothing.
+	if viewer := forge.viewerLogin(t.Context(), client, host); viewer != "" || userReads.Load() != 2 || entries() != 1 {
+		t.Fatalf("viewer = %q, user reads %d, cached entries %d; want unknown, a second read, one entry", viewer, userReads.Load(), entries())
+	}
+	if viewer := forge.viewerLogin(t.Context(), client, host); viewer != "" || userReads.Load() != 2 {
+		t.Fatalf("viewer = %q, user reads %d; want the cached unknown", viewer, userReads.Load())
+	}
+}

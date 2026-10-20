@@ -24,8 +24,9 @@ import {
   supportsIgnoreWhitespace,
 } from './reviewPaneLoad';
 import { applyPRCILogEvent, applyPRCIUpdatedEvent, applyPRUpdatedEvent, attachPR } from './prReviewStore.svelte';
-import { closeCompanion, openCompanion, resetCompanionPanesForTest } from './companionPanes.svelte';
-import { __setTransportStatusForTest } from './transportStatus.svelte';
+import { closeCompanion, hideCompanion, openCompanion, resetCompanionPanesForTest } from './companionPanes.svelte';
+import { __setTransportHelloForTest, __setTransportStatusForTest } from './transportStatus.svelte';
+import type { TransportHello } from '../transport/wsClient';
 import { companionSubjectKey } from './companionSubject';
 import { __seedGitStatusForTest } from './gitStatusStore.svelte';
 import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
@@ -1269,7 +1270,7 @@ describe('reviewPane store — PR scope', () => {
     expect(state.mergeAction).toBeNull();
   });
 
-  it('keeps the merged PR across the checkout move the worktree cleanup makes', async () => {
+  it('keeps the merged PR across the checkout move the worktree cleanup makes and a thread switch, until the companion closes', async () => {
     installPRMocks();
     setPaneLayoutItemsForTest([{ id: 'pane-1', paneId: 'pane-1', kind: 'thread', widthPx: 400 }]);
     const state = reviewStateForPane('pane-1', prSubject());
@@ -1300,41 +1301,53 @@ describe('reviewPane store — PR scope', () => {
     expect(moved.scope).toBe('pr');
     expect(moved.prRef?.number).toBe(5);
     await waitLoaded(moved);
-    // Closing the companion is the end of it: the next state starts clean.
-    closeCompanion(companion!.paneId);
+    // A thread switch hides the companion (the stash reopens it with the
+    // thread) and destroys its ReviewPane: the held PR stays with the
+    // thread.
+    hideCompanion(companion!.paneId);
     disposeReviewStateForPane('pane-1', moved);
+    const reopened = openCompanion('pane-1', 'review');
+    const back = reviewStateForPane('pane-1', baseSubject);
+    expect(back.prRef?.number).toBe(5);
+    await waitLoaded(back);
+    // Closing the companion is the end of it: the next state starts clean.
+    closeCompanion(reopened!.paneId);
+    disposeReviewStateForPane('pane-1', back);
     const fresh = reviewStateForPane('pane-1', baseSubject);
     expect(fresh.prRef).toBeNull();
     disposeReviewStateForPane('pane-1', fresh);
   });
 
-  it('ends the wait for the pump\'s answer when the subscription is reacquired', async () => {
+  it('waits for the pump\'s answer through a re-subscribe to the same backend and gives it up on a restart', async () => {
+    const hello = (launchId: string): TransportHello => ({ launchId, protocolVersion: 1, capabilities: [], backendId: 'b1', backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
+    __setTransportHelloForTest(hello('launch-1'));
     const { subscribe } = installPRMocks();
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
-    // The answer names a seq of the pump that served the call; a backend
-    // restart starts a pump whose seqs start over, so that seq is never
-    // reached. The fresh join's snapshot is the forge's answer.
     setBindingMock('ApprovePR', async () => ({ seq: 100 }));
     await state.approvePR();
     expect(state.mergeAction).toBe('approve');
+    // Gap recovery re-subscribes to the same backend process: its pump's
+    // seqs are the ones the answer named, so the wait goes on.
     __setTransportStatusForTest({ status: 'disconnected', nextAttemptAt: null });
-    setBindingMock('SubscribePRUpdates', async () => ({
-      id: 'sub-2',
-      prKey: PR_KEY,
-      detail: prDetailStub(),
-      threads: [],
-      headSHA: 'sha-a',
-      seq: 1,
-    }));
     __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
     await vi.waitFor(() => {
-      expect(subscribe.mock.calls.length + getBindingMock('SubscribePRUpdates').mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(subscribe).toHaveBeenCalledTimes(2);
     });
-    await vi.waitFor(() => {
-      expect(state.mergeAction).toBeNull();
-    });
+    await tick();
+    expect(state.mergeAction).toBe('approve');
+    applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub(), threads: [], headSHA: 'sha-a', seq: 100 });
+    expect(state.mergeAction).toBeNull();
+
+    // A second action; this time the backend restarts: a new launch, whose
+    // pump numbers from one, and whose snapshot is the forge's answer.
+    setBindingMock('ApprovePR', async () => ({ seq: 200 }));
+    await state.approvePR();
+    expect(state.mergeAction).toBe('approve');
+    __setTransportHelloForTest(hello('launch-2'));
+    await tick();
+    expect(state.mergeAction).toBeNull();
   });
 
   it('a pr:updated error surfaces as pane state and clears on the next good snapshot', async () => {

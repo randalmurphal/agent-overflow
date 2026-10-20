@@ -155,11 +155,11 @@ func (f *gitlabForge) viewerLogin(ctx context.Context, client *forgeapi.Client, 
 			return ""
 		}
 		log.Printf("gitlab: reading the login on %s failed; merge requests read as not the viewer's for %s: %v", host, gitlabCacheTTL, err)
-		// The credential the client holds after the call is the one that was
-		// refused (a 401 inside it replaced the lookup's); one it cannot read
-		// caches nothing.
-		if refused, err := client.CredentialFingerprint(ctx); err == nil {
-			f.viewers.put(key(refused), "", f.core.nowFn())
+		// The refusal is the lookup's login's only while the client still
+		// holds that credential: a 401 inside the call can have replaced it,
+		// and the new login was never refused, so nothing is cached then.
+		if after, err := client.CredentialFingerprint(ctx); err == nil && after == fp {
+			f.viewers.put(key(fp), "", f.core.nowFn())
 		}
 		return ""
 	}

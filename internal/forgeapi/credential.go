@@ -25,7 +25,15 @@ func (t authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	hop := req.Clone(req.Context())
 	c.credMu.RLock()
 	c.token.authorize(hop)
+	fp := c.fp
 	c.credMu.RUnlock()
+	// The exchange learns which token went out: the current one, which a
+	// refresh may have replaced since the request was prepared.
+	if sent, _ := req.Context().Value(sentCredentialCtx{}).(*sentCredential); sent != nil {
+		sent.mu.Lock()
+		sent.fp = fp
+		sent.mu.Unlock()
+	}
 	return t.base.RoundTrip(hop)
 }
 

@@ -160,8 +160,9 @@ func (Token) MarshalText() ([]byte, error)
   as a request reads it (first use, the 5-minute re-read, a 401), for a
   caller that caches what the login is allowed to see: GitLab's viewer
   and project settings are looked up by it and published under
-  `Response.Credential`, the fingerprint of the token that got the answer
-  (a 401 inside the call can have replaced the one the lookup saw), so
+  `Response.Credential`, the fingerprint of the token the request sent
+  (a refresh between the lookup and the send, or a 401 inside the call,
+  can have replaced the one the lookup saw), so
   another login never reads the
   previous one's.
 - Where the token must never appear: argv, environment, log lines, error
