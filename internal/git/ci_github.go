@@ -46,12 +46,12 @@ type githubCIRun struct {
 // request (more only for a run past 100 jobs) per run holding a stepsFor
 // job whose steps can still change: a job prev observed terminal with
 // settled steps keeps them. Jobs outside stepsFor carry no steps.
-func (f *githubForge) githubPipeline(ctx context.Context, client *forgeapi.Client, ref PRReference, checks []CheckStatus, prev *CIPipeline, stepsFor []string) (CIPipeline, error) {
+func (f *githubForge) githubPipeline(ctx context.Context, client *forgeapi.Client, repo RepoReference, checks []CheckStatus, prev *CIPipeline, stepsFor []string) (CIPipeline, error) {
 	runs, external := splitGitHubChecks(checks)
 	if len(runs) > githubCIMaxRuns {
 		runs = runs[:githubCIMaxRuns]
 	}
-	if err := f.fillGitHubSteps(ctx, client, ref, runs, prev, stepsFor); err != nil {
+	if err := f.fillGitHubSteps(ctx, client, repo, runs, prev, stepsFor); err != nil {
 		return CIPipeline{}, err
 	}
 	stages := make([]CIStage, 0, len(runs)+1)
@@ -141,7 +141,7 @@ func checkDisplayName(check CheckStatus) string {
 // already observed terminal, with steps that were settled then, keeps
 // prev's: they cannot change again. Any other stepsFor job has its run's
 // jobs read once.
-func (f *githubForge) fillGitHubSteps(ctx context.Context, client *forgeapi.Client, ref PRReference, runs []githubCIRun, prev *CIPipeline, stepsFor []string) error {
+func (f *githubForge) fillGitHubSteps(ctx context.Context, client *forgeapi.Client, repo RepoReference, runs []githubCIRun, prev *CIPipeline, stepsFor []string) error {
 	if len(stepsFor) == 0 {
 		return nil
 	}
@@ -166,7 +166,7 @@ func (f *githubForge) fillGitHubSteps(ctx context.Context, client *forgeapi.Clie
 		if len(pending) == 0 {
 			continue
 		}
-		steps, err := githubRunSteps(ctx, client, ref, run.id, pending)
+		steps, err := githubRunSteps(ctx, client, repo, run.id, pending)
 		if err != nil {
 			return err
 		}
@@ -203,10 +203,10 @@ func settledGitHubSteps(prev *CIPipeline, job CIJob) ([]CIStep, bool) {
 // jobs, following the next page only until every wanted job was seen)
 // and returns their steps by job id. A job the answer lacks is absent
 // from the map.
-func githubRunSteps(ctx context.Context, client *forgeapi.Client, ref PRReference, runID string, wanted map[string]bool) (map[string][]CIStep, error) {
+func githubRunSteps(ctx context.Context, client *forgeapi.Client, repo RepoReference, runID string, wanted map[string]bool) (map[string][]CIStep, error) {
 	steps := make(map[string][]CIStep, len(wanted))
 	request := forgeapi.Request{
-		Path:  githubRepoPath(ref) + "/actions/runs/" + runID + "/jobs",
+		Path:  githubRepoPath(repo) + "/actions/runs/" + runID + "/jobs",
 		Query: url.Values{"per_page": {strconv.Itoa(githubCIJobsPerPage)}},
 	}
 	seen := 0
@@ -260,18 +260,18 @@ func githubRunSteps(ctx context.Context, client *forgeapi.Client, ref PRReferenc
 // Content-Range are the blob's. A 404 (the job's log blob does not exist
 // yet, see CILogStreams) is ErrCIJobLogNotFound. The body starts with the
 // UTF-8 byte order mark the endpoint prepends.
-func (f *githubForge) StreamCIJobLog(ctx context.Context, ref PRReference, req CIJobLogRequest, begin func(CIJobLogStart) (io.Writer, error)) (bool, error) {
+func (f *githubForge) StreamCIJobLog(ctx context.Context, repo RepoReference, req CIJobLogRequest, begin func(CIJobLogStart) (io.Writer, error)) (bool, error) {
 	if err := ValidateCIJobID(req.JobID); err != nil {
 		return false, err
 	}
-	client, err := f.core.githubAPI(ref.Host)
+	client, err := f.core.githubAPI(repo.Host)
 	if err != nil {
 		return false, err
 	}
-	if _, _, err := splitGitHubProject(ref.Project()); err != nil {
+	if _, _, err := splitGitHubProject(repo.Project()); err != nil {
 		return false, err
 	}
-	return streamCILog(ctx, client, ciLogRequest(githubRepoPath(ref)+"/actions/jobs/"+req.JobID+"/logs", req), begin)
+	return streamCILog(ctx, client, ciLogRequest(githubRepoPath(repo)+"/actions/jobs/"+req.JobID+"/logs", req), begin)
 }
 
 // CILogStreams is false: the Actions log endpoint answers 404 until the
@@ -282,9 +282,9 @@ func (f *githubForge) StreamCIJobLog(ctx context.Context, ref PRReference, req C
 // so that window shows the log as soon as it is served.
 func (f *githubForge) CILogStreams() bool { return false }
 
-// githubRepoPath is the REST path of ref's repository, each segment
+// githubRepoPath is the REST path of a repository, each segment
 // escaped.
-func githubRepoPath(ref PRReference) string {
+func githubRepoPath(ref RepoReference) string {
 	owner, repo, _ := strings.Cut(ref.Project(), "/")
 	return "repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo)
 }

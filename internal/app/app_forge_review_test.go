@@ -138,7 +138,7 @@ func stubPRCIFetch(app *App) {
 }
 
 // emptyCILogStream answers every log request with an empty log.
-func emptyCILogStream(_ context.Context, _ gitops.PRReference, _ gitops.CIJobLogRequest, begin func(gitops.CIJobLogStart) (io.Writer, error)) (bool, error) {
+func emptyCILogStream(_ context.Context, _ gitops.RepoReference, _ gitops.CIJobLogRequest, begin func(gitops.CIJobLogStart) (io.Writer, error)) (bool, error) {
 	_, err := begin(gitops.CIJobLogStart{Status: http.StatusOK, ETag: `"empty"`})
 	return false, err
 }

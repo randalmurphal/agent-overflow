@@ -84,7 +84,7 @@ func (a *App) prCILogStreams(pr gitops.PRReference) bool {
 	if a.prUpdates.ciLogStreams != nil {
 		return *a.prUpdates.ciLogStreams
 	}
-	return a.gitCore().CILogStreams(pr)
+	return a.gitCore().CILogStreams(pr.Repository())
 }
 
 func (a *App) prCILiveInterval() time.Duration {

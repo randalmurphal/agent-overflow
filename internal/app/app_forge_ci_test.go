@@ -73,7 +73,7 @@ func newPRCIFixture(t *testing.T, streams bool) *prCIFixture {
 		return f.pipeline, f.pipelineErr
 	}
 	f.app.configDir = t.TempDir()
-	f.app.prUpdates.ciLogStreamFn = func(ctx context.Context, _ gitops.PRReference, req gitops.CIJobLogRequest, begin func(gitops.CIJobLogStart) (io.Writer, error)) (bool, error) {
+	f.app.prUpdates.ciLogStreamFn = func(ctx context.Context, _ gitops.RepoReference, req gitops.CIJobLogRequest, begin func(gitops.CIJobLogStart) (io.Writer, error)) (bool, error) {
 		f.logFetches.Add(1)
 		f.mu.Lock()
 		f.logInteractive = append(f.logInteractive, forgeapi.IsInteractive(ctx))

@@ -291,6 +291,9 @@ func (e *OriginUnknownError) Error() string {
 	return fmt.Sprintf("origin remote of %s: %s", e.Cwd, e.Reason)
 }
 
+// Is matches ErrOriginNotForge, whatever the origin lacked.
+func (e *OriginUnknownError) Is(target error) bool { return target == ErrOriginNotForge }
+
 // originCoordinates is the forge, host and project path a
 // repository-scoped forge operation on cwd addresses, from the origin
 // identity forge detection cached for cwd (read again when none is

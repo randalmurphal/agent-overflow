@@ -74,7 +74,7 @@ func (a *App) ciLogSource(pr gitops.PRReference, jobID string) cilog.Source {
 		if a.prUpdates.ciLogStreamFn != nil {
 			stream = a.prUpdates.ciLogStreamFn
 		}
-		notModified, err := stream(ctx, pr, forgeReq, start)
+		notModified, err := stream(ctx, pr.Repository(), forgeReq, start)
 		if errors.Is(err, gitops.ErrCIJobLogRangeUnsatisfiable) {
 			return false, fmt.Errorf("%w: %w", cilog.ErrRangeUnsatisfiable, err)
 		}

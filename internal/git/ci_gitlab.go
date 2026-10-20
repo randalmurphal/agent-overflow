@@ -38,12 +38,12 @@ type gitlabCIJobRaw struct {
 // readGitLabPipeline reads the jobs of the merge request's head pipeline,
 // which the MR read already named. A merge request with no pipeline costs
 // no request.
-func readGitLabPipeline(ctx context.Context, client *forgeapi.Client, ref PRReference, pipeline *gitlabPipelineRaw) (CIPipeline, error) {
+func readGitLabPipeline(ctx context.Context, client *forgeapi.Client, repo RepoReference, pipeline *gitlabPipelineRaw) (CIPipeline, error) {
 	if pipeline == nil || pipeline.ID <= 0 {
 		return CIPipeline{}, nil
 	}
 	request := forgeapi.Request{
-		Path:  gitlabProjectPath(ref.Project()) + "/pipelines/" + strconv.FormatInt(pipeline.ID, 10) + "/jobs",
+		Path:  gitlabProjectPath(repo.Project()) + "/pipelines/" + strconv.FormatInt(pipeline.ID, 10) + "/jobs",
 		Query: url.Values{"per_page": {strconv.Itoa(gitlabPageSize)}},
 	}
 	var jobs []gitlabCIJobRaw
@@ -114,15 +114,15 @@ func groupGitLabJobsByStage(raw []gitlabCIJobRaw) []CIStage {
 // If-None-Match on a trace, running or completed, and Range only on a
 // completed one: a running trace answers a range with 200 and the whole
 // body.
-func (f *gitlabForge) StreamCIJobLog(ctx context.Context, ref PRReference, req CIJobLogRequest, begin func(CIJobLogStart) (io.Writer, error)) (bool, error) {
+func (f *gitlabForge) StreamCIJobLog(ctx context.Context, repo RepoReference, req CIJobLogRequest, begin func(CIJobLogStart) (io.Writer, error)) (bool, error) {
 	if err := ValidateCIJobID(req.JobID); err != nil {
 		return false, err
 	}
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.core.gitlabAPI(repo.Host)
 	if err != nil {
 		return false, err
 	}
-	request := ciLogRequest(gitlabProjectPath(ref.Project())+"/jobs/"+req.JobID+"/trace", req)
+	request := ciLogRequest(gitlabProjectPath(repo.Project())+"/jobs/"+req.JobID+"/trace", req)
 	// The trace is plain text.
 	request.Header.Set("Accept", "*/*")
 	return streamCILog(ctx, client, request, begin)

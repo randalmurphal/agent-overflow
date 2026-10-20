@@ -104,12 +104,12 @@ func (c *gitlabCache[V]) put(key string, value V, now time.Time) {
 	c.entries[key] = gitlabCacheEntry[V]{value: value, readAt: now}
 }
 
-// projectSettings is ref's project's merge settings as the current login
+// projectSettings is repo's merge settings as the current login
 // reads them, read from projects/P at most once per login per
 // gitlabCacheTTL. The entry is published under the credential that got
 // the answer (Response.Credential), which a 401 inside the read can have
 // replaced since the lookup, so no login reads another's permissions.
-func (f *gitlabForge) projectSettings(ctx context.Context, client *forgeapi.Client, ref PRReference) (gitlabProjectSettings, error) {
+func (f *gitlabForge) projectSettings(ctx context.Context, client *forgeapi.Client, ref RepoReference) (gitlabProjectSettings, error) {
 	fp, err := client.CredentialFingerprint(ctx)
 	if err != nil {
 		return gitlabProjectSettings{}, err

@@ -259,7 +259,7 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		if _, err := client.JSON(ctx, forgeapi.Request{Path: gitlabMRPath(ref) + "/approvals"}, &approvals); err != nil {
 			return PRRead{}, err
 		}
-		settings, err := f.projectSettings(ctx, client, ref)
+		settings, err := f.projectSettings(ctx, client, ref.Repository())
 		if err != nil {
 			return PRRead{}, err
 		}
@@ -267,7 +267,7 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		gitlabFillMerge(&out.Detail, mr, approvals, settings, events, f.viewerLogin(ctx, client, ref.Host))
 	}
 	if want.CI {
-		if out.CI, err = readGitLabPipeline(ctx, client, ref, mr.HeadPipeline); err != nil {
+		if out.CI, err = readGitLabPipeline(ctx, client, ref.Repository(), mr.HeadPipeline); err != nil {
 			return PRRead{}, err
 		}
 		out.HasCI = true

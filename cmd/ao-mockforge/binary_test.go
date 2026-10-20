@@ -284,11 +284,11 @@ func TestGitHubReadsParseThroughTheAppsForgeCode(t *testing.T) {
 		}
 	}
 
-	data, name, err := r.core.FetchAttachment(t.Context(), ref, "https://github.com/user-attachments/assets/1a2b", 1<<20)
+	data, name, err := r.core.FetchAttachment(t.Context(), ref.Repository(), "https://github.com/user-attachments/assets/1a2b", 1<<20)
 	if err != nil || !bytes.Equal(data, pngBytes) || name != "1a2b" {
 		t.Fatalf("FetchAttachment = %d bytes %q, %v", len(data), name, err)
 	}
-	if _, _, err := r.core.FetchAttachment(t.Context(), ref, "https://github.com/user-attachments/assets/ffff", 1<<20); err == nil {
+	if _, _, err := r.core.FetchAttachment(t.Context(), ref.Repository(), "https://github.com/user-attachments/assets/ffff", 1<<20); err == nil {
 		t.Fatal("an unseeded attachment downloaded")
 	}
 
@@ -325,7 +325,7 @@ func streamLog(t *testing.T, core *gitops.Core, ref gitops.PRReference, req gito
 	t.Helper()
 	var out streamedLog
 	var body strings.Builder
-	notModified, err := core.StreamCIJobLog(t.Context(), ref, req, func(st gitops.CIJobLogStart) (io.Writer, error) {
+	notModified, err := core.StreamCIJobLog(t.Context(), ref.Repository(), req, func(st gitops.CIJobLogStart) (io.Writer, error) {
 		out.status, out.etag, out.offset = st.Status, st.ETag, st.Offset
 		return &body, nil
 	})
@@ -360,7 +360,7 @@ func TestGitHubRunningJobLogThroughTheAppsForgeCode(t *testing.T) {
 		}
 	}
 
-	if r.core.CILogStreams(ref) {
+	if r.core.CILogStreams(ref.Repository()) {
 		t.Fatal("GitHub reports that it streams running logs")
 	}
 	if _, err := streamLog(t, r.core, ref, gitops.CIJobLogRequest{JobID: "601"}); !errors.Is(err, gitops.ErrCIJobLogNotFound) {
@@ -507,7 +507,7 @@ func TestGitLabReadsParseThroughTheAppsForgeCode(t *testing.T) {
 		"https://gitlab.com/grp/sub/tool/-/uploads/0123456789abcdef0123456789abcdef/diagram%20one.svg",
 		"/-/project/4242/uploads/0123456789abcdef0123456789abcdef/diagram%20one.svg",
 	} {
-		data, name, err := r.core.FetchAttachment(t.Context(), ref, href, 1<<20)
+		data, name, err := r.core.FetchAttachment(t.Context(), ref.Repository(), href, 1<<20)
 		if err != nil || string(data) != svg || name != "diagram one.svg" {
 			t.Fatalf("FetchAttachment(%s) = %q %q, %v", href, data, name, err)
 		}
@@ -592,7 +592,7 @@ func TestPRReadsAddressTheReferencesHost(t *testing.T) {
 			t.Fatalf("%s ListPRCIJobs = %+v, %v", ref.Host, pipeline, err)
 		}
 	}
-	if _, _, err := r.core.FetchAttachment(t.Context(), refs[1], "/uploads/0123456789abcdef0123456789abcdef/diagram%20one.svg", 1<<20); err != nil {
+	if _, _, err := r.core.FetchAttachment(t.Context(), refs[1].Repository(), "/uploads/0123456789abcdef0123456789abcdef/diagram%20one.svg", 1<<20); err != nil {
 		t.Fatalf("self-hosted GitLab FetchAttachment: %v", err)
 	}
 	reads := r.engine.Invocations(0).Invocations

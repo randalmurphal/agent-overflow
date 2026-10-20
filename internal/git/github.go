@@ -260,7 +260,7 @@ func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review 
 
 // githubPullPath is the REST path of ref's pull request.
 func githubPullPath(ref PRReference) string {
-	return fmt.Sprintf("%s/pulls/%d", githubRepoPath(ref), ref.Number)
+	return fmt.Sprintf("%s/pulls/%d", githubRepoPath(ref.Repository()), ref.Number)
 }
 
 // postGitHubReview submits one review: SubmitReview's and Approve's
@@ -395,7 +395,7 @@ func (f *githubForge) ReplyToThread(ctx context.Context, ref PRReference, _ stri
 	if err != nil {
 		return err
 	}
-	path := fmt.Sprintf("%s/pulls/%d/comments/%d/replies", githubRepoPath(ref), ref.Number, databaseID)
+	path := fmt.Sprintf("%s/pulls/%d/comments/%d/replies", githubRepoPath(ref.Repository()), ref.Number, databaseID)
 	_, err = client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: path, Body: map[string]string{"body": body}}, nil)
 	return err
 }
