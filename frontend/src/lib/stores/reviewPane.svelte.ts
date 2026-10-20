@@ -626,8 +626,9 @@ function createReviewPaneState(
   // (a merge, from here or elsewhere): the last open PR is held until the
   // scope changes, so the merged snapshot does not vanish under the
   // reader when git status catches up.
-  let scope: ReviewScope = $state(persisted?.scope ?? 'workspace');
-  let heldPRRef = $state<PRRef | null>(scope === 'pr' ? (heldPRByRow.get(rowId) ?? null) : null);
+  const initialScope: ReviewScope = persisted?.scope ?? 'workspace';
+  let scope: ReviewScope = $state(initialScope);
+  let heldPRRef = $state<PRRef | null>(initialScope === 'pr' ? (heldPRByRow.get(rowId) ?? null) : null);
   const prRef: PRRef | null = $derived(workspacePRRef() ?? (scope === 'pr' ? heldPRRef : null));
   let baseBranch: string | null = $state(persisted?.baseBranch ?? null);
   // The head THIS pane's diff was computed at, stamped with the PR it was
