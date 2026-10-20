@@ -11,9 +11,12 @@ import (
 
 // Commit is one row of the review pane's per-commit selector.
 type Commit struct {
-	SHA        string `json:"sha"`
-	ShortSHA   string `json:"shortSha"`
-	Subject    string `json:"subject"`
+	SHA      string `json:"sha"`
+	ShortSHA string `json:"shortSha"`
+	Subject  string `json:"subject"`
+	// Body is the message after the subject, trailing newlines trimmed;
+	// empty for a one-line message.
+	Body       string `json:"body"`
 	Author     string `json:"author"`
 	AuthoredAt int64  `json:"authoredAt"`
 }
@@ -24,14 +27,15 @@ const maxListedCommits = 300
 
 var commitSHAPattern = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
 
-// Separators for the `git log --pretty` parse. Records are LED by a
-// NUL (`%x00`) — the one byte a commit object can never contain, so a
-// subject holding arbitrary control characters cannot forge a record
-// boundary. Fields split on \x1f with the subject last and SplitN, so
-// a \x1f inside the subject stays in the subject.
+// Separators for the `git log --pretty` parse. A commit is two chunks,
+// each LED by a NUL (`%x00`), the one byte a commit object can never
+// contain, so a message holding arbitrary control characters cannot
+// forge a chunk boundary: the header, whose fields split on \x1f with
+// the subject last and SplitN so a \x1f inside the subject stays in the
+// subject; then the body, whole.
 const (
 	logFieldSep    = "\x1f"
-	logRecordLead  = "\x00"
+	logChunkLead   = "\x00"
 	logCommitCount = 5 // %H, %h, %an, %at, %s
 )
 
@@ -121,7 +125,7 @@ func logCommitRange(ctx context.Context, workspace, base, head string) ([]Commit
 func logRev(ctx context.Context, workspace string, limit int, rev string) ([]Commit, error) {
 	stdout, _, _, err := runGit(ctx, workspace, nil, false,
 		"log", "--no-decorate", "--max-count="+strconv.Itoa(limit),
-		"--pretty=format:%x00%H"+logFieldSep+"%h"+logFieldSep+"%an"+logFieldSep+"%at"+logFieldSep+"%s",
+		"--pretty=format:%x00%H"+logFieldSep+"%h"+logFieldSep+"%an"+logFieldSep+"%at"+logFieldSep+"%s%x00%b",
 		rev, "--")
 	if err != nil {
 		return nil, err
@@ -131,13 +135,21 @@ func logRev(ctx context.Context, workspace string, limit int, rev string) ([]Com
 
 func parseCommitLog(stdout string) ([]Commit, error) {
 	commits := []Commit{}
-	for _, record := range strings.Split(stdout, logRecordLead) {
+	if stdout == "" {
+		return commits, nil
+	}
+	chunks := strings.Split(stdout, logChunkLead)
+	// Output starts with a lead, so the first chunk is empty; after it the
+	// chunks pair up as header, body.
+	if chunks[0] != "" || len(chunks)%2 != 1 {
+		return nil, fmt.Errorf("gitdiff: malformed log output (%d chunks)", len(chunks))
+	}
+	for i := 1; i < len(chunks); i += 2 {
+		record := chunks[i]
 		// git separates format entries with a newline, which lands at the
-		// tail of the previous record; the subject itself never holds one.
-		record = strings.TrimSuffix(record, "\n")
-		if record == "" {
-			continue
-		}
+		// tail of the previous commit's body along with the body's own
+		// trailing newlines.
+		body := strings.TrimRight(chunks[i+1], "\n")
 		fields := strings.SplitN(record, logFieldSep, logCommitCount)
 		if len(fields) != logCommitCount {
 			return nil, fmt.Errorf("gitdiff: malformed log record %q", record)
@@ -152,6 +164,7 @@ func parseCommitLog(stdout string) ([]Commit, error) {
 			Author:     fields[2],
 			AuthoredAt: authoredAt * 1000,
 			Subject:    fields[4],
+			Body:       body,
 		})
 	}
 	return commits, nil

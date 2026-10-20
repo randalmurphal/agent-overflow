@@ -19,6 +19,37 @@ import { createThreadPane } from '../../stores/thread.svelte';
 
 // The view toggles (whitespace, wrap, split) are checkbox rows of the
 // toolbar's "..." menu, which closes on every pick: open it, find the row.
+/** Opens a toolbar menu by its trigger and picks the row the matcher
+ *  accepts; the pick closes the menu. */
+async function pickFromMenu(
+  view: { getByTestId: (id: string) => HTMLElement; getAllByTestId: (id: string) => HTMLElement[] },
+  triggerId: string,
+  optionId: string,
+  match: (row: HTMLElement) => boolean = () => true,
+): Promise<void> {
+  const trigger = view.getByTestId(triggerId);
+  await waitFor(() => {
+    expect(trigger).toBeEnabled();
+  });
+  if (trigger.getAttribute('aria-expanded') !== 'true') await fireEvent.click(trigger);
+  const row = await waitFor(() => {
+    const found = view.getAllByTestId(optionId).find(match);
+    if (!found) throw new Error(`no  row matched`);
+    return found;
+  });
+  await fireEvent.click(row);
+  await waitFor(() => {
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  });
+}
+
+async function pickScope(
+  view: { getByTestId: (id: string) => HTMLElement; getAllByTestId: (id: string) => HTMLElement[] },
+  scope: string,
+): Promise<void> {
+  await pickFromMenu(view, 'review-scope-select', `review-scope-option-${scope}`);
+}
+
 async function openViewOption(view: { getByTestId: (id: string) => HTMLElement }, testId: string): Promise<HTMLElement> {
   const trigger = view.getByTestId('review-view-options');
   if (trigger.getAttribute('aria-expanded') !== 'true') await fireEvent.click(trigger);
@@ -157,9 +188,18 @@ describe('<ReviewPane>', () => {
     await waitFor(() => {
       expect(view.getAllByTestId('review-file-header')).toHaveLength(2);
     });
-    const select = view.getByTestId('review-scope-select') as HTMLSelectElement;
-    expect([...select.options].map((o) => o.value)).toEqual(['workspace', 'branch']);
-    expect(select.disabled).toBe(false);
+    const trigger = view.getByTestId('review-scope-select');
+    expect(trigger).toBeEnabled();
+    expect(trigger).toHaveTextContent('Workspace');
+    await fireEvent.click(trigger);
+    await waitFor(() => {
+      expect(view.getByTestId('review-scope-option-workspace')).toBeInTheDocument();
+    });
+    const options = [...document.querySelectorAll('[data-testid^="review-scope-option-"]')]
+      .map((row) => row.getAttribute('data-testid')?.replace('review-scope-option-', ''));
+    expect(options).toEqual(['workspace', 'branch']);
+    expect(view.getByTestId('review-scope-option-workspace').getAttribute('aria-checked')).toBeNull();
+    expect(view.getByTestId('review-scope-option-workspace')).toHaveTextContent('✓');
   });
 
   // The header badge is a toggle, but re-clicking it to close is not
@@ -214,14 +254,11 @@ describe('<ReviewPane>', () => {
     setBindingMock('ListDiffReviewComments', async () => [draft]);
 
     const view = render(ReviewPane, { ctx: makeCtx() });
-    await waitFor(() => {
-      expect(view.getByTestId('review-comment-tally')).toHaveTextContent('1 draft');
-    });
-    // Workspace scope has no conversation to open, so the tally is text.
-    expect(view.getByTestId('review-comment-tally').tagName).toBe('SPAN');
-
     // The commented file carries a count badge; a draft is not unresolved.
-    const badge = view.getByTestId('review-tree-comment-count');
+    // The toolbar carries no comment tally: the counts live on the tree,
+    // the Conversation header and the title bar's stepper.
+    const badge = await waitFor(() => view.getByTestId('review-tree-comment-count'));
+    expect(view.queryByTestId('review-comment-tally')).toBeNull();
     expect(badge).toHaveTextContent('1');
     expect(badge.classList.contains('text-warning')).toBe(false);
     expect(view.getByTestId('review-tree-search')).toBeInTheDocument();
@@ -275,21 +312,19 @@ describe('<ReviewPane>', () => {
     await waitFor(() => {
       expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
     });
-    await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'pr' } });
+    await pickScope(view, 'pr');
     await waitFor(() => {
       expect(view.getByTestId('review-pr-header')).toBeInTheDocument();
       expect(view.getByTestId('review-overview')).toBeInTheDocument();
     });
 
-    // Both sections start folded; the tally is a button here that opens
-    // the conversation at the thread's card.
+    // Both sections start folded; the Conversation header carries the
+    // count and opens at the thread's card. The toolbar has no tally.
     expect(view.getByTestId('review-pr-description').getAttribute('data-open')).toBe('false');
     expect(view.getByTestId('review-pr-conversation').getAttribute('data-open')).toBe('false');
     expect(view.queryByTestId('review-conversation-thread')).toBeNull();
-    const tally = view.getByTestId('review-comment-tally');
-    expect(tally.tagName).toBe('BUTTON');
-    expect(tally).toHaveTextContent('1 unresolved');
-    await fireEvent.click(tally);
+    expect(view.queryByTestId('review-comment-tally')).toBeNull();
+    await fireEvent.click(view.getByTestId('review-pr-conversation').querySelector('button')!);
     await waitFor(() => {
       expect(view.getByTestId('review-pr-conversation').getAttribute('data-open')).toBe('true');
     });
@@ -401,7 +436,7 @@ describe('<ReviewPane>', () => {
     });
     await fireEvent.keyDown(toggle, { key: 'Escape' });
 
-    await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'edits' } });
+    await pickScope(view, 'edits');
     await waitFor(async () => {
       toggle = await openViewOption(view, 'review-ignore-whitespace-toggle');
       expect(toggle).toHaveAttribute('aria-disabled', 'true');
@@ -571,7 +606,7 @@ describe('<ReviewPane>', () => {
     await waitFor(() => {
       expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
     });
-    await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'pr' } });
+    await pickScope(view, 'pr');
 
     await waitFor(() => {
       expect(view.getByTestId('review-pr-header')).toBeInTheDocument();
@@ -585,7 +620,7 @@ describe('<ReviewPane>', () => {
     expect(view.getByTestId('review-pr-refs').getAttribute('title')).toBe('main ← feature');
     expect(view.getByTestId('review-pr-refs-line').contains(view.getByTestId('review-pr-refs'))).toBe(true);
     expect(header.textContent).not.toContain('+99');
-    expect(view.getByTestId('review-scope-select').parentElement?.textContent).not.toContain('main ← feature');
+    expect(view.getByTestId('review-toolbar').textContent).not.toContain('main ← feature');
   });
 
   it('closing the pane releases its PR hold and its diff read', async () => {
@@ -628,7 +663,7 @@ describe('<ReviewPane>', () => {
     await waitFor(() => {
       expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
     });
-    await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'pr' } });
+    await pickScope(view, 'pr');
     await waitFor(() => {
       expect(read).toHaveBeenCalledWith('diff-1', 40, expect.any(Number));
     });
@@ -707,7 +742,7 @@ describe('<ReviewPane>', () => {
     await waitFor(() => {
       expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
     });
-    await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'pr' } });
+    await pickScope(view, 'pr');
 
     // Retarget the send from the agent to the PR to reveal the verdict row.
     await waitFor(() => {
@@ -792,7 +827,7 @@ describe('<ReviewPane>', () => {
     await waitFor(() => {
       expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
     });
-    await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'pr' } });
+    await pickScope(view, 'pr');
 
     await waitFor(() => {
       expect(view.getByTestId('review-commit-select')).toBeInTheDocument();
@@ -804,20 +839,47 @@ describe('<ReviewPane>', () => {
       expect(view.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
     });
 
-    await fireEvent.change(view.getByTestId('review-commit-select'), { target: { value: commitSHA } });
+    // The trigger reads "All commits" and never carries a subject; the
+    // menu row does, with the hash.
+    expect(view.getByTestId('review-commit-select')).toHaveTextContent('All commits');
+    await waitFor(() => {
+      expect(view.getByTestId('review-commit-select')).toBeEnabled();
+    });
+    await fireEvent.click(view.getByTestId('review-commit-select'));
+    const row = await waitFor(() => view.getByTestId('review-commit-option'));
+    expect(row).toHaveTextContent('bbbbbbb');
+    expect(row).toHaveTextContent('first');
+    expect(view.getByTestId('review-commit-position')).toHaveTextContent('1 commit');
+    await fireEvent.click(row);
     // The single-commit view can only send to the agent: the target
     // select and the PR verdict row both leave the strip.
     await waitFor(() => {
       expect(view.getByTestId('review-send-strip').querySelector('select')).toBeNull();
     });
     expect(view.queryByRole('button', { name: 'Approve' })).toBeNull();
+    // The trigger is the ordinal and hash; the subject, author and body
+    // are the commit card leading the diff, in the PR overview's place.
+    const trigger = view.getByTestId('review-commit-select');
+    expect(trigger).toHaveTextContent('1/1');
+    expect(trigger).toHaveTextContent('bbbbbbb');
+    expect(trigger).not.toHaveTextContent('first');
+    expect(trigger).toHaveAttribute('title', 'bbbbbbb first');
+    const card = view.getByTestId('review-commit-card');
+    expect(card.getAttribute('data-sha')).toBe(commitSHA);
+    expect(card).toHaveTextContent('first');
+    expect(card).toHaveTextContent('r');
+    expect(view.queryByTestId('review-overview')).toBeNull();
+    expect(view.getAllByTestId('review-file-header')[0].compareDocumentPosition(card) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
 
-    // Back to "All commits" restores the PR target (still selected).
-    await fireEvent.change(view.getByTestId('review-commit-select'), { target: { value: '' } });
+    // Back to "All commits" restores the PR target (still selected) and
+    // drops the card.
+    await pickFromMenu(view, 'review-commit-select', 'review-commit-all');
     await waitFor(() => {
       expect(view.getByTestId('review-send-strip').querySelector('select')).not.toBeNull();
       expect(view.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
     });
+    expect(view.queryByTestId('review-commit-card')).toBeNull();
+    expect(view.getByTestId('review-commit-select')).toHaveTextContent('All commits');
   });
 
   it('edits scope shows the turn-grouped selector and switches to a single edit', async () => {
@@ -839,20 +901,36 @@ describe('<ReviewPane>', () => {
     await waitFor(() => {
       expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
     });
-    await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'edits' } });
+    await pickScope(view, 'edits');
 
     await waitFor(() => {
       expect(view.getByTestId('review-edit-select')).toBeInTheDocument();
     });
-    const select = view.getByTestId('review-edit-select') as HTMLSelectElement;
-    // Default: the latest turn's whole set, grouped under its prompt.
-    expect(select.value).toBe('turn:2');
-    const groups = [...select.querySelectorAll('optgroup')].map((group) => group.label);
+    const trigger = view.getByTestId('review-edit-select');
+    // Default: the latest turn's whole set, named by its prompt.
+    expect(trigger).toHaveTextContent('now the lexer');
+    await waitFor(() => {
+      expect(trigger).toBeEnabled();
+    });
+    await fireEvent.click(trigger);
+    await waitFor(() => {
+      expect(view.getAllByTestId('review-edit-option')).toHaveLength(5);
+    });
+    const groups = [...document.querySelectorAll('[data-menu-section-header]')].map((header) => header.textContent?.trim());
     expect(groups).toEqual(['fix the parser', 'now the lexer']);
+    const rows = view.getAllByTestId('review-edit-option');
+    expect(rows[2]).toHaveTextContent('All edits in turn');
+    expect(rows[2]).toHaveTextContent('✓');
+    expect(rows[0]).not.toHaveTextContent('✓');
+    expect(rows[3]).toHaveTextContent('Edited lexer.go');
+    expect(rows[3]).toHaveTextContent('+2 −1');
 
-    await fireEvent.change(select, { target: { value: 'item:tool:2a' } });
+    await fireEvent.click(rows[3]);
     await waitFor(() => {
       expect(payload).toHaveBeenCalledWith('thread-1', 'pl-2a');
+    });
+    await waitFor(() => {
+      expect(view.getByTestId('review-edit-select')).toHaveTextContent('Edited lexer.go');
     });
   });
 
@@ -878,11 +956,11 @@ describe('<ReviewPane>', () => {
       expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
     });
     const select = view.getByTestId('review-scope-select');
-    await fireEvent.change(select, { target: { value: 'pr' } });
+    await pickScope(view, 'pr');
 
     // Still loading (the diff hangs) — the selector must stay usable.
     expect(select).toBeEnabled();
-    await fireEvent.change(select, { target: { value: 'workspace' } });
+    await pickScope(view, 'workspace');
     await waitFor(() => {
       expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
     });
@@ -927,7 +1005,7 @@ describe('<ReviewPane>', () => {
     await waitFor(() => {
       expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
     });
-    await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'pr' } });
+    await pickScope(view, 'pr');
     await waitFor(() => {
       expect(view.getByTestId('review-pr-header')).toBeInTheDocument();
     });
@@ -1160,7 +1238,7 @@ async function renderPRScope(ci: CIPipeline | null = null) {
   await waitFor(() => {
     expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
   });
-  await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'pr' } });
+  await pickScope(view, 'pr');
   await waitFor(() => {
     expect(view.getByTestId('review-pr-header')).toBeInTheDocument();
   });

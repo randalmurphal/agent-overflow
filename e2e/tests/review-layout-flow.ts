@@ -183,7 +183,7 @@ export function reviewLayoutFlow({ compact }: LayoutSurface): void {
     expect(tops[0]).toBeLessThan(tops[1]);
     expect(tops[1]).toBeLessThan(tops[2]);
     // The toolbar keeps the diff's counts and nothing of the PR's identity.
-    const toolbar = review.getByTestId('review-scope-select').locator('..');
+    const toolbar = review.getByTestId('review-toolbar');
     await expect(toolbar.getByTestId('review-diff-stats')).toContainText('5 files');
     await expect(toolbar).not.toContainText('main ← feature');
     await expect(toolbar).not.toContainText('open');
@@ -202,6 +202,40 @@ export function reviewLayoutFlow({ compact }: LayoutSurface): void {
     await expect(page.locator('[data-popover]').last().getByTestId('review-split-toggle')).toHaveAttribute('aria-checked', 'true');
     await press(page.locator('[data-popover]').last().getByTestId('review-split-toggle'));
     await expect(review.getByTestId('review-line-block').first().locator('.w-1\\/2')).toHaveCount(0);
+
+    // The commit picker: the trigger reads "All commits", then the ordinal
+    // and hash, never the subject, and the chrome keeps its height; the
+    // commit's card leads the diff in the overview's place and scrolls
+    // with it; "All commits" takes it away again.
+    const commitTrigger = review.getByTestId('review-commit-select');
+    await expect(commitTrigger).toHaveText(/All commits/);
+    const chromeBottom = (await review.getByTestId('review-diff-body').boundingBox())!.y;
+    await press(commitTrigger);
+    const commitMenu = page.locator('[data-popover]').last();
+    await expect(commitMenu.getByTestId('review-commit-position')).toHaveText('1 commit');
+    const commitRow = commitMenu.getByTestId('review-commit-option');
+    await expect(commitRow).toHaveCount(1);
+    await expect(commitRow).toContainText('feature work');
+    await expect(commitRow).toContainText(/[0-9a-f]{7,}/);
+    await shot('commit-menu');
+    await press(commitRow);
+    await expect(commitMenu).toHaveCount(0);
+    await expect(commitTrigger).toHaveText(/^\s*1\/1\s*[0-9a-f]{7,}\s*$/);
+    await expect(commitTrigger).not.toContainText('feature work');
+    expect((await review.getByTestId('review-diff-body').boundingBox())!.y).toBe(chromeBottom);
+    const commitCard = review.getByTestId('review-commit-card');
+    await expect(commitCard).toBeVisible();
+    await expect(commitCard.getByTestId('review-commit-card-subject')).toHaveText('feature work');
+    await expect(commitCard.getByTestId('review-commit-card-body')).toHaveText('Adds the mailer and its tests.');
+    await expect(review.getByTestId('review-overview')).toHaveCount(0);
+    expect((await commitCard.boundingBox())!.y).toBeLessThan((await review.getByTestId('review-file-header').first().boundingBox())!.y);
+    await paneShot('commit-picked');
+    await press(commitTrigger);
+    await expect(page.locator('[data-popover]').last().getByTestId('review-commit-option')).toContainText('✓');
+    await press(page.locator('[data-popover]').last().getByTestId('review-commit-all'));
+    await expect(commitTrigger).toHaveText(/All commits/);
+    await expect(commitCard).toHaveCount(0);
+    await expect(review.getByTestId('review-overview')).toBeVisible();
 
     // The tree toggle lives in the rail: closed, the rail is a strip.
     const rail = review.getByTestId('review-rail');

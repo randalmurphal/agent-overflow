@@ -8,12 +8,15 @@
   import X from '@lucide/svelte/icons/x';
   import ReviewCILogView from './ReviewCILogView.svelte';
   import ReviewCommentThread from './ReviewCommentThread.svelte';
+  import ReviewCommitCard from './ReviewCommitCard.svelte';
+  import ReviewCommitPicker from './ReviewCommitPicker.svelte';
   import ReviewDiffBody from './ReviewDiffBody.svelte';
   import ReviewDraftEditor from './ReviewDraftEditor.svelte';
   import ReviewOverview from './ReviewOverview.svelte';
   import ReviewPRThreadRow from './ReviewPRThreadRow.svelte';
   import ReviewPRTitleBar from './ReviewPRTitleBar.svelte';
   import ReviewRail from './ReviewRail.svelte';
+  import ReviewToolbarMenu from './ReviewToolbarMenu.svelte';
   import { appStorageGet, appStorageSet } from '../../stores/appStorage';
   import type { PanelContext } from '../../stores/panelContext.svelte';
   import {
@@ -27,7 +30,9 @@
   import { getPane } from '../../stores/panes.svelte';
   import type { GitBranch, GitStatus } from '../../types/git';
   import type { DiffReviewComment } from '../../types/models';
+  import { truncateMiddle } from '../../utils/format';
   import { countReviewComments, type CommentCounts } from '../../utils/reviewComments';
+  import type { ReviewLeadRow } from '../../utils/reviewRows';
   import { filterReviewFiles } from '../../utils/reviewTree';
   import type { PopoverCloseReason } from '../../utils/popoverOwnership';
   import { rateLimitMessage } from '../../utils/forgeFailure';
@@ -37,6 +42,7 @@
   import Icon from '../primitives/Icon.svelte';
   import Menu from '../primitives/Menu.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
+  import MenuSectionHeader from '../primitives/MenuSectionHeader.svelte';
   import Popover from '../primitives/Popover.svelte';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
   import RenderBoundary from '../shared/RenderBoundary.svelte';
@@ -126,21 +132,25 @@
   const commentCounts = $derived(
     review ? countReviewComments({ prThreads: review.prThreads, drafts: review.drafts }) : EMPTY_COUNTS,
   );
-  const tally = $derived(commentCounts.tally);
-  const tallyLabel = $derived.by(() => {
-    const parts: string[] = [];
-    if (tally.unresolved > 0) parts.push(`${tally.unresolved} unresolved`);
-    if (tally.drafts > 0) parts.push(`${tally.drafts} ${tally.drafts === 1 ? 'draft' : 'drafts'}`);
-    if (parts.length === 0) parts.push(`${tally.total} ${tally.total === 1 ? 'comment' : 'comments'}`);
-    return parts.join(' · ');
-  });
-
-  // The overview (Description + Conversation) is the diff list's first
-  // row in PR scope; it exists when there is anything to put in it.
-  const overviewShown = $derived(
-    review?.scope === 'pr' && review.prDetail !== null
-      && (review.prDetail.body !== '' || review.prThreads.length + review.prDetail.latestReviews.length > 0),
+  // The picked commit, when the list holds it (branch and pr scope).
+  const selectedCommitIndex = $derived(
+    review?.selectedCommitSHA ? review.commits.findIndex((commit) => commit.sha === review.selectedCommitSHA) : -1,
   );
+  const selectedCommit = $derived(selectedCommitIndex >= 0 ? review!.commits[selectedCommitIndex] : null);
+
+  // The diff list's first row: the picked commit's card (its subject,
+  // author and message live there, not in the toolbar); else, in PR
+  // scope, the overview (Description + Conversation) when there is
+  // anything to put in it; else nothing.
+  const leadRow = $derived.by((): ReviewLeadRow | null => {
+    if (selectedCommit) return 'commit';
+    if (
+      review?.scope === 'pr' && review.prDetail !== null
+      && (review.prDetail.body !== '' || review.prThreads.length + review.prDetail.latestReviews.length > 0)
+    ) return 'overview';
+    return null;
+  });
+  const overviewShown = $derived(leadRow === 'overview');
   // True once the overview row has scrolled off the top: the title bar
   // then shows peek buttons back to it.
   let overviewOff = $state(false);
@@ -176,14 +186,9 @@
     if (review) disposeReviewStateForPane(sourcePaneId, review);
   });
 
-  function setScope(value: string): void {
-    if (!review || !isReviewScope(value)) return;
-    void review.setScope(value);
-  }
-
-  function setCommit(value: string): void {
+  function setScope(value: ReviewScope): void {
     if (!review) return;
-    void review.selectCommit(value || null);
+    void review.setScope(value);
   }
 
   function setBaseBranch(value: string): void {
@@ -219,9 +224,29 @@
     review?.consumePendingJumpFilePath();
   }
 
-  function isReviewScope(value: string): value is ReviewScope {
-    return value === 'workspace' || value === 'branch' || value === 'pr' || value === 'edits';
-  }
+  // The scopes this pane can show: worktree scopes need a workspace, edits
+  // a thread, the PR an open pull request.
+  const scopeOptions = $derived.by((): { value: ReviewScope; label: string }[] => {
+    const options: { value: ReviewScope; label: string }[] = [];
+    if (ctx.workspace) options.push({ value: 'workspace', label: 'Workspace' }, { value: 'branch', label: 'Branch' });
+    if (ctx.threadId) options.push({ value: 'edits', label: 'Edits' });
+    if (review?.prRef) options.push({ value: 'pr', label: review.prScopeLabel ?? 'PR' });
+    return options;
+  });
+  const scopeLabel = $derived(
+    scopeOptions.find((option) => option.value === review?.scope)?.label ?? 'Workspace',
+  );
+  // The base-branch menu lists the repository's branches plus the current
+  // base when it is not among them (a deleted or remote-only branch).
+  const baseBranchOptions = $derived.by(() => {
+    const names = branches.map((branch) => branch.name);
+    const current = review?.baseBranch;
+    return current && !names.includes(current) ? [current, ...names] : names;
+  });
+  // Trigger labels for values of unbounded length (a branch name, an
+  // edit's title) shorten in the middle so the row never grows past the
+  // pane; the whole value is the trigger's hover text.
+  const TRIGGER_LABEL_MAX = 28;
 
   function setEdit(value: string): void {
     if (!review) return;
@@ -246,13 +271,18 @@
     }));
   });
 
-  // Native <select> popups size to their longest option with no CSS
-  // truncation available, so unbounded label text (a pathological
-  // commit subject) must be capped before render. Edits-scope labels
-  // arrive pre-capped from Go (editSelectorLabel).
-  function capOptionLabel(label: string): string {
-    return label.length > 80 ? `${label.slice(0, 77).trimEnd()}...` : label;
-  }
+  // What the edits trigger reads: the picked edit's title, or the turn's
+  // prompt label (pre-capped from Go, editSelectorLabel) for a whole turn.
+  const editLabel = $derived.by((): string => {
+    const key = review?.selectedEditKey;
+    if (!key) return 'Edits';
+    if (key.startsWith('turn:')) {
+      const turnIndex = Number(key.slice('turn:'.length));
+      return editGroups.find((group) => group.turnIndex === turnIndex)?.label ?? `Turn ${turnIndex}`;
+    }
+    const itemId = key.slice('item:'.length);
+    return review?.edits.find((entry) => entry.itemId === itemId)?.title ?? 'Edit';
+  });
 
   function commentById(commentId: string): DiffReviewComment | null {
     return review?.comments.find((comment) => comment.id === commentId) ?? null;
@@ -318,107 +348,95 @@
 <section bind:this={rootEl} class="flex h-full min-h-0 flex-col bg-surface-1" data-testid="review-pane">
   <!-- Wraps: a narrow pane carries the counts and the icon run on a second
        row instead of clipping them. -->
-  <div class="flex shrink-0 flex-wrap items-center gap-2 border-b border-border-subtle px-3 py-2">
-    <select
-      class="rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1 text-xs text-fg"
-      aria-label="Review scope"
-      data-testid="review-scope-select"
-      value={review?.scope ?? 'workspace'}
-      onchange={(event) => setScope(event.currentTarget.value)}
-      disabled={!review}
-    >
-      {#if ctx.workspace}
-        <option value="workspace">Workspace</option>
-        <option value="branch">Branch</option>
-      {/if}
-      {#if ctx.threadId}
-        <option value="edits">Edits</option>
-      {/if}
-      {#if review?.prRef}
-        <option value="pr">{review.prScopeLabel ?? 'PR'}</option>
-      {/if}
-    </select>
+  <div class="flex shrink-0 flex-wrap items-center gap-2 border-b border-border-subtle px-3 py-2" data-testid="review-toolbar">
+    <ReviewToolbarMenu ariaLabel="Review scope" testId="review-scope-select" disabled={!review}>
+      {#snippet label()}<span>{scopeLabel}</span>{/snippet}
+      {#snippet children(close)}
+        {#each scopeOptions as option (option.value)}
+          <MenuItem
+            label={option.label}
+            checked={option.value === review?.scope}
+            testId={`review-scope-option-${option.value}`}
+            onSelect={() => { close(); setScope(option.value); }}
+          />
+        {/each}
+      {/snippet}
+    </ReviewToolbarMenu>
 
     {#if review?.scope === 'branch'}
-      <select
-        class="min-w-0 flex-1 rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1 text-xs text-fg"
-        aria-label="Base branch"
-        data-testid="review-base-branch-select"
-        value={review.baseBranch ?? ''}
-        onchange={(event) => setBaseBranch(event.currentTarget.value)}
+      <ReviewToolbarMenu
+        ariaLabel="Base branch"
+        title={review.baseBranch ?? 'Base branch'}
+        testId="review-base-branch-select"
         disabled={review.loading}
       >
-        {#if review.baseBranch && !branches.some((branch) => branch.name === review.baseBranch)}
-          <option value={review.baseBranch}>{review.baseBranch}</option>
-        {/if}
-        {#each branches as branch (branch.name)}
-          <option value={branch.name}>{branch.name}</option>
-        {/each}
-      </select>
+        {#snippet label()}<span>{truncateMiddle(review?.baseBranch ?? 'Base branch', TRIGGER_LABEL_MAX)}</span>{/snippet}
+        {#snippet children(close)}
+          {#each baseBranchOptions as name (name)}
+            <MenuItem
+              label={name}
+              title={name}
+              checked={name === review?.baseBranch}
+              testId="review-base-branch-option"
+              onSelect={() => { close(); setBaseBranch(name); }}
+            />
+          {/each}
+        {/snippet}
+      </ReviewToolbarMenu>
     {/if}
 
     {#if review && (review.scope === 'branch' || review.scope === 'pr') && review.commits.length > 0}
-      <select
-        class="min-w-0 flex-1 rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1 text-xs text-fg"
-        aria-label="Commit"
-        data-testid="review-commit-select"
-        value={review.selectedCommitSHA ?? ''}
-        onchange={(event) => setCommit(event.currentTarget.value)}
+      <ReviewCommitPicker
+        commits={review.commits}
+        selectedSha={review.selectedCommitSHA}
         disabled={review.loading}
-      >
-        <option value="">All commits</option>
-        {#each review.commits as commit (commit.sha)}
-          <option value={commit.sha}>{commit.shortSha} {capOptionLabel(commit.subject)}</option>
-        {/each}
-      </select>
+        onSelect={(sha) => { void review?.selectCommit(sha); }}
+      />
     {/if}
 
     {#if review && review.scope === 'edits' && editGroups.length > 0}
-      <select
-        class="min-w-0 flex-1 rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1 text-xs text-fg"
-        aria-label="Edit"
-        data-testid="review-edit-select"
-        value={review.selectedEditKey ?? ''}
-        onchange={(event) => setEdit(event.currentTarget.value)}
+      <ReviewToolbarMenu
+        ariaLabel="Edit"
+        title={editLabel}
+        testId="review-edit-select"
         disabled={review.loading}
+        minWidthClass="min-w-[280px]"
       >
-        {#each editGroups as group (group.turnIndex)}
-          <optgroup label={group.label}>
-            <option value={`turn:${group.turnIndex}`}>
-              All edits in turn ({group.entries.length})
-            </option>
+        {#snippet label()}<span>{truncateMiddle(editLabel, TRIGGER_LABEL_MAX)}</span>{/snippet}
+        {#snippet children(close)}
+          {#each editGroups as group (group.turnIndex)}
+            <MenuSectionHeader label={group.label} />
+            <MenuItem
+              label="All edits in turn"
+              suffix={String(group.entries.length)}
+              checked={review?.selectedEditKey === `turn:${group.turnIndex}`}
+              testId="review-edit-option"
+              onSelect={() => { close(); setEdit(`turn:${group.turnIndex}`); }}
+            />
             {#each group.entries as entry (entry.itemId)}
-              <option value={`item:${entry.itemId}`}>{entry.title} +{entry.insertions} −{entry.deletions}</option>
+              <MenuItem
+                label={entry.title}
+                title={entry.title}
+                suffix={`+${entry.insertions} −${entry.deletions}`}
+                checked={review?.selectedEditKey === `item:${entry.itemId}`}
+                testId="review-edit-option"
+                onSelect={() => { close(); setEdit(`item:${entry.itemId}`); }}
+              />
             {/each}
-          </optgroup>
-        {/each}
-      </select>
+          {/each}
+        {/snippet}
+      </ReviewToolbarMenu>
     {/if}
 
-    <!-- On the phone the counts take a row of their own under the controls
-         instead of truncating between them. -->
-    <div class="ml-auto shrink-0 whitespace-nowrap text-right text-[0.6875rem] tabular-nums text-fg-muted compact:order-last compact:basis-full">
-      {#if review && !review.conflictView}
-        {#if diffFiles.length > 0}
-          <span data-testid="review-diff-stats">
-            {diffFiles.length} {diffFiles.length === 1 ? 'file' : 'files'}
-            {#if totalAdditions > 0}<span class="text-success">+{totalAdditions}</span>{/if}
-            {#if totalDeletions > 0}<span class="text-error">-{totalDeletions}</span>{/if}
-          </span>
-        {/if}
-        {#if tally.total > 0 && overviewShown}
-          <button
-            type="button"
-            class="ml-2 rounded border border-border-subtle px-1.5 py-0.5 text-fg-muted hover:text-fg"
-            title="Open the conversation"
-            data-testid="review-comment-tally"
-            onclick={() => review?.jumpToOverview('conversation')}
-          >
-            {tallyLabel}
-          </button>
-        {:else if tally.total > 0}
-          <span class="ml-2 text-fg-muted" data-testid="review-comment-tally">{tallyLabel}</span>
-        {/if}
+    <!-- The counts end the row, or the last row when the controls wrap on
+         the phone, instead of truncating between them. -->
+    <div class="ml-auto shrink-0 whitespace-nowrap text-right text-[0.6875rem] tabular-nums text-fg-muted compact:order-last">
+      {#if review && !review.conflictView && diffFiles.length > 0}
+        <span data-testid="review-diff-stats">
+          {diffFiles.length} {diffFiles.length === 1 ? 'file' : 'files'}
+          {#if totalAdditions > 0}<span class="text-success">+{totalAdditions}</span>{/if}
+          {#if totalDeletions > 0}<span class="text-error">-{totalDeletions}</span>{/if}
+        </span>
       {/if}
     </div>
 
@@ -702,8 +720,10 @@
             No files match the filter.
           </div>
         {:else}
-        {#snippet overviewRow()}
-          {#if review?.prDetail}
+        {#snippet leadRowContent()}
+          {#if selectedCommit}
+            <ReviewCommitCard commit={selectedCommit} ordinal={selectedCommitIndex + 1} count={review?.commits.length ?? 0} />
+          {:else if review?.prDetail}
             <ReviewOverview {review} detail={review.prDetail} />
           {/if}
         {/snippet}
@@ -729,7 +749,8 @@
           jumpToRowKey={review.pendingJumpRowKey}
           onJumpRowConsumed={() => review?.consumePendingJumpRowKey()}
           onTopFileChange={(fileIndex) => { topFileIndex = fileIndex; }}
-          overview={overviewShown ? overviewRow : undefined}
+          overview={leadRow ? leadRowContent : undefined}
+          overviewLead={leadRow ?? 'overview'}
           onOverviewOffChange={(off) => { overviewOff = off; }}
         >
           {#snippet draftEditor(anchor)}
@@ -772,7 +793,7 @@
               onResolve={thread.isResolvable
                 ? (resolved) => { void review?.setPRThreadResolved(thread, resolved); }
                 : undefined}
-              onJumpToConversation={review?.scope === 'pr' && review.prDetail
+              onJumpToConversation={overviewShown
                 ? () => review?.jumpToConversationThread(thread.id)
                 : undefined}
             />

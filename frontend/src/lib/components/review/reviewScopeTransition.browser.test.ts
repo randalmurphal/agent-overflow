@@ -49,18 +49,23 @@ for (const width of [400, 1100]) {
     target.style.width = `${width}px`;
     app = mount(ReviewPane, { target, props: { ctx: makeStubPanelContext() } });
     await vi.waitFor(() => expect(target.textContent).toContain('workspace content'));
-    const scope = target.querySelector<HTMLSelectElement>('[data-testid="review-scope-select"]')!;
-    const select = (value: string) => {
-      scope.value = value;
-      scope.dispatchEvent(new Event('change', { bubbles: true }));
+    // The scope selector is a menu: open it, pick the row.
+    const select = async (value: string) => {
+      target.querySelector<HTMLButtonElement>('[data-testid="review-scope-select"]')!.click();
+      const row = await vi.waitFor(() => {
+        const found = document.querySelector<HTMLElement>(`[data-testid="review-scope-option-${value}"]`);
+        expect(found).not.toBeNull();
+        return found!;
+      });
+      row.click();
     };
     for (let round = 0; round < 2; round++) {
-      select('edits');
+      await select('edits');
       await vi.waitFor(() => expect(target.textContent).toContain('second edit'));
       let resolve!: (value: string) => void;
       const pending = new Promise<string>(done => { resolve = done; });
       const read = setReviewDiffMock('OpenWorkspaceDiff', () => pending);
-      select('workspace');
+      await select('workspace');
       try {
         await vi.waitFor(() => expect(read).toHaveBeenCalled());
         // Let Svelte and the real virtualizer render the pending-load state.

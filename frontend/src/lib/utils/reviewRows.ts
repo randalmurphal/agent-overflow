@@ -32,11 +32,16 @@ export const REVIEW_FILE_HEADER_PX = REVIEW_FILE_GAP_PX + REVIEW_FILE_HEADER_BAR
 export const REVIEW_SURFACE_END_PX = 8;
 export const REVIEW_LINE_BLOCK_MAX_LINES = 32;
 const REVIEW_COMMENT_ESTIMATE_PX = 120;
-// The PR overview row (title meta, Description, Conversation) before the
-// first file. Priors remember its measured height by key across reopens;
-// this is the first-render guess.
+// The lead row before the first file: the PR overview (Description,
+// Conversation) or, with one commit picked, that commit's card. Priors
+// remember each one's measured height by key across reopens; these are
+// the first-render guesses.
 export const REVIEW_OVERVIEW_ESTIMATE_PX = 480;
 export const REVIEW_OVERVIEW_ROW_KEY = 'overview';
+export const REVIEW_COMMIT_CARD_ESTIMATE_PX = 96;
+export const REVIEW_COMMIT_CARD_ROW_KEY = 'commit';
+/** What leads the list: the PR overview or the picked commit's card. */
+export type ReviewLeadRow = 'overview' | 'commit';
 
 export interface CommentAnchor {
   filePath: string;
@@ -47,9 +52,9 @@ export interface CommentAnchor {
 }
 
 export type ReviewRow =
-  /** The PR overview before the first file (fileIndex -1): it scrolls
-   * with the diff and is measured like any other row. */
-  | { kind: 'overview'; fileIndex: -1 }
+  /** The lead row before the first file (fileIndex -1): it scrolls with
+   * the diff and is measured like any other row. */
+  | { kind: 'overview'; fileIndex: -1; lead: ReviewLeadRow }
   | { kind: 'file-header'; fileIndex: number; path: string }
   | LineBlockRow
   | { kind: 'draft-editor'; fileIndex: number; anchor: CommentAnchor }
@@ -80,8 +85,8 @@ export interface ReviewRowsInput {
   openEditors: readonly CommentAnchor[];
   prThreads?: readonly ReviewThread[];
   expandedPRThreadIds?: ReadonlySet<string>;
-  /** Lead the list with the PR overview row. */
-  overview?: boolean;
+  /** Lead the list with the PR overview or a commit card. */
+  overview?: ReviewLeadRow;
 }
 
 export interface ReviewRowsResult {
@@ -115,7 +120,13 @@ export function buildReviewRows(input: ReviewRowsInput): ReviewRowsResult {
     fileOfRow.push(fileIndex);
   }
 
-  if (input.overview) push({ kind: 'overview', fileIndex: -1 }, REVIEW_OVERVIEW_ROW_KEY, -1);
+  if (input.overview) {
+    push(
+      { kind: 'overview', fileIndex: -1, lead: input.overview },
+      input.overview === 'commit' ? REVIEW_COMMIT_CARD_ROW_KEY : REVIEW_OVERVIEW_ROW_KEY,
+      -1,
+    );
+  }
 
   for (let fileIndex = 0; fileIndex < input.files.length; fileIndex += 1) {
     const file = input.files[fileIndex];
@@ -153,7 +164,7 @@ export function reviewRowEstimate(result: ReviewRowsResult, wordWrap: boolean): 
       if (!row) return REVIEW_LINE_HEIGHT_PX;
       if (row.kind === 'file-header') return REVIEW_FILE_HEADER_PX;
       if (row.kind === 'surface-end') return REVIEW_SURFACE_END_PX;
-      if (row.kind === 'overview') return REVIEW_OVERVIEW_ESTIMATE_PX;
+      if (row.kind === 'overview') return row.lead === 'commit' ? REVIEW_COMMIT_CARD_ESTIMATE_PX : REVIEW_OVERVIEW_ESTIMATE_PX;
       // Split view renders side pairs, so the visual row count is
       // splitRows.length, not the stacked display-row count.
       if (row.kind === 'line-block') return (row.splitCount ?? row.count) * REVIEW_LINE_HEIGHT_PX;

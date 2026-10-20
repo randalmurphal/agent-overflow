@@ -537,6 +537,15 @@ and anti-changes that live only here:
   lockfiles): a normal source file is never folded by default. The tree's
   filter can hide test files by naming convention, accepting that helpers
   without a test name are missed (ruling 2026-10-19).
+- The toolbar's selectors are one dropdown style (the app's menu), and the
+  commit picker's trigger is fixed-width content that never clips: `All
+  commits`, or the commit's ordinal and short hash once one is picked. The
+  subject, author, time and message belong where there is room: one row
+  per commit in the menu (with a previous/next stepper in its header), and
+  a commit card that leads the diff list and scrolls away with it; in
+  `All commits` there is no card. No always-present row for the picked
+  commit (a height shift with nothing to show in most states) and no
+  toolbar comment tally (ruling 2026-10-20).
 - PR comments live in the overview: Description (collapsed by default)
   and Conversation (also collapsed by default, and capped short enough
   that the diff stays visible under it), two collapsible sections that head

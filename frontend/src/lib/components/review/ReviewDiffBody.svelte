@@ -29,6 +29,7 @@
     REVIEW_SURFACE_END_PX,
     reviewRowEstimate,
     type CommentAnchor,
+    type ReviewLeadRow,
     type ReviewRow,
   } from '../../utils/reviewRows';
   import type { RowEstimate } from '../../utils/virtual/types';
@@ -82,12 +83,15 @@
      * for none. */
     commentThread?: Snippet<[threadKey: string, anchor: CommentAnchor, pulse: number]>;
     prThread?: Snippet<[thread: ReviewThread, anchor: CommentAnchor, collapsed: boolean, orphaned: boolean, pulse: number]>;
-    /** The PR overview (meta, Description, Conversation) as the list's
-     * first row, so it scrolls off with the diff. Absent on every other
-     * scope. */
+    /** The lead row (the PR overview, or the picked commit's card) as the
+     * list's first row, so it scrolls off with the diff. Absent when
+     * neither applies. */
     overview?: Snippet;
-    /** Fires when the overview row leaves or re-enters the viewport top,
-     * for the title bar's peek controls. */
+    /** Which lead row `overview` renders; keys its measured height. */
+    overviewLead?: ReviewLeadRow;
+    /** Fires when the PR overview row leaves or re-enters the viewport
+     * top, for the title bar's peek controls. A commit card has no peek
+     * controls and never reports. */
     onOverviewOffChange?: (off: boolean) => void;
     onAddComment?: (anchor: CommentAnchor) => void;
     /** Conflict view only: expands a fold row's hidden lines. */
@@ -127,6 +131,7 @@
     commentThread,
     prThread,
     overview,
+    overviewLead = 'overview',
     onOverviewOffChange,
     onAddComment,
     onExpandFold,
@@ -141,7 +146,7 @@
   }: Props = $props();
 
   const built = $derived(
-    buildReviewRows({ files, viewMode, collapsedPaths, drafts, openEditors, prThreads, expandedPRThreadIds, overview: overview !== undefined }),
+    buildReviewRows({ files, viewMode, collapsedPaths, drafts, openEditors, prThreads, expandedPRThreadIds, overview: overview === undefined ? undefined : overviewLead }),
   );
   const builtEstimate = $derived(reviewRowEstimate(built, wordWrap));
   // The rows of the blocks this surface renders, for the files it shows.
@@ -235,7 +240,8 @@
       return;
     }
     const rowIndex = ref.findItemIndex(offset);
-    setOverviewOff(built.rows[0]?.kind === 'overview' && rowIndex > 0);
+    const lead = built.rows[0];
+    setOverviewOff(lead?.kind === 'overview' && lead.lead === 'overview' && rowIndex > 0);
     const fileIndex = built.fileOfRow[rowIndex] ?? -1;
     setTopFileIndex(fileIndex);
     const headerRow = fileIndex >= 0 ? (built.firstRowOfFile[fileIndex] ?? -1) : -1;

@@ -286,7 +286,7 @@ export async function publishPullRequest(
     await writeFile(path.join(workspace, name), content);
   }
   git(workspace, 'add', '--', ...Object.keys(files));
-  git(workspace, 'commit', '--quiet', '-m', 'feature work');
+  git(workspace, 'commit', '--quiet', '-m', 'feature work', '-m', 'Adds the mailer and its tests.');
   const headSha = git(workspace, 'rev-parse', 'HEAD');
   git(workspace, 'push', '--quiet', bare, 'main', 'feature');
   git(bare, 'update-ref', PULL_HEAD_REF[repo.forge](pull.number), headSha);
