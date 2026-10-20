@@ -35,31 +35,38 @@
     return Number.isNaN(ms) ? '' : relativeTime(ms);
   }
 
-  function verdictKind(state: string): 'approved' | 'changes' | 'comment' {
+  function verdictKind(state: string): 'approved' | 'changes' | 'dismissed' | 'comment' {
     switch (state.toUpperCase()) {
       case 'APPROVED':
         return 'approved';
       case 'CHANGES_REQUESTED':
         return 'changes';
+      case 'DISMISSED':
+        return 'dismissed';
       default:
         return 'comment';
     }
   }
 
-  const VERDICT_LABEL = { approved: 'approved', changes: 'requested changes', comment: 'reviewed' } as const;
+  // A dismissed review (GitHub: an approval withdrawn) keeps its card,
+  // since its body still stands, and says what became of it.
+  const VERDICT_LABEL = { approved: 'approved', changes: 'requested changes', dismissed: 'review dismissed', comment: 'reviewed' } as const;
   const VERDICT_CHIP = {
     approved: 'bg-success/12 text-success',
     changes: 'bg-error/12 text-error',
+    dismissed: 'bg-warning/12 text-warning',
     comment: 'bg-surface-2 text-fg-muted',
   } as const;
   const VERDICT_CARD = {
     approved: 'border-success/45',
     changes: 'border-error/45',
+    dismissed: 'border-border',
     comment: 'border-border',
   } as const;
   const VERDICT_HEAD = {
     approved: 'bg-success/8',
     changes: 'bg-error/8',
+    dismissed: 'bg-surface-2/60',
     comment: 'bg-surface-2/60',
   } as const;
 
