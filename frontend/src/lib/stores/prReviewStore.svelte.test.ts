@@ -64,6 +64,8 @@ function detailStub(overrides: Partial<PRDetail> = {}): PRDetail {
     latestReviews: [],
     checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
     mergeability: 'clean',
+    readiness: { state: 'ready', blockers: [], settled: [] },
+    merge: { methods: ['merge'], deleteBranchOffered: false, deleteBranchDefault: false, autoMergeAvailable: false, viewerCanMerge: false, viewerCanApprove: false, viewerApproved: false },
     ...overrides,
   };
 }

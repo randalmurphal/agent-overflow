@@ -9,12 +9,16 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/forgeapi"
 )
 
 // ForgeActionError is a forge failure as the user reads it: one sentence
 // naming the cause and the fix (Message), its kind for the surface that
-// shows it, and the forge's own error underneath for "Details". Every
+// shows it, and the forge's own error underneath for "Details". Err is
+// the sentence as errorsx.Public prose (code "forge_<Kind>") over the
+// forge's error, so a bound method returning this error reaches the
+// client as the sentence under that code. Every
 // forge call the user makes (and the PR pump's reads) passes its error
 // through ExplainForgeError before it reaches the wire.
 type ForgeActionError struct {
@@ -69,8 +73,11 @@ func ExplainForgeError(ref PRReference, action ForgeAction, err error) error {
 	}
 	labels := forgeLabels(ref.Forge)
 	name := fmt.Sprintf("%s%s%d", ref.Project(), labels.numberPrefix, ref.Number)
+	// The sentence travels as reviewed prose (errorsx.Public): the transport
+	// sends it whole under the code "forge_<kind>", so a client reads the
+	// kind from the code and the forge's own text only from the details.
 	wrap := func(kind, message string) error {
-		return &ForgeActionError{Kind: kind, Message: message, Err: err}
+		return &ForgeActionError{Kind: kind, Message: message, Err: errorsx.Public("forge_"+kind, message, err)}
 	}
 	var setup *forgeapi.SetupError
 	var limited *forgeapi.RateLimitedError

@@ -66,12 +66,14 @@ import {
 } from './prReviewConflicts.svelte';
 import { documentHidden } from '../utils/pageVisibility';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
-import type { CIPipeline, PRDetail, ReviewThread } from '../types/models';
+import type { CIPipeline, PRDetail, ReviewEvent, ReviewThread } from '../types/models';
 
 /** The polled half of a PR: what `SubscribePRUpdates` observes. */
 export interface PRSnapshot {
   readonly detail: PRDetail | null;
   readonly threads: readonly ReviewThread[];
+  /** The forge's activity rows (approvals, merges, draft flips, …). */
+  readonly events: readonly ReviewEvent[];
   /** The PR's LIVE head OID — not the head any pane's diff was loaded at. */
   readonly headSHA: string;
 }
@@ -88,10 +90,11 @@ export interface PRUpdatedEvent {
   prKey: string;
   detail?: PRDetail | null;
   threads?: ReviewThread[] | null;
+  events?: ReviewEvent[] | null;
   headSHA?: string;
   /** A fetch failure on the pump: user-facing state, not a log line. */
   error?: string;
-  /** The failure's kind: transient, rate_limited, setup or forge. */
+  /** The failure's kind: transient, rate_limited, setup, forbidden or forge. */
   errorKind?: string;
   /** A rate limit kept for the user's own actions (rate_limited only). */
   reserve?: boolean;
@@ -320,6 +323,7 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
       const snapshot: PRSnapshot = {
         detail,
         threads: (result.threads ?? []) as ReviewThread[],
+        events: (result.events ?? []) as ReviewEvent[],
         headSHA: String(result.headSHA ?? detail?.headSHA ?? ''),
       };
       apply(snapshot);
@@ -655,6 +659,7 @@ function applyPRUpdateToKey(key: string, event: PRUpdatedEvent): void {
   store.apply(key, {
     detail,
     threads: (event.threads ?? []) as ReviewThread[],
+    events: (event.events ?? []) as ReviewEvent[],
     headSHA: String(event.headSHA || detail?.headSHA || ''),
   });
 }
@@ -664,10 +669,13 @@ function applyPRCIToKey(key: string, event: PRCIUpdatedEvent): void {
   applyPRCIUpdated(key, event);
 }
 
-/** Apply a freshly fetched detail + threads pair (comments-only refresh). */
-export function applyPRSnapshot(key: string, snapshot: PRSnapshot): void {
-  store.apply(key, snapshot);
+/** Apply a freshly fetched detail + threads pair (comments-only refresh).
+ * A refresh reads no events (only the pump does), so the held ones stay. */
+export function applyPRSnapshot(key: string, snapshot: Omit<PRSnapshot, 'events'> & { events?: readonly ReviewEvent[] }): void {
+  store.apply(key, { ...snapshot, events: snapshot.events ?? store.snapshot(key)?.events ?? EMPTY_PR_EVENTS });
 }
+
+const EMPTY_PR_EVENTS: readonly ReviewEvent[] = Object.freeze([]);
 
 /**
  * Apply re-listed review threads after a submit or reply, keeping the
@@ -686,6 +694,7 @@ export function applyPRThreads(key: string, threads: readonly ReviewThread[]): v
     {
       detail: current?.detail ?? null,
       threads,
+      events: current?.events ?? EMPTY_PR_EVENTS,
       headSHA: current?.headSHA ?? '',
     },
     { preserveError: true },

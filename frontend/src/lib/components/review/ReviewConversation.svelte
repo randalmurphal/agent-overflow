@@ -9,11 +9,13 @@
   import { REVIEW_JUMP_PULSE_MS } from '../../utils/reviewJumpPulse';
   import { visibleBody } from '../../utils/reviewComments';
   import { authorDisplayName } from '../../utils/reviewIdentity';
+  import { READINESS_PILL_CLASS, reviewEventLabel, reviewEventTone } from '../../utils/reviewReadiness';
   import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
 
   // The Conversation section's body: ONE chronological feed (newest
-  // first) interleaving thread cards, review verdicts, and commit pushes,
-  // the forge's overview timeline made compact. Entries hang off one
+  // first) interleaving thread cards, review verdicts, forge events
+  // (approvals, merges, draft flips, auto-merge) and commit pushes, the
+  // forge's overview timeline made compact. Entries hang off one
   // vertical rail so the sequence reads at a glance; the avatar sits on
   // the rail and the card beside it. The store owns the feed and freezes
   // its order once shown; new arrivals wait behind the header's chip.
@@ -138,6 +140,27 @@
             {/if}
           </div>
         </article>
+      {:else if entry.kind === 'event'}
+        <!-- A forge event is one line on the rail, like a push: who did
+             what, when, and the forge's own words under it. -->
+        <div class="grid grid-cols-[28px_minmax(0,1fr)] gap-x-3" data-testid="review-conversation-event" data-kind={entry.event.kind}>
+          <div class="relative z-10 rounded-full ring-[3px] ring-surface-0/70">
+            <ReviewAvatar login={entry.event.actorLogin} name={entry.event.actorName} size={28} />
+          </div>
+          <div class="flex min-h-7 min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[0.75rem]">
+            <span class="truncate font-semibold text-fg">{authorDisplayName({ authorLogin: entry.event.actorLogin, authorName: entry.event.actorName })}</span>
+            <span class="shrink-0 rounded-full px-1.5 py-px text-[0.6875rem] {READINESS_PILL_CLASS[reviewEventTone(entry.event.kind)]}">{reviewEventLabel(entry.event.kind)}</span>
+            {#if entry.event.ref}
+              <span class="shrink-0 font-mono text-[0.6875rem] text-fg-muted">{entry.event.ref.length > 12 ? entry.event.ref : entry.event.ref.slice(0, 7)}</span>
+            {/if}
+            {#if verdictTime(entry.event.at)}
+              <span class="shrink-0 text-fg-subtle">· {verdictTime(entry.event.at)}</span>
+            {/if}
+            {#if entry.event.text && entry.event.text !== reviewEventLabel(entry.event.kind)}
+              <span class="basis-full truncate text-fg-muted" title={entry.event.text}>{entry.event.text}</span>
+            {/if}
+          </div>
+        </div>
       {:else}
         <ReviewConversationCommits {review} author={entry.author} commits={entry.commits} />
       {/if}

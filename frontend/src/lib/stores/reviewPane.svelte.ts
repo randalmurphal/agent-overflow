@@ -7,9 +7,13 @@ import { threadHasScope } from '../transport/entityScopes';
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { untrack } from 'svelte';
 import {
+  ApprovePR,
+  CancelPRAutoMerge,
   GetDiffContextLines,
   GetEditDiffContextLines,
   GetPRDetail,
+  MarkPRReady,
+  MergePR,
   SavePRCIJobLog,
   SavePRCIJobLogSection,
   ListPRReviewThreads,
@@ -18,6 +22,8 @@ import {
   SetPRThreadResolved,
   SendDiffReviewComments,
   SubmitPRReview,
+  UnapprovePR,
+  UpdatePRBranch,
   VerifyEditDiffs,
 } from './bindings';
 import { openCompanion } from './companionPanes.svelte';
@@ -48,7 +54,8 @@ import {
 } from './prReviewStore.svelte';
 import { peekPRCI, refreshPRCI, type PRCILogState } from './prReviewCI.svelte';
 import { ciLogFetch, readCILogLines as readCILogRange } from './ciLogBlocks.svelte';
-import { addToast } from './toast.svelte';
+import { addErrorToast, addToast } from './toast.svelte';
+import { TransportError } from '../transport/wsClient';
 import { copyToClipboard } from '../utils/clipboard';
 import type { ForgeFailure } from '../utils/forgeFailure';
 import { prCILogFollowPending, refreshPRCILogFollows, setPRCILogFollow } from './prReviewCIFollows.svelte';
@@ -88,7 +95,9 @@ import type {
   CIPipeline,
   DiffReviewComment,
   DiffReviewScope,
+  MergeOutcome,
   PRDetail,
+  ReviewEvent,
   ReviewThread,
   ReviewVerdict,
   SubmitPRReviewResult,
@@ -124,13 +133,29 @@ import { REVIEW_OVERVIEW_ROW_KEY } from '../utils/reviewRows';
 export type ReviewScope = DiffReviewScope;
 
 /** One row of the Conversation section's chronological feed: a review
- * thread's card, a verdict one-liner, or one contiguous run of pushed
- * commits by one author. Ids are prefixed per kind (`t:`/`v:`/`c:`) so
- * the frozen-order capture can hold all three still at once. */
+ * thread's card, a verdict one-liner, a forge event one-liner (an
+ * approval, a merge, a draft flip), or one contiguous run of pushed
+ * commits by one author. Ids are prefixed per kind (`t:`/`v:`/`e:`/`c:`)
+ * so the frozen-order capture can hold all four still at once. */
 export type ConversationFeedItem =
   | { kind: 'thread'; id: string; thread: ReviewThread }
   | { kind: 'verdict'; id: string; verdict: ReviewVerdict }
+  | { kind: 'event'; id: string; event: ReviewEvent }
   | { kind: 'commits'; id: string; author: string; commits: readonly BranchCommit[] };
+
+/** A Merge section action in flight. */
+export type MergeActionKind = 'approve' | 'unapprove' | 'merge' | 'auto_merge' | 'cancel_auto_merge' | 'update_branch' | 'mark_ready';
+
+/** What the Merge menu sends: the method and toggles it shows. */
+export interface MergePRChoice {
+  method: string;
+  deleteBranch: boolean;
+  autoMerge: boolean;
+}
+
+/** How long a successful action keeps its pending state waiting for the
+ * pump's frame before the regular tick is trusted to catch up. */
+export const MERGE_ACTION_FRAME_WAIT_MS = 15_000;
 
 export interface ReviewPaneState {
   /** Subject this state was created for — the registry's staleness check.
@@ -177,6 +202,25 @@ export interface ReviewPaneState {
   /** Live PR detail, shared by every pane on this PR. */
   readonly prDetail: PRDetail | null;
   readonly prThreads: readonly ReviewThread[];
+  /** The forge's activity rows for the PR (approvals, merges, …). */
+  readonly prEvents: readonly ReviewEvent[];
+  // ------------------------------------------------------------------
+  // The Merge section: readiness and the merge actions, the one home for
+  // approve, merge and auto-merge on every surface (docs/specs/pull-requests.md).
+  // No optimistic state: a success asks the pump to poll and the pane
+  // follows the forge's answer; the action stays pending until that
+  // frame lands (or MERGE_ACTION_FRAME_WAIT_MS pass).
+  // ------------------------------------------------------------------
+  readonly mergeOpen: boolean;
+  setMergeOpen(open: boolean): void;
+  /** The action in flight, or null. Every merge control disables on it. */
+  readonly mergeAction: MergeActionKind | null;
+  approvePR(): Promise<void>;
+  unapprovePR(): Promise<void>;
+  mergePR(choice: MergePRChoice): Promise<void>;
+  cancelPRAutoMerge(): Promise<void>;
+  updatePRBranch(): Promise<void>;
+  markPRReady(): Promise<void>;
   /** The head the LOADED diff was computed at — not the PR's live head.
    * Comment anchors, span context, and sent-marks all describe the diff
    * on screen, so they read this. */
@@ -331,6 +375,9 @@ export interface ReviewPaneState {
    * first: the frozen order once captured, the live order before (the
    * section freezes it on first render). Empty while closed. */
   readonly conversationFeed: readonly ConversationFeedItem[];
+  /** Conversation entries (threads, verdicts, events; pushes are context,
+   * not conversation): the count the section header and the title bar show. */
+  readonly conversationCount: number;
   /** Whether the order is captured. */
   readonly conversationFrozen: boolean;
   /** Capture the current live order (the section's first render). */
@@ -420,6 +467,17 @@ const statesBySourcePane = new Map<string, ReviewPaneState>();
 // the reader on a prThreads IDENTITY change, so a fresh [] per read would
 // look like the review threads moved on every keystroke.
 const EMPTY_PR_THREADS: readonly ReviewThread[] = Object.freeze([]);
+const EMPTY_PR_EVENTS: readonly ReviewEvent[] = Object.freeze([]);
+// The verb a failed action's toast leads with.
+const MERGE_ACTION_LABEL: Record<MergeActionKind, string> = {
+  approve: 'Approve',
+  unapprove: 'Unapprove',
+  merge: 'Merge',
+  auto_merge: 'Auto-merge',
+  cancel_auto_merge: 'Cancel auto-merge',
+  update_branch: 'Update branch',
+  mark_ready: 'Mark ready',
+};
 const EMPTY_CONVERSATION_FEED: readonly ConversationFeedItem[] = Object.freeze([]);
 
 // Same stability rule for the comment list a workspace-only pane reads.
@@ -590,6 +648,13 @@ function createReviewPaneState(
   // replaces underneath (see the interface comment).
   let conversationOpen = $state(false);
   let descriptionOpen = $state(false);
+  let mergeOpen = $state(false);
+  // The merge action in flight, then (mergeAwait) the one whose success
+  // is waiting for the pump's frame: it reads as pending while the
+  // snapshot is still the one the action started from.
+  let mergeAction = $state<MergeActionKind | null>(null);
+  let mergeAwait = $state<{ kind: MergeActionKind; snapshot: PRSnapshot | null } | null>(null);
+  let mergeAwaitTimer: ReturnType<typeof setTimeout> | undefined;
   const overviewScrollTops = new SvelteMap<ReviewSectionId, number>();
   let unresolvedCursor: string | null = $state(null);
   let conversationOrder: readonly string[] = $state([]);
@@ -675,6 +740,10 @@ function createReviewPaneState(
     const threads = prSnapshot?.threads ?? EMPTY_PR_THREADS;
     return prEntityKey ? overriddenPRThreads(prEntityKey, threads) : threads;
   });
+  const prEvents = $derived<readonly ReviewEvent[]>(prSnapshot?.events ?? EMPTY_PR_EVENTS);
+  const mergeActionShown = $derived<MergeActionKind | null>(
+    mergeAction ?? (mergeAwait !== null && prSnapshot === mergeAwait.snapshot ? mergeAwait.kind : null),
+  );
   // The live feed universe: every thread, verdict, and commit push the
   // section could show, chronological newest first. The frozen order is
   // captured FROM this and projected back ONTO it, so content updates
@@ -688,12 +757,22 @@ function createReviewPaneState(
         item: { kind: 'thread', id: `t:${thread.id}`, thread },
       });
     }
-    for (const verdict of prSnapshot?.detail?.latestReviews ?? []) {
+    const verdicts = prSnapshot?.detail?.latestReviews ?? [];
+    for (const verdict of verdicts) {
       const parsed = Date.parse(verdict.submittedAt);
       out.push({
         timeMs: Number.isFinite(parsed) ? parsed : 0,
         item: { kind: 'verdict', id: `v:${verdict.authorLogin}:${verdict.submittedAt}`, verdict },
       });
+    }
+    // A forge event; an approval the verdict row above already shows (same
+    // reviewer, same minute) is not repeated.
+    for (const event of prEvents) {
+      const parsed = Date.parse(event.at);
+      const timeMs = Number.isFinite(parsed) ? parsed : 0;
+      if (event.kind === 'approved' && verdicts.some((verdict) => verdict.authorLogin === event.actorLogin
+        && verdict.state.toUpperCase() === 'APPROVED' && Math.abs(Date.parse(verdict.submittedAt) - timeMs) < 60_000)) continue;
+      out.push({ timeMs, item: { kind: 'event', id: `e:${event.id}`, event } });
     }
     // `commits` arrives newest first; one feed row per contiguous run by
     // one author, keyed by the run's OLDEST sha so a later push on top
@@ -737,6 +816,7 @@ function createReviewPaneState(
     }
     return out;
   });
+  const conversationCount = $derived(conversationFeedSource.reduce((count, entry) => count + (entry.item.kind === 'commits' ? 0 : 1), 0));
   const unresolvedThreads = $derived.by<readonly ReviewThread[]>(() => {
     const out: ReviewThread[] = [];
     for (const entry of conversationFeedSource) {
@@ -1048,6 +1128,7 @@ function createReviewPaneState(
     conflictPaintedSpans.clear();
     resetConflictView();
     closeCILogView();
+    clearTimeout(mergeAwaitTimer);
     releasePR();
   }
 
@@ -1840,6 +1921,97 @@ function createReviewPaneState(
   }
 
   // ------------------------------------------------------------------
+  // Merge section actions
+  // ------------------------------------------------------------------
+
+  // Every merge action is one shape: refuse while one is in flight, call
+  // the forge through this PR's computer, and on failure toast the one
+  // sentence the backend reviewed (the forge's own text is in Details)
+  // and re-read the PR so a head that moved raises the stale banner. On
+  // success the backend already asked the pump to poll; the action stays
+  // pending until that frame replaces the snapshot, so the button never
+  // flips back to its old label before the forge's answer is on screen.
+  async function runMergeAction(kind: MergeActionKind, call: () => Promise<unknown>): Promise<void> {
+    if (scope !== 'pr' || !prRef || mergeAction !== null) return;
+    const ref = prRef;
+    mergeAction = kind;
+    clearTimeout(mergeAwaitTimer);
+    mergeAwait = null;
+    try {
+      await withBackendTarget(backend, call);
+    } catch (err) {
+      if (disposed) return;
+      mergeAction = null;
+      addErrorToast(`${MERGE_ACTION_LABEL[kind]} failed: ${userFacingError(err)}`, err, 0, mergeFailureAction(err));
+      if (prRef === ref) void refreshPRThreads();
+      return;
+    }
+    if (disposed) return;
+    mergeAction = null;
+    mergeAwait = { kind, snapshot: untrack(() => prSnapshot) };
+    mergeAwaitTimer = setTimeout(() => { mergeAwait = null; }, MERGE_ACTION_FRAME_WAIT_MS);
+  }
+
+  // A head that moved under the action is fixed by reloading the diff;
+  // the backend names that case by its code (git.ForgeErrorStaleHead).
+  function mergeFailureAction(err: unknown): { label: string; run: () => void } | undefined {
+    if (err instanceof TransportError && err.code === 'forge_stale_head') {
+      return { label: 'Reload', run: () => { void reload(); } };
+    }
+    return undefined;
+  }
+
+  function approvePR(): Promise<void> {
+    const ref = prRef;
+    const head = prSnapshot?.headSHA ?? '';
+    if (!ref) return Promise.resolve();
+    return runMergeAction('approve', () => ApprovePR(prReferenceWire(ref), head));
+  }
+
+  function unapprovePR(): Promise<void> {
+    const ref = prRef;
+    if (!ref) return Promise.resolve();
+    return runMergeAction('unapprove', () => UnapprovePR(prReferenceWire(ref), ''));
+  }
+
+  function mergePR(choice: MergePRChoice): Promise<void> {
+    const ref = prRef;
+    const head = prSnapshot?.headSHA ?? '';
+    if (!ref) return Promise.resolve();
+    return runMergeAction(choice.autoMerge ? 'auto_merge' : 'merge', async () => {
+      const outcome = (await MergePR(prReferenceWire(ref), {
+        method: choice.method,
+        headSHA: head,
+        deleteBranch: choice.deleteBranch,
+        autoMerge: choice.autoMerge,
+      })) as MergeOutcome;
+      // The forge took the merge but has not finished it (GitLab merges
+      // asynchronously): say so, since the pane shows it open until the
+      // frame with `merged` lands.
+      if (!choice.autoMerge && !outcome.merged && !outcome.autoMerge) addToast('info', 'Merging…');
+    });
+  }
+
+  function cancelPRAutoMerge(): Promise<void> {
+    const ref = prRef;
+    if (!ref) return Promise.resolve();
+    return runMergeAction('cancel_auto_merge', () => CancelPRAutoMerge(prReferenceWire(ref)));
+  }
+
+  function updatePRBranch(): Promise<void> {
+    const ref = prRef;
+    const head = prSnapshot?.headSHA ?? '';
+    if (!ref) return Promise.resolve();
+    return runMergeAction('update_branch', () => UpdatePRBranch(prReferenceWire(ref), head));
+  }
+
+  function markPRReady(): Promise<void> {
+    const ref = prRef;
+    if (!ref) return Promise.resolve();
+    return runMergeAction('mark_ready', () => MarkPRReady(prReferenceWire(ref)));
+  }
+
+  // ------------------------------------------------------------------
   // Conversation section
   // ------------------------------------------------------------------
 
@@ -1910,6 +2082,7 @@ function createReviewPaneState(
   function jumpToOverview(section?: ReviewSectionId): void {
     closeCILogView();
     closeConflictView();
+    if (section === 'merge') mergeOpen = true;
     if (section === 'description') descriptionOpen = true;
     if (section === 'conversation') setConversationOpen(true);
     pendingJumpRowKey = REVIEW_OVERVIEW_ROW_KEY;
@@ -2278,6 +2451,16 @@ function createReviewPaneState(
     get sendingComments() { return sendingComments; },
     get prDetail() { return prSnapshot?.detail ?? null; },
     get prThreads() { return prThreads; },
+    get prEvents() { return prEvents; },
+    get mergeOpen() { return mergeOpen; },
+    setMergeOpen(open: boolean): void { mergeOpen = open; },
+    get mergeAction() { return mergeActionShown; },
+    approvePR,
+    unapprovePR,
+    mergePR,
+    cancelPRAutoMerge,
+    updatePRBranch,
+    markPRReady,
     get conversationOpen() { return conversationOpen; },
     get conversationFeed() { return conversationFeed; },
     get conversationNewCount() { return conversationNewCount; },
@@ -2406,6 +2589,7 @@ function createReviewPaneState(
     get unresolvedCursor() { return unresolvedCursor; },
     stepUnresolvedThread,
     setConversationOpen,
+    get conversationCount() { return conversationCount; },
     get conversationFrozen() { return conversationOrder.length > 0; },
     freezeConversation(): void {
       if (conversationOrder.length === 0) captureConversationOrder(false);
