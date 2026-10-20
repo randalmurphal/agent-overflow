@@ -616,10 +616,11 @@ export class MergeOutcome {
 
 /**
  * MergeReadiness is whether the forge would merge the PR now, and what
- * stands in the way when it would not. Blockers is in the forge's order
- * and empty when State is not blocked; Settled lists the checks that
- * pass (approvals met, pipeline passed, no conflicts) so the section has
- * rows in every state.
+ * stands in the way when it would not. Blockers is in the forge's order:
+ * empty when State is ready, checking, merged or closed; a draft leads
+ * with its draft blocker (the fix is Mark ready) and then what would block
+ * once ready. Settled lists the checks that pass (approvals met,
+ * pipeline passed, no conflicts) so the section has rows in every state.
  */
 export class MergeReadiness {
     "state": string;
