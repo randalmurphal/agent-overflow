@@ -7,7 +7,8 @@
 // state nor the refs; whitespace, wrap and split are checkbox rows of the
 // toolbar's view-options menu and split takes effect; the file-tree
 // toggle lives in the rail, which closes to a strip holding the toggle
-// and on compact opens over the diff at full width and closes on a pick;
+// and on compact opens over the diff at full width and closes on a pick
+// or on Back, with the pane still on screen;
 // "Hide tests" in the tree's filter menu drops test files from the tree
 // and, applied to the diff, from the diff's counts; the conversation
 // refresh sits on the Conversation header and re-reads the threads; an
@@ -222,6 +223,13 @@ export function reviewLayoutFlow({ compact }: LayoutSurface): void {
       expect(railBox.width).toBeGreaterThanOrEqual(paneBox.width - 4);
       expect(railBox.x).toBeLessThanOrEqual(paneBox.x + 2);
       await paneShot('rail-open');
+      // Back closes the tree, the topmost layer, and nothing more: the
+      // review pane stays on screen.
+      await page.goBack();
+      await expect(rail).toHaveAttribute('data-open', 'false');
+      await expect(review.getByTestId('review-pr-header')).toBeVisible();
+      await press(rail.getByTestId('review-tree-toggle'));
+      await expect(rail).toHaveAttribute('data-open', 'true');
       await press(rail.getByTestId('review-tree-file').filter({ hasText: 'mail.go' }));
       await expect(rail).toHaveAttribute('data-open', 'false');
       await expect(review.getByTestId('review-file-header-path').filter({ hasText: 'mail.go' }).first()).toBeInViewport();

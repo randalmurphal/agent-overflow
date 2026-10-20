@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ReviewFileTree from './ReviewFileTree.svelte';
 import ReviewRail from './ReviewRail.svelte';
 import { appStorageGet, appStorageSet, resetAppStorageForTest } from '../../stores/appStorage';
+import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
+import { registerAirspaceSurface } from '../../utils/paneAirspace.svelte';
+import { createSurfaceDismissalEvent } from '../../utils/surfaceDismissal';
 import type { PatchFile } from '../../utils/patchFiles';
 
 function file(path: string, kind = 'modified', additions = 1, deletions = 0): PatchFile {
@@ -19,6 +22,7 @@ const FILES = [
 
 beforeEach(() => {
   resetAppStorageForTest();
+  setCompactLayoutForTest(false);
 });
 
 describe('<ReviewFileTree>', () => {
@@ -242,5 +246,45 @@ describe('<ReviewFileTree> hide tests', () => {
     await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
     await fireEvent.click(view.getByText('Clear filters'));
     expect(onHideTestsChange).toHaveBeenCalledWith(false);
+  });
+});
+
+describe('<ReviewRail> on compact', () => {
+  it('closes the open tree on the Back ladder\'s dismissal, unless an overlay is up, and never off compact', () => {
+    const onToggleOpen = vi.fn();
+    const dismiss = () => {
+      const event = createSurfaceDismissalEvent();
+      document.body.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    // Desktop: the tree is beside the diff, not over it; Back is not its.
+    const desktop = renderRail({ open: true, onToggleOpen });
+    expect(dismiss()).toBe(false);
+    expect(onToggleOpen).not.toHaveBeenCalled();
+    desktop.unmount();
+
+    setCompactLayoutForTest(true);
+    const view = renderRail({ open: true, onToggleOpen });
+    // An overlay above the tree (the filter menu) takes the press.
+    const release = registerAirspaceSurface(document.createElement('div'));
+    expect(dismiss()).toBe(false);
+    expect(onToggleOpen).not.toHaveBeenCalled();
+    release();
+    expect(dismiss()).toBe(true);
+    expect(onToggleOpen).toHaveBeenCalledTimes(1);
+    view.unmount();
+
+    // Closed, the strip is not a layer: the press falls through.
+    const closed = renderRail({ open: false, onToggleOpen });
+    expect(dismiss()).toBe(false);
+    expect(onToggleOpen).toHaveBeenCalledTimes(1);
+    closed.unmount();
+    // A real Escape keystroke is not Back.
+    const again = renderRail({ open: true, onToggleOpen });
+    const plain = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    document.body.dispatchEvent(plain);
+    expect(plain.defaultPrevented).toBe(false);
+    expect(onToggleOpen).toHaveBeenCalledTimes(1);
+    again.unmount();
   });
 });
