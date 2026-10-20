@@ -78,7 +78,14 @@ func ExplainForgeError(ref PRReference, action ForgeAction, err error) error {
 	var forbidden *forgeapi.ForbiddenError
 	var graphQL *forgeapi.GraphQLError
 	var status *forgeapi.StatusError
+	var kept *BranchKeptError
 	switch {
+	case errors.As(err, &kept):
+		reason := trimSentence(kept.Err.Error())
+		if errors.As(kept.Err, &status) {
+			reason = firstNonEmpty(trimSentence(forgeBodyMessage(status.Body)), fmt.Sprintf("HTTP %d", status.Status))
+		}
+		return wrap(ForgeErrorForge, fmt.Sprintf("Merged %s, but %s kept the branch %s: %s", name, labels.name, kept.Branch, reason))
 	case errors.As(err, &setup):
 		return wrap(ForgeErrorSetup, setupSentence(setup, labels))
 	case errors.As(err, &limited):

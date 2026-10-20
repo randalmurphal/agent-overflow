@@ -236,12 +236,12 @@ func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review 
 		}
 		headSHA = read.Detail.HeadSHA
 	}
-	pulls := fmt.Sprintf("%s/pulls/%d", githubRepoPath(ref), number)
+	pulls := githubPullPath(ref)
 	body, err := githubReviewRequestBody(review, lineComments)
 	if err != nil {
 		return SubmitReviewResult{}, err
 	}
-	if _, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: pulls + "/reviews", Body: body}, nil); err != nil {
+	if err := postGitHubReview(ctx, client, ref, body); err != nil {
 		return SubmitReviewResult{}, err
 	}
 	out := SubmitReviewResult{PostedReview: true}
@@ -258,10 +258,24 @@ func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	return out, nil
 }
 
-// githubReviewIn is the REST review submission body.
+// githubPullPath is the REST path of ref's pull request.
+func githubPullPath(ref PRReference) string {
+	return fmt.Sprintf("%s/pulls/%d", githubRepoPath(ref), ref.Number)
+}
+
+// postGitHubReview submits one review: SubmitReview's and Approve's
+// request.
+func postGitHubReview(ctx context.Context, client *forgeapi.Client, ref PRReference, review githubReviewIn) error {
+	_, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: githubPullPath(ref) + "/reviews", Body: review}, nil)
+	return err
+}
+
+// githubReviewIn is the REST review submission body. CommitID pins the
+// review to a head; GitHub reviews the current head when it is empty.
 type githubReviewIn struct {
 	Event    string                  `json:"event"`
 	Body     string                  `json:"body,omitempty"`
+	CommitID string                  `json:"commit_id,omitempty"`
 	Comments []githubReviewCommentIn `json:"comments,omitempty"`
 }
 
