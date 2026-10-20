@@ -140,14 +140,12 @@
 
   // The diff list's first row: the picked commit's card (its subject,
   // author and message live there, not in the toolbar); else, in PR
-  // scope, the overview (Description + Conversation) when there is
-  // anything to put in it; else nothing.
+  // scope, the overview (Merge + Description + Conversation): the Merge
+  // section always has something to say about a PR, so the row exists
+  // for every one; else nothing.
   const leadRow = $derived.by((): ReviewLeadRow | null => {
     if (selectedCommit) return 'commit';
-    if (
-      review?.scope === 'pr' && review.prDetail !== null
-      && (review.prDetail.body !== '' || review.prThreads.length + review.prDetail.latestReviews.length > 0)
-    ) return 'overview';
+    if (review?.scope === 'pr' && review.prDetail !== null) return 'overview';
     return null;
   });
   const overviewShown = $derived(leadRow === 'overview');
@@ -578,9 +576,10 @@
         <div class="border-b border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning" data-testid="review-pr-rate-limited">
           {rateLimitMessage(review.prRef?.forge, failure)}
         </div>
-      {:else if failure?.kind === 'setup'}
-        <!-- A login to fix outside the app: the message names it, and no
-             retry will change it until the user does. -->
+      {:else if failure?.kind === 'setup' || failure?.kind === 'forbidden'}
+        <!-- A login to fix outside the app (missing, expired, or without
+             the scope or the project): the message names it, and no retry
+             will change it until the user does. -->
         <div class="border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="review-pr-setup">
           {review.prUpdateError}
         </div>
@@ -697,34 +696,35 @@
     {:else if review.files.length === 0 && review.error}
       <!-- Nothing loaded: the banner above says why. An empty diff is not
            what the load found. -->
-    {:else if review.files.length === 0}
+    {:else if review.files.length === 0 && !overviewShown}
       <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-empty">No changed files.</div>
     {:else}
-      <!-- Relative: on the phone the open rail lays over the diff. -->
+      <!-- Relative: on the phone the open rail lays over the diff. The
+           overview (Merge, Description, Conversation) leads the list for
+           every PR, with no file rows under it when the diff is empty or
+           the filter hides every file; the rail stays while there are
+           files to unhide. -->
       <div class="relative flex min-h-0 flex-1">
-        <ReviewRail
-          files={review.files}
-          activeFileIndex={treeActiveFileIndex}
-          onSelectFile={jumpToFile}
-          commentCounts={commentCounts.byFile}
-          open={treeVisible}
-          onToggleOpen={toggleTree}
-          {activeExtensions}
-          {hideTests}
-          onHideTestsChange={(value) => { hideTests = value; }}
-          {filterDiff}
-          onFilterDiffChange={(value) => { filterDiff = value; }}
-        />
-        {#if diffFiles.length === 0}
-          <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-filter-empty">
-            No files match the filter.
-          </div>
-        {:else}
+        {#if review.files.length > 0}
+          <ReviewRail
+            files={review.files}
+            activeFileIndex={treeActiveFileIndex}
+            onSelectFile={jumpToFile}
+            commentCounts={commentCounts.byFile}
+            open={treeVisible}
+            onToggleOpen={toggleTree}
+            {activeExtensions}
+            {hideTests}
+            onHideTestsChange={(value) => { hideTests = value; }}
+            {filterDiff}
+            onFilterDiffChange={(value) => { filterDiff = value; }}
+          />
+        {/if}
         {#snippet leadRowContent()}
           {#if selectedCommit}
             <ReviewCommitCard commit={selectedCommit} ordinal={selectedCommitIndex + 1} count={review?.commits.length ?? 0} />
           {:else if review?.prDetail}
-            <ReviewOverview {review} detail={review.prDetail} />
+            <ReviewOverview {review} detail={review.prDetail} hasWorkspace={ctx.workspace !== null} />
           {/if}
         {/snippet}
         <ReviewDiffBody
@@ -753,6 +753,13 @@
           overviewLead={leadRow ?? 'overview'}
           onOverviewOffChange={(off) => { overviewOff = off; }}
         >
+          {#snippet empty()}
+            {#if review?.files.length === 0}
+              <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-empty">No changed files.</div>
+            {:else}
+              <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-filter-empty">No files match the filter.</div>
+            {/if}
+          {/snippet}
           {#snippet draftEditor(anchor)}
             <ReviewDraftEditor
               {anchor}
@@ -799,7 +806,6 @@
             />
           {/snippet}
         </ReviewDiffBody>
-        {/if}
       </div>
     {/if}
     {#if !review.conflictView && review.drafts.length > 0}

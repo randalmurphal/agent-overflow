@@ -25,7 +25,15 @@ func (t authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	hop := req.Clone(req.Context())
 	c.credMu.RLock()
 	c.token.authorize(hop)
+	fp := c.fp
 	c.credMu.RUnlock()
+	// The exchange learns which token went out: the current one, which a
+	// refresh may have replaced since the request was prepared.
+	if sent, _ := req.Context().Value(sentCredentialCtx{}).(*sentCredential); sent != nil {
+		sent.mu.Lock()
+		sent.fp = fp
+		sent.mu.Unlock()
+	}
 	return t.base.RoundTrip(hop)
 }
 
@@ -87,6 +95,7 @@ func (c *Client) read(ctx context.Context, rejected string) error {
 		if ctx.Err() != nil {
 			return c.contextError(ctx, err)
 		}
+		err = withHost(err, c.host)
 		c.credMu.Lock()
 		c.failErr, c.failUntil = err, now.Add(tokenFailureTTL)
 		c.token.Zero()
@@ -107,6 +116,7 @@ func (c *Client) read(ctx context.Context, rejected string) error {
 	}
 	c.failErr = nil
 	c.readAt = now
+	c.expiryLookup = info.ExpiryLookup
 	if fp == c.fp && c.token != nil {
 		return nil
 	}

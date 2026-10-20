@@ -285,6 +285,8 @@ describe('<ReviewPane>', () => {
       latestReviews: [],
       checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
       mergeability: 'clean',
+      readiness: { state: 'ready', blockers: [], settled: [] },
+      merge: { methods: ['merge'], deleteBranchOffered: false, deleteBranchDefault: false, autoMergeAvailable: false, viewerCanMerge: false, viewerCanApprove: false, viewerApproved: false },
     };
     const threads: ReviewThread[] = [{
       id: 't-1',
@@ -586,6 +588,8 @@ describe('<ReviewPane>', () => {
       latestReviews: [],
       checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
       mergeability: 'clean',
+      readiness: { state: 'ready', blockers: [], settled: [] },
+      merge: { methods: ['merge'], deleteBranchOffered: false, deleteBranchDefault: false, autoMergeAvailable: false, viewerCanMerge: false, viewerCanApprove: false, viewerApproved: false },
     };
     setBindingMock('SubscribePRUpdates', async () => ({
       id: 'sub-1',
@@ -702,6 +706,8 @@ describe('<ReviewPane>', () => {
       latestReviews: [],
       checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
       mergeability: 'clean',
+      readiness: { state: 'ready', blockers: [], settled: [] },
+      merge: { methods: ['merge'], deleteBranchOffered: false, deleteBranchDefault: false, autoMergeAvailable: false, viewerCanMerge: false, viewerCanApprove: false, viewerApproved: false },
     };
     setBindingMock('SubscribePRUpdates', async () => ({
       id: 'sub-1',
@@ -782,6 +788,8 @@ describe('<ReviewPane>', () => {
       latestReviews: [],
       checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
       mergeability: 'clean',
+      readiness: { state: 'ready', blockers: [], settled: [] },
+      merge: { methods: ['merge'], deleteBranchOffered: false, deleteBranchDefault: false, autoMergeAvailable: false, viewerCanMerge: false, viewerCanApprove: false, viewerApproved: false },
     };
     setBindingMock('SubscribePRUpdates', async () => ({
       id: 'sub-1',
@@ -989,6 +997,8 @@ describe('<ReviewPane>', () => {
       latestReviews: [],
       checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
       mergeability: 'clean',
+      readiness: { state: 'ready', blockers: [], settled: [] },
+      merge: { methods: ['merge'], deleteBranchOffered: false, deleteBranchDefault: false, autoMergeAvailable: false, viewerCanMerge: false, viewerCanApprove: false, viewerApproved: false },
     };
     setBindingMock('SubscribePRUpdates', async () => ({
       id: 'sub-1',
@@ -1211,6 +1221,8 @@ function prDetailFor(headSHA: string): PRDetail {
     latestReviews: [],
     checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
     mergeability: 'conflicts',
+    readiness: { state: 'ready', blockers: [], settled: [] },
+    merge: { methods: ['merge'], deleteBranchOffered: false, deleteBranchDefault: false, autoMergeAvailable: false, viewerCanMerge: false, viewerCanApprove: false, viewerApproved: false },
   };
 }
 

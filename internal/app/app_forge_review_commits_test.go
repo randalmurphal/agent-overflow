@@ -186,7 +186,7 @@ func TestFailedPRReadMakesTheNextUnchangedPollEmit(t *testing.T) {
 	app.prUpdates.mu.Lock()
 	pump := app.prUpdates.pumps[sub.PRKey]
 	app.prUpdates.mu.Unlock()
-	if _, changed := app.pollPRUpdate(pump); changed {
+	if _, changed := app.pollPRUpdate(pump.ctx, pump); changed {
 		t.Fatal("an unchanged poll emitted before any read failed")
 	}
 
@@ -197,11 +197,11 @@ func TestFailedPRReadMakesTheNextUnchangedPollEmit(t *testing.T) {
 		t.Fatal("ListPRCommits succeeded without its base commit")
 	}
 
-	evt, changed := app.pollPRUpdate(pump)
+	evt, changed := app.pollPRUpdate(pump.ctx, pump)
 	if !changed || evt.Error != "" || evt.Detail.HeadSHA != "head-a" || evt.Seq <= sub.Seq {
 		t.Fatalf("poll after the failed read = %+v changed=%v, want the unchanged snapshot under a new seq", evt, changed)
 	}
-	if _, changed := app.pollPRUpdate(pump); changed {
+	if _, changed := app.pollPRUpdate(pump.ctx, pump); changed {
 		t.Fatal("a second unchanged poll emitted; the failure should cue one frame")
 	}
 }

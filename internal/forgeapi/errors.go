@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,14 @@ type SetupError struct {
 	Kind    string // SetupMissing | SetupUnauthenticated
 	Message string
 	Err     error
+	// Host is the forge host the login is for, when the error is about one.
+	Host string
+	// ExpiredAt is when the host's token expired, when the client learned
+	// the expiry while the token still worked (expiry.go: GitLab's
+	// personal_access_tokens/self, GitHub's
+	// GitHub-Authentication-Token-Expiration); zero when unknown or the
+	// token was revoked, which Message says. Message names it when set.
+	ExpiredAt time.Time
 }
 
 // The two SetupError kinds.
@@ -67,6 +76,91 @@ func UnauthenticatedError(forge string, err error) *SetupError {
 		return &SetupError{Forge: ForgeGitHub, Binary: "gh", Kind: SetupUnauthenticated, Err: err,
 			Message: "GitHub CLI (`gh`) is not authenticated. Run 'gh auth login' to continue"}
 	}
+}
+
+// ForbiddenError is a 403 that is not a rate limit: the token can reach
+// the host but the forge refused this request. Scope is a token scope the
+// forge shows the token lacks (GitLab's insufficient_scope answer names
+// it; GitHub's X-Accepted-OAuth-Scopes beside an X-OAuth-Scopes that
+// grants none of them); empty when the refusal is about access to the
+// resource or a fine-grained token's permissions rather than a classic
+// scope. Message is the forge's own text when the body carried one.
+type ForbiddenError struct {
+	Status  *StatusError
+	Scope   string
+	Message string
+}
+
+func (e *ForbiddenError) Error() string {
+	if e.Scope != "" {
+		return fmt.Sprintf("forge refused (token lacks the %s scope): %s", e.Scope, e.Status.Error())
+	}
+	return "forge refused: " + e.Status.Error()
+}
+
+func (e *ForbiddenError) Unwrap() error { return e.Status }
+
+// forbiddenError reads a 403's body and headers for what the forge
+// refused. GitLab answers a token without the scope with
+// {"error":"insufficient_scope",...,"scope":"api"}. GitHub names the
+// scopes an endpoint checks in X-Accepted-OAuth-Scopes and a classic
+// token's granted scopes in X-OAuth-Scopes; only a granted list holding
+// none of the accepted ones is a missing scope, since a token with the
+// scope is refused for other reasons too (SSO, branch rules, repository
+// access). A fine-grained token answers "Resource not accessible by
+// personal access token": a permission it lacks, kept as Message.
+func forbiddenError(status *StatusError, header http.Header) *ForbiddenError {
+	out := &ForbiddenError{Status: status}
+	var body struct {
+		Error       string `json:"error"`
+		Description string `json:"error_description"`
+		Scope       string `json:"scope"`
+		Message     string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(status.Body), &body); err == nil {
+		switch {
+		case body.Error == "insufficient_scope":
+			out.Scope = strings.TrimSpace(body.Scope)
+			if out.Scope == "" {
+				out.Scope = "api"
+			}
+			out.Message = body.Description
+		case body.Message != "":
+			out.Message = body.Message
+		}
+	}
+	if out.Scope == "" && !strings.Contains(out.Message, "not accessible by personal access token") {
+		out.Scope = githubMissingScope(header)
+	}
+	return out
+}
+
+// githubMissingScope is the first scope X-Accepted-OAuth-Scopes accepts
+// when X-OAuth-Scopes is present and grants none of them; empty otherwise.
+func githubMissingScope(header http.Header) string {
+	accepted := scopeList(header.Get("X-Accepted-OAuth-Scopes"))
+	granted, ok := header[http.CanonicalHeaderKey("X-OAuth-Scopes")]
+	if len(accepted) == 0 || !ok {
+		return ""
+	}
+	held := scopeList(strings.Join(granted, ","))
+	for _, scope := range accepted {
+		if slices.Contains(held, scope) {
+			return ""
+		}
+	}
+	return accepted[0]
+}
+
+// scopeList splits GitHub's comma-separated scope header.
+func scopeList(value string) []string {
+	var out []string
+	for _, scope := range strings.Split(value, ",") {
+		if scope = strings.TrimSpace(scope); scope != "" {
+			out = append(out, scope)
+		}
+	}
+	return out
 }
 
 // ErrNotFound matches, through errors.Is, a *StatusError whose status is
@@ -227,6 +321,8 @@ func classify(a answer) classified {
 		return classified{outcome: outcomeNotFound, err: statusErr()}
 	case a.status == http.StatusNotModified:
 		return classified{outcome: outcomeNotModified}
+	case a.status == http.StatusForbidden:
+		return classified{outcome: outcomeStatus, err: forbiddenError(statusErr(), a.header)}
 	case a.status < 200 || a.status > 299:
 		return classified{outcome: outcomeStatus, err: statusErr()}
 	}

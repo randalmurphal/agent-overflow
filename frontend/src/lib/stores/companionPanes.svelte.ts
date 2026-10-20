@@ -192,9 +192,25 @@ export function hideCompanion(paneId: string): void {
   takeDownCompanion(paneId, 'hide');
 }
 
+let companionClosedObservers: readonly CompanionClosedObserver[] = [];
+
+/** Observes a companion closed for good (`closeCompanion`, the source
+ * pane's destroy cascade), never one hidden for a thread switch. `threadId`
+ * is the source pane's thread at that moment. */
+export type CompanionClosedObserver = (sourcePaneId: string, kind: CompanionKind, threadId: string | null) => void;
+
+export function addCompanionClosedObserver(observer: CompanionClosedObserver): () => void {
+  companionClosedObservers = [...companionClosedObservers, observer];
+  return () => {
+    companionClosedObservers = companionClosedObservers.filter((existing) => existing !== observer);
+  };
+}
+
 function takeDownCompanion(paneId: string, mode: 'close' | 'hide'): void {
   const state = companionPanes.get(paneId);
   if (!state) return;
+  // Read before the registry entry goes: the observers name the thread.
+  const sourceThreadId = getPane(state.sourcePaneId)?.threadId ?? null;
   // Read before the section leaves the DOM: under compact the strip shows
   // one pane, and closing the one on screen must bring its thread back
   // rather than glide to whichever sibling companion is left.
@@ -205,6 +221,9 @@ function takeDownCompanion(paneId: string, mode: 'close' | 'hide'): void {
     closeCompanionsForSource(paneId);
   }
   unregisterCompanionPane(paneId);
+  if (mode === 'close') {
+    for (const observe of companionClosedObservers) observe(state.sourcePaneId, state.kind, sourceThreadId);
+  }
   if (isThreadHostingCompanionKind(state.kind)) {
     // Read before the registry entry goes. destroyPane removes the layout
     // item itself.

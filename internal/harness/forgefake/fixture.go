@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -43,6 +44,48 @@ type Repo struct {
 	// Attachments are the files the forge serves for the repository's
 	// markdown.
 	Attachments []Attachment `json:"attachments,omitempty"`
+	// Merge is the project's merge settings and the viewer's role in it.
+	// Omitted, it is a new project's: every GitHub method allowed, no
+	// auto-merge, GitLab merge commits with squash off by default, and
+	// the viewer a writer (GitHub WRITE, GitLab developer).
+	Merge *RepoMerge `json:"merge,omitempty"`
+	// DeletedBranches are head branches deleted from the repository
+	// (GitHub's branch delete after a merge); a branch exists while a
+	// pull names it as its head or base and it is not listed here.
+	DeletedBranches []string `json:"deletedBranches,omitempty"`
+}
+
+// RepoMerge is a project's merge settings (GitHub repository settings,
+// GitLab project settings) and the viewer's role. Fields of the other
+// forge are refused.
+type RepoMerge struct {
+	// Permission is the viewer's role: GitHub READ, TRIAGE, WRITE
+	// (default), MAINTAIN or ADMIN (viewerPermission); GitLab guest,
+	// reporter, developer (default), maintainer or owner (access_level 10
+	// to 50). Merging and approving need WRITE or developer.
+	Permission string `json:"permission,omitempty"`
+	// Methods are the merge methods a GitHub repository allows (merge,
+	// squash, rebase), all three by default; DefaultMethod is the
+	// viewer's default (viewerDefaultMergeMethod), the first allowed by
+	// default. AutoMergeAllowed is the repository's "Allow auto-merge",
+	// off by default as on GitHub.
+	Methods          []string `json:"methods"`
+	DefaultMethod    string   `json:"defaultMethod,omitempty"`
+	AutoMergeAllowed bool     `json:"autoMergeAllowed,omitempty"`
+	// DeleteBranchOnMerge is GitHub's deleteBranchOnMerge and GitLab's
+	// remove_source_branch_after_merge (a merge request's
+	// force_remove_source_branch default).
+	DeleteBranchOnMerge bool `json:"deleteBranchOnMerge,omitempty"`
+	// MergeMethod is a GitLab project's merge_method: merge (default),
+	// rebase_merge or ff. SquashOption is its squash_option: default_off
+	// (default), default_on, always or never.
+	MergeMethod  string `json:"mergeMethod,omitempty"`
+	SquashOption string `json:"squashOption,omitempty"`
+	// PipelineMustSucceed and DiscussionsMustResolve are GitLab's
+	// only_allow_merge_if_pipeline_succeeds and
+	// only_allow_merge_if_all_discussions_are_resolved.
+	PipelineMustSucceed    bool `json:"pipelineMustSucceed,omitempty"`
+	DiscussionsMustResolve bool `json:"discussionsMustResolve,omitempty"`
 }
 
 // Pull is one pull request (GitHub) or merge request (GitLab).
@@ -100,6 +143,106 @@ type Pull struct {
 	Reviews []Review `json:"reviews,omitempty"`
 	// CI is the head pipeline (GitLab) or workflow run (GitHub Actions).
 	CI *Pipeline `json:"ci,omitempty"`
+	// Readiness is what the base branch and the project require of the
+	// pull and where it stands beyond its reviews, CI, threads and
+	// conflicts. Omitted, nothing is required: an open pull with no
+	// conflicts reads as ready on both forges, as on an unprotected
+	// branch.
+	Readiness *Readiness `json:"readiness,omitempty"`
+	// MergedBy is who merged a merged pull; defaults to its author.
+	// MergeCommitSHA is the merge commit, generated for a merged pull.
+	MergedBy       string `json:"mergedBy,omitempty"`
+	MergeCommitSHA string `json:"mergeCommitSha,omitempty"`
+	// ClosedAt is when a closed or merged pull closed, RFC 3339; it
+	// defaults to MergedAt for a merged pull and to the time it was seeded
+	// for a closed one. ClosedBy is who closed it; defaults to its author.
+	ClosedAt string `json:"closedAt,omitempty"`
+	ClosedBy string `json:"closedBy,omitempty"`
+	// Events are the pull's forge activity beyond its reviews: GitHub
+	// timeline items, GitLab system notes. A merge action, an approval,
+	// an auto-merge and the like append theirs. A GitHub review is its
+	// own timeline item (from Reviews); a seeded GitLab approval carries
+	// no note, so seed an approved event beside it for one. A seeded
+	// GitHub pull that is merged or closed gets its merged and closed
+	// events when it has none.
+	Events []Event `json:"events,omitempty"`
+
+	// squash is how a GitLab merge request merges or merged (its squash
+	// flag), squashSHA the squash commit of a squashed merge; forceRemove
+	// is its force_remove_source_branch.
+	squash      bool
+	squashSHA   string
+	forceRemove bool
+}
+
+// Readiness is the merge box state a pull carries beyond its reviews, CI,
+// threads and conflicts.
+type Readiness struct {
+	// RequiredApprovals is the approvals the merge needs: GitHub's base
+	// protection requiredApprovingReviewCount, GitLab's
+	// approvals_required.
+	RequiredApprovals int `json:"requiredApprovals,omitempty"`
+	// RequiredChecks names the CI jobs GitHub's base requires to pass
+	// (each check's isRequired); a required name with no job reads as
+	// expected and pending. GitLab requires the whole pipeline instead,
+	// with RepoMerge.PipelineMustSucceed.
+	RequiredChecks []string `json:"requiredChecks,omitempty"`
+	// ResolveThreads is GitHub's base requiresConversationResolution.
+	// GitLab's is RepoMerge.DiscussionsMustResolve.
+	ResolveThreads bool `json:"resolveThreads,omitempty"`
+	// Behind is a head behind its base where the base requires it be up
+	// to date: GitHub BEHIND, GitLab need_rebase (a fast-forward
+	// project). An update or rebase clears it.
+	Behind bool `json:"behind,omitempty"`
+	// ViewerCanApprove overrides whether GitLab takes the viewer's
+	// approval (user_can_approve, which reads false once they approved);
+	// nil derives it from the viewer's role. GitHub refuses only the
+	// author.
+	ViewerCanApprove *bool `json:"viewerCanApprove,omitempty"`
+	// AutoMerge is an armed auto-merge.
+	AutoMerge *AutoMerge `json:"autoMerge,omitempty"`
+}
+
+// AutoMerge is an armed merge-when-ready.
+type AutoMerge struct {
+	// Method is merge (default), squash or rebase.
+	Method string `json:"method,omitempty"`
+	// By is who armed it, defaulting to the pull's author; ByName their
+	// display name.
+	By     string `json:"by,omitempty"`
+	ByName string `json:"byName,omitempty"`
+	// At is when, RFC 3339; defaults to 2026-01-01T00:00:00Z.
+	At string `json:"at,omitempty"`
+}
+
+// Event is one forge activity item. Kind is the app's vocabulary and
+// each forge answers the kinds it records: GitHub review_dismissed,
+// merged, closed, reopened, marked_draft, marked_ready, auto_merge_set,
+// auto_merge_canceled, force_pushed, base_changed, review_requested;
+// GitLab approved, unapproved, merged, closed, reopened, marked_draft,
+// marked_ready, auto_merge_set, auto_merge_canceled, base_changed,
+// review_requested (each in the system note phrasing GitLab writes).
+type Event struct {
+	// ID is the timeline item or note id; generated when omitted.
+	ID   int64  `json:"id,omitempty"`
+	Kind string `json:"kind"`
+	// Actor defaults to the pull's author; ActorName needs Actor.
+	Actor     string `json:"actor,omitempty"`
+	ActorName string `json:"actorName,omitempty"`
+	// At is RFC 3339; defaults to 2026-01-01T00:00:00Z.
+	At string `json:"at,omitempty"`
+	// Ref is what the event names: the new base (base_changed), the
+	// reviewer (review_requested; GitLab a comma list), the head after a
+	// force push, the dismissed review's author, the commit an
+	// auto-merge was set for (GitLab; defaults to the head).
+	Ref string `json:"ref,omitempty"`
+	// Method is an auto_merge_set's method on GitHub: merge (default),
+	// squash or rebase.
+	Method string `json:"method,omitempty"`
+	// Text is a review_dismissed's message, an auto_merge_canceled's
+	// reason (GitLab: "aborted the automatic merge because <text>"), or a
+	// GitLab base_changed's old branch (defaults to "main").
+	Text string `json:"text,omitempty"`
 }
 
 // Comment is one comment or note.
@@ -134,6 +277,9 @@ type Thread struct {
 
 // Review is one submitted review verdict.
 type Review struct {
+	// ID is the review's numeric id (GitHub databaseId; its node id is
+	// derived from it). Generated when omitted.
+	ID     int64  `json:"id,omitempty"`
 	Author string `json:"author"`
 	// AuthorName is the reviewer's display name. Empty answers as a user
 	// with no display name (GitLab) or a bot (GitHub).
@@ -215,8 +361,23 @@ type Attachment struct {
 
 var (
 	gitLabUploadSecret = regexp.MustCompile(`^[0-9a-f]{32}$`)
-	jobStatuses        = map[string]bool{"success": true, "failed": true, "running": true, "pending": true, "skipped": true, "canceled": true}
-	reviewStates       = map[string]bool{"APPROVED": true, "CHANGES_REQUESTED": true, "COMMENTED": true, "DISMISSED": true, "PENDING": true}
+	// gitlabDraftTitle is GitLab's draft title prefix (MergeRequest
+	// DRAFT_REGEX): a merge request is a draft exactly when its title
+	// carries it.
+	gitlabDraftTitle = regexp.MustCompile(`(?i)^(\[draft\]|\(draft\)|draft:)+\s*`)
+	mergeMethods     = map[string]bool{"merge": true, "squash": true, "rebase": true}
+	githubRoles      = map[string]int{"READ": 1, "TRIAGE": 2, "WRITE": 3, "MAINTAIN": 4, "ADMIN": 5}
+	gitlabRoles      = map[string]int{"guest": 10, "reporter": 20, "developer": 30, "maintainer": 40, "owner": 50}
+	githubEventKinds = map[string]bool{
+		"review_dismissed": true, "merged": true, "closed": true, "reopened": true, "marked_draft": true, "marked_ready": true,
+		"auto_merge_set": true, "auto_merge_canceled": true, "force_pushed": true, "base_changed": true, "review_requested": true,
+	}
+	gitlabEventKinds = map[string]bool{
+		"approved": true, "unapproved": true, "merged": true, "closed": true, "reopened": true, "marked_draft": true,
+		"marked_ready": true, "auto_merge_set": true, "auto_merge_canceled": true, "base_changed": true, "review_requested": true,
+	}
+	jobStatuses  = map[string]bool{"success": true, "failed": true, "running": true, "pending": true, "skipped": true, "canceled": true}
+	reviewStates = map[string]bool{"APPROVED": true, "CHANGES_REQUESTED": true, "COMMENTED": true, "DISMISSED": true, "PENDING": true}
 )
 
 // clone is a deep copy, so the engine never shares a slice or pointer
@@ -293,6 +454,17 @@ func (r *Repo) normalize(ids *idSource) error {
 			return fmt.Errorf("project %q has an empty or padded segment", r.Project)
 		}
 	}
+	if r.Merge == nil {
+		r.Merge = &RepoMerge{}
+	}
+	if err := r.Merge.normalize(r.Forge); err != nil {
+		return fmt.Errorf("merge: %w", err)
+	}
+	for _, branch := range r.DeletedBranches {
+		if strings.TrimSpace(branch) == "" {
+			return errors.New("deletedBranches holds an empty name")
+		}
+	}
 	numbers := make(map[int]bool, len(r.Pulls))
 	for i := range r.Pulls {
 		pull := &r.Pulls[i]
@@ -304,6 +476,9 @@ func (r *Repo) normalize(ids *idSource) error {
 		}
 		numbers[pull.Number] = true
 		r.defaultNodeID(pull)
+		if err := pull.normalizeMerge(r, ids); err != nil {
+			return fmt.Errorf("pulls[%d] (#%d): %w", i, pull.Number, err)
+		}
 		if pull.HeadRepo != "" {
 			if !strings.Contains(pull.HeadRepo, "/") || strings.EqualFold(pull.HeadRepo, r.Project) {
 				return fmt.Errorf("pulls[%d] (#%d): headRepo %q is not another repository's path", i, pull.Number, pull.HeadRepo)
@@ -315,6 +490,54 @@ func (r *Repo) normalize(ids *idSource) error {
 		if err := r.Attachments[i].normalize(r.Forge); err != nil {
 			return fmt.Errorf("attachments[%d]: %w", i, err)
 		}
+	}
+	return nil
+}
+
+func (m *RepoMerge) normalize(forge string) error {
+	if forge == "github" {
+		if m.MergeMethod != "" || m.SquashOption != "" || m.PipelineMustSucceed || m.DiscussionsMustResolve {
+			return errors.New("mergeMethod, squashOption, pipelineMustSucceed and discussionsMustResolve are GitLab project settings")
+		}
+		m.Permission = defaultString(m.Permission, "WRITE")
+		if githubRoles[m.Permission] == 0 {
+			return fmt.Errorf("permission %q is not READ, TRIAGE, WRITE, MAINTAIN or ADMIN", m.Permission)
+		}
+		if m.Methods == nil {
+			m.Methods = []string{"merge", "squash", "rebase"}
+		}
+		if len(m.Methods) == 0 {
+			return errors.New("a GitHub repository allows at least one merge method")
+		}
+		for _, method := range m.Methods {
+			if !mergeMethods[method] {
+				return fmt.Errorf("method %q is not merge, squash or rebase", method)
+			}
+		}
+		m.DefaultMethod = defaultString(m.DefaultMethod, m.Methods[0])
+		if !slices.Contains(m.Methods, m.DefaultMethod) {
+			return fmt.Errorf("defaultMethod %q is not an allowed method", m.DefaultMethod)
+		}
+		return nil
+	}
+	if m.Methods != nil || m.DefaultMethod != "" || m.AutoMergeAllowed {
+		return errors.New("methods, defaultMethod and autoMergeAllowed are GitHub repository settings")
+	}
+	m.Permission = defaultString(m.Permission, "developer")
+	if gitlabRoles[m.Permission] == 0 {
+		return fmt.Errorf("permission %q is not guest, reporter, developer, maintainer or owner", m.Permission)
+	}
+	m.MergeMethod = defaultString(m.MergeMethod, "merge")
+	switch m.MergeMethod {
+	case "merge", "rebase_merge", "ff":
+	default:
+		return fmt.Errorf("mergeMethod %q is not merge, rebase_merge or ff", m.MergeMethod)
+	}
+	m.SquashOption = defaultString(m.SquashOption, "default_off")
+	switch m.SquashOption {
+	case "default_off", "default_on", "always", "never":
+	default:
+		return fmt.Errorf("squashOption %q is not default_off, default_on, always or never", m.SquashOption)
 	}
 	return nil
 }
@@ -390,6 +613,9 @@ func (p *Pull) normalize(forge string, ids *idSource) error {
 		if forge == "gitlab" && review.State != "APPROVED" {
 			return fmt.Errorf("reviews[%d]: GitLab has approvals only; state must be APPROVED", i)
 		}
+		if review.ID == 0 {
+			p.Reviews[i].ID = ids.next()
+		}
 		p.Reviews[i].SubmittedAt = defaultString(review.SubmittedAt, "2026-01-01T00:00:00Z")
 		p.Reviews[i].CommitSHA = defaultString(review.CommitSHA, p.HeadSHA)
 	}
@@ -397,6 +623,162 @@ func (p *Pull) normalize(forge string, ids *idSource) error {
 		if err := p.CI.normalize(ids); err != nil {
 			return fmt.Errorf("ci: %w", err)
 		}
+	}
+	return nil
+}
+
+// normalizeMerge validates and fills the pull's merge state: its
+// readiness, its end of life and its events. It runs once the pull's own
+// fields are filled.
+func (p *Pull) normalizeMerge(r *Repo, ids *idSource) error {
+	forge := r.Forge
+	if forge == "gitlab" {
+		// GitLab's draft is its title prefix: a draft seed without one
+		// gets GitLab's own, a title with one is a draft.
+		switch {
+		case gitlabDraftTitle.MatchString(p.Title):
+			p.Draft = true
+		case p.Draft:
+			p.Title = "Draft: " + p.Title
+		}
+		p.squash = r.Merge.SquashOption == "default_on" || r.Merge.SquashOption == "always"
+		p.forceRemove = r.Merge.DeleteBranchOnMerge
+	}
+	switch {
+	case p.State != "merged" && (p.MergedBy != "" || p.MergeCommitSHA != ""):
+		return errors.New("mergedBy and mergeCommitSha are a merged pull's")
+	case p.State == "open" && (p.ClosedAt != "" || p.ClosedBy != ""):
+		return errors.New("closedAt and closedBy are a closed or merged pull's")
+	}
+	switch p.State {
+	case "merged":
+		p.MergedBy = defaultString(p.MergedBy, p.Author)
+		p.MergeCommitSHA = defaultString(p.MergeCommitSHA, ids.sha())
+		p.ClosedAt = defaultString(p.ClosedAt, p.MergedAt)
+		p.ClosedBy = defaultString(p.ClosedBy, p.MergedBy)
+	case "closed":
+		p.ClosedAt = defaultString(p.ClosedAt, time.Now().UTC().Format(time.RFC3339))
+		p.ClosedBy = defaultString(p.ClosedBy, p.Author)
+	}
+	if p.ClosedAt != "" {
+		if _, err := time.Parse(time.RFC3339, p.ClosedAt); err != nil {
+			return fmt.Errorf("closedAt %q is not RFC 3339", p.ClosedAt)
+		}
+	}
+	if p.Readiness == nil {
+		p.Readiness = &Readiness{}
+	}
+	if err := p.Readiness.normalize(forge, p); err != nil {
+		return fmt.Errorf("readiness: %w", err)
+	}
+	if forge == "gitlab" && p.Readiness.Behind && r.Merge.MergeMethod == "merge" {
+		return errors.New("readiness: behind is GitLab's need_rebase, which a merge-commit project never reports; set merge.mergeMethod to ff or rebase_merge")
+	}
+	kinds := githubEventKinds
+	if forge == "gitlab" {
+		kinds = gitlabEventKinds
+	}
+	for i := range p.Events {
+		event := &p.Events[i]
+		if !kinds[event.Kind] {
+			return fmt.Errorf("events[%d]: kind %q is not a %s event", i, event.Kind, forge)
+		}
+		if err := event.normalize(forge, p, ids); err != nil {
+			return fmt.Errorf("events[%d]: %w", i, err)
+		}
+	}
+	if forge == "github" && p.State != "open" {
+		// GitHub records every merge and close in the timeline: a merge
+		// leaves a MergedEvent and a ClosedEvent in the same second.
+		has := func(kind string) bool {
+			return slices.ContainsFunc(p.Events, func(e Event) bool { return e.Kind == kind })
+		}
+		if p.State == "merged" && !has("merged") {
+			p.Events = append(p.Events, Event{ID: ids.next(), Kind: "merged", Actor: p.MergedBy, At: p.MergedAt, Ref: p.MergeCommitSHA})
+		}
+		if !has("closed") {
+			p.Events = append(p.Events, Event{ID: ids.next(), Kind: "closed", Actor: p.ClosedBy, At: p.ClosedAt})
+		}
+	}
+	return nil
+}
+
+func (rd *Readiness) normalize(forge string, p *Pull) error {
+	if rd.RequiredApprovals < 0 {
+		return errors.New("requiredApprovals is negative")
+	}
+	if forge == "gitlab" && (len(rd.RequiredChecks) > 0 || rd.ResolveThreads) {
+		return errors.New("requiredChecks and resolveThreads are GitHub base protection; a GitLab project requires its pipeline and threads through merge.pipelineMustSucceed and merge.discussionsMustResolve")
+	}
+	if forge == "github" && rd.ViewerCanApprove != nil {
+		return errors.New("viewerCanApprove is GitLab's user_can_approve; GitHub refuses only the author")
+	}
+	for _, name := range rd.RequiredChecks {
+		if strings.TrimSpace(name) == "" {
+			return errors.New("requiredChecks holds an empty name")
+		}
+	}
+	if armed := rd.AutoMerge; armed != nil {
+		if p.State != "open" {
+			return errors.New("autoMerge is armed on an open pull only")
+		}
+		armed.Method = defaultString(armed.Method, "merge")
+		if !mergeMethods[armed.Method] {
+			return fmt.Errorf("autoMerge method %q is not merge, squash or rebase", armed.Method)
+		}
+		if armed.By == "" && armed.ByName != "" {
+			return errors.New("autoMerge byName needs by")
+		}
+		armed.By = defaultString(armed.By, p.Author)
+		armed.At = defaultString(armed.At, "2026-01-01T00:00:00Z")
+		if _, err := time.Parse(time.RFC3339, armed.At); err != nil {
+			return fmt.Errorf("autoMerge at %q is not RFC 3339", armed.At)
+		}
+		if forge == "gitlab" {
+			p.squash = armed.Method == "squash"
+		}
+	}
+	return nil
+}
+
+func (ev *Event) normalize(forge string, p *Pull, ids *idSource) error {
+	if ev.ID == 0 {
+		ev.ID = ids.next()
+	}
+	if ev.Actor == "" {
+		if ev.ActorName != "" {
+			return errors.New("actorName needs actor")
+		}
+		ev.Actor = p.Author
+	}
+	ev.At = defaultString(ev.At, "2026-01-01T00:00:00Z")
+	if _, err := time.Parse(time.RFC3339, ev.At); err != nil {
+		return fmt.Errorf("at %q is not RFC 3339", ev.At)
+	}
+	if ev.Method != "" && (forge != "github" || ev.Kind != "auto_merge_set") {
+		return errors.New("method is a GitHub auto_merge_set's")
+	}
+	switch ev.Kind {
+	case "auto_merge_set":
+		if forge == "github" {
+			ev.Method = defaultString(ev.Method, "merge")
+			if !mergeMethods[ev.Method] {
+				return fmt.Errorf("method %q is not merge, squash or rebase", ev.Method)
+			}
+		} else {
+			ev.Ref = defaultString(ev.Ref, p.HeadSHA)
+		}
+	case "base_changed", "review_requested":
+		if ev.Ref == "" {
+			return fmt.Errorf("a %s event names its ref", ev.Kind)
+		}
+		if forge == "gitlab" && ev.Kind == "base_changed" {
+			ev.Text = defaultString(ev.Text, "main")
+		}
+	case "review_dismissed":
+		ev.Ref = defaultString(ev.Ref, p.Author)
+	case "force_pushed":
+		ev.Ref = defaultString(ev.Ref, p.HeadSHA)
 	}
 	return nil
 }

@@ -505,6 +505,87 @@ export interface PRDetail {
   latestReviews: ReviewVerdict[];
   checks: CheckSummary;
   mergeability: string;
+  /** Can it merge, and what stands in the way (git.MergeReadiness). */
+  readiness: MergeReadiness;
+  /** What the project allows and what the viewer may do (git.MergeOptions). */
+  merge: MergeOptions;
+  mergedAt?: string;
+  mergedBy?: string;
+  closedAt?: string;
+}
+
+/** The merge's state and its conditions; mirrors git.MergeReadiness. */
+export interface MergeReadiness {
+  /** ready, blocked, checking, draft, merged or closed. */
+  state: string;
+  /** What stands in the way, in the forge's order. */
+  blockers: MergeBlocker[];
+  /** Conditions already met, so a ready PR's section is never empty. */
+  settled: MergeBlocker[];
+}
+
+export type MergeBlockerKind =
+  | 'approvals' | 'checks' | 'threads' | 'conflicts' | 'rebase' | 'draft' | 'rules' | 'changes_requested' | 'other';
+
+export interface MergeBlocker {
+  kind: MergeBlockerKind | string;
+  text: string;
+  detail?: string;
+  url?: string;
+}
+
+/** Mirrors git.MergeOptions: methods the project allows (default first). */
+export interface MergeOptions {
+  /** merge, squash, rebase; the project default first. */
+  methods: string[];
+  deleteBranchOffered: boolean;
+  deleteBranchDefault: boolean;
+  autoMergeAvailable: boolean;
+  autoMerge?: AutoMergeRequest | null;
+  viewerCanMerge: boolean;
+  viewerCanApprove: boolean;
+  viewerApproved: boolean;
+  cannotApproveReason?: string;
+  cannotMergeReason?: string;
+}
+
+export interface AutoMergeRequest {
+  method: string;
+  byLogin: string;
+  byName?: string;
+  at: string;
+  waitsFor: string;
+  canCancel: boolean;
+}
+
+/** One forge activity row in the Conversation feed (git.ReviewEvent). */
+export interface ReviewEvent {
+  id: string;
+  /** approved, unapproved, review_dismissed, merged, closed, reopened,
+   *  marked_draft, marked_ready, auto_merge_set, auto_merge_canceled,
+   *  force_pushed, rebased, review_requested, base_changed. */
+  kind: string;
+  actorLogin: string;
+  actorName?: string;
+  /** RFC 3339. */
+  at: string;
+  text?: string;
+  /** A SHA or branch the event names. */
+  ref?: string;
+}
+
+/** What the user asked of MergePR (git.MergeRequest). */
+export interface MergeRequest {
+  method: string;
+  headSHA: string;
+  deleteBranch: boolean;
+  autoMerge: boolean;
+}
+
+export interface MergeOutcome {
+  merged: boolean;
+  autoMerge: boolean;
+  sha?: string;
 }
 
 export interface ReviewVerdict {
@@ -643,6 +724,7 @@ export interface SubmitPRReviewResult {
   postedFileComments: number;
   partialFailurePath?: string;
   partialFailure?: string;
+  partialFailureKind?: string;
 }
 
 export interface ProposedPlanComment {

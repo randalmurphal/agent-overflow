@@ -30,18 +30,26 @@
   data-testid={testid}
   data-open={open ? 'true' : 'false'}
 >
-  <div class="flex h-9 items-center gap-2 pr-2">
+  <!-- The header wraps rather than clips: the toggle asks for a row's
+       worth of width, so on a narrow pane the trailing controls (buttons,
+       the stepper) drop to their own line under the label and pill, and
+       the label never truncates. -->
+  <div class="flex min-h-9 flex-wrap items-center gap-x-2 gap-y-1 pr-2">
     <button
       type="button"
-      class="flex h-full min-w-0 flex-1 items-center gap-2 px-2.5 text-left text-xs font-semibold text-fg compact:select-none"
+      class="flex h-9 min-w-0 flex-1 basis-[14rem] items-center gap-2 px-2.5 text-left text-xs font-semibold text-fg compact:select-none"
       aria-expanded={open}
       onclick={onToggle}
     >
       <Icon icon={ChevronRight} size={13} class="shrink-0 text-fg-muted transition-transform duration-100 {open ? 'rotate-90' : ''}" />
-      <span class="truncate">{label}</span>
+      <span class="shrink-0 whitespace-nowrap">{label}</span>
       {#if badge}{@render badge()}{/if}
     </button>
-    {#if trailing}{@render trailing()}{/if}
+    {#if trailing}
+      <div class="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-1.5 py-1 pl-2.5">
+        {@render trailing()}
+      </div>
+    {/if}
   </div>
   {#if open}
     <div class="border-t border-border-subtle">

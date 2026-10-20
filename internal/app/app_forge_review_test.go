@@ -11,12 +11,14 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/transport"
 )
 
 func TestMapSubmitPRReviewResult(t *testing.T) {
 	t.Parallel()
+	reviewRef := gitops.PRReference{Forge: "gitlab", Host: "gitlab.example.com", Namespace: "team", Repo: "app", Number: 42}
 	cases := []struct {
 		name    string
 		result  gitops.SubmitReviewResult
@@ -41,7 +43,22 @@ func TestMapSubmitPRReviewResult(t *testing.T) {
 				PostedReview:       true,
 				PostedFileComments: 1,
 				PartialFailurePath: "README.md",
-				PartialFailure:     "denied",
+				PartialFailure:     "GitLab did not review team/app!42: denied",
+				PartialFailureKind: gitops.ForgeErrorForge,
+			},
+		},
+		{
+			// The follow-up's failure reads as the reviewed sentence and
+			// kind, not the forge's error text.
+			name: "partial refused for a scope",
+			err: &gitops.PartialSubmitError{
+				PostedReview: true,
+				Err:          &forgeapi.ForbiddenError{Status: &forgeapi.StatusError{Status: http.StatusForbidden, Body: `{"error":"insufficient_scope"}`}, Scope: "api"},
+			},
+			want: SubmitPRReviewResult{
+				PostedReview:       true,
+				PartialFailure:     "Your gitlab.example.com token lacks the `api` scope, so the app cannot review team/app!42. Create a token with that scope and log glab in with it.",
+				PartialFailureKind: gitops.ForgeErrorForbidden,
 			},
 		},
 		{
@@ -52,7 +69,7 @@ func TestMapSubmitPRReviewResult(t *testing.T) {
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := mapSubmitPRReviewResult(tt.result, tt.err)
+			got, err := mapSubmitPRReviewResult(reviewRef, gitops.ActionReview, tt.result, tt.err)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected error")
@@ -786,14 +803,14 @@ func TestPollPRUpdateStoresNothingOnADeadPump(t *testing.T) {
 
 	// A snapshot that WOULD have been a change on a live pump.
 	head = "head-b"
-	if evt, changed := app.pollPRUpdate(pump); changed {
+	if evt, changed := app.pollPRUpdate(pump.ctx, pump); changed {
 		t.Fatalf("dead pump published a snapshot change: %+v", evt)
 	}
 	assertUnstamped("snapshot path")
 
 	// And a failure, which stamps through a second critical section.
 	fetchErr = errors.New("gh: boom")
-	if evt, changed := app.pollPRUpdate(pump); changed {
+	if evt, changed := app.pollPRUpdate(pump.ctx, pump); changed {
 		t.Fatalf("dead pump published a failure: %+v", evt)
 	}
 	assertUnstamped("error path")

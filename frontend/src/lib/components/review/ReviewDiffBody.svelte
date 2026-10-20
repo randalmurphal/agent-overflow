@@ -87,6 +87,10 @@
      * list's first row, so it scrolls off with the diff. Absent when
      * neither applies. */
     overview?: Snippet;
+    /** Rendered under the lead row when `files` is empty (an empty diff,
+     * or every file filtered out), so the lead row still has the list to
+     * sit in. */
+    empty?: Snippet;
     /** Which lead row `overview` renders; keys its measured height. */
     overviewLead?: ReviewLeadRow;
     /** Fires when the PR overview row leaves or re-enters the viewport
@@ -132,6 +136,7 @@
     prThread,
     overview,
     overviewLead = 'overview',
+    empty,
     onOverviewOffChange,
     onAddComment,
     onExpandFold,
@@ -557,5 +562,8 @@
         {/snippet}
       </LongListVirtualizer>
     {/key}
+    {#if files.length === 0}
+      {@render empty?.()}
+    {/if}
   </div>
 </div>

@@ -1,5 +1,5 @@
-// Dragged heights of the PR header's collapsible sections (Description,
-// Conversation). One remembered height per SECTION, shared by every
+// Dragged heights of the PR header's collapsible sections (Merge,
+// Description, Conversation). One remembered height per SECTION, shared by every
 // review pane and persisted through appStorage — the preference is about
 // how much of the pane the diff keeps, which is a property of the screen,
 // not of one PR. Null means "never dragged": the section falls back to
@@ -10,7 +10,7 @@
 
 import { appStorageGet, appStorageSet } from './appStorage';
 
-export type ReviewSectionId = 'description' | 'conversation';
+export type ReviewSectionId = 'merge' | 'description' | 'conversation';
 
 export const REVIEW_SECTION_MIN_HEIGHT = 64;
 /** Generous ceiling — the real bound is the pane, and shrinking the diff
@@ -36,7 +36,7 @@ export function readPersistedSectionHeights(): Partial<Record<ReviewSectionId, n
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const out: Partial<Record<ReviewSectionId, number>> = {};
-    for (const section of ['description', 'conversation'] as const) {
+    for (const section of ['merge', 'description', 'conversation'] as const) {
       const value = parsed[section];
       if (typeof value === 'number' && Number.isFinite(value)) {
         out[section] = clampHeight(value);

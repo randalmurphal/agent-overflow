@@ -6,6 +6,7 @@ import { flushSync, tick } from 'svelte';
 import {
   applyPRCIUpdatedEvent,
   applyPRError,
+  applyPRSnapshot,
   applyPRThreads,
   applyPRUpdatedEvent,
   attachPR,
@@ -64,6 +65,8 @@ function detailStub(overrides: Partial<PRDetail> = {}): PRDetail {
     latestReviews: [],
     checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
     mergeability: 'clean',
+    readiness: { state: 'ready', blockers: [], settled: [] },
+    merge: { methods: ['merge'], deleteBranchOffered: false, deleteBranchDefault: false, autoMergeAvailable: false, viewerCanMerge: false, viewerCanApprove: false, viewerApproved: false },
     ...overrides,
   };
 }
@@ -869,6 +872,24 @@ describe('prReviewStore — applying pushes', () => {
     // A healthy pump observation is what clears it.
     applyPRUpdatedEvent({ prKey: KEY, detail: detailStub(), threads: [], headSHA: 'sha-a' });
     expect(a.error).toBeNull();
+    a.release();
+  });
+
+  // Only the pump reads the forge's events; a thread re-list and a
+  // detail refresh keep the ones held.
+  it("events ride the pump's frames and survive comments-only refreshes", async () => {
+    installSubscribeMock();
+    const a = attachPR(KEY, { ref: REF });
+    await flush();
+    const events = [{ id: 'e1', kind: 'approved', actorLogin: 'alice', at: '2026-10-20T09:00:00Z' }];
+    applyPRUpdatedEvent({ prKey: KEY, detail: detailStub(), threads: [], events, headSHA: 'sha-a' });
+    expect(a.snapshot?.events.map((event) => event.id)).toEqual(['e1']);
+    applyPRThreads(KEY, [threadStub('t-1')]);
+    expect(a.snapshot?.events.map((event) => event.id)).toEqual(['e1']);
+    applyPRSnapshot(KEY, { detail: detailStub(), threads: [], headSHA: 'sha-a' });
+    expect(a.snapshot?.events.map((event) => event.id)).toEqual(['e1']);
+    applyPRUpdatedEvent({ prKey: KEY, detail: detailStub(), threads: [], events: [], headSHA: 'sha-a' });
+    expect(a.snapshot?.events).toEqual([]);
     a.release();
   });
 });

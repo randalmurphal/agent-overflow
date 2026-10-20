@@ -32,6 +32,10 @@ type Request struct {
 	// Attachment allows an absolute Path. Only the attachment fetchers set
 	// it.
 	Attachment bool
+
+	// expiryLookup marks the client's own token expiry lookup: it runs no
+	// lookup itself and a 401 is returned as is, without the token refresh.
+	expiryLookup bool
 }
 
 // Response is a forge answer. Whether the request was interactive comes
@@ -45,6 +49,12 @@ type Response struct {
 	// NotModified is a 304. Do and JSON answer it from the ETag store with
 	// the stored body and the headers it came with.
 	NotModified bool
+	// Credential is the fingerprint of the token that was sent for this answer
+	// (CredentialFingerprint names the one the next request sends). A call
+	// re-reads its credential and retries after a 401, so the two can
+	// differ: a caller that caches what the answer says about the login
+	// keys the entry on this one.
+	Credential string
 	// Rate is the quota the response's headers reported, nil when none.
 	Rate *RateLimit
 }
@@ -74,6 +84,12 @@ type Client struct {
 	failUntil time.Time
 	rest      *url.URL
 	graphQL   *url.URL
+	// expiryLookup is SourceInfo.ExpiryLookup of the current token.
+	expiryLookup bool
+
+	// expiry is what the client learned of the current token's expiry
+	// (expiry.go).
+	expiry expiryState
 }
 
 // Do sends r and returns the answer read whole. A GET whose URL the ETag
@@ -136,6 +152,25 @@ func (c *Client) GraphQL(ctx context.Context, operation, query string, vars map[
 		}
 	}
 	return resp, err
+}
+
+// CredentialFingerprint names the login the client's next request sends:
+// a digest of the current token, read the way a request reads it (at
+// first use, again after five minutes, and after a 401 replaced it). A
+// caller keys what it caches about the authenticated identity (the
+// viewer, the viewer's permissions) on it, so another login never reads
+// the previous one's answers. It fails as a request would without a
+// token.
+func (c *Client) CredentialFingerprint(ctx context.Context) (string, error) {
+	if err := c.usable(); err != nil {
+		return "", err
+	}
+	if err := c.credential(ctx); err != nil {
+		return "", err
+	}
+	c.credMu.RLock()
+	defer c.credMu.RUnlock()
+	return c.fp, nil
 }
 
 // Pages sends r and follows the next page, GitHub's Link rel="next" first,
@@ -219,6 +254,35 @@ type exchange struct {
 	etag    *etagEntry
 	etagKey etagKey
 	body    bool // carries a body that cannot be resent
+	// noRefresh returns a 401 as is (Request.expiryLookup).
+	noRefresh bool
+	// sent is written by authTransport with the fingerprint of the token
+	// it put on the wire, which is the client's CURRENT token at send time:
+	// a request prepared before a refresh and sent after it carries the
+	// new one, while key.fingerprint still names the old.
+	sent *sentCredential
+}
+
+// sentCredential is the exchange's slot for the credential that went out,
+// reached from the request's context by authTransport.
+type sentCredential struct {
+	mu sync.Mutex
+	fp string
+}
+
+type sentCredentialCtx struct{}
+
+// credential is the fingerprint of the token this exchange sent, or the
+// one it was prepared with when nothing went out (an unauthorized host).
+func (ex *exchange) credential() string {
+	if ex.sent != nil {
+		ex.sent.mu.Lock()
+		defer ex.sent.mu.Unlock()
+		if ex.sent.fp != "" {
+			return ex.sent.fp
+		}
+	}
+	return ex.key.fingerprint
 }
 
 func (c *Client) call(ctx context.Context, r Request, graphQL bool) (*Response, error) {
@@ -228,7 +292,7 @@ func (c *Client) call(ctx context.Context, r Request, graphQL bool) (*Response, 
 	for {
 		resp, retry, err := c.attempt(ctx, r, graphQL, refreshed)
 		if !retry {
-			return resp, err
+			return resp, c.settleProbe(ctx, err)
 		}
 		refreshed = true
 	}
@@ -269,24 +333,33 @@ func (c *Client) attempt(ctx context.Context, r Request, graphQL, refreshed bool
 }
 
 // settle classifies a read answer, updates the gate and the ETag store and
-// decides whether the call retries after a token refresh.
+// decides whether the call retries after a token refresh, or, for a
+// mutation's second 401, probes the login (probeNeeded).
 func (c *Client) settle(ctx context.Context, ex *exchange, answered *http.Request, resp *http.Response, body []byte, refreshed bool) (*Response, bool, error) {
 	now := c.svc.now()
 	rate := c.observe(ex, resp.Header)
+	c.observeExpiry(ex.key.fingerprint, resp.Header)
 	result := classify(answer{
 		host: c.host, pool: ex.key.pool, method: ex.req.Method, url: c.redact(answered.URL),
 		status: resp.StatusCode, header: resp.Header, body: body, graphQL: ex.graphQL, now: now,
 	})
-	out := &Response{Status: resp.StatusCode, Header: resp.Header, Body: body, Rate: rate}
+	out := &Response{Status: resp.StatusCode, Header: resp.Header, Body: body, Rate: rate, Credential: ex.credential()}
 	switch result.outcome {
 	case outcomeRateLimited:
 		limited := result.err.(*RateLimitedError)
 		limited.Until = c.svc.gates.limited(ex.lease, limited.Until, now)
 		return nil, false, limited
 	case outcomeUnauthorized:
-		used := ex.key.fingerprint
+		used := ex.credential()
+		if ex.noRefresh {
+			return nil, false, result.err
+		}
 		if refreshed {
-			return nil, false, UnauthenticatedError(c.forge, result.err)
+			if mutation(ex.req.Method) {
+				// The probe runs once this attempt has released its slot.
+				return nil, false, &probeNeeded{unauthorized: result.err, fingerprint: used}
+			}
+			return nil, false, c.unauthenticated(result.err, used)
 		}
 		if err := c.refresh(ctx, used); err != nil {
 			return nil, false, err
@@ -426,4 +499,49 @@ func readBounded(r io.Reader, limit int64) ([]byte, error) {
 func drain(resp *http.Response) {
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	_ = resp.Body.Close()
+}
+
+// probeNeeded is settle's answer to a mutation's 401 after the refresh
+// left the token as it was: GitLab answers a merge the user may not
+// perform with 401, the same status an expired token gets. The calling
+// loop settles it with settleProbe after the attempt released its host
+// slot, since the probe needs a slot of its own: probing inside the
+// attempt let mutations holding every slot wait on probes that could
+// never start.
+type probeNeeded struct {
+	unauthorized error // the mutation's 401 *StatusError
+	fingerprint  string
+}
+
+func (p *probeNeeded) Error() string { return p.unauthorized.Error() }
+
+func mutation(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead:
+		return false
+	}
+	return true
+}
+
+// settleProbe turns a probeNeeded into the call's error with one GET of
+// the login's own user (the same path on both forges); any other err is
+// returned as is. A probe answered 200 means the token is live, so the
+// 401 is the forge refusing the action and reaches the caller as its
+// *StatusError. A probe answered 401 is a dead login. A probe that failed
+// any other way (rate limited, a 5xx, unreachable, out of time,
+// cancelled) leaves the login's state unknown and returns its own error,
+// which the caller retries.
+func (c *Client) settleProbe(ctx context.Context, err error) error {
+	probe, ok := err.(*probeNeeded)
+	if !ok {
+		return err
+	}
+	_, probeErr := c.Do(ctx, Request{Path: "user", Timeout: expiryLookupTimeout, expiryLookup: true})
+	if probeErr == nil {
+		return probe.unauthorized
+	}
+	if status, ok := errors.AsType[*StatusError](probeErr); ok && status.Status == http.StatusUnauthorized {
+		return c.unauthenticated(probe.unauthorized, probe.fingerprint)
+	}
+	return probeErr
 }

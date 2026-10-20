@@ -4,13 +4,15 @@
   import ReviewCollapsibleSection from './ReviewCollapsibleSection.svelte';
   import ReviewConversation from './ReviewConversation.svelte';
   import ReviewIconButton from './ReviewIconButton.svelte';
+  import ReviewMergeSection from './ReviewMergeSection.svelte';
   import ReviewResizableBody from './ReviewResizableBody.svelte';
   import ReviewUnresolvedStepper from './ReviewUnresolvedStepper.svelte';
   import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
   import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
+  import { readinessPill } from '../../utils/reviewReadiness';
   import type { PRDetail } from '../../types/models';
 
-  // The PR overview: the first row of the diff list, holding the
+  // The PR overview: the first row of the diff list, holding the Merge,
   // Description and Conversation sections. It scrolls off with the diff
   // like a page heading and is unmounted while the reader is far below,
   // so every piece of state a reader would notice losing (open sections,
@@ -21,12 +23,14 @@
   interface Props {
     review: ReviewPaneState;
     detail: PRDetail;
+    /** A checkout exists, so the Merge section can open conflicts in the pane. */
+    hasWorkspace?: boolean;
   }
 
-  let { review, detail }: Props = $props();
+  let { review, detail, hasWorkspace = false }: Props = $props();
 
   const unresolvedCount = $derived(review.unresolvedThreads.length);
-  const conversationTotal = $derived(review.prThreads.length + detail.latestReviews.length);
+  const conversationTotal = $derived(review.conversationCount);
 
   // The feed renders in live order until the section has shown it once;
   // from then on the order holds and arrivals wait behind the chip.
@@ -38,6 +42,10 @@
 </script>
 
 <div class="flex flex-col gap-2.5 px-[var(--review-slab-inset)] pb-3 pt-2.5" data-testid="review-overview">
+  <!-- A detail with no readiness (an older backend) has no section. -->
+  {#if readinessPill(detail)}
+    <ReviewMergeSection {review} {detail} {hasWorkspace} />
+  {/if}
   {#if detail.body}
     <ReviewCollapsibleSection
       label="Description"

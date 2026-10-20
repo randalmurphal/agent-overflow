@@ -8,6 +8,7 @@
   import { OpenExternalURL } from '../../stores/bindings';
   import { truncateMiddle } from '../../utils/format';
   import { authorDisplayName } from '../../utils/reviewIdentity';
+  import { READINESS_PILL_CLASS, readinessPill } from '../../utils/reviewReadiness';
   import type { ForgeFailure } from '../../utils/forgeFailure';
   import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
   import type { CIJob, CIPipeline, PRDetail } from '../../types/models';
@@ -64,9 +65,11 @@
   }: Props = $props();
 
   const unresolvedCount = $derived(review?.unresolvedThreads.length ?? 0);
-  const conversationTotal = $derived(
-    (review?.prThreads.length ?? 0) + detail.latestReviews.length,
-  );
+  const conversationTotal = $derived(review?.conversationCount ?? detail.latestReviews.length);
+  // The refs line carries the readiness pill and nothing more about
+  // merging: the pill jumps to the Merge section, the one home of the
+  // actions, so every pane reads and does the same thing.
+  const readiness = $derived(readinessPill(detail));
 
   async function openURL(url: string | undefined): Promise<void> {
     if (!url) return;
@@ -190,6 +193,22 @@
       <span class="shrink-0 text-fg-subtle">←</span>
       <span class="truncate text-fg">{truncateMiddle(detail.headRefName, REF_MAX)}</span>
     </span>
+    {#if readiness}
+      {#if review}
+        <button
+          type="button"
+          class="inline-flex items-center rounded-full px-2 py-px text-[0.6875rem] hover:brightness-110 {READINESS_PILL_CLASS[readiness.tone]}"
+          title="Open the Merge section"
+          data-testid="review-pr-readiness"
+          data-state={readiness.state}
+          onclick={() => review?.jumpToOverview('merge')}
+        >
+          {readiness.label}
+        </button>
+      {:else}
+        <span class="inline-flex items-center rounded-full px-2 py-px text-[0.6875rem] {READINESS_PILL_CLASS[readiness.tone]}" data-testid="review-pr-readiness" data-state={readiness.state}>{readiness.label}</span>
+      {/if}
+    {/if}
     {#if detail.mergeability === 'conflicts'}
       {#if hasWorkspace}
         <button
@@ -202,7 +221,7 @@
       {:else}
         <span class="rounded-[var(--radius-field)] border border-error/40 bg-error/10 px-1.5 py-px text-[0.6875rem] text-error">Conflicts</span>
       {/if}
-    {:else if detail.mergeability === 'checking'}
+    {:else if detail.mergeability === 'checking' && !readiness}
       <span class="text-fg-subtle">Checking mergeability...</span>
     {/if}
     <!-- The PR's decision, unless a reviewer's own verdict pill already

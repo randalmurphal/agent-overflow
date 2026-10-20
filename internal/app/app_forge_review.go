@@ -60,6 +60,7 @@ type PRUpdateSubscriptionResult struct {
 	PRKey     string                `json:"prKey"`
 	Detail    gitops.PRDetail       `json:"detail"`
 	Threads   []gitops.ReviewThread `json:"threads"`
+	Events    []gitops.ReviewEvent  `json:"events"`
 	HeadSHA   string                `json:"headSHA"`
 	Error     string                `json:"error"`
 	ErrorKind string                `json:"errorKind"`
@@ -101,6 +102,7 @@ type PRUpdatedEvent struct {
 	PRKey     string                `json:"prKey"`
 	Detail    gitops.PRDetail       `json:"detail"`
 	Threads   []gitops.ReviewThread `json:"threads"`
+	Events    []gitops.ReviewEvent  `json:"events"`
 	HeadSHA   string                `json:"headSHA"`
 	Error     string                `json:"error,omitempty"`
 	ErrorKind string                `json:"errorKind,omitempty"`
@@ -112,6 +114,7 @@ type PRUpdatedEvent struct {
 type prUpdateSnapshot struct {
 	Detail  gitops.PRDetail       `json:"detail"`
 	Threads []gitops.ReviewThread `json:"threads"`
+	Events  []gitops.ReviewEvent  `json:"events"`
 }
 
 // prUpdatePump is the App's per-PR poller: one ticker, one
@@ -351,10 +354,17 @@ type SubmitPRReviewResult struct {
 	PostedReview       bool   `json:"postedReview"`
 	PostedFileComments int    `json:"postedFileComments"`
 	PartialFailurePath string `json:"partialFailurePath,omitempty"`
+	// PartialFailure is the failed follow-up's sentence and
+	// PartialFailureKind its kind (git.ExplainForgeError), never the
+	// forge's raw text.
 	PartialFailure     string `json:"partialFailure,omitempty"`
+	PartialFailureKind string `json:"partialFailureKind,omitempty"`
 }
 
-func mapSubmitPRReviewResult(result gitops.SubmitReviewResult, err error) (SubmitPRReviewResult, error) {
+// mapSubmitPRReviewResult turns a submit's result into the wire answer. A
+// review that landed with a failed follow-up is a result, not an error,
+// and carries the follow-up's failure explained for pr and action.
+func mapSubmitPRReviewResult(pr gitops.PRReference, action gitops.ForgeAction, result gitops.SubmitReviewResult, err error) (SubmitPRReviewResult, error) {
 	if err == nil {
 		return SubmitPRReviewResult{
 			PostedReview:       result.PostedReview,
@@ -363,12 +373,16 @@ func mapSubmitPRReviewResult(result gitops.SubmitReviewResult, err error) (Submi
 	}
 	var partial *gitops.PartialSubmitError
 	if errors.As(err, &partial) {
-		return SubmitPRReviewResult{
+		mapped := SubmitPRReviewResult{
 			PostedReview:       partial.PostedReview,
 			PostedFileComments: partial.PostedFileComments,
 			PartialFailurePath: partial.FailedPath,
-			PartialFailure:     partial.Err.Error(),
-		}, nil
+		}
+		mapped.PartialFailure = partial.Err.Error()
+		if explained, ok := errors.AsType[*gitops.ForgeActionError](gitops.ExplainForgeError(pr, action, partial.Err)); ok {
+			mapped.PartialFailure, mapped.PartialFailureKind = explained.Message, explained.Kind
+		}
+		return mapped, nil
 	}
 	return SubmitPRReviewResult{}, err
 }
@@ -383,7 +397,8 @@ func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review 
 		return SubmitPRReviewResult{}, err
 	}
 	result, err := a.gitCore().SubmitReview(forgeapi.WithInteractive(ctx), pr, review)
-	return mapSubmitPRReviewResult(result, err)
+	mapped, err := mapSubmitPRReviewResult(pr, gitops.ActionReview, result, err)
+	return mapped, gitops.ExplainForgeError(pr, gitops.ActionReview, err)
 }
 
 //ao:scope git:operate
@@ -395,7 +410,7 @@ func (a *App) ReplyToPRThread(ctx context.Context, pr gitops.PRReference, thread
 	if err := pr.Validate(); err != nil {
 		return err
 	}
-	return a.gitCore().ReplyToThread(forgeapi.WithInteractive(ctx), pr, threadID, databaseID, body)
+	return gitops.ExplainForgeError(pr, gitops.ActionReply, a.gitCore().ReplyToThread(forgeapi.WithInteractive(ctx), pr, threadID, databaseID, body))
 }
 
 // SetPRThreadResolved resolves (or reopens) one review thread on the
@@ -418,7 +433,7 @@ func (a *App) SetPRThreadResolved(ctx context.Context, pr gitops.PRReference, th
 	if strings.TrimSpace(threadID) == "" {
 		return errors.New("review thread id is required")
 	}
-	return a.gitCore().SetThreadResolved(forgeapi.WithInteractive(ctx), pr, threadID, resolved)
+	return gitops.ExplainForgeError(pr, gitops.ActionResolve, a.gitCore().SetThreadResolved(forgeapi.WithInteractive(ctx), pr, threadID, resolved))
 }
 
 // SubscribePRUpdates begins polling a pull request for detail/review-thread
@@ -476,7 +491,7 @@ func (a *App) SubscribePRUpdates(ctx context.Context, pr gitops.PRReference) (PR
 		var encoded []byte
 		var fail prForgeFailure
 		if err != nil {
-			fail = a.newPRForgeFailure(err)
+			fail = a.newPRForgeFailure(pr, err)
 			log.Printf("pr updates: first fetch failed for pr=%s (id: %s): %v", prKey, fail.correlationID, err)
 			fetched = prUpdateSnapshot{}
 		} else if encoded, err = encodePRUpdateSnapshot(fetched); err != nil {
@@ -506,6 +521,7 @@ func (a *App) SubscribePRUpdates(ctx context.Context, pr gitops.PRReference) (PR
 		PRKey:       prKey,
 		Detail:      ref.snapshot.Detail,
 		Threads:     ref.snapshot.Threads,
+		Events:      ref.snapshot.Events,
 		HeadSHA:     ref.snapshot.Detail.HeadSHA,
 		Error:       ref.fail.wire,
 		ErrorKind:   ref.fail.kind,
@@ -752,6 +768,17 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 	var ciTick <-chan time.Time
 	var ciRetryDelay time.Duration
 	missedCI := false
+	// runSnapshot polls the detail, threads and events once and folds the
+	// answer into the retry curve; the ticker and a merge action's refresh
+	// request (servePRPumpRequest) both run it. ctx is the pump's, marked
+	// interactive for the request.
+	runSnapshot := func(ctx context.Context) {
+		event, changed := a.pollPRUpdate(ctx, pump)
+		scheduleRetry()
+		if changed {
+			a.emitPRPumpEvent(pump, eventchan.PRUpdated, event)
+		}
+	}
 	// ctx is the pump's, marked interactive when a person's request asked
 	// for the poll (servePRPumpRequest).
 	runCI := func(ctx context.Context, forced map[string]bool, pollPipeline bool) {
@@ -781,7 +808,7 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 		case <-pump.ctx.Done():
 			return
 		case req := <-pump.requests:
-			a.servePRPumpRequest(pump, req, runCI)
+			a.servePRPumpRequest(pump, req, runSnapshot, runCI)
 			continue
 		case <-ciTick:
 			if pump.paused.Load() {
@@ -822,19 +849,16 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 			}
 			continue
 		}
-		event, changed := a.pollPRUpdate(pump)
-		scheduleRetry()
-		if changed {
-			a.emitPRPumpEvent(pump, eventchan.PRUpdated, event)
-		}
+		runSnapshot(pump.ctx)
 		if missedCI || a.prCIWantsPoll(pump) {
 			runCI(pump.ctx, nil, true)
 		}
 	}
 }
 
-// pollPRUpdate fetches one snapshot and folds it into the pump's change
-// detection. changed=false means the observation is identical to the last
+// pollPRUpdate fetches one snapshot under ctx (the pump's, marked
+// interactive when a person's action asked for the poll) and folds it
+// into the pump's change detection. changed=false means the observation is identical to the last
 // one broadcast — including a repeat of the same failure, which must not
 // re-emit every tick while a forge is down.
 //
@@ -845,8 +869,8 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 // after the replacement was created would outrank fresher content. With the
 // guard, a pump only stores while live and successive pumps' live windows
 // for a key cannot overlap.
-func (a *App) pollPRUpdate(pump *prUpdatePump) (PRUpdatedEvent, bool) {
-	snapshot, err := a.fetchPRUpdateSnapshot(pump.ctx, pump.pr)
+func (a *App) pollPRUpdate(ctx context.Context, pump *prUpdatePump) (PRUpdatedEvent, bool) {
+	snapshot, err := a.fetchPRUpdateSnapshot(ctx, pump.pr)
 	if err == nil {
 		var encoded []byte
 		encoded, err = encodePRUpdateSnapshot(snapshot)
@@ -882,6 +906,7 @@ func (a *App) pollPRUpdate(pump *prUpdatePump) (PRUpdatedEvent, bool) {
 				PRKey:   pump.prKey,
 				Detail:  snapshot.Detail,
 				Threads: snapshot.Threads,
+				Events:  snapshot.Events,
 				HeadSHA: snapshot.Detail.HeadSHA,
 				Seq:     seq,
 			}, true
@@ -893,7 +918,7 @@ func (a *App) pollPRUpdate(pump *prUpdatePump) (PRUpdatedEvent, bool) {
 	// server log, the same split internal/transport makes for RPC errors.
 	// The id is minted before the lock so the summary STORED for joiners
 	// and the one EMITTED here are the same string.
-	fail := a.newPRForgeFailure(err)
+	fail := a.newPRForgeFailure(pump.pr, err)
 	// Dedup BEFORE logging: a forge that is down fails identically every
 	// tick, and logging first turned one outage into a log line every 45s
 	// for as long as a pane stayed open.
@@ -1059,13 +1084,13 @@ func (a *App) fetchPRUpdateSnapshot(ctx context.Context, pr gitops.PRReference) 
 	if a.prUpdates.fetchFn != nil {
 		return a.prUpdates.fetchFn(ctx, pr)
 	}
-	// One forge read per tick: the detail and threads together. The CI
-	// phase reads the pipeline on its own cadence (fetchPRCI).
-	read, err := a.gitCore().ReadPR(ctx, pr, gitops.PRReadParts{Detail: true, Threads: true}, nil, nil)
+	// One forge read per tick: the detail, threads and events together.
+	// The CI phase reads the pipeline on its own cadence (fetchPRCI).
+	read, err := a.gitCore().ReadPR(ctx, pr, gitops.PRReadParts{Detail: true, Threads: true, Events: true}, nil, nil)
 	if err != nil {
 		return prUpdateSnapshot{}, err
 	}
-	return prUpdateSnapshot{Detail: read.Detail, Threads: read.Threads}, nil
+	return prUpdateSnapshot{Detail: read.Detail, Threads: read.Threads, Events: read.Events}, nil
 }
 
 func (a *App) prUpdatePollInterval() time.Duration {

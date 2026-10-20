@@ -32,6 +32,7 @@ func TestClassifyForgeFailure(t *testing.T) {
 		{"rate limit", &forgeapi.RateLimitedError{Host: "github.com", Pool: "graphql", Until: until}, forgeFailureRateLimited, false, until},
 		{"reserve", fmt.Errorf("read: %w", &forgeapi.RateLimitedError{Host: "github.com", Pool: "core", Until: until, Reserve: true}), forgeFailureRateLimited, true, until},
 		{"setup", &forgeapi.SetupError{Forge: "github", Binary: "gh", Kind: forgeapi.SetupUnauthenticated, Message: "Run gh auth login."}, forgeFailureSetup, false, time.Time{}},
+		{"forbidden", fmt.Errorf("read: %w", &forgeapi.ForbiddenError{Status: &forgeapi.StatusError{Method: "GET", URL: "https://api.github.com/repos/o/r/pulls/9", Status: 403}, Scope: "repo"}), forgeFailureForbidden, false, time.Time{}},
 		{"transient", fmt.Errorf("read: %w", &forgeapi.TransientError{Err: errors.New("dial tcp: connection refused")}), forgeFailureTransient, false, time.Time{}},
 		{"deadline", fmt.Errorf("read: %w", context.DeadlineExceeded), forgeFailureTransient, false, time.Time{}},
 		{"forge", errors.New("forge GET repos/o/r/pulls/9: HTTP 500"), forgeFailureForge, false, time.Time{}},
@@ -352,8 +353,28 @@ func TestPRUpdateGitLabNotModifiedTickIsQuiet(t *testing.T) {
 	var mu sync.Mutex
 	type seen struct{ path, inm string }
 	var requests []seen
+	var projectReads, userReads atomic.Int32
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		suffix := r.URL.Path[strings.Index(r.URL.Path, "/merge_requests/"):]
+		// The project's merge settings and the viewer's login are read
+		// once, not per tick.
+		if strings.HasSuffix(r.URL.Path, "/projects/group/widget") {
+			projectReads.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"merge_method":"merge"}`))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/user") {
+			userReads.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"username":"dev"}`))
+			return
+		}
+		i := strings.Index(r.URL.Path, "/merge_requests/")
+		if i < 0 {
+			http.NotFound(w, r)
+			return
+		}
+		suffix := r.URL.Path[i:]
 		body, ok := bodies[suffix]
 		if !ok {
 			http.NotFound(w, r)
@@ -414,6 +435,12 @@ func TestPRUpdateGitLabNotModifiedTickIsQuiet(t *testing.T) {
 		if n < ticks-1 || n > ticks {
 			t.Fatalf("requests per endpoint = %v (%s)", perPath, path)
 		}
+	}
+	if n := projectReads.Load(); n != 1 {
+		t.Fatalf("project reads over %d ticks = %d, want 1", ticks, n)
+	}
+	if n := userReads.Load(); n != 1 {
+		t.Fatalf("user reads over %d ticks = %d, want 1", ticks, n)
 	}
 }
 

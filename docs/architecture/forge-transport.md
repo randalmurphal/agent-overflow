@@ -124,6 +124,18 @@ func (Token) MarshalText() ([]byte, error)
   when that is empty (keyring). A glab login with `is_oauth2` true runs
   `glab api --hostname H version` before every read so glab refreshes an
   expired OAuth2 token first; the source keeps no state about expiry.
+- Expiry: GitLab answers an expired or revoked token with a bare 401, so
+  the client learns expiry while the token works (`expiry.go`). A glab
+  token that is not OAuth2 (`SourceInfo.ExpiryLookup`) costs one
+  `GET personal_access_tokens/self` on the first request after it is read,
+  once per token fingerprint, inside that request's `prepare` and context,
+  10s bound; the client keeps `expires_at` (a date, UTC midnight) and
+  `revoked`. The lookup never sends its own lookup, never refreshes on its
+  401, and never fails the request: a failure is logged once per host and
+  that token is not asked again. GitHub's expiry is the
+  `GitHub-Authentication-Token-Expiration` response header (fine-grained
+  and expiring tokens), kept per fingerprint from any response, no extra
+  request. An isolated boot's fixed token is never looked up.
 - Header: GitHub `Authorization: Bearer`. GitLab `Private-Token` for a
   personal token, `Authorization: Bearer` for an OAuth2 login (both verified
   against gitlab.com; glab itself sends `Private-Token` for a PAT).
@@ -144,6 +156,15 @@ func (Token) MarshalText() ([]byte, error)
   "not logged in".
 - Fingerprint: `sha256(token)` keys the rate gates and the ETag store, so
   a token never appears in a map key, a log or a test name.
+  `Client.CredentialFingerprint(ctx)` returns the current token's, read
+  as a request reads it (first use, the 5-minute re-read, a 401), for a
+  caller that caches what the login is allowed to see: GitLab's viewer
+  and project settings are looked up by it and published under
+  `Response.Credential`, the fingerprint of the token the request sent
+  (a refresh between the lookup and the send, or a 401 inside the call,
+  can have replaced the one the lookup saw), so
+  another login never reads the
+  previous one's.
 - Where the token must never appear: argv, environment, log lines, error
   strings, `StatusError` bodies, the diagnostics bundle, `uiRenderTrace`,
   harness invocation records, the transport wire. Only `authorize` touches
@@ -156,10 +177,20 @@ func (Token) MarshalText() ([]byte, error)
 ## Reads per tick
 
 The PR pump reads a PR with one `Forge.ReadPR(ctx, ref, want, prev,
-stepsFor)` per tick. `want` (`git.PRReadParts{Detail, Threads, CI}`) names
+stepsFor)` per tick. `want` (`git.PRReadParts{Detail, Threads, CI, Events}`) names
 the parts the caller needs and the read fetches nothing else: the pump
-asks for `Detail` and `Threads`, the CI phase for `CI` alone on its own
-cadence. `git.Core` keeps `GetPRDetail`, `ListReviewThreads` and
+asks for `Detail`, `Threads` and `Events` (the forge events the
+Conversation feed shows: approvals, merges, draft flips, auto-merge,
+force pushes), the CI phase for `CI` alone on its own cadence. A merge
+action (`ApprovePR`, `UnapprovePR`, `MergePR`, `CancelPRAutoMerge`,
+`UpdatePRBranch`, `MarkPRReady`) that succeeds asks the PR's live pump for
+one snapshot poll at once (`prPumpRequest.snapshot`), so every pane on the
+PR follows the forge's answer without waiting out the interval, and
+answers with the pump's sequence after that poll (`PRActionResult.Seq`,
+zero with no pane on the PR) so the pane knows when the answer is on its
+screen; the
+readiness, merge options and events in the detail come from that read,
+never from the action's own response. `git.Core` keeps `GetPRDetail`, `ListReviewThreads` and
 `ListPRCIJobs` as one-part wrappers for the callers that need one part.
 
 GitHub answers a read with one GraphQL request, `PRTick`:
@@ -167,16 +198,22 @@ GitHub answers a read with one GraphQL request, `PRTick`:
 | Variable | Selects |
 |---|---|
 | `owner`, `name`, `number` | the pull request; `number` is always selected |
-| `wantDetail` | `viewer`, the detail fields and `latestReviews(first: 100)` |
-| `wantChecks` | `commits(last: 1)`: the head commit's `id` and `statusCheckRollup.contexts(first: 100)`; true for `Detail` or `CI`, since the detail's check summary and the pipeline both come from the rollup |
+| `wantDetail` | `viewer`, the detail fields, `latestReviews(first: 100)`, and what readiness and merge options derive from: the merge state and viewer flags, `autoMergeRequest`, `latestOpinionatedReviews(first: 100)`, `threadStates: reviewThreads(first: 100) { isResolved }`, `baseRef { refUpdateRule rules(first: 100) }`, and the repository's merge methods, `deleteBranchOnMerge`, `autoMergeAllowed`, `viewerPermission` and `viewerDefaultMergeMethod` |
+| `wantChecks` | `commits(last: 1)`: the head commit's `id` and `statusCheckRollup.contexts(first: 100)`, each with `isRequired(pullRequestNumber: $number)`; true for `Detail` or `CI`, since the detail's check summary and readiness and the pipeline all come from the rollup |
 | `wantThreads` | `reviewThreads(first: 100)`, each with `comments(first: 100)`, and `comments(first: 100)` |
+| `wantEvents` | `timelineItems(last: 100, itemTypes: [...])`: the review, merge, close, reopen, draft, auto-merge, force-push, base-change and review-request items `ReviewEvent` maps |
 
 The document is the same every tick; the parts are `@include` directives
 on those variables. A connection longer than one page continues with its
 own operation from the page's `endCursor`: `PRThreadsPage` and
 `PRCommentsPage(owner, name, number, after)`, `ThreadCommentsPage(threadID,
-after)` and `RollupContextsPage(commitID, after)` through `node(id:)`.
-Each connection reads at most `githubReadMaxPages` (10) pages of 100. A
+after)` and `RollupContextsPage(commitID, number, after)` through `node(id:)`.
+`PRThreadStatesPage(owner, name, number, after)` continues the thread
+states only when readiness needs them (the base requires conversation
+resolution and the first page has no unresolved thread), and
+`PRTimelinePage(owner, name, number, before)` reads the timeline backwards
+from the tick's newest page. Each connection reads at most
+`githubReadMaxPages` (10) pages of 100. A
 CI read adds REST requests only for what the rollup lacks: the jobs list
 of a run (`repos/O/R/actions/runs/ID/jobs?per_page=100`, paged by `Link`)
 while a job in `stepsFor` has steps that are not settled in `prev`, and a
@@ -190,17 +227,37 @@ CI log store, 404 is `ErrCIJobLogNotFound`).
 | CI phase, a followed running job | 1 (`PRTick`) + 1 jobs-list page per run |
 | CI phase, a followed running job's log | 1 logs request (a 302, then the blob's 404 until it exists, in practice until the job completed) |
 
+A GitHub merge action reads the PR's node id, head branch and the
+repository's `deleteBranchOnMerge` with `PRMergeTarget(owner, name,
+number)`, then runs its mutation; `Approve` and `Unapprove` need no node
+id.
+
+| Action | GitHub requests |
+|---|---|
+| `Approve` | 1 REST `POST repos/O/R/pulls/N/reviews` (`event: APPROVE`, `commit_id`) |
+| `Unapprove` | 1 `DismissReview` (`dismissPullRequestReview`), after 1 `ViewerApproval(owner, name, number)` (`latestOpinionatedReviews`) when the caller has no review id |
+| `Merge` | `PRMergeTarget` + `MergePR` (`mergePullRequest`, `expectedHeadOid`), + 1 REST `DELETE repos/O/R/git/refs/heads/B` when asked and the repository does not delete merged branches |
+| `Merge` with `AutoMerge` | `PRMergeTarget` + `EnableAutoMerge` (`enablePullRequestAutoMerge`, `expectedHeadOid`) |
+| `CancelAutoMerge`, `UpdateBranch`, `MarkReady` | `PRMergeTarget` + `DisableAutoMerge`, `UpdatePRBranch` (`expectedHeadOid`) or `MarkPRReady` |
+
 GitLab's `ReadPR` reads the merge request once
 (`projects/P/merge_requests/N`) and derives every part from it: `Detail`
-adds its approvals, `Threads` its discussions (`per_page=100`, paged by
-`X-Next-Page`, positions normalized against `diff_refs.head_sha`), and `CI`
+adds its approvals, the project's merge settings (`projects/P`, cached
+per login and project for 10 minutes, then revalidated through the ETag
+store: a `W/` ETag answered 304) and the viewer's login (`user`, cached
+per login and host for 10 minutes; the author may cancel an auto-merge, and a refused read
+is cached as an unknown viewer), `Threads` and `Events` its discussions
+(`per_page=100`, paged by `X-Next-Page`, positions normalized against
+`diff_refs.head_sha`; one read serves both, system notes are the events,
+and the merge request's `merged_at`/`closed_at` supply the merge and close
+GitLab records as state events rather than notes), and `CI`
 the jobs of its `head_pipeline` (`per_page=100`, paged by `X-Next-Page`,
 at most `gitlabCIJobsMaxPages` (5) pages). A job's trace is read on
 request (`StreamCIJobLog`, as on GitHub).
 
 | Tick | GitLab requests |
 |---|---|
-| Pump (`Detail`, `Threads`) | 1 merge request + 1 approvals + 1 discussions page per 100 discussions |
+| Pump (`Detail`, `Threads`, `Events`) | 1 merge request + 1 approvals + 1 discussions page per 100 discussions; + 1 `projects/P` per login and project and 1 `user` per login and host per 10 minutes |
 | CI phase, a head pipeline | 1 merge request + 1 jobs page per 100 jobs |
 | CI phase, no head pipeline | 1 merge request |
 | Log follow, a followed running job (every 5s) | 1 trace (304 while unchanged) |
@@ -309,6 +366,7 @@ func (c *Client) JSON(ctx context.Context, r Request, out any) (*Response, error
 func (c *Client) GraphQL(ctx context.Context, operation, query string, vars map[string]any, out any) (*Response, error)
 func (c *Client) Stream(ctx context.Context, r Request, dst io.Writer, limit int64) (*Response, error)
 func (c *Client) Pages(ctx context.Context, r Request, visit func(*Response) (more bool, err error)) error
+func (c *Client) CredentialFingerprint(ctx context.Context) (string, error) // see Credentials
 ```
 
 - `GraphQL` sends variables as JSON `variables`, never interpolated into
@@ -347,23 +405,35 @@ errors, success. Rate limited means 429; 403 with `X-RateLimit-Remaining:
 0`, a `Retry-After` header or a body matching `rate limit`; or a 200
 GraphQL envelope with a `RATE_LIMITED` error or errors beside
 `X-RateLimit-Remaining: 0`. Any other 403 (SSO enforcement, a missing
-scope) is a plain `*StatusError`, never "unauthenticated".
+scope or permission) is a `*ForbiddenError`, never "unauthenticated".
 
 | Observation | Error | Caller behavior |
 |---|---|---|
 | CLI missing when the token is read | `*SetupError{Kind: "missing"}` | Setup banner, as today |
-| CLI present, no token for the host | `*SetupError{Kind: "unauthenticated"}` | Setup banner |
-| 401 after one token refresh | `*SetupError{Kind: "unauthenticated"}` | Setup banner |
-| 403 without rate-limit headers | `*StatusError` (scope or permission) | Shown as the forge's message |
+| CLI present, no token for the host | `*SetupError{Kind: "unauthenticated", Host}` | Setup banner |
+| 401 after one token refresh, on a read, or on a mutation whose probe of the login's own `user` is answered 401 (one GET, sent after the mutation released its host slot; GitLab answers a merge the login may not perform with 401) | `*SetupError{Kind: "unauthenticated", Host, ExpiredAt}`: `ExpiredAt` when the token's remembered expiry (see Credentials) has passed; a remembered revocation leaves it zero and says "revoked" in `Message` | Setup banner; `git.ExplainForgeError` names the expiry date |
+| 401 after one token refresh on a mutation while the login still reads `user` | `*StatusError` (the forge refused the action) | `git.ExplainForgeError`: "FORGE did not let you ACTION NAME." |
+| 401 after one token refresh on a mutation whose `user` probe fails otherwise (rate limited, 5xx, unreachable, timeout, cancelled) | the probe's own error | Retry; never "log in again" |
+| 403 without rate-limit headers | `*ForbiddenError{Status, Scope, Message}`: `Scope` only with evidence the token lacks it, GitLab's `insufficient_scope` body or GitHub's `X-Accepted-OAuth-Scopes` beside an `X-OAuth-Scopes` granting none of them (the first accepted one); a fine-grained token's "Resource not accessible by personal access token" is a permission, no `Scope`; `Message` the body's | `git.ExplainForgeError` names the scope; else an action shows the forge's message and a read the project |
 | Rate limited (rules above), or refused for the reserve | `*RateLimitedError{Host, Pool, Until, Reserve}` | Pollers wait for `Until`; see below |
 | 404 on a PR-, job- or thread-scoped path | `*StatusError` matching `errors.Is(err, ErrNotFound)` | `ErrCIJobLogNotFound`, PR gone, log not published yet |
 | 404 on a repository- or project-scoped path | `*StatusError` | Reaches the user: wrong project or no access, never an empty list |
 | 304 | no error, `Response.NotModified` | Caller keeps its state |
 | Dial, DNS, TLS, timeout | `*TransientError` wrapping the cause | Retry on the next tick |
 | GraphQL `errors` | `*GraphQLError{Problems, Data}` | Caller decides on partial data |
+| GraphQL `errors` with a `NOT_FOUND` problem | `*GraphQLError{Problems, Data}` | `git.ExplainForgeError`: kind `not_found`, the REST 404 sentence |
 
 `StatusError.Error()` carries the method, the redacted URL, the status and a
 bounded body (4 KiB). No forge error is classified from CLI stderr.
+
+A bound method that acts on a PR (`SubmitPRReview`, `ReplyToPRThread`,
+`SetPRThreadResolved`, the merge actions) returns its forge failure
+through `git.ExplainForgeError`: one sentence naming the cause and the
+fix, carried as reviewed prose under the code `forge_<kind>` (`transient`,
+`rate_limited`, `setup`, `forbidden`, `not_found`, `stale_head`, `refused`,
+`forge`) with the forge's own error in the detail chain. The client shows
+the sentence and keys its one action on the code (`forge_stale_head`
+offers Reload).
 
 ## Rate limits
 
@@ -406,7 +476,7 @@ identical failures, except that a rate-limited failure dedups on
 out when the resume time moves and not on every tick. `pr:updated`,
 `pr:ci_updated`, `pr:ci_log` and the `SubscribePRUpdates` result (for CI,
 `CIErrorKind`, `CIReserve`, `CIResumeAt`) carry `ErrorKind` (`transient`,
-`rate_limited`, `setup`, `forge`), `Reserve` and `ResumeAt` (RFC 3339, set
+`rate_limited`, `setup`, `forbidden`, `forge`), `Reserve` and `ResumeAt` (RFC 3339, set
 for `rate_limited` only) beside the caller-safe `Error`, so the pane
 chooses the surface instead of parsing text. `classifyForgeFailure`
 (`internal/app/app_forge_failure.go`) is the one classification.
@@ -429,6 +499,9 @@ chooses the surface instead of parsing text. `classifyForgeFailure`
 - `setup`: `Error` is the `SetupError` message, which names the login to
   fix and carries no forge text; the pane shows it in its own banner
   (`review-pr-setup`) with no "Retrying" prefix.
+- `forbidden`: `Error` is the `git.ExplainForgeError` sentence naming the
+  missing scope or the project the login cannot see, no forge text; the
+  pane shows it in the setup banner.
 - `transient` and `forge`: "Retrying: failed to refresh pull request
   (id: ...)", the correlation id that finds the raw error in the server
   log.

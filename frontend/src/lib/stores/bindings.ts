@@ -515,6 +515,14 @@ export {
   SubmitPRReview,
   ReplyToPRThread,
   SetPRThreadResolved,
+  // The Merge section's actions (docs/specs/pull-requests.md): each is the
+  // user's own, and a success has the PR's pump poll at once.
+  ApprovePR,
+  UnapprovePR,
+  MergePR,
+  CancelPRAutoMerge,
+  UpdatePRBranch,
+  MarkPRReady,
   SubscribePRUpdates,
   UnsubscribePRUpdates,
   SetPRUpdatesActive,

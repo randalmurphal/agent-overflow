@@ -76,14 +76,21 @@ type Forge interface {
 	// A body larger than maxBytes is an error, not a truncation. See
 	// forge_attachment.go.
 	FetchAttachment(ctx context.Context, ref PRReference, target forgeattach.Target, maxBytes int64) ([]byte, error)
+	// The merge actions: approvals, merging, auto-merge, branch updates
+	// (forge_merge.go).
+	ForgeMerger
 }
 
-// PRReadParts names the parts of a PR one ReadPR decodes.
+// PRReadParts names the parts of a PR one ReadPR decodes. Events are the
+// forge's activity rows (ReviewEvent); a forge reads them with the
+// threads' request when it can (GitLab's system notes are discussions,
+// GitHub's timeline items ride PRTick), so asking for both costs nothing
+// more than threads alone.
 type PRReadParts struct {
-	Detail, Threads, CI bool
+	Detail, Threads, CI, Events bool
 }
 
-func (p PRReadParts) none() bool { return !p.Detail && !p.Threads && !p.CI }
+func (p PRReadParts) none() bool { return !p.Detail && !p.Threads && !p.CI && !p.Events }
 
 // PRRead is one ReadPR answer. A part ReadPR was not asked for is zero.
 // HasCI reports that the CI part was read, so a caller can tell a PR
@@ -91,6 +98,7 @@ func (p PRReadParts) none() bool { return !p.Detail && !p.Threads && !p.CI }
 type PRRead struct {
 	Detail  PRDetail
 	Threads []ReviewThread
+	Events  []ReviewEvent
 	CI      CIPipeline
 	HasCI   bool
 }
@@ -147,6 +155,14 @@ type PRDetail struct {
 	Checks         CheckSummary    `json:"checks"`
 	Mergeability   string          `json:"mergeability"`
 	DiffRefs       *PRDiffRefs     `json:"diffRefs,omitempty"`
+	// Readiness and Merge feed the review pane's Merge section
+	// (forge_merge.go). MergedAt, MergedBy and ClosedAt name the end of a
+	// PR that is no longer open; empty while it is.
+	Readiness MergeReadiness `json:"readiness"`
+	Merge     MergeOptions   `json:"merge"`
+	MergedAt  string         `json:"mergedAt,omitempty"`
+	MergedBy  string         `json:"mergedBy,omitempty"`
+	ClosedAt  string         `json:"closedAt,omitempty"`
 }
 
 type PRDiffRefs struct {

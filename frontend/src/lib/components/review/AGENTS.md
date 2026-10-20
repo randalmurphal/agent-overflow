@@ -31,12 +31,22 @@ PR stores; components own presentation and interaction.
   names a different line once the held range moves.
 - Preserve line identity across refreshes so open threads, selections, and
   measured rows do not move unnecessarily.
-- The PR overview (`ReviewOverview`: Description and Conversation) is the
-  diff list's first row (`kind: 'overview'`, key `REVIEW_OVERVIEW_ROW_KEY`),
-  measured like any row and unmounted when far below, so section open
-  state, section scroll offsets and the frozen feed live in the review
-  store. Reading anchors name it as path `''`. `ReviewDiffBody` reports the
-  row scrolling off (`onOverviewOffChange`); the title bar's peek buttons
+- The PR overview (`ReviewOverview`: Merge, Description and Conversation)
+  is the diff list's first row (`kind: 'overview'`, key
+  `REVIEW_OVERVIEW_ROW_KEY`) for every PR, measured like any row and
+  unmounted when far below, so section open state, section scroll offsets
+  and the frozen feed live in the review store. The Merge section
+  (`ReviewMergeSection`) is the one home of approve, merge and auto-merge
+  on every surface: the title bar's refs line carries only the readiness
+  pill, which jumps to it, and both read `utils/reviewReadiness.ts` so
+  they never disagree. Its actions go through the store
+  (`approvePR`, `mergePR`, …), which holds `mergeAction` pending until the
+  PR's applied seq reaches the one the action answered with (the pump's
+  seq after its poll) and toasts a failure as the
+  backend's one sentence (code `forge_<kind>`; `forge_stale_head` offers
+  Reload). Never render merged, approved or armed state from a call's
+  success; the forge's answer arrives on the snapshot. Reading anchors
+  name it as path `''`. `ReviewDiffBody` reports the row scrolling off (`onOverviewOffChange`); the title bar's peek buttons
   return through `jumpToOverview`. With a commit picked the lead row is
   the commit card instead, which has no peek and no conversation to jump
   to: `overviewOff` stays false and thread rows offer no conversation jump.

@@ -63,10 +63,13 @@ type PRCIUpdatedEvent struct {
 // (ci) and fetch these jobs' logs now, pause or not. done closes once the
 // poll ran; err is the pipeline poll's failure when ci was asked.
 type prPumpRequest struct {
-	ci     bool
-	jobIDs []string
-	done   chan struct{}
-	err    error
+	// snapshot polls the detail, threads and events now (after a merge
+	// action); ci the pipeline; jobIDs the logs to force.
+	snapshot bool
+	ci       bool
+	jobIDs   []string
+	done     chan struct{}
+	err      error
 }
 
 func (a *App) fetchPRCI(ctx context.Context, pr gitops.PRReference, prev *gitops.CIPipeline, stepsFor []string) (gitops.CIPipeline, error) {
@@ -224,7 +227,7 @@ func (a *App) pollPRCI(ctx context.Context, pump *prUpdatePump) (PRCIUpdatedEven
 			return PRCIUpdatedEvent{PRKey: pump.prKey, Pipeline: &pipeline, Seq: seq}, true
 		}
 	}
-	fail := a.newPRForgeFailure(err)
+	fail := a.newPRForgeFailure(pump.pr, err)
 	a.prUpdates.mu.Lock()
 	if pump.dead {
 		a.prUpdates.mu.Unlock()
@@ -294,12 +297,17 @@ func (a *App) requestPRPump(ctx context.Context, pump *prUpdatePump, req *prPump
 // asks for and emits what changed. Returns the pipeline poll's active
 // failure when the request asked for one. The polls run under the pump's
 // context, marked interactive: a person asked for them.
-func (a *App) servePRPumpRequest(pump *prUpdatePump, req *prPumpRequest, runCI func(ctx context.Context, forced map[string]bool, pollPipeline bool)) {
+func (a *App) servePRPumpRequest(pump *prUpdatePump, req *prPumpRequest, runSnapshot func(ctx context.Context), runCI func(ctx context.Context, forced map[string]bool, pollPipeline bool)) {
+	ctx := forgeapi.WithInteractive(pump.ctx)
+	if req.snapshot {
+		runSnapshot(ctx)
+	}
 	forced := make(map[string]bool, len(req.jobIDs))
 	for _, jobID := range req.jobIDs {
 		forced[jobID] = true
 	}
-	runCI(forgeapi.WithInteractive(pump.ctx), forced, req.ci)
+	// A moved snapshot marks the pipeline dirty; runCI polls it then.
+	runCI(ctx, forced, req.ci)
 	if req.ci {
 		a.prUpdates.mu.Lock()
 		if pump.ciFail.failing() {

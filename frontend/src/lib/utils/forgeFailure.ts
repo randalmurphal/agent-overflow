@@ -6,7 +6,7 @@
 import { formatTimeOfDay } from './format';
 import { forgeLabels } from './forgeLabels';
 
-export type ForgeFailureKind = 'transient' | 'rate_limited' | 'setup' | 'forge';
+export type ForgeFailureKind = 'transient' | 'rate_limited' | 'setup' | 'forbidden' | 'forge';
 
 export interface ForgeFailure {
   readonly kind: ForgeFailureKind;
@@ -24,7 +24,7 @@ export interface ForgeFailureWire {
   resumeAt?: string;
 }
 
-const KINDS: ReadonlySet<string> = new Set<ForgeFailureKind>(['transient', 'rate_limited', 'setup', 'forge']);
+const KINDS: ReadonlySet<string> = new Set<ForgeFailureKind>(['transient', 'rate_limited', 'setup', 'forbidden', 'forge']);
 
 /** The failure a wire payload names; null when it names no known kind. */
 export function forgeFailureFrom(wire: ForgeFailureWire): ForgeFailure | null {
