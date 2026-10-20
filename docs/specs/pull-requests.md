@@ -119,17 +119,21 @@ AutoMergeAvailable, AutoMerge, ViewerCanMerge, ViewerCanApprove,
 ViewerApproved, CannotApproveReason, CannotMergeReason}`. `Methods` lists
 what the project allows (`merge`, `squash`, `rebase`; GitLab's `ff` is
 `rebase`), the project default first. `AutoMerge` is the armed request
-when one exists (`{Method, ByLogin, ByName, At, WaitsFor, CanCancel}`). The menu shows exactly these. Project settings are
-read once per repository and revalidated through the ETag store, never
-per tick.
+when one exists (`{Method, ByLogin, ByName, At, WaitsFor, CanCancel}`).
+The menu shows exactly these. GitLab project settings are read once per
+repository and revalidated through the ETag store, never per tick;
+GitHub's repository settings ride `PRTick` with the detail at no extra
+request, its default being `viewerDefaultMergeMethod` (the viewer's last
+used method or the repository's default) and its methods narrowed by the
+base's rulesets (`allowedMergeMethods`).
 
 ### Actions
 
 - Approve: GitLab `POST .../approve` with the head `sha`; GitHub a review
   with the approve verdict (the existing `SubmitReview`). Unapprove:
   GitLab `POST .../unapprove`; GitHub `dismissPullRequestReview` on the
-  viewer's latest approval (`latestReviews` carries the review id and
-  `viewerDidAuthor`). A viewer who cannot approve (GitHub: the author;
+  viewer's latest approval (`latestOpinionatedReviews` carries the review
+  id and `viewerDidAuthor`). A viewer who cannot approve (GitHub: the author;
   GitLab: `user_can_approve` false) sees no button, and the approvals
   blocker row says why.
 - Merge now: GitLab `PUT .../merge` with `squash`,
@@ -161,7 +165,7 @@ Text, Ref}` with `Kind` from `approved`, `unapproved`, `review_dismissed`,
 `auto_merge_set`, `auto_merge_canceled`, `force_pushed`, `rebased`,
 `review_requested`, `base_changed`. GitLab reads them from the system
 notes already in the discussions read (no extra request); GitHub from
-`timelineItems` inside `PRTick` under `$wantThreads`. Pushes stay the
+`timelineItems` inside `PRTick` under `$wantEvents`. Pushes stay the
 commit groups the feed already builds from git. Events are feed items of
 kind `event`, in time order with the rest, frozen and revealed like
 threads. Label, milestone and assignee changes are not events.
@@ -283,9 +287,11 @@ fake forge on desktop and compact.
 - GitLab before 17.11 has no `auto_merge`; the client sends
   `merge_when_pipeline_succeeds` when the server rejects `auto_merge` with
   a 400 naming it, once per host, remembered for the process.
-- GitHub `latestReviews` lists one review per author; the viewer's
-  approval to dismiss is the one with `viewerDidAuthor`. A dismissed
-  review stays in the timeline as `review_dismissed`.
+- GitHub `latestReviews` lists each author's latest review, so a comment
+  after an approval hides it; `latestOpinionatedReviews` lists each
+  author's latest approval or change request, and the viewer's approval
+  to dismiss is the one with `viewerDidAuthor`. A dismissed review stays
+  in the timeline as `review_dismissed`.
 - A merge the forge accepts but the pump reads as still open for one tick
   (GitLab merges asynchronously) shows the pending button until the frame
   with `merged` lands; the toast says "Merging…" only if the forge

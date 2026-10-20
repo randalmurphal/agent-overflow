@@ -156,7 +156,7 @@ func (Token) MarshalText() ([]byte, error)
 ## Reads per tick
 
 The PR pump reads a PR with one `Forge.ReadPR(ctx, ref, want, prev,
-stepsFor)` per tick. `want` (`git.PRReadParts{Detail, Threads, CI}`) names
+stepsFor)` per tick. `want` (`git.PRReadParts{Detail, Threads, CI, Events}`) names
 the parts the caller needs and the read fetches nothing else: the pump
 asks for `Detail`, `Threads` and `Events` (the forge events the
 Conversation feed shows: approvals, merges, draft flips, auto-merge,
@@ -174,16 +174,22 @@ GitHub answers a read with one GraphQL request, `PRTick`:
 | Variable | Selects |
 |---|---|
 | `owner`, `name`, `number` | the pull request; `number` is always selected |
-| `wantDetail` | `viewer`, the detail fields and `latestReviews(first: 100)` |
-| `wantChecks` | `commits(last: 1)`: the head commit's `id` and `statusCheckRollup.contexts(first: 100)`; true for `Detail` or `CI`, since the detail's check summary and the pipeline both come from the rollup |
+| `wantDetail` | `viewer`, the detail fields, `latestReviews(first: 100)`, and what readiness and merge options derive from: the merge state and viewer flags, `autoMergeRequest`, `latestOpinionatedReviews(first: 100)`, `threadStates: reviewThreads(first: 100) { isResolved }`, `baseRef { refUpdateRule rules(first: 100) }`, and the repository's merge methods, `deleteBranchOnMerge`, `autoMergeAllowed`, `viewerPermission` and `viewerDefaultMergeMethod` |
+| `wantChecks` | `commits(last: 1)`: the head commit's `id` and `statusCheckRollup.contexts(first: 100)`, each with `isRequired(pullRequestNumber: $number)`; true for `Detail` or `CI`, since the detail's check summary and readiness and the pipeline all come from the rollup |
 | `wantThreads` | `reviewThreads(first: 100)`, each with `comments(first: 100)`, and `comments(first: 100)` |
+| `wantEvents` | `timelineItems(last: 100, itemTypes: [...])`: the review, merge, close, reopen, draft, auto-merge, force-push, base-change and review-request items `ReviewEvent` maps |
 
 The document is the same every tick; the parts are `@include` directives
 on those variables. A connection longer than one page continues with its
 own operation from the page's `endCursor`: `PRThreadsPage` and
 `PRCommentsPage(owner, name, number, after)`, `ThreadCommentsPage(threadID,
-after)` and `RollupContextsPage(commitID, after)` through `node(id:)`.
-Each connection reads at most `githubReadMaxPages` (10) pages of 100. A
+after)` and `RollupContextsPage(commitID, number, after)` through `node(id:)`.
+`PRThreadStatesPage(owner, name, number, after)` continues the thread
+states only when readiness needs them (the base requires conversation
+resolution and the first page has no unresolved thread), and
+`PRTimelinePage(owner, name, number, before)` reads the timeline backwards
+from the tick's newest page. Each connection reads at most
+`githubReadMaxPages` (10) pages of 100. A
 CI read adds REST requests only for what the rollup lacks: the jobs list
 of a run (`repos/O/R/actions/runs/ID/jobs?per_page=100`, paged by `Link`)
 while a job in `stepsFor` has steps that are not settled in `prev`, and a
@@ -196,6 +202,19 @@ CI log store, 404 is `ErrCIJobLogNotFound`).
 | CI phase, no followed job | 1 (`PRTick`) |
 | CI phase, a followed running job | 1 (`PRTick`) + 1 jobs-list page per run |
 | CI phase, a followed running job's log | 1 logs request (a 302, then the blob's 404 until it exists, in practice until the job completed) |
+
+A GitHub merge action reads the PR's node id, head branch and the
+repository's `deleteBranchOnMerge` with `PRMergeTarget(owner, name,
+number)`, then runs its mutation; `Approve` and `Unapprove` need no node
+id.
+
+| Action | GitHub requests |
+|---|---|
+| `Approve` | 1 REST `POST repos/O/R/pulls/N/reviews` (`event: APPROVE`, `commit_id`) |
+| `Unapprove` | 1 `DismissReview` (`dismissPullRequestReview`), after 1 `ViewerApproval(owner, name, number)` (`latestOpinionatedReviews`) when the caller has no review id |
+| `Merge` | `PRMergeTarget` + `MergePR` (`mergePullRequest`, `expectedHeadOid`), + 1 REST `DELETE repos/O/R/git/refs/heads/B` when asked and the repository does not delete merged branches |
+| `Merge` with `AutoMerge` | `PRMergeTarget` + `EnableAutoMerge` (`enablePullRequestAutoMerge`, `expectedHeadOid`) |
+| `CancelAutoMerge`, `UpdateBranch`, `MarkReady` | `PRMergeTarget` + `DisableAutoMerge`, `UpdatePRBranch` (`expectedHeadOid`) or `MarkPRReady` |
 
 GitLab's `ReadPR` reads the merge request once
 (`projects/P/merge_requests/N`) and derives every part from it: `Detail`

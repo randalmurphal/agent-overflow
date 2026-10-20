@@ -91,3 +91,67 @@ empty body. The pipeline jobs list carries a weak `ETag` but answers 200 to
   `1000-` and a start past the end all answer 200 with the whole body. A
   missing job answers `{"message":"404 Not found"}`; `glab` prints
   `glab: 404 Not found (HTTP 404)`.
+
+## Merge readiness and actions
+
+GitHub only, 2026-10-20: read-only `__type` introspection and queries on
+github.com with the developer's `gh` login, on randalmurphal/agent-overflow
+(viewer `ADMIN`, rulesets only) and cli/cli (viewer `READ`, branch
+protection on `trunk`). No mutation was run.
+
+- `PullRequest` has `mergeable`, `mergeStateStatus`, `merged`, `mergedAt`,
+  `mergedBy`, `closedAt`, `isDraft`, `reviewDecision`, `viewerDidAuthor`,
+  `isCrossRepository`, `autoMergeRequest`, `viewerCanEnableAutoMerge`,
+  `viewerCanDisableAutoMerge`, `viewerCanMergeAsAdmin`,
+  `viewerCanUpdateBranch`, `latestReviews`, `latestOpinionatedReviews`,
+  `viewerLatestReview` and `timelineItems(itemTypes:)`, all answered as
+  `READ`. `viewerCanDeleteHeadRef` is documented as whether the viewer can
+  restore a deleted head ref.
+- `MergeStateStatus` is `DIRTY`, `UNKNOWN`, `BLOCKED`, `BEHIND`,
+  `UNSTABLE` ("mergeable with non-passing commit status"), `HAS_HOOKS`,
+  `CLEAN`, and `DRAFT`, deprecated for `isDraft` and listed only with
+  `includeDeprecated`. A merged PR answers `UNKNOWN`.
+- `latestReviews` shows a reviewer's later `COMMENTED` review in place of
+  their approval; `latestOpinionatedReviews` keeps the `APPROVED`
+  (cli/cli#14475). Its nodes have `id`, `viewerDidAuthor` and
+  `authorCanPushToRepository`.
+- `Ref.refUpdateRule` (protection "viewable by non-admins":
+  `requiredApprovingReviewCount`, `requiredStatusCheckContexts`,
+  `requiresCodeOwnerReviews`, `requiresConversationResolution`) answered
+  as `READ` on cli/cli and null on agent-overflow, which has rulesets
+  only. `Ref.branchProtectionRule` was null as `READ`. `Ref.rules` (active
+  ruleset rules) answered for both viewers; `PULL_REQUEST` parameters
+  (`requiredApprovingReviewCount`, `requireCodeOwnerReview`,
+  `requiredReviewThreadResolution`, `allowedMergeMethods`) and
+  `REQUIRED_STATUS_CHECKS` contexts were seen as `ADMIN` only, since
+  cli/cli has neither rule.
+- `CheckRun.isRequired` and `StatusContext.isRequired` take
+  `pullRequestNumber`; they answered as `READ` on cli/cli and include
+  ruleset-required checks on agent-overflow.
+- `Repository` has `mergeCommitAllowed`, `squashMergeAllowed`,
+  `rebaseMergeAllowed`, `deleteBranchOnMerge`, `autoMergeAllowed`,
+  `allowUpdateBranch`, `viewerPermission` (`ADMIN`, `MAINTAIN`, `WRITE`,
+  `TRIAGE_PLUS`, `TRIAGE`, `READ`; null for a GitHub App) and
+  `viewerDefaultMergeMethod` ("the last used merge method by the viewer or
+  the default for the repository"), all answered as `READ`.
+- `AutoMergeRequest` has `enabledAt`, `enabledBy`, `mergeMethod`,
+  `authorEmail`, `commitHeadline`, `commitBody`.
+- A merge leaves a `MergedEvent` and a `ClosedEvent` in the same second.
+  Arming auto-merge is `AutoMergeEnabledEvent`, `AutoSquashEnabledEvent` or
+  `AutoRebaseEnabledEvent` by method; `AutoMergeDisabledEvent` has
+  `reason`. `ReviewRequestedEvent.requestedReviewer` is a User, Bot,
+  Mannequin, Team (`combinedSlug`) or EnterpriseTeam, and can be null.
+- Mutation inputs: `mergePullRequest` and `enablePullRequestAutoMerge`
+  take `pullRequestId`, `mergeMethod` (`MERGE`, `SQUASH`, `REBASE`) and
+  `expectedHeadOid`; `updatePullRequestBranch` takes `pullRequestId`,
+  `expectedHeadOid` and `updateMethod` (`MERGE`, `REBASE`);
+  `dismissPullRequestReview` takes `pullRequestReviewId` and a required
+  `message`; `disablePullRequestAutoMerge` and
+  `markPullRequestReadyForReview` take `pullRequestId`. Each payload has
+  `pullRequest`, the dismissal's `pullRequestReview`.
+- The shipped `PRTick`, `PRTimelinePage`, `PRThreadStatesPage`,
+  `RollupContextsPage` and `PRMergeTarget` documents answered without
+  errors on both repositories. The mutation documents are checked against
+  introspection only. REST `commit_id` on `POST pulls/N/reviews` and
+  `DELETE git/refs/heads/B` (422 "Reference does not exist" when the
+  branch is gone) are from GitHub's REST documentation, not probed.

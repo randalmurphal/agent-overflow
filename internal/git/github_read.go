@@ -35,28 +35,77 @@ const (
 	githubThreadFields        = `id isResolved isOutdated path line startLine originalLine originalStartLine diffSide startDiffSide subjectType ` +
 		`comments(first: 100) { ` + githubPageInfoFields + ` nodes { ` + githubThreadCommentFields + ` } }`
 	githubCommentFields = `id databaseId ` + githubActor + ` body createdAt isMinimized`
+	// isRequired is the forge's own answer to whether the PR's base
+	// requires the context, branch protection and rulesets alike, so it
+	// needs the PR's $number in every document that selects contexts.
 	githubContextFields = `__typename ` +
-		`... on CheckRun { databaseId name status conclusion startedAt completedAt detailsUrl checkSuite { workflowRun { databaseId url workflow { name } } } } ` +
-		`... on StatusContext { context state targetUrl createdAt description }`
+		`... on CheckRun { databaseId name status conclusion startedAt completedAt detailsUrl isRequired(pullRequestNumber: $number) checkSuite { workflowRun { databaseId url workflow { name } } } } ` +
+		`... on StatusContext { context state targetUrl createdAt description isRequired(pullRequestNumber: $number) }`
+	githubActorAs = `login ... on User { name }`
+	// githubDetailFields is the PR half of the detail. The merge fields
+	// feed Readiness and Merge (github_readiness.go): refUpdateRule is the
+	// base's branch protection as a non-admin may read it (null on a
+	// ruleset-only repository), rules the active rulesets' rules on the
+	// base, latestOpinionatedReviews each reviewer's latest approval or
+	// change request (latestReviews shows a later comment instead), and
+	// threadStates the review threads' resolution alone.
 	githubDetailFields = `title body state isDraft baseRefName baseRefOid headRefName headRefOid url ` +
 		`additions deletions changedFiles mergeable mergeStateStatus reviewDecision ` + githubActor + ` ` +
-		`latestReviews(first: 100) { nodes { ` + githubActor + ` body submittedAt state commit { oid } } }`
+		`latestReviews(first: 100) { nodes { ` + githubActor + ` body submittedAt state commit { oid } } } ` +
+		`merged mergedAt mergedBy { ` + githubActorAs + ` } closedAt viewerDidAuthor isCrossRepository ` +
+		`viewerCanEnableAutoMerge viewerCanDisableAutoMerge ` +
+		`autoMergeRequest { enabledAt mergeMethod enabledBy { ` + githubActorAs + ` } } ` +
+		`latestOpinionatedReviews(first: 100) { nodes { id state viewerDidAuthor authorCanPushToRepository ` + githubActor + ` } } ` +
+		`threadStates: reviewThreads(first: 100) { ` + githubPageInfoFields + ` nodes { isResolved } } ` +
+		`baseRef { refUpdateRule { requiredApprovingReviewCount requiredStatusCheckContexts requiresCodeOwnerReviews requiresConversationResolution } ` +
+		`rules(first: 100) { nodes { type parameters { __typename ` +
+		`... on PullRequestParameters { requiredApprovingReviewCount requireCodeOwnerReview requiredReviewThreadResolution allowedMergeMethods } ` +
+		`... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } } }`
+	// githubRepositoryMergeFields is the repository half of the detail:
+	// the merge methods and settings the Merge menu offers.
+	githubRepositoryMergeFields = `mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed deleteBranchOnMerge autoMergeAllowed viewerPermission viewerDefaultMergeMethod`
+	// githubTimelineItemTypes are the timeline items the Conversation feed
+	// shows as forge events (github_readiness.go maps them).
+	githubTimelineItemTypes = `PULL_REQUEST_REVIEW, REVIEW_DISMISSED_EVENT, MERGED_EVENT, CLOSED_EVENT, REOPENED_EVENT, ` +
+		`CONVERT_TO_DRAFT_EVENT, READY_FOR_REVIEW_EVENT, AUTO_MERGE_ENABLED_EVENT, AUTO_SQUASH_ENABLED_EVENT, ` +
+		`AUTO_REBASE_ENABLED_EVENT, AUTO_MERGE_DISABLED_EVENT, HEAD_REF_FORCE_PUSHED_EVENT, BASE_REF_CHANGED_EVENT, ` +
+		`REVIEW_REQUESTED_EVENT`
+	githubTimelineActor  = `actor { ` + githubActorAs + ` }`
+	githubTimelineFields = `__typename ` +
+		`... on PullRequestReview { id state submittedAt ` + githubActor + ` commit { oid } } ` +
+		`... on ReviewDismissedEvent { id createdAt ` + githubTimelineActor + ` dismissalMessage review { author { login } } } ` +
+		`... on MergedEvent { id createdAt ` + githubTimelineActor + ` commit { oid } } ` +
+		`... on ClosedEvent { id createdAt ` + githubTimelineActor + ` } ` +
+		`... on ReopenedEvent { id createdAt ` + githubTimelineActor + ` } ` +
+		`... on ConvertToDraftEvent { id createdAt ` + githubTimelineActor + ` } ` +
+		`... on ReadyForReviewEvent { id createdAt ` + githubTimelineActor + ` } ` +
+		`... on AutoMergeEnabledEvent { id createdAt ` + githubTimelineActor + ` } ` +
+		`... on AutoSquashEnabledEvent { id createdAt ` + githubTimelineActor + ` } ` +
+		`... on AutoRebaseEnabledEvent { id createdAt ` + githubTimelineActor + ` } ` +
+		`... on AutoMergeDisabledEvent { id createdAt ` + githubTimelineActor + ` reason } ` +
+		`... on HeadRefForcePushedEvent { id createdAt ` + githubTimelineActor + ` afterCommit { oid } } ` +
+		`... on BaseRefChangedEvent { id createdAt ` + githubTimelineActor + ` currentRefName } ` +
+		`... on ReviewRequestedEvent { id createdAt ` + githubTimelineActor + ` requestedReviewer { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } ... on Team { combinedSlug } } }`
+	githubTimelinePageInfoFields = `pageInfo { hasPreviousPage startCursor }`
 )
 
 // githubPRTickQuery reads a PR's detail, review threads and conversation
-// comments, and the head commit's check rollup. $wantDetail gates the
-// detail and the viewer, $wantThreads the threads and comments, and
-// $wantChecks the rollup, which both the detail's check summary and the
-// CI pipeline are built from.
-const githubPRTickQuery = `query PRTick($owner: String!, $name: String!, $number: Int!, $wantDetail: Boolean!, $wantThreads: Boolean!, $wantChecks: Boolean!) {
+// comments, timeline events, and the head commit's check rollup.
+// $wantDetail gates the detail, the viewer and the repository's merge
+// settings, $wantThreads the threads and comments, $wantEvents the newest
+// page of timeline items, and $wantChecks the rollup, which both the
+// detail's check summary and readiness and the CI pipeline are built from.
+const githubPRTickQuery = `query PRTick($owner: String!, $name: String!, $number: Int!, $wantDetail: Boolean!, $wantThreads: Boolean!, $wantEvents: Boolean!, $wantChecks: Boolean!) {
   viewer @include(if: $wantDetail) { login }
   repository(owner: $owner, name: $name) {
+    ... @include(if: $wantDetail) { ` + githubRepositoryMergeFields + ` }
     pullRequest(number: $number) {
       number
       ... @include(if: $wantDetail) { ` + githubDetailFields + ` }
       commits(last: 1) @include(if: $wantChecks) { nodes { commit { id statusCheckRollup { contexts(first: 100) { ` + githubPageInfoFields + ` nodes { ` + githubContextFields + ` } } } } } }
       reviewThreads(first: 100) @include(if: $wantThreads) { ` + githubPageInfoFields + ` nodes { ` + githubThreadFields + ` } }
       comments(first: 100) @include(if: $wantThreads) { ` + githubPageInfoFields + ` nodes { ` + githubCommentFields + ` } }
+      timelineItems(last: 100, itemTypes: [` + githubTimelineItemTypes + `]) @include(if: $wantEvents) { ` + githubTimelinePageInfoFields + ` nodes { ` + githubTimelineFields + ` } }
     }
   }
 }`
@@ -85,7 +134,25 @@ const githubThreadCommentsPageQuery = `query ThreadCommentsPage($threadID: ID!, 
   }
 }`
 
-const githubRollupContextsPageQuery = `query RollupContextsPage($commitID: ID!, $after: String!) {
+const githubThreadStatesPageQuery = `query PRThreadStatesPage($owner: String!, $name: String!, $number: Int!, $after: String!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $after) { ` + githubPageInfoFields + ` nodes { isResolved } }
+    }
+  }
+}`
+
+// githubPRTimelinePageQuery reads the timeline page before $before: the
+// tick reads the newest items, so older pages are read backwards.
+const githubPRTimelinePageQuery = `query PRTimelinePage($owner: String!, $name: String!, $number: Int!, $before: String!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      timelineItems(last: 100, before: $before, itemTypes: [` + githubTimelineItemTypes + `]) { ` + githubTimelinePageInfoFields + ` nodes { ` + githubTimelineFields + ` } }
+    }
+  }
+}`
+
+const githubRollupContextsPageQuery = `query RollupContextsPage($commitID: ID!, $number: Int!, $after: String!) {
   node(id: $commitID) {
     ... on Commit {
       statusCheckRollup { contexts(first: 100, after: $after) { ` + githubPageInfoFields + ` nodes { ` + githubContextFields + ` } } }
@@ -178,10 +245,11 @@ type githubContextRaw struct {
 			} `json:"workflow"`
 		} `json:"workflowRun"`
 	} `json:"checkSuite"`
-	Context   string `json:"context"`
-	State     string `json:"state"`
-	TargetURL string `json:"targetUrl"`
-	CreatedAt string `json:"createdAt"`
+	Context    string `json:"context"`
+	State      string `json:"state"`
+	TargetURL  string `json:"targetUrl"`
+	CreatedAt  string `json:"createdAt"`
+	IsRequired bool   `json:"isRequired"`
 }
 
 type githubContextsRaw struct {
@@ -235,6 +303,8 @@ type githubPullRaw struct {
 	} `json:"commits"`
 	ReviewThreads githubThreadsRaw  `json:"reviewThreads"`
 	Comments      githubCommentsRaw `json:"comments"`
+	TimelineItems githubTimelineRaw `json:"timelineItems"`
+	githubPullMergeRaw
 }
 
 // githubTickRaw is PRTick's data.
@@ -243,6 +313,7 @@ type githubTickRaw struct {
 		Login string `json:"login"`
 	} `json:"viewer"`
 	Repository *struct {
+		githubRepositoryMergeRaw
 		PullRequest *githubPullRaw `json:"pullRequest"`
 	} `json:"repository"`
 }
@@ -279,6 +350,7 @@ func (f *githubForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 	}
 	vars["wantDetail"] = want.Detail
 	vars["wantThreads"] = want.Threads
+	vars["wantEvents"] = want.Events
 	vars["wantChecks"] = want.Detail || want.CI
 	var raw githubTickRaw
 	if _, err := client.GraphQL(ctx, "PRTick", githubPRTickQuery, vars, &raw); err != nil {
@@ -289,9 +361,9 @@ func (f *githubForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		return PRRead{}, err
 	}
 	var checks []CheckStatus
+	var contexts []githubContextRaw
 	if want.Detail || want.CI {
-		contexts, err := f.readRollupContexts(ctx, client, pull)
-		if err != nil {
+		if contexts, err = f.readRollupContexts(ctx, client, ref, pull); err != nil {
 			return PRRead{}, err
 		}
 		checks = githubCheckStatuses(contexts)
@@ -303,6 +375,28 @@ func (f *githubForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 			viewer = raw.Viewer.Login
 		}
 		out.Detail = githubPRDetail(pull, viewer, checks)
+		merge := githubMergeInputs{pull: pull, repo: raw.Repository.githubRepositoryMergeRaw, contexts: contexts}
+		if merge.needsThreadStates() {
+			if err := f.readThreadStates(ctx, client, ref, pull); err != nil {
+				return PRRead{}, err
+			}
+		}
+		out.Detail.Readiness = merge.readiness()
+		out.Detail.Merge = merge.options(out.Detail.Readiness)
+		if pull.Merged || strings.EqualFold(pull.State, "MERGED") {
+			out.Detail.MergedAt = pull.MergedAt
+			if pull.MergedBy != nil {
+				out.Detail.MergedBy = pull.MergedBy.Login
+			}
+		}
+		if !strings.EqualFold(pull.State, "OPEN") {
+			out.Detail.ClosedAt = pull.ClosedAt
+		}
+	}
+	if want.Events {
+		if out.Events, err = f.readEvents(ctx, client, ref, pull); err != nil {
+			return PRRead{}, err
+		}
 	}
 	if want.Threads {
 		if out.Threads, err = f.readThreads(ctx, client, ref, pull); err != nil {
@@ -320,7 +414,7 @@ func (f *githubForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 
 // readRollupContexts returns the head commit's check contexts, paging
 // past the first page. A PR whose head has no checks answers none.
-func (f *githubForge) readRollupContexts(ctx context.Context, client *forgeapi.Client, pull *githubPullRaw) ([]githubContextRaw, error) {
+func (f *githubForge) readRollupContexts(ctx context.Context, client *forgeapi.Client, ref PRReference, pull *githubPullRaw) ([]githubContextRaw, error) {
 	if len(pull.Commits.Nodes) == 0 || pull.Commits.Nodes[0].Commit.StatusCheckRollup == nil {
 		return nil, nil
 	}
@@ -337,7 +431,7 @@ func (f *githubForge) readRollupContexts(ctx context.Context, client *forgeapi.C
 				StatusCheckRollup *githubRollupRaw `json:"statusCheckRollup"`
 			} `json:"node"`
 		}
-		if _, err := client.GraphQL(ctx, "RollupContextsPage", githubRollupContextsPageQuery, map[string]any{"commitID": commit.ID, "after": page.EndCursor}, &raw); err != nil {
+		if _, err := client.GraphQL(ctx, "RollupContextsPage", githubRollupContextsPageQuery, map[string]any{"commitID": commit.ID, "number": ref.Number, "after": page.EndCursor}, &raw); err != nil {
 			return nil, err
 		}
 		if raw.Node == nil || raw.Node.StatusCheckRollup == nil {
@@ -422,6 +516,75 @@ func (f *githubForge) readThreadComments(ctx context.Context, client *forgeapi.C
 	return nil
 }
 
+// readThreadStates completes the detail's thread resolution states past
+// their first page.
+func (f *githubForge) readThreadStates(ctx context.Context, client *forgeapi.Client, ref PRReference, pull *githubPullRaw) error {
+	vars, err := githubPullVars(ref)
+	if err != nil {
+		return err
+	}
+	page := pull.ThreadStates.PageInfo
+	for pages := 1; page.HasNextPage && pages < githubReadMaxPages; pages++ {
+		if page.EndCursor == "" {
+			return errors.New("GitHub review thread states have another page but no cursor")
+		}
+		var raw struct {
+			Repository *struct {
+				PullRequest *struct {
+					ReviewThreads githubThreadStatesRaw `json:"reviewThreads"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		}
+		if _, err := client.GraphQL(ctx, "PRThreadStatesPage", githubThreadStatesPageQuery, withAfter(vars, page.EndCursor), &raw); err != nil {
+			return err
+		}
+		if raw.Repository == nil || raw.Repository.PullRequest == nil {
+			return fmt.Errorf("GitHub answered no pull request %s#%d on %s", ref.Project(), ref.Number, ref.Host)
+		}
+		pull.ThreadStates.Nodes = append(pull.ThreadStates.Nodes, raw.Repository.PullRequest.ReviewThreads.Nodes...)
+		page = raw.Repository.PullRequest.ReviewThreads.PageInfo
+	}
+	pull.ThreadStates.PageInfo = page
+	return nil
+}
+
+// readEvents returns the PR's forge events oldest first: the tick's
+// newest timeline page, then older pages read backwards, at most
+// githubReadMaxPages pages (the newest items when the timeline is longer).
+func (f *githubForge) readEvents(ctx context.Context, client *forgeapi.Client, ref PRReference, pull *githubPullRaw) ([]ReviewEvent, error) {
+	vars, err := githubPullVars(ref)
+	if err != nil {
+		return nil, err
+	}
+	pages := [][]githubTimelineItemRaw{pull.TimelineItems.Nodes}
+	page := pull.TimelineItems.PageInfo
+	for n := 1; page.HasPreviousPage && n < githubReadMaxPages; n++ {
+		if page.StartCursor == "" {
+			return nil, errors.New("GitHub timeline has an earlier page but no cursor to read it by")
+		}
+		before := make(map[string]any, len(vars)+1)
+		for k, v := range vars {
+			before[k] = v
+		}
+		before["before"] = page.StartCursor
+		var raw githubTickRaw
+		if _, err := client.GraphQL(ctx, "PRTimelinePage", githubPRTimelinePageQuery, before, &raw); err != nil {
+			return nil, err
+		}
+		next, err := raw.pull(ref)
+		if err != nil {
+			return nil, err
+		}
+		pages = append(pages, next.TimelineItems.Nodes)
+		page = next.TimelineItems.PageInfo
+	}
+	var items []githubTimelineItemRaw
+	for i := len(pages) - 1; i >= 0; i-- {
+		items = append(items, pages[i]...)
+	}
+	return githubReviewEvents(items), nil
+}
+
 // withAfter copies vars with the page cursor set.
 func withAfter(vars map[string]any, after string) map[string]any {
 	out := make(map[string]any, len(vars)+1)
@@ -477,35 +640,43 @@ func githubLatestReviews(reviews []githubReviewRaw) []ReviewVerdict {
 	return out
 }
 
-// githubCheckStatuses maps rollup contexts to checks. A CheckRun's
-// workflow is its check suite's workflow run's; a StatusContext's start
-// is its creation. A context of another type is skipped.
+// githubCheckStatuses maps rollup contexts to checks, skipping a context
+// of another type.
 func githubCheckStatuses(contexts []githubContextRaw) []CheckStatus {
 	out := make([]CheckStatus, 0, len(contexts))
 	for _, item := range contexts {
-		check := CheckStatus{Kind: item.Typename}
-		switch item.Typename {
-		case "CheckRun":
-			check.Name = item.Name
-			if suite := item.CheckSuite; suite != nil && suite.WorkflowRun != nil && suite.WorkflowRun.Workflow != nil {
-				check.Workflow = suite.WorkflowRun.Workflow.Name
-			}
-			check.Status = item.Status
-			check.Conclusion = item.Conclusion
-			check.DetailsURL = item.DetailsURL
-			check.StartedAt = item.StartedAt
-			check.CompletedAt = item.CompletedAt
-		case "StatusContext":
-			check.Name = item.Context
-			check.Status = item.State
-			check.DetailsURL = item.TargetURL
-			check.StartedAt = item.CreatedAt
-		default:
-			continue
+		if check, ok := githubCheckStatus(item); ok {
+			out = append(out, check)
 		}
-		out = append(out, check)
 	}
 	return out
+}
+
+// githubCheckStatus maps one rollup context. A CheckRun's workflow is its
+// check suite's workflow run's; a StatusContext's start is its creation.
+// ok is false for a context of another type.
+func githubCheckStatus(item githubContextRaw) (CheckStatus, bool) {
+	check := CheckStatus{Kind: item.Typename}
+	switch item.Typename {
+	case "CheckRun":
+		check.Name = item.Name
+		if suite := item.CheckSuite; suite != nil && suite.WorkflowRun != nil && suite.WorkflowRun.Workflow != nil {
+			check.Workflow = suite.WorkflowRun.Workflow.Name
+		}
+		check.Status = item.Status
+		check.Conclusion = item.Conclusion
+		check.DetailsURL = item.DetailsURL
+		check.StartedAt = item.StartedAt
+		check.CompletedAt = item.CompletedAt
+	case "StatusContext":
+		check.Name = item.Context
+		check.Status = item.State
+		check.DetailsURL = item.TargetURL
+		check.StartedAt = item.CreatedAt
+	default:
+		return CheckStatus{}, false
+	}
+	return check, true
 }
 
 func githubCheckSummary(checks []CheckStatus) CheckSummary {

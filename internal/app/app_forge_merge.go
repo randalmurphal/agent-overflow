@@ -107,11 +107,15 @@ func (a *App) MarkPRReady(ctx context.Context, pr gitops.PRReference) error {
 
 // settlePRAction is the tail of every merge action: a failure is explained
 // for the user, a success asks the PR's pump (when one is live) to poll
-// the snapshot now. The poll's own failure does not fail the action: the
+// the snapshot now. A merge whose branch delete failed changed the PR, so
+// it refreshes too. The poll's own failure does not fail the action: the
 // forge accepted it, and the pump reports its read failure on its own
 // frame.
 func (a *App) settlePRAction(ctx context.Context, pr gitops.PRReference, action gitops.ForgeAction, err error) error {
 	if err != nil {
+		if _, merged := errors.AsType[*gitops.BranchKeptError](err); merged {
+			a.refreshPRSnapshot(ctx, pr)
+		}
 		return gitops.ExplainForgeError(pr, action, err)
 	}
 	a.refreshPRSnapshot(ctx, pr)

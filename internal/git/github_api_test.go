@@ -329,13 +329,14 @@ func TestReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 	t.Parallel()
 	answer := readTestdata(t, "github-pr-tick-cli-14571.json")
 	cases := []struct {
-		want                    PRReadParts
-		detail, threads, checks bool
+		want                            PRReadParts
+		detail, threads, events, checks bool
 	}{
-		{PRReadParts{CI: true}, false, false, true},
-		{PRReadParts{Threads: true}, false, true, false},
-		{PRReadParts{Detail: true}, true, false, true},
-		{PRReadParts{Detail: true, Threads: true}, true, true, true},
+		{PRReadParts{CI: true}, false, false, false, true},
+		{PRReadParts{Threads: true}, false, true, false, false},
+		{PRReadParts{Events: true}, false, false, true, false},
+		{PRReadParts{Detail: true}, true, false, false, true},
+		{PRReadParts{Detail: true, Threads: true, Events: true}, true, true, true, true},
 	}
 	var query string
 	for _, tc := range cases {
@@ -350,7 +351,7 @@ func TestReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 		}
 		vars := sent[0].Vars
 		if vars["owner"] != "o" || vars["name"] != "r" || vars["number"] != float64(14571) ||
-			vars["wantDetail"] != tc.detail || vars["wantThreads"] != tc.threads || vars["wantChecks"] != tc.checks {
+			vars["wantDetail"] != tc.detail || vars["wantThreads"] != tc.threads || vars["wantEvents"] != tc.events || vars["wantChecks"] != tc.checks {
 			t.Fatalf("%+v: variables = %v", tc.want, vars)
 		}
 		if query != "" && sent[0].Query != query {
@@ -367,6 +368,7 @@ func TestReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 		"commits(last: 1) @include(if: $wantChecks)",
 		"reviewThreads(first: 100) @include(if: $wantThreads)",
 		"comments(first: 100) @include(if: $wantThreads)",
+		"]) @include(if: $wantEvents)",
 	} {
 		if !strings.Contains(query, gate) {
 			t.Fatalf("PRTick lacks %q", gate)
