@@ -119,8 +119,9 @@ runner; the setup action installs its toolchains from the same pins.
 Go build caches are saved only by pushes to `main`; a pull request restores
 the newest `main` cache for its job slot, so it rebuilds and retests what
 it changed. `codeql.yml` scans Go and
-TypeScript; `dependabot.yml` tracks Go, npm, Gradle and action versions;
-`dependency-review-action` checks pull request dependency changes.
+TypeScript; `dependabot.yml` opens only security updates for Go, npm,
+Gradle and actions; `dependency-review-action` checks pull request
+dependency changes.
 
 The two lint jobs gate new issues only: `scripts/ci-change.sh` writes the
 change (a pull request's merge against the base branch it merged into,
