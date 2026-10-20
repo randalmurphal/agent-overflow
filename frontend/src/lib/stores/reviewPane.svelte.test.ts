@@ -24,7 +24,8 @@ import {
   supportsIgnoreWhitespace,
 } from './reviewPaneLoad';
 import { applyPRCILogEvent, applyPRCIUpdatedEvent, applyPRUpdatedEvent, attachPR } from './prReviewStore.svelte';
-import { resetCompanionPanesForTest } from './companionPanes.svelte';
+import { closeCompanion, openCompanion, resetCompanionPanesForTest } from './companionPanes.svelte';
+import { __setTransportStatusForTest } from './transportStatus.svelte';
 import { companionSubjectKey } from './companionSubject';
 import { __seedGitStatusForTest } from './gitStatusStore.svelte';
 import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
@@ -1270,7 +1271,10 @@ describe('reviewPane store — PR scope', () => {
 
   it('keeps the merged PR across the checkout move the worktree cleanup makes', async () => {
     installPRMocks();
+    setPaneLayoutItemsForTest([{ id: 'pane-1', paneId: 'pane-1', kind: 'thread', widthPx: 400 }]);
     const state = reviewStateForPane('pane-1', prSubject());
+    const companion = openCompanion('pane-1', 'review');
+    expect(companion).not.toBeNull();
     await waitLoaded(state);
     await state.setScope('pr');
     expect(state.prRef?.number).toBe(5);
@@ -1279,8 +1283,11 @@ describe('reviewPane store — PR scope', () => {
     await tick();
     expect(state.prRef?.number).toBe(5);
     // The cleanup moves the thread to Base: the companion subject changes
-    // (its checkout is part of it) and this state is replaced by one for
-    // the new checkout, which must still show the merged PR.
+    // (its checkout is part of it) and CompanionPane remounts the body,
+    // destroying the old ReviewPane (which disposes its state) before the
+    // new one creates its own. The companion stays open throughout, so the
+    // held PR carries across and the merged snapshot stays on screen.
+    disposeReviewStateForPane('pane-1', state);
     const base: WorkspaceRef = { projectId: REVIEW_WS.projectId, workspacePath: '/tmp/base' };
     const thread = { id: 'thread-1', projectId: REVIEW_WS.projectId } as Thread;
     const baseSubject: ReviewSubject = {
@@ -1290,15 +1297,44 @@ describe('reviewPane store — PR scope', () => {
       workspace: base,
     };
     const moved = reviewStateForPane('pane-1', baseSubject);
-    expect(moved).not.toBe(state);
     expect(moved.scope).toBe('pr');
     expect(moved.prRef?.number).toBe(5);
     await waitLoaded(moved);
-    // Closing the pane is the end of it: the next state starts clean.
+    // Closing the companion is the end of it: the next state starts clean.
+    closeCompanion(companion!.paneId);
     disposeReviewStateForPane('pane-1', moved);
     const fresh = reviewStateForPane('pane-1', baseSubject);
     expect(fresh.prRef).toBeNull();
     disposeReviewStateForPane('pane-1', fresh);
+  });
+
+  it('ends the wait for the pump\'s answer when the subscription is reacquired', async () => {
+    const { subscribe } = installPRMocks();
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    // The answer names a seq of the pump that served the call; a backend
+    // restart starts a pump whose seqs start over, so that seq is never
+    // reached. The fresh join's snapshot is the forge's answer.
+    setBindingMock('ApprovePR', async () => ({ seq: 100 }));
+    await state.approvePR();
+    expect(state.mergeAction).toBe('approve');
+    __setTransportStatusForTest({ status: 'disconnected', nextAttemptAt: null });
+    setBindingMock('SubscribePRUpdates', async () => ({
+      id: 'sub-2',
+      prKey: PR_KEY,
+      detail: prDetailStub(),
+      threads: [],
+      headSHA: 'sha-a',
+      seq: 1,
+    }));
+    __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+    await vi.waitFor(() => {
+      expect(subscribe.mock.calls.length + getBindingMock('SubscribePRUpdates').mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+    await vi.waitFor(() => {
+      expect(state.mergeAction).toBeNull();
+    });
   });
 
   it('a pr:updated error surfaces as pane state and clears on the next good snapshot', async () => {

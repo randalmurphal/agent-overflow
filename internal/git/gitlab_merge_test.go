@@ -658,6 +658,87 @@ func TestGitLabCachesFollowTheLogin(t *testing.T) {
 	}
 }
 
+// A cache entry is published under the login that answered, not the one
+// the lookup saw: a 401 inside the read (the old token revoked) replaces
+// the credential before GitLab answers, and the answer is the new login's.
+func TestGitLabCachePublishesUnderTheAnsweringLogin(t *testing.T) {
+	t.Parallel()
+	settingsByToken := map[string]string{
+		"token-alice": gitlabTestProjectSettings,
+		"token-bob":   strings.Replace(gitlabTestProjectSettings, `"merge_method":"merge"`, `"merge_method":"ff"`, 1),
+	}
+	var accepted atomic.Value
+	accepted.Store("token-alice")
+	mr := gitlabTestProject + "/merge_requests/7"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := r.Header.Get("Private-Token")
+		if token != accepted.Load().(string) {
+			http.Error(w, `{"message":"401 Unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch path := strings.TrimPrefix(r.URL.EscapedPath(), "/api/v4/"); {
+		case path == "user":
+			_, _ = io.WriteString(w, `{"username":"`+strings.TrimPrefix(token, "token-")+`"}`)
+		case path == mr && r.Method == http.MethodGet:
+			_, _ = io.WriteString(w, gitlabMergeMR(t, nil))
+		case path == mr+"/approvals":
+			_, _ = io.WriteString(w, `{"approvals_required":0}`)
+		case path == gitlabTestProject:
+			_, _ = io.WriteString(w, settingsByToken[token])
+		case path == mr+"/merge" && r.Method == http.MethodPut:
+			_, _ = io.WriteString(w, `{"state":"merged","sha":"abc1234"}`)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, path)
+			http.Error(w, "unexpected", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	source := &swappableTokenSource{apiHost: strings.TrimPrefix(srv.URL, "http://")}
+	source.token.Store("token-alice")
+	svc, err := forgeapi.New(forgeapi.Options{Version: "test", TokenSource: source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(svc.Close)
+	core := NewCore(WithForgeAPI(svc))
+	ref := gitlabTestRef(7)
+	forge := core.ForgeByID("gitlab").(*gitlabForge)
+	client, err := forge.core.gitlabAPI(ref.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The client reads alice's token; it is then revoked for bob's before
+	// anything is cached. The merge's settings read looks the cache up as
+	// alice (a miss), is refused, re-reads the credential and is answered
+	// as bob: bob's permissions, under bob's credential.
+	alice, err := client.CredentialFingerprint(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.token.Store("token-bob")
+	accepted.Store("token-bob")
+	if _, err := core.MergePR(t.Context(), ref, MergeRequest{Method: MergeMethodRebase, HeadSHA: "abc1234"}); err != nil {
+		t.Fatalf("merge as bob: %v", err)
+	}
+	bob, err := client.CredentialFingerprint(t.Context())
+	if err != nil || bob == alice {
+		t.Fatalf("fingerprint after the swap = %q, %v (alice %q)", bob, err, alice)
+	}
+	entry := func(fp string) (string, bool) {
+		forge.projects.mu.Lock()
+		defer forge.projects.mu.Unlock()
+		e, ok := forge.projects.entries[fp+" "+ref.Host+" "+ref.Project()]
+		return e.value.MergeMethod, ok
+	}
+	if method, ok := entry(bob); !ok || method != "ff" {
+		t.Fatalf("bob's settings = %q, %v; want ff under bob's credential", method, ok)
+	}
+	if method, ok := entry(alice); ok {
+		t.Fatalf("alice's credential holds bob's answer: %q", method)
+	}
+}
+
 // gitlabMergeForge is an httptest GitLab for the merge actions: each test
 // sets the answer per method and path.
 func gitlabMergeForge(t *testing.T, answer func(call forgeAPICall) (forgeAPIAnswer, bool)) (*Core, *forgeAPICalls) {

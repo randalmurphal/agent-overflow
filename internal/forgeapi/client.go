@@ -49,6 +49,12 @@ type Response struct {
 	// NotModified is a 304. Do and JSON answer it from the ETag store with
 	// the stored body and the headers it came with.
 	NotModified bool
+	// Credential is the fingerprint of the token that got this answer
+	// (CredentialFingerprint names the one the next request sends). A call
+	// re-reads its credential and retries after a 401, so the two can
+	// differ: a caller that caches what the answer says about the login
+	// keys the entry on this one.
+	Credential string
 	// Rate is the quota the response's headers reported, nil when none.
 	Rate *RateLimit
 }
@@ -310,7 +316,7 @@ func (c *Client) settle(ctx context.Context, ex *exchange, answered *http.Reques
 		host: c.host, pool: ex.key.pool, method: ex.req.Method, url: c.redact(answered.URL),
 		status: resp.StatusCode, header: resp.Header, body: body, graphQL: ex.graphQL, now: now,
 	})
-	out := &Response{Status: resp.StatusCode, Header: resp.Header, Body: body, Rate: rate}
+	out := &Response{Status: resp.StatusCode, Header: resp.Header, Body: body, Rate: rate, Credential: ex.key.fingerprint}
 	switch result.outcome {
 	case outcomeRateLimited:
 		limited := result.err.(*RateLimitedError)

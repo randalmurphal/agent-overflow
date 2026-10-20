@@ -85,7 +85,7 @@ func (c *Client) streamAttempt(ctx context.Context, r Request, dst io.Writer, li
 		if limit != NoLimit && written > limit {
 			return nil, false, fmt.Errorf("forge %s %s: %w (limit %d)", ex.req.Method, c.redact(answered.URL), ErrBodyTooLarge, limit)
 		}
-		return &Response{Status: resp.StatusCode, Header: resp.Header, Rate: parseRateLimit(resp.Header, ex.key.pool)}, false, nil
+		return &Response{Status: resp.StatusCode, Header: resp.Header, Rate: parseRateLimit(resp.Header, ex.key.pool), Credential: ex.key.fingerprint}, false, nil
 	}
 	body, readErr := readBounded(resp.Body, c.svc.opts.MaxBodyBytes)
 	if readErr != nil && !errors.Is(readErr, ErrBodyTooLarge) {

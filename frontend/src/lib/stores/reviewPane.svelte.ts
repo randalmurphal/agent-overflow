@@ -26,7 +26,7 @@ import {
   UpdatePRBranch,
   VerifyEditDiffs,
 } from './bindings';
-import { openCompanion } from './companionPanes.svelte';
+import { isCompanionOpen, openCompanion } from './companionPanes.svelte';
 import { peekGitStatus, peekGitStatusError } from './gitStatusStore.svelte';
 import { workspaceKeyForThread } from '../utils/workspaceKey';
 import { getPane } from './panes.svelte';
@@ -47,6 +47,7 @@ import {
   overriddenPRThreads,
   peekPRError,
   peekPRFailure,
+  peekPRJoin,
   peekPRSeq,
   peekPRSnapshot,
   setPRThreadResolveOverride,
@@ -546,12 +547,14 @@ export function reviewStateForPane(
 /**
  * Dispose `state` if it is still the pane's registered state. A state that
  * was already replaced was disposed by `reviewStateForPane`, and its
- * successor belongs to a newer mount.
+ * successor belongs to a newer mount. The held PR outlives the state while
+ * the review companion stays open (a remount for a new checkout) and goes
+ * with a closed companion.
  */
 export function disposeReviewStateForPane(sourcePaneId: string, state: ReviewPaneState): void {
   if (statesBySourcePane.get(sourcePaneId) !== state) return;
   statesBySourcePane.delete(sourcePaneId);
-  heldPRByRow.delete(state.rowId);
+  if (!isCompanionOpen(sourcePaneId, 'review')) heldPRByRow.delete(state.rowId);
   state.dispose();
 }
 
@@ -668,7 +671,7 @@ function createReviewPaneState(
   // applied seq is below the seq the action answered with (the poll it
   // asked for stamped that seq, or stamped nothing when unchanged).
   let mergeAction = $state<MergeActionKind | null>(null);
-  let mergeAwait = $state<{ kind: MergeActionKind; key: string; seq: number } | null>(null);
+  let mergeAwait = $state<{ kind: MergeActionKind; key: string; seq: number; join: number } | null>(null);
   const overviewScrollTops = new SvelteMap<ReviewSectionId, number>();
   let unresolvedCursor: string | null = $state(null);
   let conversationOrder: readonly string[] = $state([]);
@@ -758,7 +761,7 @@ function createReviewPaneState(
   // A poll that failed after the action is the pump's answer too: the
   // banner says why the forge's state is unknown, and the button is free.
   const mergeActionShown = $derived<MergeActionKind | null>(
-    mergeAction ?? (mergeAwait !== null && mergeAwait.key === prEntityKey && peekPRSeq(prEntityKey) < mergeAwait.seq && prUpdateError === null ? mergeAwait.kind : null),
+    mergeAction ?? (mergeAwait !== null && mergeAwait.key === prEntityKey && peekPRJoin(prEntityKey) === mergeAwait.join && peekPRSeq(prEntityKey) < mergeAwait.seq && prUpdateError === null ? mergeAwait.kind : null),
   );
   // The live feed universe: every thread, verdict, and commit push the
   // section could show, chronological newest first. The frozen order is
@@ -1979,6 +1982,10 @@ function createReviewPaneState(
     if (scope !== 'pr' || !prRef || mergeActionShown !== null || mergeWithheldReason !== null) return;
     const ref = prRef;
     const key = prEntityKey;
+    // The seq the answer names is the pump's of this join: a re-subscribe
+    // (a backend restart) starts a new pump whose seqs start over, and its
+    // snapshot is the forge's answer.
+    const join = peekPRJoin(key);
     mergeAction = kind;
     mergeAwait = null;
     let result: { seq: number };
@@ -1995,8 +2002,8 @@ function createReviewPaneState(
     }
     if (disposed) return;
     mergeAction = null;
-    if (key === null || peekPRSeq(key) >= result.seq) return;
-    mergeAwait = { kind, key, seq: result.seq };
+    if (key === null || peekPRJoin(key) !== join || peekPRSeq(key) >= result.seq) return;
+    mergeAwait = { kind, key, seq: result.seq, join };
   }
 
   // A head that moved under the action is fixed by reloading the diff;

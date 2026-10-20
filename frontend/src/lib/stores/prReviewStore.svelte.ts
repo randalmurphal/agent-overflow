@@ -203,6 +203,13 @@ let joinsInFlight = 0;
 // pump's seq after its poll, and the pane reads as pending until the
 // watermark reaches it (`peekPRSeq`).
 const appliedSeqByKey = new SvelteMap<string, number>();
+// How many times each key's subscription was (re)acquired. A subscribe
+// result seeds the watermark from the pump it came from, and a pump is a
+// backend process's: after a restart its sequences start over, so a seq
+// a merge action named under the previous pump is never reached. A pane
+// waiting on one gives up the wait when the join changes (`peekPRJoin`):
+// the fresh join's snapshot is the forge's answer.
+const joinByKey = new SvelteMap<string, number>();
 
 function beginPRUpdateJoin(): void {
   joinsInFlight += 1;
@@ -317,6 +324,7 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
       // The result IS this key's applied state, so it is the watermark every
       // frame from here on is ranked against — the replay below included.
       appliedSeqByKey.set(key, Number(result.seq ?? 0));
+      joinByKey.set(key, (joinByKey.get(key) ?? 0) + 1);
       // A load can finish while the window sits minimized; the fresh pump
       // must start paused like every other live one.
       if (documentHidden()) setPumpActive(backend, id, false);
@@ -375,6 +383,7 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
     refByKey.delete(key);
     failureByKey.delete(key);
     appliedSeqByKey.delete(key);
+    joinByKey.delete(key);
     resolveOverridesByKey.delete(key);
     dropPRCIFollows(key);
     dropPRCI(key);
@@ -787,6 +796,13 @@ export function attachPR(key: string, ctx: PRCtx): PRAttachment {
  * poll; the forge's answer is on screen once this has reached it. */
 export function peekPRSeq(key: string | null): number {
   return key ? (appliedSeqByKey.get(key) ?? 0) : 0;
+}
+
+/** The PR's join generation: how many times its subscription was acquired
+ * under `key`. A seq named under an earlier join is not comparable with the
+ * current watermark. Zero before any. */
+export function peekPRJoin(key: string | null): number {
+  return key ? (joinByKey.get(key) ?? 0) : 0;
 }
 
 export function peekPRSnapshot(key: string | null): PRSnapshot | null {
