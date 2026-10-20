@@ -156,6 +156,11 @@ func (Token) MarshalText() ([]byte, error)
   "not logged in".
 - Fingerprint: `sha256(token)` keys the rate gates and the ETag store, so
   a token never appears in a map key, a log or a test name.
+  `Client.CredentialFingerprint(ctx)` returns the current token's, read
+  as a request reads it (first use, the 5-minute re-read, a 401), for a
+  caller that caches what the login is allowed to see: GitLab's viewer
+  and project settings are keyed on it, so another login never reads the
+  previous one's.
 - Where the token must never appear: argv, environment, log lines, error
   strings, `StatusError` bodies, the diagnostics bundle, `uiRenderTrace`,
   harness invocation records, the transport wire. Only `authorize` touches
@@ -234,9 +239,9 @@ id.
 GitLab's `ReadPR` reads the merge request once
 (`projects/P/merge_requests/N`) and derives every part from it: `Detail`
 adds its approvals, the project's merge settings (`projects/P`, cached
-per project for 10 minutes, then revalidated through the ETag store: a
-`W/` ETag answered 304) and the viewer's login (`user`, cached per host
-for 10 minutes; the author may cancel an auto-merge, and a refused read
+per login and project for 10 minutes, then revalidated through the ETag
+store: a `W/` ETag answered 304) and the viewer's login (`user`, cached
+per login and host for 10 minutes; the author may cancel an auto-merge, and a refused read
 is cached as an unknown viewer), `Threads` and `Events` its discussions
 (`per_page=100`, paged by `X-Next-Page`, positions normalized against
 `diff_refs.head_sha`; one read serves both, system notes are the events,
@@ -248,7 +253,7 @@ request (`StreamCIJobLog`, as on GitHub).
 
 | Tick | GitLab requests |
 |---|---|
-| Pump (`Detail`, `Threads`, `Events`) | 1 merge request + 1 approvals + 1 discussions page per 100 discussions; + 1 `projects/P` per project and 1 `user` per host per 10 minutes |
+| Pump (`Detail`, `Threads`, `Events`) | 1 merge request + 1 approvals + 1 discussions page per 100 discussions; + 1 `projects/P` per login and project and 1 `user` per login and host per 10 minutes |
 | CI phase, a head pipeline | 1 merge request + 1 jobs page per 100 jobs |
 | CI phase, no head pipeline | 1 merge request |
 | Log follow, a followed running job (every 5s) | 1 trace (304 while unchanged) |
@@ -357,6 +362,7 @@ func (c *Client) JSON(ctx context.Context, r Request, out any) (*Response, error
 func (c *Client) GraphQL(ctx context.Context, operation, query string, vars map[string]any, out any) (*Response, error)
 func (c *Client) Stream(ctx context.Context, r Request, dst io.Writer, limit int64) (*Response, error)
 func (c *Client) Pages(ctx context.Context, r Request, visit func(*Response) (more bool, err error)) error
+func (c *Client) CredentialFingerprint(ctx context.Context) (string, error) // see Credentials
 ```
 
 - `GraphQL` sends variables as JSON `variables`, never interpolated into
@@ -411,6 +417,7 @@ scope or permission) is a `*ForbiddenError`, never "unauthenticated".
 | 304 | no error, `Response.NotModified` | Caller keeps its state |
 | Dial, DNS, TLS, timeout | `*TransientError` wrapping the cause | Retry on the next tick |
 | GraphQL `errors` | `*GraphQLError{Problems, Data}` | Caller decides on partial data |
+| GraphQL `errors` with a `NOT_FOUND` problem | `*GraphQLError{Problems, Data}` | `git.ExplainForgeError`: kind `not_found`, the REST 404 sentence |
 
 `StatusError.Error()` carries the method, the redacted URL, the status and a
 bounded body (4 KiB). No forge error is classified from CLI stderr.

@@ -148,6 +148,25 @@ func (c *Client) GraphQL(ctx context.Context, operation, query string, vars map[
 	return resp, err
 }
 
+// CredentialFingerprint names the login the client's next request sends:
+// a digest of the current token, read the way a request reads it (at
+// first use, again after five minutes, and after a 401 replaced it). A
+// caller keys what it caches about the authenticated identity (the
+// viewer, the viewer's permissions) on it, so another login never reads
+// the previous one's answers. It fails as a request would without a
+// token.
+func (c *Client) CredentialFingerprint(ctx context.Context) (string, error) {
+	if err := c.usable(); err != nil {
+		return "", err
+	}
+	if err := c.credential(ctx); err != nil {
+		return "", err
+	}
+	c.credMu.RLock()
+	defer c.credMu.RUnlock()
+	return c.fp, nil
+}
+
 // Pages sends r and follows the next page, GitHub's Link rel="next" first,
 // then GitLab's X-Next-Page, for as long as visit answers more. The page
 // cap is visit's: it returns false once the caller has the pages it wants.

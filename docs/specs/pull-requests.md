@@ -199,7 +199,7 @@ and correlation id stay behind "Details". The sentences:
 | Token expired | "Your GitLab token for HOST expired on DATE. Run `glab auth login --hostname HOST`." (the expiry is learned while the token works: GitLab `GET personal_access_tokens/self` once per personal token, GitHub the `GitHub-Authentication-Token-Expiration` header; see forge transport "Credentials") |
 | Token lacks scope | "Your HOST token lacks the `api` scope, so NAME cannot ACTION." (GitLab `insufficient_scope`; GitHub `X-Accepted-OAuth-Scopes` none of which `X-OAuth-Scopes` grants. A fine-grained token's "Resource not accessible by personal access token" reads "GitHub blocks this: REASON" on an action and "No access" on a read) |
 | No access | "No access to PROJECT with this login." |
-| Project or PR gone | "PROJECT!N was not found on HOST." |
+| Project or PR gone | "PROJECT!N was not found on HOST, or this login cannot see it." (REST 404, GitHub GraphQL `NOT_FOUND`) |
 | Head moved | "The branch moved after you loaded this MR. Reload and try again." (409) |
 | Not mergeable | "FORGE refused the merge: REASON." (GitLab 405/422 body, GitHub 405/422 message) |
 | Rules block | "FORGE blocks this merge: REASON." (GitHub 403 with a protection message, GitLab 401 on merge) |

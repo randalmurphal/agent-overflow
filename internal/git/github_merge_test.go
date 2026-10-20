@@ -911,6 +911,9 @@ func TestGitHubMerge(t *testing.T) {
 		if _, ok := errors.AsType[*forgeapi.GraphQLError](err); !ok {
 			t.Fatalf("missing PR = %v", err)
 		}
+		if explained, _ := errors.AsType[*ForgeActionError](ExplainForgeError(githubTestRef(5), ActionMerge, err)); explained == nil || explained.Kind != ForgeErrorNotFound {
+			t.Fatalf("missing PR explained = %+v", explained)
+		}
 	})
 	t.Run("a request without the head is refused", func(t *testing.T) {
 		t.Parallel()

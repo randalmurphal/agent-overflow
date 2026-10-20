@@ -101,6 +101,37 @@ func TestExplainForgeErrorIdempotent(t *testing.T) {
 	}
 }
 
+// A GitHub GraphQL NOT_FOUND is the same not-found answer a REST 404 is,
+// sentence for sentence, not a refusal quoting the forge.
+func TestExplainForgeErrorGraphQLNotFound(t *testing.T) {
+	t.Parallel()
+	ref := PRReference{Forge: "github", Host: "github.com", Namespace: "o", Repo: "r", Number: 5}
+	missing := &forgeapi.GraphQLError{Problems: []forgeapi.GraphQLProblem{{Type: "NOT_FOUND", Message: "Could not resolve to a PullRequest with the number of 5."}}}
+	err := ExplainForgeError(ref, ActionMerge, missing)
+	explained, ok := errors.AsType[*ForgeActionError](err)
+	if !ok || explained.Kind != ForgeErrorNotFound {
+		t.Fatalf("GraphQL NOT_FOUND = %T %v, want kind %q", err, err, ForgeErrorNotFound)
+	}
+	want := "o/r#5 was not found on GitHub, or this login cannot see it."
+	if explained.Message != want {
+		t.Fatalf("sentence = %q\nwant       %q", explained.Message, want)
+	}
+	if rest := ExplainForgeError(ref, ActionMerge, &forgeapi.StatusError{Method: "PUT", Status: http.StatusNotFound}); rest.Error() != explained.Message {
+		t.Fatalf("REST 404 reads %q, GraphQL NOT_FOUND %q", rest.Error(), explained.Message)
+	}
+	if code, message, ok := errorsx.PublicDetails(err); !ok || code != "forge_not_found" || message != want {
+		t.Fatalf("public details = (%q, %q, %v)", code, message, ok)
+	}
+	if !errors.Is(err, missing) {
+		t.Fatal("the forge's error is not in the chain")
+	}
+	// A NOT_FOUND after another problem still names the missing object.
+	second := &forgeapi.GraphQLError{Problems: []forgeapi.GraphQLProblem{{Message: "Something else"}, {Type: "NOT_FOUND", Message: "Could not resolve"}}}
+	if explained, _ := errors.AsType[*ForgeActionError](ExplainForgeError(ref, ActionRead, second)); explained == nil || explained.Kind != ForgeErrorNotFound {
+		t.Fatalf("NOT_FOUND second = %+v", explained)
+	}
+}
+
 // GitHub's labels: the public host reads as the forge's name, the number
 // as #N, and a scope refusal names gh.
 func TestExplainForgeErrorGitHubLabels(t *testing.T) {
