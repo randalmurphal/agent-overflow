@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"agent-overflow/internal/forgeapi"
+	gitops "agent-overflow/internal/git"
 )
 
 // The kinds of forge failure the PR pump reports (ErrorKind on the wire),
@@ -25,6 +26,10 @@ const (
 	// forgeFailureSetup is a login the user fixes outside the app: the CLI
 	// is missing or has no token for the host.
 	forgeFailureSetup = "setup"
+	// forgeFailureForbidden is a forge that refused the login: a token
+	// without the scope, or no access to the project. The wire carries the
+	// sentence naming which (git.ExplainForgeError).
+	forgeFailureForbidden = "forbidden"
 	// forgeFailureForge is every other forge answer: a status, a GraphQL
 	// error, a body the app could not read.
 	forgeFailureForge = "forge"
@@ -43,11 +48,14 @@ func classifyForgeFailure(err error) (kind string, reserve bool, until time.Time
 	var limited *forgeapi.RateLimitedError
 	var transient *forgeapi.TransientError
 	var setup *forgeapi.SetupError
+	var forbidden *forgeapi.ForbiddenError
 	switch {
 	case errors.As(err, &limited):
 		return forgeFailureRateLimited, limited.Reserve, limited.Until
 	case errors.As(err, &setup):
 		return forgeFailureSetup, false, time.Time{}
+	case errors.As(err, &forbidden):
+		return forgeFailureForbidden, false, time.Time{}
 	case errors.As(err, &transient), errors.Is(err, context.DeadlineExceeded):
 		return forgeFailureTransient, false, time.Time{}
 	}
@@ -81,16 +89,17 @@ func (f prForgeFailure) failing() bool { return f.key != "" }
 // rateLimited reports whether the failure holds its poller until release.
 func (f prForgeFailure) rateLimited() bool { return f.kind == forgeFailureRateLimited }
 
-// newPRForgeFailure classifies err and mints its wire summary.
-func (a *App) newPRForgeFailure(err error) prForgeFailure {
+// newPRForgeFailure classifies err, from a read of pr, and mints its wire
+// summary: the correlation summary, or for a setup or forbidden failure
+// the sentence naming the login to fix (git.ExplainForgeError), which
+// carries no forge text.
+func (a *App) newPRForgeFailure(pr gitops.PRReference, err error) prForgeFailure {
 	kind, reserve, until := classifyForgeFailure(err)
 	f := prForgeFailure{key: err.Error(), kind: kind, correlationID: uuid.NewString()}
 	f.wire = prUpdateErrorMessage(f.correlationID)
 	switch kind {
-	case forgeFailureSetup:
-		var setup *forgeapi.SetupError
-		errors.As(err, &setup)
-		f.wire = setup.Message
+	case forgeFailureSetup, forgeFailureForbidden:
+		f.wire = gitops.ExplainForgeError(pr, gitops.ActionRead, err).Error()
 	case forgeFailureRateLimited:
 		f.reserve = reserve
 		f.resumeAt = until.UTC().Format(time.RFC3339)

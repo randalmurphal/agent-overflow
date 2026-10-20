@@ -31,6 +31,10 @@ when nothing changed. Diffs of every scope are read in chunks with no
 size limit, and the frontend holds patch text within a memory budget
 ([review diff streaming](review-diff-streaming.md)), replacing the
 constraint below that full patch text is parsed and held.
+Extended 2026-10-20: merge readiness, approve and merge live in a Merge
+section of the overview row, forge events join the Conversation feed, and
+the pane also opens from a Pull requests page with no thread
+([pull requests](../specs/pull-requests.md)).
 
 ## Goal
 

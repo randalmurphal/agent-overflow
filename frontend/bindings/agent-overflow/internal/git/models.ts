@@ -5,6 +5,48 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
+/**
+ * AutoMergeRequest is an armed merge-when-ready: who set it, when, with
+ * which method, and the forge's own wording of what it waits for.
+ */
+export class AutoMergeRequest {
+    "method": string;
+    "byLogin": string;
+    "byName"?: string;
+    "at": string;
+    "waitsFor": string;
+    "canCancel": boolean;
+
+    /** Creates a new AutoMergeRequest instance. */
+    constructor($$source: Partial<AutoMergeRequest> = {}) {
+        if (!("method" in $$source)) {
+            this["method"] = "";
+        }
+        if (!("byLogin" in $$source)) {
+            this["byLogin"] = "";
+        }
+        if (!("at" in $$source)) {
+            this["at"] = "";
+        }
+        if (!("waitsFor" in $$source)) {
+            this["waitsFor"] = "";
+        }
+        if (!("canCancel" in $$source)) {
+            this["canCancel"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AutoMergeRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AutoMergeRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new AutoMergeRequest($$parsedSource as Partial<AutoMergeRequest>);
+    }
+}
+
 export class CIJob {
     /**
      * ID is the forge's numeric job id, as a string. Empty when the job
@@ -417,6 +459,245 @@ export class GitStatus {
 }
 
 /**
+ * MergeBlocker is one condition of the merge. Text is the sentence the row
+ * shows ("Needs 1 more approval"), Detail the smaller line under it
+ * ("Randy Murphy approved · 2 required"), URL the forge page for the
+ * condition when one exists (a pipeline, a protection rule).
+ */
+export class MergeBlocker {
+    "kind": string;
+    "text": string;
+    "detail"?: string;
+    "url"?: string;
+
+    /** Creates a new MergeBlocker instance. */
+    constructor($$source: Partial<MergeBlocker> = {}) {
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("text" in $$source)) {
+            this["text"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MergeBlocker instance from a string or object.
+     */
+    static createFrom($$source: any = {}): MergeBlocker {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new MergeBlocker($$parsedSource as Partial<MergeBlocker>);
+    }
+}
+
+/**
+ * MergeOptions is what the project allows and what the viewer may do,
+ * read with the PR's detail. Methods lists the allowed merge methods with
+ * the project's default first; empty when the viewer cannot read the
+ * project's settings, in which case the UI offers MergeMethodMerge alone.
+ */
+export class MergeOptions {
+    "methods": string[];
+
+    /**
+     * DeleteBranchOffered is whether the menu shows the delete-branch
+     * toggle: false for a fork's branch or when the project always deletes
+     * it; DeleteBranchDefault is the toggle's initial state.
+     */
+    "deleteBranchOffered": boolean;
+    "deleteBranchDefault": boolean;
+
+    /**
+     * AutoMergeAvailable is whether the forge offers merging when the
+     * checks pass; AutoMerge is the armed request, nil when none.
+     */
+    "autoMergeAvailable": boolean;
+    "autoMerge"?: AutoMergeRequest | null;
+
+    /**
+     * ViewerCanMerge is whether the forge would let this login merge;
+     * ViewerCanApprove whether it accepts an approval from this login
+     * (GitHub refuses the author; GitLab's user_can_approve);
+     * ViewerApproved whether the login's approval currently stands.
+     */
+    "viewerCanMerge": boolean;
+    "viewerCanApprove": boolean;
+    "viewerApproved": boolean;
+
+    /**
+     * CannotApproveReason explains an absent Approve button ("Authors
+     * cannot approve their own pull request").
+     */
+    "cannotApproveReason"?: string;
+
+    /**
+     * CannotMergeReason explains a greyed Merge now ("You do not have
+     * merge access to this project").
+     */
+    "cannotMergeReason"?: string;
+
+    /** Creates a new MergeOptions instance. */
+    constructor($$source: Partial<MergeOptions> = {}) {
+        if (!("methods" in $$source)) {
+            this["methods"] = [];
+        }
+        if (!("deleteBranchOffered" in $$source)) {
+            this["deleteBranchOffered"] = false;
+        }
+        if (!("deleteBranchDefault" in $$source)) {
+            this["deleteBranchDefault"] = false;
+        }
+        if (!("autoMergeAvailable" in $$source)) {
+            this["autoMergeAvailable"] = false;
+        }
+        if (!("viewerCanMerge" in $$source)) {
+            this["viewerCanMerge"] = false;
+        }
+        if (!("viewerCanApprove" in $$source)) {
+            this["viewerCanApprove"] = false;
+        }
+        if (!("viewerApproved" in $$source)) {
+            this["viewerApproved"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MergeOptions instance from a string or object.
+     */
+    static createFrom($$source: any = {}): MergeOptions {
+        const $$createField0_0 = $$createType8;
+        const $$createField4_0 = $$createType10;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("methods" in $$parsedSource) {
+            $$parsedSource["methods"] = $$createField0_0($$parsedSource["methods"]);
+        }
+        if ("autoMerge" in $$parsedSource) {
+            $$parsedSource["autoMerge"] = $$createField4_0($$parsedSource["autoMerge"]);
+        }
+        return new MergeOptions($$parsedSource as Partial<MergeOptions>);
+    }
+}
+
+/**
+ * MergeOutcome is what the forge did. Merged is true when the PR is
+ * merged now; AutoMerge when the forge armed the merge instead (a merge
+ * request that returned the PR still open, or an auto-merge request that
+ * succeeded). A forge that merges asynchronously answers neither and the
+ * caller follows the PR's next poll.
+ */
+export class MergeOutcome {
+    "merged": boolean;
+    "autoMerge": boolean;
+    "sha"?: string;
+
+    /** Creates a new MergeOutcome instance. */
+    constructor($$source: Partial<MergeOutcome> = {}) {
+        if (!("merged" in $$source)) {
+            this["merged"] = false;
+        }
+        if (!("autoMerge" in $$source)) {
+            this["autoMerge"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MergeOutcome instance from a string or object.
+     */
+    static createFrom($$source: any = {}): MergeOutcome {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new MergeOutcome($$parsedSource as Partial<MergeOutcome>);
+    }
+}
+
+/**
+ * MergeReadiness is whether the forge would merge the PR now, and what
+ * stands in the way when it would not. Blockers is in the forge's order
+ * and empty when State is not blocked; Settled lists the checks that
+ * pass (approvals met, pipeline passed, no conflicts) so the section has
+ * rows in every state.
+ */
+export class MergeReadiness {
+    "state": string;
+    "blockers": MergeBlocker[];
+    "settled": MergeBlocker[];
+
+    /** Creates a new MergeReadiness instance. */
+    constructor($$source: Partial<MergeReadiness> = {}) {
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+        if (!("blockers" in $$source)) {
+            this["blockers"] = [];
+        }
+        if (!("settled" in $$source)) {
+            this["settled"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MergeReadiness instance from a string or object.
+     */
+    static createFrom($$source: any = {}): MergeReadiness {
+        const $$createField1_0 = $$createType12;
+        const $$createField2_0 = $$createType12;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("blockers" in $$parsedSource) {
+            $$parsedSource["blockers"] = $$createField1_0($$parsedSource["blockers"]);
+        }
+        if ("settled" in $$parsedSource) {
+            $$parsedSource["settled"] = $$createField2_0($$parsedSource["settled"]);
+        }
+        return new MergeReadiness($$parsedSource as Partial<MergeReadiness>);
+    }
+}
+
+/**
+ * MergeRequest is one merge action. Method must be one of the PR's
+ * MergeOptions.Methods; HeadSHA is the head the caller saw and the forge
+ * refuses the merge when the branch moved past it. AutoMerge arms the
+ * merge for when the checks pass instead of merging now.
+ */
+export class MergeRequest {
+    "method": string;
+    "headSHA": string;
+    "deleteBranch": boolean;
+    "autoMerge": boolean;
+
+    /** Creates a new MergeRequest instance. */
+    constructor($$source: Partial<MergeRequest> = {}) {
+        if (!("method" in $$source)) {
+            this["method"] = "";
+        }
+        if (!("headSHA" in $$source)) {
+            this["headSHA"] = "";
+        }
+        if (!("deleteBranch" in $$source)) {
+            this["deleteBranch"] = false;
+        }
+        if (!("autoMerge" in $$source)) {
+            this["autoMerge"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MergeRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): MergeRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new MergeRequest($$parsedSource as Partial<MergeRequest>);
+    }
+}
+
+/**
  * PRDetail is the normalized PR/MR detail shape consumed by the review pane.
  * 
  * AuthorName, here and on ReviewVerdict and ReviewComment, is the forge
@@ -452,6 +733,17 @@ export class PRDetail {
     "checks": CheckSummary;
     "mergeability": string;
     "diffRefs"?: PRDiffRefs | null;
+
+    /**
+     * Readiness and Merge feed the review pane's Merge section
+     * (forge_merge.go). MergedAt, MergedBy and ClosedAt name the end of a
+     * PR that is no longer open; empty while it is.
+     */
+    "readiness": MergeReadiness;
+    "merge": MergeOptions;
+    "mergedAt"?: string;
+    "mergedBy"?: string;
+    "closedAt"?: string;
 
     /** Creates a new PRDetail instance. */
     constructor($$source: Partial<PRDetail> = {}) {
@@ -512,6 +804,12 @@ export class PRDetail {
         if (!("mergeability" in $$source)) {
             this["mergeability"] = "";
         }
+        if (!("readiness" in $$source)) {
+            this["readiness"] = (new MergeReadiness());
+        }
+        if (!("merge" in $$source)) {
+            this["merge"] = (new MergeOptions());
+        }
 
         Object.assign(this, $$source);
     }
@@ -520,9 +818,11 @@ export class PRDetail {
      * Creates a new PRDetail instance from a string or object.
      */
     static createFrom($$source: any = {}): PRDetail {
-        const $$createField17_0 = $$createType9;
-        const $$createField18_0 = $$createType10;
-        const $$createField20_0 = $$createType12;
+        const $$createField17_0 = $$createType14;
+        const $$createField18_0 = $$createType15;
+        const $$createField20_0 = $$createType17;
+        const $$createField21_0 = $$createType18;
+        const $$createField22_0 = $$createType19;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("latestReviews" in $$parsedSource) {
             $$parsedSource["latestReviews"] = $$createField17_0($$parsedSource["latestReviews"]);
@@ -532,6 +832,12 @@ export class PRDetail {
         }
         if ("diffRefs" in $$parsedSource) {
             $$parsedSource["diffRefs"] = $$createField20_0($$parsedSource["diffRefs"]);
+        }
+        if ("readiness" in $$parsedSource) {
+            $$parsedSource["readiness"] = $$createField21_0($$parsedSource["readiness"]);
+        }
+        if ("merge" in $$parsedSource) {
+            $$parsedSource["merge"] = $$createField22_0($$parsedSource["merge"]);
         }
         return new PRDetail($$parsedSource as Partial<PRDetail>);
     }
@@ -691,12 +997,57 @@ export class ReviewComment {
      * Creates a new ReviewComment instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewComment {
-        const $$createField5_0 = $$createType14;
+        const $$createField5_0 = $$createType21;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("replyTo" in $$parsedSource) {
             $$parsedSource["replyTo"] = $$createField5_0($$parsedSource["replyTo"]);
         }
         return new ReviewComment($$parsedSource as Partial<ReviewComment>);
+    }
+}
+
+/**
+ * ReviewEvent is one forge activity row. ID is unique within the PR and
+ * stable across reads (a GitLab note id, a GitHub timeline node id). At is
+ * RFC 3339. Text is the forge's own phrasing when it adds to the kind
+ * ("enabled an automatic merge when the pipeline succeeds"), else empty.
+ * Ref names what the event concerns when the kind has one: the review
+ * author for review_dismissed, the reviewer for review_requested, the
+ * new base for base_changed.
+ */
+export class ReviewEvent {
+    "id": string;
+    "kind": string;
+    "actorLogin": string;
+    "actorName"?: string;
+    "at": string;
+    "text"?: string;
+    "ref"?: string;
+
+    /** Creates a new ReviewEvent instance. */
+    constructor($$source: Partial<ReviewEvent> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("actorLogin" in $$source)) {
+            this["actorLogin"] = "";
+        }
+        if (!("at" in $$source)) {
+            this["at"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ReviewEvent instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ReviewEvent {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ReviewEvent($$parsedSource as Partial<ReviewEvent>);
     }
 }
 
@@ -822,7 +1173,7 @@ export class ReviewThread {
      * Creates a new ReviewThread instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewThread {
-        const $$createField10_0 = $$createType16;
+        const $$createField10_0 = $$createType23;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("comments" in $$parsedSource) {
             $$parsedSource["comments"] = $$createField10_0($$parsedSource["comments"]);
@@ -893,7 +1244,7 @@ export class SubmitReviewRequest {
      * Creates a new SubmitReviewRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): SubmitReviewRequest {
-        const $$createField2_0 = $$createType18;
+        const $$createField2_0 = $$createType25;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("comments" in $$parsedSource) {
             $$parsedSource["comments"] = $$createField2_0($$parsedSource["comments"]);
@@ -911,14 +1262,21 @@ const $$createType4 = CIJob.createFrom;
 const $$createType5 = $Create.Array($$createType4);
 const $$createType6 = CheckStatus.createFrom;
 const $$createType7 = $Create.Array($$createType6);
-const $$createType8 = ReviewVerdict.createFrom;
-const $$createType9 = $Create.Array($$createType8);
-const $$createType10 = CheckSummary.createFrom;
-const $$createType11 = PRDiffRefs.createFrom;
-const $$createType12 = $Create.Nullable($$createType11);
-const $$createType13 = ReviewReplyTo.createFrom;
-const $$createType14 = $Create.Nullable($$createType13);
-const $$createType15 = ReviewComment.createFrom;
-const $$createType16 = $Create.Array($$createType15);
-const $$createType17 = ReviewLineComment.createFrom;
-const $$createType18 = $Create.Array($$createType17);
+const $$createType8 = $Create.Array($Create.Any);
+const $$createType9 = AutoMergeRequest.createFrom;
+const $$createType10 = $Create.Nullable($$createType9);
+const $$createType11 = MergeBlocker.createFrom;
+const $$createType12 = $Create.Array($$createType11);
+const $$createType13 = ReviewVerdict.createFrom;
+const $$createType14 = $Create.Array($$createType13);
+const $$createType15 = CheckSummary.createFrom;
+const $$createType16 = PRDiffRefs.createFrom;
+const $$createType17 = $Create.Nullable($$createType16);
+const $$createType18 = MergeReadiness.createFrom;
+const $$createType19 = MergeOptions.createFrom;
+const $$createType20 = ReviewReplyTo.createFrom;
+const $$createType21 = $Create.Nullable($$createType20);
+const $$createType22 = ReviewComment.createFrom;
+const $$createType23 = $Create.Array($$createType22);
+const $$createType24 = ReviewLineComment.createFrom;
+const $$createType25 = $Create.Array($$createType24);

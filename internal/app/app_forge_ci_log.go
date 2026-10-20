@@ -203,7 +203,7 @@ func (a *App) foldPRCILogLocked(pump *prUpdatePump, follow *prCILogFollow, out p
 	}
 	switch {
 	case failure != nil:
-		fail := a.newPRForgeFailure(failure)
+		fail := a.newPRForgeFailure(pump.pr, failure)
 		if follow.pendingFinal && !fail.rateLimited() {
 			follow.finalAttempts++
 			if follow.finalAttempts >= prCILogFinalAttempts {

@@ -158,8 +158,15 @@ func (Token) MarshalText() ([]byte, error)
 The PR pump reads a PR with one `Forge.ReadPR(ctx, ref, want, prev,
 stepsFor)` per tick. `want` (`git.PRReadParts{Detail, Threads, CI}`) names
 the parts the caller needs and the read fetches nothing else: the pump
-asks for `Detail` and `Threads`, the CI phase for `CI` alone on its own
-cadence. `git.Core` keeps `GetPRDetail`, `ListReviewThreads` and
+asks for `Detail`, `Threads` and `Events` (the forge events the
+Conversation feed shows: approvals, merges, draft flips, auto-merge,
+force pushes), the CI phase for `CI` alone on its own cadence. A merge
+action (`ApprovePR`, `UnapprovePR`, `MergePR`, `CancelPRAutoMerge`,
+`UpdatePRBranch`, `MarkPRReady`) that succeeds asks the PR's live pump for
+one snapshot poll at once (`prPumpRequest.snapshot`), so every pane on the
+PR follows the forge's answer without waiting out the interval; the
+readiness, merge options and events in the detail come from that read,
+never from the action's own response. `git.Core` keeps `GetPRDetail`, `ListReviewThreads` and
 `ListPRCIJobs` as one-part wrappers for the callers that need one part.
 
 GitHub answers a read with one GraphQL request, `PRTick`:
@@ -347,14 +354,14 @@ errors, success. Rate limited means 429; 403 with `X-RateLimit-Remaining:
 0`, a `Retry-After` header or a body matching `rate limit`; or a 200
 GraphQL envelope with a `RATE_LIMITED` error or errors beside
 `X-RateLimit-Remaining: 0`. Any other 403 (SSO enforcement, a missing
-scope) is a plain `*StatusError`, never "unauthenticated".
+scope) is a `*ForbiddenError`, never "unauthenticated".
 
 | Observation | Error | Caller behavior |
 |---|---|---|
 | CLI missing when the token is read | `*SetupError{Kind: "missing"}` | Setup banner, as today |
 | CLI present, no token for the host | `*SetupError{Kind: "unauthenticated"}` | Setup banner |
 | 401 after one token refresh | `*SetupError{Kind: "unauthenticated"}` | Setup banner |
-| 403 without rate-limit headers | `*StatusError` (scope or permission) | Shown as the forge's message |
+| 403 without rate-limit headers | `*ForbiddenError{Status, Scope, Message}`: `Scope` from an `insufficient_scope` body, `X-Accepted-OAuth-Scopes` or a fine-grained-token refusal; `Message` the body's | `git.ExplainForgeError` names the scope or the project; a merge action shows the forge's message |
 | Rate limited (rules above), or refused for the reserve | `*RateLimitedError{Host, Pool, Until, Reserve}` | Pollers wait for `Until`; see below |
 | 404 on a PR-, job- or thread-scoped path | `*StatusError` matching `errors.Is(err, ErrNotFound)` | `ErrCIJobLogNotFound`, PR gone, log not published yet |
 | 404 on a repository- or project-scoped path | `*StatusError` | Reaches the user: wrong project or no access, never an empty list |
@@ -406,7 +413,7 @@ identical failures, except that a rate-limited failure dedups on
 out when the resume time moves and not on every tick. `pr:updated`,
 `pr:ci_updated`, `pr:ci_log` and the `SubscribePRUpdates` result (for CI,
 `CIErrorKind`, `CIReserve`, `CIResumeAt`) carry `ErrorKind` (`transient`,
-`rate_limited`, `setup`, `forge`), `Reserve` and `ResumeAt` (RFC 3339, set
+`rate_limited`, `setup`, `forbidden`, `forge`), `Reserve` and `ResumeAt` (RFC 3339, set
 for `rate_limited` only) beside the caller-safe `Error`, so the pane
 chooses the surface instead of parsing text. `classifyForgeFailure`
 (`internal/app/app_forge_failure.go`) is the one classification.
@@ -429,6 +436,9 @@ chooses the surface instead of parsing text. `classifyForgeFailure`
 - `setup`: `Error` is the `SetupError` message, which names the login to
   fix and carries no forge text; the pane shows it in its own banner
   (`review-pr-setup`) with no "Retrying" prefix.
+- `forbidden`: `Error` is the `git.ExplainForgeError` sentence naming the
+  missing scope or the project the login cannot see, no forge text; the
+  pane shows it in the setup banner.
 - `transient` and `forge`: "Retrying: failed to refresh pull request
   (id: ...)", the correlation id that finds the raw error in the server
   log.

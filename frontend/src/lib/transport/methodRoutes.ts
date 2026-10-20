@@ -22,6 +22,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1365876070: 'selected', // AgentRemoteStatus
 	4007046465: 'selected', // AllowPreviewPort
 	2157691816: 'home', // AppendUIRenderTraceBatch
+	580543372: 'selected', // ApprovePR
 	1352159878: 'project', // ArchiveProject
 	3655608409: 'thread', // ArchiveThread
 	2367642633: 'thread', // AttachThreadWorktree
@@ -42,6 +43,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1485125416: 'home', // BrowserCompanionThreadState
 	2848608143: 'home', // BrowserHostReport
 	2608316491: 'home', // CancelDevicePairing
+	472111634: 'selected', // CancelPRAutoMerge
 	341374423: 'home', // CancelProviderLogin
 	73679326: 'home', // CancelRestartToUpdate
 	812773075: 'home', // CancelSSHConnection
@@ -242,8 +244,10 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2332614075: 'home', // ListWSLDistros
 	2808137798: 'selected', // ListWorkspaceMcpServers
 	1673567995: 'thread', // MarkDiffReviewCommentsSent
+	404041677: 'selected', // MarkPRReady
 	1480646012: 'thread', // MarkThreadRead
 	236597375: 'thread', // MarkThreadUnread
+	3922935373: 'selected', // MergePR
 	3197504008: 'thread', // MintAttachmentDownloadTicket
 	1857144453: 'thread', // MintAttachmentUploadTicket
 	400809065: 'home', // MintDevicePairing
@@ -407,6 +411,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1018082581: 'selected', // ThreadToolResolve
 	1291217507: 'thread', // TriggerMcpAuth
 	417766274: 'selected', // TriggerWorkspaceMcpAuth
+	2161888729: 'selected', // UnapprovePR
 	2561521885: 'project', // UnarchiveProject
 	3655125512: 'thread', // UnarchiveThread
 	3175043037: 'thread', // UnpinThread
@@ -419,6 +424,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1706395020: 'selected', // UpdateDiscussion
 	3490094229: 'home', // UpdateKeybindings
 	595194384: 'home', // UpdateNewThreadDefaults
+	3913890634: 'selected', // UpdatePRBranch
 	3717363955: 'home', // UpdateProjectSortPositions
 	2747956806: 'thread', // UpdateProposedPlanComment
 	2894041249: 'home', // UpdateSettings

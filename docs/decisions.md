@@ -546,6 +546,24 @@ and anti-changes that live only here:
   `All commits` there is no card. No always-present row for the picked
   commit (a height shift with nothing to show in most states) and no
   toolbar comment tally (ruling 2026-10-20).
+- Merge actions have one home: the Merge section that leads the overview
+  row (readiness pill, Approve or Unapprove, `Merge ▾`), identical in a
+  thread's companion pane and on the Pull requests page. The title bar's
+  refs line carries the readiness pill and never an action. Merge has no
+  confirmation step (the forge refuses a stale head; gh and glab do not
+  confirm either); the button is never disabled, offering auto-merge while
+  blocked with "Merge now" greyed and naming what it waits for. The forge's
+  events (approved, revoked, merged, closed, draft, ready, auto-merge,
+  force push) are rows of the Conversation feed. Pipelines on the page
+  default to every status; the review pane's CI line stays the head
+  pipeline only (rulings 2026-10-20, `docs/specs/pull-requests.md`).
+- Tools (Workflows, Pull requests, later Issues) are pane kinds behind
+  one sidebar tools row above Settings: the active tool carries its label
+  and badge, the others their icon and badge with hover text. A click
+  opens the tool in the focused pane like a thread; ctrl+click opens a new
+  pane, so two tools sit side by side with no special case. Workflows
+  loses its modal. The row's label follows the focused pane when it is a
+  tool, else the tool used last (ruling 2026-10-20).
 - PR comments live in the overview: Description (collapsed by default)
   and Conversation (also collapsed by default, and capped short enough
   that the diff stays visible under it), two collapsible sections that head

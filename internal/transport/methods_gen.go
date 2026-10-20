@@ -56,6 +56,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "AgentRemoteStatus", ID: 1365876070, Scope: "terminal:operate", Route: "selected"},                                 // main.App.AgentRemoteStatus
 	{Name: "AllowPreviewPort", ID: 4007046465, Scope: "access:admin", Route: "selected", Remote: true},                        // main.App.AllowPreviewPort
 	{Name: "AppendUIRenderTraceBatch", ID: 2157691816, Scope: "host", Route: "home"},                                          // main.App.AppendUIRenderTraceBatch
+	{Name: "ApprovePR", ID: 580543372, Scope: "git:operate", Route: "selected"},                                               // main.App.ApprovePR
 	{Name: "ArchiveProject", ID: 1352159878, Scope: "threads:operate", Route: "project"},                                      // main.App.ArchiveProject
 	{Name: "ArchiveThread", ID: 3655608409, Scope: "threads:operate", Route: "thread"},                                        // main.App.ArchiveThread
 	{Name: "AttachThreadWorktree", ID: 2367642633, Scope: "git:operate", Route: "thread"},                                     // main.App.AttachThreadWorktree
@@ -76,6 +77,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "BrowserCompanionThreadState", ID: 1485125416, Scope: "host", Route: "home"},                                       // main.App.BrowserCompanionThreadState
 	{Name: "BrowserHostReport", ID: 2848608143, Scope: "host", Route: "home"},                                                 // main.App.BrowserHostReport
 	{Name: "CancelDevicePairing", ID: 2608316491, Scope: "access:admin", Route: "home"},                                       // main.App.CancelDevicePairing
+	{Name: "CancelPRAutoMerge", ID: 472111634, Scope: "git:operate", Route: "selected"},                                       // main.App.CancelPRAutoMerge
 	{Name: "CancelProviderLogin", ID: 341374423, Scope: "access:admin", Route: "home"},                                        // main.App.CancelProviderLogin
 	{Name: "CancelRestartToUpdate", ID: 73679326, Scope: "host", Route: "home"},                                               // main.App.CancelRestartToUpdate
 	{Name: "CancelSSHConnection", ID: 812773075, Scope: "host", Route: "home"},                                                // main.App.CancelSSHConnection
@@ -276,8 +278,10 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListWSLDistros", ID: 2332614075, Scope: "host", Route: "home"},                                                    // main.App.ListWSLDistros
 	{Name: "ListWorkspaceMcpServers", ID: 2808137798, Scope: "settings:write", Route: "selected"},                             // main.App.ListWorkspaceMcpServers
 	{Name: "MarkDiffReviewCommentsSent", ID: 1673567995, Scope: "threads:operate", Route: "thread"},                           // main.App.MarkDiffReviewCommentsSent
+	{Name: "MarkPRReady", ID: 404041677, Scope: "git:operate", Route: "selected"},                                             // main.App.MarkPRReady
 	{Name: "MarkThreadRead", ID: 1480646012, Scope: "threads:operate", Route: "thread"},                                       // main.App.MarkThreadRead
 	{Name: "MarkThreadUnread", ID: 236597375, Scope: "threads:operate", Route: "thread"},                                      // main.App.MarkThreadUnread
+	{Name: "MergePR", ID: 3922935373, Scope: "git:operate", Route: "selected"},                                                // main.App.MergePR
 	{Name: "MintAttachmentDownloadTicket", ID: 3197504008, Scope: "threads:read", Route: "thread"},                            // main.App.MintAttachmentDownloadTicket
 	{Name: "MintAttachmentUploadTicket", ID: 1857144453, Scope: "attachments:write", Route: "thread"},                         // main.App.MintAttachmentUploadTicket
 	{Name: "MintDevicePairing", ID: 400809065, Scope: "access:admin", Route: "home", StepUp: true, Remote: true},              // main.App.MintDevicePairing
@@ -441,6 +445,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ThreadToolResolve", ID: 1018082581, Scope: "threads:read", Route: "selected"},                                     // main.App.ThreadToolResolve
 	{Name: "TriggerMcpAuth", ID: 1291217507, Scope: "settings:write", Route: "thread"},                                        // main.App.TriggerMcpAuth
 	{Name: "TriggerWorkspaceMcpAuth", ID: 417766274, Scope: "settings:write", Route: "selected"},                              // main.App.TriggerWorkspaceMcpAuth
+	{Name: "UnapprovePR", ID: 2161888729, Scope: "git:operate", Route: "selected"},                                            // main.App.UnapprovePR
 	{Name: "UnarchiveProject", ID: 2561521885, Scope: "threads:operate", Route: "project"},                                    // main.App.UnarchiveProject
 	{Name: "UnarchiveThread", ID: 3655125512, Scope: "threads:operate", Route: "thread"},                                      // main.App.UnarchiveThread
 	{Name: "UnpinThread", ID: 3175043037, Scope: "threads:operate", Route: "thread"},                                          // main.App.UnpinThread
@@ -453,6 +458,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "UpdateDiscussion", ID: 1706395020, Scope: "threads:operate", Route: "selected"},                                   // main.App.UpdateDiscussion
 	{Name: "UpdateKeybindings", ID: 3490094229, Scope: "settings:write", Route: "home"},                                       // main.App.UpdateKeybindings
 	{Name: "UpdateNewThreadDefaults", ID: 595194384, Scope: "threads:operate", Route: "home"},                                 // main.App.UpdateNewThreadDefaults
+	{Name: "UpdatePRBranch", ID: 3913890634, Scope: "git:operate", Route: "selected"},                                         // main.App.UpdatePRBranch
 	{Name: "UpdateProjectSortPositions", ID: 3717363955, Scope: "threads:operate", Route: "home"},                             // main.App.UpdateProjectSortPositions
 	{Name: "UpdateProposedPlanComment", ID: 2747956806, Scope: "threads:operate", Route: "thread"},                            // main.App.UpdateProposedPlanComment
 	{Name: "UpdateSettings", ID: 2894041249, Scope: "session", Route: "home"},                                                 // main.App.UpdateSettings
