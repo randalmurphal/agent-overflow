@@ -994,7 +994,7 @@ func TestGitHubMergeActionsThroughTheAppsForgeCode(t *testing.T) {
 		t.Fatalf("ApprovePR: %v", err)
 	}
 	read = mergeRead(t, r, ref)
-	if got := read.Detail.Readiness; !slices.Equal(blockerKinds(got), []string{"checks"}) || !read.Detail.Merge.ViewerApproved || read.Detail.Merge.ViewerApprovalID == "" {
+	if got := read.Detail.Readiness; !slices.Equal(blockerKinds(got), []string{"checks"}) || !read.Detail.Merge.ViewerApproved {
 		t.Fatalf("after approve: readiness %+v, merge %+v", got, read.Detail.Merge)
 	}
 	if kinds := eventKinds(read.Events); !slices.Equal(kinds, []string{"approved"}) || read.Events[0].ActorLogin != "alice" || read.Events[0].Ref != head {
@@ -1002,7 +1002,7 @@ func TestGitHubMergeActionsThroughTheAppsForgeCode(t *testing.T) {
 	}
 
 	// Unapprove finds the approval itself (ViewerApproval) and dismisses it.
-	if err := r.core.UnapprovePR(ctx, ref, ""); err != nil {
+	if err := r.core.UnapprovePR(ctx, ref); err != nil {
 		t.Fatalf("UnapprovePR: %v", err)
 	}
 	read = mergeRead(t, r, ref)
@@ -1012,7 +1012,7 @@ func TestGitHubMergeActionsThroughTheAppsForgeCode(t *testing.T) {
 	if kinds := eventKinds(read.Events); !slices.Equal(kinds, []string{"review_dismissed"}) || read.Events[0].Ref != "alice" || read.Events[0].Text != "Approval withdrawn" {
 		t.Fatalf("after unapprove: events %+v", read.Events)
 	}
-	if err := r.core.UnapprovePR(ctx, ref, ""); explained(t, ref, gitops.ActionUnapprove, err).Message != "You have no approval to withdraw." {
+	if err := r.core.UnapprovePR(ctx, ref); explained(t, ref, gitops.ActionUnapprove, err).Message != "You have no approval to withdraw." {
 		t.Fatalf("a second unapprove = %v", err)
 	}
 
@@ -1174,7 +1174,7 @@ func TestGitLabMergeActionsThroughTheAppsForgeCode(t *testing.T) {
 	if kinds := eventKinds(read.Events); !slices.Equal(kinds, []string{"approved"}) || read.Events[0].ActorLogin != "alice" {
 		t.Fatalf("after approve: events %+v", read.Events)
 	}
-	if err := r.core.UnapprovePR(ctx, ref, ""); err != nil {
+	if err := r.core.UnapprovePR(ctx, ref); err != nil {
 		t.Fatalf("UnapprovePR: %v", err)
 	}
 	read = mergeRead(t, r, ref)
