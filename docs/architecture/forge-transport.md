@@ -396,7 +396,8 @@ scope) is a `*ForbiddenError`, never "unauthenticated".
 |---|---|---|
 | CLI missing when the token is read | `*SetupError{Kind: "missing"}` | Setup banner, as today |
 | CLI present, no token for the host | `*SetupError{Kind: "unauthenticated", Host}` | Setup banner |
-| 401 after one token refresh | `*SetupError{Kind: "unauthenticated", Host, ExpiredAt}`: `ExpiredAt` when the token's remembered expiry (see Credentials) has passed; a remembered revocation leaves it zero and says "revoked" in `Message` | Setup banner; `git.ExplainForgeError` names the expiry date |
+| 401 after one token refresh, on a read, or on a mutation whose login no longer reads its own `user` (one probe GET; GitLab answers a merge the login may not perform with 401) | `*SetupError{Kind: "unauthenticated", Host, ExpiredAt}`: `ExpiredAt` when the token's remembered expiry (see Credentials) has passed; a remembered revocation leaves it zero and says "revoked" in `Message` | Setup banner; `git.ExplainForgeError` names the expiry date |
+| 401 after one token refresh on a mutation while the login still reads `user` | `*StatusError` (the forge refused the action) | `git.ExplainForgeError`: "FORGE did not let you ACTION NAME." |
 | 403 without rate-limit headers | `*ForbiddenError{Status, Scope, Message}`: `Scope` from an `insufficient_scope` body, `X-Accepted-OAuth-Scopes` or a fine-grained-token refusal; `Message` the body's | `git.ExplainForgeError` names the scope or the project; a merge action shows the forge's message |
 | Rate limited (rules above), or refused for the reserve | `*RateLimitedError{Host, Pool, Until, Reserve}` | Pollers wait for `Until`; see below |
 | 404 on a PR-, job- or thread-scoped path | `*StatusError` matching `errors.Is(err, ErrNotFound)` | `ErrCIJobLogNotFound`, PR gone, log not published yet |

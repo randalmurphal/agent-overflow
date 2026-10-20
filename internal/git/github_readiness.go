@@ -233,7 +233,10 @@ func (in githubMergeInputs) readiness() MergeReadiness {
 	out.Settled = settled
 	switch {
 	case pull.IsDraft || status == "DRAFT":
+		// A draft leads with the draft itself (its fix is Mark ready), then
+		// whatever else would block once it is ready.
 		out.State = MergeStateDraft
+		out.Blockers = append([]MergeBlocker{{Kind: BlockerDraft, Text: "This pull request is a draft", Detail: "Mark it ready for review to merge"}}, blockers...)
 		return out
 	case status == "UNKNOWN" || status == "":
 		out.State = MergeStateChecking

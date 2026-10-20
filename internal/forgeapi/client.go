@@ -302,6 +302,9 @@ func (c *Client) settle(ctx context.Context, ex *exchange, answered *http.Reques
 			return nil, false, result.err
 		}
 		if refreshed {
+			if c.refusedAction(ctx, ex) {
+				return nil, false, result.err
+			}
 			return nil, false, c.unauthenticated(result.err, used)
 		}
 		if err := c.refresh(ctx, used); err != nil {
@@ -442,4 +445,20 @@ func readBounded(r io.Reader, limit int64) ([]byte, error) {
 func drain(resp *http.Response) {
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	_ = resp.Body.Close()
+}
+
+// refusedAction tells a forge's 401 on a mutation from a dead login:
+// GitLab answers a merge the user may not perform with 401, the same
+// status an expired token gets. After the refresh left the token as it
+// was, one GET of the login's own user (the same path on both forges)
+// settles it: a token that still reads is live, so the 401 is the forge
+// refusing the action and reaches the caller as its StatusError. A probe
+// that fails for any reason leaves the verdict at unauthenticated.
+func (c *Client) refusedAction(ctx context.Context, ex *exchange) bool {
+	switch ex.req.Method {
+	case http.MethodGet, http.MethodHead:
+		return false
+	}
+	_, err := c.Do(ctx, Request{Path: "user", Timeout: expiryLookupTimeout, expiryLookup: true})
+	return err == nil
 }
