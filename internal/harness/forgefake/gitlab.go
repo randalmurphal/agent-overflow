@@ -16,10 +16,7 @@ import (
 // follow the GitLab REST API; the fields emitted are the ones
 // internal/git parses.
 
-var (
-	gitlabStates      = map[string]string{"open": "opened", "closed": "closed", "merged": "merged"}
-	gitlabMergeStatus = map[string]string{"clean": "mergeable", "conflicts": "conflict", "checking": "checking"}
-)
+var gitlabStates = map[string]string{"open": "opened", "closed": "closed", "merged": "merged"}
 
 func glabNotFound(what string) response {
 	return response{
