@@ -615,7 +615,7 @@ func TestGitLabApproveAndUnapprove(t *testing.T) {
 	if err := core.ApprovePR(t.Context(), ref, "abc1234"); err != nil {
 		t.Fatal(err)
 	}
-	if err := core.UnapprovePR(t.Context(), ref, "ignored"); err != nil {
+	if err := core.UnapprovePR(t.Context(), ref); err != nil {
 		t.Fatal(err)
 	}
 	if err := core.ApprovePR(t.Context(), ref, "not a sha"); err == nil {
@@ -883,7 +883,7 @@ func TestGitLabMergeActionsReturnTypedRefusals(t *testing.T) {
 	ref := gitlabTestRef(7)
 	actions := map[string]func() error{
 		"approve":   func() error { return core.ApprovePR(t.Context(), ref, "abc1234") },
-		"unapprove": func() error { return core.UnapprovePR(t.Context(), ref, "") },
+		"unapprove": func() error { return core.UnapprovePR(t.Context(), ref) },
 		"merge": func() error {
 			_, err := core.MergePR(t.Context(), ref, MergeRequest{Method: MergeMethodMerge, HeadSHA: "abc1234"})
 			return err

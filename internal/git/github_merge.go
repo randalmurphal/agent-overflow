@@ -155,23 +155,22 @@ func (f *githubForge) Approve(ctx context.Context, ref PRReference, headSHA stri
 // standing approval of the viewer's.
 var errNoApprovalToWithdraw = errors.New("no approving review of the viewer's")
 
-// Unapprove dismisses the review approvalID names
-// (MergeOptions.ViewerApprovalID), with a message GitHub requires, and
-// reads the review's state back. An empty approvalID (the wire does not
-// carry the id) is resolved first with ViewerApproval: the viewer's own
-// APPROVED entry of latestOpinionatedReviews. When there is none the
-// answer is a *ForgeActionError of kind refused, "You have no approval to
-// withdraw.", and nothing is dismissed.
-func (f *githubForge) Unapprove(ctx context.Context, ref PRReference, approvalID string) error {
+// Unapprove dismisses the viewer's own standing approval, with a message
+// GitHub requires, and reads the review's state back. The review is
+// resolved here (ViewerApproval: the viewer's APPROVED entry of
+// latestOpinionatedReviews), never named by the caller, so no other
+// login's review and no review of another pull request can be dismissed
+// through it. With no standing approval the answer is a *ForgeActionError
+// of kind refused, "You have no approval to withdraw.", and nothing is
+// dismissed.
+func (f *githubForge) Unapprove(ctx context.Context, ref PRReference) error {
 	client, err := f.core.githubAPI(ref.Host)
 	if err != nil {
 		return err
 	}
-	approvalID = strings.TrimSpace(approvalID)
-	if approvalID == "" {
-		if approvalID, err = viewerApprovalID(ctx, client, ref); err != nil {
-			return err
-		}
+	approvalID, err := viewerApprovalID(ctx, client, ref)
+	if err != nil {
+		return err
 	}
 	var raw struct {
 		Dismiss *struct {

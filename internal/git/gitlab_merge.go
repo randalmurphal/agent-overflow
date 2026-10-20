@@ -59,8 +59,8 @@ func (f *gitlabForge) Approve(ctx context.Context, ref PRReference, headSHA stri
 }
 
 // Unapprove withdraws the viewer's approval. GitLab keeps one approval per
-// user, so approvalID is not needed.
-func (f *gitlabForge) Unapprove(ctx context.Context, ref PRReference, _ string) error {
+// user, so the viewer's is the one POST .../unapprove removes.
+func (f *gitlabForge) Unapprove(ctx context.Context, ref PRReference) error {
 	client, err := f.core.gitlabAPI(ref.Host)
 	if err != nil {
 		return err

@@ -98,9 +98,6 @@ type MergeOptions struct {
 	ViewerCanMerge   bool `json:"viewerCanMerge"`
 	ViewerCanApprove bool `json:"viewerCanApprove"`
 	ViewerApproved   bool `json:"viewerApproved"`
-	// ViewerApprovalID is what Unapprove dismisses on GitHub (the viewer's
-	// latest approving review's node id); empty on GitLab.
-	ViewerApprovalID string `json:"-"`
 	// CannotApproveReason explains an absent Approve button ("Authors
 	// cannot approve their own pull request").
 	CannotApproveReason string `json:"cannotApproveReason,omitempty"`
@@ -199,10 +196,11 @@ type ForgeMerger interface {
 	// Approve records the viewer's approval of the PR at headSHA. GitLab
 	// posts an approval; GitHub submits an approving review.
 	Approve(ctx context.Context, ref PRReference, headSHA string) error
-	// Unapprove withdraws the viewer's approval. approvalID is
-	// MergeOptions.ViewerApprovalID (GitHub dismisses that review; GitLab
-	// ignores it).
-	Unapprove(ctx context.Context, ref PRReference, approvalID string) error
+	// Unapprove withdraws the viewer's own standing approval: GitHub
+	// dismisses the viewer's approving review (found on the forge, never
+	// named by the caller), GitLab unapproves. Nothing of another login's
+	// can be withdrawn through it.
+	Unapprove(ctx context.Context, ref PRReference) error
 	// Merge merges now, or arms auto-merge when req.AutoMerge.
 	Merge(ctx context.Context, ref PRReference, req MergeRequest) (MergeOutcome, error)
 	// CancelAutoMerge disarms an armed auto-merge.
@@ -215,8 +213,8 @@ type ForgeMerger interface {
 	MarkReady(ctx context.Context, ref PRReference) error
 }
 
-func (nullForge) Approve(context.Context, PRReference, string) error   { return ErrUnsupportedForge }
-func (nullForge) Unapprove(context.Context, PRReference, string) error { return ErrUnsupportedForge }
+func (nullForge) Approve(context.Context, PRReference, string) error { return ErrUnsupportedForge }
+func (nullForge) Unapprove(context.Context, PRReference) error       { return ErrUnsupportedForge }
 func (nullForge) Merge(context.Context, PRReference, MergeRequest) (MergeOutcome, error) {
 	return MergeOutcome{}, ErrUnsupportedForge
 }
@@ -233,11 +231,11 @@ func (c *Core) ApprovePR(ctx context.Context, ref PRReference, headSHA string) e
 }
 
 // UnapprovePR withdraws the caller's approval (see ForgeMerger.Unapprove).
-func (c *Core) UnapprovePR(ctx context.Context, ref PRReference, approvalID string) error {
+func (c *Core) UnapprovePR(ctx context.Context, ref PRReference) error {
 	if err := ref.Validate(); err != nil {
 		return err
 	}
-	return c.ForgeByID(ref.Forge).Unapprove(ctx, ref, approvalID)
+	return c.ForgeByID(ref.Forge).Unapprove(ctx, ref)
 }
 
 // MergePR merges now or arms auto-merge (see ForgeMerger.Merge).

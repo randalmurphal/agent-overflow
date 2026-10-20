@@ -40,7 +40,7 @@ func TestPRActionRefreshPollsTheLivePump(t *testing.T) {
 		script.mu.Unlock()
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: pr.Number, HeadSHA: "head-b"}, Events: []gitops.ReviewEvent{{ID: "e1", Kind: gitops.EventApproved}}}, nil
 	}
-	if err := app.settlePRAction(context.Background(), testPR, gitops.ActionApprove, nil); err != nil {
+	if _, err := app.settlePRAction(context.Background(), testPR, gitops.ActionApprove, nil); err != nil {
 		t.Fatalf("settle: %v", err)
 	}
 	frame := awaitPRUpdate(t, events, "refresh frame")
@@ -96,7 +96,7 @@ func TestPRActionRefreshPollsInteractively(t *testing.T) {
 	pump := app.livePRUpdatePumpLocked(sub.PRKey)
 	app.prUpdates.mu.Unlock()
 	pump.paused.Store(true)
-	if err := app.settlePRAction(context.Background(), testPR, gitops.ActionMerge, nil); err != nil {
+	if _, err := app.settlePRAction(context.Background(), testPR, gitops.ActionMerge, nil); err != nil {
 		t.Fatalf("settle: %v", err)
 	}
 	// The pump is paused, so the last poll is the refresh, served before
@@ -123,7 +123,7 @@ func TestPRActionFailureIsExplained(t *testing.T) {
 	// A tick in flight when the pump was parked finishes first.
 	time.Sleep(20 * time.Millisecond)
 	before := len(script.calls())
-	err := app.settlePRAction(context.Background(), testPR, gitops.ActionMerge, errors.New("forge PUT merge: HTTP 418"))
+	_, err := app.settlePRAction(context.Background(), testPR, gitops.ActionMerge, errors.New("forge PUT merge: HTTP 418"))
 	var explained *gitops.ForgeActionError
 	if !errors.As(err, &explained) || explained.Kind != gitops.ForgeErrorForge {
 		t.Fatalf("settle = %T %v, want a forge ForgeActionError", err, err)
@@ -139,7 +139,7 @@ func TestPRActionFailureIsExplained(t *testing.T) {
 func TestPRActionWithoutPumpSucceeds(t *testing.T) {
 	t.Parallel()
 	app := NewApp()
-	if err := app.settlePRAction(context.Background(), testPR, gitops.ActionApprove, nil); err != nil {
+	if _, err := app.settlePRAction(context.Background(), testPR, gitops.ActionApprove, nil); err != nil {
 		t.Fatalf("settle without pump: %v", err)
 	}
 }
@@ -150,7 +150,7 @@ func TestPRActionsValidateTheReference(t *testing.T) {
 	app := NewApp()
 	ctx := context.Background()
 	bad := gitops.PRReference{Forge: "github"}
-	if err := app.ApprovePR(ctx, bad, "abc"); err == nil {
+	if _, err := app.ApprovePR(ctx, bad, "abc"); err == nil {
 		t.Fatal("ApprovePR accepted an empty reference")
 	}
 	if _, err := app.MergePR(ctx, testPR, gitops.MergeRequest{Method: "rebase-merge", HeadSHA: "abcdef1"}); err == nil {
@@ -186,18 +186,18 @@ func TestSettlePRActionRefreshesWhenThePRChanged(t *testing.T) {
 	}()
 	base := fetches.Load()
 
-	if err := app.settlePRAction(context.Background(), testPR, gitops.ActionMerge, nil); err != nil || fetches.Load() != base+1 {
+	if _, err := app.settlePRAction(context.Background(), testPR, gitops.ActionMerge, nil); err != nil || fetches.Load() != base+1 {
 		t.Fatalf("success = %v, fetches %d after %d", err, fetches.Load(), base)
 	}
 
 	refused := errors.New("refused")
-	err = app.settlePRAction(context.Background(), testPR, gitops.ActionMerge, refused)
+	_, err = app.settlePRAction(context.Background(), testPR, gitops.ActionMerge, refused)
 	if explained, ok := errors.AsType[*gitops.ForgeActionError](err); !ok || !errors.Is(err, refused) || fetches.Load() != base+1 {
 		t.Fatalf("refusal = %v (%+v), fetches %d", err, explained, fetches.Load())
 	}
 
 	kept := &gitops.BranchKeptError{Outcome: gitops.MergeOutcome{Merged: true, SHA: "m"}, Branch: "feature", Err: errors.New("delete refused")}
-	err = app.settlePRAction(context.Background(), testPR, gitops.ActionMerge, kept)
+	_, err = app.settlePRAction(context.Background(), testPR, gitops.ActionMerge, kept)
 	explained, ok := errors.AsType[*gitops.ForgeActionError](err)
 	if !ok || explained.Message != "Merged owner/repo#9, but GitHub kept the branch feature: delete refused" || fetches.Load() != base+2 {
 		t.Fatalf("merged, branch kept = %v, fetches %d", err, fetches.Load())

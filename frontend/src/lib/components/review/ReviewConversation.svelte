@@ -35,6 +35,12 @@
     return Number.isNaN(ms) ? '' : relativeTime(ms);
   }
 
+  // An event's ref is a commit (a hex oid, shown abbreviated) or a name
+  // (a branch, a requested reviewer's login), shown whole.
+  function abbreviateEventRef(ref: string): string {
+    return /^[0-9a-f]{12,}$/i.test(ref) ? ref.slice(0, 7) : ref;
+  }
+
   function verdictKind(state: string): 'approved' | 'changes' | 'dismissed' | 'comment' {
     switch (state.toUpperCase()) {
       case 'APPROVED':
@@ -158,7 +164,7 @@
             <span class="truncate font-semibold text-fg">{authorDisplayName({ authorLogin: entry.event.actorLogin, authorName: entry.event.actorName })}</span>
             <span class="shrink-0 rounded-full px-1.5 py-px text-[0.6875rem] {READINESS_PILL_CLASS[reviewEventTone(entry.event.kind)]}">{reviewEventLabel(entry.event.kind)}</span>
             {#if entry.event.ref}
-              <span class="shrink-0 font-mono text-[0.6875rem] text-fg-muted">{entry.event.ref.length > 12 ? entry.event.ref : entry.event.ref.slice(0, 7)}</span>
+              <span class="shrink-0 font-mono text-[0.6875rem] text-fg-muted">{abbreviateEventRef(entry.event.ref)}</span>
             {/if}
             {#if verdictTime(entry.event.at)}
               <span class="shrink-0 text-fg-subtle">· {verdictTime(entry.event.at)}</span>

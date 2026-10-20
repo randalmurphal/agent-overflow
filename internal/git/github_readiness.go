@@ -433,7 +433,6 @@ func (in githubMergeInputs) options(readiness MergeReadiness) MergeOptions {
 	for _, review := range pull.LatestOpinionatedReviews.Nodes {
 		if review.ViewerDidAuthor && strings.EqualFold(review.State, "APPROVED") {
 			out.ViewerApproved = true
-			out.ViewerApprovalID = review.ID
 		}
 	}
 	return out

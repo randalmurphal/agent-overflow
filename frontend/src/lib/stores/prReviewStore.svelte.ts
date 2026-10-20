@@ -198,8 +198,11 @@ let joinsInFlight = 0;
 
 // The highest seq applied per LOCAL key, seeded from the subscribe result.
 // Ordering is per PR key on both sides: the backend stamps under one mutex
-// and a dead pump stamps nothing, so seq order is content order.
-const appliedSeqByKey = new Map<string, number>();
+// and a dead pump stamps nothing, so seq order is content order. Reactive
+// (SvelteMap) so a pane can wait on it: a merge action answers with the
+// pump's seq after its poll, and the pane reads as pending until the
+// watermark reaches it (`peekPRSeq`).
+const appliedSeqByKey = new SvelteMap<string, number>();
 
 function beginPRUpdateJoin(): void {
   joinsInFlight += 1;
@@ -778,6 +781,14 @@ export function attachPR(key: string, ctx: PRCtx): PRAttachment {
 }
 
 /** Read a PR's snapshot without attaching. Reactive. */
+/** The PR's applied frame sequence: the seq of the last pr:updated or
+ * pr:ci_updated frame applied under `key` (the subscribe result seeds it).
+ * Zero before any. A merge action's answer names the pump's seq after its
+ * poll; the forge's answer is on screen once this has reached it. */
+export function peekPRSeq(key: string | null): number {
+  return key ? (appliedSeqByKey.get(key) ?? 0) : 0;
+}
+
 export function peekPRSnapshot(key: string | null): PRSnapshot | null {
   return key === null ? null : store.peek(key);
 }

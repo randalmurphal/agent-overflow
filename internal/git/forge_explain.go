@@ -9,16 +9,14 @@ import (
 	"strings"
 	"time"
 
-	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/forgeapi"
 )
 
 // ForgeActionError is a forge failure as the user reads it: one sentence
 // naming the cause and the fix (Message), its kind for the surface that
-// shows it, and the forge's own error underneath for "Details". Err is
-// the sentence as errorsx.Public prose (code "forge_<Kind>") over the
-// forge's error, so a bound method returning this error reaches the
-// client as the sentence under that code. Every
+// shows it, and the forge's own error underneath (Err) for "Details". It
+// is public by type (PublicDetails), so a bound method returning one
+// reaches the client as the sentence under the code "forge_<Kind>". Every
 // forge call the user makes (and the PR pump's reads) passes its error
 // through ExplainForgeError before it reaches the wire.
 type ForgeActionError struct {
@@ -29,6 +27,14 @@ type ForgeActionError struct {
 
 func (e *ForgeActionError) Error() string { return e.Message }
 func (e *ForgeActionError) Unwrap() error { return e.Err }
+
+// PublicDetails is the sentence under the code "forge_<kind>", for every
+// ForgeActionError however it was built (errorsx.Detailed): the transport
+// sends the message whole and a client reads the kind from the code; the
+// forge's own text travels only in the error's details.
+func (e *ForgeActionError) PublicDetails() (code, message string) {
+	return "forge_" + e.Kind, e.Message
+}
 
 // ForgeActionError.Kind values. The first four are the PR pump's failure
 // kinds (internal/app/app_forge_failure.go); the rest are refusals of
@@ -73,11 +79,8 @@ func ExplainForgeError(ref PRReference, action ForgeAction, err error) error {
 	}
 	labels := forgeLabels(ref.Forge)
 	name := fmt.Sprintf("%s%s%d", ref.Project(), labels.numberPrefix, ref.Number)
-	// The sentence travels as reviewed prose (errorsx.Public): the transport
-	// sends it whole under the code "forge_<kind>", so a client reads the
-	// kind from the code and the forge's own text only from the details.
 	wrap := func(kind, message string) error {
-		return &ForgeActionError{Kind: kind, Message: message, Err: errorsx.Public("forge_"+kind, message, err)}
+		return &ForgeActionError{Kind: kind, Message: message, Err: err}
 	}
 	var setup *forgeapi.SetupError
 	var limited *forgeapi.RateLimitedError

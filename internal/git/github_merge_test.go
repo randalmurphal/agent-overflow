@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/forgeapi"
 )
 
@@ -476,16 +477,13 @@ func TestGitHubViewerApproval(t *testing.T) {
 			githubOpinion("PRR_mine", "viewer", "", "APPROVED", true, true),
 		}},
 	}))
-	if m := d.Merge; !m.ViewerApproved || m.ViewerApprovalID != "PRR_mine" || !m.ViewerCanApprove || m.CannotApproveReason != "" {
+	if m := d.Merge; !m.ViewerApproved || !m.ViewerCanApprove || m.CannotApproveReason != "" {
 		t.Fatalf("merge options = %+v", m)
-	}
-	if raw, _ := json.Marshal(d.Merge); strings.Contains(string(raw), "PRR_mine") {
-		t.Fatalf("the approval id reaches the wire: %s", raw)
 	}
 	notApproved := readGitHubDetail(t, githubMergeRepo(nil), githubMergePull(map[string]any{
 		"latestOpinionatedReviews": map[string]any{"nodes": []any{githubOpinion("PRR_mine", "viewer", "", "CHANGES_REQUESTED", true, true)}},
 	})).Merge
-	if notApproved.ViewerApproved || notApproved.ViewerApprovalID != "" {
+	if notApproved.ViewerApproved {
 		t.Fatalf("a change request reads as approval: %+v", notApproved)
 	}
 	author := readGitHubDetail(t, githubMergeRepo(nil), githubMergePull(map[string]any{"viewerDidAuthor": true})).Merge
@@ -700,28 +698,30 @@ func TestGitHubApprove(t *testing.T) {
 	}
 }
 
-// Unapprove dismisses the approving review and reads its state back.
+// Unapprove dismisses the viewer's approving review and reads its state
+// back; an answer that is not DISMISSED is an error.
 func TestGitHubUnapprove(t *testing.T) {
 	t.Parallel()
 	core, fake, calls := newGitHubMergeCore(t)
+	fake.set("ViewerApproval", githubData(`{"repository":{"pullRequest":{"latestOpinionatedReviews":{"nodes":[{"id":"PRR_mine","state":"APPROVED","viewerDidAuthor":true}]}}}}`))
 	fake.set("DismissReview", githubData(`{"dismissPullRequestReview":{"pullRequestReview":{"state":"DISMISSED"}}}`))
-	if err := core.UnapprovePR(t.Context(), githubTestRef(5), "PRR_mine"); err != nil {
+	if err := core.UnapprovePR(t.Context(), githubTestRef(5)); err != nil {
 		t.Fatal(err)
 	}
 	sent := calls.all()
-	if len(sent) != 1 || sent[0].Vars["reviewID"] != "PRR_mine" || sent[0].Vars["message"] != "Approval withdrawn" ||
-		!strings.Contains(sent[0].Query, "dismissPullRequestReview(input: {pullRequestReviewId: $reviewID, message: $message})") {
+	if len(sent) != 2 || sent[1].Vars["reviewID"] != "PRR_mine" || sent[1].Vars["message"] != "Approval withdrawn" ||
+		!strings.Contains(sent[1].Query, "dismissPullRequestReview(input: {pullRequestReviewId: $reviewID, message: $message})") {
 		t.Fatalf("dismiss = %+v", sent)
 	}
 	fake.set("DismissReview", githubData(`{"dismissPullRequestReview":{"pullRequestReview":{"state":"APPROVED"}}}`))
-	if err := core.UnapprovePR(t.Context(), githubTestRef(5), "PRR_mine"); err == nil || !strings.Contains(err.Error(), "APPROVED") {
+	if err := core.UnapprovePR(t.Context(), githubTestRef(5)); err == nil || !strings.Contains(err.Error(), "APPROVED") {
 		t.Fatalf("contradicting answer = %v", err)
 	}
 }
 
-// Unapprove without a review id dismisses the viewer's own standing
-// approval, found in latestOpinionatedReviews; with none it refuses and
-// dismisses nothing.
+// Unapprove dismisses only the viewer's own standing approval, found in
+// latestOpinionatedReviews of the pull request named; with none it
+// refuses, publicly, and dismisses nothing.
 func TestGitHubUnapproveFindsTheViewersApproval(t *testing.T) {
 	t.Parallel()
 	core, fake, calls := newGitHubMergeCore(t)
@@ -729,7 +729,7 @@ func TestGitHubUnapproveFindsTheViewersApproval(t *testing.T) {
 		{"id":"PRR_other","state":"APPROVED","viewerDidAuthor":false},
 		{"id":"PRR_mine","state":"APPROVED","viewerDidAuthor":true}]}}}}`))
 	fake.set("DismissReview", githubData(`{"dismissPullRequestReview":{"pullRequestReview":{"state":"DISMISSED"}}}`))
-	if err := core.UnapprovePR(t.Context(), githubTestRef(5), " "); err != nil {
+	if err := core.UnapprovePR(t.Context(), githubTestRef(5)); err != nil {
 		t.Fatal(err)
 	}
 	sent := calls.all()
@@ -747,13 +747,18 @@ func TestGitHubUnapproveFindsTheViewersApproval(t *testing.T) {
 	fake.set("ViewerApproval", githubData(`{"repository":{"pullRequest":{"latestOpinionatedReviews":{"nodes":[
 		{"id":"PRR_other","state":"APPROVED","viewerDidAuthor":false},
 		{"id":"PRR_mine","state":"CHANGES_REQUESTED","viewerDidAuthor":true}]}}}}`))
-	err := core.UnapprovePR(t.Context(), githubTestRef(5), "")
+	err := core.UnapprovePR(t.Context(), githubTestRef(5))
 	explained, ok := errors.AsType[*ForgeActionError](err)
 	if !ok || explained.Kind != ForgeErrorRefused || explained.Message != "You have no approval to withdraw." {
 		t.Fatalf("no approval = %v", err)
 	}
 	if again, _ := errors.AsType[*ForgeActionError](ExplainForgeError(githubTestRef(5), ActionUnapprove, err)); again == nil || again.Message != explained.Message {
 		t.Fatalf("explained = %v", again)
+	}
+	// The wire reads the refusal as the sentence under its code, like every
+	// explained error, though this one was built by the forge itself.
+	if code, message, ok := errorsx.PublicDetails(err); !ok || code != "forge_refused" || message != explained.Message {
+		t.Fatalf("public details = (%q, %q, %v), want (forge_refused, the sentence, true)", code, message, ok)
 	}
 	if fmt.Sprint(calls.ops()) != "[ViewerApproval DismissReview ViewerApproval]" {
 		t.Fatalf("a dismiss was sent without an approval: %v", calls.ops())

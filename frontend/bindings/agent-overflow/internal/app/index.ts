@@ -75,6 +75,7 @@ export {
     NewThreadDefaultsUpdate,
     OwnDeviceList,
     OwnDeviceMember,
+    PRActionResult,
     PRCILogFollowResult,
     PRCILogState,
     PRMergeConflictsResult,
