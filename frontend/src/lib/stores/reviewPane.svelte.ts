@@ -475,14 +475,22 @@ const statesBySourcePane = new Map<string, ReviewPaneState>();
 // pane leaves pr scope, the review companion closes for good, or the
 // thread is removed.
 const heldPRByRow = new Map<string, PRRef>();
-addCompanionClosedObserver((sourcePaneId, kind, threadId) => {
-  if (kind !== 'review') return;
-  const row = threadId ?? statesBySourcePane.get(sourcePaneId)?.rowId;
-  if (row) heldPRByRow.delete(row);
-});
-// A deleted or archived thread takes its hidden companions with it
-// (companionStash), with no live companion left to close.
-addThreadRemovedObserver((threadId) => heldPRByRow.delete(threadId));
+// Registered on the first state, not at module load: this module sits in
+// an import cycle with the companion and thread stores, so at load one of
+// them can still be initializing.
+let heldPRObserversInstalled = false;
+function installHeldPRObservers(): void {
+  if (heldPRObserversInstalled) return;
+  heldPRObserversInstalled = true;
+  addCompanionClosedObserver((sourcePaneId, kind, threadId) => {
+    if (kind !== 'review') return;
+    const row = threadId ?? statesBySourcePane.get(sourcePaneId)?.rowId;
+    if (row) heldPRByRow.delete(row);
+  });
+  // A deleted or archived thread takes its hidden companions with it
+  // (companionStash), with no live companion left to close.
+  addThreadRemovedObserver((threadId) => heldPRByRow.delete(threadId));
+}
 
 // Stable identity for "this pane is on no PR": ReviewDiffBody re-anchors
 // the reader on a prThreads IDENTITY change, so a fresh [] per read would
@@ -603,6 +611,7 @@ function createReviewPaneState(
   subject: ReviewSubject,
   deferInitialLoad: boolean,
 ): ReviewPaneState {
+  installHeldPRObservers();
   const { identity, threadId, rowId, workspace } = subject;
   const backend = threadMachine(threadId ?? '', workspace.projectId);
   function computerPRKey(ref: PRRef): string { return composeWorkspaceKey(backend, prKey(ref)); }
