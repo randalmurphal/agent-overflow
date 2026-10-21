@@ -5010,8 +5010,9 @@ export function SetPRListActive(subscriptionID: string, active: boolean): $Cance
  * SetPRListFocus replaces the PR keys (git.PRReference.Key) whose detail
  * one subscriber wants read while it is visible: the rows on its screen
  * and the needs-you set, at most maxPRListFocus. A key the list holds no
- * row for is ignored and reported. A newly focused row's detail is read
- * at once, not at the next tick.
+ * row for is ignored and reported. A focused row whose detail is unread,
+ * or was refused at the rate limit reserve, is read at once as the user's,
+ * not at the next tick.
  */
 export function SetPRListFocus(subscriptionID: string, prKeys: string[]): $CancellablePromise<app$0.PRListFocusResult> {
     return $Call.ByID(910260531, subscriptionID, prKeys).then(($result: any) => {
