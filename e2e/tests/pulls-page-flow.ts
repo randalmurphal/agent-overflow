@@ -5,17 +5,21 @@
 // states and repository pipelines. Covered: the tools row opens the page
 // in the focused pane's place; the Needs you and Waiting on others groups
 // carry one state pill per row and the sidebar badge counts the first
-// group; a GitLab row's failed pipeline arrives with its detail read; the
-// filter chips and the project picker narrow the list and survive a
-// reload; picking a row opens the review pinned to it beside the list (full
-// width with Back on compact) with its readiness pill and Merge section;
-// what moved since the reader looked reads on the row and clears once the
-// row is opened again; a project whose list the forge refuses fails alone
-// with its sentence and a Retry; Open with agent starts a thread in a
-// worktree on the MR's branch with the seeded draft, and afterwards lists
-// it on the MR and refuses a second worktree; the Pipelines tab lists the
-// repositories' pipelines with their refs, filters by ref kind, and opens a
-// pipeline's stages and a job's log beside the list.
+// group; the page reads each repository's list and the detail of the
+// user's own and review-requested rows, and no other row's; a GitLab row's
+// failed pipeline arrives with its detail read; the filter chips and the
+// project picker narrow the list and survive a reload; picking a row opens
+// the review pinned to it beside the list (full width with Back on compact)
+// with its readiness pill and Merge section; what moved since the reader
+// looked reads on the row, clears once the row is opened again and stays
+// cleared across a reload; a project whose list the forge refuses fails
+// alone with its sentence and a Retry; Open with agent starts a thread in a
+// worktree with the MR's branch checked out at its head and the seeded
+// draft, and afterwards lists it on the MR and refuses a second worktree;
+// the Pipelines tab lists the repositories' pipelines with their refs,
+// filters by ref kind, project and status (the last two survive a reload),
+// and opens a GitLab and a GitHub pipeline's stages and a job's log beside
+// the list.
 
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -27,11 +31,13 @@ import { expect, test, type SeedResult } from './fixtures.js';
 import {
   clearForgeRefusal,
   expectEveryForgeCallHandled,
+  forgeInvocations,
   publishPullRequest,
   refuseForgeRoute,
   seedForge,
   type ForgeRepo,
 } from './forge-helpers.js';
+import { harnessGit } from './worktree-removal-helpers.js';
 
 export interface PullsSurface {
   compact: boolean;
@@ -172,6 +178,21 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       await expect(rowPill(page, 201)).toHaveText('Ready to merge');
       await expect(rowPill(page, 103)).toHaveText('Pipeline failed', { timeout: 20_000 });
       await expect(needsYou).toContainText('4');
+      // What the page asked the forges for: each repository's list, and the
+      // detail of the user's own and review-requested rows, every one of
+      // them whether or not the filter shows it (!102 is a draft under
+      // Waiting on others). !104 is neither and not on screen: no read.
+      await expect(async () => {
+        expect(await pullRequestReads(harness)).toEqual({
+          lists: [`gh graphql PullsSearch ${seeded.github.project}`, `glab api merge request list ${seeded.gitlab.project}`],
+          details: [
+            'gh graphql PRTick 201', 'gh graphql PRTick 202',
+            'glab api approvals 101', 'glab api approvals 102', 'glab api approvals 103',
+            'glab api discussions 101', 'glab api discussions 102', 'glab api discussions 103',
+            'glab api merge request 101', 'glab api merge request 102', 'glab api merge request 103',
+          ],
+        });
+      }).toPass({ timeout: 20_000 });
       await expect(pane.getByTestId('pull-row')).toHaveCount(4);
       await pane.getByTestId('pulls-filter-all').click();
       await expect(rowPill(page, 102)).toHaveText('Draft');
@@ -243,6 +264,17 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       await expect(row(page, 101).getByTestId('pull-since')).toHaveText('pushed · 1 new comment since you looked', { timeout: 20_000 });
       await expect(row(page, 101).getByTestId('pull-since')).toHaveCount(1);
 
+      // Opening !101 again clears it, and the backend keeps the mark: a
+      // reload drops the page's own record of the open.
+      await row(page, 101).getByRole('button').first().click();
+      await expect(page.getByTestId('review-pr-header')).toContainText('Queue: retry a failed delivery once');
+      if (compact) await page.getByTestId('pulls-back').click();
+      await expect(row(page, 101).getByTestId('pull-since')).toHaveCount(0, { timeout: 20_000 });
+      await page.reload();
+      if (compact) await page.getByTestId('sidebar-tool-pulls').click();
+      await expect(rowPill(page, 101)).toHaveText('Your turn');
+      await expect(row(page, 101).getByTestId('pull-since')).toHaveCount(0);
+
       await expectEveryForgeCallHandled(harness);
     } finally {
       await page.close();
@@ -254,7 +286,7 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
     test.setTimeout(120_000);
     const harness = await launchPullsHarness();
     try {
-      await seedProjects(harness);
+      const seeded = await seedProjects(harness);
       await harness.open(page);
       await useDarkTheme(page);
       const pane = await openPage(page);
@@ -294,6 +326,13 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       const input = page.getByRole('textbox', { name: 'Message Input', exact: true });
       await expect(input).toHaveValue(/^Reviewing !101: Queue: retry a failed delivery once\n/, { timeout: 30_000 });
       await expect(page.getByTestId('pulls-pane')).toHaveCount(0);
+      // The thread's linked worktree has the MR's branch checked out at its head.
+      const threads = await harness.rpc<Array<{ projectId: string; worktreePath?: string }>>('HarnessListThreadRows');
+      const worktrees = threads.filter((thread) => thread.worktreePath).map((thread) => thread.worktreePath!);
+      expect(worktrees).toHaveLength(1);
+      expect(worktrees[0]).not.toBe(seeded.gitlabPath);
+      expect(harnessGit(harness, worktrees[0], 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('feature');
+      expect(harnessGit(harness, worktrees[0], 'rev-parse', 'HEAD')).toBe(seeded.gitlab.pulls![0].headSha);
       // The thread's branch is the MR's: git status finds the MR, which
       // the header shows as the badge, or under compact as a menu row.
       if (compact) {
@@ -357,6 +396,29 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       await page.getByTestId('pipelines-ref-any').click();
       await expect(rows).toHaveCount(6);
 
+      // The project and status filters narrow the list and survive a
+      // reload: widgets' failed tag and merge request pipelines.
+      const gadgets = await projectId(harness, 'gadgets');
+      const widgets = await projectId(harness, 'widgets');
+      await pane.getByTestId(`pipelines-project-${gadgets}`).click();
+      await pane.getByTestId('pipelines-status-picker').click();
+      await page.getByTestId('pipelines-status-failed').click();
+      await expect(rows).toHaveCount(2);
+      await expect(rows.filter({ hasText: '#9002' })).toHaveCount(1);
+      await expect(rows.filter({ hasText: '#45103' })).toHaveCount(1);
+      await page.reload();
+      if (compact) await page.getByTestId('sidebar-tool-pulls').click();
+      await expect(pane).toHaveAttribute('data-tab', 'pipelines');
+      await expect(pane.getByTestId('pipelines-status-picker')).toContainText('Failed');
+      await expect(pane.getByTestId(`pipelines-project-${gadgets}`)).toHaveAttribute('aria-pressed', 'false');
+      await expect(pane.getByTestId(`pipelines-project-${widgets}`)).toHaveAttribute('aria-pressed', 'true');
+      await expect(rows).toHaveCount(2);
+      await expect(rows.filter({ hasText: '#9002' })).toHaveCount(1);
+      await pane.getByTestId(`pipelines-project-${gadgets}`).click();
+      await pane.getByTestId('pipelines-status-picker').click();
+      await page.getByTestId('pipelines-status-all').click();
+      await expect(rows).toHaveCount(6);
+
       // A row opens its stages; a job opens its log.
       await tagRow.getByRole('button').first().click();
       const view = page.getByTestId('pipeline-view');
@@ -375,12 +437,47 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
         await expect(rows).toHaveCount(6);
       }
 
+      // A GitHub run opens the same way: #201's run, its unit job's log.
+      await rows.filter({ hasText: '#46201' }).getByRole('button').first().click();
+      await expect(view).toHaveAttribute('data-pipeline-key', /:46201$/);
+      await expect(view.getByTestId('pipeline-view-status')).toHaveText('success');
+      await view.getByTestId('review-ci-chip').filter({ hasText: 'CI' }).click();
+      await page.getByTestId('review-ci-job').filter({ hasText: 'unit' }).click();
+      await log.locator('[data-testid="review-ci-section"][data-key="job"]').getByTestId('review-ci-section-toggle').click();
+      await expect(log).toContainText('all green');
+      if (compact) {
+        await page.getByTestId('pulls-back').click();
+        await expect(view).toBeHidden();
+      }
+
       await expectEveryForgeCallHandled(harness);
     } finally {
       await page.close();
       await harness.close();
     }
   });
+}
+
+/**
+ * The page's forge reads so far, as sorted `<route> <target>` strings: the
+ * list reads by repository and the detail reads by PR number.
+ */
+async function pullRequestReads(harness: HarnessApp): Promise<{ lists: string[]; details: string[] }> {
+  const lists = new Set<string>();
+  const details = new Set<string>();
+  for (const call of await forgeInvocations(harness)) {
+    if (call.via !== 'http') continue;
+    if (call.route === 'gh graphql PullsSearch') {
+      lists.add(`${call.route} ${String(call.variables?.query ?? '').replace(/^.*repo:(\S+).*$/, '$1')}`);
+    } else if (call.route === 'gh graphql PRTick') {
+      details.add(`${call.route} ${String(call.variables?.number)}`);
+    } else if (call.route === 'glab api merge request list') {
+      lists.add(`${call.route} ${decodeURIComponent(call.path.replace(/^projects\/([^/]+)\/.*$/, '$1'))}`);
+    } else if (call.route === 'glab api merge request' || call.route === 'glab api approvals' || call.route === 'glab api discussions') {
+      details.add(`${call.route} ${call.path.replace(/^projects\/[^/]+\/merge_requests\/(\d+).*$/, '$1')}`);
+    }
+  }
+  return { lists: [...lists].sort(), details: [...details].sort() };
 }
 
 async function projectId(harness: HarnessApp, name: string): Promise<string> {
