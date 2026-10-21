@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+
+	"agent-overflow/internal/secret"
 )
 
 // Identity rows (migration v79). Persistence only: this package validates
@@ -157,7 +159,7 @@ func (s Session) AwaitingConfirmation() bool {
 // under them keep verifying until they are deliberately dropped.
 type SigningKey struct {
 	ID        string
-	Secret    []byte
+	Secret    *secret.Bytes
 	CreatedAt int64
 }
 
@@ -744,13 +746,13 @@ func (s *Store) InsertSigningKey(key SigningKey) error {
 	if strings.TrimSpace(key.ID) == "" {
 		return fmt.Errorf("%w: signing key id", ErrIdentityFieldRequired)
 	}
-	if len(key.Secret) == 0 {
+	if key.Secret.Len() == 0 {
 		return fmt.Errorf("%w: signing key secret", ErrIdentityFieldRequired)
 	}
 	if _, err := s.db.Exec(
 		`INSERT INTO signing_keys (id, secret, created_at) VALUES (?, ?, ?)
 		 ON CONFLICT(id) DO NOTHING`,
-		key.ID, key.Secret, key.CreatedAt,
+		key.ID, key.Secret.Reveal(), key.CreatedAt,
 	); err != nil {
 		return fmt.Errorf("store: insert signing key: %w", err)
 	}
@@ -779,12 +781,14 @@ func (s *Store) SigningKeyByID(id string) (SigningKey, error) {
 
 func scanSigningKey(sc interface{ Scan(...any) error }) (SigningKey, error) {
 	var key SigningKey
-	if err := sc.Scan(&key.ID, &key.Secret, &key.CreatedAt); err != nil {
+	var raw []byte
+	if err := sc.Scan(&key.ID, &raw, &key.CreatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return SigningKey{}, err
 		}
 		return SigningKey{}, fmt.Errorf("store: scan signing key: %w", err)
 	}
+	key.Secret = secret.Adopt(raw)
 	return key, nil
 }
 

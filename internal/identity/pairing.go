@@ -675,7 +675,7 @@ func (s *Sessions) VerificationNumber(linkID, thumbprint string) (string, error)
 	if err != nil {
 		return "", err
 	}
-	mac := hmac.New(sha256.New, key.Secret)
+	mac := hmac.New(sha256.New, key.Secret.Reveal())
 	mac.Write([]byte(verificationDomain))
 	mac.Write([]byte(s.backendID))
 	mac.Write([]byte{0})

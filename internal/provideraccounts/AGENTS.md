@@ -70,6 +70,47 @@ Never set `CLAUDE_CONFIG_DIR` for a canonical-home run, even to its default.
 Reserve and clear `CLAUDE_SECURESTORAGE_CONFIG_DIR` on every corresponding
 spawn. All macOS `security(1)` calls remain in `claude_keychain.go`.
 
+A Keychain write too long for `security -i`'s 4096-byte line goes through
+argv, as Claude Code's own write does. The item's ACL trusts only
+`/usr/bin/security`, so a Security-framework write from AO would prompt on
+every switch. Moving the login to the plaintext file instead would expose it
+longer to the same readers.
+
+Every ephemeral home, Claude or Codex, is registered with a lease the
+owning process holds before a credential can exist in it
+(`ephemeral_registry.go`). The boot sweep acts only on homes whose lease it
+can take. It adopts a crash-orphaned credential into its slot only when the
+slot is missing, signed out, or strictly behind it on the rotation chain
+(`ChainPosition`: Claude token expiry, Codex `last_refresh`).
+
+Each registry entry records the fingerprint of the refresh token its home
+was seeded with (`TokenFingerprint`, provider-owned: the provider rewrites
+its credential file for other reasons and keeps the token). An adoption of
+an orphan that rotated that token first records it as consumed beside the
+slot's lock (`consumed.go`), and no slot write ever lands a credential
+holding it again: a switch's preserve, an adoption, a delayed commit. A
+recovery record that cannot be read stops every write to its slot.
+
+Only the store that selected an account writes the canonical credential
+for it. Its sweep also restores a selected account's orphan into the
+canonical home while that still holds the consumed token. Another data
+root's sweep restores the slot alone. While the canonical store still holds
+the consumed token, the owner promotes the slot (`PromoteSlotOverCanonical`):
+at boot, before reconciliation, before an account probe and before a
+selected usage probe. Coherence of the
+shared canonical credential across stores otherwise belongs to
+external-login reconciliation.
+
+Every slot write and removal holds the slot's lock (`lockSlot`); a writer
+that decides from the slot's contents holds it from the read to the write.
+A writer holding bytes it read earlier replaces only what it read, and
+never moves the slot backward on its chain (`ReplaceAccountCredential`).
+Rollback removes only what it wrote.
+
+Credential bytes travel as `CredentialSnapshot` or `secret.Bytes`, which
+print as `<redacted>` from any field. A raw `[]byte` credential is a
+function argument, never a struct field.
+
 Pruning requires a matching `providerHome` ownership stamp. Tests and harness
 runs use temporary homes and the file-backed keychain seam; they never inspect
 or modify real provider homes.

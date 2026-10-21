@@ -100,7 +100,7 @@ func TestVerifyRefusalsAreTypedAndSpecific(t *testing.T) {
 	orphan, err := signClaims(Claims{
 		KeyID: key.ID, SessionID: "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
 		IssuedAt: c.now().UnixMilli(), ExpiresAt: c.now().UnixMilli() + 1000,
-	}, key.Secret, testBackendID)
+	}, key.Secret.Reveal(), testBackendID)
 	if err != nil {
 		t.Fatalf("signClaims: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestSignatureIsCheckedBeforeTheTimeWindow(t *testing.T) {
 	}
 
 	// Signed properly, it is a clock problem and says so.
-	signed, err := signClaims(futureClaims, key.Secret, testBackendID)
+	signed, err := signClaims(futureClaims, key.Secret.Reveal(), testBackendID)
 	if err != nil {
 		t.Fatalf("signClaims: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestSignatureIsCheckedBeforeTheTimeWindow(t *testing.T) {
 	// not the clock either.
 	foreign, err := signClaims(
 		Claims{KeyID: "ffffffffffffffff", SessionID: session.ID, IssuedAt: future, ExpiresAt: future + 1000},
-		key.Secret, testBackendID)
+		key.Secret.Reveal(), testBackendID)
 	if err != nil {
 		t.Fatalf("signClaims: %v", err)
 	}
@@ -427,8 +427,8 @@ func TestEnsureSigningKeyIsIdempotent(t *testing.T) {
 	if first.ID != second.ID {
 		t.Fatalf("signing key moved: %q -> %q", first.ID, second.ID)
 	}
-	if len(first.Secret) != 32 {
-		t.Fatalf("signing key secret is %d bytes, want 32", len(first.Secret))
+	if first.Secret.Len() != 32 {
+		t.Fatalf("signing key secret is %d bytes, want 32", first.Secret.Len())
 	}
 }
 

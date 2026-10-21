@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/filelock"
 )
 
 // A fork anywhere in the process copies the lock's descriptor until its
@@ -24,7 +26,7 @@ func TestProfileLockReleaseFreesTheLockWhileAForkHoldsACopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if locked, err := tryProfileLock(f); !locked || err != nil {
+	if locked, err := filelock.TryLock(f); !locked || err != nil {
 		t.Fatalf("lock = %t, %v", locked, err)
 	}
 	holder := exec.Command("/bin/sleep", "30")

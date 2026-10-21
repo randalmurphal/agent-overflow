@@ -41,7 +41,7 @@ func TestCredentialWritesRefuseASignOutHusk(t *testing.T) {
 	) {
 		t.Fatalf("WriteAccountCredential(husk) = %v, want ErrSignedOutCredential", err)
 	}
-	if err := credentials.CommitSelectedCredential("claude", "slot", []byte("husk")); !errors.Is(
+	if err := credentials.CommitSelectedCredential("claude", "slot", nil, []byte("husk")); !errors.Is(
 		err,
 		ErrSignedOutCredential,
 	) {
@@ -90,10 +90,10 @@ func TestARefusedHuskLeavesTheExistingCredentialIntact(t *testing.T) {
 
 	// The canonical store is the other destination, and the one whose loss
 	// signs the user out of the running app.
-	if err := credentials.CommitSelectedCredential("claude", "slot", []byte("real-token")); err != nil {
+	if err := credentials.CommitSelectedCredential("claude", "slot", []byte("real-token"), []byte("real-token")); err != nil {
 		t.Fatal(err)
 	}
-	if err := credentials.CommitSelectedCredential("claude", "slot", []byte("husk")); !errors.Is(
+	if err := credentials.CommitSelectedCredential("claude", "slot", nil, []byte("husk")); !errors.Is(
 		err,
 		ErrSignedOutCredential,
 	) {
@@ -225,7 +225,7 @@ func TestActivateWithSnapshotSkipsAHuskSnapshotAndStillSwitches(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	husk := CredentialSnapshot{Data: []byte("husk")}
+	husk := NewCredentialSnapshot([]byte("husk"))
 	if err := credentials.ActivateWithSnapshot("claude", "outgoing", "incoming", &husk); err != nil {
 		t.Fatalf("ActivateWithSnapshot() error = %v", err)
 	}
@@ -284,7 +284,10 @@ func TestCaptureAccountCredentialTreatsAHuskAsNoCredential(t *testing.T) {
 	if saved.HadCredential() {
 		t.Fatal("a husked slot captured as holding a credential")
 	}
-	if err := credentials.RestoreAccountCredential(saved); err != nil {
+	if err := credentials.WriteAccountCredential("claude", "dead", []byte("new-login")); err != nil {
+		t.Fatal(err)
+	}
+	if err := credentials.RestoreAccountCredential(saved, []byte("new-login")); err != nil {
 		t.Fatalf("RestoreAccountCredential() error = %v", err)
 	}
 	if _, err := os.Lstat(slot); !errors.Is(err, os.ErrNotExist) {

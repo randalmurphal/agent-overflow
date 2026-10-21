@@ -3,9 +3,12 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
+
+	"agent-overflow/internal/secret"
 )
 
 // seedOwnerDevice returns a store with an owner account and one device, the
@@ -26,7 +29,7 @@ func seedOwnerDevice(t *testing.T) (*Store, User, Device) {
 
 func seedSigningKey(t *testing.T, s *Store) SigningKey {
 	t.Helper()
-	key := SigningKey{ID: "key-1", Secret: []byte("0123456789abcdef"), CreatedAt: 100}
+	key := SigningKey{ID: "key-1", Secret: secret.New([]byte("0123456789abcdef")), CreatedAt: 100}
 	if err := s.InsertSigningKey(key); err != nil {
 		t.Fatalf("InsertSigningKey: %v", err)
 	}
@@ -472,8 +475,8 @@ func TestSigningKeysAndTheirCascade(t *testing.T) {
 	if _, err := s.ActiveSigningKey(); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("ActiveSigningKey on a fresh store = %v, want sql.ErrNoRows", err)
 	}
-	older := SigningKey{ID: "key-old", Secret: []byte("old"), CreatedAt: 100}
-	newer := SigningKey{ID: "key-new", Secret: []byte("new"), CreatedAt: 200}
+	older := SigningKey{ID: "key-old", Secret: secret.New([]byte("old")), CreatedAt: 100}
+	newer := SigningKey{ID: "key-new", Secret: secret.New([]byte("new")), CreatedAt: 200}
 	for _, key := range []SigningKey{older, newer} {
 		if err := s.InsertSigningKey(key); err != nil {
 			t.Fatalf("InsertSigningKey(%s): %v", key.ID, err)
@@ -490,8 +493,11 @@ func TestSigningKeysAndTheirCascade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SigningKeyByID: %v", err)
 	}
-	if string(byID.Secret) != "old" {
-		t.Fatalf("secret did not round-trip: %q", byID.Secret)
+	if string(byID.Secret.Reveal()) != "old" {
+		t.Fatalf("secret did not round-trip: %q", byID.Secret.Reveal())
+	}
+	if printed := fmt.Sprintf("%s %+v", any(byID), byID); strings.Contains(strings.ReplaceAll(printed, "key-old", ""), "old") {
+		t.Fatalf("a read signing key printed its secret: %s", printed)
 	}
 	if _, err := s.SigningKeyByID("key-missing"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("SigningKeyByID(missing) = %v, want sql.ErrNoRows", err)
@@ -511,11 +517,11 @@ func TestSigningKeysAndTheirCascade(t *testing.T) {
 
 func TestInsertSigningKeyIsIdempotentOnID(t *testing.T) {
 	s := newTestStore(t)
-	key := SigningKey{ID: "key-1", Secret: []byte("first"), CreatedAt: 1}
+	key := SigningKey{ID: "key-1", Secret: secret.New([]byte("first")), CreatedAt: 1}
 	if err := s.InsertSigningKey(key); err != nil {
 		t.Fatalf("InsertSigningKey: %v", err)
 	}
-	key.Secret = []byte("second")
+	key.Secret = secret.New([]byte("second"))
 	if err := s.InsertSigningKey(key); err != nil {
 		t.Fatalf("repeat InsertSigningKey: %v", err)
 	}
@@ -523,8 +529,8 @@ func TestInsertSigningKeyIsIdempotentOnID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SigningKeyByID: %v", err)
 	}
-	if string(got.Secret) != "first" {
-		t.Fatalf("secret was overwritten: %q — a key's bytes must never move", got.Secret)
+	if string(got.Secret.Reveal()) != "first" {
+		t.Fatalf("secret was overwritten: %q — a key's bytes must never move", got.Secret.Reveal())
 	}
 }
 
@@ -775,7 +781,7 @@ func TestIdentityWritesRefuseMissingRequiredFields(t *testing.T) {
 	if _, err := s.CreateDevice("user", "", "desktop", ""); !errors.Is(err, ErrIdentityFieldRequired) {
 		t.Fatalf("blank device label = %v", err)
 	}
-	if err := s.InsertSigningKey(SigningKey{ID: "", Secret: []byte("x")}); !errors.Is(err, ErrIdentityFieldRequired) {
+	if err := s.InsertSigningKey(SigningKey{ID: "", Secret: secret.New([]byte("x"))}); !errors.Is(err, ErrIdentityFieldRequired) {
 		t.Fatalf("blank key id = %v", err)
 	}
 	if err := s.InsertSigningKey(SigningKey{ID: "k"}); !errors.Is(err, ErrIdentityFieldRequired) {

@@ -6,6 +6,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccounts"
 )
 
@@ -16,12 +17,21 @@ func CredentialSignedOut(providerName string, data []byte) bool {
 }
 
 // CredentialChainPosition reports a comparable position on a provider's
-// single-use credential chain. Only Claude currently has one.
+// credential rotation chain: Claude's access-token expiry, Codex's
+// last_refresh in epoch milliseconds.
 func CredentialChainPosition(providerName string, data []byte) (int64, bool) {
-	if providerName != string(provider.Claude) {
+	switch providerName {
+	case string(provider.Claude):
+		return claude.CredentialExpiresAt(data)
+	case string(provider.Codex):
+		refreshed, ok := codex.CredentialLastRefresh(data)
+		if !ok {
+			return 0, false
+		}
+		return refreshed.UnixMilli(), true
+	default:
 		return 0, false
 	}
-	return claude.CredentialExpiresAt(data)
 }
 
 // CredentialLoginExpiresAt reports when the login provider-native bytes hold
@@ -40,12 +50,27 @@ func CredentialLoginExpiresAt(providerName string, data []byte) (int64, bool) {
 	return expiresAt.UnixMilli(), true
 }
 
+// CredentialRefreshTokenFingerprint identifies the refresh token
+// provider-native bytes hold (claude and codex
+// CredentialRefreshTokenFingerprint).
+func CredentialRefreshTokenFingerprint(providerName string, data []byte) (string, bool) {
+	switch providerName {
+	case string(provider.Claude):
+		return claude.CredentialRefreshTokenFingerprint(data)
+	case string(provider.Codex):
+		return codex.CredentialRefreshTokenFingerprint(data)
+	default:
+		return "", false
+	}
+}
+
 // CredentialPolicy is the shared provider-native credential write policy.
 func CredentialPolicy() provideraccounts.Policy {
 	return provideraccounts.Policy{
-		SignedOut:      CredentialSignedOut,
-		ChainPosition:  CredentialChainPosition,
-		LoginExpiresAt: CredentialLoginExpiresAt,
+		SignedOut:        CredentialSignedOut,
+		ChainPosition:    CredentialChainPosition,
+		LoginExpiresAt:   CredentialLoginExpiresAt,
+		TokenFingerprint: CredentialRefreshTokenFingerprint,
 	}
 }
 

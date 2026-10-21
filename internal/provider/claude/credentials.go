@@ -1,6 +1,8 @@
 package claude
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"time"
@@ -178,4 +180,25 @@ func LoginExpired(data []byte, now time.Time) bool {
 		return false
 	}
 	return !expiresAt.After(now)
+}
+
+// CredentialRefreshTokenFingerprint is a SHA-256 of the OAuth refresh token
+// in native credential bytes, hex encoded: the material a rotation consumes,
+// identifying a credential across rewrites that leave it alone. ok is false
+// when there is none (an API-key setup, a foreign shape, the sign-out husk).
+func CredentialRefreshTokenFingerprint(data []byte) (string, bool) {
+	var credentials struct {
+		ClaudeAIOauth *struct {
+			RefreshToken string `json:"refreshToken"`
+		} `json:"claudeAiOauth"`
+	}
+	if err := json.Unmarshal(data, &credentials); err != nil || credentials.ClaudeAIOauth == nil {
+		return "", false
+	}
+	token := strings.TrimSpace(credentials.ClaudeAIOauth.RefreshToken)
+	if token == "" {
+		return "", false
+	}
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:]), true
 }
