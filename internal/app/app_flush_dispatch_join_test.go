@@ -1103,6 +1103,37 @@ func TestRequeueOfAJoinedMessageResendsEveryReviewSource(t *testing.T) {
 	}
 }
 
+// A joined message may carry more comments of one source than one selection
+// may: each member's selection is bounded, the join is not. Its resend
+// claims every comment it renders.
+func TestRequeueOfAJoinedMessageClaimsMoreCommentsThanOneSelection(t *testing.T) {
+	t.Parallel()
+	bodies := func(member, n int) []string {
+		out := make([]string, 0, n)
+		for i := range n {
+			out = append(out, fmt.Sprintf("Comment %d of message %d.", i, member))
+		}
+		return out
+	}
+	for _, failure := range reviewRequeueFailures {
+		t.Run(failure.name, func(t *testing.T) {
+			t.Parallel()
+			d := startReviewDispatchOf(t, "requeue-joined-over-selection",
+				reviewMessage{text: reviewDispatchText, bodies: bodies(0, 26)},
+				reviewMessage{text: "And the rest.", bodies: bodies(1, 25)},
+			)
+			if len(d.drafts) <= store.MaxDiffReviewCommentIDs {
+				t.Fatalf("%d comments, want more than one selection's %d", len(d.drafts), store.MaxDiffReviewCommentIDs)
+			}
+			d.requeue(t, failure)
+			d.resend(t)
+			d.wantEnvelope(t, 2)
+			d.wantStatus(t, d.app, "sent", "after the resend")
+			d.wantClaimedByResend(t, d.draftIDs()...)
+		})
+	}
+}
+
 // A PR-scope message renders each comment with its hunk excerpt, which only
 // its first dispatch had; the resend carries them.
 func TestRequeueResendsTheHunkExcerptsOfAPRScopeMessage(t *testing.T) {

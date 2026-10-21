@@ -321,6 +321,38 @@ func TestClaimDiffReviewCommentsSentSettlesTheTextTheMessageCarries(t *testing.T
 // between the two) returns to a draft at the next boot; a settled one,
 // one retargeted to the row that landed, and one whose row was already
 // there stay sent.
+// A joined message claims more comments than one selection may, whole: all
+// of them in one transaction, or, when one went to another message, none.
+func TestClaimDiffReviewCommentsSentClaimsAJoinedSnapshotWhole(t *testing.T) {
+	s := newTestStore(t)
+	thread := makeThread("claim-whole-thread", "claude")
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	owner := ThreadReviewOwner(thread.ID)
+	scope, source := string(DiffReviewScopeWorkspace), "k"
+	var snapshot []DiffReviewCommentSnapshot
+	for i := range MaxDiffReviewCommentIDs + 1 {
+		id := fmt.Sprintf("c%02d", i)
+		createReviewComments(t, s, owner, scope, source, id)
+		snapshot = append(snapshot, DiffReviewCommentSnapshot{ID: id, Body: id})
+	}
+	claimFor(t, s, owner, scope, source, "c50", thread.ID, "user:other", thread.ID+":9", true)
+	if got, err := s.ClaimDiffReviewCommentsSent(owner, scope, source, snapshot, DiffReviewDelivery{SentAt: 20, TurnID: thread.ID + ":1", ThreadID: thread.ID, ItemID: "user:1", Queued: true}); !errors.Is(err, ErrDiffReviewCommentsSentElsewhere) || got != nil {
+		t.Fatalf("claim with one sent elsewhere = %v, %v; want ErrDiffReviewCommentsSentElsewhere", got, err)
+	}
+	if got := reviewCommentStatus(t, s, owner, "c00"); got != "draft" {
+		t.Fatalf("c00 after the refused claim = %s, want a draft", got)
+	}
+	if _, err := s.RetireUndeliveredUserRow(thread.ID, "user:other"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ClaimDiffReviewCommentsSent(owner, scope, source, snapshot, DiffReviewDelivery{SentAt: 20, TurnID: thread.ID + ":1", ThreadID: thread.ID, ItemID: "user:1", Queued: true})
+	if err != nil || len(got) != len(snapshot) {
+		t.Fatalf("claim of %d = %d claimed, %v; want all", len(snapshot), len(got), err)
+	}
+}
+
 func TestDiffReviewClaimsTheirRowNeverSettledReturnAtBoot(t *testing.T) {
 	s := openStoreAt(t)
 	thread := makeThread("claim-thread", "claude")

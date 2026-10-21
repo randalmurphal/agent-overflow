@@ -459,7 +459,8 @@ const (
 // edited since stays a draft, a deleted one is skipped, and one already
 // sent in that turn is left as it is. A draft sent in another turn, or
 // resolved, fails the whole claim with ErrDiffReviewCommentsSentElsewhere
-// and marks nothing: that text reached another message.
+// and marks nothing: that text reached another message. The snapshot is
+// claimed whole in one transaction, however many members' comments it joins.
 //
 // The claim names the message's row (claim_thread_id, claim_item_id) and
 // waits for its delivery (claim_settles): a direct send or steer is
@@ -488,9 +489,9 @@ func (s *Store) ClaimDiffReviewCommentsSent(owner DiffReviewOwner, scope, source
 	if strings.TrimSpace(delivery.ThreadID) == "" || strings.TrimSpace(delivery.ItemID) == "" {
 		return nil, fmt.Errorf("store: claim diff review comments: the message row is required")
 	}
-	if len(snapshot) > MaxDiffReviewCommentIDs {
-		return nil, fmt.Errorf("store: too many diff review comments selected")
-	}
+	// No selection limit here: the selection a message renders is bounded
+	// where it is read (ListDraftDiffReviewCommentsByID), and a joined
+	// message claims the comments of every member at once.
 	column, value := owner.column()
 	tx, err := s.db.Begin()
 	if err != nil {
