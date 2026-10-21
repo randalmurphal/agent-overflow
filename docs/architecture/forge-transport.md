@@ -63,10 +63,10 @@ CLI-backed source in production and a fixed fake token when isolated.
 
 ## Hosts and base URLs
 
-Two kinds of forge method, two sources of the host:
+Three kinds of forge method, two sources of the host:
 
 - PR-scoped methods (`ReadPR`, `SubmitReview`, `ReplyToThread`,
-  `SetThreadResolved`, `GetCIJobLog`, `FetchAttachment`) take a
+  `SetThreadResolved`, the merge actions) take a
   `PRReference`, which carries `Host` beside
   `Forge`, `Namespace`, `Repo` and `Number`. The host comes from the PR URL
   every reference is built from (`ParsePRURL`, `prRefFromUrl`); the wire
@@ -81,7 +81,16 @@ Two kinds of forge method, two sources of the host:
   `forge:namespace/repo:number` on the forge's public host and becomes
   `forge@host:namespace/repo:number` elsewhere, so existing keys and
   persisted draft sourceKeys are unchanged.
-- Repository-scoped methods (`ListOpenPRs`, `ListMergedPRHeads`,
+- Repository-scoped methods that need no checkout (`ListProjectPRs`,
+  `ListPipelines`, `ReadPipeline`, `StreamCIJobLog`, `FetchAttachment`,
+  `ReadPRStates`) take a `RepoReference`: a `PRReference` without the
+  number (`PRReference.Repository()`), checked by
+  `RepoReference.Validate`, keyed `forge:namespace/repo` or
+  `forge@host:namespace/repo` as the PR key is. `Core.OriginRepository`
+  builds one from a checkout's origin (below) and fails with
+  `ErrOriginNotForge` for a checkout whose origin names no repository on
+  a supported forge.
+- Checkout-scoped methods (`ListOpenPRs`, `ListMergedPRHeads`,
   `CreatePR`, repository identity) take `cwd`; host and project path come
   from the one origin read forge detection already does
   (`Core.originCoordinates` over the cached `originIdentity`, through
@@ -293,6 +302,48 @@ agent command that settles running `gh pr create` or `glab mr create`
 (`git.CreatesPullRequest`), invalidate and look the branch up again at
 once (`Core.RefreshOpenPR`), so the new PR shows without waiting out a
 cached "no open PR" and is tracked whether or not a pane watches it.
+
+## Project lists
+
+The Pull requests page reads each project's open PRs with one
+`Core.ListProjectPRs(ctx, repo)` (`internal/git/pr_list.go`), and its
+Pipelines tab a project's pipelines on any ref with one
+`Core.ListPipelines(ctx, repo, filter)` and a selected one with
+`Core.ReadPipeline(ctx, repo, id, prev, stepsFor)` (`ci.go`,
+`ci_github.go`, `ci_gitlab.go`). The rows' fields, and which a forge
+leaves zero, are documented on `PRListRow` and `PipelineSummary`.
+
+GitHub lists open PRs with one GraphQL `PullsSearch(query, after)`:
+`search(type: ISSUE, query: "is:pr is:open repo:O/R", first: 100)`
+beside `viewer { login }`. Each node selects its review state
+(`reviewDecision`, `reviewRequests(first: 20)`,
+`latestOpinionatedReviews(first: 100) { viewerDidAuthor }`,
+`viewerLatestReview`, since the login is not known before the answer),
+its merge state, `totalCommentsCount` and `commits(last: 1)` with the
+head commit's time and rollup `state`. GitLab lists
+`projects/P/merge_requests?state=opened&order_by=updated_at&sort=desc&per_page=100`,
+whose basic view carries no pipeline; the viewer is the login's cached
+username, as the detail read uses it. Both read at most `prListMaxPages`
+(10) pages of 100: GitHub search answers at most 1000 results, and
+GitLab's list stops at the 1000 most recently updated.
+
+| Read | GitHub | GitLab |
+|---|---|---|
+| Open PRs of a project | 1 `PullsSearch` per 100 PRs | 1 merge request list page per 100 MRs; + 1 `user` per login and host per 10 minutes |
+| Pipelines of a project (`ListPipelines`, at most 100 rows) | 1 `GET repos/O/R/actions/runs?per_page=N[&branch=][&status=]` | 1 `GET projects/P/pipelines?per_page=N[&ref=][&status=]` |
+| One pipeline (`ReadPipeline`) | 1 `GET repos/O/R/actions/runs/ID` + 1 jobs page per 100 jobs, at most `githubReadMaxPages` | 1 `GET projects/P/pipelines/ID` + 1 jobs page per 100 jobs, at most `gitlabCIJobsMaxPages` |
+
+`PipelineListFilter.Status` is a normalized status each forge filters by
+its own value: success, failed, running, pending (GitHub `queued`),
+canceled, skipped, and manual on GitLab only; another value is refused
+before any request. A GitHub run is one row and, read, one stage named
+after its workflow; its jobs list carries every job's steps, so
+`stepsFor` costs no extra request. Neither list marks a tag: a row's
+`RefKind` is `merge_request` for a GitLab `refs/merge-requests/N` ref or
+a GitHub `pull_request` event, `tag` for a GitHub `release` event, and
+`branch` otherwise. `CIPipeline` carries the pipeline's `ID`, `Ref` and
+`SHA`; a GitHub PR's head checks span many runs, so `ReadPR` leaves its
+`ID` empty.
 
 ## Merged PR worktree cleanup
 
@@ -513,9 +564,10 @@ chooses the surface instead of parsing text. `classifyForgeFailure`
   and bytes (32 MiB) with LRU eviction; a host's entries go when its token
   changes. A GET whose key is held
   sends `If-None-Match`; a 304 returns the stored body with `NotModified`.
-  GitHub REST 304s are free of the limit; GraphQL (POST) has no ETag.
-  GitLab honors `If-None-Match` on merge requests, their list and job
-  traces, not on the pipeline jobs list (200 with the same weak ETag).
+  GitHub REST 304s are free of the limit; GraphQL (POST) has no ETag, so
+  `PullsSearch` is read whole each refresh. GitLab honors `If-None-Match`
+  on merge requests, their list and job traces, not on the pipeline jobs
+  list (200 with the same weak ETag).
 - `Stream` never stores a body; it passes the caller's `If-None-Match`
   through and exposes the response ETag, and follows a redirect with the
   caller's `Range` and `If-None-Match` (a GitHub job log's blob). The CI
