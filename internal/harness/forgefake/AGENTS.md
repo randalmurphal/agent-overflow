@@ -151,7 +151,7 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitHub | `GET <attachment URL>` (`gh api attachment`) | forge attachments |
 | GitLab | `GET projects/P/merge_requests/N` (`glab api merge request`, conditional) | ReadPR, once per read: detail, head SHA for threads, head pipeline for CI, the merge fields with `detailed_merge_status` derived from the fixture |
 | GitLab | `GET projects/P/merge_requests/N/approvals` (`glab api approvals`) | ReadPR detail: approvals required and left, the viewer's standing |
-| GitLab | `GET projects/P/merge_requests/N/reviewers` (`glab api reviewers`) | ReadPRSummary: each reviewer's review state (approved, requested_changes from `changeRequests`, else unreviewed) |
+| GitLab | `GET projects/P/merge_requests/N/reviewers?[per_page=N][&page=N]` (`glab api reviewers`) | ReadPRSummary: each reviewer's review state (approved, requested_changes from `changeRequests`, else unreviewed); `X-Next-Page` while more pages exist |
 | GitLab | `GET projects/P/merge_requests/N/discussions?per_page=N[&page=N]` (`glab api discussions`) | ReadPR threads and, from the system notes, events; `X-Next-Page` while more pages exist |
 | GitLab | `POST .../approve` with `{sha}`, `POST .../unapprove` (`glab api approve`, `glab api unapprove`) | Approve (409 on a moved head, 401 for a viewer GitLab takes no approval from) and Unapprove (404 with none), each with its system note |
 | GitLab | `PUT .../merge` with `{sha, squash, should_remove_source_branch, auto_merge, merge_when_pipeline_succeeds}` (`glab api merge`) | Merge now (405 while blocked, 401 without the role, 409 on a moved head) and Auto-merge (either key or both: arms a blocked merge request, with its system note) |

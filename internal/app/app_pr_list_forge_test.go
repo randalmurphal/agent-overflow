@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -44,6 +45,15 @@ func forgeProjectRepo(t *testing.T, app *App, originURL string) string {
 	return project.ID
 }
 
+// reviewersThen is n other reviewers, then login.
+func reviewersThen(n int, login string) []string {
+	reviewers := make([]string, 0, n+1)
+	for i := range n {
+		reviewers = append(reviewers, fmt.Sprintf("reviewer-%03d", i))
+	}
+	return append(reviewers, login)
+}
+
 // The list pump against the fake forge on both forges: the projects come
 // from the store and their origins, the rows from each forge's list, and
 // the detail read of the user's own and reviewed rows adds approvals,
@@ -80,7 +90,8 @@ func TestPRListReadsBothForgesThroughTheirAPIs(t *testing.T) {
 			{Number: 9, Title: "Dave asked for changes", Author: "carol", Reviewers: []string{"ao-viewer", "dave"}, ChangeRequests: []string{"dave"}},
 			{Number: 10, Title: "Approved by me, Dave asked for changes", Author: "carol", Reviewers: []string{"ao-viewer", "dave"}, ChangeRequests: []string{"dave"},
 				Reviews: []forgefake.Review{{Author: "ao-viewer", State: "APPROVED"}}},
-			{Number: 11, Title: "I asked for changes", Author: "carol", Reviewers: []string{"ao-viewer"}, ChangeRequests: []string{"ao-viewer"}},
+			// The viewer is past the reviewers' first page of 100.
+			{Number: 11, Title: "I asked for changes", Author: "carol", Reviewers: reviewersThen(100, "ao-viewer"), ChangeRequests: []string{"ao-viewer"}},
 		}},
 	}}); err != nil {
 		t.Fatal(err)

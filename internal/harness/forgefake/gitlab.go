@@ -230,11 +230,16 @@ func glabApprovals(e *Engine, c *call, m []string) response {
 
 // glabReviewers answers GET .../reviewers: each reviewer with the state of
 // their review, approved for one whose approval stands, requested_changes
-// for one in changeRequests, else unreviewed.
+// for one in changeRequests, else unreviewed; paginated by per_page (20 by
+// default) and page with X-Next-Page.
 func glabReviewers(e *Engine, c *call, m []string) response {
 	_, p, fail, ok := e.glabMRFrom(c, m)
 	if !ok {
 		return fail
+	}
+	_, perPage, page, err := glabPage(m[3])
+	if err != nil {
+		return unhandled("%v", err)
 	}
 	reviewers := []map[string]any{}
 	for _, login := range p.Reviewers {
@@ -249,7 +254,8 @@ func glabReviewers(e *Engine, c *call, m []string) response {
 		user["state"] = "active"
 		reviewers = append(reviewers, map[string]any{"user": user, "state": state, "created_at": p.CreatedAt})
 	}
-	return glabOK(jsonResponse(reviewers))
+	items, next := paginate(reviewers, perPage, page)
+	return glabOK(jsonResponse(items), "X-Next-Page: "+next, "X-Page: "+strconv.Itoa(page))
 }
 
 // gitlabApprovalsJSON is the merge request's approval state. With no
