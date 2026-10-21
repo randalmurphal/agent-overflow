@@ -53,8 +53,8 @@
     TAIL_WINDOW_KEEP_LINES,
     TAIL_WINDOW_MEASURE_RETRY_CHARS,
     TAIL_WINDOW_MIN_KEEP_CHARS,
-    heightAbove,
     isMonotonicAppend,
+    landedHeight,
     measuredLineStartOffset,
     newlineCutOffset,
   } from './tailWindow';
@@ -124,14 +124,17 @@
   let slideOffset = 0;
   let slideFrame = 0;
   let slideLastTs = 0;
-  // Height the window's own cuts removed from above the box since the
-  // last slide decision. A cut lands in the frame of the text that pushed
-  // the window over its cap, so the observer sees the lines that landed
-  // less the lines cut; the decision is given the cut so the slide is for
-  // the lines that landed. A cut that removes exactly what landed changes
-  // no size and wakes no observer, so the cut's own update runs the
-  // decision once the DOM shows the cut (settleCut).
-  let slideCutPx = 0;
+  // An update whose rendered start advanced (the window's own cut, or the
+  // source window's start moving past it): the stream offsets of the text
+  // it appended and the cut it rendered from. A cut lands in the frame of
+  // the text that pushed the window over its cap, so the observer sees
+  // the lines that landed less the lines cut, and a cut that removes
+  // exactly what landed changes no size and wakes no observer. Once the
+  // DOM shows the cut, settleCut measures the lines that landed directly
+  // (the previous last character is still rendered: a cut stays before
+  // the previous end) and credits the difference to the decision, so the
+  // slide is for the lines that landed.
+  let slideCut: { previousEnd: number; end: number; cut: number } | null = null;
 
   function applySlide(inner: HTMLElement): void {
     inner.style.transform = slideOffset > 0 ? `translateY(${slideOffset}px)` : '';
@@ -161,9 +164,7 @@
     }
   }
 
-  function observeSlide(inner: HTMLElement, next: SlideObservation): void {
-    const removedPx = slideCutPx;
-    slideCutPx = 0;
+  function observeSlide(inner: HTMLElement, next: SlideObservation, removedPx = 0): void {
     const decision = slideDecision(slideMemory, next, slideOffset, removedPx);
     slideMemory = decision.memory;
     if (decision.kind === 'clear') {
@@ -176,13 +177,21 @@
     startSlide(inner, decision.startPx);
   }
 
-  // After the DOM shows a cut: decide from the geometry as it is now. The
+  // After the DOM shows a cut: decide from the geometry as it is now, with
+  // the height the cut removed (what landed less the net growth). The
   // observer's later delivery, if any, sees the same sizes and does nothing.
   function settleCut(): void {
-    if (slideCutPx === 0 || !innerEl || !el) return;
+    const pending = slideCut;
+    slideCut = null;
+    if (!pending || !innerEl || !el || slideMemory === null) return;
+    const node = innerEl.firstChild;
+    if (!(node instanceof Text)) return;
+    const landed = landedHeight(node, pending.previousEnd - 1 - pending.cut, pending.end - 1 - pending.cut);
+    if (landed === null) return;
     const inner = innerEl.getBoundingClientRect();
     const outer = el.getBoundingClientRect();
-    observeSlide(innerEl, { innerH: inner.height, innerW: inner.width, outerH: outer.height });
+    const removed = landed - (inner.height - slideMemory.innerH);
+    observeSlide(innerEl, { innerH: inner.height, innerW: inner.width, outerH: outer.height }, Math.max(0, removed));
   }
 
   $effect(() => {
@@ -262,11 +271,12 @@
       // swap shape the RO cannot see). The expanded flip needs no arm
       // here: it moves the clamp box, and the RO watches the box.
       slideMemory = null;
-      slideCutPx = 0;
+      slideCut = null;
       clearSlide();
     } else if (cut < start) {
       cut = start;
     }
+    const previousEnd = prevEnd;
     prevEnd = end;
     prevLastCharCode = t.length > 0 ? t.charCodeAt(t.length - 1) : 0;
 
@@ -291,17 +301,12 @@
       }
     }
 
-    // A cut that advances through rendered text removes its height from
-    // above the box in the same frame as the text that landed; measured
-    // now, while the text node still renders from the previous cut.
-    const renderedStart = Math.max(renderedCut, start);
-    if (appended && cut > renderedStart && !expanded) {
-      const node = innerEl?.firstChild;
-      const removed = node instanceof Text ? heightAbove(node, cut - renderedStart) : null;
-      if (removed !== null && removed > 0) {
-        slideCutPx += removed;
-        void tick().then(settleCut);
-      }
+    // A rendered start that advanced removes height from above the box in
+    // the same frame as the text that landed: settle the slide once the
+    // DOM shows the cut.
+    if (appended && cut > renderedCut && !expanded && previousEnd > cut) {
+      slideCut = { previousEnd, end, cut };
+      void tick().then(settleCut);
     }
 
     // A replacement can leave the cut where it was, over different text.

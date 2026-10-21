@@ -42,6 +42,8 @@ type Case = {
   seed?: string;
   /** The deltas after the seed; by default the next 800 characters, 12 at a time every 12ms. */
   feed?: Feed[];
+  /** Frames to sample before the first delta, when the first delta recuts. */
+  leadMs?: number;
   /** The clamp renders from one start throughout (no measured cut moves it). */
   sameStart: boolean;
 };
@@ -95,6 +97,20 @@ const CASES: Case[] = [
     sameStart: false,
   },
 ];
+
+const OVERTAKE_SEED = `${UNBROKEN_LINES}${'x'.repeat(LIVE_WINDOW_RECUT_CHARS - UNBROKEN_LINES.length - 5)}\n`;
+CASES.push({
+  // The token ends with a newline the clamp trims; the first word after it
+  // lays that newline out, the live window's cut moves past the clamp's
+  // own cut (which kept the token's line and the 21 before it), and the
+  // clamp renders from the window's start: one line left above as one
+  // landed, with no size change for the observer to see.
+  name: 'window start overtaking the clamp cut',
+  stream: `${OVERTAKE_SEED}${'word '.repeat(160)}`,
+  seed: OVERTAKE_SEED,
+  leadMs: 300,
+  sameStart: false,
+});
 
 function feedOf(stream: string, seed: string): Feed[] {
   return [{ text: stream.slice(seed.length, seed.length + 800), chunk: 12, everyMs: 12 }];
@@ -197,7 +213,7 @@ type Frame = {
 const paintedDt = (frames: Frame[], i: number): number =>
   i >= 2 ? frames[i - 1]!.t - frames[i - 2]!.t : frames[i]!.t - frames[i - 1]!.t;
 
-describe.each(CASES)('streaming thinking tail through a live window recut ($name)', ({ stream, seed: givenSeed, feed, sameStart }) => {
+describe.each(CASES)('streaming thinking tail through a live window recut ($name)', ({ stream, seed: givenSeed, feed, leadMs, sameStart }) => {
   it('keeps the rendered text, its retained rows and the line slide continuous', async () => {
     const seed = givenSeed ?? seedOf(stream);
     const feeds = feed ?? feedOf(stream, seed);
@@ -237,6 +253,7 @@ describe.each(CASES)('streaming thinking tail through a live window recut ($name
       }
     })();
 
+    if (leadMs) await wait(leadMs);
     let end = seed.length;
     for (const { text, chunk, everyMs } of feeds) {
       for (const delta of text.match(new RegExp(`[^]{1,${chunk}}`, 'g'))!) {

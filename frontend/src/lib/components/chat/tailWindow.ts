@@ -130,6 +130,27 @@ export function isMonotonicAppend(
 }
 
 /**
+ * Height, in CSS pixels, the rendered text grew by below the line of the
+ * character at `previousLast` of `textNode` (the last character before an
+ * append) up to the line of the character at `last` (the last character
+ * now): the lines the append landed, zero when it stayed on the previous
+ * last line. Null without layout geometry or when either index is outside
+ * the node.
+ */
+export function landedHeight(textNode: Text, previousLast: number, last: number): number | null {
+  if (previousLast < 0 || last < previousLast || last >= textNode.length) return null;
+  const range = document.createRange();
+  range.setStart(textNode, previousLast);
+  range.setEnd(textNode, previousLast + 1);
+  const before = range.getBoundingClientRect();
+  range.setStart(textNode, last);
+  range.setEnd(textNode, last + 1);
+  const after = range.getBoundingClientRect();
+  if (before.height === 0 || after.height === 0) return null;
+  return Math.max(0, after.bottom - before.bottom);
+}
+
+/**
  * Wrap-stable cut inside rendered text with no usable hard newline:
  * the offset (RELATIVE TO `textNode`) of the first character of the
  * rendered line `keepLines` line-heights above the last character's
@@ -142,25 +163,6 @@ export function isMonotonicAppend(
  * isn't a usable pixel value, or when fewer than `keepLines` lines are
  * rendered.
  */
-/**
- * Height, in CSS pixels, of the rendered text above the character at
- * `offset` of `textNode` (relative to the node's first character's line),
- * or null without layout geometry. A cut at a line start removes exactly
- * this much from above the clamp box.
- */
-export function heightAbove(textNode: Text, offset: number): number | null {
-  if (offset <= 0 || offset >= textNode.length) return offset <= 0 ? 0 : null;
-  const range = document.createRange();
-  range.setStart(textNode, 0);
-  range.setEnd(textNode, 1);
-  const first = range.getBoundingClientRect();
-  range.setStart(textNode, offset);
-  range.setEnd(textNode, offset + 1);
-  const at = range.getBoundingClientRect();
-  if (first.height === 0 || at.height === 0) return null;
-  return at.top - first.top;
-}
-
 export function measuredLineStartOffset(
   textNode: Text,
   keepLines: number,
