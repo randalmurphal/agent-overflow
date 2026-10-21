@@ -14,10 +14,10 @@
   import PipelineView from './PipelineView.svelte';
   import PipelinesFilterChips from './PipelinesFilterChips.svelte';
   import PipelinesList from './PipelinesList.svelte';
-  import PullsFilterChips from './PullsFilterChips.svelte';
   import PullsErrorNotice from './PullsErrorNotice.svelte';
   import PullsList from './PullsList.svelte';
   import PullsListResizer from './PullsListResizer.svelte';
+  import PullsToolbar from './PullsToolbar.svelte';
   import { ListColumnWidth } from './listWidth.svelte';
   import { provideHostedBack } from '../panes/hostedBack';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
@@ -62,10 +62,9 @@
     pullsRowsByGroup,
     pullsSnapshotError,
     refreshPullsPage,
+    pullsStale,
     selectPR,
     selectedPR,
-    setFocusedRows,
-    setReviewShown,
   } from '../../stores/pullsPage.svelte';
   import {
     loadThreadsOnPR,
@@ -89,9 +88,9 @@
   import type { PipelineRowView } from './pipelineRowView';
 
   // The Pull requests tool pane (docs/specs/pull-requests.md, "The page"):
-  // a list column with two tabs, Merge requests (the filter chips, the
-  // Needs you and Waiting on others groups, each project's failure under
-  // its own heading) and Pipelines (project, ref and status filters over
+  // a list column with two tabs, Merge requests (the toolbar's filter,
+  // projects and sort, the Needs you and Waiting on others groups, each
+  // project's failure under its own heading) and Pipelines (project, ref and status filters over
   // one row per pipeline), beside the detail: the review pane pinned to
   // the picked MR, or the picked pipeline's stages and logs. The list
   // column is resizable and remembered; compact shows the list as the
@@ -141,11 +140,6 @@
       attachPipelinesPage(paneId, backend);
       return () => detachPipelinesPage(paneId);
     }
-  });
-  // The selected MR is seen only while its review is displayed: not under
-  // the Pipelines tab, and on compact not while the list is the page.
-  $effect(() => {
-    setReviewShown(paneId, tab === 'mrs' && (!compact || detailShown));
   });
   const disposeProbe = registerToolDetailProbe('pulls', () => (tab === 'mrs' ? detailOpen(paneId) : pipelineDetailOpen(paneId)));
   const disposeBack = registerPullsBackHandler(stepBack);
@@ -300,7 +294,7 @@
           testId="pulls-refresh"
           onclick={refresh}
         >
-          <Icon icon={RefreshCw} size={13} strokeWidth={1.75} class={(tab === 'mrs' ? pullsRefreshing(paneId) : pipelinesReading(paneId)) ? 'animate-spin' : ''} />
+          <Icon icon={RefreshCw} size={13} strokeWidth={1.75} class={(tab === 'mrs' ? pullsRefreshing(paneId) || pullsStale(paneId) : pipelinesReading(paneId)) ? 'animate-spin' : ''} />
         </PaneHeaderIconButton>
       </div>
     </div>
@@ -317,18 +311,20 @@
   <div class="flex min-h-0 flex-1" bind:clientWidth={listColumn.paneWidth}>
     <!-- The list column: the page on compact, a resizable column beside the detail on desktop. -->
     <div
-      class="relative flex min-h-0 shrink-0 flex-col border-r border-border-subtle compact:w-full compact:border-r-0 {compact && detailShown ? 'hidden' : ''}"
+      class="@container/pulls relative flex min-h-0 shrink-0 flex-col border-r border-border-subtle compact:w-full compact:border-r-0 {compact && detailShown ? 'hidden' : ''}"
       style:width={compact ? undefined : `${listColumn.width}px`}
       data-testid="pulls-list-column"
     >
       {#if tab === 'mrs'}
-        <PullsFilterChips
+        <PullsToolbar
           filter={filters.filter}
           needsYouCount={pullsNeedsYouCount(paneId)}
           projects={pullsProjects(paneId)}
           selectedProjects={filters.projects}
+          sort={filters.sort}
           onFilter={(next) => setMRFilters(backend, { filter: next })}
           onProjects={(next) => setMRFilters(backend, { projects: next })}
+          onSort={(next) => setMRFilters(backend, { sort: next })}
         />
         {#if pullsSnapshotError(paneId)}
           <div class="border-y border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="pulls-snapshot-error">{pullsSnapshotError(paneId)}</div>
@@ -346,7 +342,6 @@
           onOpen={openRow}
           onMenu={openRowMenu}
           onRetry={refresh}
-          onVisible={(keys) => setFocusedRows(paneId, keys)}
         />
       {:else}
         <PipelinesFilterChips filters={pipeFilters} projects={pipelinesProjects(paneId)} onChange={(next) => setPipelinesFilters(paneId, next)} />

@@ -1,8 +1,9 @@
-// The Pull requests page's attention vocabulary: one state pill per row,
-// the "since you looked" fragment, and the two groups. The backend
-// computes the state (internal/app, the attention state function); this
-// module only names it, so the page, the sidebar badge and the compact
-// list never disagree (docs/specs/pull-requests.md, "The page").
+// The Pull requests page's attention vocabulary: one state per row, the
+// reason it is in that state, and the two groups. The backend computes
+// the state and the reason from the forge's own record of the viewer's
+// activity (internal/app, the attention state function); this module only
+// words them, so the page, the sidebar badge and the compact list never
+// disagree (docs/specs/pull-requests.md, "The page").
 
 import type { ReadinessTone } from './reviewReadiness';
 
@@ -12,64 +13,88 @@ export type PullState =
   | 'ready'
   | 'changes_requested'
   | 'waiting_on_author'
+  | 'approved'
   | 'draft'
   | 'open';
 
 export type PullGroup = 'needs_you' | 'waiting';
 
-export interface PullStatePill {
-  label: string;
-  tone: ReadinessTone;
+/** Why a row is in its state, as the wire spells it (PRListReason):
+ * for `your_turn` which turn it is (`review_requested`, `pushed`,
+ * `replied`), for `approved` whether the viewer approved or only
+ * reviewed (`approved`, `reviewed`); '' when the state needs none. */
+export interface PullReason {
+  kind: string;
+  /** Commits since the viewer's review, when the forge counts them. */
+  commits: number;
+  /** The author's replies since the viewer's review, when counted. */
+  replies: number;
 }
 
-const PILLS: Record<PullState, PullStatePill> = {
-  your_turn: { label: 'Your turn', tone: 'accent' },
-  pipeline_failed: { label: 'Pipeline failed', tone: 'error' },
-  ready: { label: 'Ready to merge', tone: 'success' },
-  changes_requested: { label: 'Changes requested', tone: 'warning' },
-  waiting_on_author: { label: 'Waiting on author', tone: 'muted' },
-  draft: { label: 'Draft', tone: 'muted' },
-  open: { label: 'Open', tone: 'muted' },
+/** The backend's attention order (prStateOrder in app_pr_attention.go). */
+export const PULL_STATE_ORDER: readonly PullState[] = [
+  'your_turn', 'pipeline_failed', 'ready', 'changes_requested', 'waiting_on_author', 'approved', 'draft', 'open',
+];
+
+const TONES: Record<PullState, ReadinessTone> = {
+  your_turn: 'accent',
+  pipeline_failed: 'error',
+  ready: 'success',
+  changes_requested: 'warning',
+  waiting_on_author: 'muted',
+  approved: 'muted',
+  draft: 'muted',
+  open: 'muted',
 };
 
-/** The pill for a row's state; an unknown state reads as open. */
-export function pullStatePill(state: string): PullStatePill {
-  return PILLS[state as PullState] ?? PILLS.open;
+export function pullStateRank(state: string): number {
+  const at = PULL_STATE_ORDER.indexOf(state as PullState);
+  return at < 0 ? PULL_STATE_ORDER.length : at;
+}
+
+/** The tone of a row's state label; an unknown state reads as open. */
+export function pullStateTone(state: string): ReadinessTone {
+  return TONES[state as PullState] ?? TONES.open;
+}
+
+/**
+ * The row's state label: for a turn, what happened (`Review requested`,
+ * `+3 commits since your review`, `2 replies since your review`); for
+ * every other state, the state. The label is the one coloured text on
+ * the row, so it says why the row is where it is.
+ */
+export function pullStateText(state: string, reason: PullReason | null | undefined): string {
+  switch (state as PullState) {
+    case 'your_turn':
+      switch (reason?.kind) {
+        case 'pushed':
+          return reason.commits > 0
+            ? `+${reason.commits} ${reason.commits === 1 ? 'commit' : 'commits'} since your review`
+            : 'Pushed since your review';
+        case 'replied':
+          return reason.replies > 0
+            ? `${reason.replies === 1 ? '1 reply' : `${reason.replies} replies`} since your review`
+            : 'Updated since your review';
+        default:
+          return 'Review requested';
+      }
+    case 'pipeline_failed':
+      return 'Pipeline failed';
+    case 'ready':
+      return 'Ready to merge';
+    case 'changes_requested':
+      return 'Changes requested';
+    case 'waiting_on_author':
+      return 'Waiting on author';
+    case 'approved':
+      return reason?.kind === 'reviewed' ? 'Reviewed by you' : 'Approved by you';
+    case 'draft':
+      return 'Draft';
+    default:
+      return 'Open';
+  }
 }
 
 export function pullGroupLabel(group: string): string {
   return group === 'needs_you' ? 'Needs you' : 'Waiting on others';
-}
-
-/** What the backend knows changed since the app last opened the PR. */
-export interface PullSince {
-  headMoved: boolean;
-  newComments: number;
-  newCommits: number;
-}
-
-/**
- * The "since you looked" fragment, or null when nothing moved (a quiet
- * row) or the PR was never opened here (nothing to compare against).
- * Commit counts come from the forge list where it carries them (GitHub);
- * a head that moved without a count reads as "pushed".
- */
-export function sinceYouLookedText(since: PullSince | null | undefined): string | null {
-  if (!since) return null;
-  const parts: string[] = [];
-  if (since.newCommits > 0) {
-    parts.push(`+${since.newCommits} ${since.newCommits === 1 ? 'commit' : 'commits'}`);
-  } else if (since.headMoved) {
-    parts.push('pushed');
-  }
-  if (since.newComments > 0) {
-    parts.push(`${since.newComments} new ${since.newComments === 1 ? 'comment' : 'comments'}`);
-  }
-  if (parts.length === 0) return null;
-  return `${parts.join(' · ')} since you looked`;
-}
-
-/** A row the reader has seen with nothing new on it dims. */
-export function pullRowQuiet(seen: boolean, since: PullSince | null | undefined): boolean {
-  return seen && sinceYouLookedText(since) === null;
 }

@@ -1,7 +1,7 @@
 // The Pull requests page store: the list subscription's lifecycle and
-// routing, the sequence watermark, the filters and their persistence, the
-// row projection, the needs-you badge, the focus set, viewed marks, and
-// Open with agent.
+// routing, the sequence watermark, the filters, the sort and their
+// persistence, the row projection, the needs-you badge, the selection,
+// and Open with agent.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, tick } from 'svelte';
@@ -19,12 +19,11 @@ import {
   pullsError,
   pullsRefreshFailure,
   pullsRowsByGroup,
+  pullsStale,
   refreshPullsPage,
   resyncPullsAfterGap,
   selectedPR,
   selectPR,
-  setFocusedRows,
-  setReviewShown,
 } from './pullsPage.svelte';
 import {
   __resetPullsPageAgentForTest,
@@ -36,31 +35,30 @@ import {
   threadsOnPR,
 } from './pullsPageAgent.svelte';
 import {
+  DEFAULT_MR_SORT,
   MR_FILTERS_KEY,
   mrFilters,
   resetPullsFiltersForTest,
   setMRFilters,
   syncPullsFiltersFromAppStorage,
 } from './pullsPageFilters.svelte';
-import { PR_LIST_FOCUS_MAX } from './pullsPageRows';
-import { getPullsNeedsYouCount, resetPullsAttentionForTest } from './pullsAttention.svelte';
+import { applyPullsBadge, getPullsNeedsYouCount, hydratePullsAttention, resetPullsAttentionForTest } from './pullsAttention.svelte';
 import { applyPullsUpdatedEvent } from './pullsStore.svelte';
-import { __resetPRReviewStoreForTest, applyPRUpdatedEvent, attachPR } from './prReviewStore.svelte';
+import { __resetPRReviewStoreForTest } from './prReviewStore.svelte';
 import { appStorageGet, appStorageSet, resetAppStorageForTest } from './appStorage';
 import { __setTransportStatusForTest } from './transportStatus.svelte';
 import { resetPanesForTest } from './panes.svelte';
-import { setCompactLayoutForTest, showCompactList, showCompactThread } from './layoutMode.svelte';
 import { __resetReviewPaneStateForTest } from './reviewPane.svelte';
+import { setSelectedBackend } from './selectedBackend.svelte';
 import type { PRListItem, PRListSnapshot, ProjectPRList } from './bindings';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { takePinnedBackend } from '../transport/backends';
 import { prKey, type PRRef } from '../utils/prReference';
-import { sinceYouLookedText } from '../utils/pullsAttention';
 import { composeWorkspaceKey } from '../utils/workspaceKey';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { probeReactivity } from '../../test/helpers/reactivity.svelte';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
-import { grantBackendScopes, pairViewOnly, resetToLocalPage, revokeBackendScopes } from '../../test/helpers/scopes';
+import { grantBackendScopes, revokeBackendScopes } from '../../test/helpers/scopes';
 import { getToasts, resetToastsForTest } from './toast.svelte';
 
 const PANE = 'tools-pulls';
@@ -101,9 +99,10 @@ function item(number: number, overrides: Partial<PRListItem> = {}, repo = 'repo'
     checksState: '',
     state: 'open',
     group: 'waiting',
-    detail: null,
-    seen: null,
-    since: null,
+    reason: { kind: '', commits: 0, replies: 0 },
+    approvals: null,
+    unresolved: null,
+    ci: '',
     ...overrides,
   } as PRListItem;
 }
@@ -118,15 +117,14 @@ function project(id: string, rows: PRListItem[], overrides: Partial<ProjectPRLis
   } as ProjectPRList;
 }
 
-function snapshot(seq: number, projects: ProjectPRList[], needsYou = 0): PRListSnapshot {
-  return { seq, fetchedAt: '2026-10-20T00:00:00Z', needsYou, projects } as PRListSnapshot;
+function snapshot(seq: number, projects: ProjectPRList[], needsYou = 0, stale = false): PRListSnapshot {
+  return { seq, fetchedAt: '2026-10-20T00:00:00Z', needsYou, stale, projects } as PRListSnapshot;
 }
 
 interface ListMocks {
   subscribe: ReturnType<typeof vi.fn>;
   unsubscribe: ReturnType<typeof vi.fn>;
   active: ReturnType<typeof vi.fn>;
-  focus: ReturnType<typeof vi.fn>;
   refresh: ReturnType<typeof vi.fn>;
   /** The computer each call went to, by binding. */
   routed: Record<string, string[]>;
@@ -149,14 +147,10 @@ function installListMocks(first: PRListSnapshot = snapshot(1, [project('p1', [it
   const active = setBindingMock('SetPRListActive', async () => {
     note('SetPRListActive');
   });
-  const focus = setBindingMock('SetPRListFocus', async () => {
-    note('SetPRListFocus');
-    return { unknown: [] };
-  });
   const refresh = setBindingMock('RefreshPRList', async () => {
     note('RefreshPRList');
   });
-  return { subscribe, unsubscribe, active, focus, refresh, routed };
+  return { subscribe, unsubscribe, active, refresh, routed };
 }
 
 async function flush(): Promise<void> {
@@ -214,11 +208,10 @@ describe('the list subscription', () => {
     expect(mocks.subscribe).toHaveBeenCalledTimes(2);
   });
 
-  it('attaches and reports its rows from a mount effect without the effect depending on the page', async () => {
+  it('attaches from a mount effect without the effect depending on the page', async () => {
     installListMocks();
     const probe = probeReactivity(() => {
       attachPullsPage(PANE, HOME_BACKEND);
-      setFocusedRows(PANE, [rowKey(1)]);
       return 0;
     });
     try {
@@ -248,7 +241,6 @@ describe('the list subscription', () => {
     expect(mocks.routed.SubscribePRList).toEqual(['laptop']);
     expect(mocks.routed.RefreshPRList).toEqual(['laptop']);
     expect(mocks.routed.SetPRListActive).toEqual(['laptop']);
-    expect(mocks.routed.SetPRListFocus).toEqual(['laptop']);
     expect(mocks.routed.UnsubscribePRList).toEqual(['laptop']);
   });
 
@@ -387,7 +379,6 @@ describe('the sequence watermark', () => {
     setBindingMock('SubscribePRList', () => new Promise((resolve) => {
       answer = resolve;
     }));
-    setBindingMock('SetPRListFocus', async () => ({ unknown: [] }));
     setBindingMock('UnsubscribePRList', async () => undefined);
     attachPullsPage(PANE, HOME_BACKEND);
     setMRFilters(HOME_BACKEND, { filter: 'all' });
@@ -397,13 +388,26 @@ describe('the sequence watermark', () => {
     await flush();
     expect(groupKeys()).toEqual([[rowKey(8)]]);
   });
+
+  it('shows a stale answer as rows, not as loading, until the read lands', async () => {
+    installListMocks(snapshot(1, [project('p1', [item(1)])], 0, true));
+    attachPullsPage(PANE, HOME_BACKEND);
+    await flush();
+    setMRFilters(HOME_BACKEND, { filter: 'all' });
+    expect(pullsLoading(PANE)).toBe(false);
+    expect(pullsStale(PANE)).toBe(true);
+    expect(groupKeys()).toEqual([[rowKey(1)]]);
+    applyPullsSnapshot(snapshot(2, [project('p1', [item(1), item(2)])]), HOME_BACKEND);
+    expect(pullsStale(PANE)).toBe(false);
+    expect(groupKeys()).toEqual([[rowKey(2), rowKey(1)]]);
+  });
 });
 
 describe('filters', () => {
   const rows = [
-    item(1, { group: 'needs_you', state: 'your_turn', reviewRequested: true }),
-    item(2, { viewerIsAuthor: true, state: 'draft' }),
-    item(3, { reviewRequested: true }),
+    item(1, { group: 'needs_you', state: 'your_turn', viewerIsReviewer: true, updatedAt: '2026-10-09T00:00:00Z' }),
+    item(2, { viewerIsAuthor: true, state: 'draft', updatedAt: '2026-10-11T00:00:00Z' }),
+    item(3, { viewerIsReviewer: true, state: 'approved', updatedAt: '2026-10-08T00:00:00Z' }),
   ];
 
   async function attached(): Promise<void> {
@@ -412,18 +416,33 @@ describe('filters', () => {
     await flush();
   }
 
-  it('starts on Needs you over every project and filters by each chip', async () => {
+  it('starts on Needs you over every project, newest update first, and filters by each choice', async () => {
     await attached();
-    expect(mrFilters(HOME_BACKEND)).toEqual({ filter: 'needs_you', projects: [] });
+    expect(mrFilters(HOME_BACKEND)).toEqual({ filter: 'needs_you', projects: [], sort: DEFAULT_MR_SORT });
     expect(groupKeys()).toEqual([[rowKey(1)]]);
     setMRFilters(HOME_BACKEND, { filter: 'mine' });
     expect(groupKeys()).toEqual([[rowKey(2)]]);
-    setMRFilters(HOME_BACKEND, { filter: 'review_requested' });
+    setMRFilters(HOME_BACKEND, { filter: 'reviewing' });
     expect(groupKeys()).toEqual([[rowKey(1)], [rowKey(3)]]);
     setMRFilters(HOME_BACKEND, { filter: 'all' });
     expect(pullsRowsByGroup(PANE).map((group) => group.group)).toEqual(['needs_you', 'waiting']);
-    // Across projects in the backend's order: state (draft before open),
-    // then the latest update, then the higher number.
+    // Across projects, newest update first, then the higher number.
+    expect(groupKeys()).toEqual([[rowKey(1)], [rowKey(2), rowKey(9, HOME_BACKEND, 'other'), rowKey(3)]]);
+  });
+
+  it('sorts each group by the remembered key, turned around when reversed, with needs-you rows always first', async () => {
+    await attached();
+    setMRFilters(HOME_BACKEND, { filter: 'all', sort: { key: 'updated', reversed: true } });
+    expect(groupKeys()).toEqual([[rowKey(1)], [rowKey(3), rowKey(9, HOME_BACKEND, 'other'), rowKey(2)]]);
+    setMRFilters(HOME_BACKEND, { sort: { key: 'created', reversed: false } });
+    // Equal creation times fall to the newest update, then the higher number.
+    expect(groupKeys()).toEqual([[rowKey(1)], [rowKey(2), rowKey(9, HOME_BACKEND, 'other'), rowKey(3)]]);
+    setMRFilters(HOME_BACKEND, { sort: { key: 'title', reversed: false } });
+    expect(groupKeys()).toEqual([[rowKey(1)], [rowKey(2), rowKey(3), rowKey(9, HOME_BACKEND, 'other')]]);
+    setMRFilters(HOME_BACKEND, { sort: { key: 'attention', reversed: false } });
+    // The backend's state order: approved before draft before open.
+    expect(groupKeys()).toEqual([[rowKey(1)], [rowKey(3), rowKey(2), rowKey(9, HOME_BACKEND, 'other')]]);
+    setMRFilters(HOME_BACKEND, { sort: { key: 'author', reversed: false } });
     expect(groupKeys()).toEqual([[rowKey(1)], [rowKey(2), rowKey(9, HOME_BACKEND, 'other'), rowKey(3)]]);
   });
 
@@ -434,34 +453,42 @@ describe('filters', () => {
     expect(groupKeys()).toEqual([[rowKey(9, HOME_BACKEND, 'other')]]);
   });
 
-  it('remembers the filters per computer and adopts the stored copy on sync', async () => {
+  it('remembers the filters and the sort per computer and adopts the stored copy on sync', async () => {
     await attached();
-    setMRFilters(HOME_BACKEND, { filter: 'mine', projects: ['p1'] });
-    expect(JSON.parse(appStorageGet(MR_FILTERS_KEY, HOME_BACKEND) ?? '{}')).toEqual({ filter: 'mine', projects: ['p1'] });
-    appStorageSet(MR_FILTERS_KEY, JSON.stringify({ filter: 'review_requested', projects: ['p2'] }), HOME_BACKEND);
+    setMRFilters(HOME_BACKEND, { filter: 'mine', projects: ['p1'], sort: { key: 'title', reversed: true } });
+    expect(JSON.parse(appStorageGet(MR_FILTERS_KEY, HOME_BACKEND) ?? '{}')).toEqual({ filter: 'mine', projects: ['p1'], sort: { key: 'title', reversed: true } });
+    appStorageSet(MR_FILTERS_KEY, JSON.stringify({ filter: 'reviewing', projects: ['p2'], sort: { key: 'author', reversed: false } }), HOME_BACKEND);
     syncPullsFiltersFromAppStorage();
-    expect(mrFilters(HOME_BACKEND)).toEqual({ filter: 'review_requested', projects: ['p2'] });
-    appStorageSet(MR_FILTERS_KEY, '{"filter":"bogus","projects":[3]}', HOME_BACKEND);
+    expect(mrFilters(HOME_BACKEND)).toEqual({ filter: 'reviewing', projects: ['p2'], sort: { key: 'author', reversed: false } });
+    // The filter's name before it listed every MR the viewer reviews.
+    appStorageSet(MR_FILTERS_KEY, JSON.stringify({ filter: 'review_requested', projects: [] }), HOME_BACKEND);
     syncPullsFiltersFromAppStorage();
-    expect(mrFilters(HOME_BACKEND)).toEqual({ filter: 'needs_you', projects: [] });
+    expect(mrFilters(HOME_BACKEND)).toEqual({ filter: 'reviewing', projects: [], sort: DEFAULT_MR_SORT });
+    appStorageSet(MR_FILTERS_KEY, '{"filter":"bogus","projects":[3],"sort":{"key":"size"}}', HOME_BACKEND);
+    syncPullsFiltersFromAppStorage();
+    expect(mrFilters(HOME_BACKEND)).toEqual({ filter: 'needs_you', projects: [], sort: DEFAULT_MR_SORT });
   });
 });
 
 describe('row projection', () => {
-  it('names the viewer "you", takes CI from the detail pipeline before the checks, and words what moved', async () => {
+  it('names the viewer "you", the author by display name, words the state with its reason, and carries the facts', async () => {
     installListMocks(snapshot(1, [project('p1', [
-      item(1, { viewerIsAuthor: true, checksState: 'failure' }),
-      item(2, { checksState: 'failure', detail: { readinessState: 'blocked', blockers: [], approvalsGiven: 1, approvalsRequired: 2, unresolved: 3, checksState: 'failure', pipelineStatus: 'running', viewerApproved: false } }),
-      item(3, { seen: { openedAt: 1, headSHA: 'old', comments: 0, commits: 1 }, since: { headMoved: true, newComments: 2, newCommits: 0 } }),
+      item(1, { viewerIsAuthor: true, state: 'pipeline_failed', group: 'needs_you', ci: 'failed', approvals: { given: 0, required: 0 } }),
+      item(2, { author: { login: 'bob', name: '' }, ci: 'running', approvals: { given: 1, required: 2 }, unresolved: 3 }),
+      item(3, { state: 'your_turn', group: 'needs_you', reason: { kind: 'pushed', commits: 2, replies: 0 }, updatedAt: '2026-10-11T00:00:00Z' }),
+      item(4, { state: 'your_turn', group: 'needs_you', reason: { kind: 'replied', commits: 0, replies: 1 }, updatedAt: '2026-10-12T00:00:00Z' }),
+      item(5, { state: 'approved', reason: { kind: 'reviewed', commits: 0, replies: 0 } }),
     ])]));
     attachPullsPage(PANE, HOME_BACKEND);
     await flush();
     setMRFilters(HOME_BACKEND, { filter: 'all' });
-    const [one, two, three] = pullsRowsByGroup(PANE)[0]!.rows.sort((a, b) => a.number - b.number);
-    expect(one).toMatchObject({ author: 'you', ci: 'failed', approvals: null, unresolved: null, seen: false, projectName: 'Project p1' });
-    expect(two).toMatchObject({ author: 'Alice', ci: 'running', approvals: { given: 1, required: 2 }, unresolved: 3 });
-    expect(three!.seen).toBe(true);
-    expect(sinceYouLookedText(three!.since)).toBe('pushed · 2 new comments since you looked');
+    const rows = pullsRowsByGroup(PANE).flatMap((group) => group.rows).sort((a, b) => a.number - b.number);
+    expect(rows[0]).toMatchObject({ author: 'you', viewerIsAuthor: true, ci: 'failed', label: 'Pipeline failed', tone: 'error', approvals: null, unresolved: null, projectName: 'Project p1' });
+    expect(rows[0]!.age).toMatch(/^\d+[mhd]$/);
+    expect(rows[1]).toMatchObject({ author: 'bob', label: 'Open', tone: 'muted', ci: 'running', approvals: { given: 1, required: 2 }, unresolved: 3 });
+    expect(rows[2]).toMatchObject({ author: 'Alice', label: '+2 commits since your review', tone: 'accent' });
+    expect(rows[3]).toMatchObject({ label: '1 reply since your review', tone: 'accent' });
+    expect(rows[4]).toMatchObject({ label: 'Reviewed by you', tone: 'muted' });
   });
 
   it('reports each failed project with its kind', async () => {
@@ -476,7 +503,20 @@ describe('row projection', () => {
 });
 
 describe('the needs-you badge', () => {
-  it('pushes the count of every project on each snapshot and clears it when the last page goes', async () => {
+  it('counts the selected computer from its badge frames, its edge read and the page\'s own snapshots', async () => {
+    stageBackend();
+    await grantBackendScopes('laptop', ['git:operate']);
+    const read = setBindingMock('GetPRListNeedsYou', async () => 4);
+    applyPullsBadge({ needsYou: 3 }, HOME_BACKEND);
+    expect(getPullsNeedsYouCount()).toBe(3);
+    await hydratePullsAttention('laptop');
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(getPullsNeedsYouCount()).toBe(3);
+    setSelectedBackend('laptop');
+    expect(getPullsNeedsYouCount()).toBe(4);
+    setSelectedBackend(HOME_BACKEND);
+
+    // The page's snapshot and the badge never disagree.
     installListMocks(snapshot(1, [project('p1', [item(1, { group: 'needs_you' })])], 1));
     attachPullsPage(PANE, HOME_BACKEND);
     await flush();
@@ -485,54 +525,22 @@ describe('the needs-you badge', () => {
     expect(pullsNeedsYouCount(PANE)).toBe(1);
     applyPullsSnapshot(snapshot(2, [project('p1', [item(1, { group: 'needs_you' }), item(2, { group: 'needs_you' })])], 2), HOME_BACKEND);
     expect(getPullsNeedsYouCount()).toBe(2);
+    // The page going does not take the count: the badge is right with no page open.
     detachPullsPage(PANE);
-    expect(getPullsNeedsYouCount()).toBe(0);
+    expect(getPullsNeedsYouCount()).toBe(2);
+    // A malformed frame changes nothing; a device without the scope reads nothing.
+    applyPullsBadge({} as { needsYou?: number }, HOME_BACKEND);
+    expect(getPullsNeedsYouCount()).toBe(2);
+    revokeBackendScopes('laptop');
+    await hydratePullsAttention('laptop');
+    expect(read).toHaveBeenCalledTimes(1);
   });
 });
 
-describe('the focus set', () => {
-  it('names the rows on screen in list order, at most the backend cap, and never an off-screen needs-you row', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
-    const needsYou = Array.from({ length: 60 }, (_, index) => item(index + 1, { group: 'needs_you' }));
-    const waiting = Array.from({ length: 70 }, (_, index) => item(index + 100));
-    const mocks = installListMocks(snapshot(1, [project('p1', [...needsYou, ...waiting])]));
-    attachPullsPage(PANE, HOME_BACKEND);
-    await vi.advanceTimersByTimeAsync(0);
-    // A new handle with nothing on screen focuses nothing.
-    const first = mocks.focus.mock.calls.at(-1)!;
-    expect(first[0]).toBe('list-1');
-    expect(first[1]).toEqual([]);
-
-    // Sixty needs-you rows outside the filter leave the on-screen rows
-    // every slot.
-    setFocusedRows(PANE, [rowKey(119), rowKey(118), ...waiting.slice(0, 10).map((row) => rowKey(row.ref.Number))]);
-    await vi.advanceTimersByTimeAsync(2_000);
-    expect(mocks.focus.mock.calls.at(-1)![1]).toEqual([...waiting.slice(0, 10), item(118), item(119)].map((row) => prKey(ref(row.ref.Number))));
-
-    setFocusedRows(PANE, waiting.map((row) => rowKey(row.ref.Number)));
-    await vi.advanceTimersByTimeAsync(2_000);
-    const keys = mocks.focus.mock.calls.at(-1)![1] as string[];
-    expect(keys).toEqual(waiting.slice(0, PR_LIST_FOCUS_MAX).map((row) => prKey(ref(row.ref.Number))));
-
-    const calls = mocks.focus.mock.calls.length;
-    setFocusedRows(PANE, waiting.map((row) => rowKey(row.ref.Number)));
-    await vi.advanceTimersByTimeAsync(2_000);
-    expect(mocks.focus.mock.calls.length).toBe(calls);
-  });
-});
-
-describe('selection and viewed marks', () => {
-  function installPRMocks(): ReturnType<typeof vi.fn> {
-    setBindingMock('SubscribePRUpdates', async () => ({ id: 'pr-sub', prKey: prKey(ref(1)), detail: null, threads: [], headSHA: 'sha-1', seq: 1 }));
-    setBindingMock('UnsubscribePRUpdates', async () => undefined);
-    setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
-    return setBindingMock('MarkPRViewed', async (_pr: unknown, headSHA: string) => ({ openedAt: Date.now() + 1000, headSHA, comments: 4, commits: 2 }));
-  }
-
+describe('selection', () => {
   it('selects a listed row and clears it, which the compact probe reads', async () => {
     installListMocks();
     attachPullsPage(PANE, HOME_BACKEND);
-    setReviewShown(PANE, true);
     await flush();
     expect(selectPR(PANE, rowKey(99))).toBe(false);
     expect(selectPR(PANE, rowKey(1))).toBe(true);
@@ -542,305 +550,6 @@ describe('selection and viewed marks', () => {
     expect(detailOpen(PANE)).toBe(false);
   });
 
-  it('marks the selected PR viewed once per head and comment count while its review shows, and clears its since text at once', async () => {
-    installListMocks(snapshot(1, [project('p1', [item(1, { seen: { openedAt: 1, headSHA: 'old', comments: 0, commits: 1 }, since: { headMoved: true, newComments: 1, newCommits: 0 } })])]));
-    const mark = installPRMocks();
-    attachPullsPage(PANE, HOME_BACKEND);
-    setReviewShown(PANE, true);
-    await flush();
-    setMRFilters(HOME_BACKEND, { filter: 'all' });
-    selectPR(PANE, rowKey(1));
-    const held = attachPR(rowKey(1), { ref: ref(1) });
-    await flush();
-    expect(mark).toHaveBeenCalledTimes(1);
-    expect(mark).toHaveBeenCalledWith({ Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 1 }, 'sha-1');
-    expect(pullsRowsByGroup(PANE)[0]!.rows[0]!.since).toBeNull();
-
-    // The same head again marks nothing; a push marks the new head.
-    applyPRUpdatedEvent({ prKey: prKey(ref(1)), detail: null, threads: [], headSHA: 'sha-1', seq: 2 });
-    expect(mark).toHaveBeenCalledTimes(1);
-    applyPRUpdatedEvent({ prKey: prKey(ref(1)), detail: null, threads: [], headSHA: 'sha-2', seq: 3 });
-    await flush();
-    expect(mark).toHaveBeenCalledTimes(2);
-
-    // Hidden, nothing is marked.
-    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
-    applyPRUpdatedEvent({ prKey: prKey(ref(1)), detail: null, threads: [], headSHA: 'sha-3', seq: 4 });
-    expect(mark).toHaveBeenCalledTimes(2);
-    held.release();
-  });
-
-  // One pump per PR number, as the pinned reviews the page keeps hold them.
-  // A mark records the comment count the list holds, as the backend's does.
-  function installPRPumps(commentsOf: (number: number) => number = () => 0): ReturnType<typeof vi.fn> {
-    setBindingMock('SubscribePRUpdates', async (wire: { Number: number }) => ({
-      id: `pr-sub-${wire.Number}`, prKey: prKey(ref(wire.Number)), detail: null, threads: [], headSHA: `sha-${wire.Number}`, seq: 1,
-    }));
-    setBindingMock('UnsubscribePRUpdates', async () => undefined);
-    setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
-    let openedAt = 100;
-    return setBindingMock('MarkPRViewed', async (wire: { Number: number }, headSHA: string) => ({ openedAt: ++openedAt, headSHA, comments: commentsOf(wire.Number), commits: 1 }));
-  }
-
-  it('marks a PR again on returning to it after comments without a push, and only then', async () => {
-    installListMocks(snapshot(1, [project('p1', [item(1, { comments: 3 }), item(2)])]));
-    let listed = 3;
-    const mark = installPRPumps((number) => (number === 1 ? listed : 0));
-    attachPullsPage(PANE, HOME_BACKEND);
-    setReviewShown(PANE, true);
-    await flush();
-    setMRFilters(HOME_BACKEND, { filter: 'all' });
-    selectPR(PANE, rowKey(1));
-    const one = attachPR(rowKey(1), { ref: ref(1) });
-    await flush();
-    selectPR(PANE, rowKey(2));
-    const two = attachPR(rowKey(2), { ref: ref(2) });
-    await flush();
-    expect(mark.mock.calls.map((call) => call[1])).toEqual(['sha-1', 'sha-2']);
-
-    // Two comments land on #1 while #2 is open; its row, whose record now
-    // holds the mark, says so.
-    applyPullsSnapshot(snapshot(2, [project('p1', [
-      item(1, { comments: 5, seen: { openedAt: 102, headSHA: 'sha-1', comments: 3, commits: 1 }, since: { headMoved: false, newComments: 2, newCommits: 0 } }),
-      item(2),
-    ])]), HOME_BACKEND);
-    listed = 5;
-    expect(mark).toHaveBeenCalledTimes(2);
-    const since = () => pullsRowsByGroup(PANE)[0]!.rows.find((row) => row.number === 1)!.since;
-    expect(sinceYouLookedText(since())).toBe('2 new comments since you looked');
-
-    // Back to #1, whose kept review applies no snapshot: marked at its
-    // head, and the fragment clears.
-    selectPR(PANE, rowKey(1));
-    await flush();
-    expect(mark).toHaveBeenCalledTimes(3);
-    expect(mark.mock.calls[2]![1]).toBe('sha-1');
-    expect(since()).toBeNull();
-
-    // Stepping between them with nothing new marks nothing.
-    selectPR(PANE, rowKey(2));
-    selectPR(PANE, rowKey(1));
-    await flush();
-    expect(mark).toHaveBeenCalledTimes(3);
-    one.release();
-    two.release();
-  });
-
-  it('keeps a push the list shows on the row while the kept review shows the head before it', async () => {
-    installListMocks(snapshot(1, [project('p1', [item(1), item(2)])]));
-    let listed = 0;
-    const mark = installPRPumps((number) => (number === 1 ? listed : 0));
-    attachPullsPage(PANE, HOME_BACKEND);
-    setReviewShown(PANE, true);
-    await flush();
-    setMRFilters(HOME_BACKEND, { filter: 'all' });
-    selectPR(PANE, rowKey(1));
-    const one = attachPR(rowKey(1), { ref: ref(1) });
-    await flush();
-    selectPR(PANE, rowKey(2));
-    const two = attachPR(rowKey(2), { ref: ref(2) });
-    await flush();
-
-    // #1 gains a push and a comment while #2 is open, and the list has
-    // them before #1's pump does.
-    applyPullsSnapshot(snapshot(2, [project('p1', [
-      item(1, { headSHA: 'sha-9', comments: 1, seen: { openedAt: 101, headSHA: 'sha-1', comments: 0, commits: 1 }, since: { headMoved: true, newComments: 1, newCommits: 0 } }),
-      item(2),
-    ])]), HOME_BACKEND);
-    listed = 1;
-    const since = () => pullsRowsByGroup(PANE)[0]!.rows.find((row) => row.number === 1)!.since;
-
-    // Back to #1, whose kept review still shows the head before the push:
-    // marked at that head, and the push still reads on the row.
-    selectPR(PANE, rowKey(1));
-    await flush();
-    expect(mark.mock.calls.at(-1)![1]).toBe('sha-1');
-    expect(sinceYouLookedText(since())).toBe('pushed since you looked');
-
-    // The review shows the push: marked at it, and the fragment clears.
-    applyPRUpdatedEvent({ prKey: prKey(ref(1)), detail: null, threads: [], headSHA: 'sha-9', seq: 2 });
-    await flush();
-    expect(mark.mock.calls.at(-1)![1]).toBe('sha-9');
-    expect(since()).toBeNull();
-    one.release();
-    two.release();
-  });
-
-  it('marks a comment that lands while the PR\'s review is on screen', async () => {
-    installListMocks(snapshot(1, [project('p1', [item(1)])]));
-    const mark = installPRPumps();
-    attachPullsPage(PANE, HOME_BACKEND);
-    setReviewShown(PANE, true);
-    await flush();
-    selectPR(PANE, rowKey(1));
-    const held = attachPR(rowKey(1), { ref: ref(1) });
-    await flush();
-    expect(mark).toHaveBeenCalledTimes(1);
-    applyPullsSnapshot(snapshot(2, [project('p1', [item(1, { comments: 1 })])]), HOME_BACKEND);
-    await flush();
-    expect(mark).toHaveBeenCalledTimes(2);
-    applyPullsSnapshot(snapshot(3, [project('p1', [item(1, { comments: 1, title: 'Renamed' })])]), HOME_BACKEND);
-    await flush();
-    expect(mark).toHaveBeenCalledTimes(2);
-    held.release();
-  });
-
-  it('marks nothing once this device may not operate git on the computer', async () => {
-    installListMocks(snapshot(1, [project('p1', [item(1)])]));
-    const mark = installPRPumps();
-    attachPullsPage(PANE, HOME_BACKEND);
-    setReviewShown(PANE, true);
-    await flush();
-    selectPR(PANE, rowKey(1));
-    const held = attachPR(rowKey(1), { ref: ref(1) });
-    await flush();
-    expect(mark).toHaveBeenCalledTimes(1);
-    await pairViewOnly();
-    applyPRUpdatedEvent({ prKey: prKey(ref(1)), detail: null, threads: [], headSHA: 'sha-9', seq: 2 });
-    await flush();
-    expect(mark).toHaveBeenCalledTimes(1);
-    held.release();
-    resetToLocalPage();
-  });
-
-  it('marks a reopened PR viewed at the head its held review moved to while another was open', async () => {
-    installListMocks(snapshot(1, [project('p1', [item(1), item(2)])]));
-    const mark = installPRMocks();
-    attachPullsPage(PANE, HOME_BACKEND);
-    setReviewShown(PANE, true);
-    await flush();
-    selectPR(PANE, rowKey(1));
-    const held = attachPR(rowKey(1), { ref: ref(1) });
-    await flush();
-    expect(mark).toHaveBeenCalledTimes(1);
-
-    // The pane keeps !1's review while !2 is open; a push lands on it then.
-    selectPR(PANE, rowKey(2));
-    applyPRUpdatedEvent({ prKey: prKey(ref(1)), detail: null, threads: [], headSHA: 'sha-2', seq: 2 });
-    await flush();
-    expect(mark).toHaveBeenCalledTimes(1);
-    selectPR(PANE, rowKey(1));
-    await flush();
-    expect(mark).toHaveBeenCalledTimes(2);
-    expect(mark).toHaveBeenLastCalledWith({ Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 1 }, 'sha-2');
-    // Opening it again at the same head marks nothing more.
-    selectPR(PANE, rowKey(2));
-    selectPR(PANE, rowKey(1));
-    await flush();
-    expect(mark).toHaveBeenCalledTimes(2);
-    held.release();
-  });
-
-  it('marks nothing on the compact list screen, where the review is not showing', async () => {
-    installListMocks();
-    const mark = installPRMocks();
-    attachPullsPage(PANE, HOME_BACKEND);
-    setReviewShown(PANE, true);
-    await flush();
-    selectPR(PANE, rowKey(1));
-    setCompactLayoutForTest(true);
-    showCompactList();
-    const held = attachPR(rowKey(1), { ref: ref(1) });
-    await flush();
-    expect(mark).not.toHaveBeenCalled();
-    held.release();
-    setCompactLayoutForTest(false);
-  });
-
-  // The compact thread screen showing the pane, as the strip's geometry
-  // reads it.
-  function showPaneOnCompactStrip(): () => void {
-    const strip = document.createElement('div');
-    strip.className = 'compact-screen-thread';
-    const section = document.createElement('section');
-    section.dataset.paneId = PANE;
-    strip.append(section);
-    document.body.append(strip);
-    const rect = { left: 0, right: 400, width: 400, top: 0, bottom: 800, height: 800, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
-    strip.getBoundingClientRect = () => rect;
-    section.getBoundingClientRect = () => rect;
-    setCompactLayoutForTest(true);
-    showCompactThread();
-    return () => {
-      strip.remove();
-      setCompactLayoutForTest(false);
-    };
-  }
-
-  it.each([
-    ['desktop', false],
-    ['compact', true],
-  ])('marks nothing while the pane shows another tab, and the current revision once the review shows again (%s)', async (_layout, compact) => {
-    const restore = compact ? showPaneOnCompactStrip() : () => {};
-    try {
-      installListMocks(snapshot(1, [project('p1', [item(1)])]));
-      let listed = 0;
-      const mark = installPRPumps(() => listed);
-      attachPullsPage(PANE, HOME_BACKEND);
-      setReviewShown(PANE, true);
-      await flush();
-      setMRFilters(HOME_BACKEND, { filter: 'all' });
-      selectPR(PANE, rowKey(1));
-      const held = attachPR(rowKey(1), { ref: ref(1) });
-      await flush();
-      expect(mark.mock.calls.map((call) => call[1])).toEqual(['sha-1']);
-
-      // The Pipelines tab: the selection and its review stay held, and a
-      // comment and a push land on it.
-      setReviewShown(PANE, false);
-      applyPullsSnapshot(snapshot(2, [project('p1', [
-        item(1, { headSHA: 'sha-2', comments: 1, seen: { openedAt: 101, headSHA: 'sha-1', comments: 0, commits: 1 }, since: { headMoved: true, newComments: 1, newCommits: 0 } }),
-      ])]), HOME_BACKEND);
-      listed = 1;
-      applyPRUpdatedEvent({ prKey: prKey(ref(1)), detail: null, threads: [], headSHA: 'sha-2', seq: 2 });
-      await flush();
-      expect(mark).toHaveBeenCalledTimes(1);
-      const since = () => pullsRowsByGroup(PANE)[0]!.rows.find((row) => row.number === 1)!.since;
-      expect(sinceYouLookedText(since())).toBe('pushed · 1 new comment since you looked');
-
-      // Back on the review: seen at the revision it shows now.
-      setReviewShown(PANE, true);
-      await flush();
-      expect(mark.mock.calls.map((call) => call[1])).toEqual(['sha-1', 'sha-2']);
-      expect(since()).toBeNull();
-      held.release();
-    } finally {
-      restore();
-    }
-  });
-
-  it('marks what landed while the document was hidden once it shows again', async () => {
-    installListMocks(snapshot(1, [project('p1', [item(1)])]));
-    const mark = installPRPumps();
-    attachPullsPage(PANE, HOME_BACKEND);
-    setReviewShown(PANE, true);
-    await flush();
-    selectPR(PANE, rowKey(1));
-    const held = attachPR(rowKey(1), { ref: ref(1) });
-    await flush();
-    expect(mark).toHaveBeenCalledTimes(1);
-    setDocumentVisibility('hidden');
-    applyPRUpdatedEvent({ prKey: prKey(ref(1)), detail: null, threads: [], headSHA: 'sha-2', seq: 2 });
-    await flush();
-    expect(mark).toHaveBeenCalledTimes(1);
-    setDocumentVisibility('visible');
-    await flush();
-    expect(mark.mock.calls.map((call) => call[1])).toEqual(['sha-1', 'sha-2']);
-    held.release();
-  });
-
-  it('marks nothing for a PR the pane has not selected', async () => {
-    installListMocks(snapshot(1, [project('p1', [item(1), item(2)])]));
-    const mark = installPRMocks();
-    attachPullsPage(PANE, HOME_BACKEND);
-    setReviewShown(PANE, true);
-    await flush();
-    selectPR(PANE, rowKey(2));
-    const held = attachPR(rowKey(1), { ref: ref(1) });
-    await flush();
-    expect(mark).not.toHaveBeenCalled();
-    held.release();
-  });
 });
 
 describe('open with agent', () => {

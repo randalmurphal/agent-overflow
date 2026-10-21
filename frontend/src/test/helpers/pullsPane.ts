@@ -62,9 +62,10 @@ export function pullItem(number: number, overrides: Partial<PRListItem> = {}): P
     checksState: '',
     state: 'your_turn',
     group: 'needs_you',
-    detail: null,
-    seen: null,
-    since: null,
+    reason: { kind: 'review_requested', commits: 0, replies: 0 },
+    approvals: null,
+    unresolved: null,
+    ci: '',
     ...overrides,
   } as PRListItem;
 }
@@ -116,7 +117,6 @@ function patch(): string {
 export interface PullsPaneMocks {
   refresh: ReturnType<typeof vi.fn>;
   threads: ReturnType<typeof vi.fn>;
-  focus: ReturnType<typeof vi.fn>;
 }
 
 /** Every binding the page, its pinned review and its Pipelines tab call. */
@@ -124,9 +124,8 @@ export function installPullsPaneMocks(snapshot: PRListSnapshot = pullsSnapshot()
   setBindingMock('SubscribePRList', async () => ({ id: 'list-1', snapshot }));
   setBindingMock('UnsubscribePRList', async () => undefined);
   setBindingMock('SetPRListActive', async () => undefined);
-  const focus = setBindingMock('SetPRListFocus', async () => ({ unknown: [] }));
   const refresh = setBindingMock('RefreshPRList', async () => undefined);
-  setBindingMock('MarkPRViewed', async () => null);
+  setBindingMock('GetPRListNeedsYou', async () => 0);
   const threads = setBindingMock('ListThreadsOnPR', async () => []);
   setBindingMock('GetErrorLogLines', async () => ({ lines: [], found: false }));
   setBindingMock('OpenExternalURL', async () => undefined);
@@ -166,7 +165,7 @@ export function installPullsPaneMocks(snapshot: PRListSnapshot = pullsSnapshot()
     logs: Object.fromEntries(jobs.map((job) => [job, { version: 1, totalLines: 1, totalBytes: 8, stableLines: 0, sections: [], available: true, downloading: false, error: '', seq: 2 }])),
   }));
   setBindingMock('GetPRCILogLines', async () => ({ from: 0, lines: ['boom'], totalLines: 1, version: 1 }));
-  return { refresh, threads, focus };
+  return { refresh, threads };
 }
 
 /** Clears every store the page touches. */

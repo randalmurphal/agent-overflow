@@ -23,10 +23,9 @@
     onOpen: (row: PullRowView) => void;
     onMenu: (row: PullRowView, anchor: HTMLElement) => void;
     onRetry: () => void;
-    onVisible: (keys: string[]) => void;
   }
 
-  let { groups, projectErrors, selectedKey, filter, noProjects, error, loading, retrying, shown, onOpen, onMenu, onRetry, onVisible }: Props = $props();
+  let { groups, projectErrors, selectedKey, filter, noProjects, error, loading, retrying, shown, onOpen, onMenu, onRetry }: Props = $props();
 
   const items = $derived(
     pullsListItems(
@@ -48,15 +47,15 @@
         return 'Nothing needs you right now.';
       case 'mine':
         return 'No open merge requests of yours.';
-      case 'review_requested':
-        return 'No reviews requested from you.';
+      case 'reviewing':
+        return 'No open merge requests you are reviewing.';
       default:
         return 'No open merge requests.';
     }
   });
 </script>
 
-<PullsListBody testid="pulls-list" {items} rowEstimatePx={76} {shown} {onVisible} {onRetry} {retrying}>
+<PullsListBody testid="pulls-list" {items} rowEstimatePx={84} {shown} {onRetry} {retrying}>
   {#snippet row(view: PullRowView)}
     <PullRow row={view} selected={selectedKey === view.key} {onOpen} {onMenu} />
   {/snippet}

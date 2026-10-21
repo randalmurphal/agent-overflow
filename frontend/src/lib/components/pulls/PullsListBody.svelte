@@ -8,11 +8,10 @@
 
   // The scrolling body of one of the page's lists, virtualized: only the
   // rows near the viewport are mounted, so a list of any length costs the
-  // rows on screen. The rows on screen are the virtualizer's viewport
-  // range, reported by key on every scroll, resize and data change, and
-  // none while the list is not shown (the compact detail covers it) or
-  // once it unmounts; the
-  // store turns them into the rows whose detail it reads. The heading of
+  // rows on screen. A list that asks (`onVisible`) is told the rows on
+  // screen, the virtualizer's viewport range, by key on every scroll,
+  // resize and data change, and none while the list is not shown (the
+  // compact detail covers it) or once it unmounts. The heading of
   // the group under the viewport top sticks over the list once its own
   // row has scrolled under the top; the rows' own headings cannot stick,
   // each row being positioned on its own.
@@ -30,7 +29,8 @@
     rowEstimatePx: number;
     /** False while the list is hidden: no row is on screen. */
     shown: boolean;
-    onVisible: (keys: string[]) => void;
+    /** The rows on screen, for a list whose store reads detail for them. */
+    onVisible?: (keys: string[]) => void;
     onRetry: () => void;
     retrying: boolean;
     row: Snippet<[R]>;
@@ -79,6 +79,7 @@
       if (item && item.kind !== 'row' && (owner !== first || ref.getItemOffset(first) < offset)) heading = item.heading;
     }
     if (stuck !== heading) stuck = heading;
+    if (!onVisible) return;
     const joined = keys.join('\u0000');
     if (joined === reported) return;
     reported = joined;
@@ -110,7 +111,7 @@
   // A list that goes (the tab switches) leaves no row on screen: the
   // store holds what it was last told.
   onDestroy(() => {
-    if (reported !== '') onVisible([]);
+    if (reported !== '') onVisible?.([]);
   });
 </script>
 

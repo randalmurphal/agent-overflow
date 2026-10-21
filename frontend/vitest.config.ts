@@ -159,6 +159,9 @@ export default defineConfig({
             '@lucide/svelte/icons/circle',
             '@lucide/svelte/icons/circle-check',
             '@lucide/svelte/icons/text-wrap',
+            '@lucide/svelte/icons/arrow-up-down',
+            '@lucide/svelte/icons/folder-git-2',
+            '@lucide/svelte/icons/list-filter',
           ],
           entries: [
             'src/**/*.browser.{test,spec}.{ts,js}',

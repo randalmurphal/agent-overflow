@@ -1,6 +1,6 @@
 // The Pull requests page's remembered filters, per computer and per tab
 // (docs/specs/pull-requests.md, "The page"): the Merge requests tab's
-// state chip and project picker, and the Pipelines tab's projects, ref
+// filter, project picker and sort, and the Pipelines tab's projects, ref
 // kind and status. Persisted in appStorage under the computer the page
 // lists; adopted again once hydration lands (App.svelte boot), as the
 // other remembered view preferences are.
@@ -8,12 +8,23 @@
 import { appStorageGet, appStorageSet } from './appStorage';
 import type { BackendKey } from '../transport/backendKey';
 
-export type PullsFilter = 'needs_you' | 'mine' | 'review_requested' | 'all';
+export type PullsFilter = 'needs_you' | 'mine' | 'reviewing' | 'all';
+
+/** What the Merge requests tab sorts by, within each group. */
+export type PullsSortKey = 'updated' | 'created' | 'title' | 'author' | 'attention';
+
+export interface PullsSort {
+  readonly key: PullsSortKey;
+  /** Reversed from the key's natural order (newest first, A to Z, the
+   * attention order). */
+  readonly reversed: boolean;
+}
 
 export interface MRFilters {
   readonly filter: PullsFilter;
   /** Project ids; empty means every project. */
   readonly projects: readonly string[];
+  readonly sort: PullsSort;
 }
 
 export type PipelineRefKind = '' | 'branch' | 'tag' | 'merge_request';
@@ -30,11 +41,13 @@ export interface PipelineFilters {
 export const MR_FILTERS_KEY = 'pulls:filter:mrs';
 export const PIPELINE_FILTERS_KEY = 'pulls:filter:pipelines';
 
-const FILTERS = new Set<string>(['needs_you', 'mine', 'review_requested', 'all']);
+const FILTERS = new Set<string>(['needs_you', 'mine', 'reviewing', 'all']);
+const SORT_KEYS = new Set<string>(['updated', 'created', 'title', 'author', 'attention']);
 const REF_KINDS = new Set<string>(['', 'branch', 'tag', 'merge_request']);
 const STATUSES = new Set<string>(['', 'success', 'failed', 'running', 'pending', 'canceled', 'skipped', 'manual']);
 
-export const DEFAULT_MR_FILTERS: MRFilters = Object.freeze({ filter: 'needs_you', projects: Object.freeze([]) });
+export const DEFAULT_MR_SORT: PullsSort = Object.freeze({ key: 'updated', reversed: false });
+export const DEFAULT_MR_FILTERS: MRFilters = Object.freeze({ filter: 'needs_you', projects: Object.freeze([]), sort: DEFAULT_MR_SORT });
 export const DEFAULT_PIPELINE_FILTERS: PipelineFilters = Object.freeze({ projects: Object.freeze([]), refKind: '', status: '' });
 
 function parseObject(raw: string | null): Record<string, unknown> | null {
@@ -51,11 +64,21 @@ function parseProjects(value: unknown): string[] {
   return Array.isArray(value) ? [...new Set(value.filter((id): id is string => typeof id === 'string' && id !== ''))] : [];
 }
 
+function parseSort(value: unknown): PullsSort {
+  if (!value || typeof value !== 'object') return DEFAULT_MR_SORT;
+  const sort = value as Record<string, unknown>;
+  const key = typeof sort.key === 'string' && SORT_KEYS.has(sort.key) ? (sort.key as PullsSortKey) : DEFAULT_MR_SORT.key;
+  return { key, reversed: sort.reversed === true };
+}
+
 export function parseMRFilters(raw: string | null): MRFilters {
   const parsed = parseObject(raw);
   if (!parsed) return DEFAULT_MR_FILTERS;
-  const filter = typeof parsed.filter === 'string' && FILTERS.has(parsed.filter) ? (parsed.filter as PullsFilter) : DEFAULT_MR_FILTERS.filter;
-  return { filter, projects: parseProjects(parsed.projects) };
+  // `review_requested` was the filter's name before it listed every MR
+  // the viewer reviews.
+  const stored = parsed.filter === 'review_requested' ? 'reviewing' : parsed.filter;
+  const filter = typeof stored === 'string' && FILTERS.has(stored) ? (stored as PullsFilter) : DEFAULT_MR_FILTERS.filter;
+  return { filter, projects: parseProjects(parsed.projects), sort: parseSort(parsed.sort) };
 }
 
 export function parsePipelineFilters(raw: string | null): PipelineFilters {
