@@ -58,13 +58,14 @@ func TestGitHubListPipelinesParsesTheRuns(t *testing.T) {
 }
 
 // The recorded pipelines list parses into rows: a merge request's
-// pipeline with its iid, a tag's (which GitLab's list does not mark), a
-// manual one. GitLab's list carries no workflow name or commit title.
+// pipeline with its iid, a push's, a manual one. GitLab's list carries no
+// workflow name or commit title. A merge request ref names no tag, so a
+// list of one reads no tag scope.
 func TestGitLabListPipelinesParsesThePipelines(t *testing.T) {
 	t.Parallel()
 	answer := readTestdata(t, "gitlab-pipelines.json")
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-		if strings.HasPrefix(call.Path, "projects/grp%2Fsub%2Fapp/pipelines?") {
+		if strings.HasPrefix(call.Path, "projects/grp%2Fsub%2Fapp/pipelines?") && !strings.Contains(call.Path, "scope=") {
 			return forgeAPIAnswer{Body: answer}
 		}
 		return forgeUnexpected(t, call)
@@ -87,52 +88,160 @@ func TestGitLabListPipelinesParsesThePipelines(t *testing.T) {
 	if rows[0] != want {
 		t.Errorf("merge request pipeline = %+v\nwant                     %+v", rows[0], want)
 	}
-	// A list of one ref cannot hold a tag of another name: no tag scope read.
-	if tag := rows[1]; tag.RefKind != PipelineRefBranch || tag.Ref != "v2.0.0" || tag.Status != CIStatusSuccess {
-		t.Errorf("tag pipeline = %+v", tag)
+	if push := rows[1]; push.RefKind != PipelineRefBranch || push.Ref != "v2.0.0" || push.Status != CIStatusSuccess {
+		t.Errorf("push pipeline = %+v", push)
 	}
 	if manual := rows[2]; manual.Status != CIStatusManual || manual.Source != "schedule" || manual.Name != "" || manual.Title != "" {
 		t.Errorf("manual pipeline = %+v", manual)
 	}
 	if len(calls.all()) != 1 {
-		t.Fatalf("calls = %d, want the list alone for one ref", len(calls.all()))
+		t.Fatalf("calls = %d, want the list alone for a merge request ref", len(calls.all()))
 	}
 }
 
-// A list of any ref reads the tag scope too, since the list does not say
-// which pipelines ran on a tag, and marks them; a tag past the first list
-// is appended.
-func TestGitLabListPipelinesMarksTagsFromTheTagScope(t *testing.T) {
-	t.Parallel()
-	answer := readTestdata(t, "gitlab-pipelines.json")
-	var all []map[string]any
-	if err := json.Unmarshal([]byte(answer), &all); err != nil {
+// gitlabListPipeline is a pipelines list entry.
+func gitlabListPipeline(id int64, ref, status string) map[string]any {
+	return map[string]any{
+		"id": id, "sha": fmt.Sprintf("%040d", id), "ref": ref, "status": status, "source": "push",
+		"created_at": "2026-10-17T10:00:00.000Z", "updated_at": "2026-10-17T10:30:00.000Z",
+		"web_url": fmt.Sprintf("https://gitlab.example/grp/sub/app/-/pipelines/%d", id),
+	}
+}
+
+func gitlabListBody(t *testing.T, pipelines ...map[string]any) string {
+	t.Helper()
+	body, err := json.Marshal(pipelines)
+	if err != nil {
 		t.Fatal(err)
 	}
-	tagged, _ := json.Marshal([]map[string]any{all[1], {
-		"id": 7000, "sha": "bbbb000000000000000000000000000000000000", "ref": "v1.0.0", "status": "success", "source": "push",
-		"created_at": "2026-10-17T10:00:00.000Z", "updated_at": "2026-10-17T10:30:00.000Z", "web_url": "https://gitlab.example/grp/sub/app/-/pipelines/7000",
-	}})
+	return string(body)
+}
+
+// GitLab's tag scope answers only each tag's latest pipeline, so a
+// pipeline is a tag's when its ref is one the scope names: an older run
+// of the same tag is a tag pipeline too. The scope is read without the
+// status filter (a tag whose latest run failed is a tag still), and a
+// tag's latest pipeline past the list's page is appended when the status
+// filter admits it.
+func TestGitLabListPipelinesMarksTagsFromTheTagScope(t *testing.T) {
+	t.Parallel()
+	list := gitlabListBody(t,
+		gitlabListPipeline(7002, "v2.0.0", "success"),
+		gitlabListPipeline(6990, "v2.0.0", "success"),
+		gitlabListPipeline(6985, "v2.1.0", "success"),
+		gitlabListPipeline(6980, "main", "success"),
+	)
+	tags := gitlabListBody(t,
+		gitlabListPipeline(7005, "v2.1.0", "failed"),
+		gitlabListPipeline(7002, "v2.0.0", "success"),
+		gitlabListPipeline(6970, "v1.0.0", "success"),
+		gitlabListPipeline(6960, "v0.9.0", "canceled"),
+	)
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 		switch {
+		case !strings.HasPrefix(call.Path, "projects/grp%2Fsub%2Fapp/pipelines?"):
 		case strings.Contains(call.Path, "scope=tags"):
-			return forgeAPIAnswer{Body: string(tagged)}
-		case strings.HasPrefix(call.Path, "projects/grp%2Fsub%2Fapp/pipelines?"):
-			return forgeAPIAnswer{Body: answer}
+			return forgeAPIAnswer{Body: tags}
+		default:
+			return forgeAPIAnswer{Body: list}
 		}
 		return forgeUnexpected(t, call)
 	})
-	rows, err := core.ListPipelines(t.Context(), gitlabTestRepo(), PipelineListFilter{Status: CIStatusSuccess})
+	rows, err := core.ListPipelines(t.Context(), gitlabTestRepo(), PipelineListFilter{Status: CIStatusSuccess, Limit: 4})
 	if err != nil {
 		t.Fatalf("ListPipelines: %v", err)
 	}
-	if got := calls.all(); len(got) != 2 || listQuery(t, got[1].Path).Encode() != "per_page=100&scope=tags&status=success" {
-		t.Fatalf("calls = %+v, want the list then the tag scope with the same filter", got)
+	if got := calls.all(); len(got) != 2 || listQuery(t, got[1].Path).Encode() != "per_page=100&scope=tags" {
+		t.Fatalf("calls = %+v, want the list then the tag scope without the status filter", got)
 	}
-	if len(rows) != 4 || rows[1].RefKind != PipelineRefTag || rows[1].Ref != "v2.0.0" || rows[3].RefKind != PipelineRefTag || rows[3].ID != "7000" {
-		t.Fatalf("rows = %+v", rows)
+	var got []string
+	for _, row := range rows {
+		got = append(got, row.ID+":"+row.Ref+":"+row.RefKind)
 	}
-	if rows[0].RefKind != PipelineRefMergeRequest || rows[2].RefKind != PipelineRefBranch {
+	want := []string{"7002:v2.0.0:tag", "6990:v2.0.0:tag", "6985:v2.1.0:tag", "6980:main:branch", "6970:v1.0.0:tag"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("rows = %v\nwant   %v", got, want)
+	}
+}
+
+// A list of one ref reads that ref's tag scope once, without the status
+// filter, which classifies every row: the ref is a tag or it is not.
+func TestGitLabListPipelinesClassifiesARefWithOneTagRead(t *testing.T) {
+	t.Parallel()
+	for ref, wantKind := range map[string]string{"v2.0.0": PipelineRefTag, "main": PipelineRefBranch} {
+		core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+			switch {
+			case !strings.HasPrefix(call.Path, "projects/grp%2Fsub%2Fapp/pipelines?"):
+			case strings.Contains(call.Path, "scope=tags") && ref == "v2.0.0":
+				return forgeAPIAnswer{Body: gitlabListBody(t, gitlabListPipeline(7002, ref, "success"))}
+			case strings.Contains(call.Path, "scope=tags"):
+				return forgeAPIAnswer{Body: "[]"}
+			default:
+				return forgeAPIAnswer{Body: gitlabListBody(t, gitlabListPipeline(6995, ref, "failed"), gitlabListPipeline(6990, ref, "failed"))}
+			}
+			return forgeUnexpected(t, call)
+		})
+		rows, err := core.ListPipelines(t.Context(), gitlabTestRepo(), PipelineListFilter{Ref: ref, Status: CIStatusFailed})
+		if err != nil {
+			t.Fatalf("%s: ListPipelines: %v", ref, err)
+		}
+		got := calls.all()
+		if len(got) != 2 || listQuery(t, got[1].Path).Encode() != "per_page=100&ref="+ref+"&scope=tags" {
+			t.Fatalf("%s: calls = %+v, want the list then the ref's tag scope", ref, got)
+		}
+		if len(rows) != 2 || rows[0].RefKind != wantKind || rows[1].RefKind != wantKind {
+			t.Fatalf("%s: rows = %+v, want two %s rows and the success not appended", ref, rows, wantKind)
+		}
+	}
+}
+
+// The tag scope is read page by page until a page reaches past the oldest
+// listed pipeline: the latest pipeline of a listed pipeline's tag is no
+// older than it.
+func TestGitLabListPipelinesPagesTheTagScopeToTheOldestListedPipeline(t *testing.T) {
+	t.Parallel()
+	page := func(first int64, extra map[string]any) string {
+		var pipelines []map[string]any
+		for id := first; len(pipelines) < gitlabPageSize; id-- {
+			if extra != nil && id == extra["id"].(int64) {
+				pipelines = append(pipelines, extra)
+				continue
+			}
+			pipelines = append(pipelines, gitlabListPipeline(id, fmt.Sprintf("t%d", id), "failed"))
+		}
+		return gitlabListBody(t, pipelines...)
+	}
+	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if !strings.HasPrefix(call.Path, "projects/grp%2Fsub%2Fapp/pipelines?") {
+			return forgeUnexpected(t, call)
+		}
+		query := listQuery(t, call.Path)
+		if query.Get("scope") != "tags" {
+			return forgeAPIAnswer{Body: gitlabListBody(t, gitlabListPipeline(5000, "main", "success"), gitlabListPipeline(100, "old", "success"))}
+		}
+		next := http.Header{"X-Next-Page": {"0"}}
+		switch query.Get("page") {
+		case "":
+			next.Set("X-Next-Page", "2")
+			return forgeAPIAnswer{Header: next, Body: page(9000, nil)}
+		case "2":
+			next.Set("X-Next-Page", "3")
+			return forgeAPIAnswer{Header: next, Body: page(400, nil)}
+		case "3":
+			// Full, but past the oldest listed id: the last page read.
+			next.Set("X-Next-Page", "4")
+			return forgeAPIAnswer{Header: next, Body: page(150, gitlabListPipeline(100, "old", "success"))}
+		}
+		return forgeUnexpected(t, call)
+	})
+	rows, err := core.ListPipelines(t.Context(), gitlabTestRepo(), PipelineListFilter{Status: CIStatusSuccess, Limit: 2})
+	if err != nil {
+		t.Fatalf("ListPipelines: %v", err)
+	}
+	if got := len(calls.all()); got != 4 {
+		t.Fatalf("calls = %d, want the list and three tag scope pages", got)
+	}
+	if len(rows) != 2 || rows[0].RefKind != PipelineRefBranch || rows[1].ID != "100" || rows[1].RefKind != PipelineRefTag {
 		t.Fatalf("rows = %+v", rows)
 	}
 }

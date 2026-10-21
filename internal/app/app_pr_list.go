@@ -199,8 +199,9 @@ func (a *App) takePRListHandle() (id string, pump *prListPump, start bool, err e
 }
 
 // SetPRListActive reports whether one subscriber shows the list; the pump
-// reads nothing while every subscriber is hidden. An unknown id is a
-// no-op.
+// reads nothing while every subscriber is hidden. Only a visible
+// subscriber's focus selects detail reads, so a change of a focusing
+// subscriber recomputes the selection at once. An unknown id is a no-op.
 //
 //ao:scope git:operate
 //ao:route home
@@ -214,18 +215,25 @@ func (a *App) SetPRListActive(ctx context.Context, subscriptionID string, active
 	}
 	handle.active = active
 	resumed := pump.voteLocked(active)
+	refocus := len(handle.focus) > 0
 	a.prUpdates.mu.Unlock()
 	if resumed {
 		pump.wakeUp()
+	}
+	if refocus {
+		select {
+		case pump.focusWake <- struct{}{}:
+		default:
+		}
 	}
 	return nil
 }
 
 // SetPRListFocus replaces the PR keys (git.PRReference.Key) whose detail
-// one subscriber wants read: the rows on its screen and the needs-you set,
-// at most maxPRListFocus. A key the list holds no row for is ignored and
-// reported. A newly focused row's detail is read at once, not at the next
-// tick.
+// one subscriber wants read while it is visible: the rows on its screen
+// and the needs-you set, at most maxPRListFocus. A key the list holds no
+// row for is ignored and reported. A newly focused row's detail is read
+// at once, not at the next tick.
 //
 //ao:scope git:operate
 //ao:route home
@@ -307,9 +315,18 @@ func (a *App) unsubscribePRList(id string) {
 		teardown = pump
 		a.prUpdates.list = nil
 	}
+	// A visible handle's focus leaves with it: the others' rows may take
+	// its share of the detail allowance now.
+	refocus := teardown == nil && handle.active && len(handle.focus) > 0
 	a.prUpdates.mu.Unlock()
 	if teardown != nil {
 		teardown.stop()
+	}
+	if refocus {
+		select {
+		case pump.focusWake <- struct{}{}:
+		default:
+		}
 	}
 }
 

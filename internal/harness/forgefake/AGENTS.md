@@ -159,7 +159,7 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitHub, GitLab | `GET user` (`gh api user`, `glab api user`) | the fixture's viewer: GitLab's detail read (once per host per 10 minutes), and the transport's probe after a 401 on a mutation on both forges |
 | GitLab | `GET projects/P/merge_requests?state=opened\|merged&...` (`glab api merge request list`, conditional) | open MR lookup, merged heads (checkout origin), project MR list; the full view, with `project_id` and `source_project_id` (a pull with `headRepo` answers its fork's id) and the list fields (author, reviewers, draft, times, `user_notes_count`, conflicts, blocking discussions, `detailed_merge_status`), no pipeline |
 | GitLab | `GET projects/P/merge_requests?iids[]=N...&state=all&per_page=100` (`glab api merge request list`) | merged-PR cleanup: state and `merged_at` of tracked MRs |
-| GitLab | `GET projects/P/pipelines?[per_page=N][&page=N][&ref=R][&status=S]` (`glab api pipelines`) | pipelines list: every pipeline of the project, highest id first; `X-Next-Page` while more pages exist |
+| GitLab | `GET projects/P/pipelines?[per_page=N][&page=N][&ref=R][&status=S][&scope=tags\|branches]` (`glab api pipelines`) | pipelines list: every pipeline of the project, highest id first; a scope answers each tag or branch ref's latest pipeline, then the ref and status filters apply; `X-Next-Page` while more pages exist |
 | GitLab | `GET projects/P/pipelines/ID` (`glab api pipeline`) | ReadPipeline: one pipeline, with its `tag` flag |
 | GitLab | `GET projects/P/pipelines/ID/jobs?per_page=N[&page=N]` (`glab api pipeline jobs`) | ReadPR CI, ReadPipeline's jobs |
 | GitLab | `GET projects/P/jobs/ID/trace` (`glab api job trace`, conditional) | CI job log (the current `log` of a started job, running included; 404 while the job sets `logWithheld`). A completed job's trace honors a start or closed range (206) and refuses a suffix range (400); a running job's trace ignores `Range` (200, whole body) and a running `synthetic` trace grows on every request |
@@ -206,7 +206,8 @@ bulk publish, discussion note POST, discussion resolve PUT and
   head (GitLab ref `refs/merge-requests/N/head`). A pipeline's `refKind`
   is answered as each forge can: GitHub only through the run's event
   (`source`, defaulting to push, release or pull_request by kind), GitLab
-  through the merge request ref and the single pipeline's `tag`.
+  through the merge request ref, the tag scope (each tag's latest
+  pipeline) and the single pipeline's `tag`.
 - `reviewers` are the logins asked for a review (GitHub
   `reviewRequests`, GitLab `reviewers`); a GitHub review from one ends its
   request. `changeRequests` are the GitLab reviewers who requested

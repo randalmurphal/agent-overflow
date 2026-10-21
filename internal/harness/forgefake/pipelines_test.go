@@ -135,6 +135,48 @@ func TestGitHubRunAnswersOneRunAndRevalidates(t *testing.T) {
 	}
 }
 
+// GitLab's tag and branch scopes answer each ref's latest pipeline, and
+// the status and ref filters narrow those: an older run of a tag is not
+// in the tag scope, nor is a tag whose latest run has another status.
+func TestGitLabPipelineScopesAnswerEachRefsLatestPipeline(t *testing.T) {
+	t.Parallel()
+	e := New(Options{APIToken: testAPIToken})
+	job := func(id int, status string) string {
+		return fmt.Sprintf(`[{"id": %d, "name": "build", "stage": "build", "status": %q}]`, id, status)
+	}
+	if _, err := seedJSON(e, `{"repos": [{"forge": "gitlab", "project": "grp/tags", "pipelines": [
+	  {"id": 10, "ref": "main", "jobs": `+job(1001, "failed")+`},
+	  {"id": 20, "ref": "main", "jobs": `+job(2001, "success")+`},
+	  {"id": 30, "refKind": "tag", "ref": "v2", "jobs": `+job(3001, "success")+`},
+	  {"id": 35, "refKind": "tag", "ref": "v1", "jobs": `+job(3501, "success")+`},
+	  {"id": 40, "refKind": "tag", "ref": "v1", "jobs": `+job(4001, "failed")+`}
+	]}]}`); err != nil {
+		t.Fatal(err)
+	}
+	srv := testServer(t, e)
+	ids := func(query string) string {
+		var rows []map[string]any
+		decodeBody(t, glabGET(t, srv, "gitlab.com", "projects/grp%2Ftags/pipelines?"+query), &rows)
+		var out []string
+		for _, row := range rows {
+			out = append(out, fmt.Sprint(row["id"]))
+		}
+		return strings.Join(out, ",")
+	}
+	for query, want := range map[string]string{
+		"scope=tags":                "40,30",
+		"scope=tags&status=success": "30",
+		"scope=tags&ref=v1":         "40",
+		"scope=tags&ref=main":       "",
+		"scope=branches":            "20",
+		"ref=v1":                    "40,35",
+	} {
+		if got := ids(query); got != want {
+			t.Errorf("%s = [%s], want [%s]", query, got, want)
+		}
+	}
+}
+
 func TestGitLabPipelinesAnswerEveryPipelineNewestFirst(t *testing.T) {
 	t.Parallel()
 	e := pipelinesEngine(t)

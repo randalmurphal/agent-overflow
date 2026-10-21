@@ -221,6 +221,10 @@ wrap layers outermost first (`errorsx.Chain`). Every caller is an
 authenticated session that was allowed to make the call, so the message and
 chain are the method's own on every origin. A panic's value stays in the log;
 its frame carries only the reference. `already_handled` carries no detail.
+A `forge_rate_limited` failure also carries `reserve` (the forge's quota was
+kept for the user's own actions rather than spent) and `resumeAt` (RFC 3339,
+when the forge may be asked again), from `forgeapi.RateLimitedError`, so a
+client words the pause without parsing the message.
 
 The backend retains its recent log lines in memory (`logging.Output`).
 `GetErrorLogLines` (scope `threads:operate`, the grant that already lets a

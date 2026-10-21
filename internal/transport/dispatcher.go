@@ -474,6 +474,18 @@ func (d *Dispatcher) processResults(m *Method, results []reflect.Value) (json.Ra
 				if code == ErrCodeBackgroundAgentsRunning && errors.As(methodErr, &agents) {
 					frame.BackgroundAgents = agents.RefusedBackgroundAgents()
 				}
+				// A forge rate limit says whether it kept the reserve and
+				// when it lifts (forgeapi.RateLimitedError).
+				var limit interface {
+					RateLimitRelease() (bool, time.Time)
+				}
+				if code == ErrCodeForgeRateLimited && errors.As(methodErr, &limit) {
+					reserve, until := limit.RateLimitRelease()
+					frame.Reserve = reserve
+					if !until.IsZero() {
+						frame.ResumeAt = until.UTC().Format(time.RFC3339)
+					}
+				}
 				return nil, frame
 			}
 			if errors.Is(methodErr, sql.ErrNoRows) {

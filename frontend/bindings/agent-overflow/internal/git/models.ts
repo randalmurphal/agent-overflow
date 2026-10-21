@@ -1117,11 +1117,11 @@ export class PipelineListFilter {
 
 /**
  * PipelineSummary is one pipeline of a repository as the forge's list
- * read answers it: a GitLab pipeline or a GitHub workflow run. Neither
- * list says whether a ref is a branch or a tag, so RefKind is
+ * read answers it: a GitLab pipeline or a GitHub workflow run. RefKind is
  * merge_request for a merge request's pipeline (GitLab's
  * refs/merge-requests/N ref, a GitHub pull_request event), tag for a
- * GitHub release event, and branch otherwise, a tag push included.
+ * GitLab pipeline whose ref the tag scope names or a GitHub release
+ * event, and branch otherwise, a GitHub tag push included.
  */
 export class PipelineSummary {
     /**

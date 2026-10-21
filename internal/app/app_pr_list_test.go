@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sync"
 	"testing"
@@ -504,6 +505,147 @@ func TestPRViewMarkedShowsSeenAndSinceInTheList(t *testing.T) {
 	if err != nil || seen.Comments != nil || seen.Commits != nil {
 		t.Fatalf("seen without a row = %+v, %v", seen, err)
 	}
+}
+
+// More own rows than the detail allowance across two repositories: every
+// tick picks the same newest maxPRListFocus by update time (GitLab's
+// times carry milliseconds), so an unchanged row's detail is read once
+// and none is dropped and read again.
+func TestPRListDetailSelectionIsStableAcrossTicks(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = 2 * time.Millisecond
+	fake := newPRListFake(t, app)
+	want := map[string]bool{}
+	fake.set(func(f *prListFake) {
+		for i := 1; i <= 40; i++ {
+			row := prListRow(prListRepoA, i, func(r *gitops.PRListRow) {
+				r.ViewerIsAuthor, r.UpdatedAt = true, fmt.Sprintf("2026-01-01T00:00:%02dZ", i)
+			})
+			f.rows[prListRepoA.Key()] = append(f.rows[prListRepoA.Key()], row)
+			if i >= 12 {
+				want[row.Ref.Key()] = true
+			}
+		}
+		for i := 1; i <= 41; i++ {
+			row := prListRow(prListRepoB, i, func(r *gitops.PRListRow) {
+				r.ViewerIsReviewer, r.UpdatedAt = true, fmt.Sprintf("2026-01-01T00:00:%02d.500Z", i)
+			})
+			f.rows[prListRepoB.Key()] = append(f.rows[prListRepoB.Key()], row)
+			if i >= 11 {
+				want[row.Ref.Key()] = true
+			}
+		}
+	})
+	if len(want) != maxPRListFocus {
+		t.Fatalf("the test expects %d rows, has %d", maxPRListFocus, len(want))
+	}
+	subscribePRList(t, app)
+	for fake.listCount(prListRepoA) < 20 {
+		time.Sleep(2 * time.Millisecond)
+	}
+	fake.mu.Lock()
+	reads := maps.Clone(fake.reads)
+	fake.mu.Unlock()
+	for key, n := range reads {
+		if !want[key] || n != 1 {
+			t.Errorf("%s detail read %d times (in the newest set: %v)", key, n, want[key])
+		}
+	}
+	if len(reads) != len(want) {
+		t.Errorf("%d details read, want the %d newest", len(reads), len(want))
+	}
+}
+
+// Only a visible subscriber's focus selects detail reads: hiding one
+// gives the other's rows the allowance at once, and showing it again
+// reads its rows back.
+func TestPRListHiddenSubscriberFocusYieldsTheAllowance(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	fake := newPRListFake(t, app)
+	var older, newer []string
+	fake.set(func(f *prListFake) {
+		for i := 1; i <= 2*maxPRListFocus; i++ {
+			row := prListRow(prListRepoA, i, func(r *gitops.PRListRow) {
+				r.UpdatedAt = time.Date(2026, 1, 1, 0, 0, i, 0, time.UTC).Format(time.RFC3339)
+			})
+			f.rows[prListRepoA.Key()] = append(f.rows[prListRepoA.Key()], row)
+			if i <= maxPRListFocus {
+				older = append(older, row.Ref.Key())
+			} else {
+				newer = append(newer, row.Ref.Key())
+			}
+		}
+	})
+	events := capturePRList(t, app)
+	a := subscribePRList(t, app)
+	b := subscribePRList(t, app)
+	detailed := func(s PRListSnapshot, keys []string) int {
+		n := 0
+		for _, row := range prListProject(t, s, "p-a").Rows {
+			if slices.Contains(keys, row.Ref.Key()) && row.Detail != nil {
+				n++
+			}
+		}
+		return n
+	}
+	if _, err := app.SetPRListFocus(context.Background(), b.ID, newer); err != nil {
+		t.Fatal(err)
+	}
+	awaitPRList(t, events, "the newer rows' detail", func(s PRListSnapshot) bool { return detailed(s, newer) == maxPRListFocus })
+	// Both visible: the newer rows hold the allowance.
+	if _, err := app.SetPRListFocus(context.Background(), a.ID, older); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := app.SetPRListActive(context.Background(), b.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	awaitPRList(t, events, "the visible subscriber's rows read once the other hid", func(s PRListSnapshot) bool {
+		return detailed(s, older) == maxPRListFocus && detailed(s, newer) == 0
+	})
+
+	if err := app.SetPRListActive(context.Background(), b.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	awaitPRList(t, events, "the shown subscriber's rows read again", func(s PRListSnapshot) bool {
+		return detailed(s, newer) == maxPRListFocus && detailed(s, older) == 0
+	})
+	fake.mu.Lock()
+	for _, key := range newer {
+		if n := fake.reads[key]; n != 2 {
+			t.Errorf("%s detail read %d times, want 2", key, n)
+		}
+	}
+	fake.mu.Unlock()
+
+	// A visible subscriber that leaves gives its share back at once.
+	if err := app.UnsubscribePRList(context.Background(), b.ID); err != nil {
+		t.Fatal(err)
+	}
+	awaitPRList(t, events, "the remaining subscriber's rows read once the other left", func(s PRListSnapshot) bool {
+		return detailed(s, older) == maxPRListFocus && detailed(s, newer) == 0
+	})
+
+	// Nothing left to read: hiding still drops the hidden rows' detail.
+	c := subscribePRList(t, app)
+	if _, err := app.SetPRListFocus(context.Background(), c.ID, newer); err != nil {
+		t.Fatal(err)
+	}
+	awaitPRList(t, events, "the newer rows read for the new subscriber", func(s PRListSnapshot) bool {
+		return detailed(s, newer) == maxPRListFocus
+	})
+	if _, err := app.SetPRListFocus(context.Background(), a.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.SetPRListActive(context.Background(), c.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	awaitPRList(t, events, "the hidden rows' detail dropped", func(s PRListSnapshot) bool {
+		return detailed(s, newer) == 0 && detailed(s, older) == 0
+	})
 }
 
 func TestUnsubscribePRListUnbindsItsConnectionTie(t *testing.T) {

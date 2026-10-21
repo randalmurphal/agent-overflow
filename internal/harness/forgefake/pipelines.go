@@ -219,18 +219,26 @@ func glabPipelines(e *Engine, c *call, m []string) response {
 	if query.Has("status") && !gitlabPipelineStatuses[status] {
 		return unhandled("status=%q is not a GitLab pipeline status", status)
 	}
-	// scope=tags and scope=branches narrow by what the ref is, as GitLab
-	// does; the list itself never says.
+	// scope=tags and scope=branches answer the latest pipeline of each tag
+	// or branch ref, and the ref and status filters apply to those, as
+	// GitLab documents and its finder orders them; the list itself never
+	// says what a ref is.
 	scope := query.Get("scope")
 	if query.Has("scope") && scope != "tags" && scope != "branches" {
 		return unhandled("scope=%q is not implemented", scope)
 	}
+	scopeKind := map[string]string{"tags": "tag", "branches": "branch"}[scope]
+	latest := map[string]bool{}
 	rows := []map[string]any{}
 	for _, pipeline := range r.pipelines() {
-		if (query.Has("ref") && pipeline.Ref != query.Get("ref")) || (status != "" && pipeline.Status != status) {
-			continue
+		if scopeKind != "" {
+			// Newest first: a ref's first pipeline is its latest.
+			if pipeline.RefKind != scopeKind || latest[pipeline.Ref] {
+				continue
+			}
+			latest[pipeline.Ref] = true
 		}
-		if (scope == "tags" && pipeline.RefKind != "tag") || (scope == "branches" && pipeline.RefKind != "branch") {
+		if (query.Has("ref") && pipeline.Ref != query.Get("ref")) || (status != "" && pipeline.Status != status) {
 			continue
 		}
 		rows = append(rows, gitlabPipelineJSON(r, pipeline))

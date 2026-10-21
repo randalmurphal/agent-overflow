@@ -18,13 +18,14 @@ import (
 // of the jobs somebody is watching, so one pipeline costs one poller
 // however many panes show it, pauses with them, and emits each
 // observation once. Cadence follows what can still change: nothing while
-// every job is terminal (the owner re-arms it), prCILiveInterval while a
-// job is queued or running (a followed running job's log included, unless
-// its forge streams it), prCIFollowInterval while a followed job is live
-// on a forge that streams running logs, its final log is still being
-// fetched or a download it was cut off in resumes, and prCILogWaitInterval
-// while a completed job's log stays unpublished after the quick tries. The
-// logs themselves are in app_forge_ci_log.go.
+// the pipeline and every job are terminal (the owner re-arms it),
+// prCILiveInterval while the pipeline or a job is queued or running (a
+// followed running job's log included, unless its forge streams it),
+// prCIFollowInterval while a followed job is live on a forge that streams
+// running logs, its final log is still being fetched or a download it was
+// cut off in resumes, and prCILogWaitInterval while a completed job's log
+// stays unpublished after the quick tries. The logs themselves are in
+// app_forge_ci_log.go.
 //
 // Everything below runs on the owning pump's goroutine, including the work
 // an RPC asks for through its requests: one writer per pump keeps frame
