@@ -376,10 +376,26 @@ func TestCreatePRUpdatePumpReconcilesAConcurrentPump(t *testing.T) {
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
 	}
 
+	ciPolled := make(chan struct{}, 1)
+	app.testEmitHook = func(name string, _ any) {
+		if name == "pr:ci_updated" {
+			ciPolled <- struct{}{}
+		}
+	}
 	winner, err := app.SubscribePRUpdates(context.Background(), testPR)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
+	// The pump's first CI poll stamps its state; after it the pump is
+	// quiet for the hour-long interval.
+	select {
+	case <-ciPolled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the pump's first CI poll never landed")
+	}
+	app.prUpdates.mu.Lock()
+	liveSeq := app.prUpdates.pumps[winner.PRKey].seq
+	app.prUpdates.mu.Unlock()
 
 	// The loser finished its own fetch a moment later; the pump is already
 	// there when it takes the lock.
@@ -398,8 +414,8 @@ func TestCreatePRUpdatePumpReconcilesAConcurrentPump(t *testing.T) {
 	if ref.snapshot.Detail.HeadSHA != "head-a" {
 		t.Fatalf("loser kept its own snapshot (%q), want the live pump's", ref.snapshot.Detail.HeadSHA)
 	}
-	if ref.seq != winner.Seq {
-		t.Fatalf("loser's seq = %d, want the live pump's %d", ref.seq, winner.Seq)
+	if ref.seq != liveSeq {
+		t.Fatalf("loser's seq = %d, want the live pump's %d", ref.seq, liveSeq)
 	}
 	if refs, active, _, present := prPumpState(app, winner.PRKey); !present || refs != 2 || active != 2 {
 		t.Fatalf("pump refs=%d active=%d present=%v, want 2/2/true", refs, active, present)

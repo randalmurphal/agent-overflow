@@ -999,6 +999,8 @@ func (a *App) closePRUpdatePumps() {
 	for _, pump := range orphans {
 		pump.stop()
 	}
+	a.closePipelinePumps()
+	a.closePRListPump()
 	a.prUpdates.wg.Wait()
 }
 

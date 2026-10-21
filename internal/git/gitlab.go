@@ -238,8 +238,10 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 	}
 	var out PRRead
 	var notes []gitlabNoteRaw
-	if want.Threads || want.Events {
-		threads, system, err := readGitLabDiscussions(ctx, client, ref, mr.headSHA())
+	var threads []ReviewThread
+	if want.Threads || want.Events || (want.Detail && want.Unresolved) {
+		var system []gitlabNoteRaw
+		threads, system, err = readGitLabDiscussions(ctx, client, ref, mr.headSHA())
 		if err != nil {
 			return PRRead{}, err
 		}
@@ -265,6 +267,10 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		}
 		out.Detail = gitlabPRDetail(mr, gitlabApprovalVerdicts(approvals))
 		gitlabFillMerge(&out.Detail, mr, approvals, settings, events, f.viewerLogin(ctx, client, ref.Host))
+		if want.Unresolved {
+			unresolved := UnresolvedThreads(threads)
+			out.Detail.Readiness.Unresolved = &unresolved
+		}
 	}
 	if want.CI {
 		if out.CI, err = readGitLabPipeline(ctx, client, ref.Repository(), mr.HeadPipeline); err != nil {
@@ -399,7 +405,20 @@ func gitlabCheckSummary(pipeline *gitlabPipelineRaw) CheckSummary {
 	}
 	check := CheckStatus{Kind: "Pipeline", Name: "Pipeline", Status: pipeline.Status, DetailsURL: pipeline.WebURL}
 	summary := CheckSummary{Total: 1, Checks: []CheckStatus{check}}
-	addCheckBucket(&summary, check)
+	// GitLab's pipeline statuses, not GitHub's conclusions that
+	// addCheckBucket sorts.
+	switch NormalizeCIStatus(pipeline.Status, "") {
+	case CIStatusSuccess:
+		summary.Success++
+	case CIStatusFailed:
+		summary.Failure++
+	case CIStatusCanceled:
+		summary.Canceled++
+	case CIStatusSkipped:
+		summary.Skipped++
+	default:
+		summary.Pending++
+	}
 	return summary
 }
 

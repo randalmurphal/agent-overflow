@@ -96,9 +96,12 @@ type Forge interface {
 // forge's activity rows (ReviewEvent); a forge reads them with the
 // threads' request when it can (GitLab's system notes are discussions,
 // GitHub's timeline items ride PRTick), so asking for both costs nothing
-// more than threads alone.
+// more than threads alone. Unresolved, with Detail, has the detail's
+// readiness count the unresolved threads (MergeReadiness.Unresolved):
+// GitHub reads the thread states past the detail's first 100, GitLab the
+// discussions.
 type PRReadParts struct {
-	Detail, Threads, CI, Events bool
+	Detail, Threads, CI, Events, Unresolved bool
 }
 
 func (p PRReadParts) none() bool { return !p.Detail && !p.Threads && !p.CI && !p.Events }

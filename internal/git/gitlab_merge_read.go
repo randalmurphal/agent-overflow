@@ -187,6 +187,7 @@ func (f *gitlabForge) readViewerLogin(ctx context.Context, client *forgeapi.Clie
 func gitlabFillMerge(detail *PRDetail, mr gitlabMRRaw, approvals gitlabApprovalsRaw, settings gitlabProjectSettings, events []ReviewEvent, viewer string) {
 	detail.ViewerIsAuthor = viewer != "" && strings.EqualFold(viewer, mr.Author.Username)
 	detail.Readiness = gitlabReadiness(mr, approvals, settings)
+	detail.Readiness.Approvals = ApprovalCount{Given: len(approvals.ApprovedBy), Required: approvals.ApprovalsRequired}
 	detail.Merge = gitlabMergeOptions(mr, approvals, settings, detail.Readiness, events, detail.ViewerIsAuthor)
 	switch NormalizePRState(mr.State) {
 	case "merged":

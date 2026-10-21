@@ -79,11 +79,18 @@ func fails(err error) func() error { return func() error { return err } }
 // steps, ticking every 5ms.
 func newScriptedPump(t *testing.T, steps ...func() error) (*App, *scriptedFetch, chan PRUpdatedEvent, PRUpdateSubscriptionResult) {
 	t.Helper()
+	return newStaggeredScriptedPump(t, 0, steps...)
+}
+
+// newStaggeredScriptedPump is newScriptedPump with stagger added to a rate
+// limit's resume time, set before the pump starts.
+func newStaggeredScriptedPump(t *testing.T, stagger time.Duration, steps ...func() error) (*App, *scriptedFetch, chan PRUpdatedEvent, PRUpdateSubscriptionResult) {
+	t.Helper()
 	app := NewApp()
 	stubPRCIFetch(app)
 	app.prUpdates.interval = 5 * time.Millisecond
 	app.prUpdates.retryBase = 5 * time.Millisecond
-	app.prUpdates.staggerFn = func() time.Duration { return 0 }
+	app.prUpdates.staggerFn = func() time.Duration { return stagger }
 	script := &scriptedFetch{steps: steps}
 	app.prUpdates.fetchFn = script.fetch
 	events := capturePRUpdates(t, app)
@@ -142,7 +149,7 @@ func TestPRUpdateRateLimitHoldsPollingUntilResumeAt(t *testing.T) {
 	t.Parallel()
 	const stagger = 100 * time.Millisecond
 	var resume atomic.Pointer[time.Time]
-	app, script, events, _ := newScriptedPump(t,
+	_, script, events, _ := newStaggeredScriptedPump(t, stagger,
 		ok,
 		func() error {
 			until := time.Now().Add(300 * time.Millisecond)
@@ -151,7 +158,6 @@ func TestPRUpdateRateLimitHoldsPollingUntilResumeAt(t *testing.T) {
 		},
 		ok,
 	)
-	app.prUpdates.staggerFn = func() time.Duration { return stagger }
 	limited := awaitPRUpdate(t, events, "rate limit frame")
 	until := *resume.Load()
 	if limited.ErrorKind != forgeFailureRateLimited || limited.ResumeAt != until.UTC().Format(time.RFC3339) {

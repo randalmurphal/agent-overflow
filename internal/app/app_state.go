@@ -120,6 +120,23 @@ type appPRUpdateState struct {
 	// staggerFn replaces the random delay added to a rate limit's resume
 	// time (prUpdateStagger), for tests.
 	staggerFn func() time.Duration
+
+	// pipelines index the pipeline pumps (app_pipeline_pump.go) by
+	// pipelineKey, and pipelineHandles each SubscribePipeline caller's
+	// reference, as pumps and handles do for PRs. pipelineFetchFn stands
+	// in for the forge's ReadPipeline in tests.
+	pipelines       map[string]*pipelinePump
+	pipelineHandles map[string]*pipelineHandle
+	pipelineFetchFn func(ctx context.Context, repo gitops.RepoReference, id string, prev *gitops.CIPipeline, stepsFor []string) (gitops.CIPipeline, error)
+
+	// list is this backend's PR list pump (app_pr_list.go), nil while no
+	// page subscribes, and listHandles its subscribers. The list fetch
+	// hooks stand in for the forge in tests.
+	list           *prListPump
+	listHandles    map[string]*prListHandle
+	listProjectsFn func(ctx context.Context) ([]ForgeProject, error)
+	listFetchFn    func(ctx context.Context, repo gitops.RepoReference) ([]gitops.PRListRow, error)
+	listDetailFn   func(ctx context.Context, pr gitops.PRReference) (gitops.PRDetail, error)
 }
 
 // appSessionImportState is the session-import concern
