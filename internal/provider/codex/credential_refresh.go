@@ -1,7 +1,10 @@
 package codex
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -19,4 +22,27 @@ func CredentialLastRefresh(data []byte) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return *authFile.LastRefresh, true
+}
+
+// CredentialRefreshTokenFingerprint is a SHA-256 of the refresh token a Codex
+// `auth.json` holds, hex encoded: the material a rotation consumes. Codex
+// rewrites the file for other reasons too (an agent identity record, for
+// one) without touching the token, so the token rather than the file is what
+// identifies a credential across those rewrites. ok is false when there is
+// no refresh token (API-key and other non-refreshing modes).
+func CredentialRefreshTokenFingerprint(data []byte) (string, bool) {
+	var authFile struct {
+		Tokens *struct {
+			RefreshToken string `json:"refresh_token"`
+		} `json:"tokens"`
+	}
+	if err := json.Unmarshal(data, &authFile); err != nil || authFile.Tokens == nil {
+		return "", false
+	}
+	token := strings.TrimSpace(authFile.Tokens.RefreshToken)
+	if token == "" {
+		return "", false
+	}
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:]), true
 }

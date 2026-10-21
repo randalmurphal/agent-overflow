@@ -21,21 +21,34 @@ import (
 // the probe was of the selected account, and any snapshot a running
 // backend read before the recovery landed. So the sweep records their
 // digest beside the slot's lock before it writes the slot, and every later
-// slot write of exactly those bytes is dropped. They can never authorize
-// anything again, and the slot holds their live successor. While the
+// slot write of a credential holding that refresh token is dropped. It can
+// never authorize anything again, and the slot holds its live successor.
+// The record names the refresh token (Policy.TokenFingerprint), not the
+// file: the provider rewrites the file for other reasons and keeps the
+// token. While the
 // canonical store still holds them, the store that selected the account
 // promotes the slot into it (PromoteSlotOverCanonical).
 //
 // Dropping such a write is the safety property; the promotion only restores
 // a working canonical credential sooner. The marker holds a SHA-256 of the
-// credential bytes: one-way, and not itself a credential. It lives as long
-// as the account's slot does.
+// refresh token: one-way, and not itself a credential. It lives as long as
+// the account's slot does.
 
 const consumedMarkerSuffix = ".consumed"
 
-func credentialDigest(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+// tokenFingerprint is Policy.TokenFingerprint, ok=false without one.
+func (c *Credentials) tokenFingerprint(providerName string, data []byte) (string, bool) {
+	if c.policy.TokenFingerprint == nil {
+		return "", false
+	}
+	return c.policy.TokenFingerprint(providerName, data)
+}
+
+// holdsConsumed reports that data hold the refresh token recorded as
+// consumed.
+func (c *Credentials) holdsConsumed(providerName string, data []byte, consumed string) bool {
+	fingerprint, ok := c.tokenFingerprint(providerName, data)
+	return ok && consumed != "" && fingerprint == consumed
 }
 
 func (c *Credentials) consumedMarkerPath(providerName, accountID string) (string, error) {
@@ -98,12 +111,12 @@ func (c *Credentials) removeConsumedMarker(providerName, accountID string) error
 	return nil
 }
 
-// consumedSlotWrite reports whether data are the bytes a recovery recorded
-// as consumed for this slot, logging the dropped write when they are. The
-// caller holds the slot lock.
+// consumedSlotWrite reports whether data hold the refresh token a recovery
+// recorded as consumed for this slot, logging the dropped write when they
+// do. The caller holds the slot lock.
 func (c *Credentials) consumedSlotWrite(providerName, accountID string, data []byte) (bool, error) {
 	digest, err := c.readConsumedMarker(providerName, accountID)
-	if err != nil || digest == "" || digest != credentialDigest(data) {
+	if err != nil || !c.holdsConsumed(providerName, data, digest) {
 		return false, err
 	}
 	log.Printf("provideraccounts: kept %s slot %s: the write held the credential a recovered rotation consumed", providerName, accountID)
@@ -111,7 +124,7 @@ func (c *Credentials) consumedSlotWrite(providerName, accountID string, data []b
 }
 
 // PromoteSlotOverCanonical puts an account's saved credential into the
-// canonical store while the canonical store still holds the bytes a
+// canonical store while the canonical store still holds the refresh token a
 // recovered rotation consumed. Another store's boot sweep leaves that state:
 // it restores the rotation into the slot and never writes the canonical
 // credential. Only the store that selected the account calls this, under
@@ -128,7 +141,7 @@ func (c *Credentials) PromoteSlotOverCanonical(providerName, accountID string) (
 	if err != nil {
 		return CredentialSnapshot{}, false, fmt.Errorf("provideraccounts: read canonical %s credential before promoting slot %s: %w", providerName, accountID, err)
 	}
-	if credentialDigest(canonical.Bytes()) != consumed {
+	if !c.holdsConsumed(providerName, canonical.Bytes(), consumed) {
 		return CredentialSnapshot{}, false, nil
 	}
 	if err := c.writeActiveCredential(providerName, slot.Bytes()); err != nil {
@@ -139,7 +152,7 @@ func (c *Credentials) PromoteSlotOverCanonical(providerName, accountID string) (
 
 // recoveredSlot reads a slot's recovery record and credential together
 // under the slot lock. consumed is "" when there is nothing to promote: no
-// record, no credential, or the slot itself on the consumed bytes.
+// record, no credential, or the slot itself on the consumed token.
 func (c *Credentials) recoveredSlot(providerName, accountID string) (consumed string, slot CredentialSnapshot, retErr error) {
 	accountDir, err := c.accountDirectory(providerName, accountID)
 	if err != nil {
@@ -161,7 +174,7 @@ func (c *Credentials) recoveredSlot(providerName, accountID string) (consumed st
 	if err != nil {
 		return "", CredentialSnapshot{}, fmt.Errorf("provideraccounts: read %s slot %s before promoting it: %w", providerName, accountID, err)
 	}
-	if credentialDigest(slot.Bytes()) == consumed {
+	if c.holdsConsumed(providerName, slot.Bytes(), consumed) {
 		return "", CredentialSnapshot{}, nil
 	}
 	return consumed, slot, nil

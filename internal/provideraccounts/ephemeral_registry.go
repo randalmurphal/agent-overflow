@@ -60,8 +60,8 @@ func ephemeralHomePrefix(providerName string) string {
 type ephemeralRegistryEntry struct {
 	ConfigHome string `json:"configHome"`
 	AccountID  string `json:"accountId,omitempty"`
-	// SeedDigest is the SHA-256 of the credential the home was seeded with
-	// (consumed.go); empty for a login home, which starts with none.
+	// SeedDigest is the fingerprint of the refresh token the home was seeded
+	// with (consumed.go); empty for a login home, which starts with none.
 	SeedDigest string    `json:"seedDigest,omitempty"`
 	CreatedAt  time.Time `json:"createdAt"`
 }
@@ -396,7 +396,8 @@ func (c *Credentials) sweepOneEphemeralHome(providerName string, entry ephemeral
 
 	result.Action = "discarded"
 	if entry.AccountID != "" && !c.credentialSignedOut(providerName, orphan.Bytes()) {
-		rotated := entry.SeedDigest != "" && credentialDigest(orphan.Bytes()) != entry.SeedDigest
+		orphanToken, hasToken := c.tokenFingerprint(providerName, orphan.Bytes())
+		rotated := entry.SeedDigest != "" && hasToken && orphanToken != entry.SeedDigest
 		if rotated && entry.AccountID == selectedAccountID {
 			replaced, err := c.restoreCanonicalFromOrphan(providerName, entry.SeedDigest, orphan.Bytes())
 			if err != nil {
@@ -420,9 +421,8 @@ func (c *Credentials) sweepOneEphemeralHome(providerName string, entry ephemeral
 }
 
 // restoreCanonicalFromOrphan replaces the canonical credential with the
-// selected account's orphan while the canonical store still holds exactly
-// the seed the orphan was rotated from, whose refresh token the rotation
-// consumed. Anything else there (a sign-in, a later rotation, another
+// selected account's orphan while the canonical store still holds the
+// refresh token the orphan's rotation consumed. Anything else there (a sign-in, a later rotation, another
 // account) is left alone.
 //
 // Nothing serializes this read-compare-write against the provider CLI:
@@ -438,7 +438,7 @@ func (c *Credentials) restoreCanonicalFromOrphan(providerName, seedDigest string
 	if err != nil {
 		return false, fmt.Errorf("provideraccounts: inspect canonical %s credential before adoption: %w", providerName, err)
 	}
-	if credentialDigest(canonical.Bytes()) != seedDigest {
+	if !c.holdsConsumed(providerName, canonical.Bytes(), seedDigest) {
 		return false, nil
 	}
 	if err := c.writeActiveCredential(providerName, orphan); err != nil {

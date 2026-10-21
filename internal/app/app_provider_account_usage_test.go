@@ -449,10 +449,25 @@ func chatGPTAuthForTest(t *testing.T, identity chatGPTIdentity, refreshToken str
 // root's boot sweep does after a crash of its probe: the rotation restored
 // to the slot and its consumed seed recorded, the canonical credential
 // still on that seed. "other" is a second saved account to switch to.
-func installRecoveredCodexAccounts(t *testing.T, app *App, identity chatGPTIdentity) (consumed, live []byte) {
+// With rewritten, the canonical credential holds the seed's refresh token
+// in a file Codex rewrote since the probe copied it (an agent identity
+// record), so its bytes differ from the seed's.
+func installRecoveredCodexAccounts(t *testing.T, app *App, identity chatGPTIdentity, rewritten bool) (consumed, live []byte) {
 	t.Helper()
-	consumed = chatGPTAuthForTest(t, identity, "rt-10", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
+	seed := chatGPTAuthForTest(t, identity, "rt-10", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
 	live = chatGPTAuthForTest(t, identity, "rt-20", time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
+	consumed = seed
+	if rewritten {
+		var authFile map[string]any
+		if err := json.Unmarshal(seed, &authFile); err != nil {
+			t.Fatal(err)
+		}
+		authFile["agent_identity"] = map[string]any{"agent_runtime_id": "runtime-1"}
+		var err error
+		if consumed, err = json.Marshal(authFile); err != nil {
+			t.Fatal(err)
+		}
+	}
 	installProviderUsageTestAccounts(
 		t,
 		app,
@@ -460,7 +475,7 @@ func installRecoveredCodexAccounts(t *testing.T, app *App, identity chatGPTIdent
 		usageTestAccount{"other", []byte(`{"tokens":{"access_token":"other"}}`)},
 		usageTestAccount{"selected", consumed},
 	)
-	if err := providerCredentialsForTest(t, app).RecoverRotationForTest(string(provider.Codex), "selected", consumed, live); err != nil {
+	if err := providerCredentialsForTest(t, app).RecoverRotationForTest(string(provider.Codex), "selected", seed, live); err != nil {
 		t.Fatal(err)
 	}
 	return consumed, live
@@ -512,11 +527,13 @@ func assertCodexCredentials(t *testing.T, app *App, wantSlot, wantCanonical []by
 func TestRecoveredCodexRotationSurvivesEverySelectedPath(t *testing.T) {
 	t.Parallel()
 	for _, identity := range []struct {
-		name  string
-		value chatGPTIdentity
+		name      string
+		value     chatGPTIdentity
+		rewritten bool
 	}{
-		{"user id", identifiedByUserID},
-		{"no identity", identifiedByNothing},
+		{"user id", identifiedByUserID, false},
+		{"no identity", identifiedByNothing, false},
+		{"canonical rewritten since the seed", identifiedByUserID, true},
 	} {
 		for _, path := range []struct {
 			name string
@@ -536,7 +553,7 @@ func TestRecoveredCodexRotationSurvivesEverySelectedPath(t *testing.T) {
 			t.Run(identity.name+"/"+path.name, func(t *testing.T) {
 				t.Parallel()
 				app := newTestAppWithStore(t)
-				_, live := installRecoveredCodexAccounts(t, app, identity.value)
+				_, live := installRecoveredCodexAccounts(t, app, identity.value, identity.rewritten)
 				writeCodexAppServerMock(t, app)
 				if err := path.run(app); err != nil {
 					t.Fatal(err)
@@ -548,16 +565,19 @@ func TestRecoveredCodexRotationSurvivesEverySelectedPath(t *testing.T) {
 }
 
 // A switch away saves the outgoing canonical credential into its slot. It
-// must not be the consumed seed, whether promotion ran first or not.
+// must not be the consumed token, whether promotion ran first or not, and
+// whether or not Codex rewrote the file around it.
 func TestSwitchAwayKeepsARecoveredCodexRotation(t *testing.T) {
 	t.Parallel()
-	app := newTestAppWithStore(t)
-	_, live := installRecoveredCodexAccounts(t, app, identifiedByNothing)
-	writeCodexAppServerMock(t, app)
-	if _, err := app.SwitchProviderAccount(string(provider.Codex), "other"); err != nil {
-		t.Fatal(err)
+	for _, rewritten := range []bool{false, true} {
+		app := newTestAppWithStore(t)
+		_, live := installRecoveredCodexAccounts(t, app, identifiedByNothing, rewritten)
+		writeCodexAppServerMock(t, app)
+		if _, err := app.SwitchProviderAccount(string(provider.Codex), "other"); err != nil {
+			t.Fatal(err)
+		}
+		assertCodexCredentials(t, app, live, nil)
 	}
-	assertCodexCredentials(t, app, live, nil)
 }
 
 // An inactive Codex probe works on bytes it read before it ran. Another

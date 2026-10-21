@@ -45,7 +45,11 @@ func (c *Credentials) RecoverRotationForTest(providerName, accountID string, see
 	if err != nil {
 		return err
 	}
-	if err := c.writeConsumedMarker(providerName, accountID, credentialDigest(seed)); err != nil {
+	consumed, ok := c.tokenFingerprint(providerName, seed)
+	if !ok {
+		return errors.New("provideraccounts: the seed holds no refresh token")
+	}
+	if err := c.writeConsumedMarker(providerName, accountID, consumed); err != nil {
 		return err
 	}
 	return c.writeCredentialAt(providerName, accountDir, false, rotated)

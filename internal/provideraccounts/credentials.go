@@ -80,6 +80,12 @@ type ChainPosition func(providerName string, data []byte) (int64, bool)
 // a sign-in repairs is the worse failure.
 type LoginExpiry func(providerName string, data []byte) (int64, bool)
 
+// TokenFingerprint identifies the refresh token provider-native credential
+// bytes hold, as a hex SHA-256: equal across rewrites that keep the token,
+// different once a rotation replaces it. ok=false means the bytes hold no
+// refresh token, so nothing in them can be consumed.
+type TokenFingerprint func(providerName string, data []byte) (string, bool)
+
 // Policy carries the provider-specific credential predicates this package
 // cannot implement itself without importing a provider package. They are
 // supplied at construction rather than through setters, so a store that
@@ -90,6 +96,9 @@ type Policy struct {
 	SignedOut      SignedOutDetector
 	ChainPosition  ChainPosition
 	LoginExpiresAt LoginExpiry
+	// TokenFingerprint names what a crash recovery records as consumed
+	// (consumed.go). Without it nothing is recorded.
+	TokenFingerprint TokenFingerprint
 }
 
 // Credentials owns Agent Overflow's opaque copies of provider-native

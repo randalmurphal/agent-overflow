@@ -1,9 +1,12 @@
 package provideraccounts
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,11 +19,23 @@ func sweepFixture(t *testing.T) *Credentials {
 	// The sweep's husk rules ("never adopt a husk orphan", "adopt over a
 	// husked slot") consult the detector, so the fixture carries it the way
 	// production does.
-	credentials, err := NewCredentials(t.TempDir(), Policy{SignedOut: literalHuskDetector})
+	credentials, err := NewCredentials(t.TempDir(), Policy{SignedOut: literalHuskDetector, TokenFingerprint: testTokenFingerprint})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return credentials
+}
+
+// testTokenFingerprint treats a fixture credential's refresh token as its
+// text up to " meta:", so "pos:10 meta:x" is the "pos:10" credential
+// rewritten without rotating, the way Codex records an agent identity.
+func testTokenFingerprint(_ string, data []byte) (string, bool) {
+	token, _, _ := strings.Cut(string(data), " meta:")
+	if token == "" {
+		return "", false
+	}
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:]), true
 }
 
 // abandonEphemeralHome ends a home's lease without cleaning it up: what
@@ -130,6 +145,7 @@ func chainFixture(t *testing.T) *Credentials {
 			}
 			return position, true
 		},
+		TokenFingerprint: testTokenFingerprint,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -220,7 +236,7 @@ func crashRotatedHome(t *testing.T, c *Credentials, seed, rotated []byte, ownerA
 }
 
 // The selected account's probe starts from the canonical credential, so a
-// crash after its rotation leaves the canonical store on the consumed seed.
+// crash after its rotation leaves the canonical store on the consumed token.
 // The sweep of the store that selected the account restores the rotation
 // there while the canonical store still holds exactly that seed. Another
 // store's sweep restores the slot alone, and nothing is restored from an
@@ -235,6 +251,7 @@ func TestSweepRestoresTheSelectedAccountsCanonicalCredential(t *testing.T) {
 		wantCanonical string
 	}{
 		{name: "canonical on the seed", selected: selected, canonical: "pos:10", orphan: "pos:20", wantCanonical: "pos:20"},
+		{name: "canonical rewritten on the seed's token", selected: selected, canonical: "pos:10 meta:agent", orphan: "pos:20", wantCanonical: "pos:20"},
 		{name: "outside sign-in", selected: selected, canonical: "pos:5 bob", orphan: "pos:20", wantCanonical: "pos:5 bob"},
 		{name: "canonical moved on", selected: selected, canonical: "pos:30", orphan: "pos:20", wantCanonical: "pos:30"},
 		{name: "another store's account", canonical: "pos:10", orphan: "pos:20", wantCanonical: "pos:10"},
@@ -375,6 +392,30 @@ func TestConsumedCredentialNeverReturnsToTheSlot(t *testing.T) {
 	}
 	if slot, err := credentials.ReadCredential("codex", "acct-1", false); err != nil || string(slot) != "pos:10" {
 		t.Fatalf("slot = %q, %v; the record outlived its account", slot, err)
+	}
+}
+
+// The provider rewrites a credential without rotating it (Codex records an
+// agent identity in auth.json). The rewrite still holds the consumed token:
+// it is promoted over, and never saved over the recovered slot.
+func TestConsumedTokenIsRecognizedAcrossARewrite(t *testing.T) {
+	credentials := chainFixture(t)
+	recoverForeign(t, credentials)
+	if err := credentials.writeActiveCredential("codex", []byte("pos:10 meta:agent")); err != nil {
+		t.Fatal(err)
+	}
+	writeCodexSlot(t, credentials, "acct-2", "pos:1 carol")
+	if err := credentials.WriteAccountCredential("codex", "acct-1", []byte("pos:10 meta:agent")); err != nil {
+		t.Fatal(err)
+	}
+	if slot, err := credentials.ReadCredential("codex", "acct-1", false); err != nil || string(slot) != "pos:20" {
+		t.Fatalf("slot = %q, %v; the rewritten consumed credential replaced the rotation", slot, err)
+	}
+	if _, changed, err := credentials.PromoteSlotOverCanonical("codex", "acct-1"); err != nil || !changed {
+		t.Fatalf("promote over the rewritten consumed credential = %v, %v", changed, err)
+	}
+	if canonical, err := credentials.ReadCredential("codex", "", true); err != nil || string(canonical) != "pos:20" {
+		t.Fatalf("canonical = %q, %v; want the rotation", canonical, err)
 	}
 }
 

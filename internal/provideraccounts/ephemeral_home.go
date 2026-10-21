@@ -88,7 +88,7 @@ func (c *Credentials) newEphemeralHome(
 	// forever (ephemeral_registry.go).
 	seedDigest := ""
 	if credential != nil {
-		seedDigest = credentialDigest(credential)
+		seedDigest, _ = c.tokenFingerprint(providerName, credential)
 	}
 	lease, err := c.registerEphemeralHome(providerName, path, ownerAccountID, seedDigest)
 	if err != nil {

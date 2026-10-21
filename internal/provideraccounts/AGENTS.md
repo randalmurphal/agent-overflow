@@ -83,19 +83,21 @@ can take. It adopts a crash-orphaned credential into its slot only when the
 slot is missing, signed out, or strictly behind it on the rotation chain
 (`ChainPosition`: Claude token expiry, Codex `last_refresh`).
 
-Each registry entry records the digest of the credential its home was
-seeded with. An adoption of an orphan that rotated that seed first records
-the seed as consumed beside the slot's lock (`consumed.go`), and no slot
-write ever lands those exact bytes again: a switch's preserve, an
-adoption, a delayed commit. A recovery record that cannot be read stops
-every write to its slot.
+Each registry entry records the fingerprint of the refresh token its home
+was seeded with (`TokenFingerprint`, provider-owned: the provider rewrites
+its credential file for other reasons and keeps the token). An adoption of
+an orphan that rotated that token first records it as consumed beside the
+slot's lock (`consumed.go`), and no slot write ever lands a credential
+holding it again: a switch's preserve, an adoption, a delayed commit. A
+recovery record that cannot be read stops every write to its slot.
 
 Only the store that selected an account writes the canonical credential
 for it. Its sweep also restores a selected account's orphan into the
-canonical home while that still holds the consumed seed. Another data
+canonical home while that still holds the consumed token. Another data
 root's sweep restores the slot alone. While the canonical store still holds
-the consumed seed, the owner promotes the slot (`PromoteSlotOverCanonical`):
-at boot, before reconciliation and before a selected probe. Coherence of the
+the consumed token, the owner promotes the slot (`PromoteSlotOverCanonical`):
+at boot, before reconciliation, before an account probe and before a
+selected usage probe. Coherence of the
 shared canonical credential across stores otherwise belongs to
 external-login reconciliation.
 
