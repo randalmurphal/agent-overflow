@@ -133,11 +133,12 @@ type gitlabPullNodeRaw struct {
 
 // gitlabActivityDays is how far back the viewer's events are read, and
 // gitlabActivityMaxPages the pages of 100 read of each feed. A busy
-// viewer's 300 newest comments can span only days: the window's floor
-// (gitlabActivity.floor) says how far back they reach.
+// viewer leaves about 250 comments a month (forge-api-measurements.md),
+// so five pages hold the window whole for most; past the cap the
+// window's floor (gitlabActivity.floor) says how far back they reach.
 const (
 	gitlabActivityDays     = 30
-	gitlabActivityMaxPages = 3
+	gitlabActivityMaxPages = 5
 )
 
 // gitlabMRKey names a merge request across projects, as the events do.

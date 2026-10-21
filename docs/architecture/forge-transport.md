@@ -368,7 +368,7 @@ project), then concurrently:
   `approvalsLeft` are never selected, since they add about 2 s.
 - `users/ID/events?action=commented&per_page=100&after=<30 days ago>`
   and the same with `action=approved`, concurrently, each at most
-  `gitlabActivityMaxPages` (3) pages: the viewer's latest
+  `gitlabActivityMaxPages` (5) pages: the viewer's latest
   `commented on` (a note, diff note or discussion note on a
   `MergeRequest`) or `approved` event per project and merge request is
   the row's viewer activity. GitLab filters each feed, so pushes and

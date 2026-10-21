@@ -272,10 +272,10 @@ func TestGitLabViewerEventsAreReadOncePerRound(t *testing.T) {
 // event; one cut at gitlabActivityMaxPages pages only to its oldest event
 // read, or to now when its pages held none. The window is complete only
 // back to where both are, so its floor, which a row with no activity in
-// it carries, is the later of the two: the cut comments feed's 299
-// minutes against the approvals feed that ended two days back, the day
-// after the after date when both end, now when the cut feed showed
-// nothing.
+// it carries, is the later of the two: the cut comments feed's oldest
+// event (one a minute, gitlabActivityMaxPages pages of 100) against the
+// approvals feed that ended two days back, the day after the after date
+// when both end, now when the cut feed showed nothing.
 func TestGitLabViewerActivityFloorIsTheLaterFeedsReach(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
@@ -329,7 +329,7 @@ func TestGitLabViewerActivityFloorIsTheLaterFeedsReach(t *testing.T) {
 			}
 		}
 	}
-	check(now.Add(-299 * time.Minute).Format(time.RFC3339))
+	check(now.Add(-time.Duration(gitlabActivityMaxPages*100-1) * time.Minute).Format(time.RFC3339))
 	mu.Lock()
 	read := commentPages
 	comments = "none"
