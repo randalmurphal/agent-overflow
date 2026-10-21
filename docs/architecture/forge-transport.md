@@ -336,7 +336,7 @@ GitLab's list stops at the 1000 most recently updated.
 | Read | GitHub | GitLab |
 |---|---|---|
 | Open PRs of a project | 1 `PullsSearch` per 100 PRs | 1 merge request list page per 100 MRs; + 1 `user` per login and host per 10 minutes |
-| Pipelines of a project (`ListPipelines`, at most `Limit` rows, 100 when unset or larger) | 1 `GET repos/O/R/actions/runs?per_page=N[&branch=][&status=]` | 1 `GET projects/P/pipelines?per_page=N[&ref=][&status=]`; + `GET projects/P/pipelines?per_page=100&scope=tags[&ref=]` pages, at most `gitlabTagScopeMaxPages` (10): 1 for a ref, 1 or 2 without a status filter, none for a merge request ref or an empty list; + 1 `GET projects/P/pipelines/ID` per row on a tag's ref name whose id the tag scope does not hold, once per pipeline while the repository's listings hold it, 4 at a time |
+| Pipelines of a project (`ListPipelines`, at most `Limit` rows, 100 when unset or larger) | 1 `GET repos/O/R/actions/runs?per_page=N[&branch=][&status=]` | 1 `GET projects/P/pipelines?per_page=N[&ref=][&status=]`; + `GET projects/P/pipelines?per_page=100&scope=tags[&ref=]` pages, at most `gitlabTagScopeMaxPages` (10): 1 for a ref, 1 or 2 without a status filter, none for a merge request ref or an empty list; + 1 `GET projects/P/pipelines/ID` per row on a tag's ref name whose id the tag scope does not hold, once per pipeline while the repository's listings hold it and shared by concurrent listings, 4 at a time per listing |
 | One pipeline (`ReadPipeline`) | 1 `GET repos/O/R/actions/runs/ID` + 1 jobs page per 100 jobs, at most `githubReadMaxPages` | 1 `GET projects/P/pipelines/ID` + 1 jobs page per 100 jobs, at most `gitlabCIJobsMaxPages` |
 | Stages of 30 unchanged rows (`ReadPipelineStages`) | 30 runs + 30 jobs pages, each a 304 | 30 pipelines + 30 jobs pages, each a 200 with its body |
 
@@ -358,8 +358,13 @@ name the scope names but not in it is an older run of the tag or a run
 of a branch of the same name, which GitLab allows, and is classified by
 the single pipeline's `tag`. Those reads use the list's admission and
 their answers, with the scope's, are remembered per repository by
-pipeline id (a pipeline's tag flag never changes); each listing prunes
-the repository's memory to the pipelines it answered. A read that
+pipeline id (a pipeline's tag flag never changes). A listing that needs
+a pipeline another listing is reading joins that read, and tries once
+more when that read fails for other than a 404 (another listing's
+admission or cancellation). A
+finishing listing prunes the repository's memory to the pipelines it
+and every listing that overlapped it in time answered, its own alone
+when none did. A read that
 answers 404 (the pipeline was deleted) leaves the row out; any other
 failure fails the listing. The scope is read without the status filter,
 since a tag whose latest run has another status is still a tag. It is

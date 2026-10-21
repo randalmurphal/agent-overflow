@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func listQuery(t *testing.T, path string) url.Values {
@@ -121,7 +123,9 @@ func gitlabListBody(t *testing.T, pipelines ...map[string]any) string {
 }
 
 // gitlabPipelinesFake answers the pipelines list, its tag scope and the
-// single pipeline reads from fields a test changes between listings.
+// single pipeline reads from fields a test changes between listings. The
+// list answers the pipelines of the status asked for, as GitLab does.
+// gate, when set, runs before every answer, outside the fake's lock.
 type gitlabPipelinesFake struct {
 	mu    sync.Mutex
 	list  []map[string]any
@@ -130,10 +134,17 @@ type gitlabPipelinesFake struct {
 	// one in refused answers 403.
 	single  map[int64]bool
 	refused map[int64]bool
+	gate    func(call forgeAPICall)
 }
 
 func (f *gitlabPipelinesFake) answer(t *testing.T) func(call forgeAPICall) forgeAPIAnswer {
 	return func(call forgeAPICall) forgeAPIAnswer {
+		f.mu.Lock()
+		gate := f.gate
+		f.mu.Unlock()
+		if gate != nil {
+			gate(call)
+		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		const prefix = "projects/grp%2Fsub%2Fapp/pipelines"
@@ -141,7 +152,11 @@ func (f *gitlabPipelinesFake) answer(t *testing.T) func(call forgeAPICall) forge
 		case strings.HasPrefix(call.Path, prefix+"?") && strings.Contains(call.Path, "scope=tags"):
 			return forgeAPIAnswer{Body: gitlabListBody(t, f.scope...)}
 		case strings.HasPrefix(call.Path, prefix+"?"):
-			return forgeAPIAnswer{Body: gitlabListBody(t, f.list...)}
+			list := f.list
+			if status := listQuery(t, call.Path).Get("status"); status != "" {
+				list = slices.DeleteFunc(slices.Clone(list), func(pipeline map[string]any) bool { return pipeline["status"] != status })
+			}
+			return forgeAPIAnswer{Body: gitlabListBody(t, list...)}
 		case strings.HasPrefix(call.Path, prefix+"/"):
 			id, err := strconv.ParseInt(strings.TrimPrefix(call.Path, prefix+"/"), 10, 64)
 			if err != nil {
@@ -259,6 +274,179 @@ func TestGitLabListPipelinesClassifiesTagsByTheScopeAndTheSinglePipeline(t *test
 	})
 	if _, err := core.ListPipelines(t.Context(), gitlabTestRepo(), PipelineListFilter{Status: CIStatusSuccess}); err == nil {
 		t.Fatal("a refused single pipeline read did not fail the listing")
+	}
+}
+
+// gitlabTagMemory is the test repository's pipeline tag memory: the
+// remembered flags, and how many reads and listings it still tracks.
+type gitlabTagMemory struct {
+	tags    map[int64]bool
+	tracked int
+}
+
+// gitlabTagMemoryOf reads core's tag memory of the test repository; ok
+// is false when it holds no entry.
+func gitlabTagMemoryOf(t *testing.T, core *Core) (memory gitlabTagMemory, ok bool) {
+	t.Helper()
+	forge, isGitLab := core.ForgeByID("gitlab").(*gitlabForge)
+	if !isGitLab {
+		t.Fatal("no gitlab forge")
+	}
+	tags := &forge.pipelineTags
+	tags.mu.Lock()
+	defer tags.mu.Unlock()
+	repo := gitlabTestRepo()
+	state := tags.repos[repo.Host+" "+repo.Project()]
+	if state == nil {
+		return gitlabTagMemory{}, false
+	}
+	return gitlabTagMemory{tags: maps.Clone(state.tags), tracked: len(state.reads) + len(state.listings) + len(state.recent)}, true
+}
+
+func assertGitLabTagMemory(t *testing.T, core *Core, want map[int64]bool) {
+	t.Helper()
+	memory, ok := gitlabTagMemoryOf(t, core)
+	if !ok || !maps.Equal(memory.tags, want) || memory.tracked != 0 {
+		t.Fatalf("tag memory = %v (present %v, tracking %d), want %v and nothing in flight", memory.tags, ok, memory.tracked, want)
+	}
+}
+
+// Two listings that need the same ambiguous pipelines share one single
+// read of each: the second joins the first's read in flight. Each single
+// read is held until both listings read the tag scope, and a while
+// longer unless a second read of it arrives.
+func TestGitLabConcurrentListingsShareEachSinglePipelineRead(t *testing.T) {
+	t.Parallel()
+	fake := &gitlabPipelinesFake{
+		list:   []map[string]any{gitlabListPipeline(6995, "release", "success"), gitlabListPipeline(6990, "release", "success")},
+		scope:  []map[string]any{gitlabListPipeline(7002, "release", "success")},
+		single: map[int64]bool{6995: false, 6990: true},
+	}
+	var mu sync.Mutex
+	scopes, reads := 0, map[string]int{}
+	scoped := make(chan struct{})
+	again := map[string]chan struct{}{"6995": make(chan struct{}), "6990": make(chan struct{})}
+	fake.gate = func(call forgeAPICall) {
+		if strings.Contains(call.Path, "scope=tags") {
+			mu.Lock()
+			if scopes++; scopes == 2 {
+				close(scoped)
+			}
+			mu.Unlock()
+			return
+		}
+		id, ok := strings.CutPrefix(call.Path, "projects/grp%2Fsub%2Fapp/pipelines/")
+		if !ok {
+			return
+		}
+		mu.Lock()
+		if reads[id]++; reads[id] == 2 {
+			close(again[id])
+		}
+		mu.Unlock()
+		select {
+		case <-scoped:
+		case <-time.After(3 * time.Second):
+			t.Error("the second listing never read the tag scope")
+		}
+		select {
+		case <-again[id]:
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	core, calls := newForgeAPICore(t, fake.answer(t))
+
+	rows := make([][]PipelineSummary, 2)
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for i := range rows {
+		wg.Go(func() { rows[i], errs[i] = core.ListPipelines(t.Context(), gitlabTestRepo(), PipelineListFilter{}) })
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		t.Fatal(err)
+	}
+	if got := singleReads(calls.all(), 0); strings.Join(got, " ") != "6990 6995" {
+		t.Fatalf("single reads = %v, want one of each ambiguous pipeline", got)
+	}
+	for i, listing := range rows {
+		if got, want := pipelineKinds(listing), "7002:release:tag 6995:release:branch 6990:release:tag"; got != want {
+			t.Errorf("listing %d rows = %s\nwant             %s", i, got, want)
+		}
+	}
+	assertGitLabTagMemory(t, core, map[int64]bool{7002: true, 6995: false, 6990: true})
+}
+
+// Listings that overlap in time keep each other's pipelines in the
+// memory; a listing alone prunes it to its own, and one with nothing to
+// remember leaves no entry.
+func TestGitLabOverlappingListingsKeepEachOthersPipelines(t *testing.T) {
+	t.Parallel()
+	fake := &gitlabPipelinesFake{
+		list: []map[string]any{
+			gitlabListPipeline(6995, "release", "success"),
+			gitlabListPipeline(6993, "release", "success"),
+			gitlabListPipeline(6990, "release", "failed"),
+			gitlabListPipeline(6988, "release", "failed"),
+		},
+		scope:  []map[string]any{gitlabListPipeline(7002, "release", "success")},
+		single: map[int64]bool{6995: false, 6993: true, 6990: false, 6988: true},
+	}
+	// Every single read waits for all four, so both listings are in
+	// flight together.
+	var mu sync.Mutex
+	arrived := 0
+	all := make(chan struct{})
+	fake.gate = func(call forgeAPICall) {
+		if !strings.HasPrefix(call.Path, "projects/grp%2Fsub%2Fapp/pipelines/") {
+			return
+		}
+		mu.Lock()
+		if arrived++; arrived == 4 {
+			close(all)
+		}
+		mu.Unlock()
+		select {
+		case <-all:
+		case <-time.After(3 * time.Second):
+			t.Error("the listings' single reads were not in flight together")
+		}
+	}
+	core, calls := newForgeAPICore(t, fake.answer(t))
+
+	statuses := []string{CIStatusSuccess, CIStatusFailed}
+	errs := make([]error, len(statuses))
+	var wg sync.WaitGroup
+	for i, status := range statuses {
+		wg.Go(func() {
+			_, errs[i] = core.ListPipelines(t.Context(), gitlabTestRepo(), PipelineListFilter{Status: status})
+		})
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		t.Fatal(err)
+	}
+	assertGitLabTagMemory(t, core, map[int64]bool{7002: true, 6995: false, 6993: true, 6990: false, 6988: true})
+
+	fake.set(func(f *gitlabPipelinesFake) { f.gate = nil })
+	before := len(calls.all())
+	if _, err := core.ListPipelines(t.Context(), gitlabTestRepo(), PipelineListFilter{Status: CIStatusSuccess}); err != nil {
+		t.Fatal(err)
+	}
+	if got := singleReads(calls.all(), before); len(got) != 0 {
+		t.Fatalf("a remembered listing read %v", got)
+	}
+	assertGitLabTagMemory(t, core, map[int64]bool{7002: true, 6995: false, 6993: true})
+
+	fake.set(func(f *gitlabPipelinesFake) {
+		f.list = []map[string]any{gitlabListPipeline(6999, "main", "success")}
+		f.scope = nil
+	})
+	if _, err := core.ListPipelines(t.Context(), gitlabTestRepo(), PipelineListFilter{}); err != nil {
+		t.Fatal(err)
+	}
+	if memory, ok := gitlabTagMemoryOf(t, core); ok {
+		t.Fatalf("a listing with nothing to remember left %+v", memory)
 	}
 }
 

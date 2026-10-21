@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
@@ -205,14 +207,154 @@ func (f *gitlabForge) ListPipelines(ctx context.Context, repo RepoReference, fil
 	return rows, nil
 }
 
-// gitlabPipelineTags remembers, per repository, whether each pipeline of
-// its latest listing on a tag's ref name ran on the tag, so the single
-// pipeline read that classifies an ambiguous one is made once while it
-// stays listed: a pipeline's tag flag never changes. Each listing prunes
-// its repository's entry to the pipelines it answered.
+// gitlabPipelineTags remembers, per repository, whether each listed
+// pipeline on a tag's ref name ran on the tag, so the single pipeline read
+// that classifies an ambiguous one is made once while the repository's
+// listings hold it: a pipeline's tag flag never changes. Concurrent
+// listings share one read per pipeline. A finishing listing prunes the
+// memory to the pipelines it and every listing that overlapped it in time
+// answered, its own alone when none did.
 type gitlabPipelineTags struct {
 	mu    sync.Mutex
-	repos map[string]map[int64]bool
+	repos map[string]*gitlabRepoTags
+}
+
+// gitlabRepoTags is one repository's memory, under gitlabPipelineTags.mu.
+// tags is each remembered pipeline's flag and reads the single reads in
+// flight. listings holds the pipeline ids of each listing in flight by its
+// start, and recent those of the finished listings that overlapped one
+// still in flight; start and end stamps come from next. The entry is
+// deleted once it holds nothing.
+type gitlabRepoTags struct {
+	tags     map[int64]bool
+	reads    map[int64]*gitlabTagRead
+	listings map[uint64][]int64
+	recent   []gitlabFinishedListing
+	next     uint64
+}
+
+type gitlabFinishedListing struct {
+	end uint64
+	ids []int64
+}
+
+// gitlabTagRead is one single pipeline read in flight; tag and err are
+// set before done closes.
+type gitlabTagRead struct {
+	done chan struct{}
+	tag  bool
+	err  error
+}
+
+// beginListing registers a listing of pipelines ids under key and
+// returns its repository memory, its start and the flags remembered for
+// those ids.
+func (c *gitlabPipelineTags) beginListing(key string, ids []int64) (*gitlabRepoTags, uint64, map[int64]bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	state := c.repos[key]
+	if state == nil {
+		state = &gitlabRepoTags{tags: map[int64]bool{}, reads: map[int64]*gitlabTagRead{}, listings: map[uint64][]int64{}}
+		if c.repos == nil {
+			c.repos = map[string]*gitlabRepoTags{}
+		}
+		c.repos[key] = state
+	}
+	start := state.next
+	state.next++
+	state.listings[start] = ids
+	known := map[int64]bool{}
+	for _, id := range ids {
+		if tag, ok := state.tags[id]; ok {
+			known[id] = tag
+		}
+	}
+	return state, start, known
+}
+
+// endListing remembers the flags a listing learned (learned) and prunes
+// the memory to the ids of that listing, the listings in flight and the
+// finished ones that overlapped those.
+func (c *gitlabPipelineTags) endListing(key string, state *gitlabRepoTags, start uint64, learned map[int64]bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	maps.Copy(state.tags, learned)
+	ids := state.listings[start]
+	delete(state.listings, start)
+	keep := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		keep[id] = true
+	}
+	for _, held := range state.listings {
+		for _, id := range held {
+			keep[id] = true
+		}
+	}
+	for _, finished := range state.recent {
+		for _, id := range finished.ids {
+			keep[id] = true
+		}
+	}
+	for id := range state.tags {
+		if !keep[id] {
+			delete(state.tags, id)
+		}
+	}
+	// A finished listing matters while a listing it overlapped is in
+	// flight: one that started before it ended.
+	end := state.next
+	state.next++
+	oldest := state.next
+	for listing := range state.listings {
+		oldest = min(oldest, listing)
+	}
+	state.recent = slices.DeleteFunc(append(state.recent, gitlabFinishedListing{end: end, ids: ids}), func(finished gitlabFinishedListing) bool {
+		return finished.end < oldest
+	})
+	if len(state.tags) == 0 && len(state.reads) == 0 && len(state.listings) == 0 {
+		delete(c.repos, key)
+	}
+}
+
+// readTag answers pipeline id's tag flag for a listing registered on
+// state: remembered, the read another listing has in flight, or its own
+// read in one of slots. A joined read that failed for other than a 404
+// (its listing's admission, its cancellation) is tried once more.
+func (c *gitlabPipelineTags) readTag(ctx context.Context, client *forgeapi.Client, project string, state *gitlabRepoTags, id int64, slots chan struct{}) (bool, error) {
+	for attempt := 0; ; attempt++ {
+		c.mu.Lock()
+		if tag, ok := state.tags[id]; ok {
+			c.mu.Unlock()
+			return tag, nil
+		}
+		read, joined := state.reads[id]
+		if !joined {
+			read = &gitlabTagRead{done: make(chan struct{})}
+			state.reads[id] = read
+		}
+		c.mu.Unlock()
+		if !joined {
+			slots <- struct{}{}
+			read.tag, read.err = readGitLabPipelineTag(ctx, client, project, id)
+			<-slots
+			c.mu.Lock()
+			delete(state.reads, id)
+			if read.err == nil {
+				state.tags[id] = read.tag
+			}
+			c.mu.Unlock()
+			close(read.done)
+			return read.tag, read.err
+		}
+		select {
+		case <-read.done:
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+		if read.err == nil || errors.Is(read.err, forgeapi.ErrNotFound) || attempt > 0 {
+			return read.tag, read.err
+		}
+	}
 }
 
 // kinds answers each pipeline's RefKind. A merge request ref is a merge
@@ -221,20 +363,18 @@ type gitlabPipelineTags struct {
 // on a ref name the scope does not name is a branch's. One on a ref name
 // the scope names but not in it is an older run of the tag or a run of a
 // branch of the same name, and its kind is the single pipeline's `tag`,
-// remembered or read with ctx's admission. A pipeline that read answers
-// 404 for (deleted since the list) has no kind and is left out; any other
-// failure fails the listing.
+// remembered, joined or read with ctx's admission (readTag). A pipeline
+// that read answers 404 for (deleted since the list) has no kind and is
+// left out; any other failure fails the listing.
 func (c *gitlabPipelineTags) kinds(ctx context.Context, client *forgeapi.Client, repo RepoReference, pipelines []gitlabPipelineRaw, tagRefs map[string]bool, scope map[int64]bool) (map[int64]string, error) {
 	key := repo.Host + " " + repo.Project()
-	known := map[int64]bool{}
-	c.mu.Lock()
-	remembered := c.repos[key]
-	for _, pipeline := range pipelines {
-		if tag, ok := remembered[pipeline.ID]; ok {
-			known[pipeline.ID] = tag
-		}
+	ids := make([]int64, len(pipelines))
+	for i, pipeline := range pipelines {
+		ids[i] = pipeline.ID
 	}
-	c.mu.Unlock()
+	state, start, known := c.beginListing(key, ids)
+	learned := map[int64]bool{}
+	defer func() { c.endListing(key, state, start, learned) }()
 
 	kinds := make(map[int64]string, len(pipelines))
 	var ambiguous []int64
@@ -258,9 +398,7 @@ func (c *gitlabPipelineTags) kinds(ctx context.Context, client *forgeapi.Client,
 	var wg sync.WaitGroup
 	for i, id := range ambiguous {
 		wg.Go(func() {
-			slots <- struct{}{}
-			defer func() { <-slots }()
-			tags[i], errs[i] = readGitLabPipelineTag(ctx, client, repo.Project(), id)
+			tags[i], errs[i] = c.readTag(ctx, client, repo.Project(), state, id, slots)
 		})
 	}
 	wg.Wait()
@@ -276,28 +414,17 @@ func (c *gitlabPipelineTags) kinds(ctx context.Context, client *forgeapi.Client,
 		}
 	}
 
-	next := map[int64]bool{}
 	for _, pipeline := range pipelines {
 		tag, ok := known[pipeline.ID]
 		if !ok || kinds[pipeline.ID] != "" {
 			continue
 		}
-		next[pipeline.ID] = tag
+		learned[pipeline.ID] = tag
 		kinds[pipeline.ID] = PipelineRefBranch
 		if tag {
 			kinds[pipeline.ID] = PipelineRefTag
 		}
 	}
-	c.mu.Lock()
-	if len(next) == 0 {
-		delete(c.repos, key)
-	} else {
-		if c.repos == nil {
-			c.repos = map[string]map[int64]bool{}
-		}
-		c.repos[key] = next
-	}
-	c.mu.Unlock()
 	if failure != nil {
 		return nil, failure
 	}
