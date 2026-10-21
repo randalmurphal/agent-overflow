@@ -579,9 +579,10 @@ export function reviewSubjectForPR(input: {
 // the page's list keeps the selected PR's state and the one before it (a
 // step back restores its diff, reading position and live subscription at
 // once); older ones are disposed, so an owner holds at most this many PR
-// subscriptions.
+// subscriptions. Reactive, since the page derives from the current state
+// (its drafts count); each owner's list is replaced wholesale.
 const PINNED_STATES_PER_OWNER = 2;
-const pinnedStatesByOwner = new Map<string, ReviewPaneState[]>();
+const pinnedStatesByOwner = new SvelteMap<string, readonly ReviewPaneState[]>();
 
 /**
  * The state for a pinned subject, created or reused, made the owner's
@@ -590,12 +591,12 @@ const pinnedStatesByOwner = new Map<string, ReviewPaneState[]>();
  */
 export function reviewStateForPR(ownerPaneId: string, subject: ReviewSubject): ReviewPaneState {
   if (!subject.pinned) throw new Error('reviewStateForPR needs a subject from reviewSubjectForPR.');
-  const held = pinnedStatesByOwner.get(ownerPaneId) ?? [];
+  const held = untrack(() => pinnedStatesByOwner.get(ownerPaneId)) ?? [];
   let state = held.find((candidate) => candidate.identity === subject.identity);
   const rest = held.filter((candidate) => candidate !== state);
   state ??= createReviewPaneState(ownerPaneId, subject, false);
   const kept = [state, ...rest];
-  pinnedStatesByOwner.set(ownerPaneId, kept.slice(0, PINNED_STATES_PER_OWNER));
+  if (held[0] !== state) pinnedStatesByOwner.set(ownerPaneId, kept.slice(0, PINNED_STATES_PER_OWNER));
   for (const dropped of kept.slice(PINNED_STATES_PER_OWNER)) disposePinnedState(dropped);
   return state;
 }
@@ -608,7 +609,7 @@ export function currentPinnedReviewState(ownerPaneId: string): ReviewPaneState |
 
 /** Disposes every pinned state the owner holds: its page closed. */
 export function disposePRReviewStates(ownerPaneId: string): void {
-  const held = pinnedStatesByOwner.get(ownerPaneId);
+  const held = untrack(() => pinnedStatesByOwner.get(ownerPaneId));
   if (!held) return;
   pinnedStatesByOwner.delete(ownerPaneId);
   for (const state of held) disposePinnedState(state);
@@ -618,7 +619,7 @@ export function disposePRReviewStates(ownerPaneId: string): void {
 // evicts it, so its entries go with the last state holding that row id.
 function disposePinnedState(state: ReviewPaneState): void {
   state.dispose();
-  for (const states of pinnedStatesByOwner.values()) {
+  for (const states of untrack(() => [...pinnedStatesByOwner.values()])) {
     if (states.some((other) => other.rowId === state.rowId)) return;
   }
   evictDiffSpansForThread(state.rowId);
@@ -2783,7 +2784,7 @@ function userFacingError(err: unknown): string {
 export function __resetReviewPaneStateForTest(): void {
   for (const state of statesBySourcePane.values()) state.dispose();
   statesBySourcePane.clear();
-  for (const owner of pinnedStatesByOwner.keys()) disposePRReviewStates(owner);
+  for (const owner of [...pinnedStatesByOwner.keys()]) disposePRReviewStates(owner);
   heldPRByRow.clear();
   resetPRDiffReviewCommentsForTest();
 }

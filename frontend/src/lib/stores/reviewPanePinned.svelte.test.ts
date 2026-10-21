@@ -4,11 +4,12 @@
 // calls that need a chat refusing.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { tick } from 'svelte';
+import { flushSync, tick } from 'svelte';
 import { resetAppStorageForTest } from './appStorage';
 import {
   __pinnedReviewStatesForTest,
   __resetReviewPaneStateForTest,
+  currentPinnedReviewState,
   disposePRReviewStates,
   reviewStateForPane,
   reviewStateForPR,
@@ -277,6 +278,46 @@ describe('pinned retention per owner pane', () => {
     await settle();
     expect(unsubscribe).toHaveBeenCalledTimes(1);
     expect(prReviewKeys()).toEqual([]);
+  });
+
+  it('wakes a reader of the current state when the owner steps between PRs', async () => {
+    const { drafts: fake } = installPRMocks();
+    fake.held.set(6, [{
+      id: 'kept', threadId: '', scope: 'pr', sourceKey: `pr:${prKey(ref(6))}`, commitSha: 'sha-6', filePath: 'src/app.ts',
+      status: 'draft', newLine: 2, side: 'new', selectedText: 'line 2', body: 'on six', createdAt: 1, updatedAt: 1,
+    } as DiffReviewComment]);
+    let count = -1;
+    let current: ReviewPaneState | null = null;
+    const stop = $effect.root(() => {
+      $effect(() => {
+        current = currentPinnedReviewState(OWNER);
+        count = current?.drafts.length ?? 0;
+      });
+    });
+    try {
+      flushSync();
+      expect(count).toBe(0);
+      const five = pinned(5);
+      await waitLoaded(five);
+      flushSync();
+      expect(current).toBe(five);
+      expect(count).toBe(0);
+      const six = pinned(6);
+      await waitLoaded(six);
+      await vi.waitFor(() => expect(six.drafts).toHaveLength(1));
+      flushSync();
+      expect(current).toBe(six);
+      expect(count).toBe(1);
+      expect(pinned(5)).toBe(five);
+      flushSync();
+      expect(current).toBe(five);
+      expect(count).toBe(0);
+      disposePRReviewStates(OWNER);
+      flushSync();
+      expect(current).toBeNull();
+    } finally {
+      stop();
+    }
   });
 });
 
