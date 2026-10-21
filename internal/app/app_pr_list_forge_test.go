@@ -198,6 +198,53 @@ func TestPRListReadsBothForgesThroughTheirAPIs(t *testing.T) {
 	}
 }
 
+// The comments feed, cut at its page cap by the viewer's newer comments
+// elsewhere, hides the viewer's comment on both merge requests; the
+// complete approvals feed finds the viewer's older approval of each. The
+// viewer may have acted any time up to the window's floor, so neither the
+// commit between the approval and the comment (!1) nor the update the
+// comment made (!2) is a move since the viewer's review.
+func TestPRListGitLabCutFeedHidesNoLaterActivity(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	engine := forgefake.New(forgefake.Options{APIToken: mergeForgeToken})
+	now := time.Now().UTC()
+	ago := func(d time.Duration) string { return now.Add(-d).Format(time.RFC3339) }
+	day := 24 * time.Hour
+	newer := make([]forgefake.Comment, 1000)
+	for i := range newer {
+		newer[i] = forgefake.Comment{Author: "ao-viewer", Body: "elsewhere", CreatedAt: ago(time.Duration(i+1) * time.Minute)}
+	}
+	approved := []forgefake.Review{{Author: "ao-viewer", State: "APPROVED", SubmittedAt: ago(6 * day)}}
+	comment := []forgefake.Comment{{Author: "ao-viewer", Body: "one more thing", CreatedAt: ago(3 * day)}}
+	if _, err := engine.Seed(forgefake.Fixture{Repos: []forgefake.Repo{
+		{Forge: "gitlab", Project: "team/busy", Pulls: []forgefake.Pull{{Number: 1, Title: "Elsewhere", Author: "carol", Comments: newer}}},
+		{Forge: "gitlab", Project: "team/app", Pulls: []forgefake.Pull{
+			{Number: 1, Title: "Pushed before my comment", Author: "carol", Reviewers: []string{"ao-viewer"}, Reviews: approved, Comments: comment,
+				CommittedAt: ago(4 * day), UpdatedAt: ago(3 * day)},
+			{Number: 2, Title: "Touched by my comment", Author: "carol", Reviewers: []string{"ao-viewer"}, Reviews: approved, Comments: comment,
+				CommittedAt: ago(7 * day), UpdatedAt: ago(3 * day)},
+		}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	useForgefake(t, app, engine)
+	gitlab := forgeProjectRepo(t, app, "https://gitlab.com/team/app.git")
+	t.Cleanup(app.prUpdates.wg.Wait)
+	events := capturePRList(t, app)
+	subscribePRList(t, app)
+	project := prListProject(t, awaitPRListRead(t, events), gitlab)
+	if project.Error != "" || project.DetailError != "" || len(project.Rows) != 2 {
+		t.Fatalf("project = %+v", project)
+	}
+	for _, row := range project.Rows {
+		if row.State != PRStateApproved || row.Reason == nil || row.Reason.Kind != PRReasonApproved {
+			t.Errorf("!%d = %s/%+v, want approved by you", row.Ref.Number, row.State, row.Reason)
+		}
+	}
+}
+
 // A checkout whose origin git cannot read, once the cached origin is gone,
 // stays listed with the failure beside the rows read before it, and
 // recovers when the checkout reads again.

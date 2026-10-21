@@ -77,8 +77,9 @@ const gitlabTouchSlack = 10 * time.Second
 //     its update time, past gitlabTouchSlack; GitHub the author's latest
 //     comment or review). GitLab's events are a lower bound: a reviewer
 //     whose review state says they reviewed, with no activity in the
-//     window read, reviewed before the window's floor, so the floor
-//     stands in for their activity.
+//     window read or only activity older than the window's floor, may
+//     have acted any time up to the floor, so the floor stands in for
+//     their activity.
 //   - pipeline_failed and ready, the user's PR: its head pipeline failed;
 //     the forge would merge it (GitLab detailed_merge_status mergeable,
 //     GitHub clean or has_hooks).
@@ -120,8 +121,10 @@ func prAttentionState(row gitops.PRListRow) (string, *PRReason) {
 	case review == "":
 		return prQuietState(row), nil
 	}
+	// The window's floor outranks older activity found: a feed cut above
+	// the viewer's later activity hides it.
 	activity := row.ViewerActivityAt
-	if activity == "" {
+	if activity == "" || rfc3339After(row.ViewerActivityFloor, activity) {
 		activity = row.ViewerActivityFloor
 	}
 	if activity != "" {

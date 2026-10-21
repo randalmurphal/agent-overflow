@@ -91,6 +91,14 @@ func TestPRListAttentionStates(t *testing.T) {
 		{name: "gitlab changes requested before the window, pushed after its floor", row: reviewed(gl, "requested_changes", func(r *gitops.PRListRow) {
 			r.ViewerActivityAt, r.ViewerActivityFloor, r.LastCommitAt = "", review, after
 		}), state: PRStateYourTurn, reason: &PRReason{Kind: PRReasonPushed}},
+		// A feed cut above the viewer's later comment hides it; the older
+		// approval the other feed found yields to the floor.
+		{name: "gitlab activity older than the floor, pushed before it", row: reviewed(gl, "approved", func(r *gitops.PRListRow) {
+			r.ViewerActivityAt, r.ViewerActivityFloor, r.LastCommitAt, r.UpdatedAt = before, after, review, review
+		}), state: PRStateApproved, reason: &PRReason{Kind: PRReasonApproved}},
+		{name: "gitlab activity older than the floor, pushed after it", row: reviewed(gl, "approved", func(r *gitops.PRListRow) {
+			r.ViewerActivityAt, r.ViewerActivityFloor, r.LastCommitAt = before, review, after
+		}), state: PRStateYourTurn, reason: &PRReason{Kind: PRReasonPushed}},
 		{name: "activity in the window outranks the floor", row: reviewed(gl, "approved", func(r *gitops.PRListRow) {
 			r.ViewerActivityAt, r.ViewerActivityFloor, r.LastCommitAt = after, review, after
 		}), state: PRStateApproved, reason: &PRReason{Kind: PRReasonApproved}},

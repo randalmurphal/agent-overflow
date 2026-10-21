@@ -185,7 +185,9 @@ func TestGitLabListReadsTheViewersOwnReview(t *testing.T) {
 // GitLab's events feed selects a page before dropping the events the
 // viewer may not see: a page of a hidden project's comments comes back
 // empty and names the next, and the list read follows it to the
-// viewer's comment on the project it lists.
+// viewer's comment on the project it lists, two comment pages and one
+// approvals page in all. The hidden project's own merge request carries
+// none of the hidden comments.
 func TestGitLabListFollowsTheEventsPastAHiddenPage(t *testing.T) {
 	now := time.Now().UTC()
 	hidden := make([]forgefake.Comment, 100)
@@ -205,6 +207,22 @@ func TestGitLabListFollowsTheEventsPastAHiddenPage(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].ViewerActivityAt != seen {
 		t.Fatalf("rows = %+v, want !1 with the viewer's comment at %s", rows, seen)
+	}
+	var pages []string
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		if inv.Route == "glab api user events" {
+			pages = append(pages, inv.Path)
+		}
+	}
+	if len(pages) != 3 {
+		t.Fatalf("events requests = %q, want the comments feed's two pages and the approvals feed's one", pages)
+	}
+	gone, err := r.core.ListProjectPRs(t.Context(), gitops.RepoReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "gone"})
+	if err != nil {
+		t.Fatalf("ListProjectPRs: %v", err)
+	}
+	if len(gone) != 1 || gone[0].ViewerActivityAt != "" {
+		t.Fatalf("hidden project rows = %+v, want !1 with no activity", gone)
 	}
 	expectHandled(t, r)
 }

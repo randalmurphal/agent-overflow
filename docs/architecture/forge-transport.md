@@ -378,10 +378,11 @@ project), then concurrently:
   held, and a feed ends at the page that names none. An ended feed's floor
   is the day after the after date; a feed cut at the cap's is its oldest
   event read (now when it read none). The window is complete only back to
-  where both feeds are, so its floor is the later of the two; a row with
-  no activity in the
-  window carries it as `ViewerActivityFloor`, which attention reads as
-  the activity's upper bound. They are read once per host per round
+  where both feeds are, so its floor is the later of the two. A row whose
+  activity in the window is missing or older than the floor carries it
+  as `ViewerActivityFloor`, and attention takes the later of the two as
+  the viewer's activity, since a cut feed can hide activity newer than
+  the other feed found. They are read once per host per round
   (`git.WithPRListRound`, one per tick or prefetch): the round's
   concurrent project reads share it and a later round replaces it.
 

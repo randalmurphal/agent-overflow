@@ -253,14 +253,17 @@ requested changes, nothing since), `Approved by you` or `Reviewed by you`
 Your activity is the forge's own record: GitHub `viewerLatestReview`,
 GitLab your notes (conversation, diff and discussion notes) and approvals,
 read as two events feeds GitLab filters to comments and to approvals.
-The feeds are a lower bound: each covers the last 30 days or your newest
-300 such events. A feed that ends within its pages covers the 30 days; one
-cut at 300 covers back to the oldest event it returned. The window's floor
-is the later of the two. A reviewer state of reviewed, approved or changes requested
-with no activity in the window means your activity is older than the
-floor; a head commit after the floor is then a push since your review,
-an update after it (past the slack) a reply, and neither keeps
-`Approved by you` or `Reviewed by you`. The toolbar's three
+The feeds are a lower bound: each reads at most five pages of 100 events
+from the last 30 days. A feed that ends within its pages covers the 30
+days; one cut at the fifth page covers back to the oldest event it
+returned. The window's floor is the later of the two. Your activity is
+the later of the activity found and the floor, since a cut feed can hide
+activity newer than what the other feed found: a reviewer state of
+reviewed, approved or changes requested with no activity in the window,
+or only activity older than the floor, takes the floor as your activity.
+A head commit after it is a push since your review, an update after it
+(past the slack) a reply, and neither keeps `Approved by you` or
+`Reviewed by you`. The toolbar's three
 menu buttons, the filter (`Needs you` with its count, `Mine`,
 `Reviewing`, `All open`), the projects and the sort (`Updated` newest
 first by default, `Created`, `Title`, `Author`, `Attention`; the same

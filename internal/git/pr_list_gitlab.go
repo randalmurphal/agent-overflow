@@ -210,7 +210,8 @@ func (f *gitlabForge) ListProjectPRs(ctx context.Context, repo RepoReference) ([
 	for _, mr := range raw {
 		row := gitlabPRListRow(repo, mr, viewer.Username)
 		row.ViewerActivityAt = activity.at[gitlabMRKey{project: mr.ProjectID, iid: mr.IID}]
-		if row.ViewerActivityAt == "" {
+		// A cut feed can hide later activity than the activity found.
+		if row.ViewerActivityAt == "" || rfc3339After(activity.floor, row.ViewerActivityAt) {
 			row.ViewerActivityFloor = activity.floor
 		}
 		byIID[mr.IID] = len(rows)

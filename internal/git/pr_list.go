@@ -98,9 +98,10 @@ type PRListRow struct {
 	// PR with more than 100 threads); PipelineStatus the head pipeline's
 	// normalized CI status ("" with none). ProjectID is GitLab's numeric
 	// project id, which the viewer's events name. ViewerActivityFloor
-	// (GitLab, RFC 3339) is set when ViewerActivityAt is empty and the
-	// events were read: the login's activity on the PR, if any, is older
-	// than it.
+	// (GitLab, RFC 3339) is the events window's floor, set when the events
+	// were read and ViewerActivityAt is empty or older than it: the
+	// login's latest activity on the PR may be any time up to it, since a
+	// feed cut at its page cap hides what is older than its oldest event.
 	AuthorReplies       int    `json:"-"`
 	ApprovalsGiven      *int   `json:"-"`
 	ApprovalsRequired   *int   `json:"-"`
