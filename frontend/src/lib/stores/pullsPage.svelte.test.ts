@@ -419,28 +419,31 @@ describe('the needs-you badge', () => {
 });
 
 describe('the focus set', () => {
-  it('names every needs-you row first, then the rows on screen, at most the backend cap', async () => {
+  it('names the rows on screen in list order, at most the backend cap, and never an off-screen needs-you row', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
-    const needsYou = Array.from({ length: 50 }, (_, index) => item(index + 1, { group: 'needs_you' }));
-    const waiting = Array.from({ length: 20 }, (_, index) => item(index + 100));
+    const needsYou = Array.from({ length: 60 }, (_, index) => item(index + 1, { group: 'needs_you' }));
+    const waiting = Array.from({ length: 70 }, (_, index) => item(index + 100));
     const mocks = installListMocks(snapshot(1, [project('p1', [...needsYou, ...waiting])]));
     attachPullsPage(PANE, HOME_BACKEND);
     await vi.advanceTimersByTimeAsync(0);
+    // A new handle with nothing on screen focuses nothing.
     const first = mocks.focus.mock.calls.at(-1)!;
     expect(first[0]).toBe('list-1');
-    expect(first[1]).toEqual(needsYou.map((row) => prKey(ref(row.ref.Number))));
+    expect(first[1]).toEqual([]);
 
-    setFocusedRows(PANE, [rowKey(119), rowKey(118), rowKey(3), ...waiting.slice(0, 15).map((row) => rowKey(row.ref.Number))]);
+    // Sixty needs-you rows outside the filter leave the on-screen rows
+    // every slot.
+    setFocusedRows(PANE, [rowKey(119), rowKey(118), ...waiting.slice(0, 10).map((row) => rowKey(row.ref.Number))]);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(mocks.focus.mock.calls.at(-1)![1]).toEqual([...waiting.slice(0, 10), item(118), item(119)].map((row) => prKey(ref(row.ref.Number))));
+
+    setFocusedRows(PANE, waiting.map((row) => rowKey(row.ref.Number)));
     await vi.advanceTimersByTimeAsync(2_000);
     const keys = mocks.focus.mock.calls.at(-1)![1] as string[];
-    expect(keys).toHaveLength(PR_LIST_FOCUS_MAX);
-    expect(keys.slice(0, 50)).toEqual(needsYou.map((row) => prKey(ref(row.ref.Number))));
-    // On-screen rows follow in list order, past the needs-you set they
-    // already include.
-    expect(keys.slice(50)).toEqual(waiting.slice(0, 10).map((row) => prKey(ref(row.ref.Number))));
+    expect(keys).toEqual(waiting.slice(0, PR_LIST_FOCUS_MAX).map((row) => prKey(ref(row.ref.Number))));
 
     const calls = mocks.focus.mock.calls.length;
-    setFocusedRows(PANE, [rowKey(119), rowKey(118), rowKey(3), ...waiting.slice(0, 15).map((row) => rowKey(row.ref.Number))]);
+    setFocusedRows(PANE, waiting.map((row) => rowKey(row.ref.Number)));
     await vi.advanceTimersByTimeAsync(2_000);
     expect(mocks.focus.mock.calls.length).toBe(calls);
   });

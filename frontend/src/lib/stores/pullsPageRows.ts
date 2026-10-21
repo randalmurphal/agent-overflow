@@ -211,19 +211,14 @@ export function projectErrors(snapshot: PRListSnapshot | null, projects: readonl
 
 /**
  * The PR keys (the backend's, `PRReference.Key`) whose detail the page
- * asks for: every needs-you row first, whatever the filters, then the rows
- * on screen, at most PR_LIST_FOCUS_MAX.
+ * asks for: the rows on screen in list order, at most PR_LIST_FOCUS_MAX.
+ * The pump reads the user's own and reviewed rows itself.
  */
 export function focusKeys(rows: readonly PullsListedRow[], onScreen: ReadonlySet<string>): string[] {
   const out: string[] = [];
-  const added = new Set<string>();
-  const add = (row: PullsListedRow): void => {
-    const key = prKey(row.pr);
-    if (added.has(key) || out.length >= PR_LIST_FOCUS_MAX) return;
-    added.add(key);
-    out.push(key);
-  };
-  for (const row of rows) if (row.item.group === 'needs_you') add(row);
-  for (const row of rows) if (onScreen.has(row.key)) add(row);
+  for (const row of rows) {
+    if (out.length >= PR_LIST_FOCUS_MAX) break;
+    if (onScreen.has(row.key)) out.push(prKey(row.pr));
+  }
   return out;
 }

@@ -163,7 +163,7 @@ class PullsPageBackend {
         if (!row || (row.seen !== null && row.seen.openedAt >= seen.openedAt)) this.seenOverrides.delete(key);
       }
     }
-    // The needs-you set may have moved.
+    // Rows on screen may have joined or left the list.
     this.focus.request();
   }
 
@@ -419,7 +419,7 @@ export function detailOpen(paneId: string): boolean {
 }
 
 /** The rows the pane shows on screen, by row key. The focus set is their
- * union over the computer's panes and every needs-you row. */
+ * union over the computer's panes. */
 export function setFocusedRows(paneId: string, keys: Iterable<string>): void {
   untrack(() => {
     const entry = paneEntries.get(paneId);
