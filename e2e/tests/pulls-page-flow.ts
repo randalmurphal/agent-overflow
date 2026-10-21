@@ -494,7 +494,7 @@ async function pullRequestReads(harness: HarnessApp): Promise<{ lists: string[];
   const perPR = new Set<string>();
   const project = (path: string) => decodeURIComponent(path.replace(/^projects\/([^/?]+).*$/, '$1'));
   for (const call of await forgeInvocations(harness)) {
-    if (call.via !== 'http') continue;
+    if (call.via !== 'http' || !call.route) continue;
     if (call.route === 'gh graphql PullsSearch') {
       lists.add(`${call.route} ${String(call.variables?.query ?? '').replace(/^.*repo:(\S+).*$/, '$1')}`);
     } else if (call.route === 'glab api merge request list') {
