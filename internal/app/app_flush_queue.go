@@ -1007,6 +1007,9 @@ func (a *App) RegisterQueueItem(ctx context.Context, threadID string, message st
 	if err := a.requireAutonomyForThread(ctx, threadID, opts.RuntimeMode); err != nil {
 		return RegisteredQueueItem{}, err
 	}
+	if err := refusePRDraftSource(opts); err != nil {
+		return RegisteredQueueItem{}, err
+	}
 	unlockAdmission, err := a.lockSendAdmission(ctx, threadID, opts.SendID)
 	if err != nil {
 		return RegisteredQueueItem{}, err

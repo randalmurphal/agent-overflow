@@ -30,6 +30,8 @@ import { attachPR } from './prReviewStore.svelte';
 import { peekPRCI } from './prReviewCI.svelte';
 import { setPRCILogFollow } from './prReviewCIFollows.svelte';
 import { prKey } from '../utils/prReference';
+import { setPullsReceiver } from './pullsStore.svelte';
+import { HOME_BACKEND } from '../transport/backendKey';
 import { getConnectionId } from '../transport/clientIdentity';
 import { emitWailsEvent, resetWailsMocks, wailsListenerCount } from '../../test/mocks/wailsio-runtime';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
@@ -194,6 +196,41 @@ describe('setupEventListeners', () => {
     cleanup();
     expect(wailsListenerCount('pr:ci_updated')).toBe(0);
     expect(wailsListenerCount('pr:ci_log')).toBe(0);
+    cleanup = setupEventListeners();
+  });
+
+  it('routes the Pull requests channels to the page store with their computer', () => {
+    expect(wailsListenerCount('pulls:updated')).toBe(1);
+    expect(wailsListenerCount('ci:pipeline_updated')).toBe(1);
+    const got: string[] = [];
+    const remove = setPullsReceiver({
+      pulls: (snapshot, backend) => got.push(`pulls ${snapshot.seq} ${backend}`),
+      pipeline: (event, backend) => got.push(`pipeline ${event.key} ${event.seq} ${backend}`),
+      pipelineLog: (event, backend) => got.push(`log ${event.pipelineKey} ${event.jobId} ${backend}`),
+    });
+    try {
+      emitWailsEvent('pulls:updated', { seq: 7, fetchedAt: '', needsYou: 0, projects: [] });
+      emitWailsEvent('pulls:updated', { seq: 8 });
+      emitWailsEvent('ci:pipeline_updated', { key: 'github:o/r:pipeline:41', seq: 9 });
+      emitWailsEvent('ci:pipeline_updated', { seq: 10 });
+      emitWailsEvent('pr:ci_log', {
+        prKey: '', pipelineKey: 'github:o/r:pipeline:41', repoKey: 'github:o/r', jobId: '20', seq: 11, version: 1,
+        totalLines: 1, totalBytes: 2, stableLines: 0, sections: [], available: true, downloading: false, error: '',
+      });
+      expect(got).toEqual([
+        `pulls 7 ${HOME_BACKEND}`,
+        `pipeline github:o/r:pipeline:41 9 ${HOME_BACKEND}`,
+        `log github:o/r:pipeline:41 20 ${HOME_BACKEND}`,
+      ]);
+    } finally {
+      remove();
+    }
+    emitWailsEvent('pulls:updated', { seq: 12, projects: [] });
+    expect(got).toHaveLength(3);
+
+    cleanup();
+    expect(wailsListenerCount('pulls:updated')).toBe(0);
+    expect(wailsListenerCount('ci:pipeline_updated')).toBe(0);
     cleanup = setupEventListeners();
   });
 

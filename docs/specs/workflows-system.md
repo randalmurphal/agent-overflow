@@ -32,8 +32,8 @@ explicit gates that need a human.
   Most work stays in normal threads. Workflows cover **large decomposable
   efforts** (parallel port/refactor campaigns, §3 fan-out + §3 call recursion),
   **scheduled/triggered automations**, and **unattended build-and-validate**.
-  The surface (§10) is **deliberately secondary and quiet**: an overlay, one
-  clear "needs you" signal, never a takeover.
+  The surface (§10) is **deliberately secondary and quiet**: one tool pane,
+  one clear "needs you" signal, never a takeover.
 - **Durability is structural.** Every run, phase attempt, child run, and
   fan-out unit is persisted as it happens; the app can die at any moment and
   the whole tree is still there, parked and resumable (§12).
@@ -1198,21 +1198,19 @@ proceeds only on a clean merge from a green terminal state. **Any conflict or
 dirty base refuses and parks `needs-human(disposition)`**, never forced,
 never silent.
 
-## 10. The surface: the workflows overlay and per-phase threads
+## 10. The surface: the workflows pane and per-phase threads
 
-**One button, one overlay: panes never unmount.** A workflows button in the
-sidebar footer (bottom-left) carrying the single needs-attention badge opens
-the **workflows overlay**: a full-surface layer rendered **over** the pane
-host as a sibling. The pane tree stays mounted and untouched underneath, so
-closing the overlay is instant and rebuilds nothing. (Explicitly not the
-settings pattern, which swaps the surface out and forces pane remounts.)
-There is no workflows pane, no per-project sidebar section, and no workflow
-presence in normal thread lists: **phase, unit, studio, and triage threads
-are excluded from thread lists**, reachable from the overlay (and openable as
-normal thread panes beside it once summoned). Studio and triage-agent threads
-are no longer created (D32); the exclusion keeps existing ones hidden.
+**One button, one pane.** The Workflows button in the sidebar's tools row,
+carrying the single needs-attention badge, opens the **workflows pane**: the
+`workflows` tool pane kind, one per window, placed in the strip like a
+thread pane ([UI-SPEC §2.1](workflows-system-ui/UI-SPEC.md)). There is no
+per-project sidebar section and no workflow presence in normal thread
+lists: **phase, unit, studio, and triage threads are excluded from thread
+lists**, reachable from the workflows pane and opened as normal thread
+panes. Studio and triage-agent threads are no longer created (D32); the
+exclusion keeps existing ones hidden.
 
-**Overlay structure, project-grouped, drill-down:**
+**Pane structure, project-grouped, drill-down:**
 
 - **Home**: per project, its workflow definitions (read-only rows; authoring
   is file work, §8) and its runs: active first (live state, current phase,
@@ -1227,10 +1225,10 @@ are no longer created (D32); the exclusion keeps existing ones hidden.
   links its thread, completed, failed, and superseded attempts included.
   Every one of those opens a thread that already exists; **no action here
   creates one** (D32).
-- Threads always break out of the overlay into normal panes; the overlay is
-  for state and action, not for chatting.
+- Threads always break out of the workflows pane into normal panes; the pane
+  is for state and action, not for chatting.
 
-**The run record is persisted.** The overlay is a read over a **persisted run
+**The run record is persisted.** The workflows pane is a read over a **persisted run
 record**: ordered phases, each phase's envelope + gate decision + narrative
 reference, timings, resource waits, unit and child-run linkage, the **frozen
 workflow snapshot** the run executed under (§8), a **typed reason** on every
@@ -1243,7 +1241,7 @@ each with kind / when / note). It is also the **recovery journal** (§12).
 - A **native OS notification** fires on **`needs-human`** and **`failed`**
   only (never on `done` / `running`, which are the passive badge), carrying
   project + goal + the typed blocking reason, and **deep-links to the parked
-  run's detail** in the overlay. Thread-bound runs (§5) additionally wake
+  run's detail** in the workflows pane. Thread-bound runs (§5) additionally wake
   their thread. The notification still fires; the badge is still
   authoritative.
 - The notification is a **nudge, not the source of truth**: the durable

@@ -28,7 +28,6 @@
   import { openWorkflowThreadById, takeOverWorkflowUnit } from '../../stores/workflowThreads';
   import { getWorkflowReceipt } from '../../stores/workflowRuns.svelte';
   import {
-    closeWorkflowsOverlay,
     getWorkflowArmedAction,
     popWorkflowsOverlay,
     setWorkflowArmedAction,
@@ -156,7 +155,7 @@
       case 'cancel': void act({ kind: 'cancel' }); return;
       // Preview is consent (§4.5): discard never destroys from this row.
       case 'discard': setWorkflowsOverlayDialog('discard'); return;
-      case 'back': if (!popWorkflowsOverlay()) closeWorkflowsOverlay(); return;
+      case 'back': popWorkflowsOverlay(); return;
     }
   }
 
@@ -206,7 +205,7 @@
       <span class="min-w-0 flex-1">✓ {receipt.message}</span>
       <button
         class="rounded-md border border-success/30 px-2 py-1 text-xs"
-        onclick={() => { if (!popWorkflowsOverlay()) closeWorkflowsOverlay(); }}
+        onclick={() => { popWorkflowsOverlay(); }}
         data-testid="workflow-receipt-back"
       >Back</button>
     </div>

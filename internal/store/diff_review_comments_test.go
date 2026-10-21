@@ -29,7 +29,7 @@ func TestDiffReviewCommentsDraftLifecycle(t *testing.T) {
 		t.Fatalf("created = %+v", created)
 	}
 
-	updated, err := s.UpdateDiffReviewComment(thread.ID, created.ID, DiffReviewCommentUpdate{
+	updated, err := s.UpdateDiffReviewComment(ThreadReviewOwner(thread.ID), created.ID, DiffReviewCommentUpdate{
 		Body: "Use the domain term.",
 	}, 200)
 	if err != nil {
@@ -39,7 +39,7 @@ func TestDiffReviewCommentsDraftLifecycle(t *testing.T) {
 		t.Fatalf("updated = %+v", updated)
 	}
 
-	selected, err := s.ListDraftDiffReviewCommentsByID(thread.ID, string(DiffReviewScopeWorkspace), "diff-1", []string{created.ID})
+	selected, err := s.ListDraftDiffReviewCommentsByID(ThreadReviewOwner(thread.ID), string(DiffReviewScopeWorkspace), "diff-1", []string{created.ID})
 	if err != nil {
 		t.Fatalf("ListDraftDiffReviewCommentsByID: %v", err)
 	}
@@ -47,13 +47,13 @@ func TestDiffReviewCommentsDraftLifecycle(t *testing.T) {
 		t.Fatalf("selected = %+v", selected)
 	}
 
-	if err := s.MarkDiffReviewCommentsSent(thread.ID, string(DiffReviewScopeWorkspace), "diff-1", []string{created.ID}, 300, "user:1"); err != nil {
+	if err := s.MarkDiffReviewCommentsSent(ThreadReviewOwner(thread.ID), string(DiffReviewScopeWorkspace), "diff-1", []string{created.ID}, 300, "user:1"); err != nil {
 		t.Fatalf("MarkDiffReviewCommentsSent: %v", err)
 	}
-	if err := s.MarkDiffReviewCommentsSent(thread.ID, string(DiffReviewScopeWorkspace), "diff-1", []string{created.ID}, 300, "user:1"); err != nil {
+	if err := s.MarkDiffReviewCommentsSent(ThreadReviewOwner(thread.ID), string(DiffReviewScopeWorkspace), "diff-1", []string{created.ID}, 300, "user:1"); err != nil {
 		t.Fatalf("MarkDiffReviewCommentsSent idempotent retry: %v", err)
 	}
-	sent, err := s.GetDiffReviewComment(thread.ID, created.ID)
+	sent, err := s.GetDiffReviewComment(ThreadReviewOwner(thread.ID), created.ID)
 	if err != nil {
 		t.Fatalf("GetDiffReviewComment: %v", err)
 	}
@@ -61,10 +61,10 @@ func TestDiffReviewCommentsDraftLifecycle(t *testing.T) {
 		t.Fatalf("sent = %+v", sent)
 	}
 
-	if err := s.DeleteOrResolveDiffReviewComment(thread.ID, created.ID, 400); err != nil {
+	if err := s.DeleteOrResolveDiffReviewComment(ThreadReviewOwner(thread.ID), created.ID, 400); err != nil {
 		t.Fatalf("DeleteOrResolveDiffReviewComment: %v", err)
 	}
-	resolved, err := s.GetDiffReviewComment(thread.ID, created.ID)
+	resolved, err := s.GetDiffReviewComment(ThreadReviewOwner(thread.ID), created.ID)
 	if err != nil {
 		t.Fatalf("GetDiffReviewComment resolved: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestDiffReviewCommentCommitSHARoundTrip(t *testing.T) {
 	if created.CommitSHA != "abc123" {
 		t.Fatalf("CommitSHA = %q, want abc123", created.CommitSHA)
 	}
-	listed, err := s.ListDiffReviewComments(thread.ID, string(DiffReviewScopePR), "pr:github:o/r:1")
+	listed, err := s.ListDiffReviewComments(ThreadReviewOwner(thread.ID), string(DiffReviewScopePR), "pr:github:o/r:1")
 	if err != nil {
 		t.Fatalf("ListDiffReviewComments: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestListDraftDiffReviewCommentsByIDRejectsStaleIDs(t *testing.T) {
 		t.Fatalf("CreateDiffReviewComment: %v", err)
 	}
 
-	if _, err := s.ListDraftDiffReviewCommentsByID(thread.ID, string(DiffReviewScopeWorkspace), "diff-1", []string{created.ID, "missing"}); err == nil {
+	if _, err := s.ListDraftDiffReviewCommentsByID(ThreadReviewOwner(thread.ID), string(DiffReviewScopeWorkspace), "diff-1", []string{created.ID, "missing"}); err == nil {
 		t.Fatal("ListDraftDiffReviewCommentsByID accepted a stale id")
 	}
 }

@@ -21,9 +21,11 @@ import (
 // or the PR pump's lifetime. Cancelling it ends the request. A context
 // marked with forgeapi.WithInteractive is a user's own action.
 //
-// Repository-scoped operations (ListOpenPRs, ListMergedPRHeads, CreatePR)
-// resolve the repository from cwd. PR-scoped operations take the
-// PRReference, which carries the forge host, and no cwd.
+// Checkout-scoped operations (ListOpenPRs, ListMergedPRHeads, CreatePR)
+// resolve the repository from cwd. Repository-scoped operations
+// (ListProjectPRs, the pipeline reads, job logs, attachments, PR states)
+// take a RepoReference and PR-scoped ones a PRReference, both carrying
+// the forge host, and no cwd.
 type Forge interface {
 	// ID returns "github" or "gitlab", the canonical short id for this forge.
 	ID() string
@@ -41,7 +43,10 @@ type Forge interface {
 	// ReadPRStates reads the state and merge time of every PR in prs, all
 	// of repo's repository, in one request per 100 PRs. A PR the forge does
 	// not resolve is absent from the answer. See pr_state.go.
-	ReadPRStates(ctx context.Context, repo PRReference, prs []TrackedPR) (map[int]PRState, error)
+	ReadPRStates(ctx context.Context, repo RepoReference, prs []TrackedPR) (map[int]PRState, error)
+	// ListProjectPRs reads every open PR/MR of repo in one list read (see
+	// pr_list.go).
+	ListProjectPRs(ctx context.Context, repo RepoReference) ([]PRListRow, error)
 	// CreatePR opens a PR/MR for the current branch in cwd. Returns the URL.
 	CreatePR(ctx context.Context, cwd, title, body, base string, draft bool) (string, error)
 	// ReadPR reads the parts of a PR/MR want names, the PR pump's one
@@ -63,19 +68,25 @@ type Forge interface {
 	// threadID is the same id ReadPR reported: a GitHub review thread node
 	// id, a GitLab discussion id.
 	SetThreadResolved(ctx context.Context, ref PRReference, threadID string, resolved bool) error
-	// StreamCIJobLog reads the raw log/trace of one CI job of ref's
-	// repository (see Core.StreamCIJobLog).
-	StreamCIJobLog(ctx context.Context, ref PRReference, req CIJobLogRequest, begin func(CIJobLogStart) (io.Writer, error)) (bool, error)
+	// StreamCIJobLog reads the raw log/trace of one CI job of repo
+	// (see Core.StreamCIJobLog).
+	StreamCIJobLog(ctx context.Context, repo RepoReference, req CIJobLogRequest, begin func(CIJobLogStart) (io.Writer, error)) (bool, error)
+	// ListPipelines lists repo's pipelines (GitLab pipelines, GitHub
+	// workflow runs) with filter already validated; ReadPipeline reads one
+	// by id into stages and jobs, steps on the stepsFor jobs (see
+	// Core.ListPipelines, Core.ReadPipeline).
+	ListPipelines(ctx context.Context, repo RepoReference, filter PipelineListFilter) ([]PipelineSummary, error)
+	ReadPipeline(ctx context.Context, repo RepoReference, id string, prev *CIPipeline, stepsFor []string) (CIPipeline, error)
 	// CILogStreams reports whether StreamCIJobLog serves a running job's log
 	// as it grows (GitLab's trace), so following it at a quick cadence
 	// shows progress. GitHub answers 404 until the job's log blob exists,
 	// in practice once the job completed (ErrCIJobLogNotFound).
 	CILogStreams() bool
 	// FetchAttachment downloads one forge-hosted attachment referenced by
-	// ref's body or review comments, through the user's own forge login.
-	// A body larger than maxBytes is an error, not a truncation. See
-	// forge_attachment.go.
-	FetchAttachment(ctx context.Context, ref PRReference, target forgeattach.Target, maxBytes int64) ([]byte, error)
+	// markdown of repo (a PR body or review comment), through the user's
+	// own forge login. A body larger than maxBytes is an error, not a
+	// truncation. See forge_attachment.go.
+	FetchAttachment(ctx context.Context, repo RepoReference, target forgeattach.Target, maxBytes int64) ([]byte, error)
 	// The merge actions: approvals, merging, auto-merge, branch updates
 	// (forge_merge.go).
 	ForgeMerger
@@ -85,9 +96,12 @@ type Forge interface {
 // forge's activity rows (ReviewEvent); a forge reads them with the
 // threads' request when it can (GitLab's system notes are discussions,
 // GitHub's timeline items ride PRTick), so asking for both costs nothing
-// more than threads alone.
+// more than threads alone. Unresolved, with Detail, has the detail's
+// readiness count the unresolved threads (MergeReadiness.Unresolved):
+// GitHub reads the thread states past the detail's first 100, GitLab the
+// discussions.
 type PRReadParts struct {
-	Detail, Threads, CI, Events bool
+	Detail, Threads, CI, Events, Unresolved bool
 }
 
 func (p PRReadParts) none() bool { return !p.Detail && !p.Threads && !p.CI && !p.Events }
@@ -382,7 +396,7 @@ func (nullForge) ListMergedPRHeads(context.Context, string, int) ([]MergedPRHead
 	return nil, ErrUnsupportedForge
 }
 
-func (nullForge) ReadPRStates(context.Context, PRReference, []TrackedPR) (map[int]PRState, error) {
+func (nullForge) ReadPRStates(context.Context, RepoReference, []TrackedPR) (map[int]PRState, error) {
 	return nil, ErrUnsupportedForge
 }
 
@@ -408,7 +422,7 @@ func (nullForge) SetThreadResolved(context.Context, PRReference, string, bool) e
 
 func (nullForge) CILogStreams() bool { return false }
 
-func (nullForge) StreamCIJobLog(context.Context, PRReference, CIJobLogRequest, func(CIJobLogStart) (io.Writer, error)) (bool, error) {
+func (nullForge) StreamCIJobLog(context.Context, RepoReference, CIJobLogRequest, func(CIJobLogStart) (io.Writer, error)) (bool, error) {
 	return false, ErrUnsupportedForge
 }
 
@@ -556,10 +570,10 @@ func (c *Core) ListPRCIJobs(ctx context.Context, ref PRReference, prev *CIPipeli
 	return read.CI, err
 }
 
-// CILogStreams reports whether ref's forge streams a running job's
+// CILogStreams reports whether repo's forge streams a running job's
 // log (see Forge.CILogStreams).
-func (c *Core) CILogStreams(ref PRReference) bool {
-	return c.ForgeByID(ref.Forge).CILogStreams()
+func (c *Core) CILogStreams(repo RepoReference) bool {
+	return c.ForgeByID(repo.Forge).CILogStreams()
 }
 
 // StreamCIJobLog reads one CI job's raw log as the forge serves it, for
@@ -567,9 +581,9 @@ func (c *Core) CILogStreams(ref PRReference) bool {
 // calls begin, and the body goes to the writer begin returns, of any size.
 // It reports a 304 to the request's ETag as notModified, begin never
 // called; a 404 is ErrCIJobLogNotFound.
-func (c *Core) StreamCIJobLog(ctx context.Context, ref PRReference, req CIJobLogRequest, begin func(CIJobLogStart) (io.Writer, error)) (bool, error) {
-	if err := ref.Validate(); err != nil {
+func (c *Core) StreamCIJobLog(ctx context.Context, repo RepoReference, req CIJobLogRequest, begin func(CIJobLogStart) (io.Writer, error)) (bool, error) {
+	if err := repo.Validate(); err != nil {
 		return false, err
 	}
-	return c.ForgeByID(ref.Forge).StreamCIJobLog(ctx, ref, req, begin)
+	return c.ForgeByID(repo.Forge).StreamCIJobLog(ctx, repo, req, begin)
 }

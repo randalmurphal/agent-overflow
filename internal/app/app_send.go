@@ -215,7 +215,7 @@ func (a *App) resolveUserMessageEnvelope(
 	}
 	revisionDiffCommentIDs := inputs.revisionSourceDiffCommentIDs
 	if revisionSourceDiff != nil && len(revisionDiffCommentIDs) > 0 {
-		nextContent, commentIDs, err := a.appendDiffReviewCommentsToContent(threadID, content, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, revisionDiffCommentIDs, revisionSourceDiff.PR)
+		nextContent, commentIDs, err := a.appendDiffReviewCommentsToContent(diffReviewSourceOwner(revisionSourceDiff), content, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, revisionDiffCommentIDs, revisionSourceDiff.PR)
 		if err != nil {
 			return resolvedUserMessage{}, fmt.Errorf("diff review comments: %w", err)
 		}
@@ -1098,6 +1098,18 @@ func (a *App) nextSequencedUserItemID(threadID string, turnIndex int, scope stri
 	return fmt.Sprintf("user:%d:%s:%d", turnIndex, scope, seq), nil
 }
 
+// refusePRDraftSource refuses a send through the thread bindings that names
+// a PR's drafts: those are git:operate state, sent to a thread only by
+// SendPRDiffReviewComments.
+func refusePRDraftSource(opts SendMessageOptions) error {
+	if opts.RevisionSourceDiffReview != nil && opts.RevisionSourceDiffReview.PRKey != "" {
+		return errors.New("send message: a PR's review drafts are sent with SendPRDiffReviewComments")
+	}
+	return nil
+}
+
+// resolveSourceDiffReview resolves the drafts a send carries: threadID's own,
+// or the drafts of the PR the source's PRKey names, which go to threadID.
 func (a *App) resolveSourceDiffReview(threadID string, source *SourceDiffReview) (*SourceDiffReview, error) {
 	if source == nil || strings.TrimSpace(source.Scope) == "" {
 		return nil, nil
@@ -1106,16 +1118,25 @@ func (a *App) resolveSourceDiffReview(threadID string, source *SourceDiffReview)
 	if err != nil {
 		return nil, err
 	}
+	sourceKey, err := store.NormalizeDiffReviewSourceKey(source.SourceKey)
+	if err != nil {
+		return nil, err
+	}
+	if prKey := strings.TrimSpace(source.PRKey); prKey != "" {
+		if strings.TrimSpace(source.ThreadID) != "" {
+			return nil, fmt.Errorf("diff review source names both a thread and a PR")
+		}
+		if scope != string(store.DiffReviewScopePR) {
+			return nil, fmt.Errorf("a PR's diff review drafts are pr scope, not %s", scope)
+		}
+		return &SourceDiffReview{PRKey: prKey, Scope: scope, SourceKey: sourceKey, PR: source.PR}, nil
+	}
 	sourceThreadID := strings.TrimSpace(source.ThreadID)
 	if sourceThreadID == "" {
 		sourceThreadID = threadID
 	}
 	if sourceThreadID != threadID {
 		return nil, fmt.Errorf("diff review source must be on the current thread")
-	}
-	sourceKey, err := store.NormalizeDiffReviewSourceKey(source.SourceKey)
-	if err != nil {
-		return nil, err
 	}
 	return &SourceDiffReview{ThreadID: sourceThreadID, Scope: scope, SourceKey: sourceKey, PR: source.PR}, nil
 }
@@ -1264,9 +1285,9 @@ func (a *App) applyProposedPlanAcceptance(threadID string, userItem store.Item, 
 	}
 
 	if rd := resolved.revisionSourceDiff; rd != nil && len(resolved.revisionDiffCommentIDs) > 0 {
-		if err := a.store.MarkDiffReviewCommentsSent(threadID, rd.Scope, rd.SourceKey, resolved.revisionDiffCommentIDs, now, sentTurnID); err != nil {
+		if err := a.store.MarkDiffReviewCommentsSent(diffReviewSourceOwner(rd), rd.Scope, rd.SourceKey, resolved.revisionDiffCommentIDs, now, sentTurnID); err != nil {
 			log.Printf("apply plan acceptance: mark diff review comments sent: %v", err)
-		} else {
+		} else if rd.PRKey == "" {
 			a.announceDiffCommentsChanged(threadID, rd.Scope, rd.SourceKey)
 		}
 	}

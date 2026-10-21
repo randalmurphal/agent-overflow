@@ -193,3 +193,23 @@ func TestExtractMRCreateURL(t *testing.T) {
 		}
 	}
 }
+
+// The head pipeline's check bucket reads GitLab's own statuses: a failed
+// pipeline is a failure, not a pending check.
+func TestGitLabCheckSummaryBucketsThePipelineStatus(t *testing.T) {
+	t.Parallel()
+	for status, want := range map[string][5]int{
+		// success, failure, canceled, skipped, pending
+		"success":  {1, 0, 0, 0, 0},
+		"failed":   {0, 1, 0, 0, 0},
+		"canceled": {0, 0, 1, 0, 0},
+		"skipped":  {0, 0, 0, 1, 0},
+		"running":  {0, 0, 0, 0, 1},
+		"manual":   {0, 0, 0, 0, 1},
+	} {
+		got := gitlabCheckSummary(&gitlabPipelineRaw{Status: status})
+		if buckets := [5]int{got.Success, got.Failure, got.Canceled, got.Skipped, got.Pending}; got.Total != 1 || buckets != want {
+			t.Errorf("%s: summary = %+v, want buckets %v", status, got, want)
+		}
+	}
+}

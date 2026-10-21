@@ -20,7 +20,7 @@ import {
 } from '../../../test/fixtures/runMap';
 import WorkflowRunMap from './WorkflowRunMap.svelte';
 import WorkflowRunMapWave from './WorkflowRunMapWave.svelte';
-import { WORKFLOWS_OVERLAY_SCROLLER_KEY } from './overlayScroller';
+import { WORKFLOWS_SCROLLER_KEY } from './workflowsScroller';
 import { buildRunMap, RUN_MAP_INLINE_DONE_MAX } from '../../utils/workflowRunMap';
 // Read as text, not imported: the CSS pipeline resolves a `.css` import to a
 // (deliberately empty) style module under vitest, and an empty string would
@@ -113,7 +113,7 @@ function fanView(): WorkflowRunMapView {
 }
 
 /**
- * The overlay owns the scroller and hands it down (§9.9), so a map mounted on
+ * The pane owns the scroller and hands it down (§9.9), so a map mounted on
  * its own has to provide one — deliberately: the map throws without a provider
  * rather than walking the DOM for something that happens to scroll. The
  * container the map renders into plays the part, so the follow controller sees
@@ -125,7 +125,7 @@ function fanView(): WorkflowRunMapView {
  * would in a browser. It also states a document TALLER than that viewport: the
  * disengaged chip is an offer to travel (§9.10), and a surface with nothing to
  * scroll has no offer to make, so a stand-in that could not scroll would
- * describe an overlay body that does not exist and hide the chip in every case
+ * describe a pane body that does not exist and hide the chip in every case
  * below. Geometry decisions are proved against a stated layout in
  * `runMapFollow.svelte.test.ts`; what these tests prove is the wiring.
  */
@@ -140,13 +140,13 @@ function asScroller(el: HTMLElement): HTMLElement {
 }
 
 function renderMap(itemId: string) {
-  // The getter is what the overlay hands down, so it can answer with an
+  // The getter is what the pane hands down, so it can answer with an
   // element that does not exist yet — which is exactly the case here.
   const scroller: { el: HTMLElement | null } = { el: null };
   const rendered = render(WorkflowRunMap, {
     props: { itemId },
     context: new Map<symbol, () => HTMLElement | null>([
-      [WORKFLOWS_OVERLAY_SCROLLER_KEY, () => scroller.el],
+      [WORKFLOWS_SCROLLER_KEY, () => scroller.el],
     ]),
   });
   scroller.el = asScroller(rendered.container as HTMLElement);
@@ -173,7 +173,7 @@ function mountWave(
   if (!wave) throw new Error(`no wave ${waveItemId}`);
   // The scroller context is required here too: a wave's fold asks whether its
   // region is on screen before it animates (§9.8), which is the same "the
-  // overlay provides, the map requires" contract the map itself holds to.
+  // pane provides, the map requires" contract the map itself holds to.
   const scroller: { el: HTMLElement | null } = { el: null };
   // No `open` prop: a wave is open exactly when the projection built its
   // segments, which naming the wave in `expandedWaveIds` above is what does.
@@ -187,7 +187,7 @@ function mountWave(
       onToggleLane: () => {},
     },
     context: new Map<symbol, () => HTMLElement | null>([
-      [WORKFLOWS_OVERLAY_SCROLLER_KEY, () => scroller.el],
+      [WORKFLOWS_SCROLLER_KEY, () => scroller.el],
     ]),
   });
   scroller.el = asScroller(rendered.container as HTMLElement);
@@ -323,7 +323,7 @@ describe('WorkflowRunMap — the surface', () => {
     expect(lap.textContent).toContain('$2.50 of $10.00');
   });
 
-  it('expands a folded wave through the overlay store, and keeps it across a remount', async () => {
+  it('expands a folded wave through the workflows store, and keeps it across a remount', async () => {
     const view = mountMap(campaignView());
     await waitFor(() => expect(view.getAllByTestId('workflow-map-summary')).toHaveLength(3));
     // Closed means the fold is closed AND its body is empty: an open flag that
@@ -439,7 +439,7 @@ describe('WorkflowRunMap — the surface', () => {
   // §9.9: the frame that owns the scroller hands it down. Mounted anywhere
   // that does not, the map has nothing to place, jump, follow or compensate
   // against — and it says so instead of silently doing none of the four.
-  it('refuses to mount without the overlay scroller its writes need', () => {
+  it('refuses to mount without the workflows scroller its writes need', () => {
     setBindingMock('WorkflowGetRunMap', async () => campaignView());
     expect(() => render(WorkflowRunMap, { itemId: 'wave-1' })).toThrow(/scroller context is missing/);
   });

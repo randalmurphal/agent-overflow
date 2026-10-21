@@ -22,7 +22,7 @@
   import RenderBoundary from '../shared/RenderBoundary.svelte';
   import UsageFooter from './UsageFooter.svelte';
   import SystemStatsFooter from './SystemStatsFooter.svelte';
-  import WorkflowsFooter from './WorkflowsFooter.svelte';
+  import ToolsRow from './ToolsRow.svelte';
   import SettingsFooter from './SettingsFooter.svelte';
   import SidebarResizer from './SidebarResizer.svelte';
 
@@ -62,7 +62,7 @@
 <!--
   Collapsed renders a rail, not nothing. It is the one piece of chrome
   guaranteed to exist in every app state — no thread open, settings
-  surface up, workflows overlay covering the pane strip — so the way
+  surface up, no pane open at all — so the way
   back is never conditional on what happens to be mounted next to it.
   A "show sidebar" button in the chat header would have been the closer
   parallel to how companion panes reopen, but ChatHeader renders only
@@ -103,7 +103,7 @@
     </RenderBoundary>
     <UsageFooter />
     <SystemStatsFooter />
-    <WorkflowsFooter />
+    <ToolsRow />
     <SettingsFooter {onOpenSettings} />
     <!--
       The divider is mounted only while expanded. A grabbable edge on a

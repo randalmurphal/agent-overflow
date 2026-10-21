@@ -96,7 +96,7 @@ func (f *gitlabForge) Merge(ctx context.Context, ref PRReference, req MergeReque
 	if err != nil {
 		return MergeOutcome{}, err
 	}
-	settings, err := f.projectSettings(ctx, client, ref)
+	settings, err := f.projectSettings(ctx, client, ref.Repository())
 	if err != nil {
 		return MergeOutcome{}, err
 	}

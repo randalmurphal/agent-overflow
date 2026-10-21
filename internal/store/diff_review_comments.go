@@ -27,9 +27,13 @@ const (
 	DiffReviewScopeEdits     DiffReviewScope = "edits"
 )
 
+// DiffReviewComment is one review comment on a diff. It belongs to a
+// thread (ThreadID) or, for a PR the Pull requests page reviews with no
+// thread, to that PR (PRKey, git.PRReference.Key); exactly one is set.
 type DiffReviewComment struct {
 	ID           string `json:"id"`
 	ThreadID     string `json:"threadId"`
+	PRKey        string `json:"prKey,omitempty"`
 	Scope        string `json:"scope"`
 	SourceKey    string `json:"sourceKey"`
 	CommitSHA    string `json:"commitSha,omitempty"`
@@ -62,8 +66,12 @@ type DiffReviewCommentUpdate struct {
 	Body string `json:"body"`
 }
 
+// DiffReviewSourceRef names the drafts a sent message carries: a scope and
+// source key of the thread's own drafts (ThreadID), or of the drafts a PR
+// owns (PRKey), which a send appends to another thread.
 type DiffReviewSourceRef struct {
 	ThreadID  string               `json:"threadId,omitempty"`
+	PRKey     string               `json:"prKey,omitempty"`
 	Scope     string               `json:"scope"`
 	SourceKey string               `json:"sourceKey"`
 	PR        *DiffReviewPRContext `json:"pr,omitempty"`
@@ -78,6 +86,50 @@ type DiffReviewPRContext struct {
 type DiffReviewPRContextEntry struct {
 	CommentID   string `json:"commentId"`
 	HunkExcerpt string `json:"hunkExcerpt"`
+}
+
+// DiffReviewOwner is who diff review comments belong to: a thread, or a PR
+// reviewed with no thread (its git.PRReference.Key). Exactly one is set;
+// every accessor reads and writes only the rows of the owner it names, so
+// a thread's paths never see a PR's drafts and the reverse.
+type DiffReviewOwner struct {
+	ThreadID string
+	PRKey    string
+}
+
+// ThreadReviewOwner is the owner of a thread's own comments.
+func ThreadReviewOwner(threadID string) DiffReviewOwner {
+	return DiffReviewOwner{ThreadID: threadID}
+}
+
+// PRReviewOwner is the owner of the drafts on a PR with no thread.
+func PRReviewOwner(prKey string) DiffReviewOwner {
+	return DiffReviewOwner{PRKey: prKey}
+}
+
+func (o DiffReviewOwner) validate() error {
+	switch {
+	case (o.ThreadID == "") == (o.PRKey == ""):
+		return fmt.Errorf("store: a diff review comment belongs to exactly one thread or PR")
+	case o.PRKey != "" && (len(o.PRKey) > MaxDiffReviewSourceKeyBytes || hasControlCharacter(o.PRKey)):
+		return fmt.Errorf("store: diff review PR key is invalid")
+	}
+	return nil
+}
+
+// column is the owner's column and the value it is matched with.
+func (o DiffReviewOwner) column() (string, string) {
+	if o.PRKey != "" {
+		return "pr_key", o.PRKey
+	}
+	return "thread_id", o.ThreadID
+}
+
+func (o DiffReviewOwner) String() string {
+	if o.PRKey != "" {
+		return "PR " + o.PRKey
+	}
+	return "thread " + o.ThreadID
 }
 
 func NormalizeDiffReviewScope(scope string) (string, error) {
@@ -190,13 +242,22 @@ func hasControlCharacter(value string) bool {
 	})
 }
 
+// CreateDiffReviewComment writes a draft owned by comment.ThreadID or
+// comment.PRKey, exactly one of them. A PR's drafts are PR scope.
 func (s *Store) CreateDiffReviewComment(comment DiffReviewComment) (DiffReviewComment, error) {
-	if comment.ID == "" || comment.ThreadID == "" {
-		return DiffReviewComment{}, fmt.Errorf("store: diff review comment id and thread id are required")
+	owner := DiffReviewOwner{ThreadID: comment.ThreadID, PRKey: comment.PRKey}
+	if comment.ID == "" {
+		return DiffReviewComment{}, fmt.Errorf("store: diff review comment id is required")
+	}
+	if err := owner.validate(); err != nil {
+		return DiffReviewComment{}, err
 	}
 	scope, err := NormalizeDiffReviewScope(comment.Scope)
 	if err != nil {
 		return DiffReviewComment{}, err
+	}
+	if owner.PRKey != "" && scope != string(DiffReviewScopePR) {
+		return DiffReviewComment{}, fmt.Errorf("store: a PR's diff review comments are pr scope, not %s", scope)
 	}
 	sourceKey, err := NormalizeDiffReviewSourceKey(comment.SourceKey)
 	if err != nil {
@@ -234,62 +295,81 @@ func (s *Store) CreateDiffReviewComment(comment DiffReviewComment) (DiffReviewCo
 	}
 	_, err = s.db.Exec(
 		`INSERT INTO diff_review_comments (
-			id, thread_id, scope, source_key, commit_sha, file_path, status, old_line, new_line, side,
+			id, thread_id, pr_key, scope, source_key, commit_sha, file_path, status, old_line, new_line, side,
 			selected_text, body, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?)`,
-		comment.ID, comment.ThreadID, comment.Scope, comment.SourceKey, comment.CommitSHA, comment.FilePath, comment.OldLine, comment.NewLine,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?)`,
+		comment.ID, nullableText(owner.ThreadID), nullableText(owner.PRKey), comment.Scope, comment.SourceKey, comment.CommitSHA, comment.FilePath, comment.OldLine, comment.NewLine,
 		comment.Side, comment.SelectedText, comment.Body, comment.CreatedAt, comment.UpdatedAt,
 	)
 	if err != nil {
 		return DiffReviewComment{}, fmt.Errorf("store: create diff review comment %s: %w", comment.ID, err)
 	}
-	return s.GetDiffReviewComment(comment.ThreadID, comment.ID)
+	return s.GetDiffReviewComment(owner, comment.ID)
 }
 
-func (s *Store) UpdateDiffReviewComment(threadID, commentID string, update DiffReviewCommentUpdate, now int64) (DiffReviewComment, error) {
+// nullableText is NULL for an empty string.
+func nullableText(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
+func (s *Store) UpdateDiffReviewComment(owner DiffReviewOwner, commentID string, update DiffReviewCommentUpdate, now int64) (DiffReviewComment, error) {
+	if err := owner.validate(); err != nil {
+		return DiffReviewComment{}, err
+	}
 	body, err := normalizeDiffReviewBody(update.Body)
 	if err != nil {
 		return DiffReviewComment{}, err
 	}
+	column, value := owner.column()
 	res, err := s.db.Exec(
 		`UPDATE diff_review_comments
 		    SET body = ?, status = 'draft', sent_at = 0, sent_turn_id = '', updated_at = ?
-		  WHERE thread_id = ? AND id = ? AND status <> 'resolved'`,
-		body, now, threadID, commentID,
+		  WHERE `+column+` = ? AND id = ? AND status <> 'resolved'`,
+		body, now, value, commentID,
 	)
 	if err != nil {
-		return DiffReviewComment{}, fmt.Errorf("store: update diff review comment %s/%s: %w", threadID, commentID, err)
+		return DiffReviewComment{}, fmt.Errorf("store: update diff review comment %s of %s: %w", commentID, owner, err)
 	}
 	if n, err := res.RowsAffected(); err == nil && n == 0 {
 		return DiffReviewComment{}, fmt.Errorf("store: diff review comment %s not found or resolved", commentID)
 	}
-	return s.GetDiffReviewComment(threadID, commentID)
+	return s.GetDiffReviewComment(owner, commentID)
 }
 
-func (s *Store) DeleteOrResolveDiffReviewComment(threadID, commentID string, now int64) error {
-	comment, err := s.GetDiffReviewComment(threadID, commentID)
+func (s *Store) DeleteOrResolveDiffReviewComment(owner DiffReviewOwner, commentID string, now int64) error {
+	comment, err := s.GetDiffReviewComment(owner, commentID)
 	if err != nil {
 		return err
 	}
+	column, value := owner.column()
 	if comment.Status == "draft" {
-		if _, err := s.db.Exec(`DELETE FROM diff_review_comments WHERE thread_id = ? AND id = ?`, threadID, commentID); err != nil {
-			return fmt.Errorf("store: delete draft diff review comment %s/%s: %w", threadID, commentID, err)
+		if _, err := s.db.Exec(`DELETE FROM diff_review_comments WHERE `+column+` = ? AND id = ?`, value, commentID); err != nil {
+			return fmt.Errorf("store: delete draft diff review comment %s of %s: %w", commentID, owner, err)
 		}
 		return nil
 	}
 	_, err = s.db.Exec(
 		`UPDATE diff_review_comments
 		    SET status = 'resolved', updated_at = ?
-		  WHERE thread_id = ? AND id = ?`,
-		now, threadID, commentID,
+		  WHERE `+column+` = ? AND id = ?`,
+		now, value, commentID,
 	)
 	if err != nil {
-		return fmt.Errorf("store: resolve diff review comment %s/%s: %w", threadID, commentID, err)
+		return fmt.Errorf("store: resolve diff review comment %s of %s: %w", commentID, owner, err)
 	}
 	return nil
 }
 
-func (s *Store) MarkDiffReviewCommentsSent(threadID, scope, sourceKey string, commentIDs []string, sentAt int64, sentTurnID string) error {
+// MarkDiffReviewCommentsSent marks the owner's drafts commentIDs sent in
+// the turn sentTurnID: the owner's own thread's turn, or for a PR's drafts
+// the turn of the thread they were sent to.
+func (s *Store) MarkDiffReviewCommentsSent(owner DiffReviewOwner, scope, sourceKey string, commentIDs []string, sentAt int64, sentTurnID string) error {
+	if err := owner.validate(); err != nil {
+		return err
+	}
 	scope, err := NormalizeDiffReviewScope(scope)
 	if err != nil {
 		return err
@@ -305,48 +385,50 @@ func (s *Store) MarkDiffReviewCommentsSent(threadID, scope, sourceKey string, co
 	if len(ids) > MaxDiffReviewCommentIDs {
 		return fmt.Errorf("store: too many diff review comments selected")
 	}
+	column, value := owner.column()
 	query := `UPDATE diff_review_comments
 	             SET status = 'sent', sent_at = ?, sent_turn_id = ?, updated_at = ?
-	           WHERE thread_id = ? AND scope = ? AND source_key = ? AND status = 'draft' AND id IN (` + placeholders(len(ids)) + `)`
+	           WHERE ` + column + ` = ? AND scope = ? AND source_key = ? AND status = 'draft' AND id IN (` + placeholders(len(ids)) + `)`
 	args := make([]any, 0, 6+len(ids))
-	args = append(args, sentAt, sentTurnID, sentAt, threadID, scope, sourceKey)
+	args = append(args, sentAt, sentTurnID, sentAt, value, scope, sourceKey)
 	for _, id := range ids {
 		args = append(args, id)
 	}
 	res, err := s.db.Exec(query, args...)
 	if err != nil {
-		return fmt.Errorf("store: mark diff review comments sent for %s/%s: %w", threadID, scope, err)
+		return fmt.Errorf("store: mark diff review comments sent for %s/%s: %w", owner, scope, err)
 	}
 	if n, err := res.RowsAffected(); err == nil && int(n) != len(ids) {
-		ok, checkErr := s.diffReviewCommentsAlreadySent(threadID, scope, sourceKey, ids, sentTurnID)
+		ok, checkErr := s.diffReviewCommentsAlreadySent(owner, scope, sourceKey, ids, sentTurnID)
 		if checkErr != nil {
 			return checkErr
 		}
 		if ok {
 			return nil
 		}
-		return fmt.Errorf("store: marked %d diff review comments sent for %s/%s, want %d draft comments", n, threadID, scope, len(ids))
+		return fmt.Errorf("store: marked %d diff review comments sent for %s/%s, want %d draft comments", n, owner, scope, len(ids))
 	}
 	return nil
 }
 
-func (s *Store) diffReviewCommentsAlreadySent(threadID, scope, sourceKey string, ids []string, sentTurnID string) (bool, error) {
+func (s *Store) diffReviewCommentsAlreadySent(owner DiffReviewOwner, scope, sourceKey string, ids []string, sentTurnID string) (bool, error) {
+	column, value := owner.column()
 	query := `SELECT id
 	            FROM diff_review_comments
-	           WHERE thread_id = ?
+	           WHERE ` + column + ` = ?
 	             AND scope = ?
 	             AND source_key = ?
 	             AND status = 'sent'
 	             AND sent_turn_id = ?
 	             AND id IN (` + placeholders(len(ids)) + `)`
 	args := make([]any, 0, 4+len(ids))
-	args = append(args, threadID, scope, sourceKey, sentTurnID)
+	args = append(args, value, scope, sourceKey, sentTurnID)
 	for _, id := range ids {
 		args = append(args, id)
 	}
 	rows, err := s.reader().Query(query, args...)
 	if err != nil {
-		return false, fmt.Errorf("store: check sent diff review comments for %s/%s: %w", threadID, scope, err)
+		return false, fmt.Errorf("store: check sent diff review comments for %s/%s: %w", owner, scope, err)
 	}
 	defer rows.Close()
 	found := make(map[string]bool, len(ids))
@@ -363,25 +445,36 @@ func (s *Store) diffReviewCommentsAlreadySent(threadID, scope, sourceKey string,
 	return len(found) == len(ids), nil
 }
 
-func (s *Store) GetDiffReviewComment(threadID, commentID string) (DiffReviewComment, error) {
+// diffReviewCommentColumns is a comment row as scanOwnedDiffReviewComment
+// reads it.
+const diffReviewCommentColumns = `id, thread_id, pr_key, scope, source_key, commit_sha, file_path, status, old_line, new_line, side,
+		        selected_text, body, sent_at, sent_turn_id, created_at, updated_at`
+
+func (s *Store) GetDiffReviewComment(owner DiffReviewOwner, commentID string) (DiffReviewComment, error) {
+	if err := owner.validate(); err != nil {
+		return DiffReviewComment{}, err
+	}
+	column, value := owner.column()
 	row := s.reader().QueryRow(
-		`SELECT id, thread_id, scope, source_key, commit_sha, file_path, status, old_line, new_line, side,
-		        selected_text, body, sent_at, sent_turn_id, created_at, updated_at
+		`SELECT `+diffReviewCommentColumns+`
 		   FROM diff_review_comments
-		  WHERE thread_id = ? AND id = ?`,
-		threadID, commentID,
+		  WHERE `+column+` = ? AND id = ?`,
+		value, commentID,
 	)
-	comment, err := scanDiffReviewComment(row)
+	comment, err := scanOwnedDiffReviewComment(row)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return DiffReviewComment{}, fmt.Errorf("store: diff review comment %s not found on thread %s", commentID, threadID)
+			return DiffReviewComment{}, fmt.Errorf("store: diff review comment %s not found on %s", commentID, owner)
 		}
-		return DiffReviewComment{}, fmt.Errorf("store: get diff review comment %s/%s: %w", threadID, commentID, err)
+		return DiffReviewComment{}, fmt.Errorf("store: get diff review comment %s of %s: %w", commentID, owner, err)
 	}
 	return comment, nil
 }
 
-func (s *Store) ListDiffReviewComments(threadID, scope, sourceKey string) ([]DiffReviewComment, error) {
+func (s *Store) ListDiffReviewComments(owner DiffReviewOwner, scope, sourceKey string) ([]DiffReviewComment, error) {
+	if err := owner.validate(); err != nil {
+		return nil, err
+	}
 	scope, err := NormalizeDiffReviewScope(scope)
 	if err != nil {
 		return nil, err
@@ -390,34 +483,37 @@ func (s *Store) ListDiffReviewComments(threadID, scope, sourceKey string) ([]Dif
 	if err != nil {
 		return nil, err
 	}
+	column, value := owner.column()
 	rows, err := s.reader().Query(
-		`SELECT id, thread_id, scope, source_key, commit_sha, file_path, status, old_line, new_line, side,
-		        selected_text, body, sent_at, sent_turn_id, created_at, updated_at
+		`SELECT `+diffReviewCommentColumns+`
 		   FROM diff_review_comments
-		  WHERE thread_id = ? AND scope = ? AND source_key = ? AND status <> 'resolved'
+		  WHERE `+column+` = ? AND scope = ? AND source_key = ? AND status <> 'resolved'
 		  ORDER BY file_path ASC, old_line ASC, new_line ASC, created_at ASC`,
-		threadID, scope, sourceKey,
+		value, scope, sourceKey,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("store: list diff review comments %s/%s: %w", threadID, scope, err)
+		return nil, fmt.Errorf("store: list diff review comments %s/%s: %w", owner, scope, err)
 	}
 	defer rows.Close()
 
 	out := []DiffReviewComment{}
 	for rows.Next() {
-		comment, err := scanDiffReviewComment(rows)
+		comment, err := scanOwnedDiffReviewComment(rows)
 		if err != nil {
 			return nil, fmt.Errorf("store: scan diff review comment: %w", err)
 		}
 		out = append(out, comment)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate diff review comments %s/%s: %w", threadID, scope, err)
+		return nil, fmt.Errorf("store: iterate diff review comments %s/%s: %w", owner, scope, err)
 	}
 	return out, nil
 }
 
-func (s *Store) ListDraftDiffReviewCommentsByID(threadID, scope, sourceKey string, ids []string) ([]DiffReviewComment, error) {
+func (s *Store) ListDraftDiffReviewCommentsByID(owner DiffReviewOwner, scope, sourceKey string, ids []string) ([]DiffReviewComment, error) {
+	if err := owner.validate(); err != nil {
+		return nil, err
+	}
 	scope, err := NormalizeDiffReviewScope(scope)
 	if err != nil {
 		return nil, err
@@ -433,30 +529,30 @@ func (s *Store) ListDraftDiffReviewCommentsByID(threadID, scope, sourceKey strin
 	if len(wanted) > MaxDiffReviewCommentIDs {
 		return nil, fmt.Errorf("store: too many diff review comments selected")
 	}
-	query := `SELECT id, thread_id, scope, source_key, commit_sha, file_path, status, old_line, new_line, side,
-	                 selected_text, body, sent_at, sent_turn_id, created_at, updated_at
+	column, value := owner.column()
+	query := `SELECT ` + diffReviewCommentColumns + `
 	            FROM diff_review_comments
-	           WHERE thread_id = ?
+	           WHERE ` + column + ` = ?
 	             AND scope = ?
 	             AND source_key = ?
 	             AND status = 'draft'
 	             AND id IN (` + placeholders(len(wanted)) + `)
 	           ORDER BY file_path ASC, old_line ASC, new_line ASC, created_at ASC`
 	args := make([]any, 0, 3+len(wanted))
-	args = append(args, threadID, scope, sourceKey)
+	args = append(args, value, scope, sourceKey)
 	for _, id := range wanted {
 		args = append(args, id)
 	}
 	rows, err := s.reader().Query(query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("store: list selected draft diff review comments %s/%s: %w", threadID, scope, err)
+		return nil, fmt.Errorf("store: list selected draft diff review comments %s/%s: %w", owner, scope, err)
 	}
 	defer rows.Close()
 
 	out := make([]DiffReviewComment, 0, len(wanted))
 	found := make(map[string]bool, len(wanted))
 	for rows.Next() {
-		comment, err := scanDiffReviewComment(rows)
+		comment, err := scanOwnedDiffReviewComment(rows)
 		if err != nil {
 			return nil, fmt.Errorf("store: scan selected draft diff review comment: %w", err)
 		}
@@ -464,7 +560,7 @@ func (s *Store) ListDraftDiffReviewCommentsByID(threadID, scope, sourceKey strin
 		found[comment.ID] = true
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate selected draft diff review comments %s/%s: %w", threadID, scope, err)
+		return nil, fmt.Errorf("store: iterate selected draft diff review comments %s/%s: %w", owner, scope, err)
 	}
 	if len(found) != len(wanted) {
 		return nil, fmt.Errorf("store: selected diff review comments include stale or non-draft ids")
@@ -472,6 +568,24 @@ func (s *Store) ListDraftDiffReviewCommentsByID(threadID, scope, sourceKey strin
 	return out, nil
 }
 
+// scanOwnedDiffReviewComment reads a diffReviewCommentColumns row, whose
+// owner is a thread or a PR.
+func scanOwnedDiffReviewComment(scanner interface{ Scan(...any) error }) (DiffReviewComment, error) {
+	var comment DiffReviewComment
+	var threadID, prKey sql.NullString
+	if err := scanner.Scan(
+		&comment.ID, &threadID, &prKey, &comment.Scope, &comment.SourceKey, &comment.CommitSHA, &comment.FilePath, &comment.Status,
+		&comment.OldLine, &comment.NewLine, &comment.Side, &comment.SelectedText, &comment.Body,
+		&comment.SentAt, &comment.SentTurnID, &comment.CreatedAt, &comment.UpdatedAt,
+	); err != nil {
+		return DiffReviewComment{}, err
+	}
+	comment.ThreadID, comment.PRKey = threadID.String, prKey.String
+	return comment, nil
+}
+
+// scanDiffReviewComment reads a thread-owned row without its pr_key, as
+// a transfer exports it (transferDiffCommentColumns).
 func scanDiffReviewComment(scanner interface{ Scan(...any) error }) (DiffReviewComment, error) {
 	var comment DiffReviewComment
 	if err := scanner.Scan(

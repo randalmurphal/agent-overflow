@@ -58,6 +58,8 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.PRUpdated,
 		eventchan.PRCIUpdated,
 		eventchan.PRCILog,
+		eventchan.PullsUpdated,
+		eventchan.PipelineUpdated,
 		eventchan.ProjectUpdated,
 		eventchan.ProviderAccount,
 		eventchan.ProviderAccountUsageError,

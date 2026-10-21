@@ -562,9 +562,15 @@ export class ChatBarFavorite {
     }
 }
 
+/**
+ * DiffReviewComment is one review comment on a diff. It belongs to a
+ * thread (ThreadID) or, for a PR the Pull requests page reviews with no
+ * thread, to that PR (PRKey, git.PRReference.Key); exactly one is set.
+ */
 export class DiffReviewComment {
     "id": string;
     "threadId": string;
+    "prKey"?: string;
     "scope": string;
     "sourceKey": string;
     "commitSha"?: string;
@@ -751,8 +757,14 @@ export class DiffReviewPRContextEntry {
     }
 }
 
+/**
+ * DiffReviewSourceRef names the drafts a sent message carries: a scope and
+ * source key of the thread's own drafts (ThreadID), or of the drafts a PR
+ * owns (PRKey), which a send appends to another thread.
+ */
 export class DiffReviewSourceRef {
     "threadId"?: string;
+    "prKey"?: string;
     "scope": string;
     "sourceKey": string;
     "pr"?: DiffReviewPRContext | null;
@@ -773,10 +785,10 @@ export class DiffReviewSourceRef {
      * Creates a new DiffReviewSourceRef instance from a string or object.
      */
     static createFrom($$source: any = {}): DiffReviewSourceRef {
-        const $$createField3_0 = $$createType11;
+        const $$createField4_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pr" in $$parsedSource) {
-            $$parsedSource["pr"] = $$createField3_0($$parsedSource["pr"]);
+            $$parsedSource["pr"] = $$createField4_0($$parsedSource["pr"]);
         }
         return new DiffReviewSourceRef($$parsedSource as Partial<DiffReviewSourceRef>);
     }

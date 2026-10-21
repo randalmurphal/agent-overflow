@@ -50,6 +50,12 @@ through `assignThread`, which refreshes transport watches and saves the pane
 layout before any load the change starts. Use `revealPane` for actions that
 expose a pane so compact layout moves to the thread screen.
 
+Tool panes are layout items only (`toolPanes.svelte.ts`), one per kind. A
+thread open that names no pane resolves through
+`panes.svelte#focusedOpenTargetPane`, which gives a focused tool pane's slot
+to the thread; do not pass `getFocusedPaneOrNull() ?? ensureMainPane()` as a
+target, which bypasses it.
+
 ## Events and convergence
 
 `events.ts` is the single subscription root. Add a channel there and put its
@@ -89,7 +95,10 @@ asked for; the pane reads as pending until the watermark reaches it, and
 gives the wait up when the backend's launch (its hello's `launchId`) changes, since
 a restarted backend's pump numbers from one again, while a re-subscribe to
 the same process keeps it. CI is sourced only by
-that subscription; the frontend never polls it.
+that subscription, or for a repository pipeline by its `SubscribePipeline`
+handle (`pipelineCI.svelte.ts`); the frontend never polls it. Both feed the
+CI entry under one CI key and register their follow and refresh calls in
+`ciHandles.ts`.
 `pr:ci_log` frames carry a followed job's whole log state, its index and
 never its text, so the newest by sequence wins; the follow set lives on the
 subscription handle, so it is restated after every subscribe and after a
