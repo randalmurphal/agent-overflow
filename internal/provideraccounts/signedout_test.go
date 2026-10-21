@@ -225,7 +225,7 @@ func TestActivateWithSnapshotSkipsAHuskSnapshotAndStillSwitches(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	husk := CredentialSnapshot{Data: []byte("husk")}
+	husk := NewCredentialSnapshot([]byte("husk"))
 	if err := credentials.ActivateWithSnapshot("claude", "outgoing", "incoming", &husk); err != nil {
 		t.Fatalf("ActivateWithSnapshot() error = %v", err)
 	}

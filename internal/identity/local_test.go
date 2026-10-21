@@ -48,7 +48,7 @@ func TestLocalCredentialLifetimeAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old, err := signClaims(Claims{KeyID: key.ID, SessionID: row.ID, IssuedAt: next.Now(), ExpiresAt: next.Now() + time.Hour.Milliseconds()}, key.Secret, next.backendID)
+	old, err := signClaims(Claims{KeyID: key.ID, SessionID: row.ID, IssuedAt: next.Now(), ExpiresAt: next.Now() + time.Hour.Milliseconds()}, key.Secret.Reveal(), next.backendID)
 	if err != nil {
 		t.Fatal(err)
 	}

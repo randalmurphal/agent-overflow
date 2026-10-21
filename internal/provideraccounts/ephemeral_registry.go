@@ -14,22 +14,23 @@ import (
 	"agent-overflow/internal/atomicfile"
 )
 
-// The ephemeral registry closes the crash window on temporary Claude
-// homes. Every ephemeral Claude home gets a Keychain item (darwin) or a
-// credential file seeded or written by the CLI, and a probe there can
-// ROTATE the account's single-use refresh chain — so a crash between
-// the rotation and the read-back leaves the only live copy of that
-// chain in a store nothing references: the temp directory is gone, but
-// the hash-named Keychain item is not. Each home is therefore recorded
-// in a per-entry file BEFORE any credential can exist there, the entry
-// is removed on clean teardown, and the boot sweep recovers whatever a
-// crash left behind: adopt the bytes into the owning slot when the slot
-// is dead, then delete the remnant.
+// The ephemeral registry closes the crash window on temporary provider
+// homes. Every ephemeral home holds a credential seeded by AO or written
+// by the CLI (for Claude on darwin, a hash-named Keychain item), and a
+// probe there can ROTATE the account's refresh chain. A crash between the
+// rotation and the read-back leaves the only live copy of that chain in a
+// store nothing references, and an abandoned home keeps a live credential
+// in the temporary directory indefinitely. Each home is therefore recorded
+// in a per-entry file BEFORE any credential can exist there, the entry is
+// removed on clean teardown, and the boot sweep recovers whatever a crash
+// left behind: adopt the bytes into the owning slot when the slot is dead
+// or behind the orphan on its chain, then delete the remnant.
 //
-// One file per entry (not one shared file) so two concurrent app
-// instances over the same home can never lose each other's records to
-// a read-modify-write race: entries are independent, creation is
-// atomic, and double-removal is a no-op.
+// Each provider keeps its registry in its own shared home. One file per
+// entry (not one shared file) so two concurrent app instances over the
+// same home can never lose each other's records to a read-modify-write
+// race: entries are independent, creation is atomic, and double-removal
+// is a no-op.
 const ephemeralRegistryDirName = "agent-overflow-ephemerals"
 
 // ephemeralSweepGrace keeps the sweep off entries another live instance
@@ -38,11 +39,17 @@ const ephemeralRegistryDirName = "agent-overflow-ephemerals"
 // A younger entry just waits for a later boot.
 const ephemeralSweepGrace = time.Hour
 
-// ephemeralClaudeHomePrefix is the os.MkdirTemp prefix newEphemeralHome
-// uses for Claude homes. The sweep refuses to act on any recorded path
-// without it — a corrupted or foreign registry entry must never aim the
+// ephemeralProviders are the providers whose temporary homes the registry
+// covers, in sweep order.
+var ephemeralProviders = []string{"claude", "codex"}
+
+// ephemeralHomePrefix is the os.MkdirTemp prefix newEphemeralHome uses for
+// one provider's homes. The sweep refuses to act on any recorded path
+// without it: a corrupted or foreign registry entry must never aim the
 // remnant removal at a real directory.
-const ephemeralClaudeHomePrefix = "agent-overflow-claude-"
+func ephemeralHomePrefix(providerName string) string {
+	return "agent-overflow-" + providerName + "-"
+}
 
 type ephemeralRegistryEntry struct {
 	ConfigHome string    `json:"configHome"`
@@ -51,8 +58,9 @@ type ephemeralRegistryEntry struct {
 }
 
 // EphemeralSweepResult reports what the boot sweep did with one
-// crash-orphaned ephemeral Claude home.
+// crash-orphaned ephemeral home.
 type EphemeralSweepResult struct {
+	Provider   string
 	ConfigHome string
 	AccountID  string
 	// Action is one of "adopted" (the orphan held the only live copy of
@@ -64,8 +72,8 @@ type EphemeralSweepResult struct {
 	Action string
 }
 
-func (c *Credentials) ephemeralRegistryDir() (string, error) {
-	paths, err := c.Paths("claude")
+func (c *Credentials) ephemeralRegistryDir(providerName string) (string, error) {
+	paths, err := c.Paths(providerName)
 	if err != nil {
 		return "", err
 	}
@@ -77,17 +85,17 @@ func ephemeralRegistryFileName(configHome string) string {
 	return hex.EncodeToString(sum[:8]) + ".json"
 }
 
-// registerEphemeralClaudeHome records a temporary Claude home before
-// any credential can exist in it. Ordering is the point: an
-// unrecorded home that crashes is invisible forever, so registration
-// failure fails the home's creation rather than proceeding uncovered.
-func (c *Credentials) registerEphemeralClaudeHome(configHome, ownerAccountID string) error {
-	dir, err := c.ephemeralRegistryDir()
+// registerEphemeralHome records a temporary provider home before any
+// credential can exist in it. Ordering is the point: an unrecorded home
+// that crashes is invisible forever, so registration failure fails the
+// home's creation rather than proceeding uncovered.
+func (c *Credentials) registerEphemeralHome(providerName, configHome, ownerAccountID string) error {
+	dir, err := c.ephemeralRegistryDir(providerName)
 	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("provideraccounts: create ephemeral registry: %w", err)
+		return fmt.Errorf("provideraccounts: create ephemeral %s registry: %w", providerName, err)
 	}
 	entry := ephemeralRegistryEntry{
 		ConfigHome: configHome,
@@ -95,48 +103,62 @@ func (c *Credentials) registerEphemeralClaudeHome(configHome, ownerAccountID str
 		CreatedAt:  time.Now().UTC(),
 	}
 	if err := atomicfile.WriteJSON(filepath.Join(dir, ephemeralRegistryFileName(configHome)), entry); err != nil {
-		return fmt.Errorf("provideraccounts: record ephemeral Claude home: %w", err)
+		return fmt.Errorf("provideraccounts: record ephemeral %s home: %w", providerName, err)
 	}
 	return nil
 }
 
-func (c *Credentials) unregisterEphemeralClaudeHome(configHome string) error {
-	dir, err := c.ephemeralRegistryDir()
+func (c *Credentials) unregisterEphemeralHome(providerName, configHome string) error {
+	dir, err := c.ephemeralRegistryDir(providerName)
 	if err != nil {
 		return err
 	}
 	path := filepath.Join(dir, ephemeralRegistryFileName(configHome))
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("provideraccounts: clear ephemeral Claude home record: %w", err)
+		return fmt.Errorf("provideraccounts: clear ephemeral %s home record: %w", providerName, err)
 	}
 	return nil
 }
 
 // sweepableEphemeralHome is the structural guard on recorded paths: the
 // sweep only ever acts on absolute paths whose directory name carries
-// the ephemeral MkdirTemp prefix, so no registry content — corrupt,
-// stale, or hostile — can point the removal or the Keychain-service
-// hash at the canonical home, a slot, or any other real location.
-func sweepableEphemeralHome(configHome string) bool {
+// the provider's ephemeral MkdirTemp prefix, so no registry content —
+// corrupt, stale, or hostile — can point the removal or the
+// Keychain-service hash at the canonical home, a slot, or any other real
+// location.
+func sweepableEphemeralHome(providerName, configHome string) bool {
 	return filepath.IsAbs(configHome) &&
-		strings.HasPrefix(filepath.Base(configHome), ephemeralClaudeHomePrefix)
+		strings.HasPrefix(filepath.Base(configHome), ephemeralHomePrefix(providerName))
 }
 
-// SweepEphemeralClaudeCredentials recovers and removes credentials left
-// behind by ephemeral Claude homes that never reached their cleanup —
-// a crash or kill mid-probe. Run at boot, after the orphan-slot prune.
+// SweepEphemeralCredentials recovers and removes credentials left behind
+// by ephemeral homes that never reached their cleanup — a crash or kill
+// mid-probe or mid-login. Run at boot, after the orphan-slot prune.
 //
 // Per entry older than the grace period: read whatever credential the
-// home still holds (Keychain item on darwin, credential file
-// elsewhere); if the owning account's slot still exists and holds no
-// usable credential (missing or the provider's sign-out husk) while the
-// orphan's bytes are usable, restore them into the slot — the orphan
-// may be the only live copy of a rotated single-use chain. Then delete
-// the remnant credential, the leftover directory, and the entry. Any
-// step that cannot prove it is safe keeps the entry for the next boot
-// instead of guessing.
-func (c *Credentials) SweepEphemeralClaudeCredentials(now time.Time) ([]EphemeralSweepResult, error) {
-	dir, err := c.ephemeralRegistryDir()
+// home still holds (Keychain item for Claude on darwin, credential file
+// otherwise); if the owning account's slot still exists and the orphan's
+// bytes are usable and the slot's are not (missing, the provider's
+// sign-out husk, or behind the orphan on the rotation chain), restore
+// them into the slot — the orphan may be the only live copy of a rotated
+// chain. Then delete the remnant credential, the leftover directory, and
+// the entry. Any step that cannot prove it is safe keeps the entry for
+// the next boot instead of guessing.
+func (c *Credentials) SweepEphemeralCredentials(now time.Time) ([]EphemeralSweepResult, error) {
+	var results []EphemeralSweepResult
+	var sweepErrs []error
+	for _, providerName := range ephemeralProviders {
+		providerResults, err := c.sweepEphemeralHomes(providerName, now)
+		results = append(results, providerResults...)
+		if err != nil {
+			sweepErrs = append(sweepErrs, err)
+		}
+	}
+	return results, errors.Join(sweepErrs...)
+}
+
+func (c *Credentials) sweepEphemeralHomes(providerName string, now time.Time) ([]EphemeralSweepResult, error) {
+	dir, err := c.ephemeralRegistryDir(providerName)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +167,7 @@ func (c *Credentials) SweepEphemeralClaudeCredentials(now time.Time) ([]Ephemera
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("provideraccounts: read ephemeral registry: %w", err)
+		return nil, fmt.Errorf("provideraccounts: read ephemeral %s registry: %w", providerName, err)
 	}
 
 	var results []EphemeralSweepResult
@@ -157,11 +179,11 @@ func (c *Credentials) SweepEphemeralClaudeCredentials(now time.Time) ([]Ephemera
 		entryPath := filepath.Join(dir, dirEntry.Name())
 		var entry ephemeralRegistryEntry
 		found, readErr := atomicfile.ReadJSON(entryPath, &entry)
-		if readErr != nil || !found || !sweepableEphemeralHome(entry.ConfigHome) {
+		if readErr != nil || !found || !sweepableEphemeralHome(providerName, entry.ConfigHome) {
 			// Unreadable or unsafe entries can never become actionable;
 			// keeping them would re-report forever.
 			if readErr != nil {
-				sweepErrs = append(sweepErrs, fmt.Errorf("provideraccounts: drop unreadable ephemeral registry entry %s: %w", dirEntry.Name(), readErr))
+				sweepErrs = append(sweepErrs, fmt.Errorf("provideraccounts: drop unreadable ephemeral %s registry entry %s: %w", providerName, dirEntry.Name(), readErr))
 			}
 			if removeErr := os.Remove(entryPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 				sweepErrs = append(sweepErrs, removeErr)
@@ -170,6 +192,7 @@ func (c *Credentials) SweepEphemeralClaudeCredentials(now time.Time) ([]Ephemera
 		}
 		if now.Sub(entry.CreatedAt) < ephemeralSweepGrace {
 			results = append(results, EphemeralSweepResult{
+				Provider:   providerName,
 				ConfigHome: entry.ConfigHome,
 				AccountID:  entry.AccountID,
 				Action:     "skipped",
@@ -177,7 +200,7 @@ func (c *Credentials) SweepEphemeralClaudeCredentials(now time.Time) ([]Ephemera
 			continue
 		}
 
-		result, entryErr := c.sweepOneEphemeralHome(entry)
+		result, entryErr := c.sweepOneEphemeralHome(providerName, entry)
 		if entryErr != nil {
 			// Kept for the next boot: the orphan may still hold the only
 			// live copy of a chain, so an indeterminate state is never
@@ -194,49 +217,51 @@ func (c *Credentials) SweepEphemeralClaudeCredentials(now time.Time) ([]Ephemera
 	return results, errors.Join(sweepErrs...)
 }
 
-func (c *Credentials) sweepOneEphemeralHome(entry ephemeralRegistryEntry) (EphemeralSweepResult, error) {
-	result := EphemeralSweepResult{ConfigHome: entry.ConfigHome, AccountID: entry.AccountID}
+func (c *Credentials) sweepOneEphemeralHome(providerName string, entry ephemeralRegistryEntry) (EphemeralSweepResult, error) {
+	result := EphemeralSweepResult{Provider: providerName, ConfigHome: entry.ConfigHome, AccountID: entry.AccountID}
 
-	orphan, readErr := c.readCredentialAt("claude", entry.ConfigHome, false)
+	orphan, readErr := c.readCredentialAt(providerName, entry.ConfigHome, false)
 	if readErr != nil && !IsCredentialMissing(readErr) {
-		return result, fmt.Errorf("provideraccounts: read crash-orphaned ephemeral credential at %s: %w", entry.ConfigHome, readErr)
+		return result, fmt.Errorf("provideraccounts: read crash-orphaned ephemeral %s credential at %s: %w", providerName, entry.ConfigHome, readErr)
 	}
 	if IsCredentialMissing(readErr) {
 		result.Action = "cleaned"
-		return result, c.removeEphemeralRemnants(entry.ConfigHome)
+		return result, c.removeEphemeralRemnants(providerName, entry.ConfigHome)
 	}
 
 	result.Action = "discarded"
-	if entry.AccountID != "" && !c.credentialSignedOut("claude", orphan.Data) {
-		adopt, decideErr := c.slotNeedsAdoption(entry.AccountID)
+	if entry.AccountID != "" && !c.credentialSignedOut(providerName, orphan.Bytes()) {
+		adopt, decideErr := c.slotNeedsAdoption(providerName, entry.AccountID, orphan.Bytes())
 		if decideErr != nil {
 			return result, decideErr
 		}
 		if adopt {
-			if writeErr := c.WriteAccountCredential("claude", entry.AccountID, orphan.Data); writeErr != nil {
-				return result, fmt.Errorf("provideraccounts: restore crash-orphaned credential to slot %s: %w", entry.AccountID, writeErr)
+			if writeErr := c.WriteAccountCredential(providerName, entry.AccountID, orphan.Bytes()); writeErr != nil {
+				return result, fmt.Errorf("provideraccounts: restore crash-orphaned %s credential to slot %s: %w", providerName, entry.AccountID, writeErr)
 			}
 			result.Action = "adopted"
 		}
 	}
-	return result, c.removeEphemeralRemnants(entry.ConfigHome)
+	return result, c.removeEphemeralRemnants(providerName, entry.ConfigHome)
 }
 
 // slotNeedsAdoption reports whether the account's slot would gain from
 // the orphan's bytes: the slot directory still exists (the account is
-// still saved on this machine — the prune runs first) but its
-// credential is missing or the provider's own sign-out husk. A healthy
-// slot is never overwritten: the user may have re-logged-in since the
-// crash, and those bytes are newer than any orphan.
-func (c *Credentials) slotNeedsAdoption(accountID string) (bool, error) {
-	accountDir, err := c.accountDirectory("claude", accountID)
+// still saved on this machine — the prune runs first) and its credential
+// is missing, the provider's own sign-out husk, or strictly behind the
+// orphan on the rotation chain. A slot at or past the orphan's position,
+// or one whose position is unknown, is never overwritten: the user may
+// have re-logged-in since the crash, and those bytes are newer than any
+// orphan.
+func (c *Credentials) slotNeedsAdoption(providerName, accountID string, orphan []byte) (bool, error) {
+	accountDir, err := c.accountDirectory(providerName, accountID)
 	if err != nil {
 		return false, nil
 	}
 	if _, statErr := os.Stat(accountDir); statErr != nil {
 		return false, nil
 	}
-	slot, readErr := c.readCredentialAt("claude", accountDir, false)
+	slot, readErr := c.readCredentialAt(providerName, accountDir, false)
 	if IsCredentialMissing(readErr) {
 		return true, nil
 	}
@@ -244,25 +269,43 @@ func (c *Credentials) slotNeedsAdoption(accountID string) (bool, error) {
 		// Indeterminate slot state: without knowing whether the slot is
 		// healthy, neither overwriting it nor discarding the orphan is
 		// provably safe.
-		return false, fmt.Errorf("provideraccounts: inspect slot %s before adoption: %w", accountID, readErr)
+		return false, fmt.Errorf("provideraccounts: inspect %s slot %s before adoption: %w", providerName, accountID, readErr)
 	}
-	return c.credentialSignedOut("claude", slot.Data), nil
+	if c.credentialSignedOut(providerName, slot.Bytes()) {
+		return true, nil
+	}
+	return c.chainAdvances(providerName, slot.Bytes(), orphan), nil
 }
 
-// removeEphemeralRemnants deletes whatever a crashed ephemeral home
-// left behind: the darwin Keychain item named by the home's path hash
-// (and any migrated credential file, via the seam's fallback) plus the
-// leftover temporary directory. The caller has already proven the path
-// sweepable.
-func (c *Credentials) removeEphemeralRemnants(configHome string) error {
+// chainAdvances reports that next sits strictly later than current on one
+// account's rotation chain. Bytes without an ordering signal never
+// advance anything.
+func (c *Credentials) chainAdvances(providerName string, current, next []byte) bool {
+	if c.policy.ChainPosition == nil {
+		return false
+	}
+	currentPosition, ok := c.policy.ChainPosition(providerName, current)
+	if !ok {
+		return false
+	}
+	nextPosition, ok := c.policy.ChainPosition(providerName, next)
+	return ok && nextPosition > currentPosition
+}
+
+// removeEphemeralRemnants deletes whatever a crashed ephemeral home left
+// behind: for Claude on darwin the Keychain item named by the home's path
+// hash (and any migrated credential file, via the seam's fallback), plus
+// the leftover temporary directory. The caller has already proven the
+// path sweepable.
+func (c *Credentials) removeEphemeralRemnants(providerName, configHome string) error {
 	var errs []error
-	if runtime.GOOS == "darwin" {
+	if runtime.GOOS == "darwin" && providerName == "claude" {
 		if err := c.keychain.remove(configHome, false); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	if err := os.RemoveAll(configHome); err != nil {
-		errs = append(errs, fmt.Errorf("provideraccounts: remove crashed ephemeral home %s: %w", configHome, err))
+		errs = append(errs, fmt.Errorf("provideraccounts: remove crashed ephemeral %s home %s: %w", providerName, configHome, err))
 	}
 	return errors.Join(errs...)
 }

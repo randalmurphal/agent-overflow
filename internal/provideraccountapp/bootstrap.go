@@ -39,14 +39,14 @@ func (m *Manager) ReconcileProviderHome(dbDir, userHome string) error {
 		}
 	}
 
-	sweepResults, sweepErr := m.credentials.SweepEphemeralClaudeCredentials(time.Now())
+	sweepResults, sweepErr := m.credentials.SweepEphemeralCredentials(time.Now())
 	for _, result := range sweepResults {
 		if result.Action != "skipped" {
-			m.audit("ephemeral claude sweep: %s crash-orphaned home %s (account %q)", result.Action, result.ConfigHome, result.AccountID)
+			m.audit("ephemeral %s sweep: %s crash-orphaned home %s (account %q)", result.Provider, result.Action, result.ConfigHome, result.AccountID)
 		}
 	}
 	if sweepErr != nil {
-		m.audit("ephemeral claude sweep errors: %v", sweepErr)
+		m.audit("ephemeral sweep errors: %v", sweepErr)
 	}
 	return nil
 }

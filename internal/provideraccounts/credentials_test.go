@@ -135,8 +135,8 @@ func TestReadEphemeralCredentialCapturesProviderLogin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(snapshot.Data) != `{"oauth":"new"}` {
-		t.Fatalf("credential = %s", snapshot.Data)
+	if string(snapshot.Bytes()) != `{"oauth":"new"}` {
+		t.Fatalf("credential = %s", snapshot.Bytes())
 	}
 }
 

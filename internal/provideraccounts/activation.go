@@ -28,7 +28,7 @@ func (c *Credentials) Activate(providerName, currentAccountID, targetAccountID s
 			currentAccountID = ""
 		case err != nil:
 			return fmt.Errorf("provideraccounts: read current account before switch: %w", err)
-		case c.credentialSignedOut(providerName, snapshot.Data):
+		case c.credentialSignedOut(providerName, snapshot.Bytes()):
 			currentAccountID = ""
 		default:
 			current = &snapshot
@@ -60,9 +60,9 @@ func (c *Credentials) ActivateWithSnapshot(
 		// login nothing inside the app ever replaces (incident 2026-08-03).
 		// Dropping the snapshot also stands the re-preserve below down: there
 		// is no rotation to detect against bytes that were never a token.
-		if c.credentialSignedOut(providerName, current.Data) {
+		if c.credentialSignedOut(providerName, current.Bytes()) {
 			current = nil
-		} else if err := c.WriteAccountCredential(providerName, currentAccountID, current.Data); err != nil {
+		} else if err := c.WriteAccountCredential(providerName, currentAccountID, current.Bytes()); err != nil {
 			return fmt.Errorf("provideraccounts: preserve current account before switch: %w", err)
 		}
 	}
@@ -93,9 +93,9 @@ func (c *Credentials) ActivateWithSnapshot(
 	// worth keeping beyond the snapshot already preserved above.
 	if currentAccountID != "" && currentAccountID != targetAccountID && current != nil {
 		if latest, err := c.ReadCredentialSnapshot(providerName, "", true); err == nil &&
-			!bytes.Equal(latest.Data, current.Data) &&
-			!c.credentialSignedOut(providerName, latest.Data) {
-			if err := c.WriteAccountCredential(providerName, currentAccountID, latest.Data); err != nil {
+			!bytes.Equal(latest.Bytes(), current.Bytes()) &&
+			!c.credentialSignedOut(providerName, latest.Bytes()) {
+			if err := c.WriteAccountCredential(providerName, currentAccountID, latest.Bytes()); err != nil {
 				return fmt.Errorf(
 					"provideraccounts: preserve rotated current account before switch: %w",
 					err,

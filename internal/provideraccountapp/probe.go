@@ -129,7 +129,7 @@ func (m *Manager) emitUnauthenticatedIfNoLogin(r ProbeRequest, info provider.Acc
 		if err != nil {
 			return
 		}
-		if present && !m.credentials.CredentialSignedOut(r.ProviderName, snapshot.Data) {
+		if present && !m.credentials.CredentialSignedOut(r.ProviderName, snapshot.Bytes()) {
 			return
 		}
 	}
@@ -164,7 +164,7 @@ func (m *Manager) runStableAccountProbe(
 		// verdict as an error naming the one repair.
 		if beforePresent && m.credentials.CredentialLoginExpired(
 			providerName,
-			before.Data,
+			before.Bytes(),
 			time.Now(),
 		) {
 			return provider.AccountInfo{}, nil, errClaudeLoginExpired
@@ -185,13 +185,13 @@ func (m *Manager) runStableAccountProbe(
 			return provider.AccountInfo{}, nil, err
 		}
 		if beforePresent == afterPresent &&
-			(!beforePresent || sha256.Sum256(before.Data) == sha256.Sum256(after.Data)) {
+			(!beforePresent || sha256.Sum256(before.Bytes()) == sha256.Sum256(after.Bytes())) {
 			if !afterPresent {
 				return info, nil, nil
 			}
 			// Codex's workspace id is IN the credential bytes; parsing the
 			// verified after-snapshot pairs identity and org by construction.
-			return EnrichCodexIdentity(providerName, info, after.Data), &after, nil
+			return EnrichCodexIdentity(providerName, info, after.Bytes()), &after, nil
 		}
 	}
 	return provider.AccountInfo{}, nil, fmt.Errorf(
@@ -209,7 +209,7 @@ func (m *Manager) canonicalLoginExpired(providerName string) (bool, error) {
 	if err != nil || !present {
 		return false, err
 	}
-	return m.credentials.CredentialLoginExpired(providerName, snapshot.Data, time.Now()), nil
+	return m.credentials.CredentialLoginExpired(providerName, snapshot.Bytes(), time.Now()), nil
 }
 
 func (m *Manager) readCanonicalCredentialIfPresent(

@@ -115,8 +115,12 @@ Base URLs are resolved once per host and kept with the host's client.
 ## Credentials
 
 ```go
-// Token holds one host's bearer secret. Only authorize reads it.
-type Token struct{ b []byte }
+// Token holds one host's bearer secret in a secret.Bytes. Only authorize
+// reads it; reflection over a holding struct prints an address.
+type Token struct {
+	secret *secret.Bytes
+	header AuthHeader
+}
 
 func (t *Token) authorize(req *http.Request) // Authorization: Bearer / Private-Token
 func (t *Token) Zero()

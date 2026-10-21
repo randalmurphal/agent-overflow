@@ -66,10 +66,10 @@ func (m *Manager) reconcileExternalProviderAccountWithMutexHeld(
 	m.mu.RLock()
 	known, observed := m.fingerprints[providerName]
 	m.mu.RUnlock()
-	if observed && known == sha256.Sum256(before.Data) {
+	if observed && known == sha256.Sum256(before.Bytes()) {
 		return nil
 	}
-	if m.credentials.CredentialLoginExpired(providerName, before.Data, time.Now()) {
+	if m.credentials.CredentialLoginExpired(providerName, before.Bytes(), time.Now()) {
 		// An expired login is a change this reconciliation cannot identify:
 		// the probe that would name it is a CLI start, and starting the CLI on
 		// an expired refresh token is what converts it into the husk below.
@@ -79,7 +79,7 @@ func (m *Manager) reconcileExternalProviderAccountWithMutexHeld(
 		// neither switch away from the dead account nor sign it back in.
 		return nil
 	}
-	if providerName == string(provider.Claude) && claude.CredentialsSignedOut(before.Data) {
+	if providerName == string(provider.Claude) && claude.CredentialsSignedOut(before.Bytes()) {
 		// claude >= 2.1.219 blanks the canonical credential in place when its
 		// startup token refresh fails (spike 2026-08-03). That husk is a
 		// sign-out, not an external login: adopting it would copy unusable
@@ -109,7 +109,7 @@ func (m *Manager) reconcileExternalProviderAccountWithMutexHeld(
 		// nothing to adopt, and the next reconciliation sees the absence.
 		return nil
 	}
-	fingerprint := sha256.Sum256(credential.Data)
+	fingerprint := sha256.Sum256(credential.Bytes())
 
 	m.mu.Lock()
 	// Serialize against Agent Overflow's own account switch and repeat the
@@ -119,7 +119,7 @@ func (m *Manager) reconcileExternalProviderAccountWithMutexHeld(
 		m.mu.Unlock()
 		return fmt.Errorf("recheck active %s credentials before activation: %w", providerName, err)
 	}
-	if sha256.Sum256(current.Data) != fingerprint {
+	if sha256.Sum256(current.Bytes()) != fingerprint {
 		m.mu.Unlock()
 		return fmt.Errorf("%s credentials changed before account activation; retry", providerName)
 	}
@@ -276,7 +276,7 @@ func (m *Manager) reconcileObservedAccountLocked(
 	if err := m.credentials.WriteAccountCredential(
 		providerName,
 		target.ID,
-		credential.Data,
+		credential.Bytes(),
 	); err != nil {
 		return provideraccounts.Account{}, SignIn{}, false, fmt.Errorf(
 			"preserve externally selected %s credentials: %w",
@@ -292,7 +292,7 @@ func (m *Manager) reconcileObservedAccountLocked(
 			err,
 		)
 	}
-	if sha256.Sum256(stable.Data) != sha256.Sum256(credential.Data) {
+	if sha256.Sum256(stable.Bytes()) != sha256.Sum256(credential.Bytes()) {
 		return provideraccounts.Account{}, SignIn{}, false, fmt.Errorf(
 			"%s credentials changed before metadata activation; retry",
 			providerName,
@@ -311,13 +311,13 @@ func (m *Manager) reconcileObservedAccountLocked(
 			err,
 		)
 	}
-	account = m.withRecordedLoginExpiry(account, credential.Data)
+	account = m.withRecordedLoginExpiry(account, credential.Bytes())
 	restoreCredentialOnError = false
 	signIn = SignIn{
 		Provider: providerName,
 		Account:  account,
 		Added:    !found,
-		Renewed:  found && CredentialLoginRenewed(providerName, previous, credential.Data),
+		Renewed:  found && CredentialLoginRenewed(providerName, previous, credential.Bytes()),
 		Switched: hasActive && active.ID != account.ID,
 		Active:   true,
 	}

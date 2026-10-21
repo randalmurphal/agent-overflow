@@ -253,7 +253,7 @@ func (m *Manager) SwitchProviderAccount(providerName, accountID string) (Managed
 	// A husked slot is a login the provider already ended. Installing it into
 	// the canonical store would retire the working account for a dead one and
 	// leave the app looking signed in until the next request failed.
-	if m.credentials.CredentialSignedOut(providerName, targetCredential.Data) {
+	if m.credentials.CredentialSignedOut(providerName, targetCredential.Bytes()) {
 		m.audit(
 			"refused to switch to %s account %s: its saved credential is the provider's sign-out marker",
 			providerName,
@@ -267,14 +267,14 @@ func (m *Manager) SwitchProviderAccount(providerName, accountID string) (Managed
 	// So the switch stops here instead: the account is reported as needing a
 	// sign-in, and the answer says so rather than failing, because nothing
 	// went wrong.
-	if m.credentials.CredentialLoginExpired(providerName, targetCredential.Data, time.Now()) {
+	if m.credentials.CredentialLoginExpired(providerName, targetCredential.Bytes(), time.Now()) {
 		m.audit(
 			"declined to switch to %s account %s: its login expired at %s",
 			providerName,
 			accountID,
-			describeLoginExpiry(providerName, targetCredential.Data),
+			describeLoginExpiry(providerName, targetCredential.Bytes()),
 		)
-		expired := m.withRecordedLoginExpiry(target, targetCredential.Data)
+		expired := m.withRecordedLoginExpiry(target, targetCredential.Bytes())
 		return ManagedAccount{
 			Account:        expired,
 			Generation:     m.store.Generation(providerName),
@@ -310,7 +310,7 @@ func (m *Manager) SwitchProviderAccount(providerName, accountID string) (Managed
 	}
 	if err := m.verifyCanonicalProviderCredentialLocked(
 		providerName,
-		targetCredential.Data,
+		targetCredential.Bytes(),
 	); err != nil {
 		return ManagedAccount{}, err
 	}
@@ -324,12 +324,12 @@ func (m *Manager) SwitchProviderAccount(providerName, accountID string) (Managed
 	// Both accounts just had credential bytes committed for them: the incoming
 	// one into the canonical store, the outgoing one into its slot. Record
 	// what each says about its session deadline while the bytes are in hand.
-	account = m.withRecordedLoginExpiry(account, targetCredential.Data)
+	account = m.withRecordedLoginExpiry(account, targetCredential.Bytes())
 	if currentCredential != nil {
-		m.recordLoginExpiry(providerName, preserveID, currentCredential.Data)
+		m.recordLoginExpiry(providerName, preserveID, currentCredential.Bytes())
 	}
 	binary := m.providerBinaryPath(providerName)
-	m.rememberProviderCredentialFingerprintLocked(providerName, targetCredential.Data)
+	m.rememberProviderCredentialFingerprintLocked(providerName, targetCredential.Bytes())
 	generation := m.store.Generation(providerName)
 	m.mu.Unlock()
 	accountLocked = false
@@ -403,10 +403,10 @@ func (m *Manager) verifiedActiveCredentialLocked(
 	// Checked before the fingerprint: a husk can never match the remembered
 	// fingerprint, and "changed; retry" would misdiagnose a sign-out as a
 	// concurrent login.
-	if providerName == string(provider.Claude) && claude.CredentialsSignedOut(snapshot.Data) {
+	if providerName == string(provider.Claude) && claude.CredentialsSignedOut(snapshot.Bytes()) {
 		return provideraccounts.CredentialSnapshot{}, errActiveCredentialSignedOut
 	}
-	fingerprint := sha256.Sum256(snapshot.Data)
+	fingerprint := sha256.Sum256(snapshot.Bytes())
 	known, ok := m.fingerprints[providerName]
 	if !ok || known != fingerprint {
 		return provideraccounts.CredentialSnapshot{}, fmt.Errorf(
@@ -512,7 +512,7 @@ func (m *Manager) adoptCurrentProviderAccount(
 	}
 	if err := m.verifyCanonicalProviderCredentialLocked(
 		providerName,
-		credential.Data,
+		credential.Bytes(),
 	); err != nil {
 		return provideraccounts.Account{}, SignIn{}, err
 	}
@@ -526,7 +526,7 @@ func (m *Manager) adoptCurrentProviderAccount(
 		if err := m.credentials.WriteAccountCredential(
 			providerName,
 			accountID,
-			credential.Data,
+			credential.Bytes(),
 		); err != nil {
 			return provideraccounts.Account{}, SignIn{}, fmt.Errorf(
 				"save existing %s credentials: %w",
@@ -541,8 +541,8 @@ func (m *Manager) adoptCurrentProviderAccount(
 			cleanupErr := m.credentials.RestoreAccountCredential(saved)
 			return provideraccounts.Account{}, SignIn{}, errors.Join(err, cleanupErr)
 		}
-		account = m.withRecordedLoginExpiry(account, credential.Data)
-		m.rememberProviderCredentialFingerprintLocked(providerName, credential.Data)
+		account = m.withRecordedLoginExpiry(account, credential.Bytes())
+		m.rememberProviderCredentialFingerprintLocked(providerName, credential.Bytes())
 		return account, SignIn{Provider: providerName, Account: account, Added: true, Active: true}, nil
 	}
 	account, signIn, _, err := m.reconcileObservedAccountLocked(
@@ -553,7 +553,7 @@ func (m *Manager) adoptCurrentProviderAccount(
 	if err != nil {
 		return provideraccounts.Account{}, SignIn{}, err
 	}
-	m.rememberProviderCredentialFingerprintLocked(providerName, credential.Data)
+	m.rememberProviderCredentialFingerprintLocked(providerName, credential.Bytes())
 	return account, signIn, nil
 }
 
@@ -590,7 +590,7 @@ func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary strin
 	}
 	if err := m.verifyCanonicalProviderCredentialLocked(
 		providerName,
-		credential.Data,
+		credential.Bytes(),
 	); err != nil {
 		return SignIn{}, err
 	}
@@ -625,7 +625,7 @@ func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary strin
 	if err := m.credentials.WriteAccountCredential(
 		providerName,
 		accountID,
-		credential.Data,
+		credential.Bytes(),
 	); err != nil {
 		restore()
 		return SignIn{}, err
@@ -635,8 +635,8 @@ func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary strin
 		restore()
 		return SignIn{}, err
 	}
-	account = m.withRecordedLoginExpiry(account, credential.Data)
-	m.rememberProviderCredentialFingerprintLocked(providerName, credential.Data)
+	account = m.withRecordedLoginExpiry(account, credential.Bytes())
+	m.rememberProviderCredentialFingerprintLocked(providerName, credential.Bytes())
 	return SignIn{Provider: providerName, Account: account, Added: !found, Active: true}, nil
 }
 

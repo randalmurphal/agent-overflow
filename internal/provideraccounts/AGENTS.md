@@ -70,6 +70,22 @@ Never set `CLAUDE_CONFIG_DIR` for a canonical-home run, even to its default.
 Reserve and clear `CLAUDE_SECURESTORAGE_CONFIG_DIR` on every corresponding
 spawn. All macOS `security(1)` calls remain in `claude_keychain.go`.
 
+A Keychain write too long for `security -i`'s 4096-byte line goes through
+argv, as Claude Code's own write does. The item's ACL trusts only
+`/usr/bin/security`, so a Security-framework write from AO would prompt on
+every switch. Moving the login to the plaintext file instead would expose it
+longer to the same readers.
+
+Every ephemeral home, Claude or Codex, is registered before a credential
+can exist in it (`ephemeral_registry.go`). The boot sweep adopts a
+crash-orphaned credential into its slot only when the slot is missing,
+signed out, or strictly behind it on the rotation chain (`ChainPosition`:
+Claude token expiry, Codex `last_refresh`).
+
+Credential bytes travel as `CredentialSnapshot` or `secret.Bytes`, which
+print as `<redacted>` from any field. A raw `[]byte` credential is a
+function argument, never a struct field.
+
 Pruning requires a matching `providerHome` ownership stamp. Tests and harness
 runs use temporary homes and the file-backed keychain seam; they never inspect
 or modify real provider homes.

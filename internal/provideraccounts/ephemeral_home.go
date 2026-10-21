@@ -63,7 +63,7 @@ func (c *Credentials) newEphemeralHome(
 	if err != nil {
 		return nil, err
 	}
-	path, err := os.MkdirTemp("", "agent-overflow-"+providerName+"-")
+	path, err := os.MkdirTemp("", ephemeralHomePrefix(providerName))
 	if err != nil {
 		return nil, fmt.Errorf("provideraccounts: create temporary %s home: %w", providerName, err)
 	}
@@ -82,10 +82,8 @@ func (c *Credentials) newEphemeralHome(
 	// the home — the CLI in a login home writes one on its own — because
 	// an unrecorded home that crashes is invisible to the boot sweep
 	// forever (ephemeral_registry.go).
-	if providerName == "claude" {
-		if err := c.registerEphemeralClaudeHome(path, ownerAccountID); err != nil {
-			return cleanupOnError(err)
-		}
+	if err := c.registerEphemeralHome(providerName, path, ownerAccountID); err != nil {
+		return cleanupOnError(err)
 	}
 	if err := os.Chmod(path, 0o700); err != nil {
 		return cleanupOnError(fmt.Errorf("provideraccounts: secure temporary %s home: %w", providerName, err))
@@ -209,8 +207,8 @@ func (h *EphemeralHome) Cleanup() error {
 	}
 	// The registry entry goes last: it must outlive any partial cleanup,
 	// or the boot sweep loses its only pointer to whatever remains.
-	if len(cleanupErrs) == 0 && h.providerName == "claude" {
-		if err := h.credentials.unregisterEphemeralClaudeHome(h.Path); err != nil {
+	if len(cleanupErrs) == 0 {
+		if err := h.credentials.unregisterEphemeralHome(h.providerName, h.Path); err != nil {
 			cleanupErrs = append(cleanupErrs, err)
 		}
 	}

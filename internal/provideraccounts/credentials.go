@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/atomicfile"
+	"agent-overflow/internal/secret"
 )
 
 const (
@@ -103,10 +105,33 @@ type Credentials struct {
 }
 
 // CredentialSnapshot is one stable read from a provider-native credential
-// store. Data remains opaque to Agent Overflow.
+// store. The bytes remain opaque to Agent Overflow and print as
+// secret.Redacted wherever a snapshot is formatted, logged or encoded;
+// Bytes is the only way to read them.
 type CredentialSnapshot struct {
-	Data []byte
+	data *secret.Bytes
 }
+
+// NewCredentialSnapshot takes ownership of data.
+func NewCredentialSnapshot(data []byte) CredentialSnapshot {
+	return CredentialSnapshot{data: secret.Adopt(data)}
+}
+
+// Bytes returns the credential. The slice aliases the snapshot; callers
+// must not modify it.
+func (s CredentialSnapshot) Bytes() []byte { return s.data.Reveal() }
+
+func (CredentialSnapshot) String() string   { return secret.Redacted }
+func (CredentialSnapshot) GoString() string { return secret.Redacted }
+
+// Format prints secret.Redacted for every verb and flag.
+func (CredentialSnapshot) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte(secret.Redacted)) }
+
+func (CredentialSnapshot) MarshalJSON() ([]byte, error) {
+	return []byte(`"` + secret.Redacted + `"`), nil
+}
+func (CredentialSnapshot) MarshalText() ([]byte, error) { return []byte(secret.Redacted), nil }
+func (CredentialSnapshot) LogValue() slog.Value         { return slog.StringValue(secret.Redacted) }
 
 // NewCredentials builds the credential store. See Policy for why the
 // provider-specific predicates are constructor arguments rather than setters.
@@ -349,16 +374,16 @@ func (c *Credentials) InspectCredential(
 	if err != nil {
 		return CredentialState{}, err
 	}
-	if len(snapshot.Data) == 0 {
+	if len(snapshot.Bytes()) == 0 {
 		return CredentialState{}, nil
 	}
 	state := CredentialState{
-		LoginExpiresAt: c.CredentialLoginExpiresAt(providerName, snapshot.Data),
+		LoginExpiresAt: c.CredentialLoginExpiresAt(providerName, snapshot.Bytes()),
 	}
-	if c.credentialSignedOut(providerName, snapshot.Data) {
+	if c.credentialSignedOut(providerName, snapshot.Bytes()) {
 		return state, nil
 	}
-	state.Usable = !c.CredentialLoginExpired(providerName, snapshot.Data, time.Now())
+	state.Usable = !c.CredentialLoginExpired(providerName, snapshot.Bytes(), time.Now())
 	return state, nil
 }
 
@@ -374,7 +399,7 @@ func (c *Credentials) CredentialUsable(providerName, accountID string, active bo
 // active is true, or from one saved account slot otherwise.
 func (c *Credentials) ReadCredential(providerName, accountID string, active bool) ([]byte, error) {
 	snapshot, err := c.ReadCredentialSnapshot(providerName, accountID, active)
-	return snapshot.Data, err
+	return snapshot.Bytes(), err
 }
 
 func (c *Credentials) ReadCredentialSnapshot(
@@ -411,7 +436,7 @@ func (c *Credentials) readCredentialAt(
 	}
 	if runtime.GOOS == "darwin" && providerName == "claude" {
 		data, err := c.keychain.read(home, active)
-		return CredentialSnapshot{Data: data}, err
+		return NewCredentialSnapshot(data), err
 	}
 	return readCredentialSnapshot(filepath.Join(home, paths.CredentialFile))
 }
@@ -486,7 +511,7 @@ func (c *Credentials) noteSupersededSlotWrite(providerName, home string, data []
 	if err != nil {
 		return
 	}
-	current, ok := c.policy.ChainPosition(providerName, existing.Data)
+	current, ok := c.policy.ChainPosition(providerName, existing.Bytes())
 	if !ok || incoming >= current {
 		return
 	}
@@ -645,7 +670,7 @@ func readCredentialSnapshot(path string) (CredentialSnapshot, error) {
 	if currentInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(openedInfo, currentInfo) {
 		return CredentialSnapshot{}, fmt.Errorf("%s changed while reading credential file", path)
 	}
-	return CredentialSnapshot{Data: data}, nil
+	return NewCredentialSnapshot(data), nil
 }
 
 func IsCredentialMissing(err error) bool {

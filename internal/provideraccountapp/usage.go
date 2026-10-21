@@ -125,7 +125,7 @@ func (m *Manager) refreshProviderAccountUsage(
 		accountID:    accountID,
 		generation:   generation,
 		isSelected:   isSelected,
-		probed:       credential.Data,
+		probed:       credential,
 	}
 
 	var (
@@ -152,7 +152,7 @@ func (m *Manager) refreshProviderAccountUsage(
 	if providerName == string(provider.Codex) {
 		ephemeral, err = m.credentials.NewEphemeralHomeWithCredential(
 			providerName,
-			credential.Data,
+			credential.Bytes(),
 			accountID,
 		)
 		if err != nil {
@@ -169,22 +169,24 @@ func (m *Manager) refreshProviderAccountUsage(
 	case string(provider.Claude):
 		probeRan = true
 		if refresh.refreshesInCanonicalHome() {
-			snapshot, refresh.refreshed, probeErr = m.probeSelectedClaudeRateLimits(
+			var rotated []byte
+			snapshot, rotated, probeErr = m.probeSelectedClaudeRateLimits(
 				ctx,
 				selection,
-				credential.Data,
+				credential.Bytes(),
 			)
+			refresh.refreshed = provideraccounts.NewCredentialSnapshot(rotated)
 			// The canonical refresh can rotate the credential and still fail:
 			// the usage retry after a successful token rotation can be
 			// throttled even though the token endpoint was not. Claude refresh
 			// tokens are single-use, so a rotation must reach the commit even
 			// when the probe's answer is an error — dropping it here would
 			// leave the slot on a consumed token.
-			if probeErr != nil && len(refresh.refreshed) == 0 {
+			if probeErr != nil && len(refresh.refreshed.Bytes()) == 0 {
 				return mapProviderAccountLoginError(providerName, account, probeErr)
 			}
 		} else {
-			snapshot, probeErr = m.probeInactiveClaudeRateLimits(ctx, credential.Data)
+			snapshot, probeErr = m.probeInactiveClaudeRateLimits(ctx, credential.Bytes())
 			if probeErr != nil {
 				return mapProviderAccountLoginError(providerName, account, probeErr)
 			}
@@ -211,7 +213,7 @@ func (m *Manager) refreshProviderAccountUsage(
 		if readErr != nil {
 			return fmt.Errorf("capture refreshed Codex credentials: %w", readErr)
 		}
-		refresh.refreshed = refreshed.Data
+		refresh.refreshed = refreshed
 		refresh.observed = info
 	}
 
@@ -228,12 +230,12 @@ func (m *Manager) refreshProviderAccountUsage(
 	// would invert that ordering. Inactive CLAUDE accounts never reach here
 	// with anything: they no longer refresh, so their probe returns no bytes.)
 	if !refresh.isSelected &&
-		len(refresh.refreshed) > 0 &&
-		!bytes.Equal(refresh.refreshed, refresh.probed) {
+		len(refresh.refreshed.Bytes()) > 0 &&
+		!bytes.Equal(refresh.refreshed.Bytes(), refresh.probed.Bytes()) {
 		refresh.slotPersisted = m.credentials.WriteAccountCredential(
 			refresh.providerName,
 			refresh.accountID,
-			refresh.refreshed,
+			refresh.refreshed.Bytes(),
 		) == nil
 	}
 
@@ -271,12 +273,12 @@ type providerUsageRefresh struct {
 	generation   uint64
 	isSelected   bool
 	// probed is the credential the probe started from.
-	probed []byte
+	probed provideraccounts.CredentialSnapshot
 	// refreshed is the rotated credential, empty when nothing rotated.
 	// Only two probes can fill it: the selected Claude account's canonical
 	// refresh, and any Codex probe (which rotates inside its temporary home).
 	// An inactive Claude account never rotates, so its refresh is always empty.
-	refreshed []byte
+	refreshed provideraccounts.CredentialSnapshot
 	// observed is the identity the provider reported during the probe, when
 	// it reports one at all. Stays zero otherwise.
 	observed provider.AccountInfo
@@ -309,10 +311,10 @@ func (r providerUsageRefresh) refreshesInCanonicalHome() bool {
 // nothing rotated at all, which then compared the canonical file against an
 // empty expectation that can never match.
 func (r providerUsageRefresh) canonicalCredential() []byte {
-	if r.refreshesInCanonicalHome() && len(r.refreshed) > 0 {
-		return r.refreshed
+	if r.refreshesInCanonicalHome() && len(r.refreshed.Bytes()) > 0 {
+		return r.refreshed.Bytes()
 	}
-	return r.probed
+	return r.probed.Bytes()
 }
 
 type providerUsageCommit struct {
@@ -377,9 +379,9 @@ func (m *Manager) commitProviderUsageRefreshLocked(
 	}
 
 	// latest is the value every copy of this account must end up holding.
-	latest := refresh.refreshed
+	latest := refresh.refreshed.Bytes()
 	if len(latest) == 0 {
-		latest = refresh.probed
+		latest = refresh.probed.Bytes()
 	}
 	// Those bytes are also the freshest statement of when this login's session
 	// ends — and for an account saved before the deadline was captured, the
@@ -396,13 +398,13 @@ func (m *Manager) commitProviderUsageRefreshLocked(
 		commit.account = &updated
 	}
 	if !refresh.isSelected {
-		if len(refresh.refreshed) == 0 || refresh.slotPersisted {
+		if len(refresh.refreshed.Bytes()) == 0 || refresh.slotPersisted {
 			return commit, nil
 		}
 		if err := m.credentials.WriteAccountCredential(
 			refresh.providerName,
 			refresh.accountID,
-			refresh.refreshed,
+			refresh.refreshed.Bytes(),
 		); err != nil {
 			return commit, fmt.Errorf(
 				"save refreshed %s credentials: %w",
@@ -444,7 +446,7 @@ func (m *Manager) commitProviderUsageRefreshLocked(
 			return commit, err
 		}
 	}
-	if refresh.providerName == string(provider.Codex) && !bytes.Equal(latest, refresh.probed) {
+	if refresh.providerName == string(provider.Codex) && !bytes.Equal(latest, refresh.probed.Bytes()) {
 		advanced, err := m.store.AdvanceActiveCredential(
 			refresh.providerName,
 			refresh.accountID,

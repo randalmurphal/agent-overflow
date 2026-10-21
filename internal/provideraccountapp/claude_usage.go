@@ -186,7 +186,7 @@ func (m *Manager) probeSelectedClaudeRateLimits(
 			readErr,
 		)
 	}
-	if claude.CredentialsSignedOut(refreshed.Data) {
+	if claude.CredentialsSignedOut(refreshed.Bytes()) {
 		m.audit(
 			"claude account %s found signed out: the CLI blanked the canonical credential during a usage refresh",
 			selection.AccountID,
@@ -222,7 +222,7 @@ func (m *Manager) probeSelectedClaudeRateLimits(
 	snapshot, retryErr := claude.ProbeRateLimitsFromCredentialData(
 		ctx,
 		m.rateLimitProbeClient(),
-		refreshed.Data,
+		refreshed.Bytes(),
 	)
 	if errors.Is(retryErr, claude.ErrOAuthUnauthorized) {
 		// A bearer the server rejects immediately after its own refresh issued
@@ -234,7 +234,7 @@ func (m *Manager) probeSelectedClaudeRateLimits(
 	// refresh tokens are single-use, so a rotation that reaches disk but not
 	// the commit leaves this account's slot holding a token the server has
 	// already retired — a login that dies at its next use, not a stale read.
-	return snapshot, refreshed.Data, retryErr
+	return snapshot, refreshed.Bytes(), retryErr
 }
 
 // assertSelectedClaudeIdentity refuses to attribute a canonical-home refresh

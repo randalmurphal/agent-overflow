@@ -70,7 +70,7 @@ func (c *Credentials) CaptureAccountCredential(providerName, accountID string) (
 	snapshot, readErr := c.ReadCredentialSnapshot(providerName, accountID, false)
 	switch {
 	case readErr == nil:
-		if c.credentialSignedOut(providerName, snapshot.Data) {
+		if c.credentialSignedOut(providerName, snapshot.Bytes()) {
 			break
 		}
 		saved.hadCredential = true
