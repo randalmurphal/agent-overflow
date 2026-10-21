@@ -299,35 +299,49 @@ func TestUnreachableForgeIsTransientAndRedacted(t *testing.T) {
 	}
 }
 
+// A host's client runs at most 8 requests at once: with 8 held, a 9th
+// waits in the client and starts only when one of them finishes. The
+// transport's own connection limit is lifted for the test, so the bound
+// is the client's semaphore (HTTP/2 multiplexes one connection, which a
+// connection limit does not bound).
 func TestHostConcurrencyIsBounded(t *testing.T) {
 	t.Parallel()
-	var inFlight, peak atomic.Int32
-	release := make(chan struct{})
+	var arrived atomic.Int32
+	release := make(chan struct{}, 9)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		n := inFlight.Add(1)
-		for {
-			p := peak.Load()
-			if n <= p || peak.CompareAndSwap(p, n) {
-				break
-			}
-		}
+		arrived.Add(1)
 		<-release
-		inFlight.Add(-1)
 	}))
 	defer srv.Close()
 	s := isolatedService(t, srv)
+	s.transport.MaxConnsPerHost = 0
+	s.transport.MaxIdleConnsPerHost = 0
 	var wg sync.WaitGroup
-	for range 8 {
+	defer wg.Wait()
+	defer func() {
+		for range 9 {
+			release <- struct{}{}
+		}
+	}()
+	for range 9 {
 		wg.Go(func() { _, _ = s.GitHub("github.com").Do(t.Context(), Request{Path: "user"}) })
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for inFlight.Load() < hostConcurrency && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+	waitFor := func(n int32) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for arrived.Load() < n {
+			if time.Now().After(deadline) {
+				t.Fatalf("arrived = %d, want %d", arrived.Load(), n)
+			}
+			time.Sleep(time.Millisecond)
+		}
 	}
-	time.Sleep(50 * time.Millisecond)
-	close(release)
-	wg.Wait()
-	if peak.Load() != hostConcurrency {
-		t.Fatalf("peak in flight = %d, want %d", peak.Load(), hostConcurrency)
+	waitFor(8)
+	// An absence has no event to wait for: the 9th has had time to arrive.
+	time.Sleep(100 * time.Millisecond)
+	if got := arrived.Load(); got != 8 {
+		t.Fatalf("in flight with 8 held = %d, want 8", got)
 	}
+	release <- struct{}{}
+	waitFor(9)
 }

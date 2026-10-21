@@ -10,8 +10,8 @@ import (
 
 // The attention state of one row of the Pull requests page's list
 // (docs/specs/pull-requests.md, "The page"): what the PR needs from the
-// signed-in user, from its list row and, once the focus read landed, its
-// detail. A pure function of the two, so the table tests pin every rule.
+// signed-in user, from the forge's own record of the user's activity on
+// it. A pure function of the row, so the table tests pin every rule.
 
 // The attention states, in sort order.
 const (
@@ -20,6 +20,7 @@ const (
 	PRStateReady            = "ready"
 	PRStateChangesRequested = "changes_requested"
 	PRStateWaitingOnAuthor  = "waiting_on_author"
+	PRStateApproved         = "approved"
 	PRStateDraft            = "draft"
 	PRStateOpen             = "open"
 )
@@ -31,172 +32,152 @@ const (
 	PRGroupWaiting  = "waiting"
 )
 
+// The reasons a row carries: why it is the user's turn, or how the user
+// stands on a PR it waits on others for.
+const (
+	PRReasonReviewRequested = "review_requested"
+	PRReasonPushed          = "pushed"
+	PRReasonReplied         = "replied"
+	PRReasonApproved        = "approved"
+	PRReasonReviewed        = "reviewed"
+)
+
 var prStateOrder = []string{
 	PRStateYourTurn, PRStatePipelineFailed, PRStateReady, PRStateChangesRequested,
-	PRStateWaitingOnAuthor, PRStateDraft, PRStateOpen,
+	PRStateWaitingOnAuthor, PRStateApproved, PRStateDraft, PRStateOpen,
 }
 
-// PRListDetail is what the focus read (git.Core.ReadPRSummary) adds to a
-// row: readiness and its blocker kinds, approvals, unresolved threads, the
-// head checks (ChecksState in the list's success/failure/pending
-// vocabulary, PipelineStatus the normalized CI status), whether the
-// viewer's approval stands and, on GitLab, the viewer's own review state
-// (git.PRDetail.ViewerReviewState).
-type PRListDetail struct {
-	ReadinessState    string   `json:"readinessState"`
-	Blockers          []string `json:"blockers"`
-	ApprovalsGiven    int      `json:"approvalsGiven"`
-	ApprovalsRequired int      `json:"approvalsRequired"`
-	Unresolved        int      `json:"unresolved"`
-	ChecksState       string   `json:"checksState"`
-	PipelineStatus    string   `json:"pipelineStatus"`
-	ViewerApproved    bool     `json:"viewerApproved"`
-	ViewerReviewState string   `json:"viewerReviewState,omitempty"`
+// PRReason is why a row is in its state: for your_turn a review requested
+// from the user, the author's push after the user's review (Commits, the
+// commits since when the forge says, else 0) or the author's reply after
+// it (Replies, the author's comments and reviews since on GitHub, else
+// 0); for approved whether the user's approval stands (approved) or the
+// user reviewed without approving (reviewed).
+type PRReason struct {
+	Kind    string `json:"kind"`
+	Commits int    `json:"commits"`
+	Replies int    `json:"replies"`
 }
 
-// prListDetailOf summarizes a PR's detail for its row.
-func prListDetailOf(detail gitops.PRDetail) *PRListDetail {
-	out := &PRListDetail{
-		ReadinessState:    detail.Readiness.State,
-		Blockers:          make([]string, 0, len(detail.Readiness.Blockers)),
-		ApprovalsGiven:    detail.Readiness.Approvals.Given,
-		ApprovalsRequired: detail.Readiness.Approvals.Required,
-		ViewerApproved:    detail.Merge.ViewerApproved,
-		ViewerReviewState: detail.ViewerReviewState,
-	}
-	for _, blocker := range detail.Readiness.Blockers {
-		out.Blockers = append(out.Blockers, blocker.Kind)
-	}
-	if detail.Readiness.Unresolved != nil {
-		out.Unresolved = *detail.Readiness.Unresolved
-	}
-	checks := detail.Checks
-	switch {
-	case checks.Failure > 0:
-		out.ChecksState = "failure"
-	case checks.Pending > 0:
-		out.ChecksState = "pending"
-	case checks.Total > 0:
-		out.ChecksState = "success"
-	}
-	if len(checks.Checks) > 0 {
-		statuses := make([]string, 0, len(checks.Checks))
-		for _, check := range checks.Checks {
-			statuses = append(statuses, gitops.NormalizeCIStatus(check.Status, check.Conclusion))
-		}
-		out.PipelineStatus = gitops.AggregateCIStatus(statuses)
-	}
-	return out
-}
+// gitlabTouchSlack is how much later than the user's own note or
+// approval GitLab's updated_at may read for the same action: GitLab
+// touches the merge request after it writes the note, so the merge
+// request's update time trails the event's created_at by a moment.
+// Without the slack the user's own comment reads as the author's reply.
+const gitlabTouchSlack = 10 * time.Second
 
-// prAttention is a row's state and group. detail is nil until the focus
-// read landed. In order:
+// prAttention is a row's state, group and reason. In order:
 //
-//   - your_turn: the user did not open it, and the forge requests their
-//     review, or they reviewed it and the author pushed or replied after
-//     that review (GitHub: the head commit, or the author's latest
-//     comment or review, is newer than the review). On GitLab, whose
-//     list cannot say whether a reviewer reviewed, a reviewer whose own
-//     review, as the detail reads it, has not approved, requested changes
-//     or reviewed (before the detail lands, any reviewer).
-//   - pipeline_failed: theirs, and the checks or the pipeline failed. A
-//     GitLab list row carries no pipeline, so there it waits for the
-//     detail.
-//   - ready: theirs, and the readiness is ready, or before the detail the
-//     forge's merge status is clean (GitHub clean or has_hooks, GitLab
-//     mergeable).
-//   - changes_requested: theirs, and a reviewer requested changes.
-//   - waiting_on_author: the user's own review requested changes and
-//     nothing moved since (GitHub: their latest review; GitLab: their
-//     reviewer state, which the detail reads). Another reviewer's change
-//     request is never the user's.
+//   - your_turn, not the user's PR: review_requested while the user's
+//     review is asked for and not given (GitLab reviewer state unreviewed
+//     or review_started, or unknown for a reviewer when the review read
+//     failed; GitHub a pending review request); otherwise, once the user
+//     reviewed, pushed when the head commit is newer than the user's
+//     latest activity, else replied when the PR moved after it (GitLab
+//     its update time, past gitlabTouchSlack; GitHub the author's latest
+//     comment or review). GitLab's events are a lower bound: a reviewer
+//     whose review state says they reviewed, with no activity in the
+//     window read or only activity older than the window's floor, may
+//     have acted any time up to the floor, so the floor stands in for
+//     their activity.
+//   - pipeline_failed and ready, the user's PR: its head pipeline failed;
+//     the forge would merge it (GitLab detailed_merge_status mergeable,
+//     GitHub clean or has_hooks).
+//   - changes_requested, the user's PR: a reviewer requested changes.
+//   - waiting_on_author: the user's review requested changes and nothing
+//     moved since.
+//   - approved: the user approved (reason approved) or reviewed without
+//     approving (reason reviewed), and nothing moved since.
 //   - draft, then open.
-func prAttention(row gitops.PRListRow, detail *PRListDetail) (state, group string) {
-	state = prAttentionState(row, detail)
+func prAttention(row gitops.PRListRow) (state, group string, reason *PRReason) {
+	state, reason = prAttentionState(row)
 	group = PRGroupWaiting
 	switch state {
 	case PRStateYourTurn, PRStatePipelineFailed, PRStateReady:
 		group = PRGroupNeedsYou
 	}
-	return state, group
+	return state, group, reason
 }
 
-func prAttentionState(row gitops.PRListRow, detail *PRListDetail) string {
-	changesRequested := row.ReviewDecision == "CHANGES_REQUESTED"
-	if !row.ViewerIsAuthor {
-		review := row.ViewerReview
-		reviewed := review.SubmittedAt != ""
-		headMoved := reviewed && rfc3339After(row.LastCommitAt, review.SubmittedAt)
-		authorReplied := reviewed && rfc3339After(row.AuthorActivityAt, review.SubmittedAt)
+func prAttentionState(row gitops.PRListRow) (string, *PRReason) {
+	if row.ViewerIsAuthor {
 		switch {
-		case row.Ref.Forge == "gitlab":
-			if row.ViewerIsReviewer && !gitlabViewerReviewed(detail) {
-				return PRStateYourTurn
-			}
-		case row.ReviewRequested || headMoved || authorReplied:
-			return PRStateYourTurn
+		case row.PipelineStatus == gitops.CIStatusFailed:
+			return PRStatePipelineFailed, nil
+		case slices.Contains([]string{"clean", "has_hooks", "mergeable"}, row.MergeStatus):
+			return PRStateReady, nil
+		case row.ReviewDecision == "CHANGES_REQUESTED":
+			return PRStateChangesRequested, nil
 		}
-	} else {
-		failed := row.ChecksState == "failure"
-		if detail != nil {
-			failed = detail.ChecksState == "failure" || detail.PipelineStatus == gitops.CIStatusFailed
-		}
-		if failed {
-			return PRStatePipelineFailed
-		}
-		ready := slices.Contains([]string{"clean", "has_hooks", "mergeable"}, row.MergeStatus)
-		if detail != nil {
-			ready = detail.ReadinessState == gitops.MergeStateReady
-		}
-		if ready {
-			return PRStateReady
-		}
-		if changesRequested {
-			return PRStateChangesRequested
-		}
+		return prQuietState(row), nil
 	}
-	if !row.ViewerIsAuthor {
-		// The user's own change request: GitHub's list names their latest
-		// review, GitLab's detail their reviewer state. The aggregate
-		// decision may be another reviewer's.
-		mine := strings.EqualFold(row.ViewerReview.State, "CHANGES_REQUESTED")
+	switch review := row.ViewerReviewState; {
+	case review == "unreviewed" || review == "review_started":
+		return PRStateYourTurn, &PRReason{Kind: PRReasonReviewRequested}
+	case review == "" && row.Ref.Forge == "gitlab" && row.ViewerIsReviewer:
+		// The review read failed: a reviewer whose review is unknown is
+		// asked for it until the read says otherwise.
+		return PRStateYourTurn, &PRReason{Kind: PRReasonReviewRequested}
+	case review == "":
+		return prQuietState(row), nil
+	}
+	// The window's floor outranks older activity found: a feed cut above
+	// the viewer's later activity hides it.
+	activity := row.ViewerActivityAt
+	if activity == "" || rfc3339After(row.ViewerActivityFloor, activity) {
+		activity = row.ViewerActivityFloor
+	}
+	if activity != "" {
+		if rfc3339After(row.LastCommitAt, activity) {
+			return PRStateYourTurn, &PRReason{Kind: PRReasonPushed}
+		}
+		replied := rfc3339After(row.AuthorActivityAt, activity)
 		if row.Ref.Forge == "gitlab" {
-			mine = row.ViewerIsReviewer && detail != nil && detail.ViewerReviewState == gitlabReviewRequestedChanges
+			replied = rfc3339AfterBy(row.UpdatedAt, activity, gitlabTouchSlack)
 		}
-		if mine {
-			return PRStateWaitingOnAuthor
+		if replied {
+			return PRStateYourTurn, &PRReason{Kind: PRReasonReplied, Replies: row.AuthorReplies}
 		}
 	}
+	switch row.ViewerReviewState {
+	case "requested_changes":
+		return PRStateWaitingOnAuthor, nil
+	case "approved":
+		return PRStateApproved, &PRReason{Kind: PRReasonApproved}
+	}
+	return PRStateApproved, &PRReason{Kind: PRReasonReviewed}
+}
+
+// prQuietState is a row's state when nothing asks anything of the user.
+func prQuietState(row gitops.PRListRow) string {
 	if row.Draft {
 		return PRStateDraft
 	}
 	return PRStateOpen
 }
 
-// gitlabReviewRequestedChanges is GitLab's reviewer state for a review
-// that requested changes.
-const gitlabReviewRequestedChanges = "requested_changes"
-
-// gitlabViewerReviewed reports that the detail shows the viewer's own
-// review done: their approval stands, or their reviewer state is
-// approved, requested_changes or reviewed. Unknown before the detail.
-func gitlabViewerReviewed(detail *PRListDetail) bool {
-	if detail == nil {
-		return false
-	}
-	switch detail.ViewerReviewState {
-	case "approved", gitlabReviewRequestedChanges, "reviewed":
-		return true
-	}
-	return detail.ViewerApproved
-}
-
 // rfc3339After reports whether a is a time after b; an unreadable time is
 // not after anything.
 func rfc3339After(a, b string) bool {
+	return rfc3339AfterBy(a, b, 0)
+}
+
+// rfc3339AfterBy reports whether a is more than slack after b.
+func rfc3339AfterBy(a, b string, slack time.Duration) bool {
 	at, errA := time.Parse(time.RFC3339, a)
 	bt, errB := time.Parse(time.RFC3339, b)
-	return errA == nil && errB == nil && at.After(bt)
+	return errA == nil && errB == nil && at.After(bt.Add(slack))
+}
+
+// prListItemOf is a row as the list publishes it: its attention and the
+// detail fields in the wire's shape.
+func prListItemOf(row gitops.PRListRow) PRListItem {
+	item := PRListItem{PRListRow: row, Unresolved: row.Unresolved, CI: row.PipelineStatus}
+	item.State, item.Group, item.Reason = prAttention(row)
+	if row.ApprovalsGiven != nil && row.ApprovalsRequired != nil {
+		item.Approvals = &PRApprovals{Given: *row.ApprovalsGiven, Required: *row.ApprovalsRequired}
+	}
+	return item
 }
 
 // sortPRListItems orders a project's rows: needs-you first, then by state

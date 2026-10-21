@@ -146,38 +146,49 @@ func (f *gitlabForge) viewerLogin(ctx context.Context, client *forgeapi.Client, 
 // error that left it unknown. A refusal is still cached as unknown for
 // the TTL and returned as that cached error each time.
 func (f *gitlabForge) readViewerLogin(ctx context.Context, client *forgeapi.Client, host string) (string, error) {
+	viewer, err := f.readViewer(ctx, client, host)
+	return viewer.Username, err
+}
+
+// gitlabViewer is the account host's current login reads as: its
+// username and numeric id (the events feed is addressed by the id).
+type gitlabViewer struct {
+	Username string `json:"username"`
+	ID       int64  `json:"id"`
+}
+
+// readViewer is readViewerLogin with the account's id.
+func (f *gitlabForge) readViewer(ctx context.Context, client *forgeapi.Client, host string) (gitlabViewer, error) {
 	fp, err := client.CredentialFingerprint(ctx)
 	if err != nil {
-		return "", err
+		return gitlabViewer{}, err
 	}
 	key := func(fp string) string { return fp + " " + host }
 	if viewer, ok := f.viewers.get(key(fp), f.core.nowFn()); ok {
-		if viewer == "" {
-			return "", fmt.Errorf("gitlab: the login on %s could not be read; retried in %s", host, gitlabCacheTTL)
+		if viewer.Username == "" {
+			return gitlabViewer{}, fmt.Errorf("gitlab: the login on %s could not be read; retried in %s", host, gitlabCacheTTL)
 		}
 		return viewer, nil
 	}
-	var user struct {
-		Username string `json:"username"`
-	}
+	var user gitlabViewer
 	resp, err := client.JSON(ctx, forgeapi.Request{Path: "user"}, &user)
 	if err != nil {
 		_, limited := errors.AsType[*forgeapi.RateLimitedError](err)
 		_, transient := errors.AsType[*forgeapi.TransientError](err)
 		if ctx.Err() != nil || limited || transient {
-			return "", err
+			return gitlabViewer{}, err
 		}
 		log.Printf("gitlab: reading the login on %s failed; merge requests read as not the viewer's for %s: %v", host, gitlabCacheTTL, err)
 		// The refusal is the lookup's login's only while the client still
 		// holds that credential: a 401 inside the call can have replaced it,
 		// and the new login was never refused, so nothing is cached then.
 		if after, err := client.CredentialFingerprint(ctx); err == nil && after == fp {
-			f.viewers.put(key(fp), "", f.core.nowFn())
+			f.viewers.put(key(fp), gitlabViewer{}, f.core.nowFn())
 		}
-		return "", err
+		return gitlabViewer{}, err
 	}
-	f.viewers.put(key(resp.Credential), user.Username, f.core.nowFn())
-	return user.Username, nil
+	f.viewers.put(key(resp.Credential), user, f.core.nowFn())
+	return user, nil
 }
 
 // gitlabFillMerge fills the detail's readiness, merge options, end of

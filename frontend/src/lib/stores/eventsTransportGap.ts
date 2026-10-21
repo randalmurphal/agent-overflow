@@ -63,6 +63,7 @@ import { applyBackendSetChange } from './systems.svelte';
 import { reconcileThreadLiveActivity } from './threadLiveActivity';
 import { recoverThreadWindows } from './threadWindowRecovery';
 import { resyncLiveCodeRows } from '../components/chat/markdown/liveCodeSpans.svelte';
+import { hydratePullsAttention } from './pullsAttention.svelte';
 
 // The registry hands out whole ThreadPanes; this module narrows them to
 // the ingest surface at the one acquisition point, so a new pane member
@@ -333,6 +334,11 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       const backend = backendKeyForOrigin(origin?.backendId ?? '');
       const resync = resyncPullsAfterGap(backend);
       if (resync) holdBackendRecovery(backend, resync);
+      return;
+    }
+    // The badge's count is restated by one read.
+    case 'pulls:badge': {
+      void hydratePullsAttention(backendKeyForOrigin(origin?.backendId ?? ''));
       return;
     }
     // Each pipeline's re-subscribe holds the recovery until it settles.

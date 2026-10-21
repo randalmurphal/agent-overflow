@@ -130,6 +130,38 @@ flagged `tag`, so a branch sharing the name is never in it. The release
 that added the `tag` restriction was not checked; an older
 self-managed instance may answer otherwise. None of this was probed.
 
+Measured against gitlab.com on 2026-10-21 (read-only, a project of 57
+open merge requests): the list page takes 0.9 to 1.7 s; in GraphQL
+`mergeRequests(reviewerUsername:|authorUsername:)`, the reviewer and
+approval fields and the discussion and commit fields each cost 1 to 2 s,
+and `approvalsRequired`/`approvalsLeft` 2 to 2.7 s alone. The extended
+GitHub `PullsSearch` costs 3 points and 0.4 s.
+
+Approvals required, measured the same day on 56 merge requests the
+viewer reviews (3 runs each, medians): the review read alone 1.74 s and
+1.85 s; with `approvalState { rules { type approvalsRequired } }` added
+2.29 s and 2.72 s; with `approvalsRequired approvalsLeft` added 3.95 s;
+`approvalState` alone as its own read 1.05 s, beside an activity read of
+1.75 s and a list page of 1.15 to 3.7 s. Every merge request carried an
+`ANY_APPROVER` rule ("All Members", 1) beside `REGULAR` and `CODE_OWNER`
+rules, so the project's rules summed overcount: `approvalsRequired` was
+the larger of the any-approver rule and the other rules' sum on all 56.
+The viewer's events feed carries `commented on` events with target type
+`Note`, `DiffNote` and `DiscussionNote`, each with `note.noteable_type`
+`MergeRequest` and `noteable_iid`. GitLab drops the events the reader
+may not see after selecting a page, so pages come back short and still
+name the next. With `after` 30 days back (2026-10-21, an active viewer,
+`per_page=100`): the unfiltered feed's pages held 100, 100, 98, 100, 97,
+91, 100, 100 and 94 events, each but the last naming a next page, and
+reached the after date (2026-09-22). `action=commented` held 97, 89 and
+67 comments over 3 pages, the last naming none, reaching back 28 days
+(2026-09-23); `action=approved` 81 approvals in one page naming none,
+reaching back 28 days (2026-09-23). No comment or approval in the
+unfiltered feed was older than the filtered feeds' oldest, so a feed
+whose last page names no next is complete to the after date. Stopping at
+the first short page read one comments page, reaching back 12 days
+(2026-10-09). The feed's `after` semantics were not probed.
+
 ## Merge readiness and actions
 
 ### GitHub

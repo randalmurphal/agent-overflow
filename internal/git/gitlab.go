@@ -20,9 +20,16 @@ import (
 type gitlabForge struct {
 	core *Core
 	// projects caches each login's merge settings of a project and
-	// viewers each login's username on a host (gitlab_merge_read.go).
+	// viewers each login's account on a host (gitlab_merge_read.go).
 	projects gitlabCache[gitlabProjectSettings]
-	viewers  gitlabCache[string]
+	viewers  gitlabCache[gitlabViewer]
+	// noApprovalState marks a host whose GraphQL has no
+	// MergeRequest.approvalState (GitLab CE), for gitlabCacheTTL
+	// (pr_list_gitlab.go).
+	noApprovalState gitlabCache[bool]
+	// activity is each host's viewer activity, read once per list round
+	// (pr_list_gitlab.go).
+	activity gitlabActivityRounds
 	// routes remembers, per host, a server that answered the older cancel
 	// route (gitlab_merge.go).
 	routes gitlabRouteMemory
@@ -242,7 +249,7 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 	var out PRRead
 	var notes []gitlabNoteRaw
 	var threads []ReviewThread
-	if want.Threads || want.Events || (want.Detail && want.Unresolved) {
+	if want.Threads || want.Events {
 		var system []gitlabNoteRaw
 		threads, system, err = readGitLabDiscussions(ctx, client, ref, mr.headSHA())
 		if err != nil {
@@ -271,15 +278,6 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		viewer := f.viewerLogin(ctx, client, ref.Host)
 		out.Detail = gitlabPRDetail(mr, gitlabApprovalVerdicts(approvals))
 		gitlabFillMerge(&out.Detail, mr, approvals, settings, events, viewer)
-		if want.ViewerReview {
-			if out.Detail.ViewerReviewState, err = readGitLabViewerReview(ctx, client, ref, viewer); err != nil {
-				return PRRead{}, err
-			}
-		}
-		if want.Unresolved {
-			unresolved := UnresolvedThreads(threads)
-			out.Detail.Readiness.Unresolved = &unresolved
-		}
 	}
 	if want.CI {
 		if out.CI, err = readGitLabPipeline(ctx, client, ref.Repository(), mr.HeadPipeline); err != nil {
@@ -288,43 +286,6 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		out.HasCI = true
 	}
 	return out, nil
-}
-
-// readGitLabViewerReview is the state of viewer's own review of ref, from
-// the merge request's reviewers (the list and the single merge request
-// carry the reviewers' accounts only), or "" when the viewer is not one
-// or is unknown. The reviewers are paginated: pages are read until the
-// viewer is found or the list ends.
-func readGitLabViewerReview(ctx context.Context, client *forgeapi.Client, ref PRReference, viewer string) (string, error) {
-	if viewer == "" {
-		return "", nil
-	}
-	request := forgeapi.Request{
-		Path:  gitlabMRPath(ref) + "/reviewers",
-		Query: url.Values{"per_page": {strconv.Itoa(gitlabPageSize)}},
-	}
-	state := ""
-	page := 1
-	err := client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
-		var reviewers []struct {
-			User  gitlabAuthorRaw `json:"user"`
-			State string          `json:"state"`
-		}
-		if err := json.Unmarshal(resp.Body, &reviewers); err != nil {
-			return false, fmt.Errorf("GitLab merge request reviewers: decode response: %w", err)
-		}
-		for _, reviewer := range reviewers {
-			if strings.EqualFold(reviewer.User.Username, viewer) {
-				state = reviewer.State
-				return false, nil
-			}
-		}
-		return advanceGitLabPage(resp, &page), nil
-	})
-	if err != nil {
-		return "", err
-	}
-	return state, nil
 }
 
 // readGitLabMR reads the merge request itself. The single-MR endpoint is

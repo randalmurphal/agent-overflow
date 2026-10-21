@@ -59,7 +59,8 @@ later Issues) are pane kinds behind one sidebar row.
       cause and the fix, with the raw text and correlation id behind
       "Details"; a failed project on the page fails alone.
 - [x] The page lists open MRs of every forge-identified project with one
-      state per row and a "since you looked" fragment, remembers its
+      state and reason per row from the forge's record of the user's
+      activity, remembers its
       filters, and opens an MR in the review pane beside the list with no
       thread.
 - [x] "Open with agent" starts a draft thread in a linked worktree on the
@@ -213,7 +214,7 @@ failed project's group header; the other projects keep working.
 ### The page (phase 2)
 
 A pane kind `pulls`. Left: a list column with tabs (Merge requests,
-Pipelines), a filter row, and grouped rows; right: the review pane on the
+Pipelines), a toolbar, and grouped rows; right: the review pane on the
 selected MR with the project's root as its workspace and no thread, so
 stepping through the list never loses it. The list column's width is
 remembered and clamped to leave the detail a usable width in the pane as
@@ -231,45 +232,70 @@ the one before it; older ones are released with their subscription. Line
 comment drafts have no thread row to live under, so the MR owns them
 (stored under its key on its computer) until a review posts them or they
 are sent to a thread; they survive stepping through the list and a
-restart. The page marks an MR viewed in `pr_views` while its review is
-on screen (the Merge requests tab, and on compact its detail screen) and
-the window visible, whenever the head the review shows (the PR store's
-`onPRSnapshotApplied` observer, or the snapshot it holds when the page
-returns to a kept review) or the listed comment count differs from what
-it last marked. Nothing is marked while the Pipelines tab or the hidden
-window keeps the selected MR's review off screen; when it shows again,
-the revision it shows then is marked.
+restart. The page records nothing about which MRs the user opened.
 
-Rows carry number, title, project, author, age, CI dot, approvals `n/m`,
-unresolved count, one state pill and a "since you looked" fragment.
-States, in sort order across projects: `Your turn` (review requested and
-no review from you, or the author pushed or replied after your last
-review), `Pipeline failed` (yours), `Ready to merge` (yours, no blockers),
-`Changes requested` (yours), `Waiting on author` (you requested changes,
-nothing since), `Draft`, `Open`. "Since you looked" compares the head SHA
-and the comment count against the last time the app opened the MR
-(`pr_views` store table: PR key, opened at, head SHA seen, comments seen);
-a row with nothing new dims. Filters (`Needs you`, `Mine`, `Review
-requested`, `All open`, project) persist in appStorage per tab.
+A row reads top down: the project, `!number`, the author's display name
+("you" for your own) and the age; the title, wrapping to two lines; then
+the facts, wrapping and never cut: the state label in its tone, approvals
+`n/m`, the unresolved count and, on your own MRs only, the CI dot. The
+label says why the row is where it is: `Review requested`, `+N commits
+since your review`, `N replies since your review` or `Author replied`,
+`Approved by you` or `Reviewed by you`. States, in attention order:
+`Your turn` (a review requested from you and not
+given; or, after your latest review, comment or approval, the author
+pushed, or replied: GitHub the author's latest comment or review, GitLab
+the MR's update time more than `gitlabTouchSlack` (10 s) past your
+activity), `Pipeline failed` (yours), `Ready to merge` (yours, no
+blockers), `Changes requested` (yours), `Waiting on author` (you
+requested changes, nothing since), `Approved by you` or `Reviewed by you`
+(your approval stands, or you reviewed without approving, nothing since),
+`Draft`, `Open`. The first three are Needs you, listed before the rest.
+Your activity is the forge's own record: GitHub `viewerLatestReview`,
+GitLab your notes (conversation, diff and discussion notes) and approvals,
+read as two events feeds GitLab filters to comments and to approvals.
+The feeds are a lower bound: each reads at most five pages of 100 events
+from the last 30 days. A feed that ends within its pages covers the 30
+days; one cut at the fifth page covers back to the oldest event it
+returned. The window's floor is the later of the two. Your activity is
+the later of the activity found and the floor, since a cut feed can hide
+activity newer than what the other feed found: a reviewer state of
+reviewed, approved or changes requested with no activity in the window,
+or only activity older than the floor, takes the floor as your activity.
+A head commit after it is a push since your review, an update after it
+(past the slack) a reply, and neither keeps `Approved by you` or
+`Reviewed by you`. The toolbar's three
+menu buttons, the filter (`Needs you` with its count, `Mine`,
+`Reviewing`, `All open`), the projects and the sort (`Updated` newest
+first by default, `Created`, `Title`, `Author`, `Attention`; the same
+key again turns the order around) persist in appStorage per computer;
+under 380px the buttons keep their icons and drop their labels. A sort
+you pick opens the list from the top; rows that move under a list at its
+top leave it at its top, and under a list scrolled into its rows keep the
+row at the viewport top in view.
 
-One list read per project per refresh: GitLab
-`projects/P/merge_requests?state=opened&per_page=100` (carries sha,
-`user_notes_count`, reviewers, `detailed_merge_status`),
-GitHub a `search(type: ISSUE, query: "is:pr is:open repo:O/R")` with
-`reviewDecision`, `reviewRequests`, `headRefOid`, the rollup state, the
-head commit's time and the last 10 comments and reviews (the author's
-latest reply).
-GitLab's basic list carries no `head_pipeline` and cannot say how the
-viewer reviewed (its `reviewers` are accounts, and `requested_changes`
-may be another reviewer's), so the detail (approvals, the viewer's own
-reviewer state, unresolved count, pipeline, readiness) is read per MR for the rows on screen and for the user's own
-and reviewed rows whether or not the filter shows them, at most 60 (the
-rows on screen first, each group newest first), and
-read again only when the list row moves, on a refresh, or after five
-minutes. A GitLab author's reply after the viewer's review is not in the
-list and does not move a row to `Your turn`. The page refreshes on open,
-on its own refresh button and every PR-update interval while visible;
-hidden, it reads nothing.
+Each project is read with a fixed set of concurrent requests and never a
+read per row. GitHub: one `PullsSearch` per 100 PRs, whose nodes carry the
+review state, approvals given and required, unresolved threads (unknown
+for a PR with more than 100) the rollup and the head commit's time.
+GitLab: the merge request list (rows), three GraphQL reads of the MRs you
+review (`PullsReviewing`, reviewer states, approvals, head pipeline;
+`PullsReviewingActivity`, discussions and the head commit's time;
+`PullsReviewingApprovals`, the MR's own approval rules, so the required
+count follows its target branch and any override) and the same three of
+the MRs you authored, and, once per host per refresh, your comment and
+approval events. Only a
+failed list fails the project; another failed request leaves its fields
+unknown and shows on the project beside its rows. A GitLab MR you neither
+review nor authored carries no review detail and reads `Draft` or `Open`.
+
+Each project's read is stored (`pr_list_projects`), so the page opens on
+the stored list, marked stale while it is older than the PR-update
+interval, and each project replaces its rows as its read lands. The
+backend reads once after boot every forge project whose stored read is
+missing or older than the interval, so the list and the badge are current
+before the page opens. The page refreshes on open, on its own refresh
+button and every PR-update interval while visible; hidden, it reads
+nothing.
 
 "Open with agent" (the page header's button on the selected MR, and each
 row's menu on that row's MR, which stays unselected): "New
@@ -290,7 +316,8 @@ The sidebar's Workflows row becomes a tools row above Settings: the
 active tool shows its icon and label with its badge, the others show
 their icon and badge with hover text (`git-pull-request-arrow`,
 `workflow`, `circle-dot`). The badge is the tool's "needs you" count:
-MRs in `Your turn` + `Pipeline failed` + `Ready to merge`, running
+MRs in `Your turn` + `Pipeline failed` + `Ready to merge` (from the
+stored list until the page reads, `pulls:badge` on every store write), running
 workflows, assigned issues. The label follows the focused pane when it is
 a tool, else the tool used last. A click opens the tool in the focused
 pane like a thread; ctrl+click opens a new pane. Workflows becomes the
@@ -385,14 +412,15 @@ approve → unapprove → auto-merge → cancel → merge → merged on a GitLab
 and a GitHub PR, plus the 403 and 409 refusals, with a compact screenshot
 of the section header. `pulls-page.spec.ts` and its compact twin
 (`pulls-page-flow.ts`) drive the page against both forges: the groups
-and states, the forge reads (each repository's list, the own and
-review-requested rows' detail), the detail read that moves a GitLab row
-to `Pipeline failed`, filters remembered across a reload, the pinned
-review, "since you looked" clearing on a reopen and staying clear across
-a reload, a refused project failing alone, "Open with agent" opening a
+and the states, the forge reads (each project's fixed request set and no
+read per row), the GraphQL read that moves a GitLab row to `Pipeline
+failed`, filters remembered across a reload, the pinned review, the
+user's own comment reading `Reviewed by you` and the author's reply
+after it `Your turn`, a refused project failing alone, "Open with agent" opening a
 thread on a worktree of the branch, and the Pipelines tab's filters
 remembered across a reload, stages and a GitLab and a GitHub job log.
 `pullsList.browser.test.ts` covers the lists' virtualization: the
-mounted rows stay bounded over thousands, and the rows on screen are
-reported as the list scrolls, changes and hides. `tool-panes.spec.ts`, `workflows-pane.spec.ts` and their
+mounted rows stay bounded over thousands, a list at its top stays there
+when its rows move, a chosen sort opens from the top, and the Pipelines
+list reports the rows on screen as it scrolls, changes and hides. `tool-panes.spec.ts`, `workflows-pane.spec.ts` and their
 compact twins cover the tools row and the pane kinds.

@@ -16,7 +16,7 @@ import (
 const (
 	defaultReadTimeout  = 45 * time.Second
 	defaultMaxBodyBytes = 1 << 20
-	hostConcurrency     = 4
+	hostConcurrency     = 8
 	tokenRereadAfter    = 5 * time.Minute
 	tokenFailureTTL     = 5 * time.Second
 	githubAPIVersion    = "2022-11-28"
@@ -43,8 +43,9 @@ type Options struct {
 }
 
 // Isolated is the fake forge an isolated boot talks to. Every host's REST
-// base becomes BaseURL/github/rest/ or BaseURL/gitlab/api/v4/ and the
-// GitHub GraphQL URL BaseURL/github/graphql; a request carries the forge
+// base becomes BaseURL/github/rest/ or BaseURL/gitlab/api/v4/ and its
+// GraphQL URL BaseURL/github/graphql or BaseURL/gitlab/api/graphql; a
+// request carries the forge
 // host it is for as its Host header. An attachment's absolute URL becomes
 // BaseURL/{forge}/absolute/<host>/<path>. Token is sent on every request.
 // An empty BaseURL refuses every request.
@@ -243,15 +244,15 @@ func (s *Service) isClosed() bool {
 	return s.closed
 }
 
-// defaultBase resolves a host's REST base and GraphQL URL (nil for
-// GitLab) per the table in docs/architecture/forge-transport.md.
+// defaultBase resolves a host's REST base and GraphQL URL per the table
+// in docs/architecture/forge-transport.md.
 func (s *Service) defaultBase(forge, host string, info SourceInfo) (*url.URL, *url.URL, error) {
 	if s.isolated != nil {
 		switch forge {
 		case ForgeGitHub:
 			return s.isolated.JoinPath("github", "rest/"), s.isolated.JoinPath("github", "graphql"), nil
 		default:
-			return s.isolated.JoinPath("gitlab", "api", "v4/"), nil, nil
+			return s.isolated.JoinPath("gitlab", "api", "v4/"), s.isolated.JoinPath("gitlab", "api", "graphql"), nil
 		}
 	}
 	switch forge {
@@ -274,7 +275,8 @@ func (s *Service) defaultBase(forge, host string, info SourceInfo) (*url.URL, *u
 		if err := validHost(strings.ToLower(apiHost)); err != nil {
 			return nil, nil, fmt.Errorf("forgeapi: glab api_host for %s: %w", host, err)
 		}
-		return &url.URL{Scheme: scheme, Host: strings.ToLower(apiHost), Path: "/api/v4/"}, nil, nil
+		apiHost = strings.ToLower(apiHost)
+		return &url.URL{Scheme: scheme, Host: apiHost, Path: "/api/v4/"}, &url.URL{Scheme: scheme, Host: apiHost, Path: "/api/graphql"}, nil
 	}
 }
 

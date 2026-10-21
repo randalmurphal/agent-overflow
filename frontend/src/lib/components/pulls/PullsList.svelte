@@ -14,6 +14,8 @@
     projectErrors: readonly PullsListProjectError[];
     selectedKey: string | null;
     filter: PullsFilter;
+    /** The remembered sort, as a key: a change scrolls the list to its top. */
+    orderKey: string;
     /** No project on the computer has a forge origin. */
     noProjects: boolean;
     error: string | null;
@@ -23,10 +25,9 @@
     onOpen: (row: PullRowView) => void;
     onMenu: (row: PullRowView, anchor: HTMLElement) => void;
     onRetry: () => void;
-    onVisible: (keys: string[]) => void;
   }
 
-  let { groups, projectErrors, selectedKey, filter, noProjects, error, loading, retrying, shown, onOpen, onMenu, onRetry, onVisible }: Props = $props();
+  let { groups, projectErrors, selectedKey, filter, orderKey, noProjects, error, loading, retrying, shown, onOpen, onMenu, onRetry }: Props = $props();
 
   const items = $derived(
     pullsListItems(
@@ -40,6 +41,7 @@
     ),
   );
   const rowCount = $derived(groups.reduce((sum, group) => sum + group.rows.length, 0));
+  const failedLists = $derived(projectErrors.filter((error) => !error.partial).length);
 
   const emptyText = $derived.by(() => {
     if (noProjects) return 'No project on this computer has a GitHub or GitLab origin.';
@@ -48,24 +50,24 @@
         return 'Nothing needs you right now.';
       case 'mine':
         return 'No open merge requests of yours.';
-      case 'review_requested':
-        return 'No reviews requested from you.';
+      case 'reviewing':
+        return 'No open merge requests you are reviewing.';
       default:
         return 'No open merge requests.';
     }
   });
 </script>
 
-<PullsListBody testid="pulls-list" {items} rowEstimatePx={76} {shown} {onVisible} {onRetry} {retrying}>
+<PullsListBody testid="pulls-list" {items} rowEstimatePx={84} {shown} {orderKey} {onRetry} {retrying}>
   {#snippet row(view: PullRowView)}
     <PullRow row={view} selected={selectedKey === view.key} {onOpen} {onMenu} />
   {/snippet}
   {#snippet after()}
     {#if error}
       <p class="px-4 py-6 text-xs text-error" data-testid="pulls-error">{error}</p>
-    {:else if loading && rowCount === 0 && projectErrors.length === 0}
+    {:else if loading && rowCount === 0 && failedLists === 0}
       <p class="px-4 py-6 text-xs text-fg-muted" data-testid="pulls-loading">Reading merge requests…</p>
-    {:else if rowCount === 0 && projectErrors.length === 0}
+    {:else if rowCount === 0 && failedLists === 0}
       <div class="flex flex-col items-center gap-1 px-6 py-10 text-center" data-testid="pulls-empty">
         <p class="text-sm text-fg-muted">{emptyText}</p>
       </div>

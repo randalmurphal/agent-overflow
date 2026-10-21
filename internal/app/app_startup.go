@@ -205,6 +205,10 @@ func (a *App) startUnattendedWork() error {
 	// restart sessions when a checkout was removed outside the app. See
 	// app_worktree_watch.go.
 	a.armWorktreeWatch()
+	// Read every forge project's pull requests once into the list's
+	// stored copy, so the sidebar badge is current before the Pull
+	// requests page opens (app_pr_list_store.go).
+	a.startPRListPrefetch()
 	// Probe provider binaries once on boot so the thread-level banner can
 	// surface "claude not found" / "codex too old" before the user opens
 	// settings. Runs in a goroutine because DetectProvider spawns subprocesses

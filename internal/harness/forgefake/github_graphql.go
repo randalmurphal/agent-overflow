@@ -74,14 +74,19 @@ var (
 	graphQLDeclaredVar = regexp.MustCompile(`\$([A-Za-z_][A-Za-z0-9_]*)\s*:`)
 )
 
-// graphQL answers one GraphQL request. Callers hold mu.
+// graphQL answers one GraphQL request from its forge's operation table
+// (githubGraphQL, gitlabGraphQL). Callers hold mu.
 func (e *Engine) graphQL(c *call) response {
 	req := c.graphQL
-	i := slices.IndexFunc(githubGraphQL, func(op graphQLOp) bool { return op.name == req.OperationName })
+	ops := githubGraphQL
+	if c.cli == "glab" {
+		ops = gitlabGraphQL
+	}
+	i := slices.IndexFunc(ops, func(op graphQLOp) bool { return op.name == req.OperationName })
 	if i < 0 {
 		return unhandled("GraphQL operation %q is not implemented", req.OperationName)
 	}
-	op := githubGraphQL[i]
+	op := ops[i]
 	m := graphQLSignature.FindStringSubmatch(req.Query)
 	if m == nil || m[1] != op.kind || m[2] != op.name {
 		return unhandled("GraphQL document does not declare %s %s", op.kind, op.name)
@@ -109,12 +114,13 @@ func (e *Engine) graphQL(c *call) response {
 			return unhandled("%s variable %q is missing", op.name, name)
 		}
 	}
-	resp, refused := e.refusal("gh graphql " + op.name)
+	route := c.cli + " graphql " + op.name
+	resp, refused := e.refusal(route)
 	if !refused {
 		resp = op.run(e, c, req.vars)
 	}
 	if resp.route == "" {
-		resp.route = "gh graphql " + op.name
+		resp.route = route
 	}
 	return resp
 }

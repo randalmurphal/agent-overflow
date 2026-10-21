@@ -1,0 +1,26 @@
+{
+  "data": {
+    "project": {
+      "mergeRequests": {
+        "pageInfo": { "hasNextPage": false, "endCursor": "eyJpZCI6IjIwIn0" },
+        "nodes": [
+          {
+            "iid": "20",
+            "reviewers": { "nodes": [
+              { "username": "dave", "mergeRequestInteraction": { "reviewState": "APPROVED" } },
+              { "username": "alice", "mergeRequestInteraction": { "reviewState": "REVIEWED" } }
+            ] },
+            "approvedBy": { "nodes": [ { "username": "dave" } ] },
+            "headPipeline": { "status": "FAILED" }
+          },
+          {
+            "iid": "999",
+            "reviewers": { "nodes": [] },
+            "approvedBy": { "nodes": [] },
+            "headPipeline": null
+          }
+        ]
+      }
+    }
+  }
+}

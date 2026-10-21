@@ -377,7 +377,7 @@ func (f *githubForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		}
 		out.Detail = githubPRDetail(pull, viewer, checks)
 		merge := githubMergeInputs{pull: pull, repo: raw.Repository.githubRepositoryMergeRaw, contexts: contexts}
-		if merge.needsThreadStates() || (want.Unresolved && pull.ThreadStates.PageInfo.HasNextPage) {
+		if merge.needsThreadStates() {
 			if err := f.readThreadStates(ctx, client, ref, pull); err != nil {
 				return PRRead{}, err
 			}

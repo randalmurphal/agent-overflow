@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,9 +56,9 @@ func reviewersThen(n int, login string) []string {
 }
 
 // The list pump against the fake forge on both forges: the projects come
-// from the store and their origins, the rows from each forge's list, and
-// the detail read of the user's own and reviewed rows adds approvals,
-// unresolved threads and the pipeline, which moves the attention state.
+// from the store and their origins, and each project's read (the list and
+// its detail requests, none per row) gives every row its attention state,
+// approvals, unresolved threads and pipeline.
 func TestPRListReadsBothForgesThroughTheirAPIs(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -84,14 +85,16 @@ func TestPRListReadsBothForgesThroughTheirAPIs(t *testing.T) {
 				Reviews: []forgefake.Review{{Author: "bob", AuthorName: "Bob", State: "APPROVED"}},
 				Threads: []forgefake.Thread{{Path: "a.go", Line: &line, Comments: []forgefake.Comment{{Body: "fix"}}}},
 				CI:      &forgefake.Pipeline{Jobs: []forgefake.Job{{Name: "unit", Status: "failed"}}}},
-			{Number: 8, Title: "Approved by me", Author: "carol", Reviewers: []string{"ao-viewer"},
+			{Number: 8, Title: "Approved by me", Author: "carol", Reviewers: []string{"ao-viewer"}, Readiness: &forgefake.Readiness{RequiredApprovals: 2},
 				Reviews: []forgefake.Review{{Author: "ao-viewer", AuthorName: "Viewer", State: "APPROVED"}}},
 			// Dave's change request is not the viewer's.
 			{Number: 9, Title: "Dave asked for changes", Author: "carol", Reviewers: []string{"ao-viewer", "dave"}, ChangeRequests: []string{"dave"}},
 			{Number: 10, Title: "Approved by me, Dave asked for changes", Author: "carol", Reviewers: []string{"ao-viewer", "dave"}, ChangeRequests: []string{"dave"},
 				Reviews: []forgefake.Review{{Author: "ao-viewer", State: "APPROVED"}}},
-			// The viewer is past the reviewers' first page of 100.
+			// The viewer is past the first 100 reviewers.
 			{Number: 11, Title: "I asked for changes", Author: "carol", Reviewers: reviewersThen(100, "ao-viewer"), ChangeRequests: []string{"ao-viewer"}},
+			// Neither the viewer's nor asked of it: no detail read covers it.
+			{Number: 12, Title: "Someone else's", Author: "carol"},
 		}},
 	}}); err != nil {
 		t.Fatal(err)
@@ -118,61 +121,126 @@ func TestPRListReadsBothForgesThroughTheirAPIs(t *testing.T) {
 	}
 
 	t.Cleanup(app.prUpdates.wg.Wait)
-	sub := subscribePRList(t, app)
-	snapshot := sub.Snapshot
-	gh := prListProject(t, snapshot, github)
-	if gh.Error != "" || len(gh.Rows) != 5 {
-		t.Fatalf("github project = %+v", gh)
+	events := capturePRList(t, app)
+	subscribePRList(t, app)
+	snapshot := awaitPRListRead(t, events)
+	type want struct {
+		state, reason string
+		approvals     *PRApprovals
+		unresolved    int
+		ci            string
 	}
-	states := map[int]string{}
-	for _, row := range gh.Rows {
-		states[row.Ref.Number] = row.State
-	}
-	if states[1] != PRStateReady || states[2] != PRStateYourTurn || states[3] != PRStatePipelineFailed ||
-		states[4] != PRStateYourTurn || states[5] != PRStateWaitingOnAuthor {
-		t.Fatalf("github states = %v", states)
-	}
-	gl := prListProject(t, snapshot, gitlab)
-	if gl.Error != "" || len(gl.Rows) != 5 {
-		t.Fatalf("gitlab project = %+v", gl)
-	}
-	// Every row is the user's own or one they review, so the first tick
-	// read each detail: GitLab's list alone has no pipeline and cannot say
-	// the viewer approved.
-	for _, project := range snapshot.Projects {
+	check := func(project ProjectPRList, wants map[int]want) {
+		t.Helper()
+		if project.Error != "" || project.DetailError != "" || len(project.Rows) != len(wants) {
+			t.Fatalf("project = %+v", project)
+		}
 		for _, row := range project.Rows {
-			if row.Detail == nil {
-				t.Fatalf("%s has no detail (%s)", row.Ref.Key(), row.DetailError)
+			w := wants[row.Ref.Number]
+			reason := ""
+			if row.Reason != nil {
+				reason = row.Reason.Kind
+			}
+			unresolved := -1
+			if row.Unresolved != nil {
+				unresolved = *row.Unresolved
+			}
+			if row.State != w.state || reason != w.reason || unresolved != w.unresolved || row.CI != w.ci ||
+				(row.Approvals == nil) != (w.approvals == nil) || (w.approvals != nil && *row.Approvals != *w.approvals) {
+				t.Errorf("%s = %s/%s approvals %+v unresolved %d ci %q; want %+v", row.Ref.Key(), row.State, reason, row.Approvals, unresolved, row.CI, w)
 			}
 		}
 	}
-	for _, row := range prListProject(t, snapshot, gitlab).Rows {
-		switch row.Ref.Number {
-		case 7:
-			if row.State != PRStatePipelineFailed || row.Detail.ApprovalsGiven != 1 || row.Detail.ApprovalsRequired != 1 || row.Detail.Unresolved != 1 {
-				t.Fatalf("MR 7 = %s %+v (%s)", row.State, row.Detail, row.DetailError)
-			}
-		case 8:
-			if row.State != PRStateOpen || !row.Detail.ViewerApproved {
-				t.Fatalf("MR 8 = %s %+v (%s)", row.State, row.Detail, row.DetailError)
-			}
-		case 9:
-			if row.State != PRStateYourTurn || row.ReviewDecision != "CHANGES_REQUESTED" || row.Detail.ViewerReviewState != "unreviewed" {
-				t.Fatalf("MR 9 = %s %+v (%s)", row.State, row.Detail, row.DetailError)
-			}
-		case 10:
-			if row.State != PRStateOpen || row.Detail.ViewerReviewState != "approved" {
-				t.Fatalf("MR 10 = %s %+v (%s)", row.State, row.Detail, row.DetailError)
-			}
-		case 11:
-			if row.State != PRStateWaitingOnAuthor || row.Detail.ViewerReviewState != "requested_changes" {
-				t.Fatalf("MR 11 = %s %+v (%s)", row.State, row.Detail, row.DetailError)
-			}
-		}
-	}
+	check(prListProject(t, snapshot, github), map[int]want{
+		1: {state: PRStateReady, approvals: &PRApprovals{Given: 1}, unresolved: 1},
+		2: {state: PRStateYourTurn, reason: PRReasonReviewRequested, approvals: &PRApprovals{}},
+		3: {state: PRStatePipelineFailed, approvals: &PRApprovals{}, ci: gitops.CIStatusFailed},
+		4: {state: PRStateYourTurn, reason: PRReasonReplied, approvals: &PRApprovals{}},
+		5: {state: PRStateWaitingOnAuthor, approvals: &PRApprovals{}},
+	})
+	check(prListProject(t, snapshot, gitlab), map[int]want{
+		7: {state: PRStatePipelineFailed, approvals: &PRApprovals{Given: 1, Required: 1}, unresolved: 1, ci: gitops.CIStatusFailed},
+		// Each merge request requires its own rules' approvals.
+		8:  {state: PRStateApproved, reason: PRReasonApproved, approvals: &PRApprovals{Given: 1, Required: 2}},
+		9:  {state: PRStateYourTurn, reason: PRReasonReviewRequested, approvals: &PRApprovals{}},
+		10: {state: PRStateApproved, reason: PRReasonApproved, approvals: &PRApprovals{Given: 1}},
+		11: {state: PRStateWaitingOnAuthor, approvals: &PRApprovals{}},
+		12: {state: PRStateOpen, unresolved: -1},
+	})
 	for _, row := range prListProject(t, snapshot, github).Rows {
-		if row.Ref.Number == 1 && (row.State != PRStateReady || row.Detail.ApprovalsGiven != 1 || row.Detail.Unresolved != 1) {
-			t.Fatalf("PR 1 = %s %+v (%s)", row.State, row.Detail, row.DetailError)
+		if row.Ref.Number == 4 && row.Reason.Replies != 1 {
+			t.Errorf("PR 4 replies = %d, want the author's one comment", row.Reason.Replies)
+		}
+	}
+	// No request names one PR: each project costs its forge's fixed set.
+	perRoute := map[string]int{}
+	for _, inv := range engine.Invocations(0).Invocations {
+		if inv.Unhandled {
+			t.Fatalf("unhandled forge call: %+v", inv)
+		}
+		if !strings.HasSuffix(inv.Route, "repository identity") {
+			// Registering a project reads its repository's identity.
+			perRoute[inv.Route]++
+		}
+	}
+	for _, route := range []string{"gh graphql PullsSearch", "glab api merge request list", "glab graphql PullsReviewing", "glab graphql PullsAuthored",
+		"glab graphql PullsReviewingActivity", "glab graphql PullsAuthoredActivity", "glab graphql PullsReviewingApprovals",
+		"glab graphql PullsAuthoredApprovals", "glab api user"} {
+		if perRoute[route] != 1 {
+			t.Errorf("route %s sent %d times, want once: %v", route, perRoute[route], perRoute)
+		}
+	}
+	if perRoute["glab api user events"] != 2 {
+		t.Errorf("events sent %d times, want the comment and approval feeds once each: %v", perRoute["glab api user events"], perRoute)
+	}
+	if len(perRoute) != 10 {
+		t.Errorf("routes = %v, want only the project reads", perRoute)
+	}
+}
+
+// The comments feed, cut at its page cap by the viewer's newer comments
+// elsewhere, hides the viewer's comment on both merge requests; the
+// complete approvals feed finds the viewer's older approval of each. The
+// viewer may have acted any time up to the window's floor, so neither the
+// commit between the approval and the comment (!1) nor the update the
+// comment made (!2) is a move since the viewer's review.
+func TestPRListGitLabCutFeedHidesNoLaterActivity(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	engine := forgefake.New(forgefake.Options{APIToken: mergeForgeToken})
+	now := time.Now().UTC()
+	ago := func(d time.Duration) string { return now.Add(-d).Format(time.RFC3339) }
+	day := 24 * time.Hour
+	newer := make([]forgefake.Comment, 1000)
+	for i := range newer {
+		newer[i] = forgefake.Comment{Author: "ao-viewer", Body: "elsewhere", CreatedAt: ago(time.Duration(i+1) * time.Minute)}
+	}
+	approved := []forgefake.Review{{Author: "ao-viewer", State: "APPROVED", SubmittedAt: ago(6 * day)}}
+	comment := []forgefake.Comment{{Author: "ao-viewer", Body: "one more thing", CreatedAt: ago(3 * day)}}
+	if _, err := engine.Seed(forgefake.Fixture{Repos: []forgefake.Repo{
+		{Forge: "gitlab", Project: "team/busy", Pulls: []forgefake.Pull{{Number: 1, Title: "Elsewhere", Author: "carol", Comments: newer}}},
+		{Forge: "gitlab", Project: "team/app", Pulls: []forgefake.Pull{
+			{Number: 1, Title: "Pushed before my comment", Author: "carol", Reviewers: []string{"ao-viewer"}, Reviews: approved, Comments: comment,
+				CommittedAt: ago(4 * day), UpdatedAt: ago(3 * day)},
+			{Number: 2, Title: "Touched by my comment", Author: "carol", Reviewers: []string{"ao-viewer"}, Reviews: approved, Comments: comment,
+				CommittedAt: ago(7 * day), UpdatedAt: ago(3 * day)},
+		}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	useForgefake(t, app, engine)
+	gitlab := forgeProjectRepo(t, app, "https://gitlab.com/team/app.git")
+	t.Cleanup(app.prUpdates.wg.Wait)
+	events := capturePRList(t, app)
+	subscribePRList(t, app)
+	project := prListProject(t, awaitPRListRead(t, events), gitlab)
+	if project.Error != "" || project.DetailError != "" || len(project.Rows) != 2 {
+		t.Fatalf("project = %+v", project)
+	}
+	for _, row := range project.Rows {
+		if row.State != PRStateApproved || row.Reason == nil || row.Reason.Kind != PRReasonApproved {
+			t.Errorf("!%d = %s/%+v, want approved by you", row.Ref.Number, row.State, row.Reason)
 		}
 	}
 }
@@ -197,8 +265,9 @@ func TestPRListKeepsAProjectWhoseOriginCannotBeRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(app.prUpdates.wg.Wait)
+	events := capturePRList(t, app)
 	sub := subscribePRList(t, app)
-	if got := prListProject(t, sub.Snapshot, projectID); got.Error != "" || len(got.Rows) != 1 {
+	if got := prListProject(t, awaitPRListRead(t, events), projectID); got.Error != "" || len(got.Rows) != 1 {
 		t.Fatalf("project = %+v", got)
 	}
 

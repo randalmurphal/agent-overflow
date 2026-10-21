@@ -83,7 +83,7 @@ func newForgeAPIService(t *testing.T, answer func(call forgeAPICall) forgeAPIAns
 		body, _ := io.ReadAll(r.Body)
 		call := forgeAPICall{RESTBase: restBase, Host: r.Host, Method: r.Method, Header: r.Header.Clone(), Body: body}
 		switch {
-		case r.URL.Path == "/github/graphql":
+		case r.URL.Path == "/github/graphql" || r.URL.Path == "/gitlab/api/graphql":
 			var payload struct {
 				Query         string         `json:"query"`
 				OperationName string         `json:"operationName"`
