@@ -68,6 +68,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2617952423: 'thread', // CountRunningBackgroundTasks
 	565306783: 'thread', // CreateDiffReviewComment
 	757689265: 'selected', // CreateDiscussion
+	1066081365: 'selected', // CreatePRDiffReviewComment
 	969543070: 'selected', // CreateProject
 	617214578: 'selected', // CreateProjectCheckout
 	4246792665: 'thread', // CreateProposedPlanComment
@@ -78,6 +79,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1303317790: 'thread', // DeleteDiffReviewComment
 	302062730: 'selected', // DeleteDiscussion
 	3876094070: 'thread', // DeleteEmptyDraftThread
+	4163354052: 'selected', // DeletePRDiffReviewComment
 	151243274: 'home', // DeletePasskey
 	3379369923: 'project', // DeleteProject
 	554913120: 'thread', // DeleteProposedPlanComment
@@ -221,6 +223,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2582096622: 'home', // ListMcpServerStatuses
 	2775087950: 'home', // ListOwnDevices
 	4110818691: 'workspace', // ListPRCommits
+	4107523902: 'selected', // ListPRDiffReviewComments
 	763649720: 'selected', // ListPRReviewThreads
 	3860831272: 'home', // ListPasskeys
 	4186874978: 'thread', // ListPendingInteractiveRequests
@@ -247,6 +250,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2332614075: 'home', // ListWSLDistros
 	2808137798: 'selected', // ListWorkspaceMcpServers
 	1673567995: 'thread', // MarkDiffReviewCommentsSent
+	3609806653: 'selected', // MarkPRDiffReviewCommentsSent
 	404041677: 'selected', // MarkPRReady
 	2793490958: 'selected', // MarkPRViewed
 	1480646012: 'thread', // MarkThreadRead
@@ -367,6 +371,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2317109106: 'thread', // SendDiffReviewComments
 	1496882310: 'thread', // SendMessage
 	3632185196: 'thread', // SendMessageWithOptions
+	2605216420: 'selected', // SendPRDiffReviewComments
 	1407159655: 'thread', // SendPlanRevisionComments
 	1204782690: 'selected', // SetAgentComputerEnabled
 	3167202905: 'home', // SetAppearance
@@ -441,6 +446,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3490094229: 'home', // UpdateKeybindings
 	595194384: 'home', // UpdateNewThreadDefaults
 	3913890634: 'selected', // UpdatePRBranch
+	1344431070: 'selected', // UpdatePRDiffReviewComment
 	3717363955: 'home', // UpdateProjectSortPositions
 	2747956806: 'thread', // UpdateProposedPlanComment
 	2894041249: 'home', // UpdateSettings

@@ -757,6 +757,12 @@ export function CreateDiscussion(def: store$0.DiscussionDefinition): $Cancellabl
     return $Call.ByID(757689265, def);
 }
 
+export function CreatePRDiffReviewComment(pr: git$0.PRReference, input: store$0.DiffReviewCommentInput): $CancellablePromise<store$0.DiffReviewComment> {
+    return $Call.ByID(1066081365, pr, input).then(($result: any) => {
+        return $$createType20($result);
+    });
+}
+
 /**
  * CreateProject validates that path exists, is a directory, and is not
  * already backing another project. Returns ErrProjectPathInUse when the
@@ -859,6 +865,14 @@ export function DeleteDiscussion(name: string, scope: string): $CancellablePromi
  */
 export function DeleteEmptyDraftThread(threadID: string): $CancellablePromise<boolean> {
     return $Call.ByID(3876094070, threadID);
+}
+
+/**
+ * DeletePRDiffReviewComment deletes a draft, or resolves one already sent,
+ * as DeleteDiffReviewComment does.
+ */
+export function DeletePRDiffReviewComment(pr: git$0.PRReference, commentID: string): $CancellablePromise<void> {
+    return $Call.ByID(4163354052, pr, commentID);
 }
 
 /**
@@ -2873,6 +2887,15 @@ export function ListPRCommits(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev
 }
 
 /**
+ * ListPRDiffReviewComments lists pr's drafts for one source.
+ */
+export function ListPRDiffReviewComments(pr: git$0.PRReference, scope: string, sourceKey: string): $CancellablePromise<store$0.DiffReviewComment[]> {
+    return $Call.ByID(4107523902, pr, scope, sourceKey).then(($result: any) => {
+        return $$createType131($result);
+    });
+}
+
+/**
  * ListPRReviewThreads reads a PR's review threads for the user who asked.
  */
 export function ListPRReviewThreads(pr: git$0.PRReference): $CancellablePromise<git$0.ReviewThread[]> {
@@ -3197,6 +3220,14 @@ export function ListWorkspaceMcpServers(providerName: string, workspacePath: str
 
 export function MarkDiffReviewCommentsSent(threadID: string, scope: string, sourceKey: string, commentIDs: string[], sentTurnID: string): $CancellablePromise<void> {
     return $Call.ByID(1673567995, threadID, scope, sourceKey, commentIDs, sentTurnID);
+}
+
+/**
+ * MarkPRDiffReviewCommentsSent settles drafts a SubmitPRReview posted to
+ * the forge; no turn carried them.
+ */
+export function MarkPRDiffReviewCommentsSent(pr: git$0.PRReference, scope: string, sourceKey: string, commentIDs: string[]): $CancellablePromise<void> {
+    return $Call.ByID(3609806653, pr, scope, sourceKey, commentIDs);
 }
 
 export function MarkPRReady(pr: git$0.PRReference): $CancellablePromise<app$0.PRActionResult> {
@@ -4824,6 +4855,18 @@ export function SendMessageWithOptions(threadID: string, content: string, opts: 
 }
 
 /**
+ * SendPRDiffReviewComments appends pr's drafts commentIDs to threadID as
+ * SendDiffReviewComments appends a thread's own (the same prompt, with
+ * input's PR context) and marks them sent on the turn that carried them.
+ * Every id must be a draft of pr's for scope and sourceKey.
+ */
+export function SendPRDiffReviewComments(pr: git$0.PRReference, threadID: string, scope: string, sourceKey: string, commentIDs: string[], input: app$0.SendDiffReviewCommentsInput): $CancellablePromise<store$0.Thread> {
+    return $Call.ByID(2605216420, pr, threadID, scope, sourceKey, commentIDs, input).then(($result: any) => {
+        return $$createType8($result);
+    });
+}
+
+/**
  * SendPlanRevisionComments sends only the selected draft comments back to the
  * agent. The same thread already contains the plan body, so this deliberately
  * avoids stuffing the full plan text into the prompt.
@@ -5804,6 +5847,12 @@ export function UpdateNewThreadDefaults(update: app$0.NewThreadDefaultsUpdate): 
 export function UpdatePRBranch(pr: git$0.PRReference, headSHA: string): $CancellablePromise<app$0.PRActionResult> {
     return $Call.ByID(3913890634, pr, headSHA).then(($result: any) => {
         return $$createType7($result);
+    });
+}
+
+export function UpdatePRDiffReviewComment(pr: git$0.PRReference, commentID: string, update: store$0.DiffReviewCommentUpdate): $CancellablePromise<store$0.DiffReviewComment> {
+    return $Call.ByID(1344431070, pr, commentID, update).then(($result: any) => {
+        return $$createType20($result);
     });
 }
 

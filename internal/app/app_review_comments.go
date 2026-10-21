@@ -261,10 +261,21 @@ func (a *App) CreateDiffReviewComment(threadID string, input store.DiffReviewCom
 		return store.DiffReviewComment{}, err
 	}
 	defer unlock()
+	created, err := a.store.CreateDiffReviewComment(newDiffReviewComment(store.ThreadReviewOwner(threadID), input))
+	if err != nil {
+		return store.DiffReviewComment{}, fmt.Errorf("create diff review comment: %w", err)
+	}
+	a.announceDiffCommentsChanged(threadID, created.Scope, created.SourceKey)
+	return created, nil
+}
+
+// newDiffReviewComment is a new draft of owner's from input.
+func newDiffReviewComment(owner store.DiffReviewOwner, input store.DiffReviewCommentInput) store.DiffReviewComment {
 	now := time.Now().UnixMilli()
-	comment := store.DiffReviewComment{
+	return store.DiffReviewComment{
 		ID:           uuid.NewString(),
-		ThreadID:     threadID,
+		ThreadID:     owner.ThreadID,
+		PRKey:        owner.PRKey,
 		Scope:        input.Scope,
 		SourceKey:    input.SourceKey,
 		CommitSHA:    input.CommitSHA,
@@ -277,12 +288,6 @@ func (a *App) CreateDiffReviewComment(threadID string, input store.DiffReviewCom
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
-	created, err := a.store.CreateDiffReviewComment(comment)
-	if err != nil {
-		return store.DiffReviewComment{}, fmt.Errorf("create diff review comment: %w", err)
-	}
-	a.announceDiffCommentsChanged(threadID, created.Scope, created.SourceKey)
-	return created, nil
 }
 
 //ao:scope threads:operate
