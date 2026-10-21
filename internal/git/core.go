@@ -441,7 +441,8 @@ func (c *Core) CreateWorktree(cwd, path, branch string) error {
 // has a worktree (git's own invariant — one branch checked out in one
 // place at a time). createdBranch reports that the branch was origin's
 // alone and this call made the local branch, which a caller undoing the
-// attach deletes with the worktree.
+// attach deletes with the worktree. A failed attach leaves neither a
+// worktree nor a branch it made (checkoutWorktree).
 func (c *Core) AttachWorktree(cwd, path, branch string) (createdBranch bool, err error) {
 	if strings.TrimSpace(path) == "" {
 		return false, errors.New("git worktree path is required")
@@ -453,7 +454,6 @@ func (c *Core) AttachWorktree(cwd, path, branch string) (createdBranch bool, err
 	if err := validateBranchName(branch); err != nil {
 		return false, err
 	}
-	args := []string{"worktree", "add", "--", path, branch}
 	// A branch only origin has is checked out as a new local branch tracking
 	// origin's, named explicitly: git's own guess needs exactly one remote
 	// to have the name, and a fork's second remote often does too.
@@ -462,16 +462,14 @@ func (c *Core) AttachWorktree(cwd, path, branch string) (createdBranch bool, err
 		return false, err
 	}
 	if remoteRef, ok := c.originTrackingRef(cwd, branch); !local && ok {
-		args = []string{"worktree", "add", "--track", "-b", branch, "--", path, remoteRef}
+		_, stderr, err := c.Execute(cwd, "branch", "--track", "--", branch, remoteRef)
+		if err != nil {
+			return false, fmt.Errorf("git worktree add failed: %s", firstNonEmpty(strings.TrimSpace(stderr), err.Error()))
+		}
 		createdBranch = true
 	}
-	_, stderr, err := c.Execute(cwd, args...)
-	if err != nil {
-		message := strings.TrimSpace(stderr)
-		if message == "" {
-			message = err.Error()
-		}
-		return false, fmt.Errorf("git worktree add failed: %s", message)
+	if err := c.checkoutWorktree(cwd, path, branch, createdBranch); err != nil {
+		return false, err
 	}
 	return createdBranch, nil
 }
@@ -488,9 +486,12 @@ func (c *Core) CreateWorktreeFromBranch(cwd, path, baseBranch, newBranch string)
 	return c.createWorktreeAt(cwd, path, baseBranch, newBranch, false)
 }
 
-// createWorktreeAt is the one `git worktree add -b` invocation. startPoint is
-// a revision (a local branch, or a remote-tracking ref when the caller
-// resolved one); empty means the repository's current HEAD.
+// createWorktreeAt makes newBranch and checks it out in a new worktree at
+// path. startPoint is a revision (a local branch, or a remote-tracking ref
+// when the caller resolved one); empty means the repository's current HEAD.
+// It runs `git branch` and then `git worktree add`, which is what
+// `git worktree add -b` does, so that a failed checkout knows the branch is
+// this call's to delete (checkoutWorktree).
 //
 // noTrack suppresses git's branch.autoSetupMerge DWIM, which would otherwise
 // set the new branch's upstream whenever the start point is a remote-tracking
@@ -518,26 +519,81 @@ func (c *Core) createWorktreeAt(cwd, path, startPoint, newBranch string, noTrack
 		return err
 	}
 
-	args := []string{"worktree", "add"}
+	args := []string{"branch"}
 	if noTrack {
 		args = append(args, "--no-track")
 	}
-	args = append(args, "-b", newBranch, "--", path)
+	args = append(args, "--", newBranch)
 	if startPoint != "" {
 		args = append(args, startPoint)
 	}
-	_, stderr, err := c.Execute(cwd, args...)
-	if err != nil {
+	if _, stderr, err := c.Execute(cwd, args...); err != nil {
 		if c.branchAlreadyExistsAfterCreationError(cwd, stderr, newBranch) {
 			return branchAlreadyExistsError(newBranch)
 		}
-		message := strings.TrimSpace(stderr)
-		if message == "" {
-			message = err.Error()
-		}
-		return fmt.Errorf("git worktree add failed: %s", message)
+		return fmt.Errorf("git worktree add failed: %s", firstNonEmpty(strings.TrimSpace(stderr), err.Error()))
 	}
-	return nil
+	return c.checkoutWorktree(cwd, path, newBranch, true)
+}
+
+// checkoutWorktree checks branch out in a new worktree at path. A failed
+// checkout takes back what it left: a failing post-checkout hook leaves the
+// worktree registered, so a worktree git lists at path on branch that was
+// not registered before is removed, and then, when ownsBranch (the caller
+// made the branch for this worktree), the branch is deleted. A branch the
+// caller did not make is never deleted, and a destination git refused as
+// occupied stays as it was. What the undo could not take back is joined to
+// git's diagnosis.
+func (c *Core) checkoutWorktree(cwd, path, branch string, ownsBranch bool) error {
+	// A worktree on a branch made for this checkout can only be this
+	// checkout's; on any other branch it may predate it.
+	registered := false
+	if !ownsBranch {
+		var err error
+		if registered, err = c.worktreeRegisteredAt(cwd, path); err != nil {
+			return fmt.Errorf("git worktree add: %w", err)
+		}
+	}
+	_, stderr, err := c.Execute(cwd, "worktree", "add", "--", path, branch)
+	if err == nil {
+		return nil
+	}
+	failure := fmt.Errorf("git worktree add failed: %s", firstNonEmpty(strings.TrimSpace(stderr), err.Error()))
+	var undo []error
+	if !registered {
+		worktrees, listErr := c.ListWorktrees(cwd)
+		if listErr != nil {
+			undo = append(undo, listErr)
+		}
+		for _, worktree := range worktrees {
+			if worktree.Branch == branch && SameFilesystemPath(worktree.Path, path) {
+				undo = append(undo, c.RemoveWorktreeForce(cwd, worktree.Path, true))
+				break
+			}
+		}
+	}
+	if ownsBranch {
+		undo = append(undo, c.DeleteBranch(cwd, branch, true))
+	}
+	if undoErr := errors.Join(undo...); undoErr != nil {
+		return errors.Join(failure, fmt.Errorf("undo the failed worktree add: %w", undoErr))
+	}
+	return failure
+}
+
+// worktreeRegisteredAt reports whether git lists a worktree of the
+// repository at cwd at path.
+func (c *Core) worktreeRegisteredAt(cwd, path string) (bool, error) {
+	worktrees, err := c.ListWorktrees(cwd)
+	if err != nil {
+		return false, err
+	}
+	for _, worktree := range worktrees {
+		if SameFilesystemPath(worktree.Path, path) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // RemoveWorktree removes a worktree from a repository.
