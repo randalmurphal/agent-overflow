@@ -89,7 +89,7 @@ func (c *Core) ReadPRStates(ctx context.Context, prs []TrackedPR) (map[int]PRSta
 			return nil, fmt.Errorf("PR states read names more than one repository: %s and %s", repo.Key(), pr.Ref.Key())
 		}
 	}
-	return c.ForgeByID(repo.Forge).ReadPRStates(ctx, repo, prs)
+	return c.ForgeByID(repo.Forge).ReadPRStates(ctx, repo.Repository(), prs)
 }
 
 // githubPRStatesQuery reads pull requests by node id. A node that does not
@@ -98,7 +98,7 @@ const githubPRStatesQuery = `query PRStates($ids: [ID!]!) {
   nodes(ids: $ids) { ... on PullRequest { id number state mergedAt } }
 }`
 
-func (f *githubForge) ReadPRStates(ctx context.Context, repo PRReference, prs []TrackedPR) (map[int]PRState, error) {
+func (f *githubForge) ReadPRStates(ctx context.Context, repo RepoReference, prs []TrackedPR) (map[int]PRState, error) {
 	client, err := f.core.githubAPI(repo.Host)
 	if err != nil {
 		return nil, err
@@ -166,7 +166,7 @@ func onlyNotFound(err error) bool {
 	return true
 }
 
-func (f *gitlabForge) ReadPRStates(ctx context.Context, repo PRReference, prs []TrackedPR) (map[int]PRState, error) {
+func (f *gitlabForge) ReadPRStates(ctx context.Context, repo RepoReference, prs []TrackedPR) (map[int]PRState, error) {
 	client, err := f.core.gitlabAPI(repo.Host)
 	if err != nil {
 		return nil, err

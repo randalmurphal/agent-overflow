@@ -68,6 +68,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2617952423: 'thread', // CountRunningBackgroundTasks
 	565306783: 'thread', // CreateDiffReviewComment
 	757689265: 'selected', // CreateDiscussion
+	1066081365: 'selected', // CreatePRDiffReviewComment
 	969543070: 'selected', // CreateProject
 	617214578: 'selected', // CreateProjectCheckout
 	4246792665: 'thread', // CreateProposedPlanComment
@@ -78,6 +79,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1303317790: 'thread', // DeleteDiffReviewComment
 	302062730: 'selected', // DeleteDiscussion
 	3876094070: 'thread', // DeleteEmptyDraftThread
+	4163354052: 'selected', // DeletePRDiffReviewComment
 	151243274: 'home', // DeletePasskey
 	3379369923: 'project', // DeleteProject
 	554913120: 'thread', // DeleteProposedPlanComment
@@ -212,6 +214,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3057473088: 'thread', // ListDiffReviewComments
 	942288562: 'selected', // ListDiscussions
 	2502562885: 'thread', // ListDiscussionsForThread
+	3779338822: 'selected', // ListForgeProjects
 	99668597: 'selected', // ListImportableSessions
 	2158085763: 'thread', // ListItems
 	2915892537: 'thread', // ListItemsAfterCursor
@@ -220,9 +223,11 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2582096622: 'home', // ListMcpServerStatuses
 	2775087950: 'home', // ListOwnDevices
 	4110818691: 'workspace', // ListPRCommits
+	4107523902: 'selected', // ListPRDiffReviewComments
 	763649720: 'selected', // ListPRReviewThreads
 	3860831272: 'home', // ListPasskeys
 	4186874978: 'thread', // ListPendingInteractiveRequests
+	647538989: 'project', // ListProjectPipelines
 	2721360259: 'all', // ListProjects
 	2030403250: 'thread', // ListProposedPlanComments
 	981125684: 'home', // ListProviderAccounts
@@ -241,10 +246,13 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1165681857: 'thread', // ListThreadRemoteCommands
 	4176102096: 'thread', // ListThreadSliceAround
 	1090132042: 'all', // ListThreads
+	1924357569: 'selected', // ListThreadsOnPR
 	2332614075: 'home', // ListWSLDistros
 	2808137798: 'selected', // ListWorkspaceMcpServers
 	1673567995: 'thread', // MarkDiffReviewCommentsSent
+	3609806653: 'selected', // MarkPRDiffReviewCommentsSent
 	404041677: 'selected', // MarkPRReady
+	2793490958: 'selected', // MarkPRViewed
 	1480646012: 'thread', // MarkThreadRead
 	236597375: 'thread', // MarkThreadUnread
 	3922935373: 'selected', // MergePR
@@ -269,6 +277,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	767864574: 'home', // OpenOwnComputerPairing
 	110447601: 'workspace', // OpenPRCommitDiff
 	4075510992: 'workspace', // OpenPRDiff
+	2660387675: 'selected', // OpenPRThread
 	2247958725: 'thread', // OpenTerminal
 	4078889536: 'thread', // OpenTurnEditsDiff
 	3558532873: 'workspace', // OpenWorkspaceDiff
@@ -289,6 +298,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2998028796: 'thread', // ProviderTerminalResize
 	1382066673: 'thread', // ProviderTerminalSetControl
 	2418838611: 'home', // PutSoundFile
+	2036690300: 'selected', // ReadPipelineStages
 	2473150982: 'home', // ReadReviewDiff
 	2424974671: 'thread', // ReadThreadRemoteLog
 	2274850917: 'home', // RecheckClaudeAccount
@@ -298,6 +308,8 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1420075138: 'thread', // ReconnectSession
 	2215279661: 'selected', // RefreshMcpServerStatus
 	3232577070: 'home', // RefreshPRCI
+	2738680414: 'home', // RefreshPRList
+	31356442: 'home', // RefreshPipeline
 	2745242207: 'project', // RefreshProjectIdentity
 	2539237007: 'home', // RefreshProviderAccountUsage
 	2618043580: 'home', // RefreshTerminal
@@ -359,6 +371,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2317109106: 'thread', // SendDiffReviewComments
 	1496882310: 'thread', // SendMessage
 	3632185196: 'thread', // SendMessageWithOptions
+	2605216420: 'selected', // SendPRDiffReviewComments
 	1407159655: 'thread', // SendPlanRevisionComments
 	1204782690: 'selected', // SetAgentComputerEnabled
 	3167202905: 'home', // SetAppearance
@@ -368,8 +381,12 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3655340267: 'selected', // SetEditorSettings
 	3915514446: 'home', // SetNetworkSettings
 	1675722685: 'home', // SetPRCILogFollows
+	2324570575: 'home', // SetPRListActive
+	910260531: 'home', // SetPRListFocus
 	2594833485: 'selected', // SetPRThreadResolved
 	1078249699: 'home', // SetPRUpdatesActive
+	1113626255: 'home', // SetPipelineActive
+	2435786137: 'home', // SetPipelineFollows
 	322092470: 'project', // SetProjectWorktreeSetup
 	2118904465: 'home', // SetProviderCustomEnvVar
 	719170063: 'home', // SetPushSenderCredential
@@ -398,7 +415,9 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1219107798: 'thread', // SubmitAsyncAnswers
 	2692607191: 'selected', // SubmitPRReview
 	3556446736: 'home', // SubmitProviderLoginCode
+	2065051829: 'selected', // SubscribePRList
 	3272491649: 'selected', // SubscribePRUpdates
+	2067341173: 'selected', // SubscribePipeline
 	1249964095: 'home', // SwitchProviderAccount
 	3897387725: 'thread', // SwitchThread
 	1289411773: 'home', // SyncOwnDevices
@@ -416,7 +435,9 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3655125512: 'thread', // UnarchiveThread
 	3175043037: 'thread', // UnpinThread
 	3065043012: 'home', // UnregisterPushToken
+	3130440960: 'home', // UnsubscribePRList
 	2888550814: 'home', // UnsubscribePRUpdates
+	2697678232: 'home', // UnsubscribePipeline
 	1941806085: 'thread', // UnwatchBackgroundTaskOutput
 	3406073706: 'home', // UpdateClientDeviceName
 	1472386383: 'home', // UpdateContextSettingsProfile
@@ -425,6 +446,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3490094229: 'home', // UpdateKeybindings
 	595194384: 'home', // UpdateNewThreadDefaults
 	3913890634: 'selected', // UpdatePRBranch
+	1344431070: 'selected', // UpdatePRDiffReviewComment
 	3717363955: 'home', // UpdateProjectSortPositions
 	2747956806: 'thread', // UpdateProposedPlanComment
 	2894041249: 'home', // UpdateSettings

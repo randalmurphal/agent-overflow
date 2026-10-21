@@ -70,6 +70,20 @@ const (
 // *ForgeActionError. An error that is already one, or nil, is returned
 // as is. The sentences are the table in docs/specs/pull-requests.md.
 func ExplainForgeError(ref PRReference, action ForgeAction, err error) error {
+	labels := forgeLabels(ref.Forge)
+	return explainForgeError(ref.Repository(), fmt.Sprintf("%s%s%d", ref.Project(), labels.numberPrefix, ref.Number), action, err)
+}
+
+// ExplainRepoForgeError is ExplainForgeError for a call about a whole
+// repository (its PR list, its pipelines): the sentences name the
+// project instead of one PR of it.
+func ExplainRepoForgeError(repo RepoReference, action ForgeAction, err error) error {
+	return explainForgeError(repo, repo.Project(), action, err)
+}
+
+// explainForgeError is both explanations; name is what the sentences call
+// the subject of the call.
+func explainForgeError(ref RepoReference, name string, action ForgeAction, err error) error {
 	if err == nil {
 		return nil
 	}
@@ -78,7 +92,6 @@ func ExplainForgeError(ref PRReference, action ForgeAction, err error) error {
 		return err
 	}
 	labels := forgeLabels(ref.Forge)
-	name := fmt.Sprintf("%s%s%d", ref.Project(), labels.numberPrefix, ref.Number)
 	wrap := func(kind, message string) error {
 		return &ForgeActionError{Kind: kind, Message: message, Err: err}
 	}
@@ -165,7 +178,7 @@ func setupSentence(setup *forgeapi.SetupError, labels forgeLabelSet) string {
 // notFoundSentence is the not-found sentence: a REST 404 and a GitHub
 // GraphQL NOT_FOUND read the same, since neither tells a missing object
 // from one this login cannot see.
-func notFoundSentence(labels forgeLabelSet, ref PRReference, name string) string {
+func notFoundSentence(labels forgeLabelSet, ref RepoReference, name string) string {
 	return fmt.Sprintf("%s was not found on %s, or this login cannot see it.", name, labels.host(ref.Host))
 }
 
@@ -224,7 +237,7 @@ func statusKind(status *forgeapi.StatusError) string {
 	return ForgeErrorForge
 }
 
-func statusSentence(status *forgeapi.StatusError, labels forgeLabelSet, ref PRReference, action ForgeAction, name string) string {
+func statusSentence(status *forgeapi.StatusError, labels forgeLabelSet, ref RepoReference, action ForgeAction, name string) string {
 	reason := trimSentence(forgeBodyMessage(status.Body))
 	switch status.Status {
 	case http.StatusNotFound:

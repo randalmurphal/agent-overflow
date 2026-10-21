@@ -113,9 +113,9 @@ inspection go through the harness wire with no fixture files.
 
 ## Invocations
 
-Handled, covering the reads the review pane, git status and CI make, the
-thread resolve toggle and the Create PR/MR dialog. Every row but the CLI
-ones is served over HTTP only: GitHub REST at `/github/rest/E`, GraphQL at
+Handled, covering the reads the review pane, the Pull requests page, git
+status and CI make, the thread resolve toggle and the Create PR/MR
+dialog. Every row but the CLI ones is served over HTTP only: GitHub REST at `/github/rest/E`, GraphQL at
 `/github/graphql` (a POST of `{"query", "operationName", "variables"}`),
 an attachment URL at `/github/absolute/<host>/<path>`, GitLab REST at
 `/gitlab/api/v4/E`. The request's Host header is the invocation's
@@ -140,10 +140,13 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitHub | `POST repos/O/R/pulls/N/reviews` with `{event, body?, commit_id?}` (`gh api pull reviews`) | Approve and the send strip's verdict without line comments: the viewer's review, a timeline item; the author's approval is GitHub's 422 |
 | GitHub | `DELETE repos/O/R/git/refs/heads/B` (`gh api delete branch`) | the head branch delete after a merge: 204, then 422 "Reference does not exist" |
 | GitHub | GraphQL `SetThreadResolved(threadID, resolved)` | SetThreadResolved (flips the seeded thread) |
+| GitHub | GraphQL `PullsSearch(query, after)` | project PR list: `search` over `is:pr is:open repo:O/R` (any other query is unhandled), the repository's open pulls newest first in pages of 100, beside the viewer; a repository not on the host answers GitHub's search refusal (null `search` beside an error) |
 | GitHub | GraphQL `OpenPRsByHead(owner, name, head, after)` | open PR lookup (checkout origin): pages of 100 with each PR's node id and `isCrossRepository` (a pull with `headRepo`) |
 | GitHub | GraphQL `PRStates(ids)` | merged-PR cleanup: state and `mergedAt` of tracked PRs by node id; an unknown id is a `NOT_FOUND` error at its `nodes` index |
 | GitHub | GraphQL `MergedPRs(owner, name, first, after)` | merged heads (checkout origin), in fixture order |
-| GitHub | `GET repos/O/R/actions/runs/ID/jobs?per_page=N[&page=N]` (`gh api run jobs`, conditional) | CI steps of a followed job's run; `Link` rel="next" while more pages exist |
+| GitHub | `GET repos/O/R/actions/runs?[per_page=N][&page=N][&branch=B][&status=S]` (`gh api runs`, conditional) | pipelines list: every run of the repository, highest id first, `status` a run status or conclusion; `Link` rel="next" while more pages exist |
+| GitHub | `GET repos/O/R/actions/runs/ID` (`gh api run`, conditional) | ReadPipeline: one run |
+| GitHub | `GET repos/O/R/actions/runs/ID/jobs?per_page=N[&page=N]` (`gh api run jobs`, conditional) | CI steps of a followed job's run, ReadPipeline's jobs; `Link` rel="next" while more pages exist |
 | GitHub | `GET repos/O/R/actions/jobs/ID/logs` (`gh api job logs`, conditional) | CI job log (the current `log` of a started job; 404 while the job is pending and while it sets `logWithheld`, as the real endpoint does until the job's log blob exists, which for a running job is its whole run; a running job with a log models the jobs API still reporting a completed job running); answered directly where the real endpoint redirects to its log blob, with the blob's ETag and Range behavior: a start or closed range is a 206 with `Content-Range`, a suffix range is ignored (200, whole body), a start at or past the end is a 416 (HTTP range semantics; not measured on the forges) |
 | GitHub | `GET <attachment URL>` (`gh api attachment`) | forge attachments |
 | GitLab | `GET projects/P/merge_requests/N` (`glab api merge request`, conditional) | ReadPR, once per read: detail, head SHA for threads, head pipeline for CI, the merge fields with `detailed_merge_status` derived from the fixture |
@@ -153,9 +156,11 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitLab | `PUT .../merge` with `{sha, squash, should_remove_source_branch, auto_merge, merge_when_pipeline_succeeds}` (`glab api merge`) | Merge now (405 while blocked, 401 without the role, 409 on a moved head) and Auto-merge (either key or both: arms a blocked merge request, with its system note) |
 | GitLab | `POST .../cancel_auto_merge`, `PUT .../rebase`, `PUT projects/P/merge_requests/N` with `{title}` | Cancel auto-merge (409 with none armed), Update branch (202, the head moves), Mark ready (the title loses its draft prefix) |
 | GitHub, GitLab | `GET user` (`gh api user`, `glab api user`) | the fixture's viewer: GitLab's detail read (once per host per 10 minutes), and the transport's probe after a 401 on a mutation on both forges |
-| GitLab | `GET projects/P/merge_requests?state=opened\|merged&...` (`glab api merge request list`, conditional) | open MR lookup, merged heads (checkout origin); the full view, with `project_id` and `source_project_id` (a pull with `headRepo` answers its fork's id) |
+| GitLab | `GET projects/P/merge_requests?state=opened\|merged&...` (`glab api merge request list`, conditional) | open MR lookup, merged heads (checkout origin), project MR list; the full view, with `project_id` and `source_project_id` (a pull with `headRepo` answers its fork's id) and the list fields (author, reviewers, draft, times, `user_notes_count`, conflicts, blocking discussions, `detailed_merge_status`), no pipeline |
 | GitLab | `GET projects/P/merge_requests?iids[]=N...&state=all&per_page=100` (`glab api merge request list`) | merged-PR cleanup: state and `merged_at` of tracked MRs |
-| GitLab | `GET projects/P/pipelines/ID/jobs?per_page=N[&page=N]` (`glab api pipeline jobs`) | ReadPR CI |
+| GitLab | `GET projects/P/pipelines?[per_page=N][&page=N][&ref=R][&status=S]` (`glab api pipelines`) | pipelines list: every pipeline of the project, highest id first; `X-Next-Page` while more pages exist |
+| GitLab | `GET projects/P/pipelines/ID` (`glab api pipeline`) | ReadPipeline: one pipeline, with its `tag` flag |
+| GitLab | `GET projects/P/pipelines/ID/jobs?per_page=N[&page=N]` (`glab api pipeline jobs`) | ReadPR CI, ReadPipeline's jobs |
 | GitLab | `GET projects/P/jobs/ID/trace` (`glab api job trace`, conditional) | CI job log (the current `log` of a started job, running included; 404 while the job sets `logWithheld`). A completed job's trace honors a start or closed range (206) and refuses a suffix range (400); a running job's trace ignores `Range` (200, whole body) and a running `synthetic` trace grows on every request |
 | GitLab | `GET projects/P/uploads/SECRET/NAME` (`glab api upload`) | forge attachments |
 
@@ -194,6 +199,17 @@ bulk publish, discussion note POST, discussion resolve PUT and
   note: seed an `approved` event beside it for one. An armed auto-merge
   stays armed until merged or canceled: the fake does not merge it when
   the pull becomes ready.
+- `pipelines` are a repository's pipelines beside its pulls' `ci`; the
+  lists answer both, highest id first, and an id is unique in its
+  repository. A pull's `ci` defaults to a merge request pipeline of its
+  head (GitLab ref `refs/merge-requests/N/head`). A pipeline's `refKind`
+  is answered as each forge can: GitHub only through the run's event
+  (`source`, defaulting to push, release or pull_request by kind), GitLab
+  through the merge request ref and the single pipeline's `tag`.
+- `reviewers` are the logins asked for a review (GitHub
+  `reviewRequests`, GitLab `reviewers`); a GitHub review from one ends its
+  request. `createdAt`, `updatedAt`, `committedAt` and `commits` feed the
+  project list rows.
 - Generated ids start at 1,000,000 and stay unique across reseeds and
   resets.
 - A job's `log` is served as the forge would serve it, and the app's log

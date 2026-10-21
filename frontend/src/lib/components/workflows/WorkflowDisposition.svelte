@@ -7,7 +7,7 @@
   // After Create PR the PR block appears: `Review comments (N)` (lazily
   // counted, single-flight — one fetch per run per mount) and `Discuss this
   // PR`. Both ride the run's one linked thread and open it as a normal pane,
-  // which closes the overlay (R3).
+  // which takes the focused workflows pane's slot (R3).
 
   import type { WorkItem, WorkflowDispositionReceipt } from '../../types/workflow';
   import { WorkflowDiscussPR, WorkflowFetchPRReviewComments, WorkflowSendPRReviewCommentsToThread } from '../../stores/bindings';

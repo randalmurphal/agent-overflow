@@ -609,6 +609,30 @@ var channelPolicies = []ChannelPolicy{
 			"against the text that call answered with.",
 	},
 	{
+		Channel:   eventchan.PullsUpdated,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeGitOperate,
+		Why: "Every forge project's open pull requests: private-repo titles, " +
+			"branch names, author and reviewer logins, review and CI states, " +
+			"plus per-project read failures. Gated like pr:updated: only " +
+			"SubscribePRList (git:operate) starts the pump that emits it, and " +
+			"the subscribe call answers with the same snapshot. Audience any " +
+			"for the same reason as pr:updated: a list away from the desk " +
+			"that never hears a change presents stale attention as live.",
+	},
+	{
+		Channel:   eventchan.PipelineUpdated,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeGitOperate,
+		Why: "One repository pipeline as job rows: job and step names, " +
+			"statuses and URLs of a private repository, plus a poll-failure " +
+			"summary. Same gate and reasoning as pr:ci_updated: only " +
+			"SubscribePipeline (git:operate) starts the pump that emits it, " +
+			"and the subscribe call answers with the same pipeline.",
+	},
+	{
 		Channel:   eventchan.ProjectUpdated,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,

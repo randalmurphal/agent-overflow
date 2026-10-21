@@ -1,0 +1,391 @@
+// The Pull requests page (docs/specs/pull-requests.md, "The page" and
+// "Pipelines tab"), shared by the desktop and compact projects, through the
+// shipped UI, the real backend and the fake forge: a GitLab project and a
+// GitHub project, each with open merge requests in several attention
+// states and repository pipelines. Covered: the tools row opens the page
+// in the focused pane's place; the Needs you and Waiting on others groups
+// carry one state pill per row and the sidebar badge counts the first
+// group; a GitLab row's failed pipeline arrives with its detail read; the
+// filter chips and the project picker narrow the list and survive a
+// reload; picking a row opens the review pinned to it beside the list (full
+// width with Back on compact) with its readiness pill and Merge section;
+// what moved since the reader looked reads on the row and clears once the
+// row is opened again; a project whose list the forge refuses fails alone
+// with its sentence and a Retry; Open with agent starts a thread in a
+// worktree on the MR's branch with the seeded draft, and afterwards lists
+// it on the MR and refuses a second worktree; the Pipelines tab lists the
+// repositories' pipelines with their refs, filters by ref kind, and opens a
+// pipeline's stages and a job's log beside the list.
+
+import { execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import path from 'node:path';
+import type { Locator, Page, TestInfo } from '@playwright/test';
+
+import { HARNESS_TIMING, launchHarness, type HarnessApp } from '../src/harness.js';
+import { expect, test, type SeedResult } from './fixtures.js';
+import {
+  clearForgeRefusal,
+  expectEveryForgeCallHandled,
+  publishPullRequest,
+  refuseForgeRoute,
+  seedForge,
+  type ForgeRepo,
+} from './forge-helpers.js';
+
+export interface PullsSurface {
+  compact: boolean;
+}
+
+const VIEWER = 'ao-viewer';
+const SHA = (seed: string): string => seed.repeat(40).slice(0, 40);
+const PIPELINE_JOBS = (status: 'success' | 'failed' | 'running') => [
+  { id: 1, name: 'build', stage: 'build', status: 'success' as const, log: 'built\n' },
+  { id: 2, name: 'unit', stage: 'test', status, log: 'unit tests ran\nall green\n' },
+];
+
+function gitlabRepo(): ForgeRepo {
+  const suffix = randomBytes(4).toString('hex');
+  return {
+    forge: 'gitlab',
+    id: 4_500_000 + parseInt(suffix.slice(0, 4), 16),
+    project: `ao-e2e/widgets-${suffix}`,
+    merge: { pipelineMustSucceed: true },
+    pulls: [
+      {
+        number: 101, title: 'Queue: retry a failed delivery once', author: 'sabossedgh', authorName: 'Sawmon Abossedgh',
+        reviewers: [VIEWER], readiness: { requiredApprovals: 1 },
+        comments: [{ author: 'alice', authorName: 'Alice Ng', body: 'One question on the backoff.', createdAt: '2026-10-18T15:00:00Z' }],
+        ci: { id: 45_101, jobs: PIPELINE_JOBS('running') },
+        updatedAt: '2026-10-19T12:00:00Z',
+      },
+      { number: 102, title: 'Draft: speed up builds', draft: true, author: VIEWER, headRef: 'builds', headSha: SHA('2'), updatedAt: '2026-10-18T12:00:00Z' },
+      { number: 103, title: 'Tenable rules: crash on empty filter', author: VIEWER, headRef: 'tenable', headSha: SHA('3'), ci: { id: 45_103, jobs: PIPELINE_JOBS('failed') }, updatedAt: '2026-10-17T12:00:00Z' },
+      { number: 104, title: 'Postern: retry budget for webhooks', author: 'alice', authorName: 'Alice Ng', headRef: 'postern', headSha: SHA('4'), updatedAt: '2026-10-16T12:00:00Z' },
+    ],
+    pipelines: [
+      { id: 9_001, refKind: 'branch', ref: 'main', sha: SHA('a'), status: 'success', title: 'Merge !100', jobs: PIPELINE_JOBS('success') },
+      { id: 9_002, refKind: 'tag', ref: 'v3.9.2', sha: SHA('b'), status: 'failed', title: 'release', jobs: PIPELINE_JOBS('failed') },
+    ],
+  };
+}
+
+function githubRepo(): ForgeRepo {
+  const suffix = randomBytes(4).toString('hex');
+  return {
+    forge: 'github',
+    project: `ao-e2e/gadgets-${suffix}`,
+    merge: { autoMergeAllowed: true },
+    pulls: [
+      {
+        number: 201, title: 'Rework the review pane header', author: VIEWER,
+        readiness: { requiredApprovals: 1 },
+        reviews: [{ author: 'rmurphy', authorName: 'Randy Murphy', state: 'APPROVED', submittedAt: '2026-10-19T09:00:00Z' }],
+        ci: { id: 46_201, jobs: PIPELINE_JOBS('success') },
+        updatedAt: '2026-10-19T10:00:00Z',
+      },
+      { number: 202, title: 'Trim transcript retention', author: 'bob', authorName: 'Bob Lee', reviewers: [VIEWER], headRef: 'retention', headSha: SHA('5'), updatedAt: '2026-10-18T10:00:00Z' },
+    ],
+    pipelines: [
+      { id: 7_001, name: 'CI', refKind: 'branch', ref: 'main', sha: SHA('c'), status: 'running', title: 'CI', jobs: PIPELINE_JOBS('running') },
+    ],
+  };
+}
+
+interface Seeded {
+  gitlab: ForgeRepo;
+  github: ForgeRepo;
+  gitlabPath: string;
+}
+
+async function seedProjects(harness: HarnessApp): Promise<Seeded> {
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      { name: 'widgets', repo: { commits: [{ message: 'init', files: { 'README.md': '# Widgets\n' } }] }, threads: [] },
+      { name: 'gadgets', repo: { commits: [{ message: 'init', files: { 'README.md': '# Gadgets\n' } }] }, threads: [] },
+    ],
+  });
+  const gitlab = await publishPullRequest(harness, seed.projects[0].path, gitlabRepo(), {
+    'src/queue/deliver.ts': 'export async function deliver(): Promise<void> {\n  await post();\n}\n',
+  });
+  const github = await publishPullRequest(harness, seed.projects[1].path, githubRepo(), {
+    'src/review/header.ts': 'export const header = 1;\n',
+  });
+  // publishPullRequest leaves the checkout on the PR's branch; a project
+  // root sits on main, which is what lets a thread check the branch out.
+  const env = { ...process.env, HOME: path.join(harness.bootstrap.dataRoot, 'home'), GIT_CONFIG_NOSYSTEM: '1' };
+  for (const project of seed.projects) {
+    execFileSync('git', ['checkout', '--quiet', 'main'], { cwd: project.path, env, encoding: 'utf8' });
+  }
+  return { gitlab, github, gitlabPath: seed.projects[0].path };
+}
+
+export function launchPullsHarness(): Promise<HarnessApp> {
+  // The list pump's product cadence is 45 s; the "since you looked" and
+  // refusal steps wait for a tick.
+  return launchHarness({ env: { AO_HARNESS_TIMING: [...HARNESS_TIMING.split(','), 'pr-update=1s'].join(',') } });
+}
+
+function row(page: Page, number: number): Locator {
+  // The row key ends in the PR number; the numbers here are distinct.
+  return page.locator(`[data-testid="pull-row"][data-pr-key$=":${number}"]`);
+}
+
+function rowPill(page: Page, number: number): Locator {
+  return row(page, number).getByTestId('pull-state-pill');
+}
+
+async function useDarkTheme(page: Page): Promise<void> {
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await expect(page.locator('html')).toHaveClass(/\bdark\b/);
+}
+
+async function shoot(target: Page | Locator, testInfo: TestInfo, name: string): Promise<void> {
+  await target.screenshot({ path: testInfo.outputPath(`${name}.png`) });
+}
+
+async function openPage(page: Page): Promise<Locator> {
+  await page.getByTestId('sidebar-tool-pulls').click();
+  const pane = page.getByTestId('pulls-pane');
+  await expect(pane).toBeVisible();
+  return pane;
+}
+
+export function registerPullsPageFlow({ compact }: PullsSurface): void {
+  test('the page groups merge requests by what they need, remembers its filters, and opens one beside the list', async ({ page }, testInfo) => {
+    test.setTimeout(120_000);
+    const harness = await launchPullsHarness();
+    try {
+      const seeded = await seedProjects(harness);
+      await harness.open(page);
+      await useDarkTheme(page);
+      const pane = await openPage(page);
+
+      // The page opens on Needs you: every row of that group with one
+      // state pill. !103's failed pipeline is not on GitLab's list; it
+      // arrives with the detail read of the user's own rows.
+      const needsYou = pane.getByTestId('pulls-group-needs_you');
+      await expect(needsYou).toBeVisible();
+      await expect(pane.getByTestId('pulls-filter-needs_you')).toHaveAttribute('aria-pressed', 'true');
+      await expect(rowPill(page, 101)).toHaveText('Your turn');
+      await expect(rowPill(page, 202)).toHaveText('Your turn');
+      await expect(rowPill(page, 201)).toHaveText('Ready to merge');
+      await expect(rowPill(page, 103)).toHaveText('Pipeline failed', { timeout: 20_000 });
+      await expect(needsYou).toContainText('4');
+      await expect(pane.getByTestId('pull-row')).toHaveCount(4);
+      await pane.getByTestId('pulls-filter-all').click();
+      await expect(rowPill(page, 102)).toHaveText('Draft');
+      await expect(rowPill(page, 104)).toHaveText('Open');
+      await expect(pane.getByTestId('pulls-group-waiting')).toContainText('2');
+      await expect(page.getByTestId('sidebar-tool-pulls-badge')).toHaveText('4');
+      // The needs-you count on the chip reads the same.
+      await expect(pane.getByTestId('pulls-filter-needs-you-count')).toHaveText('4');
+      // Approvals and the CI dot come from the detail read of focused rows.
+      await expect(row(page, 101).getByTestId('pull-approvals')).toHaveText('approvals 0/1');
+      await expect(row(page, 201).getByTestId('pull-approvals')).toHaveText('approvals 1/1');
+      await shoot(compact ? page : pane, testInfo, 'pulls-list-dark');
+
+      // Filters narrow the list and are remembered across a reload.
+      await pane.getByTestId('pulls-filter-mine').click();
+      await expect(pane.getByTestId('pull-row')).toHaveCount(3);
+      await expect(row(page, 101)).toHaveCount(0);
+      await pane.getByTestId('pulls-filter-all').click();
+      await expect(pane.getByTestId('pull-row')).toHaveCount(6);
+      await pane.getByTestId('pulls-projects-picker').click();
+      await page.getByTestId('pulls-project-' + (await projectId(harness, 'gadgets'))).click();
+      await page.keyboard.press('Escape');
+      await expect(pane.getByTestId('pull-row')).toHaveCount(4);
+      await expect(row(page, 201)).toHaveCount(0);
+      await page.reload();
+      // Compact starts on the list screen; the tools row reveals the pane.
+      if (compact) await page.getByTestId('sidebar-tool-pulls').click();
+      await expect(page.getByTestId('pulls-pane')).toBeVisible();
+      await expect(page.getByTestId('pulls-filter-all')).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.getByTestId('pull-row')).toHaveCount(4);
+      await page.getByTestId('pulls-projects-picker').click();
+      await page.getByTestId('pulls-projects-all').click();
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('pull-row')).toHaveCount(6);
+
+      // A row opens the review pinned to it: the readiness pill, the Merge
+      // section, no scope selector and no close (Back on compact).
+      await row(page, 101).getByRole('button').first().click();
+      const review = page.getByTestId('review-pane');
+      await expect(review).toBeVisible();
+      await expect(review.getByTestId('review-pr-header')).toContainText('Queue: retry a failed delivery once');
+      await expect(review.getByTestId('review-pr-readiness')).toContainText('Blocked');
+      await expect(review.getByTestId('review-pr-merge')).toBeVisible();
+      await expect(review.getByTestId('review-scope-select')).toHaveCount(0);
+      await expect(row(page, 101)).toHaveAttribute('data-selected', 'true');
+      if (compact) {
+        await expect(page.getByTestId('pulls-list-column')).toBeHidden();
+        await shoot(page, testInfo, 'pulls-review-compact-dark');
+        await page.getByTestId('pulls-back').click();
+        await expect(page.getByTestId('pulls-list-column')).toBeVisible();
+        await expect(review).toBeHidden();
+        await row(page, 101).getByRole('button').first().click();
+        await expect(review).toBeVisible();
+      } else {
+        await shoot(page, testInfo, 'pulls-page-dark');
+      }
+
+      // What moved since the reader looked: with #201 open instead, !101
+      // gains a push and a comment; its row says so until it is opened again.
+      await (compact ? page.getByTestId('pulls-back').click() : Promise.resolve());
+      await row(page, 201).getByRole('button').first().click();
+      await expect(page.getByTestId('review-pr-header')).toContainText('Rework the review pane header');
+      const [first, ...rest] = seeded.gitlab.pulls!;
+      await seedForge(harness, [{
+        ...seeded.gitlab,
+        pulls: [{ ...first, headSha: SHA('9'), comments: [...(first.comments ?? []), { author: 'sabossedgh', body: 'Addressed.', createdAt: '2026-10-20T15:00:00Z' }], updatedAt: '2026-10-20T15:00:00Z' }, ...rest],
+      }]);
+      if (compact) await page.getByTestId('pulls-back').click();
+      await expect(row(page, 101).getByTestId('pull-since')).toHaveText('pushed · 1 new comment since you looked', { timeout: 20_000 });
+      await expect(row(page, 101).getByTestId('pull-since')).toHaveCount(1);
+
+      await expectEveryForgeCallHandled(harness);
+    } finally {
+      await page.close();
+      await harness.close();
+    }
+  });
+
+  test('a project the forge refuses fails alone, and Open with agent starts a thread on the branch', async ({ page }, testInfo) => {
+    test.setTimeout(120_000);
+    const harness = await launchPullsHarness();
+    try {
+      await seedProjects(harness);
+      await harness.open(page);
+      await useDarkTheme(page);
+      const pane = await openPage(page);
+      await expect(rowPill(page, 101)).toHaveText('Your turn');
+      await pane.getByTestId('pulls-filter-all').click();
+      await expect(pane.getByTestId('pull-row')).toHaveCount(6);
+
+      // GitLab refuses its list with a token lacking the scope: the widgets
+      // project reads the sentence under its own heading; gadgets still lists.
+      await refuseForgeRoute(harness, {
+        route: 'glab api merge request list', status: 403,
+        body: { error: 'insufficient_scope', error_description: 'The request requires higher privileges than provided by the access token.', scope: 'api' },
+      });
+      await pane.getByTestId('pulls-refresh').click();
+      const failed = pane.getByTestId('pulls-project-error');
+      await expect(failed).toBeVisible({ timeout: 20_000 });
+      await expect(failed).toContainText('api');
+      await expect(failed).toHaveAttribute('data-error-kind', 'forbidden');
+      await expect(pane.getByTestId('pulls-project-group')).toContainText('widgets');
+      await expect(row(page, 201)).toBeVisible();
+      await shoot(compact ? page : pane, testInfo, 'pulls-project-error-dark');
+      await clearForgeRefusal(harness, 'glab api merge request list');
+      await pane.getByTestId('pulls-refresh').click();
+      await expect(failed).toHaveCount(0, { timeout: 20_000 });
+      await expect(row(page, 101)).toBeVisible();
+
+      // Open with agent on !101: a thread in a linked worktree on its
+      // branch, with the seeded draft, takes the page's slot.
+      await row(page, 101).getByRole('button').first().click();
+      await expect(page.getByTestId('review-pane')).toBeVisible();
+      await page.getByTestId('pulls-open-with-agent').click();
+      const menu = page.locator('[data-popover]');
+      await expect(menu.getByTestId('open-with-agent-no-threads')).toBeVisible();
+      await expect(menu.getByTestId('open-with-agent-new-thread')).toContainText('New thread on feature');
+      await shoot(page, testInfo, 'pulls-open-with-agent-dark');
+      await menu.getByTestId('open-with-agent-new-thread').click();
+      const input = page.getByRole('textbox', { name: 'Message Input', exact: true });
+      await expect(input).toHaveValue(/^Reviewing !101: Queue: retry a failed delivery once\n/, { timeout: 30_000 });
+      await expect(page.getByTestId('pulls-pane')).toHaveCount(0);
+      // The thread's branch is the MR's: git status finds the MR, which
+      // the header shows as the badge, or under compact as a menu row.
+      if (compact) {
+        const more = page.getByTestId('chat-header-more');
+        const menu = page.locator('[data-popover]');
+        const prRow = menu.getByRole('menuitem', { name: 'MR !101' });
+        await expect(async () => {
+          if ((await menu.count()) > 0) await page.keyboard.press('Escape');
+          await expect(menu).toHaveCount(0);
+          await more.tap();
+          await expect(prRow).toBeVisible({ timeout: 2_000 });
+        }).toPass({ timeout: 30_000 });
+        await page.keyboard.press('Escape');
+        await expect(menu).toHaveCount(0);
+      } else {
+        await expect(page.getByTestId('chat-header-pr-badge')).toBeVisible({ timeout: 30_000 });
+      }
+
+      // Back on the page, the MR lists the thread and refuses a second worktree.
+      if (compact) await page.getByTestId('compact-back').click();
+      await page.getByTestId('sidebar-tool-pulls').click();
+      await expect(page.getByTestId('pulls-pane')).toBeVisible();
+      await row(page, 101).getByRole('button').first().click();
+      await page.getByTestId('pulls-open-with-agent').click();
+      await expect(menu.getByTestId('open-with-agent-thread')).toHaveCount(1);
+      await expect(menu.getByTestId('open-with-agent-new-thread')).toHaveAttribute('aria-disabled', 'true');
+      await page.keyboard.press('Escape');
+
+      await expectEveryForgeCallHandled(harness);
+    } finally {
+      await page.close();
+      await harness.close();
+    }
+  });
+
+  test('the Pipelines tab lists repository pipelines by ref and opens one with its logs', async ({ page }, testInfo) => {
+    test.setTimeout(120_000);
+    const harness = await launchPullsHarness();
+    try {
+      await seedProjects(harness);
+      await harness.open(page);
+      await useDarkTheme(page);
+      const pane = await openPage(page);
+      await page.getByRole('radio', { name: 'Pipelines' }).click();
+      await expect(pane).toHaveAttribute('data-tab', 'pipelines');
+      // Two repository pipelines and two merge request pipelines on GitLab,
+      // one workflow run and one pull request run on GitHub.
+      const rows = pane.getByTestId('pipeline-row');
+      await expect(rows).toHaveCount(6);
+      const tagRow = rows.filter({ hasText: '#9002' });
+      await expect(tagRow).toContainText('v3.9.2');
+      await expect(rows.filter({ hasText: '#7001' })).toContainText('CI');
+      // Stage dots arrive for rows on screen.
+      await expect(tagRow.getByTestId('pipeline-stages').locator('span')).toHaveCount(2);
+      await shoot(compact ? page : pane, testInfo, 'pipelines-list-dark');
+
+      await pane.getByTestId('pipelines-ref-picker').click();
+      await page.getByTestId('pipelines-ref-tag').click();
+      await expect(rows).toHaveCount(1);
+      await pane.getByTestId('pipelines-ref-picker').click();
+      await page.getByTestId('pipelines-ref-any').click();
+      await expect(rows).toHaveCount(6);
+
+      // A row opens its stages; a job opens its log.
+      await tagRow.getByRole('button').first().click();
+      const view = page.getByTestId('pipeline-view');
+      await expect(view).toBeVisible();
+      await expect(view.getByTestId('pipeline-view-status')).toHaveText('failed');
+      await view.getByTestId('review-ci-chip').filter({ hasText: 'test' }).click();
+      await page.getByTestId('review-ci-job').filter({ hasText: 'unit' }).click();
+      // A log opens with its sections collapsed; the job section holds the lines.
+      const log = view.getByTestId('review-ci-log');
+      await log.locator('[data-testid="review-ci-section"][data-key="job"]').getByTestId('review-ci-section-toggle').click();
+      await expect(log).toContainText('all green');
+      await shoot(compact ? page : view, testInfo, 'pipeline-view-dark');
+      if (compact) {
+        await page.getByTestId('pulls-back').click();
+        await expect(view).toBeHidden();
+        await expect(rows).toHaveCount(6);
+      }
+
+      await expectEveryForgeCallHandled(harness);
+    } finally {
+      await page.close();
+      await harness.close();
+    }
+  });
+}
+
+async function projectId(harness: HarnessApp, name: string): Promise<string> {
+  const rows = await harness.rpc<Array<{ project: { id: string; name: string } }>>('ListProjects');
+  const row = rows.find((entry) => entry.project.name === name);
+  if (!row) throw new Error(`project ${name} is not listed`);
+  return row.project.id;
+}

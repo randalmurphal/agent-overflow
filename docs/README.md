@@ -122,7 +122,7 @@ obsolete planning material. Update incoming links when moving or retiring a doc.
 | [`app-update.md`](specs/app-update.md) | In-app updates on macOS, Linux and Windows: database snapshot, trial boot, commit or rollback, recovery after a crash, and no live migration. Implemented. |
 | [`testing-harness.md`](specs/testing-harness.md) | The harness contract and design rationale. `architecture/agent-harness.md` describes the built surface. |
 | [`prompt-tool-overrides.md`](specs/prompt-tool-overrides.md) | Settings-level system-prompt overrides, per-provider tool toggles, and the app guide appended to interactive sessions. |
-| [`workflows-system-ui/UI-SPEC.md`](specs/workflows-system-ui/UI-SPEC.md) | The binding workflows-overlay UI spec (rev 2). Cited as `UI-SPEC §N` across the frontend. |
+| [`workflows-system-ui/UI-SPEC.md`](specs/workflows-system-ui/UI-SPEC.md) | The binding workflows UI spec (rev 2), now the `workflows` tool pane. Cited as `UI-SPEC §N` across the frontend. |
 | [`pull-requests.md`](specs/pull-requests.md) | Merge readiness, approve and merge in the review pane; the Pull requests page with attention states, "Open with agent" and pipelines; tools as pane kinds. Phase 1 in progress since 2026-10-20. |
 | [`cursor-provider.md`](specs/cursor-provider.md) | Cursor as a third provider over ACP, signed off 2026-08-31. Living gap table + spike backlog; not implemented yet. |
 | [`plan-mode.md`](specs/plan-mode.md) | Plan mode as AO's own intent-to-merge-ready protocol: provider plan modes removed, per-thread plan files, the plan pane with anchored comments, project contract and personal settings, `PostCompact` re-injection. Signed off 2026-09-27; not implemented. |

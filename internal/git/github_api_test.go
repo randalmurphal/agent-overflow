@@ -511,7 +511,7 @@ func TestGitHubWithoutATransportIsErrNoForgeAPI(t *testing.T) {
 	if _, err := core.ReadPR(t.Context(), githubTestRef(1), allParts, nil, nil); !errors.Is(err, ErrNoForgeAPI) {
 		t.Fatalf("ReadPR = %v", err)
 	}
-	if _, err := core.StreamCIJobLog(t.Context(), githubTestRef(1), CIJobLogRequest{JobID: "9"}, nil); !errors.Is(err, ErrNoForgeAPI) {
+	if _, err := core.StreamCIJobLog(t.Context(), githubTestRef(1).Repository(), CIJobLogRequest{JobID: "9"}, nil); !errors.Is(err, ErrNoForgeAPI) {
 		t.Fatalf("StreamCIJobLog = %v", err)
 	}
 }
@@ -774,7 +774,7 @@ func streamTestLog(t *testing.T, core *Core, ref PRReference, req CIJobLogReques
 	var start CIJobLogStart
 	var body strings.Builder
 	begun := false
-	notModified, err := core.StreamCIJobLog(t.Context(), ref, req, func(s CIJobLogStart) (io.Writer, error) {
+	notModified, err := core.StreamCIJobLog(t.Context(), ref.Repository(), req, func(s CIJobLogStart) (io.Writer, error) {
 		start, begun = s, true
 		return &body, nil
 	})
@@ -1117,17 +1117,17 @@ func TestGitHubFetchAttachment(t *testing.T) {
 	})
 	ref := PRReference{Forge: "github", Host: "github.com", Namespace: "o", Repo: "r", Number: 1}
 	href := "https://github.com/user-attachments/assets/0f0e0d0c-0b0a-0908-0706-050403020100"
-	data, name, err := core.FetchAttachment(t.Context(), ref, href, 1<<20)
+	data, name, err := core.FetchAttachment(t.Context(), ref.Repository(), href, 1<<20)
 	if err != nil || string(data) != content || name != "0f0e0d0c-0b0a-0908-0706-050403020100" {
 		t.Fatalf("FetchAttachment = %q %q %v", data, name, err)
 	}
 	if sent := calls.all(); len(sent) != 1 || sent[0].Header.Get("Accept") != "*/*" || sent[0].Header.Get("Authorization") != "Bearer test-token" {
 		t.Fatalf("attachment request = %+v", sent)
 	}
-	if _, _, err := core.FetchAttachment(t.Context(), ref, href, 4); err == nil || !strings.Contains(err.Error(), "larger than 4 bytes") {
+	if _, _, err := core.FetchAttachment(t.Context(), ref.Repository(), href, 4); err == nil || !strings.Contains(err.Error(), "larger than 4 bytes") {
 		t.Fatalf("over-cap attachment = %v", err)
 	}
-	if _, err := core.ForgeByID("github").FetchAttachment(t.Context(), ref, forgeattach.Target{Forge: "gitlab", Request: "projects/1/uploads/x/y"}, 10); err == nil {
+	if _, err := core.ForgeByID("github").FetchAttachment(t.Context(), ref.Repository(), forgeattach.Target{Forge: "gitlab", Request: "projects/1/uploads/x/y"}, 10); err == nil {
 		t.Fatal("a GitLab target went to GitHub")
 	}
 	if n := len(calls.all()); n != 2 {
@@ -1143,7 +1143,7 @@ func TestGitHubFetchAttachmentFailure(t *testing.T) {
 		return forgeAPIAnswer{Status: http.StatusNotFound, Body: `{"message":"Not Found"}`}
 	})
 	ref := PRReference{Forge: "github", Host: "github.com", Namespace: "o", Repo: "r", Number: 1}
-	_, _, err := core.FetchAttachment(t.Context(), ref, "https://private-user-images.githubusercontent.com/1/2.png?jwt=SIGNED", 1<<20)
+	_, _, err := core.FetchAttachment(t.Context(), ref.Repository(), "https://private-user-images.githubusercontent.com/1/2.png?jwt=SIGNED", 1<<20)
 	status, ok := errors.AsType[*forgeapi.StatusError](err)
 	if !ok || status.Status != http.StatusNotFound || strings.Contains(err.Error(), "SIGNED") {
 		t.Fatalf("FetchAttachment = %v, want a redacted 404", err)

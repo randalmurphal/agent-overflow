@@ -90,10 +90,12 @@ import { reportNonBenignInterruptError } from './interruptErrors';
 import { PICKER_TOGGLE_INPUT_EVENT, type GitDialogKind } from './eventNames';
 import { startPaneTitleRename } from './paneTitleRename';
 import { registerWorkflowCommands } from './workflowCommands.svelte';
+import { isPullsPaneFocused, registerPullsCommands } from './pullsCommands.svelte';
 import {
   getWorkflowsOverlayTop,
-  isWorkflowsOverlayOpen,
+  isWorkflowsPaneFocused,
 } from './workflowsOverlay.svelte';
+import { focusedToolDetailOpen, focusedToolKind } from './toolPanes.svelte';
 import {
   escapeSettingsOverlay,
   isSettingsOpen,
@@ -1134,6 +1136,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   // Workflows overlay + `/workflow` composer context. Kept in their own module
   // so this file doesn't grow another surface's worth of registrations.
   registerWorkflowCommands();
+  registerPullsCommands();
 }
 
 /**
@@ -1168,14 +1171,18 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     // chosen by a selection nobody can see.
     sidebarCursorActive: getSidebarCursorThreadId() !== null && !isSidebarCollapsed(),
     anyPickerOpen: false,
-    // Both full-height overlays scope their chords off these. Derived here
-    // rather than passed in by App.svelte so every context builder — palette,
-    // per-keypress dispatch, tests — sees the same answer as the overlay
-    // itself, and no caller can forget to supply one (`settings.close` gates
-    // on `settingsOpen`, so a missing flag would silently make Esc inert).
+    // The settings overlay and the tool panes scope their chords off these.
+    // Derived here rather than passed in by App.svelte so every context
+    // builder — palette, per-keypress dispatch, tests — sees the same answer
+    // as the surface itself, and no caller can forget to supply one
+    // (`settings.close` gates on `settingsOpen`, so a missing flag would
+    // silently make Esc inert).
     settingsOpen: isSettingsOpen(),
-    workflowsOverlayOpen: isWorkflowsOverlayOpen(),
-    workflowsRunDetail: isWorkflowsOverlayOpen() && getWorkflowsOverlayTop().level === 'run',
+    toolPaneFocused: focusedToolKind() !== null,
+    toolDetailOpen: focusedToolDetailOpen(),
+    workflowsPaneFocused: isWorkflowsPaneFocused(),
+    pullsPaneFocused: isPullsPaneFocused(),
+    workflowsRunDetail: isWorkflowsPaneFocused() && getWorkflowsOverlayTop().level === 'run',
     compactLayout: isCompactLayout(),
     // Derived here, not passed in, for the same reason as the overlay flags:
     // the palette, per-keypress dispatch and tests must all see one answer for

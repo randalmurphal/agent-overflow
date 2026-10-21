@@ -325,6 +325,7 @@ const SINGLE_ENTITY_BY_METHOD: Readonly<Record<number, 'thread' | 'project'>> = 
   4079123887: 'thread', // PromoteScratchThread
   3728890856: 'project', // RenameProject
   2317109106: 'thread', // SendDiffReviewComments
+  2605216420: 'thread', // SendPRDiffReviewComments
   3632185196: 'thread', // SendMessageWithOptions
   1407159655: 'thread', // SendPlanRevisionComments
   3112222989: 'thread', // SetThreadPinGroup

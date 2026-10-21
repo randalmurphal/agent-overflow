@@ -189,7 +189,11 @@ polling.
   then every 45s while the job stays followed. The pause, dedup, caller-safe error and
   connection-cleanup rules of the snapshot pump apply to all of it; `RefreshPRCI` and a re-sent follow
   are the manual refreshes and run while paused. The frontend sends the
-  union of the jobs its panes show per PR (`prReviewCIFollows.svelte.ts`).
+  union of the jobs its panes show per CI key (`prReviewCIFollows.svelte.ts`):
+  a PR's head pipeline, or a repository pipeline the Pipelines tab follows
+  through `SubscribePipeline` (`pipelineCI.svelte.ts`). One CI subject
+  state (`ciSubject.svelte.ts`) drives the chips and the log view for
+  either.
 - **The CI log view** (`ReviewCILogView.svelte`) shows a job's log as one
   collapsible row per GitHub step or top-level GitLab section, as the
   backend's index lists them (`internal/cilog/sections.go`). A GitHub

@@ -4,6 +4,7 @@
 // tier that holds a stamp, not just the registry.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyTransportGap } from './eventsTransportGap';
+import { setPullsReceiver } from './pullsStore.svelte';
 import { resetPanesForTest } from './panes.svelte';
 import {
   registerComposerDraft,
@@ -564,3 +565,23 @@ describe('transport gap — computer membership', () => {
     expect(list).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('transport gap — the Pull requests channels', () => {
+  it('reads the list or the pipelines again on their computer', () => {
+    const got: string[] = [];
+    const remove = setPullsReceiver({
+      pullsGap: (backend) => got.push(`pulls ${backend}`),
+      pipelinesGap: (backend) => got.push(`pipelines ${backend}`),
+    });
+    try {
+      applyTransportGap({ channel: 'pulls:updated', seq: 3 });
+      applyTransportGap({ channel: 'ci:pipeline_updated', seq: 3 });
+      // A followed log is a PR's or a pipeline's: both are re-sent.
+      applyTransportGap({ channel: 'pr:ci_log', seq: 3 });
+      expect(got).toEqual([`pulls ${HOME_BACKEND}`, `pipelines ${HOME_BACKEND}`, `pipelines ${HOME_BACKEND}`]);
+    } finally {
+      remove();
+    }
+  });
+});
+

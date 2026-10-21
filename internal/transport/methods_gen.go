@@ -102,6 +102,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "CountRunningBackgroundTasks", ID: 2617952423, Scope: "threads:read", Route: "thread"},                             // main.App.CountRunningBackgroundTasks
 	{Name: "CreateDiffReviewComment", ID: 565306783, Scope: "threads:operate", Route: "thread"},                               // main.App.CreateDiffReviewComment
 	{Name: "CreateDiscussion", ID: 757689265, Scope: "threads:operate", Route: "selected"},                                    // main.App.CreateDiscussion
+	{Name: "CreatePRDiffReviewComment", ID: 1066081365, Scope: "git:operate", Route: "selected"},                              // main.App.CreatePRDiffReviewComment
 	{Name: "CreateProject", ID: 969543070, Scope: "git:operate", Route: "selected"},                                           // main.App.CreateProject
 	{Name: "CreateProjectCheckout", ID: 617214578, Scope: "git:operate", Route: "selected"},                                   // main.App.CreateProjectCheckout
 	{Name: "CreateProposedPlanComment", ID: 4246792665, Scope: "threads:operate", Route: "thread"},                            // main.App.CreateProposedPlanComment
@@ -112,6 +113,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DeleteDiffReviewComment", ID: 1303317790, Scope: "threads:operate", Route: "thread"},                              // main.App.DeleteDiffReviewComment
 	{Name: "DeleteDiscussion", ID: 302062730, Scope: "threads:operate", Route: "selected"},                                    // main.App.DeleteDiscussion
 	{Name: "DeleteEmptyDraftThread", ID: 3876094070, Scope: "threads:operate", Route: "thread"},                               // main.App.DeleteEmptyDraftThread
+	{Name: "DeletePRDiffReviewComment", ID: 4163354052, Scope: "git:operate", Route: "selected"},                              // main.App.DeletePRDiffReviewComment
 	{Name: "DeletePasskey", ID: 151243274, Scope: "access:admin", Route: "home"},                                              // main.App.DeletePasskey
 	{Name: "DeleteProject", ID: 3379369923, Scope: "threads:operate", Route: "project"},                                       // main.App.DeleteProject
 	{Name: "DeleteProposedPlanComment", ID: 554913120, Scope: "threads:operate", Route: "thread"},                             // main.App.DeleteProposedPlanComment
@@ -246,6 +248,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListDiffReviewComments", ID: 3057473088, Scope: "threads:read", Route: "thread"},                                  // main.App.ListDiffReviewComments
 	{Name: "ListDiscussions", ID: 942288562, Scope: "threads:read", Route: "selected"},                                        // main.App.ListDiscussions
 	{Name: "ListDiscussionsForThread", ID: 2502562885, Scope: "threads:read", Route: "thread"},                                // main.App.ListDiscussionsForThread
+	{Name: "ListForgeProjects", ID: 3779338822, Scope: "git:operate", Route: "selected"},                                      // main.App.ListForgeProjects
 	{Name: "ListImportableSessions", ID: 99668597, Scope: "threads:operate", Route: "selected"},                               // main.App.ListImportableSessions
 	{Name: "ListItems", ID: 2158085763, Scope: "threads:read", Route: "thread"},                                               // main.App.ListItems
 	{Name: "ListItemsAfterCursor", ID: 2915892537, Scope: "threads:read", Route: "thread"},                                    // main.App.ListItemsAfterCursor
@@ -254,9 +257,11 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListMcpServerStatuses", ID: 2582096622, Scope: "settings:write", Route: "home"},                                   // main.App.ListMcpServerStatuses
 	{Name: "ListOwnDevices", ID: 2775087950, Scope: "session", Route: "home"},                                                 // main.App.ListOwnDevices
 	{Name: "ListPRCommits", ID: 4110818691, Scope: "git:operate", Route: "workspace"},                                         // main.App.ListPRCommits
+	{Name: "ListPRDiffReviewComments", ID: 4107523902, Scope: "git:operate", Route: "selected"},                               // main.App.ListPRDiffReviewComments
 	{Name: "ListPRReviewThreads", ID: 763649720, Scope: "git:operate", Route: "selected"},                                     // main.App.ListPRReviewThreads
 	{Name: "ListPasskeys", ID: 3860831272, Scope: "access:admin", Route: "home"},                                              // main.App.ListPasskeys
 	{Name: "ListPendingInteractiveRequests", ID: 4186874978, Scope: "approvals:respond", Route: "thread"},                     // main.App.ListPendingInteractiveRequests
+	{Name: "ListProjectPipelines", ID: 647538989, Scope: "git:operate", Route: "project"},                                     // main.App.ListProjectPipelines
 	{Name: "ListProjects", ID: 2721360259, Scope: "threads:read", Route: "all"},                                               // main.App.ListProjects
 	{Name: "ListProposedPlanComments", ID: 2030403250, Scope: "threads:read", Route: "thread"},                                // main.App.ListProposedPlanComments
 	{Name: "ListProviderAccounts", ID: 981125684, Scope: "access:admin", Route: "home"},                                       // main.App.ListProviderAccounts
@@ -275,10 +280,13 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListThreadRemoteCommands", ID: 1165681857, Scope: "threads:read", Route: "thread"},                                // main.App.ListThreadRemoteCommands
 	{Name: "ListThreadSliceAround", ID: 4176102096, Scope: "threads:read", Route: "thread"},                                   // main.App.ListThreadSliceAround
 	{Name: "ListThreads", ID: 1090132042, Scope: "threads:read", Route: "all"},                                                // main.App.ListThreads
+	{Name: "ListThreadsOnPR", ID: 1924357569, Scope: "git:operate", Route: "selected"},                                        // main.App.ListThreadsOnPR
 	{Name: "ListWSLDistros", ID: 2332614075, Scope: "host", Route: "home"},                                                    // main.App.ListWSLDistros
 	{Name: "ListWorkspaceMcpServers", ID: 2808137798, Scope: "settings:write", Route: "selected"},                             // main.App.ListWorkspaceMcpServers
 	{Name: "MarkDiffReviewCommentsSent", ID: 1673567995, Scope: "threads:operate", Route: "thread"},                           // main.App.MarkDiffReviewCommentsSent
+	{Name: "MarkPRDiffReviewCommentsSent", ID: 3609806653, Scope: "git:operate", Route: "selected"},                           // main.App.MarkPRDiffReviewCommentsSent
 	{Name: "MarkPRReady", ID: 404041677, Scope: "git:operate", Route: "selected"},                                             // main.App.MarkPRReady
+	{Name: "MarkPRViewed", ID: 2793490958, Scope: "git:operate", Route: "selected"},                                           // main.App.MarkPRViewed
 	{Name: "MarkThreadRead", ID: 1480646012, Scope: "threads:operate", Route: "thread"},                                       // main.App.MarkThreadRead
 	{Name: "MarkThreadUnread", ID: 236597375, Scope: "threads:operate", Route: "thread"},                                      // main.App.MarkThreadUnread
 	{Name: "MergePR", ID: 3922935373, Scope: "git:operate", Route: "selected"},                                                // main.App.MergePR
@@ -303,6 +311,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "OpenOwnComputerPairing", ID: 767864574, Scope: "access:admin", Route: "home", StepUp: true, Remote: true},         // main.App.OpenOwnComputerPairing
 	{Name: "OpenPRCommitDiff", ID: 110447601, Scope: "git:operate", Route: "workspace"},                                       // main.App.OpenPRCommitDiff
 	{Name: "OpenPRDiff", ID: 4075510992, Scope: "git:operate", Route: "workspace"},                                            // main.App.OpenPRDiff
+	{Name: "OpenPRThread", ID: 2660387675, Scope: "git:operate", Route: "selected"},                                           // main.App.OpenPRThread
 	{Name: "OpenTerminal", ID: 2247958725, Scope: "terminal:operate", Route: "thread"},                                        // main.App.OpenTerminal
 	{Name: "OpenTurnEditsDiff", ID: 4078889536, Scope: "threads:read", Route: "thread"},                                       // main.App.OpenTurnEditsDiff
 	{Name: "OpenWorkspaceDiff", ID: 3558532873, Scope: "files:read", Route: "workspace"},                                      // main.App.OpenWorkspaceDiff
@@ -323,6 +332,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ProviderTerminalResize", ID: 2998028796, Scope: "terminal:operate", Route: "thread"},                              // main.App.ProviderTerminalResize
 	{Name: "ProviderTerminalSetControl", ID: 1382066673, Scope: "terminal:operate", Route: "thread"},                          // main.App.ProviderTerminalSetControl
 	{Name: "PutSoundFile", ID: 2418838611, Scope: "settings:write", Route: "home"},                                            // main.App.PutSoundFile
+	{Name: "ReadPipelineStages", ID: 2036690300, Scope: "git:operate", Route: "selected"},                                     // main.App.ReadPipelineStages
 	{Name: "ReadReviewDiff", ID: 2473150982, Scope: "session", Route: "home"},                                                 // main.App.ReadReviewDiff
 	{Name: "ReadThreadRemoteLog", ID: 2424974671, Scope: "terminal:operate", Route: "thread"},                                 // main.App.ReadThreadRemoteLog
 	{Name: "RecheckClaudeAccount", ID: 2274850917, Scope: "access:admin", Route: "home"},                                      // main.App.RecheckClaudeAccount
@@ -332,6 +342,8 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ReconnectSession", ID: 1420075138, Scope: "threads:operate", Route: "thread"},                                     // main.App.ReconnectSession
 	{Name: "RefreshMcpServerStatus", ID: 2215279661, Scope: "settings:write", Route: "selected"},                              // main.App.RefreshMcpServerStatus
 	{Name: "RefreshPRCI", ID: 3232577070, Scope: "git:operate", Route: "home"},                                                // main.App.RefreshPRCI
+	{Name: "RefreshPRList", ID: 2738680414, Scope: "git:operate", Route: "home"},                                              // main.App.RefreshPRList
+	{Name: "RefreshPipeline", ID: 31356442, Scope: "git:operate", Route: "home"},                                              // main.App.RefreshPipeline
 	{Name: "RefreshProjectIdentity", ID: 2745242207, Scope: "threads:read", Route: "project"},                                 // main.App.RefreshProjectIdentity
 	{Name: "RefreshProviderAccountUsage", ID: 2539237007, Scope: "access:admin", Route: "home"},                               // main.App.RefreshProviderAccountUsage
 	{Name: "RefreshTerminal", ID: 2618043580, Scope: "terminal:operate", Route: "home"},                                       // main.App.RefreshTerminal
@@ -393,6 +405,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SendDiffReviewComments", ID: 2317109106, Scope: "threads:operate", Route: "thread"},                               // main.App.SendDiffReviewComments
 	{Name: "SendMessage", ID: 1496882310, Scope: "threads:operate", Route: "thread"},                                          // main.App.SendMessage
 	{Name: "SendMessageWithOptions", ID: 3632185196, Scope: "threads:operate", Route: "thread"},                               // main.App.SendMessageWithOptions
+	{Name: "SendPRDiffReviewComments", ID: 2605216420, Scope: "git:operate", Route: "selected"},                               // main.App.SendPRDiffReviewComments
 	{Name: "SendPlanRevisionComments", ID: 1407159655, Scope: "threads:operate", Route: "thread"},                             // main.App.SendPlanRevisionComments
 	{Name: "SetAgentComputerEnabled", ID: 1204782690, Scope: "terminal:operate", Route: "selected", Remote: true},             // main.App.SetAgentComputerEnabled
 	{Name: "SetAppearance", ID: 3167202905, Scope: "host", Route: "home"},                                                     // main.App.SetAppearance
@@ -402,8 +415,12 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetEditorSettings", ID: 3655340267, Scope: "settings:write", Route: "selected"},                                   // main.App.SetEditorSettings
 	{Name: "SetNetworkSettings", ID: 3915514446, Scope: "settings:write", Route: "home", StepUp: true},                        // main.App.SetNetworkSettings
 	{Name: "SetPRCILogFollows", ID: 1675722685, Scope: "git:operate", Route: "home"},                                          // main.App.SetPRCILogFollows
+	{Name: "SetPRListActive", ID: 2324570575, Scope: "git:operate", Route: "home"},                                            // main.App.SetPRListActive
+	{Name: "SetPRListFocus", ID: 910260531, Scope: "git:operate", Route: "home"},                                              // main.App.SetPRListFocus
 	{Name: "SetPRThreadResolved", ID: 2594833485, Scope: "git:operate", Route: "selected"},                                    // main.App.SetPRThreadResolved
 	{Name: "SetPRUpdatesActive", ID: 1078249699, Scope: "git:operate", Route: "home"},                                         // main.App.SetPRUpdatesActive
+	{Name: "SetPipelineActive", ID: 1113626255, Scope: "git:operate", Route: "home"},                                          // main.App.SetPipelineActive
+	{Name: "SetPipelineFollows", ID: 2435786137, Scope: "git:operate", Route: "home"},                                         // main.App.SetPipelineFollows
 	{Name: "SetProjectWorktreeSetup", ID: 322092470, Scope: "terminal:operate", Route: "project", StepUp: true},               // main.App.SetProjectWorktreeSetup
 	{Name: "SetProviderCustomEnvVar", ID: 2118904465, Scope: "settings:write", Route: "home", StepUp: true},                   // main.App.SetProviderCustomEnvVar
 	{Name: "SetPushSenderCredential", ID: 719170063, Scope: "access:admin", Route: "home", StepUp: true, Remote: true},        // main.App.SetPushSenderCredential
@@ -432,7 +449,9 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SubmitAsyncAnswers", ID: 1219107798, Scope: "threads:operate", Route: "thread"},                                   // main.App.SubmitAsyncAnswers
 	{Name: "SubmitPRReview", ID: 2692607191, Scope: "git:operate", Route: "selected"},                                         // main.App.SubmitPRReview
 	{Name: "SubmitProviderLoginCode", ID: 3556446736, Scope: "access:admin", Route: "home"},                                   // main.App.SubmitProviderLoginCode
+	{Name: "SubscribePRList", ID: 2065051829, Scope: "git:operate", Route: "selected"},                                        // main.App.SubscribePRList
 	{Name: "SubscribePRUpdates", ID: 3272491649, Scope: "git:operate", Route: "selected"},                                     // main.App.SubscribePRUpdates
+	{Name: "SubscribePipeline", ID: 2067341173, Scope: "git:operate", Route: "selected"},                                      // main.App.SubscribePipeline
 	{Name: "SwitchProviderAccount", ID: 1249964095, Scope: "access:admin", Route: "home"},                                     // main.App.SwitchProviderAccount
 	{Name: "SwitchThread", ID: 3897387725, Scope: "threads:operate", Route: "thread"},                                         // main.App.SwitchThread
 	{Name: "SyncOwnDevices", ID: 1289411773, Scope: "session", Route: "home", Remote: true},                                   // main.App.SyncOwnDevices
@@ -450,7 +469,9 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "UnarchiveThread", ID: 3655125512, Scope: "threads:operate", Route: "thread"},                                      // main.App.UnarchiveThread
 	{Name: "UnpinThread", ID: 3175043037, Scope: "threads:operate", Route: "thread"},                                          // main.App.UnpinThread
 	{Name: "UnregisterPushToken", ID: 3065043012, Scope: "session", Route: "home"},                                            // main.App.UnregisterPushToken
+	{Name: "UnsubscribePRList", ID: 3130440960, Scope: "git:operate", Route: "home"},                                          // main.App.UnsubscribePRList
 	{Name: "UnsubscribePRUpdates", ID: 2888550814, Scope: "git:operate", Route: "home"},                                       // main.App.UnsubscribePRUpdates
+	{Name: "UnsubscribePipeline", ID: 2697678232, Scope: "git:operate", Route: "home"},                                        // main.App.UnsubscribePipeline
 	{Name: "UnwatchBackgroundTaskOutput", ID: 1941806085, Scope: "threads:read", Route: "thread"},                             // main.App.UnwatchBackgroundTaskOutput
 	{Name: "UpdateClientDeviceName", ID: 3406073706, Scope: "session", Route: "home"},                                         // main.App.UpdateClientDeviceName
 	{Name: "UpdateContextSettingsProfile", ID: 1472386383, Scope: "settings:write", Route: "home"},                            // main.App.UpdateContextSettingsProfile
@@ -459,6 +480,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "UpdateKeybindings", ID: 3490094229, Scope: "settings:write", Route: "home"},                                       // main.App.UpdateKeybindings
 	{Name: "UpdateNewThreadDefaults", ID: 595194384, Scope: "threads:operate", Route: "home"},                                 // main.App.UpdateNewThreadDefaults
 	{Name: "UpdatePRBranch", ID: 3913890634, Scope: "git:operate", Route: "selected"},                                         // main.App.UpdatePRBranch
+	{Name: "UpdatePRDiffReviewComment", ID: 1344431070, Scope: "git:operate", Route: "selected"},                              // main.App.UpdatePRDiffReviewComment
 	{Name: "UpdateProjectSortPositions", ID: 3717363955, Scope: "threads:operate", Route: "home"},                             // main.App.UpdateProjectSortPositions
 	{Name: "UpdateProposedPlanComment", ID: 2747956806, Scope: "threads:operate", Route: "thread"},                            // main.App.UpdateProposedPlanComment
 	{Name: "UpdateSettings", ID: 2894041249, Scope: "session", Route: "home"},                                                 // main.App.UpdateSettings

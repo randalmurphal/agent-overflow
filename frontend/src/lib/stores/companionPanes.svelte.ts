@@ -33,6 +33,7 @@ import {
   revealPane,
 } from './panes.svelte';
 import { deleteSideChatThread } from './sideChatThread';
+import { closeToolPane, toolKindOf } from './toolPanes.svelte';
 
 export type CompanionKind = CompanionPaneKind;
 /**
@@ -243,8 +244,9 @@ function takeDownCompanion(paneId: string, mode: 'close' | 'hide'): void {
 /**
  * Pane-scoped close for whatever holds focus. A focused companion closes
  * ITSELF (never the thread it's paired to — closeCompanion hands focus
- * back to the source); anything else destroys the focused thread pane.
- * This is the single owner of the companion-vs-thread close branch —
+ * back to the source); a focused tool pane closes as a tool; anything else
+ * destroys the focused thread pane.
+ * This is the single owner of the companion-vs-tool-vs-thread close branch —
  * `pane.close` routes here. It lives in this store because
  * panes.svelte.ts must not depend on companion stores, while the reverse
  * dependency is the sanctioned direction.
@@ -253,6 +255,7 @@ export function closeFocusedPaneOrCompanion(): void {
   const focusedId = getFocusedPaneId();
   const companion = focusedId ? companionPanes.get(focusedId) : null;
   if (companion) closeCompanion(companion.paneId);
+  else if (toolKindOf(focusedId)) closeToolPane(focusedId as string);
   else closeFocusedPane();
 }
 
@@ -265,6 +268,7 @@ export function closeFocusedPaneOrCompanion(): void {
 export function closePaneById(paneId: string): void {
   const companion = companionPanes.get(paneId);
   if (companion) closeCompanion(companion.paneId);
+  else if (toolKindOf(paneId)) closeToolPane(paneId);
   else destroyPane(paneId);
 }
 
