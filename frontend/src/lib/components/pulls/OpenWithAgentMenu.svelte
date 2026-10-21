@@ -13,7 +13,9 @@
   // button and each row's menu): a new thread in a linked worktree on the
   // MR's branch, the threads already on this MR, and sending the review's
   // drafts to a thread of the project. Every row names what it does; the
-  // page runs it.
+  // page runs it. Until the threads on the MR are read, nobody knows
+  // whether one has the branch checked out, so a failed read says so with
+  // a Retry and New thread stays off.
 
   interface Props {
     anchor: HTMLElement | undefined;
@@ -25,6 +27,11 @@
     crossRepository: boolean;
     /** Threads already tracking this MR. */
     threadsOnPR: readonly AgentThreadChoice[];
+    /** The read of threadsOnPR is in flight. */
+    threadsLoading?: boolean;
+    /** The read of threadsOnPR failed; null when it answered. */
+    threadsError?: string | null;
+    onRetryThreads?: () => void;
     /** The project's other threads, for sending drafts. */
     projectThreads: readonly AgentThreadChoice[];
     draftsCount: number;
@@ -46,6 +53,9 @@
     branch,
     crossRepository,
     threadsOnPR,
+    threadsLoading = false,
+    threadsError = null,
+    onRetryThreads,
     projectThreads,
     draftsCount,
     checkedOutBy = null,
@@ -80,13 +90,20 @@
       label="New thread on {branch}"
       description={newThreadDescription}
       suffix="worktree"
-      disabled={busy || !branch || checkedOutBy !== null}
+      disabled={busy || threadsLoading || threadsError !== null || !branch || checkedOutBy !== null}
       onSelect={onNewThread}
       testId="open-with-agent-new-thread"
     />
     <MenuDivider />
     <MenuSectionHeader label="Threads already on this MR" />
-    {#if threadsOnPR.length === 0}
+    {#if threadsError !== null}
+      <MenuItem label="Could not read the threads on this MR" description={threadsError} disabled testId="open-with-agent-threads-error" />
+      {#if onRetryThreads}
+        <MenuItem label="Retry" onSelect={onRetryThreads} testId="open-with-agent-threads-retry" />
+      {/if}
+    {:else if threadsLoading && threadsOnPR.length === 0}
+      <MenuItem label="Reading the threads on this MR…" disabled testId="open-with-agent-threads-loading" />
+    {:else if threadsOnPR.length === 0}
       <MenuItem label="No threads on this MR yet" disabled testId="open-with-agent-no-threads" />
     {:else}
       {#each threadsOnPR as thread (thread.id)}

@@ -8,7 +8,7 @@ import { SvelteMap } from 'svelte/reactivity';
 import { GetThread, ListThreadsOnPR, OpenPRThread } from './bindings';
 import type { PRThread } from './bindings';
 import { mountThreadInPane, syncThreadReply } from './panes.svelte';
-import { pullsPageBackend, pullsSnapshotSeq, selectedPR, type PullsSelection } from './pullsPage.svelte';
+import { listedPR, pullsPageBackend, pullsSnapshotSeq, selectedPR, type PullsSelection } from './pullsPage.svelte';
 import { currentPinnedReviewState, reviewSubjectForPR } from './reviewPane.svelte';
 import { expandProject } from './sidebar.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
@@ -48,10 +48,17 @@ function choice(id: string, title: string, updatedAt: number, backend: BackendKe
   return { id, title: title || 'Untitled thread', detail: [getThreadStatus(id), age].filter(Boolean).join(' · ') };
 }
 
-/** Reads the threads on the selected PR when the menu opens; a read for
- * the snapshot on screen is kept until the next snapshot. */
-export async function loadThreadsOnPR(paneId: string): Promise<void> {
-  const selection = selectedPR(paneId);
+// The PR a call is about: the listed row `key` names (a row's menu), or
+// the pane's selection when no key is given (the header's menu).
+function targetPR(paneId: string, key?: string): PullsSelection | null {
+  return key === undefined ? selectedPR(paneId) : listedPR(paneId, key);
+}
+
+/** Reads the threads on the PR (`key`, else the selected one) when the
+ * menu opens; a read for the snapshot on screen is kept until the next
+ * snapshot. */
+export async function loadThreadsOnPR(paneId: string, key?: string): Promise<void> {
+  const selection = targetPR(paneId, key);
   if (!selection) return;
   const seq = pullsSnapshotSeq(selection.backend);
   const held = threadsByKey.get(selection.key);
@@ -72,25 +79,26 @@ export async function loadThreadsOnPR(paneId: string): Promise<void> {
   }
 }
 
-function heldThreads(paneId: string): { selection: PullsSelection; entry: ThreadsOnPR } | null {
-  const selection = selectedPR(paneId);
+function heldThreads(paneId: string, key?: string): { selection: PullsSelection; entry: ThreadsOnPR } | null {
+  const selection = targetPR(paneId, key);
   const entry = selection ? threadsByKey.get(selection.key) : undefined;
   return selection && entry ? { selection, entry } : null;
 }
 
-/** Reactive: the threads tracking the selected PR, as last read. */
-export function threadsOnPR(paneId: string): readonly AgentThreadChoice[] {
-  const held = heldThreads(paneId);
+/** Reactive: the threads tracking the PR (`key`, else the selected one),
+ * as last read. */
+export function threadsOnPR(paneId: string, key?: string): readonly AgentThreadChoice[] {
+  const held = heldThreads(paneId, key);
   if (!held) return EMPTY;
   return held.entry.threads.map((thread) => choice(thread.threadId, thread.title, thread.updatedAt, held.selection.backend));
 }
 
-export function threadsOnPRLoading(paneId: string): boolean {
-  return heldThreads(paneId)?.entry.loading ?? false;
+export function threadsOnPRLoading(paneId: string, key?: string): boolean {
+  return heldThreads(paneId, key)?.entry.loading ?? false;
 }
 
-export function threadsOnPRError(paneId: string): string | null {
-  return heldThreads(paneId)?.entry.error ?? null;
+export function threadsOnPRError(paneId: string, key?: string): string | null {
+  return heldThreads(paneId, key)?.entry.error ?? null;
 }
 
 /**
@@ -99,8 +107,8 @@ export function threadsOnPRError(paneId: string): string | null {
  * BRANCH" names this thread instead. A fork's head is the local pr/N
  * branch the backend fetches, which it refuses on its own terms.
  */
-export function newThreadCheckedOutBy(paneId: string): AgentThreadChoice | null {
-  const held = heldThreads(paneId);
+export function newThreadCheckedOutBy(paneId: string, key?: string): AgentThreadChoice | null {
+  const held = heldThreads(paneId, key);
   if (!held || held.selection.row.crossRepository) return null;
   const branch = held.selection.row.headRefName;
   const thread = held.entry.threads.find((candidate) => candidate.worktreeBranch !== '' && candidate.worktreeBranch === branch);
@@ -120,13 +128,13 @@ export function prThreadSeed(selection: PullsSelection): string {
 }
 
 /**
- * Opens a thread in a linked worktree on the selected PR's head with the
- * PR recorded for it, seeds its draft, and mounts it where the page is
- * (the tool pane's slot goes to the thread). A failure after the thread
+ * Opens a thread in a linked worktree on the head of the PR (`key`, else
+ * the selected one) with the PR recorded for it, seeds its draft, and
+ * mounts it where the page is (the tool pane's slot goes to the thread). A failure after the thread
  * exists removes it and its worktree. Answers whether the thread opened.
  */
-export async function openPRThread(paneId: string): Promise<boolean> {
-  const selection = selectedPR(paneId);
+export async function openPRThread(paneId: string, key?: string): Promise<boolean> {
+  const selection = targetPR(paneId, key);
   if (!selection) return false;
   const { backend, pr, row } = selection;
   const label = pullNumberLabel(pr.forge, pr.number);

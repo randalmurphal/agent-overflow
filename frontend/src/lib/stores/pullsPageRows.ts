@@ -7,6 +7,7 @@ import type { PRListItem, PRListSnapshot, PRSeen, ProjectPRList } from './bindin
 import type { MRFilters } from './pullsPageFilters.svelte';
 import type { PullRowView } from '../components/pulls/pullRowView';
 import type { BackendKey } from '../transport/backendKey';
+import { TransportError } from '../transport/wsClient';
 import { forgeFailureFrom, type ForgeFailure } from '../utils/forgeFailure';
 import { relativeTime } from '../utils/format';
 import { prKey, prRefFromWire, type PRRef } from '../utils/prReference';
@@ -27,6 +28,10 @@ export interface PullsProjectError {
   message: string;
   failure: ForgeFailure | null;
   forge: string;
+  /** The failure behind the message, for Details: the pump's correlation
+   * id and the forge's raw error as a failed call would carry them; null
+   * when the snapshot sent none. */
+  cause: TransportError | null;
 }
 
 export interface PullsGroup {
@@ -193,7 +198,7 @@ export function projectChoices(snapshot: PRListSnapshot | null): PullsProjectCho
 }
 
 /** Every failed project the picker admits, with its kind. */
-export function projectErrors(snapshot: PRListSnapshot | null, projects: readonly string[]): PullsProjectError[] {
+export function projectErrors(snapshot: PRListSnapshot | null, projects: readonly string[], backend: BackendKey): PullsProjectError[] {
   const out: PullsProjectError[] = [];
   for (const project of snapshot?.projects ?? []) {
     if (!project.error) continue;
@@ -204,6 +209,9 @@ export function projectErrors(snapshot: PRListSnapshot | null, projects: readonl
       message: project.error,
       failure: forgeFailureFrom(project),
       forge: project.repo.Forge,
+      cause: project.errorDetails
+        ? new TransportError(`forge_${project.errorKind || 'forge'}`, project.error, { detail: project.errorDetails, backend })
+        : null,
     });
   }
   return out;

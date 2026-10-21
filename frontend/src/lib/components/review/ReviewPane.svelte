@@ -37,6 +37,7 @@
   import { forgeLabels } from '../../utils/forgeLabels';
   import { FORGE_ATTACHMENT_SOURCE_CONTEXT } from '../chat/markdown/forgeAttachmentContext';
   import RenderBoundary from '../shared/RenderBoundary.svelte';
+  import { hostedBackReader } from '../panes/hostedBack';
 
   interface Props {
     /** A review companion beside a thread pane. */
@@ -80,6 +81,8 @@
     return subject.pinned ? reviewStateForPR(sourcePaneId, subject) : reviewStateForPane(sourcePaneId, subject);
   }
   const review = initialState();
+  // The conflict view's Back, unless the host's header owns Back.
+  const hostOwnsBack = hostedBackReader();
   // Forge attachments in every ChatMarkdown under this pane — the PR body,
   // the conversation, each thread's comments, the comments list. A reader
   // rather than a value: the PR reference and its web URL arrive after
@@ -336,13 +339,16 @@
             Conflicts — read-only
           {/if}
         </span>
-        <button
-          type="button"
-          class="shrink-0 rounded border border-border-subtle px-2 py-1 text-[0.6875rem] text-fg-muted hover:text-fg"
-          onclick={() => review?.closeConflictView()}
-        >
-          Back
-        </button>
+        {#if !hostOwnsBack()}
+          <button
+            type="button"
+            class="shrink-0 rounded border border-border-subtle px-2 py-1 text-[0.6875rem] text-fg-muted hover:text-fg"
+            data-testid="review-conflicts-back"
+            onclick={() => review?.closeConflictView()}
+          >
+            Back
+          </button>
+        {/if}
       </div>
       {#if review.conflicts && review.conflicts.messages.length > 0}
         <!-- Fallback only: per-file messages render as note rows inside

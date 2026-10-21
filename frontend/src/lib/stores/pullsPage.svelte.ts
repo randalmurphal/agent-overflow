@@ -21,6 +21,7 @@ import { untrack } from 'svelte';
 import { MarkPRViewed, RefreshPRList, SetPRListActive, SetPRListFocus, SubscribePRList, UnsubscribePRList } from './bindings';
 import type { PRListItem, PRListSnapshot, PRSeen } from './bindings';
 import { createEntityStore } from './entityStore.svelte';
+import { captureError, type CapturedError } from './errorReports.svelte';
 import { getCompactScreen, isCompactLayout, onScreenCompactPaneId } from './layoutMode.svelte';
 import { applyPipelineFrame, applyPipelineLogFrame, resyncPipelinesAfterGap } from './pipelineCI.svelte';
 import { onPRSnapshotApplied, type PRSnapshotApplied } from './prReviewStore.svelte';
@@ -121,6 +122,7 @@ class PullsPageBackend {
   attachment: { release(): void } | null = null;
   refreshing = $state(false);
   refreshError = $state<string | null>(null);
+  refreshFailure = $state.raw<CapturedError | null>(null);
   refreshSeq = 0;
   /** Seen records this client wrote (MarkPRViewed answers) by row key,
    * shown until the list's own record catches up. */
@@ -136,7 +138,7 @@ class PullsPageBackend {
   readonly rowsByKey = $derived(new Map(this.rows.map((row) => [row.key, row])));
   readonly groups: readonly PullsGroup[] = $derived.by(() => groupRows(this.snapshot, this.backend, mrFilters(this.backend), this.seenOverrides));
   readonly projects: readonly PullsProjectChoice[] = $derived(projectChoices(this.snapshot));
-  readonly errors: readonly PullsProjectError[] = $derived.by(() => projectErrors(this.snapshot, mrFilters(this.backend).projects));
+  readonly errors: readonly PullsProjectError[] = $derived.by(() => projectErrors(this.snapshot, mrFilters(this.backend).projects, this.backend));
 
   constructor(readonly backend: BackendKey) {
     this.focus = createRefreshScheduler({
@@ -362,6 +364,12 @@ export function pullsRefreshError(paneId: string): string | null {
   return pageOf(paneId)?.refreshError ?? null;
 }
 
+/** Reactive: the last refresh call's failure as the error surface shows
+ * it (details and copy), until the next refresh. */
+export function pullsRefreshFailure(paneId: string): CapturedError | null {
+  return pageOf(paneId)?.refreshFailure ?? null;
+}
+
 /** The header's refresh: the pump reads every project and the focused
  * rows' detail now. Per-project failures arrive in the next snapshot. */
 export async function refreshPullsPage(paneId: string): Promise<void> {
@@ -373,10 +381,14 @@ export async function refreshPullsPage(paneId: string): Promise<void> {
   const seq = ++page.refreshSeq;
   page.refreshing = true;
   page.refreshError = null;
+  page.refreshFailure = null;
   try {
     await withBackendTarget(page.backend, () => RefreshPRList(id));
   } catch (err) {
-    if (seq === page.refreshSeq) page.refreshError = errString(err);
+    if (seq === page.refreshSeq) {
+      page.refreshError = errString(err);
+      page.refreshFailure = captureError(err, { context: 'Could not refresh the merge requests' });
+    }
   } finally {
     if (seq === page.refreshSeq) page.refreshing = false;
   }
@@ -393,6 +405,15 @@ export function selectedPR(paneId: string): PullsSelection | null {
   if (!selection) return null;
   const listed = pages.get(selection.backend)?.rowsByKey.get(selection.key);
   return listed && listed.item !== selection.row ? { ...selection, row: listed.item } : selection;
+}
+
+/** Reactive: a listed PR by row key as a selection would hold it,
+ * without selecting it (a row's menu acts on its own PR). */
+export function listedPR(paneId: string, key: string): PullsSelection | null {
+  const entry = paneEntries.get(paneId);
+  const row = entry ? pages.get(entry.backend)?.rowsByKey.get(key) : undefined;
+  if (!entry || !row) return null;
+  return { key, backend: entry.backend, projectId: row.project.projectId, pr: row.pr, row: row.item };
 }
 
 /** Selects a listed PR by row key; false when the list holds none. */

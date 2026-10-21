@@ -1,6 +1,7 @@
 // The Pull requests pane's commands (docs/specs/pull-requests.md, "The
 // page"): the chord that opens or closes the pane, and the surface
-// dismissal that steps from an open MR or pipeline back to the list, which
+// dismissal that steps back from an open MR or pipeline (a CI log or the
+// conflict view open in it first, then the MR or pipeline), which
 // is what Escape and the phone's Back run while the pane is focused with a
 // detail open. The pane registers what "back" does for its active tab.
 
@@ -47,7 +48,7 @@ export function registerPullsCommands(): void {
     id: 'pulls.escape',
     dismissesSurface: true,
     label: 'Pull requests: Back to the list',
-    description: 'Close the open merge request or pipeline and return to the list.',
+    description: 'Close the open log or conflicts, else the open merge request or pipeline, and return to the list.',
     when: 'pullsPaneFocused && toolDetailOpen',
     run: () => {
       stepPullsBack();

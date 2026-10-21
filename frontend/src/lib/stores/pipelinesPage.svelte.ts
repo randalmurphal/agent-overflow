@@ -41,6 +41,9 @@ export interface PipelinesProjectError {
   message: string;
   failure: ForgeFailure | null;
   forge: string;
+  /** The failed call's error, for Details: its frame carries the log
+   * reference and the forge's raw error. */
+  cause: unknown;
 }
 
 /** One listed pipeline with what reading its stages and CI needs. */
@@ -165,7 +168,7 @@ class PipelinesPageBackend {
         if (error !== null || rows === null || repo === null) {
           if (error !== null) {
             this.errors.set(project.projectId, {
-              projectId: project.projectId, name: project.name, message: errString(error), failure: failureOf(error), forge: project.repo.Forge,
+              projectId: project.projectId, name: project.name, message: errString(error), failure: failureOf(error), forge: project.repo.Forge, cause: error,
             });
           }
           // A failed project keeps the rows it listed before.

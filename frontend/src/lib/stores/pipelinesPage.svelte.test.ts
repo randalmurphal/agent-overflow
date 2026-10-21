@@ -177,6 +177,7 @@ describe('list reads', () => {
     expect(pipelinesRows(PANE).map((row) => row.id)).toEqual(['1']);
     expect(pipelinesProjectErrors(PANE)).toEqual([{
       projectId: 'p2', name: 'Project p2', message: 'No access to group/api with this login.', failure: { kind: 'forbidden', reserve: false, resumeAt: '' }, forge: 'gitlab',
+      cause: expect.objectContaining({ code: 'forge_forbidden' }),
     }]);
   });
 });

@@ -398,7 +398,7 @@ describe('row projection', () => {
     await flush();
     expect(pullsProjectErrors(PANE)).toEqual([{
       projectId: 'p1', name: 'Project p1', message: 'No access to owner/repo with this login.',
-      failure: { kind: 'forbidden', reserve: false, resumeAt: '' }, forge: 'github',
+      failure: { kind: 'forbidden', reserve: false, resumeAt: '' }, forge: 'github', cause: null,
     }]);
   });
 });

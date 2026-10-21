@@ -17,7 +17,11 @@
   import PullRow from './PullRow.svelte';
   import PullsFilterChips from './PullsFilterChips.svelte';
   import PullsGroupHeader from './PullsGroupHeader.svelte';
+  import PullsErrorNotice from './PullsErrorNotice.svelte';
+  import PullsListResizer from './PullsListResizer.svelte';
   import PullsProjectError from './PullsProjectError.svelte';
+  import { ListColumnWidth } from './listWidth.svelte';
+  import { provideHostedBack } from '../panes/hostedBack';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
   import { pullGroupLabel } from '../../utils/pullsAttention';
   import { copyToClipboard } from '../../utils/clipboard';
@@ -50,11 +54,13 @@
     clearSelection,
     detachPullsPage,
     detailOpen,
+    listedPR,
     pullsError,
     pullsLoading,
     pullsNeedsYouCount,
     pullsProjectErrors,
     pullsProjects,
+    pullsRefreshFailure,
     pullsRefreshing,
     pullsRowsByGroup,
     pullsSnapshotError,
@@ -71,10 +77,12 @@
     projectThreads,
     sendDrafts,
     threadsOnPR,
+    threadsOnPRError,
     threadsOnPRLoading,
   } from '../../stores/pullsPageAgent.svelte';
   import { mrFilters, pipelineFilters, setMRFilters } from '../../stores/pullsPageFilters.svelte';
-  import { currentPinnedReviewState } from '../../stores/reviewPane.svelte';
+  import type { CapturedError } from '../../stores/errorReports.svelte';
+  import { currentPinnedReviewState, reviewSubjectForPR, type ReviewPaneState } from '../../stores/reviewPane.svelte';
   import { selectedBackend } from '../../stores/selectedBackend.svelte';
   import { addErrorToast } from '../../stores/toast.svelte';
   import { registerToolDetailProbe } from '../../stores/toolPanes.svelte';
@@ -89,8 +97,10 @@
   // one row per pipeline), beside the detail: the review pane pinned to
   // the picked MR, or the picked pipeline's stages and logs. The list
   // column is resizable and remembered; compact shows the list as the
-  // page and the detail full width with Back. The page lists the computer
-  // selected when it opened and keeps it for the pane's life.
+  // page and the detail full width with the header's Back, the one Back:
+  // it closes a view open in the detail (a CI log, the conflicts) before
+  // the detail. The page lists the computer selected when it opened and
+  // keeps it for the pane's life.
 
   interface Props {
     paneId: string;
@@ -102,14 +112,12 @@
   type Tab = 'mrs' | 'pipelines';
   const TAB_KEY = 'pulls:tab';
   const LIST_WIDTH_KEY = 'pullsListWidth';
-  const LIST_MIN_PX = 280;
-  const LIST_MAX_PX = 720;
-  const LIST_DEFAULT_PX = 400;
 
   const backend = untrack(() => selectedBackend());
   let tab: Tab = $state(appStorageGet(TAB_KEY) === 'pipelines' ? 'pipelines' : 'mrs');
   let compact = $derived(isCompactLayout());
-  let listWidth = $state(readListWidth());
+  const listColumn = new ListColumnWidth(LIST_WIDTH_KEY);
+  provideHostedBack(() => compact);
 
   const selection = $derived(selectedPR(paneId));
   // The pinned review's subject, one nullable value the template reads
@@ -148,13 +156,29 @@
     detachPullsPage(paneId);
   });
 
+  // The selected MR's review state, when it is the one the page pins.
+  function selectedReview(): ReviewPaneState | null {
+    if (!pinnedReview) return null;
+    const state = currentPinnedReviewState(paneId);
+    try {
+      return state?.identity === reviewSubjectForPR(pinnedReview.subject).identity ? state : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // One step back: a view open in the detail closes first, then the detail.
   function stepBack(): boolean {
     if (tab === 'mrs' && selection) {
-      clearSelection(paneId);
+      const review = selectedReview();
+      if (review?.ciLogView) review.closeCILogView();
+      else if (review?.conflictView) review.closeConflictView();
+      else clearSelection(paneId);
       return true;
     }
     if (tab === 'pipelines' && pipeline) {
-      clearPipelineSelection(paneId);
+      if (pipeline.ci.logView) pipeline.ci.closeLogView();
+      else clearPipelineSelection(paneId);
       return true;
     }
     return false;
@@ -163,40 +187,6 @@
   function setTab(next: Tab): void {
     tab = next;
     appStorageSet(TAB_KEY, next);
-  }
-
-  function readListWidth(): number {
-    const raw = Number(appStorageGet(LIST_WIDTH_KEY));
-    return Number.isFinite(raw) && raw > 0 ? clampListWidth(raw) : LIST_DEFAULT_PX;
-  }
-
-  function clampListWidth(px: number): number {
-    return Math.min(LIST_MAX_PX, Math.max(LIST_MIN_PX, Math.round(px)));
-  }
-
-  function startListResize(event: PointerEvent): void {
-    event.preventDefault();
-    const handle = event.currentTarget as HTMLElement;
-    const startX = event.clientX;
-    const startWidth = listWidth;
-    handle.setPointerCapture(event.pointerId);
-    const onMove = (move: PointerEvent) => {
-      listWidth = clampListWidth(startWidth + (move.clientX - startX));
-    };
-    const onEnd = () => {
-      handle.removeEventListener('pointermove', onMove);
-      handle.removeEventListener('pointerup', onEnd);
-      handle.removeEventListener('pointercancel', onEnd);
-      appStorageSet(LIST_WIDTH_KEY, String(listWidth));
-    };
-    handle.addEventListener('pointermove', onMove);
-    handle.addEventListener('pointerup', onEnd);
-    handle.addEventListener('pointercancel', onEnd);
-  }
-
-  function resetListWidth(): void {
-    listWidth = LIST_DEFAULT_PX;
-    appStorageSet(LIST_WIDTH_KEY, String(listWidth));
   }
 
   function openRow(row: PullRowView): void {
@@ -212,23 +202,33 @@
     else refreshPipelinesPage(paneId);
   }
 
+  // A failed refresh of the merge requests reads under the header until
+  // dismissed or the next refresh. The Pipelines tab's failures land in
+  // its list and its project rows.
+  const refreshFailure = $derived(tab === 'mrs' ? pullsRefreshFailure(paneId) : null);
+  let dismissedRefresh: CapturedError | null = $state.raw(null);
+
   // The agent menu: from the header's button on the picked MR, or from a
-  // row's menu, which picks that row first so the menu and the store agree
-  // on which MR it is about.
+  // row's menu on that row's MR, which stays unpicked so the list and the
+  // menu's anchor stay on screen. `agentRowKey` is the row's key, or
+  // undefined for the picked MR.
   let agentOpen = $state(false);
   let agentAnchor: HTMLElement | undefined = $state(undefined);
-  let agentHeaderEl: HTMLElement | undefined = $state(undefined);
+  let agentRowKey: string | undefined = $state(undefined);
   let agentBusy = $state(false);
-  const agentThreads = $derived(threadsOnPR(paneId));
-  const agentCheckedOutBy = $derived(newThreadCheckedOutBy(paneId));
-  const agentProjectThreads = $derived(selection ? projectThreads(selection.projectId, backend) : []);
-  const agentBranch = $derived(selection ? (selection.row.crossRepository ? `pr/${selection.pr.number}` : selection.row.headRefName) : '');
-  const draftsCount = $derived(currentPinnedReviewState(paneId)?.drafts.length ?? 0);
+  const agentTarget = $derived(agentRowKey === undefined ? selection : listedPR(paneId, agentRowKey));
+  const agentThreads = $derived(threadsOnPR(paneId, agentRowKey));
+  const agentCheckedOutBy = $derived(newThreadCheckedOutBy(paneId, agentRowKey));
+  const agentProjectThreads = $derived(agentTarget ? projectThreads(agentTarget.projectId, backend) : []);
+  const agentBranch = $derived(agentTarget ? (agentTarget.row.crossRepository ? `pr/${agentTarget.pr.number}` : agentTarget.row.headRefName) : '');
+  // The drafts are the pinned review's, which is the picked MR's.
+  const draftsCount = $derived(agentTarget && agentTarget.key === selection?.key ? (currentPinnedReviewState(paneId)?.drafts.length ?? 0) : 0);
 
-  function openAgentMenu(anchor: HTMLElement): void {
+  function openAgentMenu(anchor: HTMLElement, rowKey?: string): void {
     agentAnchor = anchor;
+    agentRowKey = rowKey;
     agentOpen = true;
-    void loadThreadsOnPR(paneId);
+    void loadThreadsOnPR(paneId, rowKey);
   }
 
   function closeAgentMenu(reason?: PopoverCloseReason): void {
@@ -237,8 +237,7 @@
   }
 
   function openRowMenu(row: PullRowView, anchor: HTMLElement): void {
-    selectPR(paneId, row.key);
-    openAgentMenu(anchor);
+    openAgentMenu(anchor, row.key);
   }
 
   async function runAgent(action: () => Promise<boolean>): Promise<void> {
@@ -251,7 +250,7 @@
   }
 
   async function openOnForge(): Promise<void> {
-    const url = selection?.row.url;
+    const url = agentTarget?.row.url;
     if (!url) return;
     try {
       await OpenExternalURL(url);
@@ -280,7 +279,7 @@
     kind="pulls"
     {onPaneDragStart}
     onBack={compact && detailShown ? () => { stepBack(); } : undefined}
-    backLabel="Back to the list"
+    backLabel="Back"
     backTestId="pulls-back"
   >
     <div class="flex min-w-0 flex-1 items-center gap-2">
@@ -298,19 +297,17 @@
       {/if}
       <div class="ml-auto flex shrink-0 items-center gap-1">
         {#if tab === 'mrs' && selection}
-          <span bind:this={agentHeaderEl} class="inline-flex">
-            <Button
-              variant="tinted"
-              size="xs"
-              testId="pulls-open-with-agent"
-              ariaLabel="Open with agent"
-              onclick={() => { if (agentHeaderEl) openAgentMenu(agentHeaderEl); }}
-            >
-              {#snippet leading()}<Icon icon={Sparkles} size={12} strokeWidth={1.75} />{/snippet}
-              <span class="compact:hidden">Open with agent</span>
-              {#snippet trailing()}<Icon icon={ChevronDown} size={11} strokeWidth={2} />{/snippet}
-            </Button>
-          </span>
+          <Button
+            variant="tinted"
+            size="xs"
+            testId="pulls-open-with-agent"
+            ariaLabel="Open with agent"
+            onclick={(event) => openAgentMenu(event.currentTarget as HTMLElement)}
+          >
+            {#snippet leading()}<Icon icon={Sparkles} size={12} strokeWidth={1.75} />{/snippet}
+            <span class="compact:hidden">Open with agent</span>
+            {#snippet trailing()}<Icon icon={ChevronDown} size={11} strokeWidth={2} />{/snippet}
+          </Button>
         {/if}
         <PaneHeaderIconButton
           label={tab === 'mrs' ? 'Refresh merge requests' : 'Refresh pipelines'}
@@ -322,12 +319,20 @@
       </div>
     </div>
   </ToolPaneHeader>
+  {#if refreshFailure && refreshFailure !== dismissedRefresh}
+    <PullsErrorNotice
+      message="Could not refresh the merge requests: {refreshFailure.report.reason}"
+      captured={refreshFailure}
+      onDismiss={() => { dismissedRefresh = refreshFailure; }}
+      testId="pulls-refresh-error"
+    />
+  {/if}
 
-  <div class="flex min-h-0 flex-1">
+  <div class="flex min-h-0 flex-1" bind:clientWidth={listColumn.paneWidth}>
     <!-- The list column: the page on compact, a resizable column beside the detail on desktop. -->
     <div
       class="relative flex min-h-0 shrink-0 flex-col border-r border-border-subtle compact:w-full compact:border-r-0 {compact && detailShown ? 'hidden' : ''}"
-      style:width={compact ? undefined : `${listWidth}px`}
+      style:width={compact ? undefined : `${listColumn.width}px`}
       data-testid="pulls-list-column"
     >
       {#if tab === 'mrs'}
@@ -349,7 +354,7 @@
         >
           {#each projectErrors as failed (failed.projectId)}
             <PullsGroupHeader label={failed.name} testid="pulls-project-group" />
-            <PullsProjectError message={failed.message} failure={failed.failure} forge={failed.forge} onRetry={refresh} retrying={pullsRefreshing(paneId)} />
+            <PullsProjectError message={failed.message} failure={failed.failure} forge={failed.forge} cause={failed.cause} onRetry={refresh} retrying={pullsRefreshing(paneId)} />
           {/each}
           {#each groups as group (group.group)}
             <PullsGroupHeader label={pullGroupLabel(group.group)} count={group.rows.length} testid="pulls-group-{group.group}" />
@@ -376,7 +381,7 @@
         >
           {#each pipelinesProjectErrors(paneId) as failed (failed.projectId)}
             <PullsGroupHeader label={failed.name} testid="pipelines-project-group" />
-            <PullsProjectError message={failed.message} failure={failed.failure} forge={failed.forge} onRetry={refresh} retrying={pipelinesReading(paneId)} />
+            <PullsProjectError message={failed.message} failure={failed.failure} forge={failed.forge} cause={failed.cause} onRetry={refresh} retrying={pipelinesReading(paneId)} />
           {/each}
           {#each pipeRows as row (row.key)}
             <PipelineRow {row} selected={pipeline?.key === row.key} onOpen={openPipelineRow} />
@@ -393,16 +398,7 @@
         </div>
       {/if}
       {#if !compact}
-        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-        <div
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize the list"
-          class="absolute inset-y-0 -right-0.5 z-10 w-1 cursor-col-resize hover:bg-accent/40 active:bg-accent/60"
-          data-testid="pulls-list-resize"
-          onpointerdown={startListResize}
-          ondblclick={resetListWidth}
-        ></div>
+        <PullsListResizer column={listColumn} />
       {/if}
     </div>
 
@@ -431,27 +427,30 @@
   </div>
 </div>
 
-{#if selection}
+{#if agentTarget}
   <OpenWithAgentMenu
     anchor={agentAnchor}
     open={agentOpen}
     onClose={closeAgentMenu}
     branch={agentBranch}
-    crossRepository={selection.row.crossRepository}
+    crossRepository={agentTarget.row.crossRepository}
     threadsOnPR={agentThreads}
+    threadsLoading={threadsOnPRLoading(paneId, agentRowKey)}
+    threadsError={threadsOnPRError(paneId, agentRowKey)}
+    onRetryThreads={() => { void loadThreadsOnPR(paneId, agentRowKey); }}
     projectThreads={agentProjectThreads}
     {draftsCount}
     checkedOutBy={agentCheckedOutBy}
-    busy={agentBusy || threadsOnPRLoading(paneId)}
-    onNewThread={() => { void runAgent(() => openPRThread(paneId)); }}
+    busy={agentBusy}
+    onNewThread={() => { void runAgent(() => openPRThread(paneId, agentRowKey)); }}
     onOpenThread={(threadId) => { void runAgent(() => openThread(paneId, threadId)); }}
     onSendDrafts={(threadId) => { void runAgent(() => sendDrafts(paneId, threadId)); }}
   >
     {#snippet extra()}
-      <MenuItem label="Open on {forgeLabels(selection?.pr.forge).name}" onSelect={() => { void openOnForge(); }} testId="pull-menu-open-forge" />
+      <MenuItem label="Open on {forgeLabels(agentTarget?.pr.forge).name}" onSelect={() => { void openOnForge(); }} testId="pull-menu-open-forge" />
       <MenuItem
         label="Copy URL"
-        onSelect={() => { if (selection) void copyToClipboard(selection.row.url); }}
+        onSelect={() => { if (agentTarget) void copyToClipboard(agentTarget.row.url); }}
         testId="pull-menu-copy-url"
       />
     {/snippet}

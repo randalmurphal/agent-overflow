@@ -20,6 +20,7 @@
   import LongListVirtualizer, { type LongListHandle } from '../virtual/LongListVirtualizer.svelte';
   import ReviewCILogBlockRow from './ReviewCILogBlockRow.svelte';
   import ReviewIconButton from './ReviewIconButton.svelte';
+  import { hostedBackReader } from '../panes/hostedBack';
   import { OpenExternalURL } from '../../stores/bindings';
   import { CI_LOG_BLOCK_LINES, CILogBlockCache, type CILogFetch } from '../../stores/ciLogBlocks.svelte';
   import type { PRCILogState } from '../../stores/prReviewCI.svelte';
@@ -105,6 +106,9 @@
     onCopySection,
     onSendSection,
   }: Props = $props();
+
+  // Back closes the log; a host whose header owns Back steps here first.
+  const hostOwnsBack = hostedBackReader();
 
   type LogRow =
     | { kind: 'section'; key: string; section: CILogSection; open: boolean }
@@ -334,13 +338,16 @@
         <Icon icon={ExternalLink} size={12} />
       </button>
     {/if}
-    <button
-      type="button"
-      class="shrink-0 rounded border border-border-subtle px-2 py-1 text-[0.6875rem] text-fg-muted hover:text-fg"
-      onclick={onBack}
-    >
-      Back
-    </button>
+    {#if !hostOwnsBack()}
+      <button
+        type="button"
+        class="shrink-0 rounded border border-border-subtle px-2 py-1 text-[0.6875rem] text-fg-muted hover:text-fg"
+        data-testid="review-ci-log-back"
+        onclick={onBack}
+      >
+        Back
+      </button>
+    {/if}
   </div>
 
   {#if savedPath}

@@ -368,7 +368,10 @@ forge repository), lists each repository once however many projects
 clone it, at most `prListReadConcurrency` (4) at a time, then reads the
 summary detail of the rows the subscribers focus, joins the user's
 `pr_views` and emits `pulls:updated` when the snapshot changed. A
-project's failed list keeps the rows read before beside its error, a
+project's failed list keeps the rows read before beside its error
+(`ProjectPRList.Error`, the caller-safe sentence, and `ErrorDetails`, the
+correlation id the server log holds the raw error under with that
+error's chain, fixed while the same failure repeats), a
 first transient failure with rows on screen is held back once, a
 rate-limited repository is skipped by background ticks until its
 release, and a removed project takes its rows along. Each row's

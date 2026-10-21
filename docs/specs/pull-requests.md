@@ -215,8 +215,12 @@ failed project's group header; the other projects keep working.
 A pane kind `pulls`. Left: a list column with tabs (Merge requests,
 Pipelines), a filter row, and grouped rows; right: the review pane on the
 selected MR with the project's root as its workspace and no thread, so
-stepping through the list never loses it. Compact: the list is the page,
-a tap opens the pane full width, Back returns.
+stepping through the list never loses it. The list column's width is
+remembered and clamped to leave the detail a usable width in the pane as
+it is now; its handle also resizes from the keyboard. Compact: the list
+is the page, a tap opens the pane full width, and the page header's Back
+is the one Back: it closes a CI log or the conflict view open in the
+detail, then the detail.
 
 The pane is pinned to the MR (`reviewSubjectForPR`): its scope is the PR
 alone, and the MR, its computer and the `git:operate` check are the ones
@@ -258,15 +262,18 @@ list and does not move a row to `Your turn`. The page refreshes on open,
 on its own refresh button and every PR-update interval while visible;
 hidden, it reads nothing.
 
-"Open with agent" (the page header's button, and each row's menu): "New
+"Open with agent" (the page header's button on the selected MR, and each
+row's menu on that row's MR, which stays unselected): "New
 thread on BRANCH" creates a linked worktree on the MR's source branch,
 which must exist on origin; a fork's head is fetched into the local
 branch `pr/N` instead. The thread opens with a draft seeded "Reviewing
 !N: TITLE URL" and records the PR (`thread_pull_requests`) so the badge
 and the merge cleanup see it, every step rolled back if a later one
 fails;
-"Threads on this MR" lists threads already tracking it; "Send review
-comments to a thread…" is the existing send flow.
+"Threads on this MR" lists threads already tracking it, and a failed read
+of them says so with a Retry and keeps "New thread" off until it
+succeeds; "Send review comments to a thread…" is the existing send flow.
+A failed refresh shows under the page header with "Details".
 
 ### Tools row (phase 2)
 
@@ -288,7 +295,7 @@ MR, tag), head commit, stage dots for the rows on screen, age. Filters:
 project, ref kind, status, default all; the ref and status pickers are
 one choice each and close on the pick. A row opens the stages / jobs /
 log view beside the list; on compact the page header's Back is the one
-Back, for a pipeline as for an MR;
+Back, for a pipeline as for an MR, and closes an open log first;
 the CI model is keyed by `(repository, pipeline id)`, the MR's head
 pipeline being one case. GitLab `projects/P/pipelines`, GitHub
 `actions/runs`. The review pane's CI line stays the head pipeline only.

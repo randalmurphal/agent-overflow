@@ -11,11 +11,13 @@
 // width with Back on compact) with its readiness pill and Merge section;
 // what moved since the reader looked reads on the row and clears once the
 // row is opened again; a project whose list the forge refuses fails alone
-// with its sentence and a Retry; Open with agent starts a thread in a
+// with its sentence, Details and a Retry; a row's menu acts on its MR
+// without opening it; Open with agent starts a thread in a
 // worktree on the MR's branch with the seeded draft, and afterwards lists
 // it on the MR and refuses a second worktree; the Pipelines tab lists the
 // repositories' pipelines with their refs, filters by ref kind, and opens a
-// pipeline's stages and a job's log beside the list.
+// pipeline's stages and a job's log beside the list (on compact the
+// header's Back is the only Back and closes the log first).
 
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -273,6 +275,10 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       await expect(failed).toBeVisible({ timeout: 20_000 });
       await expect(failed).toContainText('api');
       await expect(failed).toHaveAttribute('data-error-kind', 'forbidden');
+      // Details: the correlation id and the forge's own answer behind the sentence.
+      await failed.getByTestId('error-details-toggle').click();
+      await expect(failed.getByTestId('error-details')).toContainText(/ref \S+/);
+      await expect(failed.getByTestId('error-details')).toContainText('HTTP 403');
       await expect(pane.getByTestId('pulls-project-group')).toContainText('widgets');
       await expect(row(page, 201)).toBeVisible();
       await shoot(compact ? page : pane, testInfo, 'pulls-project-error-dark');
@@ -280,6 +286,21 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       await pane.getByTestId('pulls-refresh').click();
       await expect(failed).toHaveCount(0, { timeout: 20_000 });
       await expect(row(page, 101)).toBeVisible();
+
+      // A row's menu is about its own MR and leaves it unopened: the list,
+      // and the trigger the menu hangs from, stay on screen (on compact too).
+      const rowMenu = row(page, 201).getByTestId('pull-row-menu');
+      await rowMenu.click();
+      const rowMenuPopover = page.locator('[data-popover]');
+      await expect(rowMenuPopover.getByTestId('open-with-agent-new-thread')).toContainText('New thread on');
+      await expect(row(page, 201)).not.toHaveAttribute('data-selected', 'true');
+      await expect(page.getByTestId('pulls-list-column')).toBeVisible();
+      await expect(rowMenu).toBeVisible();
+      const anchorBox = (await rowMenu.boundingBox())!;
+      const menuBox = (await rowMenuPopover.boundingBox())!;
+      expect(Math.abs(menuBox.y - (anchorBox.y + anchorBox.height))).toBeLessThan(24);
+      await page.keyboard.press('Escape');
+      await expect(rowMenuPopover).toHaveCount(0);
 
       // Open with agent on !101: a thread in a linked worktree on its
       // branch, with the seeded draft, takes the page's slot.
@@ -370,6 +391,11 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       await expect(log).toContainText('all green');
       await shoot(compact ? page : view, testInfo, 'pipeline-view-dark');
       if (compact) {
+        // One Back: the page header's, which closes the log, then the pipeline.
+        await expect(page.getByRole('button', { name: 'Back', exact: true })).toHaveCount(1);
+        await page.getByTestId('pulls-back').click();
+        await expect(log).toHaveCount(0);
+        await expect(view.getByTestId('pipeline-view-empty')).toBeVisible();
         await page.getByTestId('pulls-back').click();
         await expect(view).toBeHidden();
         await expect(rows).toHaveCount(6);
