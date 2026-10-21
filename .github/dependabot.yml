@@ -1,10 +1,14 @@
 version: 2
+# Security updates only: a limit of 0 stops scheduled version-update pull
+# requests, while security updates still open for advisories and still apply
+# the ignore rules below. Version bumps are done by hand.
 updates:
   - package-ecosystem: gomod
     directory: /
     schedule:
       interval: weekly
       day: monday
+    open-pull-requests-limit: 0
     groups:
       go:
         patterns: ["*"]
@@ -22,6 +26,7 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    open-pull-requests-limit: 0
     groups:
       npm:
         patterns: ["*"]
@@ -48,8 +53,10 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    open-pull-requests-limit: 0
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
       day: monday
+    open-pull-requests-limit: 0
