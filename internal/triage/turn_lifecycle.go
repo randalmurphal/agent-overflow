@@ -950,13 +950,14 @@ func (r *Router) OpenTurnIndex(threadID string) int {
 
 // InterruptTurnIndex returns the turn an interrupt of threadID cuts: the
 // open turn, or -1 when none is in flight. While handleTurnStart runs it
-// first waits for the start to finish. That handler writes the active
-// turns row before it sets the open turn, and GetActiveTurn-gated
-// callers (workflow takeover, revert) can interrupt in between; an
-// immediate sample would read -1 and lose the user's stop. A marker
-// written in that gap would not hold either: setOpenTurn resets the
-// turn's error sequence, so the turn's next error row reuses the
-// marker's id.
+// first waits for the start to finish, whether or not a turn is already
+// open. That handler writes the active turns row before it sets the open
+// turn, and GetActiveTurn-gated callers (workflow takeover, revert) can
+// interrupt in between; an immediate sample would read -1 and lose the
+// user's stop. A marker written before setOpenTurn would not hold
+// either, even on a turn a queued echo already opened at the same index:
+// setOpenTurn resets the turn's error sequence (its re-init contract),
+// so the turn's next error row would reuse the marker's id.
 //
 // The store's row is never consulted. An active row with no open turn
 // and no start in progress is a turn the router already closed: a fatal
@@ -980,9 +981,13 @@ func (r *Router) InterruptTurnIndex(threadID string) int {
 		r.mu.Unlock()
 		return -1
 	}
-	if !st.openTurnSet && st.turnStarting != nil {
+	if st.turnStarting != nil {
 		starting := st.turnStarting
+		hook := r.interruptWaitHook
 		r.mu.Unlock()
+		if hook != nil {
+			hook(threadID)
+		}
 		<-starting
 		return r.OpenTurnIndex(threadID)
 	}

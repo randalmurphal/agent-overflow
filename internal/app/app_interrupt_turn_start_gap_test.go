@@ -58,19 +58,39 @@ func interruptInTurnStartGap(t *testing.T, name string, interrupt func(app *App,
 		t.Fatalf("precondition: GetActiveTurn active=%v err=%v; want the started row", active, err)
 	}
 
+	// The start is released only once the interrupt is waiting on it in
+	// InterruptTurnIndex; an interrupt that finishes first sampled the gap.
+	waiting := make(chan struct{})
+	var waitOnce sync.Once
+	app.triage.SetInterruptWaitHook(func(string) {
+		waitOnce.Do(func() { close(waiting) })
+	})
 	done := make(chan error, 1)
 	go func() { done <- interrupt(app, thread.ID) }()
 	select {
+	case <-waiting:
 	case err := <-done:
-		t.Fatalf("interrupt finished while the turn start was parked (err=%v): it sampled the gap", err)
-	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("interrupt finished without waiting on the parked turn start (err=%v): it sampled the gap", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("interrupt never waited on the parked turn start")
 	}
 	releaseStart()
-	if err := <-started; err != nil {
-		t.Fatalf("turn start: %v", err)
+	select {
+	case err := <-started:
+		if err != nil {
+			t.Fatalf("turn start: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("released turn start never returned")
 	}
-	if err := <-done; err != nil {
-		t.Fatalf("interrupt: %v", err)
+	var interruptErr error
+	select {
+	case interruptErr = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("interrupt still waiting after the turn start returned")
+	}
+	if interruptErr != nil {
+		t.Fatalf("interrupt: %v", interruptErr)
 	}
 	// A marker written before the open turn was set would share its id
 	// with the turn's next error and be overwritten by it.
@@ -110,6 +130,12 @@ func TestInterruptTurnRecordsStopInTurnStartGap(t *testing.T) {
 func TestPlainInterruptFallbackRecordsStopInTurnStartGap(t *testing.T) {
 	t.Parallel()
 	requireStopAndLaterError(t, interruptInTurnStartGap(t, "plain-interrupt-start-gap", func(app *App, threadID string) error {
+		// The caller owns the thread action lock, as InterruptAndRevertIfClean does.
+		unlock, err := app.threadLocks().LockCtx(t.Context(), threadID)
+		if err != nil {
+			return err
+		}
+		defer unlock()
 		return app.runPlainInterruptLocked(threadID)
 	}))
 }

@@ -3,6 +3,7 @@ package triage
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -17,31 +18,46 @@ import (
 // its open turn (SetTurnRowWrittenGate).
 type heldTurnStart struct {
 	release func()
+	// handled receives the start's Handle error, or errAbortedStart when
+	// the start was aborted at the gate.
 	handled chan error
 }
 
-// holdTurnStart runs EventTurnStart for turnIndex on its own goroutine
-// and returns once the start is parked after writing the turns row.
-func holdTurnStart(t *testing.T, router *Router, threadID string, turnIndex int) heldTurnStart {
+var errAbortedStart = errors.New("turn start aborted at the gate")
+
+// holdTurnStart runs evt (an EventTurnStart) on its own goroutine and
+// returns once the start is parked after writing the turns row. With
+// abort set, the released start panics out of the gate, unwinding
+// before setOpenTurn.
+func holdTurnStart(t *testing.T, router *Router, evt provider.ProviderEvent, abort bool) heldTurnStart {
 	t.Helper()
 	inGap := make(chan struct{})
 	release := make(chan struct{})
 	var once sync.Once
 	router.SetTurnRowWrittenGate(func(id string) {
-		if id != threadID {
+		if id != evt.ThreadID {
 			return
 		}
 		once.Do(func() {
 			close(inGap)
 			<-release
+			if abort {
+				panic(errAbortedStart)
+			}
 		})
 	})
 	t.Cleanup(func() { router.SetTurnRowWrittenGate(nil) })
 	handled := make(chan error, 1)
 	go func() {
-		handled <- router.Handle(provider.ProviderEvent{
-			Kind: provider.EventTurnStart, ThreadID: threadID, TurnIndex: turnIndex, Timestamp: time.Now(),
-		})
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				if recovered != errAbortedStart {
+					panic(recovered)
+				}
+				handled <- errAbortedStart
+			}
+		}()
+		handled <- router.Handle(evt)
 	}()
 	select {
 	case <-inGap:
@@ -54,31 +70,69 @@ func holdTurnStart(t *testing.T, router *Router, threadID string, turnIndex int)
 	return held
 }
 
+func turnStartEvent(threadID string, turnIndex int) provider.ProviderEvent {
+	return provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: threadID, TurnIndex: turnIndex, Timestamp: time.Now(),
+	}
+}
+
+// runThroughHeldStart runs interrupt on its own goroutine, releases the
+// held start only once interrupt is waiting on it in InterruptTurnIndex
+// (SetInterruptWaitHook), and returns interrupt's result and the start's
+// Handle outcome. An interrupt that finishes without waiting sampled the
+// start's gap and fails the test.
+func runThroughHeldStart[T any](t *testing.T, router *Router, threadID string, held heldTurnStart, interrupt func() T) (T, error) {
+	t.Helper()
+	waiting := make(chan struct{})
+	var once sync.Once
+	router.SetInterruptWaitHook(func(id string) {
+		if id == threadID {
+			once.Do(func() { close(waiting) })
+		}
+	})
+	t.Cleanup(func() { router.SetInterruptWaitHook(nil) })
+	done := make(chan T, 1)
+	go func() { done <- interrupt() }()
+	select {
+	case <-waiting:
+	case res := <-done:
+		t.Fatalf("interrupt finished without waiting on the held turn start: %+v", res)
+	case <-time.After(10 * time.Second):
+		t.Fatal("interrupt never waited on the held turn start")
+	}
+	held.release()
+	var startErr error
+	select {
+	case startErr = <-held.handled:
+	case <-time.After(10 * time.Second):
+		t.Fatal("released turn start never returned")
+	}
+	select {
+	case res := <-done:
+		return res, startErr
+	case <-time.After(10 * time.Second):
+		t.Fatal("interrupt still waiting after the turn start returned")
+	}
+	panic("unreachable")
+}
+
 type interruptResult struct {
 	errID string
 	err   error
 }
 
-// interruptThroughHeldStart runs the production interrupt sequence while
-// the start is held, asserts it does not finish before the start does,
-// then releases the start and returns the interrupt's outcome.
+// interruptThroughHeldStart runs the production interrupt sequence
+// through the held start (runThroughHeldStart).
 func interruptThroughHeldStart(t *testing.T, router *Router, threadID string, held heldTurnStart) interruptResult {
 	t.Helper()
-	done := make(chan interruptResult, 1)
-	go func() {
+	res, startErr := runThroughHeldStart(t, router, threadID, held, func() interruptResult {
 		errID, err := markUserInterruptForTest(router, threadID)
-		done <- interruptResult{errID: errID, err: err}
-	}()
-	select {
-	case res := <-done:
-		t.Fatalf("interrupt finished while the turn start was held: %+v", res)
-	case <-time.After(200 * time.Millisecond):
+		return interruptResult{errID: errID, err: err}
+	})
+	if startErr != nil {
+		t.Fatalf("turn start: %v", startErr)
 	}
-	held.release()
-	if err := <-held.handled; err != nil {
-		t.Fatalf("turn start: %v", err)
-	}
-	return <-done
+	return res
 }
 
 // requireStoppedByUserRow asserts errID names a persisted "Stopped by
@@ -150,7 +204,7 @@ func requireInterruptWritesNothing(t *testing.T, router *Router, st *store.Store
 func TestInterruptTurnIndex_WaitsOutTurnStartGap(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
-	held := holdTurnStart(t, router, "t1", 1)
+	held := holdTurnStart(t, router, turnStartEvent("t1", 1), false)
 	if active, ok, err := st.GetActiveTurn("t1"); err != nil || !ok || active.TurnIndex != 1 {
 		t.Fatalf("precondition: GetActiveTurn = %+v, %v, %v; want active turn 1", active, ok, err)
 	}
@@ -188,12 +242,60 @@ func TestInterruptTurnIndex_LiveRevertReusedIndexIsCut(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	held := holdTurnStart(t, router, "t1", 1)
+	held := holdTurnStart(t, router, turnStartEvent("t1", 1), false)
 	res := interruptThroughHeldStart(t, router, "t1", held)
 	if res.err != nil {
 		t.Fatalf("MarkUserInterrupt: %v", res.err)
 	}
 	requireStoppedByUserRow(t, st, "t1", res.errID, 1)
+}
+
+// A queued echo can open turn N before the provider's start for N
+// arrives. The turn is already open while that start is held, but the
+// start's setOpenTurn will still reset the turn's error sequence, so
+// the interrupt waits for it too and its marker survives the turn's
+// next error.
+func TestInterruptTurnIndex_WaitsOutStartOfEchoOpenedTurn(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	router.openQueuedEchoTurn("t1", 1, time.Now().UnixMilli(), -1)
+	if got := router.OpenTurnIndex("t1"); got != 1 {
+		t.Fatalf("precondition: OpenTurnIndex = %d, want the echo-opened turn 1", got)
+	}
+
+	evt := turnStartEvent("t1", 1)
+	evt.TurnID = "codex-turn-1"
+	held := holdTurnStart(t, router, evt, false)
+	res := interruptThroughHeldStart(t, router, "t1", held)
+	if res.err != nil {
+		t.Fatalf("MarkUserInterrupt: %v", res.err)
+	}
+	requireStoppedByUserRow(t, st, "t1", res.errID, 1)
+	requireMarkerSurvivesLaterError(t, router, st, "t1", res.errID, 1)
+}
+
+// A turn start that unwinds before setting the open turn still releases
+// a waiting interrupt, which then finds no turn, and leaves no start
+// marker behind.
+func TestInterruptTurnIndex_AbortedStartReleasesWaiter(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	held := holdTurnStart(t, router, turnStartEvent("t1", 1), true)
+	got, startErr := runThroughHeldStart(t, router, "t1", held, func() int {
+		return router.InterruptTurnIndex("t1")
+	})
+	if startErr != errAbortedStart {
+		t.Fatalf("turn start = %v, want the aborted start", startErr)
+	}
+	if got != -1 {
+		t.Fatalf("InterruptTurnIndex after the aborted start = %d, want -1", got)
+	}
+	router.mu.Lock()
+	marker := router.threadStateIfPresent("t1").turnStarting
+	router.mu.Unlock()
+	if marker != nil {
+		t.Fatal("aborted start left its start marker set")
+	}
 }
 
 // A turn that completed leaves its router state with no open turn and

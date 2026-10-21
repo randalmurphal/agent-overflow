@@ -73,6 +73,10 @@ type Router struct {
 	// BEFORE the open turn is set — the window InterruptTurnIndex waits
 	// out. Read under mu. Nil in production.
 	turnRowWrittenGate func(threadID string)
+	// interruptWaitHook is a test-only hook (SetInterruptWaitHook) called
+	// by InterruptTurnIndex right before it waits on a turn start in
+	// progress. Read under mu. Nil in production.
+	interruptWaitHook func(threadID string)
 	// delays holds the router's debounce and throttle intervals, the
 	// production values from NewRouter. A same-package test lengthens
 	// one so its timer cannot fire inside a window that asserts what a
@@ -401,6 +405,16 @@ func (r *Router) SetEventHook(hook func(provider.ProviderEvent)) {
 func (r *Router) SetTurnRowWrittenGate(gate func(threadID string)) {
 	r.mu.Lock()
 	r.turnRowWrittenGate = gate
+	r.mu.Unlock()
+}
+
+// SetInterruptWaitHook installs a test-only hook that InterruptTurnIndex
+// calls right before it waits on a turn start in progress, so a test can
+// release a held start only once the interrupt is waiting on it.
+// Production code must leave this nil. Pass nil to clear.
+func (r *Router) SetInterruptWaitHook(hook func(threadID string)) {
+	r.mu.Lock()
+	r.interruptWaitHook = hook
 	r.mu.Unlock()
 }
 
