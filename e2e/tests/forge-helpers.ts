@@ -138,6 +138,8 @@ export interface ForgeRepoMerge {
   squashOption?: 'default_off' | 'default_on' | 'always' | 'never';
   pipelineMustSucceed?: boolean;
   discussionsMustResolve?: boolean;
+  /** GitLab: each approval rule's approvals_required (projects/P/approval_rules). */
+  approvalRules?: number[];
 }
 
 export interface ForgePipeline {

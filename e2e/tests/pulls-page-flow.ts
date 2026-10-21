@@ -5,15 +5,16 @@
 // states and repository pipelines. Covered: the tools row opens the page
 // in the focused pane's place; the Needs you and Waiting on others groups
 // carry one state pill per row and the sidebar badge counts the first
-// group; the page reads each repository's list and the detail of the
-// user's own and review-requested rows, and no other row's; a GitLab row's
-// failed pipeline arrives with its detail read; the filter chips and the
-// project picker narrow the list and survive a reload; picking a row opens
-// the review pinned to it beside the list (full width with Back on compact)
-// with its readiness pill and Merge section; what moved since the reader
-// looked, a push or only comments, reads on the row, clears once the row
-// is opened again, stays cleared across a reload, and is not cleared by
-// what lands while the Pipelines tab hides the open MR; a project whose list
+// group; the page reads each project with its forge's fixed request set
+// (GitHub one PullsSearch, GitLab the list beside its GraphQL reviewer and
+// activity reads, the viewer's events and the approval rules) and never a
+// read per row; a GitLab row's failed pipeline arrives with its project's
+// read; the filter chips and the project picker narrow the list and
+// survive a reload; picking a row opens the review pinned to it beside the
+// list (full width with Back on compact) with its readiness pill and Merge
+// section; the viewer's own comment on a merge request it reviews reads as
+// reviewed by them, and the author's reply after it as their turn again,
+// from the forge's record of the viewer's activity; a project whose list
 // the forge refuses fails alone with its sentence, Details and a Retry; a
 // row's menu acts on its MR without opening it; Open with agent starts a
 // thread in a worktree with the MR's branch checked out at its head and
@@ -59,7 +60,7 @@ function gitlabRepo(): ForgeRepo {
     forge: 'gitlab',
     id: 4_500_000 + parseInt(suffix.slice(0, 4), 16),
     project: `ao-e2e/widgets-${suffix}`,
-    merge: { pipelineMustSucceed: true },
+    merge: { pipelineMustSucceed: true, approvalRules: [1] },
     pulls: [
       {
         number: 101, title: 'Queue: retry a failed delivery once', author: 'sabossedgh', authorName: 'Sawmon Abossedgh',
@@ -130,8 +131,8 @@ async function seedProjects(harness: HarnessApp): Promise<Seeded> {
 }
 
 export function launchPullsHarness(): Promise<HarnessApp> {
-  // The list pump's product cadence is 45 s; the "since you looked" and
-  // refusal steps wait for a tick.
+  // The list pump's product cadence is 45 s; the activity and refusal
+  // steps wait for a tick.
   return launchHarness({ env: { AO_HARNESS_TIMING: [...HARNESS_TIMING.split(','), 'pr-update=1s'].join(',') } });
 }
 
@@ -172,7 +173,7 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
 
       // The page opens on Needs you: every row of that group with one
       // state pill. !103's failed pipeline is not on GitLab's list; it
-      // arrives with the detail read of the user's own rows.
+      // arrives with the project's GraphQL read of the user's own rows.
       const needsYou = pane.getByTestId('pulls-group-needs_you');
       await expect(needsYou).toBeVisible();
       await expect(pane.getByTestId('pulls-filter-needs_you')).toHaveAttribute('aria-pressed', 'true');
@@ -181,19 +182,16 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       await expect(rowPill(page, 201)).toHaveText('Ready to merge');
       await expect(rowPill(page, 103)).toHaveText('Pipeline failed', { timeout: 20_000 });
       await expect(needsYou).toContainText('4');
-      // What the page asked the forges for: each repository's list, and the
-      // detail of the user's own and review-requested rows, every one of
-      // them whether or not the filter shows it (!102 is a draft under
-      // Waiting on others). !104 is neither and not on screen: no read.
+      // What the page asked the forges for: each project's fixed request
+      // set, and no read of one PR before a review opens.
       await expect(async () => {
         expect(await pullRequestReads(harness)).toEqual({
           lists: [`gh graphql PullsSearch ${seeded.github.project}`, `glab api merge request list ${seeded.gitlab.project}`],
           details: [
-            'gh graphql PRTick 201', 'gh graphql PRTick 202',
-            'glab api approvals 101', 'glab api approvals 102', 'glab api approvals 103',
-            'glab api discussions 101', 'glab api discussions 102', 'glab api discussions 103',
-            'glab api merge request 101', 'glab api merge request 102', 'glab api merge request 103',
+            'glab api approval rules ' + seeded.gitlab.project, 'glab api user events',
+            ...['PullsAuthored', 'PullsAuthoredActivity', 'PullsReviewing', 'PullsReviewingActivity'].map((op) => `glab graphql ${op} ${seeded.gitlab.project}`),
           ],
+          perPR: [],
         });
       }).toPass({ timeout: 20_000 });
       await expect(pane.getByTestId('pull-row')).toHaveCount(4);
@@ -204,7 +202,7 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       await expect(page.getByTestId('sidebar-tool-pulls-badge')).toHaveText('4');
       // The needs-you count on the chip reads the same.
       await expect(pane.getByTestId('pulls-filter-needs-you-count')).toHaveText('4');
-      // Approvals and the CI dot come from the detail read of focused rows.
+      // Approvals and the CI dot come with each project's read.
       await expect(row(page, 101).getByTestId('pull-approvals')).toHaveText('approvals 0/1');
       await expect(row(page, 201).getByTestId('pull-approvals')).toHaveText('approvals 1/1');
       await shoot(compact ? page : pane, testInfo, 'pulls-list-dark');
@@ -253,69 +251,26 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
         await shoot(page, testInfo, 'pulls-page-dark');
       }
 
-      // What moved since the reader looked: with #201 open instead, !101
-      // gains a push and a comment; its row says so until it is opened again.
-      await (compact ? page.getByTestId('pulls-back').click() : Promise.resolve());
-      await row(page, 201).getByRole('button').first().click();
-      await expect(page.getByTestId('review-pr-header')).toContainText('Rework the review pane header');
+      // The viewer's own comment on !101, which it reviews, is its review:
+      // the row waits on others, reviewed by the viewer, with GitLab's touch
+      // of the merge request just after the note not read as a reply.
+      if (compact) await page.getByTestId('pulls-back').click();
       const [first, ...rest] = seeded.gitlab.pulls!;
+      const reviewed = {
+        ...first,
+        comments: [...(first.comments ?? []), { author: VIEWER, body: 'Why one retry and not three?', createdAt: '2026-10-20T15:00:00Z' }],
+        updatedAt: '2026-10-20T15:00:00.400Z',
+      };
+      await seedForge(harness, [{ ...seeded.gitlab, pulls: [reviewed, ...rest] }]);
+      await expect(rowPill(page, 101)).toHaveText('Reviewed by you', { timeout: 20_000 });
+      await expect(page.getByTestId('sidebar-tool-pulls-badge')).toHaveText('3');
+      // The author answers a minute later: the viewer's turn again.
       await seedForge(harness, [{
         ...seeded.gitlab,
-        pulls: [{ ...first, headSha: SHA('9'), comments: [...(first.comments ?? []), { author: 'sabossedgh', body: 'Addressed.', createdAt: '2026-10-20T15:00:00Z' }], updatedAt: '2026-10-20T15:00:00Z' }, ...rest],
+        pulls: [{ ...reviewed, comments: [...reviewed.comments, { author: 'sabossedgh', body: 'Three would hide a dead endpoint.', createdAt: '2026-10-20T15:01:00Z' }], updatedAt: '2026-10-20T15:01:00Z' }, ...rest],
       }]);
-      if (compact) await page.getByTestId('pulls-back').click();
-      await expect(row(page, 101).getByTestId('pull-since')).toHaveText('pushed · 1 new comment since you looked', { timeout: 20_000 });
-      await expect(row(page, 101).getByTestId('pull-since')).toHaveCount(1);
-      // Opened again, it is seen once its review shows the push.
-      await row(page, 101).getByRole('button').first().click();
-      await expect(page.getByTestId('review-pr-header')).toContainText('Queue: retry a failed delivery once');
-      await expect(row(page, 101).getByTestId('pull-since')).toHaveCount(0, { timeout: 20_000 });
-      if (compact) await page.getByTestId('pulls-back').click();
-
-      // A comment with no push reads on the row too, and going back to the
-      // review the page kept clears it.
-      await row(page, 201).getByRole('button').first().click();
-      await expect(page.getByTestId('review-pr-header')).toContainText('Rework the review pane header');
-      const pushed = { ...first, headSha: SHA('9'), comments: [...(first.comments ?? []), { author: 'sabossedgh', body: 'Addressed.', createdAt: '2026-10-20T15:00:00Z' }] };
-      const thanked = { ...pushed, comments: [...pushed.comments, { author: 'alice', authorName: 'Alice Ng', body: 'Thanks.', createdAt: '2026-10-20T16:00:00Z' }], updatedAt: '2026-10-20T16:00:00Z' };
-      await seedForge(harness, [{ ...seeded.gitlab, pulls: [thanked, ...rest] }]);
-      if (compact) await page.getByTestId('pulls-back').click();
-      await expect(row(page, 101).getByTestId('pull-since')).toHaveText('1 new comment since you looked', { timeout: 20_000 });
-      await row(page, 101).getByRole('button').first().click();
-      await expect(page.getByTestId('review-pr-header')).toContainText('Queue: retry a failed delivery once');
-      await expect(row(page, 101).getByTestId('pull-since')).toHaveCount(0, { timeout: 20_000 });
-
-      // The backend keeps the mark: a reload drops the page's own record
-      // of the open and the row still reads as seen.
-      if (compact) await page.getByTestId('pulls-back').click();
-      await page.reload();
-      if (compact) await page.getByTestId('sidebar-tool-pulls').click();
-      await expect(rowPill(page, 101)).toHaveText('Your turn');
-      await expect(row(page, 101).getByTestId('pull-since')).toHaveCount(0);
-
-      // Under the Pipelines tab the MR stays selected with its review off
-      // screen: a comment that lands then is not seen. A reload drops the
-      // selection and the page's own records, and the row still says so.
-      // (Compact has no such state: its Back clears the MR before the tabs show.)
-      if (!compact) {
-        await row(page, 101).getByRole('button').first().click();
-        await expect(page.getByTestId('review-pr-header')).toContainText('Queue: retry a failed delivery once');
-        await page.getByRole('radio', { name: 'Pipelines' }).click();
-        await expect(page.getByTestId('review-pane')).toHaveCount(0);
-        const listReads = async () => (await forgeInvocations(harness)).filter((call) => call.via === 'http' && call.route === 'glab api merge request list').length;
-        const before = await listReads();
-        await seedForge(harness, [{
-          ...seeded.gitlab,
-          pulls: [{ ...thanked, comments: [...thanked.comments, { author: 'sabossedgh', body: 'One more.', createdAt: '2026-10-20T17:00:00Z' }], updatedAt: '2026-10-20T17:00:00Z' }, ...rest],
-        }]);
-        // Two list ticks after the comment: the page has had the row that carries it.
-        await expect(async () => expect(await listReads()).toBeGreaterThanOrEqual(before + 2)).toPass({ timeout: 20_000 });
-        await page.reload();
-        await page.getByRole('radio', { name: 'Merge requests' }).click();
-        await expect(row(page, 101).getByTestId('pull-since')).toHaveText('1 new comment since you looked', { timeout: 20_000 });
-        await row(page, 101).getByRole('button').first().click();
-        await expect(row(page, 101).getByTestId('pull-since')).toHaveCount(0, { timeout: 20_000 });
-      }
+      await expect(rowPill(page, 101)).toHaveText('Your turn', { timeout: 20_000 });
+      await expect(page.getByTestId('sidebar-tool-pulls-badge')).toHaveText('4');
 
       await expectEveryForgeCallHandled(harness);
     } finally {
@@ -529,24 +484,32 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
 
 /**
  * The page's forge reads so far, as sorted `<route> <target>` strings: the
- * list reads by repository and the detail reads by PR number.
+ * list reads by repository, the other requests of a project read by
+ * project (the events feed is the viewer's, once per host), and any read
+ * of one PR by its number.
  */
-async function pullRequestReads(harness: HarnessApp): Promise<{ lists: string[]; details: string[] }> {
+async function pullRequestReads(harness: HarnessApp): Promise<{ lists: string[]; details: string[]; perPR: string[] }> {
   const lists = new Set<string>();
   const details = new Set<string>();
+  const perPR = new Set<string>();
+  const project = (path: string) => decodeURIComponent(path.replace(/^projects\/([^/?]+).*$/, '$1'));
   for (const call of await forgeInvocations(harness)) {
     if (call.via !== 'http') continue;
     if (call.route === 'gh graphql PullsSearch') {
       lists.add(`${call.route} ${String(call.variables?.query ?? '').replace(/^.*repo:(\S+).*$/, '$1')}`);
-    } else if (call.route === 'gh graphql PRTick') {
-      details.add(`${call.route} ${String(call.variables?.number)}`);
     } else if (call.route === 'glab api merge request list') {
-      lists.add(`${call.route} ${decodeURIComponent(call.path.replace(/^projects\/([^/]+)\/.*$/, '$1'))}`);
-    } else if (call.route === 'glab api merge request' || call.route === 'glab api approvals' || call.route === 'glab api discussions') {
-      details.add(`${call.route} ${call.path.replace(/^projects\/[^/]+\/merge_requests\/(\d+).*$/, '$1')}`);
+      lists.add(`${call.route} ${project(call.path)}`);
+    } else if (call.route.startsWith('glab graphql Pulls')) {
+      details.add(`${call.route} ${String(call.variables?.fullPath)}`);
+    } else if (call.route === 'glab api approval rules') {
+      details.add(`${call.route} ${project(call.path)}`);
+    } else if (call.route === 'glab api user events') {
+      details.add(call.route);
+    } else if (['gh graphql PRTick', 'glab api merge request', 'glab api approvals', 'glab api discussions'].includes(call.route)) {
+      perPR.add(`${call.route} ${String(call.variables?.number ?? call.path.replace(/^projects\/[^/]+\/merge_requests\/(\d+).*$/, '$1'))}`);
     }
   }
-  return { lists: [...lists].sort(), details: [...details].sort() };
+  return { lists: [...lists].sort(), details: [...details].sort(), perPR: [...perPR].sort() };
 }
 
 async function projectId(harness: HarnessApp, name: string): Promise<string> {

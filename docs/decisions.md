@@ -564,6 +564,13 @@ and anti-changes that live only here:
   pane, so two tools sit side by side with no special case. Workflows
   loses its modal. The row's label follows the focused pane when it is a
   tool, else the tool used last (ruling 2026-10-20).
+- The Pull requests page never records which PRs the user opened. A row's
+  attention comes from the forge's own record of the viewer's activity
+  (GitHub's latest review, GitLab's reviewer state and the viewer's notes
+  and approvals in its events feed), so it reads the same on every
+  computer and in the forge's own UI. The list opens on its stored copy
+  and never reads one PR on its own (ruling 2026-10-21,
+  `docs/specs/pull-requests.md`).
 - PR comments live in the overview: Description (collapsed by default)
   and Conversation (also collapsed by default, and capped short enough
   that the diff stays visible under it), two collapsible sections that head
