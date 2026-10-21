@@ -42,8 +42,8 @@ func (a *App) ciLogs() (*cilog.Store, error) {
 	return a.ciLogStore, nil
 }
 
-func ciLogKey(pr gitops.PRReference, jobID string) cilog.Key {
-	return cilog.Key{Forge: pr.Forge, Host: pr.Host, Project: pr.Project(), JobID: jobID}
+func ciLogKey(repo gitops.RepoReference, jobID string) cilog.Key {
+	return cilog.Key{Forge: repo.Forge, Host: repo.Host, Project: repo.Project(), JobID: jobID}
 }
 
 // ciLogJob is what a job's log rows are computed from: its name, status
@@ -64,7 +64,7 @@ func ciLogJob(job *gitops.CIJob) cilog.Job {
 }
 
 // ciLogSource downloads one job's log from its forge for the cache.
-func (a *App) ciLogSource(pr gitops.PRReference, jobID string) cilog.Source {
+func (a *App) ciLogSource(repo gitops.RepoReference, jobID string) cilog.Source {
 	return func(ctx context.Context, req cilog.Request, begin func(cilog.Start) (io.Writer, error)) (bool, error) {
 		forgeReq := gitops.CIJobLogRequest{JobID: jobID, ETag: req.ETag, From: req.From, Timeout: ciLogAttemptTimeout}
 		start := func(st gitops.CIJobLogStart) (io.Writer, error) {
@@ -74,7 +74,7 @@ func (a *App) ciLogSource(pr gitops.PRReference, jobID string) cilog.Source {
 		if a.prUpdates.ciLogStreamFn != nil {
 			stream = a.prUpdates.ciLogStreamFn
 		}
-		notModified, err := stream(ctx, pr.Repository(), forgeReq, start)
+		notModified, err := stream(ctx, repo, forgeReq, start)
 		if errors.Is(err, gitops.ErrCIJobLogRangeUnsatisfiable) {
 			return false, fmt.Errorf("%w: %w", cilog.ErrRangeUnsatisfiable, err)
 		}
@@ -86,13 +86,13 @@ func (a *App) ciLogSource(pr gitops.PRReference, jobID string) cilog.Source {
 // resuming each download the forge cuts off. Every resumed attempt carried
 // the download further (a cut that made no progress is Fetch's error), so
 // the loop ends with the log, a failure or the caller's cancellation.
-func (a *App) downloadCILog(ctx context.Context, store *cilog.Store, pr gitops.PRReference, jobID string) error {
-	key := ciLogKey(pr, jobID)
+func (a *App) downloadCILog(ctx context.Context, store *cilog.Store, repo gitops.RepoReference, jobID string) error {
+	key := ciLogKey(repo, jobID)
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		result, err := store.Fetch(ctx, key, a.ciLogSource(pr, jobID))
+		result, err := store.Fetch(ctx, key, a.ciLogSource(repo, jobID))
 		switch {
 		case errors.Is(err, gitops.ErrCIJobLogNotFound):
 			return errCIJobLogUnpublished

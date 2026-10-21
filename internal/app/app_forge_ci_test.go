@@ -148,7 +148,7 @@ func (f *prCIFixture) requests() []gitops.CIJobLogRequest {
 // lines reads a followed job's whole cached log through the RPC.
 func (f *prCIFixture) lines(t *testing.T, jobID string) []string {
 	t.Helper()
-	window, err := f.app.GetPRCILogLines(testPR, jobID, 0, maxCILogLinesPerRead)
+	window, err := f.app.GetPRCILogLines(testPR.Repository(), jobID, 0, maxCILogLinesPerRead)
 	if err != nil {
 		t.Fatalf("GetPRCILogLines(%s): %v", jobID, err)
 	}
@@ -378,12 +378,11 @@ func TestPRCIIntervalPacesEachFollow(t *testing.T) {
 	interval := func(streams bool, ci *gitops.CIPipeline, state prCILogFollow) time.Duration {
 		t.Helper()
 		app.prUpdates.ciLogStreams = &streams
-		pump := &prUpdatePump{pr: testPR, follows: map[string]*prCILogFollow{"7": &state}}
+		phase := &ciPhase{repo: testPR.Repository(), follows: map[string]*prCILogFollow{"7": &state}}
 		if ci != nil {
-			pump.ci, pump.ciKnown = *ci, true
+			phase.ci, phase.ciKnown = *ci, true
 		}
-		var retry time.Duration
-		return app.prCIInterval(pump, &retry)
+		return app.ciInterval(phase)
 	}
 
 	if got := interval(false, nil, prCILogFollow{pendingFinal: true, finalAttempts: prCILogFinalAttempts - 1}); got != follow {

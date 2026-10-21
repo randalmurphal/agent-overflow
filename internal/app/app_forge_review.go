@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -137,24 +136,11 @@ type prUpdateSnapshot struct {
 type prUpdatePump struct {
 	prKey string
 	pr    gitops.PRReference
-	done  chan struct{}
-	// ctx is every forge call the pump makes, derived from the app's
-	// lifetime; cancel ends it when the pump dies (stopPRUpdatePump,
-	// dropPRUpdatePump), which cancels a forge request the pump has in
-	// flight.
-	ctx    context.Context
-	cancel context.CancelFunc
-	dead   bool
-	// paused suspends polling while EVERY subscriber of this PR reports
-	// itself hidden (window minimized, tab in the background) — active is
-	// the count of those that don't, so one visible client keeps the pump
-	// running for all of them. The pump and its change-detection state
-	// stay alive; wake nudges the loop on resume so a poll missed while
-	// paused runs immediately instead of waiting out the next tick.
-	paused atomic.Bool
-	wake   chan struct{}
-	refs   int
-	active int
+	// pumpCore is the goroutine's lifetime, the subscribers' refs and
+	// visibility votes (paused while EVERY subscriber of this PR reports
+	// itself hidden, so one visible client keeps the pump running for all
+	// of them), the sequence and the request channel.
+	pumpCore
 
 	// last is the encoded form used for change detection; lastSnapshot is
 	// the same observation decoded, kept so a joiner is served without
@@ -173,24 +159,13 @@ type prUpdatePump struct {
 	fail         prForgeFailure
 	graced       bool
 	readFailed   bool
-	seq          uint64
 
-	// The CI phase (app_forge_ci.go), under the same lock. ci is the last
-	// pipeline fetched (meaningful once ciKnown), ciLast its encoding for
-	// change detection, ciFail the active fetch failure, as fail is for the
-	// snapshot. ciStamp is the prCIStamp of the
-	// snapshot the pipeline was last polled under; ciDirty is set by a
-	// snapshot poll that moved it and by a new follow (whose steps the next
-	// pipeline poll fills). follows holds the logs being watched,
-	// by job id. requests is how an RPC has this goroutine poll now.
-	ci       gitops.CIPipeline
-	ciKnown  bool
-	ciLast   []byte
-	ciFail   prForgeFailure
-	ciStamp  string
-	ciDirty  bool
-	follows  map[string]*prCILogFollow
-	requests chan *prPumpRequest
+	// The CI phase (app_ci_phase.go): the head pipeline and the followed
+	// logs, under the same lock. ciStamp is the prCIStamp of the snapshot
+	// the pipeline was last polled under; a snapshot poll that moves it
+	// marks the phase dirty.
+	ciPhase
+	ciStamp string
 }
 
 // prUpdateReference is one caller's take on a pump: the handle plus the
@@ -577,19 +552,23 @@ func (a *App) createPRUpdatePump(
 	if existing := a.livePRUpdatePumpLocked(prKey); existing != nil {
 		return a.takePRUpdateReferenceLocked(existing), nil, nil
 	}
-	ctx, cancel := context.WithCancel(a.lifeCtx())
 	pump := &prUpdatePump{
 		prKey:        prKey,
 		pr:           pr,
-		done:         make(chan struct{}),
-		ctx:          ctx,
-		cancel:       cancel,
-		wake:         make(chan struct{}, 1),
-		requests:     make(chan *prPumpRequest),
+		pumpCore:     a.newPumpCore(),
 		last:         encoded,
 		lastSnapshot: snapshot,
 		fail:         fail,
-		seq:          a.nextPRUpdateSeqLocked(),
+	}
+	pump.seq = a.nextPRUpdateSeqLocked()
+	pump.ciPhase = ciPhase{
+		core:  &pump.pumpCore,
+		repo:  pr.Repository(),
+		prKey: prKey,
+		fetch: func(ctx context.Context, prev *gitops.CIPipeline, stepsFor []string) (gitops.CIPipeline, error) {
+			return a.fetchPRCI(ctx, pr, prev, stepsFor)
+		},
+		failure: func(err error) prForgeFailure { return a.newPRForgeFailure(pr, err) },
 	}
 	a.prUpdates.pumps[prKey] = pump
 	return a.takePRUpdateReferenceLocked(pump), pump, nil
@@ -634,14 +613,8 @@ func (a *App) livePRUpdatePumpLocked(prKey string) *prUpdatePump {
 // for waits out a whole tick that the pause already made it miss.
 func (a *App) takePRUpdateReferenceLocked(pump *prUpdatePump) prUpdateReference {
 	id := uuid.NewString()
-	pump.refs++
-	pump.active++
-	resumed := pump.refs > 1 && pump.active == 1
-	pump.paused.Store(false)
+	pump.takeLocked()
 	a.prUpdates.handles[id] = &prUpdateHandle{pump: pump, active: true}
-	if resumed {
-		wakePRUpdatePump(pump)
-	}
 	ref := prUpdateReference{
 		id:       id,
 		snapshot: pump.lastSnapshot,
@@ -694,27 +667,12 @@ func (a *App) SetPRUpdatesActive(subscriptionID string, active bool) error {
 		a.prUpdates.mu.Unlock()
 		return nil
 	}
-	if active {
-		pump.active++
-	} else {
-		pump.active--
-	}
-	resumed := active && pump.active == 1
-	pump.paused.Store(pump.active <= 0)
+	resumed := pump.voteLocked(active)
 	a.prUpdates.mu.Unlock()
 	if resumed {
-		wakePRUpdatePump(pump)
+		pump.wakeUp()
 	}
 	return nil
-}
-
-// wakePRUpdatePump nudges a resumed pump's loop without blocking: the
-// channel is capacity-1, and a wake already queued does the same job.
-func wakePRUpdatePump(pump *prUpdatePump) {
-	select {
-	case pump.wake <- struct{}{}:
-	default:
-	}
 }
 
 func (a *App) pumpPRUpdates(pump *prUpdatePump) {
@@ -738,35 +696,18 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 	// to the interval, starting with the failure it was created with; a
 	// healthy one rides the ticker alone. A rate-limited pump instead waits
 	// for the failure's release (the pool's resume time plus the stagger)
-	// and polls nothing before it: hold is that release, and a tick or
-	// resume that lands earlier is skipped.
-	var retry <-chan time.Time
-	var retryDelay time.Duration
-	var hold time.Time
+	// and polls nothing before it: a tick or resume that lands earlier is
+	// skipped.
+	var retry retrySchedule
 	scheduleRetry := func() {
 		retrying, release := a.prUpdatePumpRetry(pump)
-		switch {
-		case !retrying:
-			retry, retryDelay, hold = nil, 0, time.Time{}
-		case !release.IsZero():
-			retryDelay, hold = 0, release
-			retry = time.After(heldUntil(release))
-		default:
-			hold = time.Time{}
-			if retryDelay == 0 {
-				retryDelay = min(a.prUpdateRetryBase(), interval)
-			} else {
-				retryDelay = min(retryDelay*2, interval)
-			}
-			retry = time.After(retryDelay)
-		}
+		retry.arm(retrying, release, a.prUpdateRetryBase(), interval)
 	}
 	scheduleRetry()
 	// The CI phase rides its own timer, re-armed from the pump's CI state
-	// after every CI poll (prCIInterval): nil while nothing is live. A CI
+	// after every CI poll (ciInterval): nil while nothing is live. A CI
 	// tick that lands while paused is folded into the resume poll.
 	var ciTick <-chan time.Time
-	var ciRetryDelay time.Duration
 	missedCI := false
 	// runSnapshot polls the detail, threads and events once and folds the
 	// answer into the retry curve; the ticker and a merge action's refresh
@@ -776,22 +717,19 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 		event, changed := a.pollPRUpdate(ctx, pump)
 		scheduleRetry()
 		if changed {
-			a.emitPRPumpEvent(pump, eventchan.PRUpdated, event)
+			a.emitPumpEvent(&pump.pumpCore, eventchan.PRUpdated, event)
 		}
 	}
 	// ctx is the pump's, marked interactive when a person's request asked
-	// for the poll (servePRPumpRequest).
+	// for the poll (servePumpRequest).
 	runCI := func(ctx context.Context, forced map[string]bool, pollPipeline bool) {
 		missedCI = false
-		if pollPipeline || a.prCIWantsPoll(pump) {
+		delay := a.runCIPhase(ctx, &pump.ciPhase, forced, pollPipeline, func(ctx context.Context) {
 			if event, changed := a.pollPRCI(ctx, pump); changed {
-				a.emitPRPumpEvent(pump, eventchan.PRCIUpdated, event)
+				a.emitPumpEvent(&pump.pumpCore, eventchan.PRCIUpdated, event)
 			}
-		}
-		for _, event := range a.pollPRCILogs(ctx, pump, forced) {
-			a.emitPRPumpEvent(pump, eventchan.PRCILog, event)
-		}
-		if delay := a.prCIInterval(pump, &ciRetryDelay); delay > 0 {
+		})
+		if delay > 0 {
 			ciTick = time.After(delay)
 		} else {
 			ciTick = nil
@@ -808,7 +746,7 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 		case <-pump.ctx.Done():
 			return
 		case req := <-pump.requests:
-			a.servePRPumpRequest(pump, req, runSnapshot, runCI)
+			a.servePumpRequest(&pump.ciPhase, req, runSnapshot, runCI)
 			continue
 		case <-ciTick:
 			if pump.paused.Load() {
@@ -824,11 +762,10 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 				continue
 			}
 			missedTick = false
-		case <-retry:
+		case <-retry.timer:
 			if pump.paused.Load() {
 				// Resume polls once; the retry curve restarts from there.
-				retry = nil
-				retryDelay = 0
+				retry.pausedRetry()
 				missedTick = true
 				continue
 			}
@@ -840,17 +777,14 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 			}
 			missedTick = false
 		}
-		if time.Now().Before(hold) {
+		if retry.held() {
 			// A rate limit holds the snapshot poll until its release, which
 			// the retry timer is armed for; a resume after a pause re-arms
 			// it.
-			if retry == nil {
-				retry = time.After(heldUntil(hold))
-			}
 			continue
 		}
 		runSnapshot(pump.ctx)
-		if missedCI || a.prCIWantsPoll(pump) {
+		if missedCI || a.ciWantsPoll(&pump.ciPhase) {
 			runCI(pump.ctx, nil, true)
 		}
 	}
@@ -993,39 +927,26 @@ func (a *App) unsubscribePRUpdates(id string) {
 	delete(a.prUpdates.handles, id)
 	var teardown *prUpdatePump
 	pump := handle.pump
-	releaseFollowsLocked(pump, handle)
-	if handle.active {
-		pump.active--
-	}
-	pump.refs--
-	if pump.refs <= 0 {
+	releaseFollowsLocked(&pump.ciPhase, handle.follows)
+	handle.follows = nil
+	// The last release stamps the pump dead under the same lock pollPRUpdate
+	// stores under, so a poll this pump still has in flight cannot stamp
+	// state (or a sequence) after a replacement pump exists — per key,
+	// sequence order must match content order, and this pump's fetch began
+	// before any successor's. dropPRUpdatePump re-stamps harmlessly.
+	if pump.releaseLocked(handle.active) {
 		teardown = pump
-		// Stamped under the same lock pollPRUpdate stores under, so a poll
-		// this pump still has in flight cannot stamp state (or a sequence)
-		// after a replacement pump exists — per key, sequence order must
-		// match content order, and this pump's fetch began before any
-		// successor's. dropPRUpdatePump re-stamps harmlessly.
-		pump.dead = true
 		// Only if it is still the pump serving this key — a superseded
 		// (dead) pump was replaced in the map and must not evict its
 		// successor.
 		if a.prUpdates.pumps[pump.prKey] == pump {
 			delete(a.prUpdates.pumps, pump.prKey)
 		}
-	} else {
-		pump.paused.Store(pump.active <= 0)
 	}
 	a.prUpdates.mu.Unlock()
 	if teardown != nil {
-		stopPRUpdatePump(teardown)
+		teardown.stop()
 	}
-}
-
-// stopPRUpdatePump ends a pump taken out of the map: its loop exits and a
-// forge call it has in flight is cancelled.
-func stopPRUpdatePump(pump *prUpdatePump) {
-	pump.cancel()
-	close(pump.done)
 }
 
 // dropPRUpdatePump removes a pump whose goroutine exited on its own (app
@@ -1049,7 +970,8 @@ func (a *App) dropPRUpdatePump(pump *prUpdatePump) {
 	}
 	for id, handle := range a.prUpdates.handles {
 		if handle.pump == pump {
-			releaseFollowsLocked(pump, handle)
+			releaseFollowsLocked(&pump.ciPhase, handle.follows)
+			handle.follows = nil
 			delete(a.prUpdates.handles, id)
 		}
 	}
@@ -1075,7 +997,7 @@ func (a *App) closePRUpdatePumps() {
 	}
 	a.prUpdates.mu.Unlock()
 	for _, pump := range orphans {
-		stopPRUpdatePump(pump)
+		pump.stop()
 	}
 	a.prUpdates.wg.Wait()
 }

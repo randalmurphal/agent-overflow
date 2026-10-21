@@ -503,11 +503,11 @@ func TestPRCILogFollowOfALargeTraceIsCachedWhole(t *testing.T) {
 	if state.Error != "" || !state.Available || state.TotalLines != lines || state.TotalBytes != int64(len(full)) {
 		t.Fatalf("follow state = %d lines, %d bytes, error %q; want %d lines, %d bytes", state.TotalLines, state.TotalBytes, state.Error, lines, len(full))
 	}
-	first, err := f.app.GetPRCILogLines(pr, "7", 0, 2)
+	first, err := f.app.GetPRCILogLines(pr.Repository(), "7", 0, 2)
 	if err != nil || !slices.Equal(first.Lines, []string{"line 00000000 of the trace", "line 00000001 of the trace"}) {
 		t.Fatalf("top of the trace = %q, %v", first.Lines, err)
 	}
-	last, err := f.app.GetPRCILogLines(pr, "7", lines-1, 10)
+	last, err := f.app.GetPRCILogLines(pr.Repository(), "7", lines-1, 10)
 	if err != nil || !slices.Equal(last.Lines, []string{fmt.Sprintf("line %08d of the trace", lines-1)}) {
 		t.Fatalf("bottom of the trace = %q, %v", last.Lines, err)
 	}
