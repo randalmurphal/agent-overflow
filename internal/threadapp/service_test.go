@@ -532,7 +532,7 @@ func TestCreateUndoesEverythingWhenTheCreatedRowCannotBeRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer raw.Close()
+	defer func() { _ = raw.Close() }()
 	// A column the read cannot scan makes the row unreadable.
 	if _, err := raw.Exec(`CREATE TRIGGER unreadable_thread AFTER INSERT ON threads BEGIN UPDATE threads SET last_read_at = 'unreadable' WHERE id = NEW.id; END`); err != nil {
 		t.Fatal(err)
