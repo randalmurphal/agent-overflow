@@ -242,6 +242,9 @@ const pages = new SvelteMap<BackendKey, PullsPageBackend>();
 class PaneEntry {
   selection = $state.raw<PullsSelection | null>(null);
   onScreen: ReadonlySet<string> = new Set();
+  /** The pane displays the selected MR's review (its tab, and on compact
+   * its detail screen), as the pane last said. */
+  reviewShown = false;
   constructor(readonly backend: BackendKey, readonly attachment: number) {}
 }
 
@@ -353,6 +356,8 @@ if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
     const active = !documentHidden();
     for (const [backend, id] of subscriptionByBackend) votes.setActive(backend, id, active);
+    // Back on screen: a review shown again is seen at its current revision.
+    if (active) for (const paneId of paneEntries.keys()) markShownSelection(paneId, null, null);
   });
 }
 
@@ -496,6 +501,19 @@ export function detailOpen(paneId: string): boolean {
   return (paneEntries.get(paneId)?.selection ?? null) !== null;
 }
 
+/** Whether the pane displays the selected MR's review: false while
+ * another tab shows, or on compact while the list does. Nothing is
+ * marked viewed while it is false; becoming true marks the review's
+ * current revision. */
+export function setReviewShown(paneId: string, shown: boolean): void {
+  untrack(() => {
+    const entry = paneEntries.get(paneId);
+    if (!entry || entry.reviewShown === shown) return;
+    entry.reviewShown = shown;
+    if (shown) markShownSelection(paneId, null, null);
+  });
+}
+
 /** The rows the pane shows on screen, by row key. The focus set is their
  * union over the computer's panes. */
 export function setFocusedRows(paneId: string, keys: Iterable<string>): void {
@@ -511,9 +529,10 @@ export function setFocusedRows(paneId: string, keys: Iterable<string>): void {
 // Viewed marks
 // ---------------------------------------------------------------------------
 
-// The pane's review is what the reader is looking at: on desktop the page
-// is mounted, on compact the thread screen shows this pane.
-function paneShowing(paneId: string): boolean {
+// The pane's review is what the reader is looking at: the pane displays
+// it (`setReviewShown`), and on compact the thread screen shows this pane.
+function paneShowing(paneId: string, entry: PaneEntry): boolean {
+  if (!entry.reviewShown) return false;
   if (!isCompactLayout()) return true;
   return getCompactScreen() === 'thread' && onScreenCompactPaneId() === paneId;
 }
@@ -542,7 +561,7 @@ function markShownSelection(paneId: string, headSHA: string | null, row: PRListI
     const entry = paneEntries.get(paneId);
     const selection = entry?.selection ?? null;
     const page = entry ? pages.get(entry.backend) : undefined;
-    if (!selection || !page || documentHidden() || !paneShowing(paneId)) return;
+    if (!entry || !selection || !page || documentHidden() || !paneShowing(paneId, entry)) return;
     const head = headSHA ?? peekPRSnapshot(selection.key)?.headSHA ?? '';
     if (!head) return;
     const listed = row ?? page.rowsByKey.get(selection.key)?.item ?? null;

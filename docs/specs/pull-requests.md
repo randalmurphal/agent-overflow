@@ -232,10 +232,13 @@ comment drafts have no thread row to live under, so the MR owns them
 (stored under its key on its computer) until a review posts them or they
 are sent to a thread; they survive stepping through the list and a
 restart. The page marks an MR viewed in `pr_views` while its review is
-on screen and the window visible, whenever the head the review shows (the
-PR store's `onPRSnapshotApplied` observer, or the snapshot it holds when
-the page returns to a kept review) or the listed comment count differs
-from what it last marked.
+on screen (the Merge requests tab, and on compact its detail screen) and
+the window visible, whenever the head the review shows (the PR store's
+`onPRSnapshotApplied` observer, or the snapshot it holds when the page
+returns to a kept review) or the listed comment count differs from what
+it last marked. Nothing is marked while the Pipelines tab or the hidden
+window keeps the selected MR's review off screen; when it shows again,
+the revision it shows then is marked.
 
 Rows carry number, title, project, author, age, CI dot, approvals `n/m`,
 unresolved count, one state pill and a "since you looked" fragment.
@@ -251,7 +254,7 @@ requested`, `All open`, project) persist in appStorage per tab.
 
 One list read per project per refresh: GitLab
 `projects/P/merge_requests?state=opened&per_page=100` (carries sha,
-`user_notes_count`, reviewers, `detailed_merge_status`, `head_pipeline`),
+`user_notes_count`, reviewers, `detailed_merge_status`),
 GitHub a `search(type: ISSUE, query: "is:pr is:open repo:O/R")` with
 `reviewDecision`, `reviewRequests`, `headRefOid`, the rollup state, the
 head commit's time and the last 10 comments and reviews (the author's
@@ -307,6 +310,10 @@ Back, for a pipeline as for an MR, and closes an open log first;
 the CI model is keyed by `(repository, pipeline id)`, the MR's head
 pipeline being one case. GitLab `projects/P/pipelines`, GitHub
 `actions/runs`. The review pane's CI line stays the head pipeline only.
+The tab reads its list on open, on its refresh button and every
+PR-update interval while visible. Hidden, the interval, a reconnect and
+a regained grant read neither the list nor the stages; the one read they
+owe runs when the window shows.
 
 ## State matrix (phase 1)
 

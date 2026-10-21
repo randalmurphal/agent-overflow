@@ -24,6 +24,7 @@ import {
   selectedPR,
   selectPR,
   setFocusedRows,
+  setReviewShown,
 } from './pullsPage.svelte';
 import {
   __resetPullsPageAgentForTest,
@@ -48,7 +49,7 @@ import { __resetPRReviewStoreForTest, applyPRUpdatedEvent, attachPR } from './pr
 import { appStorageGet, appStorageSet, resetAppStorageForTest } from './appStorage';
 import { __setTransportStatusForTest } from './transportStatus.svelte';
 import { resetPanesForTest } from './panes.svelte';
-import { setCompactLayoutForTest, showCompactList } from './layoutMode.svelte';
+import { setCompactLayoutForTest, showCompactList, showCompactThread } from './layoutMode.svelte';
 import { __resetReviewPaneStateForTest } from './reviewPane.svelte';
 import type { PRListItem, PRListSnapshot, ProjectPRList } from './bindings';
 import { HOME_BACKEND } from '../transport/backendKey';
@@ -531,6 +532,7 @@ describe('selection and viewed marks', () => {
   it('selects a listed row and clears it, which the compact probe reads', async () => {
     installListMocks();
     attachPullsPage(PANE, HOME_BACKEND);
+    setReviewShown(PANE, true);
     await flush();
     expect(selectPR(PANE, rowKey(99))).toBe(false);
     expect(selectPR(PANE, rowKey(1))).toBe(true);
@@ -544,6 +546,7 @@ describe('selection and viewed marks', () => {
     installListMocks(snapshot(1, [project('p1', [item(1, { seen: { openedAt: 1, headSHA: 'old', comments: 0, commits: 1 }, since: { headMoved: true, newComments: 1, newCommits: 0 } })])]));
     const mark = installPRMocks();
     attachPullsPage(PANE, HOME_BACKEND);
+    setReviewShown(PANE, true);
     await flush();
     setMRFilters(HOME_BACKEND, { filter: 'all' });
     selectPR(PANE, rowKey(1));
@@ -584,6 +587,7 @@ describe('selection and viewed marks', () => {
     let listed = 3;
     const mark = installPRPumps((number) => (number === 1 ? listed : 0));
     attachPullsPage(PANE, HOME_BACKEND);
+    setReviewShown(PANE, true);
     await flush();
     setMRFilters(HOME_BACKEND, { filter: 'all' });
     selectPR(PANE, rowKey(1));
@@ -627,6 +631,7 @@ describe('selection and viewed marks', () => {
     let listed = 0;
     const mark = installPRPumps((number) => (number === 1 ? listed : 0));
     attachPullsPage(PANE, HOME_BACKEND);
+    setReviewShown(PANE, true);
     await flush();
     setMRFilters(HOME_BACKEND, { filter: 'all' });
     selectPR(PANE, rowKey(1));
@@ -665,6 +670,7 @@ describe('selection and viewed marks', () => {
     installListMocks(snapshot(1, [project('p1', [item(1)])]));
     const mark = installPRPumps();
     attachPullsPage(PANE, HOME_BACKEND);
+    setReviewShown(PANE, true);
     await flush();
     selectPR(PANE, rowKey(1));
     const held = attachPR(rowKey(1), { ref: ref(1) });
@@ -683,6 +689,7 @@ describe('selection and viewed marks', () => {
     installListMocks(snapshot(1, [project('p1', [item(1)])]));
     const mark = installPRPumps();
     attachPullsPage(PANE, HOME_BACKEND);
+    setReviewShown(PANE, true);
     await flush();
     selectPR(PANE, rowKey(1));
     const held = attachPR(rowKey(1), { ref: ref(1) });
@@ -700,6 +707,7 @@ describe('selection and viewed marks', () => {
     installListMocks(snapshot(1, [project('p1', [item(1), item(2)])]));
     const mark = installPRMocks();
     attachPullsPage(PANE, HOME_BACKEND);
+    setReviewShown(PANE, true);
     await flush();
     selectPR(PANE, rowKey(1));
     const held = attachPR(rowKey(1), { ref: ref(1) });
@@ -727,6 +735,7 @@ describe('selection and viewed marks', () => {
     installListMocks();
     const mark = installPRMocks();
     attachPullsPage(PANE, HOME_BACKEND);
+    setReviewShown(PANE, true);
     await flush();
     selectPR(PANE, rowKey(1));
     setCompactLayoutForTest(true);
@@ -738,10 +747,93 @@ describe('selection and viewed marks', () => {
     setCompactLayoutForTest(false);
   });
 
+  // The compact thread screen showing the pane, as the strip's geometry
+  // reads it.
+  function showPaneOnCompactStrip(): () => void {
+    const strip = document.createElement('div');
+    strip.className = 'compact-screen-thread';
+    const section = document.createElement('section');
+    section.dataset.paneId = PANE;
+    strip.append(section);
+    document.body.append(strip);
+    const rect = { left: 0, right: 400, width: 400, top: 0, bottom: 800, height: 800, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+    strip.getBoundingClientRect = () => rect;
+    section.getBoundingClientRect = () => rect;
+    setCompactLayoutForTest(true);
+    showCompactThread();
+    return () => {
+      strip.remove();
+      setCompactLayoutForTest(false);
+    };
+  }
+
+  it.each([
+    ['desktop', false],
+    ['compact', true],
+  ])('marks nothing while the pane shows another tab, and the current revision once the review shows again (%s)', async (_layout, compact) => {
+    const restore = compact ? showPaneOnCompactStrip() : () => {};
+    try {
+      installListMocks(snapshot(1, [project('p1', [item(1)])]));
+      let listed = 0;
+      const mark = installPRPumps(() => listed);
+      attachPullsPage(PANE, HOME_BACKEND);
+      setReviewShown(PANE, true);
+      await flush();
+      setMRFilters(HOME_BACKEND, { filter: 'all' });
+      selectPR(PANE, rowKey(1));
+      const held = attachPR(rowKey(1), { ref: ref(1) });
+      await flush();
+      expect(mark.mock.calls.map((call) => call[1])).toEqual(['sha-1']);
+
+      // The Pipelines tab: the selection and its review stay held, and a
+      // comment and a push land on it.
+      setReviewShown(PANE, false);
+      applyPullsSnapshot(snapshot(2, [project('p1', [
+        item(1, { headSHA: 'sha-2', comments: 1, seen: { openedAt: 101, headSHA: 'sha-1', comments: 0, commits: 1 }, since: { headMoved: true, newComments: 1, newCommits: 0 } }),
+      ])]), HOME_BACKEND);
+      listed = 1;
+      applyPRUpdatedEvent({ prKey: prKey(ref(1)), detail: null, threads: [], headSHA: 'sha-2', seq: 2 });
+      await flush();
+      expect(mark).toHaveBeenCalledTimes(1);
+      const since = () => pullsRowsByGroup(PANE)[0]!.rows.find((row) => row.number === 1)!.since;
+      expect(sinceYouLookedText(since())).toBe('pushed · 1 new comment since you looked');
+
+      // Back on the review: seen at the revision it shows now.
+      setReviewShown(PANE, true);
+      await flush();
+      expect(mark.mock.calls.map((call) => call[1])).toEqual(['sha-1', 'sha-2']);
+      expect(since()).toBeNull();
+      held.release();
+    } finally {
+      restore();
+    }
+  });
+
+  it('marks what landed while the document was hidden once it shows again', async () => {
+    installListMocks(snapshot(1, [project('p1', [item(1)])]));
+    const mark = installPRPumps();
+    attachPullsPage(PANE, HOME_BACKEND);
+    setReviewShown(PANE, true);
+    await flush();
+    selectPR(PANE, rowKey(1));
+    const held = attachPR(rowKey(1), { ref: ref(1) });
+    await flush();
+    expect(mark).toHaveBeenCalledTimes(1);
+    setDocumentVisibility('hidden');
+    applyPRUpdatedEvent({ prKey: prKey(ref(1)), detail: null, threads: [], headSHA: 'sha-2', seq: 2 });
+    await flush();
+    expect(mark).toHaveBeenCalledTimes(1);
+    setDocumentVisibility('visible');
+    await flush();
+    expect(mark.mock.calls.map((call) => call[1])).toEqual(['sha-1', 'sha-2']);
+    held.release();
+  });
+
   it('marks nothing for a PR the pane has not selected', async () => {
     installListMocks(snapshot(1, [project('p1', [item(1), item(2)])]));
     const mark = installPRMocks();
     attachPullsPage(PANE, HOME_BACKEND);
+    setReviewShown(PANE, true);
     await flush();
     selectPR(PANE, rowKey(2));
     const held = attachPR(rowKey(1), { ref: ref(1) });

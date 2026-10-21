@@ -297,6 +297,29 @@ describe('a pipeline subject', () => {
     held.release();
   });
 
+  it('answers a gap resync with the re-subscribe, settled only once it answers', async () => {
+    const mocks = installMocks();
+    const held = attachPipelineCI(HOME_BACKEND, REPO, '77');
+    await flush();
+    let answer!: () => void;
+    mocks.subscribe.mockImplementationOnce(() => new Promise((resolve) => {
+      answer = () => resolve({ id: 'pipe-2', key: WIRE_KEY, pipeline: pipeline('success'), error: '', errorKind: '', reserve: false, resumeAt: '', seq: 9 });
+    }));
+    const resync = resyncPipelinesAfterGap(HOME_BACKEND);
+    expect(resync).toBeDefined();
+    let settled = false;
+    void resync!.then(() => {
+      settled = true;
+    });
+    await flush();
+    expect(mocks.subscribe).toHaveBeenCalledTimes(2);
+    expect(settled).toBe(false);
+    answer();
+    await flush();
+    expect(settled).toBe(true);
+    held.release();
+  });
+
   it('votes its pump down while the document is hidden', async () => {
     const mocks = installMocks();
     const held = attachPipelineCI(HOME_BACKEND, REPO, '77');
