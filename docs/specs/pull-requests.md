@@ -254,7 +254,7 @@ requested`, `All open`, project) persist in appStorage per tab.
 
 One list read per project per refresh: GitLab
 `projects/P/merge_requests?state=opened&per_page=100` (carries sha,
-`user_notes_count`, reviewers, `detailed_merge_status`, `head_pipeline`),
+`user_notes_count`, reviewers, `detailed_merge_status`),
 GitHub a `search(type: ISSUE, query: "is:pr is:open repo:O/R")` with
 `reviewDecision`, `reviewRequests`, `headRefOid`, the rollup state, the
 head commit's time and the last 10 comments and reviews (the author's
