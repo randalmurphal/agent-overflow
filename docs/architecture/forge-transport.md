@@ -329,8 +329,9 @@ beside `viewer { login }`. Each node selects its review state
 `APPROVED` count is the approvals given, `viewerLatestReview`, since the
 login is not known before the answer), the approvals required
 (`baseRef { refUpdateRule rules(first: 100) }`, as the detail read
-derives them), `reviewThreads(first: 100) { isResolved }` (unresolved, of
-the first 100), its merge state, `totalCommentsCount`, `commits(last: 1)`
+derives them), `reviewThreads(first: 100) { pageInfo { hasNextPage }
+isResolved }` (the unresolved count, unknown when the threads run past
+the page), its merge state, `totalCommentsCount`, `commits(last: 1)`
 with the head commit's time and rollup `state` (the CI status), and
 `comments(last: 10)` and `reviews(last: 10)` with each author and time,
 from which the row takes the PR author's latest reply
@@ -351,21 +352,28 @@ project), then concurrently:
   `approvedBy` and `headPipeline.status`.
 - `PullsReviewingActivity` and `PullsAuthoredActivity`, the same filters
   selecting `resolvableDiscussionsCount`, `resolvedDiscussionsCount` and
-  the head commit's `committedDate`. The approval fields and the
-  discussion and commit fields each cost seconds on a large project, so
-  they are separate concurrent requests; `approvalsRequired` and
-  `approvalsLeft` are never selected, since they cost more than both.
-- `projects/P/approval_rules?per_page=100`: the required approvals, the
-  sum of `approvals_required`, cached per login and project for 10
-  minutes and revalidated through the ETag store; a 404 (no rules on the
-  tier) requires none.
+  the head commit's `committedDate`.
+- `PullsReviewingApprovals` and `PullsAuthoredApprovals`, the same
+  filters selecting `approvalState { rules { type approvalsRequired } }`:
+  the merge request's own rules, its target branch and any override
+  applied. The required count is the larger of the any-approver rule's
+  and the other rules' sum (an approval from a rule's member also counts
+  toward any approver), which matched `approvalsRequired` on all 56 merge
+  requests measured. The review, the discussion and commit, and the
+  approval fields each cost about a second on a large project, so they
+  are separate concurrent requests; `approvalsRequired` and
+  `approvalsLeft` are never selected, since they add about 2 s.
 - `users/ID/events?per_page=100&after=<30 days ago>`, at most
   `gitlabActivityMaxPages` (3) pages: the viewer's latest
-  `commented on` (a `MergeRequest` note) or `approved` event per project
-  and merge request is the row's viewer activity. It is read once per
-  host per round (`git.WithPRListRound`, one per tick or prefetch): the
-  round's concurrent project reads share it and a later round replaces
-  it.
+  `commented on` (a note, diff note or discussion note on a
+  `MergeRequest`) or `approved` event per project and merge request is
+  the row's viewer activity. The read's floor is the day after the after
+  date when the feed ended within the pages, else the oldest event read
+  (a busy viewer's 300 events can span days); a row with no activity in
+  the window carries it as `ViewerActivityFloor`, which attention reads
+  as the activity's upper bound. It is read once per host per round
+  (`git.WithPRListRound`, one per tick or prefetch): the round's
+  concurrent project reads share it and a later round replaces it.
 
 A merge request neither filter returns carries no review detail. Both
 forges read at most `prListMaxPages` (10) pages of 100 per connection:
@@ -374,7 +382,7 @@ the 1000 most recently updated.
 
 | Read | GitHub | GitLab |
 |---|---|---|
-| Open PRs of a project | 1 `PullsSearch` per 100 PRs | 1 merge request list page per 100 MRs + 4 GraphQL reads, each 1 page per 100 MRs it returns + 1 `approval_rules` per login and project per 10 minutes (then a 304) + 1 to 3 `users/ID/events` per host per round; + 1 `user` per login and host per 10 minutes |
+| Open PRs of a project | 1 `PullsSearch` per 100 PRs | 1 merge request list page per 100 MRs + 6 GraphQL reads, each 1 page per 100 MRs it returns + 1 to 3 `users/ID/events` per host per round; + 1 `user` per login and host per 10 minutes |
 | Pipelines of a project (`ListPipelines`, at most `Limit` rows, 100 when unset or larger) | 1 `GET repos/O/R/actions/runs?per_page=N[&branch=][&status=]` | 1 `GET projects/P/pipelines?per_page=N[&ref=][&status=]`; + `GET projects/P/pipelines?per_page=100&scope=tags[&ref=]` pages, at most `gitlabTagScopeMaxPages` (10): 1 for a ref, 1 or 2 without a status filter, none for a merge request ref or an empty list; + 1 `GET projects/P/pipelines/ID` per row on a tag's ref name whose id the tag scope does not hold, once per pipeline while the repository's listings hold it and shared by concurrent listings, 4 at a time per listing |
 | One pipeline (`ReadPipeline`) | 1 `GET repos/O/R/actions/runs/ID` + 1 jobs page per 100 jobs, at most `githubReadMaxPages` | 1 `GET projects/P/pipelines/ID` + 1 jobs page per 100 jobs, at most `gitlabCIJobsMaxPages` |
 | Stages of 30 unchanged rows (`ReadPipelineStages`) | 30 runs + 30 jobs pages, each a 304 | 30 pipelines + 30 jobs pages, each a 200 with its body |
@@ -432,8 +440,9 @@ the pump's last frame when one runs, else with the snapshot assembled
 from the store (`pr_list_projects`, one row per repository holding its
 `ProjectPRList`) for the current forge projects, `Stale` while a
 project's stored read is missing or older than the PR update interval.
-Its first tick is the user's action and so interactive, as a refresh is;
-later ticks run at the PR update interval.
+A new pump starts once that answer is read, so no forge request precedes
+it. Its first tick is the user's action and so interactive, as a refresh
+is; later ticks run at the PR update interval.
 
 A tick (`app_pr_list_tick.go`) reads the backend's forge projects
 (`ListForgeProjects`: the non-archived projects whose origin names a
@@ -455,16 +464,24 @@ rows the last tick read beside that error, and a removed project takes
 its rows along, from the pump and the store. Each row's attention state,
 group and reason come from `prAttention` (`app_pr_attention.go`), a pure
 function of the row; `NeedsYou`, the sidebar badge, counts each PR once.
-The last unsubscribe stops the pump and drops what it held.
+The last unsubscribe stops the pump, cancels its reads in flight and
+drops what it held.
 
 The boot prefetch (`app_pr_list_store.go`) runs once after
-`awaitFirstReadsSettled`: one background read of every forge project
-with no pump, storing each landed read, pruning repositories no project
-names, and holding nothing after. It reads nothing when the store's
-newest read is younger than the PR update interval or a list pump runs.
-`GetPRListNeedsYou` answers the badge from the store, and every store
-write (a pump publish, a prefetch read) emits `pulls:badge`
-`{needsYou}`, so the badge is right before the page opens.
+`awaitFirstReadsSettled`: one background read, with no pump, of every
+forge repository whose stored read is missing or older than the PR
+update interval, storing each landed read, pruning repositories no
+project names, and holding nothing after. It reads nothing while a list
+pump runs. One writer owns the stored copy at a time
+(`commitPRListStore`, keyed by `listGen`, which counts the pumps
+started): the prefetch until a pump starts, then that pump until the
+next. A write or prune of a writer that lost the copy is dropped, so a
+prefetch read that lands after a pump's newer one neither replaces it
+nor undoes a prune. `GetPRListNeedsYou` answers the badge from the
+store, and every change to it (a read stored, a repository pruned)
+emits `pulls:badge` `{needsYou}` counted from what the store committed,
+in commit order, so the badge is right before the page opens and after
+a pump stopped mid-write.
 
 | Tick | GitHub | GitLab |
 |---|---|---|

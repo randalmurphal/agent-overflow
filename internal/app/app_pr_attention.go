@@ -75,7 +75,10 @@ const gitlabTouchSlack = 10 * time.Second
 //     reviewed, pushed when the head commit is newer than the user's
 //     latest activity, else replied when the PR moved after it (GitLab
 //     its update time, past gitlabTouchSlack; GitHub the author's latest
-//     comment or review).
+//     comment or review). GitLab's events are a lower bound: a reviewer
+//     whose review state says they reviewed, with no activity in the
+//     window read, reviewed before the window's floor, so the floor
+//     stands in for their activity.
 //   - pipeline_failed and ready, the user's PR: its head pipeline failed;
 //     the forge would merge it (GitLab detailed_merge_status mergeable,
 //     GitHub clean or has_hooks).
@@ -117,7 +120,11 @@ func prAttentionState(row gitops.PRListRow) (string, *PRReason) {
 	case review == "":
 		return prQuietState(row), nil
 	}
-	if activity := row.ViewerActivityAt; activity != "" {
+	activity := row.ViewerActivityAt
+	if activity == "" {
+		activity = row.ViewerActivityFloor
+	}
+	if activity != "" {
 		if rfc3339After(row.LastCommitAt, activity) {
 			return PRStateYourTurn, &PRReason{Kind: PRReasonPushed}
 		}

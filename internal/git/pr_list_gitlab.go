@@ -3,7 +3,6 @@ package git
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -16,15 +15,14 @@ import (
 )
 
 // The GitLab project read of the Pull requests page: the open merge
-// request list, four GraphQL requests over the merge requests the viewer
-// reviews and authored, the project's approval rules (cached) and the
-// viewer's events (once per host per round), all concurrent
-// (docs/architecture/forge-transport.md#project-lists). The list's basic
-// view carries no pipeline and cannot say how the viewer reviewed, so the
-// GraphQL requests fill those fields for the rows they cover; the
-// approval fields and the discussion and commit fields are separate
-// requests because each costs GitLab 1-2 s on 57 rows and they run side
-// by side.
+// request list, six GraphQL requests over the merge requests the viewer
+// reviews and authored and the viewer's events (once per host per round),
+// all concurrent (docs/architecture/forge-transport.md#project-lists).
+// The list's basic view carries no pipeline and cannot say how the viewer
+// reviewed, so the GraphQL requests fill those fields for the rows they
+// cover. The review fields, the discussion and commit fields and the
+// approval rules are separate requests because each costs GitLab about
+// 1-2 s on 57 rows and side by side they cost the slowest one.
 
 type gitlabListMRRaw struct {
 	IID                         int               `json:"iid"`
@@ -55,6 +53,12 @@ const gitlabPullsReviewFields = `iid reviewers { nodes { username mergeRequestIn
 // resolvable and resolved thread counts and the newest commit's time.
 const gitlabPullsActivityFields = `iid resolvableDiscussionsCount resolvedDiscussionsCount commits(first: 1) { nodes { committedDate } }`
 
+// gitlabPullsApprovalFields are the merge request's own approval rules,
+// which already apply its target branch and any per-merge-request
+// override. approvalsRequired and approvalsLeft would answer the count
+// directly but cost GitLab about 2 s more on 57 rows.
+const gitlabPullsApprovalFields = `iid approvalState { rules { type approvalsRequired } }`
+
 // gitlabPullsQuery is one GraphQL read of a project's open merge requests
 // the viewer reviews (filter reviewerUsername) or authored
 // (authorUsername), 100 per page, selecting fields.
@@ -69,15 +73,24 @@ func gitlabPullsQuery(operation, filter, fields string) string {
 }`
 }
 
-// gitlabPullsReads are the four GraphQL reads, by operation name.
+// The selections of the GraphQL reads.
+const (
+	gitlabPullsReview = iota
+	gitlabPullsActivity
+	gitlabPullsApprovals
+)
+
+// gitlabPullsReads are the six GraphQL reads, by operation name.
 var gitlabPullsReads = []struct {
 	operation, query string
-	activity         bool
+	selection        int
 }{
-	{"PullsReviewing", gitlabPullsQuery("PullsReviewing", "reviewerUsername", gitlabPullsReviewFields), false},
-	{"PullsAuthored", gitlabPullsQuery("PullsAuthored", "authorUsername", gitlabPullsReviewFields), false},
-	{"PullsReviewingActivity", gitlabPullsQuery("PullsReviewingActivity", "reviewerUsername", gitlabPullsActivityFields), true},
-	{"PullsAuthoredActivity", gitlabPullsQuery("PullsAuthoredActivity", "authorUsername", gitlabPullsActivityFields), true},
+	{"PullsReviewing", gitlabPullsQuery("PullsReviewing", "reviewerUsername", gitlabPullsReviewFields), gitlabPullsReview},
+	{"PullsAuthored", gitlabPullsQuery("PullsAuthored", "authorUsername", gitlabPullsReviewFields), gitlabPullsReview},
+	{"PullsReviewingActivity", gitlabPullsQuery("PullsReviewingActivity", "reviewerUsername", gitlabPullsActivityFields), gitlabPullsActivity},
+	{"PullsAuthoredActivity", gitlabPullsQuery("PullsAuthoredActivity", "authorUsername", gitlabPullsActivityFields), gitlabPullsActivity},
+	{"PullsReviewingApprovals", gitlabPullsQuery("PullsReviewingApprovals", "reviewerUsername", gitlabPullsApprovalFields), gitlabPullsApprovals},
+	{"PullsAuthoredApprovals", gitlabPullsQuery("PullsAuthoredApprovals", "authorUsername", gitlabPullsApprovalFields), gitlabPullsApprovals},
 }
 
 // gitlabPullNodeRaw is one merge request node of either selection.
@@ -106,10 +119,18 @@ type gitlabPullNodeRaw struct {
 			CommittedDate string `json:"committedDate"`
 		} `json:"nodes"`
 	} `json:"commits"`
+	ApprovalState *struct {
+		Rules []struct {
+			Type              string `json:"type"`
+			ApprovalsRequired int    `json:"approvalsRequired"`
+		} `json:"rules"`
+	} `json:"approvalState"`
 }
 
 // gitlabActivityDays is how far back the viewer's events are read, and
-// gitlabActivityMaxPages the pages of 100 read of them.
+// gitlabActivityMaxPages the pages of 100 read of them. A busy viewer's
+// 300 newest events can span only days: the window's floor
+// (gitlabActivity.floor) says how far back they reach.
 const (
 	gitlabActivityDays     = 30
 	gitlabActivityMaxPages = 3
@@ -119,6 +140,16 @@ const (
 type gitlabMRKey struct {
 	project int64
 	iid     int
+}
+
+// gitlabActivity is what the viewer's events say: the latest comment on
+// or approval of each merge request (at), and the window's floor, the
+// time before which the read saw nothing. The feed is a lower bound: a
+// merge request the viewer reviewed with nothing in the window was
+// reviewed before the floor.
+type gitlabActivity struct {
+	at    map[gitlabMRKey]string
+	floor string
 }
 
 // ListProjectPRs reads the project's open merge requests, most recently
@@ -140,16 +171,13 @@ func (f *gitlabForge) ListProjectPRs(ctx context.Context, repo RepoReference) ([
 		return nil, fmt.Errorf("gitlab: list %s: %w", repo.Project(), err)
 	}
 	var (
-		wg         sync.WaitGroup
-		raw        []gitlabListMRRaw
-		listErr    error
-		nodes      = make([][]gitlabPullNodeRaw, len(gitlabPullsReads))
-		nodeErrs   = make([]error, len(gitlabPullsReads))
-		activity   map[gitlabMRKey]string
-		eventsErr  error
-		required   int
-		rulesErr   error
-		rulesKnown bool
+		wg        sync.WaitGroup
+		raw       []gitlabListMRRaw
+		listErr   error
+		nodes     = make([][]gitlabPullNodeRaw, len(gitlabPullsReads))
+		nodeErrs  = make([]error, len(gitlabPullsReads))
+		activity  gitlabActivity
+		eventsErr error
 	)
 	wg.Go(func() { raw, listErr = readGitLabMRList(ctx, client, repo) })
 	for i, read := range gitlabPullsReads {
@@ -158,10 +186,6 @@ func (f *gitlabForge) ListProjectPRs(ctx context.Context, repo RepoReference) ([
 		})
 	}
 	wg.Go(func() { activity, eventsErr = f.viewerActivity(ctx, client, repo.Host, viewer) })
-	wg.Go(func() {
-		required, rulesErr = f.requiredApprovals(ctx, client, repo)
-		rulesKnown = rulesErr == nil
-	})
 	wg.Wait()
 	if listErr != nil {
 		return nil, listErr
@@ -170,10 +194,10 @@ func (f *gitlabForge) ListProjectPRs(ctx context.Context, repo RepoReference) ([
 	byIID := make(map[int]int, len(raw))
 	for _, mr := range raw {
 		row := gitlabPRListRow(repo, mr, viewer.Username)
-		if rulesKnown {
-			row.ApprovalsRequired = &required
+		row.ViewerActivityAt = activity.at[gitlabMRKey{project: mr.ProjectID, iid: mr.IID}]
+		if row.ViewerActivityAt == "" {
+			row.ViewerActivityFloor = activity.floor
 		}
-		row.ViewerActivityAt = activity[gitlabMRKey{project: mr.ProjectID, iid: mr.IID}]
 		byIID[mr.IID] = len(rows)
 		rows = append(rows, row)
 	}
@@ -185,14 +209,17 @@ func (f *gitlabForge) ListProjectPRs(ctx context.Context, repo RepoReference) ([
 				// Opened or closed between the list and this read.
 				continue
 			}
-			if read.activity {
-				gitlabFillActivity(&rows[at], node)
-			} else {
+			switch read.selection {
+			case gitlabPullsReview:
 				gitlabFillReview(&rows[at], node, viewer.Username)
+			case gitlabPullsActivity:
+				gitlabFillActivity(&rows[at], node)
+			case gitlabPullsApprovals:
+				gitlabFillApprovals(&rows[at], node)
 			}
 		}
 	}
-	return rows, detailError(append(nodeErrs, eventsErr, rulesErr)...)
+	return rows, detailError(append(nodeErrs, eventsErr)...)
 }
 
 // readGitLabMRList is the open merge request list.
@@ -285,41 +312,26 @@ func gitlabFillActivity(row *PRListRow, node gitlabPullNodeRaw) {
 	}
 }
 
-// requiredApprovals is the approvals the project's approval rules
-// require, their approvals_required summed (an MR GraphQL reads with
-// approvalsRequired 2 had rules of 1 and 1), read at most once per login
-// per project per gitlabCacheTTL and revalidated with its ETag after.
-// A GitLab without approval rules (Free, or CE where the endpoint does
-// not exist) answers 404, which requires none.
-func (f *gitlabForge) requiredApprovals(ctx context.Context, client *forgeapi.Client, repo RepoReference) (int, error) {
-	fp, err := client.CredentialFingerprint(ctx)
-	if err != nil {
-		return 0, err
+// gitlabFillApprovals fills the approvals a merge request requires from
+// its approval rules: the rules other than the any-approver rule, summed,
+// or the any-approver rule's count when it asks for more, since an
+// approval from a rule's member also counts toward any approver. Checked
+// on gitlab.com against approvalsRequired for 56 merge requests with
+// any-approver, regular and code owner rules.
+func gitlabFillApprovals(row *PRListRow, node gitlabPullNodeRaw) {
+	if node.ApprovalState == nil {
+		return
 	}
-	key := func(fp string) string { return fp + " " + repo.Host + " " + repo.Project() }
-	if required, ok := f.approvalRules.get(key(fp), f.core.nowFn()); ok {
-		return required, nil
+	anyApprover, rules := 0, 0
+	for _, rule := range node.ApprovalState.Rules {
+		if rule.Type == "ANY_APPROVER" {
+			anyApprover += max(rule.ApprovalsRequired, 0)
+		} else {
+			rules += max(rule.ApprovalsRequired, 0)
+		}
 	}
-	var rules []struct {
-		ApprovalsRequired int `json:"approvals_required"`
-	}
-	resp, err := client.JSON(ctx, forgeapi.Request{
-		Path:  gitlabProjectPath(repo.Project()) + "/approval_rules",
-		Query: url.Values{"per_page": {strconv.Itoa(gitlabPageSize)}},
-	}, &rules)
-	switch {
-	case errors.Is(err, forgeapi.ErrNotFound):
-		f.approvalRules.put(key(fp), 0, f.core.nowFn())
-		return 0, nil
-	case err != nil:
-		return 0, err
-	}
-	required := 0
-	for _, rule := range rules {
-		required += max(rule.ApprovalsRequired, 0)
-	}
-	f.approvalRules.put(key(resp.Credential), required, f.core.nowFn())
-	return required, nil
+	required := max(anyApprover, rules)
+	row.ApprovalsRequired = &required
 }
 
 // gitlabEventRaw is one entry of the viewer's events feed.
@@ -337,19 +349,24 @@ type gitlabEventRaw struct {
 
 // readGitLabViewerActivity reads the viewer's events of the last
 // gitlabActivityDays, at most gitlabActivityMaxPages pages of 100, and
-// keeps its latest comment on or approval of each merge request.
-func readGitLabViewerActivity(ctx context.Context, client *forgeapi.Client, viewer gitlabViewer, now time.Time) (map[gitlabMRKey]string, error) {
+// keeps its latest comment on (a note, diff note or discussion note) or
+// approval of each merge request. The floor is the start of the day
+// after the after date when the feed ended within the pages (GitLab
+// answers events created after that date), else the oldest event read.
+func readGitLabViewerActivity(ctx context.Context, client *forgeapi.Client, viewer gitlabViewer, now time.Time) (gitlabActivity, error) {
 	if viewer.ID <= 0 {
-		return nil, fmt.Errorf("gitlab: the login %q has no account id to read its events by", viewer.Username)
+		return gitlabActivity{}, fmt.Errorf("gitlab: the login %q has no account id to read its events by", viewer.Username)
 	}
+	after := now.UTC().AddDate(0, 0, -gitlabActivityDays)
 	request := forgeapi.Request{
 		Path: "users/" + strconv.FormatInt(viewer.ID, 10) + "/events",
 		Query: url.Values{
 			"per_page": {strconv.Itoa(gitlabPageSize)},
-			"after":    {now.AddDate(0, 0, -gitlabActivityDays).UTC().Format(time.DateOnly)},
+			"after":    {after.Format(time.DateOnly)},
 		},
 	}
-	out := map[gitlabMRKey]string{}
+	out := gitlabActivity{at: map[gitlabMRKey]string{}}
+	oldest, ended := "", false
 	page, pages := 1, 0
 	err := client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
 		var events []gitlabEventRaw
@@ -357,6 +374,7 @@ func readGitLabViewerActivity(ctx context.Context, client *forgeapi.Client, view
 			return false, fmt.Errorf("GitLab events of %s: decode response: %w", viewer.Username, err)
 		}
 		for _, event := range events {
+			oldest = earlierRFC3339(oldest, event.CreatedAt)
 			iid := 0
 			switch {
 			case event.ActionName == "commented on" && event.Note != nil && event.Note.NoteableType == "MergeRequest" && event.Note.NoteableIID != nil:
@@ -367,15 +385,36 @@ func readGitLabViewerActivity(ctx context.Context, client *forgeapi.Client, view
 				continue
 			}
 			key := gitlabMRKey{project: event.ProjectID, iid: iid}
-			out[key] = laterRFC3339(out[key], event.CreatedAt)
+			out.at[key] = laterRFC3339(out.at[key], event.CreatedAt)
 		}
 		pages++
-		return len(events) == gitlabPageSize && pages < gitlabActivityMaxPages && advanceGitLabPage(resp, &page), nil
+		more := len(events) == gitlabPageSize && advanceGitLabPage(resp, &page)
+		ended = !more
+		return more && pages < gitlabActivityMaxPages, nil
 	})
 	if err != nil {
-		return nil, err
+		return gitlabActivity{}, err
+	}
+	out.floor = oldest
+	if ended || oldest == "" {
+		day := time.Date(after.Year(), after.Month(), after.Day(), 0, 0, 0, 0, time.UTC)
+		out.floor = day.AddDate(0, 0, 1).Format(time.RFC3339)
 	}
 	return out, nil
+}
+
+// earlierRFC3339 is the earlier of two RFC 3339 times; an unreadable or
+// empty one loses to the other.
+func earlierRFC3339(a, b string) string {
+	at, errA := time.Parse(time.RFC3339, a)
+	bt, errB := time.Parse(time.RFC3339, b)
+	switch {
+	case errB != nil:
+		return a
+	case errA != nil || bt.Before(at):
+		return b
+	}
+	return a
 }
 
 // prListRoundKey carries a list round in a context (WithPRListRound).
@@ -408,14 +447,14 @@ type gitlabActivityRead struct {
 	round    uint64
 	viewer   gitlabViewer
 	done     chan struct{}
-	activity map[gitlabMRKey]string
+	activity gitlabActivity
 	err      error
 }
 
 // viewerActivity is the viewer's activity on host for ctx's round.
-func (f *gitlabForge) viewerActivity(ctx context.Context, client *forgeapi.Client, host string, viewer gitlabViewer) (map[gitlabMRKey]string, error) {
+func (f *gitlabForge) viewerActivity(ctx context.Context, client *forgeapi.Client, host string, viewer gitlabViewer) (gitlabActivity, error) {
 	round := prListRound(ctx)
-	read := func() (map[gitlabMRKey]string, error) {
+	read := func() (gitlabActivity, error) {
 		return readGitLabViewerActivity(ctx, client, viewer, f.core.nowFn())
 	}
 	if round == 0 {
@@ -430,7 +469,7 @@ func (f *gitlabForge) viewerActivity(ctx context.Context, client *forgeapi.Clien
 		case <-entry.done:
 			return entry.activity, entry.err
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return gitlabActivity{}, ctx.Err()
 		}
 	}
 	entry = &gitlabActivityRead{round: round, viewer: viewer, done: make(chan struct{})}

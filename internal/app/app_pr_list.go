@@ -104,6 +104,9 @@ type PRListSubscriptionResult struct {
 
 type prListPump struct {
 	pumpCore
+	// gen is the pump's listGen: it owns the stored copy until another
+	// pump starts.
+	gen uint64
 	// The tick's state (app_pr_list_tick.go), under App.prUpdates.mu:
 	// snapshot and encoded the last published frame, forge and forgeErr
 	// the projects the running or last tick read, projects each
@@ -127,9 +130,10 @@ func prListCleanupKey(id string) string { return "pr-list:" + id }
 
 // SubscribePRList starts the list pump, or joins it, and answers at once:
 // with the pump's last frame when it published one, else the snapshot
-// assembled from the stored copy (app_pr_list_store.go). The pump's first
-// tick, the user's action and so interactive, follows with a frame per
-// project as each read lands. The subscription ends with the calling
+// assembled from the stored copy (app_pr_list_store.go). The pump starts
+// after that read, so its first tick, the user's action and so
+// interactive, follows the answer with a frame per project as each read
+// lands. The subscription ends with the calling
 // connection. Routed to the selected computer like SubscribePRUpdates;
 // the handle calls route home, and the caller pins them to the computer
 // that answered.
@@ -145,7 +149,9 @@ func (a *App) SubscribePRList(ctx context.Context) (PRListSubscriptionResult, er
 		return PRListSubscriptionResult{}, err
 	}
 	if start {
-		a.prUpdates.wg.Go(func() { a.pumpPRList(pump) })
+		// The pump's first forge read follows the answer: it starts once
+		// the stored copy is read, on every path out.
+		defer a.prUpdates.wg.Go(func() { a.pumpPRList(pump) })
 	}
 	if state := transport.ConnStateFromContext(ctx); state != nil {
 		if !state.BindCleanup(prListCleanupKey(id), func() { a.unsubscribePRList(id) }) {
@@ -183,7 +189,8 @@ func (a *App) takePRListHandle() (id string, pump *prListPump, start bool, publi
 	}
 	pump = a.prUpdates.list
 	if pump == nil || pump.dead {
-		pump = &prListPump{pumpCore: a.newPumpCore(), projects: map[string]*prListProjectState{}}
+		a.prUpdates.listGen++
+		pump = &prListPump{pumpCore: a.newPumpCore(), gen: a.prUpdates.listGen, projects: map[string]*prListProjectState{}}
 		a.prUpdates.list = pump
 		start = true
 	}
@@ -359,7 +366,7 @@ func (a *App) pumpPRList(pump *prListPump) {
 	}
 }
 
-// emitPRListBadge emits the needs-you count after a store write.
+// emitPRListBadge emits the needs-you count of the stored copy.
 func (a *App) emitPRListBadge(needsYou int) {
 	a.emit(eventchan.PullsBadge, PRListBadge{NeedsYou: needsYou})
 }

@@ -134,12 +134,22 @@ Measured against gitlab.com on 2026-10-21 (read-only, a project of 57
 open merge requests): the list page takes 0.9 to 1.7 s; in GraphQL
 `mergeRequests(reviewerUsername:|authorUsername:)`, the reviewer and
 approval fields and the discussion and commit fields each cost 1 to 2 s,
-and `approvalsRequired`/`approvalsLeft` 2 to 2.7 s alone. The sum of
-`approvals_required` over `projects/P/approval_rules` matched an MR whose
-`approvalsRequired` was 2 (rules of 1 and 1). The extended GitHub
-`PullsSearch` costs 3 points and 0.4 s. That `approval_rules` sends an
-`ETag` the list revalidates, and the events feed's `after` and paging,
-follow GitLab's REST conventions and were not probed.
+and `approvalsRequired`/`approvalsLeft` 2 to 2.7 s alone. The extended
+GitHub `PullsSearch` costs 3 points and 0.4 s.
+
+Approvals required, measured the same day on 56 merge requests the
+viewer reviews (3 runs each, medians): the review read alone 1.74 s and
+1.85 s; with `approvalState { rules { type approvalsRequired } }` added
+2.29 s and 2.72 s; with `approvalsRequired approvalsLeft` added 3.95 s;
+`approvalState` alone as its own read 1.05 s, beside an activity read of
+1.75 s and a list page of 1.15 to 3.7 s. Every merge request carried an
+`ANY_APPROVER` rule ("All Members", 1) beside `REGULAR` and `CODE_OWNER`
+rules, so the project's rules summed overcount: `approvalsRequired` was
+the larger of the any-approver rule and the other rules' sum on all 56.
+The viewer's events feed carries `commented on` events with target type
+`Note`, `DiffNote` and `DiscussionNote`, each with `note.noteable_type`
+`MergeRequest` and `noteable_iid`; 3 pages of 100 reached back 5 days
+for an active viewer. The feed's `after` semantics were not probed.
 
 ## Merge readiness and actions
 

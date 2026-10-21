@@ -143,7 +143,7 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitHub | `POST repos/O/R/pulls/N/reviews` with `{event, body?, commit_id?}` (`gh api pull reviews`) | Approve and the send strip's verdict without line comments: the viewer's review, a timeline item; the author's approval is GitHub's 422 |
 | GitHub | `DELETE repos/O/R/git/refs/heads/B` (`gh api delete branch`) | the head branch delete after a merge: 204, then 422 "Reference does not exist" |
 | GitHub | GraphQL `SetThreadResolved(threadID, resolved)` | SetThreadResolved (flips the seeded thread) |
-| GitHub | GraphQL `PullsSearch(query, after)` | project PR list: `search` over `is:pr is:open repo:O/R` (any other query is unhandled), the repository's open pulls newest first in pages of 100, beside the viewer, each with its last 10 `comments` and submitted `reviews`, its opinionated reviews (state, `viewerDidAuthor`), the first 100 review threads' `isResolved`, and the base's `refUpdateRule` (its `requiredApprovingReviewCount` alone) and `rules` as PRTick answers them; a repository not on the host answers GitHub's search refusal (null `search` beside an error) |
+| GitHub | GraphQL `PullsSearch(query, after)` | project PR list: `search` over `is:pr is:open repo:O/R` (any other query is unhandled), the repository's open pulls newest first in pages of 100, beside the viewer, each with its last 10 `comments` and submitted `reviews`, its opinionated reviews (state, `viewerDidAuthor`), the first 100 review threads' `isResolved` with `pageInfo`, and the base's `refUpdateRule` (its `requiredApprovingReviewCount` alone) and `rules` as PRTick answers them; a repository not on the host answers GitHub's search refusal (null `search` beside an error) |
 | GitHub | GraphQL `OpenPRsByHead(owner, name, head, after)` | open PR lookup (checkout origin): pages of 100 with each PR's node id and `isCrossRepository` (a pull with `headRepo`) |
 | GitHub | GraphQL `PRStates(ids)` | merged-PR cleanup: state and `mergedAt` of tracked PRs by node id; an unknown id is a `NOT_FOUND` error at its `nodes` index |
 | GitHub | GraphQL `MergedPRs(owner, name, first, after)` | merged heads (checkout origin), in fixture order |
@@ -156,8 +156,8 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitLab | `GET projects/P/merge_requests/N/approvals` (`glab api approvals`) | ReadPR detail: approvals required and left, the viewer's standing |
 | GitLab | GraphQL `PullsReviewing`, `PullsAuthored(fullPath, viewer, after)` | project PR list: the open merge requests `viewer` reviews or authored, newest update first in pages of 100, each with its reviewers' `reviewState`, `approvedBy` and `headPipeline.status`; a project not on the host is a null `project` |
 | GitLab | GraphQL `PullsReviewingActivity`, `PullsAuthoredActivity(fullPath, viewer, after)` | project PR list: the same merge requests with resolvable and resolved discussion counts and the head commit's `committedDate` |
-| GitLab | `GET users/ID/events?per_page=N[&page=N][&after=YYYY-MM-DD]` (`glab api user events`) | project PR list: the viewer's (id 1) `commented on` notes on merge requests and `approved` events across the host's projects, newest first, created after the date; another id is a 404; `X-Next-Page` while more pages exist |
-| GitLab | `GET projects/P/approval_rules?[per_page=N]` (`glab api approval rules`, conditional) | project PR list: the required approvals, one `regular` rule per `merge.approvalRules` entry |
+| GitLab | GraphQL `PullsReviewingApprovals`, `PullsAuthoredApprovals(fullPath, viewer, after)` | project PR list: the same merge requests' `approvalState.rules`, one `ANY_APPROVER` rule requiring the pull's `readiness.requiredApprovals` |
+| GitLab | `GET users/ID/events?per_page=N[&page=N][&after=YYYY-MM-DD]` (`glab api user events`) | project PR list: the viewer's (id 1) `commented on` notes on merge requests (target type `Note` for a conversation comment, `DiffNote` for a thread comment) and `approved` events across the host's projects, newest first, created after the date; another id is a 404; `X-Next-Page` while more pages exist |
 | GitLab | `GET projects/P/merge_requests/N/discussions?per_page=N[&page=N]` (`glab api discussions`) | ReadPR threads and, from the system notes, events; `X-Next-Page` while more pages exist |
 | GitLab | `POST .../approve` with `{sha}`, `POST .../unapprove` (`glab api approve`, `glab api unapprove`) | Approve (409 on a moved head, 401 for a viewer GitLab takes no approval from) and Unapprove (404 with none), each with its system note |
 | GitLab | `PUT .../merge` with `{sha, squash, should_remove_source_branch, auto_merge, merge_when_pipeline_succeeds}` (`glab api merge`) | Merge now (405 while blocked, 401 without the role, 409 on a moved head) and Auto-merge (either key or both: arms a blocked merge request, with its system note) |
@@ -222,9 +222,7 @@ bulk publish, discussion note POST, discussion resolve PUT and
   reviewer's `reviewState` is `approved` while their approval stands,
   `requested_changes` when in `changeRequests`, `reviewed` once they
   commented (a thread comment or a note), else `unreviewed`; the
-  viewer's comments and approvals are also its events feed.
-  `merge.approvalRules` (GitLab only) are the project's approval rules'
-  `approvals_required`. `createdAt`,
+  viewer's comments and approvals are also its events feed. `createdAt`,
   `updatedAt`, `committedAt` and `commits` feed the project list rows.
 - Generated ids start at 1,000,000 and stay unique across reseeds and
   resets.

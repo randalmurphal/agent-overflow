@@ -25,15 +25,11 @@ func TestPRListSnapshotMigrationDropsPRViewsAndAddsTheSnapshotTable(t *testing.T
 	}
 }
 
-// A repository's read replaces the one before; the newest time is the
-// latest read's; pruning keeps only the named repositories, and pruning
+// A repository's read replaces the one before; pruning keeps only the named repositories, and pruning
 // with none named empties the table.
 func TestPRListProjectsStoreReadsAndPrune(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
-	if newest, err := s.NewestPRListReadAt(); err != nil || newest != 0 {
-		t.Fatalf("newest of none = %d, %v", newest, err)
-	}
 	for _, project := range []PRListProject{
 		{RepoKey: "github:o/r", ProjectJSON: []byte(`{"rows":[1]}`), ReadAt: 10},
 		{RepoKey: "gitlab:g/r", ProjectJSON: []byte(`{"rows":[]}`), ReadAt: 30},
@@ -56,9 +52,6 @@ func TestPRListProjectsStoreReadsAndPrune(t *testing.T) {
 	all, err := s.ListPRListProjects()
 	if err != nil || len(all) != 3 || string(all["github:o/r"].ProjectJSON) != `{"rows":[2]}` || all["github:o/r"].ReadAt != 20 {
 		t.Fatalf("reads = %+v, %v", all, err)
-	}
-	if newest, err := s.NewestPRListReadAt(); err != nil || newest != 30 {
-		t.Fatalf("newest = %d, %v", newest, err)
 	}
 	if n, err := s.DeletePRListProjectsExcept([]string{"github:o/r", "gitlab:g/r", "github:o/r"}); err != nil || n != 1 {
 		t.Fatalf("prune = %d, %v", n, err)

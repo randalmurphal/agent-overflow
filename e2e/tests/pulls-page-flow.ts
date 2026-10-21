@@ -6,8 +6,8 @@
 // in the focused pane's place; the Needs you and Waiting on others groups
 // carry one state pill per row and the sidebar badge counts the first
 // group; the page reads each project with its forge's fixed request set
-// (GitHub one PullsSearch, GitLab the list beside its GraphQL reviewer and
-// activity reads, the viewer's events and the approval rules) and never a
+// (GitHub one PullsSearch, GitLab the list beside its GraphQL reviewer,
+// activity and approval rule reads and the viewer's events) and never a
 // read per row; a GitLab row's failed pipeline arrives with its project's
 // read; the filter chips and the project picker narrow the list and
 // survive a reload; picking a row opens the review pinned to it beside the
@@ -60,7 +60,7 @@ function gitlabRepo(): ForgeRepo {
     forge: 'gitlab',
     id: 4_500_000 + parseInt(suffix.slice(0, 4), 16),
     project: `ao-e2e/widgets-${suffix}`,
-    merge: { pipelineMustSucceed: true, approvalRules: [1] },
+    merge: { pipelineMustSucceed: true },
     pulls: [
       {
         number: 101, title: 'Queue: retry a failed delivery once', author: 'sabossedgh', authorName: 'Sawmon Abossedgh',
@@ -195,8 +195,9 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
         expect(await pullRequestReads(harness)).toEqual({
           lists: [`gh graphql PullsSearch ${seeded.github.project}`, `glab api merge request list ${seeded.gitlab.project}`],
           details: [
-            'glab api approval rules ' + seeded.gitlab.project, 'glab api user events',
-            ...['PullsAuthored', 'PullsAuthoredActivity', 'PullsReviewing', 'PullsReviewingActivity'].map((op) => `glab graphql ${op} ${seeded.gitlab.project}`),
+            'glab api user events',
+            ...['PullsAuthored', 'PullsAuthoredActivity', 'PullsAuthoredApprovals', 'PullsReviewing', 'PullsReviewingActivity', 'PullsReviewingApprovals']
+              .map((op) => `glab graphql ${op} ${seeded.gitlab.project}`),
           ],
           perPR: [],
         });
@@ -508,8 +509,6 @@ async function pullRequestReads(harness: HarnessApp): Promise<{ lists: string[];
       lists.add(`${call.route} ${project(call.path)}`);
     } else if (call.route.startsWith('glab graphql Pulls')) {
       details.add(`${call.route} ${String(call.variables?.fullPath)}`);
-    } else if (call.route === 'glab api approval rules') {
-      details.add(`${call.route} ${project(call.path)}`);
     } else if (call.route === 'glab api user events') {
       details.add(call.route);
     } else if (['gh graphql PRTick', 'glab api merge request', 'glab api approvals', 'glab api discussions'].includes(call.route)) {

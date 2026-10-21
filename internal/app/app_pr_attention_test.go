@@ -75,8 +75,25 @@ func TestPRListAttentionStates(t *testing.T) {
 		{name: "gitlab withdrew an approval", row: reviewed(gl, "unapproved", nil), state: PRStateApproved, reason: &PRReason{Kind: PRReasonReviewed}},
 		{name: "another reviewer's change request is not mine", row: reviewed(gl, "approved", func(r *gitops.PRListRow) { r.ReviewDecision = "CHANGES_REQUESTED" }),
 			state: PRStateApproved, reason: &PRReason{Kind: PRReasonApproved}},
-		{name: "gitlab reviewed with no activity in the events", row: reviewed(gl, "reviewed", func(r *gitops.PRListRow) { r.ViewerActivityAt, r.LastCommitAt, r.UpdatedAt = "", after, after }),
+		{name: "gitlab reviewed, the events unread", row: reviewed(gl, "reviewed", func(r *gitops.PRListRow) { r.ViewerActivityAt, r.LastCommitAt, r.UpdatedAt = "", after, after }),
 			state: PRStateApproved, reason: &PRReason{Kind: PRReasonReviewed}},
+		// The events are a lower bound: an approval with nothing in the
+		// window read is older than the window's floor (review here).
+		{name: "gitlab approved before the window, pushed after its floor", row: reviewed(gl, "approved", func(r *gitops.PRListRow) {
+			r.ViewerActivityAt, r.ViewerActivityFloor, r.LastCommitAt, r.UpdatedAt = "", review, after, after
+		}), state: PRStateYourTurn, reason: &PRReason{Kind: PRReasonPushed}},
+		{name: "gitlab approved before the window, updated after its floor", row: reviewed(gl, "approved", func(r *gitops.PRListRow) {
+			r.ViewerActivityAt, r.ViewerActivityFloor, r.UpdatedAt = "", review, "2026-01-02T00:00:11Z"
+		}), state: PRStateYourTurn, reason: &PRReason{Kind: PRReasonReplied}},
+		{name: "gitlab approved before the window, nothing since its floor", row: reviewed(gl, "approved", func(r *gitops.PRListRow) {
+			r.ViewerActivityAt, r.ViewerActivityFloor, r.LastCommitAt, r.UpdatedAt = "", review, before, before
+		}), state: PRStateApproved, reason: &PRReason{Kind: PRReasonApproved}},
+		{name: "gitlab changes requested before the window, pushed after its floor", row: reviewed(gl, "requested_changes", func(r *gitops.PRListRow) {
+			r.ViewerActivityAt, r.ViewerActivityFloor, r.LastCommitAt = "", review, after
+		}), state: PRStateYourTurn, reason: &PRReason{Kind: PRReasonPushed}},
+		{name: "activity in the window outranks the floor", row: reviewed(gl, "approved", func(r *gitops.PRListRow) {
+			r.ViewerActivityAt, r.ViewerActivityFloor, r.LastCommitAt = after, review, after
+		}), state: PRStateApproved, reason: &PRReason{Kind: PRReasonApproved}},
 		{name: "unreadable times are not a move", row: reviewed(gh, "approved", func(r *gitops.PRListRow) { r.LastCommitAt = "soon" }),
 			state: PRStateApproved, reason: &PRReason{Kind: PRReasonApproved}},
 		// Nobody asked the viewer.
