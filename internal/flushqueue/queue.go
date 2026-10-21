@@ -70,12 +70,33 @@ type Payload struct {
 	// re-dispatched row answering for the first member only, and a retry of
 	// any other member would send a duplicate.
 	JoinedSendIDs []string `json:"joinedSendIds,omitempty"`
+	// TextBeforeReviewComments is set when the message is the summary of
+	// the row an earlier dispatch of it landed as, which renders the diff
+	// review comments it carried (`usermessage.Meta.TextBeforeReviewComments`).
+	// The dispatch sends that message as it is, without rendering the
+	// comments again, and a restore to the composer gives back this text.
+	// Like RenderedReviewComments it is set only by the requeue, never from
+	// send options.
+	TextBeforeReviewComments *string `json:"textBeforeReviewComments,omitempty"`
+	// RenderedReviewComments are the comments such a message renders that
+	// its row's retire returned to drafts, with the bodies it renders: the
+	// dispatch claims them again, and one edited since stays a draft.
+	// Comments a stale row (QueuedFlushItem.StaleUserItemID) still holds
+	// join them when the dispatch retires that row.
+	RenderedReviewComments []RenderedReviewComments `json:"renderedReviewComments,omitempty"`
 	// Origin and OriginThread attribute a queued message the app wrote on
 	// an agent's behalf. They ride the payload for the same reason SendID
 	// does: the dispatch that persists the row happens later, and the row
 	// must carry the same attribution the immediate send would have.
 	Origin       string                    `json:"origin,omitempty"`
 	OriginThread *usermessage.OriginThread `json:"originThread,omitempty"`
+}
+
+// RenderedReviewComments are one source's comments a requeued message
+// renders, as it renders them (Payload.RenderedReviewComments).
+type RenderedReviewComments struct {
+	Source   store.DiffReviewSourceRef         `json:"source"`
+	Comments []store.DiffReviewCommentSnapshot `json:"comments"`
 }
 
 // ItemFromTriage decodes a triage QueuedFlushItem back into the

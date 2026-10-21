@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,6 +14,7 @@ import (
 
 	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/flushqueue"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
@@ -2128,6 +2130,10 @@ func TestSessionStatusErrorRestoresQueuedFlushItemsToDraft(t *testing.T) {
 	}
 }
 
+// The review drafts each message claimed return with it: a thread's on the
+// quiet message, whose row landed before the provider had it, and a PR's on
+// the deferred one, which has no row. A boot after the restore finds no
+// claim to act on.
 func TestSessionDeathRestoresDeferredAndQuietFlushesToDraft(t *testing.T) {
 	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
@@ -2151,6 +2157,9 @@ func TestSessionDeathRestoresDeferredAndQuietFlushesToDraft(t *testing.T) {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
+	// The dispatch claims each message's drafts before its row lands.
+	quietOwner, quietDraft := claimReviewDraftFor(t, app, thread.ID, quiet.ID, 0, false, true)
+	deferredOwner, deferredDraft := claimReviewDraftFor(t, app, thread.ID, "user:1:flush:1", 1, true, true)
 	if err := app.triage.PersistItemQuiet(quiet, nil); err != nil {
 		t.Fatalf("PersistItemQuiet: %v", err)
 	}
@@ -2195,6 +2204,14 @@ func TestSessionDeathRestoresDeferredAndQuietFlushesToDraft(t *testing.T) {
 	if strings.Join(restored[0].UserItemIDs, ",") != "user:0:flush:1,user:1:flush:1" {
 		t.Fatalf("restored user ids = %+v", restored[0].UserItemIDs)
 	}
+	wantReviewDraft(t, app, quietOwner, quietDraft.ID, "after the restore")
+	wantReviewDraft(t, app, deferredOwner, deferredDraft.ID, "after the restore")
+	// The boot sweep runs on the next start.
+	if released, err := app.store.ReleaseUnsettledDiffReviewClaims(); err != nil || released != 0 {
+		t.Fatalf("ReleaseUnsettledDiffReviewClaims = %d, %v; want no claim left", released, err)
+	}
+	wantReviewDraft(t, app, quietOwner, quietDraft.ID, "after a boot")
+	wantReviewDraft(t, app, deferredOwner, deferredDraft.ID, "after a boot")
 }
 
 // TestDispatchFlush_StaleRowCleanupBeforePersist pins R11-1 (round
@@ -2657,6 +2674,66 @@ func TestCodexResendAfterInterrupt_DraftMergeFailureRequeues(t *testing.T) {
 	}
 }
 
+// An eager row whose resend failed and whose draft write fails is requeued
+// as the row renders it: its summary with the review comments, which the
+// row's retire returned with their bodies for the resend to claim again,
+// and the text before them for a later restore to the composer.
+func TestResendFailureRequeuesTheRenderedReviewComments(t *testing.T) {
+	t.Parallel()
+	app, _ := newAppForFlushQueueRPC(t)
+	thread := testThread("codex-resend-review")
+	thread.Provider = string(provider.Codex)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	draft, err := app.CreateDiffReviewComment(thread.ID, diffReviewPRInput("Rename the counter."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := &SourceDiffReview{ThreadID: thread.ID, Scope: draft.Scope, SourceKey: draft.SourceKey}
+	resolved, err := app.resolveUserMessageEnvelope(thread.ID, "Resend me.", userMessageInputs{revisionSourceDiffReview: source, revisionSourceDiffCommentIDs: []string{draft.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const rowID = "user:1:flush:1"
+	if _, err := app.claimDiffReviewDelivery(thread.ID, 1, rowID, resolved, true); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	if _, err := app.store.AppendItem(store.Item{ID: rowID, ThreadID: thread.ID, TurnIndex: 1, Kind: "user_text", Role: "user", Status: "completed", Summary: resolved.content, Meta: resolved.userMessageMeta, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	// A draft whose attachments blob cannot decode fails the draft write.
+	if _, err := app.store.UpsertThreadDraft(store.ThreadDraft{ThreadID: thread.ID, Content: "half-typed draft", Attachments: "corrupt", UpdatedAt: now}); err != nil {
+		t.Fatalf("UpsertThreadDraft: %v", err)
+	}
+
+	app.restoreEagerPersistedFlushesToDraft(thread.ID, []triage.EagerPersistedFlush{{
+		UserItemID: rowID, TurnIndex: 1, Content: resolved.content, Meta: resolved.userMessageMeta, QueueItemID: "queue:q1", EnqueuedAt: 10,
+	}})
+
+	requeued := app.triage.QueuedFlushItems(thread.ID)
+	if len(requeued) != 1 || requeued[0].Message != resolved.content {
+		t.Fatalf("requeued = %+v, want the row's summary %q", requeued, resolved.content)
+	}
+	var payload flushQueuePayload
+	if err := json.Unmarshal(requeued[0].Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.TextBeforeReviewComments == nil || *payload.TextBeforeReviewComments != "Resend me." {
+		t.Errorf("payload text before the review comments = %v, want the message's own text", payload.TextBeforeReviewComments)
+	}
+	want := []flushqueue.RenderedReviewComments{{
+		Source:   store.DiffReviewSourceRef{ThreadID: thread.ID, Scope: draft.Scope, SourceKey: draft.SourceKey},
+		Comments: []store.DiffReviewCommentSnapshot{{ID: draft.ID, Body: draft.Body}},
+	}}
+	if !reflect.DeepEqual(payload.RenderedReviewComments, want) {
+		t.Errorf("rendered review comments = %+v, want %+v", payload.RenderedReviewComments, want)
+	}
+	wantReviewDraft(t, app, store.ThreadReviewOwner(thread.ID), draft.ID, "after the requeue")
+}
+
 // TestStartSession_FlushesRequeuedItems pins R12-2 (round 12): a
 // session-death restore can REQUEUE a message instead of restoring it
 // to the draft (failed stale-row cleanup, R11-1). Every other drain
@@ -2822,7 +2899,7 @@ func TestQueuedFlushItemFromUnconfirmed_CarriesStaleMarker(t *testing.T) {
 		Message:         "still stale",
 		EnqueuedAt:      10,
 		StaleUserItemID: "user:2:flush:1",
-	})
+	}, nil)
 	if !ok {
 		t.Fatal("conversion rejected a message-bearing item")
 	}
@@ -3382,7 +3459,7 @@ func TestFlushPayloadFromUserMeta_DropsBakedRevisionCommentIDs(t *testing.T) {
 		"revisionSourceDiffCommentIds":["d1"],
 		"expandComposerCommands":true
 	}`
-	raw, err := flushPayloadFromUserMeta(meta)
+	raw, err := flushPayloadFromUserMeta(meta, nil)
 	if err != nil {
 		t.Fatalf("flushPayloadFromUserMeta: %v", err)
 	}
@@ -3408,6 +3485,55 @@ func TestFlushPayloadFromUserMeta_DropsBakedRevisionCommentIDs(t *testing.T) {
 	if !payload.ExpandComposerCommands {
 		t.Error("ExpandComposerCommands = false, want composer provenance preserved across requeue")
 	}
+
+	// A row whose summary renders its review comments is resent as it is:
+	// the payload marks it with the text before them, keeps the diff ids as
+	// provenance and claims again the comments its retire returned. A row
+	// that renders none ignores a retire's comments. Plan ids still drop
+	// from both rebuilds.
+	rendered := strings.Replace(meta, `"expandComposerCommands":true`, `"expandComposerCommands":true,"textBeforeReviewComments":"own text"`, 1)
+	returned := []store.DiffReviewReturnedComments{{
+		DiffReviewCommentSource: store.DiffReviewCommentSource{Owner: store.ThreadReviewOwner("t1"), Scope: "pr", SourceKey: "k"},
+		Comments:                []store.DiffReviewCommentSnapshot{{ID: "d1", Body: "Rename it."}},
+	}}
+	fromMeta, err := flushPayloadFromUserMeta(rendered, returned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromItem := withReturnedReviewComments(queuePayloadFromUserItem(store.Item{Summary: "own text, rendered", Meta: rendered}, nil), returned)
+	for _, raw := range []json.RawMessage{fromMeta, fromItem} {
+		var payload flushQueuePayload
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if len(payload.RevisionSourceCommentIDs) != 0 || strings.Join(payload.RevisionSourceDiffCommentIDs, ",") != "d1" {
+			t.Errorf("payload plan ids %v, diff ids %v; want none and [d1]", payload.RevisionSourceCommentIDs, payload.RevisionSourceDiffCommentIDs)
+		}
+		if payload.TextBeforeReviewComments == nil || *payload.TextBeforeReviewComments != "own text" {
+			t.Errorf("payload text before the review comments = %v, want the row's", payload.TextBeforeReviewComments)
+		}
+		want := []flushqueue.RenderedReviewComments{{
+			Source:   store.DiffReviewSourceRef{ThreadID: "t1", Scope: "pr", SourceKey: "k"},
+			Comments: []store.DiffReviewCommentSnapshot{{ID: "d1", Body: "Rename it."}},
+		}}
+		if !reflect.DeepEqual(payload.RenderedReviewComments, want) {
+			t.Errorf("rendered review comments = %+v, want %+v", payload.RenderedReviewComments, want)
+		}
+	}
+	plain, err := flushPayloadFromUserMeta(meta, returned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plainPayload flushQueuePayload
+	if err := json.Unmarshal(plain, &plainPayload); err != nil {
+		t.Fatal(err)
+	}
+	if plainPayload.TextBeforeReviewComments != nil || len(plainPayload.RenderedReviewComments) != 0 {
+		t.Errorf("payload of a row rendering no review comments = %+v, want no rendered comments", plainPayload)
+	}
+	if got := rowTextWithoutReviewComments("own text, rendered", rendered); got != "own text" {
+		t.Errorf("composer text = %q, want the text before the review comments", got)
+	}
 }
 
 func TestQueuePayloadFromUserItemPreservesComposerCommandProvenance(t *testing.T) {
@@ -3430,13 +3556,13 @@ func TestQueuePayloadFromUserItemPreservesComposerCommandProvenance(t *testing.T
 // and provenance. Both decode helpers must fail loudly instead.
 func TestFlushUserMetaHelpers_RejectNullMeta(t *testing.T) {
 	t.Parallel()
-	if _, err := flushPayloadFromUserMeta("null"); err == nil {
+	if _, err := flushPayloadFromUserMeta("null", nil); err == nil {
 		t.Error("flushPayloadFromUserMeta(null) = nil error, want corrupt-meta failure")
 	}
 	if _, err := attachmentIDsFromUserMeta("null"); err == nil {
 		t.Error("attachmentIDsFromUserMeta(null) = nil error, want corrupt-meta failure")
 	}
-	if _, err := flushPayloadFromUserMeta(""); err != nil {
+	if _, err := flushPayloadFromUserMeta("", nil); err != nil {
 		t.Errorf("flushPayloadFromUserMeta(empty) = %v, want nil — absent meta is legitimate", err)
 	}
 }
@@ -3515,8 +3641,9 @@ func TestDispatchFlush_SettlesOnlyAfterTheProviderWrite(t *testing.T) {
 
 // TestUndeliveredSendReturnsToComposer: a send Claude retires without
 // `started` never reached the model, so it leaves the timeline and its text
-// returns to the composer. A direct send's row is already persisted, so the
-// restore loads and deletes it.
+// returns to the composer, and the review drafts it claimed are drafts
+// again. A direct send's row is already persisted, which settled its claim,
+// so the restore loads and deletes it.
 func TestUndeliveredSendReturnsToComposer(t *testing.T) {
 	t.Parallel()
 	for _, shape := range []string{"direct", "deferred"} {
@@ -3532,13 +3659,16 @@ func TestUndeliveredSendReturnsToComposer(t *testing.T) {
 			now := time.Now().UnixMilli()
 			row := store.Item{ID: "user:0", ThreadID: thread.ID, Kind: "user_text", Role: "user", Status: "completed", Summary: "never ran", CreatedAt: now, UpdatedAt: now}
 			expect := triage.PendingSendExpectation{ProviderItemID: "u-unrun"}
+			if shape != "direct" {
+				row.ID = "user:flush:0"
+			}
+			owner, draft := claimReviewDraftFor(t, app, thread.ID, row.ID, 0, shape == "direct", shape != "direct")
 			if shape == "direct" {
 				if _, err := app.store.AppendItem(row); err != nil {
 					t.Fatalf("AppendItem: %v", err)
 				}
 				app.triage.RegisterPendingSendWithExpectation(thread.ID, row.ID, 0, expect)
 			} else {
-				row.ID = "user:flush:0"
 				app.triage.RegisterPendingFlushSendWithExpectation(thread.ID, "queue:unrun", row, now, expect)
 			}
 			for _, state := range []provider.CommandLifecycleState{provider.CommandQueued, provider.CommandCancelled} {
@@ -3567,6 +3697,7 @@ func TestUndeliveredSendReturnsToComposer(t *testing.T) {
 			if len(restored) != 1 || restored[0].Reason != queueRestoredReasonNotDelivered || strings.Join(restored[0].UserItemIDs, ",") != row.ID {
 				t.Fatalf("queue restored events = %+v, want one not_delivered for %s", restored, row.ID)
 			}
+			wantReviewDraft(t, app, owner, draft.ID, "after the restore")
 		})
 	}
 }
@@ -3757,6 +3888,89 @@ func TestAutoReconnectAfterDeathRestoresTheQueueFirst(t *testing.T) {
 			var err error
 			draft, _, err = app.store.GetThreadDraft(id)
 			return err == nil && draft.Content == "queued before the death"
+		})
+	}
+}
+
+// A queued message dispatched into an active Claude turn lands as a quiet
+// row before the provider has it. That row does not deliver the review
+// drafts it carries: a session death takes them back with the message, and
+// an app that stops before any confirmation returns them at the next boot.
+func TestDispatchFlush_QuietRowDoesNotDeliverItsReviewDrafts(t *testing.T) {
+	t.Parallel()
+	for _, end := range []string{"session death", "app stop"} {
+		t.Run(end, func(t *testing.T) {
+			t.Parallel()
+			app, _ := newAppForFlushQueueRPC(t)
+			thread := testThread("flush-quiet-review-" + strings.ReplaceAll(end, " ", "-"))
+			thread.Provider = string(provider.Claude)
+			thread.WorkspacePath = initGitRepo(t)
+			if err := app.store.CreateThread(thread); err != nil {
+				t.Fatalf("CreateThread: %v", err)
+			}
+			draft, err := app.CreateDiffReviewComment(thread.ID, diffReviewPRInput("Name this better."))
+			if err != nil {
+				t.Fatal(err)
+			}
+			// An active turn makes the dispatch persist its row quietly.
+			if err := app.store.InsertTurn(store.Turn{TurnID: "turn-0", ThreadID: thread.ID, TurnIndex: 0, StartedAt: time.Now().UnixMilli()}); err != nil {
+				t.Fatalf("InsertTurn: %v", err)
+			}
+			sess, err := claude.NewSession(
+				context.Background(), thread.ID,
+				claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+				func(provider.ProviderEvent) {},
+			)
+			if err != nil {
+				t.Fatalf("claude.NewSession: %v", err)
+			}
+			t.Cleanup(func() { _ = sess.Close() })
+			app.sessionManager().put(thread.ID, session{
+				Provider: string(provider.Claude), Token: "tok", Claude: sess, Liveness: newSessionLiveness(time.Now()),
+			})
+			payload, err := json.Marshal(flushQueuePayload{
+				RevisionSourceDiffReview:     &SourceDiffReview{ThreadID: thread.ID, Scope: draft.Scope, SourceKey: draft.SourceKey},
+				RevisionSourceDiffCommentIDs: []string{draft.ID},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{ID: "queue:review", Message: "see the notes", Payload: payload}})
+
+			owner := store.ThreadReviewOwner(thread.ID)
+			var quiet store.Item
+			items, err := app.store.ListItems(thread.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, item := range items {
+				if item.Kind == "user_text" && strings.Contains(item.Summary, "Name this better.") {
+					quiet = item
+				}
+			}
+			if quiet.ID == "" {
+				t.Fatalf("no quiet row carries the message: %+v", items)
+			}
+			if got, err := app.store.GetDiffReviewComment(owner, draft.ID); err != nil || got.Status != "sent" {
+				t.Fatalf("draft after the dispatch = %+v (%v), want it claimed", got, err)
+			}
+
+			if end == "session death" {
+				app.restoreUnconfirmedQueueOnSessionDeath(thread.ID)
+				if _, found, err := app.store.GetThreadItem(thread.ID, quiet.ID); err != nil || found {
+					t.Fatalf("quiet row after the restore: found=%v err=%v", found, err)
+				}
+				wantReviewDraft(t, app, owner, draft.ID, "after the restore")
+			}
+			// The boot sweep of the next start.
+			released, err := app.store.ReleaseUnsettledDiffReviewClaims()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := map[string]int{"session death": 0, "app stop": 1}[end]; released != want {
+				t.Fatalf("ReleaseUnsettledDiffReviewClaims = %d, want %d", released, want)
+			}
+			wantReviewDraft(t, app, owner, draft.ID, "after a boot")
 		})
 	}
 }

@@ -1,8 +1,8 @@
 # Pull requests
 
 Status: design signed off 2026-10-20 (mock reviewed in the browser pane).
-Phase 1 (the Merge section, approve, merge, forge events, error kinds) is
-in progress; phases 2 to 4 are designed here and not started.
+Phases 1 to 3 are shipped; phase 4 (Issues) is not designed and has no
+tool row entry until it is.
 
 ## Goal
 
@@ -41,31 +41,31 @@ later Issues) are pane kinds behind one sidebar row.
 
 ## Success criteria
 
-- [ ] An open PR's title bar shows one readiness pill (`Ready to merge`,
+- [x] An open PR's title bar shows one readiness pill (`Ready to merge`,
       `Blocked · N`, `Checking`, `Draft`) that jumps to the Merge section,
       and never an action.
-- [ ] The Merge section lists every blocker the forge reports with its fix
+- [x] The Merge section lists every blocker the forge reports with its fix
       on the row, holds Approve / Unapprove and `Merge ▾`, and is the only
       place those actions exist, identical in a thread's companion pane and
       on the page.
-- [ ] `Merge ▾` is never disabled: it offers the project's allowed methods
+- [x] `Merge ▾` is never disabled: it offers the project's allowed methods
       and toggles, "Merge now" when ready and "Auto-merge when ready" when
       blocked, with the greyed one naming what it waits for. No confirm
       step.
-- [ ] Approvals, revoked approvals, pushes, merges, closes, reopens, draft
+- [x] Approvals, revoked approvals, pushes, merges, closes, reopens, draft
       and ready changes and auto-merge changes appear as rows in the
       Conversation feed on both forges.
-- [ ] Every forge failure the app can hit reads as one sentence naming the
+- [x] Every forge failure the app can hit reads as one sentence naming the
       cause and the fix, with the raw text and correlation id behind
       "Details"; a failed project on the page fails alone.
-- [ ] The page lists open MRs of every forge-identified project with one
+- [x] The page lists open MRs of every forge-identified project with one
       state per row and a "since you looked" fragment, remembers its
       filters, and opens an MR in the review pane beside the list with no
       thread.
-- [ ] "Open with agent" starts a draft thread in a linked worktree on the
+- [x] "Open with agent" starts a draft thread in a linked worktree on the
       MR's branch, with the MR linked, or hands the MR to a thread already
       on it.
-- [ ] Tools are pane kinds: a sidebar tools row with the active tool
+- [x] Tools are pane kinds: a sidebar tools row with the active tool
       labelled and the rest as icons with badges; ctrl+click opens a tool
       in a new pane.
 
@@ -215,8 +215,30 @@ failed project's group header; the other projects keep working.
 A pane kind `pulls`. Left: a list column with tabs (Merge requests,
 Pipelines), a filter row, and grouped rows; right: the review pane on the
 selected MR with the project's root as its workspace and no thread, so
-stepping through the list never loses it. Compact: the list is the page,
-a tap opens the pane full width, Back returns.
+stepping through the list never loses it. The list column's width is
+remembered and clamped to leave the detail a usable width in the pane as
+it is now; its handle also resizes from the keyboard. Compact: the list
+is the page, a tap opens the pane full width, and the page header's Back
+is the one Back: it closes a CI log or the conflict view open in the
+detail, then the detail.
+
+The pane is pinned to the MR (`reviewSubjectForPR`): its scope is the PR
+alone, and the MR, its computer and the `git:operate` check are the ones
+the page selected. Everything the PR scope does beside a thread works,
+except what needs one: no Edits scope, no Send to chat (CI log, sections),
+no linked-agent target. The page keeps the selected MR's review state and
+the one before it; older ones are released with their subscription. Line
+comment drafts have no thread row to live under, so the MR owns them
+(stored under its key on its computer) until a review posts them or they
+are sent to a thread; they survive stepping through the list and a
+restart. The page marks an MR viewed in `pr_views` while its review is
+on screen (the Merge requests tab, and on compact its detail screen) and
+the window visible, whenever the head the review shows (the PR store's
+`onPRSnapshotApplied` observer, or the snapshot it holds when the page
+returns to a kept review) or the listed comment count differs from what
+it last marked. Nothing is marked while the Pipelines tab or the hidden
+window keeps the selected MR's review off screen; when it shows again,
+the revision it shows then is marked.
 
 Rows carry number, title, project, author, age, CI dot, approvals `n/m`,
 unresolved count, one state pill and a "since you looked" fragment.
@@ -232,21 +254,35 @@ requested`, `All open`, project) persist in appStorage per tab.
 
 One list read per project per refresh: GitLab
 `projects/P/merge_requests?state=opened&per_page=100` (carries sha,
-`user_notes_count`, reviewers, `detailed_merge_status`, `head_pipeline`),
+`user_notes_count`, reviewers, `detailed_merge_status`),
 GitHub a `search(type: ISSUE, query: "is:pr is:open repo:O/R")` with
-`reviewDecision`, `reviewRequests`, `headRefOid` and the rollup state.
-Approvals and unresolved counts are read per MR only for rows in the
-"needs you" set or on screen, ETag-revalidated. The page refreshes on
-open, on its own refresh button and every PR-update interval while
-visible; hidden, it reads nothing.
+`reviewDecision`, `reviewRequests`, `headRefOid`, the rollup state, the
+head commit's time and the last 10 comments and reviews (the author's
+latest reply).
+GitLab's basic list carries no `head_pipeline` and cannot say how the
+viewer reviewed (its `reviewers` are accounts, and `requested_changes`
+may be another reviewer's), so the detail (approvals, the viewer's own
+reviewer state, unresolved count, pipeline, readiness) is read per MR for the rows on screen and for the user's own
+and reviewed rows whether or not the filter shows them, at most 60 (the
+rows on screen first, each group newest first), and
+read again only when the list row moves, on a refresh, or after five
+minutes. A GitLab author's reply after the viewer's review is not in the
+list and does not move a row to `Your turn`. The page refreshes on open,
+on its own refresh button and every PR-update interval while visible;
+hidden, it reads nothing.
 
-"Open with agent" (toolbar button on the page's review pane, and each
-row's menu): "New thread on BRANCH" creates a linked worktree on the MR's
-source branch (`Core.CreateWorktree` after fetching it), opens a draft in
-it seeded "Reviewing !N: TITLE URL", and records the PR for the thread
-(`thread_pull_requests`) so the badge and the merge cleanup see it;
-"Threads on this MR" lists threads already tracking it; "Send review
-comments to a thread…" is the existing send flow.
+"Open with agent" (the page header's button on the selected MR, and each
+row's menu on that row's MR, which stays unselected): "New
+thread on BRANCH" creates a linked worktree on the MR's source branch,
+which must exist on origin; a fork's head is fetched into the local
+branch `pr/N` instead. The thread opens with a draft seeded "Reviewing
+!N: TITLE URL" and records the PR (`thread_pull_requests`) so the badge
+and the merge cleanup see it, every step rolled back if a later one
+fails;
+"Threads on this MR" lists threads already tracking it, and a failed read
+of them says so with a Retry and keeps "New thread" off until it
+succeeds; "Send review comments to a thread…" is the existing send flow.
+A failed refresh shows under the page header with "Details".
 
 ### Tools row (phase 2)
 
@@ -264,11 +300,20 @@ detail beside it) and loses its modal.
 ### Pipelines tab (phase 3)
 
 Rows are pipelines of the selected projects on any ref: id, ref (branch,
-MR, tag), head commit, stage dots, age. Filters: project, ref kind, status,
-default all. A row opens the stages / jobs / log view beside the list;
+MR, tag), head commit, stage dots for the rows on screen (or that their
+read failed), age. A project whose pipelines or origin could not be read
+shows its failure above the rows, as on the Merge requests tab. Filters:
+project, ref kind, status, default all; the ref and status pickers are
+one choice each and close on the pick. A row opens the stages / jobs /
+log view beside the list; on compact the page header's Back is the one
+Back, for a pipeline as for an MR, and closes an open log first;
 the CI model is keyed by `(repository, pipeline id)`, the MR's head
 pipeline being one case. GitLab `projects/P/pipelines`, GitHub
 `actions/runs`. The review pane's CI line stays the head pipeline only.
+The tab reads its list on open, on its refresh button and every
+PR-update interval while visible. Hidden, the interval, a reconnect and
+a regained grant read neither the list nor the stages; the one read they
+owe runs when the window shows.
 
 ## State matrix (phase 1)
 
@@ -338,4 +383,16 @@ one component test per state-matrix row, feed tests for event items, the
 toast sentences. e2e: `review-merge.spec.ts` and its compact twin drive
 approve → unapprove → auto-merge → cancel → merge → merged on a GitLab MR
 and a GitHub PR, plus the 403 and 409 refusals, with a compact screenshot
-of the section header.
+of the section header. `pulls-page.spec.ts` and its compact twin
+(`pulls-page-flow.ts`) drive the page against both forges: the groups
+and states, the forge reads (each repository's list, the own and
+review-requested rows' detail), the detail read that moves a GitLab row
+to `Pipeline failed`, filters remembered across a reload, the pinned
+review, "since you looked" clearing on a reopen and staying clear across
+a reload, a refused project failing alone, "Open with agent" opening a
+thread on a worktree of the branch, and the Pipelines tab's filters
+remembered across a reload, stages and a GitLab and a GitHub job log.
+`pullsList.browser.test.ts` covers the lists' virtualization: the
+mounted rows stay bounded over thousands, and the rows on screen are
+reported as the list scrolls, changes and hides. `tool-panes.spec.ts`, `workflows-pane.spec.ts` and their
+compact twins cover the tools row and the pane kinds.

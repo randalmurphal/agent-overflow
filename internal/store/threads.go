@@ -251,25 +251,43 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 }
 
 func (s *Store) CreateThread(t Thread) error {
+	_, err := s.createThread(t, false)
+	return err
+}
+
+// CreateThreadAndRead is CreateThread returning the created row, read in
+// the insert's transaction: a read that fails rolls the insert back, so a
+// caller never holds a thread it could not read.
+func (s *Store) CreateThreadAndRead(t Thread) (Thread, error) {
+	return s.createThread(t, true)
+}
+
+func (s *Store) createThread(t Thread, readBack bool) (Thread, error) {
 	prepared, lastReadAtArg, err := prepareThreadForCreate(t)
 	if err != nil {
-		return err
+		return Thread{}, err
 	}
 	// One transaction because the row and its title's index entry are one
 	// fact: a thread that exists and is unsearchable would stay that way,
 	// the background build being a one-time pass over what already existed.
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("store: begin create thread: %w", err)
+		return Thread{}, fmt.Errorf("store: begin create thread: %w", err)
 	}
 	defer tx.Rollback()
 	if err := insertThread(tx, prepared, lastReadAtArg); err != nil {
-		return fmt.Errorf("store: create thread: %w", err)
+		return Thread{}, fmt.Errorf("store: create thread: %w", err)
+	}
+	var created Thread
+	if readBack {
+		if created, err = getThreadTx(tx, prepared.ID); err != nil {
+			return Thread{}, fmt.Errorf("store: create thread: read %s back: %w", prepared.ID, err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: commit create thread: %w", err)
+		return Thread{}, fmt.Errorf("store: commit create thread: %w", err)
 	}
-	return nil
+	return created, nil
 }
 
 func prepareThreadForCreate(t Thread) (Thread, any, error) {

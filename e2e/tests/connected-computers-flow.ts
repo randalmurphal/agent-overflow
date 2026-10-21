@@ -168,14 +168,14 @@ export function connectedComputersFlow(): void {
       expect(await second.evaluate(() => getComputedStyle(document.documentElement).fontSize)).toBe(initialFont);
       await page.getByRole('button', { name: 'Close Settings', exact: true }).click();
 
-      await page.getByTestId('sidebar-workflows-button').click();
+      await page.getByTestId('sidebar-tool-workflows').click();
       await page.getByTestId('workflows-pause-all').click();
       await expect.poll(async () => (await home!.rpc<{ paused: boolean }>('WorkflowGetEngineState')).paused).toBe(true);
       await expect.poll(async () => (await remote!.rpc<{ paused: boolean }>('WorkflowGetEngineState')).paused).toBe(true);
       await page.getByTestId('workflow-run-row').filter({ hasText: 'Work on the GPU computer' }).click();
       await page.locator('[data-testid="workflow-map-node"][data-phase-id="plan"]').getByTestId('workflow-map-node-label').click();
       await expect(page.locator(`[data-ui-surface="chat"][data-thread-id="${workflowThread}"]`)).toBeVisible();
-      await expect(page.getByTestId('workflows-overlay')).toBeHidden();
+      await expect(page.getByTestId('workflows-pane')).toBeHidden();
       const back = page.getByTestId('compact-back');
       if (await back.isVisible()) await back.click();
 

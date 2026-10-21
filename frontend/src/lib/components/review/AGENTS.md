@@ -16,6 +16,18 @@ PR stores; components own presentation and interaction.
   never a branch name the backend resolves on its own.
 - Capture mutation targets before awaiting. Late replies update the captured
   PR or thread and must not navigate a pane whose target changed.
+- A review is a companion of a thread pane (`ctx`, `reviewSubjectForPane`)
+  or pinned to one PR with no thread (`pr`, `reviewSubjectForPR`, the Pull
+  requests page). A pinned review's workspace is the project root, its
+  scope stays `pr`, and its PR, computer and `git:operate` check are the
+  ones it was opened with, never the owner pane's git status, thread or
+  composer. Its gates read the state (`pinned`, `commentsGranted`,
+  `canDraftComments`), not `ctx`: no scope selector, Edits, Send to chat
+  or agent target. Its drafts have no thread row, so they are the PR's
+  (`stores/prDiffReviewComments.svelte.ts`, persisted under the PR on its
+  computer) and post as a PR review or are sent to a thread. The owner keys `ReviewPane` on the PR; `reviewStateForPR` (`stores/reviewPanePinned.svelte.ts`) keeps
+  the selected PR's state and the one before it per owner pane, and the
+  owner calls `disposePRReviewStates` when its page goes.
 
 ## Rendering contracts
 
@@ -57,8 +69,9 @@ PR stores; components own presentation and interaction.
   thread by its resolve state), author names, initials and tones from
   `utils/reviewIdentity.ts` through `ReviewAvatar`. The Conversation card
   and the diff row (`ReviewPRThreadRow`) render the same card.
-- The toolbar holds the scope selectors, the diff's counts, collapse-all,
-  the view-options menu (whitespace, wrap, split), reload and close; no
+- The toolbar (`ReviewToolbar`) holds the scope selectors, the diff's
+  counts, collapse-all, the view-options menu (whitespace, wrap, split),
+  reload and close (Back on a pinned review); no
   comment tally (the tree badges, the Conversation header and the title
   bar's stepper carry counts). Every selector is `ReviewToolbarMenu`, a
   bordered trigger over the shared `Menu`; a trigger never truncates on

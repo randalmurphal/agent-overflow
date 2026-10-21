@@ -118,13 +118,20 @@ func (a *App) CreateThread(ctx context.Context, opts CreateThreadOptions) (store
 // createThread is shared with agent requests and harness seeds. Only the
 // user-facing binding above remembers the selection as composer defaults.
 func (a *App) createThread(ctx context.Context, opts CreateThreadOptions, rememberDefaults bool) (store.Thread, error) {
+	thread, _, err := a.createThreadWithWorktree(ctx, opts, rememberDefaults)
+	return thread, err
+}
+
+// createThreadWithWorktree is createThread that also reports the worktree
+// it cut, for a caller that undoes the thread and so owns what the cut made.
+func (a *App) createThreadWithWorktree(ctx context.Context, opts CreateThreadOptions, rememberDefaults bool) (store.Thread, threadapp.CutWorktree, error) {
 	endWork, admitErr := a.workAdmission.begin(ctx)
 	if admitErr != nil {
-		return store.Thread{}, admitErr
+		return store.Thread{}, threadapp.CutWorktree{}, admitErr
 	}
 	defer endWork()
 	settingsBucket, settingsClass := a.callerSettingsScreen(ctx)
-	thread, err := a.threadApplication().Create(threadapp.CreateOptions{
+	thread, cut, err := a.threadApplication().CreateWithWorktree(threadapp.CreateOptions{
 		ProjectID:                  opts.ProjectID,
 		GroupID:                    opts.GroupID,
 		Title:                      opts.Title,
@@ -153,14 +160,14 @@ func (a *App) createThread(ctx context.Context, opts CreateThreadOptions, rememb
 		},
 	})
 	if err != nil {
-		return store.Thread{}, err
+		return store.Thread{}, threadapp.CutWorktree{}, err
 	}
 	var profileErr error
 	if rememberDefaults {
 		profileErr = a.rememberCreatedThreadProfile(thread, opts)
 	}
 	a.announceThread(triage.ThreadActionListed, thread.ID)
-	return thread, profileErr
+	return thread, cut, profileErr
 }
 
 // StartTerminal mints a terminal-mode thread and returns it.

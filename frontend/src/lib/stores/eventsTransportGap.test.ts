@@ -4,6 +4,7 @@
 // tier that holds a stamp, not just the registry.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyTransportGap } from './eventsTransportGap';
+import { setPullsReceiver } from './pullsStore.svelte';
 import { resetPanesForTest } from './panes.svelte';
 import {
   registerComposerDraft,
@@ -49,6 +50,7 @@ import { itemEventQueued, itemEventsSettled } from './itemEventSettlement';
 import { __resetSystemsForTest, loadSystems } from './systems.svelte';
 import { resetToLocalPage, pairViewOnly } from '../../test/helpers/scopes';
 import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { onBackendRecovery } from './transportRecovery';
 import { backendById } from '../transport/backends';
 import { __resetManifestBackendsForTest, manifestBackendDescriptors } from '../transport/manifestBackends';
 
@@ -564,3 +566,77 @@ describe('transport gap — computer membership', () => {
     expect(list).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('transport gap — the Pull requests channels', () => {
+  it('holds the computer\'s recovery until the list\'s re-subscribe settles', async () => {
+    const laptop = stageBackend();
+    const phases: string[] = [];
+    const off = onBackendRecovery((backend, phase) => phases.push(`${backend}:${phase}`));
+    let done!: () => void;
+    const resync = new Promise<void>((resolve) => {
+      done = resolve;
+    });
+    const remove = setPullsReceiver({ pullsGap: () => resync });
+    try {
+      laptop.replay('start');
+      applyTransportGap({ channel: 'pulls:updated', seq: 3 }, { backendId: backendById('laptop')!.backendId });
+      laptop.replay('complete');
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+      expect(phases).toEqual(['laptop:start']);
+      done();
+      await vi.waitFor(() => expect(phases).toEqual(['laptop:start', 'laptop:complete']));
+    } finally {
+      remove();
+      off();
+      resetStagedBackends();
+    }
+  });
+
+  it('holds the computer\'s recovery until the pipelines\' re-subscribes settle', async () => {
+    const laptop = stageBackend();
+    const phases: string[] = [];
+    const off = onBackendRecovery((backend, phase) => phases.push(`${backend}:${phase}`));
+    let done!: () => void;
+    const resync = new Promise<void>((resolve) => {
+      done = resolve;
+    });
+    const remove = setPullsReceiver({ pipelinesGap: () => resync });
+    try {
+      laptop.replay('start');
+      applyTransportGap({ channel: 'ci:pipeline_updated', seq: 3 }, { backendId: backendById('laptop')!.backendId });
+      laptop.replay('complete');
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+      expect(phases).toEqual(['laptop:start']);
+      done();
+      await vi.waitFor(() => expect(phases).toEqual(['laptop:start', 'laptop:complete']));
+    } finally {
+      remove();
+      off();
+      resetStagedBackends();
+    }
+  });
+
+  it('reads the list or the pipelines again on their computer', () => {
+    const got: string[] = [];
+    const remove = setPullsReceiver({
+      pullsGap: (backend) => {
+        got.push(`pulls ${backend}`);
+        return undefined;
+      },
+      pipelinesGap: (backend) => {
+        got.push(`pipelines ${backend}`);
+        return undefined;
+      },
+    });
+    try {
+      applyTransportGap({ channel: 'pulls:updated', seq: 3 });
+      applyTransportGap({ channel: 'ci:pipeline_updated', seq: 3 });
+      // A followed log is a PR's or a pipeline's: both are re-sent.
+      applyTransportGap({ channel: 'pr:ci_log', seq: 3 });
+      expect(got).toEqual([`pulls ${HOME_BACKEND}`, `pipelines ${HOME_BACKEND}`, `pipelines ${HOME_BACKEND}`]);
+    } finally {
+      remove();
+    }
+  });
+});
+

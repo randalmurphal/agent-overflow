@@ -57,9 +57,19 @@ export interface CommandFlags {
   anyPickerOpen: boolean;
   /** True while the settings overlay is mounted over the pane strip. */
   settingsOpen: boolean;
-  /** True while the workflows overlay is mounted over the pane strip. */
-  workflowsOverlayOpen: boolean;
-  /** True while the workflows overlay is showing a run detail level. */
+  /** True while the raw focused pane is a tool pane (Pull requests, Workflows). */
+  toolPaneFocused: boolean;
+  /**
+   * True while the focused tool pane has a detail step open above its list
+   * (toolPanes.svelte#focusedToolDetailOpen). A tool's surface-dismissal
+   * command gates on it so Back steps to the list before leaving the pane.
+   */
+  toolDetailOpen: boolean;
+  /** True while the raw focused pane is the workflows pane. */
+  workflowsPaneFocused: boolean;
+  /** True while the raw focused pane is the Pull requests pane. */
+  pullsPaneFocused: boolean;
+  /** True while the focused workflows pane is showing a run detail level. */
   workflowsRunDetail: boolean;
   /**
    * True under the compact (phone) layout, where the strip shows one

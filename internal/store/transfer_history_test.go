@@ -404,3 +404,68 @@ func TestTransferHistoryCarriesEmptyPayloads(t *testing.T) {
 		}
 	}
 }
+
+// A copy and a move carry a review comment whose message was delivered as
+// sent, and one whose claim no delivery settled as a draft: that message
+// never reached the provider, and the copy has no row that could deliver
+// it. The claim stays behind with the source's rows.
+func TestTransferHistoryCarriesAnUnsettledReviewClaimAsADraft(t *testing.T) {
+	source, destination := newTestStore(t), newTestStore(t)
+	mustCreateThread(t, source, "source")
+	owner := ThreadReviewOwner("source")
+	scope, sourceKey := string(DiffReviewScopeWorkspace), "k"
+	createReviewComments(t, source, owner, scope, sourceKey, "delivered", "queued", "lost")
+	userRow := func(id string) {
+		t.Helper()
+		if _, err := source.UpsertItem(Item{ID: id, ThreadID: "source", TurnIndex: 0, ItemIndex: len(id), Kind: "user_text", Role: "user", Status: "completed", Summary: id, CreatedAt: 1, UpdatedAt: 1}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	claimFor(t, source, owner, scope, sourceKey, "delivered", "source", "user:1", "source:0", false)
+	userRow("user:1")
+	// A queued message whose quiet row landed and that no provider confirmed.
+	claimFor(t, source, owner, scope, sourceKey, "queued", "source", "user:22", "source:0", true)
+	userRow("user:22")
+	// A message whose row never landed.
+	claimFor(t, source, owner, scope, sourceKey, "lost", "source", "user:333", "source:0", false)
+
+	thread, err := source.GetThread("source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot bytes.Buffer
+	if err := source.ExportThreadHistory(context.Background(), "source", &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"copy", "source"} {
+		target := thread
+		target.ID = id
+		if err := destination.ImportThreadHistory(context.Background(), target, bytes.NewReader(snapshot.Bytes())); err != nil {
+			t.Fatal(err)
+		}
+		comments, err := destination.ListDiffReviewComments(ThreadReviewOwner(id), scope, sourceKey)
+		if err != nil || len(comments) != 3 {
+			t.Fatalf("%s: comments = %+v (%v)", id, comments, err)
+		}
+		for _, comment := range comments {
+			delivered := comment.Body == "delivered"
+			if delivered && (comment.Status != "sent" || comment.SentTurnID != id+":0" || comment.SentAt == 0) {
+				t.Errorf("%s: delivered = %+v, want sent in its turn", id, comment)
+			}
+			if !delivered && (comment.Status != "draft" || comment.SentTurnID != "" || comment.SentAt != 0) {
+				t.Errorf("%s: %s = %+v, want a draft", id, comment.Body, comment)
+			}
+		}
+		var linked int
+		if err := destination.db.QueryRow(`SELECT COUNT(*) FROM diff_review_comments WHERE thread_id = ? AND (claim_item_id <> '' OR claim_settles <> '')`, id).Scan(&linked); err != nil || linked != 0 {
+			t.Fatalf("%s: %d comments arrived with a claim (%v)", id, linked, err)
+		}
+	}
+	if released, err := destination.ReleaseUnsettledDiffReviewClaims(); err != nil || released != 0 {
+		t.Fatalf("destination ReleaseUnsettledDiffReviewClaims = %d, %v; want nothing", released, err)
+	}
+	// The source keeps its own claims for its own lifecycle.
+	if got := reviewCommentStatus(t, source, owner, "queued"); got != "sent" {
+		t.Fatalf("source queued = %s, want its claim untouched", got)
+	}
+}

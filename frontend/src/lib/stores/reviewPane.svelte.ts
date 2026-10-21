@@ -4,6 +4,19 @@ import { withBackendTarget } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
 import { composeWorkspaceKey } from '../utils/workspaceKey';
 import { threadHasScope } from '../transport/entityScopes';
+import { hasScope } from '../transport/scopes';
+import {
+  createPRDiffReviewComment,
+  deletePRDiffReviewComment,
+  getPRDiffReviewComments,
+  markPRDiffReviewCommentsSent,
+  prDraftsKey,
+  refreshPRDiffReviewComments,
+  resetPRDiffReviewCommentsForTest,
+  sendPRDiffReviewComments,
+  updatePRDiffReviewComment,
+  type PRDraftsTarget,
+} from './prDiffReviewComments.svelte';
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { untrack } from 'svelte';
 import {
@@ -14,8 +27,6 @@ import {
   GetPRDetail,
   MarkPRReady,
   MergePR,
-  SavePRCIJobLog,
-  SavePRCIJobLogSection,
   ListPRReviewThreads,
   MarkDiffReviewCommentsSent,
   ReplyToPRThread,
@@ -56,13 +67,11 @@ import {
   type PRAttachment,
   type PRSnapshot,
 } from './prReviewStore.svelte';
-import { peekPRCI, refreshPRCI, type PRCILogState } from './prReviewCI.svelte';
-import { ciLogFetch, readCILogLines as readCILogRange } from './ciLogBlocks.svelte';
+import type { PRCILogState } from './prReviewCI.svelte';
+import { CI_SECTION_INLINE_MAX_BYTES, createCISubjectState, type CILogView } from './ciSubject.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
 import { TransportError } from '../transport/wsClient';
-import { copyToClipboard } from '../utils/clipboard';
 import type { ForgeFailure } from '../utils/forgeFailure';
-import { prCILogFollowPending, refreshPRCILogFollows, setPRCILogFollow } from './prReviewCIFollows.svelte';
 import {
   ensurePRConflictFile,
   openPRConflicts,
@@ -164,6 +173,18 @@ export interface ReviewPaneState {
   /** Span-cache owner for this review's diff bodies (`ReviewSubject.rowId`). */
   readonly rowId: string;
   readonly scope: ReviewScope;
+  /** Pinned to one PR with no thread (`reviewSubjectForPR`): the scope
+   * stays `pr`, there is no chat to send to, and drafts post as a PR
+   * review. */
+  readonly pinned: boolean;
+  /** The session holds the grant the comment writes need on this
+   * review's computer: `threads:operate` for a thread's drafts,
+   * `git:operate` for a pinned review's forge submission. */
+  readonly commentsGranted: boolean;
+  /** Line comments have a home here: the thread row, or for a pinned
+   * review the PR's full diff (a picked commit's line numbers would
+   * misanchor against the head diff, and there is no agent to send them to). */
+  readonly canDraftComments: boolean;
   /** The computer this review's PR and workspace reads are routed to. */
   readonly backend: BackendKey;
   readonly baseBranch: string | null;
@@ -321,6 +342,9 @@ export interface ReviewPaneState {
   updateComment(commentId: string, body: string): Promise<void>;
   deleteComment(commentId: string): Promise<void>;
   sendComments(): Promise<void>;
+  /** A pinned review's drafts on the whole PR, handed to a thread as a
+   * review message (SendPRDiffReviewComments). Answers the thread row. */
+  sendDraftsToThread(threadId: string): Promise<Thread | null>;
   submitPRReview(): Promise<void>;
   setSubmitTarget(target: 'agent' | 'pr'): void;
   setVerdict(verdict: 'comment' | 'approve' | 'request-changes'): void;
@@ -442,21 +466,6 @@ export interface ReviewPaneState {
   dispose(): void;
 }
 
-export interface CILogView {
-  stageName: string;
-  jobId: string;
-  job: CIJob;
-}
-
-/** A section's text goes into the composer or the clipboard inline up to
- * this size in bytes; a longer one is saved to a file by the backend,
- * from its cached log, and never read into the frontend. */
-export const CI_SECTION_INLINE_MAX_BYTES = 64 * 1024;
-
-// SGR and erase sequences (ESC is the one control character that opens
-// one): a section's text goes to the clipboard and the chat plain.
-const ANSI_SEQUENCE = /\p{Cc}\[[0-9;?]*[A-Za-z]/gu;
-
 const CI_RESULT_STATUSES = new Set(['success', 'failed', 'running', 'pending', 'canceled', 'skipped', 'manual']);
 
 /** A fence longer than any backtick run in `text`. */
@@ -511,6 +520,8 @@ const EMPTY_CONVERSATION_FEED: readonly ConversationFeedItem[] = Object.freeze([
 
 // Same stability rule for the comment list a workspace-only pane reads.
 const EMPTY_COMMENTS: readonly DiffReviewComment[] = Object.freeze([]);
+// What a chat-bound call on a pinned review answers; the pane offers none.
+const PINNED_NO_CHAT = 'This review has no chat to send to.';
 
 /**
  * What a review pane is looking at. The values travel together because
@@ -520,13 +531,22 @@ const EMPTY_COMMENTS: readonly DiffReviewComment[] = Object.freeze([]);
  * `rowId` is the pane's thread row id (a draft placeholder's synthetic one)
  * and owns the diff span-cache entries, which thread switch, delete and
  * draft materialization address by row id, and `workspace` is the checkout
- * every workspace-scoped RPC addresses.
+ * every workspace-scoped RPC addresses. `pinned` is set only by
+ * `reviewSubjectForPR`: the review is of that PR alone, with no thread.
  */
 export interface ReviewSubject {
   readonly identity: string;
   readonly threadId: string | null;
   readonly rowId: string;
   readonly workspace: WorkspaceRef;
+  readonly pinned?: PinnedReviewPR;
+}
+
+/** The PR a review with no thread is pinned to, and the computer that
+ * listed it: every PR and workspace call of the review routes there. */
+export interface PinnedReviewPR {
+  readonly pr: PRRef;
+  readonly backend: BackendKey;
 }
 
 /** The one place a review subject is built. Structural in the pane so both
@@ -551,6 +571,8 @@ export function reviewStateForPane(
   subject: ReviewSubject,
   opts: { deferInitialLoad?: boolean } = {},
 ): ReviewPaneState {
+  // A pinned review belongs to its page's retention, not a companion slot.
+  if (subject.pinned) throw new Error('A pull request review is held by reviewStateForPR.');
   const existing = statesBySourcePane.get(sourcePaneId);
   // Subject mismatch replaces rather than reuses: the CompanionPane {#key}
   // remount usually disposes the old state first, but correctness must not
@@ -606,18 +628,27 @@ export async function openReviewCompanion(
   return state;
 }
 
-function createReviewPaneState(
+/**
+ * Builds a review state. Only the registries call it: `reviewStateForPane`
+ * for a thread's companion, `reviewPanePinned.svelte#reviewStateForPR` for
+ * a review pinned to one PR, each owning the state's disposal.
+ */
+export function createReviewPaneState(
   sourcePaneId: string,
   subject: ReviewSubject,
   deferInitialLoad: boolean,
 ): ReviewPaneState {
   installHeldPRObservers();
   const { identity, threadId, rowId, workspace } = subject;
-  const backend = threadMachine(threadId ?? '', workspace.projectId);
+  // A pinned review's PR and computer are the ones it was opened on; it
+  // never reads the owner pane's git status, thread or composer.
+  const pinned = subject.pinned ?? null;
+  const backend = pinned?.backend ?? threadMachine(threadId ?? '', workspace.projectId);
   function computerPRKey(ref: PRRef): string { return composeWorkspaceKey(backend, prKey(ref)); }
   // Scope persistence is keyed on a real row; a draft placeholder has no
-  // history to restore and nothing to write back.
-  const persisted = threadId === null ? null : readPersistedScope(threadId);
+  // history to restore and nothing to write back, and a pinned review's
+  // scope is always pr.
+  const persisted = pinned ? { scope: 'pr' as const, baseBranch: null } : threadId === null ? null : readPersistedScope(threadId);
   // Derived, not probed-once: the PR is the workspace's, read from the live
   // git-status store, so it becomes selectable the moment status lands (or a
   // PR opens while the pane sits open) instead of only when something
@@ -629,7 +660,7 @@ function createReviewPaneState(
   const initialScope: ReviewScope = persisted?.scope ?? 'workspace';
   let scope: ReviewScope = $state(initialScope);
   let heldPRRef = $state<PRRef | null>(initialScope === 'pr' ? (heldPRByRow.get(rowId) ?? null) : null);
-  const prRef: PRRef | null = $derived(workspacePRRef() ?? (scope === 'pr' ? heldPRRef : null));
+  const prRef: PRRef | null = $derived(pinned ? pinned.pr : (workspacePRRef() ?? (scope === 'pr' ? heldPRRef : null)));
   let baseBranch: string | null = $state(persisted?.baseBranch ?? null);
   // The head THIS pane's diff was computed at, stamped with the PR it was
   // computed FOR. The PR's live head lives in the shared store; staleness
@@ -658,18 +689,10 @@ function createReviewPaneState(
   // Expanded fold ids per path. Entries are replaced wholesale on expand
   // so the SvelteMap write re-derives conflictFiles.
   const conflictExpandedFolds = new SvelteMap<string, ReadonlySet<number>>();
-  // The job log this pane opened, as captured at open; `ciLogView` derives
-  // the live row from the pipeline. The log itself is the PR's (shared by
-  // every pane following that job); this pane holds a follow on it under
-  // its own token, against the PR key it was opened on.
-  let ciLogOpen = $state<{ key: string; stageName: string; job: CIJob & { id: string } } | null>(null);
-  const ciFollowToken = Symbol('review-ci-log');
-  // Save and send failures; the log's own failures are on its state.
-  let ciLogLocalError: string | null = $state(null);
-  let ciLogSavedPath: string | null = $state(null);
-  // Expanded log sections, `<job id>/<section key>`. Nothing opens on its
-  // own, and each log open starts collapsed.
-  const ciLogOpenSections = new SvelteSet<string>();
+  // The CI of the PR on screen, and the job log this pane opened on it
+  // (ciSubject.svelte.ts). The log is the PR's, shared by every pane
+  // following that job; this pane holds its own follow on it.
+  const ci = createCISubjectState(() => (scope === 'pr' && prRef ? { kind: 'pr', backend, pr: prRef } : null));
   let submitTarget: 'agent' | 'pr' = $state('agent');
   let verdict: 'comment' | 'approve' | 'request-changes' = $state('comment');
   let summaryBody = $state('');
@@ -710,8 +733,9 @@ function createReviewPaneState(
   let editTurnLabels: ReadonlyMap<number, string> = $state(new Map());
   let selectedEdit: EditSelection | null = $state(null);
   let pendingEditItemID: string | null = null;
+  // A pinned review has no agent: its drafts only ever post to the PR.
   const effectiveSubmitTarget = $derived<'agent' | 'pr'>(
-    scope === 'pr' && !selectedCommitSHA ? submitTarget : 'agent',
+    pinned ? 'pr' : scope === 'pr' && !selectedCommitSHA ? submitTarget : 'agent',
   );
   let pendingJumpFilePath: string | null = $state(null);
   let pendingJumpRowKey: string | null = $state(null);
@@ -879,28 +903,6 @@ function createReviewPaneState(
     }
     return count;
   });
-  const ciState = $derived(peekPRCI(prEntityKey));
-  // The open job as the pipeline lists it now, so status, steps and
-  // duration move while the log is watched. A job the pipeline no longer
-  // lists (the head moved on) keeps the row captured at open.
-  //
-  // Both read the PR the log was opened on: a PR switch moves
-  // `prEntityKey` before the reload that releases the old PR closes the
-  // view, and in between this pane must not show one PR's job against
-  // another's pipeline.
-  const ciLogView = $derived.by<CILogView | null>(() => {
-    const open = ciLogOpen;
-    if (!open) return null;
-    const live = findCIJob(peekPRCI(open.key).pipeline, open.job.id);
-    return {
-      stageName: live?.stageName ?? open.stageName,
-      jobId: open.job.id,
-      job: live?.job ?? open.job,
-    };
-  });
-  const ciLog = $derived<PRCILogState | null>(
-    ciLogOpen ? (peekPRCI(ciLogOpen.key).logs.get(ciLogOpen.job.id) ?? null) : null,
-  );
   const conflictsState = $derived(peekPRConflicts(prEntityKey, workspace));
   // The loaded head, but only while it still describes the PR on screen.
   // Everything anchored to the diff — the stale banner, span context,
@@ -1049,14 +1051,24 @@ function createReviewPaneState(
   // so flipping `-w` from either would reload a surface the user isn't
   // looking at.
   const canIgnoreWhitespace = $derived(
-    !conflictView && ciLogView === null && supportsIgnoreWhitespace(scope, selectedCommitSHA),
+    !conflictView && ci.logView === null && supportsIgnoreWhitespace(scope, selectedCommitSHA),
   );
   // Review comments and turn state belong to a THREAD's history; a draft
   // placeholder has neither, so the comment affordances stay dark rather
   // than pointing at a row that does not exist yet.
-  const comments = $derived(
-    threadId === null ? EMPTY_COMMENTS : getDiffReviewComments(threadId, scope, sourceKey),
+  // A pinned review has no thread row: its drafts are the PR's
+  // (prDiffReviewComments.svelte.ts), on the computer it was opened on,
+  // and post as a PR review.
+  const pinnedDrafts: PRDraftsTarget | null = pinned ? { backend, pr: pinned.pr } : null;
+  const pinnedDraftKey = pinnedDrafts ? prDraftsKey(pinnedDrafts) : null;
+  const comments = $derived.by((): readonly DiffReviewComment[] => {
+    if (pinnedDraftKey !== null) return getPRDiffReviewComments(pinnedDraftKey, scope, sourceKey);
+    return threadId === null ? EMPTY_COMMENTS : getDiffReviewComments(threadId, scope, sourceKey);
+  });
+  const commentsGranted = $derived(
+    pinned ? hasScope('git:operate', backend) : threadHasScope('threads:operate', threadId, workspace.projectId),
   );
+  const canDraftComments = $derived(pinned ? scope === 'pr' && selectedCommitSHA === null : threadId !== null);
   const drafts = $derived(comments.filter((comment) => comment.status === 'draft'));
   const isTurnActive = $derived(threadId !== null && getActiveTurn(threadId) !== null);
 
@@ -1064,6 +1076,9 @@ function createReviewPaneState(
   // store. Not memoized: a PR opened while this pane sat open must become
   // selectable, and one that merged must stop being offered.
   function workspacePRRef(): PRRef | null {
+    // The owner pane of a pinned review may hold a thread later; its git
+    // status names that thread's PR, not this one.
+    if (pinned) return null;
     const status = peekGitStatus(workspaceKeyForThread(getPane(sourcePaneId)?.thread ?? null));
     if (!status) return null;
     return prRefFromUrl(
@@ -1117,6 +1132,7 @@ function createReviewPaneState(
   let failedPRLoad = $state<{ snapshot: PRSnapshot; headSHA: string } | null>(null);
   const awaitingPR = $derived(awaitingPRDetail || awaitingPRStatus);
   function workspacePRLookupSettled(): boolean {
+    if (pinned) return true;
     const key = workspaceKeyForThread(getPane(sourcePaneId)?.thread ?? null);
     const status = peekGitStatus(key);
     if (status !== null) return !status.openPrLookupPending;
@@ -1169,7 +1185,11 @@ function createReviewPaneState(
     // spend one refusal per pane before anybody touched anything. The
     // no-attachment answer already exists for the disposed case, and the
     // pane renders its empty state from it.
-    if (!threadHasScope('git:operate', subject.threadId, subject.workspace.projectId)) return null;
+    // A pinned review asks the computer every one of its calls routes to.
+    const granted = pinned
+      ? hasScope('git:operate', backend)
+      : threadHasScope('git:operate', subject.threadId, subject.workspace.projectId);
+    if (!granted) return null;
     const key = computerPRKey(ref);
     if (prAttachment?.key === key) return prAttachment;
     releasePR();
@@ -1223,6 +1243,9 @@ function createReviewPaneState(
   }
 
   async function setScope(nextScope: ReviewScope, opts?: { baseBranch?: string }): Promise<void> {
+    if (pinned && nextScope !== 'pr') {
+      throw new Error('A pull request review shows only its pull request.');
+    }
     const navigation = ++navigationSeq;
     const scopeChanged = nextScope !== scope;
     const nextBaseBranch = nextScope === 'branch'
@@ -1428,6 +1451,17 @@ function createReviewPaneState(
       // The files, patch key and selection are already updated above, so
       // the derived reflects this load — no need to re-derive by hand.
       const nextSourceKey = sourceKey;
+      if (pinnedDrafts !== null && nextSourceKey) {
+        try {
+          await refreshPRDiffReviewComments(pinnedDrafts, scope, nextSourceKey);
+          if (seq !== loadSeq) return;
+          error = null;
+        } catch (err) {
+          if (seq !== loadSeq) return;
+          error = userFacingError(err);
+        }
+        return;
+      }
       if (threadId === null) {
         // A draft placeholder owns no comment store to sync.
         error = null;
@@ -1656,6 +1690,7 @@ function createReviewPaneState(
   // placeholder, so reaching one without a row is a bug rather than a
   // user-visible state — say so instead of no-oping.
   function commentThreadId(): string {
+    if (pinned) throw new Error(PINNED_NO_CHAT);
     if (threadId === null) throw new Error('Review comments need a started thread.');
     return threadId;
   }
@@ -1783,7 +1818,7 @@ function createReviewPaneState(
     const trimmed = body.trim();
     if (!sourceKey || !trimmed) return;
     try {
-      await createDiffReviewComment(commentThreadId(), {
+      const input = {
         scope,
         sourceKey,
         commitSha: selectedCommitSHA ?? (scope === 'pr' ? loadedPRHeadSHA : undefined),
@@ -1793,7 +1828,15 @@ function createReviewPaneState(
         side: anchor.side,
         selectedText: anchor.selectedText ?? '',
         body: trimmed,
-      });
+      };
+      if (pinnedDrafts !== null) {
+        if (!canDraftComments) throw new Error('Comment on the whole pull request: pick All commits.');
+        await createPRDiffReviewComment(pinnedDrafts, input);
+        closeDraftEditor(anchor);
+        error = null;
+        return;
+      }
+      await createDiffReviewComment(commentThreadId(), input);
       closeDraftEditor(anchor);
       setActiveDiffReviewSource(commentThreadId(), scope, sourceKey);
       error = null;
@@ -1807,7 +1850,8 @@ function createReviewPaneState(
     const trimmed = body.trim();
     if (!sourceKey || !trimmed) return;
     try {
-      await updateDiffReviewComment(commentThreadId(), scope, sourceKey, commentId, { body: trimmed });
+      if (pinnedDrafts !== null) await updatePRDiffReviewComment(pinnedDrafts, scope, sourceKey, commentId, { body: trimmed });
+      else await updateDiffReviewComment(commentThreadId(), scope, sourceKey, commentId, { body: trimmed });
       error = null;
     } catch (err) {
       error = userFacingError(err);
@@ -1818,7 +1862,8 @@ function createReviewPaneState(
   async function deleteComment(commentId: string): Promise<void> {
     if (!sourceKey) return;
     try {
-      await deleteDiffReviewComment(commentThreadId(), scope, sourceKey, commentId);
+      if (pinnedDrafts !== null) await deletePRDiffReviewComment(pinnedDrafts, scope, sourceKey, commentId);
+      else await deleteDiffReviewComment(commentThreadId(), scope, sourceKey, commentId);
       error = null;
     } catch (err) {
       error = userFacingError(err);
@@ -1830,27 +1875,51 @@ function createReviewPaneState(
     if (!sourceKey || drafts.length === 0 || sendingComments || isTurnActive) return;
     sendingComments = true;
     try {
-      const detail = prSnapshot?.detail;
       const thread = commentThreadId();
       const sendScope = scope;
       const key = sourceKey;
       const sending = drafts;
-      const shown = files;
-      // Excerpts can read evicted text again, so everything the send
-      // addresses is taken before.
-      const pr = sendScope === 'pr' && detail
-        ? {
-            number: detail.number,
-            url: detail.url,
-            comments: await Promise.all(sending.map(async (comment) => ({
-              commentId: comment.id,
-              hunkExcerpt: await hunkExcerptForComment(shown, comment),
-            }))),
-          }
-        : undefined;
+      const pr = await prSendContext(sendScope, sending);
       await SendDiffReviewComments(thread, sendScope, key, sending.map((comment) => comment.id), { pr });
       await refreshDiffReviewComments(commentThreadId(), scope, sourceKey);
       error = null;
+    } catch (err) {
+      error = userFacingError(err);
+      throw err;
+    } finally {
+      sendingComments = false;
+    }
+  }
+
+  // The PR context a send of drafts carries: each comment's hunk. Excerpts
+  // can read evicted text again, so everything the send addresses is taken
+  // before the first await.
+  async function prSendContext(sendScope: ReviewScope, sending: readonly DiffReviewComment[]) {
+    const detail = prSnapshot?.detail;
+    const shown = files;
+    if (sendScope !== 'pr' || !detail) return undefined;
+    return {
+      number: detail.number,
+      url: detail.url,
+      comments: await Promise.all(sending.map(async (comment) => ({
+        commentId: comment.id,
+        hunkExcerpt: await hunkExcerptForComment(shown, comment),
+      }))),
+    };
+  }
+
+  async function sendDraftsToThread(target: string): Promise<Thread | null> {
+    if (!pinnedDrafts) throw new Error('Only a review pinned to a pull request sends its drafts to a thread.');
+    if (scope !== 'pr' || selectedCommitSHA) throw new Error('Send the whole pull request\'s comments: pick All commits.');
+    if (!sourceKey || drafts.length === 0 || sendingComments) return null;
+    sendingComments = true;
+    try {
+      const key = sourceKey;
+      const sending = drafts;
+      const pr = await prSendContext('pr', sending);
+      const thread = await sendPRDiffReviewComments(pinnedDrafts, target, 'pr', key, sending.map((comment) => comment.id), { pr });
+      error = null;
+      return thread;
     } catch (err) {
       error = userFacingError(err);
       throw err;
@@ -1894,10 +1963,15 @@ function createReviewPaneState(
         // Everything posted; a follow-up step (GitLab approve) failed.
         submitError = `The review posted, but a step after it did not. ${result.partialFailure}`;
       }
-      if (sent.length > 0) {
-        await MarkDiffReviewCommentsSent(commentThreadId(), scope, sourceKey, sent.map((comment) => comment.id), `pr:${loadedPRHeadSHA}`);
+      if (pinnedDrafts !== null) {
+        // Posted drafts are the forge's comments now; the rest stay.
+        if (sent.length > 0) await markPRDiffReviewCommentsSent(pinnedDrafts, scope, sourceKey, sent.map((comment) => comment.id));
+      } else {
+        if (sent.length > 0) {
+          await MarkDiffReviewCommentsSent(commentThreadId(), scope, sourceKey, sent.map((comment) => comment.id), `pr:${loadedPRHeadSHA}`);
+        }
+        await refreshDiffReviewComments(commentThreadId(), scope, sourceKey);
       }
-      await refreshDiffReviewComments(commentThreadId(), scope, sourceKey);
       // Through the store: the posted review is now part of the PR, so
       // every pane looking at it shows the new threads.
       applyPRThreads(computerPRKey(prRef), ((await withBackendTarget(backend, () => ListPRReviewThreads(prReferenceWire(prRef)))) ?? []) as ReviewThread[]);
@@ -2291,85 +2365,36 @@ function createReviewPaneState(
   }
 
   async function refreshCI(): Promise<void> {
-    const key = prEntityKey;
-    if (!key) return;
-    await refreshPRCI(key);
+    await ci.refresh();
   }
 
   function openCIJobLog(stageName: string, job: CIJob): void {
-    const key = prEntityKey;
-    const jobId = job.id;
-    if (!key || !job.logsAvailable || !jobId) return;
+    if (!prEntityKey || !job.logsAvailable || !job.id) return;
     // The log view and the conflict view both replace the diff body.
     setConflictView(false);
-    if (ciLogOpen && ciLogOpen.key !== key) closeCILogView();
-    ciLogOpen = { key, stageName, job: { ...job, id: jobId } };
-    ciLogLocalError = null;
-    ciLogSavedPath = null;
-    ciLogOpenSections.clear();
-    setPRCILogFollow(key, ciFollowToken, jobId);
-  }
-
-  // Re-sending the follow is the backend's refetch.
-  function refreshCILog(): void {
-    if (!ciLogOpen) return;
-    ciLogLocalError = null;
-    refreshPRCILogFollows(ciLogOpen.key);
+    ci.openJobLog(stageName, job);
   }
 
   function closeCILogView(): void {
-    if (ciLogOpen) setPRCILogFollow(ciLogOpen.key, ciFollowToken, null);
-    ciLogOpen = null;
-    ciLogLocalError = null;
-    ciLogSavedPath = null;
-    ciLogOpenSections.clear();
-  }
-
-  function toggleCILogSection(sectionKey: string): void {
-    if (!ciLogOpen) return;
-    const key = `${ciLogOpen.job.id}/${sectionKey}`;
-    if (ciLogOpenSections.has(key)) ciLogOpenSections.delete(key);
-    else ciLogOpenSections.add(key);
-  }
-
-  function setCILogSectionsOpen(sectionKeys: readonly string[], open: boolean): void {
-    if (!ciLogOpen) return;
-    for (const sectionKey of sectionKeys) {
-      const key = `${ciLogOpen.job.id}/${sectionKey}`;
-      if (open) ciLogOpenSections.add(key);
-      else ciLogOpenSections.delete(key);
-    }
-  }
-
-  async function saveCILog(): Promise<string | null> {
-    // The open record, not the derived view: a pipeline frame landing
-    // during the save re-derives the view but leaves the same log open.
-    const open = ciLogOpen;
-    if (!prRef || !open) return null;
-    const jobId = open.job.id;
-    const jobName = ciLogView?.job.name ?? open.job.name;
-    const ref = prReferenceWire(prRef);
-    try {
-      const path = String(await withBackendTarget(backend, () => SavePRCIJobLog(ref, jobId, jobName)));
-      if (ciLogOpen === open) ciLogSavedPath = path;
-      return path;
-    } catch (err) {
-      if (ciLogOpen === open) ciLogLocalError = userFacingError(err);
-      return null;
-    }
+    ci.closeLogView();
   }
 
   async function sendCILogToChat(): Promise<void> {
-    const open = ciLogOpen;
-    const opened = ciLogView;
+    const open = ci.opened;
+    const opened = ci.logView;
     if (!prRef || !open || !opened) return;
-    const path = await saveCILog();
+    // The owner pane of a pinned review is not its chat, whatever it holds.
+    if (pinned) {
+      ci.setLogError(PINNED_NO_CHAT);
+      return;
+    }
+    const path = await ci.saveLog();
     if (!path) return;
     // The job's status as of the send, while its log is still the one open.
-    const view = (ciLogOpen === open ? ciLogView : null) ?? opened;
+    const view = (ci.opened === open ? ci.logView : null) ?? opened;
     const draft = getComposerDraftForPane(sourcePaneId);
     if (!draft) {
-      ciLogLocalError = 'The source chat pane is not available.';
+      ci.setLogError('The source chat pane is not available.');
       return;
     }
     const message = [
@@ -2380,66 +2405,17 @@ function createReviewPaneState(
     draft.setContent(existing ? `${existing}\n\n${message}` : message);
   }
 
-  function readCILogLines(from: number, count: number): Promise<CILogLines> {
-    const open = ciLogOpen;
-    const ref = prRef;
-    if (!open || !ref) return Promise.reject(new Error('No CI job log is open.'));
-    return ciLogFetch(backend, prReferenceWire(ref), open.job.id)(from, count);
-  }
-
-  /** A section's lines as plain text, read from the backend's cache. */
-  async function ciSectionText(section: CILogSection): Promise<string> {
-    const lines = await readCILogRange(readCILogLines, section.start, section.end);
-    return lines.join('\n').replace(ANSI_SEQUENCE, '');
-  }
-
-  /** Saves a section server-side and returns its path, or null with the
-   * failure shown. */
-  async function saveCILogSection(open: NonNullable<typeof ciLogOpen>, ref: PRRef, section: CILogSection): Promise<string | null> {
-    try {
-      return String(await withBackendTarget(backend, () =>
-        SavePRCIJobLogSection(prReferenceWire(ref), open.job.id, open.job.name, section.key)));
-    } catch (err) {
-      if (ciLogOpen === open) ciLogLocalError = userFacingError(err);
-      return null;
-    }
-  }
-
-  async function copyCILogSection(section: CILogSection): Promise<boolean> {
-    const open = ciLogOpen;
-    const ref = prRef;
-    if (!ref || !open) return false;
-    let copied: string;
-    if (section.bytes <= CI_SECTION_INLINE_MAX_BYTES) {
-      try {
-        copied = await ciSectionText(section);
-      } catch (err) {
-        if (ciLogOpen === open) ciLogLocalError = userFacingError(err);
-        return false;
-      }
-    } else {
-      const path = await saveCILogSection(open, ref, section);
-      if (!path) return false;
-      if (ciLogOpen === open) ciLogSavedPath = path;
-      copied = path;
-    }
-    if (!(await copyToClipboard(copied))) {
-      addToast('error', 'Failed to copy');
-      return false;
-    }
-    if (section.bytes > CI_SECTION_INLINE_MAX_BYTES) {
-      addToast('info', 'The section is over 64 KB: it was saved to a file, and the path is copied.');
-    }
-    return true;
-  }
-
   async function sendCILogSectionToChat(section: CILogSection): Promise<void> {
-    const open = ciLogOpen;
-    const view = ciLogView;
+    const open = ci.opened;
+    const view = ci.logView;
     const ref = prRef;
     if (!ref || !open || !view) return;
+    if (pinned) {
+      ci.setLogError(PINNED_NO_CHAT);
+      return;
+    }
     if (!getComposerDraftForPane(sourcePaneId)) {
-      ciLogLocalError = 'The source chat pane is not available.';
+      ci.setLogError('The source chat pane is not available.');
       return;
     }
     const result = CI_RESULT_STATUSES.has(section.status) ? ` (${section.status})` : '';
@@ -2449,22 +2425,22 @@ function createReviewPaneState(
     if (section.bytes <= CI_SECTION_INLINE_MAX_BYTES) {
       let text: string;
       try {
-        text = await ciSectionText(section);
+        text = await ci.sectionText(section);
       } catch (err) {
-        if (ciLogOpen === open) ciLogLocalError = userFacingError(err);
+        ci.setLogError(userFacingError(err), open);
         return;
       }
       const fence = codeFence(text);
       lines.push(fence, text, fence);
     } else {
-      const path = await saveCILogSection(open, ref, section);
+      const path = await ci.saveSection(section);
       if (!path) return;
       lines.push(`Section log saved at: ${path}`);
     }
     // The draft as of now: the read or save may have outlived the pane.
     const draft = getComposerDraftForPane(sourcePaneId);
     if (!draft) {
-      if (ciLogOpen === open) ciLogLocalError = 'The source chat pane is not available.';
+      ci.setLogError('The source chat pane is not available.', open);
       return;
     }
     const message = lines.join('\n');
@@ -2511,6 +2487,9 @@ function createReviewPaneState(
     identity,
     rowId,
     get scope() { return scope; },
+    pinned: pinned !== null,
+    get commentsGranted() { return commentsGranted; },
+    get canDraftComments() { return canDraftComments; },
     backend,
     get baseBranch() { return baseBranch; },
     get prRef() { return prRef; },
@@ -2568,18 +2547,18 @@ function createReviewPaneState(
     get conflictFiles() { return conflictFiles; },
     paintedSpans,
     conflictPaintedSpans,
-    get ciPipeline() { return ciState.pipeline; },
-    get ciLoading() { return ciState.loading; },
-    get ciRefreshing() { return ciState.refreshing; },
-    get ciError() { return ciState.error; },
-    get ciFailure() { return ciState.failure; },
-    get ciLogView() { return ciLogView; },
-    get ciLog() { return ciLog; },
-    get ciLogLoading() { return ciLogOpen !== null && prCILogFollowPending(ciLogOpen.key); },
-    get ciLogError() { return ciLogLocalError ?? ciLog?.error ?? null; },
-    get ciLogFailure() { return ciLogLocalError === null ? (ciLog?.failure ?? null) : null; },
-    get ciLogSavedPath() { return ciLogSavedPath; },
-    get ciLogOpenSections() { return ciLogOpenSections; },
+    get ciPipeline() { return ci.pipeline; },
+    get ciLoading() { return ci.loading; },
+    get ciRefreshing() { return ci.refreshing; },
+    get ciError() { return ci.error; },
+    get ciFailure() { return ci.failure; },
+    get ciLogView() { return ci.logView; },
+    get ciLog() { return ci.log; },
+    get ciLogLoading() { return ci.logLoading; },
+    get ciLogError() { return ci.logError; },
+    get ciLogFailure() { return ci.logFailure; },
+    get ciLogSavedPath() { return ci.logSavedPath; },
+    get ciLogOpenSections() { return ci.logOpenSections; },
     get submitTarget() { return submitTarget; },
     get effectiveSubmitTarget() { return effectiveSubmitTarget; },
     get verdict() { return verdict; },
@@ -2621,6 +2600,7 @@ function createReviewPaneState(
     updateComment,
     deleteComment,
     sendComments,
+    sendDraftsToThread,
     submitPRReview,
     setSubmitTarget(target: 'agent' | 'pr'): void {
       submitTarget = target;
@@ -2697,13 +2677,13 @@ function createReviewPaneState(
     refreshCI,
     openCIJobLog,
     closeCILogView,
-    refreshCILog,
-    saveCILog,
+    refreshCILog: () => ci.refreshLog(),
+    saveCILog: () => ci.saveLog(),
     sendCILogToChat,
-    toggleCILogSection,
-    setCILogSectionsOpen,
-    readCILogLines,
-    copyCILogSection,
+    toggleCILogSection: (sectionKey: string) => ci.toggleSection(sectionKey),
+    setCILogSectionsOpen: (sectionKeys: readonly string[], open: boolean) => ci.setSectionsOpen(sectionKeys, open),
+    readCILogLines: (from: number, count: number) => ci.readLines(from, count),
+    copyCILogSection: (section: CILogSection) => ci.copySection(section),
     sendCILogSectionToChat,
     expandDiffContext,
     toggleCollapsed(path: string): void {
@@ -2724,17 +2704,6 @@ function createReviewPaneState(
   };
 }
 
-function findCIJob(
-  pipeline: CIPipeline | null,
-  jobId: string,
-): { stageName: string; job: CIJob } | null {
-  for (const stage of pipeline?.stages ?? []) {
-    const job = stage.jobs.find((candidate) => candidate.id === jobId);
-    if (job) return { stageName: stage.name, job };
-  }
-  return null;
-}
-
 function userFacingError(err: unknown): string {
   if (err instanceof Error) return err.message;
   if (typeof err === 'string') return err;
@@ -2745,6 +2714,7 @@ export function __resetReviewPaneStateForTest(): void {
   for (const state of statesBySourcePane.values()) state.dispose();
   statesBySourcePane.clear();
   heldPRByRow.clear();
+  resetPRDiffReviewCommentsForTest();
 }
 
 export type { CommentAnchor };

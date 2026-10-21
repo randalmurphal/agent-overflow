@@ -111,6 +111,7 @@ func (in Input) Projection() Meta {
 		JoinedSendIDs:                in.JoinedSendIDs,
 		Origin:                       in.Origin,
 		OriginThread:                 in.OriginThread,
+		TextBeforeReviewComments:     in.TextBeforeReviewComments,
 	}
 }
 
@@ -188,7 +189,7 @@ func samePlanRef(a, b *store.ProposedPlanSourceRef) bool {
 }
 
 func sameDiffRef(a, b *store.DiffReviewSourceRef) bool {
-	return a != nil && b != nil && a.Scope == b.Scope && a.SourceKey == b.SourceKey
+	return a != nil && b != nil && a.PRKey == b.PRKey && a.Scope == b.Scope && a.SourceKey == b.SourceKey
 }
 
 // MarshalMeta encodes an already-projected Meta with the same empty-is-nothing
@@ -217,6 +218,7 @@ func (m Meta) isZero() bool {
 		len(m.JoinedSendIDs) == 0 &&
 		m.Origin == "" &&
 		m.OriginThread == nil &&
+		m.TextBeforeReviewComments == nil &&
 		!m.ExpandComposerCommands
 }
 
@@ -241,6 +243,7 @@ var metaTypedKeys = []string{
 	"joinedSendIds",
 	"origin",
 	"originThread",
+	"textBeforeReviewComments",
 }
 
 // MergeJoinedMeta rewrites the typed usermessage fields of `existing` to those

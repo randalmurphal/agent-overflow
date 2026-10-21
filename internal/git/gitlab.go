@@ -26,6 +26,9 @@ type gitlabForge struct {
 	// routes remembers, per host, a server that answered the older cancel
 	// route (gitlab_merge.go).
 	routes gitlabRouteMemory
+	// pipelineTags remembers which listed pipelines ran on a tag
+	// (ci_gitlab.go).
+	pipelineTags gitlabPipelineTags
 }
 
 func (f *gitlabForge) ID() string         { return "gitlab" }
@@ -238,8 +241,10 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 	}
 	var out PRRead
 	var notes []gitlabNoteRaw
-	if want.Threads || want.Events {
-		threads, system, err := readGitLabDiscussions(ctx, client, ref, mr.headSHA())
+	var threads []ReviewThread
+	if want.Threads || want.Events || (want.Detail && want.Unresolved) {
+		var system []gitlabNoteRaw
+		threads, system, err = readGitLabDiscussions(ctx, client, ref, mr.headSHA())
 		if err != nil {
 			return PRRead{}, err
 		}
@@ -259,20 +264,67 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		if _, err := client.JSON(ctx, forgeapi.Request{Path: gitlabMRPath(ref) + "/approvals"}, &approvals); err != nil {
 			return PRRead{}, err
 		}
-		settings, err := f.projectSettings(ctx, client, ref)
+		settings, err := f.projectSettings(ctx, client, ref.Repository())
 		if err != nil {
 			return PRRead{}, err
 		}
+		viewer := f.viewerLogin(ctx, client, ref.Host)
 		out.Detail = gitlabPRDetail(mr, gitlabApprovalVerdicts(approvals))
-		gitlabFillMerge(&out.Detail, mr, approvals, settings, events, f.viewerLogin(ctx, client, ref.Host))
+		gitlabFillMerge(&out.Detail, mr, approvals, settings, events, viewer)
+		if want.ViewerReview {
+			if out.Detail.ViewerReviewState, err = readGitLabViewerReview(ctx, client, ref, viewer); err != nil {
+				return PRRead{}, err
+			}
+		}
+		if want.Unresolved {
+			unresolved := UnresolvedThreads(threads)
+			out.Detail.Readiness.Unresolved = &unresolved
+		}
 	}
 	if want.CI {
-		if out.CI, err = readGitLabPipeline(ctx, client, ref, mr.HeadPipeline); err != nil {
+		if out.CI, err = readGitLabPipeline(ctx, client, ref.Repository(), mr.HeadPipeline); err != nil {
 			return PRRead{}, err
 		}
 		out.HasCI = true
 	}
 	return out, nil
+}
+
+// readGitLabViewerReview is the state of viewer's own review of ref, from
+// the merge request's reviewers (the list and the single merge request
+// carry the reviewers' accounts only), or "" when the viewer is not one
+// or is unknown. The reviewers are paginated: pages are read until the
+// viewer is found or the list ends.
+func readGitLabViewerReview(ctx context.Context, client *forgeapi.Client, ref PRReference, viewer string) (string, error) {
+	if viewer == "" {
+		return "", nil
+	}
+	request := forgeapi.Request{
+		Path:  gitlabMRPath(ref) + "/reviewers",
+		Query: url.Values{"per_page": {strconv.Itoa(gitlabPageSize)}},
+	}
+	state := ""
+	page := 1
+	err := client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
+		var reviewers []struct {
+			User  gitlabAuthorRaw `json:"user"`
+			State string          `json:"state"`
+		}
+		if err := json.Unmarshal(resp.Body, &reviewers); err != nil {
+			return false, fmt.Errorf("GitLab merge request reviewers: decode response: %w", err)
+		}
+		for _, reviewer := range reviewers {
+			if strings.EqualFold(reviewer.User.Username, viewer) {
+				state = reviewer.State
+				return false, nil
+			}
+		}
+		return advanceGitLabPage(resp, &page), nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return state, nil
 }
 
 // readGitLabMR reads the merge request itself. The single-MR endpoint is
@@ -327,11 +379,17 @@ type gitlabMRRaw struct {
 	} `json:"user"`
 }
 
-// gitlabPipelineRaw is a merge request's head pipeline.
+// gitlabPipelineRaw is a pipeline as GitLab answers it: a merge
+// request's head pipeline, a pipeline list row or one pipeline read.
 type gitlabPipelineRaw struct {
-	ID     int64  `json:"id"`
-	Status string `json:"status"`
-	WebURL string `json:"web_url"`
+	ID        int64  `json:"id"`
+	Status    string `json:"status"`
+	WebURL    string `json:"web_url"`
+	Ref       string `json:"ref"`
+	SHA       string `json:"sha"`
+	Source    string `json:"source"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 // headSHA is the merge request's head commit: the diff's head, else the
@@ -393,7 +451,20 @@ func gitlabCheckSummary(pipeline *gitlabPipelineRaw) CheckSummary {
 	}
 	check := CheckStatus{Kind: "Pipeline", Name: "Pipeline", Status: pipeline.Status, DetailsURL: pipeline.WebURL}
 	summary := CheckSummary{Total: 1, Checks: []CheckStatus{check}}
-	addCheckBucket(&summary, check)
+	// GitLab's pipeline statuses, not GitHub's conclusions that
+	// addCheckBucket sorts.
+	switch NormalizeCIStatus(pipeline.Status, "") {
+	case CIStatusSuccess:
+		summary.Success++
+	case CIStatusFailed:
+		summary.Failure++
+	case CIStatusCanceled:
+		summary.Canceled++
+	case CIStatusSkipped:
+		summary.Skipped++
+	default:
+		summary.Pending++
+	}
 	return summary
 }
 

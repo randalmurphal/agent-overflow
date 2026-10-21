@@ -816,8 +816,9 @@ the current turn" error is unsatisfiable when no session exists to
 interrupt.
 
 The boot sweeps (`App.settlePriorInstance`: crashed turns, Codex
-background runtime, orphaned Claude background launches and running
-worktree setups) each run in their own boot phase. A sweep that fails
+background runtime, orphaned Claude background launches, running
+worktree setups and review-comment claims whose message was never
+delivered) each run in their own boot phase. A sweep that fails
 does not stop the boot: it is reported as a failed boot phase, which
 every client shows ([startup readiness](transport.md#startup-readiness)),
 and the next start runs it again.
@@ -987,7 +988,17 @@ active turn persists the row QUIETLY at the active turn's index, with no
 `provider:item_event`; every other case defers the row until its provider
 echo. Either way the message is visible above the composer, not in the
 timeline, until its confirmation proves consumption
-(`docs/architecture/user-message-ordering.md` § Confirmation).
+(`docs/architecture/user-message-ordering.md` § Confirmation). The review
+comments a queued message carries are delivered by that confirmation, not
+by the quiet row. A restore that takes the message back returns them to
+drafts with its row (`RetireUndeliveredUserRow`) and gives the composer
+the text before them (`usermessage.Meta.TextBeforeReviewComments`), never
+both. A requeue rebuilt from the row sends the row's summary as it is,
+since it renders what only the first dispatch had (a PR's hunk excerpts,
+every joined member's comments of every source), and claims again the
+comments the row's retire returned, with the bodies the summary renders: a
+comment edited meanwhile stays a draft. A stale row the restore could not
+delete is retired by the resend, which claims what it returns.
 
 **The frontend mirror** (`frontend/src/lib/stores/sendQueue.svelte.ts`) has
 two zones, both per-thread and both surviving thread switches:

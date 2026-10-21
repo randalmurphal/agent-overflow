@@ -1734,6 +1734,8 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: 141, Name: "repository_identity", SQL: repositoryIdentityV141SQL, Fix: scrubRepositoryCoordinates},
 	{Version: threadPullRequestsMigrationVersion, Name: "thread_pull_requests", SQL: threadPullRequestsV142SQL},
 	{Version: codexDeveloperInstructionsMigrationVersion, Name: "codex_developer_instructions", SQL: codexDeveloperInstructionsV143SQL},
+	{Version: pullRequestsPageMigrationVersion, Name: "pull_requests_page", SQL: pullRequestsPageV144SQL, Rebuild: true},
+	{Version: reviewClaimRowsMigrationVersion, Name: "review_claim_rows", SQL: reviewClaimRowsV145SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

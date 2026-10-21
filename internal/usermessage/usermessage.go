@@ -81,6 +81,23 @@ type Meta struct {
 	// OriginThread names the thread that wrote this row, on an
 	// `agent-thread` row. Absent on every other origin.
 	OriginThread *OriginThread `json:"originThread,omitempty"`
+	// TextBeforeReviewComments is the message as it read before the diff
+	// review comments it carries were rendered into it, set when it
+	// rendered any; the row's summary is the rendered whole. The comments
+	// belong to the message's claim, not to its text: a message taken back
+	// undelivered returns this text to the composer while its comments
+	// return to drafts (store.RetireUndeliveredUserRow). A resend rebuilt
+	// from the row sends the summary and claims the comments again.
+	TextBeforeReviewComments *string `json:"textBeforeReviewComments,omitempty"`
+}
+
+// TextWithoutReviewComments is the text of the row whose summary is
+// summary, without the diff review comments rendered into it.
+func (m Meta) TextWithoutReviewComments(summary string) string {
+	if m.TextBeforeReviewComments != nil {
+		return *m.TextBeforeReviewComments
+	}
+	return summary
 }
 
 // OriginAgentThread is the Origin value of a row one thread's agent wrote
@@ -115,6 +132,8 @@ type Input struct {
 	JoinedSendIDs          []string
 	Origin                 string
 	OriginThread           *OriginThread
+	// TextBeforeReviewComments is Meta.TextBeforeReviewComments.
+	TextBeforeReviewComments *string
 }
 
 // AttachmentMeta is the per-attachment slice element. The Go side

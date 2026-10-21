@@ -4,7 +4,10 @@ Owns the JSON metadata shape persisted on user-authored `user_text` rows and
 the slash-command word parser shared by send and history rendering.
 
 `Meta` contains attachment display data, plan/review source references,
-recognized command state, composer-command expansion, and `SendID`.
+recognized command state, composer-command expansion, `SendID`, and the
+text before the review comments a message rendered
+(`TextBeforeReviewComments`): a message taken back undelivered restores
+that text to the composer, and its comments return to drafts.
 `Marshal(Input)`, `FromItem`, and `EncodeDraftSource` are the canonical
 shape boundary used by send, queue, retry, fork, and draft restoration.
 Coordinate JSON field changes with store, triage, App, and frontend consumers.

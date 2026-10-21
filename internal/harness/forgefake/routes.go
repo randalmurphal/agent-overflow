@@ -53,6 +53,8 @@ var commands = []command{
 // GraphQL operations are githubGraphQL.
 var githubAPI = []apiRoute{
 	{name: "gh repository identity", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)$`), flags: []string{"hostname"}, run: forgeRepositoryIdentity},
+	{name: "gh api runs", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/runs(?:\?(.*))?$`), flags: []string{"hostname", "if-none-match"}, run: ghRuns},
+	{name: "gh api run", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/runs/(\d+)$`), flags: []string{"hostname", "if-none-match"}, run: ghRun},
 	{name: "gh api run jobs", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/runs/(\d+)/jobs(?:\?(.*))?$`), flags: []string{"hostname", "if-none-match"}, run: ghRunJobs},
 	{name: "gh api job logs", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/jobs/(\d+)/logs$`), flags: []string{"hostname", "if-none-match", "range"}, run: ghJobLogs},
 	{name: "gh api attachment", method: "GET", pattern: regexp.MustCompile(`^https://.+`), run: ghAttachment},
@@ -65,8 +67,11 @@ var gitlabAPI = []apiRoute{
 	{name: "glab repository identity", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)$`), flags: []string{"hostname", "if-none-match"}, run: glabProjectRead},
 	{name: "glab api merge request", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)$`), flags: []string{"hostname", "if-none-match"}, run: glabMR},
 	{name: "glab api approvals", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/approvals$`), flags: []string{"hostname"}, run: glabApprovals},
+	{name: "glab api reviewers", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/reviewers(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabReviewers},
 	{name: "glab api discussions", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabDiscussions},
 	{name: "glab api merge request list", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests(?:\?(.*))?$`), flags: []string{"hostname", "if-none-match"}, run: glabMRList},
+	{name: "glab api pipelines", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/pipelines(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabPipelines},
+	{name: "glab api pipeline", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/pipelines/(\d+)$`), flags: []string{"hostname"}, run: glabPipeline},
 	{name: "glab api pipeline jobs", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/pipelines/(\d+)/jobs(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabPipelineJobs},
 	{name: "glab api job trace", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/jobs/(\d+)/trace$`), flags: []string{"hostname", "if-none-match", "range"}, run: glabJobTrace},
 	{name: "glab api upload", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/uploads/([0-9a-f]{32})/([^/?]+)$`), flags: []string{"hostname"}, run: glabUpload},

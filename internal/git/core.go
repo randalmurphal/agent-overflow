@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"golang.org/x/sync/singleflight"
 
 	"agent-overflow/internal/appimage"
@@ -244,6 +245,11 @@ type Core struct {
 	// otherwise) without touching a network. Never reassigned in
 	// production code.
 	fetchFn func(ctx context.Context, cwd string) error
+
+	// beforeWorktreeAdd runs just before checkoutWorktree's
+	// `git worktree add`. Nil in production; tests set it to hold one
+	// checkout there while another runs.
+	beforeWorktreeAdd func(path string)
 }
 
 type prCacheEntry struct {
@@ -439,38 +445,44 @@ func (c *Core) CreateWorktree(cwd, path, branch string) error {
 // AttachWorktree creates a new worktree at path pointing at an existing
 // branch, a local one or one only origin has. Fails if the branch already
 // has a worktree (git's own invariant — one branch checked out in one
-// place at a time).
-func (c *Core) AttachWorktree(cwd, path, branch string) error {
+// place at a time). createdBranch reports that the branch was origin's
+// alone and this call made the local branch, which a caller undoing the
+// attach deletes with the worktree. A failed attach leaves neither a
+// worktree nor a branch it made (checkoutWorktree).
+func (c *Core) AttachWorktree(cwd, path, branch string) (createdBranch bool, err error) {
 	if strings.TrimSpace(path) == "" {
-		return errors.New("git worktree path is required")
+		return false, errors.New("git worktree path is required")
 	}
 	branch = strings.TrimSpace(branch)
 	if branch == "" {
-		return errors.New("git worktree branch is required")
+		return false, errors.New("git worktree branch is required")
 	}
 	if err := validateBranchName(branch); err != nil {
-		return err
+		return false, err
 	}
-	args := []string{"worktree", "add", "--", path, branch}
+	unlock, err := c.lockWorktreeCheckout(cwd)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
 	// A branch only origin has is checked out as a new local branch tracking
 	// origin's, named explicitly: git's own guess needs exactly one remote
 	// to have the name, and a fork's second remote often does too.
 	local, err := c.branchExistsChecked(cwd, branch)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if remoteRef, ok := c.originTrackingRef(cwd, branch); !local && ok {
-		args = []string{"worktree", "add", "--track", "-b", branch, "--", path, remoteRef}
-	}
-	_, stderr, err := c.Execute(cwd, args...)
-	if err != nil {
-		message := strings.TrimSpace(stderr)
-		if message == "" {
-			message = err.Error()
+		_, stderr, err := c.Execute(cwd, "branch", "--track", "--", branch, remoteRef)
+		if err != nil {
+			return false, fmt.Errorf("git worktree add failed: %s", firstNonEmpty(strings.TrimSpace(stderr), err.Error()))
 		}
-		return fmt.Errorf("git worktree add failed: %s", message)
+		createdBranch = true
 	}
-	return nil
+	if err := c.checkoutWorktree(cwd, path, branch, createdBranch); err != nil {
+		return false, err
+	}
+	return createdBranch, nil
 }
 
 // CreateWorktreeFromBranch creates a new worktree backed by newBranch from an
@@ -485,9 +497,12 @@ func (c *Core) CreateWorktreeFromBranch(cwd, path, baseBranch, newBranch string)
 	return c.createWorktreeAt(cwd, path, baseBranch, newBranch, false)
 }
 
-// createWorktreeAt is the one `git worktree add -b` invocation. startPoint is
-// a revision (a local branch, or a remote-tracking ref when the caller
-// resolved one); empty means the repository's current HEAD.
+// createWorktreeAt makes newBranch and checks it out in a new worktree at
+// path. startPoint is a revision (a local branch, or a remote-tracking ref
+// when the caller resolved one); empty means the repository's current HEAD.
+// It runs `git branch` and then `git worktree add`, which is what
+// `git worktree add -b` does, so that a failed checkout knows the branch is
+// this call's to delete (checkoutWorktree).
 //
 // noTrack suppresses git's branch.autoSetupMerge DWIM, which would otherwise
 // set the new branch's upstream whenever the start point is a remote-tracking
@@ -511,31 +526,88 @@ func (c *Core) createWorktreeAt(cwd, path, startPoint, newBranch string, noTrack
 			return err
 		}
 	}
+	unlock, err := c.lockWorktreeCheckout(cwd)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := c.ensureBranchDoesNotExist(cwd, newBranch); err != nil {
 		return err
 	}
 
-	args := []string{"worktree", "add"}
+	args := []string{"branch"}
 	if noTrack {
 		args = append(args, "--no-track")
 	}
-	args = append(args, "-b", newBranch, "--", path)
+	args = append(args, "--", newBranch)
 	if startPoint != "" {
 		args = append(args, startPoint)
 	}
-	_, stderr, err := c.Execute(cwd, args...)
-	if err != nil {
+	if _, stderr, err := c.Execute(cwd, args...); err != nil {
 		if c.branchAlreadyExistsAfterCreationError(cwd, stderr, newBranch) {
 			return branchAlreadyExistsError(newBranch)
 		}
-		message := strings.TrimSpace(stderr)
-		if message == "" {
-			message = err.Error()
-		}
-		return fmt.Errorf("git worktree add failed: %s", message)
+		return fmt.Errorf("git worktree add failed: %s", firstNonEmpty(strings.TrimSpace(stderr), err.Error()))
+	}
+	return c.checkoutWorktree(cwd, path, newBranch, true)
+}
+
+// checkoutWorktree checks branch out in a new worktree at path. The add
+// locks the worktree with a reason unique to this attempt
+// (checkoutLockReason), and a failed checkout takes back only what carries
+// it: a failing post-checkout hook leaves the worktree registered and
+// locked, so the registration locked with this attempt's reason is
+// removed, and then, when ownsBranch (the caller made the branch for this
+// worktree), the branch is deleted. A registration another process made at
+// path, or one git refused the add for, carries no such lock and stays as
+// it was; a branch the caller did not make is never deleted. What the undo
+// could not take back is joined to git's diagnosis. A checkout that
+// succeeded and could not be unlocked is a failure too, undone the same
+// way, so an error means the call left nothing behind.
+func (c *Core) checkoutWorktree(cwd, path, branch string, ownsBranch bool) error {
+	reason := checkoutLockReason + uuid.NewString()
+	if c.beforeWorktreeAdd != nil {
+		c.beforeWorktreeAdd(path)
+	}
+	_, stderr, err := c.Execute(cwd, "worktree", "add", "--lock", "--reason", reason, "--", path, branch)
+	if err != nil {
+		failure := fmt.Errorf("git worktree add failed: %s", firstNonEmpty(strings.TrimSpace(stderr), err.Error()))
+		return c.undoCheckout(cwd, branch, reason, ownsBranch, failure)
+	}
+	if _, stderr, err := c.Execute(cwd, "worktree", "unlock", "--", path); err != nil {
+		failure := fmt.Errorf("git worktree add: git worktree unlock failed: %s", firstNonEmpty(strings.TrimSpace(stderr), err.Error()))
+		return c.undoCheckout(cwd, branch, reason, ownsBranch, failure)
 	}
 	return nil
 }
+
+// undoCheckout takes back what a failed checkoutWorktree made: the
+// registration locked with reason and, when ownsBranch, the branch. It
+// returns failure joined with what it could not take back.
+func (c *Core) undoCheckout(cwd, branch, reason string, ownsBranch bool, failure error) error {
+	var undo []error
+	entries, listErr := c.listWorktreeEntries(cwd)
+	if listErr != nil {
+		undo = append(undo, listErr)
+	}
+	for _, entry := range entries {
+		if entry.locked && entry.lockReason == reason {
+			undo = append(undo, c.RemoveWorktreeForce(cwd, entry.Path, true))
+			break
+		}
+	}
+	if ownsBranch {
+		undo = append(undo, c.DeleteBranch(cwd, branch, true))
+	}
+	if undoErr := errors.Join(undo...); undoErr != nil {
+		return errors.Join(failure, fmt.Errorf("undo the failed worktree add: %w", undoErr))
+	}
+	return failure
+}
+
+// checkoutLockReason prefixes the lock reason checkoutWorktree adds a
+// worktree with; a random id follows it, so the lock names one attempt.
+const checkoutLockReason = "Agent Overflow checkout "
 
 // RemoveWorktree removes a worktree from a repository.
 func (c *Core) RemoveWorktree(cwd, path string) error {
@@ -599,14 +671,11 @@ func (c *Core) ListWorktrees(cwd string) ([]Worktree, error) {
 
 // ListWorktreesContext allows discovery callers to bound the complete scan.
 func (c *Core) ListWorktreesContext(ctx context.Context, cwd string) ([]Worktree, error) {
-	result, err := c.runSpec(commandSpec{ctx: ctx, binary: "git", cwd: cwd, args: []string{"worktree", "list", "--porcelain"}})
+	entries, err := c.listWorktreeEntriesContext(ctx, cwd)
 	if err != nil {
 		return nil, err
 	}
-	if result.exitCode != 0 {
-		return nil, fmt.Errorf("git worktree list failed: %s", strings.TrimSpace(result.stderr))
-	}
-	return parseWorktreeList(result.stdout), nil
+	return selectableWorktrees(entries), nil
 }
 
 func (c *Core) run(cwd string, args ...string) (commandResult, error) {
@@ -909,7 +978,7 @@ func (b *limitedBuffer) Truncated() bool {
 	return b.truncated
 }
 
-// worktreeEntry is one `git worktree list --porcelain` record before the
+// worktreeEntry is one `git worktree list --porcelain -z` record before the
 // selectable-workspace filter: a transfer reservation is not a workspace the
 // user can pick, but it is a checkout removal must be able to unlock.
 type worktreeEntry struct {
@@ -922,14 +991,11 @@ type worktreeEntry struct {
 // at cwd. A path git does not list is not locked; the caller's own git
 // command reports it as unknown.
 func (c *Core) worktreeLocked(cwd, path string) (bool, error) {
-	result, err := c.run(cwd, "worktree", "list", "--porcelain")
+	entries, err := c.listWorktreeEntries(cwd)
 	if err != nil {
 		return false, err
 	}
-	if result.exitCode != 0 {
-		return false, fmt.Errorf("git worktree list failed: %s", strings.TrimSpace(result.stderr))
-	}
-	for _, entry := range parseWorktreeEntries(result.stdout) {
+	for _, entry := range entries {
 		if SameFilesystemPath(entry.Path, path) {
 			return entry.locked, nil
 		}
@@ -937,9 +1003,27 @@ func (c *Core) worktreeLocked(cwd, path string) (bool, error) {
 	return false, nil
 }
 
-func parseWorktreeList(stdout string) []Worktree {
+// listWorktreeEntries is every worktree record of the repository at cwd,
+// with its lock.
+func (c *Core) listWorktreeEntries(cwd string) ([]worktreeEntry, error) {
+	return c.listWorktreeEntriesContext(context.Background(), cwd)
+}
+
+func (c *Core) listWorktreeEntriesContext(ctx context.Context, cwd string) ([]worktreeEntry, error) {
+	result, err := c.runSpec(commandSpec{ctx: ctx, binary: "git", cwd: cwd, args: []string{"worktree", "list", "--porcelain", "-z"}})
+	if err != nil {
+		return nil, err
+	}
+	if result.exitCode != 0 {
+		return nil, fmt.Errorf("git worktree list failed: %s", strings.TrimSpace(result.stderr))
+	}
+	return parseWorktreeEntries(result.stdout), nil
+}
+
+// selectableWorktrees drops the records that are not workspaces.
+func selectableWorktrees(entries []worktreeEntry) []Worktree {
 	var worktrees []Worktree
-	for _, entry := range parseWorktreeEntries(stdout) {
+	for _, entry := range entries {
 		// A transfer's registered staging index retains its objects through
 		// GC, but is not a workspace the user can select before activation.
 		if !isTransferPreparationWorktree(entry.Path, entry.lockReason) {
@@ -949,40 +1033,40 @@ func parseWorktreeList(stdout string) []Worktree {
 	return worktrees
 }
 
-// parseWorktreeEntries reads every record of `git worktree list --porcelain`.
-// The `locked` line is bare when the lock carries no reason (Claude Code's
-// EnterWorktree) and `locked <reason>` otherwise.
+// parseWorktreeEntries reads every record of
+// `git worktree list --porcelain -z`: each attribute ends in NUL and an
+// empty one ends the record. Paths and lock reasons are verbatim there, so
+// nothing is trimmed: a path that differs from another by a trailing space
+// or holds a newline is its own. The `locked` attribute is bare when the
+// lock carries no reason (Claude Code's EnterWorktree) and
+// `locked <reason>` otherwise.
 func parseWorktreeEntries(stdout string) []worktreeEntry {
 	var entries []worktreeEntry
 	current := worktreeEntry{}
 
 	flush := func() {
-		if strings.TrimSpace(current.Path) != "" {
+		if current.Path != "" {
 			entries = append(entries, current)
 		}
 		current = worktreeEntry{}
 	}
 
-	for _, rawLine := range strings.Split(stdout, "\n") {
-		line := strings.TrimSpace(rawLine)
-		if line == "" {
-			flush()
-			continue
-		}
-
+	for _, field := range strings.Split(stdout, "\x00") {
 		switch {
-		case strings.HasPrefix(line, "worktree "):
+		case field == "":
 			flush()
-			current.Path = strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
-		case strings.HasPrefix(line, "HEAD "):
-			current.HEAD = strings.TrimSpace(strings.TrimPrefix(line, "HEAD "))
-		case strings.HasPrefix(line, "branch "):
-			current.Branch = trimBranchRef(strings.TrimSpace(strings.TrimPrefix(line, "branch ")))
-		case line == "locked":
+		case strings.HasPrefix(field, "worktree "):
+			flush()
+			current.Path = strings.TrimPrefix(field, "worktree ")
+		case strings.HasPrefix(field, "HEAD "):
+			current.HEAD = strings.TrimPrefix(field, "HEAD ")
+		case strings.HasPrefix(field, "branch "):
+			current.Branch = trimBranchRef(strings.TrimPrefix(field, "branch "))
+		case field == "locked":
 			current.locked = true
-		case strings.HasPrefix(line, "locked "):
+		case strings.HasPrefix(field, "locked "):
 			current.locked = true
-			current.lockReason = strings.TrimPrefix(line, "locked ")
+			current.lockReason = strings.TrimPrefix(field, "locked ")
 		}
 	}
 

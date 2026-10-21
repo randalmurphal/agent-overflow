@@ -543,6 +543,13 @@ type FrameError struct {
 	// that refused (app.BackgroundKillAgent), and a client validates it as
 	// untrusted input.
 	BackgroundAgents json.RawMessage `json:"backgroundAgents,omitempty"`
+	// Reserve and ResumeAt are set only alongside ErrCodeForgeRateLimited:
+	// whether the forge's quota is kept for the user's own actions (a
+	// background call refused under the reserve) rather than spent, and
+	// when the forge may be asked again (RFC 3339). Fields for the reason
+	// Scope is one: the client words the refusal from them.
+	Reserve  bool   `json:"reserve,omitempty"`
+	ResumeAt string `json:"resumeAt,omitempty"`
 	// Detail is the diagnostic record of a method failure: present on
 	// method_error, temporarily_unavailable, internal and every reviewed
 	// (errorsx.Public) failure, absent on refusals the caller decides on
@@ -606,6 +613,10 @@ const (
 	ErrCodeShuttingDown            = "shutting_down"
 	ErrCodeAuthFailed              = "auth_failed"
 	ErrCodeBackgroundAgentsRunning = "background_agents_running"
+	// ErrCodeForgeRateLimited is a forge call refused for its rate limit
+	// (git.ForgeActionError's code for kind rate_limited); the frame
+	// carries Reserve and ResumeAt.
+	ErrCodeForgeRateLimited = "forge_rate_limited"
 	// ErrCodeClientOverloaded refuses an RPC this connection has no slot
 	// for: it already holds Config.MaxConcurrentRPCs in flight. The call
 	// was never started, so a client may reissue it once one of its own

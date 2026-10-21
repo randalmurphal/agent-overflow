@@ -19,8 +19,26 @@ import type { AgentPaneScopeSnapshot } from '../types/settings';
 // take-control, browser and side-chat are
 // live/ephemeral; plan, review, and agent companions are persisted by layout
 // persistence and restored through companionPanes.svelte.ts.
-export type PaneLayoutKind = 'thread' | 'take-control' | 'browser' | 'plan' | 'review' | 'agent' | 'side-chat';
+//
+// Tool panes ('pulls', 'workflows') are a third class: an app-wide surface
+// with no thread and no source pane. A tool item leads its own layout block
+// like a thread pane does (resnap, move and reorder treat it as a lead), is
+// not in the ThreadPane registry, and exists at most once per kind under the
+// id `tool-<kind>` (toolPanes.svelte.ts).
+export type ToolPaneKind = 'pulls' | 'workflows';
 export type CompanionPaneKind = 'take-control' | 'browser' | 'plan' | 'review' | 'agent' | 'side-chat';
+export type PaneLayoutKind = 'thread' | CompanionPaneKind | ToolPaneKind;
+
+export const TOOL_PANE_KINDS: readonly ToolPaneKind[] = ['pulls', 'workflows'];
+
+export function isToolKind(kind: unknown): kind is ToolPaneKind {
+  return kind === 'pulls' || kind === 'workflows';
+}
+
+/** The one layout id a tool kind's pane has. */
+export function toolPaneIdFor(kind: ToolPaneKind): string {
+  return `tool-${kind}`;
+}
 
 export function isCompanionKind(kind: PaneLayoutKind): kind is CompanionPaneKind {
   return kind === 'take-control' ||
@@ -155,6 +173,21 @@ const sourcePaneIdByPaneId = $derived.by(() => {
     return bySource;
   });
 });
+
+// A pane id's kind never changes for its lifetime, so membership alone keys
+// this lookup too.
+const kindByPaneId = $derived.by(() => {
+  void paneMembershipKey;
+  return untrack(() => new Map(layoutItems.map((item) => [item.paneId, item.kind])));
+});
+
+/**
+ * Kind of a mounted layout pane, null for an unmounted id. Reactive reads
+ * track layout membership only, never pane widths.
+ */
+export function paneLayoutKindOf(paneId: string): PaneLayoutKind | null {
+  return kindByPaneId.get(paneId) ?? null;
+}
 
 /**
  * `sourcePaneId` of a mounted layout pane: the paired source thread pane

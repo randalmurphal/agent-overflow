@@ -12,7 +12,7 @@ import (
 	gitops "agent-overflow/internal/git"
 )
 
-// The log half of the CI phase (app_forge_ci.go). A followed job's log is
+// The log half of the CI phase (app_ci_phase.go). A followed job's log is
 // downloaded into the CI log cache (app_ci_logs.go), pinned there while
 // anyone follows it, and reported as its index: line and byte counts, the
 // job's rows and the version its lines belong to. Its text never rides a
@@ -31,10 +31,15 @@ const maxPRCILogFollowsPerHandle = 16
 var ErrTooManyPRCILogFollows = fmt.Errorf("pr updates: too many CI log follows (limit %d)", maxPRCILogFollowsPerHandle)
 
 // PRCILogEvent is the "pr:ci_log" frame for one followed job: its whole
-// state, emitted whenever any of it changed.
+// state, emitted whenever any of it changed. A log is one entity per
+// repository and job (RepoKey, JobID: the cache's key), and the frame
+// names the pump that follows it: PRKey for a PR pump, PipelineKey (with
+// PRKey empty) for a pipeline pump.
 type PRCILogEvent struct {
-	PRKey string `json:"prKey"`
-	JobID string `json:"jobId"`
+	PRKey       string `json:"prKey"`
+	PipelineKey string `json:"pipelineKey,omitempty"`
+	RepoKey     string `json:"repoKey"`
+	JobID       string `json:"jobId"`
 	PRCILogState
 }
 
@@ -91,19 +96,19 @@ type prCILogOutcome struct {
 // held by a rate limit waits for its release. Every follow's index is
 // read each tick, since its rows move with the pipeline's step states as
 // well as with the log.
-func (a *App) pollPRCILogs(ctx context.Context, pump *prUpdatePump, forced map[string]bool) []PRCILogEvent {
+func (a *App) pollCILogs(ctx context.Context, phase *ciPhase, forced map[string]bool) []PRCILogEvent {
 	now := time.Now()
 	a.prUpdates.mu.Lock()
-	if pump.dead || len(pump.follows) == 0 {
+	if phase.core.dead || len(phase.follows) == 0 {
 		a.prUpdates.mu.Unlock()
 		return nil
 	}
-	work := make([]prCILogWork, 0, len(pump.follows))
-	for jobID, follow := range pump.follows {
-		job := gitops.FindCIJob(pump.ci, jobID)
+	work := make([]prCILogWork, 0, len(phase.follows))
+	for jobID, follow := range phase.follows {
+		job := gitops.FindCIJob(phase.ci, jobID)
 		// A job the current pipeline no longer lists (the head moved on)
 		// is terminal for following purposes: one final fetch, then idle.
-		live := pump.ciKnown && job != nil && gitops.CIJobLive(job.Status)
+		live := phase.ciKnown && job != nil && gitops.CIJobLive(job.Status)
 		if follow.wasLive && !live {
 			follow.pendingFinal = true
 			follow.finalAttempts = 0
@@ -117,36 +122,36 @@ func (a *App) pollPRCILogs(ctx context.Context, pump *prUpdatePump, forced map[s
 
 	outcomes := make([]prCILogOutcome, 0, len(work))
 	for _, w := range work {
-		outcomes = append(outcomes, a.advancePRCILog(ctx, pump.pr, w))
+		outcomes = append(outcomes, a.advanceCILog(ctx, phase.repo, w))
 	}
 
 	var events []PRCILogEvent
 	a.prUpdates.mu.Lock()
 	defer a.prUpdates.mu.Unlock()
-	if pump.dead {
+	if phase.core.dead {
 		return nil
 	}
 	for _, out := range outcomes {
-		follow := pump.follows[out.work.jobID]
+		follow := phase.follows[out.work.jobID]
 		if follow == nil {
 			// Unfollowed while the fetch ran.
 			continue
 		}
-		if event, ok := a.foldPRCILogLocked(pump, follow, out, forced[out.work.jobID]); ok {
+		if event, ok := a.foldCILogLocked(phase, follow, out, forced[out.work.jobID]); ok {
 			events = append(events, event)
 		}
 	}
 	return events
 }
 
-// advancePRCILog downloads one job's log when the tick asks for it and
+// advanceCILog downloads one job's log when the tick asks for it and
 // reads its index. A log whose file went from under the cache (a user
 // cleared it) was dropped by the read, so it is downloaded again now.
-func (a *App) advancePRCILog(ctx context.Context, pr gitops.PRReference, w prCILogWork) prCILogOutcome {
+func (a *App) advanceCILog(ctx context.Context, repo gitops.RepoReference, w prCILogWork) prCILogOutcome {
 	out := prCILogOutcome{work: w}
 	fetch := func() {
 		out.fetched = true
-		out.result, out.err = w.store.Fetch(ctx, w.key, a.ciLogSource(pr, w.jobID))
+		out.result, out.err = w.store.Fetch(ctx, w.key, a.ciLogSource(repo, w.jobID))
 	}
 	if w.fetch {
 		fetch()
@@ -159,9 +164,9 @@ func (a *App) advancePRCILog(ctx context.Context, pr gitops.PRReference, w prCIL
 	return out
 }
 
-// foldPRCILogLocked applies one job's outcome to its follow and returns
+// foldCILogLocked applies one job's outcome to its follow and returns
 // the frame to emit when its state changed, or on the first decision.
-func (a *App) foldPRCILogLocked(pump *prUpdatePump, follow *prCILogFollow, out prCILogOutcome, forced bool) (PRCILogEvent, bool) {
+func (a *App) foldCILogLocked(phase *ciPhase, follow *prCILogFollow, out prCILogOutcome, forced bool) (PRCILogEvent, bool) {
 	before := prCILogStateLocked(follow)
 	first := !follow.fetched
 	var failure error
@@ -203,7 +208,7 @@ func (a *App) foldPRCILogLocked(pump *prUpdatePump, follow *prCILogFollow, out p
 	}
 	switch {
 	case failure != nil:
-		fail := a.newPRForgeFailure(pump.pr, failure)
+		fail := phase.failure(failure)
 		if follow.pendingFinal && !fail.rateLimited() {
 			follow.finalAttempts++
 			if follow.finalAttempts >= prCILogFinalAttempts {
@@ -221,7 +226,7 @@ func (a *App) foldPRCILogLocked(pump *prUpdatePump, follow *prCILogFollow, out p
 		follow.downloading = false
 		if follow.fail.key != fail.key {
 			follow.fail = fail
-			log.Printf("pr updates: ci log failed for pr=%s job=%s (id: %s): %v", pump.prKey, out.work.jobID, fail.correlationID, failure)
+			log.Printf("pr updates: ci log failed for %s job=%s (id: %s): %v", phase.name(), out.work.jobID, fail.correlationID, failure)
 		}
 	case out.fetched:
 		follow.fail = prForgeFailure{}
@@ -232,7 +237,7 @@ func (a *App) foldPRCILogLocked(pump *prUpdatePump, follow *prCILogFollow, out p
 	}
 	follow.seq = a.nextPRUpdateSeqLocked()
 	after.Seq = follow.seq
-	return PRCILogEvent{PRKey: pump.prKey, JobID: out.work.jobID, PRCILogState: after}, true
+	return PRCILogEvent{PRKey: phase.prKey, PipelineKey: phase.pipelineKey, RepoKey: phase.repo.Key(), JobID: out.work.jobID, PRCILogState: after}, true
 }
 
 // prCILogStateLocked is a follow as the wire reports it.
@@ -257,31 +262,44 @@ func prCILogStateLocked(follow *prCILogFollow) PRCILogState {
 	}
 }
 
-// releaseFollowsLocked drops every follow a handle holds.
-func releaseFollowsLocked(pump *prUpdatePump, handle *prUpdateHandle) {
-	for jobID := range handle.follows {
-		dropFollowLocked(pump, jobID)
+// releaseFollowsLocked drops every follow a handle holds (its follows);
+// the caller clears its set.
+func releaseFollowsLocked(phase *ciPhase, follows map[string]bool) {
+	for jobID := range follows {
+		dropFollowLocked(phase, jobID)
 	}
-	handle.follows = nil
 }
 
 // dropFollowLocked releases one handle's ref on a follow; a job nobody
 // follows any more is unpinned, so the cache bound applies to its log.
-func dropFollowLocked(pump *prUpdatePump, jobID string) {
-	follow := pump.follows[jobID]
+func dropFollowLocked(phase *ciPhase, jobID string) {
+	follow := phase.follows[jobID]
 	if follow == nil {
 		return
 	}
 	follow.refs--
 	if follow.refs <= 0 {
-		delete(pump.follows, jobID)
+		delete(phase.follows, jobID)
 		follow.store.Unpin(follow.key)
 	}
 }
 
-// setPRCILogFollows replaces one handle's follow set and has the pump
-// fetch the requested jobs now, so the reply is the current state.
+// setPRCILogFollows replaces one PR subscription's follow set.
 func (a *App) setPRCILogFollows(ctx context.Context, subscriptionID string, jobIDs []string) (PRCILogFollowResult, error) {
+	return a.setCILogFollows(ctx, jobIDs, func() (*ciPhase, *map[string]bool, bool) {
+		handle, ok := a.prUpdates.handles[subscriptionID]
+		if !ok || handle.pump.dead {
+			return nil, nil, false
+		}
+		return &handle.pump.ciPhase, &handle.follows, true
+	})
+}
+
+// setCILogFollows replaces one handle's follow set and has its pump fetch
+// the requested jobs now, so the reply is the current state. lookup runs
+// under App.prUpdates.mu and names the handle's phase and follow set, or
+// reports the subscription unknown.
+func (a *App) setCILogFollows(ctx context.Context, jobIDs []string, lookup func() (*ciPhase, *map[string]bool, bool)) (PRCILogFollowResult, error) {
 	if len(jobIDs) > maxPRCILogFollowsPerHandle {
 		return PRCILogFollowResult{}, ErrTooManyPRCILogFollows
 	}
@@ -293,41 +311,40 @@ func (a *App) setPRCILogFollows(ctx context.Context, subscriptionID string, jobI
 		}
 	}
 	a.prUpdates.mu.Lock()
-	handle, ok := a.prUpdates.handles[subscriptionID]
-	if !ok || handle.pump.dead {
+	phase, handleFollows, ok := lookup()
+	if !ok {
 		a.prUpdates.mu.Unlock()
 		return PRCILogFollowResult{}, errPRUpdatesUnknownSubscription
 	}
-	pump := handle.pump
 	want := make(map[string]bool, len(jobIDs))
 	for _, jobID := range jobIDs {
 		want[jobID] = true
 	}
-	for jobID := range handle.follows {
+	for jobID := range *handleFollows {
 		if !want[jobID] {
-			dropFollowLocked(pump, jobID)
-			delete(handle.follows, jobID)
+			dropFollowLocked(phase, jobID)
+			delete(*handleFollows, jobID)
 		}
 	}
-	if handle.follows == nil {
-		handle.follows = make(map[string]bool)
+	if *handleFollows == nil {
+		*handleFollows = make(map[string]bool)
 	}
-	if pump.follows == nil {
-		pump.follows = make(map[string]*prCILogFollow)
+	if phase.follows == nil {
+		phase.follows = make(map[string]*prCILogFollow)
 	}
 	for jobID := range want {
-		if handle.follows[jobID] {
+		if (*handleFollows)[jobID] {
 			continue
 		}
-		handle.follows[jobID] = true
-		follow := pump.follows[jobID]
+		(*handleFollows)[jobID] = true
+		follow := phase.follows[jobID]
 		if follow == nil {
-			follow = &prCILogFollow{store: store, key: ciLogKey(pump.pr, jobID)}
+			follow = &prCILogFollow{store: store, key: ciLogKey(phase.repo, jobID)}
 			store.Pin(follow.key)
-			pump.follows[jobID] = follow
+			phase.follows[jobID] = follow
 			// A followed job's steps ride the pipeline, which the forge
 			// fills only for followed jobs: poll it with this one in.
-			pump.ciDirty = true
+			phase.ciDirty = true
 		}
 		follow.refs++
 	}
@@ -337,13 +354,13 @@ func (a *App) setPRCILogFollows(ctx context.Context, subscriptionID string, jobI
 	if len(jobIDs) == 0 {
 		return result, nil
 	}
-	if err := a.requestPRPump(ctx, pump, &prPumpRequest{jobIDs: jobIDs}); err != nil {
+	if err := a.requestPump(ctx, phase.core, &prPumpRequest{jobIDs: jobIDs}); err != nil {
 		return PRCILogFollowResult{}, err
 	}
 	a.prUpdates.mu.Lock()
 	defer a.prUpdates.mu.Unlock()
 	for _, jobID := range jobIDs {
-		if follow := pump.follows[jobID]; follow != nil {
+		if follow := phase.follows[jobID]; follow != nil {
 			result.Logs[jobID] = prCILogStateLocked(follow)
 		}
 	}

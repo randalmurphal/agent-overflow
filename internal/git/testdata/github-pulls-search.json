@@ -1,0 +1,68 @@
+{
+  "data": {
+    "viewer": { "login": "alice" },
+    "search": {
+      "pageInfo": { "hasNextPage": false, "endCursor": "Y3Vyc29yOjM=" },
+      "nodes": [
+        {
+          "id": "PR_kwDOAAAB12", "number": 12, "url": "https://github.com/acme/widgets/pull/12",
+          "title": "Draft: widgets", "isDraft": true,
+          "createdAt": "2026-10-01T09:00:00Z", "updatedAt": "2026-10-19T12:00:00Z",
+          "headRefOid": "1111111111111111111111111111111111111111", "headRefName": "alice/widgets", "baseRefName": "main",
+          "isCrossRepository": false,
+          "author": { "login": "alice", "name": "Alice Ng" },
+          "totalCommentsCount": 4, "reviewDecision": "REVIEW_REQUIRED", "mergeStateStatus": "BLOCKED", "mergeable": "MERGEABLE",
+          "viewerDidAuthor": true,
+          "reviewRequests": { "nodes": [ { "requestedReviewer": { "__typename": "User", "login": "bob" } } ] },
+          "latestOpinionatedReviews": { "nodes": [] },
+          "viewerLatestReview": null,
+          "commits": { "totalCount": 3, "nodes": [ { "commit": { "committedDate": "2026-10-19T11:58:00Z", "statusCheckRollup": { "state": "SUCCESS" } } } ] },
+          "comments": { "nodes": [] },
+          "reviews": { "nodes": [] }
+        },
+        {
+          "id": "PR_kwDOAAAB11", "number": 11, "url": "https://github.com/acme/widgets/pull/11",
+          "title": "Fork fix", "isDraft": false,
+          "createdAt": "2026-09-20T09:00:00Z", "updatedAt": "2026-10-18T08:00:00Z",
+          "headRefOid": "2222222222222222222222222222222222222222", "headRefName": "main", "baseRefName": "main",
+          "isCrossRepository": true,
+          "author": { "login": "carol" },
+          "totalCommentsCount": 0, "reviewDecision": null, "mergeStateStatus": "DIRTY", "mergeable": "CONFLICTING",
+          "viewerDidAuthor": false,
+          "reviewRequests": { "nodes": [
+            { "requestedReviewer": { "__typename": "Team" } },
+            { "requestedReviewer": { "__typename": "User", "login": "Alice" } }
+          ] },
+          "latestOpinionatedReviews": { "nodes": [ { "viewerDidAuthor": false } ] },
+          "viewerLatestReview": null,
+          "commits": { "totalCount": 1, "nodes": [ { "commit": { "committedDate": "2026-10-18T07:59:00Z", "statusCheckRollup": { "state": "FAILURE" } } } ] },
+          "comments": { "nodes": [ { "author": { "login": "bob" }, "createdAt": "2026-10-18T09:00:00Z" }, { "author": null, "createdAt": "2026-10-18T09:30:00Z" } ] },
+          "reviews": { "nodes": [] }
+        },
+        {
+          "id": "PR_kwDOAAAB10", "number": 10, "url": "https://github.com/acme/widgets/pull/10",
+          "title": "Bump deps", "isDraft": false,
+          "createdAt": "2026-09-01T09:00:00Z", "updatedAt": "2026-10-02T08:00:00Z",
+          "headRefOid": "3333333333333333333333333333333333333333", "headRefName": "deps", "baseRefName": "release",
+          "isCrossRepository": false,
+          "author": { "login": "dependabot" },
+          "totalCommentsCount": 2, "reviewDecision": "CHANGES_REQUESTED", "mergeStateStatus": "BLOCKED", "mergeable": "UNKNOWN",
+          "viewerDidAuthor": false,
+          "reviewRequests": { "nodes": [] },
+          "latestOpinionatedReviews": { "nodes": [ { "viewerDidAuthor": true } ] },
+          "viewerLatestReview": { "state": "CHANGES_REQUESTED", "submittedAt": "2026-10-01T10:00:00Z" },
+          "commits": { "totalCount": 7, "nodes": [ { "commit": { "committedDate": "2026-09-30T10:00:00Z", "statusCheckRollup": null } } ] },
+          "comments": { "nodes": [
+            { "author": { "login": "dependabot" }, "createdAt": "2026-10-01T11:00:00Z" },
+            { "author": { "login": "alice" }, "createdAt": "2026-10-02T07:00:00Z" }
+          ] },
+          "reviews": { "nodes": [
+            { "author": { "login": "alice" }, "submittedAt": "2026-10-01T10:00:00Z" },
+            { "author": { "login": "Dependabot" }, "submittedAt": "2026-10-01T12:30:00Z" },
+            { "author": { "login": "dependabot" }, "submittedAt": null }
+          ] }
+        }
+      ]
+    }
+  }
+}

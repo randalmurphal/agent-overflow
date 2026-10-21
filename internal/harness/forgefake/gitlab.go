@@ -82,11 +82,7 @@ func glabMR(e *Engine, c *call, m []string) response {
 func (e *Engine) gitlabMRJSON(r *Repo, p *Pull) map[string]any {
 	var pipeline any
 	if p.CI != nil {
-		pipeline = map[string]any{
-			"id":      p.CI.ID,
-			"status":  p.CI.Status,
-			"web_url": fmt.Sprintf("https://%s/%s/-/pipelines/%d", r.Host, r.Project, p.CI.ID),
-		}
+		pipeline = gitlabPipelineJSON(r, p.CI)
 	}
 	source := r.ID
 	if p.HeadRepo != "" {
@@ -175,6 +171,8 @@ func (e *Engine) gitlabDetailedStatus(r *Repo, p *Pull) string {
 		return "need_rebase"
 	case r.Merge.DiscussionsMustResolve && gitlabUnresolved(p):
 		return "discussions_not_resolved"
+	case len(p.ChangeRequests) > 0:
+		return "requested_changes"
 	}
 	if r.Merge.PipelineMustSucceed {
 		switch {
@@ -228,6 +226,36 @@ func glabApprovals(e *Engine, c *call, m []string) response {
 		return fail
 	}
 	return glabOK(jsonResponse(e.gitlabApprovalsJSON(r, p)))
+}
+
+// glabReviewers answers GET .../reviewers: each reviewer with the state of
+// their review, approved for one whose approval stands, requested_changes
+// for one in changeRequests, else unreviewed; paginated by per_page (20 by
+// default) and page with X-Next-Page.
+func glabReviewers(e *Engine, c *call, m []string) response {
+	_, p, fail, ok := e.glabMRFrom(c, m)
+	if !ok {
+		return fail
+	}
+	_, perPage, page, err := glabPage(m[3])
+	if err != nil {
+		return unhandled("%v", err)
+	}
+	reviewers := []map[string]any{}
+	for _, login := range p.Reviewers {
+		state := "unreviewed"
+		switch {
+		case gitlabViewerApproved(p, login):
+			state = "approved"
+		case slices.ContainsFunc(p.ChangeRequests, func(other string) bool { return strings.EqualFold(other, login) }):
+			state = "requested_changes"
+		}
+		user := gitlabUser(login, "")
+		user["state"] = "active"
+		reviewers = append(reviewers, map[string]any{"user": user, "state": state, "created_at": p.CreatedAt})
+	}
+	items, next := paginate(reviewers, perPage, page)
+	return glabOK(jsonResponse(items), "X-Next-Page: "+next, "X-Page: "+strconv.Itoa(page))
 }
 
 // gitlabApprovalsJSON is the merge request's approval state. With no
@@ -464,7 +492,7 @@ func glabMRList(e *Engine, c *call, m []string) response {
 		return unhandled("%v", err)
 	}
 	if iids, named := query["iids[]"]; named {
-		return glabMRsByIID(r, query, iids, perPage, page)
+		return e.glabMRsByIID(r, query, iids, perPage, page)
 	}
 	if order := query.Get("order_by"); order != "" && order != "updated_at" {
 		return unhandled("order_by=%q is not implemented", order)
@@ -485,7 +513,7 @@ func glabMRList(e *Engine, c *call, m []string) response {
 		if gitlabStates[p.State] != state || (branch != "" && p.HeadRef != branch) {
 			continue
 		}
-		matches = append(matches, gitlabMRListItem(r, p))
+		matches = append(matches, e.gitlabMRListItem(r, p))
 	}
 	items, next := paginate(matches, perPage, page)
 	if items == nil {
@@ -496,7 +524,7 @@ func glabMRList(e *Engine, c *call, m []string) response {
 
 // glabMRsByIID answers the merge requests iids names, in any state, newest
 // first. An iid the project does not have is absent, as GitLab answers it.
-func glabMRsByIID(r *Repo, query url.Values, iids []string, perPage, page int) response {
+func (e *Engine) glabMRsByIID(r *Repo, query url.Values, iids []string, perPage, page int) response {
 	if state := query.Get("state"); state != "all" {
 		return unhandled("iids[] with state=%q is not implemented", state)
 	}
@@ -516,7 +544,7 @@ func glabMRsByIID(r *Repo, query url.Values, iids []string, perPage, page int) r
 	var matches []map[string]any
 	for i := len(r.Pulls) - 1; i >= 0; i-- {
 		if p := &r.Pulls[i]; wanted[p.Number] {
-			matches = append(matches, gitlabMRListItem(r, p))
+			matches = append(matches, e.gitlabMRListItem(r, p))
 		}
 	}
 	items, next := paginate(matches, perPage, page)
@@ -526,8 +554,11 @@ func glabMRsByIID(r *Repo, query url.Values, iids []string, perPage, page int) r
 	return glabOK(jsonResponse(items), "X-Next-Page: "+next)
 }
 
-// gitlabMRListItem is one merge request as the list endpoint answers it.
-func gitlabMRListItem(r *Repo, p *Pull) map[string]any {
+// gitlabMRListItem is one merge request as the list endpoint answers it:
+// the fields the app reads of the list's basic view (measured in
+// docs/references/forge-api-measurements.md). It carries no pipeline.
+// Callers hold mu.
+func (e *Engine) gitlabMRListItem(r *Repo, p *Pull) map[string]any {
 	var mergedAt any
 	if p.MergedAt != "" {
 		mergedAt = p.MergedAt
@@ -547,7 +578,42 @@ func gitlabMRListItem(r *Repo, p *Pull) map[string]any {
 		"target_branch":     p.BaseRef,
 		"sha":               p.HeadSHA,
 		"merged_at":         mergedAt,
+		"author":            gitlabUser(p.Author, p.AuthorName),
+		"reviewers":         gitlabReviewerList(p.Reviewers),
+		"draft":             p.Draft,
+		"work_in_progress":  p.Draft,
+		"created_at":        p.CreatedAt,
+		"updated_at":        p.UpdatedAt,
+		"user_notes_count":  userNoteCount(p),
+		"has_conflicts":     p.Mergeable == "conflicts",
+		// blocking_discussions_resolved reads as the single merge
+		// request's does.
+		"blocking_discussions_resolved": !r.Merge.DiscussionsMustResolve || !gitlabUnresolved(p),
+		"detailed_merge_status":         e.gitlabDetailedStatus(r, p),
 	}
+}
+
+// gitlabReviewerList is a merge request's reviewers as users. GitLab's
+// state on them is the account's, not a review's.
+func gitlabReviewerList(logins []string) []map[string]any {
+	out := make([]map[string]any, 0, len(logins))
+	for _, login := range logins {
+		user := gitlabUser(login, "")
+		user["state"] = "active"
+		out = append(out, user)
+	}
+	return out
+}
+
+// userNoteCount is the pull's human comments: its conversation comments
+// and every comment of its review threads (GitLab user_notes_count,
+// GitHub totalCommentsCount).
+func userNoteCount(p *Pull) int {
+	n := len(p.Comments)
+	for _, thread := range p.Threads {
+		n += len(thread.Comments)
+	}
+	return n
 }
 
 func glabPipelineJobs(e *Engine, c *call, m []string) response {
@@ -727,6 +793,8 @@ func glabApprove(e *Engine, c *call, m []string) response {
 	}
 	now := glabNow()
 	p.Reviews = append(p.Reviews, Review{ID: e.ids.next(), Author: e.viewer, State: "APPROVED", SubmittedAt: now, CommitSHA: p.HeadSHA})
+	// An approval replaces the viewer's change request, as on GitLab.
+	p.ChangeRequests = slices.DeleteFunc(p.ChangeRequests, func(login string) bool { return strings.EqualFold(login, e.viewer) })
 	p.Events = append(p.Events, Event{ID: e.ids.next(), Kind: "approved", Actor: e.viewer, At: now})
 	resp := glabOK(jsonResponse(e.gitlabApprovalsJSON(r, p)))
 	resp.status = http.StatusCreated

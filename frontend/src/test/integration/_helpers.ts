@@ -30,6 +30,7 @@ import { resetSettingsForTest } from '../../lib/stores/settings.svelte';
 import { resetThreadActionConfirmationsForTest } from '../../lib/stores/threadActionConfirmations.svelte';
 import { resetSettingsOverlayForTest } from '../../lib/stores/settingsOverlay.svelte';
 import { resetWorkflowsOverlayForTest } from '../../lib/stores/workflowsOverlay.svelte';
+import { resetToolPanesForTest } from '../../lib/stores/toolPanes.svelte';
 import { closeAccountSwitcher } from '../../lib/stores/accountSwitcher.svelte';
 import {
   getQueueForThread,
@@ -78,10 +79,11 @@ export function resetAppState(): void {
   resetSidebarForTest();
   resetSettingsForTest();
   resetThreadActionConfirmationsForTest();
-  // Both full-height overlays are module state now, so an open one would
-  // otherwise ride into the next test (and each closes the other on open).
+  // Settings and the workflows navigation are module state, so an open one
+  // would otherwise ride into the next test.
   resetSettingsOverlayForTest();
   resetWorkflowsOverlayForTest();
+  resetToolPanesForTest();
   closeAccountSwitcher();
   resetProviderModelsForTest();
   // Per-thread send queue is in-memory only; clear it between tests

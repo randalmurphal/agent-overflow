@@ -4,6 +4,7 @@
   import { untrack } from 'svelte';
   import ChatView from '../chat/ChatView.svelte';
   import CompanionPane from './CompanionPane.svelte';
+  import ToolPane from './ToolPane.svelte';
   import RenderBoundary from '../shared/RenderBoundary.svelte';
   import {
     focusPane,
@@ -11,7 +12,7 @@
     getPane,
   } from '../../stores/panes.svelte';
   import { getMinPaneWidth } from '../../stores/paneDensity.svelte';
-  import { getPaneLayoutItems, isCompanionKind } from '../../stores/paneLayout.svelte';
+  import { getPaneLayoutItems, isCompanionKind, isToolKind } from '../../stores/paneLayout.svelte';
   import { getPaneWidth, setPaneHostWidth } from '../../stores/layoutMetrics.svelte';
   import { REVEAL_PANE_EVENT } from '../../stores/eventNames';
   import { getCompactScreen, isCompactLayout } from '../../stores/layoutMode.svelte';
@@ -530,6 +531,37 @@
               <CompanionPane paneId={item.paneId} kind={item.kind} sourcePaneId={item.sourcePaneId!} />
             {/if}
           </RenderBoundary>
+        </section>
+      {:else if isToolKind(item.kind)}
+        <!-- Tool panes (Pull requests, Workflows) are app-wide surfaces with
+             no ThreadPane. Like a thread pane they lead their own layout
+             block, so they take reorder drops and a dropped thread opens
+             beside them. ToolPane owns the render boundary. -->
+        {@const toolKind = item.kind}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <section
+          use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange }}
+          style={paneSectionStyle(item.widthPx)}
+          class={[
+            'flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-r border-border-subtle/70',
+            focusedPaneId === item.paneId ? 'bg-surface-0/40' : '',
+            drag.draggingPaneId === item.paneId ? 'opacity-55' : '',
+          ].join(' ')}
+          data-pane-id={item.paneId}
+          data-pane-kind={item.kind}
+          data-pane-min-width={minPaneWidth}
+          data-pane-width={item.widthPx}
+          data-pane-focused={focusedPaneId === item.paneId}
+          onpointerdown={() => handlePanePointerDown(item.paneId)}
+          onfocusin={() => handlePaneFocusIn(item.paneId)}
+          ondrop={(event) => drag.onPaneDrop(event, item.paneId)}
+          ondragend={drag.onPaneDragEnd}
+        >
+          <ToolPane
+            paneId={item.paneId}
+            kind={toolKind}
+            onPaneDragStart={(event) => drag.onPaneDragStart(event, item.paneId)}
+          />
         </section>
       {:else}
         {@const pane = getPane(item.paneId)}

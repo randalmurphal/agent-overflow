@@ -275,7 +275,7 @@ func TestGitLabWithoutATransportIsErrNoForgeAPI(t *testing.T) {
 	if _, err := core.ReadPR(t.Context(), ref, allParts, nil, nil); !errors.Is(err, ErrNoForgeAPI) {
 		t.Fatalf("ReadPR = %v", err)
 	}
-	if _, err := core.StreamCIJobLog(t.Context(), ref, CIJobLogRequest{JobID: "9"}, nil); !errors.Is(err, ErrNoForgeAPI) {
+	if _, err := core.StreamCIJobLog(t.Context(), ref.Repository(), CIJobLogRequest{JobID: "9"}, nil); !errors.Is(err, ErrNoForgeAPI) {
 		t.Fatalf("StreamCIJobLog = %v", err)
 	}
 	if _, err := core.SubmitReview(t.Context(), ref, SubmitReviewRequest{Verdict: ReviewVerdictApprove}); !errors.Is(err, ErrNoForgeAPI) {
@@ -661,7 +661,7 @@ func TestGitLabOriginScopedListFailures(t *testing.T) {
 	}
 	sent := len(calls.all())
 	for name, origin := range map[string]string{"no origin": "", "github": "https://github.com/acme/repo.git", "no project": "https://gitlab.com/grp"} {
-		cwd := t.TempDir()
+		cwd := initGitRepo(t)
 		if origin != "" {
 			core.recordOrigin(cwd, originIdentity{url: origin, known: true}, core.nowFn())
 		}
@@ -695,7 +695,7 @@ func TestGitLabFetchAttachment(t *testing.T) {
 	})
 	ref := PRReference{Forge: "gitlab", Host: "gitlab.example.com:8443", Namespace: "group/x", Repo: "y", Number: 4}
 	href := "https://gitlab.example.com:8443/grp/sub/widget/uploads/" + testUploadSecretB + "/Screen%20Shot.png"
-	data, name, err := core.FetchAttachment(t.Context(), ref, href, 1<<20)
+	data, name, err := core.FetchAttachment(t.Context(), ref.Repository(), href, 1<<20)
 	if err != nil || string(data) != content || name != "Screen Shot.png" {
 		t.Fatalf("FetchAttachment = %q %q %v", data, name, err)
 	}
@@ -703,7 +703,7 @@ func TestGitLabFetchAttachment(t *testing.T) {
 	if len(sent) != 1 || sent[0].Host != "gitlab.example.com:8443" || sent[0].Header.Get("Accept") != "*/*" || sent[0].Header.Get("Private-Token") != "test-token" {
 		t.Fatalf("attachment request = %+v", sent)
 	}
-	if _, _, err := core.FetchAttachment(t.Context(), ref, href, 4); err == nil || err.Error() != "attachment is larger than 4 bytes" {
+	if _, _, err := core.FetchAttachment(t.Context(), ref.Repository(), href, 4); err == nil || err.Error() != "attachment is larger than 4 bytes" {
 		t.Fatalf("over-cap attachment = %v", err)
 	}
 }
@@ -727,7 +727,7 @@ func TestGitLabFetchAttachmentFailureHidesTheSecret(t *testing.T) {
 	href := "/uploads/" + testUploadSecretB + "/a.png"
 	check := func(name string, match func(error) bool) {
 		t.Helper()
-		_, _, err := core.FetchAttachment(t.Context(), ref, href, 1<<20)
+		_, _, err := core.FetchAttachment(t.Context(), ref.Repository(), href, 1<<20)
 		if err == nil || !match(err) {
 			t.Fatalf("%s: FetchAttachment = %v", name, err)
 		}

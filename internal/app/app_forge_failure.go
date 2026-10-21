@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
 )
@@ -82,6 +83,24 @@ type prForgeFailure struct {
 	release time.Time
 	// correlationID ties wire to the server log line.
 	correlationID string
+	// detail is the failure behind wire for "Details": the correlation id
+	// and the raw error's layers, fixed when the failure is first seen so
+	// a repeat of it leaves the snapshot unchanged.
+	detail *ForgeErrorDetail
+}
+
+// ForgeErrorDetail is a pump failure's diagnostic record, in the shape of
+// the transport's ErrorDetail (internal/transport/frame.go) so a client
+// reads it as it reads a failed call's: Ref is the correlation id of the
+// server log line `(id: <ref>)` holding the full error, Method names the
+// read that failed, At (Unix milliseconds) is when the failure was first
+// seen, and Chain is the raw error's wrap layers, outermost first
+// (errorsx.Chain), which carry the forge's own text.
+type ForgeErrorDetail struct {
+	Ref    string   `json:"ref"`
+	Method string   `json:"method"`
+	At     int64    `json:"at"`
+	Chain  []string `json:"chain,omitempty"`
 }
 
 func (f prForgeFailure) failing() bool { return f.key != "" }
@@ -94,12 +113,38 @@ func (f prForgeFailure) rateLimited() bool { return f.kind == forgeFailureRateLi
 // the sentence naming the login to fix (git.ExplainForgeError), which
 // carries no forge text.
 func (a *App) newPRForgeFailure(pr gitops.PRReference, err error) prForgeFailure {
+	return a.newForgeFailure(err, "pull request read", prUpdateErrorMessage, func(err error) error {
+		return gitops.ExplainForgeError(pr, gitops.ActionRead, err)
+	})
+}
+
+// newRepoForgeFailure is newPRForgeFailure for a read of a whole
+// repository (its PR list, a pipeline of it): the setup and forbidden
+// sentences name the project, and every other kind reads as a failed
+// refresh of the repository.
+func (a *App) newRepoForgeFailure(repo gitops.RepoReference, err error) prForgeFailure {
+	return a.newForgeFailure(err, "repository read", repoRefreshErrorMessage, func(err error) error {
+		return gitops.ExplainRepoForgeError(repo, gitops.ActionRead, err)
+	})
+}
+
+// repoRefreshErrorMessage is the repository read's counterpart of
+// prUpdateErrorMessage.
+func repoRefreshErrorMessage(correlationID string) string {
+	return fmt.Sprintf("failed to refresh from the forge (id: %s)", correlationID)
+}
+
+// newForgeFailure classifies err with summary as the correlation sentence
+// and explain as the sentence of a setup or forbidden failure; read names
+// the read in the failure's detail.
+func (a *App) newForgeFailure(err error, read string, summary func(correlationID string) string, explain func(error) error) prForgeFailure {
 	kind, reserve, until := classifyForgeFailure(err)
 	f := prForgeFailure{key: err.Error(), kind: kind, correlationID: uuid.NewString()}
-	f.wire = prUpdateErrorMessage(f.correlationID)
+	f.wire = summary(f.correlationID)
+	f.detail = &ForgeErrorDetail{Ref: f.correlationID, Method: read, At: time.Now().UnixMilli(), Chain: errorsx.Chain(err)}
 	switch kind {
 	case forgeFailureSetup, forgeFailureForbidden:
-		f.wire = gitops.ExplainForgeError(pr, gitops.ActionRead, err).Error()
+		f.wire = explain(err).Error()
 	case forgeFailureRateLimited:
 		f.reserve = reserve
 		f.resumeAt = until.UTC().Format(time.RFC3339)

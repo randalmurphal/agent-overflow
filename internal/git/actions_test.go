@@ -449,6 +449,9 @@ func installBranchRaceGit(t *testing.T, branchExistsMarker string) {
 	gitPath := filepath.Join(binDir, "git")
 	script := `#!/bin/sh
 case "$1" in
+  rev-parse)
+    echo .git
+    ;;
   show-ref)
     if [ -f "$AO_BRANCH_EXISTS_MARKER" ]; then
       exit 0

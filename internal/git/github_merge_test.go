@@ -999,3 +999,54 @@ func TestGitHubPRStateMutations(t *testing.T) {
 		}
 	})
 }
+
+// The PR list's summary read counts every unresolved thread: past the
+// detail's first 100 thread states it reads the next pages, which a plain
+// detail read without the requirement does not, and leaves the count
+// unknown.
+func TestGitHubReadPRSummaryCountsEveryUnresolvedThread(t *testing.T) {
+	t.Parallel()
+	states := make([]any, 100)
+	for i := range states {
+		states[i] = map[string]any{"isResolved": i%2 == 0}
+	}
+	pull := githubMergePull(map[string]any{
+		"threadStates": map[string]any{"pageInfo": map[string]any{"hasNextPage": true, "endCursor": "ts-1"}, "nodes": states},
+		"latestOpinionatedReviews": map[string]any{"nodes": []any{
+			githubOpinion("PRR_1", "ann", "Ann", "APPROVED", true, false),
+			githubOpinion("PRR_2", "bob", "Bob", "CHANGES_REQUESTED", true, false),
+		}},
+		"baseRef": githubRules(map[string]any{"type": "PULL_REQUEST", "parameters": map[string]any{"requiredApprovingReviewCount": 2}}),
+	})
+	tick := githubTickJSON(t, githubMergeRepo(nil), pull)
+	answer := func(call forgeAPICall) forgeAPIAnswer {
+		switch call.Op {
+		case "PRTick":
+			return forgeAPIAnswer{Body: tick}
+		case "PRThreadStatesPage":
+			return githubData(`{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":"ts-2"},"nodes":[{"isResolved":false},{"isResolved":true}]}}}}`)
+		}
+		return forgeUnexpected(t, call)
+	}
+	core, calls := newForgeAPICore(t, answer)
+	got, err := core.ReadPRSummary(t.Context(), githubTestRef(7))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ops := calls.ops(); fmt.Sprint(ops) != "[PRTick PRThreadStatesPage]" {
+		t.Fatalf("requests = %v", ops)
+	}
+	r := got.Readiness
+	if r.Unresolved == nil || *r.Unresolved != 51 || r.Approvals != (ApprovalCount{Given: 1, Required: 2}) {
+		t.Fatalf("unresolved = %v approvals = %+v", r.Unresolved, r.Approvals)
+	}
+
+	core, calls = newForgeAPICore(t, answer)
+	plain, err := core.ReadPR(t.Context(), githubTestRef(7), PRReadParts{Detail: true}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(calls.all()); n != 1 || plain.Detail.Readiness.Unresolved != nil {
+		t.Fatalf("plain detail read: requests %v, unresolved %v", calls.ops(), plain.Detail.Readiness.Unresolved)
+	}
+}

@@ -49,14 +49,25 @@ type WorktreeCut struct {
 	BaseLocal bool
 }
 
+// CutWorktree is a worktree a cut made: where it is, the branch it checks
+// out, and whether the cut made that branch (a new one, or the local branch
+// of one only origin had), which undoing the cut deletes.
+type CutWorktree struct {
+	Path          string
+	Branch        string
+	CreatedBranch bool
+}
+
 // Workspace is the explicit git/worktree subprocess port. Thread policy asks
 // for outcomes; root owns the real git implementation and app lifetime.
 type Workspace interface {
 	CurrentBranch(workspacePath string) string
 	FindWorktree(projectPath, candidate string) (path, branch string, found bool, err error)
-	// CreateWorktree cuts a fresh worktree for cut and reports where it is
-	// and the branch it checks out.
-	CreateWorktree(ctx context.Context, projectPath string, cut WorktreeCut) (path, resolvedBranch string, err error)
+	// CreateWorktree cuts a fresh worktree for cut and reports what it made.
+	CreateWorktree(ctx context.Context, projectPath string, cut WorktreeCut) (CutWorktree, error)
+	// RemoveCutWorktree undoes a cut nothing has used yet: it removes the
+	// worktree, then deletes the branch when the cut made it.
+	RemoveCutWorktree(projectPath string, cut CutWorktree) error
 	// ObserveOrigin reads the workspace's git coordinates as they stand right
 	// now. It has no error return because every failure, no repository, no
 	// remote, an unborn branch, means the same thing to a caller recording
