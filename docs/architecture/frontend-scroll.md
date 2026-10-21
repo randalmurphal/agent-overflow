@@ -1241,12 +1241,12 @@ scroller:
 2. **The streaming line-slide** (`TailClampedText`'s inverted translateY,
    drained by a rAF tracker — `tailSlide.ts`) is the one in-content
    animation, on the one region that is genuinely in motion: the line
-   being streamed. The slide drains each paint's measured period (the
-   spring's cadence sampler), up to the reveal smoother's stall bound
-   (`MAX_REVEAL_TICK_DT_MS`, `SLIDE_MAX_CATCHUP_FRAMES`), so the lines
-   keep pace with the text on a slow paint, and after a stalled frame
-   the slide, the reveal and the spring each resume at their pace rather
-   than landing the gap at once.
+   being streamed. The slide drains each gap up to the last paint period
+   (`paintPeriodAfter`: a gap within the reveal smoother's stall bound,
+   `MAX_REVEAL_TICK_DT_MS`, is a paint and sets the period; a longer one
+   is a stall and does not), so the lines keep pace with the text on a
+   slow paint, and after a stalled frame the slide, the reveal and the
+   spring each resume at their pace rather than landing the gap at once.
    The slide's pending offset is capped at `SLIDE_MAX_WINDOWS` clamp
    windows, the bound on how far the visible text moves in one frame
    (the drain's share of the cap), and at the content above the box; the

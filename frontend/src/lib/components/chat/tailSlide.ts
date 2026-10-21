@@ -94,8 +94,7 @@ const FRAME_MS = 1000 / 60;
  * Most frames of drain one painted frame may apply, however long the
  * gap since the last one: the reveal smoother's stall bound
  * (MAX_REVEAL_TICK_DT_MS), the longest gap that is a paint period. A
- * paint drains its measured period (`stepSlide`'s cadence, the display's
- * frame interval sampled as the scroll spring samples it), never more
+ * paint drains the last paint period (`paintPeriodAfter`), never more
  * than this: at a 20Hz paint the reveal lands three frames of text a
  * paint, and a drain of one frame a paint fell behind it on
  * one-character lines until the offset pinned at its cap and every
@@ -103,9 +102,26 @@ const FRAME_MS = 1000 / 60;
  * task, a GC pause, a compositor drop) that paints nothing while it
  * lasts; catching up the whole of one on the next paint moved every
  * visible line by most of the pending offset at once, the snap the slide
- * exists to prevent, so the ticker resumes at its measured pace instead.
+ * exists to prevent, so the ticker resumes at the last paint's pace
+ * instead.
  */
 export const SLIDE_MAX_CATCHUP_FRAMES = MAX_REVEAL_TICK_DT_MS / FRAME_MS;
+
+/**
+ * The paint period after a frame gap of `gapMs`, given the period before
+ * it: a gap up to MAX_REVEAL_TICK_DT_MS is a paint and is the period from
+ * now on; a longer gap is a stall and leaves it. The period is the stall
+ * bound of the next gap (`stepSlide`), so a paint as long as the last
+ * drains in full, the first slower paint drains the previous period, and
+ * a stall drains the period of the paints before it, whether they were
+ * fast or slow: a slow spell is forgotten by the first fast paint after
+ * it, not averaged out over many (a smoothed cadence drained a stall just
+ * after a slow spell by two frames or more). The first period, before any
+ * gap, is a 60Hz frame.
+ */
+export function paintPeriodAfter(periodMs: number, gapMs: number): number {
+  return gapMs >= 1 && gapMs <= MAX_REVEAL_TICK_DT_MS ? gapMs : periodMs;
+}
 
 /**
  * Sub-pixel slack for geometry comparisons. Fractional client rects can
@@ -171,15 +187,15 @@ export function slideDecision(
 
 /**
  * One drain step of the pending offset after `dtMs` of wall time: a
- * sub-frame dt drains its share, and a gap drains at most the display's
- * measured paint period `cadenceMs` (null before one is measured: a 60Hz
- * frame), itself at most SLIDE_MAX_CATCHUP_FRAMES. A period under a 60Hz
- * frame still drains a whole frame's gap, so one dropped frame on a
- * high-refresh panel is not a stall.
+ * sub-frame dt drains its share, and a gap drains at most the last paint
+ * period `periodMs` (paintPeriodAfter; a 60Hz frame by default), itself
+ * at most SLIDE_MAX_CATCHUP_FRAMES. A period under a 60Hz frame still
+ * drains a whole frame's gap, so one dropped frame on a high-refresh
+ * panel is not a stall.
  */
-export function stepSlide(offset: number, dtMs: number, cadenceMs: number | null = null): number {
+export function stepSlide(offset: number, dtMs: number, periodMs: number = FRAME_MS): number {
   if (offset <= 0) return 0;
-  const bound = Math.min(Math.max(FRAME_MS, cadenceMs ?? FRAME_MS), MAX_REVEAL_TICK_DT_MS);
+  const bound = Math.min(Math.max(FRAME_MS, periodMs), MAX_REVEAL_TICK_DT_MS);
   const frames = Math.min(bound, Math.max(0, dtMs)) / FRAME_MS;
   const drained = offset * (1 - Math.pow(1 - SLIDE_DRAIN_PER_FRAME, frames));
   const next = offset - Math.max(drained, SLIDE_MIN_STEP_PX * frames);

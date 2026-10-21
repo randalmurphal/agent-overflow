@@ -77,7 +77,7 @@ const REVEAL_STARVATION_MS = MIN_REVEAL_TICK_INTERVAL_MS * 2;
 // task, a GC pause, an occluded window): the tick after it accrues this
 // much instead of the whole gap, so the reveal resumes at its pace rather
 // than landing the gap's text at once. The thinking tail's line slide
-// drains each paint's measured period up to this bound
+// drains each gap up to the last paint period, itself up to this bound
 // (SLIDE_MAX_CATCHUP_FRAMES), so the lines it tickers keep pace with the
 // text that lands on a slow paint and resume from a stall at that pace;
 // the scroll spring resumes at its pace after any gap over a frame

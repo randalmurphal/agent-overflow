@@ -6,12 +6,12 @@ import {
   __resetRevealFrameGateForTest,
   type SmoothingClock,
 } from '../../markdown/smoothing/PerItemSmoother';
-import { createFrameCadence } from '../../utils/scroll/cadence';
 import {
   SLIDE_DRAIN_PER_FRAME,
   SLIDE_MAX_CATCHUP_FRAMES,
   SLIDE_MAX_WINDOWS,
   SLIDE_MIN_STEP_PX,
+  paintPeriodAfter,
   slideDecision,
   stepSlide,
   transformTranslateY,
@@ -126,14 +126,13 @@ describe('slideDecision', () => {
   it('keeps pace with the reveal on one-character lines at every paint cadence it accrues in full', () => {
     // A code block of one-character lines at the ceiling: the reveal
     // lands MAX_REVEAL_TICK_DT_MS of budget a paint (16 chars, eight
-    // lines at 20Hz), and the drain catches up the paint period it
-    // measures, so the offset settles well under the cap and no line
-    // snaps. With a drain of one frame a paint, 20Hz pinned at the cap
-    // within a second.
+    // lines at 20Hz), and the drain catches up the last paint period, so
+    // the offset settles well under the cap and no line snaps. With a
+    // drain of one frame a paint, 20Hz pinned at the cap within a second.
     for (const hz of [60, 30, 20]) {
       __resetRevealFrameGateForTest();
       const clock = new PaintClock();
-      const cadence = createFrameCadence();
+      let period = 1000 / 60;
       let revealed = '';
       const smoother = new PerItemSmoother({ onReveal: (delta) => { revealed += delta; }, clock });
       smoother.appendDelta('a\n'.repeat(4000));
@@ -154,7 +153,8 @@ describe('slideDecision', () => {
         // Every line that landed is in the offset: nothing snapped.
         expect(d.startPx, `${hz}Hz paint ${paint}`).toBeCloseTo(offset + landed * LH);
         peak = Math.max(peak, d.startPx);
-        offset = stepSlide(d.startPx, 1000 / hz, cadence(1000 / hz));
+        offset = stepSlide(d.startPx, 1000 / hz, period);
+        period = paintPeriodAfter(period, 1000 / hz);
         prev = next;
       }
       expect(revealed.length / 3, `${hz}Hz`).toBeGreaterThan(MAX_ADAPTIVE_CHARS_PER_SEC * 0.9);
@@ -276,10 +276,10 @@ describe('stepSlide', () => {
     expect(stepSlide(BOX, FRAME / 2)).toBeCloseTo(BOX * Math.pow(1 - SLIDE_DRAIN_PER_FRAME, 0.5), 3);
   });
 
-  it('drains a gap up to the measured paint period, and resumes after a stall instead of catching it up', () => {
+  it('drains a gap up to the last paint period, and resumes after a stall instead of catching it up', () => {
     const frames = (n: number) => BOX * Math.pow(1 - SLIDE_DRAIN_PER_FRAME, n);
-    // No period measured yet, or a 60Hz one: a dropped frame and a stall
-    // both drain one frame.
+    // No period yet, or a 60Hz one: a dropped frame and a stall both
+    // drain one frame.
     expect(stepSlide(BOX, 2 * FRAME)).toBeCloseTo(frames(1), 3);
     expect(stepSlide(BOX, 120, FRAME)).toBeCloseTo(frames(1), 3);
     expect(stepSlide(BOX, 5000, FRAME)).toBeCloseTo(frames(1), 3);
@@ -293,18 +293,34 @@ describe('stepSlide', () => {
     expect(stepSlide(BOX, 12, 6)).toBeCloseTo(frames(12 / FRAME), 3);
   });
 
-  it('keeps a stall on a 60Hz display to one frame of drain, even after a 20Hz spell', () => {
-    // The sampler ignores a stall and needs three consistent slower paints
-    // before it takes a slower period: an isolated 120ms gap at 60Hz is a
-    // stall and drains one frame; a run of 20Hz paints drains three each.
-    const cadence = createFrameCadence();
-    for (let i = 0; i < 10; i += 1) cadence(FRAME);
+  it('takes the last paint as the period: a slow spell ends with the first fast paint, and a stall is never a period', () => {
+    // The drain as the component runs it: each gap drains up to the
+    // period the previous paints set, then sets the period if it was a
+    // paint. 60Hz, a stall, a 20Hz spell, back to 60Hz, then a stall:
+    // the stall after the spell drains one frame, since the fast paint
+    // before it is the period (a smoothed cadence still held most of the
+    // spell and drained it by two frames or more).
     const frames = (n: number) => BOX * Math.pow(1 - SLIDE_DRAIN_PER_FRAME, n);
-    expect(stepSlide(BOX, 120, cadence(120))).toBeCloseTo(frames(1), 3);
-    expect(stepSlide(BOX, 50, cadence(50))).toBeCloseTo(frames(1), 3);
-    cadence(50);
-    expect(stepSlide(BOX, 50, cadence(50))).toBeCloseTo(frames(3), 3);
-    expect(stepSlide(BOX, 120, cadence(120))).toBeCloseTo(frames(3), 3);
+    let period = FRAME;
+    const drain = (gap: number): number => {
+      const next = stepSlide(BOX, gap, period);
+      period = paintPeriodAfter(period, gap);
+      return next;
+    };
+    for (let i = 0; i < 10; i += 1) expect(drain(FRAME)).toBeCloseTo(frames(1), 3);
+    expect(drain(120)).toBeCloseTo(frames(1), 3);
+    expect(drain(100)).toBeCloseTo(frames(1), 3);
+    // The first slow paint drains the period before it; the next is slow in full.
+    expect(drain(50)).toBeCloseTo(frames(1), 3);
+    for (let i = 0; i < 10; i += 1) expect(drain(50)).toBeCloseTo(frames(3), 3);
+    expect(drain(120)).toBeCloseTo(frames(3), 3);
+    expect(drain(FRAME)).toBeCloseTo(frames(1), 3);
+    expect(drain(120)).toBeCloseTo(frames(1), 3);
+    expect(period).toBeCloseTo(FRAME, 6);
+    // A 165Hz display: its period floors at a 60Hz frame for the bound.
+    period = FRAME;
+    drain(6);
+    expect(drain(12)).toBeCloseTo(frames(12 / FRAME), 3);
   });
 
   it('never drains slower than the minimum step, and lands on exactly zero', () => {
