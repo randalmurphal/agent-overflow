@@ -125,8 +125,15 @@ function notifyToolPaneClosed(kind: ToolPaneKind): void {
 // pane. A tool with no probe has no detail step.
 const detailProbes = new Map<ToolPaneKind, () => boolean>();
 
-export function registerToolDetailProbe(kind: ToolPaneKind, isOpen: () => boolean): void {
+/** Register a tool's probe. Returns a disposer that restores the previous one. */
+export function registerToolDetailProbe(kind: ToolPaneKind, isOpen: () => boolean): () => void {
+  const previous = detailProbes.get(kind);
   detailProbes.set(kind, isOpen);
+  return () => {
+    if (detailProbes.get(kind) !== isOpen) return;
+    if (previous) detailProbes.set(kind, previous);
+    else detailProbes.delete(kind);
+  };
 }
 
 /** The focused tool pane has a detail step open above its list. */

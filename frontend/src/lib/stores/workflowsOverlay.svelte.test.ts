@@ -31,8 +31,8 @@ import {
   toggleWorkflowsPane,
 } from './workflowsOverlay.svelte';
 import { appStorageGet, appStorageSet, resetAppStorageForTest } from './appStorage';
-import { focusedOpenTargetPane, resetPanesForTest } from './panes.svelte';
-import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
+import { createPane, focusPane, focusedOpenTargetPane, resetPanesForTest } from './panes.svelte';
+import { getPaneLayoutItems, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import { installToolPanes, isToolOpen, resetToolPanesForTest } from './toolPanes.svelte';
 
 const STACK_KEY = 'workflows:overlay';
@@ -88,6 +88,22 @@ describe('workflows navigation', () => {
     expect(getWorkflowsOverlayStack()).toEqual([{ level: 'home' }, { level: 'all-clear' }]);
     expect(isWorkflowSweepActive()).toBe(false);
     expect(getWorkflowSweepIndex()).toBe(-1);
+  });
+
+  // A deep link opens Workflows the way a thread notification opens its
+  // thread: in the focused pane's place (stores/toolPanes.svelte.ts).
+  it('opens a deep link in the focused pane\'s place', () => {
+    setPaneLayoutItemsForTest([
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 560 },
+      { id: 'right', paneId: 'right', kind: 'thread', widthPx: 640 },
+    ]);
+    createPane('left');
+    createPane('right');
+    focusPane('right');
+    openWorkflowRunInPane('run-3');
+    expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['left', 'tool-workflows']);
+    expect(getPaneLayoutItems()[1].widthPx).toBe(640);
+    expect(getWorkflowsOverlayRunId()).toBe('run-3');
   });
 
   it('opens a deep link straight into the sweep at that run', () => {

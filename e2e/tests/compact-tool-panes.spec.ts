@@ -65,4 +65,14 @@ test('Workflows is a full-width pane and Back steps detail, home, then list', as
   await section.getByTestId('compact-back').click();
   await expect(screen(page)).toHaveAttribute('data-compact-screen', 'list');
   await page.screenshot({ path: testInfo.outputPath('compact-list-tools-row-dark.png') });
+
+  // Pull requests, whose list has no detail step yet: Back goes straight to
+  // the list.
+  await page.getByTestId('sidebar-tool-pulls').click();
+  await expect(screen(page)).toHaveAttribute('data-compact-screen', 'thread');
+  const pulls = page.locator('section[data-pane-kind="pulls"]');
+  await expect(pulls.getByTestId('pulls-pane-empty')).toBeVisible();
+  await expect(pulls.getByTestId('pane-close')).toHaveCount(0);
+  await pulls.getByTestId('compact-back').click();
+  await expect(screen(page)).toHaveAttribute('data-compact-screen', 'list');
 });

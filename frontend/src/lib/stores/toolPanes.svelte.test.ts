@@ -417,7 +417,7 @@ describe('focus and the active tool', () => {
 
   it('reports the focused tool\'s detail step through its probe', () => {
     let open = false;
-    registerToolDetailProbe('pulls', () => open);
+    const restore = registerToolDetailProbe('pulls', () => open);
     threadLayout([threadItem('left'), toolItem('pulls')], 'left');
     open = true;
     expect(focusedToolDetailOpen()).toBe(false);
@@ -425,6 +425,17 @@ describe('focus and the active tool', () => {
     expect(focusedToolDetailOpen()).toBe(true);
     open = false;
     expect(focusedToolDetailOpen()).toBe(false);
-    registerToolDetailProbe('pulls', () => false);
+    restore();
+  });
+
+  it('restores the probe a registration replaced when it is disposed', () => {
+    threadLayout([toolItem('pulls')], 'tool-pulls');
+    const restoreFirst = registerToolDetailProbe('pulls', () => true);
+    const restoreSecond = registerToolDetailProbe('pulls', () => false);
+    expect(focusedToolDetailOpen()).toBe(false);
+    restoreSecond();
+    expect(focusedToolDetailOpen()).toBe(true);
+    restoreFirst();
+    expect(focusedToolDetailOpen()).toBe(false);
   });
 });
