@@ -99,9 +99,10 @@ type Forge interface {
 // more than threads alone. Unresolved, with Detail, has the detail's
 // readiness count the unresolved threads (MergeReadiness.Unresolved):
 // GitHub reads the thread states past the detail's first 100, GitLab the
-// discussions.
+// discussions. ViewerReview, with Detail, fills PRDetail.ViewerReviewState:
+// GitLab reads the merge request's reviewers; GitHub's list carries it.
 type PRReadParts struct {
-	Detail, Threads, CI, Events, Unresolved bool
+	Detail, Threads, CI, Events, Unresolved, ViewerReview bool
 }
 
 func (p PRReadParts) none() bool { return !p.Detail && !p.Threads && !p.CI && !p.Events }
@@ -174,9 +175,15 @@ type PRDetail struct {
 	// PR that is no longer open; empty while it is.
 	Readiness MergeReadiness `json:"readiness"`
 	Merge     MergeOptions   `json:"merge"`
-	MergedAt  string         `json:"mergedAt,omitempty"`
-	MergedBy  string         `json:"mergedBy,omitempty"`
-	ClosedAt  string         `json:"closedAt,omitempty"`
+	// ViewerReviewState is the viewer's own review of a GitLab merge
+	// request as its reviewers read words it (unreviewed, review_started,
+	// reviewed, requested_changes, approved, unapproved); empty when the
+	// viewer is not a reviewer, on GitHub, and when the read did not ask
+	// (PRReadParts.ViewerReview).
+	ViewerReviewState string `json:"viewerReviewState,omitempty"`
+	MergedAt          string `json:"mergedAt,omitempty"`
+	MergedBy          string `json:"mergedBy,omitempty"`
+	ClosedAt          string `json:"closedAt,omitempty"`
 }
 
 type PRDiffRefs struct {

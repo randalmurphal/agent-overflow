@@ -24,7 +24,12 @@ func TestPRListAttentionStates(t *testing.T) {
 		{name: "github unreadable times are not a move", row: gitops.PRListRow{Ref: gh, LastCommitAt: "soon", ViewerReview: gitops.PRListReview{State: "APPROVED", SubmittedAt: "2026-01-02T00:00:00Z"}}, state: PRStateOpen},
 		{name: "gitlab reviewer not approved", row: gitops.PRListRow{Ref: gl, ViewerIsReviewer: true, ReviewRequested: true}, state: PRStateYourTurn},
 		{name: "gitlab reviewer approved", row: gitops.PRListRow{Ref: gl, ViewerIsReviewer: true, ReviewRequested: true}, detail: &PRListDetail{ViewerApproved: true}, state: PRStateOpen},
-		{name: "gitlab reviewer requested changes", row: gitops.PRListRow{Ref: gl, ViewerIsReviewer: true, ReviewDecision: "CHANGES_REQUESTED"}, state: PRStateWaitingOnAuthor},
+		{name: "gitlab my change request stands", row: gitops.PRListRow{Ref: gl, ViewerIsReviewer: true, ReviewDecision: "CHANGES_REQUESTED"}, detail: &PRListDetail{ViewerReviewState: "requested_changes"}, state: PRStateWaitingOnAuthor},
+		{name: "gitlab another reviewer's change request, mine unreviewed", row: gitops.PRListRow{Ref: gl, ViewerIsReviewer: true, ReviewDecision: "CHANGES_REQUESTED"}, detail: &PRListDetail{ViewerReviewState: "unreviewed"}, state: PRStateYourTurn},
+		{name: "gitlab another reviewer's change request before the detail", row: gitops.PRListRow{Ref: gl, ViewerIsReviewer: true, ReviewDecision: "CHANGES_REQUESTED"}, state: PRStateYourTurn},
+		{name: "gitlab another reviewer's change request, mine approved", row: gitops.PRListRow{Ref: gl, ViewerIsReviewer: true, ReviewDecision: "CHANGES_REQUESTED"}, detail: &PRListDetail{ViewerApproved: true, ViewerReviewState: "approved"}, state: PRStateOpen},
+		{name: "gitlab reviewer commented", row: gitops.PRListRow{Ref: gl, ViewerIsReviewer: true}, detail: &PRListDetail{ViewerReviewState: "reviewed"}, state: PRStateOpen},
+		{name: "gitlab reviewer withdrew an approval", row: gitops.PRListRow{Ref: gl, ViewerIsReviewer: true}, detail: &PRListDetail{ViewerReviewState: "unapproved"}, state: PRStateYourTurn},
 		{name: "gitlab not a reviewer", row: gitops.PRListRow{Ref: gl}, state: PRStateOpen},
 		{name: "github failing checks at list stage", row: gitops.PRListRow{Ref: gh, ViewerIsAuthor: true, ChecksState: "failure", MergeStatus: "clean"}, state: PRStatePipelineFailed},
 		{name: "detail checks pass over a failing list rollup", row: gitops.PRListRow{Ref: gh, ViewerIsAuthor: true, ChecksState: "failure"}, detail: &PRListDetail{ChecksState: "success", ReadinessState: gitops.MergeStateReady}, state: PRStateReady},
@@ -100,11 +105,12 @@ func TestPRListDetailSummarizesTheReadiness(t *testing.T) {
 			Approvals:  gitops.ApprovalCount{Given: 1, Required: 2},
 			Unresolved: &unresolved,
 		},
-		Merge:  gitops.MergeOptions{ViewerApproved: true},
-		Checks: gitops.CheckSummary{Total: 2, Failure: 1, Checks: []gitops.CheckStatus{{Status: "COMPLETED", Conclusion: "FAILURE"}, {Status: "COMPLETED", Conclusion: "SUCCESS"}}},
+		Merge:             gitops.MergeOptions{ViewerApproved: true},
+		ViewerReviewState: "approved",
+		Checks:            gitops.CheckSummary{Total: 2, Failure: 1, Checks: []gitops.CheckStatus{{Status: "COMPLETED", Conclusion: "FAILURE"}, {Status: "COMPLETED", Conclusion: "SUCCESS"}}},
 	})
 	if detail.ReadinessState != gitops.MergeStateBlocked || len(detail.Blockers) != 2 || detail.Blockers[1] != "threads" ||
-		detail.ApprovalsGiven != 1 || detail.ApprovalsRequired != 2 || detail.Unresolved != 3 || !detail.ViewerApproved ||
+		detail.ApprovalsGiven != 1 || detail.ApprovalsRequired != 2 || detail.Unresolved != 3 || !detail.ViewerApproved || detail.ViewerReviewState != "approved" ||
 		detail.ChecksState != "failure" || detail.PipelineStatus != gitops.CIStatusFailed {
 		t.Fatalf("detail = %+v", detail)
 	}

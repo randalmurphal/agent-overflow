@@ -68,6 +68,11 @@ func TestPRListReadsBothForgesThroughTheirAPIs(t *testing.T) {
 				CI:      &forgefake.Pipeline{Jobs: []forgefake.Job{{Name: "unit", Status: "failed"}}}},
 			{Number: 8, Title: "Approved by me", Author: "carol", Reviewers: []string{"ao-viewer"},
 				Reviews: []forgefake.Review{{Author: "ao-viewer", AuthorName: "Viewer", State: "APPROVED"}}},
+			// Dave's change request is not the viewer's.
+			{Number: 9, Title: "Dave asked for changes", Author: "carol", Reviewers: []string{"ao-viewer", "dave"}, ChangeRequests: []string{"dave"}},
+			{Number: 10, Title: "Approved by me, Dave asked for changes", Author: "carol", Reviewers: []string{"ao-viewer", "dave"}, ChangeRequests: []string{"dave"},
+				Reviews: []forgefake.Review{{Author: "ao-viewer", State: "APPROVED"}}},
+			{Number: 11, Title: "I asked for changes", Author: "carol", Reviewers: []string{"ao-viewer"}, ChangeRequests: []string{"ao-viewer"}},
 		}},
 	}}); err != nil {
 		t.Fatal(err)
@@ -108,7 +113,7 @@ func TestPRListReadsBothForgesThroughTheirAPIs(t *testing.T) {
 		t.Fatalf("github states = %v", states)
 	}
 	gl := prListProject(t, snapshot, gitlab)
-	if gl.Error != "" || len(gl.Rows) != 2 {
+	if gl.Error != "" || len(gl.Rows) != 5 {
 		t.Fatalf("gitlab project = %+v", gl)
 	}
 	// Every row is the user's own or one they review, so the first tick
@@ -130,6 +135,18 @@ func TestPRListReadsBothForgesThroughTheirAPIs(t *testing.T) {
 		case 8:
 			if row.State != PRStateOpen || !row.Detail.ViewerApproved {
 				t.Fatalf("MR 8 = %s %+v (%s)", row.State, row.Detail, row.DetailError)
+			}
+		case 9:
+			if row.State != PRStateYourTurn || row.ReviewDecision != "CHANGES_REQUESTED" || row.Detail.ViewerReviewState != "unreviewed" {
+				t.Fatalf("MR 9 = %s %+v (%s)", row.State, row.Detail, row.DetailError)
+			}
+		case 10:
+			if row.State != PRStateOpen || row.Detail.ViewerReviewState != "approved" {
+				t.Fatalf("MR 10 = %s %+v (%s)", row.State, row.Detail, row.DetailError)
+			}
+		case 11:
+			if row.State != PRStateWaitingOnAuthor || row.Detail.ViewerReviewState != "requested_changes" {
+				t.Fatalf("MR 11 = %s %+v (%s)", row.State, row.Detail, row.DetailError)
 			}
 		}
 	}

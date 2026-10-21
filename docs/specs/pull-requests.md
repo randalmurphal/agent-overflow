@@ -248,9 +248,10 @@ One list read per project per refresh: GitLab
 `user_notes_count`, reviewers, `detailed_merge_status`, `head_pipeline`),
 GitHub a `search(type: ISSUE, query: "is:pr is:open repo:O/R")` with
 `reviewDecision`, `reviewRequests`, `headRefOid` and the rollup state.
-GitLab's basic list carries no `head_pipeline` and cannot say whether the
-viewer approved, so the detail (approvals, unresolved count, pipeline,
-readiness) is read per MR for the rows on screen and for the user's own
+GitLab's basic list carries no `head_pipeline` and cannot say how the
+viewer reviewed (its `reviewers` are accounts, and `requested_changes`
+may be another reviewer's), so the detail (approvals, the viewer's own
+reviewer state, unresolved count, pipeline, readiness) is read per MR for the rows on screen and for the user's own
 and reviewed rows whether or not the filter shows them, at most 60, and
 read again only when the list row moves, on a refresh, or after five
 minutes. A GitLab author's reply after the viewer's review is not in the

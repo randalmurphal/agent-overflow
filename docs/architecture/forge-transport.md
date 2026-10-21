@@ -401,7 +401,7 @@ row's `Seen` and `Since` follow at once.
 | Tick | GitHub | GitLab |
 |---|---|---|
 | Lists | 1 `PullsSearch` per repository per 100 PRs | 1 merge request list page per repository per 100 MRs |
-| A focused row's detail, when due | 1 `PRTick` (detail and checks), + 1 `PRThreadStatesPage` per 100 threads past 100 | 1 merge request + 1 approvals + 1 discussions page per 100 discussions |
+| A focused row's detail, when due | 1 `PRTick` (detail and checks), + 1 `PRThreadStatesPage` per 100 threads past 100 | 1 merge request + 1 approvals + 1 reviewers (the viewer's own review state) + 1 discussions page per 100 discussions |
 
 ### The pipeline pump and stage reads
 

@@ -39,8 +39,9 @@ var prStateOrder = []string{
 // PRListDetail is what the focus read (git.Core.ReadPRSummary) adds to a
 // row: readiness and its blocker kinds, approvals, unresolved threads, the
 // head checks (ChecksState in the list's success/failure/pending
-// vocabulary, PipelineStatus the normalized CI status) and whether the
-// viewer's approval stands.
+// vocabulary, PipelineStatus the normalized CI status), whether the
+// viewer's approval stands and, on GitLab, the viewer's own review state
+// (git.PRDetail.ViewerReviewState).
 type PRListDetail struct {
 	ReadinessState    string   `json:"readinessState"`
 	Blockers          []string `json:"blockers"`
@@ -50,6 +51,7 @@ type PRListDetail struct {
 	ChecksState       string   `json:"checksState"`
 	PipelineStatus    string   `json:"pipelineStatus"`
 	ViewerApproved    bool     `json:"viewerApproved"`
+	ViewerReviewState string   `json:"viewerReviewState,omitempty"`
 }
 
 // prListDetailOf summarizes a PR's detail for its row.
@@ -60,6 +62,7 @@ func prListDetailOf(detail gitops.PRDetail) *PRListDetail {
 		ApprovalsGiven:    detail.Readiness.Approvals.Given,
 		ApprovalsRequired: detail.Readiness.Approvals.Required,
 		ViewerApproved:    detail.Merge.ViewerApproved,
+		ViewerReviewState: detail.ViewerReviewState,
 	}
 	for _, blocker := range detail.Readiness.Blockers {
 		out.Blockers = append(out.Blockers, blocker.Kind)
@@ -92,9 +95,9 @@ func prListDetailOf(detail gitops.PRDetail) *PRListDetail {
 //   - your_turn: the user did not open it, and the forge requests their
 //     review, or they reviewed it and the head moved after that review
 //     (GitHub: the head commit is newer than the review). On GitLab, whose
-//     list cannot say whether a reviewer reviewed, a reviewer whose
-//     approval does not stand and whose merge request has no change
-//     request.
+//     list cannot say whether a reviewer reviewed, a reviewer whose own
+//     review, as the detail reads it, has not approved, requested changes
+//     or reviewed (before the detail lands, any reviewer).
 //   - pipeline_failed: theirs, and the checks or the pipeline failed. A
 //     GitLab list row carries no pipeline, so there it waits for the
 //     detail.
@@ -102,8 +105,10 @@ func prListDetailOf(detail gitops.PRDetail) *PRListDetail {
 //     forge's merge status is clean (GitHub clean or has_hooks, GitLab
 //     mergeable).
 //   - changes_requested: theirs, and a reviewer requested changes.
-//   - waiting_on_author: the user requested changes and nothing moved
-//     since.
+//   - waiting_on_author: the user's own review requested changes and
+//     nothing moved since (GitHub: their latest review; GitLab: their
+//     reviewer state, which the detail reads). Another reviewer's change
+//     request is never the user's.
 //   - draft, then open.
 func prAttention(row gitops.PRListRow, detail *PRListDetail) (state, group string) {
 	state = prAttentionState(row, detail)
@@ -122,7 +127,7 @@ func prAttentionState(row gitops.PRListRow, detail *PRListDetail) string {
 		headMoved := review.SubmittedAt != "" && rfc3339After(row.LastCommitAt, review.SubmittedAt)
 		switch {
 		case row.Ref.Forge == "gitlab":
-			if row.ViewerIsReviewer && (detail == nil || !detail.ViewerApproved) && !changesRequested {
+			if row.ViewerIsReviewer && !gitlabViewerReviewed(detail) {
 				return PRStateYourTurn
 			}
 		case row.ReviewRequested || headMoved:
@@ -148,11 +153,12 @@ func prAttentionState(row gitops.PRListRow, detail *PRListDetail) string {
 		}
 	}
 	if !row.ViewerIsAuthor {
-		// GitHub names the user's own change request; GitLab's list only
-		// that one stands, which for a reviewer is theirs to wait on.
+		// The user's own change request: GitHub's list names their latest
+		// review, GitLab's detail their reviewer state. The aggregate
+		// decision may be another reviewer's.
 		mine := strings.EqualFold(row.ViewerReview.State, "CHANGES_REQUESTED")
 		if row.Ref.Forge == "gitlab" {
-			mine = row.ViewerIsReviewer && changesRequested
+			mine = row.ViewerIsReviewer && detail != nil && detail.ViewerReviewState == gitlabReviewRequestedChanges
 		}
 		if mine {
 			return PRStateWaitingOnAuthor
@@ -162,6 +168,24 @@ func prAttentionState(row gitops.PRListRow, detail *PRListDetail) string {
 		return PRStateDraft
 	}
 	return PRStateOpen
+}
+
+// gitlabReviewRequestedChanges is GitLab's reviewer state for a review
+// that requested changes.
+const gitlabReviewRequestedChanges = "requested_changes"
+
+// gitlabViewerReviewed reports that the detail shows the viewer's own
+// review done: their approval stands, or their reviewer state is
+// approved, requested_changes or reviewed. Unknown before the detail.
+func gitlabViewerReviewed(detail *PRListDetail) bool {
+	if detail == nil {
+		return false
+	}
+	switch detail.ViewerReviewState {
+	case "approved", gitlabReviewRequestedChanges, "reviewed":
+		return true
+	}
+	return detail.ViewerApproved
 }
 
 // rfc3339After reports whether a is a time after b; an unreadable time is

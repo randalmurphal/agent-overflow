@@ -2125,8 +2125,9 @@ export class ForgeAttachment {
 /**
  * ForgeProject is one of this backend's projects whose origin names a
  * repository on a supported forge: the Pull requests page lists its PRs
- * and pipelines. Error is set, with Repo zero, when the origin could not
- * be read for a reason other than naming no forge repository.
+ * and pipelines. Error is set, with Repo zero, when git could not read the
+ * origin (not a repository, a git or I/O failure); the PR list keeps the
+ * repository and rows it read before beside it.
  */
 export class ForgeProject {
     "projectId": string;
@@ -3555,8 +3556,9 @@ export class PRCILogState {
  * PRListDetail is what the focus read (git.Core.ReadPRSummary) adds to a
  * row: readiness and its blocker kinds, approvals, unresolved threads, the
  * head checks (ChecksState in the list's success/failure/pending
- * vocabulary, PipelineStatus the normalized CI status) and whether the
- * viewer's approval stands.
+ * vocabulary, PipelineStatus the normalized CI status), whether the
+ * viewer's approval stands and, on GitLab, the viewer's own review state
+ * (git.PRDetail.ViewerReviewState).
  */
 export class PRListDetail {
     "readinessState": string;
@@ -3567,6 +3569,7 @@ export class PRListDetail {
     "checksState": string;
     "pipelineStatus": string;
     "viewerApproved": boolean;
+    "viewerReviewState"?: string;
 
     /** Creates a new PRListDetail instance. */
     constructor($$source: Partial<PRListDetail> = {}) {

@@ -171,6 +171,8 @@ func (e *Engine) gitlabDetailedStatus(r *Repo, p *Pull) string {
 		return "need_rebase"
 	case r.Merge.DiscussionsMustResolve && gitlabUnresolved(p):
 		return "discussions_not_resolved"
+	case len(p.ChangeRequests) > 0:
+		return "requested_changes"
 	}
 	if r.Merge.PipelineMustSucceed {
 		switch {
@@ -224,6 +226,30 @@ func glabApprovals(e *Engine, c *call, m []string) response {
 		return fail
 	}
 	return glabOK(jsonResponse(e.gitlabApprovalsJSON(r, p)))
+}
+
+// glabReviewers answers GET .../reviewers: each reviewer with the state of
+// their review, approved for one whose approval stands, requested_changes
+// for one in changeRequests, else unreviewed.
+func glabReviewers(e *Engine, c *call, m []string) response {
+	_, p, fail, ok := e.glabMRFrom(c, m)
+	if !ok {
+		return fail
+	}
+	reviewers := []map[string]any{}
+	for _, login := range p.Reviewers {
+		state := "unreviewed"
+		switch {
+		case gitlabViewerApproved(p, login):
+			state = "approved"
+		case slices.ContainsFunc(p.ChangeRequests, func(other string) bool { return strings.EqualFold(other, login) }):
+			state = "requested_changes"
+		}
+		user := gitlabUser(login, "")
+		user["state"] = "active"
+		reviewers = append(reviewers, map[string]any{"user": user, "state": state, "created_at": p.CreatedAt})
+	}
+	return glabOK(jsonResponse(reviewers))
 }
 
 // gitlabApprovalsJSON is the merge request's approval state. With no
@@ -761,6 +787,8 @@ func glabApprove(e *Engine, c *call, m []string) response {
 	}
 	now := glabNow()
 	p.Reviews = append(p.Reviews, Review{ID: e.ids.next(), Author: e.viewer, State: "APPROVED", SubmittedAt: now, CommitSHA: p.HeadSHA})
+	// An approval replaces the viewer's change request, as on GitLab.
+	p.ChangeRequests = slices.DeleteFunc(p.ChangeRequests, func(login string) bool { return strings.EqualFold(login, e.viewer) })
 	p.Events = append(p.Events, Event{ID: e.ids.next(), Kind: "approved", Actor: e.viewer, At: now})
 	resp := glabOK(jsonResponse(e.gitlabApprovalsJSON(r, p)))
 	resp.status = http.StatusCreated
