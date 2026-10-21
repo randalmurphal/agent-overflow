@@ -12,6 +12,10 @@
     subscribeContentGeometry(onSample: (sample: ContentGeometrySample) => void): () => void;
     /** A scroll controller wrote scrollTop (`TimelineVirtualizerHandle.noteScrollTopWritten`). */
     noteScrollTopWritten(top: number): void;
+    /** The scroll offset the virtualizer last saw. */
+    getScrollOffset(): number;
+    /** The scroller's content-box height. */
+    getViewportSize(): number;
     /** The row at a scroll offset. */
     findItemIndex(offset: number): number;
     /** Whether the row is held, and so has a scroll offset. */
@@ -235,6 +239,14 @@
 
   export function noteScrollTopWritten(top: number): void {
     list?.noteScrollTopWritten(top);
+  }
+
+  export function getScrollOffset(): number {
+    return list?.getScrollOffset() ?? 0;
+  }
+
+  export function getViewportSize(): number {
+    return list?.getViewportSize() ?? 0;
   }
 
   export function findItemIndex(offset: number): number {

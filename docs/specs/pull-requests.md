@@ -231,9 +231,11 @@ the one before it; older ones are released with their subscription. Line
 comment drafts have no thread row to live under, so the MR owns them
 (stored under its key on its computer) until a review posts them or they
 are sent to a thread; they survive stepping through the list and a
-restart. The PR store's `onPRSnapshotApplied` observer
-(key, live head, window visibility) is the page's signal to mark an MR
-viewed in `pr_views`.
+restart. The page marks an MR viewed in `pr_views` while its review is
+on screen and the window visible, whenever the head the review shows (the
+PR store's `onPRSnapshotApplied` observer, or the snapshot it holds when
+the page returns to a kept review) or the listed comment count differs
+from what it last marked.
 
 Rows carry number, title, project, author, age, CI dot, approvals `n/m`,
 unresolved count, one state pill and a "since you looked" fragment.
@@ -291,7 +293,9 @@ detail beside it) and loses its modal.
 ### Pipelines tab (phase 3)
 
 Rows are pipelines of the selected projects on any ref: id, ref (branch,
-MR, tag), head commit, stage dots for the rows on screen, age. Filters:
+MR, tag), head commit, stage dots for the rows on screen (or that their
+read failed), age. A project whose pipelines or origin could not be read
+shows its failure above the rows, as on the Merge requests tab. Filters:
 project, ref kind, status, default all; the ref and status pickers are
 one choice each and close on the pick. A row opens the stages / jobs /
 log view beside the list; on compact the page header's Back is the one
@@ -370,9 +374,14 @@ approve → unapprove → auto-merge → cancel → merge → merged on a GitLab
 and a GitHub PR, plus the 403 and 409 refusals, with a compact screenshot
 of the section header. `pulls-page.spec.ts` and its compact twin
 (`pulls-page-flow.ts`) drive the page against both forges: the groups
-and states, the detail read that moves a GitLab row to `Pipeline
-failed`, filters remembered across a reload, the pinned review, "since
-you looked", a refused project failing alone, "Open with agent" opening
-a thread on the branch, and the Pipelines tab's filters, stages and a
-job log. `tool-panes.spec.ts`, `workflows-pane.spec.ts` and their
+and states, the forge reads (each repository's list, the own and
+review-requested rows' detail), the detail read that moves a GitLab row
+to `Pipeline failed`, filters remembered across a reload, the pinned
+review, "since you looked" clearing on a reopen and staying clear across
+a reload, a refused project failing alone, "Open with agent" opening a
+thread on a worktree of the branch, and the Pipelines tab's filters
+remembered across a reload, stages and a GitLab and a GitHub job log.
+`pullsList.browser.test.ts` covers the lists' virtualization: the
+mounted rows stay bounded over thousands, and the rows on screen are
+reported as the list scrolls, changes and hides. `tool-panes.spec.ts`, `workflows-pane.spec.ts` and their
 compact twins cover the tools row and the pane kinds.

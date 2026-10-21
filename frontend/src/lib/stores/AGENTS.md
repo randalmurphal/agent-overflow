@@ -54,7 +54,10 @@ Tool panes are layout items only (`toolPanes.svelte.ts`), one per kind. A
 thread open that names no pane resolves through
 `panes.svelte#focusedOpenTargetPane`, which gives a focused tool pane's slot
 to the thread; do not pass `getFocusedPaneOrNull() ?? ensureMainPane()` as a
-target, which bypasses it.
+target, which bypasses it. A tool's open that answers after an await goes
+through `mountThreadForToolPane` with the tool pane, or null once the
+surface that asked is gone, so it never lands in a pane that gained focus
+meanwhile.
 
 ## Events and convergence
 
@@ -96,9 +99,11 @@ gives the wait up when the backend's launch (its hello's `launchId`) changes, si
 a restarted backend's pump numbers from one again, while a re-subscribe to
 the same process keeps it. CI is sourced only by
 that subscription, or for a repository pipeline by its `SubscribePipeline`
-handle (`pipelineCI.svelte.ts`); the frontend never polls it. Both feed the
-CI entry under one CI key and register their follow and refresh calls in
-`ciHandles.ts`.
+handle (`pipelineCI.svelte.ts`), whose `ci:pipeline_updated` frames rank
+the same way against one watermark per pipeline key, seeded by the result,
+with the frames of its join replayed in sequence order; the frontend never
+polls it. Both feed the CI entry under one CI key and register their follow
+and refresh calls in `ciHandles.ts`.
 `pr:ci_log` frames carry a followed job's whole log state, its index and
 never its text, so the newest by sequence wins; the follow set lives on the
 subscription handle, so it is restated after every subscribe and after a

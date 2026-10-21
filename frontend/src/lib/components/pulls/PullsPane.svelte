@@ -11,19 +11,16 @@
   import Segmented from '../primitives/Segmented.svelte';
   import ReviewPane from '../review/ReviewPane.svelte';
   import OpenWithAgentMenu from './OpenWithAgentMenu.svelte';
-  import PipelineRow from './PipelineRow.svelte';
   import PipelineView from './PipelineView.svelte';
   import PipelinesFilterChips from './PipelinesFilterChips.svelte';
-  import PullRow from './PullRow.svelte';
+  import PipelinesList from './PipelinesList.svelte';
   import PullsFilterChips from './PullsFilterChips.svelte';
-  import PullsGroupHeader from './PullsGroupHeader.svelte';
   import PullsErrorNotice from './PullsErrorNotice.svelte';
+  import PullsList from './PullsList.svelte';
   import PullsListResizer from './PullsListResizer.svelte';
-  import PullsProjectError from './PullsProjectError.svelte';
   import { ListColumnWidth } from './listWidth.svelte';
   import { provideHostedBack } from '../panes/hostedBack';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
-  import { pullGroupLabel } from '../../utils/pullsAttention';
   import { copyToClipboard } from '../../utils/clipboard';
   import { errString } from '../../utils/errors';
   import { forgeLabels } from '../../utils/forgeLabels';
@@ -82,13 +79,13 @@
   } from '../../stores/pullsPageAgent.svelte';
   import { mrFilters, pipelineFilters, setMRFilters } from '../../stores/pullsPageFilters.svelte';
   import type { CapturedError } from '../../stores/errorReports.svelte';
-  import { currentPinnedReviewState, reviewSubjectForPR, type ReviewPaneState } from '../../stores/reviewPane.svelte';
+  import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
+  import { currentPinnedReviewState, reviewSubjectForPR } from '../../stores/reviewPanePinned.svelte';
   import { selectedBackend } from '../../stores/selectedBackend.svelte';
   import { addErrorToast } from '../../stores/toast.svelte';
   import { registerToolDetailProbe } from '../../stores/toolPanes.svelte';
   import type { PullRowView } from './pullRowView';
   import type { PipelineRowView } from './pipelineRowView';
-  import { visibleRows } from './visibleRows';
 
   // The Pull requests tool pane (docs/specs/pull-requests.md, "The page"):
   // a list column with two tabs, Merge requests (the filter chips, the
@@ -130,11 +127,7 @@
   const pipeline = $derived(selectedPipeline(paneId));
   const detailShown = $derived(tab === 'mrs' ? selection !== null : pipeline !== null);
   const filters = $derived(mrFilters(backend));
-  const groups = $derived(pullsRowsByGroup(paneId));
-  const projectErrors = $derived(pullsProjectErrors(paneId));
-  const rowCount = $derived(groups.reduce((sum, group) => sum + group.rows.length, 0));
   const pipeFilters = $derived(pipelineFilters(backend));
-  const pipeRows = $derived(pipelinesRows(paneId));
 
   // The page lists the computer it opened on until the pane goes. The
   // pane id is fixed for a tool pane's life (`tool-pulls`), so the initial
@@ -258,19 +251,6 @@
       addErrorToast(`Could not open the pull request: ${errString(err)}`, err);
     }
   }
-
-  const emptyText = $derived.by(() => {
-    switch (filters.filter) {
-      case 'needs_you':
-        return 'Nothing needs you right now.';
-      case 'mine':
-        return 'No open merge requests of yours.';
-      case 'review_requested':
-        return 'No reviews requested from you.';
-      default:
-        return 'No open merge requests.';
-    }
-  });
 </script>
 
 <div class="flex h-full min-h-0 flex-col" data-testid="pulls-pane" data-tab={tab}>
@@ -347,55 +327,35 @@
         {#if pullsSnapshotError(paneId)}
           <div class="border-y border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="pulls-snapshot-error">{pullsSnapshotError(paneId)}</div>
         {/if}
-        <div
-          class="min-h-0 flex-1 overflow-y-auto border-t border-border-subtle"
-          data-testid="pulls-list"
-          use:visibleRows={{ attr: 'pr-key', onVisible: (keys) => setFocusedRows(paneId, keys) }}
-        >
-          {#each projectErrors as failed (failed.projectId)}
-            <PullsGroupHeader label={failed.name} testid="pulls-project-group" />
-            <PullsProjectError message={failed.message} failure={failed.failure} forge={failed.forge} cause={failed.cause} onRetry={refresh} retrying={pullsRefreshing(paneId)} />
-          {/each}
-          {#each groups as group (group.group)}
-            <PullsGroupHeader label={pullGroupLabel(group.group)} count={group.rows.length} testid="pulls-group-{group.group}" />
-            {#each group.rows as row (row.key)}
-              <PullRow {row} selected={selection?.key === row.key} onOpen={openRow} onMenu={openRowMenu} />
-            {/each}
-          {/each}
-          {#if pullsError(paneId)}
-            <p class="px-4 py-6 text-xs text-error" data-testid="pulls-error">{pullsError(paneId)}</p>
-          {:else if pullsLoading(paneId) && rowCount === 0 && projectErrors.length === 0}
-            <p class="px-4 py-6 text-xs text-fg-muted" data-testid="pulls-loading">Reading merge requests…</p>
-          {:else if rowCount === 0 && projectErrors.length === 0}
-            <div class="flex flex-col items-center gap-1 px-6 py-10 text-center" data-testid="pulls-empty">
-              <p class="text-sm text-fg-muted">{pullsProjects(paneId).length === 0 ? 'No project on this computer has a GitHub or GitLab origin.' : emptyText}</p>
-            </div>
-          {/if}
-        </div>
+        <PullsList
+          groups={pullsRowsByGroup(paneId)}
+          projectErrors={pullsProjectErrors(paneId)}
+          selectedKey={selection?.key ?? null}
+          filter={filters.filter}
+          noProjects={pullsProjects(paneId).length === 0}
+          error={pullsError(paneId)}
+          loading={pullsLoading(paneId)}
+          retrying={pullsRefreshing(paneId)}
+          shown={!(compact && detailShown)}
+          onOpen={openRow}
+          onMenu={openRowMenu}
+          onRetry={refresh}
+          onVisible={(keys) => setFocusedRows(paneId, keys)}
+        />
       {:else}
         <PipelinesFilterChips filters={pipeFilters} projects={pipelinesProjects(paneId)} onChange={(next) => setPipelinesFilters(paneId, next)} />
-        <div
-          class="min-h-0 flex-1 overflow-y-auto border-t border-border-subtle"
-          data-testid="pipelines-list"
-          use:visibleRows={{ attr: 'pipeline-key', onVisible: (keys) => setVisiblePipelines(paneId, keys) }}
-        >
-          {#each pipelinesProjectErrors(paneId) as failed (failed.projectId)}
-            <PullsGroupHeader label={failed.name} testid="pipelines-project-group" />
-            <PullsProjectError message={failed.message} failure={failed.failure} forge={failed.forge} cause={failed.cause} onRetry={refresh} retrying={pipelinesReading(paneId)} />
-          {/each}
-          {#each pipeRows as row (row.key)}
-            <PipelineRow {row} selected={pipeline?.key === row.key} onOpen={openPipelineRow} />
-          {/each}
-          {#if pipelinesError(paneId)}
-            <p class="px-4 py-6 text-xs text-error" data-testid="pipelines-error">{pipelinesError(paneId)}</p>
-          {:else if pipelinesLoading(paneId) && pipeRows.length === 0}
-            <p class="px-4 py-6 text-xs text-fg-muted" data-testid="pipelines-loading">Reading pipelines…</p>
-          {:else if pipeRows.length === 0 && pipelinesProjectErrors(paneId).length === 0}
-            <div class="flex flex-col items-center gap-1 px-6 py-10 text-center" data-testid="pipelines-empty">
-              <p class="text-sm text-fg-muted">No pipelines match.</p>
-            </div>
-          {/if}
-        </div>
+        <PipelinesList
+          rows={pipelinesRows(paneId)}
+          projectErrors={pipelinesProjectErrors(paneId)}
+          selectedKey={pipeline?.key ?? null}
+          error={pipelinesError(paneId)}
+          loading={pipelinesLoading(paneId)}
+          retrying={pipelinesReading(paneId)}
+          shown={!(compact && detailShown)}
+          onOpen={openPipelineRow}
+          onRetry={refresh}
+          onVisible={(keys) => setVisiblePipelines(paneId, keys)}
+        />
       {/if}
       {#if !compact}
         <PullsListResizer column={listColumn} />

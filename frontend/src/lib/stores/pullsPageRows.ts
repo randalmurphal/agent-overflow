@@ -160,7 +160,7 @@ function overrides(row: PRListItem, local: PRSeen | null): boolean {
 export function projectPullRow(row: PullsListedRow, backend: BackendKey, localSeen: PRSeen | null): PullRowView {
   const { item, project } = row;
   const detail = item.detail;
-  const marked = overrides(item, localSeen);
+  const local = overrides(item, localSeen) ? localSeen : null;
   return {
     key: row.key,
     forge: row.pr.forge,
@@ -169,9 +169,10 @@ export function projectPullRow(row: PullsListedRow, backend: BackendKey, localSe
     url: item.url,
     state: item.state,
     group: item.group,
-    // Marked viewed at its head just now: nothing is new since.
-    since: marked ? null : sinceOf(item),
-    seen: marked || item.seen !== null,
+    // Marked viewed just now: what is new is measured from that mark,
+    // which records the head the review showed, not always the listed one.
+    since: local ? sinceMark(item, local) : sinceOf(item),
+    seen: local !== null || item.seen !== null,
     projectName: project.name,
     author: item.viewerIsAuthor ? 'you' : (item.author.name || item.author.login),
     age: ageOf(item.updatedAt, backend),
@@ -181,6 +182,15 @@ export function projectPullRow(row: PullsListedRow, backend: BackendKey, localSe
     approvals: detail && detail.approvalsRequired > 0 ? { given: detail.approvalsGiven, required: detail.approvalsRequired } : null,
     unresolved: detail ? detail.unresolved : null,
   };
+}
+
+// The backend's measure (prSinceOf) of the listed PR against a mark;
+// null when nothing moved.
+function sinceMark(item: PRListItem, seen: PRSeen): PullSince | null {
+  const headMoved = item.headSHA !== '' && seen.headSHA !== item.headSHA;
+  const newComments = seen.comments === null ? 0 : Math.max(item.comments - seen.comments, 0);
+  const newCommits = seen.commits === null ? 0 : Math.max(item.commits - seen.commits, 0);
+  return headMoved || newComments > 0 || newCommits > 0 ? { headMoved, newComments, newCommits } : null;
 }
 
 function sinceOf(item: PRListItem): PullSince | null {
@@ -219,19 +229,14 @@ export function projectErrors(snapshot: PRListSnapshot | null, projects: readonl
 
 /**
  * The PR keys (the backend's, `PRReference.Key`) whose detail the page
- * asks for: every needs-you row first, whatever the filters, then the rows
- * on screen, at most PR_LIST_FOCUS_MAX.
+ * asks for: the rows on screen in list order, at most PR_LIST_FOCUS_MAX.
+ * The pump reads the user's own and reviewed rows itself.
  */
 export function focusKeys(rows: readonly PullsListedRow[], onScreen: ReadonlySet<string>): string[] {
   const out: string[] = [];
-  const added = new Set<string>();
-  const add = (row: PullsListedRow): void => {
-    const key = prKey(row.pr);
-    if (added.has(key) || out.length >= PR_LIST_FOCUS_MAX) return;
-    added.add(key);
-    out.push(key);
-  };
-  for (const row of rows) if (row.item.group === 'needs_you') add(row);
-  for (const row of rows) if (onScreen.has(row.key)) add(row);
+  for (const row of rows) {
+    if (out.length >= PR_LIST_FOCUS_MAX) break;
+    if (onScreen.has(row.key)) out.push(prKey(row.pr));
+  }
   return out;
 }

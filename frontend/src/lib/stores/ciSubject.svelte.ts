@@ -13,7 +13,10 @@
 //
 // The subject is a getter: the review pane's PR moves with its scope. The
 // open log records the subject it was opened on, so a read, save or follow
-// never addresses a pipeline the surface has since left.
+// never addresses a pipeline the surface has since left. A surface that
+// holds the subscription itself passes `sourceError`, the reason it cannot
+// hold it (its subscribe failing, or a missing grant), which the state
+// shows in place of the CI until it clears.
 
 import { SvelteSet } from 'svelte/reactivity';
 import { SavePRCIJobLog, SavePRCIJobLogSection } from './bindings';
@@ -118,11 +121,18 @@ export interface CISubjectState {
   dispose(): void;
 }
 
-export function createCISubjectState(subject: () => CISubject | null): CISubjectState {
+export interface CISubjectOptions {
+  /** Reactive: why the surface holds no live subscription; null while it
+   * does. Shown over the CI entry, which then reads as not loading. */
+  sourceError?: () => string | null;
+}
+
+export function createCISubjectState(subject: () => CISubject | null, options: CISubjectOptions = {}): CISubjectState {
   const followToken = Symbol('ci-log');
   const current = $derived(subject());
   const key = $derived(current ? ciKeyFor(current) : null);
   const ci = $derived(peekPRCI(key));
+  const sourceError = $derived(options.sourceError?.() ?? null);
   let opened = $state<CILogOpen | null>(null);
   // Save and send failures; the log's own failures are on its state.
   let localError = $state<string | null>(null);
@@ -180,10 +190,10 @@ export function createCISubjectState(subject: () => CISubject | null): CISubject
   return {
     get key() { return key; },
     get pipeline() { return ci.pipeline; },
-    get loading() { return ci.loading; },
+    get loading() { return sourceError === null && ci.loading; },
     get refreshing() { return ci.refreshing; },
-    get error() { return ci.error; },
-    get failure() { return ci.failure; },
+    get error() { return sourceError ?? ci.error; },
+    get failure() { return sourceError === null ? ci.failure : null; },
     get logView() { return logView; },
     get log() { return log; },
     get logLoading() { return opened !== null && prCILogFollowPending(opened.key); },

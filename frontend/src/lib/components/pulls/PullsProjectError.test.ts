@@ -3,8 +3,9 @@
 // error, from the list snapshot's per-project detail or a failed call.
 
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import PullsProjectError from './PullsProjectError.svelte';
+import { __resetCauseCaptureForTest } from './causeCapture';
 import { projectErrors } from '../../stores/pullsPageRows';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { TransportError } from '../../transport/wsClient';
@@ -15,6 +16,10 @@ const REFUSED = pullsProject([], {
   error: 'Your GitHub token lacks the `repo` scope, so the app cannot read owner/repo.',
   errorKind: 'forbidden',
   errorDetails: { ref: 'cid-1', method: 'repository read', at: 1_700_000_000_000, chain: ['forge refused (token lacks the repo scope): forge GET https://api.github.com/search: HTTP 403'] },
+});
+
+beforeEach(() => {
+  __resetCauseCaptureForTest();
 });
 
 afterEach(() => {
@@ -36,7 +41,7 @@ describe('PullsProjectError', () => {
     await waitFor(() => expect(logs).toHaveBeenCalledWith('cid-1'));
   });
 
-  it('captures a failure once while the snapshots repeat it', async () => {
+  it('captures a failure once while the snapshots repeat it and its row remounts', async () => {
     const logs = setBindingMock('GetErrorLogLines', async () => ({ lines: [], found: false }));
     const first = projectErrors(pullsSnapshot([REFUSED]), [], HOME_BACKEND)[0]!;
     const view = render(PullsProjectError, { ...first, onRetry: () => {} });
@@ -44,8 +49,14 @@ describe('PullsProjectError', () => {
     const repeat = projectErrors(pullsSnapshot([REFUSED]), [], HOME_BACKEND)[0]!;
     expect(repeat.cause).not.toBe(first.cause);
     await view.rerender({ ...repeat, onRetry: () => {} });
+    // The virtualized list unmounts the row off screen and mounts it again.
+    view.unmount();
+    const again = render(PullsProjectError, { ...repeat, onRetry: () => {} });
+    expect(again.getByTestId('error-details-toggle')).toBeInTheDocument();
+    again.unmount();
+    const remounted = render(PullsProjectError, { ...repeat, onRetry: () => {} });
     const next = projectErrors(pullsSnapshot([pullsProject([], { ...REFUSED, errorDetails: { ...REFUSED.errorDetails!, ref: 'cid-2' } })]), [], HOME_BACKEND)[0]!;
-    await view.rerender({ ...next, onRetry: () => {} });
+    await remounted.rerender({ ...next, onRetry: () => {} });
     await waitFor(() => expect(logs).toHaveBeenCalledTimes(2));
     expect(logs).toHaveBeenLastCalledWith('cid-2');
   });

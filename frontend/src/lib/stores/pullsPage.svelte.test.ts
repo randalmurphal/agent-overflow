@@ -16,7 +16,8 @@ import {
   pullsNeedsYouCount,
   pullsProjectErrors,
   pullsProjects,
-  pullsRefreshError,
+  pullsError,
+  pullsRefreshFailure,
   pullsRowsByGroup,
   refreshPullsPage,
   resyncPullsAfterGap,
@@ -29,6 +30,7 @@ import {
   loadThreadsOnPR,
   newThreadCheckedOutBy,
   openPRThread,
+  openThread,
   prThreadSeed,
   threadsOnPR,
 } from './pullsPageAgent.svelte';
@@ -57,6 +59,8 @@ import { composeWorkspaceKey } from '../utils/workspaceKey';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { probeReactivity } from '../../test/helpers/reactivity.svelte';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { grantBackendScopes, pairViewOnly, resetToLocalPage, revokeBackendScopes } from '../../test/helpers/scopes';
+import { getToasts, resetToastsForTest } from './toast.svelte';
 
 const PANE = 'tools-pulls';
 
@@ -181,6 +185,7 @@ afterEach(() => {
   __resetReviewPaneStateForTest();
   __resetPRReviewStoreForTest();
   resetStagedBackends();
+  resetToastsForTest();
   delete (document as unknown as Record<string, unknown>).visibilityState;
   vi.useRealTimers();
 });
@@ -230,6 +235,7 @@ describe('the list subscription', () => {
 
   it('pins the subscribe and every handle call to the computer the page lists', async () => {
     stageBackend();
+    await grantBackendScopes('laptop', ['git:operate']);
     const mocks = installListMocks();
     attachPullsPage(PANE, 'laptop');
     await flush();
@@ -281,7 +287,37 @@ describe('the list subscription', () => {
     expect(groupKeys()).toEqual([[rowKey(1)]]);
   });
 
-  it('shows a failed refresh call until the next refresh', async () => {
+  it('answers a gap resync with the re-subscribe, settled once its snapshot is applied', async () => {
+    installListMocks();
+    expect(resyncPullsAfterGap(HOME_BACKEND)).toBeUndefined();
+    attachPullsPage(PANE, HOME_BACKEND);
+    await flush();
+    setMRFilters(HOME_BACKEND, { filter: 'all' });
+    let answer!: (value: unknown) => void;
+    setBindingMock('SubscribePRList', () => new Promise((resolve) => {
+      answer = resolve;
+    }));
+    const resync = resyncPullsAfterGap(HOME_BACKEND);
+    expect(resync).toBeInstanceOf(Promise);
+    let settled = false;
+    void resync!.then(() => {
+      settled = true;
+    });
+    await flush();
+    expect(settled).toBe(false);
+    answer({ id: 'list-9', snapshot: snapshot(4, [project('p1', [item(2)])]) });
+    await resync;
+    expect(groupKeys()).toEqual([[rowKey(2)]]);
+
+    // A failed re-subscribe settles the fence too; the store retries it.
+    setBindingMock('SubscribePRList', async () => {
+      throw new Error('backend busy');
+    });
+    await expect(resyncPullsAfterGap(HOME_BACKEND)).resolves.toBeUndefined();
+  });
+
+  it("holds a refused refresh call as the page's refresh failure until the next refresh", async () => {
+    setBindingMock('GetErrorLogLines', async () => ({ lines: [], found: false }));
     const mocks = installListMocks();
     attachPullsPage(PANE, HOME_BACKEND);
     await flush();
@@ -289,9 +325,44 @@ describe('the list subscription', () => {
       throw new Error('backend busy');
     });
     await refreshPullsPage(PANE);
-    expect(pullsRefreshError(PANE)).toBe('backend busy');
+    expect(pullsRefreshFailure(PANE)?.report).toMatchObject({ context: 'Could not refresh the merge requests', chain: ['backend busy'] });
+    expect(getToasts()).toEqual([]);
     await refreshPullsPage(PANE);
-    expect(pullsRefreshError(PANE)).toBeNull();
+    expect(pullsRefreshFailure(PANE)).toBeNull();
+    expect(getToasts()).toEqual([]);
+  });
+
+  it('holds the list only while the computer grants git:operate, and says so when it does not', async () => {
+    stageBackend();
+    const mocks = installListMocks();
+    attachPullsPage(PANE, 'laptop');
+    await flush();
+    // Absent: nothing is subscribed, and the page says why rather than
+    // loading forever.
+    expect(mocks.subscribe).not.toHaveBeenCalled();
+    expect(pullsLoading(PANE)).toBe(false);
+    expect(pullsError(PANE)).toBe('This device is not allowed to read pull requests on this computer.');
+    await refreshPullsPage(PANE);
+    expect(mocks.refresh).not.toHaveBeenCalled();
+    expect(getToasts().map((toast) => toast.message)).toEqual(['This device is not allowed to read pull requests on this computer.']);
+
+    // Granted: the list subscribes.
+    await grantBackendScopes('laptop', ['git:operate']);
+    await flush();
+    expect(mocks.subscribe).toHaveBeenCalledTimes(1);
+    expect(pullsError(PANE)).toBeNull();
+    setMRFilters('laptop', { filter: 'all' });
+    expect(groupKeys()).toEqual([[rowKey(1, 'laptop')]]);
+
+    // Revoked: the subscription goes with the rows it held.
+    revokeBackendScopes('laptop');
+    await flush();
+    expect(mocks.unsubscribe).toHaveBeenCalledWith('list-1');
+    expect(groupKeys()).toEqual([]);
+    expect(pullsError(PANE)).toBe('This device is not allowed to read pull requests on this computer.');
+    detachPullsPage(PANE);
+    await flush();
+    expect(mocks.subscribe).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -419,28 +490,31 @@ describe('the needs-you badge', () => {
 });
 
 describe('the focus set', () => {
-  it('names every needs-you row first, then the rows on screen, at most the backend cap', async () => {
+  it('names the rows on screen in list order, at most the backend cap, and never an off-screen needs-you row', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
-    const needsYou = Array.from({ length: 50 }, (_, index) => item(index + 1, { group: 'needs_you' }));
-    const waiting = Array.from({ length: 20 }, (_, index) => item(index + 100));
+    const needsYou = Array.from({ length: 60 }, (_, index) => item(index + 1, { group: 'needs_you' }));
+    const waiting = Array.from({ length: 70 }, (_, index) => item(index + 100));
     const mocks = installListMocks(snapshot(1, [project('p1', [...needsYou, ...waiting])]));
     attachPullsPage(PANE, HOME_BACKEND);
     await vi.advanceTimersByTimeAsync(0);
+    // A new handle with nothing on screen focuses nothing.
     const first = mocks.focus.mock.calls.at(-1)!;
     expect(first[0]).toBe('list-1');
-    expect(first[1]).toEqual(needsYou.map((row) => prKey(ref(row.ref.Number))));
+    expect(first[1]).toEqual([]);
 
-    setFocusedRows(PANE, [rowKey(119), rowKey(118), rowKey(3), ...waiting.slice(0, 15).map((row) => rowKey(row.ref.Number))]);
+    // Sixty needs-you rows outside the filter leave the on-screen rows
+    // every slot.
+    setFocusedRows(PANE, [rowKey(119), rowKey(118), ...waiting.slice(0, 10).map((row) => rowKey(row.ref.Number))]);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(mocks.focus.mock.calls.at(-1)![1]).toEqual([...waiting.slice(0, 10), item(118), item(119)].map((row) => prKey(ref(row.ref.Number))));
+
+    setFocusedRows(PANE, waiting.map((row) => rowKey(row.ref.Number)));
     await vi.advanceTimersByTimeAsync(2_000);
     const keys = mocks.focus.mock.calls.at(-1)![1] as string[];
-    expect(keys).toHaveLength(PR_LIST_FOCUS_MAX);
-    expect(keys.slice(0, 50)).toEqual(needsYou.map((row) => prKey(ref(row.ref.Number))));
-    // On-screen rows follow in list order, past the needs-you set they
-    // already include.
-    expect(keys.slice(50)).toEqual(waiting.slice(0, 10).map((row) => prKey(ref(row.ref.Number))));
+    expect(keys).toEqual(waiting.slice(0, PR_LIST_FOCUS_MAX).map((row) => prKey(ref(row.ref.Number))));
 
     const calls = mocks.focus.mock.calls.length;
-    setFocusedRows(PANE, [rowKey(119), rowKey(118), rowKey(3), ...waiting.slice(0, 15).map((row) => rowKey(row.ref.Number))]);
+    setFocusedRows(PANE, waiting.map((row) => rowKey(row.ref.Number)));
     await vi.advanceTimersByTimeAsync(2_000);
     expect(mocks.focus.mock.calls.length).toBe(calls);
   });
@@ -466,7 +540,7 @@ describe('selection and viewed marks', () => {
     expect(detailOpen(PANE)).toBe(false);
   });
 
-  it('marks the selected PR viewed once per head while its review shows, and clears its since text at once', async () => {
+  it('marks the selected PR viewed once per head and comment count while its review shows, and clears its since text at once', async () => {
     installListMocks(snapshot(1, [project('p1', [item(1, { seen: { openedAt: 1, headSHA: 'old', comments: 0, commits: 1 }, since: { headMoved: true, newComments: 1, newCommits: 0 } })])]));
     const mark = installPRMocks();
     attachPullsPage(PANE, HOME_BACKEND);
@@ -489,6 +563,162 @@ describe('selection and viewed marks', () => {
     // Hidden, nothing is marked.
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
     applyPRUpdatedEvent({ prKey: prKey(ref(1)), detail: null, threads: [], headSHA: 'sha-3', seq: 4 });
+    expect(mark).toHaveBeenCalledTimes(2);
+    held.release();
+  });
+
+  // One pump per PR number, as the pinned reviews the page keeps hold them.
+  // A mark records the comment count the list holds, as the backend's does.
+  function installPRPumps(commentsOf: (number: number) => number = () => 0): ReturnType<typeof vi.fn> {
+    setBindingMock('SubscribePRUpdates', async (wire: { Number: number }) => ({
+      id: `pr-sub-${wire.Number}`, prKey: prKey(ref(wire.Number)), detail: null, threads: [], headSHA: `sha-${wire.Number}`, seq: 1,
+    }));
+    setBindingMock('UnsubscribePRUpdates', async () => undefined);
+    setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
+    let openedAt = 100;
+    return setBindingMock('MarkPRViewed', async (wire: { Number: number }, headSHA: string) => ({ openedAt: ++openedAt, headSHA, comments: commentsOf(wire.Number), commits: 1 }));
+  }
+
+  it('marks a PR again on returning to it after comments without a push, and only then', async () => {
+    installListMocks(snapshot(1, [project('p1', [item(1, { comments: 3 }), item(2)])]));
+    let listed = 3;
+    const mark = installPRPumps((number) => (number === 1 ? listed : 0));
+    attachPullsPage(PANE, HOME_BACKEND);
+    await flush();
+    setMRFilters(HOME_BACKEND, { filter: 'all' });
+    selectPR(PANE, rowKey(1));
+    const one = attachPR(rowKey(1), { ref: ref(1) });
+    await flush();
+    selectPR(PANE, rowKey(2));
+    const two = attachPR(rowKey(2), { ref: ref(2) });
+    await flush();
+    expect(mark.mock.calls.map((call) => call[1])).toEqual(['sha-1', 'sha-2']);
+
+    // Two comments land on #1 while #2 is open; its row, whose record now
+    // holds the mark, says so.
+    applyPullsSnapshot(snapshot(2, [project('p1', [
+      item(1, { comments: 5, seen: { openedAt: 102, headSHA: 'sha-1', comments: 3, commits: 1 }, since: { headMoved: false, newComments: 2, newCommits: 0 } }),
+      item(2),
+    ])]), HOME_BACKEND);
+    listed = 5;
+    expect(mark).toHaveBeenCalledTimes(2);
+    const since = () => pullsRowsByGroup(PANE)[0]!.rows.find((row) => row.number === 1)!.since;
+    expect(sinceYouLookedText(since())).toBe('2 new comments since you looked');
+
+    // Back to #1, whose kept review applies no snapshot: marked at its
+    // head, and the fragment clears.
+    selectPR(PANE, rowKey(1));
+    await flush();
+    expect(mark).toHaveBeenCalledTimes(3);
+    expect(mark.mock.calls[2]![1]).toBe('sha-1');
+    expect(since()).toBeNull();
+
+    // Stepping between them with nothing new marks nothing.
+    selectPR(PANE, rowKey(2));
+    selectPR(PANE, rowKey(1));
+    await flush();
+    expect(mark).toHaveBeenCalledTimes(3);
+    one.release();
+    two.release();
+  });
+
+  it('keeps a push the list shows on the row while the kept review shows the head before it', async () => {
+    installListMocks(snapshot(1, [project('p1', [item(1), item(2)])]));
+    let listed = 0;
+    const mark = installPRPumps((number) => (number === 1 ? listed : 0));
+    attachPullsPage(PANE, HOME_BACKEND);
+    await flush();
+    setMRFilters(HOME_BACKEND, { filter: 'all' });
+    selectPR(PANE, rowKey(1));
+    const one = attachPR(rowKey(1), { ref: ref(1) });
+    await flush();
+    selectPR(PANE, rowKey(2));
+    const two = attachPR(rowKey(2), { ref: ref(2) });
+    await flush();
+
+    // #1 gains a push and a comment while #2 is open, and the list has
+    // them before #1's pump does.
+    applyPullsSnapshot(snapshot(2, [project('p1', [
+      item(1, { headSHA: 'sha-9', comments: 1, seen: { openedAt: 101, headSHA: 'sha-1', comments: 0, commits: 1 }, since: { headMoved: true, newComments: 1, newCommits: 0 } }),
+      item(2),
+    ])]), HOME_BACKEND);
+    listed = 1;
+    const since = () => pullsRowsByGroup(PANE)[0]!.rows.find((row) => row.number === 1)!.since;
+
+    // Back to #1, whose kept review still shows the head before the push:
+    // marked at that head, and the push still reads on the row.
+    selectPR(PANE, rowKey(1));
+    await flush();
+    expect(mark.mock.calls.at(-1)![1]).toBe('sha-1');
+    expect(sinceYouLookedText(since())).toBe('pushed since you looked');
+
+    // The review shows the push: marked at it, and the fragment clears.
+    applyPRUpdatedEvent({ prKey: prKey(ref(1)), detail: null, threads: [], headSHA: 'sha-9', seq: 2 });
+    await flush();
+    expect(mark.mock.calls.at(-1)![1]).toBe('sha-9');
+    expect(since()).toBeNull();
+    one.release();
+    two.release();
+  });
+
+  it('marks a comment that lands while the PR\'s review is on screen', async () => {
+    installListMocks(snapshot(1, [project('p1', [item(1)])]));
+    const mark = installPRPumps();
+    attachPullsPage(PANE, HOME_BACKEND);
+    await flush();
+    selectPR(PANE, rowKey(1));
+    const held = attachPR(rowKey(1), { ref: ref(1) });
+    await flush();
+    expect(mark).toHaveBeenCalledTimes(1);
+    applyPullsSnapshot(snapshot(2, [project('p1', [item(1, { comments: 1 })])]), HOME_BACKEND);
+    await flush();
+    expect(mark).toHaveBeenCalledTimes(2);
+    applyPullsSnapshot(snapshot(3, [project('p1', [item(1, { comments: 1, title: 'Renamed' })])]), HOME_BACKEND);
+    await flush();
+    expect(mark).toHaveBeenCalledTimes(2);
+    held.release();
+  });
+
+  it('marks nothing once this device may not operate git on the computer', async () => {
+    installListMocks(snapshot(1, [project('p1', [item(1)])]));
+    const mark = installPRPumps();
+    attachPullsPage(PANE, HOME_BACKEND);
+    await flush();
+    selectPR(PANE, rowKey(1));
+    const held = attachPR(rowKey(1), { ref: ref(1) });
+    await flush();
+    expect(mark).toHaveBeenCalledTimes(1);
+    await pairViewOnly();
+    applyPRUpdatedEvent({ prKey: prKey(ref(1)), detail: null, threads: [], headSHA: 'sha-9', seq: 2 });
+    await flush();
+    expect(mark).toHaveBeenCalledTimes(1);
+    held.release();
+    resetToLocalPage();
+  });
+
+  it('marks a reopened PR viewed at the head its held review moved to while another was open', async () => {
+    installListMocks(snapshot(1, [project('p1', [item(1), item(2)])]));
+    const mark = installPRMocks();
+    attachPullsPage(PANE, HOME_BACKEND);
+    await flush();
+    selectPR(PANE, rowKey(1));
+    const held = attachPR(rowKey(1), { ref: ref(1) });
+    await flush();
+    expect(mark).toHaveBeenCalledTimes(1);
+
+    // The pane keeps !1's review while !2 is open; a push lands on it then.
+    selectPR(PANE, rowKey(2));
+    applyPRUpdatedEvent({ prKey: prKey(ref(1)), detail: null, threads: [], headSHA: 'sha-2', seq: 2 });
+    await flush();
+    expect(mark).toHaveBeenCalledTimes(1);
+    selectPR(PANE, rowKey(1));
+    await flush();
+    expect(mark).toHaveBeenCalledTimes(2);
+    expect(mark).toHaveBeenLastCalledWith({ Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 1 }, 'sha-2');
+    // Opening it again at the same head marks nothing more.
+    selectPR(PANE, rowKey(2));
+    selectPR(PANE, rowKey(1));
+    await flush();
     expect(mark).toHaveBeenCalledTimes(2);
     held.release();
   });
@@ -529,21 +759,55 @@ describe('open with agent', () => {
     selectPR(PANE, rowKey(1));
   }
 
-  it('lists the threads on the PR once per snapshot and names the one holding its branch', async () => {
+  it('reads the threads on the PR on every menu open and names the one holding its branch', async () => {
     await selected();
     const list = setBindingMock('ListThreadsOnPR', async () => [
       { threadId: 't1', title: 'Fix it', status: 'idle', worktreeBranch: 'feature-1', updatedAt: Date.now() - 3 * 86_400_000 },
     ]);
-    await loadThreadsOnPR(PANE);
     await loadThreadsOnPR(PANE);
     expect(list).toHaveBeenCalledTimes(1);
     expect(list).toHaveBeenCalledWith({ projectId: 'p1', pr: { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 1 }, headRefName: 'feature-1', crossRepository: false });
     expect(threadsOnPR(PANE)).toEqual([{ id: 't1', title: 'Fix it', detail: 'idle · 3d ago' }]);
     expect(newThreadCheckedOutBy(PANE)?.id).toBe('t1');
 
-    applyPullsSnapshot(snapshot(2, [project('p1', [item(1)])]), HOME_BACKEND);
+    // Another client removed the thread: nothing this client holds moved,
+    // and the next open reads it gone.
+    list.mockImplementation(async () => []);
     await loadThreadsOnPR(PANE);
     expect(list).toHaveBeenCalledTimes(2);
+    expect(threadsOnPR(PANE)).toEqual([]);
+    expect(newThreadCheckedOutBy(PANE)).toBeNull();
+  });
+
+  it('drops the answer of a read a reopened menu superseded', async () => {
+    await selected();
+    const answers: Array<(threads: unknown[]) => void> = [];
+    const list = setBindingMock('ListThreadsOnPR', () => new Promise((resolve) => answers.push(resolve)));
+    const first = loadThreadsOnPR(PANE);
+    const second = loadThreadsOnPR(PANE);
+    expect(list).toHaveBeenCalledTimes(2);
+    answers[1]!([{ threadId: 'new', title: 'Newer', status: 'idle', worktreeBranch: '', updatedAt: 0 }]);
+    await second;
+    answers[0]!([{ threadId: 'old', title: 'Older', status: 'idle', worktreeBranch: '', updatedAt: 0 }]);
+    await first;
+    expect(threadsOnPR(PANE).map((thread) => thread.id)).toEqual(['new']);
+  });
+
+  it('holds nothing for a page that detached with a read in flight', async () => {
+    await selected();
+    let answer!: (threads: unknown[]) => void;
+    setBindingMock('ListThreadsOnPR', () => new Promise((resolve) => {
+      answer = resolve;
+    }));
+    const read = loadThreadsOnPR(PANE);
+    detachPullsPage(PANE);
+    answer([{ threadId: 't1', title: 'Fix it', status: 'idle', worktreeBranch: 'feature-1', updatedAt: 0 }]);
+    await read;
+    attachPullsPage(PANE, HOME_BACKEND);
+    await flush();
+    selectPR(PANE, rowKey(1));
+    expect(threadsOnPR(PANE)).toEqual([]);
+    expect(newThreadCheckedOutBy(PANE)).toBeNull();
   });
 
   it('opens a thread on the PR head, seeds its draft, and mounts it', async () => {
@@ -551,17 +815,62 @@ describe('open with agent', () => {
     const open = setBindingMock('OpenPRThread', async () => ({ threadId: 't9', worktreePath: '/wt', branch: 'feature-1' }));
     setBindingMock('GetThread', async () => ({ id: 't9', projectId: 'p1', title: '', updatedAt: 1 }));
     const panes = await import('./panes.svelte');
-    const mount = vi.spyOn(panes, 'mountThreadInPane').mockImplementation(async () => ({}) as never);
+    const mount = vi.spyOn(panes, 'mountThreadForToolPane').mockImplementation(async () => ({}) as never);
     expect(await openPRThread(PANE)).toBe(true);
-    // In the focused pane's place: no target, so the tool pane's slot goes to it.
-    expect(mount).toHaveBeenCalledWith(expect.objectContaining({ id: 't9' }));
-    expect(mount.mock.calls[0]).toHaveLength(1);
+    // In the page's slot.
+    expect(mount).toHaveBeenCalledWith(expect.objectContaining({ id: 't9' }), PANE);
     expect(open).toHaveBeenCalledWith({
       projectId: 'p1', pr: { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 1 },
       headRefName: 'feature-1', crossRepository: false, url: 'https://github.com/owner/repo/pull/1', nodeId: 'node-1', title: 'PR 1',
       seed: 'Reviewing #1: PR 1\nhttps://github.com/owner/repo/pull/1',
     });
     expect(prThreadSeed(selectedPR(PANE)!)).toBe('Reviewing #1: PR 1\nhttps://github.com/owner/repo/pull/1');
+    mount.mockRestore();
+  });
+
+  it('mounts a late answer in a new pane once the page that asked has gone, even when it reopened', async () => {
+    await selected();
+    let opened!: (value: unknown) => void;
+    setBindingMock('OpenPRThread', () => new Promise((resolve) => {
+      opened = resolve;
+    }));
+    setBindingMock('GetThread', async (id: string) => ({ id, projectId: 'p1', title: '', updatedAt: 1 }));
+    const panes = await import('./panes.svelte');
+    const mount = vi.spyOn(panes, 'mountThreadForToolPane').mockImplementation(async () => ({}) as never);
+    const opening = openPRThread(PANE);
+    await flush();
+    detachPullsPage(PANE);
+    attachPullsPage(PANE, HOME_BACKEND);
+    opened({ threadId: 't9', worktreePath: '/wt', branch: 'feature-1' });
+    expect(await opening).toBe(true);
+    expect(mount).toHaveBeenCalledWith(expect.objectContaining({ id: 't9' }), null);
+
+    // The same for a thread already on the PR read from the backend.
+    let read!: (value: unknown) => void;
+    setBindingMock('GetThread', () => new Promise((resolve) => {
+      read = resolve;
+    }));
+    await flush();
+    const reopening = openThread(PANE, 't4');
+    detachPullsPage(PANE);
+    read({ id: 't4', projectId: 'p1', title: '', updatedAt: 1 });
+    expect(await reopening).toBe(true);
+    expect(mount).toHaveBeenLastCalledWith(expect.objectContaining({ id: 't4' }), null);
+    mount.mockRestore();
+  });
+
+  it('mounts a late answer in the page\'s slot while the page is still there', async () => {
+    await selected();
+    let read!: (value: unknown) => void;
+    setBindingMock('GetThread', () => new Promise((resolve) => {
+      read = resolve;
+    }));
+    const panes = await import('./panes.svelte');
+    const mount = vi.spyOn(panes, 'mountThreadForToolPane').mockImplementation(async () => ({}) as never);
+    const opening = openThread(PANE, 't4');
+    read({ id: 't4', projectId: 'p1', title: '', updatedAt: 1 });
+    expect(await opening).toBe(true);
+    expect(mount).toHaveBeenCalledWith(expect.objectContaining({ id: 't4' }), PANE);
     mount.mockRestore();
   });
 

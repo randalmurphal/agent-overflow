@@ -48,8 +48,8 @@ let panePersistenceHandler: (() => void) | null = null;
 // way only (companion stores read the pane registry, never the reverse).
 let paneDestroyedObservers: Array<(paneId: string) => void> = [];
 let paneThreadMountedObservers: Array<(paneId: string, threadId: string) => void> = [];
-// Notified when a thread open replaces a focused tool pane in place
-// (`focusedOpenTargetPane`). toolPanes.svelte.ts registers here, for the same
+// Notified when a thread open replaces a tool pane in place
+// (`focusedOpenTargetPane`, `mountThreadForToolPane`). toolPanes.svelte.ts registers here, for the same
 // one-way dependency reason as the destroyed observers above.
 let toolPaneReplacedObservers: Array<(paneId: string, kind: ToolPaneKind) => void> = [];
 
@@ -729,14 +729,14 @@ function revealThreadIfOpen(threadId: string, activation: PaneActivation): Threa
 }
 
 /**
- * A focused tool pane gives its layout slot to a new thread pane: the tool
- * item is removed, the thread pane takes its index and width, and focus moves
- * to it. Null when the focused layout item is not a tool. Layout-level, so it
- * needs nothing from the tool store.
+ * A tool pane gives its layout slot to a new thread pane: the tool item is
+ * removed, the thread pane takes its index and width, and focus moves to
+ * it. Null when `toolPaneId` names no tool item in the layout. Layout-level,
+ * so it needs nothing from the tool store.
  */
-function replaceFocusedToolPane(): ThreadPane | null {
+function replaceToolPane(toolPaneId: string | null): ThreadPane | null {
   const items = getPaneLayoutItems();
-  const index = focusedPaneId ? items.findIndex((item) => item.paneId === focusedPaneId) : -1;
+  const index = toolPaneId ? items.findIndex((item) => item.paneId === toolPaneId) : -1;
   const tool = items[index];
   if (!tool || !isToolKind(tool.kind)) return null;
   const paneId = nextPaneId();
@@ -757,7 +757,7 @@ function replaceFocusedToolPane(): ThreadPane | null {
  * replaced the same way from the sidebar, a shortcut, a deep link or a drop.
  */
 export function focusedOpenTargetPane(): ThreadPane {
-  return getFocusedPaneOrNull() ?? replaceFocusedToolPane() ?? ensureMainPane();
+  return getFocusedPaneOrNull() ?? replaceToolPane(focusedPaneId) ?? ensureMainPane();
 }
 
 function resolveOpenTargetPane(targetPane?: string | ThreadPane | null): string | ThreadPane {
@@ -794,6 +794,23 @@ export async function mountThreadInPane(
   const existing = revealThreadIfOpen(thread.id, activation);
   if (existing) return existing;
   return replaceThreadInPane(thread, resolveOpenTargetPane(targetPane), activation, mountOptions);
+}
+
+/**
+ * A tool's own thread open, answered after the tool awaited something: the
+ * thread takes `toolPaneId`'s slot while that tool pane is in the layout,
+ * else a new pane. Never another existing pane, whatever gained focus
+ * meanwhile. Pass null when the surface that asked is gone. A thread already
+ * open is revealed where it is.
+ */
+export async function mountThreadForToolPane(thread: Thread, toolPaneId: string | null): Promise<ThreadPane> {
+  if (thread.forkPreparing) throw new Error('This fork is still being prepared.');
+  // Probed before the tool pane gives up its slot: a thread already open
+  // must not cost the tool its pane.
+  const existing = revealThreadIfOpen(thread.id, 'committed');
+  if (existing) return existing;
+  const slot = replaceToolPane(toolPaneId);
+  return slot ? mountThreadInPane(thread, slot) : openThreadInNewPane(thread);
 }
 
 export async function openThreadInPane(

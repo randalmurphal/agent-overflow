@@ -33,10 +33,15 @@ controls while it owns Back.
 
 Row components (`PullRow`, `PipelineRow`) render the views in
 `pullRowView.ts` and `pipelineRowView.ts`; attention text and sort live in
-`utils/pullsAttention.ts`. `visibleRows.ts` reports the rows on screen, which
-the stores forward as the list's focus (`SetPRListFocus`) and the stage
-reads (`ReadPipelineStages`), and reports none when its list goes or
-changes consumer; do not read a row's detail from a component.
+`utils/pullsAttention.ts`. `PullsList` and `PipelinesList` take their rows
+as props and render through `PullsListBody`, which virtualizes headings,
+project errors and rows in one `LongListVirtualizer` and reports the rows
+in its viewport range (none while the list is hidden, and none when it
+unmounts). The stores forward
+those as the list's focus (`SetPRListFocus`) and the stage reads
+(`ReadPipelineStages`); do not read a row's detail from a component. Both
+tabs' filter chips take `primitives/chipClasses.ts`, which carries the
+shared compact hit target.
 
 `OpenWithAgentMenu.svelte` is one menu for the header button (the picked
 MR) and the row menu (that row's MR, by key, without picking it, so the
@@ -47,4 +52,5 @@ rollback.
 
 A failure renders through the shared error report controls with the
 error behind it: `PullsErrorNotice` for the refresh, `PullsProjectError`
-for a project (`causeCapture.ts` captures each distinct failure once).
+for a project (`causeCapture.ts` captures each distinct failure once,
+across snapshots and row remounts).

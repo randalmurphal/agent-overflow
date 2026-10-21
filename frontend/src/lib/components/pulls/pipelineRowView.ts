@@ -24,8 +24,11 @@ export interface PipelineRowView {
   projectName: string;
   age: string;
   url: string;
-  /** Stage names and statuses, read for rows on screen; null until then. */
+  /** Stage names and statuses, read for rows on screen; null until then
+   * and while the last read failed. */
   stages: readonly PipelineStageView[] | null;
+  /** Why the last stage read failed; null when it answered or none ran. */
+  stagesError: string | null;
 }
 
 export function shortSHA(sha: string): string {

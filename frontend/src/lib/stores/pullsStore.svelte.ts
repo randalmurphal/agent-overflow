@@ -28,8 +28,8 @@ type PullsReceiver = {
   pulls?: (snapshot: PRListSnapshot, backend: BackendKey) => void;
   pipeline?: (event: PipelineUpdatedEvent, backend: BackendKey) => void;
   pipelineLog?: (event: PipelineCILogEvent, backend: BackendKey) => void;
-  pullsGap?: (backend: BackendKey) => void;
-  pipelinesGap?: (backend: BackendKey) => void;
+  pullsGap?: (backend: BackendKey) => Promise<void> | undefined;
+  pipelinesGap?: (backend: BackendKey) => Promise<void> | undefined;
 };
 
 let receiver: PullsReceiver = {};
@@ -56,13 +56,14 @@ export function applyPipelineCILogEvent(event: PipelineCILogEvent, backend: Back
 }
 
 /** A pulls:updated gap: the next frame may be a change away from the
- * snapshot held, so the list is read again. */
-export function resyncPullsAfterGap(backend: BackendKey): void {
-  receiver.pullsGap?.(backend);
+ * snapshot held, so the list is read again. Answers the read's settling,
+ * or undefined when none started. */
+export function resyncPullsAfterGap(backend: BackendKey): Promise<void> | undefined {
+  return receiver.pullsGap?.(backend);
 }
 
 /** A ci:pipeline_updated or pipeline pr:ci_log gap: every subscribed
  * pipeline and followed log is read again. */
-export function resyncPipelinesAfterGap(backend: BackendKey): void {
-  receiver.pipelinesGap?.(backend);
+export function resyncPipelinesAfterGap(backend: BackendKey): Promise<void> | undefined {
+  return receiver.pipelinesGap?.(backend);
 }

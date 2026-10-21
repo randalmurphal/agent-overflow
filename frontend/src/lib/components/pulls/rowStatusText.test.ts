@@ -17,7 +17,7 @@ const PULL: PullRowView = {
 const PIPELINE: PipelineRowView = {
   key: 'p77', id: '77', status: 'running', name: '', ref: 'main', refKind: 'branch', mrNumber: 0, forge: 'gitlab',
   shortSHA: 'abcdef1', title: 'Fix the parser', projectName: 'App', age: '5m ago', url: '',
-  stages: [{ name: 'build', status: 'success' }, { name: 'test', status: 'failed' }],
+  stages: [{ name: 'build', status: 'success' }, { name: 'test', status: 'failed' }], stagesError: null,
 };
 
 describe('CI status in words', () => {

@@ -120,7 +120,7 @@ describe('Back on compact', () => {
     await rowsListed(view);
     await fireEvent.click(view.getByRole('radio', { name: 'Pipelines' }));
     const pipelineRow = await waitFor(() => view.getByTestId('pipeline-row'));
-    await fireEvent.click(within(pipelineRow).getAllByRole('button')[0]!);
+    await fireEvent.click(pipelineRow.querySelector('button')!);
     await waitFor(() => expect(view.getAllByTestId('review-ci-chip')).toHaveLength(1));
     await fireEvent.click(view.getAllByTestId('review-ci-chip')[0]!);
     await fireEvent.click(within(document.body).getAllByTestId('review-ci-job')[0]!);
@@ -142,7 +142,7 @@ describe('Back on compact', () => {
     installPullsPaneMocks();
     const view = mountPane();
     await rowsListed(view);
-    await fireEvent.click(within(rowOf(view, 5)).getAllByRole('button')[0]!);
+    await fireEvent.click(rowOf(view, 5).querySelector('button')!);
     const conflicts = await waitFor(() => view.getByRole('button', { name: 'View conflicts' }));
     await fireEvent.click(conflicts);
     await waitFor(() => expect(view.getByTestId('review-conflicts-empty')).toBeInTheDocument());
@@ -160,7 +160,7 @@ describe('Back on compact', () => {
     installPullsPaneMocks();
     const view = mountPane();
     await rowsListed(view);
-    await fireEvent.click(within(rowOf(view, 5)).getAllByRole('button')[0]!);
+    await fireEvent.click(rowOf(view, 5).querySelector('button')!);
     await fireEvent.click(await waitFor(() => view.getByRole('button', { name: 'View conflicts' })));
     await waitFor(() => expect(view.getByTestId('review-conflicts-back')).toBeInTheDocument());
     expect(view.queryByTestId('pulls-back')).toBeNull();

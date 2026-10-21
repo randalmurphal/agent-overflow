@@ -5,7 +5,7 @@
   import ErrorReportActions from '../shared/ErrorReportActions.svelte';
   import ErrorReportDetails from '../shared/ErrorReportDetails.svelte';
   import { rateLimitMessage, type ForgeFailure } from '../../utils/forgeFailure';
-  import { causeCapture } from './causeCapture';
+  import { capturedCause } from './causeCapture';
 
   // A project whose list read failed shows the cause under its own group
   // header, so the rest of the page keeps working. A login to fix outside
@@ -37,8 +37,7 @@
       ? (paused ? 'border-warning/30 bg-warning/8 text-warning' : 'border-error/30 bg-error/8 text-error')
       : 'border-border-subtle bg-surface-1/60 text-fg-muted',
   );
-  const capture = causeCapture();
-  const captured = $derived(capture(cause));
+  const captured = $derived(capturedCause(cause));
   let expanded = $state(false);
 </script>
 
