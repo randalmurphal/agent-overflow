@@ -1011,11 +1011,16 @@ func TestPRListShowDuringAPausedFocusWakeReadsAsTheUsers(t *testing.T) {
 		}
 		return n == len(keys)
 	})
+	// The show also wakes the loop for the tick it missed while paused;
+	// when that wake is taken before the focus wake, its background read
+	// of the focused rows is refused at the reserve first. Either way the
+	// focus wake reads them as the user's, once.
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 	for _, key := range keys {
-		if got := fake.interactive[key]; !slices.Equal(got, []bool{true}) {
-			t.Errorf("%s reads (interactive) = %v, want the user's alone", key, got)
+		got := fake.interactive[key]
+		if !slices.Equal(got, []bool{true}) && !slices.Equal(got, []bool{false, true}) {
+			t.Errorf("%s reads (interactive) = %v, want the user's, after at most the missed tick's refused one", key, got)
 		}
 	}
 }
