@@ -661,7 +661,7 @@ func TestGitLabOriginScopedListFailures(t *testing.T) {
 	}
 	sent := len(calls.all())
 	for name, origin := range map[string]string{"no origin": "", "github": "https://github.com/acme/repo.git", "no project": "https://gitlab.com/grp"} {
-		cwd := t.TempDir()
+		cwd := initGitRepo(t)
 		if origin != "" {
 			core.recordOrigin(cwd, originIdentity{url: origin, known: true}, core.nowFn())
 		}

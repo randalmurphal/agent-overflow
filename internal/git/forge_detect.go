@@ -55,7 +55,7 @@ const gitNoSuchRemoteExit = 2
 // (repo_meta_cache.go), which fronts this read with the per-repository TTL
 // cache.
 func (c *Core) readOriginRemote(cwd string) originIdentity {
-	spec := commandSpec{binary: "git", cwd: cwd, extraEnv: localeCEnv, args: []string{"remote", "get-url", "origin"}}
+	spec := commandSpec{binary: "git", cwd: cwd, args: []string{"remote", "get-url", "origin"}}
 	result, err := c.runSpec(spec)
 	switch {
 	case err != nil:
