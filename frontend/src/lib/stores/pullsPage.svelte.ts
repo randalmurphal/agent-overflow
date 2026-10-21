@@ -25,6 +25,7 @@ import { getCompactScreen, isCompactLayout, onScreenCompactPaneId } from './layo
 import { applyPipelineFrame, applyPipelineLogFrame, resyncPipelinesAfterGap } from './pipelineCI.svelte';
 import { onPRSnapshotApplied, type PRSnapshotApplied } from './prReviewStore.svelte';
 import { setPullsNeedsYouCount } from './pullsAttention.svelte';
+import { addErrorToast, addToast } from './toast.svelte';
 import { ensurePullsFilters, mrFilters } from './pullsPageFilters.svelte';
 import {
   focusKeys,
@@ -43,6 +44,7 @@ import { disposePRReviewStates } from './reviewPane.svelte';
 import { isTransportClassError } from './transportStatus.svelte';
 import type { BackendKey } from '../transport/backendKey';
 import { withBackendTarget } from '../transport/backends';
+import { hasScope, pageGrantsKnown, pageGrantsKnownTracked } from '../transport/scopes';
 import { errString } from '../utils/errors';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { documentHidden } from '../utils/pageVisibility';
@@ -58,6 +60,10 @@ export interface PullsSelection {
   readonly pr: PRRef;
   readonly row: PRListItem;
 }
+
+// Every list call is a `git:operate` method.
+const LIST_SCOPE = 'git:operate';
+const UNGRANTED_MESSAGE = 'This device is not allowed to read pull requests on this computer.';
 
 const FOCUS_DELAY_MS = 300;
 const FOCUS_MAX_WAIT_MS = 1_500;
@@ -131,9 +137,7 @@ async function subscribeList(
 
 class PullsPageBackend {
   readonly panes = new Set<string>();
-  attachment: { release(): void } | null = null;
   refreshing = $state(false);
-  refreshError = $state<string | null>(null);
   refreshSeq = 0;
   /** Seen records this client wrote (MarkPRViewed answers) by row key,
    * shown until the list's own record catches up. */
@@ -143,6 +147,8 @@ class PullsPageBackend {
   readonly focus: RefreshScheduler;
   sentFocus: string | null = null;
 
+  /** The grants are known and withhold the list's scope. */
+  readonly refused = $derived.by(() => pageGrantsKnownTracked() && !hasScope(LIST_SCOPE, this.backend));
   readonly snapshot = $derived.by(() => listStore.peek(this.backend));
   readonly error = $derived.by(() => listStore.peekError(this.backend));
   readonly rows: readonly PullsListedRow[] = $derived.by(() => listedRows(this.snapshot, this.backend));
@@ -151,12 +157,23 @@ class PullsPageBackend {
   readonly projects: readonly PullsProjectChoice[] = $derived(projectChoices(this.snapshot));
   readonly errors: readonly PullsProjectError[] = $derived.by(() => projectErrors(this.snapshot, mrFilters(this.backend).projects));
 
+  // Holds the list while the computer grants its scope: a grant that
+  // arrives subscribes, a revoked one releases the subscription.
+  readonly #disposeGate: () => void;
+
   constructor(readonly backend: BackendKey) {
     this.focus = createRefreshScheduler({
       name: `pullsFocus:${backend}`,
       delayMs: FOCUS_DELAY_MS,
       maxWaitMs: FOCUS_MAX_WAIT_MS,
       run: (token) => this.sendFocus(token),
+    });
+    this.#disposeGate = $effect.root(() => {
+      $effect(() => {
+        if (!hasScope(LIST_SCOPE, backend)) return;
+        const attachment = listStore.attach(backend, backend);
+        return () => attachment.release();
+      });
     });
   }
 
@@ -203,8 +220,7 @@ class PullsPageBackend {
 
   dispose(): void {
     this.focus.dispose();
-    this.attachment?.release();
-    this.attachment = null;
+    this.#disposeGate();
     sourceRunByBackend.delete(this.backend);
   }
 }
@@ -278,7 +294,6 @@ export function attachPullsPage(paneId: string, backend: BackendKey): void {
     paneEntries.set(paneId, new PaneEntry(backend, ++nextAttachment));
     attachOrder.push(paneId);
     page.panes.add(paneId);
-    page.attachment ??= listStore.attach(backend, backend);
     const snapshot = listStore.snapshot(backend);
     if (snapshot) setPullsNeedsYouCount(snapshot.needsYou);
   });
@@ -356,12 +371,15 @@ function pageOf(paneId: string): PullsPageBackend | null {
 /** Reactive: the list has not answered yet. */
 export function pullsLoading(paneId: string): boolean {
   const page = pageOf(paneId);
-  return page !== null && page.snapshot === null && page.error === null;
+  return page !== null && !page.refused && page.snapshot === null && page.error === null;
 }
 
-/** Reactive: the list subscription failed (it retries); null when healthy. */
+/** Reactive: the list subscription failed (it retries), or this device
+ * may not read the list; null when healthy. */
 export function pullsError(paneId: string): string | null {
-  return pageOf(paneId)?.error ?? null;
+  const page = pageOf(paneId);
+  if (page?.refused) return UNGRANTED_MESSAGE;
+  return page?.error ?? null;
 }
 
 /** Reactive: the snapshot's own failure (no projects read); null when none. */
@@ -391,26 +409,25 @@ export function pullsRefreshing(paneId: string): boolean {
   return pageOf(paneId)?.refreshing ?? false;
 }
 
-/** Reactive: the last refresh call's failure, until the next refresh. */
-export function pullsRefreshError(paneId: string): string | null {
-  return pageOf(paneId)?.refreshError ?? null;
-}
-
 /** The header's refresh: the pump reads every project and the focused
- * rows' detail now. Per-project failures arrive in the next snapshot. */
+ * rows' detail now. Per-project failures arrive in the next snapshot; a
+ * refused call, or a device without the scope, reads as a toast. */
 export async function refreshPullsPage(paneId: string): Promise<void> {
   const page = pageOf(paneId);
   if (!page) return;
+  if (!hasScope(LIST_SCOPE, page.backend)) {
+    addToast('error', UNGRANTED_MESSAGE);
+    return;
+  }
   const id = subscriptionByBackend.get(page.backend);
   // No live handle: the subscribe in flight reads every project.
   if (!id) return;
   const seq = ++page.refreshSeq;
   page.refreshing = true;
-  page.refreshError = null;
   try {
     await withBackendTarget(page.backend, () => RefreshPRList(id));
   } catch (err) {
-    if (seq === page.refreshSeq) page.refreshError = errString(err);
+    addErrorToast(`Could not refresh the merge requests: ${errString(err)}`, err);
   } finally {
     if (seq === page.refreshSeq) page.refreshing = false;
   }
@@ -485,6 +502,7 @@ function markViewedOnSnapshot(key: string, applied: PRSnapshotApplied): void {
 }
 
 async function markViewed(page: PullsPageBackend, selection: PullsSelection, headSHA: string): Promise<void> {
+  if (!pageGrantsKnown() || !hasScope(LIST_SCOPE, page.backend)) return;
   const tag = `${selection.key}\n${headSHA}`;
   if (page.marked.has(tag)) return;
   page.marked.add(tag);

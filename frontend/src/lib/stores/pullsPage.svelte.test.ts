@@ -16,7 +16,7 @@ import {
   pullsNeedsYouCount,
   pullsProjectErrors,
   pullsProjects,
-  pullsRefreshError,
+  pullsError,
   pullsRowsByGroup,
   refreshPullsPage,
   resyncPullsAfterGap,
@@ -57,6 +57,8 @@ import { composeWorkspaceKey } from '../utils/workspaceKey';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { probeReactivity } from '../../test/helpers/reactivity.svelte';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { grantBackendScopes, revokeBackendScopes } from '../../test/helpers/scopes';
+import { getToasts, resetToastsForTest } from './toast.svelte';
 
 const PANE = 'tools-pulls';
 
@@ -181,6 +183,7 @@ afterEach(() => {
   __resetReviewPaneStateForTest();
   __resetPRReviewStoreForTest();
   resetStagedBackends();
+  resetToastsForTest();
   delete (document as unknown as Record<string, unknown>).visibilityState;
   vi.useRealTimers();
 });
@@ -230,6 +233,7 @@ describe('the list subscription', () => {
 
   it('pins the subscribe and every handle call to the computer the page lists', async () => {
     stageBackend();
+    await grantBackendScopes('laptop', ['git:operate']);
     const mocks = installListMocks();
     attachPullsPage(PANE, 'laptop');
     await flush();
@@ -310,7 +314,7 @@ describe('the list subscription', () => {
     await expect(resyncPullsAfterGap(HOME_BACKEND)).resolves.toBeUndefined();
   });
 
-  it('shows a failed refresh call until the next refresh', async () => {
+  it('reads a refused refresh call as a toast', async () => {
     const mocks = installListMocks();
     attachPullsPage(PANE, HOME_BACKEND);
     await flush();
@@ -318,9 +322,42 @@ describe('the list subscription', () => {
       throw new Error('backend busy');
     });
     await refreshPullsPage(PANE);
-    expect(pullsRefreshError(PANE)).toBe('backend busy');
+    expect(getToasts().map((toast) => [toast.type, toast.message])).toEqual([['error', 'Could not refresh the merge requests: backend busy']]);
     await refreshPullsPage(PANE);
-    expect(pullsRefreshError(PANE)).toBeNull();
+    expect(getToasts()).toHaveLength(1);
+  });
+
+  it('holds the list only while the computer grants git:operate, and says so when it does not', async () => {
+    stageBackend();
+    const mocks = installListMocks();
+    attachPullsPage(PANE, 'laptop');
+    await flush();
+    // Absent: nothing is subscribed, and the page says why rather than
+    // loading forever.
+    expect(mocks.subscribe).not.toHaveBeenCalled();
+    expect(pullsLoading(PANE)).toBe(false);
+    expect(pullsError(PANE)).toBe('This device is not allowed to read pull requests on this computer.');
+    await refreshPullsPage(PANE);
+    expect(mocks.refresh).not.toHaveBeenCalled();
+    expect(getToasts().map((toast) => toast.message)).toEqual(['This device is not allowed to read pull requests on this computer.']);
+
+    // Granted: the list subscribes.
+    await grantBackendScopes('laptop', ['git:operate']);
+    await flush();
+    expect(mocks.subscribe).toHaveBeenCalledTimes(1);
+    expect(pullsError(PANE)).toBeNull();
+    setMRFilters('laptop', { filter: 'all' });
+    expect(groupKeys()).toEqual([[rowKey(1, 'laptop')]]);
+
+    // Revoked: the subscription goes with the rows it held.
+    revokeBackendScopes('laptop');
+    await flush();
+    expect(mocks.unsubscribe).toHaveBeenCalledWith('list-1');
+    expect(groupKeys()).toEqual([]);
+    expect(pullsError(PANE)).toBe('This device is not allowed to read pull requests on this computer.');
+    detachPullsPage(PANE);
+    await flush();
+    expect(mocks.subscribe).toHaveBeenCalledTimes(1);
   });
 });
 
