@@ -671,15 +671,22 @@ func (c *Credentials) WriteAccountCredential(providerName, accountID string, dat
 // native store before updating its saved account slot. Canonical-first ordering
 // keeps the active account usable if the secondary slot write fails; a later
 // reconciliation can repair the slot from canonical state.
+//
+// The slot is replaced only while it still holds expectedSlot, what the
+// caller read before it refreshed: once the canonical credential is
+// published another process can rotate it further and switch away, saving
+// the later credential into this slot, and that is not to be rewound. A slot
+// that moved on, or is gone, is left as it stands.
 func (c *Credentials) CommitSelectedCredential(
 	providerName string,
 	accountID string,
+	expectedSlot []byte,
 	data []byte,
 ) error {
 	if err := c.writeActiveCredential(providerName, data); err != nil {
 		return fmt.Errorf("provideraccounts: activate refreshed %s credentials: %w", providerName, err)
 	}
-	if err := c.WriteAccountCredential(providerName, accountID, data); err != nil {
+	if _, err := c.ReplaceAccountCredential(providerName, accountID, expectedSlot, data); err != nil {
 		return fmt.Errorf(
 			"provideraccounts: save refreshed %s account after canonical activation: %w",
 			providerName,

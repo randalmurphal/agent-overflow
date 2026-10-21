@@ -343,6 +343,64 @@ func installProviderUsageTestAccounts(t *testing.T, app *App, providerName strin
 	app.providerAccounts.BlessCredentialForTest(providerName, activeCredential)
 }
 
+// The selected account's probe starts from the canonical credential, and
+// its commit brings the slot along. Another process sharing the provider
+// home can save a later credential into that slot meanwhile (it rotated the
+// published credential further, then switched away), and the commit must
+// leave it, whether the probe rotated or not.
+func TestSelectedCodexUsageRefreshNeverRewindsTheSlot(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		rotates bool
+	}{
+		{name: "probe rotated nothing"},
+		{name: "probe rotated", rotates: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
+			installIdentityTestAccount(
+				t,
+				app,
+				string(provider.Codex),
+				"selected",
+				"selected@example.com",
+				[]byte(`{"tokens":{"access_token":"original"}}`),
+			)
+			slotPath, err := providerCredentialsForTest(t, app).AccountCredentialPath(string(provider.Codex), "selected")
+			if err != nil {
+				t.Fatal(err)
+			}
+			later := `{"tokens":{"access_token":"saved-elsewhere"}}`
+			rotation := ""
+			if tc.rotates {
+				rotation = `printf '%s' '{"tokens":{"access_token":"probe-rotated"}}' > "$CODEX_HOME/auth.json"` + "\n"
+			}
+			binary := filepath.Join(t.TempDir(), "mock-codex")
+			script := "#!/bin/bash\n" +
+				"read -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\n" +
+				rotation +
+				`printf '%s' '` + later + `' > '` + slotPath + `'` + "\n" +
+				`printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"v2"}}'` + "\n" +
+				`printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"account":{"type":"chatgpt","email":"selected@example.com","planType":"pro"},"requiresOpenaiAuth":true}}'` + "\n" +
+				`printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","planType":"pro","primary":{"usedPercent":7,"windowDurationMins":300,"resetsAt":1778479200}}}}'` + "\n"
+			mockexec.Write(t, binary, script)
+			if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := app.refreshProviderAccountUsage(context.Background(), string(provider.Codex), "selected"); err != nil {
+				t.Fatal(err)
+			}
+			got, err := providerCredentialsForTest(t, app).ReadCredential(string(provider.Codex), "selected", false)
+			if err != nil || string(got) != later {
+				t.Fatalf("slot = %s, %v; want the later credential %s kept", got, err, later)
+			}
+		})
+	}
+}
+
 // An inactive Codex probe works on bytes it read before it ran. Another
 // process sharing the provider home can put a later credential in the slot
 // meanwhile (a sign-in, or the boot sweep restoring a crashed probe), and

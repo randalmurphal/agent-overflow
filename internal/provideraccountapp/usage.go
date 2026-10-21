@@ -98,7 +98,7 @@ func (m *Manager) refreshProviderAccountUsage(
 		AccountID:  accountID,
 		Account:    AccountInfo(account),
 	}
-	var credential provideraccounts.CredentialSnapshot
+	var credential, slotAtStart provideraccounts.CredentialSnapshot
 	var err error
 	if isSelected {
 		selection = m.selectionLocked(providerName)
@@ -107,6 +107,12 @@ func (m *Manager) refreshProviderAccountUsage(
 			"",
 			true,
 		)
+		if err == nil {
+			slotAtStart, err = m.credentials.ReadCredentialSnapshot(providerName, accountID, false)
+			if provideraccounts.IsCredentialMissing(err) {
+				err = nil
+			}
+		}
 	} else {
 		credential, err = m.credentials.ReadCredentialSnapshot(
 			providerName,
@@ -126,6 +132,7 @@ func (m *Manager) refreshProviderAccountUsage(
 		generation:   generation,
 		isSelected:   isSelected,
 		probed:       credential,
+		slotAtStart:  slotAtStart,
 	}
 
 	var (
@@ -276,6 +283,9 @@ type providerUsageRefresh struct {
 	isSelected   bool
 	// probed is the credential the probe started from.
 	probed provideraccounts.CredentialSnapshot
+	// slotAtStart is the selected account's slot as it stood before the
+	// probe, empty when absent; the commit replaces only this.
+	slotAtStart provideraccounts.CredentialSnapshot
 	// refreshed is the rotated credential, empty when nothing rotated.
 	// Only two probes can fill it: the selected Claude account's canonical
 	// refresh, and any Codex probe (which rotates inside its temporary home).
@@ -432,9 +442,12 @@ func (m *Manager) commitProviderUsageRefreshLocked(
 		// The canonical store already holds it — just verified. Only the
 		// saved slot needs to catch up; rewriting the file the provider
 		// watches for its own rotations would be a needless race with it.
-		if err := m.credentials.WriteAccountCredential(
+		// The slot catches up only from what it held before the probe:
+		// another process may have saved a later credential there since.
+		if _, err := m.credentials.ReplaceAccountCredential(
 			refresh.providerName,
 			refresh.accountID,
+			refresh.slotAtStart.Bytes(),
 			latest,
 		); err != nil {
 			return commit, fmt.Errorf(
@@ -447,6 +460,7 @@ func (m *Manager) commitProviderUsageRefreshLocked(
 		if err := m.credentials.CommitSelectedCredential(
 			refresh.providerName,
 			refresh.accountID,
+			refresh.slotAtStart.Bytes(),
 			latest,
 		); err != nil {
 			delete(m.fingerprints, refresh.providerName)

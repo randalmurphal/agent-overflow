@@ -100,7 +100,10 @@ func TestBootRecoversTheSelectedCodexAccountsRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	consumed := codexAuthFile(t, "user-1", "rt-1", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
-	if err := credentials.CommitSelectedCredential(string(provider.Codex), "acct-1", consumed); err != nil {
+	if err := credentials.WriteAccountCredential(string(provider.Codex), "acct-1", consumed); err != nil {
+		t.Fatal(err)
+	}
+	if err := credentials.CommitSelectedCredential(string(provider.Codex), "acct-1", consumed, consumed); err != nil {
 		t.Fatal(err)
 	}
 

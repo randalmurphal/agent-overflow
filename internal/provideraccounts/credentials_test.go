@@ -305,7 +305,7 @@ func TestCommitSelectedCredentialPublishesCanonicalBeforeSavedSlot(t *testing.T)
 		t.Fatal(err)
 	}
 
-	if err := credentials.CommitSelectedCredential("codex", "selected", []byte("new-token")); err == nil {
+	if err := credentials.CommitSelectedCredential("codex", "selected", []byte("old-token"), []byte("new-token")); err == nil {
 		t.Fatal("CommitSelectedCredential() succeeded despite an unwritable saved slot")
 	}
 	active, err := credentials.ActiveCredentialPath("codex")

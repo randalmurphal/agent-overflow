@@ -41,7 +41,7 @@ func TestCredentialWritesRefuseASignOutHusk(t *testing.T) {
 	) {
 		t.Fatalf("WriteAccountCredential(husk) = %v, want ErrSignedOutCredential", err)
 	}
-	if err := credentials.CommitSelectedCredential("claude", "slot", []byte("husk")); !errors.Is(
+	if err := credentials.CommitSelectedCredential("claude", "slot", nil, []byte("husk")); !errors.Is(
 		err,
 		ErrSignedOutCredential,
 	) {
@@ -90,10 +90,10 @@ func TestARefusedHuskLeavesTheExistingCredentialIntact(t *testing.T) {
 
 	// The canonical store is the other destination, and the one whose loss
 	// signs the user out of the running app.
-	if err := credentials.CommitSelectedCredential("claude", "slot", []byte("real-token")); err != nil {
+	if err := credentials.CommitSelectedCredential("claude", "slot", []byte("real-token"), []byte("real-token")); err != nil {
 		t.Fatal(err)
 	}
-	if err := credentials.CommitSelectedCredential("claude", "slot", []byte("husk")); !errors.Is(
+	if err := credentials.CommitSelectedCredential("claude", "slot", nil, []byte("husk")); !errors.Is(
 		err,
 		ErrSignedOutCredential,
 	) {
