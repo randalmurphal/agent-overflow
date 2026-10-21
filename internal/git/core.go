@@ -244,6 +244,11 @@ type Core struct {
 	// otherwise) without touching a network. Never reassigned in
 	// production code.
 	fetchFn func(ctx context.Context, cwd string) error
+
+	// beforeWorktreeAdd runs between checkoutWorktree's registration
+	// snapshot and its `git worktree add`. Nil in production; tests set it
+	// to hold one checkout there while another runs.
+	beforeWorktreeAdd func(path string)
 }
 
 type prCacheEntry struct {
@@ -454,6 +459,11 @@ func (c *Core) AttachWorktree(cwd, path, branch string) (createdBranch bool, err
 	if err := validateBranchName(branch); err != nil {
 		return false, err
 	}
+	unlock, err := c.lockWorktreeCheckout(cwd)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
 	// A branch only origin has is checked out as a new local branch tracking
 	// origin's, named explicitly: git's own guess needs exactly one remote
 	// to have the name, and a fork's second remote often does too.
@@ -515,6 +525,11 @@ func (c *Core) createWorktreeAt(cwd, path, startPoint, newBranch string, noTrack
 			return err
 		}
 	}
+	unlock, err := c.lockWorktreeCheckout(cwd)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := c.ensureBranchDoesNotExist(cwd, newBranch); err != nil {
 		return err
 	}
@@ -543,7 +558,9 @@ func (c *Core) createWorktreeAt(cwd, path, startPoint, newBranch string, noTrack
 // made the branch for this worktree), the branch is deleted. A branch the
 // caller did not make is never deleted, and a destination git refused as
 // occupied stays as it was. What the undo could not take back is joined to
-// git's diagnosis.
+// git's diagnosis. The caller holds the repository's checkout lock
+// (lockWorktreeCheckout), which is what makes a registration absent from
+// the snapshot and present after the add this add's own.
 func (c *Core) checkoutWorktree(cwd, path, branch string, ownsBranch bool) error {
 	// A worktree on a branch made for this checkout can only be this
 	// checkout's; on any other branch it may predate it.
@@ -553,6 +570,9 @@ func (c *Core) checkoutWorktree(cwd, path, branch string, ownsBranch bool) error
 		if registered, err = c.worktreeRegisteredAt(cwd, path); err != nil {
 			return fmt.Errorf("git worktree add: %w", err)
 		}
+	}
+	if c.beforeWorktreeAdd != nil {
+		c.beforeWorktreeAdd(path)
 	}
 	_, stderr, err := c.Execute(cwd, "worktree", "add", "--", path, branch)
 	if err == nil {

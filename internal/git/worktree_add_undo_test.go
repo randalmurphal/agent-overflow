@@ -1,11 +1,16 @@
 package git
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/testutil"
 )
@@ -180,4 +185,93 @@ func TestCreateWorktreeKeepsAnExistingBranch(t *testing.T) {
 		t.Fatalf("CreateWorktreeFromBranch = %v, want the duplicate branch refusal", err)
 	}
 	assertAddUndone(t, repo, "ao-taken", true)
+}
+
+// holdBeforeAdd makes each core hold every checkout between its
+// registration snapshot and its add until two checkouts reached that
+// point or wait elapsed, and reports whether the wait ever elapsed.
+func holdBeforeAdd(wait time.Duration, cores ...*Core) (elapsed *atomic.Bool) {
+	var arrived atomic.Int32
+	both := make(chan struct{})
+	elapsed = &atomic.Bool{}
+	for _, core := range cores {
+		core.beforeWorktreeAdd = func(string) {
+			if arrived.Add(1) == 2 {
+				close(both)
+			}
+			select {
+			case <-both:
+			case <-time.After(wait):
+				elapsed.Store(true)
+			}
+		}
+	}
+	return elapsed
+}
+
+// Two attaches of one branch to one path, from two Cores: one wins, and
+// the one git refuses leaves the winner's checkout as it was. Each
+// attach is held after its registration snapshot until the other
+// reaches it too, which only an attach not waiting on the other's whole
+// operation can.
+func TestCompetingAttachesOfOneBranchKeepTheWinnersWorktree(t *testing.T) {
+	t.Parallel()
+	repo := initGitRepo(t)
+	testutil.RunGit(t, repo, "branch", "feature/race")
+	path := filepath.Join(t.TempDir(), "race")
+	cores := []*Core{NewCore(), NewCore()}
+	holdBeforeAdd(500*time.Millisecond, cores...)
+
+	errs := make([]error, len(cores))
+	var wg sync.WaitGroup
+	for i, core := range cores {
+		wg.Go(func() { _, errs[i] = core.AttachWorktree(repo, path, "feature/race") })
+	}
+	wg.Wait()
+	if (errs[0] == nil) == (errs[1] == nil) {
+		t.Fatalf("attaches = %v, %v; want exactly one to succeed", errs[0], errs[1])
+	}
+	for _, err := range errs {
+		if err != nil && strings.Contains(err.Error(), "undo") {
+			t.Fatalf("the refused attach undid something: %v", err)
+		}
+	}
+	core := NewCore()
+	registered, err := core.worktreeRegisteredAt(repo, path)
+	if err != nil || !registered {
+		t.Fatalf("the winner's worktree is not registered (%v)", err)
+	}
+	head, _, err := core.Execute(path, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil || strings.TrimSpace(head) != "feature/race" {
+		t.Fatalf("the winner's worktree is on %q (%v)", head, err)
+	}
+	status, _, err := core.Execute(path, "status", "--porcelain")
+	if err != nil || status != "" {
+		t.Fatalf("the winner's worktree changed: %q (%v)", status, err)
+	}
+}
+
+// The checkout lock is per repository: creates in two repositories run
+// at once.
+func TestCreatesInTwoRepositoriesDoNotWaitOnEachOther(t *testing.T) {
+	t.Parallel()
+	repos := []string{initGitRepo(t), initGitRepo(t)}
+	cores := []*Core{NewCore(), NewCore()}
+	elapsed := holdBeforeAdd(5*time.Second, cores...)
+
+	errs := make([]error, len(cores))
+	paths := []string{filepath.Join(t.TempDir(), "wt"), filepath.Join(t.TempDir(), "wt")}
+	var wg sync.WaitGroup
+	for i, core := range cores {
+		wg.Go(func() {
+			errs[i] = core.CreateWorktreeFromBranch(repos[i], paths[i], "", fmt.Sprintf("ao-cut-%d", i))
+		})
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed.Load() {
+		t.Fatal("a create in one repository waited for a create in another")
+	}
 }
