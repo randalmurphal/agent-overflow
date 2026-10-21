@@ -139,7 +139,7 @@ func (a *App) refreshPRSnapshot(ctx context.Context, pr gitops.PRReference) uint
 	if pump == nil {
 		return 0
 	}
-	if err := a.requestPRPump(ctx, pump, &prPumpRequest{snapshot: true}); err != nil && !errors.Is(err, errPRUpdatesUnknownSubscription) && !errors.Is(err, context.Canceled) {
+	if err := a.requestPump(ctx, &pump.pumpCore, &prPumpRequest{snapshot: true}); err != nil && !errors.Is(err, errPRUpdatesUnknownSubscription) && !errors.Is(err, context.Canceled) {
 		log.Printf("pr updates: refresh after action failed for pr=%s: %v", prUpdateKey(pr), err)
 	}
 	a.prUpdates.mu.Lock()

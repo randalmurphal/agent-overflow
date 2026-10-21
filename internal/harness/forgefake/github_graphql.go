@@ -46,6 +46,7 @@ var githubGraphQL = []graphQLOp{
 	{kind: "query", name: "ThreadCommentsPage", required: []string{"threadID", "after"}, run: ghThreadCommentsPage},
 	{kind: "query", name: "RollupContextsPage", required: []string{"commitID", "number", "after"}, run: ghRollupContextsPage},
 	{kind: "mutation", name: "SetThreadResolved", required: []string{"threadID", "resolved"}, run: ghSetThreadResolved},
+	{kind: "query", name: "PullsSearch", required: []string{"query"}, optional: []string{"after"}, run: ghPullsSearch},
 	{kind: "query", name: "OpenPRsByHead", required: []string{"owner", "name", "head"}, optional: []string{"after"}, run: ghOpenPRsByHead},
 	{kind: "query", name: "MergedPRs", required: []string{"owner", "name", "first"}, optional: []string{"after"}, run: ghMergedPRs},
 	{kind: "query", name: "PRStates", required: []string{"ids"}, run: ghPRStates},
@@ -238,8 +239,8 @@ func (e *Engine) ghGraphQLPull(c *call, project string, number int, base map[str
 	return r, p, response{}, true
 }
 
-// ghPRTick answers the pump's one read of a PR. number is always
-// selected; $wantDetail adds the viewer, the repository's merge settings
+// ghPRTick answers the pump's one read of a PR. number and headRefName
+// are always selected; $wantDetail adds the viewer, the repository's merge settings
 // and the detail fields, $wantChecks the head commit's rollup,
 // $wantThreads the first page of review threads and conversation
 // comments, and $wantEvents the newest page of timeline items.
@@ -260,7 +261,7 @@ func ghPRTick(e *Engine, c *call, v graphQLVars) response {
 	if !ok {
 		return fail
 	}
-	pull := map[string]any{"number": p.Number}
+	pull := map[string]any{"number": p.Number, "headRefName": p.HeadRef}
 	repository := map[string]any{"pullRequest": pull}
 	if wantDetail {
 		maps.Copy(repository, githubRepositoryMerge(r))
@@ -271,7 +272,7 @@ func ghPRTick(e *Engine, c *call, v graphQLVars) response {
 		if contexts := githubContextNodes(r, p); len(contexts) > 0 {
 			rollup = map[string]any{"contexts": graphQLConnection(contexts, 0, githubGraphQLPageSize)}
 		}
-		pull["commits"] = map[string]any{"nodes": []map[string]any{{"commit": map[string]any{"id": githubCommitNodeID(r, p), "statusCheckRollup": rollup}}}}
+		pull["commits"] = map[string]any{"nodes": []map[string]any{{"commit": map[string]any{"id": githubCommitNodeID(r, p), "oid": p.HeadSHA, "statusCheckRollup": rollup}}}}
 	}
 	if wantThreads {
 		pull["reviewThreads"] = graphQLConnection(githubThreadNodes(p), 0, githubGraphQLPageSize)

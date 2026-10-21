@@ -1,24 +1,22 @@
-// CI state, keyed by PR.
+// CI state, keyed by CI key (ciHandles.ts): a PR's head pipeline under its
+// computer PR key, or one repository pipeline the Pipelines tab follows.
 //
-// The head pipeline and the logs of followed jobs belong to the pull
-// request, not to the pane showing them: two panes on one PR read one set
-// of job rows and one copy of each log. The backend's PR pump owns the CI
-// polling, so this state is SOURCED by the PR subscription and nothing here
-// polls: the subscribe result seeds the pipeline, `pr:ci_updated` frames
-// replace it, and `pr:ci_log` frames move the index of each followed job's
-// log (its lines are read on demand, ciLogBlocks.svelte.ts).
-// prReviewStore.svelte.ts routes both channels through its wire-key
-// aliases and ranks pipeline frames against the PR's one sequence
-// watermark; prReviewCIFollows.svelte.ts decides which jobs are followed.
-// An entry exists from attachPR until the snapshot store's `onDrop`.
+// The pipeline and the logs of followed jobs belong to that entity, not to
+// the pane showing them: two panes on one PR read one set of job rows and
+// one copy of each log. The backend's pump owns the CI polling, so this
+// state is SOURCED by the subscription and nothing here polls: the
+// subscribe result seeds the pipeline, frames replace it, and `pr:ci_log`
+// frames move the index of each followed job's log (its lines are read on
+// demand, ciLogBlocks.svelte.ts). prReviewStore.svelte.ts feeds a PR's
+// (`pr:ci_updated`, ranked against the PR's one sequence watermark) and
+// pipelineCI.svelte.ts a repository pipeline's (`ci:pipeline_updated`);
+// prReviewCIFollows.svelte.ts decides which jobs are followed. An entry
+// exists from the subscribing store's attach until its `onDrop`.
 
 import { SvelteMap } from 'svelte/reactivity';
 import { untrack } from 'svelte';
-import { RefreshPRCI } from './bindings';
-import { prSubscriptionId } from './prReviewSubscriptions';
-import { withBackendTarget } from '../transport/backends';
+import { ciHandle } from './ciHandles';
 import { errString } from '../utils/errors';
-import { workspaceKeyBackend } from '../utils/workspaceKey';
 import type { CILogSection, CIPipeline } from '../types/models';
 import { forgeFailureFrom, type ForgeFailure, type ForgeFailureWire } from '../utils/forgeFailure';
 
@@ -58,9 +56,13 @@ export interface PRCILogWireState extends ForgeFailureWire {
   seq: number;
 }
 
-/** The "pr:ci_log" frame: a followed job's whole state whenever it moved. */
+/** The "pr:ci_log" frame: a followed job's whole state whenever it moved.
+ * A log is its repository's (repoKey); a frame for a job a pipeline
+ * subscription follows carries pipelineKey and an empty prKey. */
 export interface PRCILogEvent extends PRCILogWireState {
   prKey: string;
+  pipelineKey?: string;
+  repoKey?: string;
   jobId: string;
 }
 
@@ -160,8 +162,12 @@ export function seedPRCI(key: string, pipeline: CIPipeline | null, ciError: stri
   entry.pumpFailure = ciError ? forgeFailureFrom(kind) : null;
 }
 
-/** Applies one pr:ci_updated frame the PR's watermark admitted. */
-export function applyPRCIUpdated(key: string, event: PRCIUpdatedEvent): void {
+/** A pipeline frame as the entry applies it: `pr:ci_updated` for a PR,
+ * `ci:pipeline_updated` for a repository pipeline. */
+export type CIFrame = Omit<PRCIUpdatedEvent, 'prKey'>;
+
+/** Applies one pipeline frame its key's watermark admitted. */
+export function applyPRCIUpdated(key: string, event: CIFrame): void {
   const entry = entryFor(key);
   if (!entry) return;
   if (event.error) {
@@ -246,21 +252,21 @@ export function retainPRCILogs(key: string, jobIds: ReadonlySet<string>): void {
 }
 
 /**
- * Has the pump poll the pipeline now. The pipeline itself arrives on
- * pr:ci_updated when it changed; the call's failure is shown on the entry
+ * Has the pump poll the pipeline now. The pipeline itself arrives on its
+ * frame channel when it changed; the call's failure is shown on the entry
  * until the next refresh or pipeline frame.
  */
 export async function refreshPRCI(key: string): Promise<void> {
   const entry = entryFor(key);
-  const id = prSubscriptionId(key);
+  const handle = ciHandle(key);
   // No live handle: the subscribe is in flight, and the pump it starts
   // polls CI immediately.
-  if (!entry || id === null) return;
+  if (!entry || handle === null) return;
   const seq = ++entry.refreshSeq;
   entry.refreshing = true;
   entry.refreshError = null;
   try {
-    await withBackendTarget(workspaceKeyBackend(key), () => RefreshPRCI(id));
+    await handle.refresh();
   } catch (err) {
     if (seq === entry.refreshSeq) entry.refreshError = errString(err);
   } finally {

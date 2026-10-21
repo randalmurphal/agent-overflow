@@ -299,7 +299,7 @@ func deleteGitHubBranch(ctx context.Context, client *forgeapi.Client, ref PRRefe
 	for i, segment := range segments {
 		segments[i] = url.PathEscape(segment)
 	}
-	path := githubRepoPath(ref) + "/git/refs/heads/" + strings.Join(segments, "/")
+	path := githubRepoPath(ref.Repository()) + "/git/refs/heads/" + strings.Join(segments, "/")
 	_, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodDelete, Path: path}, nil)
 	if status, ok := errors.AsType[*forgeapi.StatusError](err); ok && status.Status == http.StatusUnprocessableEntity &&
 		strings.Contains(strings.ToLower(forgeBodyMessage(status.Body)), "reference does not exist") {

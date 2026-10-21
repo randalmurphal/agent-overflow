@@ -178,7 +178,7 @@ installGitStatusEventListener();
 // them: `panes → thread → gitStatusStore` already exists, so importing panes
 // from here closes a cycle whose init order decides whether an event handler
 // registers. The pane side arms the bridge when IT loads (same shape as
-// `setWorkflowsOverlayExclusion`), so there is no registration order to get
+// `setToolPaneOpenExclusion`), so there is no registration order to get
 // right and no test reset that can disarm it.
 export interface GitStatusPaneBridge {
   /** Push a thread row an RPC started at `mark` returned into the registry

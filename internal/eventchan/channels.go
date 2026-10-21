@@ -129,6 +129,18 @@ const (
 	PRCILog     Channel = "pr:ci_log"
 )
 
+// pulls:* — the Pull requests page's list of every forge project's open
+// PRs, one frame per change of the list pump's snapshot.
+const (
+	PullsUpdated Channel = "pulls:updated"
+)
+
+// ci:* — a pipeline pump's pipeline, keyed by repository and pipeline id
+// (the Pipelines tab); its followed logs ride pr:ci_log.
+const (
+	PipelineUpdated Channel = "ci:pipeline_updated"
+)
+
 // project:* — one frame per project row a persisted write moved, carrying
 // the row and what the receiver must do with it. Same vocabulary and same
 // rules as thread:updated (triage.ProjectUpdateEvent).

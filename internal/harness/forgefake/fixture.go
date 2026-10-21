@@ -49,6 +49,10 @@ type Repo struct {
 	// auto-merge, GitLab merge commits with squash off by default, and
 	// the viewer a writer (GitHub WRITE, GitLab developer).
 	Merge *RepoMerge `json:"merge,omitempty"`
+	// Pipelines are the repository's pipelines beside its pulls' CI
+	// (GitLab pipelines, GitHub workflow runs on any ref). The pipeline
+	// lists answer both, newest (highest id) first.
+	Pipelines []Pipeline `json:"pipelines,omitempty"`
 	// DeletedBranches are head branches deleted from the repository
 	// (GitHub's branch delete after a merge); a branch exists while a
 	// pull names it as its head or base and it is not listed here.
@@ -119,6 +123,18 @@ type Pull struct {
 	HeadRepo string `json:"headRepo,omitempty"`
 	// headRepoID is the fork's generated project id.
 	headRepoID int64
+	// Reviewers are the logins a review is requested from (GitHub
+	// reviewRequests, GitLab reviewers). A GitHub review from one ends
+	// its request, as on GitHub; GitLab keeps its reviewers.
+	Reviewers []string `json:"reviewers,omitempty"`
+	// CreatedAt and UpdatedAt are RFC 3339; they default to
+	// 2026-01-01T00:00:00Z and to CreatedAt. CommittedAt is the head
+	// commit's time (GitHub committedDate), defaulting to CreatedAt, and
+	// Commits its commit count (GitHub commits.totalCount), 1 by default.
+	CreatedAt   string `json:"createdAt,omitempty"`
+	UpdatedAt   string `json:"updatedAt,omitempty"`
+	CommittedAt string `json:"committedAt,omitempty"`
+	Commits     int    `json:"commits,omitempty"`
 	// HeadSHA, BaseSHA and StartSHA are generated when omitted. StartSHA is
 	// the base branch's tip (GitHub baseRefOid, GitLab start_sha); BaseSHA
 	// is GitLab's merge base.
@@ -142,6 +158,7 @@ type Pull struct {
 	// approval; other states have no GitLab counterpart.
 	Reviews []Review `json:"reviews,omitempty"`
 	// CI is the head pipeline (GitLab) or workflow run (GitHub Actions).
+	// It defaults to a merge request pipeline of the pull's head.
 	CI *Pipeline `json:"ci,omitempty"`
 	// Readiness is what the base branch and the project require of the
 	// pull and where it stands beyond its reviews, CI, threads and
@@ -292,13 +309,34 @@ type Review struct {
 	CommitSHA   string `json:"commitSha,omitempty"`
 }
 
-// Pipeline is the CI run a pull carries.
+// Pipeline is one CI run: a pull's, or one of the repository's.
 type Pipeline struct {
-	// ID is the GitLab pipeline id or GitHub Actions run id. Generated
-	// when omitted.
+	// ID is the GitLab pipeline id or GitHub Actions run id, unique in its
+	// repository. Generated when omitted.
 	ID int64 `json:"id,omitempty"`
 	// Name is the GitHub workflow name. Defaults to "CI".
 	Name string `json:"name,omitempty"`
+	// RefKind is what Ref is: branch, tag or merge_request. A pull's
+	// pipeline defaults to merge_request, a repository's to branch. Each
+	// forge answers it as it does: GitHub only by the run's event, GitLab
+	// by its merge request ref and a single pipeline's tag flag.
+	RefKind string `json:"refKind,omitempty"`
+	// Ref is the ref it ran on: a pull's head branch (GitLab: its
+	// refs/merge-requests/N/head), else main. A GitLab merge_request
+	// pipeline's ref is refs/merge-requests/N/head, merge or train.
+	Ref string `json:"ref,omitempty"`
+	// SHA defaults to the pull's head, else a generated commit.
+	SHA string `json:"sha,omitempty"`
+	// Source is GitLab's source or GitHub's event; it defaults by kind
+	// (GitHub push, release, pull_request; GitLab push, push,
+	// merge_request_event).
+	Source string `json:"source,omitempty"`
+	// Title is the GitHub run's display title; defaults to Name.
+	Title string `json:"title,omitempty"`
+	// CreatedAt and UpdatedAt are RFC 3339; they default to
+	// 2026-01-01T00:00:00Z and to CreatedAt.
+	CreatedAt string `json:"createdAt,omitempty"`
+	UpdatedAt string `json:"updatedAt,omitempty"`
 	// Status is the pipeline status in the job vocabulary below.
 	// Defaults to the aggregate of the jobs.
 	Status string `json:"status,omitempty"`
@@ -486,6 +524,9 @@ func (r *Repo) normalize(ids *idSource) error {
 			pull.headRepoID = ids.next()
 		}
 	}
+	if err := r.normalizePipelines(ids); err != nil {
+		return err
+	}
 	for i := range r.Attachments {
 		if err := r.Attachments[i].normalize(r.Forge); err != nil {
 			return fmt.Errorf("attachments[%d]: %w", i, err)
@@ -589,6 +630,9 @@ func (p *Pull) normalize(forge string, ids *idSource) error {
 	default:
 		return fmt.Errorf("mergeable %q is not clean, conflicts or checking", p.Mergeable)
 	}
+	if err := p.normalizeList(); err != nil {
+		return err
+	}
 	p.Author = defaultString(p.Author, "ao-author")
 	p.HeadRef = defaultString(p.HeadRef, "feature")
 	p.BaseRef = defaultString(p.BaseRef, "main")
@@ -621,6 +665,9 @@ func (p *Pull) normalize(forge string, ids *idSource) error {
 	}
 	if p.CI != nil {
 		if err := p.CI.normalize(ids); err != nil {
+			return fmt.Errorf("ci: %w", err)
+		}
+		if err := p.CI.normalizeRun(forge, p, ids); err != nil {
 			return fmt.Errorf("ci: %w", err)
 		}
 	}

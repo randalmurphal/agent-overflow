@@ -89,6 +89,7 @@ function makeSavedLayout(
     | { paneId: string; threadId: string; widthPx: number }
     | { paneId: string; kind: 'thread'; threadId: string; widthPx: number }
     | { paneId: string; kind: 'plan' | 'review'; sourcePaneId: string; widthPx: number }
+    | { paneId: string; kind: 'pulls' | 'workflows'; widthPx: number }
     | {
         paneId: string;
         kind: 'agent';
@@ -237,6 +238,70 @@ describe('pane layout persistence', () => {
       kind: 'review',
       sourcePaneId: 'left',
     });
+  });
+
+  it('round-trips tool panes in their place among threads and companions, with tool focus', async () => {
+    const left = makeThread({ id: 'left-thread', title: 'Left' });
+    const right = makeThread({ id: 'right-thread', title: 'Right' });
+    installPaneMocks();
+    seedPane('left', left);
+    seedPane('right', right);
+    setPaneLayoutItemsForTest([
+      { id: 'tool-pulls', paneId: 'tool-pulls', kind: 'pulls', widthPx: 610 },
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 660 },
+      { id: 'review-left', paneId: 'review-left', kind: 'review', widthPx: 720, sourcePaneId: 'left' },
+      { id: 'tool-workflows', paneId: 'tool-workflows', kind: 'workflows', widthPx: 800 },
+      { id: 'right', paneId: 'right', kind: 'thread', widthPx: 1100 },
+    ]);
+    focusPane('tool-workflows');
+
+    persistPaneLayout();
+    await waitForPaneLayoutPersistenceForTest();
+    resetPanesForTest();
+    setPaneLayoutItemsForTest([]);
+
+    await loadPersistedPaneLayout([left, right]);
+
+    expect(persistedPaneLayout()).toEqual(makeSavedLayout([
+      { paneId: 'tool-pulls', kind: 'pulls', widthPx: 610 },
+      { paneId: 'left', threadId: 'left-thread', widthPx: 660 },
+      { paneId: 'review-left', kind: 'review', sourcePaneId: 'left', widthPx: 720 },
+      { paneId: 'tool-workflows', kind: 'workflows', widthPx: 800 },
+      { paneId: 'right', threadId: 'right-thread', widthPx: 1100 },
+    ], 'tool-workflows'));
+    expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual([
+      'tool-pulls', 'left', 'review-left', 'tool-workflows', 'right',
+    ]);
+    expect(getPaneLayoutItems()[0]).toEqual({ id: 'tool-pulls', paneId: 'tool-pulls', kind: 'pulls', widthPx: 610 });
+    expect(getFocusedPaneId()).toBe('tool-workflows');
+    expect(getAllPanes().has('tool-workflows')).toBe(false);
+  });
+
+  it('restores a layout holding only a tool pane, focused', async () => {
+    await installUIStateMock(makeSavedLayout([
+      { paneId: 'tool-workflows', kind: 'workflows', widthPx: 700 },
+    ], 'tool-workflows'));
+    await loadPersistedPaneLayout([]);
+    expect(getPaneLayoutItems()).toEqual([
+      { id: 'tool-workflows', paneId: 'tool-workflows', kind: 'workflows', widthPx: 700 },
+    ]);
+    expect(getFocusedPaneId()).toBe('tool-workflows');
+  });
+
+  it('drops a tool entry whose id is not its kind\'s one id, and a thread pane wearing a tool id', async () => {
+    const thread = makeThread({ id: 'thread-a' });
+    installPaneMocks();
+    await installUIStateMock(makeSavedLayout([
+      { paneId: 'tool-pulls', kind: 'workflows', widthPx: 700 },
+      { paneId: 'pane-9', kind: 'pulls', widthPx: 700 },
+      { paneId: 'tool-workflows', threadId: 'thread-a', widthPx: 700 },
+      { paneId: 'tool-pulls', kind: 'pulls', widthPx: 640 },
+      { paneId: 'tool-pulls', kind: 'pulls', widthPx: 999 },
+    ], null));
+    await loadPersistedPaneLayout([thread]);
+    expect(getPaneLayoutItems()).toEqual([
+      { id: 'tool-pulls', paneId: 'tool-pulls', kind: 'pulls', widthPx: 640 },
+    ]);
   });
 
   it('never snapshots ephemeral take-control, browser or side-chat companions', async () => {

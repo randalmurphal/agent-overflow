@@ -24,7 +24,7 @@
   import { CI_LOG_BLOCK_LINES, CILogBlockCache, type CILogFetch } from '../../stores/ciLogBlocks.svelte';
   import type { PRCILogState } from '../../stores/prReviewCI.svelte';
   import { getSettings } from '../../stores/settings.svelte';
-  import type { CILogView } from '../../stores/reviewPane.svelte';
+  import type { CILogView } from '../../stores/ciSubject.svelte';
   import type { CILogSection } from '../../types/models';
   import { ciJobLive, ciStatusDotClass, ciStatusTextClass, formatCIDuration } from '../../utils/ciStatus';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
@@ -75,13 +75,15 @@
     onBack: () => void;
     onRefresh: () => void;
     onSave: () => void;
-    onSend: () => void;
+    /** Puts the job in the source chat; absent with no chat to send to. */
+    onSend?: () => void;
     onToggleSection: (sectionKey: string) => void;
     onSetSectionsOpen: (sectionKeys: readonly string[], open: boolean) => void;
     /** Copies a section: resolves true once it is on the clipboard or,
      * past the inline size, saved to a file. */
     onCopySection: (section: CILogSection) => Promise<boolean>;
-    onSendSection: (section: CILogSection) => void;
+    /** Puts one section in the source chat; absent with no chat. */
+    onSendSection?: (section: CILogSection) => void;
   }
 
   let {
@@ -311,14 +313,16 @@
     >
       Save to file
     </button>
-    <button
-      type="button"
-      class="shrink-0 rounded border border-border-subtle px-2 py-1 text-[0.6875rem] text-fg-muted hover:text-fg"
-      data-testid="review-ci-log-send"
-      onclick={onSend}
-    >
-      Send to chat
-    </button>
+    {#if onSend}
+      <button
+        type="button"
+        class="shrink-0 rounded border border-border-subtle px-2 py-1 text-[0.6875rem] text-fg-muted hover:text-fg"
+        data-testid="review-ci-log-send"
+        onclick={onSend}
+      >
+        Send to chat
+      </button>
+    {/if}
     {#if view.job.url}
       <button
         type="button"
@@ -437,12 +441,14 @@
                     onclick={() => { void copySection(section); }}
                     testid="review-ci-section-copy"
                   />
-                  <ReviewIconButton
-                    icon={MessageSquarePlus}
-                    label="Send section to chat"
-                    onclick={() => onSendSection(section)}
-                    testid="review-ci-section-send"
-                  />
+                  {#if onSendSection}
+                    <ReviewIconButton
+                      icon={MessageSquarePlus}
+                      label="Send section to chat"
+                      onclick={() => onSendSection(section)}
+                      testid="review-ci-section-send"
+                    />
+                  {/if}
                 </span>
               {/if}
             </div>

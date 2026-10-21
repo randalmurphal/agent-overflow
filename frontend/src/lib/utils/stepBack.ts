@@ -4,9 +4,11 @@
 // Kept out of `native/` so the browser door does not pull the shell's
 // lazily loaded chunk into the entry bundle.
 //
-// The stack, in order: an open overlay or sheet closes first; a companion
-// screen (review, plan, agent) on screen closes and the thread it was
-// opened from comes back; a terminal drawer stacked over the chat closes;
+// The stack, in order: an open overlay or sheet closes first, and so does a
+// tool pane's detail step (a workflows run steps back to the list) through
+// the tool's own surface-dismissal command, gated on `toolDetailOpen`; a
+// companion screen (review, plan, agent) on screen closes and the thread it
+// was opened from comes back; a terminal drawer stacked over the chat closes;
 // the thread screen goes back to the list; and the list screen is the
 // root, where the caller decides what leaving means. The companion rung
 // runs before the terminal rung because opening a companion leaves focus

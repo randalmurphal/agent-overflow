@@ -89,6 +89,29 @@ func TestExplainForgeErrorSentences(t *testing.T) {
 	}
 }
 
+// A repository read names the project, never a PR number of it.
+func TestExplainRepoForgeErrorNamesTheProject(t *testing.T) {
+	t.Parallel()
+	repo := explainRef.Repository()
+	cases := []struct {
+		err  error
+		want string
+	}{
+		{&forgeapi.StatusError{Method: "GET", Status: http.StatusNotFound}, "team/app was not found on gitlab.example.com, or this login cannot see it."},
+		{errors.New("decode body: unexpected EOF"), "GitLab did not read team/app: decode body: unexpected EOF"},
+		{&forgeapi.ForbiddenError{Status: &forgeapi.StatusError{Status: http.StatusForbidden}, Scope: "read_api"}, "cannot read team/app."},
+	}
+	for _, tc := range cases {
+		explained, ok := errors.AsType[*ForgeActionError](ExplainRepoForgeError(repo, ActionRead, tc.err))
+		if !ok || !strings.Contains(explained.Message, tc.want) || strings.Contains(explained.Message, "!") {
+			t.Errorf("ExplainRepoForgeError(%v) = %v, want a sentence containing %q", tc.err, explained, tc.want)
+		}
+	}
+	if err := ExplainRepoForgeError(repo, ActionRead, nil); err != nil {
+		t.Fatalf("nil = %v", err)
+	}
+}
+
 // Nil stays nil and an explained error is not explained twice.
 func TestExplainForgeErrorIdempotent(t *testing.T) {
 	t.Parallel()

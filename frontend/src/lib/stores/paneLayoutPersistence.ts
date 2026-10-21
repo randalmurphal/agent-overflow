@@ -15,9 +15,11 @@ import {
 import { ListThreads } from './bindings';
 import {
   getPaneLayoutItems,
+  isToolKind,
   paneLayoutMutationRevision,
   setPaneLayoutPersistenceHandlers,
   setPaneLayoutItems,
+  toolPaneIdFor,
   type PaneLayoutItem,
 } from './paneLayout.svelte';
 import { getMinPaneWidth } from './paneDensity.svelte';
@@ -97,8 +99,9 @@ function isSafePersistedPaneId(paneId: string): boolean {
 // collide with the deterministic id minted when that companion later opens
 // for a same-named source pane (companionPaneIdFor('main','plan') ===
 // 'plan-main'), so reject it at the parse edge. Real companion entries
-// keep the shape — this guard applies to thread panes only.
-const COMPANION_SHAPED_PANE_ID = /^(?:plan|review|take-control|browser|agent|side-chat)-/;
+// keep the shape — this guard applies to thread panes only. Tool pane ids
+// (`tool-<kind>`) are reserved the same way.
+const COMPANION_SHAPED_PANE_ID = /^(?:plan|review|take-control|browser|agent|side-chat|tool)-/;
 
 function isSafePersistedThreadPaneId(paneId: string): boolean {
   return isSafePersistedPaneId(paneId) && !COMPANION_SHAPED_PANE_ID.test(paneId);
@@ -241,6 +244,15 @@ function parsePersistedLayout(raw: unknown): PersistedPaneLayout | null {
       };
       if (agentScope) restored.agentScope = agentScope;
       panes.push(restored);
+    } else if (isToolKind(pane.kind)) {
+      // One pane per tool kind, under its one id.
+      if (pane.paneId !== toolPaneIdFor(pane.kind)) continue;
+      seenPaneIds.add(pane.paneId);
+      panes.push({
+        paneId: pane.paneId,
+        kind: pane.kind,
+        widthPx: persistedWidthFor(pane, record.version),
+      });
     }
     if (panes.length >= MAX_RESTORED_PANES) break;
   }
@@ -295,10 +307,16 @@ function buildSnapshot(): PersistedPaneLayout {
         };
       }
       panes.push(entry);
+    } else if (isToolKind(item.kind)) {
+      panes.push({
+        paneId: item.paneId,
+        kind: item.kind,
+        widthPx: normalizePersistedWidthPx(item.widthPx),
+      });
     }
   }
   // Focus persists as-is when the focused pane itself is in the snapshot
-  // (thread panes and panel companions). A focused take-control pane is
+  // (thread panes, panel companions and tool panes). A focused take-control pane is
   // ephemeral — fall back to its source thread pane, then to the first pane.
   const focusedPaneId = getFocusedPaneId();
   const focusedThreadPaneId = getFocusedThreadPaneId();
@@ -367,10 +385,17 @@ export async function loadPersistedPaneLayout(
     const threadId = thread.id;
     if (neededThreadIds.has(threadId)) threadById.set(threadId, thread);
   }
+  // Thread and tool panes interleave in their saved order; companions are
+  // placed after their source below.
   const layoutItems: PaneLayoutItem[] = [];
   const registryEntries: Array<{ paneId: string; thread: Thread }> = [];
-  for (const pane of threadPanes) {
-    const thread = threadById.get(pane.threadId as string);
+  for (const pane of persisted.panes) {
+    if (isToolKind(pane.kind)) {
+      layoutItems.push({ id: pane.paneId, paneId: pane.paneId, kind: pane.kind, widthPx: pane.widthPx });
+      continue;
+    }
+    if (pane.kind !== 'thread' || !pane.threadId) continue;
+    const thread = threadById.get(pane.threadId);
     if (!thread) continue;
     layoutItems.push({
       id: pane.paneId,
@@ -389,7 +414,9 @@ export async function loadPersistedPaneLayout(
   await hydrateRestoredPaneRegistry(registryEntries, restoredFocusedPaneId);
   if (paneLayoutMutationRevision() !== expectedRevision) return;
 
-  const restoredThreadItems = layoutItems.filter((item) => getAllPanes().has(item.paneId));
+  const restoredLeadItems = layoutItems.filter(
+    (item) => isToolKind(item.kind) || getAllPanes().has(item.paneId),
+  );
   const companionsBySource = new Map<string, PaneLayoutItem[]>();
   for (const pane of companionPanes) {
     if (!isPersistedCompanionKind(pane.kind) || !pane.sourcePaneId) continue;
@@ -417,16 +444,16 @@ export async function loadPersistedPaneLayout(
     restoreCompanion(pane.sourcePaneId, pane.kind, pane.paneId);
   }
   const restoredLayoutItems: PaneLayoutItem[] = [];
-  for (const item of restoredThreadItems) {
+  for (const item of restoredLeadItems) {
     restoredLayoutItems.push(item);
     const companions = companionsBySource.get(item.paneId);
     if (companions) restoredLayoutItems.push(...companions);
   }
   setPaneLayoutItems(restoredLayoutItems);
 
-  // A persisted focused COMPANION id can only be honored now — the hydrate
-  // above validated against thread panes and fell back to one of those.
-  // Upgrade to the companion once its layout item exists.
+  // A persisted focused COMPANION or TOOL id can only be honored now — the
+  // hydrate above validated against thread panes and fell back to one of
+  // those. Upgrade once its layout item exists.
   if (
     persisted.focusedPaneId &&
     persisted.focusedPaneId !== getFocusedPaneId() &&

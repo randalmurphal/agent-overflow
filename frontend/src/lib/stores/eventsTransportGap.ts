@@ -41,6 +41,7 @@ import { threadHasScope } from '../transport/entityScopes';
 import { resyncGitStatusAfterGap } from './gitStatusStore.svelte';
 import { resyncPRReviewAfterGap } from './prReviewStore.svelte';
 import { resendPRCILogFollowsForBackend } from './prReviewCIFollows.svelte';
+import { resyncPipelinesAfterGap, resyncPullsAfterGap } from './pullsStore.svelte';
 import { resyncMcpServersAfterGap } from './mcpServers.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import { hasRememberedDraftSnapshot } from './composerDraftSnapshots';
@@ -320,6 +321,15 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
     // set answers every followed job's full text.
     case 'pr:ci_log':
       resendPRCILogFollowsForBackend(backendKeyForOrigin(origin?.backendId ?? ''));
+      resyncPipelinesAfterGap(backendKeyForOrigin(origin?.backendId ?? ''));
+      return;
+    // One frame per change of the list pump's snapshot, or of a pipeline:
+    // a lost one is not restated, so the page reads again.
+    case 'pulls:updated':
+      resyncPullsAfterGap(backendKeyForOrigin(origin?.backendId ?? ''));
+      return;
+    case 'ci:pipeline_updated':
+      resyncPipelinesAfterGap(backendKeyForOrigin(origin?.backendId ?? ''));
       return;
     case 'mcp:status':
       resyncMcpServersAfterGap(backendKeyForOrigin(origin?.backendId ?? ''));

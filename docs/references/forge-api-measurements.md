@@ -92,6 +92,31 @@ empty body. The pipeline jobs list carries a weak `ETag` but answers 200 to
   missing job answers `{"message":"404 Not found"}`; `glab` prints
   `glab: 404 Not found (HTTP 404)`.
 
+## Project lists
+
+One read-only `glab api "projects/<id>/merge_requests?state=opened&per_page=1"`
+on 2026-10-20 against gitlab.com (glab 1.117.0) on a project the login can
+read:
+
+- Each row carries `sha`, `user_notes_count`, `reviewers`,
+  `detailed_merge_status`, `has_conflicts`, `blocking_discussions_resolved`,
+  `draft` (and `work_in_progress`), `source_project_id`, `project_id`,
+  `created_at`, `updated_at` and `web_url`. It carries no `head_pipeline`.
+- `reviewers[]` are users (`id`, `username`, `name`, `state`, `locked`,
+  `avatar_url`, `web_url`, `public_email`); `state` is the account's
+  (`active`), not a review's, so the list does not say who has reviewed.
+- Times carry milliseconds (`2026-10-20T22:05:16.934Z`).
+- The answer sends a weak `ETag`, `X-Next-Page`, `X-Total` and
+  `X-Total-Pages`.
+
+GitHub's `PullsSearch` document and the `actions/runs` reads are checked
+against GitHub's GraphQL and REST documentation only, not probed:
+`search(type: ISSUE)` with `... on PullRequest`, `viewerLatestReview`,
+`totalCommentsCount`, `StatusCheckRollup.state`, and the
+`workflow_runs` fields `head_branch`, `event`, `display_title` and
+`pull_requests`. GitLab's pipelines list entity (`PipelineBasic`) has no
+`tag` flag; the single pipeline has one. Neither was probed.
+
 ## Merge readiness and actions
 
 ### GitHub
