@@ -377,10 +377,14 @@ attention state and group come from `prAttention`
 once.
 
 `SetPRListFocus` names at most `maxPRListFocus` (60) PR keys per handle:
-the rows on screen. The tick reads the detail of the focused rows and
-then of the user's own and reviewed rows (`ViewerIsAuthor`,
-`ViewerIsReviewer`), whose attention state needs it whether or not a
-filter shows them, at most `maxPRListFocus` in all. A row's detail is
+the rows on screen. The tick reads the detail of the rows a visible
+handle focuses and then of the user's own and reviewed rows
+(`ViewerIsAuthor`, `ViewerIsReviewer`), whose attention state needs it
+whether or not a filter shows them, at most `maxPRListFocus` in all:
+each group newest update time first, then by PR key, so unchanged rows
+keep the same set every tick. A row that falls out of the set loses its
+detail. A focusing handle that hides or shows recomputes the set at
+once (`SetPRListActive`). A row's detail is
 `Core.ReadPRSummary`: `ReadPR` with `Detail` and `Unresolved`, which adds
 the approval count and the unresolved thread count to the readiness. It
 is read when the row is first a candidate, when its list row changes

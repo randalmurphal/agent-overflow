@@ -251,7 +251,8 @@ GitHub a `search(type: ISSUE, query: "is:pr is:open repo:O/R")` with
 GitLab's basic list carries no `head_pipeline` and cannot say whether the
 viewer approved, so the detail (approvals, unresolved count, pipeline,
 readiness) is read per MR for the rows on screen and for the user's own
-and reviewed rows whether or not the filter shows them, at most 60, and
+and reviewed rows whether or not the filter shows them, at most 60 (the
+rows on screen first, each group newest first), and
 read again only when the list row moves, on a refresh, or after five
 minutes. A GitLab author's reply after the viewer's review is not in the
 list and does not move a row to `Your turn`. The page refreshes on open,

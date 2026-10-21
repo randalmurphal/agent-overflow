@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"slices"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/forgeapi"
@@ -155,25 +157,28 @@ func (a *App) pollPRList(ctx context.Context, pump *prListPump, forceDetails boo
 			log.Printf("pr list: read of %s failed (id: %s): %v", key, fail.correlationID, errs[i])
 		}
 	}
-	focus := a.prListFocusLocked(pump, forceDetails)
+	focus, _ := a.prListFocusLocked(pump, forceDetails)
 	a.prUpdates.mu.Unlock()
 
 	a.readPRListDetails(ctx, pump, focus)
 	return a.publishPRList(pump)
 }
 
-// pollPRListFocus reads the detail of focused rows that have none yet and
-// republishes, without reading the lists.
+// pollPRListFocus recomputes the detail candidates after a focus or
+// visibility change, without reading the lists: it reads the detail of
+// the candidates that have none yet and republishes, also when only a
+// detail was dropped.
 func (a *App) pollPRListFocus(ctx context.Context, pump *prListPump) (PRListSnapshot, bool) {
 	a.prUpdates.mu.Lock()
 	var fresh []prListFocusRead
-	for _, read := range a.prListFocusLocked(pump, false) {
+	due, dropped := a.prListFocusLocked(pump, false)
+	for _, read := range due {
 		if pump.details[read.pr.Key()] == nil {
 			fresh = append(fresh, read)
 		}
 	}
 	a.prUpdates.mu.Unlock()
-	if len(fresh) == 0 {
+	if len(fresh) == 0 && !dropped {
 		return PRListSnapshot{}, false
 	}
 	a.readPRListDetails(ctx, pump, fresh)
@@ -186,21 +191,27 @@ type prListFocusRead struct {
 	fingerprint string
 }
 
-// prListFocusLocked lists the rows whose detail is due: the rows the
-// subscribers focus (on screen), then the user's own and the ones they
-// review, whose attention state (ready, pipeline failed, your turn on
-// GitLab) needs the detail whether or not the list shows them, at most
-// maxPRListFocus in all; among those, never read, read for another list
-// row, older than prListDetailMaxAge, or every one when forced. A detail
-// no candidate row holds any more is dropped.
-func (a *App) prListFocusLocked(pump *prListPump, force bool) []prListFocusRead {
+// prListFocusLocked lists the rows whose detail is due. The candidates
+// are the rows a visible subscriber focuses (on screen), then the user's
+// own and the ones they review, whose attention state (ready, pipeline
+// failed, your turn on GitLab) needs the detail whether or not the list
+// shows them; each group ordered by update time, newest first, then by
+// PR key, and at most maxPRListFocus in all, so unchanged rows keep the
+// same set from tick to tick. Among those, a detail is due when never
+// read, read for another list row, older than prListDetailMaxAge, or
+// every one when forced. A detail no candidate holds any more is dropped,
+// and dropped reports whether one was.
+func (a *App) prListFocusLocked(pump *prListPump, force bool) (due []prListFocusRead, dropped bool) {
 	focused := map[string]bool{}
 	for _, handle := range a.prUpdates.listHandles {
+		if !handle.active {
+			continue
+		}
 		for key := range handle.focus {
 			focused[key] = true
 		}
 	}
-	var onScreen, own []gitops.PRListRow
+	var onScreen, own []prListCandidate
 	seen := map[string]bool{}
 	for _, state := range pump.projects {
 		for _, row := range state.rows {
@@ -211,25 +222,26 @@ func (a *App) prListFocusLocked(pump *prListPump, force bool) []prListFocusRead 
 			switch {
 			case focused[key]:
 				seen[key] = true
-				onScreen = append(onScreen, row)
+				onScreen = append(onScreen, newPRListCandidate(row))
 			case row.ViewerIsAuthor || row.ViewerIsReviewer:
 				seen[key] = true
-				own = append(own, row)
+				own = append(own, newPRListCandidate(row))
 			}
 		}
 	}
+	slices.SortFunc(onScreen, comparePRListCandidates)
+	slices.SortFunc(own, comparePRListCandidates)
 	candidates := append(onScreen, own...)
 	if len(candidates) > maxPRListFocus {
 		candidates = candidates[:maxPRListFocus]
 	}
 	now := time.Now()
-	var due []prListFocusRead
 	kept := map[string]bool{}
-	for _, row := range candidates {
-		key := row.Ref.Key()
-		kept[key] = true
+	for _, candidate := range candidates {
+		row := candidate.row
+		kept[candidate.key] = true
 		fingerprint := prListFingerprint(row)
-		last := pump.details[key]
+		last := pump.details[candidate.key]
 		if force || last == nil || last.fingerprint != fingerprint || now.Sub(last.readAt) >= prListDetailMaxAge {
 			due = append(due, prListFocusRead{pr: row.Ref, fingerprint: fingerprint})
 		}
@@ -237,9 +249,33 @@ func (a *App) prListFocusLocked(pump *prListPump, force bool) []prListFocusRead 
 	for key := range pump.details {
 		if !kept[key] {
 			delete(pump.details, key)
+			dropped = true
 		}
 	}
-	return due
+	return due, dropped
+}
+
+// prListCandidate is a row prListFocusLocked ranks: its key and parsed
+// update time (zero when the forge's time does not parse).
+type prListCandidate struct {
+	row     gitops.PRListRow
+	key     string
+	updated time.Time
+}
+
+func newPRListCandidate(row gitops.PRListRow) prListCandidate {
+	// The forges spell the time differently (GitLab with milliseconds),
+	// so the text does not order them.
+	updated, _ := time.Parse(time.RFC3339, row.UpdatedAt)
+	return prListCandidate{row: row, key: row.Ref.Key(), updated: updated}
+}
+
+// comparePRListCandidates orders the newest update first, then by key.
+func comparePRListCandidates(a, b prListCandidate) int {
+	if c := b.updated.Compare(a.updated); c != 0 {
+		return c
+	}
+	return strings.Compare(a.key, b.key)
 }
 
 // readPRListDetails reads each due row's detail, at most
