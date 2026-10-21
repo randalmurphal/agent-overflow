@@ -10,6 +10,11 @@ vi.mock('../workflows/WorkflowsPane.svelte', async () => ({
 }));
 
 import PaneHost from './PaneHost.svelte';
+// ToolPane imports its bodies lazily. Loaded with the file, the cases wait for
+// the mount rather than for a first import transforming the body, which is
+// load-dependent.
+import '../workflows/WorkflowsPane.svelte';
+import '../pulls/PullsPane.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { resetLayoutMetricsForTest } from '../../stores/layoutMetrics.svelte';
 import {
