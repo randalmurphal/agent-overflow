@@ -53,8 +53,8 @@
     TAIL_WINDOW_KEEP_LINES,
     TAIL_WINDOW_MEASURE_RETRY_CHARS,
     TAIL_WINDOW_MIN_KEEP_CHARS,
+    heightAbove,
     isMonotonicAppend,
-    landedHeight,
     measuredLineStartOffset,
     newlineCutOffset,
   } from './tailWindow';
@@ -90,6 +90,8 @@
   // summary when the retained tail is dropped, and resets the window)
   // and for throttling failed measurements. Stream offsets.
   let prevEnd = 0;
+  /** Stream offset the text node rendered from after the last update. */
+  let prevNodeStart = 0;
   let prevLastCharCode = 0;
   let cutFirstCharCode = 0;
   let measureFloor = 0;
@@ -125,16 +127,21 @@
   let slideFrame = 0;
   let slideLastTs = 0;
   // An update whose rendered start advanced (the window's own cut, or the
-  // source window's start moving past it): the stream offsets of the text
-  // it appended and the cut it rendered from. A cut lands in the frame of
-  // the text that pushed the window over its cap, so the observer sees
-  // the lines that landed less the lines cut, and a cut that removes
-  // exactly what landed changes no size and wakes no observer. Once the
-  // DOM shows the cut, settleCut measures the lines that landed directly
-  // (the previous last character is still rendered: a cut stays before
-  // the previous end) and credits the difference to the decision, so the
-  // slide is for the lines that landed.
-  let slideCut: { previousEnd: number; end: number; cut: number } | null = null;
+  // source window's start moving past it) removes height from above the
+  // box in the frame of the text that landed, so the observer sees the
+  // lines that landed less the lines removed, and a cut that removes
+  // exactly what landed changes no size and wakes no observer. The height
+  // removed is read in two parts, each where the rows still exist: the
+  // rows the source dropped (its start moving past the rendered start)
+  // on the layout before the update (`overtakenPx`, the pre-effect), and
+  // the rows the window's own cut drops as the inner's height with the
+  // appended text rendered from the previous start, read before the cut
+  // applies, less its height once the DOM shows the cut (settleCut).
+  // Heights rather than character rectangles: an append that completes a
+  // word at the right margin carries the previous last character onto
+  // the new row with it, so no character marks the previous end's row.
+  let slideCut: { preCutH: number; overtakenPx: number } | null = null;
+  let overtakenPx = 0;
 
   function applySlide(inner: HTMLElement): void {
     inner.style.transform = slideOffset > 0 ? `translateY(${slideOffset}px)` : '';
@@ -178,19 +185,15 @@
   }
 
   // After the DOM shows a cut: decide from the geometry as it is now, with
-  // the height the cut removed (what landed less the net growth). The
-  // observer's later delivery, if any, sees the same sizes and does nothing.
+  // the height the cut removed. The observer's later delivery, if any,
+  // sees the same sizes and does nothing.
   function settleCut(): void {
     const pending = slideCut;
     slideCut = null;
     if (!pending || !innerEl || !el || slideMemory === null) return;
-    const node = innerEl.firstChild;
-    if (!(node instanceof Text)) return;
-    const landed = landedHeight(node, pending.previousEnd - 1 - pending.cut, pending.end - 1 - pending.cut);
-    if (landed === null) return;
     const inner = innerEl.getBoundingClientRect();
     const outer = el.getBoundingClientRect();
-    const removed = landed - (inner.height - slideMemory.innerH);
+    const removed = pending.overtakenPx + pending.preCutH - inner.height;
     observeSlide(innerEl, { innerH: inner.height, innerW: inner.width, outerH: outer.height }, Math.max(0, removed));
   }
 
@@ -252,6 +255,21 @@
   const renderedFrom = $derived(Math.max(0, cutOffset - textStart));
   const rendered = $derived(expanded || renderedFrom === 0 ? displayText : displayText.slice(renderedFrom));
 
+  // Before the DOM update of an append whose source start moved past the
+  // rendered start: the text node still renders the previous window, so
+  // the rows the source dropped are measurable here and nowhere later.
+  $effect.pre(() => {
+    const t = displayText;
+    const start = textStart;
+    overtakenPx = 0;
+    const node = innerEl?.firstChild;
+    if (!el || !(node instanceof Text) || untrack(() => expanded) || start <= prevNodeStart) return;
+    const renderedCut = untrack(() => cutOffset);
+    if (!isMonotonicAppend(t, start, prevEnd, prevLastCharCode, renderedCut, cutFirstCharCode)) return;
+    const lineHeight = Number.parseFloat(getComputedStyle(el).lineHeight);
+    overtakenPx = heightAbove(node, start - prevNodeStart, lineHeight) ?? 0;
+  });
+
   // Depends on `displayText`, `textStart` and `expanded`. `cutOffset` reads go
   // through `untrack` so the effect's own cut writes can't re-trigger it.
   $effect(() => {
@@ -259,6 +277,8 @@
     const start = textStart;
     const end = start + t.length;
     const renderedCut = untrack(() => cutOffset);
+    const overtaken = overtakenPx;
+    overtakenPx = 0;
     let cut = renderedCut;
 
     const appended = isMonotonicAppend(t, start, prevEnd, prevLastCharCode, cut, cutFirstCharCode);
@@ -276,7 +296,6 @@
     } else if (cut < start) {
       cut = start;
     }
-    const previousEnd = prevEnd;
     prevEnd = end;
     prevLastCharCode = t.length > 0 ? t.charCodeAt(t.length - 1) : 0;
 
@@ -302,10 +321,12 @@
     }
 
     // A rendered start that advanced removes height from above the box in
-    // the same frame as the text that landed: settle the slide once the
-    // DOM shows the cut.
-    if (appended && cut > renderedCut && !expanded && previousEnd > cut) {
-      slideCut = { previousEnd, end, cut };
+    // the same frame as the text that landed. The text node still renders
+    // the appended text from the previous start here (the cut applies on
+    // the next flush), so its height now less its height after the cut is
+    // what the cut removed: settle the slide once the DOM shows the cut.
+    if (appended && cut > renderedCut && !expanded && innerEl) {
+      slideCut = { preCutH: innerEl.getBoundingClientRect().height, overtakenPx: overtaken };
       void tick().then(settleCut);
     }
 
@@ -314,6 +335,7 @@
       cutFirstCharCode = cut > 0 ? t.charCodeAt(cut - start) : 0;
       cutOffset = cut;
     }
+    prevNodeStart = expanded ? start : Math.max(cut, start);
   });
 </script>
 

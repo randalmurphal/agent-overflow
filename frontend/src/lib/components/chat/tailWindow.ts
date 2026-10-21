@@ -130,24 +130,35 @@ export function isMonotonicAppend(
 }
 
 /**
- * Height, in CSS pixels, the rendered text grew by below the line of the
- * character at `previousLast` of `textNode` (the last character before an
- * append) up to the line of the character at `last` (the last character
- * now): the lines the append landed, zero when it stayed on the previous
- * last line. Null without layout geometry or when either index is outside
- * the node.
+ * Height, in CSS pixels, of the rendered rows above the row the character
+ * at `index` of `textNode` is on. A newline's own rectangle marks no row,
+ * so the first glyph after a run of newlines stands in for the run, one
+ * row per newline skipped; the text ends in a glyph (the clamp trims it).
+ * Null without layout geometry, when `index` is outside the node, or
+ * when `lineHeightPx` is not a usable pixel value.
  */
-export function landedHeight(textNode: Text, previousLast: number, last: number): number | null {
-  if (previousLast < 0 || last < previousLast || last >= textNode.length) return null;
+export function heightAbove(textNode: Text, index: number, lineHeightPx: number): number | null {
+  const len = textNode.length;
+  if (index < 0 || index >= len || !Number.isFinite(lineHeightPx) || lineHeightPx <= 0) return null;
+  const text = textNode.data;
+  const glyphAt = (i: number): number => {
+    let k = i;
+    while (k < len && text.charCodeAt(k) === 10) k += 1;
+    return k;
+  };
+  const first = glyphAt(0);
+  const at = glyphAt(index);
+  if (at >= len) return null;
   const range = document.createRange();
-  range.setStart(textNode, previousLast);
-  range.setEnd(textNode, previousLast + 1);
-  const before = range.getBoundingClientRect();
-  range.setStart(textNode, last);
-  range.setEnd(textNode, last + 1);
-  const after = range.getBoundingClientRect();
-  if (before.height === 0 || after.height === 0) return null;
-  return Math.max(0, after.bottom - before.bottom);
+  range.setStart(textNode, first);
+  range.setEnd(textNode, first + 1);
+  const firstRect = range.getBoundingClientRect();
+  range.setStart(textNode, at);
+  range.setEnd(textNode, at + 1);
+  const atRect = range.getBoundingClientRect();
+  if (firstRect.height === 0 || atRect.height === 0) return null;
+  const rows = Math.round((atRect.top - firstRect.top) / lineHeightPx) + first - (at - index);
+  return Math.max(0, rows) * lineHeightPx;
 }
 
 /**
