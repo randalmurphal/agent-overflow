@@ -1,6 +1,6 @@
 module agent-overflow
 
-go 1.27.2
+go 1.27.3
 
 // macOS and Windows verify certificates with the system trust store even
 // when SSL_CERT_FILE or SSL_CERT_DIR is set.
