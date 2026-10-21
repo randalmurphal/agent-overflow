@@ -28,9 +28,12 @@ its own.
 
 Row components (`PullRow`, `PipelineRow`) render the views in
 `pullRowView.ts` and `pipelineRowView.ts`; attention text and sort live in
-`utils/pullsAttention.ts`. `visibleRows.ts` reports the rows on screen, which
-the stores forward as the list's focus (`SetPRListFocus`) and the stage
-reads (`ReadPipelineStages`); do not read a row's detail from a component.
+`utils/pullsAttention.ts`. `PullsList` and `PipelinesList` take their rows
+as props and render through `PullsListBody`, which virtualizes headings,
+project errors and rows in one `LongListVirtualizer` and reports the rows
+in its viewport range (none while the list is hidden). The stores forward
+those as the list's focus (`SetPRListFocus`) and the stage reads
+(`ReadPipelineStages`); do not read a row's detail from a component.
 
 `OpenWithAgentMenu.svelte` is one menu for the header button and the row
 menu; the thread choices come from `stores/pullsPageAgent.svelte.ts`, which
