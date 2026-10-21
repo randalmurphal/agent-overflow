@@ -12,7 +12,8 @@
 // the review pinned to it beside the list (full width with Back on compact)
 // with its readiness pill and Merge section; what moved since the reader
 // looked, a push or only comments, reads on the row, clears once the row
-// is opened again and stays cleared across a reload; a project whose list
+// is opened again, stays cleared across a reload, and is not cleared by
+// what lands while the Pipelines tab hides the open MR; a project whose list
 // the forge refuses fails alone with its sentence, Details and a Retry; a
 // row's menu acts on its MR without opening it; Open with agent starts a
 // thread in a worktree with the MR's branch checked out at its head and
@@ -276,10 +277,8 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       await row(page, 201).getByRole('button').first().click();
       await expect(page.getByTestId('review-pr-header')).toContainText('Rework the review pane header');
       const pushed = { ...first, headSha: SHA('9'), comments: [...(first.comments ?? []), { author: 'sabossedgh', body: 'Addressed.', createdAt: '2026-10-20T15:00:00Z' }] };
-      await seedForge(harness, [{
-        ...seeded.gitlab,
-        pulls: [{ ...pushed, comments: [...pushed.comments, { author: 'alice', authorName: 'Alice Ng', body: 'Thanks.', createdAt: '2026-10-20T16:00:00Z' }], updatedAt: '2026-10-20T16:00:00Z' }, ...rest],
-      }]);
+      const thanked = { ...pushed, comments: [...pushed.comments, { author: 'alice', authorName: 'Alice Ng', body: 'Thanks.', createdAt: '2026-10-20T16:00:00Z' }], updatedAt: '2026-10-20T16:00:00Z' };
+      await seedForge(harness, [{ ...seeded.gitlab, pulls: [thanked, ...rest] }]);
       if (compact) await page.getByTestId('pulls-back').click();
       await expect(row(page, 101).getByTestId('pull-since')).toHaveText('1 new comment since you looked', { timeout: 20_000 });
       await row(page, 101).getByRole('button').first().click();
@@ -293,6 +292,30 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       if (compact) await page.getByTestId('sidebar-tool-pulls').click();
       await expect(rowPill(page, 101)).toHaveText('Your turn');
       await expect(row(page, 101).getByTestId('pull-since')).toHaveCount(0);
+
+      // Under the Pipelines tab the MR stays selected with its review off
+      // screen: a comment that lands then is not seen. A reload drops the
+      // selection and the page's own records, and the row still says so.
+      // (Compact has no such state: its Back clears the MR before the tabs show.)
+      if (!compact) {
+        await row(page, 101).getByRole('button').first().click();
+        await expect(page.getByTestId('review-pr-header')).toContainText('Queue: retry a failed delivery once');
+        await page.getByRole('radio', { name: 'Pipelines' }).click();
+        await expect(page.getByTestId('review-pane')).toHaveCount(0);
+        const listReads = async () => (await forgeInvocations(harness)).filter((call) => call.via === 'http' && call.route === 'glab api merge request list').length;
+        const before = await listReads();
+        await seedForge(harness, [{
+          ...seeded.gitlab,
+          pulls: [{ ...thanked, comments: [...thanked.comments, { author: 'sabossedgh', body: 'One more.', createdAt: '2026-10-20T17:00:00Z' }], updatedAt: '2026-10-20T17:00:00Z' }, ...rest],
+        }]);
+        // Two list ticks after the comment: the page has had the row that carries it.
+        await expect(async () => expect(await listReads()).toBeGreaterThanOrEqual(before + 2)).toPass({ timeout: 20_000 });
+        await page.reload();
+        await page.getByRole('radio', { name: 'Merge requests' }).click();
+        await expect(row(page, 101).getByTestId('pull-since')).toHaveText('1 new comment since you looked', { timeout: 20_000 });
+        await row(page, 101).getByRole('button').first().click();
+        await expect(row(page, 101).getByTestId('pull-since')).toHaveCount(0, { timeout: 20_000 });
+      }
 
       await expectEveryForgeCallHandled(harness);
     } finally {
