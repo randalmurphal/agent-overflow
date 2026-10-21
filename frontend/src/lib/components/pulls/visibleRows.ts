@@ -4,7 +4,9 @@
 // (the rows whose detail is read). Recomputed on scroll, on resize and
 // when rows come and go, coalesced to one pass per frame; geometry is read
 // against the container's box, so a row hidden by the container's own
-// overflow counts as off screen.
+// overflow counts as off screen. A consumer that goes (the list unmounts,
+// or the options name another consumer) is told its rows left: it reads
+// what it was last told, so silence would keep the old rows focused.
 
 export interface VisibleRowsOptions {
   /** The data attribute (without `data-`) that names a row. */
@@ -33,6 +35,13 @@ export function visibleRows(node: HTMLElement, options: VisibleRowsOptions): { u
     current.onVisible(keys);
   }
 
+  // The consumer told of rows hears that none are on screen.
+  function leave(): void {
+    if (last === '') return;
+    last = '';
+    current.onVisible([]);
+  }
+
   function schedule(): void {
     if (frame !== null) return;
     frame = requestAnimationFrame(measure);
@@ -47,6 +56,7 @@ export function visibleRows(node: HTMLElement, options: VisibleRowsOptions): { u
 
   return {
     update(next: VisibleRowsOptions): void {
+      if (next.onVisible !== current.onVisible) leave();
       current = next;
       last = '';
       schedule();
@@ -56,6 +66,8 @@ export function visibleRows(node: HTMLElement, options: VisibleRowsOptions): { u
       resize?.disconnect();
       mutations?.disconnect();
       if (frame !== null) cancelAnimationFrame(frame);
+      frame = null;
+      leave();
     },
   };
 }
