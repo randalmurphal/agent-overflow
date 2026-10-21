@@ -9,8 +9,8 @@
 // filter chips and the project picker narrow the list and survive a
 // reload; picking a row opens the review pinned to it beside the list (full
 // width with Back on compact) with its readiness pill and Merge section;
-// what moved since the reader looked reads on the row and clears once the
-// row is opened again; a project whose list the forge refuses fails alone
+// what moved since the reader looked, a push or only comments, reads on
+// the row and clears once the row is opened again; a project whose list the forge refuses fails alone
 // with its sentence and a Retry; Open with agent starts a thread in a
 // worktree on the MR's branch with the seeded draft, and afterwards lists
 // it on the MR and refuses a second worktree; the Pipelines tab lists the
@@ -242,6 +242,26 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       if (compact) await page.getByTestId('pulls-back').click();
       await expect(row(page, 101).getByTestId('pull-since')).toHaveText('pushed · 1 new comment since you looked', { timeout: 20_000 });
       await expect(row(page, 101).getByTestId('pull-since')).toHaveCount(1);
+      // Opened again, it is seen once its review shows the push.
+      await row(page, 101).getByRole('button').first().click();
+      await expect(page.getByTestId('review-pr-header')).toContainText('Queue: retry a failed delivery once');
+      await expect(row(page, 101).getByTestId('pull-since')).toHaveCount(0, { timeout: 20_000 });
+      if (compact) await page.getByTestId('pulls-back').click();
+
+      // A comment with no push reads on the row too, and going back to the
+      // review the page kept clears it.
+      await row(page, 201).getByRole('button').first().click();
+      await expect(page.getByTestId('review-pr-header')).toContainText('Rework the review pane header');
+      const pushed = { ...first, headSha: SHA('9'), comments: [...(first.comments ?? []), { author: 'sabossedgh', body: 'Addressed.', createdAt: '2026-10-20T15:00:00Z' }] };
+      await seedForge(harness, [{
+        ...seeded.gitlab,
+        pulls: [{ ...pushed, comments: [...pushed.comments, { author: 'alice', authorName: 'Alice Ng', body: 'Thanks.', createdAt: '2026-10-20T16:00:00Z' }], updatedAt: '2026-10-20T16:00:00Z' }, ...rest],
+      }]);
+      if (compact) await page.getByTestId('pulls-back').click();
+      await expect(row(page, 101).getByTestId('pull-since')).toHaveText('1 new comment since you looked', { timeout: 20_000 });
+      await row(page, 101).getByRole('button').first().click();
+      await expect(page.getByTestId('review-pr-header')).toContainText('Queue: retry a failed delivery once');
+      await expect(row(page, 101).getByTestId('pull-since')).toHaveCount(0, { timeout: 20_000 });
 
       await expectEveryForgeCallHandled(harness);
     } finally {
