@@ -309,10 +309,14 @@ describe('the owning computer', () => {
   it('reads nothing until the computer grants git, stops when it is revoked, and the refresh still shows the refusal', async () => {
     stageBackend();
     const mocks = installMocks();
+    const job = { id: '20', name: 'unit', status: 'running', logsAvailable: true };
     const subscribe = setBindingMock('SubscribePipeline', async (_repo: unknown, id: string) => ({
-      id: `pipe-${id}`, key: `gitlab:group/app:pipeline:${id}`, pipeline: { id, status: 'running', stages: [] }, error: '', errorKind: '', reserve: false, resumeAt: '', seq: 1,
+      id: `pipe-${id}`, key: `gitlab:group/app:pipeline:${id}`, pipeline: { id, status: 'running', stages: [{ name: 'test', status: 'running', jobs: [job] }] }, error: '', errorKind: '', reserve: false, resumeAt: '', seq: 1,
     }));
     const unsubscribe = setBindingMock('UnsubscribePipeline', async () => undefined);
+    setBindingMock('SetPipelineFollows', async (_id: string, jobs: string[]) => ({
+      logs: Object.fromEntries(jobs.map((jobId) => [jobId, { version: 1, totalLines: 1, totalBytes: 8, stableLines: 0, sections: [], available: true, downloading: false, error: '', seq: 2 }])),
+    }));
     attachPipelinesPage(PANE, 'laptop');
     await settle();
     expect(mocks.projects).not.toHaveBeenCalled();
@@ -338,11 +342,16 @@ describe('the owning computer', () => {
     await settle();
     expect(subscribe).toHaveBeenCalledTimes(1);
     expect(selectedPipeline(PANE)?.ci.pipeline?.status).toBe('running');
+    selectedPipeline(PANE)!.ci.openJobLog('test', job);
+    await settle();
+    expect(selectedPipeline(PANE)?.ci.log).toMatchObject({ version: 1 });
 
-    // Revoked: the reads stop, the subscription goes, and both say why.
+    // Revoked: the reads stop, the subscription goes with the open log,
+    // and both say why.
     revokeBackendScopes('laptop');
     await settle();
     expect(unsubscribe).toHaveBeenCalledWith('pipe-3');
+    expect(selectedPipeline(PANE)?.ci.logView).toBeNull();
     expect(selectedPipeline(PANE)?.ci.error).toBe(NOT_GRANTED);
     expect(pipelinesError(PANE)).toBe(NOT_GRANTED);
     await vi.advanceTimersByTimeAsync(PIPELINES_REFRESH_MS * 3);

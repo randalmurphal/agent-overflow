@@ -397,10 +397,15 @@ class PipelineSelection {
     });
   }
 
-  /** Holds the subscription while granted and releases it when not. */
+  /** Holds the subscription while granted and releases it when not, with
+   * the open log, whose follow goes with the subscription. */
   sync(granted: boolean): void {
-    if (granted && !this.hold) this.hold = attachPipelineCI(this.backend, this.repo, this.pipelineId);
-    else if (!granted && this.hold) this.release();
+    if (granted && !this.hold) {
+      this.hold = attachPipelineCI(this.backend, this.repo, this.pipelineId);
+    } else if (!granted && this.hold) {
+      this.ci.closeLogView();
+      this.release();
+    }
   }
 
   release(): void {
