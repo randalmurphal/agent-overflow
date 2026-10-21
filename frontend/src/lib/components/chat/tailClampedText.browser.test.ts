@@ -529,7 +529,11 @@ describe('TailClampedText wrap-stable window', () => {
     expect(after[cut - 1]).toBe('\n');
 
     expectSamplesEqual(relBefore, sampleRelative(body, after, samples));
-    expect(tailOverflowPx(body)).toBeLessThanOrEqual(1);
+    // The cut lands in the frame of the line that pushed the window over
+    // the cap, and that line slides in as any landed line does: the content
+    // above the box shrank, the line that landed is the slide.
+    expect(transformTranslateY(getComputedStyle(body.firstElementChild as HTMLElement).transform)).toBeGreaterThan(2);
+    await waitFor(() => tailOverflowPx(body) <= 1, 'the appended line slid into view');
   });
 
   it('measured cut: a newline-less monster paragraph is cut at a rendered line start', async () => {
@@ -568,7 +572,8 @@ describe('TailClampedText wrap-stable window', () => {
     expect(contentSpanPx(body)).toBeLessThanOrEqual((TAIL_WINDOW_KEEP_LINES + 2) * lh);
 
     expectSamplesEqual(relBefore, sampleRelative(body, after, samples));
-    expect(tailOverflowPx(body)).toBeLessThanOrEqual(1);
+    expect(transformTranslateY(getComputedStyle(body.firstElementChild as HTMLElement).transform)).toBeGreaterThan(2);
+    await waitFor(() => tailOverflowPx(body) <= 1, 'the appended words slid into view');
   });
 
   it('keeps every rendered character in place when the source window moves', async () => {

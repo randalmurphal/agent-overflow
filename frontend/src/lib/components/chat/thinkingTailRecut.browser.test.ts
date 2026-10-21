@@ -16,6 +16,7 @@ import {
 } from '../../../test/helpers/timelineBrowserHarness';
 import type { Item } from '../../types/models';
 import { LIVE_WINDOW_RECUT_CHARS } from '../../utils/liveText';
+import { MAX_REVEAL_TICK_DT_MS } from '../../markdown/smoothing/PerItemSmoother';
 import { stepSlide, transformTranslateY } from './tailSlide';
 import { TAIL_WINDOW_KEEP_LINES } from './tailWindow';
 
@@ -27,17 +28,30 @@ const THINKING_ID = 'think-recut';
 // Sub-pixel geometry slack on a glyph's per-frame move.
 const GLYPH_SLACK_PX = 3;
 
+type Feed = {
+  text: string;
+  /** Characters per delta. */
+  chunk: number;
+  /** Milliseconds between deltas. */
+  everyMs: number;
+};
+
 type Case = {
   name: string;
   stream: string;
   /** The text so far when the row arrives; by default up to a line end short of the recut. */
   seed?: string;
+  /** The deltas after the seed; by default the next 800 characters, 12 at a time every 12ms. */
+  feed?: Feed[];
   /** The clamp renders from one start throughout (no measured cut moves it). */
   sameStart: boolean;
 };
 
 const UNBROKEN_LINES = 'a\n'.repeat(4088);
 const UNBROKEN_TOKEN = 'x'.repeat(LIVE_WINDOW_RECUT_CHARS - UNBROKEN_LINES.length - 100);
+// Ten blank lines: with the word that lays them out, under the slide's cap
+// (SLIDE_MAX_WINDOWS windows), so their landing slides rather than snaps.
+const BLANK_RUN = '\n'.repeat(10);
 
 const CASES: Case[] = [
   {
@@ -65,7 +79,27 @@ const CASES: Case[] = [
     seed: UNBROKEN_LINES + UNBROKEN_TOKEN,
     sameStart: false,
   },
+  {
+    // The token, then blank lines one delta at a time, then words: the
+    // clamp trims the end, so the blank lines lay out only once a word
+    // follows them. A window that counted them toward its kept lines cut
+    // the lines above the token while the blank lines were still arriving,
+    // and the clamp adopted that start and shrank to the rows that remained.
+    name: 'unbroken token then blank lines',
+    stream: `${UNBROKEN_LINES}${UNBROKEN_TOKEN}${'x'.repeat(100)}${BLANK_RUN}${'word '.repeat(160)}`,
+    seed: UNBROKEN_LINES + UNBROKEN_TOKEN,
+    feed: [
+      { text: 'x'.repeat(100), chunk: 12, everyMs: 12 },
+      { text: BLANK_RUN, chunk: 1, everyMs: 50 },
+      { text: 'word '.repeat(160), chunk: 12, everyMs: 12 },
+    ],
+    sameStart: false,
+  },
 ];
+
+function feedOf(stream: string, seed: string): Feed[] {
+  return [{ text: stream.slice(seed.length, seed.length + 800), chunk: 12, everyMs: 12 }];
+}
 
 // The row arrives with its text so far, up to a line end short of the recut:
 // the reveal is capped at 320 chars/s, so streaming it would take over a
@@ -164,10 +198,10 @@ type Frame = {
 const paintedDt = (frames: Frame[], i: number): number =>
   i >= 2 ? frames[i - 1]!.t - frames[i - 2]!.t : frames[i]!.t - frames[i - 1]!.t;
 
-describe.each(CASES)('streaming thinking tail through a live window recut ($name)', ({ stream, seed: givenSeed, sameStart }) => {
+describe.each(CASES)('streaming thinking tail through a live window recut ($name)', ({ stream, seed: givenSeed, feed, sameStart }) => {
   it('keeps the rendered text, its retained rows and the line slide continuous', async () => {
     const seed = givenSeed ?? seedOf(stream);
-    const continuation = stream.slice(seed.length, seed.length + 800);
+    const feeds = feed ?? feedOf(stream, seed);
     const { pane, scrollEl } = await mountTimeline(THREAD_ID, seedItems(seed), QUIET_BOTTOM);
     const frames: Frame[] = [];
     let stop = false;
@@ -204,12 +238,14 @@ describe.each(CASES)('streaming thinking tail through a live window recut ($name
       }
     })();
 
-    const chunks = continuation.match(/[^]{1,12}/g)!;
-    for (const delta of chunks) {
-      pane.applyItemDelta({ threadId: THREAD_ID, itemId: THINKING_ID, kind: 'thinking', delta, updatedAt: 1 });
-      await wait(12);
+    let end = seed.length;
+    for (const { text, chunk, everyMs } of feeds) {
+      for (const delta of text.match(new RegExp(`[^]{1,${chunk}}`, 'g'))!) {
+        pane.applyItemDelta({ threadId: THREAD_ID, itemId: THINKING_ID, kind: 'thinking', delta, updatedAt: 1 });
+        await wait(everyMs);
+      }
+      end += text.length;
     }
-    const end = seed.length + continuation.length;
     await waitFor(() => {
       const window = pane.liveThinkingWindowForItem(THINKING_ID);
       return window !== null && window.start + window.text.length === end;
@@ -241,7 +277,7 @@ describe.each(CASES)('streaming thinking tail through a live window recut ($name
       const b = frames[i]!;
       if (b.yPrev === null || Number.isNaN(a.y)) continue;
       const dy = b.yPrev - a.y;
-      const legit = a.ty - stepSlide(a.ty, paintedDt(frames, i)) + GLYPH_SLACK_PX;
+      const legit = a.ty - stepSlide(a.ty, paintedDt(frames, i), MAX_REVEAL_TICK_DT_MS) + GLYPH_SLACK_PX;
       if (Math.abs(dy) > legit) {
         teleports.push(`frame ${i}${i === recut ? ' (recut)' : ''}: dy ${dy.toFixed(1)}, ty ${a.ty.toFixed(1)} -> ${b.ty.toFixed(1)}`);
       }

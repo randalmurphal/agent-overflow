@@ -44,8 +44,9 @@
   // post-settle summary overwrite; see threadStreamingReveal.svelte.ts).
   // When expanded the clamp, anchor, and window are all dropped (plain
   // `block`; full text flows to full height).
-  import { untrack } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import { motionReduced } from '../../utils/reducedMotion';
+  import { createFrameCadence } from '../../utils/scroll/cadence';
   import { slideDecision, stepSlide, type SlideObservation } from './tailSlide';
   import {
     TAIL_CLAMP_LINES,
@@ -53,6 +54,7 @@
     TAIL_WINDOW_KEEP_LINES,
     TAIL_WINDOW_MEASURE_RETRY_CHARS,
     TAIL_WINDOW_MIN_KEEP_CHARS,
+    heightAbove,
     isMonotonicAppend,
     measuredLineStartOffset,
     newlineCutOffset,
@@ -123,6 +125,19 @@
   let slideOffset = 0;
   let slideFrame = 0;
   let slideLastTs = 0;
+  // Height the window's own cuts removed from above the box since the
+  // last slide decision. A cut lands in the frame of the text that pushed
+  // the window over its cap, so the observer sees the lines that landed
+  // less the lines cut; the decision is given the cut so the slide is for
+  // the lines that landed. A cut that removes exactly what landed changes
+  // no size and wakes no observer, so the cut's own update runs the
+  // decision once the DOM shows the cut (settleCut).
+  let slideCutPx = 0;
+  // The display's paint period, sampled from the drain's own frame gaps
+  // (the scroll spring's sampler: a stall is not a sample, a slower period
+  // takes three consistent paints), so a slow paint drains its whole
+  // period and a stall drains one period.
+  const slideCadence = createFrameCadence();
 
   function applySlide(inner: HTMLElement): void {
     inner.style.transform = slideOffset > 0 ? `translateY(${slideOffset}px)` : '';
@@ -137,7 +152,8 @@
 
   function drainSlide(inner: HTMLElement, ts: number): void {
     slideFrame = 0;
-    slideOffset = stepSlide(slideOffset, ts - slideLastTs);
+    const dt = ts - slideLastTs;
+    slideOffset = stepSlide(slideOffset, dt, slideCadence(dt));
     slideLastTs = ts;
     applySlide(inner);
     if (slideOffset > 0) slideFrame = requestAnimationFrame((next) => drainSlide(inner, next));
@@ -150,6 +166,30 @@
       slideLastTs = performance.now();
       slideFrame = requestAnimationFrame((ts) => drainSlide(inner, ts));
     }
+  }
+
+  function observeSlide(inner: HTMLElement, next: SlideObservation): void {
+    const removedPx = slideCutPx;
+    slideCutPx = 0;
+    const decision = slideDecision(slideMemory, next, slideOffset, removedPx);
+    slideMemory = decision.memory;
+    if (decision.kind === 'clear') {
+      clearSlide();
+      return;
+    }
+    // Gate checked after the baseline update so a low-power toggle
+    // mid-stream leaves the geometry bookkeeping calibrated.
+    if (decision.kind !== 'slide' || motionReduced()) return;
+    startSlide(inner, decision.startPx);
+  }
+
+  // After the DOM shows a cut: decide from the geometry as it is now. The
+  // observer's later delivery, if any, sees the same sizes and does nothing.
+  function settleCut(): void {
+    if (slideCutPx === 0 || !innerEl || !el) return;
+    const inner = innerEl.getBoundingClientRect();
+    const outer = el.getBoundingClientRect();
+    observeSlide(innerEl, { innerH: inner.height, innerW: inner.width, outerH: outer.height });
   }
 
   $effect(() => {
@@ -178,20 +218,7 @@
       const innerSize = sizes.get(inner);
       const outerSize = sizes.get(outer);
       if (!innerSize || !outerSize) return;
-      const decision = slideDecision(
-        slideMemory,
-        { innerH: innerSize.h, innerW: innerSize.w, outerH: outerSize.h },
-        slideOffset,
-      );
-      slideMemory = decision.memory;
-      if (decision.kind === 'clear') {
-        clearSlide();
-        return;
-      }
-      // Gate checked after the baseline update so a low-power toggle
-      // mid-stream leaves the geometry bookkeeping calibrated.
-      if (decision.kind !== 'slide' || motionReduced()) return;
-      startSlide(inner, decision.startPx);
+      observeSlide(inner, { innerH: innerSize.h, innerW: innerSize.w, outerH: outerSize.h });
     });
     ro.observe(inner);
     ro.observe(outer);
@@ -242,6 +269,7 @@
       // swap shape the RO cannot see). The expanded flip needs no arm
       // here: it moves the clamp box, and the RO watches the box.
       slideMemory = null;
+      slideCutPx = 0;
       clearSlide();
     } else if (cut < start) {
       cut = start;
@@ -267,6 +295,19 @@
           if (rel === null) measureFloor = end + TAIL_WINDOW_MEASURE_RETRY_CHARS;
           else cut += rel;
         }
+      }
+    }
+
+    // A cut that advances through rendered text removes its height from
+    // above the box in the same frame as the text that landed; measured
+    // now, while the text node still renders from the previous cut.
+    const renderedStart = Math.max(renderedCut, start);
+    if (appended && cut > renderedStart && !expanded) {
+      const node = innerEl?.firstChild;
+      const removed = node instanceof Text ? heightAbove(node, cut - renderedStart) : null;
+      if (removed !== null && removed > 0) {
+        slideCutPx += removed;
+        void tick().then(settleCut);
       }
     }
 

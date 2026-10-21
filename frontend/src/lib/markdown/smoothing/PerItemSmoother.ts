@@ -77,10 +77,11 @@ const REVEAL_STARVATION_MS = MIN_REVEAL_TICK_INTERVAL_MS * 2;
 // task, a GC pause, an occluded window): the tick after it accrues this
 // much instead of the whole gap, so the reveal resumes at its pace rather
 // than landing the gap's text at once. The thinking tail's line slide
-// shares this bound (SLIDE_MAX_CATCHUP_FRAMES), so the lines it tickers
-// keep pace with the text that lands on every paint and resume from a
-// stall with it; the scroll spring resumes at its pace after any gap over
-// a frame (SPRING_MAX_CATCHUP_STEPS). The backlog the gap built is paid
+// drains each paint's measured period up to this bound
+// (SLIDE_MAX_CATCHUP_FRAMES), so the lines it tickers keep pace with the
+// text that lands on a slow paint and resume from a stall at that pace;
+// the scroll spring resumes at its pace after any gap over a frame
+// (SPRING_MAX_CATCHUP_STEPS). The backlog the gap built is paid
 // off at the ceiling afterwards, as any backlog is. The frame gate
 // measures the panel's period from gaps up to this bound for the same
 // reason.

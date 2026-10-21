@@ -37,9 +37,10 @@ export interface TextWindow {
  * Characters a cut keeps. Twice TailClampedText's layout window, so the
  * window starts above the text the clamp renders and moving it leaves the
  * rendered text unchanged. A cut also keeps TAIL_WINDOW_KEEP_LINES
- * newlines, the rows the clamp plus a pending line slide can show: the
- * characters alone are no bound on rows, since an unbroken token is one
- * row however long it is.
+ * newlines the clamp lays out (those before the last non-whitespace
+ * character: it trims the end), the rows the clamp plus a pending line
+ * slide can show. The characters alone are no bound on rows, since an
+ * unbroken token is one row however long it is.
  */
 export const LIVE_WINDOW_KEEP_CHARS = 2 * TAIL_WINDOW_CAP_CHARS;
 
@@ -57,36 +58,52 @@ export class LiveTextWindow {
   // `text` has no '\n' before this offset: the last scan found none there,
   // or a cut dropped them.
   private scannedTo = 0;
-  // Offsets in `text` of its last TAIL_WINDOW_KEEP_LINES + 1 newlines,
-  // ascending, noted as text arrives: a cut may go no further than just
-  // after the first of them, which leaves the rest after it.
+  // End of the text the clamp lays out: just after its last non-whitespace
+  // character (`text.trimEnd().length`), tracked from each delta's end.
+  private laidOut = 0;
+  // Offsets in `text` of the last TAIL_WINDOW_KEEP_LINES + 1 newlines
+  // before `laidOut`, ascending, noted as text arrives: a cut may go no
+  // further than just after the first of them, which leaves the rest, all
+  // laid out, after it. Newlines at or past `laidOut` wait in `pending`
+  // (the last TAIL_WINDOW_KEEP_LINES + 1 of them) until text follows them.
   private newlineAt: number[] = [];
+  private pending: number[] = [];
 
   constructor(seed: string) {
     this.text = seed;
-    this.noteNewlines(0);
+    this.note(0, seed);
   }
 
   append(delta: string): TextWindow {
     const previousLength = this.text.length;
     this.text = appendCopied(this.text, delta);
-    this.noteNewlines(previousLength);
+    this.note(previousLength, delta);
     if (this.text.length > LIVE_WINDOW_RECUT_CHARS) this.recut(previousLength);
     return { text: this.text, start: this.start };
   }
 
-  private noteNewlines(from: number): void {
-    for (let i = this.text.indexOf('\n', from); i >= 0; i = this.text.indexOf('\n', i + 1)) {
-      this.newlineAt.push(i);
+  // Note `delta`, appended at `from`: where the laid-out text now ends and
+  // the newlines it added.
+  private note(from: number, delta: string): void {
+    const laidOut = delta.trimEnd().length;
+    if (laidOut > 0) {
+      this.laidOut = from + laidOut;
+      this.newlineAt.push(...this.pending);
+      this.pending.length = 0;
     }
-    const excess = this.newlineAt.length - (TAIL_WINDOW_KEEP_LINES + 1);
-    if (excess > 0) this.newlineAt.splice(0, excess);
+    for (let i = this.text.indexOf('\n', from); i >= 0; i = this.text.indexOf('\n', i + 1)) {
+      (i < this.laidOut ? this.newlineAt : this.pending).push(i);
+    }
+    for (const ring of [this.newlineAt, this.pending]) {
+      const excess = ring.length - (TAIL_WINDOW_KEEP_LINES + 1);
+      if (excess > 0) ring.splice(0, excess);
+    }
   }
 
   // Cut just after the last '\n' that keeps LIVE_WINDOW_KEEP_CHARS and
-  // TAIL_WINDOW_KEEP_LINES newlines. The cut stays before the previous
-  // end, so a reader of the previous window can still see where it ended
-  // (TailClampedText's append check).
+  // TAIL_WINDOW_KEEP_LINES laid-out newlines. The cut stays before the
+  // previous end, so a reader of the previous window can still see where
+  // it ended (TailClampedText's append check).
   private recut(previousLength: number): void {
     if (this.newlineAt.length <= TAIL_WINDOW_KEEP_LINES) return;
     const keep = Math.max(
@@ -103,9 +120,11 @@ export class LiveTextWindow {
     this.text = this.text.slice(cut);
     this.start += cut;
     this.scannedTo = limit - cut;
+    this.laidOut -= cut;
     let dropped = 0;
     while (dropped < this.newlineAt.length && this.newlineAt[dropped]! < cut) dropped += 1;
     this.newlineAt.splice(0, dropped);
     for (let i = 0; i < this.newlineAt.length; i += 1) this.newlineAt[i]! -= cut;
+    for (let i = 0; i < this.pending.length; i += 1) this.pending[i]! -= cut;
   }
 }

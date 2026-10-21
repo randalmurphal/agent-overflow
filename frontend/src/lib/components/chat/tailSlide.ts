@@ -93,17 +93,17 @@ const FRAME_MS = 1000 / 60;
 /**
  * Most frames of drain one painted frame may apply, however long the
  * gap since the last one: the reveal smoother's stall bound
- * (MAX_REVEAL_TICK_DT_MS), so the slide and the reveal agree on which
- * gaps are paint periods. A paint up to that long drains its whole
- * elapsed time, as the reveal lands its whole elapsed budget on it: at a
- * 20Hz paint the reveal lands three frames of text a paint, and a drain
- * of one frame a paint fell behind it on one-character lines until the
- * offset pinned at its cap and every further line snapped. A longer gap
- * is a stall (a long task, a GC pause, a compositor drop) that paints
- * nothing while it lasts; catching up the whole of one on the next paint
- * moved every visible line by most of the pending offset at once, the
- * snap the slide exists to prevent, so the ticker resumes at this pace
- * instead, as the reveal does.
+ * (MAX_REVEAL_TICK_DT_MS), the longest gap that is a paint period. A
+ * paint drains its measured period (`stepSlide`'s cadence, the display's
+ * frame interval sampled as the scroll spring samples it), never more
+ * than this: at a 20Hz paint the reveal lands three frames of text a
+ * paint, and a drain of one frame a paint fell behind it on
+ * one-character lines until the offset pinned at its cap and every
+ * further line snapped. A gap longer than the period is a stall (a long
+ * task, a GC pause, a compositor drop) that paints nothing while it
+ * lasts; catching up the whole of one on the next paint moved every
+ * visible line by most of the pending offset at once, the snap the slide
+ * exists to prevent, so the ticker resumes at its measured pace instead.
  */
 export const SLIDE_MAX_CATCHUP_FRAMES = MAX_REVEAL_TICK_DT_MS / FRAME_MS;
 
@@ -136,23 +136,28 @@ export type SlideDecision =
 const clipOf = (o: SlideObservation): number => Math.max(0, o.innerH - o.outerH);
 
 /**
- * Classify one ResizeObserver delivery. `prev` is the last stored
- * baseline (null = recalibrate), `currentOffset` the offset still
- * pending from earlier advances — a new advance compounds onto it, capped
- * at SLIDE_MAX_WINDOWS clamp windows and at the content above the box.
- * Content cut from above the box while an offset past it was pending (a
- * window cut shorter than the retention contract) brings the offset down
- * to what remains rather than translating into blank space.
+ * Classify one geometry observation. `prev` is the last stored baseline
+ * (null = recalibrate), `currentOffset` the offset still pending from
+ * earlier advances — a new advance compounds onto it, capped at
+ * SLIDE_MAX_WINDOWS clamp windows and at the content above the box.
+ * `removedPx` is the height the clamp's own cut took from above the box
+ * since `prev`: the cut lands in the same frame as the text that
+ * triggered it, so the observed height change is the lines that landed
+ * less the lines cut, and the slide is for the lines that landed. Content
+ * cut from above the box while an offset past it was pending (a window
+ * cut shorter than the retention contract) brings the offset down to what
+ * remains rather than translating into blank space.
  */
 export function slideDecision(
   prev: SlideObservation | null,
   next: SlideObservation,
   currentOffset: number,
+  removedPx = 0,
 ): SlideDecision {
   if (next.outerH < 1 || next.innerH < 1) return { kind: 'clear', memory: null };
   if (!prev) return { kind: 'none', memory: next };
   if (Math.abs(next.innerW - prev.innerW) > EPS) return { kind: 'clear', memory: next };
-  const delta = clipOf(next) - clipOf(prev);
+  const delta = clipOf(next) + removedPx - clipOf(prev);
   if (Math.abs(next.outerH - prev.outerH) > EPS && (next.outerH < prev.outerH || delta <= EPS)) {
     return { kind: 'clear', memory: next };
   }
@@ -166,12 +171,16 @@ export function slideDecision(
 
 /**
  * One drain step of the pending offset after `dtMs` of wall time: a
- * sub-frame dt drains its share, anything past SLIDE_MAX_CATCHUP_FRAMES
- * drains that many frames' worth.
+ * sub-frame dt drains its share, and a gap drains at most the display's
+ * measured paint period `cadenceMs` (null before one is measured: a 60Hz
+ * frame), itself at most SLIDE_MAX_CATCHUP_FRAMES. A period under a 60Hz
+ * frame still drains a whole frame's gap, so one dropped frame on a
+ * high-refresh panel is not a stall.
  */
-export function stepSlide(offset: number, dtMs: number): number {
+export function stepSlide(offset: number, dtMs: number, cadenceMs: number | null = null): number {
   if (offset <= 0) return 0;
-  const frames = Math.min(SLIDE_MAX_CATCHUP_FRAMES, Math.max(0, dtMs) / FRAME_MS);
+  const bound = Math.min(Math.max(FRAME_MS, cadenceMs ?? FRAME_MS), MAX_REVEAL_TICK_DT_MS);
+  const frames = Math.min(bound, Math.max(0, dtMs)) / FRAME_MS;
   const drained = offset * (1 - Math.pow(1 - SLIDE_DRAIN_PER_FRAME, frames));
   const next = offset - Math.max(drained, SLIDE_MIN_STEP_PX * frames);
   return next > EPS ? next : 0;

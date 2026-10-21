@@ -142,6 +142,25 @@ export function isMonotonicAppend(
  * isn't a usable pixel value, or when fewer than `keepLines` lines are
  * rendered.
  */
+/**
+ * Height, in CSS pixels, of the rendered text above the character at
+ * `offset` of `textNode` (relative to the node's first character's line),
+ * or null without layout geometry. A cut at a line start removes exactly
+ * this much from above the clamp box.
+ */
+export function heightAbove(textNode: Text, offset: number): number | null {
+  if (offset <= 0 || offset >= textNode.length) return offset <= 0 ? 0 : null;
+  const range = document.createRange();
+  range.setStart(textNode, 0);
+  range.setEnd(textNode, 1);
+  const first = range.getBoundingClientRect();
+  range.setStart(textNode, offset);
+  range.setEnd(textNode, offset + 1);
+  const at = range.getBoundingClientRect();
+  if (first.height === 0 || at.height === 0) return null;
+  return at.top - first.top;
+}
+
 export function measuredLineStartOffset(
   textNode: Text,
   keepLines: number,

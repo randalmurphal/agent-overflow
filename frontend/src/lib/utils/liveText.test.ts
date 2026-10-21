@@ -40,9 +40,11 @@ function contractBreak(w: TextWindow, stream: string, previousEnd: number, end: 
   return null;
 }
 
+// Newlines the clamp lays out: those before the text's trimmed end.
 function newlinesIn(text: string): number {
   let n = 0;
-  for (let i = text.indexOf('\n'); i >= 0; i = text.indexOf('\n', i + 1)) n += 1;
+  const laidOut = text.trimEnd().length;
+  for (let i = text.indexOf('\n'); i >= 0 && i < laidOut; i = text.indexOf('\n', i + 1)) n += 1;
   return n;
 }
 
@@ -75,6 +77,31 @@ describe('LiveTextWindow', () => {
     }
   });
 
+  it('counts a newline toward the kept lines only once text follows it, as the clamp trims the end', () => {
+    // After the token, blank lines arrive one at a time: nothing lays out
+    // past the token until a word follows, so the cut stays above the lines
+    // before it; counting the trailing newlines cut to the token alone, and
+    // the clamp, whose own cut was above, adopted it and shrank to one row.
+    const lines = 'a\n'.repeat(4088);
+    const token = 'x'.repeat(LIVE_WINDOW_KEEP_CHARS + 16);
+    const window = new LiveTextWindow(lines + token);
+    let w = window.append('\n');
+    for (let i = 0; i < 40; i += 1) w = window.append('\n');
+    expect(w.start).toBe(lines.length - 2 * TAIL_WINDOW_KEEP_LINES);
+    expect(w.text).toBe(`${'a\n'.repeat(TAIL_WINDOW_KEEP_LINES)}${token}${'\n'.repeat(41)}`);
+    // A word lays the blank lines out, and they count: the next cut (a
+    // second token takes the window over its recut length) may drop the
+    // lines above the first token, as the character keep allows.
+    const second = `w${'y'.repeat(LIVE_WINDOW_RECUT_CHARS - LIVE_WINDOW_KEEP_CHARS)}`;
+    w = window.append(second);
+    expect(w.text).toBe(`${token}${'\n'.repeat(41)}${second}`);
+    expect(w.start).toBe(lines.length);
+    // Trailing spaces are trimmed too.
+    const spaced = new LiveTextWindow(lines + token);
+    w = spaced.append(`\n${' \n'.repeat(40)}  `);
+    expect(w.start).toBe(lines.length - 2 * TAIL_WINDOW_KEEP_LINES);
+  });
+
   it('keeps TAIL_WINDOW_KEEP_LINES newlines after a cut, so an unbroken token is never all the clamp has', () => {
     // Short lines, then a token longer than the keep length: the character
     // keep alone would cut to the token, one rendered row however long,
@@ -88,10 +115,12 @@ describe('LiveTextWindow', () => {
     expect(w.text).toBe(`${'a\n'.repeat(TAIL_WINDOW_KEEP_LINES)}${token}z`);
     // The floor holds across later cuts: lines appended after the token
     // count, and the cut advances only as far as leaves that many.
+    // (The last line's newline is trailing until text follows it, so the
+    // window holds it and the 21 laid-out lines before it.)
     const line = `${'b'.repeat(LIVE_WINDOW_KEEP_CHARS / 4)}\n`;
     for (let i = 0; i < 30; i += 1) w = window.append(line);
     expect(newlinesIn(w.text)).toBe(TAIL_WINDOW_KEEP_LINES);
-    expect(w.text).toBe(line.repeat(TAIL_WINDOW_KEEP_LINES));
+    expect(w.text).toBe(line.repeat(TAIL_WINDOW_KEEP_LINES + 1));
     expect(w.start).toBeGreaterThan(lines.length + token.length);
   });
 
@@ -108,9 +137,10 @@ describe('LiveTextWindow', () => {
     let w = window.append(paragraph);
     w = window.append(' more');
     expect(w.start).toBe(0);
-    // The break that ends it is a cut once the kept lines follow it.
+    // The break that ends it is a cut once the kept lines follow it, laid
+    // out: the last line's newline is trailing until text follows it.
     const line = `${'q'.repeat(LIVE_WINDOW_KEEP_CHARS / TAIL_WINDOW_KEEP_LINES)}\n`;
-    w = window.append(`\n${line.repeat(TAIL_WINDOW_KEEP_LINES - 1)}`);
+    w = window.append(`\n${line.repeat(TAIL_WINDOW_KEEP_LINES)}`);
     expect(w.start).toBe(0);
     w = window.append(line);
     expect(w.start).toBe(paragraph.length + ' more'.length + 1);
@@ -140,27 +170,30 @@ describe('LiveTextWindow', () => {
   });
 
   it('does not rescan text it found no line break in', () => {
-    // Enough short lines for a cut to keep its lines, then a paragraph
-    // with no break past the recut length: each append looks for a cut
-    // only in the text added since the last look.
-    const lines = 'l\n'.repeat(2 * TAIL_WINDOW_KEEP_LINES);
+    // A paragraph with no break past the recut length, then short lines:
+    // once the lines a cut must keep are there, every append looks for a
+    // cut, and finds none in the paragraph until the keep length has
+    // passed it; each look covers only the text added since the last.
     const paragraph = 'p'.repeat(60_000);
-    const window = new LiveTextWindow(lines);
-    const budget = 2 * paragraph.length;
+    const stream = paragraph + 'l\n'.repeat(10_000);
+    const window = new LiveTextWindow('');
+    const budget = 2 * stream.length;
     const charCodeAt = String.prototype.charCodeAt;
     let reads = 0;
     String.prototype.charCodeAt = function (this: string, index: number): number {
       if (++reads > budget) throw new Error(`read more than ${budget} characters`);
       return charCodeAt.call(this, index);
     };
+    let w: TextWindow = { text: '', start: 0 };
     try {
-      for (let end = 20; end <= paragraph.length; end += 20) {
-        window.append(paragraph.slice(end - 20, end));
+      for (let end = 20; end <= stream.length; end += 20) {
+        w = window.append(stream.slice(end - 20, end));
       }
     } finally {
       String.prototype.charCodeAt = charCodeAt;
     }
-    expect(reads).toBeGreaterThan(0);
+    expect(reads).toBeGreaterThan(paragraph.length / 2);
+    expect(w.start).toBeGreaterThan(paragraph.length);
   });
 });
 
