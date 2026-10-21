@@ -1,7 +1,7 @@
 // A review pinned to one PR with no thread (the Pull requests page):
 // subject, retention per owner pane, the pinned scope, routing and the
-// permission gate on the subject's computer, local drafts, and the calls
-// that need a chat refusing.
+// permission gate on the subject's computer, the PR-owned drafts, and the
+// calls that need a chat refusing.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { tick } from 'svelte';
@@ -16,7 +16,7 @@ import {
   type ReviewPaneState,
 } from './reviewPane.svelte';
 import { applyPRUpdatedEvent, prReviewKeys } from './prReviewStore.svelte';
-import { peekPRDrafts } from './reviewPRDrafts.svelte';
+import { getPRDiffReviewComments } from './prDiffReviewComments.svelte';
 import { registerComposerDraft, resetComposerDraftRegistryForTest } from './composerDraftRegistry.svelte';
 import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
 import { __seedGitStatusForTest } from './gitStatusStore.svelte';
@@ -25,7 +25,7 @@ import { HOME_BACKEND } from '../transport/backendKey';
 import { takePinnedBackend } from '../transport/backends';
 import { composeWorkspaceKey } from '../utils/workspaceKey';
 import { prKey, type PRRef } from '../utils/prReference';
-import type { PRDetail } from '../types/models';
+import type { DiffReviewComment, DiffReviewCommentInput, PRDetail } from '../types/models';
 import { setBindingMock, setReviewDiffMock } from '../../test/mocks/bindings-app';
 import { grantBackendScopes, pairViewOnly, resetToLocalPage, revokeBackendScopes } from '../../test/helpers/scopes';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
@@ -83,6 +83,59 @@ interface PRMocks {
   diff: ReturnType<typeof vi.fn>;
   /** The backend each subscribe was routed to. */
   routed: string[];
+  drafts: PRDraftsFake;
+}
+
+interface PRDraftsFake {
+  /** Every comment the backend holds, by PR number. */
+  held: Map<number, DiffReviewComment[]>;
+  /** The backend each PR-owned draft call was routed to. */
+  routed: string[];
+  create: ReturnType<typeof vi.fn>;
+  mark: ReturnType<typeof vi.fn>;
+}
+
+// The PR-owned draft bindings over one in-memory table, as the backend's
+// diff_review_comments rows under a PR owner.
+function installPRDraftsFake(): PRDraftsFake {
+  const held = new Map<number, DiffReviewComment[]>();
+  const routed: string[] = [];
+  let next = 0;
+  const rows = (wire: { Number: number }) => {
+    routed.push(String(takePinnedBackend() ?? ''));
+    let list = held.get(wire.Number);
+    if (!list) {
+      list = [];
+      held.set(wire.Number, list);
+    }
+    return list;
+  };
+  setBindingMock('ListPRDiffReviewComments', async (wire: { Number: number }, scope: string, sourceKey: string) =>
+    rows(wire).filter((comment) => comment.scope === scope && comment.sourceKey === sourceKey).map((comment) => ({ ...comment })));
+  const create = setBindingMock('CreatePRDiffReviewComment', async (wire: { Number: number }, input: DiffReviewCommentInput) => {
+    next += 1;
+    const comment: DiffReviewComment = {
+      id: `c${next}`, threadId: '', status: 'draft', createdAt: next, updatedAt: next,
+      ...input,
+      commitSha: input.commitSha ?? '',
+    } as DiffReviewComment;
+    rows(wire).push(comment);
+    return { ...comment };
+  });
+  setBindingMock('UpdatePRDiffReviewComment', async (wire: { Number: number }, id: string, update: { body: string }) => {
+    const comment = rows(wire).find((candidate) => candidate.id === id);
+    if (!comment) throw new Error('not found');
+    comment.body = update.body;
+    return { ...comment };
+  });
+  setBindingMock('DeletePRDiffReviewComment', async (wire: { Number: number }, id: string) => {
+    const list = rows(wire);
+    list.splice(list.findIndex((candidate) => candidate.id === id), 1);
+  });
+  const mark = setBindingMock('MarkPRDiffReviewCommentsSent', async (wire: { Number: number }, _scope: string, _source: string, ids: string[]) => {
+    for (const comment of rows(wire)) if (ids.includes(comment.id)) comment.status = 'sent';
+  });
+  return { held, routed, create, mark };
 }
 
 // One pump per PR number: the subscribe answers that PR's snapshot under
@@ -106,7 +159,8 @@ function installPRMocks(): PRMocks {
   setBindingMock('ListPRReviewThreads', async () => []);
   setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
   setBindingMock('UpdateThreadBranch', async () => []);
-  return { subscribe, unsubscribe, diff, routed };
+  const drafts = installPRDraftsFake();
+  return { subscribe, unsubscribe, diff, routed, drafts };
 }
 
 function pinned(number: number, backend = HOME_BACKEND, owner = OWNER): ReviewPaneState {
@@ -291,13 +345,15 @@ describe('pinned routing and grants', () => {
     stageBackend();
     await grantBackendScopes('laptop', ['threads:read', 'git:operate']);
     await pairViewOnly();
-    const { subscribe, routed } = installPRMocks();
+    const { subscribe, routed, drafts } = installPRMocks();
     const state = pinned(5, 'laptop');
     await waitLoaded(state);
     expect(subscribe).toHaveBeenCalledTimes(1);
     expect(routed).toEqual(['laptop']);
     expect(state.backend).toBe('laptop');
     expect(state.commentsGranted).toBe(true);
+    await state.createComment({ filePath: 'src/app.ts', newLine: 2, side: 'new', selectedText: 'line 2' }, 'here');
+    expect(new Set(drafts.routed)).toEqual(new Set(['laptop']));
     revokeBackendScopes('laptop');
   });
 
@@ -316,8 +372,8 @@ describe('pinned routing and grants', () => {
 describe('pinned comments and actions', () => {
   const anchor = { filePath: 'src/app.ts', newLine: 2, side: 'new' as const, selectedText: 'line 2' };
 
-  it('drafts in the frontend by PR and posts them as a PR review', async () => {
-    installPRMocks();
+  it('drafts under the PR through its own bindings and posts them as a PR review', async () => {
+    const { drafts: fake } = installPRMocks();
     const create = setBindingMock('CreateDiffReviewComment', async () => ({}));
     const mark = setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
     const submit = setBindingMock('SubmitPRReview', async () => ({ postedReview: true, postedFileComments: 0 }));
@@ -327,6 +383,10 @@ describe('pinned comments and actions', () => {
 
     await state.createComment(anchor, '  needs a test  ');
     expect(create).not.toHaveBeenCalled();
+    expect(fake.create).toHaveBeenCalledWith(
+      { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 5 },
+      expect.objectContaining({ scope: 'pr', sourceKey: `pr:${prKey(ref(5))}`, body: 'needs a test', commitSha: 'sha-5' }),
+    );
     expect(state.drafts.map((comment) => comment.body)).toEqual(['needs a test']);
     expect(state.drafts[0]?.commitSha).toBe('sha-5');
     await state.updateComment(state.drafts[0]!.id, 'needs two tests');
@@ -338,8 +398,24 @@ describe('pinned comments and actions', () => {
       { verdict: 'comment', body: '', comments: [{ path: 'src/app.ts', body: 'needs two tests', line: 2, side: 'right' }] },
     );
     expect(mark).not.toHaveBeenCalled();
+    expect(fake.mark).toHaveBeenCalledWith(
+      { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 5 },
+      'pr', `pr:${prKey(ref(5))}`, ['c1'],
+    );
     expect(state.drafts).toEqual([]);
-    expect(peekPRDrafts(composeWorkspaceKey(HOME_BACKEND, prKey(ref(5))))).toEqual([]);
+    const held = getPRDiffReviewComments(composeWorkspaceKey(HOME_BACKEND, prKey(ref(5))), 'pr', `pr:${prKey(ref(5))}`);
+    expect(held.map((comment) => comment.status)).toEqual(['sent']);
+  });
+
+  it('reads the drafts the PR already holds when it loads', async () => {
+    const { drafts: fake } = installPRMocks();
+    fake.held.set(5, [{
+      id: 'kept', threadId: '', scope: 'pr', sourceKey: `pr:${prKey(ref(5))}`, commitSha: 'sha-5', filePath: 'src/app.ts',
+      status: 'draft', newLine: 2, side: 'new', selectedText: 'line 2', body: 'from before', createdAt: 1, updatedAt: 1,
+    } as DiffReviewComment]);
+    const state = pinned(5);
+    await waitLoaded(state);
+    await vi.waitFor(() => expect(state.drafts.map((comment) => comment.body)).toEqual(['from before']));
   });
 
   it('keeps drafts across the state being disposed by the retention bound', async () => {

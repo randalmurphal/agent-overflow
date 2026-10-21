@@ -23,9 +23,9 @@ PR stores; components own presentation and interaction.
   ones it was opened with, never the owner pane's git status, thread or
   composer. Its gates read the state (`pinned`, `commentsGranted`,
   `canDraftComments`), not `ctx`: no scope selector, Edits, Send to chat
-  or agent target. Its drafts have no thread row, so they are held per PR
-  in `stores/reviewPRDrafts.svelte.ts` (not persisted) and post as a PR
-  review. The owner keys `ReviewPane` on the PR; `reviewStateForPR` keeps
+  or agent target. Its drafts have no thread row, so they are the PR's
+  (`stores/prDiffReviewComments.svelte.ts`, persisted under the PR on its
+  computer) and post as a PR review or are sent to a thread. The owner keys `ReviewPane` on the PR; `reviewStateForPR` keeps
   the selected PR's state and the one before it per owner pane, and the
   owner calls `disposePRReviewStates` when its page goes.
 

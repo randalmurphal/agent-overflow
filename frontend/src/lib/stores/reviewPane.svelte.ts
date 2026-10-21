@@ -5,7 +5,17 @@ import type { BackendKey } from '../transport/backendKey';
 import { composeWorkspaceKey, workspaceRefForProject } from '../utils/workspaceKey';
 import { threadHasScope } from '../transport/entityScopes';
 import { hasScope } from '../transport/scopes';
-import { addPRDraft, peekPRDrafts, removePRDrafts, resetPRDraftsForTest, updatePRDraft } from './reviewPRDrafts.svelte';
+import {
+  createPRDiffReviewComment,
+  deletePRDiffReviewComment,
+  getPRDiffReviewComments,
+  markPRDiffReviewCommentsSent,
+  prDraftsKey,
+  refreshPRDiffReviewComments,
+  resetPRDiffReviewCommentsForTest,
+  updatePRDiffReviewComment,
+  type PRDraftsTarget,
+} from './prDiffReviewComments.svelte';
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { untrack } from 'svelte';
 import {
@@ -1155,14 +1165,13 @@ function createReviewPaneState(
   // Review comments and turn state belong to a THREAD's history; a draft
   // placeholder has neither, so the comment affordances stay dark rather
   // than pointing at a row that does not exist yet.
-  // A pinned review has no thread row: its drafts are held in the frontend
-  // by PR (reviewPRDrafts.svelte.ts) and post as a PR review.
-  const pinnedDraftKey = pinned ? computerPRKey(pinned.pr) : null;
+  // A pinned review has no thread row: its drafts are the PR's
+  // (prDiffReviewComments.svelte.ts), on the computer it was opened on,
+  // and post as a PR review.
+  const pinnedDrafts: PRDraftsTarget | null = pinned ? { backend, pr: pinned.pr } : null;
+  const pinnedDraftKey = pinnedDrafts ? prDraftsKey(pinnedDrafts) : null;
   const comments = $derived.by((): readonly DiffReviewComment[] => {
-    if (pinnedDraftKey !== null) {
-      const held = peekPRDrafts(pinnedDraftKey);
-      return held.length === 0 ? EMPTY_COMMENTS : held.filter((comment) => comment.sourceKey === sourceKey);
-    }
+    if (pinnedDraftKey !== null) return getPRDiffReviewComments(pinnedDraftKey, scope, sourceKey);
     return threadId === null ? EMPTY_COMMENTS : getDiffReviewComments(threadId, scope, sourceKey);
   });
   const commentsGranted = $derived(
@@ -1551,6 +1560,17 @@ function createReviewPaneState(
       // The files, patch key and selection are already updated above, so
       // the derived reflects this load — no need to re-derive by hand.
       const nextSourceKey = sourceKey;
+      if (pinnedDrafts !== null && nextSourceKey) {
+        try {
+          await refreshPRDiffReviewComments(pinnedDrafts, scope, nextSourceKey);
+          if (seq !== loadSeq) return;
+          error = null;
+        } catch (err) {
+          if (seq !== loadSeq) return;
+          error = userFacingError(err);
+        }
+        return;
+      }
       if (threadId === null) {
         // A draft placeholder owns no comment store to sync.
         error = null;
@@ -1918,9 +1938,9 @@ function createReviewPaneState(
         selectedText: anchor.selectedText ?? '',
         body: trimmed,
       };
-      if (pinnedDraftKey !== null) {
+      if (pinnedDrafts !== null) {
         if (!canDraftComments) throw new Error('Comment on the whole pull request: pick All commits.');
-        addPRDraft(pinnedDraftKey, input);
+        await createPRDiffReviewComment(pinnedDrafts, input);
         closeDraftEditor(anchor);
         error = null;
         return;
@@ -1939,7 +1959,7 @@ function createReviewPaneState(
     const trimmed = body.trim();
     if (!sourceKey || !trimmed) return;
     try {
-      if (pinnedDraftKey !== null) updatePRDraft(pinnedDraftKey, commentId, trimmed);
+      if (pinnedDrafts !== null) await updatePRDiffReviewComment(pinnedDrafts, scope, sourceKey, commentId, { body: trimmed });
       else await updateDiffReviewComment(commentThreadId(), scope, sourceKey, commentId, { body: trimmed });
       error = null;
     } catch (err) {
@@ -1951,7 +1971,7 @@ function createReviewPaneState(
   async function deleteComment(commentId: string): Promise<void> {
     if (!sourceKey) return;
     try {
-      if (pinnedDraftKey !== null) removePRDrafts(pinnedDraftKey, [commentId]);
+      if (pinnedDrafts !== null) await deletePRDiffReviewComment(pinnedDrafts, scope, sourceKey, commentId);
       else await deleteDiffReviewComment(commentThreadId(), scope, sourceKey, commentId);
       error = null;
     } catch (err) {
@@ -2028,9 +2048,9 @@ function createReviewPaneState(
         // Everything posted; a follow-up step (GitLab approve) failed.
         submitError = `The review posted, but a step after it did not. ${result.partialFailure}`;
       }
-      if (pinnedDraftKey !== null) {
+      if (pinnedDrafts !== null) {
         // Posted drafts are the forge's comments now; the rest stay.
-        removePRDrafts(pinnedDraftKey, sent.map((comment) => comment.id));
+        if (sent.length > 0) await markPRDiffReviewCommentsSent(pinnedDrafts, scope, sourceKey, sent.map((comment) => comment.id));
       } else {
         if (sent.length > 0) {
           await MarkDiffReviewCommentsSent(commentThreadId(), scope, sourceKey, sent.map((comment) => comment.id), `pr:${loadedPRHeadSHA}`);
@@ -2897,7 +2917,7 @@ export function __resetReviewPaneStateForTest(): void {
   statesBySourcePane.clear();
   for (const owner of pinnedStatesByOwner.keys()) disposePRReviewStates(owner);
   heldPRByRow.clear();
-  resetPRDraftsForTest();
+  resetPRDiffReviewCommentsForTest();
 }
 
 /** Tests: the pinned states an owner holds, the one on screen first. */

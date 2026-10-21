@@ -224,9 +224,10 @@ the page selected. Everything the PR scope does beside a thread works,
 except what needs one: no Edits scope, no Send to chat (CI log, sections),
 no linked-agent target. The page keeps the selected MR's review state and
 the one before it; older ones are released with their subscription. Line
-comment drafts have no thread row to live under, so the frontend holds
-them per MR until a review posts them; they survive stepping through the
-list but not a restart. The PR store's `onPRSnapshotApplied` observer
+comment drafts have no thread row to live under, so the MR owns them
+(stored under its key on its computer) until a review posts them or they
+are sent to a thread; they survive stepping through the list and a
+restart. The PR store's `onPRSnapshotApplied` observer
 (key, live head, window visibility) is the page's signal to mark an MR
 viewed in `pr_views`.
 
