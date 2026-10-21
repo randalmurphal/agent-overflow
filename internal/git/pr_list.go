@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"agent-overflow/internal/forgeapi"
 )
@@ -51,6 +52,11 @@ type PRListRow struct {
 	// ViewerReview is the login's latest review (GitHub); zero on GitLab
 	// and when the login has not reviewed.
 	ViewerReview PRListReview `json:"viewerReview"`
+	// AuthorActivityAt (RFC 3339) is the author's latest conversation
+	// comment or submitted review, a review thread reply included, among
+	// the PR's last githubListActivityDepth of each (GitHub); "" on GitLab
+	// and when none of those is the author's.
+	AuthorActivityAt string `json:"authorActivityAt,omitempty"`
 	// ReviewDecision is GitHub's reviewDecision (APPROVED,
 	// CHANGES_REQUESTED, REVIEW_REQUIRED or ""); GitLab's is
 	// REVIEW_REQUIRED for not_approved and CHANGES_REQUESTED for
@@ -103,12 +109,19 @@ func (nullForge) ListProjectPRs(context.Context, RepoReference) ([]PRListRow, er
 	return nil, ErrUnsupportedForge
 }
 
+// githubListActivityDepth bounds the latest conversation comments and
+// reviews a list node reads for the author's activity (AuthorActivityAt):
+// each connection costs one GraphQL point per page of 100 PRs, whatever
+// its depth up to 100.
+const githubListActivityDepth = "10"
+
 // githubPullsSearchQuery lists a repository's open pull requests through
 // search, the one connection that reads reviewDecision, review requests
 // and the rollup state of every PR in one request. The viewer's own
 // review comes from viewerLatestReview and its standing opinion from
 // latestOpinionatedReviews, since the login is not known before the
-// answer.
+// answer; the author's latest replies from the last comments and reviews
+// (a reply in a review thread is a review of its own).
 const githubPullsSearchQuery = `query PullsSearch($query: String!, $after: String) {
   viewer { login }
   search(type: ISSUE, query: $query, first: 100, after: $after) {
@@ -122,6 +135,8 @@ const githubPullsSearchQuery = `query PullsSearch($query: String!, $after: Strin
         latestOpinionatedReviews(first: 100) { nodes { viewerDidAuthor } }
         viewerLatestReview { state submittedAt }
         commits(last: 1) { totalCount nodes { commit { committedDate statusCheckRollup { state } } } }
+        comments(last: ` + githubListActivityDepth + `) { nodes { author { login } createdAt } }
+        reviews(last: ` + githubListActivityDepth + `) { nodes { author { login } submittedAt } }
       }
     }
   }
@@ -169,6 +184,22 @@ type githubSearchPullRaw struct {
 			} `json:"commit"`
 		} `json:"nodes"`
 	} `json:"commits"`
+	Comments struct {
+		Nodes []struct {
+			Author *struct {
+				Login string `json:"login"`
+			} `json:"author"`
+			CreatedAt string `json:"createdAt"`
+		} `json:"nodes"`
+	} `json:"comments"`
+	Reviews struct {
+		Nodes []struct {
+			Author *struct {
+				Login string `json:"login"`
+			} `json:"author"`
+			SubmittedAt string `json:"submittedAt"`
+		} `json:"nodes"`
+	} `json:"reviews"`
 }
 
 // ListProjectPRs reads the repository's open pull requests through
@@ -261,7 +292,36 @@ func githubPRListRow(repo RepoReference, node githubSearchPullRaw, viewer string
 	for _, review := range node.LatestOpinionatedReviews.Nodes {
 		row.ViewerIsReviewer = row.ViewerIsReviewer || review.ViewerDidAuthor
 	}
+	byAuthor := func(author *struct {
+		Login string `json:"login"`
+	}) bool {
+		return author != nil && author.Login != "" && strings.EqualFold(author.Login, node.Author.Login)
+	}
+	for _, comment := range node.Comments.Nodes {
+		if byAuthor(comment.Author) {
+			row.AuthorActivityAt = laterRFC3339(row.AuthorActivityAt, comment.CreatedAt)
+		}
+	}
+	for _, review := range node.Reviews.Nodes {
+		if byAuthor(review.Author) {
+			row.AuthorActivityAt = laterRFC3339(row.AuthorActivityAt, review.SubmittedAt)
+		}
+	}
 	return row
+}
+
+// laterRFC3339 is the later of two RFC 3339 times; an unreadable or empty
+// one loses.
+func laterRFC3339(a, b string) string {
+	at, errA := time.Parse(time.RFC3339, a)
+	bt, errB := time.Parse(time.RFC3339, b)
+	switch {
+	case errB != nil:
+		return a
+	case errA != nil || bt.After(at):
+		return b
+	}
+	return a
 }
 
 // githubRollupState maps a StatusState onto the list's checks vocabulary.

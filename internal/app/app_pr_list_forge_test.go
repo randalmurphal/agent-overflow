@@ -60,6 +60,14 @@ func TestPRListReadsBothForgesThroughTheirAPIs(t *testing.T) {
 				Threads: []forgefake.Thread{{Path: "a.go", Line: &line, Comments: []forgefake.Comment{{Body: "nit"}}}}},
 			{Number: 2, Title: "Asked of me", Author: "carol", Reviewers: []string{"ao-viewer"}},
 			{Number: 3, Title: "Mine, red", Author: "ao-viewer", CI: &forgefake.Pipeline{Jobs: []forgefake.Job{{Name: "unit", Status: "failed"}}}},
+			// The author answered the viewer's change request without a push.
+			{Number: 4, Title: "Carol replied", Author: "carol",
+				Reviews:  []forgefake.Review{{Author: "ao-viewer", State: "CHANGES_REQUESTED", SubmittedAt: "2026-01-02T00:00:00Z"}},
+				Comments: []forgefake.Comment{{Author: "carol", Body: "Done, see the reply", CreatedAt: "2026-01-03T00:00:00Z"}}},
+			// Someone else commented; the author did not answer.
+			{Number: 5, Title: "Dave commented", Author: "carol",
+				Reviews:  []forgefake.Review{{Author: "ao-viewer", State: "CHANGES_REQUESTED", SubmittedAt: "2026-01-02T00:00:00Z"}},
+				Comments: []forgefake.Comment{{Author: "dave", Body: "+1", CreatedAt: "2026-01-03T00:00:00Z"}}},
 		}},
 		{Forge: "gitlab", Project: "team/app", Pulls: []forgefake.Pull{
 			{Number: 7, Title: "Mine, red", Author: "ao-viewer", Readiness: &forgefake.Readiness{RequiredApprovals: 1},
@@ -102,14 +110,15 @@ func TestPRListReadsBothForgesThroughTheirAPIs(t *testing.T) {
 	sub := subscribePRList(t, app)
 	snapshot := sub.Snapshot
 	gh := prListProject(t, snapshot, github)
-	if gh.Error != "" || len(gh.Rows) != 3 {
+	if gh.Error != "" || len(gh.Rows) != 5 {
 		t.Fatalf("github project = %+v", gh)
 	}
 	states := map[int]string{}
 	for _, row := range gh.Rows {
 		states[row.Ref.Number] = row.State
 	}
-	if states[1] != PRStateReady || states[2] != PRStateYourTurn || states[3] != PRStatePipelineFailed {
+	if states[1] != PRStateReady || states[2] != PRStateYourTurn || states[3] != PRStatePipelineFailed ||
+		states[4] != PRStateYourTurn || states[5] != PRStateWaitingOnAuthor {
 		t.Fatalf("github states = %v", states)
 	}
 	gl := prListProject(t, snapshot, gitlab)

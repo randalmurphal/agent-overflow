@@ -140,7 +140,7 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitHub | `POST repos/O/R/pulls/N/reviews` with `{event, body?, commit_id?}` (`gh api pull reviews`) | Approve and the send strip's verdict without line comments: the viewer's review, a timeline item; the author's approval is GitHub's 422 |
 | GitHub | `DELETE repos/O/R/git/refs/heads/B` (`gh api delete branch`) | the head branch delete after a merge: 204, then 422 "Reference does not exist" |
 | GitHub | GraphQL `SetThreadResolved(threadID, resolved)` | SetThreadResolved (flips the seeded thread) |
-| GitHub | GraphQL `PullsSearch(query, after)` | project PR list: `search` over `is:pr is:open repo:O/R` (any other query is unhandled), the repository's open pulls newest first in pages of 100, beside the viewer; a repository not on the host answers GitHub's search refusal (null `search` beside an error) |
+| GitHub | GraphQL `PullsSearch(query, after)` | project PR list: `search` over `is:pr is:open repo:O/R` (any other query is unhandled), the repository's open pulls newest first in pages of 100, beside the viewer, each with its last 10 `comments` and submitted `reviews`; a repository not on the host answers GitHub's search refusal (null `search` beside an error) |
 | GitHub | GraphQL `OpenPRsByHead(owner, name, head, after)` | open PR lookup (checkout origin): pages of 100 with each PR's node id and `isCrossRepository` (a pull with `headRepo`) |
 | GitHub | GraphQL `PRStates(ids)` | merged-PR cleanup: state and `mergedAt` of tracked PRs by node id; an unknown id is a `NOT_FOUND` error at its `nodes` index |
 | GitHub | GraphQL `MergedPRs(owner, name, first, after)` | merged heads (checkout origin), in fixture order |

@@ -75,6 +75,20 @@ func (e *Engine) githubSearchPull(r *Repo, p *Pull) map[string]any {
 	if state := githubRollupState(p); state != "" {
 		rollup = map[string]any{"state": state}
 	}
+	// comments(last: 10) and reviews(last: 10): the conversation comments
+	// and the submitted reviews, oldest first, each with its author.
+	comments := []map[string]any{}
+	for _, comment := range p.Comments[max(len(p.Comments)-githubListActivityDepth, 0):] {
+		comments = append(comments, map[string]any{"author": map[string]any{"login": comment.Author}, "createdAt": comment.CreatedAt})
+	}
+	reviews := []map[string]any{}
+	for _, review := range p.Reviews[max(len(p.Reviews)-githubListActivityDepth, 0):] {
+		var submitted any
+		if review.State != "PENDING" {
+			submitted = review.SubmittedAt
+		}
+		reviews = append(reviews, map[string]any{"author": map[string]any{"login": review.Author}, "submittedAt": submitted})
+	}
 	return map[string]any{
 		"id":                       p.NodeID,
 		"number":                   p.Number,
@@ -99,8 +113,14 @@ func (e *Engine) githubSearchPull(r *Repo, p *Pull) map[string]any {
 		"commits": map[string]any{"totalCount": p.Commits, "nodes": []map[string]any{{"commit": map[string]any{
 			"committedDate": p.CommittedAt, "statusCheckRollup": rollup,
 		}}}},
+		"comments": map[string]any{"nodes": comments},
+		"reviews":  map[string]any{"nodes": reviews},
 	}
 }
+
+// githubListActivityDepth is the depth of PullsSearch's comments and
+// reviews connections, which the app's query selects.
+const githubListActivityDepth = 10
 
 // githubRollupState is the head commit's StatusState over its checks: a
 // failed or cancelled job is FAILURE, a live one PENDING, a check the

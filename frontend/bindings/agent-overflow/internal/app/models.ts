@@ -3708,6 +3708,14 @@ export class PRListItem {
     "viewerReview": git$0.PRListReview;
 
     /**
+     * AuthorActivityAt (RFC 3339) is the author's latest conversation
+     * comment or submitted review, a review thread reply included, among
+     * the PR's last githubListActivityDepth of each (GitHub); "" on GitLab
+     * and when none of those is the author's.
+     */
+    "authorActivityAt"?: string;
+
+    /**
      * ReviewDecision is GitHub's reviewDecision (APPROVED,
      * CHANGES_REQUESTED, REVIEW_REQUIRED or ""); GitLab's is
      * REVIEW_REQUIRED for not_approved and CHANGES_REQUESTED for
@@ -3839,9 +3847,9 @@ export class PRListItem {
         const $$createField0_0 = $$createType52;
         const $$createField5_0 = $$createType58;
         const $$createField18_0 = $$createType59;
-        const $$createField26_0 = $$createType61;
-        const $$createField28_0 = $$createType63;
-        const $$createField29_0 = $$createType65;
+        const $$createField27_0 = $$createType61;
+        const $$createField29_0 = $$createType63;
+        const $$createField30_0 = $$createType65;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("ref" in $$parsedSource) {
             $$parsedSource["ref"] = $$createField0_0($$parsedSource["ref"]);
@@ -3853,13 +3861,13 @@ export class PRListItem {
             $$parsedSource["viewerReview"] = $$createField18_0($$parsedSource["viewerReview"]);
         }
         if ("detail" in $$parsedSource) {
-            $$parsedSource["detail"] = $$createField26_0($$parsedSource["detail"]);
+            $$parsedSource["detail"] = $$createField27_0($$parsedSource["detail"]);
         }
         if ("seen" in $$parsedSource) {
-            $$parsedSource["seen"] = $$createField28_0($$parsedSource["seen"]);
+            $$parsedSource["seen"] = $$createField29_0($$parsedSource["seen"]);
         }
         if ("since" in $$parsedSource) {
-            $$parsedSource["since"] = $$createField29_0($$parsedSource["since"]);
+            $$parsedSource["since"] = $$createField30_0($$parsedSource["since"]);
         }
         return new PRListItem($$parsedSource as Partial<PRListItem>);
     }

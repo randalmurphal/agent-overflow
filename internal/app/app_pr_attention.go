@@ -93,8 +93,9 @@ func prListDetailOf(detail gitops.PRDetail) *PRListDetail {
 // read landed. In order:
 //
 //   - your_turn: the user did not open it, and the forge requests their
-//     review, or they reviewed it and the head moved after that review
-//     (GitHub: the head commit is newer than the review). On GitLab, whose
+//     review, or they reviewed it and the author pushed or replied after
+//     that review (GitHub: the head commit, or the author's latest
+//     comment or review, is newer than the review). On GitLab, whose
 //     list cannot say whether a reviewer reviewed, a reviewer whose own
 //     review, as the detail reads it, has not approved, requested changes
 //     or reviewed (before the detail lands, any reviewer).
@@ -124,13 +125,15 @@ func prAttentionState(row gitops.PRListRow, detail *PRListDetail) string {
 	changesRequested := row.ReviewDecision == "CHANGES_REQUESTED"
 	if !row.ViewerIsAuthor {
 		review := row.ViewerReview
-		headMoved := review.SubmittedAt != "" && rfc3339After(row.LastCommitAt, review.SubmittedAt)
+		reviewed := review.SubmittedAt != ""
+		headMoved := reviewed && rfc3339After(row.LastCommitAt, review.SubmittedAt)
+		authorReplied := reviewed && rfc3339After(row.AuthorActivityAt, review.SubmittedAt)
 		switch {
 		case row.Ref.Forge == "gitlab":
 			if row.ViewerIsReviewer && !gitlabViewerReviewed(detail) {
 				return PRStateYourTurn
 			}
-		case row.ReviewRequested || headMoved:
+		case row.ReviewRequested || headMoved || authorReplied:
 			return PRStateYourTurn
 		}
 	} else {

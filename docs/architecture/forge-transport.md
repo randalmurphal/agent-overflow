@@ -321,8 +321,12 @@ beside `viewer { login }`. Each node selects its review state
 (`reviewDecision`, `reviewRequests(first: 20)`,
 `latestOpinionatedReviews(first: 100) { viewerDidAuthor }`,
 `viewerLatestReview`, since the login is not known before the answer),
-its merge state, `totalCommentsCount` and `commits(last: 1)` with the
-head commit's time and rollup `state`. GitLab lists
+its merge state, `totalCommentsCount`, `commits(last: 1)` with the
+head commit's time and rollup `state`, and `comments(last: 10)` and
+`reviews(last: 10)` with each author and time, from which the row takes
+the PR author's latest reply (`AuthorActivityAt`; a review thread reply
+is a review of its own). Each of those connections costs one point per
+page of 100 PRs. GitLab lists
 `projects/P/merge_requests?state=opened&order_by=updated_at&sort=desc&per_page=100`,
 whose basic view carries no pipeline; the viewer is the login's cached
 username, as the detail read uses it. Both read at most `prListMaxPages`
