@@ -123,6 +123,9 @@ describe('assistant streaming reveal integration', () => {
       if (clock.hasPendingFrame()) throw new Error('reveal did not drain');
     };
 
+    // The first tick parses one tick's worth (`MAX_ADVANCE_PER_TICK_CHARS`,
+    // the first word here); every reveal after it paints directly, so the
+    // parser source stays at that first parse.
     await appendAndDrain('first words ', 2);
     await appendAndDrain('paint directly ', 3);
 
@@ -139,8 +142,8 @@ describe('assistant streaming reveal integration', () => {
     expect(diagnostics).toBeDefined();
     expect(diagnostics?.itemId).toBe(item.id);
     expect(diagnostics?.canonicalSource).toBe('first words paint directly ');
-    expect(diagnostics?.parserSource).toBe('first words ');
-    expect(diagnostics?.renderedSource).toBe('first words ');
+    expect(diagnostics?.parserSource).toBe('first ');
+    expect(diagnostics?.renderedSource).toBe('first ');
     expect(diagnostics?.streaming).toBe(true);
     expect(Object.keys(body)).not.toContain('__aoMarkdownDiagnostics');
     const streamdown = body.querySelector<HTMLElement & {
@@ -153,7 +156,7 @@ describe('assistant streaming reveal integration', () => {
         };
       };
     }>('.md-volatile');
-    expect(streamdown?.__aoStreamdownDiagnostics?.content).toBe('first words ');
+    expect(streamdown?.__aoStreamdownDiagnostics?.content).toBe('first ');
     expect(streamdown?.__aoStreamdownDiagnostics?.lastPath).not.toBe('none');
     expect(streamdown?.__aoStreamdownDiagnostics?.incrementalLexMetrics.calls)
       .toBeGreaterThan(0);

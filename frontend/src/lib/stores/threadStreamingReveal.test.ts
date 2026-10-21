@@ -353,7 +353,11 @@ describe('thread streaming reveal cleanup', () => {
     expect(reveal.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
     getItems()[0].status = 'completed';
 
-    expect(() => clock.tick(100)).toThrow(/smoother settle failed/);
+    // The reveal drains one tick's worth per frame; the settle that runs
+    // the failing cleanup comes on the frame the backlog empties.
+    expect(() => {
+      for (let frame = 0; frame < 20; frame += 1) clock.tick(16);
+    }).toThrow(/smoother settle failed/);
     expect(reveal.smootherCount()).toBe(0);
     expect(reveal.revealBoundary).toBeNull();
   });
