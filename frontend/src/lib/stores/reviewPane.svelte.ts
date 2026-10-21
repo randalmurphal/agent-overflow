@@ -2,8 +2,10 @@ import { threadMachine } from './attachedBackends.svelte';
 import { companionSubjectKey } from './companionSubject';
 import { withBackendTarget } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
-import { composeWorkspaceKey } from '../utils/workspaceKey';
+import { composeWorkspaceKey, workspaceRefForProject } from '../utils/workspaceKey';
 import { threadHasScope } from '../transport/entityScopes';
+import { hasScope } from '../transport/scopes';
+import { addPRDraft, peekPRDrafts, removePRDrafts, resetPRDraftsForTest, updatePRDraft } from './reviewPRDrafts.svelte';
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { untrack } from 'svelte';
 import {
@@ -107,7 +109,7 @@ import type {
   SubmitPRReviewResult,
   Thread,
 } from '../types/models';
-import { PaintedSpans, type PatchScopeContext } from '../utils/diffSpanCache.svelte';
+import { evictDiffSpansForThread, PaintedSpans, type PatchScopeContext } from '../utils/diffSpanCache.svelte';
 import { conflictPatchFile } from '../utils/conflictFile';
 import { hunkExcerptForComment } from '../utils/prHunkExcerpt';
 import {
@@ -164,6 +166,18 @@ export interface ReviewPaneState {
   /** Span-cache owner for this review's diff bodies (`ReviewSubject.rowId`). */
   readonly rowId: string;
   readonly scope: ReviewScope;
+  /** Pinned to one PR with no thread (`reviewSubjectForPR`): the scope
+   * stays `pr`, there is no chat to send to, and drafts post as a PR
+   * review. */
+  readonly pinned: boolean;
+  /** The session holds the grant the comment writes need on this
+   * review's computer: `threads:operate` for a thread's drafts,
+   * `git:operate` for a pinned review's forge submission. */
+  readonly commentsGranted: boolean;
+  /** Line comments have a home here: the thread row, or for a pinned
+   * review the PR's full diff (a picked commit's line numbers would
+   * misanchor against the head diff, and there is no agent to send them to). */
+  readonly canDraftComments: boolean;
   /** The computer this review's PR and workspace reads are routed to. */
   readonly backend: BackendKey;
   readonly baseBranch: string | null;
@@ -511,6 +525,8 @@ const EMPTY_CONVERSATION_FEED: readonly ConversationFeedItem[] = Object.freeze([
 
 // Same stability rule for the comment list a workspace-only pane reads.
 const EMPTY_COMMENTS: readonly DiffReviewComment[] = Object.freeze([]);
+// What a chat-bound call on a pinned review answers; the pane offers none.
+const PINNED_NO_CHAT = 'This review has no chat to send to.';
 
 /**
  * What a review pane is looking at. The values travel together because
@@ -520,13 +536,91 @@ const EMPTY_COMMENTS: readonly DiffReviewComment[] = Object.freeze([]);
  * `rowId` is the pane's thread row id (a draft placeholder's synthetic one)
  * and owns the diff span-cache entries, which thread switch, delete and
  * draft materialization address by row id, and `workspace` is the checkout
- * every workspace-scoped RPC addresses.
+ * every workspace-scoped RPC addresses. `pinned` is set only by
+ * `reviewSubjectForPR`: the review is of that PR alone, with no thread.
  */
 export interface ReviewSubject {
   readonly identity: string;
   readonly threadId: string | null;
   readonly rowId: string;
   readonly workspace: WorkspaceRef;
+  readonly pinned?: PinnedReviewPR;
+}
+
+/** The PR a review with no thread is pinned to, and the computer that
+ * listed it: every PR and workspace call of the review routes there. */
+export interface PinnedReviewPR {
+  readonly pr: PRRef;
+  readonly backend: BackendKey;
+}
+
+/**
+ * A review of one PR with no thread, for the Pull requests page: the
+ * project's root checkout is the workspace, the scope is pinned to `pr`,
+ * and the PR is the one given, never one read from git status. Identity
+ * and row id name the PR on its computer (the row id owns the diff span
+ * cache entries), the identity also the owner pane, so two pages on one
+ * PR hold separate states.
+ */
+export function reviewSubjectForPR(input: {
+  ownerPaneId: string;
+  backend: BackendKey;
+  projectId: string;
+  pr: PRRef;
+}): ReviewSubject {
+  const workspace = workspaceRefForProject(input.projectId, '');
+  if (!workspace) throw new Error('A pull request review needs the project it belongs to.');
+  const key = composeWorkspaceKey(input.backend, prKey(input.pr));
+  return {
+    identity: JSON.stringify(['pr', input.ownerPaneId, key]),
+    threadId: null,
+    rowId: `pr:${key}`,
+    workspace,
+    pinned: { pr: input.pr, backend: input.backend },
+  };
+}
+
+// Pinned states per owner pane, the one on screen first. Stepping through
+// the page's list keeps the selected PR's state and the one before it (a
+// step back restores its diff, reading position and live subscription at
+// once); older ones are disposed, so an owner holds at most this many PR
+// subscriptions.
+const PINNED_STATES_PER_OWNER = 2;
+const pinnedStatesByOwner = new Map<string, ReviewPaneState[]>();
+
+/**
+ * The state for a pinned subject, created or reused, made the owner's
+ * current one. States past the retention bound are disposed. The owner
+ * disposes the rest with `disposePRReviewStates` when its page goes.
+ */
+export function reviewStateForPR(ownerPaneId: string, subject: ReviewSubject): ReviewPaneState {
+  if (!subject.pinned) throw new Error('reviewStateForPR needs a subject from reviewSubjectForPR.');
+  const held = pinnedStatesByOwner.get(ownerPaneId) ?? [];
+  let state = held.find((candidate) => candidate.identity === subject.identity);
+  const rest = held.filter((candidate) => candidate !== state);
+  state ??= createReviewPaneState(ownerPaneId, subject, false);
+  const kept = [state, ...rest];
+  pinnedStatesByOwner.set(ownerPaneId, kept.slice(0, PINNED_STATES_PER_OWNER));
+  for (const dropped of kept.slice(PINNED_STATES_PER_OWNER)) disposePinnedState(dropped);
+  return state;
+}
+
+/** Disposes every pinned state the owner holds: its page closed. */
+export function disposePRReviewStates(ownerPaneId: string): void {
+  const held = pinnedStatesByOwner.get(ownerPaneId);
+  if (!held) return;
+  pinnedStatesByOwner.delete(ownerPaneId);
+  for (const state of held) disposePinnedState(state);
+}
+
+// A pinned state's span-cache owner has no thread whose switch or removal
+// evicts it, so its entries go with the last state holding that row id.
+function disposePinnedState(state: ReviewPaneState): void {
+  state.dispose();
+  for (const states of pinnedStatesByOwner.values()) {
+    if (states.some((other) => other.rowId === state.rowId)) return;
+  }
+  evictDiffSpansForThread(state.rowId);
 }
 
 /** The one place a review subject is built. Structural in the pane so both
@@ -551,6 +645,8 @@ export function reviewStateForPane(
   subject: ReviewSubject,
   opts: { deferInitialLoad?: boolean } = {},
 ): ReviewPaneState {
+  // A pinned review belongs to its page's retention, not a companion slot.
+  if (subject.pinned) throw new Error('A pull request review is held by reviewStateForPR.');
   const existing = statesBySourcePane.get(sourcePaneId);
   // Subject mismatch replaces rather than reuses: the CompanionPane {#key}
   // remount usually disposes the old state first, but correctness must not
@@ -613,11 +709,15 @@ function createReviewPaneState(
 ): ReviewPaneState {
   installHeldPRObservers();
   const { identity, threadId, rowId, workspace } = subject;
-  const backend = threadMachine(threadId ?? '', workspace.projectId);
+  // A pinned review's PR and computer are the ones it was opened on; it
+  // never reads the owner pane's git status, thread or composer.
+  const pinned = subject.pinned ?? null;
+  const backend = pinned?.backend ?? threadMachine(threadId ?? '', workspace.projectId);
   function computerPRKey(ref: PRRef): string { return composeWorkspaceKey(backend, prKey(ref)); }
   // Scope persistence is keyed on a real row; a draft placeholder has no
-  // history to restore and nothing to write back.
-  const persisted = threadId === null ? null : readPersistedScope(threadId);
+  // history to restore and nothing to write back, and a pinned review's
+  // scope is always pr.
+  const persisted = pinned ? { scope: 'pr' as const, baseBranch: null } : threadId === null ? null : readPersistedScope(threadId);
   // Derived, not probed-once: the PR is the workspace's, read from the live
   // git-status store, so it becomes selectable the moment status lands (or a
   // PR opens while the pane sits open) instead of only when something
@@ -629,7 +729,7 @@ function createReviewPaneState(
   const initialScope: ReviewScope = persisted?.scope ?? 'workspace';
   let scope: ReviewScope = $state(initialScope);
   let heldPRRef = $state<PRRef | null>(initialScope === 'pr' ? (heldPRByRow.get(rowId) ?? null) : null);
-  const prRef: PRRef | null = $derived(workspacePRRef() ?? (scope === 'pr' ? heldPRRef : null));
+  const prRef: PRRef | null = $derived(pinned ? pinned.pr : (workspacePRRef() ?? (scope === 'pr' ? heldPRRef : null)));
   let baseBranch: string | null = $state(persisted?.baseBranch ?? null);
   // The head THIS pane's diff was computed at, stamped with the PR it was
   // computed FOR. The PR's live head lives in the shared store; staleness
@@ -710,8 +810,9 @@ function createReviewPaneState(
   let editTurnLabels: ReadonlyMap<number, string> = $state(new Map());
   let selectedEdit: EditSelection | null = $state(null);
   let pendingEditItemID: string | null = null;
+  // A pinned review has no agent: its drafts only ever post to the PR.
   const effectiveSubmitTarget = $derived<'agent' | 'pr'>(
-    scope === 'pr' && !selectedCommitSHA ? submitTarget : 'agent',
+    pinned ? 'pr' : scope === 'pr' && !selectedCommitSHA ? submitTarget : 'agent',
   );
   let pendingJumpFilePath: string | null = $state(null);
   let pendingJumpRowKey: string | null = $state(null);
@@ -1054,9 +1155,20 @@ function createReviewPaneState(
   // Review comments and turn state belong to a THREAD's history; a draft
   // placeholder has neither, so the comment affordances stay dark rather
   // than pointing at a row that does not exist yet.
-  const comments = $derived(
-    threadId === null ? EMPTY_COMMENTS : getDiffReviewComments(threadId, scope, sourceKey),
+  // A pinned review has no thread row: its drafts are held in the frontend
+  // by PR (reviewPRDrafts.svelte.ts) and post as a PR review.
+  const pinnedDraftKey = pinned ? computerPRKey(pinned.pr) : null;
+  const comments = $derived.by((): readonly DiffReviewComment[] => {
+    if (pinnedDraftKey !== null) {
+      const held = peekPRDrafts(pinnedDraftKey);
+      return held.length === 0 ? EMPTY_COMMENTS : held.filter((comment) => comment.sourceKey === sourceKey);
+    }
+    return threadId === null ? EMPTY_COMMENTS : getDiffReviewComments(threadId, scope, sourceKey);
+  });
+  const commentsGranted = $derived(
+    pinned ? hasScope('git:operate', backend) : threadHasScope('threads:operate', threadId, workspace.projectId),
   );
+  const canDraftComments = $derived(pinned ? scope === 'pr' && selectedCommitSHA === null : threadId !== null);
   const drafts = $derived(comments.filter((comment) => comment.status === 'draft'));
   const isTurnActive = $derived(threadId !== null && getActiveTurn(threadId) !== null);
 
@@ -1064,6 +1176,9 @@ function createReviewPaneState(
   // store. Not memoized: a PR opened while this pane sat open must become
   // selectable, and one that merged must stop being offered.
   function workspacePRRef(): PRRef | null {
+    // The owner pane of a pinned review may hold a thread later; its git
+    // status names that thread's PR, not this one.
+    if (pinned) return null;
     const status = peekGitStatus(workspaceKeyForThread(getPane(sourcePaneId)?.thread ?? null));
     if (!status) return null;
     return prRefFromUrl(
@@ -1117,6 +1232,7 @@ function createReviewPaneState(
   let failedPRLoad = $state<{ snapshot: PRSnapshot; headSHA: string } | null>(null);
   const awaitingPR = $derived(awaitingPRDetail || awaitingPRStatus);
   function workspacePRLookupSettled(): boolean {
+    if (pinned) return true;
     const key = workspaceKeyForThread(getPane(sourcePaneId)?.thread ?? null);
     const status = peekGitStatus(key);
     if (status !== null) return !status.openPrLookupPending;
@@ -1169,7 +1285,11 @@ function createReviewPaneState(
     // spend one refusal per pane before anybody touched anything. The
     // no-attachment answer already exists for the disposed case, and the
     // pane renders its empty state from it.
-    if (!threadHasScope('git:operate', subject.threadId, subject.workspace.projectId)) return null;
+    // A pinned review asks the computer every one of its calls routes to.
+    const granted = pinned
+      ? hasScope('git:operate', backend)
+      : threadHasScope('git:operate', subject.threadId, subject.workspace.projectId);
+    if (!granted) return null;
     const key = computerPRKey(ref);
     if (prAttachment?.key === key) return prAttachment;
     releasePR();
@@ -1223,6 +1343,9 @@ function createReviewPaneState(
   }
 
   async function setScope(nextScope: ReviewScope, opts?: { baseBranch?: string }): Promise<void> {
+    if (pinned && nextScope !== 'pr') {
+      throw new Error('A pull request review shows only its pull request.');
+    }
     const navigation = ++navigationSeq;
     const scopeChanged = nextScope !== scope;
     const nextBaseBranch = nextScope === 'branch'
@@ -1656,6 +1779,7 @@ function createReviewPaneState(
   // placeholder, so reaching one without a row is a bug rather than a
   // user-visible state — say so instead of no-oping.
   function commentThreadId(): string {
+    if (pinned) throw new Error(PINNED_NO_CHAT);
     if (threadId === null) throw new Error('Review comments need a started thread.');
     return threadId;
   }
@@ -1783,7 +1907,7 @@ function createReviewPaneState(
     const trimmed = body.trim();
     if (!sourceKey || !trimmed) return;
     try {
-      await createDiffReviewComment(commentThreadId(), {
+      const input = {
         scope,
         sourceKey,
         commitSha: selectedCommitSHA ?? (scope === 'pr' ? loadedPRHeadSHA : undefined),
@@ -1793,7 +1917,15 @@ function createReviewPaneState(
         side: anchor.side,
         selectedText: anchor.selectedText ?? '',
         body: trimmed,
-      });
+      };
+      if (pinnedDraftKey !== null) {
+        if (!canDraftComments) throw new Error('Comment on the whole pull request: pick All commits.');
+        addPRDraft(pinnedDraftKey, input);
+        closeDraftEditor(anchor);
+        error = null;
+        return;
+      }
+      await createDiffReviewComment(commentThreadId(), input);
       closeDraftEditor(anchor);
       setActiveDiffReviewSource(commentThreadId(), scope, sourceKey);
       error = null;
@@ -1807,7 +1939,8 @@ function createReviewPaneState(
     const trimmed = body.trim();
     if (!sourceKey || !trimmed) return;
     try {
-      await updateDiffReviewComment(commentThreadId(), scope, sourceKey, commentId, { body: trimmed });
+      if (pinnedDraftKey !== null) updatePRDraft(pinnedDraftKey, commentId, trimmed);
+      else await updateDiffReviewComment(commentThreadId(), scope, sourceKey, commentId, { body: trimmed });
       error = null;
     } catch (err) {
       error = userFacingError(err);
@@ -1818,7 +1951,8 @@ function createReviewPaneState(
   async function deleteComment(commentId: string): Promise<void> {
     if (!sourceKey) return;
     try {
-      await deleteDiffReviewComment(commentThreadId(), scope, sourceKey, commentId);
+      if (pinnedDraftKey !== null) removePRDrafts(pinnedDraftKey, [commentId]);
+      else await deleteDiffReviewComment(commentThreadId(), scope, sourceKey, commentId);
       error = null;
     } catch (err) {
       error = userFacingError(err);
@@ -1894,10 +2028,15 @@ function createReviewPaneState(
         // Everything posted; a follow-up step (GitLab approve) failed.
         submitError = `The review posted, but a step after it did not. ${result.partialFailure}`;
       }
-      if (sent.length > 0) {
-        await MarkDiffReviewCommentsSent(commentThreadId(), scope, sourceKey, sent.map((comment) => comment.id), `pr:${loadedPRHeadSHA}`);
+      if (pinnedDraftKey !== null) {
+        // Posted drafts are the forge's comments now; the rest stay.
+        removePRDrafts(pinnedDraftKey, sent.map((comment) => comment.id));
+      } else {
+        if (sent.length > 0) {
+          await MarkDiffReviewCommentsSent(commentThreadId(), scope, sourceKey, sent.map((comment) => comment.id), `pr:${loadedPRHeadSHA}`);
+        }
+        await refreshDiffReviewComments(commentThreadId(), scope, sourceKey);
       }
-      await refreshDiffReviewComments(commentThreadId(), scope, sourceKey);
       // Through the store: the posted review is now part of the PR, so
       // every pane looking at it shows the new threads.
       applyPRThreads(computerPRKey(prRef), ((await withBackendTarget(backend, () => ListPRReviewThreads(prReferenceWire(prRef)))) ?? []) as ReviewThread[]);
@@ -2363,6 +2502,11 @@ function createReviewPaneState(
     const open = ciLogOpen;
     const opened = ciLogView;
     if (!prRef || !open || !opened) return;
+    // The owner pane of a pinned review is not its chat, whatever it holds.
+    if (pinned) {
+      ciLogLocalError = PINNED_NO_CHAT;
+      return;
+    }
     const path = await saveCILog();
     if (!path) return;
     // The job's status as of the send, while its log is still the one open.
@@ -2438,6 +2582,10 @@ function createReviewPaneState(
     const view = ciLogView;
     const ref = prRef;
     if (!ref || !open || !view) return;
+    if (pinned) {
+      ciLogLocalError = PINNED_NO_CHAT;
+      return;
+    }
     if (!getComposerDraftForPane(sourcePaneId)) {
       ciLogLocalError = 'The source chat pane is not available.';
       return;
@@ -2511,6 +2659,9 @@ function createReviewPaneState(
     identity,
     rowId,
     get scope() { return scope; },
+    pinned: pinned !== null,
+    get commentsGranted() { return commentsGranted; },
+    get canDraftComments() { return canDraftComments; },
     backend,
     get baseBranch() { return baseBranch; },
     get prRef() { return prRef; },
@@ -2744,7 +2895,14 @@ function userFacingError(err: unknown): string {
 export function __resetReviewPaneStateForTest(): void {
   for (const state of statesBySourcePane.values()) state.dispose();
   statesBySourcePane.clear();
+  for (const owner of pinnedStatesByOwner.keys()) disposePRReviewStates(owner);
   heldPRByRow.clear();
+  resetPRDraftsForTest();
+}
+
+/** Tests: the pinned states an owner holds, the one on screen first. */
+export function __pinnedReviewStatesForTest(ownerPaneId: string): readonly ReviewPaneState[] {
+  return pinnedStatesByOwner.get(ownerPaneId) ?? [];
 }
 
 export type { CommentAnchor };

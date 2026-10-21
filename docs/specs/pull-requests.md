@@ -218,6 +218,18 @@ selected MR with the project's root as its workspace and no thread, so
 stepping through the list never loses it. Compact: the list is the page,
 a tap opens the pane full width, Back returns.
 
+The pane is pinned to the MR (`reviewSubjectForPR`): its scope is the PR
+alone, and the MR, its computer and the `git:operate` check are the ones
+the page selected. Everything the PR scope does beside a thread works,
+except what needs one: no Edits scope, no Send to chat (CI log, sections),
+no linked-agent target. The page keeps the selected MR's review state and
+the one before it; older ones are released with their subscription. Line
+comment drafts have no thread row to live under, so the frontend holds
+them per MR until a review posts them; they survive stepping through the
+list but not a restart. The PR store's `onPRSnapshotApplied` observer
+(key, live head, window visibility) is the page's signal to mark an MR
+viewed in `pr_views`.
+
 Rows carry number, title, project, author, age, CI dot, approvals `n/m`,
 unresolved count, one state pill and a "since you looked" fragment.
 States, in sort order across projects: `Your turn` (review requested and

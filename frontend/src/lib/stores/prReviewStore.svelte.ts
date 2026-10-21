@@ -65,6 +65,7 @@ import {
   reconcileConflictsWithHead,
 } from './prReviewConflicts.svelte';
 import { documentHidden } from '../utils/pageVisibility';
+import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
 import type { CIPipeline, PRDetail, ReviewEvent, ReviewThread } from '../types/models';
 
@@ -268,6 +269,47 @@ function replayBufferedFrames(key: string, missed: BufferedFrames | undefined): 
   for (const frame of frames) frame.apply();
 }
 
+// ---------------------------------------------------------------------------
+// Snapshot observers
+// ---------------------------------------------------------------------------
+
+/** What an applied snapshot tells an observer: the PR's live head, and
+ * whether the window was on screen when it landed. */
+export interface PRSnapshotApplied {
+  readonly headSHA: string;
+  readonly visible: boolean;
+}
+
+export type PRSnapshotAppliedObserver = (key: string, applied: PRSnapshotApplied) => void;
+
+let snapshotAppliedObservers: readonly PRSnapshotAppliedObserver[] = [];
+
+/**
+ * Observes every snapshot applied under a held PR key: the subscribe
+ * result, each `pr:updated` frame, a comments refresh, and the threads
+ * re-listed after a review or reply. A plain observer; it must not write
+ * the PR's state. Returns the unsubscribe.
+ */
+export function onPRSnapshotApplied(observer: PRSnapshotAppliedObserver): () => void {
+  snapshotAppliedObservers = [...snapshotAppliedObservers, observer];
+  return () => {
+    snapshotAppliedObservers = snapshotAppliedObservers.filter((existing) => existing !== observer);
+  };
+}
+
+function notifySnapshotApplied(key: string, value: PRSnapshot): void {
+  if (snapshotAppliedObservers.length === 0) return;
+  const applied: PRSnapshotApplied = { headSHA: value.headSHA, visible: !documentHidden() };
+  // One observer's failure neither skips the others nor fails the apply.
+  for (const observer of snapshotAppliedObservers) {
+    try {
+      observer(key, applied);
+    } catch (err) {
+      reportFrontendDiagnostic('pr review: a snapshot observer failed', err instanceof Error ? err.message : String(err));
+    }
+  }
+}
+
 const store = createEntityStore<PRSnapshot, PRCtx>({
   name: 'prReview',
   backendForKey: workspaceKeyBackend,
@@ -359,6 +401,7 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
   onApply: (key, value) => {
     reconcileConflictsWithHead(key, refByKey.get(key), value.detail, value.headSHA);
     reconcileResolveOverrides(key, value.threads);
+    notifySnapshotApplied(key, value);
   },
   // The state kept beside the snapshot: CI (with the log follows) and the
   // merge-conflict tree. They hang off the primitive's one teardown hook
@@ -840,6 +883,7 @@ export function __resetPRReviewStoreForTest(): void {
   bufferedFrameByWireKey.clear();
   appliedSeqByKey.clear();
   pumpVotes.clear();
+  snapshotAppliedObservers = [];
   // onDrop clears these for every key an entry existed for; a test that
   // seeded CI or opened conflicts without ever attaching has no entry to
   // drop, so the caches are reset directly too.
