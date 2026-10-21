@@ -281,6 +281,35 @@ describe('the list subscription', () => {
     expect(groupKeys()).toEqual([[rowKey(1)]]);
   });
 
+  it('answers a gap resync with the re-subscribe, settled once its snapshot is applied', async () => {
+    installListMocks();
+    expect(resyncPullsAfterGap(HOME_BACKEND)).toBeUndefined();
+    attachPullsPage(PANE, HOME_BACKEND);
+    await flush();
+    setMRFilters(HOME_BACKEND, { filter: 'all' });
+    let answer!: (value: unknown) => void;
+    setBindingMock('SubscribePRList', () => new Promise((resolve) => {
+      answer = resolve;
+    }));
+    const resync = resyncPullsAfterGap(HOME_BACKEND);
+    expect(resync).toBeInstanceOf(Promise);
+    let settled = false;
+    void resync!.then(() => {
+      settled = true;
+    });
+    await flush();
+    expect(settled).toBe(false);
+    answer({ id: 'list-9', snapshot: snapshot(4, [project('p1', [item(2)])]) });
+    await resync;
+    expect(groupKeys()).toEqual([[rowKey(2)]]);
+
+    // A failed re-subscribe settles the fence too; the store retries it.
+    setBindingMock('SubscribePRList', async () => {
+      throw new Error('backend busy');
+    });
+    await expect(resyncPullsAfterGap(HOME_BACKEND)).resolves.toBeUndefined();
+  });
+
   it('shows a failed refresh call until the next refresh', async () => {
     const mocks = installListMocks();
     attachPullsPage(PANE, HOME_BACKEND);

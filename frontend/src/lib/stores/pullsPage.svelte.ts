@@ -71,6 +71,9 @@ const FOCUS_MAX_WAIT_MS = 1_500;
 const appliedSeqByBackend = new Map<BackendKey, number>();
 // The live handle per computer, for the votes, the focus and the refresh.
 const subscriptionByBackend = new Map<BackendKey, string>();
+// The latest source run per computer, settled either way: a gap resync
+// hands it to the recovery fence.
+const sourceRunByBackend = new Map<BackendKey, Promise<void>>();
 const votes = createPumpVotes('pullsPage', (id, active) => SetPRListActive(id, active));
 
 function admit(backend: BackendKey, seq: number): boolean {
@@ -84,33 +87,43 @@ const listStore = createEntityStore<PRListSnapshot, BackendKey>({
   name: 'pullsList',
   backendForKey: (backend) => backend,
   rawValue: true,
-  source: async ({ key: backend, apply, signal }) => {
-    appliedSeqByBackend.delete(backend);
-    const result = await withBackendTarget(backend, () => SubscribePRList());
-    const id = String(result.id);
-    const cleanup = async (): Promise<void> => {
-      if (subscriptionByBackend.get(backend) === id) subscriptionByBackend.delete(backend);
-      try {
-        await withBackendTarget(backend, () => UnsubscribePRList(id));
-      } catch (err) {
-        // A dead wire needs no unsubscribe: the backend releases the
-        // connection's subscriptions when it drops.
-        if (!isTransportClassError(err)) throw err;
-      }
-    };
-    if (signal.aborted) return cleanup;
-    subscriptionByBackend.set(backend, id);
-    if (documentHidden()) votes.setActive(backend, id, false);
-    // A frame that landed while the subscribe waited for the first tick
-    // and outranks its answer already holds a newer snapshot.
-    const snapshot = result.snapshot;
-    if (admit(backend, Number(snapshot?.seq ?? 0)) && snapshot) apply(snapshot);
-    // A new handle focuses nothing.
-    pages.get(backend)?.subscribed();
-    return cleanup;
+  source: (args) => {
+    const run = subscribeList(args.key, args.apply, args.signal);
+    sourceRunByBackend.set(args.key, run.then(() => undefined, () => undefined));
+    return run;
   },
   onApply: (backend, snapshot) => pages.get(backend)?.applied(snapshot),
 });
+
+async function subscribeList(
+  backend: BackendKey,
+  apply: (snapshot: PRListSnapshot) => void,
+  signal: AbortSignal,
+): Promise<() => Promise<void>> {
+  appliedSeqByBackend.delete(backend);
+  const result = await withBackendTarget(backend, () => SubscribePRList());
+  const id = String(result.id);
+  const cleanup = async (): Promise<void> => {
+    if (subscriptionByBackend.get(backend) === id) subscriptionByBackend.delete(backend);
+    try {
+      await withBackendTarget(backend, () => UnsubscribePRList(id));
+    } catch (err) {
+      // A dead wire needs no unsubscribe: the backend releases the
+      // connection's subscriptions when it drops.
+      if (!isTransportClassError(err)) throw err;
+    }
+  };
+  if (signal.aborted) return cleanup;
+  subscriptionByBackend.set(backend, id);
+  if (documentHidden()) votes.setActive(backend, id, false);
+  // A frame that landed while the subscribe waited for the first tick
+  // and outranks its answer already holds a newer snapshot.
+  const snapshot = result.snapshot;
+  if (admit(backend, Number(snapshot?.seq ?? 0)) && snapshot) apply(snapshot);
+  // A new handle focuses nothing.
+  pages.get(backend)?.subscribed();
+  return cleanup;
+}
 
 // ---------------------------------------------------------------------------
 // Per computer
@@ -192,6 +205,7 @@ class PullsPageBackend {
     this.focus.dispose();
     this.attachment?.release();
     this.attachment = null;
+    sourceRunByBackend.delete(this.backend);
   }
 }
 
@@ -302,9 +316,14 @@ export function applyPullsSnapshot(snapshot: PRListSnapshot, backend: BackendKey
 }
 
 /** A gap on `pulls:updated`: the pump emits only on change against its
- * own last snapshot, so the list subscribes again for a fresh one. */
-export function resyncPullsAfterGap(backend: BackendKey): void {
-  if (pages.has(backend)) listStore.invalidate(backend);
+ * own last snapshot, so the list subscribes again for a fresh one. Answers
+ * that subscribe's settling, or undefined when none started. */
+export function resyncPullsAfterGap(backend: BackendKey): Promise<void> | undefined {
+  if (!pages.has(backend)) return undefined;
+  const before = sourceRunByBackend.get(backend);
+  listStore.invalidate(backend);
+  const run = sourceRunByBackend.get(backend);
+  return run === before ? undefined : run;
 }
 
 if (typeof document !== 'undefined') {
@@ -489,6 +508,7 @@ export function __resetPullsPageForTest(): void {
   listStore.resetAll();
   appliedSeqByBackend.clear();
   subscriptionByBackend.clear();
+  sourceRunByBackend.clear();
   votes.resetForTest();
   unobserveSnapshots?.();
   unobserveSnapshots = null;
