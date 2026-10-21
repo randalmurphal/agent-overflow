@@ -5,7 +5,6 @@ import (
 	"log"
 	"time"
 
-	"agent-overflow/internal/store"
 	"agent-overflow/internal/usermessage"
 )
 
@@ -109,21 +108,19 @@ func (r *Router) foldMergedFlushRows(threadID string, survivor *pendingSend, dig
 
 	folded := members[:len(members)-1]
 	foldedIDs := make([]string, 0, len(folded))
+	var deferredIDs []string
 	for _, member := range folded {
 		if member.persisted {
 			foldedIDs = append(foldedIDs, member.aoItemID)
+		} else {
+			// No row to delete, only text and send ids to widen the survivor
+			// with, and the review drafts it claimed to settle.
+			deferredIDs = append(deferredIDs, member.aoItemID)
 		}
 	}
 
 	now := time.Now().UnixMilli()
-	var persisted store.Item
-	if len(foldedIDs) == 0 {
-		// Every member was still deferred, so there is nothing to delete —
-		// only the survivor's own text and send ids to widen.
-		persisted, err = r.store.UpsertItem(withFoldedContent(survivorRow, summary, meta, now), nil)
-	} else {
-		persisted, err = r.store.FoldUserTextRows(threadID, survivorRow.ID, foldedIDs, summary, meta, now)
-	}
+	persisted, err := r.store.FoldUserTextRows(threadID, survivorRow.ID, foldedIDs, deferredIDs, summary, meta, now)
 	if err != nil {
 		return fmt.Errorf("triage: fold merged flush rows on %s: %w", threadID, err)
 	}
@@ -253,11 +250,4 @@ func joinMergedFlushContent(survivorMetaJSON string, members []mergedFlushRow) (
 		return "", "", err
 	}
 	return usermessage.JoinRenumberedText(parts), meta, nil
-}
-
-func withFoldedContent(row store.Item, summary, meta string, now int64) store.Item {
-	row.Summary = summary
-	row.Meta = meta
-	row.UpdatedAt = now
-	return row
 }

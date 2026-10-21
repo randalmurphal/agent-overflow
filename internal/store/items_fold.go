@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"slices"
 )
@@ -25,22 +26,31 @@ import (
 // row already sits. Gaps left in item_index are ordering-irrelevant — nothing
 // reads the values, only their order — so no renumber runs.
 //
+// deferredIDs are the merged messages that never had a row. The review
+// drafts a message claimed settle when its row lands
+// (ClaimDiffReviewCommentsSent); theirs settle with the fold, since the
+// survivor now carries their text.
+//
 // Returns the survivor row as stored.
-func (s *Store) FoldUserTextRows(threadID, survivorID string, foldedIDs []string, summary, meta string, updatedAt int64) (Item, error) {
+func (s *Store) FoldUserTextRows(threadID, survivorID string, foldedIDs, deferredIDs []string, summary, meta string, updatedAt int64) (Item, error) {
 	if threadID == "" || survivorID == "" {
 		return Item{}, fmt.Errorf("store: fold user text rows: thread id and survivor id are required")
 	}
-	if slices.Contains(foldedIDs, survivorID) {
+	if slices.Contains(foldedIDs, survivorID) || slices.Contains(deferredIDs, survivorID) {
 		return Item{}, fmt.Errorf("store: fold user text rows %s/%s: the survivor cannot also be folded away", threadID, survivorID)
 	}
-	if len(foldedIDs) == 0 {
+	if len(foldedIDs) == 0 && len(deferredIDs) == 0 {
 		return Item{}, fmt.Errorf("store: fold user text rows %s/%s: no rows to fold", threadID, survivorID)
+	}
+	deferred, err := json.Marshal(uniqueNonEmptyStrings(deferredIDs))
+	if err != nil {
+		return Item{}, fmt.Errorf("store: fold user text rows %s/%s: encode deferred ids: %w", threadID, survivorID, err)
 	}
 
 	// The fold carries no card: it recomputes the chains of the rows it
 	// rewrites and deletes before it commits.
 	var survivor Item
-	err := s.bulkWriteItems(threadID, "fold user text rows "+threadID+"/"+survivorID, func(tx *sql.Tx, w *cardWrite) error {
+	err = s.bulkWriteItems(threadID, "fold user text rows "+threadID+"/"+survivorID, func(tx *sql.Tx, w *cardWrite) error {
 		// Localize any imported row this touches BEFORE mutating, so an
 		// overlay thread folds its own copies rather than the shared base.
 		old, err := readMutableSubagentRowTx(tx, threadID, survivorID, "store: fold user text rows")
@@ -74,6 +84,14 @@ func (s *Store) FoldUserTextRows(threadID, survivorID string, foldedIDs []string
 				return fmt.Errorf("store: fold delete %s/%s: %w", threadID, id, err)
 			}
 			w.deleted(deleted)
+		}
+		if _, err := tx.Exec(
+			`UPDATE diff_review_comments
+			    SET claim_thread_id = '', claim_item_id = ''
+			  WHERE claim_item_id <> '' AND claim_thread_id = ? AND claim_item_id IN (SELECT value FROM json_each(?))`,
+			threadID, string(deferred),
+		); err != nil {
+			return fmt.Errorf("store: fold %s/%s: settle the review claims of merged messages: %w", threadID, survivorID, err)
 		}
 		if err := w.finish(); err != nil {
 			return err

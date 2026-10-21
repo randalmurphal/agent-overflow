@@ -2487,7 +2487,7 @@ func TestSubagentCardStopWritesWhatItsAgentKeptLive(t *testing.T) {
 		{name: "fold deletes the carrier", rows: append(slices.Clone(resumed),
 			stampFixtureRow{id: "U", kind: "user_text", summary: "hello", turn: 3}), parent: "R",
 			stop: func(t *testing.T, s *Store, thread string, _ func(string) *SubagentCard) {
-				if _, err := s.FoldUserTextRows(thread, "U", []string{"C"}, "hello", "{}", 9_000); err != nil {
+				if _, err := s.FoldUserTextRows(thread, "U", []string{"C"}, nil, "hello", "{}", 9_000); err != nil {
 					t.Fatal(err)
 				}
 			}},
