@@ -528,6 +528,33 @@ export {
   SetPRUpdatesActive,
   SetPRCILogFollows,
   RefreshPRCI,
+  // The Pull requests page (docs/specs/pull-requests.md): the forge
+  // projects, the list pump, what the user saw of each PR, opening a
+  // thread on a PR's head, the drafts a PR owns, and the Pipelines tab's
+  // reads and pipeline pump. Handle calls are pinned to the computer
+  // whose subscribe answered.
+  ListForgeProjects,
+  SubscribePRList,
+  SetPRListActive,
+  SetPRListFocus,
+  RefreshPRList,
+  UnsubscribePRList,
+  MarkPRViewed,
+  ListThreadsOnPR,
+  OpenPRThread,
+  ListPRDiffReviewComments,
+  CreatePRDiffReviewComment,
+  UpdatePRDiffReviewComment,
+  DeletePRDiffReviewComment,
+  MarkPRDiffReviewCommentsSent,
+  SendPRDiffReviewComments,
+  ListProjectPipelines,
+  ReadPipelineStages,
+  SubscribePipeline,
+  SetPipelineActive,
+  SetPipelineFollows,
+  RefreshPipeline,
+  UnsubscribePipeline,
   ListLiveBackgroundTasks,
   CancelThreadRemoteCommand,
   ListThreadRemoteCommands,
@@ -703,6 +730,24 @@ export {
 } from '../../../bindings/agent-overflow/internal/network/models.js';
 // One result per launch a Stop All named; read, never constructed.
 export type { BackgroundTaskStop } from '../../../bindings/agent-overflow/internal/app/models.js';
+export type {
+  ForgeProject,
+  OpenPRThreadRequest,
+  OpenPRThreadResult,
+  PipelineListResult,
+  PipelineStages,
+  PipelineSubscriptionResult,
+  PRListDetail,
+  PRListFocusResult,
+  PRListItem,
+  PRListSnapshot,
+  PRListSubscriptionResult,
+  PRSeen,
+  PRSince,
+  PRThread,
+  PRThreadsRequest,
+  ProjectPRList,
+} from '../../../bindings/agent-overflow/internal/app/models.js';
 export type { Snapshot as BackgroundTaskOutputSnapshot } from '../../../bindings/agent-overflow/internal/tasktail/models.js';// Dev-server rows are read-only views of one machine's scan, never
 // constructed by a component.
 export type {

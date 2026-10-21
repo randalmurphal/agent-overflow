@@ -58,9 +58,13 @@ export interface PRCILogWireState extends ForgeFailureWire {
   seq: number;
 }
 
-/** The "pr:ci_log" frame: a followed job's whole state whenever it moved. */
+/** The "pr:ci_log" frame: a followed job's whole state whenever it moved.
+ * A log is its repository's (repoKey); a frame for a job a pipeline
+ * subscription follows carries pipelineKey and an empty prKey. */
 export interface PRCILogEvent extends PRCILogWireState {
   prKey: string;
+  pipelineKey?: string;
+  repoKey?: string;
   jobId: string;
 }
 
