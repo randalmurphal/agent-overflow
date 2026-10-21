@@ -147,7 +147,7 @@ func (a *App) resolveForgeAttachment(ctx context.Context, pr gitops.PRReference,
 	if entry, ok := cache.Lookup(key); ok {
 		return entry, nil
 	}
-	data, filename, err := a.gitCore().FetchAttachment(forgeapi.WithInteractive(ctx), pr, href, forgeattach.MaxBytes)
+	data, filename, err := a.gitCore().FetchAttachment(forgeapi.WithInteractive(ctx), pr.Repository(), href, forgeattach.MaxBytes)
 	if err != nil {
 		return forgeattach.Entry{}, err
 	}

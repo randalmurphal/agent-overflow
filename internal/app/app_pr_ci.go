@@ -102,15 +102,16 @@ const (
 // line that would pass it. A line longer than maxCILogLineBytes is
 // clipped to it and listed in Clipped. The reply names the version it read; lines of another version
 // than the index the caller holds are stale. The log is in the cache
-// while somebody follows the job (SetPRCILogFollows).
+// while somebody follows the job (SetPRCILogFollows, SetPipelineFollows).
+// A log is the repository's, whichever PR or pipeline showed it.
 //
 //ao:scope git:operate
 //ao:route selected
-func (a *App) GetPRCILogLines(pr gitops.PRReference, jobID string, fromLine, count int) (cilog.Lines, error) {
+func (a *App) GetPRCILogLines(repo gitops.RepoReference, jobID string, fromLine, count int) (cilog.Lines, error) {
 	if a.shuttingDown.Load() {
 		return cilog.Lines{}, ErrShuttingDown
 	}
-	if err := pr.Validate(); err != nil {
+	if err := repo.Validate(); err != nil {
 		return cilog.Lines{}, err
 	}
 	if err := gitops.ValidateCIJobID(jobID); err != nil {
@@ -126,7 +127,7 @@ func (a *App) GetPRCILogLines(pr gitops.PRReference, jobID string, fromLine, cou
 	if err != nil {
 		return cilog.Lines{}, err
 	}
-	lines, err := store.Lines(ciLogKey(pr, jobID), fromLine, count, maxCILogBytesPerRead, maxCILogLineBytes)
+	lines, err := store.Lines(ciLogKey(repo, jobID), fromLine, count, maxCILogBytesPerRead, maxCILogLineBytes)
 	if errors.Is(err, cilog.ErrNoLog) {
 		return cilog.Lines{}, errCILogNotDownloaded
 	}
@@ -136,16 +137,16 @@ func (a *App) GetPRCILogLines(pr gitops.PRReference, jobID string, fromLine, cou
 // SavePRCIJobLog writes a job's whole log, as the log view shows it,
 // under the app-managed ci-logs directory and returns the absolute path.
 // The file is a copy of the cached log, downloaded first when the cache
-// does not hold it. The path is stable per (pr, job), so a re-save
+// does not hold it. The path is stable per (repository, job), so a re-save
 // refreshes the same file.
 //
 //ao:scope git:operate
 //ao:route selected
-func (a *App) SavePRCIJobLog(ctx context.Context, pr gitops.PRReference, jobID, jobName string) (string, error) {
+func (a *App) SavePRCIJobLog(ctx context.Context, repo gitops.RepoReference, jobID, jobName string) (string, error) {
 	if a.shuttingDown.Load() {
 		return "", ErrShuttingDown
 	}
-	if err := pr.Validate(); err != nil {
+	if err := repo.Validate(); err != nil {
 		return "", err
 	}
 	if err := gitops.ValidateCIJobID(jobID); err != nil {
@@ -155,13 +156,13 @@ func (a *App) SavePRCIJobLog(ctx context.Context, pr gitops.PRReference, jobID, 
 	if err != nil {
 		return "", err
 	}
-	key := ciLogKey(pr, jobID)
+	key := ciLogKey(repo, jobID)
 	store.Pin(key)
 	defer store.Unpin(key)
-	name := ciLogFileName(pr, jobID, jobName)
+	name := ciLogFileName(repo, jobID, jobName)
 	for attempt := 0; ; attempt++ {
 		if !store.Has(key) {
-			if err := a.downloadCILog(forgeapi.WithInteractive(ctx), store, pr, jobID); err != nil {
+			if err := a.downloadCILog(forgeapi.WithInteractive(ctx), store, repo, jobID); err != nil {
 				return "", err
 			}
 		}
@@ -187,11 +188,11 @@ func (a *App) SavePRCIJobLog(ctx context.Context, pr gitops.PRReference, jobID, 
 //
 //ao:scope git:operate
 //ao:route selected
-func (a *App) SavePRCIJobLogSection(pr gitops.PRReference, jobID, jobName, sectionKey string) (string, error) {
+func (a *App) SavePRCIJobLogSection(repo gitops.RepoReference, jobID, jobName, sectionKey string) (string, error) {
 	if a.shuttingDown.Load() {
 		return "", ErrShuttingDown
 	}
-	if err := pr.Validate(); err != nil {
+	if err := repo.Validate(); err != nil {
 		return "", err
 	}
 	if err := gitops.ValidateCIJobID(jobID); err != nil {
@@ -204,9 +205,9 @@ func (a *App) SavePRCIJobLogSection(pr gitops.PRReference, jobID, jobName, secti
 	if err != nil {
 		return "", err
 	}
-	key := ciLogKey(pr, jobID)
+	key := ciLogKey(repo, jobID)
 	var section cilog.Section
-	stem := strings.TrimSuffix(ciLogFileName(pr, jobID, jobName), ".log")
+	stem := strings.TrimSuffix(ciLogFileName(repo, jobID, jobName), ".log")
 	// The name comes from the row the copy finds, so the copy goes to a
 	// temp file first and is renamed once the row is known.
 	path, err := a.writeCILogFileNamed(func(w io.Writer) (string, error) {
@@ -273,14 +274,14 @@ func (a *App) writeCILogFileNamed(write func(io.Writer) (string, error)) (string
 	return path, nil
 }
 
-// ciLogFileName builds a filesystem-safe, per-(pr, job) stable name:
-// <forge>-<namespace>-<repo>-pr<N>-<jobID>-<job name>.log
-func ciLogFileName(pr gitops.PRReference, jobID, jobName string) string {
+// ciLogFileName builds a filesystem-safe, per-(repository, job) stable
+// name: <forge>-<namespace>-<repo>-<jobID>-<job name>.log. A job id is
+// unique in its repository, so no PR or pipeline number is needed.
+func ciLogFileName(repo gitops.RepoReference, jobID, jobName string) string {
 	parts := []string{
-		pr.Forge,
-		sanitizeCIFileSegment(pr.Namespace),
-		sanitizeCIFileSegment(pr.Repo),
-		fmt.Sprintf("pr%d", pr.Number),
+		repo.Forge,
+		sanitizeCIFileSegment(repo.Namespace),
+		sanitizeCIFileSegment(repo.Repo),
 		jobID,
 	}
 	if segment := sanitizeCIFileSegment(jobName); segment != "" {

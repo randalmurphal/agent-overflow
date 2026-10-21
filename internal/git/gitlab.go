@@ -238,8 +238,10 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 	}
 	var out PRRead
 	var notes []gitlabNoteRaw
-	if want.Threads || want.Events {
-		threads, system, err := readGitLabDiscussions(ctx, client, ref, mr.headSHA())
+	var threads []ReviewThread
+	if want.Threads || want.Events || (want.Detail && want.Unresolved) {
+		var system []gitlabNoteRaw
+		threads, system, err = readGitLabDiscussions(ctx, client, ref, mr.headSHA())
 		if err != nil {
 			return PRRead{}, err
 		}
@@ -259,15 +261,19 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		if _, err := client.JSON(ctx, forgeapi.Request{Path: gitlabMRPath(ref) + "/approvals"}, &approvals); err != nil {
 			return PRRead{}, err
 		}
-		settings, err := f.projectSettings(ctx, client, ref)
+		settings, err := f.projectSettings(ctx, client, ref.Repository())
 		if err != nil {
 			return PRRead{}, err
 		}
 		out.Detail = gitlabPRDetail(mr, gitlabApprovalVerdicts(approvals))
 		gitlabFillMerge(&out.Detail, mr, approvals, settings, events, f.viewerLogin(ctx, client, ref.Host))
+		if want.Unresolved {
+			unresolved := UnresolvedThreads(threads)
+			out.Detail.Readiness.Unresolved = &unresolved
+		}
 	}
 	if want.CI {
-		if out.CI, err = readGitLabPipeline(ctx, client, ref, mr.HeadPipeline); err != nil {
+		if out.CI, err = readGitLabPipeline(ctx, client, ref.Repository(), mr.HeadPipeline); err != nil {
 			return PRRead{}, err
 		}
 		out.HasCI = true
@@ -327,11 +333,17 @@ type gitlabMRRaw struct {
 	} `json:"user"`
 }
 
-// gitlabPipelineRaw is a merge request's head pipeline.
+// gitlabPipelineRaw is a pipeline as GitLab answers it: a merge
+// request's head pipeline, a pipeline list row or one pipeline read.
 type gitlabPipelineRaw struct {
-	ID     int64  `json:"id"`
-	Status string `json:"status"`
-	WebURL string `json:"web_url"`
+	ID        int64  `json:"id"`
+	Status    string `json:"status"`
+	WebURL    string `json:"web_url"`
+	Ref       string `json:"ref"`
+	SHA       string `json:"sha"`
+	Source    string `json:"source"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 // headSHA is the merge request's head commit: the diff's head, else the
@@ -393,7 +405,20 @@ func gitlabCheckSummary(pipeline *gitlabPipelineRaw) CheckSummary {
 	}
 	check := CheckStatus{Kind: "Pipeline", Name: "Pipeline", Status: pipeline.Status, DetailsURL: pipeline.WebURL}
 	summary := CheckSummary{Total: 1, Checks: []CheckStatus{check}}
-	addCheckBucket(&summary, check)
+	// GitLab's pipeline statuses, not GitHub's conclusions that
+	// addCheckBucket sorts.
+	switch NormalizeCIStatus(pipeline.Status, "") {
+	case CIStatusSuccess:
+		summary.Success++
+	case CIStatusFailed:
+		summary.Failure++
+	case CIStatusCanceled:
+		summary.Canceled++
+	case CIStatusSkipped:
+		summary.Skipped++
+	default:
+		summary.Pending++
+	}
 	return summary
 }
 

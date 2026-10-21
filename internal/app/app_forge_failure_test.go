@@ -79,11 +79,18 @@ func fails(err error) func() error { return func() error { return err } }
 // steps, ticking every 5ms.
 func newScriptedPump(t *testing.T, steps ...func() error) (*App, *scriptedFetch, chan PRUpdatedEvent, PRUpdateSubscriptionResult) {
 	t.Helper()
+	return newStaggeredScriptedPump(t, 0, steps...)
+}
+
+// newStaggeredScriptedPump is newScriptedPump with stagger added to a rate
+// limit's resume time, set before the pump starts.
+func newStaggeredScriptedPump(t *testing.T, stagger time.Duration, steps ...func() error) (*App, *scriptedFetch, chan PRUpdatedEvent, PRUpdateSubscriptionResult) {
+	t.Helper()
 	app := NewApp()
 	stubPRCIFetch(app)
 	app.prUpdates.interval = 5 * time.Millisecond
 	app.prUpdates.retryBase = 5 * time.Millisecond
-	app.prUpdates.staggerFn = func() time.Duration { return 0 }
+	app.prUpdates.staggerFn = func() time.Duration { return stagger }
 	script := &scriptedFetch{steps: steps}
 	app.prUpdates.fetchFn = script.fetch
 	events := capturePRUpdates(t, app)
@@ -142,7 +149,7 @@ func TestPRUpdateRateLimitHoldsPollingUntilResumeAt(t *testing.T) {
 	t.Parallel()
 	const stagger = 100 * time.Millisecond
 	var resume atomic.Pointer[time.Time]
-	app, script, events, _ := newScriptedPump(t,
+	_, script, events, _ := newStaggeredScriptedPump(t, stagger,
 		ok,
 		func() error {
 			until := time.Now().Add(300 * time.Millisecond)
@@ -151,7 +158,6 @@ func TestPRUpdateRateLimitHoldsPollingUntilResumeAt(t *testing.T) {
 		},
 		ok,
 	)
-	app.prUpdates.staggerFn = func() time.Duration { return stagger }
 	limited := awaitPRUpdate(t, events, "rate limit frame")
 	until := *resume.Load()
 	if limited.ErrorKind != forgeFailureRateLimited || limited.ResumeAt != until.UTC().Format(time.RFC3339) {
@@ -503,11 +509,11 @@ func TestPRCILogFollowOfALargeTraceIsCachedWhole(t *testing.T) {
 	if state.Error != "" || !state.Available || state.TotalLines != lines || state.TotalBytes != int64(len(full)) {
 		t.Fatalf("follow state = %d lines, %d bytes, error %q; want %d lines, %d bytes", state.TotalLines, state.TotalBytes, state.Error, lines, len(full))
 	}
-	first, err := f.app.GetPRCILogLines(pr, "7", 0, 2)
+	first, err := f.app.GetPRCILogLines(pr.Repository(), "7", 0, 2)
 	if err != nil || !slices.Equal(first.Lines, []string{"line 00000000 of the trace", "line 00000001 of the trace"}) {
 		t.Fatalf("top of the trace = %q, %v", first.Lines, err)
 	}
-	last, err := f.app.GetPRCILogLines(pr, "7", lines-1, 10)
+	last, err := f.app.GetPRCILogLines(pr.Repository(), "7", lines-1, 10)
 	if err != nil || !slices.Equal(last.Lines, []string{fmt.Sprintf("line %08d of the trace", lines-1)}) {
 		t.Fatalf("bottom of the trace = %q, %v", last.Lines, err)
 	}

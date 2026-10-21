@@ -104,12 +104,12 @@ func (c *gitlabCache[V]) put(key string, value V, now time.Time) {
 	c.entries[key] = gitlabCacheEntry[V]{value: value, readAt: now}
 }
 
-// projectSettings is ref's project's merge settings as the current login
+// projectSettings is repo's merge settings as the current login
 // reads them, read from projects/P at most once per login per
 // gitlabCacheTTL. The entry is published under the credential that got
 // the answer (Response.Credential), which a 401 inside the read can have
 // replaced since the lookup, so no login reads another's permissions.
-func (f *gitlabForge) projectSettings(ctx context.Context, client *forgeapi.Client, ref PRReference) (gitlabProjectSettings, error) {
+func (f *gitlabForge) projectSettings(ctx context.Context, client *forgeapi.Client, ref RepoReference) (gitlabProjectSettings, error) {
 	fp, err := client.CredentialFingerprint(ctx)
 	if err != nil {
 		return gitlabProjectSettings{}, err
@@ -134,15 +134,28 @@ func (f *gitlabForge) projectSettings(ctx context.Context, client *forgeapi.Clie
 // logged and cached as unknown ("") for the TTL, so a login that cannot
 // read its user costs no request per tick; a cancelled, rate-limited or
 // unreachable read, or a credential that cannot be read, caches nothing
-// and the next read asks again.
+// and the next read asks again. A read whose answer depends on knowing
+// the login (the project list's attention states) uses readViewerLogin
+// and fails instead.
 func (f *gitlabForge) viewerLogin(ctx context.Context, client *forgeapi.Client, host string) string {
+	viewer, _ := f.readViewerLogin(ctx, client, host)
+	return viewer
+}
+
+// readViewerLogin is viewerLogin with the failure: the username, or the
+// error that left it unknown. A refusal is still cached as unknown for
+// the TTL and returned as that cached error each time.
+func (f *gitlabForge) readViewerLogin(ctx context.Context, client *forgeapi.Client, host string) (string, error) {
 	fp, err := client.CredentialFingerprint(ctx)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	key := func(fp string) string { return fp + " " + host }
 	if viewer, ok := f.viewers.get(key(fp), f.core.nowFn()); ok {
-		return viewer
+		if viewer == "" {
+			return "", fmt.Errorf("gitlab: the login on %s could not be read; retried in %s", host, gitlabCacheTTL)
+		}
+		return viewer, nil
 	}
 	var user struct {
 		Username string `json:"username"`
@@ -152,7 +165,7 @@ func (f *gitlabForge) viewerLogin(ctx context.Context, client *forgeapi.Client, 
 		_, limited := errors.AsType[*forgeapi.RateLimitedError](err)
 		_, transient := errors.AsType[*forgeapi.TransientError](err)
 		if ctx.Err() != nil || limited || transient {
-			return ""
+			return "", err
 		}
 		log.Printf("gitlab: reading the login on %s failed; merge requests read as not the viewer's for %s: %v", host, gitlabCacheTTL, err)
 		// The refusal is the lookup's login's only while the client still
@@ -161,10 +174,10 @@ func (f *gitlabForge) viewerLogin(ctx context.Context, client *forgeapi.Client, 
 		if after, err := client.CredentialFingerprint(ctx); err == nil && after == fp {
 			f.viewers.put(key(fp), "", f.core.nowFn())
 		}
-		return ""
+		return "", err
 	}
 	f.viewers.put(key(resp.Credential), user.Username, f.core.nowFn())
-	return user.Username
+	return user.Username, nil
 }
 
 // gitlabFillMerge fills the detail's readiness, merge options, end of
@@ -174,6 +187,7 @@ func (f *gitlabForge) viewerLogin(ctx context.Context, client *forgeapi.Client, 
 func gitlabFillMerge(detail *PRDetail, mr gitlabMRRaw, approvals gitlabApprovalsRaw, settings gitlabProjectSettings, events []ReviewEvent, viewer string) {
 	detail.ViewerIsAuthor = viewer != "" && strings.EqualFold(viewer, mr.Author.Username)
 	detail.Readiness = gitlabReadiness(mr, approvals, settings)
+	detail.Readiness.Approvals = ApprovalCount{Given: len(approvals.ApprovedBy), Required: approvals.ApprovalsRequired}
 	detail.Merge = gitlabMergeOptions(mr, approvals, settings, detail.Readiness, events, detail.ViewerIsAuthor)
 	switch NormalizePRState(mr.State) {
 	case "merged":

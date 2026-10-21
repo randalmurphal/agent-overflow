@@ -188,7 +188,7 @@ func samePlanRef(a, b *store.ProposedPlanSourceRef) bool {
 }
 
 func sameDiffRef(a, b *store.DiffReviewSourceRef) bool {
-	return a != nil && b != nil && a.Scope == b.Scope && a.SourceKey == b.SourceKey
+	return a != nil && b != nil && a.PRKey == b.PRKey && a.Scope == b.Scope && a.SourceKey == b.SourceKey
 }
 
 // MarshalMeta encodes an already-projected Meta with the same empty-is-nothing

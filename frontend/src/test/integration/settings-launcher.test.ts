@@ -1,11 +1,11 @@
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import App from '../../App.svelte';
-// App imports these overlays lazily. Loaded with the file, the cases wait for
-// the mount rather than for a first import transforming the overlay's
+// App imports these surfaces lazily. Loaded with the file, the cases wait for
+// the mount rather than for a first import transforming the surface's
 // component graph, which is load-dependent.
 import '../../lib/components/settings/SettingsOverlay.svelte';
-import '../../lib/components/workflows/WorkflowsOverlay.svelte';
+import '../../lib/components/workflows/WorkflowsPane.svelte';
 import '../../lib/components/accounts/AccountSwitcher.svelte';
 import {
   flush,
@@ -14,7 +14,6 @@ import {
   resetAppState,
 } from './_helpers';
 import { setBindingMock } from '../mocks/bindings-app';
-import { isWorkflowsOverlayOpen, openWorkflowsOverlay } from '../../lib/stores/workflowsOverlay.svelte';
 import { openSettingsOverlay } from '../../lib/stores/settingsOverlay.svelte';
 import { openAccountSwitcher } from '../../lib/stores/accountSwitcher.svelte';
 import {
@@ -150,23 +149,25 @@ describe('App integration — settings launcher', () => {
     expect(blurredWhileMounted).toBe(true);
   });
 
-  // Two full-height layers over the pane strip means two focus traps and an
-  // ambiguous Esc, so each open path closes the other surface.
-  it('is mutually exclusive with the workflows overlay', async () => {
+  // Settings is a layer over the pane strip; the workflows tool pane is IN the
+  // strip. Opening a tool closes settings so the tool is not hidden under it,
+  // and opening settings over the pane leaves the pane mounted underneath.
+  it('closes settings when the workflows pane opens, and keeps the pane under settings', async () => {
     const rendered = render(App);
     await flush(10);
 
     await openSettingsFromSidebar(rendered);
-    openWorkflowsOverlay();
+    await fireEvent.click(rendered.getByTestId('sidebar-tool-workflows'));
     await waitFor(() => {
       expect(rendered.queryByTestId(SETTINGS_TESTID)).not.toBeInTheDocument();
+      expect(rendered.getByTestId('workflows-pane')).toBeInTheDocument();
     });
 
     openSettingsOverlay('theme');
     await waitFor(() => {
       expect(rendered.getByTestId(SETTINGS_TESTID)).toBeInTheDocument();
     });
-    expect(isWorkflowsOverlayOpen()).toBe(false);
+    expect(rendered.getByTestId('workflows-pane')).toBeInTheDocument();
   });
 });
 
@@ -225,6 +226,25 @@ describe('App integration — overlay modal flags', () => {
     expect(await captureAppFlags()).toMatchObject({
       settingsOpen: true,
       anyModalOpen: true,
+    });
+  });
+
+  // Type-to-focus and the workflows chords read these off App's own context.
+  it('reads a focused workflows pane as a focused tool pane', async () => {
+    const rendered = render(App);
+    await flush(10);
+    const keybindings = await import('../../lib/stores/keybindings.svelte');
+    await keybindings.loadKeybindings();
+
+    expect(await captureAppFlags()).toMatchObject({ toolPaneFocused: false, workflowsPaneFocused: false });
+
+    await fireEvent.click(rendered.getByTestId('sidebar-tool-workflows'));
+    await waitFor(() => expect(rendered.getByTestId('workflows-pane')).toBeInTheDocument());
+
+    expect(await captureAppFlags()).toMatchObject({
+      toolPaneFocused: true,
+      workflowsPaneFocused: true,
+      toolDetailOpen: false,
     });
   });
 

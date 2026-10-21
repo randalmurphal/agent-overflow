@@ -244,7 +244,7 @@ func (a *App) emitProposedPlanUpsert(threadID, planItemID string) error {
 
 //ao:scope threads:read
 func (a *App) ListDiffReviewComments(threadID, scope, sourceKey string) ([]store.DiffReviewComment, error) {
-	comments, err := a.store.ListDiffReviewComments(threadID, scope, sourceKey)
+	comments, err := a.store.ListDiffReviewComments(store.ThreadReviewOwner(threadID), scope, sourceKey)
 	if err != nil {
 		return nil, fmt.Errorf("list diff review comments: %w", err)
 	}
@@ -261,10 +261,21 @@ func (a *App) CreateDiffReviewComment(threadID string, input store.DiffReviewCom
 		return store.DiffReviewComment{}, err
 	}
 	defer unlock()
+	created, err := a.store.CreateDiffReviewComment(newDiffReviewComment(store.ThreadReviewOwner(threadID), input))
+	if err != nil {
+		return store.DiffReviewComment{}, fmt.Errorf("create diff review comment: %w", err)
+	}
+	a.announceDiffCommentsChanged(threadID, created.Scope, created.SourceKey)
+	return created, nil
+}
+
+// newDiffReviewComment is a new draft of owner's from input.
+func newDiffReviewComment(owner store.DiffReviewOwner, input store.DiffReviewCommentInput) store.DiffReviewComment {
 	now := time.Now().UnixMilli()
-	comment := store.DiffReviewComment{
+	return store.DiffReviewComment{
 		ID:           uuid.NewString(),
-		ThreadID:     threadID,
+		ThreadID:     owner.ThreadID,
+		PRKey:        owner.PRKey,
 		Scope:        input.Scope,
 		SourceKey:    input.SourceKey,
 		CommitSHA:    input.CommitSHA,
@@ -277,12 +288,6 @@ func (a *App) CreateDiffReviewComment(threadID string, input store.DiffReviewCom
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
-	created, err := a.store.CreateDiffReviewComment(comment)
-	if err != nil {
-		return store.DiffReviewComment{}, fmt.Errorf("create diff review comment: %w", err)
-	}
-	a.announceDiffCommentsChanged(threadID, created.Scope, created.SourceKey)
-	return created, nil
 }
 
 //ao:scope threads:operate
@@ -292,7 +297,7 @@ func (a *App) UpdateDiffReviewComment(threadID, commentID string, input store.Di
 		return store.DiffReviewComment{}, err
 	}
 	defer unlock()
-	updated, err := a.store.UpdateDiffReviewComment(threadID, commentID, input, time.Now().UnixMilli())
+	updated, err := a.store.UpdateDiffReviewComment(store.ThreadReviewOwner(threadID), commentID, input, time.Now().UnixMilli())
 	if err != nil {
 		return store.DiffReviewComment{}, fmt.Errorf("update diff review comment: %w", err)
 	}
@@ -309,11 +314,11 @@ func (a *App) DeleteDiffReviewComment(threadID, commentID string) error {
 	defer unlock()
 	// Read the row before it moves: a delete names only the comment, and the
 	// set a receiver has to re-read is identified by scope + source key.
-	comment, err := a.store.GetDiffReviewComment(threadID, commentID)
+	comment, err := a.store.GetDiffReviewComment(store.ThreadReviewOwner(threadID), commentID)
 	if err != nil {
 		return fmt.Errorf("delete diff review comment: %w", err)
 	}
-	if err := a.store.DeleteOrResolveDiffReviewComment(threadID, commentID, time.Now().UnixMilli()); err != nil {
+	if err := a.store.DeleteOrResolveDiffReviewComment(store.ThreadReviewOwner(threadID), commentID, time.Now().UnixMilli()); err != nil {
 		return fmt.Errorf("delete diff review comment: %w", err)
 	}
 	a.announceDiffCommentsChanged(threadID, comment.Scope, comment.SourceKey)
@@ -322,7 +327,7 @@ func (a *App) DeleteDiffReviewComment(threadID, commentID string) error {
 
 //ao:scope threads:operate
 func (a *App) MarkDiffReviewCommentsSent(threadID, scope, sourceKey string, commentIDs []string, sentTurnID string) error {
-	if err := a.store.MarkDiffReviewCommentsSent(threadID, scope, sourceKey, commentIDs, time.Now().UnixMilli(), sentTurnID); err != nil {
+	if err := a.store.MarkDiffReviewCommentsSent(store.ThreadReviewOwner(threadID), scope, sourceKey, commentIDs, time.Now().UnixMilli(), sentTurnID); err != nil {
 		return fmt.Errorf("mark diff review comments sent: %w", err)
 	}
 	// Sending is a set change like any other: a draft that became sent renders
@@ -357,11 +362,19 @@ func (a *App) SendDiffReviewComments(threadID, scope, sourceKey string, commentI
 	return a.store.GetThread(threadID)
 }
 
-func (a *App) appendDiffReviewCommentsToContent(threadID, content, scope, sourceKey string, commentIDs []string, pr *store.DiffReviewPRContext) (string, []string, error) {
+// diffReviewSourceOwner is the owner of the drafts a resolved source names.
+func diffReviewSourceOwner(source *SourceDiffReview) store.DiffReviewOwner {
+	if source.PRKey != "" {
+		return store.PRReviewOwner(source.PRKey)
+	}
+	return store.ThreadReviewOwner(source.ThreadID)
+}
+
+func (a *App) appendDiffReviewCommentsToContent(owner store.DiffReviewOwner, content, scope, sourceKey string, commentIDs []string, pr *store.DiffReviewPRContext) (string, []string, error) {
 	if len(store.UniqueNonEmptyStringsForApp(commentIDs)) > store.MaxDiffReviewCommentIDs {
 		return "", nil, fmt.Errorf("too many diff review comments selected")
 	}
-	comments, err := a.store.ListDraftDiffReviewCommentsByID(threadID, scope, sourceKey, commentIDs)
+	comments, err := a.store.ListDraftDiffReviewCommentsByID(owner, scope, sourceKey, commentIDs)
 	if err != nil {
 		return "", nil, err
 	}
