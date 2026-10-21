@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -114,19 +113,20 @@ type prListPump struct {
 	// every subscriber starts from a read snapshot.
 	ready chan struct{}
 	// focusWake asks the loop to read the detail of newly focused rows
-	// (wakeFocus), focusUser whether a pending wake is the user's, and
-	// republish to rebuild the snapshot after the user opened a PR.
+	// (wakeFocusLocked) and republish to rebuild the snapshot after the
+	// user opened a PR.
 	focusWake chan struct{}
-	focusUser atomic.Bool
 	republish chan struct{}
 	// The tick's state (app_pr_list_tick.go), under App.prUpdates.mu:
-	// forge and forgeErr are the projects the last tick read.
-	snapshot PRListSnapshot
-	encoded  []byte
-	forge    []ForgeProject
-	forgeErr error
-	projects map[string]*prListProjectState
-	details  map[string]*prListDetailState
+	// forge and forgeErr are the projects the last tick read; focusUser
+	// whether a pending focus wake is the user's.
+	focusUser bool
+	snapshot  PRListSnapshot
+	encoded   []byte
+	forge     []ForgeProject
+	forgeErr  error
+	projects  map[string]*prListProjectState
+	details   map[string]*prListDetailState
 }
 
 type prListHandle struct {
@@ -136,15 +136,17 @@ type prListHandle struct {
 
 func prListCleanupKey(id string) string { return "pr-list:" + id }
 
-// wakeFocus asks the loop to recompute the detail set and read what it
-// newly holds. interactive is the cause: the user focusing rows or showing
-// the page reads with interactive admission; a handle that hides or leaves
-// frees allowance for rows no user action asked for, so those reads are
-// background. Wakes merge, and a pending user wake is never downgraded:
-// the flag is set before the send and taken after the receive.
-func (p *prListPump) wakeFocus(interactive bool) {
+// wakeFocusLocked asks the loop to recompute the detail set and read what
+// it newly holds; the caller holds App.prUpdates.mu, in the critical
+// section that changed the focus or visibility. interactive is the cause:
+// the user focusing rows or showing the page reads with interactive
+// admission; a handle that hides or leaves frees allowance for rows no
+// user action asked for, so those reads are background. Wakes merge, and
+// a pending user wake is never downgraded: the flag is set with the change
+// and taken with the selection that sees it (focusAdmissionLocked).
+func (p *prListPump) wakeFocusLocked(interactive bool) {
 	if interactive {
-		p.focusUser.Store(true)
+		p.focusUser = true
 	}
 	select {
 	case p.focusWake <- struct{}{}:
@@ -152,9 +154,11 @@ func (p *prListPump) wakeFocus(interactive bool) {
 	}
 }
 
-// focusContext is the admission of the focus wake just received.
-func (p *prListPump) focusContext() context.Context {
-	if p.focusUser.Swap(false) {
+// focusAdmissionLocked takes the admission of the pending focus wake.
+func (p *prListPump) focusAdmissionLocked() context.Context {
+	user := p.focusUser
+	p.focusUser = false
+	if user {
 		return forgeapi.WithInteractive(p.ctx)
 	}
 	return p.ctx
@@ -246,13 +250,12 @@ func (a *App) SetPRListActive(ctx context.Context, subscriptionID string, active
 	}
 	handle.active = active
 	resumed := pump.voteLocked(active)
-	refocus := len(handle.focus) > 0
+	if len(handle.focus) > 0 {
+		pump.wakeFocusLocked(active)
+	}
 	a.prUpdates.mu.Unlock()
 	if resumed {
 		pump.wakeUp()
-	}
-	if refocus {
-		pump.wakeFocus(active)
 	}
 	return nil
 }
@@ -291,10 +294,10 @@ func (a *App) SetPRListFocus(ctx context.Context, subscriptionID string, prKeys 
 		}
 	}
 	handle.focus = focus
-	a.prUpdates.mu.Unlock()
 	if fresh {
-		pump.wakeFocus(true)
+		pump.wakeFocusLocked(true)
 	}
+	a.prUpdates.mu.Unlock()
 	return result, nil
 }
 
@@ -342,13 +345,12 @@ func (a *App) unsubscribePRList(id string) {
 	}
 	// A visible handle's focus leaves with it: the others' rows may take
 	// its share of the detail allowance now.
-	refocus := teardown == nil && handle.active && len(handle.focus) > 0
+	if teardown == nil && handle.active && len(handle.focus) > 0 {
+		pump.wakeFocusLocked(false)
+	}
 	a.prUpdates.mu.Unlock()
 	if teardown != nil {
 		teardown.stop()
-	}
-	if refocus {
-		pump.wakeFocus(false)
 	}
 }
 
@@ -424,12 +426,14 @@ func (a *App) pumpPRList(pump *prListPump) {
 			tick(forgeapi.WithInteractive(pump.ctx), true)
 			close(req.done)
 		case <-pump.focusWake:
-			ctx := pump.focusContext()
 			if pump.paused.Load() {
+				a.prUpdates.mu.Lock()
+				pump.focusAdmissionLocked()
+				a.prUpdates.mu.Unlock()
 				missed = true
 				continue
 			}
-			if event, changed := a.pollPRListFocus(ctx, pump); changed {
+			if event, changed := a.pollPRListFocus(pump); changed {
 				a.emitPumpEvent(&pump.pumpCore, eventchan.PullsUpdated, event)
 			}
 		case <-pump.republish:

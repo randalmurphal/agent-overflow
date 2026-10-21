@@ -176,7 +176,7 @@ func (a *App) pollPRList(ctx context.Context, pump *prListPump, forceDetails boo
 			log.Printf("pr list: read of %s failed (id: %s): %v", key, fail.correlationID, errs[i])
 		}
 	}
-	focus, _ := a.prListFocusLocked(pump, forceDetails)
+	focus, _ := a.prListFocusLocked(pump, forceDetails, interactive)
 	a.prUpdates.mu.Unlock()
 
 	a.readPRListDetails(ctx, pump, focus)
@@ -185,14 +185,19 @@ func (a *App) pollPRList(ctx context.Context, pump *prListPump, forceDetails boo
 
 // pollPRListFocus recomputes the detail candidates after a focus or
 // visibility change, without reading the lists: it reads the detail of
-// the candidates that have none yet and republishes, also when only a
-// detail was dropped.
-func (a *App) pollPRListFocus(ctx context.Context, pump *prListPump) (PRListSnapshot, bool) {
+// the candidates not read yet and republishes, also when only a detail
+// was dropped. It takes the pending wake's admission in the critical
+// section that selects the candidates, so the focus a user wake came with
+// is read with the user's admission. A background read refused at the
+// rate limit reserve is not a read: a user wake reads that row again.
+func (a *App) pollPRListFocus(pump *prListPump) (PRListSnapshot, bool) {
 	a.prUpdates.mu.Lock()
+	ctx := pump.focusAdmissionLocked()
+	interactive := forgeapi.IsInteractive(ctx)
 	var fresh []prListFocusRead
-	due, dropped := a.prListFocusLocked(pump, false)
+	due, dropped := a.prListFocusLocked(pump, false, interactive)
 	for _, read := range due {
-		if pump.details[read.pr.Key()] == nil {
+		if last := pump.details[read.pr.Key()]; last == nil || (interactive && last.err.reserve) {
 			fresh = append(fresh, read)
 		}
 	}
@@ -217,10 +222,11 @@ type prListFocusRead struct {
 // shows them; each group ordered by update time, newest first, then by
 // PR key, and at most maxPRListFocus in all, so unchanged rows keep the
 // same set from tick to tick. Among those, a detail is due when never
-// read, read for another list row, older than prListDetailMaxAge, or
+// read, read for another list row, older than prListDetailMaxAge, last
+// refused at the rate limit reserve and this pass is interactive, or
 // every one when forced. A detail no candidate holds any more is dropped,
 // and dropped reports whether one was.
-func (a *App) prListFocusLocked(pump *prListPump, force bool) (due []prListFocusRead, dropped bool) {
+func (a *App) prListFocusLocked(pump *prListPump, force, interactive bool) (due []prListFocusRead, dropped bool) {
 	focused := map[string]bool{}
 	for _, handle := range a.prUpdates.listHandles {
 		if !handle.active {
@@ -261,7 +267,7 @@ func (a *App) prListFocusLocked(pump *prListPump, force bool) (due []prListFocus
 		kept[candidate.key] = true
 		fingerprint := prListFingerprint(row)
 		last := pump.details[candidate.key]
-		if force || last == nil || last.fingerprint != fingerprint || now.Sub(last.readAt) >= prListDetailMaxAge {
+		if force || last == nil || last.fingerprint != fingerprint || now.Sub(last.readAt) >= prListDetailMaxAge || (interactive && last.err.reserve) {
 			due = append(due, prListFocusRead{pr: row.Ref, fingerprint: fingerprint})
 		}
 	}

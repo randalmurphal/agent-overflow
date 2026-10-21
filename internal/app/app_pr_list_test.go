@@ -24,7 +24,8 @@ var (
 // repository's rows and failure, each PR's detail, and the reads made with
 // their admission (interactive). With reserve set, a background detail
 // read is refused as the transport refuses one near the rate limit
-// reserve.
+// reserve. listGate, when set, runs before each list read, outside the
+// fake's lock, so a test can hold a tick inside its reads.
 type prListFake struct {
 	mu          sync.Mutex
 	projects    []ForgeProject
@@ -35,6 +36,7 @@ type prListFake struct {
 	reads       map[string]int
 	interactive map[string][]bool
 	reserve     bool
+	listGate    func(repo gitops.RepoReference)
 }
 
 func newPRListFake(t *testing.T, app *App) *prListFake {
@@ -58,6 +60,12 @@ func newPRListFake(t *testing.T, app *App) *prListFake {
 		return slices.Clone(f.projects), nil
 	}
 	app.prUpdates.listFetchFn = func(_ context.Context, repo gitops.RepoReference) ([]gitops.PRListRow, error) {
+		f.mu.Lock()
+		gate := f.listGate
+		f.mu.Unlock()
+		if gate != nil {
+			gate(repo)
+		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.lists[repo.Key()]++
@@ -834,6 +842,67 @@ func TestPRListFreedAllowanceReadsInTheBackground(t *testing.T) {
 	}
 }
 
+// A user's focus that lands while a background tick is reading the lists,
+// after the tick took its admission and before it selects the rows, is
+// selected by that tick and refused at the reserve. The refusal is not a
+// read: the user's focus wake that follows reads those rows past it.
+func TestPRListFocusRefusedByABackgroundTickIsReadByTheUsersWake(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = 20 * time.Millisecond
+	fake := newPRListFake(t, app)
+	var keys []string
+	fake.set(func(f *prListFake) {
+		for i := 1; i <= 5; i++ {
+			row := prListRow(prListRepoA, i, nil)
+			f.rows[prListRepoA.Key()] = append(f.rows[prListRepoA.Key()], row)
+			keys = append(keys, row.Ref.Key())
+		}
+	})
+	events := capturePRList(t, app)
+	sub := subscribePRList(t, app)
+
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	fake.set(func(f *prListFake) {
+		f.reserve = true
+		f.listGate = func(repo gitops.RepoReference) {
+			if repo.Key() == prListRepoA.Key() {
+				once.Do(func() {
+					close(entered)
+					<-release
+				})
+			}
+		}
+	})
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no background tick read the lists")
+	}
+	if _, err := app.SetPRListFocus(context.Background(), sub.ID, keys); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+
+	awaitPRList(t, events, "the focused rows read past the reserve", func(s PRListSnapshot) bool {
+		n := 0
+		for _, row := range prListProject(t, s, "p-a").Rows {
+			if slices.Contains(keys, row.Ref.Key()) && row.Detail != nil {
+				n++
+			}
+		}
+		return n == len(keys)
+	})
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	for _, key := range keys {
+		if got := fake.interactive[key]; !slices.Equal(got, []bool{false, true}) {
+			t.Errorf("%s reads (interactive) = %v, want the tick's refused one, then the user's", key, got)
+		}
+	}
+}
+
 // A user wake that arrives while a background one is pending is not
 // downgraded: the merged wake reads as interactive.
 func TestPRListFocusWakeKeepsTheUsersAdmission(t *testing.T) {
@@ -841,20 +910,20 @@ func TestPRListFocusWakeKeepsTheUsersAdmission(t *testing.T) {
 	for _, order := range [][]bool{{false, true}, {true, false}, {true, true}} {
 		pump := &prListPump{pumpCore: pumpCore{ctx: context.Background()}, focusWake: make(chan struct{}, 1)}
 		for _, interactive := range order {
-			pump.wakeFocus(interactive)
+			pump.wakeFocusLocked(interactive)
 		}
 		<-pump.focusWake
-		if !forgeapi.IsInteractive(pump.focusContext()) {
+		if !forgeapi.IsInteractive(pump.focusAdmissionLocked()) {
 			t.Errorf("wakes %v read as background", order)
 		}
-		if forgeapi.IsInteractive(pump.focusContext()) {
+		if forgeapi.IsInteractive(pump.focusAdmissionLocked()) {
 			t.Errorf("wakes %v: the next wake inherited the user's admission", order)
 		}
 	}
 	pump := &prListPump{pumpCore: pumpCore{ctx: context.Background()}, focusWake: make(chan struct{}, 1)}
-	pump.wakeFocus(false)
+	pump.wakeFocusLocked(false)
 	<-pump.focusWake
-	if forgeapi.IsInteractive(pump.focusContext()) {
+	if forgeapi.IsInteractive(pump.focusAdmissionLocked()) {
 		t.Error("a background wake read as interactive")
 	}
 }
