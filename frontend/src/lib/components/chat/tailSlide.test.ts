@@ -1,8 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   SLIDE_DRAIN_PER_FRAME,
-  SLIDE_MAX_LINES_PER_TICK,
-  SLIDE_MAX_WINDOWS,
   SLIDE_MIN_STEP_PX,
   slideDecision,
   stepSlide,
@@ -40,36 +38,39 @@ describe('slideDecision', () => {
     if (d.kind === 'slide') expect(d.startPx).toBeCloseTo(10 + LH);
   });
 
-  it('caps a compounded start at SLIDE_MAX_WINDOWS windows', () => {
-    const d = slideDecision(obs(5), obs(9), SLIDE_MAX_WINDOWS * BOX - 5);
+  it('compounds every line that lands, however many land at once', () => {
+    // Fifty lines in one frame (a code block of one-character lines after
+    // a stalled paint, or a unit landing whole) onto a slide already five
+    // windows deep: a cap here pinned the offset and every further line
+    // re-packed the visible text in one frame, the snap the browser
+    // continuity test caught under slow paints.
+    const d = slideDecision(obs(5), obs(55), 5 * BOX);
     expect(d.kind).toBe('slide');
-    // true continuity would be (cap - 5) + 4·LH — past the cap, where the
-    // excess snaps.
-    if (d.kind === 'slide') expect(d.startPx).toBeCloseTo(SLIDE_MAX_WINDOWS * BOX);
+    if (d.kind === 'slide') expect(d.startPx).toBeCloseTo(5 * BOX + 50 * LH);
   });
 
-  it('holds the most lines the smoother can land per tick without reaching the cap', () => {
-    // The smoother lands at most SLIDE_MAX_LINES_PER_TICK lines in one
-    // processed tick (its per-tick cap on one-character lines), every
-    // frame at the ceiling. The drain must settle below the cap under that
-    // intake, or the offset pins on the cap and every further line
-    // re-packs the visible text in one frame (the snap the browser
-    // continuity test caught under slow paints).
-    const intake = SLIDE_MAX_LINES_PER_TICK * LH;
+  it('never pins under a sustained intake faster than the drain holds in a window', () => {
+    // Four short lines a frame (preserved blank lines at the ceiling) for
+    // 300 frames: the offset rises to where the drain takes four lines a
+    // frame and stays there; every line that landed is in the offset.
     let lines = 5;
     let prev = obs(lines);
     let offset = 0;
     for (let frame = 0; frame < 300; frame += 1) {
-      lines += SLIDE_MAX_LINES_PER_TICK;
+      lines += 4;
       const next = obs(lines);
       const d = slideDecision(prev, next, offset);
       expect(d.kind).toBe('slide');
       if (d.kind !== 'slide') return;
-      expect(d.startPx).toBeCloseTo(offset + intake);
-      expect(d.startPx).toBeLessThan(SLIDE_MAX_WINDOWS * BOX);
+      expect(d.startPx).toBeCloseTo(offset + 4 * LH);
       offset = stepSlide(d.startPx, 1000 / 60);
       prev = next;
     }
+    // Four lines a frame settle the pre-drain offset at 4·LH / 0.35
+    // (223px) and leave 65% of it after the drain: between two and three
+    // windows, and the same every frame.
+    expect(offset).toBeGreaterThan(2 * BOX);
+    expect(offset).toBeLessThan(3 * BOX);
   });
 
   it('lets a second window of catch-up compound past one window', () => {

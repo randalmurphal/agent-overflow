@@ -38,18 +38,22 @@
 //   - unusable geometry (hidden ancestor) — recalibrate so re-showing
 //     doesn't misread the reappearance as an append.
 //
-// A clip advance of a full window or more slides through it (up to
-// SLIDE_MAX_WINDOWS, sized from the most lines the reveal smoother can
-// land in one tick): no previously visible line survives, but a ticker
-// through the new lines still reads as motion where a snap reads as a
-// glitch.
+// A clip advance of a full window or more slides through it: no
+// previously visible line survives, but a ticker through the new lines
+// still reads as motion where a snap reads as a glitch. The pending
+// offset has no cap. A cap pinned the offset whenever lines landed
+// faster than the drain took them (two windows held short list lines at
+// 60Hz and not under a slow paint; no finite cap holds a code block's
+// one-character lines, a paragraph's preserved blank lines or an
+// oversized unit landing whole), and every line past it re-packed the
+// visible text in one frame. Uncapped, the drain's exponential settles
+// any offset in about twenty frames, the ticker just runs faster the
+// more landed at once, and a visible line never moves by more than one
+// drain step.
 //
 // Kept pure (no DOM) so the guard matrix and the drain curve are
 // unit-testable in the default vitest project; the component supplies
 // real geometry and applies the styles.
-
-import { MAX_ADVANCE_PER_TICK_CHARS } from '../../markdown/smoothing/PerItemSmoother';
-import { TAIL_CLAMP_LINES } from './tailWindow';
 
 /**
  * Fraction of the pending offset drained per 60Hz frame: an ease-out
@@ -57,30 +61,12 @@ import { TAIL_CLAMP_LINES } from './tailWindow';
  * feel on a single line (~7px in the first frame of a 19.5px advance)
  * and, at a full-window offset, drains one line per frame — more than
  * the reveal smoother's ceiling (MAX_ADAPTIVE_CHARS_PER_SEC, ~5 chars a
- * frame) can land on any line longer than five characters, so the
- * offset settles below the cap instead of pinning on it.
+ * frame) can land on any line longer than five characters, so under
+ * prose the offset settles within a window. A fraction of the pending
+ * offset bounds the time to settle, not the offset: from any start the
+ * drain is under EPS within ln(start / EPS) / ln(1 / 0.65) frames.
  */
 export const SLIDE_DRAIN_PER_FRAME = 0.35;
-
-/**
- * The most lines the reveal smoother can land in one processed tick: its
- * per-tick cap in characters, on lines of one character and a newline
- * (a code block's shortest lines; a paragraph's soft breaks collapse).
- */
-export const SLIDE_MAX_LINES_PER_TICK = Math.floor(MAX_ADVANCE_PER_TICK_CHARS / 2);
-
-/**
- * The pending offset is capped at this many clamp windows, sized so the
- * drain holds the most the smoother can land per tick. An intake of L
- * lines a frame settles the offset where the drain takes L lines a
- * frame, at L / SLIDE_DRAIN_PER_FRAME lines, and the cap is the next
- * whole window above that, so no stream the smoother can produce pins
- * the offset on it. Past one window the inversion starts on content
- * that was never visible, but an offset pinned at the cap teleports the
- * excess every frame, the snap the slide exists to prevent, where a
- * ticker through never-seen lines still reads as motion.
- */
-export const SLIDE_MAX_WINDOWS = Math.ceil(SLIDE_MAX_LINES_PER_TICK / (SLIDE_DRAIN_PER_FRAME * TAIL_CLAMP_LINES));
 
 /**
  * Minimum drain per 60Hz frame, so the exponential tail lands on zero
@@ -133,8 +119,7 @@ const clipOf = (o: SlideObservation): number => Math.max(0, o.innerH - o.outerH)
 /**
  * Classify one ResizeObserver delivery. `prev` is the last stored
  * baseline (null = recalibrate), `currentOffset` the offset still
- * pending from earlier advances — a new advance compounds onto it,
- * capped at SLIDE_MAX_WINDOWS clamp windows.
+ * pending from earlier advances — a new advance compounds onto it.
  */
 export function slideDecision(
   prev: SlideObservation | null,
@@ -149,7 +134,7 @@ export function slideDecision(
     return { kind: 'clear', memory: next };
   }
   if (delta <= EPS) return { kind: 'none', memory: next };
-  return { kind: 'slide', memory: next, startPx: Math.min(currentOffset + delta, SLIDE_MAX_WINDOWS * next.outerH) };
+  return { kind: 'slide', memory: next, startPx: currentOffset + delta };
 }
 
 /**

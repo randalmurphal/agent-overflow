@@ -28,11 +28,16 @@ class FakeSmoothingClock implements SmoothingClock {
     this.pending.delete(handle);
   }
 
+  // Advances in painted frames: a tick accrues at most one gate wait of
+  // reveal budget (MAX_REVEAL_TICK_DT_MS), so `tick(100)` is six frames
+  // of draining, not one frame worth a hundred milliseconds.
   tick(ms: number): void {
-    this.current += ms;
-    const pending = [...this.pending.values()];
-    this.pending.clear();
-    for (const callback of pending) callback();
+    for (let left = ms; left > 0; left -= 16) {
+      this.current += Math.min(16, left);
+      const pending = [...this.pending.values()];
+      this.pending.clear();
+      for (const callback of pending) callback();
+    }
   }
 }
 

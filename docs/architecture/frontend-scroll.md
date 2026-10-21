@@ -1242,11 +1242,12 @@ scroller:
    drained by a rAF tracker — `tailSlide.ts`) is the one in-content
    animation, on the one region that is genuinely in motion: the line
    being streamed. After a stalled frame the slide, the reveal smoother
-   (`MAX_ADVANCE_PER_TICK_CHARS`) and the spring each resume at their
-   pace rather than landing the gap at once, and the slide's pending
-   offset cap (`SLIDE_MAX_WINDOWS`) is sized from the most lines one
-   smoother tick can land, so no stream pins it and re-packs the visible
-   lines.
+   (`MAX_REVEAL_TICK_DT_MS`) and the spring each resume at their pace
+   rather than landing the gap at once. The slide's pending offset has
+   no cap: every line that lands compounds onto it and its exponential
+   drain settles any offset in about twenty frames, so a visible line
+   never moves by more than one drain step however many lines a frame
+   brings.
 
 Everything else is still ink. No CSS transitions (the app.css timeline
 kill rule zeroes them, per the chat guide's

@@ -7,6 +7,7 @@ import {
   ADAPTIVE_CATCHUP_MS,
   MAX_ADVANCE_PER_TICK_CHARS,
   MAX_ADAPTIVE_CHARS_PER_SEC,
+  MAX_REVEAL_TICK_DT_MS,
   MIN_REVEAL_TICK_INTERVAL_MS,
   type SmoothingClock,
   __resetRevealFrameGateForTest,
@@ -548,10 +549,9 @@ describe('PerItemSmoother — rate ceiling and per-tick work cap', () => {
     const backlog = 'ab '.repeat(67); // 201 chars
     const { clock, smoother, reveals } = makeSmoother();
     smoother.appendDelta(backlog);
-    clock.tickFrame(1000); // ~320 chars of budget accrued in one tick
-    expect(reveals.at(-1)!.revealed.length).toBeLessThanOrEqual(
-      MAX_ADVANCE_PER_TICK_CHARS,
-    );
+    clock.tickFrame(1000); // a stall: the gap accrues one tick's wait, not a second
+    const stallAccrual = (MAX_ADAPTIVE_CHARS_PER_SEC * MAX_REVEAL_TICK_DT_MS) / 1000;
+    expect(reveals.at(-1)!.revealed.length).toBeLessThanOrEqual(stallAccrual + 3);
 
     reveals.length = 0;
     const frames = 30;
@@ -566,6 +566,21 @@ describe('PerItemSmoother — rate ceiling and per-tick work cap', () => {
       MAX_ADVANCE_PER_TICK_CHARS + frames * accrual + 3,
     );
     expect(revealedAfterStall).toBeGreaterThan(0);
+  });
+
+  it('reaches the rate ceiling at 60Hz on four-letter words', () => {
+    // Word alignment carries the budget a unit does not fit into the next
+    // tick; the per-tick cap must leave room for the units that then fit
+    // together, or the cap, not the rate, is the ceiling (a cap of seven
+    // revealed one 'abc ' unit a frame: 240 cps).
+    const text = 'abc '.repeat(1000);
+    const { clock, smoother } = makeSmoother();
+    smoother.appendDelta(text);
+    const frames = 120;
+    for (let i = 0; i < frames; i += 1) clock.tickFrame(1000 / 60);
+    const cps = (smoother.getRevealed().length * 60) / frames;
+    expect(cps).toBeGreaterThanOrEqual(MAX_ADAPTIVE_CHARS_PER_SEC * 0.95);
+    expect(cps).toBeLessThanOrEqual(MAX_ADAPTIVE_CHARS_PER_SEC * 1.05);
   });
 });
 
@@ -740,7 +755,7 @@ describe('PerItemSmoother — never skips (the queue is self-correcting)', () =>
     smoother.appendDelta('hel');
     smoother.appendDelta('lo ');
 
-    clock.tickFrame(100);
+    drain(clock, smoother);
 
     expect(reveals.map((entry) => entry.delta)).toEqual(['hello ']);
     expect(smoother.getRevealed()).toBe('hello ');
@@ -765,7 +780,7 @@ describe('PerItemSmoother — never skips (the queue is self-correcting)', () =>
     smoother.appendDelta('hello');
     smoother.appendDelta(' ');
 
-    clock.tickFrame(100);
+    drain(clock, smoother);
 
     expect(reveals.map((entry) => entry.delta)).toEqual(['  hello ']);
   });

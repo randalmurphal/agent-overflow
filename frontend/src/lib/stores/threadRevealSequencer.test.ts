@@ -1104,7 +1104,11 @@ describe('threadRevealGate', () => {
           delta: full,
           updatedAt: 5,
         });
-        clock.tickFrame(100);
+        // A frame accrues at most one gate wait of budget, so the first
+        // word takes a few frames to land.
+        for (let frame = 0; frame < 10 && pane.items[0].summary.length === 0; frame++) {
+          clock.tickFrame(16);
+        }
         const beforeSnapshot = pane.items[0].summary;
         expect(beforeSnapshot.length).toBeGreaterThan(0);
         expect(beforeSnapshot.length).toBeLessThan(full.length);
