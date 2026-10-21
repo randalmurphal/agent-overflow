@@ -4,7 +4,7 @@
   import Icon from '../primitives/Icon.svelte';
   import { READINESS_PILL_CLASS } from '../../utils/reviewReadiness';
   import { pullRowQuiet, pullStatePill, sinceYouLookedText } from '../../utils/pullsAttention';
-  import { ciStatusDotClass } from '../../utils/ciStatus';
+  import { ciStatusDotClass, ciStatusText } from '../../utils/ciStatus';
   import { pullNumberLabel, type PullRowView } from './pullRowView';
 
   // One merge request in the page's list: number and title, then the
@@ -75,7 +75,7 @@
       <span class="truncate">{row.author}</span>
       <span class="shrink-0">{row.age}</span>
       <span class="inline-flex shrink-0 items-center gap-1" data-testid="pull-ci">
-        <span class="h-1.5 w-1.5 rounded-full {ciStatusDotClass(row.ci)}" aria-hidden="true"></span>{ciLabel}
+        <span class="h-1.5 w-1.5 rounded-full {ciStatusDotClass(row.ci)}" aria-hidden="true"></span>{ciLabel}{#if row.ci !== ''}<span class="sr-only">&nbsp;{ciStatusText(row.ci)}</span>{/if}
       </span>
       {#if row.approvals}
         <span class="shrink-0 tabular-nums" data-testid="pull-approvals">approvals {row.approvals.given}/{row.approvals.required}</span>

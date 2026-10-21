@@ -3,15 +3,16 @@
   import GitPullRequestArrow from '@lucide/svelte/icons/git-pull-request-arrow';
   import Tag from '@lucide/svelte/icons/tag';
   import Icon from '../primitives/Icon.svelte';
-  import { ciStatusDotClass, ciStatusTextClass } from '../../utils/ciStatus';
+  import { ciStatusDotClass, ciStatusText, ciStatusTextClass } from '../../utils/ciStatus';
   import { pullNumberLabel } from './pullRowView';
   import type { PipelineRowView } from './pipelineRowView';
 
   // One pipeline (GitLab) or workflow run (GitHub) in the Pipelines tab:
   // status dot and id, the ref it ran on with its kind glyph (branch, tag,
   // merge request) and the commit, stage dots once the row has been on
-  // screen long enough to read them, and the age. A row opens the
-  // stages / jobs / log view beside the list.
+  // screen long enough to read them, and the age. Each color carries its
+  // status in words for assistive tech. A row opens the stages / jobs /
+  // log view beside the list.
 
   interface Props {
     row: PipelineRowView;
@@ -23,7 +24,7 @@
 
   const refIcon = $derived(row.refKind === 'tag' ? Tag : row.refKind === 'merge_request' ? GitPullRequestArrow : GitBranch);
   const refLabel = $derived(row.refKind === 'merge_request' && row.mrNumber > 0 ? pullNumberLabel(row.forge, row.mrNumber) : row.ref);
-  const stageTitle = $derived((row.stages ?? []).map((stage) => `${stage.name}: ${stage.status}`).join('\n'));
+  const stageTitle = $derived((row.stages ?? []).map((stage) => `${stage.name}: ${ciStatusText(stage.status)}`).join('\n'));
 </script>
 
 <div
@@ -49,7 +50,7 @@
     }}
   >
     <span class="inline-flex items-center gap-1.5 font-mono text-[0.6875rem] {ciStatusTextClass(row.status)}" data-testid="pipeline-status">
-      <span class="h-2 w-2 rounded-full {ciStatusDotClass(row.status)}" aria-hidden="true"></span>#{row.id}
+      <span class="h-2 w-2 rounded-full {ciStatusDotClass(row.status)}" aria-hidden="true"></span>#{row.id}<span class="sr-only">&nbsp;{ciStatusText(row.status)}</span>
     </span>
     <span class="flex min-w-0 flex-col">
       <span class="flex min-w-0 items-center gap-1.5">
@@ -67,7 +68,7 @@
     </span>
     <span class="flex items-center gap-[3px]" title={stageTitle} data-testid="pipeline-stages">
       {#each row.stages ?? [] as stage, index (`${index}:${stage.name}`)}
-        <span class="h-2 w-2 rounded-full {ciStatusDotClass(stage.status)}" aria-hidden="true"></span>
+        <span class="h-2 w-2 rounded-full {ciStatusDotClass(stage.status)}" role="img" aria-label="{stage.name}: {ciStatusText(stage.status)}"></span>
       {/each}
     </span>
     <span class="shrink-0 text-[0.6875rem] text-fg-muted">{row.age}</span>
