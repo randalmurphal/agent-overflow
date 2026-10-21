@@ -68,6 +68,9 @@ function owned(owner: string, where: string): EntityOwnedBinding {
 const GIT_STATUS_STORE = 'lib/stores/gitStatusStore.svelte.ts';
 const PR_REVIEW_STORE = 'lib/stores/prReviewStore.svelte.ts';
 const PR_REVIEW_CONFLICTS = 'lib/stores/prReviewConflicts.svelte.ts';
+const PULLS_PAGE_STORE = 'lib/stores/pullsPage.svelte.ts';
+const PIPELINE_CI_STORE = 'lib/stores/pipelineCI.svelte.ts';
+const PR_DRAFTS_STORE = 'lib/stores/prDiffReviewComments.svelte.ts';
 const MCP_SERVERS_STORE = 'lib/stores/mcpServers.svelte.ts';
 const CHAT_BAR_FAVORITES_STORE = 'lib/stores/chatBarFavorites.svelte.ts';
 const WORKFLOW_RUN_MAP_STORE = 'lib/stores/workflowRunMap.svelte.ts';
@@ -108,6 +111,25 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   RefreshPRCI: owned(PR_REVIEW_STORE, 'the CI handle refreshPRCI() addresses'),
   SetPRCILogFollows: owned(PR_REVIEW_STORE, 'the CI handle setPRCILogFollow() addresses'),
   GetPRCILogLines: owned('lib/stores/ciLogBlocks.svelte.ts', 'ciLogFetch()'),
+  // The Pull requests page: the list pump's handle, a repository
+  // pipeline's pump, and the drafts a PR owns.
+  SubscribePRList: owned(PULLS_PAGE_STORE, 'attachPullsPage()'),
+  UnsubscribePRList: owned(PULLS_PAGE_STORE, 'detachPullsPage()'),
+  SetPRListActive: owned(PULLS_PAGE_STORE, 'the visibility votes'),
+  SetPRListFocus: owned(PULLS_PAGE_STORE, 'setFocusedRows()'),
+  RefreshPRList: owned(PULLS_PAGE_STORE, 'refreshPullsPage()'),
+  MarkPRViewed: owned(PULLS_PAGE_STORE, 'the snapshot observer'),
+  SubscribePipeline: owned(PIPELINE_CI_STORE, 'attachPipelineCI()'),
+  UnsubscribePipeline: owned(PIPELINE_CI_STORE, 'the attachment release()'),
+  SetPipelineActive: owned(PIPELINE_CI_STORE, 'handlePipelineVisibilityChange()'),
+  SetPipelineFollows: owned(PIPELINE_CI_STORE, 'the CI handle setPRCILogFollow() addresses'),
+  RefreshPipeline: owned(PIPELINE_CI_STORE, 'the CI handle refreshPRCI() addresses'),
+  ListPRDiffReviewComments: owned(PR_DRAFTS_STORE, 'refreshPRDiffReviewComments()'),
+  CreatePRDiffReviewComment: owned(PR_DRAFTS_STORE, 'createPRDiffReviewComment()'),
+  UpdatePRDiffReviewComment: owned(PR_DRAFTS_STORE, 'updatePRDiffReviewComment()'),
+  DeletePRDiffReviewComment: owned(PR_DRAFTS_STORE, 'deletePRDiffReviewComment()'),
+  MarkPRDiffReviewCommentsSent: owned(PR_DRAFTS_STORE, 'markPRDiffReviewCommentsSent()'),
+  SendPRDiffReviewComments: owned(PR_DRAFTS_STORE, 'sendPRDiffReviewComments()'),
   ListThreadMcpServers: owned(MCP_SERVERS_STORE, 'attachMcpServers()'),
   ListWorkspaceMcpServers: owned(MCP_SERVERS_STORE, 'attachMcpServers()'),
   SetThreadMcpServerEnabled: owned(MCP_SERVERS_STORE, 'setMcpServerEnabled()'),

@@ -13,6 +13,7 @@ import {
   prDraftsKey,
   refreshPRDiffReviewComments,
   resetPRDiffReviewCommentsForTest,
+  sendPRDiffReviewComments,
   updatePRDiffReviewComment,
   type PRDraftsTarget,
 } from './prDiffReviewComments.svelte';
@@ -341,6 +342,9 @@ export interface ReviewPaneState {
   updateComment(commentId: string, body: string): Promise<void>;
   deleteComment(commentId: string): Promise<void>;
   sendComments(): Promise<void>;
+  /** A pinned review's drafts on the whole PR, handed to a thread as a
+   * review message (SendPRDiffReviewComments). Answers the thread row. */
+  sendDraftsToThread(threadId: string): Promise<Thread | null>;
   submitPRReview(): Promise<void>;
   setSubmitTarget(target: 'agent' | 'pr'): void;
   setVerdict(verdict: 'comment' | 'approve' | 'request-changes'): void;
@@ -594,6 +598,12 @@ export function reviewStateForPR(ownerPaneId: string, subject: ReviewSubject): R
   pinnedStatesByOwner.set(ownerPaneId, kept.slice(0, PINNED_STATES_PER_OWNER));
   for (const dropped of kept.slice(PINNED_STATES_PER_OWNER)) disposePinnedState(dropped);
   return state;
+}
+
+/** The owner's pinned state on screen (the one `reviewStateForPR` made
+ * current last); null when it holds none. */
+export function currentPinnedReviewState(ownerPaneId: string): ReviewPaneState | null {
+  return pinnedStatesByOwner.get(ownerPaneId)?.[0] ?? null;
 }
 
 /** Disposes every pinned state the owner holds: its page closed. */
@@ -1935,27 +1945,51 @@ function createReviewPaneState(
     if (!sourceKey || drafts.length === 0 || sendingComments || isTurnActive) return;
     sendingComments = true;
     try {
-      const detail = prSnapshot?.detail;
       const thread = commentThreadId();
       const sendScope = scope;
       const key = sourceKey;
       const sending = drafts;
-      const shown = files;
-      // Excerpts can read evicted text again, so everything the send
-      // addresses is taken before.
-      const pr = sendScope === 'pr' && detail
-        ? {
-            number: detail.number,
-            url: detail.url,
-            comments: await Promise.all(sending.map(async (comment) => ({
-              commentId: comment.id,
-              hunkExcerpt: await hunkExcerptForComment(shown, comment),
-            }))),
-          }
-        : undefined;
+      const pr = await prSendContext(sendScope, sending);
       await SendDiffReviewComments(thread, sendScope, key, sending.map((comment) => comment.id), { pr });
       await refreshDiffReviewComments(commentThreadId(), scope, sourceKey);
       error = null;
+    } catch (err) {
+      error = userFacingError(err);
+      throw err;
+    } finally {
+      sendingComments = false;
+    }
+  }
+
+  // The PR context a send of drafts carries: each comment's hunk. Excerpts
+  // can read evicted text again, so everything the send addresses is taken
+  // before the first await.
+  async function prSendContext(sendScope: ReviewScope, sending: readonly DiffReviewComment[]) {
+    const detail = prSnapshot?.detail;
+    const shown = files;
+    if (sendScope !== 'pr' || !detail) return undefined;
+    return {
+      number: detail.number,
+      url: detail.url,
+      comments: await Promise.all(sending.map(async (comment) => ({
+        commentId: comment.id,
+        hunkExcerpt: await hunkExcerptForComment(shown, comment),
+      }))),
+    };
+  }
+
+  async function sendDraftsToThread(target: string): Promise<Thread | null> {
+    if (!pinnedDrafts) throw new Error('Only a review pinned to a pull request sends its drafts to a thread.');
+    if (scope !== 'pr' || selectedCommitSHA) throw new Error('Send the whole pull request\'s comments: pick All commits.');
+    if (!sourceKey || drafts.length === 0 || sendingComments) return null;
+    sendingComments = true;
+    try {
+      const key = sourceKey;
+      const sending = drafts;
+      const pr = await prSendContext('pr', sending);
+      const thread = await sendPRDiffReviewComments(pinnedDrafts, target, 'pr', key, sending.map((comment) => comment.id), { pr });
+      error = null;
+      return thread;
     } catch (err) {
       error = userFacingError(err);
       throw err;
@@ -2636,6 +2670,7 @@ function createReviewPaneState(
     updateComment,
     deleteComment,
     sendComments,
+    sendDraftsToThread,
     submitPRReview,
     setSubmitTarget(target: 'agent' | 'pr'): void {
       submitTarget = target;

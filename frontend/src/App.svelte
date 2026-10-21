@@ -29,6 +29,7 @@
   import { syncSidebarFromAppStorage, syncSidebarFromSettings } from './lib/stores/sidebar.svelte';
   import { syncWorkflowsOverlayFromAppStorage } from './lib/stores/workflowsOverlay.svelte';
   import { installToolPanes, syncToolPanesFromAppStorage } from './lib/stores/toolPanes.svelte';
+  import { syncPullsFiltersFromAppStorage } from './lib/stores/pullsPageFilters.svelte';
   import {
     closeSettingsOverlay,
     getSettingsSection,
@@ -490,6 +491,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
         // the same way the sidebar's view state does.
         syncWorkflowsOverlayFromAppStorage();
         syncToolPanesFromAppStorage();
+        syncPullsFiltersFromAppStorage();
         await loadPersistedPaneLayout(threads, restoreRevision);
         if (disposed) return;
         installPaneLayoutPersistence();

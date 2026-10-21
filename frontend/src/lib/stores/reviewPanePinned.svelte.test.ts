@@ -356,6 +356,23 @@ describe('pinned comments and actions', () => {
     expect(held.map((comment) => comment.status)).toEqual(['sent']);
   });
 
+  it('sends its drafts to a thread with their hunks, settling them, and only on the whole PR', async () => {
+    const { drafts: fake } = installPRMocks();
+    const state = pinned(5);
+    await waitLoaded(state);
+    await state.createComment(anchor, 'look here');
+    const thread = await state.sendDraftsToThread('thread-9');
+    expect(thread).toEqual({ id: 'thread-9' });
+    const [wire, threadId, scope, sourceKey, ids, input] = fake.send.mock.calls[0]!;
+    expect(wire).toEqual({ Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 5 });
+    expect([threadId, scope, sourceKey, ids]).toEqual(['thread-9', 'pr', `pr:${prKey(ref(5))}`, ['c1']]);
+    expect(input.pr).toMatchObject({ number: 5, url: 'https://github.com/owner/repo/pull/5', comments: [{ commentId: 'c1' }] });
+    expect(input.pr.comments[0].hunkExcerpt).toContain('line 2');
+    expect(state.drafts).toEqual([]);
+    expect(await state.sendDraftsToThread('thread-9')).toBeNull();
+    expect(fake.send).toHaveBeenCalledTimes(1);
+  });
+
   it('reads the drafts the PR already holds when it loads', async () => {
     const { drafts: fake } = installPRMocks();
     fake.held.set(5, [{
