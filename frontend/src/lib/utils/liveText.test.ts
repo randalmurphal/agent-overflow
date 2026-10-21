@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { TAIL_WINDOW_KEEP_LINES } from '../components/chat/tailWindow';
 import {
   LIVE_WINDOW_KEEP_CHARS,
   LIVE_WINDOW_RECUT_CHARS,
@@ -61,6 +62,17 @@ function feed(stream: string, maxDelta: number, seed: number): TextWindow[] {
 }
 
 describe('LiveTextWindow', () => {
+  it('keeps the lines the clamp retains at any plausible pane width', () => {
+    // The clamp's window keeps TAIL_WINDOW_KEEP_LINES rendered lines (the
+    // clamp plus what the line slide may hold pending). This window's cut
+    // keeps characters, not lines, so its keep length must cover that many
+    // lines at the widest plausible pane (an extreme 2560px pane fits ~350
+    // characters a line, tailWindow.ts). A delta longer than the keep
+    // length moves the cut to just before it, and such a delta holds more
+    // rendered lines than the slide's cap, which snaps the excess anyway.
+    expect(LIVE_WINDOW_KEEP_CHARS).toBeGreaterThanOrEqual(TAIL_WINDOW_KEEP_LINES * 350);
+  });
+
   it('holds the end of the text from a line start, keeping at least the keep length', () => {
     for (const [newlineEvery, maxDelta, seed] of [[12, 40, 1], [200, 400, 2], [3, 5, 3]]) {
       feed(makeStream(120_000, newlineEvery, seed), maxDelta, seed);

@@ -2,8 +2,9 @@
 // the collapsed clamp is sliding lines up. The recut drops text far above the
 // lines the clamp renders, so through the real pane, reveal smoother,
 // ReasoningTailRow and TailClampedText the clamp must see an append: its
-// rendered text keeps its start, and the slide in flight keeps draining
-// instead of snapping to rest.
+// rendered text keeps its start, the clamp keeps the rows a pending slide
+// can still bring into view (TAIL_WINDOW_KEEP_LINES), and the slide in
+// flight keeps draining instead of snapping to rest.
 import { describe, expect, it } from 'vitest';
 import '../../../app.css';
 import { makeItem } from '../../../test/helpers/chat';
@@ -16,6 +17,7 @@ import {
 import type { Item } from '../../types/models';
 import { LIVE_WINDOW_RECUT_CHARS } from '../../utils/liveText';
 import { stepSlide, transformTranslateY } from './tailSlide';
+import { TAIL_WINDOW_KEEP_LINES } from './tailWindow';
 
 setupTimelineHarness();
 
@@ -25,20 +27,43 @@ const THINKING_ID = 'think-recut';
 // Sub-pixel geometry slack on a glyph's per-frame move.
 const GLYPH_SLACK_PX = 3;
 
-// Short lines keep a slide in flight on almost every frame of the reveal.
-const STREAM = Array.from({ length: 2400 }, (_, i) => `- step ${i}`).join('\n');
+type Case = {
+  name: string;
+  stream: string;
+  /** The clamp renders from one start throughout (no measured cut moves it). */
+  sameStart: boolean;
+};
+
+const CASES: Case[] = [
+  {
+    // Short lines keep a slide in flight on almost every frame of the reveal.
+    name: 'short lines',
+    stream: Array.from({ length: 2400 }, (_, i) => `- step ${i}`).join('\n'),
+    sameStart: true,
+  },
+  {
+    // Thousand-character lines: TAIL_WINDOW_KEEP_LINES of them outrun the
+    // window's keep length, so the clamp cuts at measured row starts, and
+    // the window's cut must still leave it that many rows.
+    name: 'long lines',
+    stream: Array.from({ length: 30 }, (_, i) => `line ${i} ${'word '.repeat(200)}`.slice(0, 1000)).join('\n'),
+    sameStart: false,
+  },
+];
+
 // The row arrives with its text so far, up to a line end short of the recut:
 // the reveal is capped at 320 chars/s, so streaming it would take over a
 // minute.
-const SEED = STREAM.slice(0, STREAM.lastIndexOf('\n', LIVE_WINDOW_RECUT_CHARS - 200));
-const CONTINUATION = STREAM.slice(SEED.length, SEED.length + 800);
+function seedOf(stream: string): string {
+  return stream.slice(0, stream.lastIndexOf('\n', LIVE_WINDOW_RECUT_CHARS - 200));
+}
 
 function row(overrides: Partial<Item> & Pick<Item, 'id' | 'turnIndex' | 'itemIndex'>): Item {
   const at = overrides.turnIndex * 1000 + overrides.itemIndex;
   return makeItem({ threadId: THREAD_ID, createdAt: at, updatedAt: at, ...overrides });
 }
 
-function seedItems(): Item[] {
+function seedItems(seed: string): Item[] {
   const items: Item[] = [];
   for (let i = 0; i < 30; i += 1) {
     items.push(row({
@@ -64,7 +89,7 @@ function seedItems(): Item[] {
     itemIndex: 4,
     kind: 'thinking',
     status: 'streaming',
-    summary: SEED,
+    summary: seed,
   }));
   return items;
 }
@@ -113,6 +138,8 @@ type Frame = {
   /** Where the previous frame's tracked glyph sits in this frame. */
   yPrev: number | null;
   ty: number;
+  /** Rendered rows the clamp holds, visible and above the box. */
+  rows: number;
 };
 
 // A sample reads the state the previous frame painted (the sampler's rAF is
@@ -121,9 +148,11 @@ type Frame = {
 const paintedDt = (frames: Frame[], i: number): number =>
   i >= 2 ? frames[i - 1]!.t - frames[i - 2]!.t : frames[i]!.t - frames[i - 1]!.t;
 
-describe('streaming thinking tail through a live window recut', () => {
-  it('keeps the rendered text and the line slide continuous', async () => {
-    const { pane, scrollEl } = await mountTimeline(THREAD_ID, seedItems(), QUIET_BOTTOM);
+describe.each(CASES)('streaming thinking tail through a live window recut ($name)', ({ stream, sameStart }) => {
+  it('keeps the rendered text, its retained rows and the line slide continuous', async () => {
+    const seed = seedOf(stream);
+    const continuation = stream.slice(seed.length, seed.length + 800);
+    const { pane, scrollEl } = await mountTimeline(THREAD_ID, seedItems(seed), QUIET_BOTTOM);
     const frames: Frame[] = [];
     let stop = false;
     const t0 = performance.now();
@@ -144,6 +173,7 @@ describe('streaming thinking tail through a live window recut', () => {
           return rect ? rect.bottom - boxTop : null;
         };
         const tracked = renderedStart + lastLineStart(node);
+        const inner = body.firstElementChild as HTMLElement;
         const prev = frames[frames.length - 1];
         frames.push({
           t: frameTime - t0,
@@ -152,17 +182,18 @@ describe('streaming thinking tail through a live window recut', () => {
           tracked,
           y: bottomOf(tracked) ?? Number.NaN,
           yPrev: prev ? bottomOf(prev.tracked) : null,
-          ty: transformTranslateY(getComputedStyle(body.firstElementChild!).transform),
+          ty: transformTranslateY(getComputedStyle(inner).transform),
+          rows: Math.round(inner.offsetHeight / Number.parseFloat(getComputedStyle(body).lineHeight)),
         });
       }
     })();
 
-    const chunks = CONTINUATION.match(/[^]{1,12}/g)!;
+    const chunks = continuation.match(/[^]{1,12}/g)!;
     for (const delta of chunks) {
       pane.applyItemDelta({ threadId: THREAD_ID, itemId: THINKING_ID, kind: 'thinking', delta, updatedAt: 1 });
       await wait(12);
     }
-    const end = SEED.length + CONTINUATION.length;
+    const end = seed.length + continuation.length;
     await waitFor(() => {
       const window = pane.liveThinkingWindowForItem(THINKING_ID);
       return window !== null && window.start + window.text.length === end;
@@ -175,8 +206,15 @@ describe('streaming thinking tail through a live window recut', () => {
     const recut = frames.findIndex((frame) => frame.windowStart > 0);
     expect(recut).toBeGreaterThan(10);
     expect(frames.length - recut).toBeGreaterThan(30);
-    // The recut is above the rendered text: the clamp renders the same start.
-    expect(new Set(frames.map((frame) => frame.renderedStart)).size).toBe(1);
+    // The recut is above the rendered text: the clamp renders the same start,
+    // or its own measured cuts only ever move the start down the stream.
+    if (sameStart) expect(new Set(frames.map((frame) => frame.renderedStart)).size).toBe(1);
+    for (let i = 1; i < frames.length; i += 1) {
+      expect(frames[i]!.renderedStart).toBeGreaterThanOrEqual(frames[i - 1]!.renderedStart);
+    }
+    // The window left the clamp every row a pending slide can still show.
+    const starved = frames.slice(recut).filter((frame) => frame.rows < TAIL_WINDOW_KEEP_LINES);
+    expect(starved.map((frame) => `t ${frame.t.toFixed(0)}: ${frame.rows} rows`)).toEqual([]);
     // A slide was in flight during the reveal.
     expect(frames.some((frame) => frame.ty > GLYPH_SLACK_PX)).toBe(true);
 

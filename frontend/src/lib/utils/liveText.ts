@@ -34,7 +34,11 @@ export interface TextWindow {
 /**
  * Characters a cut keeps. Twice TailClampedText's layout window, so the
  * window starts above the text the clamp renders and moving it leaves the
- * rendered text unchanged.
+ * rendered text unchanged. It also covers the clamp's line retention
+ * (TAIL_WINDOW_KEEP_LINES, the clamp plus the lines its slide may hold
+ * pending) at any plausible pane width, since the longest line a 2560px
+ * pane fits is ~350 characters; a delta longer than this keeps itself
+ * whole, and holds more rendered lines than the slide's cap.
  */
 export const LIVE_WINDOW_KEEP_CHARS = 2 * TAIL_WINDOW_CAP_CHARS;
 

@@ -69,10 +69,10 @@ export const SLIDE_DRAIN_PER_FRAME = 0.35;
  * runs at 0.35 × 6 windows, about six lines a frame. Past that rate the
  * text is unreadable regardless, and the excess snaps instead of
  * compounding into a faster blur. Below it every line that lands
- * compounds: the reveal smoother lands at most one paint period of
- * budget per tick (MAX_REVEAL_TICK_DT_MS, 16 chars at the ceiling), so
- * even a code block's one-character lines or a paragraph's preserved
- * blank lines fit under the cap at a steady 60Hz and after a stall, and
+ * compounds: the reveal smoother lands at most MAX_REVEAL_TICK_DT_MS of
+ * budget per tick (16 chars at the ceiling), so even a code block's
+ * one-character lines or a paragraph's preserved blank lines fit under
+ * the cap at any paint cadence it accrues in full and after a stall, and
  * only a run of blank lines at the ceiling or an oversized unit landing
  * whole reaches it. The tail window retains the clamp plus this many
  * windows of lines above it (TAIL_WINDOW_KEEP_LINES), so a cut never

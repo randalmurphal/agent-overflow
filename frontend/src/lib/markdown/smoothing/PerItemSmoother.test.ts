@@ -568,19 +568,58 @@ describe('PerItemSmoother — rate ceiling and per-tick work cap', () => {
     expect(revealedAfterStall).toBeGreaterThan(0);
   });
 
+  function ceilingThroughput(hz: number): number {
+    const text = 'abc '.repeat(2000);
+    const { clock, smoother } = makeSmoother();
+    smoother.appendDelta(text);
+    const frames = Math.round(2 * hz);
+    for (let i = 0; i < frames; i += 1) clock.tickFrame(1000 / hz);
+    return smoother.getRevealed().length / 2;
+  }
+
   it('reaches the rate ceiling at 60Hz on four-letter words', () => {
     // Word alignment carries the budget a unit does not fit into the next
     // tick; the per-tick cap must leave room for the units that then fit
     // together, or the cap, not the rate, is the ceiling (a cap of seven
     // revealed one 'abc ' unit a frame: 240 cps).
-    const text = 'abc '.repeat(1000);
-    const { clock, smoother } = makeSmoother();
-    smoother.appendDelta(text);
-    const frames = 120;
-    for (let i = 0; i < frames; i += 1) clock.tickFrame(1000 / 60);
-    const cps = (smoother.getRevealed().length * 60) / frames;
+    const cps = ceilingThroughput(60);
     expect(cps).toBeGreaterThanOrEqual(MAX_ADAPTIVE_CHARS_PER_SEC * 0.95);
     expect(cps).toBeLessThanOrEqual(MAX_ADAPTIVE_CHARS_PER_SEC * 1.05);
+  });
+
+  it('keeps the rate ceiling on slow paints down to 20Hz', () => {
+    // A slow paint is not a stall: a tick accrues its whole elapsed time
+    // up to MAX_REVEAL_TICK_DT_MS, so a 30Hz or 20Hz paint still drains at
+    // the ceiling (a 30ms bound cut 30Hz to 288 cps and 20Hz to 192 cps).
+    for (const hz of [30, 20]) {
+      const cps = ceilingThroughput(hz);
+      expect(cps).toBeGreaterThanOrEqual(MAX_ADAPTIVE_CHARS_PER_SEC * 0.95);
+      expect(cps).toBeLessThanOrEqual(MAX_ADAPTIVE_CHARS_PER_SEC * 1.05);
+    }
+  });
+
+  it('keeps the rate ceiling for a pane the frame gate holds off', () => {
+    // Six panes on a high-refresh panel: the gate seats two or three a
+    // slot, so a pane waits up to two slots plus a frame between its ticks
+    // (33ms at 120Hz, 35ms at 144Hz), which is paint cadence, not a stall,
+    // and accrues in full. A 30ms bound lost a tenth of the rate on those
+    // panels; 165Hz alone lands its held-off tick at 30.3ms.
+    for (const hz of [90, 120, 144, 165, 240]) {
+      __resetRevealFrameGateForTest();
+      const clock = new FakeClock();
+      const smoothers = Array.from({ length: 6 }, () => {
+        const smoother = new PerItemSmoother({ onReveal: () => {}, clock });
+        smoother.appendDelta('abc '.repeat(2000));
+        return smoother;
+      });
+      const frames = 2 * hz;
+      for (let i = 0; i < frames; i += 1) clock.tickFrame(1000 / hz);
+      const seconds = frames / hz;
+      for (const smoother of smoothers) {
+        expect(smoother.getRevealed().length / seconds, `${hz}Hz`).toBeGreaterThanOrEqual(MAX_ADAPTIVE_CHARS_PER_SEC * 0.95);
+        smoother.dispose();
+      }
+    }
   });
 });
 
