@@ -81,7 +81,7 @@ func (a *App) workflowMCPConfigForThread(thread store.Thread, sessionToken strin
 	default:
 		return nil, nil
 	}
-	scope, ok, err := a.deriveCallerScope(thread)
+	scope, ok, err := a.workflowCallerScope(thread)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +140,7 @@ func (a *App) withWorkflowMCPRow(thread store.Thread, rows []ThreadMCPServer, li
 	default:
 		return rows
 	}
-	if _, ok, err := a.deriveCallerScope(thread); err != nil || !ok {
+	if _, ok, err := a.workflowCallerScope(thread); err != nil || !ok {
 		return slices.DeleteFunc(rows, func(row ThreadMCPServer) bool { return row.Name == workflowMCPName })
 	}
 	source := mcpRowSourceConfig
@@ -394,7 +394,7 @@ func (a *App) workflowToolsInstructions(threadID string) string {
 		log.Printf("workflow tools: guide for %s: %v", threadID, err)
 		return ""
 	}
-	scope, ok, err := a.deriveCallerScope(thread)
+	scope, ok, err := a.workflowCallerScope(thread)
 	if err != nil || !ok {
 		if err != nil {
 			log.Printf("workflow tools: guide for %s: %v", threadID, err)

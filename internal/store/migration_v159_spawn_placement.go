@@ -9,18 +9,18 @@ package store
 // on an added column against every existing row, and no constant default
 // satisfies it for both grouped and ungrouped rows, so the groups are set
 // aside while the column is added and restored with grouped in one write.
-// An ungrouped thread that a local spawn row names, or that is an
-// assistant's past thread, was nested under its agent and stays nested;
-// every other thread is standalone, an assistant's current thread included
-// (an assistant another one created has a spawn row naming it, and its own
-// row takes no placement).
+// An ungrouped thread that a local spawn row names was nested under its
+// agent and stays nested; every other thread is standalone, an assistant's
+// current thread included (an assistant another one created has a spawn
+// row naming it, and its own row takes no placement). An assistant's past
+// threads live outside every project, under their assistant, and take no
+// placement either.
 //
-// Nested needs one of those two links. A thread created later is inserted
-// standalone or grouped, and only the write that names a local spawn's
-// thread, SetThreadPlacement and a handoff make it nested, each with the
-// link present. The two triggers keep the rule when the last link goes: a
-// spawner's delete (its spawn rows cascade) or an assistant's delete (its
-// past-thread rows cascade) leaves the thread standalone.
+// Nested needs that link. A thread created later is inserted standalone or
+// grouped, and only the write that names a local spawn's thread and
+// SetThreadPlacement make it nested, each with the link present. The
+// trigger keeps the rule when the last link goes: a spawner's delete (its
+// spawn rows cascade) leaves the thread standalone.
 const spawnPlacementMigrationVersion = 159
 
 const spawnPlacementV159SQL = `
@@ -40,9 +40,8 @@ DROP TABLE v159_thread_groups;
 UPDATE threads SET placement = 'nested'
  WHERE placement = 'standalone'
    AND NOT EXISTS (SELECT 1 FROM agents WHERE agents.thread_id = threads.id)
-   AND (EXISTS (SELECT 1 FROM thread_requests
-                 WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = threads.id)
-     OR EXISTS (SELECT 1 FROM agent_past_threads WHERE agent_past_threads.thread_id = threads.id));
+   AND EXISTS (SELECT 1 FROM thread_requests
+                WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = threads.id);
 
 CREATE TRIGGER trg_thread_placement_spawn_gone AFTER DELETE ON thread_requests
 WHEN OLD.kind = 'spawn' AND OLD.target_computer_id = '' AND OLD.target_thread_id <> ''
@@ -50,15 +49,6 @@ BEGIN
   UPDATE threads SET placement = 'standalone'
    WHERE id = OLD.target_thread_id AND placement = 'nested'
      AND NOT EXISTS (SELECT 1 FROM thread_requests
-                      WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = OLD.target_thread_id)
-     AND NOT EXISTS (SELECT 1 FROM agent_past_threads WHERE agent_past_threads.thread_id = OLD.target_thread_id);
-END;
-
-CREATE TRIGGER trg_thread_placement_past_gone AFTER DELETE ON agent_past_threads
-BEGIN
-  UPDATE threads SET placement = 'standalone'
-   WHERE id = OLD.thread_id AND placement = 'nested'
-     AND NOT EXISTS (SELECT 1 FROM thread_requests
-                      WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = OLD.thread_id);
+                      WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = OLD.target_thread_id);
 END;
 `

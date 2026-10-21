@@ -88,12 +88,8 @@ type Pull struct {
 	// Diff is the PR's unified diff. The file and line counts the PR reads
 	// report are derived from it.
 	Diff string `json:"diff,omitempty"`
-	// Mergeable is "clean" (default), "conflicts", "behind" (the base
-	// moved and the forge requires an up-to-date head) or "checking".
+	// Mergeable is "clean" (default), "conflicts" or "checking".
 	Mergeable string `json:"mergeable,omitempty"`
-	// AutoMerge is armed merge-when-ready (GitHub auto-merge, GitLab
-	// auto-merge).
-	AutoMerge bool `json:"autoMerge,omitempty"`
 	// Comments are PR-level conversation comments (GitHub issue comments,
 	// GitLab unpositioned discussions).
 	Comments []Comment `json:"comments,omitempty"`
@@ -366,12 +362,9 @@ func (p *Pull) normalize(forge string, ids *idSource) error {
 	switch p.Mergeable {
 	case "":
 		p.Mergeable = "clean"
-	case "clean", "conflicts", "behind", "checking":
+	case "clean", "conflicts", "checking":
 	default:
-		return fmt.Errorf("mergeable %q is not clean, conflicts, behind or checking", p.Mergeable)
-	}
-	if p.State == "merged" {
-		p.AutoMerge = false
+		return fmt.Errorf("mergeable %q is not clean, conflicts or checking", p.Mergeable)
 	}
 	p.Author = defaultString(p.Author, "ao-author")
 	p.HeadRef = defaultString(p.HeadRef, "feature")

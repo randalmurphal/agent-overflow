@@ -367,31 +367,31 @@ Mechanism in
   ([claude-wire.md §E9](references/claude-wire.md#e9-forked-skill-skill-tool-context-fork)).
 - Pre-existing dangling Codex child rows in old fork threads are left inert
   on purpose (`internal/store/AGENTS.md`).
-- A standing agent's home: the app reads two well-known files from it,
-  `instructions.md` and `MEMORY.md`, delivers them capped through
-  SessionStart hooks when a thread starts and after each compaction, and
-  prescribes nothing else. This refines standing agents ruling 2; the
-  layout and the memory discipline are the optional `agent-home` skill's
+- A standing agent's home: the app reads `instructions.md` and the facts
+  in `memory/` from it and prescribes nothing else
   ([agent home contents](specs/standing-agents.md#agent-home-contents)).
-  Unconditional, installed or not, the block tells the agent to load that
-  skill and, if it is missing, to ask the user to install the library.
-  A file that cannot be read is a warning row on the thread, not a failed
-  start. A standing agent is named with its role line on the footers it
+  The app ships no skills; what an agent needs to keep memory arrives with
+  its memory (ruling 2026-10-21). A file that cannot be read is a warning
+  row on the thread, not a failed start. A standing agent is named with its role line on the footers it
   sends and on the wakes of its replies, on either computer: a thread on
   another computer behaves as a local one does.
 - An assistant's session block depends on its record alone, so a home
-  file edit keeps the provider's prompt cache. The home files reach the
-  model through SessionStart hooks at a start and at each compaction,
-  and at a resume only for a file whose context the thread's model did
-  not last receive as it reads now, judged by the digest of what was
-  delivered: a resume that ran every hook would stack another copy per
-  resume (rulings 2026-10-18 and 2026-10-19); an edit reaches the next
-  new thread, compaction or resume. The delivered memory index carries a
-  check naming the memory files it does not link and the links to files
-  that are gone. On Codex the thread's config trusts only the hook
-  commands it registers. Hooks that did not deliver are a non-fatal
-  error row, not a failed turn
-  ([home file delivery](specs/standing-agents.md#agent-home-contents)).
+  file edit keeps the provider's prompt cache. Memory reaches the model
+  through one SessionStart hook at a start and at each compaction, and
+  at a resume only when the delivery reads otherwise than what the
+  thread's model last received, judged by the digest of what was
+  delivered: a resume that ran it every time would stack another copy
+  per resume (rulings 2026-10-18 and 2026-10-19); an edit reaches the
+  next new thread, compaction or resume. The app builds each memory
+  index from the facts' frontmatter, so no agent keeps one (ruling
+  2026-10-21). On Codex the thread's config trusts only the hook command
+  it registers. A delivery that did not arrive is a non-fatal error row,
+  not a failed turn ([memory](specs/memory.md#delivery)).
+- Assistants live above projects: an assistant serves projects it is
+  assigned, runs in its home, keeps helpers to its own work under it
+  and puts project work in the project; deleting it deletes what lives
+  under it, and removing a project only unassigns it
+  ([standing agents](specs/standing-agents.md) rulings 37 to 40).
 - Messages between agents are not the person's messages (ruling
   2026-10-13). A thread tool's spawn prompt, request or question, the
   answer that comes back, a loop, watch, outside send or worker wake, a
@@ -733,14 +733,7 @@ and anti-changes that live only here:
   thread lifecycle, `iterations[-1]` context usage, prompt stash, claude.ai
   connectors, app-hosted MCP, classifier-row usage labeling, MCP toggle
   fan-out and per-thread pinning.
-- The Skills settings page's Remove asks no confirmation: it deletes
-  only what Install wrote, and Install puts it back. Update and Remove
-  treat every file the install manifest names as the app's, a user's
-  edit to one included; a file the manifest does not name is never
-  touched ([skills library](specs/standing-agents.md#skills-library)).
-- Proposed skills the owner declined: a commit skill, a standalone light
-  review skill, a standalone unslop skill, handoff riders, a wait-what
-  micro-skill. Artifacts are never offered unprompted.
+- Artifacts are never offered unprompted.
 
 ## Decisions still required
 

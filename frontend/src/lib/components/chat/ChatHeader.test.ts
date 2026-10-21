@@ -794,6 +794,16 @@ describe('<ChatHeader> under compact', () => {
     setCompactLayoutForTest(false);
   });
 
+  it('shows no branch or worktree for a thread outside every project, and no empty facts row', async () => {
+    const pane = await buildPane(makeThread({ projectId: '', projectPath: '', workspacePath: '/config/agents/ops', agentId: 'ops' }));
+    const { queryByTestId } = render(ChatHeader, { props: { pane } });
+    await tick();
+    expect(queryByTestId('chat-header-facts')).toBeNull();
+    expect(queryByTestId('chat-header-branch')).toBeNull();
+    expect(queryByTestId('chat-header-worktree')).toBeNull();
+    setCompactLayoutForTest(false);
+  });
+
   it('marks a linked worktree with the accent git folder', async () => {
     setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
     setBindingMock('GitListBranches', async () => []);

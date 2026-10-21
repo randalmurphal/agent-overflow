@@ -37,6 +37,7 @@ var holderKeptTables = []string{
 // every thread it read.
 var holderClearedRows = []struct{ table, column string }{
 	{"agent_end_backfill", "thread_id"},
+	{"agent_helpers", "thread_id"},
 	{"agent_past_threads", "thread_id"},
 	{"agent_wakes", "thread_id"},
 	{"agents", "thread_id"},

@@ -15,7 +15,10 @@ import (
 // follow the GitLab REST API; the fields emitted are the ones
 // internal/git parses.
 
-var gitlabStates = map[string]string{"open": "opened", "closed": "closed", "merged": "merged"}
+var (
+	gitlabStates      = map[string]string{"open": "opened", "closed": "closed", "merged": "merged"}
+	gitlabMergeStatus = map[string]string{"clean": "mergeable", "conflicts": "conflict", "checking": "checking"}
+)
 
 func glabNotFound(what string) response {
 	return response{
@@ -82,26 +85,24 @@ func glabMR(e *Engine, c *call, m []string) response {
 		}
 	}
 	return glabOK(jsonResponse(map[string]any{
-		"id":                           r.ID*1000 + int64(p.Number),
-		"iid":                          p.Number,
-		"project_id":                   r.ID,
-		"title":                        p.Title,
-		"description":                  p.Body,
-		"state":                        gitlabStates[p.State],
-		"draft":                        p.Draft,
-		"work_in_progress":             p.Draft,
-		"source_branch":                p.HeadRef,
-		"target_branch":                p.BaseRef,
-		"sha":                          p.HeadSHA,
-		"web_url":                      gitlabMRURL(r, p),
-		"author":                       gitlabUser(p.Author, p.AuthorName),
-		"changes_count":                strconv.Itoa(len(diffFiles(p.Diff))),
-		"has_conflicts":                p.Mergeable == "conflicts",
-		"detailed_merge_status":        gitlabDetailedMergeStatus(p),
-		"diff_refs":                    gitlabDiffRefs(p),
-		"head_pipeline":                pipeline,
-		"merged_at":                    nullable(p.MergedAt),
-		"merge_when_pipeline_succeeds": p.AutoMerge,
+		"id":                    r.ID*1000 + int64(p.Number),
+		"iid":                   p.Number,
+		"project_id":            r.ID,
+		"title":                 p.Title,
+		"description":           p.Body,
+		"state":                 gitlabStates[p.State],
+		"draft":                 p.Draft,
+		"work_in_progress":      p.Draft,
+		"source_branch":         p.HeadRef,
+		"target_branch":         p.BaseRef,
+		"sha":                   p.HeadSHA,
+		"web_url":               gitlabMRURL(r, p),
+		"author":                gitlabUser(p.Author, p.AuthorName),
+		"changes_count":         strconv.Itoa(len(diffFiles(p.Diff))),
+		"has_conflicts":         p.Mergeable == "conflicts",
+		"detailed_merge_status": gitlabMergeStatus[p.Mergeable],
+		"diff_refs":             gitlabDiffRefs(p),
+		"head_pipeline":         pipeline,
 	}))
 }
 
@@ -247,18 +248,17 @@ func gitlabNote(comment Comment, extra map[string]any) map[string]any {
 	return note
 }
 
-// glabMRList answers the merge request lists of the project the path
-// names: the three the app makes, the open MRs from a source branch name
-// (a fork's included, as source_branch matches them), recently merged MRs
-// and named MRs in any state (iids[] with state=all), and the forge
-// script's pr list, filtered by state, author or scope. Items are the full
+// glabMRList answers the three merge request lists the app makes, of the
+// project the path names: the open MRs from a source branch name (a
+// fork's included, as source_branch matches them), recently merged MRs,
+// and named MRs in any state (iids[] with state=all). Items are the full
 // view.
 func glabMRList(e *Engine, c *call, m []string) response {
 	r, fail, ok := e.glabProject(c, m[1])
 	if !ok {
 		return fail
 	}
-	query, perPage, page, err := glabPage(m[2], "state", "source_branch", "author_username", "scope", "order_by", "sort", "iids[]")
+	query, perPage, page, err := glabPage(m[2], "state", "source_branch", "order_by", "sort", "iids[]")
 	if err != nil {
 		return unhandled("%v", err)
 	}
@@ -271,17 +271,9 @@ func glabMRList(e *Engine, c *call, m []string) response {
 	if sortOrder := query.Get("sort"); sortOrder != "" && sortOrder != "desc" {
 		return unhandled("sort=%q is not implemented", sortOrder)
 	}
-	state := defaultString(query.Get("state"), "all")
-	if state != "opened" && state != "closed" && state != "merged" && state != "all" {
+	state := query.Get("state")
+	if state != "opened" && state != "merged" {
 		return unhandled("state=%q is not implemented", state)
-	}
-	author := query.Get("author_username")
-	switch scope := query.Get("scope"); scope {
-	case "", "all":
-	case "created_by_me":
-		author = e.viewer
-	default:
-		return unhandled("scope=%q is not implemented", scope)
 	}
 	branch := query.Get("source_branch")
 	var matches []map[string]any
@@ -289,7 +281,7 @@ func glabMRList(e *Engine, c *call, m []string) response {
 	// updated_at order the app asks for are both newest first.
 	for i := len(r.Pulls) - 1; i >= 0; i-- {
 		p := &r.Pulls[i]
-		if (state != "all" && gitlabStates[p.State] != state) || (branch != "" && p.HeadRef != branch) || (author != "" && p.Author != author) {
+		if gitlabStates[p.State] != state || (branch != "" && p.HeadRef != branch) {
 			continue
 		}
 		matches = append(matches, gitlabMRListItem(r, p))
@@ -307,7 +299,7 @@ func glabMRsByIID(r *Repo, query url.Values, iids []string, perPage, page int) r
 	if state := query.Get("state"); state != "all" {
 		return unhandled("iids[] with state=%q is not implemented", state)
 	}
-	for _, key := range []string{"source_branch", "author_username", "scope", "order_by", "sort"} {
+	for _, key := range []string{"source_branch", "order_by", "sort"} {
 		if query.Has(key) {
 			return unhandled("iids[] with %s is not implemented", key)
 		}
@@ -335,6 +327,10 @@ func glabMRsByIID(r *Repo, query url.Values, iids []string, perPage, page int) r
 
 // gitlabMRListItem is one merge request as the list endpoint answers it.
 func gitlabMRListItem(r *Repo, p *Pull) map[string]any {
+	var mergedAt any
+	if p.MergedAt != "" {
+		mergedAt = p.MergedAt
+	}
 	source := r.ID
 	if p.HeadRepo != "" {
 		source = p.headRepoID
@@ -345,13 +341,11 @@ func gitlabMRListItem(r *Repo, p *Pull) map[string]any {
 		"source_project_id": source,
 		"title":             p.Title,
 		"state":             gitlabStates[p.State],
-		"draft":             p.Draft,
-		"author":            gitlabUser(p.Author, p.AuthorName),
 		"web_url":           gitlabMRURL(r, p),
 		"source_branch":     p.HeadRef,
 		"target_branch":     p.BaseRef,
 		"sha":               p.HeadSHA,
-		"merged_at":         nullable(p.MergedAt),
+		"merged_at":         mergedAt,
 	}
 }
 

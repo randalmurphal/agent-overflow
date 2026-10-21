@@ -20,6 +20,7 @@
   import Popover from '../primitives/Popover.svelte';
   import type { PopoverCloseReason } from '../../utils/popoverOwnership';
   import Menu from '../primitives/Menu.svelte';
+  import { openAssistantProjectsDialog } from '../../stores/newAssistant.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import MenuDivider from '../primitives/MenuDivider.svelte';
   import MenuSubmenuItem from '../primitives/MenuSubmenuItem.svelte';
@@ -42,7 +43,7 @@
     unpinThreadAction,
     type ThreadActionCtx,
   } from './threadRowActions';
-  import { isStandingAgent, threadPlacement } from '../../utils/sidebarTree';
+  import { cardOwnerAgentId, isStandingAgent, threadPlacement } from '../../utils/sidebarTree';
   import { getEffectiveThreadStatus } from '../../stores/threadStatuses.svelte';
   import {
     applyThreadImportUpdatesAction,
@@ -54,7 +55,7 @@
     getSelectedThreadIds,
     isThreadSelected,
   } from '../../stores/threadFilter.svelte';
-  import { assistantCurrentThread, getThreadById } from '../../stores/threads.svelte';
+  import { getThreadById } from '../../stores/threads.svelte';
   import {
     TerminalsClosingNote,
     terminalsClosingNoteForThreadDelete,
@@ -130,9 +131,9 @@
   // ── Assistant ────────────────────────────────────────────────────────────
   //
   // An assistant's current thread offers New Thread, Same Assistant, its
-  // loops and watches and the children's archive, all riding
-  // `threads:operate` like every other write here; its delete is always
-  // confirmed and the confirm names its home folder.
+  // projects, its loops and watches and the children's archive; its delete
+  // is always confirmed and the confirm names its home folder and what is
+  // removed with it.
   let isAgent = $derived(isStandingAgent(thread));
   // Done: a spawned thread with nothing running and nothing waiting on
   // the user. Archiving it is what the agent's `N done` footer counts.
@@ -233,7 +234,7 @@
       : !threadHasScope('threads:operate', thread.id, thread.projectId),
   );
   let ungrantedTitle = $derived(operateUngranted ? 'Not granted to this device' : undefined);
-  // StartNextAssistantThread rides threads:autonomy.
+  // StartNextAssistantThread and SetAssistantProjects ride threads:autonomy.
   let nextThreadUngranted = $derived(!threadHasScope('threads:autonomy', thread.id, thread.projectId));
 
   /**
@@ -377,19 +378,18 @@
 
   // ── Placement ────────────────────────────────────────────────────────────
   //
-  // A thread an assistant spawned, or its past thread, sits under the agent
-  // row, in a group or as a plain row (docs/specs/standing-agents.md ruling
-  // 36). Move to Group and Remove from Group above cover grouped; these two
+  // A thread an assistant spawned into a project sits under the agent's
+  // row there, in a group or as a plain row (docs/specs/standing-agents.md
+  // ruling 36). Move to Group and Remove from Group above cover grouped; these two
   // cover the rest. They exist only while the agent's row is in the
   // sidebar (sidebarAgentRowShown): a child of an archived or hidden
   // assistant, or of a thread that is no assistant, is the plain row it
-  // renders as. The agent is named by that row's title.
+  // renders as. The agent is named by that row's title. A thread on its
+  // assistant's card (a helper or past thread, cardOwnerAgentId) lives
+  // outside every project and takes neither.
   let placementAgent = $derived.by(() => {
-    if (inBulkContext || archivedChild || isAgent) return undefined;
-    const agentThreadId = thread.pastAgentId
-      ? assistantCurrentThread(thread.pastAgentId)?.id
-      : thread.spawnedByThreadId;
-    const agent = agentThreadId ? getThreadById(agentThreadId) : undefined;
+    if (inBulkContext || archivedChild || isAgent || cardOwnerAgentId(thread)) return undefined;
+    const agent = thread.spawnedByThreadId ? getThreadById(thread.spawnedByThreadId) : undefined;
     return agent && sidebarAgentRowShown(agent, sidebarThreadVisible) ? agent : undefined;
   });
   let currentPlacement = $derived(threadPlacement(thread));
@@ -526,6 +526,15 @@
               onSelect={() => {
                 onClose();
                 void nextAssistantThreadAction(ctx());
+              }}
+            />
+            <MenuItem
+              label="Projects…"
+              disabled={nextThreadUngranted}
+              title={nextThreadUngranted ? 'Not granted to this device' : undefined}
+              onSelect={() => {
+                onClose();
+                openAssistantProjectsDialog(thread);
               }}
             />
             <MenuItem

@@ -1,8 +1,9 @@
 // Shared body of standing-agent-spawn-placement.spec.ts and its compact
 // twin (docs/specs/standing-agents.md ruling 36): an assistant spawns one
-// thread with each placement into another project, each answer reaches it
-// and marks the worker read, and the sidebar shows the nested one under the
-// agent row (folded into its done footer once settled), the grouped one in
+// thread with each placement into a project it serves, each answer reaches
+// it and marks the worker read, and the sidebar shows the nested one under
+// the agent's row in that project (folded into its done footer once
+// settled), the grouped one in
 // its group and the standalone one as a plain row of its own project; then
 // the row menu (and on desktop a drag onto the group) moves the workers
 // between placements, offering those moves only while the agent's row is
@@ -12,6 +13,7 @@ import type { Locator, Page } from '@playwright/test';
 import { expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
 import {
+  assistantHome,
   awaitTurnCompleted,
   plainScenario,
   setScenario,
@@ -19,6 +21,7 @@ import {
   threadToolsScenario,
 } from './thread-tools-helpers.js';
 import { awaitSidebarSettled, capture } from './wake-rows-helpers.js';
+import { projectRow, projectShell } from './sidebar-sections-helpers.js';
 
 interface PlacedRow {
   id: string;
@@ -32,14 +35,6 @@ interface PlacedRow {
 }
 
 export type Layout = 'desktop' | 'compact';
-
-function row(page: Page, id: string): Locator {
-  return page.locator(`[data-sidebar-thread-id="${id}"]`);
-}
-
-function shell(page: Page, id: string): Locator {
-  return page.locator('[data-testid="thread-row-shell"]', { has: row(page, id) });
-}
 
 async function rowOf(harness: HarnessApp, id: string): Promise<PlacedRow | undefined> {
   return ((await threadRows(harness)) as unknown as PlacedRow[]).find((r) => r.id === id);
@@ -63,8 +58,8 @@ async function sidebarPlace(page: Page, id: string, projectId: string): Promise<
 }
 
 async function openMenu(page: Page, layout: Layout, id: string): Promise<Locator> {
-  if (layout === 'desktop') await row(page, id).click({ button: 'right' });
-  else await shell(page, id).getByTestId('thread-row-menu').tap();
+  if (layout === 'desktop') await projectRow(page, id).click({ button: 'right' });
+  else await projectShell(page, id).getByTestId('thread-row-menu').tap();
   const menu = page.locator('[data-popover]').filter({ has: page.getByRole('menuitem') }).last();
   await expect(menu).toBeVisible();
   return menu;
@@ -93,12 +88,13 @@ export async function runSpawnPlacement(harness: HarnessApp, page: Page, layout:
   const tag = layout === 'desktop' ? 'placement' : 'compact-placement';
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [
-      { name: `${tag}-home`, repo: {}, threads: [{ title: 'Ops lead', assistant: true, turns: turn('hello') }] },
+      { name: `${tag}-lead`, repo: {}, threads: [{ title: 'Ops lead', assistant: true, turns: turn('hello') }] },
       { name: `${tag}-workers`, repo: {}, threads: [] },
     ],
   });
-  const [home, workers] = seed.projects;
-  const agent = home.threadIds[0];
+  const [lead, workers] = seed.projects;
+  const agent = lead.threadIds[0];
+  await harness.rpc('SetAssistantProjects', agent, false, [lead.projectId, workers.projectId]);
 
   await setScenario(harness, workers.path, plainScenario({ name: `${tag}-worker`, provider: 'claude', texts: ['Done.'] }));
   const spawn = (title: string, extra: Record<string, unknown>) => ({
@@ -106,7 +102,7 @@ export async function runSpawnPlacement(harness: HarnessApp, page: Page, layout:
   });
   await setScenario(
     harness,
-    home.path,
+    await assistantHome(harness, agent),
     threadToolsScenario({
       name: `${tag}-agent`,
       provider: 'claude',
@@ -157,8 +153,8 @@ export async function runSpawnPlacement(harness: HarnessApp, page: Page, layout:
   await expect(footer.getByTestId('thread-row-agent-done-label')).toHaveText('1 done');
   await expect.poll(() => sidebarPlace(page, grouped.id, workers.projectId)).toBe('group');
   await expect.poll(() => sidebarPlace(page, standalone.id, workers.projectId)).toBe('project');
-  await expect(row(page, grouped.id).getByTestId('thread-row-status-dot')).toHaveCount(0);
-  await expect(row(page, standalone.id).getByTestId('thread-row-status-dot')).toHaveCount(0);
+  await expect(projectRow(page, grouped.id).getByTestId('thread-row-status-dot')).toHaveCount(0);
+  await expect(projectRow(page, standalone.id).getByTestId('thread-row-status-dot')).toHaveCount(0);
   const sweep = page.getByTestId('thread-group-row').filter({ hasText: 'Sweep' });
   await expect(sweep).toHaveCount(1);
   const toggle = footer.getByTestId('thread-row-agent-done-toggle');
@@ -169,9 +165,9 @@ export async function runSpawnPlacement(harness: HarnessApp, page: Page, layout:
   await tapOrClick(toggle);
   await expect.poll(() => sidebarPlace(page, nested.id, workers.projectId)).toBe('agent');
   if (layout === 'desktop') await page.mouse.move(800, 400);
-  await capture(page, `${tag}-three-placements.png`, row(page, agent), row(page, nested.id), sweep, row(page, grouped.id), row(page, standalone.id));
+  await capture(page, `${tag}-three-placements.png`, projectRow(page, agent), projectRow(page, nested.id), sweep, projectRow(page, grouped.id), projectRow(page, standalone.id));
   await tapOrClick(toggle);
-  await expect(row(page, nested.id)).toHaveCount(0);
+  await expect(projectRow(page, nested.id)).toHaveCount(0);
 
   // The menu of a placed worker names the agent to nest under.
   const menu = await openMenu(page, layout, standalone.id);
@@ -196,7 +192,7 @@ export async function runSpawnPlacement(harness: HarnessApp, page: Page, layout:
     await expect(page.getByRole('menuitem')).toHaveCount(0);
   }
   await harness.rpc('UnarchiveThread', agent);
-  await expect(row(page, agent)).toBeVisible();
+  await expect(projectRow(page, agent)).toBeVisible();
   await expect.poll(() => sidebarPlace(page, nested.id, workers.projectId)).not.toBe('project');
   const restoredMenu = await openMenu(page, layout, standalone.id);
   await expect(placementItems(restoredMenu)).toHaveText(['Nest Under Ops lead']);
@@ -215,17 +211,17 @@ export async function runSpawnPlacement(harness: HarnessApp, page: Page, layout:
   await choose(page, layout, grouped.id, 'Remove from Group');
   await expect.poll(() => placementOf(harness, grouped.id)).toBe('standalone');
   await expect.poll(() => sidebarPlace(page, grouped.id, workers.projectId)).toBe('project');
-  if (layout === 'desktop') await row(page, grouped.id).dragTo(sweep);
+  if (layout === 'desktop') await projectRow(page, grouped.id).dragTo(sweep);
   else await moveToGroup(page, layout, grouped.id, 'Sweep');
   await expect.poll(() => placementOf(harness, grouped.id)).toBe('grouped');
   await expect.poll(() => sidebarPlace(page, grouped.id, workers.projectId)).toBe('group');
 
   // Nested to standalone, from the done footer's list.
   await tapOrClick(toggle);
-  await expect(row(page, nested.id)).toBeVisible();
+  await expect(projectRow(page, nested.id)).toBeVisible();
   await choose(page, layout, nested.id, 'Make Standalone');
   await expect.poll(() => placementOf(harness, nested.id)).toBe('standalone');
   await expect.poll(() => sidebarPlace(page, nested.id, workers.projectId)).toBe('project');
   await expect(footer.getByTestId('thread-row-agent-done-label')).toHaveText('1 done');
-  await capture(page, `${tag}-after-moves.png`, row(page, nested.id), row(page, grouped.id), footer);
+  await capture(page, `${tag}-after-moves.png`, projectRow(page, nested.id), projectRow(page, grouped.id), footer);
 }

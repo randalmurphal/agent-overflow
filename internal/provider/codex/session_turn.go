@@ -103,7 +103,7 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 		params["approvalsReviewer"] = cfg.ApprovalsReviewer
 	}
 	if cfg.Sandbox != "" {
-		sandboxPolicy, err := turnSandboxPolicy(cfg.Sandbox)
+		sandboxPolicy, err := turnSandboxPolicy(cfg.Sandbox, s.writableRoots)
 		if err != nil {
 			return err
 		}

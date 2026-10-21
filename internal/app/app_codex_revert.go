@@ -158,8 +158,8 @@ func (a *App) tryCodexThreadRevert(
 	if err := a.store.DeleteCodexDeveloperInstructionsDigest(threadID); err != nil {
 		return codexHistoryCut{}, false, err
 	}
-	// It can remove a home file a resume delivered too, so the next resume
-	// runs every hook.
+	// It can remove the memory a resume delivered too, so the next resume
+	// delivers it again.
 	if err := a.store.ForgetSessionStartReceipts(threadID); err != nil {
 		return codexHistoryCut{}, false, err
 	}

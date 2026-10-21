@@ -1,6 +1,6 @@
 // Sidebar list motion: svelte-native FLIP + enter/exit for the two keyed
-// eaches that used to run @formkit/auto-animate (ProjectList,
-// ProjectThreadList).
+// eaches that used to run @formkit/auto-animate (ProjectList, and the
+// tree rows now in SidebarTreeList).
 //
 // Why not auto-animate: it is framework-blind. A MutationObserver fires only
 // AFTER the DOM changed, when old positions are gone, so the library had to

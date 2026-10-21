@@ -235,6 +235,8 @@ type App struct {
 	agentWakes agentWakeState
 	// agentNoticeWork joins what notices run after they are accepted.
 	agentNoticeWork appAgentNoticeWorkState
+	// memoryReports joins the memory reads behind warning rows.
+	memoryReports appMemoryReportsState
 	// assistantHandOffs holds each assistant's running handoff and the
 	// messages it carries (StartNextAssistantThread,
 	// recoverAssistantSessionLoss).

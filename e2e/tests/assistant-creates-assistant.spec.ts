@@ -2,35 +2,21 @@
 // "thread_new_assistant"), end to end on both mock providers.
 //
 // Coverage: an assistant creates another one, which has its own record
-// naming its creator, its own home and a visible agent row of its own, not
-// nested under the creator; its opening block names the creator and quotes
+// naming its creator, its own home, the creator's projects and a card of
+// its own in the Assistants section, not nested under the creator; its
+// opening block, delivered in its home, names the creator and quotes
 // the role text; its answer reaches the creator; a name in use is refused
 // naming the holder; a thread that is not an assistant is refused.
 import { join } from 'node:path';
 
 import { test, expect, type SeedResult } from './fixtures.js';
-import type { HarnessApp } from '../src/harness.js';
 import { captureAgentMessage } from './wake-rows-helpers.js';
-import { awaitToolAnswer, awaitTurnCompleted, setScenario, threadRows, threadToolsScenario, type ProviderName } from './thread-tools-helpers.js';
-import type { MockInfo } from './workflows-helpers.js';
+import { cardRow, cardShell } from './sidebar-sections-helpers.js';
+import { assistantHome, awaitMockInput, awaitToolAnswer, awaitTurnCompleted, setScenario, threadRows, threadToolsScenario, type ProviderName } from './thread-tools-helpers.js';
 
 const ROLE = 'Watch the nightly build and tell me when it breaks.';
 
-/** Waits until a live mock runs in cwd, so a later scenario is not its. */
-async function awaitMock(harness: HarnessApp, cwd: string): Promise<void> {
-  await expect
-    .poll(async () => (await harness.rpc<(MockInfo & { exited: boolean })[]>('HarnessListMocks')).some((mock) => mock.registration.cwd === cwd && !mock.exited))
-    .toBe(true);
-}
-
-function inputIn(harness: HarnessApp, cwd: string, contains: string) {
-  return harness.waitForEvent<{ cwd: string; report: { kind: string; input?: string } }>(
-    'harness:mock',
-    (ev) => ev.report.kind === 'user_input' && ev.cwd === cwd && (ev.report.input ?? '').includes(contains),
-    60_000,
-  );
-}
-
+/** The next input a mock takes whose text includes `contains`, in cwd when one is named. */
 for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
   test(`${provider}: an assistant creates an assistant that reports to it, with a row of its own`, async ({ harness, page }) => {
     test.setTimeout(180_000);
@@ -43,11 +29,12 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const [leadProject, plainProject] = seed.projects;
     const lead = leadProject.threadIds[0];
     const plain = plainProject.threadIds[0];
-    const cwd = leadProject.path;
     const leadAgent = await harness.rpc<{ id: string }>('GetStandingAgent', lead);
+    // The lead runs in its home; the new assistant in one not made yet.
+    const cwd = await assistantHome(harness, lead);
 
     // The lead's own session takes the creating scenario; the new
-    // assistant, started in the same workspace afterwards, takes a reply.
+    // assistant, in any other workspace, takes a reply.
     await setScenario(harness, cwd, threadToolsScenario({
       name: `assistant-creates-lead-${provider}`, provider, echoUserMessage: true,
       turns: [
@@ -59,16 +46,14 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       ],
       afterTurns: 'repeatLast',
     }));
-    await harness.rpc('StartSession', lead);
-    await awaitMock(harness, cwd);
-    await setScenario(harness, cwd, threadToolsScenario({
+    await setScenario(harness, '', threadToolsScenario({
       name: `assistant-creates-scout-${provider}`, provider, echoUserMessage: true,
       turns: [{ text: 'I am Scout. I propose: watch the nightly build.' }],
       afterTurns: 'repeatLast',
     }));
 
-    const opening = inputIn(harness, cwd, 'You are "Scout", a new standing agent in Agent Overflow, created by the standing agent "Lead"');
-    const reported = inputIn(harness, cwd, 'I am Scout. I propose: watch the nightly build.');
+    const opening = awaitMockInput(harness, { includes: 'You are "Scout", a new standing agent in Agent Overflow, created by the standing agent "Lead"' });
+    const reported = awaitMockInput(harness, { cwd, includes: 'I am Scout. I propose: watch the nightly build.' });
     await harness.rpc('SendMessage', lead, 'Make an assistant for the nightly build.', null);
     const created = await awaitToolAnswer<{ token: string; thread_id: string; assistant_id: string; name: string; home: string }>(
       harness, { tool: 'thread_new_assistant', cwd, timeoutMs: 60_000 });
@@ -84,7 +69,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const record = await harness.rpc<{ id: string; threadId: string; creatorAgentId: string }>('GetStandingAgent', scout.thread_id);
     expect(record.id).toBe(scout.assistant_id);
     expect(record.creatorAgentId).toBe(leadAgent.id);
-    const input = (await opening).report.input ?? '';
+    const openingEvent = await opening;
+    expect(openingEvent.cwd).toBe(scout.home);
+    const input = openingEvent.report.input ?? '';
     expect(input).toContain(`(thread ${lead})`);
     expect(input).toContain(`> ${ROLE}`);
     expect(input).toContain(`Your home is ${scout.home}, empty but for a README.`);
@@ -92,12 +79,14 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await reported;
     await awaitTurnCompleted(harness, lead);
 
-    // A row of its own, not nested under the lead.
+    // A card of its own, not nested under the lead, serving the lead's project.
     await harness.open(page);
-    const scoutRow = page.locator(`[data-sidebar-thread-id="${scout.thread_id}"]`);
+    const scoutRow = cardRow(page, scout.thread_id);
     await expect(scoutRow).toHaveAttribute('data-sidebar-agent', '');
+    // The projects line sits under the row, in its shell.
+    await expect(cardShell(page, scout.thread_id).getByTestId('thread-row-agent-projects')).toHaveText(`assistant-creates-${provider}`);
     await expect(page.locator(`[data-agent-member] [data-sidebar-thread-id="${scout.thread_id}"]`)).toHaveCount(0);
-    await captureAgentMessage(page, `${provider}-assistant-created-by-assistant.png`, page.locator(`[data-sidebar-thread-id="${lead}"]`), scoutRow);
+    await captureAgentMessage(page, `${provider}-assistant-created-by-assistant.png`, cardRow(page, lead), scoutRow);
     await scoutRow.click();
     const openingRow = page.locator('[data-testid="agent-message-row"]').filter({ hasText: 'created by the standing agent "Lead"' });
     await expect(openingRow.getByTestId('agent-message-sender')).toHaveText('Lead');

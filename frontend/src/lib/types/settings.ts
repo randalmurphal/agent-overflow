@@ -287,6 +287,15 @@ export interface Settings {
    */
   agentGuideEnabled: boolean;
   /**
+   * Deliver project and user memory to every thread's sessions, not only to
+   * assistants' (docs/specs/memory.md). Read at spawn.
+   */
+  sharedMemoryEnabled: boolean;
+  /** Turn Claude Code's own auto memory off in this app's Claude sessions. */
+  claudeNativeMemoryDisabled: boolean;
+  /** Turn Codex's own memories off in this app's Codex threads. */
+  codexNativeMemoryDisabled: boolean;
+  /**
    * Keep-awake master switch (the sidebar moon/sun toggle): while on,
    * the app holds an OS sleep inhibitor so the machine never
    * idle-sleeps. Persisted, so it survives restarts. Mirrors

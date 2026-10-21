@@ -5,14 +5,14 @@
 // fading) with nothing running past the screen.
 import { test, expect, type SeedResult } from './fixtures.js';
 import { captureAgentMessage } from './wake-rows-helpers.js';
-import { agentRow, openAgents } from './agents-tray-helpers.js';
+import { agentRow, openAgents, seedLeadWithWorker } from './agents-tray-helpers.js';
 import { awaitTurnCompleted, plainScenario, setScenario, type ProviderName } from './thread-tools-helpers.js';
-import { LEAD, WORKER, expectHeadersShareTheWidth, pane, seedLeadWithWorker } from './companion-pane-headers-helpers.js';
+import { LEAD, WORKER, expectHeadersShareTheWidth, pane } from './companion-pane-headers-helpers.js';
 
 for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
   test(`${provider}: compact: an agent thread companion header keeps its title readable`, async ({ harness, page }) => {
     test.setTimeout(120_000);
-    const { token } = await seedLeadWithWorker(harness, `compact-companion-headers-${provider}`, provider);
+    const { token } = await seedLeadWithWorker(harness, { tag: `compact-companion-headers-${provider}`, provider, lead: LEAD, worker: WORKER });
     await harness.open(page);
     await openAgents(page, LEAD);
     await agentRow(page, token).getByTestId('agent-tray-row-open').tap();

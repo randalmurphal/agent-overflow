@@ -11,15 +11,15 @@ import (
 
 // SessionStartHook is a command a session runs at its start, after a
 // compaction and after a clear, and at a resume when Resume is set, whose
-// output reaches the model as context (a standing agent's home files,
-// docs/specs/standing-agents.md "Agent home contents"). Claude registers it
+// output reaches the model as context (the memory delivery,
+// docs/specs/memory.md "Delivery"). Claude registers it
 // in the session's inline settings and Codex in the thread's config, each
 // hook in a matcher group of its own; each provider reports a warning when a
 // start, a compaction or a resume that ran it ends without its output
 // (SessionStartDelivery).
 type SessionStartHook struct {
 	// Label names what the hook delivers in a warning and in its receipt,
-	// e.g. "instructions.md".
+	// e.g. the memory package's Label.
 	Label string
 	// Command is the shell command line the provider runs.
 	Command string
@@ -43,8 +43,7 @@ type SessionStartHook struct {
 
 // SessionStartHookSources are the SessionStart sources every hook runs for:
 // each one leaves the model without the hook's earlier output, which a
-// resumed history still carries (docs/specs/standing-agents.md, "Agent home
-// contents").
+// resumed history still carries (docs/specs/memory.md, "Delivery").
 const SessionStartHookSources = "startup|compact|clear"
 
 // SessionStartResumeSources are the sources of a hook that runs at a resume

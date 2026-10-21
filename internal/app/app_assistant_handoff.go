@@ -481,9 +481,10 @@ func (a *App) nextAssistantThread(ctx context.Context, threadID string, sessionL
 	if old.Archived {
 		return store.Thread{}, errors.New("this assistant is archived; unarchive it first")
 	}
+	// The successor lives where an assistant's thread does: outside every
+	// project, in the home.
 	standardPercent, extendedPercent := old.AutoCompactStandardPercent, old.AutoCompactExtendedPercent
 	opts := CreateThreadOptions{
-		ProjectID:                  old.ProjectID,
 		Title:                      old.Title,
 		Provider:                   old.Provider,
 		Model:                      old.Model,
@@ -494,11 +495,7 @@ func (a *App) nextAssistantThread(ctx context.Context, threadID string, sessionL
 		AutoCompactStandardPercent: &standardPercent,
 		AutoCompactExtendedPercent: &extendedPercent,
 		RuntimeMode:                old.RuntimeMode,
-		WorktreePath:               old.WorktreePath,
-		Branch:                     old.Branch,
-	}
-	if old.WorktreePath == "" {
-		opts.WorkspaceOverride = old.WorkspacePath
+		home:                       agent.Home,
 	}
 	endWork, err := a.workAdmission.begin(ctx)
 	if err != nil {

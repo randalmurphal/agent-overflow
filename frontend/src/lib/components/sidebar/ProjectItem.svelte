@@ -37,7 +37,6 @@
   import FolderOpen from '@lucide/svelte/icons/folder-open';
   import FolderPlus from '@lucide/svelte/icons/folder-plus';
   import Plus from '@lucide/svelte/icons/plus';
-  import UserRoundPlus from '@lucide/svelte/icons/user-round-plus';
   import { openNewAssistantDialog } from '../../stores/newAssistant.svelte';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import Icon from '../primitives/Icon.svelte';
@@ -73,6 +72,8 @@
     threads: Thread[];
     /** The project's groups, already search-filtered by ProjectsSection. */
     groups?: readonly ThreadGroup[];
+    /** The assistants whose row here holds a thread of this project. */
+    agents?: readonly Thread[];
     pane: ThreadPane | null;
     /** Called with the project id when the user clicks the new-thread button
      * (or otherwise signals "create a new thread in this project"). */
@@ -97,6 +98,7 @@
     displayLabel,
     threads,
     groups = [],
+    agents = [],
     pane,
     onNewThread,
     onNewTerminal,
@@ -110,8 +112,6 @@
   // an affordance reads as a broken sidebar, not as a read-only one.
   // The hover-reveal is untouched, so nothing new is visible at rest.
   let newThreadUngranted = $derived(!projectHasScope('threads:operate', project.project.id));
-  // Creating an assistant rides `threads:autonomy`: it runs loops and watches.
-  let newAssistantUngranted = $derived(!projectHasScope('threads:autonomy', project.project.id));
   // Compact: no drag (a phone's long press is the menu, and Android starts a
   // drag on a held draggable), no text selection under a hold, a taller
   // header, and the create controls the hover would have revealed.
@@ -142,6 +142,8 @@
     if (expanded) return null;
     const tree = buildSidebarThreadTree({
       threads,
+      agents,
+      scope: project.project.id,
       statusOf: (thread) => getEffectiveThreadStatus(thread),
       waitingOnOf: getThreadWaitingOn,
       unreachableMachineOf: (thread) => unreachableThreadMachineName(thread.id, thread.projectId),
@@ -185,13 +187,6 @@
     onNewThread?.(project.project.id, {
       openInNewPane: shouldOpenProjectThreadInNewPane(e),
     });
-  }
-
-  // New Assistant opens its dialog on this project, for the pane the
-  // sidebar drives, or a new pane under the new-thread modifier.
-  function handleNewAssistantClick(e: MouseEvent): void {
-    e.stopPropagation();
-    openNewAssistantDialog({ projectId: project.project.id, targetPane: pane, openInNewPane: shouldOpenProjectThreadInNewPane(e) });
   }
 
   function handleNewThreadContextMenu(e: MouseEvent): void {
@@ -500,17 +495,6 @@
       </button>
       <button
         type="button"
-        onclick={handleNewAssistantClick}
-        disabled={newAssistantUngranted}
-        title={newAssistantUngranted ? 'Not granted to this device' : 'New Assistant in This Project'}
-        aria-label="New Assistant in This Project"
-        data-testid="project-item-new-assistant"
-        class="compact:hidden opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:text-fg-subtle disabled:hover:text-fg-subtle disabled:hover:bg-surface-2/0"
-      >
-        <Icon icon={UserRoundPlus} size={12} strokeWidth={2} class="opacity-90" />
-      </button>
-      <button
-        type="button"
         onclick={handleNewThreadClick}
         oncontextmenu={handleNewThreadContextMenu}
         disabled={newThreadUngranted}
@@ -526,7 +510,7 @@
   </div>
 
   {#if expanded}
-    <ProjectThreadList projectId={project.project.id} {threads} {groups} {pane} {onNewThread} />
+    <ProjectThreadList projectId={project.project.id} {threads} {groups} {agents} {pane} {onNewThread} />
   {:else if activeWhenCollapsed}
     <!--
       Active-thread pin: the user is reading this thread but the project

@@ -19,7 +19,10 @@
   let computers = $derived(getAttachedBackends().filter((entry) => entry.id !== request.source));
   let destination = $state<BackendKey>(untrack(() => request.destination ?? computers.find((entry) => backendReachable(entry.id) && supportsConversationTransfer(entry.id) && hasScope('threads:operate', entry.id))?.id ?? ''));
   let kind = $state<TransferKind>(untrack(() => request.kind ?? 'move'));
-  let includeWorkspace = $state(untrack(() => request.includeWorkspace ?? true));
+  // A thread outside every project runs in its assistant's home, which
+  // stays on this computer: there is no workspace to carry.
+  let hasWorkspace = $derived(Boolean(request.thread.projectId));
+  let includeWorkspace = $state(untrack(() => Boolean(request.thread.projectId) && (request.includeWorkspace ?? true)));
   let projectID = $state(untrack(() => request.projectID ?? sibling(destination)));
   let adding = $state(false);
   let projects = $derived(getProjects().filter((entry) => projectBackend(entry.project.id) === destination));
@@ -102,10 +105,12 @@
       {#if !request.submitted && destination && hasScope('git:operate', destination)}
         <div><Button variant="ghost" size="xs" disabled={!backendReachable(destination)} onclick={() => { adding = true; }}>Add an existing project…</Button></div>
       {/if}
-      <label class="flex items-start gap-2 text-xs text-fg">
-        <input type="checkbox" bind:checked={includeWorkspace} disabled={locked} class="mt-0.5 accent-accent" />
-        <span>Include workspace changes<span class="mt-1 block text-fg-muted">Creates a separate worktree with commits, staged changes and untracked files. Ignored files stay on this computer.</span></span>
-      </label>
+      {#if hasWorkspace}
+        <label class="flex items-start gap-2 text-xs text-fg">
+          <input type="checkbox" bind:checked={includeWorkspace} disabled={locked} class="mt-0.5 accent-accent" />
+          <span>Include workspace changes<span class="mt-1 block text-fg-muted">Creates a separate worktree with commits, staged changes and untracked files. Ignored files stay on this computer.</span></span>
+        </label>
+      {/if}
       {#if !includeWorkspace}<p class="text-xs text-fg-muted">The conversation will use the destination project’s existing checkout.</p>{/if}
       {#if includeWorkspace && destination && !hasScope('git:operate', destination)}<p class="text-xs text-warning">Workspace access is needed on the destination to include these changes.</p>{/if}
       {#if !backendReachable(request.source) || (destination && !backendReachable(destination))}<p role="status" class="text-xs text-warning">Reconnect both computers to finish setup.</p>{/if}

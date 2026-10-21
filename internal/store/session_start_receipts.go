@@ -9,7 +9,7 @@ import (
 // context each SessionStart hook last delivered to a thread's model, and
 // the provider session that received it. A resume compares it with the
 // context the hook would deliver now and runs only the hooks that differ
-// (internal/app/app_standing_agents.go).
+// (internal/app/app_memory.go).
 //
 // The rows are cache content: a lost row costs one repeated delivery. A row
 // names the provider session it describes, so a thread repointed at another

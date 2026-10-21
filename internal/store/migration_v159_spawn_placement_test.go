@@ -7,9 +7,9 @@ import (
 )
 
 // v159 over a populated database: a grouped row keeps its group and is
-// grouped, a row a local spawn names or an assistant's past thread is
-// nested, an assistant's own thread and every other row are standalone,
-// and afterwards the CHECK refuses a write that breaks the coupling.
+// grouped, a row a local spawn names is nested, an assistant's own and
+// past threads and every other row are standalone, and afterwards the
+// CHECK refuses a write that breaks the coupling.
 func TestMigrationV159SpawnPlacement(t *testing.T) {
 	path := fileDBThrough(t, spawnPlacementMigrationVersion-1)
 	db, err := sql.Open("sqlite", poolDSN(path, writerConnPragmas))
@@ -44,7 +44,7 @@ func TestMigrationV159SpawnPlacement(t *testing.T) {
 		"created":         "standalone|",
 		"spawned":         "nested|",
 		"far":             "standalone|",
-		"past":            "nested|",
+		"past":            "standalone|",
 		"grouped":         "grouped|g",
 		"grouped-spawned": "grouped|g",
 		"plain":           "standalone|",
@@ -85,16 +85,18 @@ func TestMigrationV159SpawnPlacement(t *testing.T) {
 		}
 	}
 
-	// The triggers end nesting with the last link.
+	// The trigger ends nesting with the last link, and it is the only
+	// placement trigger: no past-thread link nests a thread.
 	mustExec(t, db, `DELETE FROM thread_requests WHERE token = 't-spawned'`)
-	mustExec(t, db, `DELETE FROM agent_past_threads WHERE thread_id = 'past'`)
-	for _, id := range []string{"spawned", "past"} {
-		var placement string
-		if err := db.QueryRow(`SELECT placement FROM threads WHERE id = ?`, id).Scan(&placement); err != nil {
-			t.Fatal(err)
-		}
-		if placement != PlacementStandalone {
-			t.Errorf("%s without its link = %s, want standalone", id, placement)
-		}
+	var placement string
+	if err := db.QueryRow(`SELECT placement FROM threads WHERE id = 'spawned'`).Scan(&placement); err != nil {
+		t.Fatal(err)
+	}
+	if placement != PlacementStandalone {
+		t.Errorf("spawned without its link = %s, want standalone", placement)
+	}
+	if triggers, err := queryIDs(db, `SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'trg_thread_placement_%' ORDER BY name`); err != nil ||
+		len(triggers) != 1 || triggers[0] != "trg_thread_placement_spawn_gone" {
+		t.Errorf("placement triggers = %q, %v", triggers, err)
 	}
 }

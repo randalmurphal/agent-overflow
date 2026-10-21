@@ -450,3 +450,41 @@ cleanup: manual
 		}
 	}
 }
+
+// The harness makes an existing thread an assistant the way New Assistant
+// makes one: the thread moves into the home, out of its project, and the
+// assistant serves that project. A name another assistant holds is refused
+// before the thread moves.
+func TestHarnessMakeAssistantMovesTheThreadIntoItsHome(t *testing.T) {
+	t.Parallel()
+	f := newThreadToolsFixture(t)
+	host := &harnessHost{app: f.app}
+	titled := func(title string) func(*store.Thread) {
+		return func(thread *store.Thread) { thread.Title = title }
+	}
+	thread := f.thread(t, "ops", titled("Ops"))
+	agent, err := host.MakeAssistant(thread.ID)
+	if err != nil {
+		t.Fatalf("MakeAssistant: %v", err)
+	}
+	row, err := f.app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.ProjectID != "" || row.WorkspacePath != agent.Home || row.AgentID != agent.ID ||
+		len(row.AgentProjectIDs) != 1 || row.AgentProjectIDs[0] != f.project.ID {
+		t.Fatalf("assistant thread = project %q workspace %q agent %q projects %q, want home %s serving %s",
+			row.ProjectID, row.WorkspacePath, row.AgentID, row.AgentProjectIDs, agent.Home, f.project.ID)
+	}
+
+	clash := f.thread(t, "ops-again", titled("ops"))
+	if _, err := host.MakeAssistant(clash.ID); err == nil {
+		t.Fatal("a second assistant took the name Ops")
+	}
+	if row, err := f.app.store.GetThread(clash.ID); err != nil || row.ProjectID != f.project.ID || row.WorkspacePath != f.project.Path {
+		t.Fatalf("a refused thread moved: project %q workspace %q (%v)", row.ProjectID, row.WorkspacePath, err)
+	}
+	if entries, err := os.ReadDir(filepath.Join(f.app.configDir, "agents")); err != nil || len(entries) != 1 {
+		t.Fatalf("homes = %v (%v), want only the assistant's", entries, err)
+	}
+}

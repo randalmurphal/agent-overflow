@@ -6,15 +6,7 @@
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
 import { captureAgentMessage } from './wake-rows-helpers.js';
-import { plainScenario, setScenario, threadRows, type ProviderName } from './thread-tools-helpers.js';
-
-async function handedOff(harness: HarnessApp, cwd: string, previous: string) {
-  return harness.waitForEvent<{ cwd: string; report: { kind: string; input?: string } }>(
-    'harness:mock',
-    (ev) => ev.report.kind === 'user_input' && ev.cwd === cwd && (ev.report.input ?? '').includes(`The user replaced your previous thread ${previous} with this one`),
-    60_000,
-  );
-}
+import { assistantHome, awaitMockInput, plainScenario, setScenario, threadRows, type ProviderName } from './thread-tools-helpers.js';
 
 async function currentThread(harness: HarnessApp, not: string): Promise<string> {
   let id = '';
@@ -33,8 +25,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const seed = await harness.rpc<SeedResult>('HarnessSeed', {
       projects: [{ name: `compact-assistant-handoff-${provider}`, repo: {}, threads: [{ title: 'Ops', provider, assistant: true, turns: [{ userText: 'hi', items: [{ kind: 'assistant_text', summary: 'ready' }] }] }] }],
     });
-    const { path: cwd, threadIds } = seed.projects[0];
-    const [first] = threadIds;
+    const [first] = seed.projects[0].threadIds;
+    const cwd = await assistantHome(harness, first);
     await setScenario(harness, cwd, plainScenario({ name: `compact-assistant-handoff-${provider}`, provider, texts: ['Picked up.'], afterTurns: 'repeatLast', echoUserMessage: true }));
 
     await harness.open(page);
@@ -48,7 +40,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await captureAgentMessage(page, `${provider}-compact-assistant-row-next-thread.png`, firstRow);
 
     // ---- From the row: the successor is the agent row, the old thread its done child.
-    const fromRow = handedOff(harness, cwd, first);
+    const fromRow = awaitMockInput(harness, { cwd, includes: `The user replaced your previous thread ${first} with this one` });
     await button.tap();
     await fromRow;
     const second = await currentThread(harness, first);
@@ -63,7 +55,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const header = page.getByTestId('chat-header-next-thread').filter({ visible: true });
     await expect(header).toBeInViewport({ ratio: 1 });
     await captureAgentMessage(page, `${provider}-compact-assistant-header-next-thread.png`, page.getByTestId('chat-header-title-row'));
-    const fromHeader = handedOff(harness, cwd, second);
+    const fromHeader = awaitMockInput(harness, { cwd, includes: `The user replaced your previous thread ${second} with this one` });
     await header.tap();
     await fromHeader;
     const third = await currentThread(harness, second);

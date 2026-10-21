@@ -5,7 +5,7 @@
     jumpLabelForThread,
   } from '../../stores/keyboardModifiers.svelte';
   import { chordHintForCommand } from '../../stores/keybindings.svelte';
-  import { assistantKey, isStandingAgent, sidebarPinGroup } from '../../utils/sidebarTree';
+  import { isStandingAgent, sidebarPinGroup } from '../../utils/sidebarTree';
   import { assistantDisplayName } from '../../stores/assistants.svelte';
   import { getShowProviderIcons, setAgentExpanded, toggleAgent } from '../../stores/sidebar.svelte';
   import { asProviderID, providerLabel } from '../../providers/catalog';
@@ -30,7 +30,6 @@
   import type { Thread } from '../../types/models';
   import type { ThreadLiveStatus } from '../../stores/threadStatuses.svelte';
   import type { ThreadStatusPill } from '../../utils/threadStatusPill';
-  import { entryIdFor, getProjectLabelText } from '../../stores/projects.svelte';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import FileText from '@lucide/svelte/icons/file-text';
   import Terminal from '@lucide/svelte/icons/terminal';
@@ -98,7 +97,6 @@
     agent = null,
     agentChildren = [],
     archivedChild = false,
-    listProjectId = null,
   }: {
     thread: Thread;
     pane: ThreadPane | null;
@@ -122,6 +120,8 @@
      * ordinary thread row.
      */
     agent?: {
+      /** The row's fold key (agentContainerKey): its card's, or its row's in one project. */
+      containerKey: string;
       expanded: boolean;
       childCount: number;
       /**
@@ -129,17 +129,16 @@
        * which the row shows while it is collapsed (ruling 33).
        */
       rolledUp?: { liveStatus: ThreadLiveStatus; pill: ThreadStatusPill } | null;
+      /**
+       * On the assistant's card, the projects it serves, under its state
+       * line; null on its row in a project, which shows neither.
+       */
+      projects?: string | null;
     } | null;
     /** The agent's live spawned threads, for the menu's Archive Done Children. */
     agentChildren?: readonly Thread[];
     /** An archived spawned thread listed under an agent's done footer. */
     archivedChild?: boolean;
-    /**
-     * The project whose list renders this row. A child an agent spawned into
-     * another project nests under the agent here and names its own project
-     * on the sublabel line.
-     */
-    listProjectId?: string | null;
   } = $props();
 
   // isActive: this thread is what the FOCUSED pane shows (the sidebar's
@@ -320,7 +319,7 @@
   function handleAgentChevronClick(e: MouseEvent): void {
     e.stopPropagation();
     if (editing) return;
-    toggleAgent(assistantKey(thread));
+    if (agent !== null) toggleAgent(agent.containerKey);
   }
 
   function handleRowKeydown(e: KeyboardEvent): void {
@@ -338,7 +337,7 @@
     if (agent === null || e.target !== e.currentTarget) return;
     if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
       e.preventDefault();
-      setAgentExpanded(assistantKey(thread), e.key === 'ArrowRight');
+      setAgentExpanded(agent.containerKey, e.key === 'ArrowRight');
     }
   }
 
@@ -448,11 +447,6 @@
   let rolledUp = $derived(agent !== null && !agent.expanded ? (agent.rolledUp ?? null) : undefined);
   let pill = $derived(rolledUp !== undefined ? (rolledUp?.pill ?? null) : ownRowPill);
   let dotStatus = $derived(rolledUp ? rolledUp.liveStatus : liveStatus);
-  let foreignProjectName = $derived(
-    listProjectId && thread.projectId && entryIdFor(thread.projectId) !== entryIdFor(listProjectId)
-      ? getProjectLabelText(thread.projectId)
-      : '',
-  );
   const WORKTREE_META_OFFSET_PX = 14;
   let worktreeIndentPx = $derived(rowPaddingLeftPx + WORKTREE_META_OFFSET_PX);
 </script>
@@ -732,9 +726,19 @@
   {#if editing && renameError}
     <p role="alert" class="px-2 pb-1 text-[0.625rem] text-error" style="padding-left: {worktreeIndentPx}px" data-testid="thread-row-rename-error">{renameError}</p>
   {:else if agent !== null}
-    <AgentStateLine threadId={thread.id} indentPx={GROUP_GLYPH_LEFT_PX} />
+    {#if agent.projects != null}
+      <AgentStateLine threadId={thread.id} indentPx={GROUP_GLYPH_LEFT_PX} />
+      <div
+        class="relative -mt-0.5 flex h-3.5 items-center pr-1 text-[0.625rem] leading-none text-fg-hint"
+        style="padding-left: {GROUP_GLYPH_LEFT_PX}px"
+        title={agent.projects}
+        data-testid="thread-row-agent-projects"
+      >
+        <span class="min-w-0 truncate">{agent.projects}</span>
+      </div>
+    {/if}
   {:else if !editing}
-    <ThreadRowSublabel {thread} indentPx={worktreeIndentPx} projectName={foreignProjectName} />
+    <ThreadRowSublabel {thread} indentPx={worktreeIndentPx} />
   {/if}
 </div>
 

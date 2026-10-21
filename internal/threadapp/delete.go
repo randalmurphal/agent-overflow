@@ -42,6 +42,14 @@ type DeletePorts struct {
 	// the removal, which runs once the delete is marked. nil remove for any
 	// other thread.
 	AssistantHome func(threadID string) (remove func() error, err error)
+	// AssistantDependents deletes, for an assistant's current thread, the
+	// threads that live under the assistant: its past threads and helpers,
+	// each through its own delete. It runs once the delete has passed its
+	// refusals and stopped the assistant's session, before the mark, so a
+	// failure leaves the assistant whole for a retry. The mark is refused
+	// while any remain (store.AssistantDependentsError), so one made
+	// meanwhile sends the delete back here; once marked, none can be made.
+	AssistantDependents func(threadID string) error
 	// Deleted fires once the row's delete mark committed
 	// (store.BeginThreadDelete), as DeleteThread returns. From the mark on
 	// the row is gone to every read, so a delete that fails after it still
@@ -58,6 +66,56 @@ type DeletePorts struct {
 	// between transactions. nil keeps user-initiated deletes at full
 	// speed.
 	ChunkPause store.ChunkPause
+}
+
+// maxDependentPasses bounds how often an assistant's delete deletes the
+// threads under it before giving up: each pass stops the sessions that
+// could make another, so a second one is a thread made during the first.
+const maxDependentPasses = 3
+
+// markDeleting takes the thread's mutation lock, stops the remote work
+// admitted during cleanup and marks a found row deleting; marked is false
+// when there is no row. An assistant's current thread is marked only once
+// nothing lives under the assistant: its dependents are deleted first,
+// with the lock released, and again when one made meanwhile refuses the
+// mark. On success the caller releases the returned lock.
+func (s *Service) markDeleting(database *store.Store, threadID string, found, assistant bool, ports DeletePorts) (unlock func(), marked bool, err error) {
+	for pass := 1; ; pass++ {
+		if assistant && ports.AssistantDependents != nil {
+			if err := ports.AssistantDependents(threadID); err != nil {
+				return nil, false, err
+			}
+		}
+		// Network uploads stage outside the thread. Serialize only
+		// publication and final deletion, after provider/process cleanup
+		// has finished.
+		unlock := s.mutations.Lock(threadID)
+		if ports.StopRemoteWork != nil {
+			if err := ports.StopRemoteWork(threadID); err != nil {
+				unlock()
+				return nil, false, err
+			}
+		}
+		if !found {
+			return unlock, false, nil
+		}
+		// The mark refuses new forks before the attachments go, so the
+		// ones the thread's forks show are known and kept
+		// (store.ReleasableAttachments).
+		err := database.BeginThreadDelete(threadID)
+		var dependents *store.AssistantDependentsError
+		switch {
+		case err == nil:
+			return unlock, true, nil
+		case errors.Is(err, sql.ErrNoRows):
+			return unlock, false, nil
+		case errors.As(err, &dependents) && assistant && pass < maxDependentPasses:
+			unlock()
+		default:
+			unlock()
+			return nil, false, fmt.Errorf("delete thread %s: mark deleting: %w", threadID, err)
+		}
+	}
 }
 
 // DeleteThread stops everything the thread owns and drops its row. Call it
@@ -124,27 +182,15 @@ func (s *Service) DeleteThread(threadID string, ports DeletePorts) error {
 	if ports.ClearAutoReconnect != nil {
 		ports.ClearAutoReconnect(threadID)
 	}
-	// Network uploads stage outside the thread. Serialize only publication
-	// and final deletion, after provider/process cleanup has finished.
-	unlockMutation := s.mutations.Lock(threadID)
-	defer unlockMutation()
-	if ports.StopRemoteWork != nil {
-		if err := ports.StopRemoteWork(threadID); err != nil {
-			return err
-		}
+	unlockMutation, marked, err := s.markDeleting(database, threadID, threadFound, threadFound && thread.AgentID != "", ports)
+	if err != nil {
+		return err
 	}
-	// The mark refuses new forks before the attachments go, so the ones
-	// the thread's forks show are known and kept (store.ReleasableAttachments).
-	if threadFound {
-		err := database.BeginThreadDelete(threadID)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("delete thread %s: mark deleting: %w", threadID, err)
-		}
-		// No client lists a holder: its source's delete reported the
-		// thread gone, and a revert's holder was never shown.
-		if err == nil && ports.Deleted != nil && thread.Mode != threadmode.ModeHolder {
-			defer ports.Deleted(thread, spawned)
-		}
+	defer unlockMutation()
+	// No client lists a holder: its source's delete reported the thread
+	// gone, and a revert's holder was never shown.
+	if marked && ports.Deleted != nil && thread.Mode != threadmode.ModeHolder {
+		defer ports.Deleted(thread, spawned)
 	}
 	if ports.CleanupAttachments != nil {
 		if err := ports.CleanupAttachments(threadID); err != nil {

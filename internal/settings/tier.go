@@ -59,14 +59,17 @@ const schemaVersionKey = "$schemaVersion"
 // map, so a new setting cannot ship without a tier decision.
 var tierByKey = map[string]Tier{
 	// ---- host: what this backend machine is and what it may do ----------
-	"network":                      TierHost,
-	"claudeBinaryPath":             TierHost,
-	"codexBinaryPath":              TierHost,
-	"claudeCustomEnv":              TierHost,
-	"codexCustomEnv":               TierHost,
-	"claudeEnabled":                TierHost,
-	"codexEnabled":                 TierHost,
-	"claudeTuiEnabled":             TierHost,
+	"network":          TierHost,
+	"claudeBinaryPath": TierHost,
+	"codexBinaryPath":  TierHost,
+	"claudeCustomEnv":  TierHost,
+	"codexCustomEnv":   TierHost,
+	"claudeEnabled":    TierHost,
+	"codexEnabled":     TierHost,
+	"claudeTuiEnabled": TierHost,
+	// Shared memory makes the memory folders writable roots of every
+	// session: an authority granted to a provider session.
+	"sharedMemoryEnabled":          TierHost,
 	"retention":                    TierHost,
 	"observabilityEventLogEnabled": TierHost,
 	"observabilityOtlpEndpoint":    TierHost,
@@ -129,6 +132,11 @@ var tierByKey = map[string]Tier{
 	"claudePromptOverrides":       TierUser,
 	"codexPromptOverrides":        TierUser,
 	"agentGuideEnabled":           TierUser,
+	// The providers' own memory is a spawn-time preference of the same
+	// kind; shared memory is host tier, since it grants write access
+	// outside the workspace.
+	"claudeNativeMemoryDisabled": TierUser,
+	"codexNativeMemoryDisabled":  TierUser,
 	// The command timeout ceiling is the same kind of preference.
 	"claudeMaxCommandTimeoutHours": TierUser,
 

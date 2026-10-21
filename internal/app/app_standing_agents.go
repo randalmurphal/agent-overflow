@@ -1,20 +1,22 @@
 package app
 
 import (
+	"cmp"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"agent-overflow/internal/agenthome"
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
-	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/transport"
@@ -55,35 +57,26 @@ func assistantSendIDKind(sendID string) string {
 var errNotAssistantThread = errors.New("this thread is not an assistant's current thread on this computer")
 
 // CreateAssistantOptions is New Assistant's dialog: the name and the
-// project and workspace choice a new thread offers.
+// projects the assistant serves, one or more, or all of them.
 type CreateAssistantOptions struct {
-	ProjectID         string `json:"projectId"`
-	Name              string `json:"name"`
-	WorktreeBranch    string `json:"worktreeBranch,omitempty"`
-	WorktreeBase      string `json:"worktreeBase,omitempty"`
-	WorktreeBaseLocal bool   `json:"worktreeBaseLocal,omitempty"`
-	WorktreePath      string `json:"worktreePath,omitempty"`
-	Branch            string `json:"branch,omitempty"`
+	Name        string   `json:"name"`
+	ProjectIDs  []string `json:"projectIds"`
+	AllProjects bool     `json:"allProjects,omitempty"`
 }
 
 // CreateAssistant creates an assistant: its thread, titled with its name,
-// its record and its home, and queues the opening message that starts the
-// discussion of its role. A name another assistant here holds is refused
-// naming that assistant, before anything is created.
+// outside every project with its home as the workspace, its record with the
+// projects it serves and its home, and queues the opening message that
+// starts the discussion of its role. A name another assistant here holds,
+// and an empty or unknown choice of projects, are refused before anything
+// is created.
 //
 //ao:scope threads:autonomy
 //ao:route selected
 func (a *App) CreateAssistant(ctx context.Context, opts CreateAssistantOptions) (store.Thread, error) {
 	thread, agent, err := a.createAssistant(ctx, assistantSpec{
-		name: opts.Name,
-		thread: CreateThreadOptions{
-			ProjectID:         opts.ProjectID,
-			WorktreeBranch:    opts.WorktreeBranch,
-			WorktreeBase:      opts.WorktreeBase,
-			WorktreeBaseLocal: opts.WorktreeBaseLocal,
-			WorktreePath:      opts.WorktreePath,
-			Branch:            opts.Branch,
-		},
+		name:     opts.Name,
+		projects: assistantProjects{all: opts.AllProjects, ids: opts.ProjectIDs},
 	})
 	if err != nil {
 		return store.Thread{}, refuseTakenAssistantName(err)
@@ -109,39 +102,83 @@ func refuseTakenAssistantName(err error) error {
 
 // assistantSpec is what an assistant is created from.
 type assistantSpec struct {
-	name   string
-	thread CreateThreadOptions
+	name string
+	// provider, model, effort and runtimeMode are the settings its thread
+	// starts with: an assistant that creates one passes on its own, as a
+	// spawn does (spawnSettings). Empty takes a new thread's defaults.
+	provider, model, effort, runtimeMode string
+	projects                             assistantProjects
 	// creatorAgentID names the assistant that created this one.
 	creatorAgentID string
 }
 
-// createAssistant makes the thread, the record and the home, and
-// broadcasts the row once it is an assistant's. A clash found when the
-// record is written deletes the thread again.
+// assistantProjects is the choice of projects an assistant serves: every
+// project, those added later included, or the ones ids names.
+type assistantProjects struct {
+	all bool
+	ids []string
+}
+
+// checkAssistantProjects refuses an empty choice and a project this
+// computer does not have, and returns the ids without repeats.
+func (a *App) checkAssistantProjects(choice assistantProjects) (assistantProjects, error) {
+	if choice.all {
+		return assistantProjects{all: true}, nil
+	}
+	var ids []string
+	for _, id := range choice.ids {
+		id = strings.TrimSpace(id)
+		if id == "" || slices.Contains(ids, id) {
+			continue
+		}
+		if _, err := a.store.GetProject(id); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return assistantProjects{}, errorsx.Public(transport.ErrCodeBadParams, fmt.Sprintf("There is no project %s on this computer.", id), err)
+			}
+			return assistantProjects{}, fmt.Errorf("read project %s: %w", id, err)
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return assistantProjects{}, errorsx.Public(transport.ErrCodeBadParams, "Choose at least one project for the assistant, or all projects.", nil)
+	}
+	return assistantProjects{ids: ids}, nil
+}
+
+// createAssistant makes the home, the thread outside every project in it
+// and the record, and broadcasts the row once it is an assistant's. A
+// clash found when the record is written deletes the thread and the home
+// again.
 func (a *App) createAssistant(ctx context.Context, spec assistantSpec) (store.Thread, store.StandingAgent, error) {
 	name := strings.TrimSpace(spec.name)
 	if err := a.store.CheckAssistantName(name); err != nil {
 		return store.Thread{}, store.StandingAgent{}, err
 	}
-	if a.configDir == "" {
-		return store.Thread{}, store.StandingAgent{}, errors.New("create an assistant: no config directory")
+	projects, err := a.checkAssistantProjects(spec.projects)
+	if err != nil {
+		return store.Thread{}, store.StandingAgent{}, err
 	}
 	endWork, err := a.workAdmission.begin(ctx)
 	if err != nil {
 		return store.Thread{}, store.StandingAgent{}, err
 	}
 	defer endWork()
-	opts := spec.thread
-	opts.Title, opts.Mode, opts.GroupID = name, string(threadmode.ModeChat), ""
-	thread, err := a.createThreadRow(ctx, opts, false)
-	if err != nil {
-		return store.Thread{}, store.StandingAgent{}, err
-	}
-	agent, err := a.makeAssistantRecord(thread, spec.creatorAgentID)
-	if err != nil {
+	thread, agent, err := a.recordNewAssistant(func(home string) (store.Thread, error) {
+		return a.createThreadRow(ctx, CreateThreadOptions{
+			Title:           name,
+			Mode:            string(threadmode.ModeChat),
+			Provider:        spec.provider,
+			Model:           spec.model,
+			ReasoningEffort: spec.effort,
+			RuntimeMode:     spec.runtimeMode,
+			home:            home,
+		}, false)
+	}, func(thread store.Thread) {
 		if err := a.DeleteThread(thread.ID); err != nil {
 			log.Printf("assistants: delete the thread %s of an assistant that was not created: %v", thread.ID, err)
 		}
+	}, projects, spec.creatorAgentID)
+	if err != nil {
 		return store.Thread{}, store.StandingAgent{}, err
 	}
 	created, err := a.store.GetThread(thread.ID)
@@ -152,37 +189,40 @@ func (a *App) createAssistant(ctx context.Context, spec assistantSpec) (store.Th
 	return created, agent, nil
 }
 
-// makeAssistantRecord makes thread an assistant's current thread: its home
-// with the README, then the record. A record that cannot be written takes
-// the home with it.
-func (a *App) makeAssistantRecord(thread store.Thread, creatorAgentID string) (store.StandingAgent, error) {
+// recordNewAssistant makes a new assistant's id and its home under the
+// config directory, has place put the assistant's current thread in that
+// home, writes the README and records the assistant serving projects. A
+// failure after the home exists removes it again, and one after place
+// succeeded hands the thread to unplace first.
+func (a *App) recordNewAssistant(
+	place func(home string) (store.Thread, error), unplace func(store.Thread),
+	projects assistantProjects, creatorAgentID string,
+) (store.Thread, store.StandingAgent, error) {
 	if a.configDir == "" {
-		return store.StandingAgent{}, errors.New("create an assistant: no config directory")
+		return store.Thread{}, store.StandingAgent{}, errors.New("create an assistant: no config directory")
 	}
-	agent := store.StandingAgent{
-		ID:             entityid.New(),
-		ThreadID:       thread.ID,
-		CreatorAgentID: creatorAgentID,
-		CreatedAt:      time.Now().UnixMilli(),
-	}
+	agent := store.StandingAgent{ID: entityid.New(), CreatorAgentID: creatorAgentID, AllProjects: projects.all, CreatedAt: time.Now().UnixMilli()}
 	agent.Home = filepath.Join(a.configDir, "agents", agent.ID)
 	if err := os.MkdirAll(agent.Home, 0o700); err != nil {
-		return store.StandingAgent{}, fmt.Errorf("create the assistant's home: %w", err)
+		return store.Thread{}, store.StandingAgent{}, fmt.Errorf("create the assistant's home: %w", err)
 	}
-	removeHome := func() {
-		if err := os.RemoveAll(agent.Home); err != nil {
-			log.Printf("assistants: remove the home %s of an assistant that was not created: %v", agent.Home, err)
+	thread, err := place(agent.Home)
+	if err == nil {
+		agent.ThreadID = thread.ID
+		if err = a.writeAssistantReadme(agent, thread); err == nil {
+			err = a.store.CreateStandingAgent(agent, projects.ids...)
+		}
+		if err != nil {
+			unplace(thread)
 		}
 	}
-	if err := a.writeAssistantReadme(agent, thread); err != nil {
-		removeHome()
-		return store.StandingAgent{}, err
+	if err != nil {
+		if removeErr := os.RemoveAll(agent.Home); removeErr != nil {
+			log.Printf("assistants: remove the home %s of an assistant that was not created: %v", agent.Home, removeErr)
+		}
+		return store.Thread{}, store.StandingAgent{}, err
 	}
-	if err := a.store.CreateStandingAgent(agent); err != nil {
-		removeHome()
-		return store.StandingAgent{}, err
-	}
-	return agent, nil
+	return thread, agent, nil
 }
 
 // queueAssistantMessage queues an app-written message that opens an
@@ -232,6 +272,82 @@ func (a *App) GetStandingAgent(threadID string) (*store.StandingAgent, error) {
 		return nil, err
 	}
 	return &row, nil
+}
+
+// AssistantDependents counts the threads that live under an assistant
+// besides its current thread, which deleting it deletes too (ruling 39).
+type AssistantDependents struct {
+	PastThreads int `json:"pastThreads"`
+	Helpers     int `json:"helpers"`
+}
+
+// describe names the counts for a sentence: "2 past threads and 1 helper".
+func (d AssistantDependents) describe() string {
+	var parts []string
+	for _, count := range []struct {
+		n          int
+		one, other string
+	}{{d.PastThreads, "past thread", "past threads"}, {d.Helpers, "helper", "helpers"}} {
+		switch {
+		case count.n == 1:
+			parts = append(parts, "1 "+count.one)
+		case count.n > 1:
+			parts = append(parts, fmt.Sprintf("%d %s", count.n, count.other))
+		}
+	}
+	return strings.Join(parts, " and ")
+}
+
+// GetAssistantDependents counts the past threads and helpers of the
+// assistant whose current thread this is, for its delete confirmation;
+// zero for any other thread.
+//
+//ao:scope threads:read
+func (a *App) GetAssistantDependents(threadID string) (AssistantDependents, error) {
+	past, helpers, err := a.store.AssistantDependentsOf(threadID)
+	if err != nil {
+		return AssistantDependents{}, err
+	}
+	return AssistantDependents{PastThreads: past, Helpers: helpers}, nil
+}
+
+// deleteAssistantDependents is the thread delete's AssistantDependents: it
+// deletes what lives under the assistant whose current thread threadID is,
+// besides that thread, its past threads and its helpers (ruling 39), each
+// through DeleteThread under its own lock. One a delete would refuse (a
+// thread being moved) refuses them all before any is deleted. Nothing for
+// any other thread.
+func (a *App) deleteAssistantDependents(threadID string) error {
+	agent, found, err := a.store.GetStandingAgent(threadID)
+	if err != nil || !found {
+		return err
+	}
+	dependents, err := a.store.AssistantDependentThreadIDs(agent.ID)
+	if err != nil {
+		return err
+	}
+	for _, id := range dependents {
+		if err := a.threadApplication().CheckMutable(id); err != nil {
+			return assistantDependentError(id, err)
+		}
+	}
+	for _, id := range dependents {
+		if err := a.DeleteThread(id); err != nil {
+			return assistantDependentError(id, err)
+		}
+	}
+	return nil
+}
+
+// assistantDependentError says which thread under an assistant stopped its
+// delete. A transfer's refusal is stated, not wrapped: the dispatcher
+// reports a wrapped one as the assistant's own transfer.
+func assistantDependentError(threadID string, err error) error {
+	var transfer *store.ThreadTransferError
+	if errors.As(err, &transfer) {
+		return fmt.Errorf("thread %s, which lives under this assistant, is being transferred to another computer (%s), so the assistant was not deleted; finish or cancel that transfer first", threadID, transfer.OperationID)
+	}
+	return fmt.Errorf("delete thread %s, which lives under the assistant: %w", threadID, err)
 }
 
 // assistantRoles is the role-line cache. Its first use subscribes it to
@@ -321,17 +437,17 @@ func (a *App) broadcastThreadRowsByID(ids []string) {
 }
 
 // broadcastSpawnerRow re-emits the assistant that spawned child, or whose
-// past thread child is: the agent row's archivedChildCount moves when such
-// a thread is archived, unarchived or deleted. Any other spawner carries no
-// count, so nothing is said for it. Log-and-continue, as announceThread:
-// the child's change is already durable and the sidebar converges on the
-// next ListThreads.
+// past thread or helper child is: the agent row's archivedChildCounts move
+// when such a thread is archived, unarchived or deleted. Any other spawner
+// carries no count, so nothing is said for it. Log-and-continue, as
+// announceThread: the child's change is already durable and the sidebar
+// converges on the next ListThreads.
 func (a *App) broadcastSpawnerRow(child store.Thread) {
 	parentID := child.SpawnedByThreadID
-	if child.PastAgentID != "" {
-		agent, found, err := a.store.GetAgent(child.PastAgentID)
+	if owner := cmp.Or(child.PastAgentID, child.HelperOfAgentID); owner != "" {
+		agent, found, err := a.store.GetAgent(owner)
 		if err != nil {
-			log.Printf("broadcast the assistant of past thread %s: %v", child.ID, err)
+			log.Printf("broadcast the assistant of thread %s: %v", child.ID, err)
 			return
 		}
 		if found {
@@ -369,6 +485,35 @@ func (a *App) SetStandingAgentNotifyOnTick(threadID string, on bool) (store.Stan
 	return row, nil
 }
 
+// SetAssistantProjects sets the projects the assistant whose current
+// thread this is serves: every project when all is set, otherwise the ones
+// named, at least one. The next session start reads them; the thread's row
+// is broadcast so the sidebar card names them.
+//
+//ao:scope threads:autonomy
+func (a *App) SetAssistantProjects(threadID string, all bool, projectIDs []string) (store.StandingAgent, error) {
+	agent, found, err := a.store.GetStandingAgent(threadID)
+	if err != nil {
+		return store.StandingAgent{}, err
+	}
+	if !found {
+		return store.StandingAgent{}, errNotAssistantThread
+	}
+	choice, err := a.checkAssistantProjects(assistantProjects{all: all, ids: projectIDs})
+	if err != nil {
+		return store.StandingAgent{}, err
+	}
+	agent, found, err = a.store.SetAgentProjects(agent.ID, choice.all, choice.ids)
+	if err != nil {
+		return store.StandingAgent{}, err
+	}
+	if !found {
+		return store.StandingAgent{}, errNotAssistantThread
+	}
+	a.announceThread(triage.ThreadActionFull, threadID)
+	return agent, nil
+}
+
 // assistantCurrentThread maps a thread a handoff superseded to its
 // assistant's current thread; ok is false for every other thread. A failed
 // read is logged and reads as not superseded, so the message goes where it
@@ -384,12 +529,6 @@ func (a *App) assistantCurrentThread(threadID string) (string, bool) {
 
 // writeAssistantReadme writes the home's README unless one is there.
 func (a *App) writeAssistantReadme(agent store.StandingAgent, thread store.Thread) error {
-	project := thread.ProjectID
-	if row, err := a.store.GetProject(thread.ProjectID); err == nil {
-		project = fmt.Sprintf("%s (%s)", row.Name, row.Path)
-	} else {
-		log.Printf("assistants: read project %s for the README of %s: %v", thread.ProjectID, agent.ID, err)
-	}
 	file, err := os.OpenFile(filepath.Join(agent.Home, "README.md"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if errors.Is(err, fs.ErrExist) {
 		return nil
@@ -397,14 +536,14 @@ func (a *App) writeAssistantReadme(agent store.StandingAgent, thread store.Threa
 	if err != nil {
 		return fmt.Errorf("write the assistant's README: %w", err)
 	}
-	_, writeErr := file.WriteString(assistantReadme(agent, thread, project))
+	_, writeErr := file.WriteString(assistantReadme(agent, thread))
 	if err := errors.Join(writeErr, file.Close()); err != nil {
 		return fmt.Errorf("write the assistant's README: %w", err)
 	}
 	return nil
 }
 
-func assistantReadme(agent store.StandingAgent, thread store.Thread, project string) string {
+func assistantReadme(agent store.StandingAgent, thread store.Thread) string {
 	return fmt.Sprintf(`# %s
 
 This directory is the home of an assistant (a standing agent) in Agent
@@ -415,7 +554,6 @@ thread for it; this home stays.
 - Assistant: %s
 - Assistant id: %s
 - First thread: %s
-- Project: %s
 
 ## What it can register
 
@@ -435,7 +573,7 @@ A script outside the app can message the assistant's thread:
 What pinning, groups, archive, the done fold and unread dots do in the
 sidebar is in the Organizing paragraph of the thread tools guide every
 session carries.
-`, thread.Title, thread.Title, agent.ID, thread.ID, project)
+`, thread.Title, thread.Title, agent.ID, thread.ID)
 }
 
 // standingAgentSession is what an assistant's sessions start with beside the
@@ -444,26 +582,18 @@ type standingAgentSession struct {
 	// Block is agenthome.SessionBlock, read from the record (name, id,
 	// current thread, home, the creator it reports to). It changes only
 	// with the record, so a home file's edit keeps the provider's prompt
-	// cache.
+	// cache; the home files reach the session in its memory
+	// (readSessionMemory).
 	Block string
-	// Hooks deliver each context file of the home (agenthome.ContextFiles)
-	// at the session's start and after each compaction, and at a resume
-	// when the thread's model does not hold the file as it reads now.
-	Hooks []provider.SessionStartHook
-	// Receipts keeps what the hooks delivered; nil without hooks.
-	Receipts *provider.SessionStartReceipts
-	// Problems are the context file reads that failed for a reason other
-	// than absence, and a hook that cannot be built; the caller surfaces
-	// them.
-	Problems []error
+	// Agent is the assistant; nil for any other thread.
+	Agent *store.StandingAgent
 }
 
 // readStandingAgentSession reads what the thread's sessions start with as an
 // assistant's current thread; the zero value for any other thread, a past
 // one included. It is read at every start and resume, so a rename reaches
-// the next session. resumeRef is the provider session the start resumes,
-// "" for a fresh one.
-func (a *App) readStandingAgentSession(thread store.Thread, resumeRef string) (standingAgentSession, error) {
+// the next session.
+func (a *App) readStandingAgentSession(thread store.Thread) (standingAgentSession, error) {
 	row, found, err := a.store.GetStandingAgent(thread.ID)
 	if err != nil {
 		return standingAgentSession{}, fmt.Errorf("read the assistant of %s: %w", thread.ID, err)
@@ -475,85 +605,7 @@ func (a *App) readStandingAgentSession(thread store.Thread, resumeRef string) (s
 	if row.CreatorAgentID != "" {
 		identity.CreatorName, identity.CreatorThreadID = a.assistantName(row.CreatorAgentID)
 	}
-	session := standingAgentSession{Block: agenthome.SessionBlock(identity)}
-	if row.Home == "" {
-		return session, nil
-	}
-	var received map[string]string
-	if resumeRef != "" {
-		received, err = a.store.SessionStartReceipts(thread.ID, resumeRef)
-		if err != nil {
-			return standingAgentSession{}, fmt.Errorf("read what the home files' hooks delivered to %s: %w", thread.ID, err)
-		}
-	}
-	session.Hooks, session.Problems = standingAgentHooks(row.Home, resumeRef != "", received, os.Executable)
-	if len(session.Hooks) > 0 {
-		session.Receipts = a.sessionStartReceipts(thread.ID)
-	}
-	return session, nil
-}
-
-// standingAgentHooks are the SessionStart hooks that deliver each context
-// file of home by running this executable, which locate finds, and the
-// problems of reading the files. For a resume, received is the digest of what
-// each hook last delivered to the thread's model, and a hook whose file now
-// reads otherwise runs at the resume.
-func standingAgentHooks(home string, resume bool, received map[string]string, locate func() (string, error)) ([]provider.SessionStartHook, []error) {
-	var problems []error
-	texts := make([]string, len(agenthome.ContextFiles))
-	for i, file := range agenthome.ContextFiles {
-		text, problem := agenthome.ReadContext(home, file)
-		if problem != nil {
-			problems = append(problems, problem)
-		}
-		texts[i] = text
-	}
-	executable, err := locate()
-	if err != nil {
-		return nil, append(problems, fmt.Errorf("locate this executable for the SessionStart hooks that deliver the home files: %w", err))
-	}
-	hooks := make([]provider.SessionStartHook, 0, len(agenthome.ContextFiles))
-	for i, file := range agenthome.ContextFiles {
-		command, err := agenthome.HookCommand(executable, home, file)
-		if err != nil {
-			return nil, append(problems, fmt.Errorf("build the SessionStart hook that delivers %s: %w", file.Name, err))
-		}
-		hooks = append(hooks, provider.SessionStartHook{
-			Label:   file.Name,
-			Command: command,
-			Heading: file.Heading,
-			Ending:  file.Ending,
-			Stamp:   agenthome.StampPrefix,
-			Resume:  resume && received[file.Name] != agenthome.ContextDigest(texts[i]),
-		})
-	}
-	return hooks, problems
-}
-
-// sessionStartReceipts keeps, per hook, the digest of what threadID's model
-// received from its home files' hooks (store.SessionStartReceipts).
-func (a *App) sessionStartReceipts(threadID string) *provider.SessionStartReceipts {
-	return &provider.SessionStartReceipts{
-		Keep: func(sessionRef, label, context string) error {
-			return a.store.PutSessionStartReceipt(threadID, sessionRef, label, agenthome.ContextDigest(context))
-		},
-		Forget: func() error {
-			return a.store.ForgetSessionStartReceipts(threadID)
-		},
-	}
-}
-
-// forgetSessionStartReceiptsAfterCut forgets what the hooks delivered to
-// threadID's model after a cut of its history that may have removed it, so
-// the next resume runs every hook. The cut has happened, so a failure is a
-// warning on the thread.
-func (a *App) forgetSessionStartReceiptsAfterCut(threadID string) {
-	if err := a.store.ForgetSessionStartReceipts(threadID); err != nil {
-		log.Printf("standing agent %s: forget the home files' receipts after a cut of the history: %v", threadID, err)
-		if err := a.emitNoticeToThread(threadID, noticeKindWarning, "Agent Overflow could not record that this rollback removed home files a resume delivered, so the next resume may not deliver them again: "+err.Error()+"."); err != nil {
-			log.Printf("standing agent %s: %v", threadID, err)
-		}
-	}
+	return standingAgentSession{Block: agenthome.SessionBlock(identity), Agent: &row}, nil
 }
 
 // assistantName reads an assistant's name and current thread, empty when it
@@ -572,33 +624,6 @@ func (a *App) assistantName(agentID string) (name, threadID string) {
 		return "", agent.ThreadID
 	}
 	return thread.Title, agent.ThreadID
-}
-
-// reportStandingAgentCompactionProblems reports the home files of the
-// assistant whose current thread compacted that cannot be read, as its
-// session start does: the compaction runs the hooks that deliver them.
-func (a *App) reportStandingAgentCompactionProblems(threadID string) {
-	row, found, err := a.store.GetStandingAgent(threadID)
-	if err != nil {
-		log.Printf("standing agent %s: read the assistant after a compaction: %v", threadID, err)
-		return
-	}
-	if found && row.Home != "" {
-		a.reportStandingAgentHomeProblems(threadID, agenthome.Problems(row.Home))
-	}
-}
-
-// reportStandingAgentHomeProblems logs each failed read of a standing agent's
-// home files with its path and puts it on the thread as a warning row, after
-// the start succeeds or fails: its sessions get a notice about it until it
-// can be read, and the person watching the agent has to know.
-func (a *App) reportStandingAgentHomeProblems(threadID string, problems []error) {
-	for _, problem := range problems {
-		log.Printf("standing agent %s: %v", threadID, problem)
-		if err := a.emitNoticeToThread(threadID, noticeKindWarning, "One of this standing agent's home files could not be read, and its sessions receive a notice about it: "+problem.Error()+"."); err != nil {
-			log.Printf("standing agent %s: %v", threadID, err)
-		}
-	}
 }
 
 // joinPromptParts joins the non-empty parts of an appended prompt with a

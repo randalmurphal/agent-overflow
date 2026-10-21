@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 
+	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/logging"
 	"agent-overflow/internal/provider"
 )
@@ -26,9 +27,17 @@ type Config struct {
 	// because the value is a process constant: letting the reconciler see
 	// it would put a never-changing field in every restart diff.
 	AdditionalDirs []string
-	Resume         string // session ID to resume, empty for new
-	ResumeAt       string // transcript UUID to resume at inside Resume
-	ForkSession    bool
+	// AccessDirs are folders outside the workspace the session may read and
+	// write as it may the workspace, granted through
+	// `permissions.additionalDirectories` in the inline `--settings`.
+	// Unlike `--add-dir`, that loads no `.claude/skills`, CLAUDE.md or
+	// plugin settings from them, so a session writing one cannot add to
+	// what later sessions load (docs/specs/memory.md, "Writable folders").
+	// Stamped at spawn like AdditionalDirs.
+	AccessDirs  []string
+	Resume      string // session ID to resume, empty for new
+	ResumeAt    string // transcript UUID to resume at inside Resume
+	ForkSession bool
 	// SystemPrompt REPLACES the CLI's default system prompt. It reaches the
 	// process as `--system-prompt-file <path>` (a 0600 file in
 	// SystemPromptDir written at spawn and removed on Close) rather than as
@@ -53,6 +62,13 @@ type Config struct {
 	// SessionStartReceipts keeps what the hooks delivered; nil keeps
 	// nothing.
 	SessionStartReceipts *provider.SessionStartReceipts
+	// NativeMemoryOff turns Claude Code's auto memory off for the session:
+	// `autoMemoryEnabled: false` in the inline `--settings`, the
+	// flagSettings layer, which outranks the user's settings files without
+	// touching them, and AutoMemoryOffEnv=1 in the same block's env, which
+	// outranks the variable wherever else it is set. Stamped at spawn like
+	// AppendSystemPrompt.
+	NativeMemoryOff bool
 	// SystemPromptDir is the existing directory the SystemPrompt and
 	// AppendSystemPrompt files are created in. Required when either is set.
 	// It must be a directory its owner sweeps, because a process that dies
@@ -236,6 +252,22 @@ func claudeSpawnEnv(cfg Config) map[string]string {
 	env := withClaudeTaskListEnv(withClaudeCrossSessionEnv(cfg.Env, cfg), cfg.TaskListID)
 	env = WithCommandTimeoutEnv(env, cfg.CommandTimeoutHours)
 	return withClaudeSessionEnvDefaults(env, cfg.DisableTodoReminders)
+}
+
+// AutoMemoryOffEnv is claudeconfig.AutoMemoryOffEnv. The CLI copies each
+// settings layer's `env` over its environment at startup, the inline
+// `--settings` last but policy, so a value there outranks one the process
+// inherits or the user's settings files set
+// (docs/references/claude-wire.md, "Auto memory switch").
+const AutoMemoryOffEnv = claudeconfig.AutoMemoryOffEnv
+
+// NativeMemoryOffEnv is the inline settings' env entry NativeMemoryOff
+// states, nil when it is off.
+func NativeMemoryOffEnv(off bool) map[string]string {
+	if !off {
+		return nil
+	}
+	return map[string]string{AutoMemoryOffEnv: "1"}
 }
 
 // withClaudeTaskListEnv pins CLAUDE_CODE_TASK_LIST_ID to taskListID,

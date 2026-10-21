@@ -1,6 +1,7 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -124,15 +125,11 @@ func (t threadToolsApp) resolveSpawnOptions(origin threadRequestOrigin, call thr
 			return CreateThreadOptions{}, err
 		}
 	}
-	opts := CreateThreadOptions{
-		ProjectID:       caller.ProjectID,
-		Title:           call.Title,
-		Provider:        origin.inherit.Provider,
-		Model:           origin.inherit.Model,
-		Mode:            origin.inherit.Mode,
-		ReasoningEffort: origin.inherit.Effort,
-		RuntimeMode:     origin.inherit.RuntimeMode,
+	opts, err := t.spawnSettings(origin, call)
+	if err != nil {
+		return CreateThreadOptions{}, err
 	}
+	opts.Title, opts.ProjectID = call.Title, caller.ProjectID
 	if call.ProjectID != "" {
 		if _, err := t.app.store.GetProject(call.ProjectID); err != nil {
 			return CreateThreadOptions{}, errorsx.Public(threadtools.CodeNotFound,
@@ -140,23 +137,120 @@ func (t threadToolsApp) resolveSpawnOptions(origin threadRequestOrigin, call thr
 		}
 		opts.ProjectID = call.ProjectID
 	}
-	if opts.ProjectID == "" {
+	owner, err := t.spawnOwner(caller)
+	if err != nil {
+		return CreateThreadOptions{}, err
+	}
+	if owner != nil {
+		if err := t.placeAssistantSpawn(&opts, *owner, call); err != nil {
+			return CreateThreadOptions{}, err
+		}
+	}
+	if opts.ProjectID == "" && opts.home == "" {
 		return CreateThreadOptions{}, errorsx.Public(threadtools.CodeInvalidRequest,
 			"A spawn needs a project: this thread has none to inherit. thread_options lists this computer's projects.", nil)
 	}
-	if call.Mode != "" {
-		opts.Mode = call.Mode
-	}
-	if call.RuntimeMode != "" {
-		opts.RuntimeMode = call.RuntimeMode
-	}
-	if err := t.applySpawnModel(&opts, call); err != nil {
-		return CreateThreadOptions{}, err
+	if opts.home != "" {
+		return opts, nil
 	}
 	if err := t.applySpawnWorkspace(&opts, caller, call); err != nil {
 		return CreateThreadOptions{}, err
 	}
 	return opts, nil
+}
+
+// spawnSettings resolves the provider settings a fresh thread a call starts
+// runs with: its caller's provider, model, mode, effort and runtime mode,
+// with the call's overrides, checked against this computer's catalogs.
+// Where the thread lives is the caller's to add. A spawn and an assistant
+// that thread_new_assistant creates both take them.
+func (t threadToolsApp) spawnSettings(origin threadRequestOrigin, call threadtools.SpawnCall) (CreateThreadOptions, error) {
+	opts := CreateThreadOptions{
+		Provider:        origin.inherit.Provider,
+		Model:           origin.inherit.Model,
+		Mode:            cmp.Or(call.Mode, origin.inherit.Mode),
+		ReasoningEffort: origin.inherit.Effort,
+		RuntimeMode:     cmp.Or(call.RuntimeMode, origin.inherit.RuntimeMode),
+	}
+	if err := t.applySpawnModel(&opts, call); err != nil {
+		return CreateThreadOptions{}, err
+	}
+	return opts, nil
+}
+
+// spawnOwner is the assistant a local caller spawns for: the one whose
+// current thread it is, or the one it is a helper of; nil for any other
+// thread (docs/specs/standing-agents.md, ruling 38).
+func (t threadToolsApp) spawnOwner(caller store.Thread) (*store.StandingAgent, error) {
+	agentID := cmp.Or(caller.AgentID, caller.HelperOfAgentID)
+	if agentID == "" {
+		return nil, nil
+	}
+	agent, found, err := t.app.store.GetAgent(agentID)
+	if err != nil || !found {
+		return nil, err
+	}
+	return &agent, nil
+}
+
+// placeAssistantSpawn places a spawn for owner: into a project it serves,
+// or, naming none, as a helper of its own work, outside every project in
+// its home. A project it does not serve is refused naming the ones it does.
+func (t threadToolsApp) placeAssistantSpawn(opts *CreateThreadOptions, owner store.StandingAgent, call threadtools.SpawnCall) error {
+	if call.ProjectID == "" {
+		if call.WorktreeBranch != "" || call.WorkspacePath != "" {
+			return errorsx.Public(threadtools.CodeInvalidRequest,
+				"A spawn without project_id is a helper of your own work in your home, so it takes no worktree or workspace_path. Name a project_id you serve to work in a checkout.", nil)
+		}
+		if call.Group != "" || (call.Placement != "" && call.Placement != threadtools.PlacementNested) {
+			return errorsx.Public(threadtools.CodeInvalidRequest,
+				"A spawn without project_id is a helper of your own work, listed under you outside every project, so it takes no group or placement. Name a project_id you serve to group or place the thread there.", nil)
+		}
+		opts.ProjectID, opts.home, opts.helperOfAgentID = "", owner.Home, owner.ID
+		return nil
+	}
+	return t.requireServedProject(owner, call.ProjectID)
+}
+
+// requireServedProject refuses work for owner in a project it does not
+// serve, naming the ones it does: a spawn or fork there, or an assistant it
+// creates to serve it. What it serves is what its sessions are told it
+// serves (store.ServedProjects): every unarchived project when it serves
+// all of them, otherwise the ones it names.
+func (t threadToolsApp) requireServedProject(owner store.StandingAgent, projectID string) error {
+	served, err := t.app.store.ServedProjects(owner.ID)
+	if err != nil {
+		return err
+	}
+	names := make([]string, 0, len(served))
+	for _, project := range served {
+		if project.ID == projectID {
+			return nil
+		}
+		names = append(names, fmt.Sprintf("%s (%s)", project.Name, project.ID))
+	}
+	serves := "no project"
+	if len(names) > 0 {
+		serves = strings.Join(names, ", ")
+	}
+	return errorsx.Public(threadtools.CodeInvalidRequest,
+		fmt.Sprintf("This assistant serves %s, not project %s. Name a project it serves, or ask the user to add this one from the assistant's menu.", serves, projectID), nil)
+}
+
+// requireAssistantFork refuses an assistant's fork of a thread it could
+// not have spawned: one in a project it does not serve, or one outside
+// every project that lives under another assistant. A fork stays where its
+// source is, so a fork of the assistant's own thread or helper is its
+// helper.
+func (t threadToolsApp) requireAssistantFork(owner store.StandingAgent, source store.Thread) error {
+	if source.ProjectID != "" {
+		return t.requireServedProject(owner, source.ProjectID)
+	}
+	if source.OwnerAgentID() != owner.ID {
+		return errorsx.Public(threadtools.CodeInvalidRequest,
+			fmt.Sprintf("Thread %s is in no project you serve and does not live under you, so you cannot fork it.", source.ID), nil)
+	}
+	return nil
 }
 
 // forkSpawnOptions resolves what a `from_thread` spawn runs with.
@@ -176,6 +270,21 @@ func (t threadToolsApp) forkSpawnOptions(origin threadRequestOrigin, call thread
 	source, err := t.localThread(call.FromThread)
 	if err != nil {
 		return CreateThreadOptions{}, err
+	}
+	if !origin.foreign {
+		caller, err := t.localThread(origin.caller.ThreadID)
+		if err != nil {
+			return CreateThreadOptions{}, err
+		}
+		owner, err := t.spawnOwner(caller)
+		if err != nil {
+			return CreateThreadOptions{}, err
+		}
+		if owner != nil {
+			if err := t.requireAssistantFork(*owner, source); err != nil {
+				return CreateThreadOptions{}, err
+			}
+		}
 	}
 	if call.Provider != "" && call.Provider != source.Provider {
 		return CreateThreadOptions{}, errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(

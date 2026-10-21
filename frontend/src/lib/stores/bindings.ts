@@ -44,6 +44,7 @@ export {
   ForkSideChat,
   PromoteScratchThread,
   GetStandingAgent,
+  GetAssistantDependents,
   BeginThreadTransfer,
   GetThreadTransferDestinationProject,
   BindThreadTransferDestination,
@@ -83,6 +84,7 @@ export {
   ListThreadGroups,
   ListArchivedSpawnedThreads,
   CreateAssistant,
+  SetAssistantProjects,
   StartNextAssistantThread,
   CreateThreadGroup,
   RenameThreadGroup,
@@ -311,6 +313,9 @@ export {
   // Provider detection
   GetProviderStatuses,
   GetModelsForProvider,
+  // Whether each provider's own memory is on as the user configured it
+  // (Settings, Memory).
+  GetNativeMemoryStatus,
   // Composer command menu sources. GetClaudeSlashCommands is a pure read
   // of what the zero-token account probe left behind (never spawns) and
   // is available on a cold thread; GetCodexSkills and GetClaudeSkills
@@ -420,13 +425,6 @@ export {
   GetSoundFiles,
   PutSoundFile,
   DeleteSoundFile,
-
-  // The shipped skills tree and its install in each provider home
-  // (docs/specs/standing-agents.md, "Skills library").
-  GetSkillsLibrary,
-  InstallSkills,
-  UpdateSkills,
-  RemoveSkills,
 
   // Review pane diffs (workspace / branch / per-commit / edits). An Open*
   // call returns a connection-owned handle and the first chunk; the rest

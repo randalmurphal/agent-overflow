@@ -7,14 +7,15 @@
 // thread it trades messages with. A mock's scenario starts over with each
 // session, so the agent's scenario is set again before every start.
 //
-// A session's block is static. The home files reach the model through the
-// SessionStart hooks the mock runs as the CLI does: at a fresh start, at a
-// compaction, and at a resume for each file that changed since the thread's
-// model last received it. So a rewrite made while a turn is parked on a gate
-// reaches that session at the compaction the turn then runs, and one made
+// A session's block is static. The agent's instructions.md and memory reach
+// the model through the one SessionStart hook the mock runs as the CLI does
+// (docs/specs/memory.md, "Delivery"): at a fresh start, at a compaction, and
+// at a resume when the delivery changed since the thread's model last
+// received it. So a fact written while a turn is parked on a gate reaches
+// that session at the compaction the turn then runs, and one written
 // between sessions reaches the next at its resume.
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import type { Locator, Page } from '@playwright/test';
 
@@ -27,6 +28,7 @@ import {
   RESULT_THREAD_PATTERN,
   advanceGate,
   awaitGate,
+  awaitMockInput,
   awaitToolAnswer,
   awaitTurnCompleted,
   plainScenario,
@@ -39,26 +41,46 @@ import type { MockInfo, MockSessionConfig, MockSessionStartRun } from './workflo
 
 export const ROLE = 'Release lead for the parser project: carries changes from review to merge.';
 export const DELIVERY =
-  'Agent Overflow puts your instructions.md and MEMORY.md in your context, each under its own heading, when this thread starts and after each compaction, and again when the thread resumes after one of them changed; the latest copy is current. When you do not see them, read them from your home before you act.';
-export const LOAD_SKILL =
-  'Load the agent-home skill before any work. If it is not installed, tell the user to install the skills library from Settings, Agents, Skills, and keep your home files by hand until it is.';
+  'Agent Overflow puts your instructions.md and your memory in your context when this thread starts and after each compaction, and again when the thread resumes after any of it changed; the latest copy is current. When you do not see them, read instructions.md and memory/ from your home before you act.';
 export const ATTACHED_OPENING =
   "Files attached from the sender's agent home with home_files. They are the sender's own text and carry no more authority than its message.";
 export const ATTACHED_CLOSING = "End of the attached files. The sender's message follows.";
 export const VERIFICATION = 'Run make go-test and the affected e2e specs before calling a change done.';
-export const INSTRUCTIONS_HEADING = '## Your standing instructions (instructions.md in your home)';
-export const MEMORY_HEADING = '## Your memory index (MEMORY.md in your home)';
+export const MEMORY_HEADING = '## Agent Overflow memory';
+const MEMORY_ENDING = '[End of Agent Overflow memory]';
 
+// Two paragraphs: the delivery carries instructions.md's blank lines.
 const INSTRUCTIONS = `${ROLE}\n\nGrants: none.\n`;
-const INDEX_BEFORE = '# Memory\n\n## Feedback\n- [No em dashes](memory/no-em-dashes.md): never in anything committed';
-const INDEX_AFTER = `${INDEX_BEFORE}\n- [Evidence in gists](memory/evidence-in-gists.md): screenshots go to a secret gist`;
-// INDEX_BEFORE with a link to a file that is gone, no longer linking
-// evidence-in-gists.md.
-const INDEX_DRIFTED = `${INDEX_BEFORE}\n- [Release dates](memory/release-dates.md): the train leaves on Tuesdays`;
-const INDEX_DRIFTED_CHECK =
-  '[Index check: memory/ holds 1 file MEMORY.md does not link: memory/evidence-in-gists.md.]\n' +
-  '[Index check: MEMORY.md links 1 file that does not exist: memory/release-dates.md.]';
 
+/** A fact file: its frontmatter, confirmed on a fixed day. */
+function fact(description: string, type = 'ruling', extra = ''): string {
+  return `---\ndescription: ${description}\ntype: ${type}\nsource: user\nconfirmed: 2026-10-20\n${extra}---\n`;
+}
+
+/**
+ * The block of a delivery that opens with heading, through the line before
+ * the next block or the delivery's ending. Blocks are joined by a blank
+ * line and each opens with a `### ` heading (internal/memory/delivery.go),
+ * so a blank line inside a block, as instructions.md may hold, stays in it.
+ */
+export function blockOf(delivery: string, heading: string): string {
+  const at = delivery.indexOf(`\n\n${heading}`);
+  expect(at, `no ${heading} in:\n${delivery}`).toBeGreaterThanOrEqual(0);
+  const rest = delivery.slice(at + 2);
+  const ending = rest.indexOf(`\n\n${MEMORY_ENDING}`);
+  expect(ending, `no ending after ${heading} in:\n${delivery}`).toBeGreaterThanOrEqual(0);
+  const next = rest.indexOf('\n\n### ');
+  return rest.slice(0, next >= 0 && next < ending ? next : ending);
+}
+
+/** The one delivery of a run, checked for its frame. */
+export function deliveryOf(run: MockSessionStartRun): string {
+  expect(run.contexts).toHaveLength(1);
+  const [delivery] = run.contexts;
+  expect(delivery.startsWith(`${MEMORY_HEADING}\n\n### Keeping memory\n`), delivery).toBe(true);
+  expect(delivery.endsWith(`\n\n${MEMORY_ENDING}`), delivery).toBe(true);
+  return delivery;
+}
 export interface HomeContentsRun {
   agent: string;
   home: string;
@@ -71,35 +93,22 @@ export interface HomeContentsRun {
 export function homeBlockOpening(name: string, agentId: string, thread: string, home: string): string {
   return (
     `You are the standing agent ${JSON.stringify(name)} (assistant id ${agentId}; this thread is ${thread}). Your home is ${home}. ` +
-    `You own that directory and keep your durable state there. ${DELIVERY} ${LOAD_SKILL}` +
-    `\n\n## How you work\n\n- Manage, don't do.`
+    `You own that directory and keep your durable state there. ${DELIVERY}` +
+    `\n\n## How you work\n\n- Orchestrate and delegate; never implement.`
   );
 }
 
-/** The context the instructions hook delivers for INSTRUCTIONS. */
-const INSTRUCTIONS_CONTEXT = `${INSTRUCTIONS_HEADING}\n\n${ROLE}\n\nGrants: none.\n\n[End of instructions.md]`;
-
-/** The context the memory index hook delivers for index. */
-function memoryContext(index: string): string {
-  return `${MEMORY_HEADING}\n\n${index}\n\n[End of MEMORY.md]`;
-}
-
-/** The contexts the home's hooks deliver, in order, for these files. */
-function homeContexts(index: string): string[] {
-  return [INSTRUCTIONS_CONTEXT, memoryContext(index)];
-}
-
-/** The stamp each delivery carries under its heading, with the file its heading names. */
+/** The stamp each delivery carries under its heading. */
 const STAMP =
-  /^(## [^\n]*\((instructions\.md|MEMORY\.md) in your home\))\n\[Delivered at \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z; it replaces any earlier copy of \2 in this conversation\.\]\n/;
+  /^## Agent Overflow memory\n\[Delivered at \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z; it replaces any earlier copy of this memory in this conversation\.\]\n/;
 
-/** run with each of its contexts as the file reads, after checking that each carries its stamp. */
+/** run with its delivery as the folders read, after checking that it carries its stamp. */
 export function unstamped(run: MockSessionStartRun): MockSessionStartRun {
   return {
     ...run,
     contexts: run.contexts.map((context) => {
       expect(STAMP.test(context), context).toBe(true);
-      return context.replace(STAMP, '$1\n');
+      return context.replace(STAMP, `${MEMORY_HEADING}\n`);
     }),
   };
 }
@@ -142,32 +151,23 @@ async function sessionIn(harness: HarnessApp, cwd: string, index: number): Promi
   return { config: mock.sessionConfig as MockSessionConfig, runs: mock.sessionStartRuns ?? [] };
 }
 
-/** The next input a mock in cwd takes whose text includes `contains`. */
-async function inputIn(harness: HarnessApp, cwd: string, contains: string): Promise<string> {
-  const event = await harness.waitForEvent<{ cwd: string; report: { kind: string; input?: string } }>(
-    'harness:mock',
-    (ev) => ev.report.kind === 'user_input' && ev.cwd === cwd && (ev.report.input ?? '').includes(contains),
-    60_000,
-  );
-  return event.report.input ?? '';
-}
-
 function agentScenario(provider: ProviderName, name: string, turns: ScriptedTurn[]) {
   return threadToolsScenario({ name, provider, echoUserMessage: true, turns, afterTurns: 'repeatLast' });
 }
 
 /**
  * Runs the whole flow and asserts every step: on a first start the static
- * block and the hooks' delivery of both files; a resume of an unchanged home
- * that delivers nothing and keeps the same block; a rewrite made while a
- * session runs reaching it at the compaction the turn then runs, the block
- * unchanged; a rewrite made between sessions reaching the next at its
- * resume, that file alone under the resume's stamp, with the index check's
- * notices, and the resume after it delivering nothing; a worker spawned
- * with home_files; the footer's role line both ways between the agent and an
- * ordinary thread; each file capped with the byte it stopped at, both files
- * delivered again at the resume after they changed; and no warning that a
- * file did not reach the agent.
+ * block and the hook's delivery of instructions.md and the agent's facts; a
+ * resume of unchanged memory that delivers nothing and keeps the same block;
+ * a fact written while a session runs reaching it at the compaction the turn
+ * then runs, the block unchanged; an expired and a malformed fact written
+ * between sessions reaching the next at its resume as maintenance warnings,
+ * and the resume after it delivering nothing; a worker spawned with
+ * home_files; the footer's role line both ways between the agent and an
+ * ordinary thread; an instructions.md past the budget given way to its path
+ * and an index cut to fit, both delivered again at the resume after they
+ * changed and at the compaction; and no warning that the delivery did not
+ * reach the agent.
  */
 export async function runHomeContents(harness: HarnessApp, provider: ProviderName, tag: string): Promise<HomeContentsRun> {
   const names = [`${tag}-lead-${provider}`, `${tag}-workers-${provider}`, `${tag}-ordinary-${provider}`];
@@ -193,66 +193,98 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   await harness.rpc('GetProviderStatuses');
 
   const record = await harness.rpc<{ id: string; home: string }>('HarnessMakeAssistant', agent);
+  // The lead runs in its home, serving its own project and the workers'.
   const home = record.home;
+  await harness.rpc('SetAssistantProjects', agent, false, [lead.projectId, workers.projectId]);
+  const memoryDir = join(home, 'memory');
   writeFileSync(join(home, 'instructions.md'), INSTRUCTIONS);
-  writeFileSync(join(home, 'MEMORY.md'), `${INDEX_BEFORE}\n`);
-  mkdirSync(join(home, 'memory'));
-  writeFileSync(join(home, 'memory', 'no-em-dashes.md'), 'Never in anything committed.\n');
+  mkdirSync(memoryDir);
+  writeFileSync(join(memoryDir, 'no-em-dashes.md'), fact('Never use em dashes in anything committed.'));
   writeFileSync(join(home, 'verification.md'), `${VERIFICATION}\n`);
   const opening = homeBlockOpening('Release lead', record.id, agent, home);
+  const instructionsHeading = `### Your standing instructions (${join(home, 'instructions.md')})`;
+  const homeHeading = `### Your memory (${memoryDir}/)`;
 
-  // ---- First start: the block, and both files from the start's hooks.
-  await setScenario(harness, lead.path, agentScenario(provider, `${tag}-setup-${provider}`, [{ text: 'Home set up.' }]));
+  // ---- First start: the block, and from the start's hook the
+  // instructions, the agent's facts and the list of the projects it
+  // serves, each with its memory folder under <configDir>/memory/projects.
+  await setScenario(harness, home, agentScenario(provider, `${tag}-setup-${provider}`, [{ text: 'Home set up.' }]));
   await harness.rpc('SendMessage', agent, 'Set up your home.', null);
   await awaitTurnCompleted(harness, agent);
-  const first = await sessionIn(harness, lead.path, 0);
+  const first = await sessionIn(harness, home, 0);
   const block = appended(provider, first.config);
   expect(block).toContain(opening);
-  expect(block).not.toContain(INSTRUCTIONS_HEADING);
   expect(block).not.toContain(MEMORY_HEADING);
-  expect(first.runs.map(unstamped)).toEqual([{ source: 'startup', contexts: homeContexts(INDEX_BEFORE) }]);
+  expect(block).not.toContain('### Your standing instructions');
+  const firstRuns = first.runs.map(unstamped);
+  expect(firstRuns.map((run) => run.source)).toEqual(['startup']);
+  const started = deliveryOf(firstRuns[0]);
+  expect(blockOf(started, instructionsHeading)).toBe(`${instructionsHeading}\n${INSTRUCTIONS.trimEnd()}`);
+  expect(blockOf(started, homeHeading)).toBe(`${homeHeading}\nRulings:\n- Never use em dashes in anything committed. (no-em-dashes.md)`);
+  const projectsMemory = join(dirname(dirname(home)), 'memory', 'projects');
+  const listed = blockOf(started, '### Your projects').split('\n').slice(2);
+  expect(listed).toHaveLength(2);
+  for (const [i, project] of [lead, workers].entries()) {
+    expect(listed[i].startsWith(`- ${names[i]} (${project.path}): ${projectsMemory}/`), listed[i]).toBe(true);
+    expect(listed[i].endsWith('/, 0 facts'), listed[i]).toBe(true);
+  }
+  expect(started).not.toContain('### Project memory');
+  expect(started).not.toContain('### Memory maintenance');
   await harness.rpc('StopSession', agent);
 
-  // ---- A resume of an unchanged home carries the same block and runs no
-  // hook: the resumed history already holds the files as they read now.
-  await setScenario(harness, lead.path, agentScenario(provider, `${tag}-again-${provider}`, [{ text: 'Ready.' }]));
+  // ---- A resume of unchanged memory carries the same block and runs no
+  // hook: the resumed history already holds the delivery as it reads now.
+  await setScenario(harness, home, agentScenario(provider, `${tag}-again-${provider}`, [{ text: 'Ready.' }]));
   await harness.rpc('SendMessage', agent, 'Are you ready?', null);
   await awaitTurnCompleted(harness, agent);
-  const second = await sessionIn(harness, lead.path, 1);
+  const second = await sessionIn(harness, home, 1);
   expect(appended(provider, second.config)).toBe(block);
   expect(second.runs).toEqual([]);
   await harness.rpc('StopSession', agent);
 
-  // ---- The agent rewrites MEMORY.md while its session runs. The session
-  // keeps its block, and its next compaction delivers the rewritten index.
+  // ---- The agent writes a fact while its session runs. The session keeps
+  // its block, and its next compaction delivers the new fact.
   await setScenario(
     harness,
-    lead.path,
+    home,
     agentScenario(provider, `${tag}-remember-${provider}`, [
       { steps: [{ gate: 'remember' }, { emitLines: compactionLines(provider) }], text: 'Noted.' },
     ]),
   );
   await harness.rpc('SendMessage', agent, 'Screenshots go to a secret gist from now on.', null);
-  const gate = await awaitGate(harness, 'remember', lead.path);
-  expect((await sessionIn(harness, lead.path, 2)).runs).toEqual([]);
-  writeFileSync(join(home, 'MEMORY.md'), `${INDEX_AFTER}\n`);
-  writeFileSync(join(home, 'memory', 'evidence-in-gists.md'), 'Screenshots go to a secret gist.\n');
+  const gate = await awaitGate(harness, 'remember', home);
+  expect((await sessionIn(harness, home, 2)).runs).toEqual([]);
+  writeFileSync(join(memoryDir, 'evidence-in-gists.md'), fact('Screenshots go to a secret gist.'));
   await advanceGate(harness, gate.mockId, 'remember');
   await awaitTurnCompleted(harness, agent);
-  const rewritten = await sessionIn(harness, lead.path, 2);
+  const rewritten = await sessionIn(harness, home, 2);
   expect(appended(provider, rewritten.config)).toBe(block);
-  expect(rewritten.runs.map(unstamped)).toEqual([{ source: 'compact', contexts: homeContexts(INDEX_AFTER) }]);
+  const rewrittenRuns = rewritten.runs.map(unstamped);
+  expect(rewrittenRuns.map((run) => run.source)).toEqual(['compact']);
+  expect(blockOf(deliveryOf(rewrittenRuns[0]), homeHeading)).toBe(
+    `${homeHeading}\nRulings:\n- Screenshots go to a secret gist. (evidence-in-gists.md)\n- Never use em dashes in anything committed. (no-em-dashes.md)`,
+  );
   await harness.rpc('StopSession', agent);
 
-  // ---- MEMORY.md drifts from memory/ between sessions: the next resume
-  // delivers it alone, with the index check's notices, and the block holds.
-  writeFileSync(join(home, 'MEMORY.md'), `${INDEX_DRIFTED}\n`);
-  await setScenario(harness, lead.path, agentScenario(provider, `${tag}-drifted-${provider}`, [{ text: 'Index fixed next.' }]));
-  await harness.rpc('SendMessage', agent, 'Check your index.', null);
+  // ---- An expired and a malformed fact land between sessions: the next
+  // resume delivers neither in the index and warns about both, and the
+  // block holds.
+  writeFileSync(join(memoryDir, 'release-dates.md'), fact('The train leaves on Tuesdays.', 'context', 'expires: 2026-01-01\n'));
+  writeFileSync(join(memoryDir, 'broken.md'), 'Remember the release train.\n');
+  await setScenario(harness, home, agentScenario(provider, `${tag}-maintain-${provider}`, [{ text: 'Cleaning up next.' }]));
+  await harness.rpc('SendMessage', agent, 'Check your memory.', null);
   await awaitTurnCompleted(harness, agent);
-  const drifted = await sessionIn(harness, lead.path, 3);
-  expect(appended(provider, drifted.config)).toBe(block);
-  expect(drifted.runs.map(unstamped)).toEqual([{ source: 'resume', contexts: [memoryContext(`${INDEX_DRIFTED}\n${INDEX_DRIFTED_CHECK}`)] }]);
+  const maintained = await sessionIn(harness, home, 3);
+  expect(appended(provider, maintained.config)).toBe(block);
+  const maintainedRuns = maintained.runs.map(unstamped);
+  expect(maintainedRuns.map((run) => run.source)).toEqual(['resume']);
+  const maintenance = deliveryOf(maintainedRuns[0]);
+  expect(maintenance).not.toContain('The train leaves on Tuesdays.');
+  expect(blockOf(maintenance, '### Memory maintenance')).toBe(
+    '### Memory maintenance\nKeeping these folders sound is your job. Fix these:\n' +
+      `- ${join(memoryDir, 'broken.md')}: it does not open with a --- frontmatter line. Fix its frontmatter or delete it.\n` +
+      `- ${join(memoryDir, 'release-dates.md')} expired on 2026-01-01. Delete it, or move expires if it still holds.`,
+  );
   await harness.rpc('StopSession', agent);
 
   // ---- The agent spawns a worker with its verification file and messages
@@ -283,7 +315,7 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   );
   await setScenario(
     harness,
-    lead.path,
+    home,
     agentScenario(provider, `${tag}-work-${provider}`, [
       {
         steps: [
@@ -313,25 +345,25 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
       { text: 'Thanks, noted.' },
     ]),
   );
-  const workerInput = inputIn(harness, workers.path, 'Review the parser change on this branch.');
+  const workerInput = awaitMockInput(harness, { cwd: workers.path, includes: 'Review the parser change on this branch.' });
   await harness.rpc('SendMessage', agent, 'Hand the review off.', null);
-  const spawned = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', cwd: lead.path, timeoutMs: 60_000 });
+  const spawned = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', cwd: home, timeoutMs: 60_000 });
   expect(spawned.isError, spawned.text).toBe(false);
   const worker = spawned.value!.thread_id;
-  const workerFirstMessage = await workerInput;
+  const workerFirstMessage = (await workerInput).report.input ?? '';
   expect(workerFirstMessage.startsWith(`${ATTACHED_OPENING}\n\n### verification.md\n\n${VERIFICATION}\n\n${ATTACHED_CLOSING}\n\nReview the parser change on this branch.\n\n---\n`), workerFirstMessage).toBe(true);
   expect(workerFirstMessage).toContain(
     `The sender is a standing agent. Its role, in its own words: "${ROLE}" It spawned this thread, so your questions and approval requests go to it, not to the user.`,
   );
   await awaitTurnCompleted(harness, agent);
-  const work = await sessionIn(harness, lead.path, 4);
+  const work = await sessionIn(harness, home, 4);
   expect(appended(provider, work.config)).toBe(block);
   expect(work.runs).toEqual([]);
 
   // Agent to ordinary thread: the role line, and no route.
-  const toOrdinary = inputIn(harness, plain.path, 'Please confirm the release notes.');
+  const toOrdinary = awaitMockInput(harness, { cwd: plain.path, includes: 'Please confirm the release notes.' });
   await harness.rpc('SendMessage', agent, 'Ask the other thread about the release notes.', null);
-  const ordinaryInput = await toOrdinary;
+  const ordinaryInput = (await toOrdinary).report.input ?? '';
   expect(ordinaryInput).toContain(`Agent request from thread "Release lead" (${agent}).`);
   expect(ordinaryInput).toContain(`Its role, in its own words: "${ROLE}"`);
   expect(ordinaryInput).not.toContain('It spawned this thread');
@@ -339,45 +371,51 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   await awaitTurnCompleted(harness, ordinary);
 
   // Ordinary thread to agent: its footer is unchanged.
-  const toAgent = inputIn(harness, lead.path, 'The release notes are ready for your review.');
+  const toAgent = awaitMockInput(harness, { cwd: home, includes: 'The release notes are ready for your review.' });
   await harness.rpc('SendMessage', ordinary, 'Tell the lead the notes are ready.', null);
-  const agentInput = await toAgent;
+  const agentInput = (await toAgent).report.input ?? '';
   expect(agentInput).toContain(`Agent request from thread "Ordinary" (${ordinary}).`);
   expect(agentInput).not.toContain('standing agent');
   await awaitTurnCompleted(harness, agent);
   await harness.rpc('StopSession', agent);
 
-  // ---- Past the caps: both files changed, so the resume delivers both,
-  // and so does the compaction; each file's head, and the line and byte it
-  // stopped at. The block does not change.
+  // ---- Past the budget: instructions.md gives way to its path and the
+  // agent's index is cut from its end. Both changed, so the resume delivers
+  // them, and so does the compaction. The block does not change.
   const line = `${'x'.repeat(99)}\n`;
-  writeFileSync(join(home, 'instructions.md'), `${ROLE}\n${line.repeat(100)}INSTRUCTIONS TAIL\n`);
-  writeFileSync(join(home, 'MEMORY.md'), `${line.repeat(50)}INDEX TAIL\n`);
-  rmSync(join(home, 'memory'), { recursive: true });
+  const longInstructions = `${ROLE}\n${line.repeat(100)}INSTRUCTIONS TAIL\n`;
+  writeFileSync(join(home, 'instructions.md'), longInstructions);
+  for (let i = 0; i < 120; i++) {
+    writeFileSync(join(memoryDir, `bulk-${String(i).padStart(3, '0')}.md`), fact(`Bulk fact ${i}: ${'y'.repeat(90)}`, 'reference'));
+  }
   await setScenario(
     harness,
-    lead.path,
+    home,
     agentScenario(provider, `${tag}-capped-${provider}`, [{ steps: [{ emitLines: compactionLines(provider) }], text: 'Read the rest myself.' }]),
   );
-  await harness.rpc('SendMessage', agent, 'Your files grew.', null);
+  await harness.rpc('SendMessage', agent, 'Your memory grew.', null);
   await awaitTurnCompleted(harness, agent);
-  const capped = await sessionIn(harness, lead.path, 5);
+  const capped = await sessionIn(harness, home, 5);
   expect(appended(provider, capped.config)).toBe(block);
   const cappedRuns = capped.runs.map(unstamped);
   expect(cappedRuns.map((run) => run.source)).toEqual(['resume', 'compact']);
   expect(cappedRuns[0].contexts).toEqual(cappedRuns[1].contexts);
-  const [instructionsContext, cappedMemory] = cappedRuns[1].contexts;
-  const instructionsCut = Buffer.byteLength(`${ROLE}\n`) + 8100;
-  expect(instructionsContext.startsWith(`${INSTRUCTIONS_HEADING}\n\n${ROLE}\nxxx`)).toBe(true);
-  expect(instructionsContext.endsWith(
-    `\n[instructions.md stops here, after line 82 (byte ${instructionsCut} of its text with hidden characters removed): Agent Overflow delivers at most 8 KiB of it. Read it yourself from line 83.]\n\n[End of instructions.md]`,
-  )).toBe(true);
-  expect(cappedMemory.startsWith(`${MEMORY_HEADING}\n\nxxx`)).toBe(true);
-  expect(cappedMemory.endsWith(
-    '\n[MEMORY.md stops here, after line 40 (byte 4000 of its text with hidden characters removed): Agent Overflow delivers at most 4 KiB of it. Read it yourself from line 41.]\n\n[End of MEMORY.md]',
-  )).toBe(true);
-  expect(instructionsContext).not.toContain('INSTRUCTIONS TAIL');
-  expect(cappedMemory).not.toContain('INDEX TAIL');
+  const cut = deliveryOf(cappedRuns[1]);
+  const bytes = Buffer.byteLength(longInstructions);
+  expect(blockOf(cut, instructionsHeading)).toBe(
+    `${instructionsHeading}\n[instructions.md is ${bytes} bytes, more than fits beside your memory. Read it from ${join(home, 'instructions.md')} before you act.]`,
+  );
+  expect(cut).not.toContain('INSTRUCTIONS TAIL');
+  const index = blockOf(cut, homeHeading);
+  const shown = (index.match(/^- Bulk fact /gm) ?? []).length;
+  expect(shown).toBeGreaterThan(0);
+  expect(index.endsWith(`\n[${120 - shown} more facts in ${memoryDir}/]`), index).toBe(true);
+  // The delivery, its stamp included, fits in the 9,000 UTF-16 units a
+  // hook's output is held to.
+  expect(capped.runs[1].contexts[0].length).toBeLessThanOrEqual(9000);
+  const warned = blockOf(cut, '### Memory maintenance');
+  expect(warned).toContain(`- ${join(home, 'instructions.md')} (${bytes} bytes) did not fit in this delivery beside your memory and was left out. Shorten it.`);
+  expect(warned).toContain(`- The index of ${memoryDir}/ was cut to fit this delivery: ${120 - shown} facts are not shown. Merge, shorten or delete facts there.`);
   await harness.rpc('StopSession', agent);
 
   // Every start, resume and compaction delivered what it ran: no warning
@@ -390,9 +428,9 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   return { agent, home, worker, ordinary, workerFirstMessage };
 }
 
-/** The warning row of a start, a resume or a compaction whose hooks delivered neither file. */
+/** The warning row of a start, a resume or a compaction whose hook did not deliver. */
 export function undeliveredWarning(after: 'start' | 'resume' | 'compaction'): string {
-  return `instructions.md and MEMORY.md did not reach this session after its ${after}: no SessionStart hook output carried them. A hook failed, or hooks are turned off in the provider's own settings.`;
+  return `Agent Overflow memory did not reach this session after its ${after}: no SessionStart hook output carried it. A hook failed, or hooks are turned off in the provider's own settings.`;
 }
 
 /**
@@ -400,7 +438,7 @@ export function undeliveredWarning(after: 'start' | 'resume' | 'compaction'): st
  * and its compaction each leave one warning row, and the turns complete.
  * Codex checks a compaction inside a turn when the next turn completes, so
  * a third turn follows the compaction. Nothing reached the thread's model,
- * so its resume runs both hooks, and leaves a third row.
+ * so its resume runs the hook again, and leaves a third row.
  */
 export async function runHomeHooksOff(harness: HarnessApp, provider: ProviderName, tag: string): Promise<{ agent: string }> {
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
@@ -410,8 +448,7 @@ export async function runHomeHooksOff(harness: HarnessApp, provider: ProviderNam
   const agent = project.threadIds[0];
   const record = await harness.rpc<{ home: string }>('HarnessMakeAssistant', agent);
   writeFileSync(join(record.home, 'instructions.md'), INSTRUCTIONS);
-  writeFileSync(join(record.home, 'MEMORY.md'), `${INDEX_BEFORE}\n`);
-  await setScenario(harness, project.path, {
+  await setScenario(harness, record.home, {
     ...agentScenario(provider, `${tag}-${provider}`, [
       { text: 'Started.' },
       { steps: [{ emitLines: compactionLines(provider) }], text: 'Compacted.' },
@@ -432,17 +469,17 @@ export async function runHomeHooksOff(harness: HarnessApp, provider: ProviderNam
     await awaitTurnCompleted(harness, agent);
   }
   expect(await errors()).toEqual([undeliveredWarning('start'), undeliveredWarning('compaction')]);
-  expect((await sessionIn(harness, project.path, 0)).runs).toEqual([]);
+  expect((await sessionIn(harness, record.home, 0)).runs).toEqual([]);
   await harness.rpc('StopSession', agent);
 
-  await setScenario(harness, project.path, {
+  await setScenario(harness, record.home, {
     ...agentScenario(provider, `${tag}-resumed-${provider}`, [{ text: 'Resumed.' }]),
     sessionStartHooksOff: true,
   });
   await harness.rpc('SendMessage', agent, 'Resume.', null);
   await awaitTurnCompleted(harness, agent);
   expect(await errors()).toEqual([undeliveredWarning('start'), undeliveredWarning('compaction'), undeliveredWarning('resume')]);
-  const resumed = (await mocksIn(harness, project.path, 2))[1];
+  const resumed = (await mocksIn(harness, record.home, 2))[1];
   if (provider === 'codex') expect(resumed.sessionConfig?.resumed).toBe(true);
   else expect(resumed.registration.resumeRef ?? '').not.toBe('');
   expect(resumed.sessionStartRuns ?? []).toEqual([]);

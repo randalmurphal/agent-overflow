@@ -20,8 +20,8 @@ type flagDef struct {
 // is the one positional, --method and --hostname are synthesized from
 // the request, and handlers answer status and headers through the
 // response instead of exit codes and --include text. A GraphQL request
-// carries graphQL instead of an endpoint. body is a REST request's JSON
-// body, which only the mutation routes read.
+// carries graphQL instead of an endpoint. body is a GitLab REST
+// request's body, which only the write routes read.
 type call struct {
 	cli     string
 	args    []string

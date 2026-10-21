@@ -76,7 +76,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await capture(page, `${provider}-compact-tray-collapsed.png`, body);
 
     // A tap on Wake now runs the watch; its row expands in place.
-    const ciWake = wakeInput(harness, agent.cwd, 'Watch "ci" reported.');
+    const ciWake = wakeInput(harness, agent.home, 'Watch "ci" reported.');
     await ci.getByTestId('wake-tray-row-wake-now').tap();
     await ciWake;
     await awaitTurnCompleted(harness, agent.thread);
@@ -84,7 +84,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await ci.getByTestId('wake-tray-row-toggle').tap();
     await expect(ci.getByTestId('wake-tray-row-stderr')).toHaveText('ci: checked pipeline 12 at the default branch');
     await expect(ci.getByTestId('wake-tray-row-command')).toHaveText(run('ci.sh'));
-    await expect(ci.getByTestId('wake-tray-row-cwd')).toHaveText(agent.cwd);
+    await expect(ci.getByTestId('wake-tray-row-cwd')).toHaveText(agent.home);
     await expectFits(ci, width);
     const detail = (await ci.getByTestId('wake-tray-row-detail').boundingBox())!;
     expect(detail.x + detail.width).toBeLessThanOrEqual(width);

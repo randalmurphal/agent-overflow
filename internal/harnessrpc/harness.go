@@ -352,7 +352,9 @@ func (h *Harness) HarnessSessionEnv(threadID string) (map[string]string, error) 
 // HarnessMakeAssistant makes an existing thread an assistant's current
 // thread, with the record and home New Assistant makes and no opening
 // message, and announces its row: the fixture form of a seeded
-// `assistant: true` for a thread a spec created itself.
+// `assistant: true` for a thread a spec created itself. The thread moves
+// into the home, out of its project, group and worktree, and the
+// assistant serves the project it came from.
 func (h *Harness) HarnessMakeAssistant(threadID string) (store.StandingAgent, error) {
 	agent, err := h.config.Host.MakeAssistant(threadID)
 	if err != nil {

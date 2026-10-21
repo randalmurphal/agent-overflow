@@ -1,6 +1,6 @@
 <script lang="ts">
-  // The `N done` footer under a standing agent's children: the count of its
-  // settled idle children and the threads it spawned that are now archived,
+  // The `N done` footer under an agent row's children: the count of its
+  // settled idle children and of the archived threads the row holds,
   // opening to list them inline above it, settled idle first, newest first
   // within each, paged like the project's own show-more footer.
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
@@ -8,7 +8,6 @@
   import type { SidebarAgentDoneNode } from '../../utils/sidebarTreeView';
   import { isAgentDoneExpanded, revealMoreAgentDone, toggleAgentDone } from '../../stores/sidebar.svelte';
   import { forgetArchivedChildren } from '../../stores/agentArchivedChildren.svelte';
-  import { assistantKey } from '../../utils/sidebarTree';
   import { THREAD_REVEAL_INCREMENT } from '../../utils/sidebarThreadLimits';
   import { GROUP_MEMBER_PIN_SLOT_LEFT_PX, sidebarGroupMemberPaddingLeftPx } from '../../utils/sidebarRowMetrics';
 
@@ -27,7 +26,7 @@
 <div class="flex items-center gap-1 pr-1" data-testid="thread-row-agent-done" data-expanded={node.expanded}>
   <button
     type="button"
-    onclick={(e) => { e.stopPropagation(); if (!isAgentDoneExpanded(assistantKey(node.agent))) forgetArchivedChildren(node.agent.id); toggleAgentDone(assistantKey(node.agent)); }}
+    onclick={(e) => { e.stopPropagation(); if (!isAgentDoneExpanded(node.containerKey)) forgetArchivedChildren(node.agent.id); toggleAgentDone(node.containerKey); }}
     aria-expanded={node.expanded}
     aria-label={node.expanded ? 'Hide finished threads' : 'Show finished threads'}
     data-testid="thread-row-agent-done-toggle"
@@ -50,7 +49,7 @@
   {#if node.expanded && node.hiddenCount > 0}
     <button
       type="button"
-      onclick={(e) => { e.stopPropagation(); revealMoreAgentDone(assistantKey(node.agent)); }}
+      onclick={(e) => { e.stopPropagation(); revealMoreAgentDone(node.containerKey); }}
       data-testid="thread-row-agent-done-more"
       class="flex items-center h-6 compact:h-9 px-2 rounded-[var(--radius-field)] text-[0.625rem] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
     >

@@ -83,7 +83,8 @@ type HarnessSeedThread struct {
 	SpawnedByID string `json:"spawnedById,omitempty"`
 	// Assistant makes the thread an assistant's current thread, its title
 	// the name, with the record and home New Assistant makes and no opening
-	// message.
+	// message. The thread moves into the home, out of its project, and the
+	// assistant serves that project.
 	Assistant bool              `json:"assistant,omitempty"`
 	Turns     []HarnessSeedTurn `json:"turns,omitempty"`
 }
@@ -756,6 +757,27 @@ func (h *Harness) HarnessReset() (err error) {
 			return fmt.Errorf("delete project %s: %w", p.Project.ID, err)
 		}
 	}
+	// Threads outside every project (an assistant's own, past and helper
+	// threads, a terminal thread) are no project's, so the cascade above
+	// leaves them. An assistant's delete takes its past threads, helpers
+	// and home with it, so assistants go first and a thread already gone
+	// is passed over.
+	outside, err := database.ThreadIDsOutsideProjects()
+	if err != nil {
+		return err
+	}
+	for _, id := range outside {
+		exists, err := database.ThreadExists(id)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			continue
+		}
+		if err := h.config.Host.DeleteThread(id); err != nil {
+			return fmt.Errorf("delete thread %s: %w", id, err)
+		}
+	}
 	// Persisted UI view state names entity ids — the workflows overlay
 	// stack persists work-item ids — so left in place the next test's
 	// fresh page restores a selection onto rows this reset just deleted
@@ -811,6 +833,13 @@ func (h *Harness) HarnessReset() (err error) {
 		if err := os.RemoveAll(dir); err != nil {
 			return fmt.Errorf("remove workflow harness state %q: %w", dir, err)
 		}
+	}
+	// The user and project memory scopes outlive every thread: left in
+	// place, one test's facts would reach the next test's sessions, and a
+	// project folder's .project-path would claim the key of a project the
+	// next test seeds at the same path.
+	if err := os.RemoveAll(filepath.Join(h.config.DataDir, "memory")); err != nil {
+		return fmt.Errorf("remove the memory scopes: %w", err)
 	}
 	// Provider trees under the harness-owned home: seeded providerHome
 	// fixtures AND the transcripts mock providers wrote during the test

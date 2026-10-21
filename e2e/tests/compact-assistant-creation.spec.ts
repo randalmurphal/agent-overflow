@@ -16,10 +16,11 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const seed = await harness.rpc<SeedResult>('HarnessSeed', {
       projects: [{ name: `compact-assistant-create-${provider}`, repo: {}, threads: [{ title: 'Ordinary', provider, turns: [{ userText: 'hi', items: [{ kind: 'assistant_text', summary: 'ready' }] }] }] }],
     });
-    const { projectId, path: cwd } = seed.projects[0];
+    const { projectId } = seed.projects[0];
     // A new thread takes the provider and model used last.
     await harness.rpc('CreateThread', { projectId, provider, model: MODEL[provider], mode: 'chat' });
-    await setScenario(harness, cwd, plainScenario({ name: `compact-assistant-create-${provider}`, provider, texts: ['I am Ops. What am I responsible for?'], afterTurns: 'repeatLast', echoUserMessage: true }));
+    // The assistant runs in a home that does not exist yet: any workspace.
+    await setScenario(harness, '', plainScenario({ name: `compact-assistant-create-${provider}`, provider, texts: ['I am Ops. What am I responsible for?'], afterTurns: 'repeatLast', echoUserMessage: true }));
     await harness.open(page);
 
     const project = page.getByTestId('project-item').filter({ hasText: `compact-assistant-create-${provider}` });
@@ -28,6 +29,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await item.tap();
     const dialog = page.getByRole('dialog');
     await expect(page.getByTestId('new-assistant-dialog')).toBeVisible();
+    // Opened from the project's menu, the dialog serves that project.
+    await expect(page.locator(`[data-testid="assistant-projects-item"][data-project-id="${projectId}"]`)).toBeChecked();
     await page.getByTestId('new-assistant-name').fill('Ops');
     const create = page.getByTestId('new-assistant-create');
     await expect(create).toBeInViewport({ ratio: 1 });

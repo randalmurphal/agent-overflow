@@ -225,7 +225,7 @@ describe('threads store', () => {
 // its own lists with it, whichever way it left; the assistant's fold and
 // footer, keyed by the assistant, go only when no thread of it is left.
 describe('standing agent state on removal', () => {
-  const agent = (promoted: boolean) => makeThread('agent', promoted ? { agentId: 'agent', archivedChildCount: 1 } : {});
+  const agent = (promoted: boolean) => makeThread('agent', promoted ? { agentId: 'agent', archivedChildCounts: { '': 1 } } : {});
 
   async function settle(): Promise<void> {
     for (let i = 0; i < 6; i += 1) await Promise.resolve();
@@ -273,7 +273,7 @@ describe('standing agent state on removal', () => {
 
   it("keeps the assistant's fold and footer across a handoff, and drops the old thread's lists", async () => {
     await primeAgentState();
-    prependThread(makeThread('agent-next', { agentId: 'agent', archivedChildCount: 2 }));
+    prependThread(makeThread('agent-next', { agentId: 'agent', archivedChildCounts: { '': 2 } }));
     replaceThread(makeThread('agent', { pastAgentId: 'agent', archived: true }));
     removeThread('agent');
     expect(isAgentExpanded('agent')).toBe(false);

@@ -8,15 +8,13 @@ import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 // setupEventListeners.
 import type { TurnCompletedEvent } from '../types/events';
 import type { Thread } from '../types/models';
-import { sidebarNestingAgent } from '../components/sidebar/sidebarBuckets';
-import { sidebarThreadVisible } from './sidebarDevices.svelte';
 import { closePanesShowingThread, findPaneShowingThread, iterPanes, moveAssistantPanes, syncThread } from './panes.svelte';
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { refreshThreadGroups } from './threadGroups.svelte';
 import { refreshAgentWakes } from './threadWakes.svelte';
 import { followAssistantHandOffInStash } from './companionStash';
 import { addErrorToast, addToast } from './toast.svelte';
-import { assistantCurrentThread, getThreadById, getThreadLiveActivityAt, getThreads, loadThreads, prependThread, removeThread, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
+import { getThreadById, getThreadLiveActivityAt, getThreads, loadThreads, prependThread, removeThread, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
 import { projectReaderMessageSent, projectThreadError } from './threadStatuses.svelte';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { pendingLocalReadMarker } from './threadReadWrites';
@@ -135,20 +133,6 @@ export function syncLatestTurnCompleted(evt: TurnCompletedEvent): void {
   });
 }
 
-/**
- * The project whose list shows thread's row: its own, or, for a thread an
- * agent row in the sidebar nests, the agent's (docs/specs/standing-agents.md
- * ruling 4), so the activity bumps the project the row sits in.
- */
-function sidebarProjectIdOf(thread: Thread): string | undefined {
-  const agent = sidebarNestingAgent(thread, {
-    threadById: getThreadById,
-    currentThreadIdOf: (agentId) => assistantCurrentThread(agentId)?.id,
-    threadVisible: sidebarThreadVisible,
-  });
-  return agent?.projectId ?? thread.projectId;
-}
-
 export function syncThreadActivity(threadId: string, updatedAt: number): void {
   if (!threadId || !Number.isFinite(updatedAt)) return;
   // Live bumps land in per-entity boxes (threads/projects stores), not
@@ -157,7 +141,7 @@ export function syncThreadActivity(threadId: string, updatedAt: number): void {
   // every pane.thread reader per beat. Row objects catch up via
   // mergeThreadRowWithLocal on the next full row sync.
   const thread = touchThreadActivity(threadId, updatedAt);
-  let projectId = thread ? sidebarProjectIdOf(thread) : undefined;
+  let projectId = thread?.projectId;
   let latestUpdatedAt = Math.max(thread ? getThreadLiveActivityAt(thread) : 0, updatedAt);
 
   if (projectId === undefined) {

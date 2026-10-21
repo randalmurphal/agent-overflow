@@ -6,7 +6,7 @@
 // save would have run on its own.
 import { test, expect, type SeedResult } from './fixtures.js';
 import { captureAgentMessage } from './wake-rows-helpers.js';
-import { awaitTurnCompleted, plainScenario, setScenario, threadRows, type ProviderName } from './thread-tools-helpers.js';
+import { assistantHome, awaitTurnCompleted, plainScenario, setScenario, threadRows, type ProviderName } from './thread-tools-helpers.js';
 
 for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
   test(`${provider}: unsent text in the composer follows New Thread, Same Assistant`, async ({ harness, page }) => {
@@ -14,8 +14,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const seed = await harness.rpc<SeedResult>('HarnessSeed', {
       projects: [{ name: `assistant-handoff-draft-${provider}`, repo: {}, threads: [{ title: 'Ops', provider, assistant: true }] }],
     });
-    const { path: cwd, threadIds } = seed.projects[0];
-    const [first] = threadIds;
+    const [first] = seed.projects[0].threadIds;
+    const cwd = await assistantHome(harness, first);
     await setScenario(harness, cwd, plainScenario({ name: `assistant-handoff-draft-${provider}`, provider, texts: ['Picked up.'], afterTurns: 'repeatLast', echoUserMessage: true }));
     const turn = awaitTurnCompleted(harness, first);
     await harness.rpc('SendMessage', first, 'hello', null);

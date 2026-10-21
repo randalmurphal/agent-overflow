@@ -4,6 +4,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"agent-overflow/internal/memory"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/claudetui"
@@ -27,6 +28,9 @@ type Entry struct {
 	AOScope              transport.CallerScope
 	AOEnv                map[string]string
 	Liveness             *Liveness
+	// MemoryPlan is the memory the session's SessionStart hook delivers,
+	// which a compaction delivers again; nil for none.
+	MemoryPlan *memory.Plan
 }
 
 // ProviderSession returns the provider-agnostic live handle.

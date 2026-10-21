@@ -3,6 +3,7 @@ package codex
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"agent-overflow/internal/provider"
 )
@@ -82,7 +83,7 @@ func buildThreadParams(cfg Config, codexVersion string) map[string]any {
 	for key, value := range DisabledToolConfigOverrides(cfg.DisabledTools) {
 		configOverrides[key] = value
 	}
-	for key, value := range threadFeatureOverrides() {
+	for key, value := range threadFeatureOverrides(cfg.NativeMemoryOff) {
 		configOverrides[key] = value
 	}
 	// Shared with thread/resume like the tool overrides: a resumed thread
@@ -110,8 +111,19 @@ func buildThreadParams(cfg Config, codexVersion string) map[string]any {
 // Every request that loads a thread into an app-server carries these:
 // thread/start, thread/resume and thread/fork. A loaded thread keeps the
 // config it was loaded with; a resume of a running thread ignores `config`.
-func threadFeatureOverrides() map[string]any {
-	return map[string]any{"features.instant_interrupt": false}
+//
+// nativeMemoryOff adds Config.NativeMemoryOff's keys: `features.memories`
+// gates the memory tool, and `memories.generate_memories` sets the memory
+// mode a new or forked thread is stored with, which decides whether it is
+// mined for memories (codex-rs core/src/session/session.rs). A resume keeps
+// the stored mode; disableResumedThreadMemories sets it.
+func threadFeatureOverrides(nativeMemoryOff bool) map[string]any {
+	overrides := map[string]any{"features.instant_interrupt": false}
+	if nativeMemoryOff {
+		overrides["features.memories"] = false
+		overrides["memories.generate_memories"] = false
+	}
+	return overrides
 }
 
 // threadApprovalsReviewer resolves the reviewer that actually reaches the
@@ -196,12 +208,19 @@ func defaultApprovalPolicy(policy string, sandbox string, codexVersion string) s
 	return approvalPolicyForCodexVersion(policy, codexVersion)
 }
 
-func turnSandboxPolicy(sandbox string) (map[string]any, error) {
+// turnSandboxPolicy is a turn's `sandboxPolicy` for sandbox. The
+// workspace-write policy carries writableRoots, the folders outside the
+// workspace the turn may write (Config.WritableRoots).
+func turnSandboxPolicy(sandbox string, writableRoots []string) (map[string]any, error) {
 	switch sandbox {
 	case "read-only":
 		return map[string]any{"type": "readOnly"}, nil
 	case "workspace-write":
-		return map[string]any{"type": "workspaceWrite"}, nil
+		policy := map[string]any{"type": "workspaceWrite"}
+		if len(writableRoots) > 0 {
+			policy["writableRoots"] = slices.Clone(writableRoots)
+		}
+		return policy, nil
 	case "danger-full-access":
 		return map[string]any{"type": "dangerFullAccess"}, nil
 	default:

@@ -541,8 +541,8 @@ Auto restores it with a notice of its own.
 
 Spike 2026-10-18, claude 2.1.283 in print mode with Agent Overflow's
 stream-json flags; limits read from the same version's bundle. Agent
-Overflow uses these hooks to deliver a standing agent's home files
-([standing agents](../specs/standing-agents.md#agent-home-contents)).
+Overflow uses one of these hooks to deliver a session's memory
+([memory](../specs/memory.md#delivery)).
 
 Hooks in the inline `--settings` JSON (the flag settings layer) merge
 with the user's own and run beside them:
@@ -610,6 +610,74 @@ gateway reads the first main model request after the start, a resume or
 hook's context runs from its heading to its ending, and counts only when
 its stamp's time is not before that start or compaction
 (`claudetui/session_start.go`).
+
+## Auto memory and additional directories (verified 2.1.283)
+
+Source read in the decompiled 2.1.88 tree; each point checked in the
+installed 2.1.283 bundle's strings, whose module exports name
+`isAutoMemoryEnabled`. No spike. Agent Overflow relies on these for its
+Claude memory setting and its writable memory folders
+([memory](../specs/memory.md#settings)).
+
+### Auto memory switch
+
+`isAutoMemoryEnabled` (`src/memdir/paths.ts`) decides, first match
+wins:
+
+1. Off while the session has memory paused, in safe mode
+   (`CLAUDE_CODE_SAFE_MODE`, `--safe-mode`) or in a restricted session
+   (2.1.283; the bundle names the gate without the pause
+   `isAutoMemoryEnabledIgnoringPause`).
+2. `CLAUDE_CODE_DISABLE_AUTO_MEMORY` as `process.env` holds it: `1`,
+   `true`, `yes` or `on` turns it off, and `0`, `false`, `no` or `off`
+   turns it on, whatever the settings say.
+3. Off under `--bare` (`CLAUDE_CODE_SIMPLE`), in a remote session
+   without `CLAUDE_CODE_REMOTE_MEMORY_DIR`, and (2.1.283) for a main
+   loop model the server excludes.
+4. `autoMemoryEnabled` of the merged settings; on when no layer sets it.
+
+Settings merge the user, project, local, flag and policy layers in that
+order, each overriding the earlier ones (`loadSettingsFromDisk`,
+`src/utils/settings/settings.ts`). Inline JSON passed to `--settings` is
+written to a temporary file and read as the flag layer
+(`loadSettingsFromFlag`, `src/main.tsx`). So `autoMemoryEnabled: false`
+there outranks the user, project and local settings files, and policy
+settings outrank it.
+
+The spawn environment does not fix the variable. At startup the CLI
+assigns onto `process.env` the `env` of `~/.claude.json`, then of the
+user and flag settings, then of policy settings, and once the workspace
+is trusted the `env` of every layer in merge order
+(`applySafeConfigEnvironmentVariables` and
+`applyConfigEnvironmentVariables`, `src/utils/managedEnv.ts`). In 2.1.283
+only a desktop or `byoc` host keeps its spawn keys from this. A settings
+`env` entry for `CLAUDE_CODE_DISABLE_AUTO_MEMORY` therefore replaces the
+value the process was spawned with; the flag layer's own `env` entry
+outranks the user, project and local layers' and yields only to policy.
+
+### Additional directories
+
+`permissions.additionalDirectories` of any settings layer, `--settings`
+included, and `--add-dir` both become working directories: each is
+validated and added by the same `addDirectories` permission update
+(`src/utils/permissions/permissionSetup.ts`), so file tools and
+permission checks treat them alike, and the sandbox's write allowlist
+holds both. The layers' arrays join. A directory that does not exist is
+skipped without a warning. In 2.1.283 the directories of a project or
+local settings file count only once the workspace's trust is persisted;
+the flag layer's always count.
+
+Only directories passed with `--add-dir` or added during the session
+join the list the CLI loads project configuration from
+(`setAdditionalDirectoriesForClaudeMd`, `src/main.tsx`): each
+directory's `.claude/skills` (`src/skills/loadSkillsDir.ts`), the
+`enabledPlugins` and `extraKnownMarketplaces` of its
+`.claude/settings.json` and `.claude/settings.local.json`
+(`src/utils/plugins/addDirPluginSettings.ts`), and, when
+`CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` is truthy, its
+`CLAUDE.md`, `.claude/CLAUDE.md` and (2.1.283) `.claude/rules`
+(`src/utils/claudemd.ts`). A directory granted only by
+`permissions.additionalDirectories` loads none of them.
 
 ## `system` model-fallback family
 

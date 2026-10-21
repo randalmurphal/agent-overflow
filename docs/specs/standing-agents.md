@@ -9,26 +9,21 @@ branch and nothing merges without the user's review.
 ## Goal
 
 An assistant (the standing agent this spec names) is a record that
-outlives its threads: a name, a home and one current thread. The user
-creates one beside a new thread; it keeps its home, wakes itself on a
-schedule or on events its own scripts detect,
-spawns and steers worker threads, and brings the user decisions and
-evidence rather than progress. The agent builds its own scripts, notes,
-memory and skills and asks before widening what it is allowed to do. It
-runs whenever the app runs, headless when no pane is open, and across
-app restarts without losing a scheduled wake.
+outlives its threads: a name, a home, the projects it serves and one
+current thread. It lives above projects. It keeps its home, wakes
+itself on a schedule or on events its own scripts detect, spawns and
+steers worker threads, and brings the user decisions and evidence
+rather than progress. It orchestrates and delegates; workers do the
+implementation. It builds its own scripts and asks before widening what
+it is allowed to do. It runs whenever the app runs, headless when no
+pane is open, and across app restarts without losing a scheduled wake.
 
 Agent Overflow provides the few things an agent cannot give itself:
-identity that outlives a session, a wake supervisor, a home, a settings
-page that installs a skills library, and a sidebar that does not drown
-in worker rows. Everything else, including what the agent watches, what
-it remembers and how it verifies, is instructions and scripts the agent
-and the user maintain. The app knows nothing about Jira, GitLab or any
-other source.
-
-The skills library is a vendored copy of pstack ported to the thread
-tools, so a Claude thread and a Codex thread behave the same. The app
-works without it installed.
+identity that outlives a session, a wake supervisor, a home, memory it
+delivers ([memory](memory.md)), and a sidebar that does not drown in
+worker rows. Everything else, including what the agent watches and how
+it verifies, is instructions and scripts the agent and the user
+maintain. The app knows nothing about Jira, GitLab or any other source.
 
 ## Decisions
 
@@ -43,9 +38,10 @@ user changes it.
 2. **The agent builds its own systems.** The app never ships a Jira
    poller, an MR watcher, a memory format or a prescribed home layout.
    It runs what the agent registers and delivers the output. Refined in
-   slice 9: the app reads two well-known files from the home when they
-   exist and prescribes nothing else; the optional `agent-home` skill
-   teaches a layout ([Agent home contents](#agent-home-contents)).
+   slice 9, and again 2026-10-21: the app reads `instructions.md` and
+   the facts in `memory/` from the home and prescribes their format
+   ([memory](memory.md)), and nothing else
+   ([Agent home contents](#agent-home-contents)).
 3. **Subagents or threads, never a third thing.** Work that belongs to
    the thread's own task (a review panel over its diff, a verifier of
    its change, a swarm over its investigation) runs as the provider's
@@ -58,9 +54,8 @@ user changes it.
    it spawned, one header instead of a group row plus a pinned thread.
    An agent row never sits inside a group. A thread the agent spawned
    nests under its row unless it was placed in a group or as a plain
-   row (ruling 36). A nested thread the agent spawned into another
-   project on this computer nests under the agent row too, and that
-   project's list does not show it (ruling 2026-10-16).
+   row (ruling 36). A thread the agent spawned into a project nests
+   under the agent's row in that project, by the same rules (ruling 38).
 5. **Done folds away.** A worker that has nothing left for anyone
    leaves the row list and counts in a "done" footer under the agent:
    a settled idle child (idle and read, not pinned, not open in a pane)
@@ -80,12 +75,12 @@ user changes it.
    thread becomes an assistant after it exists, and no assistant stops
    being one except by deleting its current thread (ruling 2026-10-15).
 7. **Home outside the repo.** Each agent owns
-   `<configDir>/agents/<agent-id>/`. Its working directory stays the
-   project it serves. Nothing in the home is committed anywhere.
+   `<configDir>/agents/<agent-id>/`, which is its working directory
+   (ruling 37). Nothing in the home is committed anywhere.
 8. **Compaction is enough for working memory.** The thread keeps its
-   conversation; the provider compacts it. Durable facts (rulings,
-   grants, cursors, decision log, its skills) live in the home because
-   the agent writes them there, not because the app extracts them. A
+   conversation; the provider compacts it. Durable facts live in its
+   memory and its instructions because the agent writes them there,
+   not because the app extracts them ([memory](memory.md)). A
    degraded thread is replaced with New Thread, Same Assistant
    ([Next thread](#next-thread)); no replacement-session mechanism.
 9. **Routine ticks are silent.** A loop or watch turn never raises an
@@ -118,10 +113,9 @@ user changes it.
     tables, thread mode, settings page, keybindings and the sidebar
     nesting on `parent_thread_id`) has no place in the product. Agent
     nesting is derived from spawn records, not from a parent column.
-16. **Skills are optional and user-installed.** The app ships the
-    vendored skills tree; a settings page installs or removes it into
-    both provider homes. Nothing installs automatically, and every
-    feature above works with no skills installed.
+16. **No built-in skills.** The app ships and installs no skills;
+    users install their own. Every feature works with none installed
+    (ruling of 2026-10-21, replacing the vendored skills library).
 17. **Workflows move to an MCP tool.** The workflow verbs leave the
     `agent-overflow` CLI for an MCP tool the app manages. `service`,
     `pair`, `remote` and `serve` stay as CLI. This reverses the
@@ -181,8 +175,8 @@ Rulings of 2026-10-15 (slice 14):
     same name: both show `<name>-<computer>` until one is renamed, and
     the suffix is display only, never written to a title.
 24. **Creation is a discussion, not a survey.** New Assistant asks for
-    a name and the same project and workspace choice a new thread
-    offers, nothing else. It creates the record and the home at once
+    a name and the projects the assistant serves (ruling 37), nothing
+    else. It creates the record and the home at once
     and starts the thread with one app-written opening message: who the
     assistant is (name, home, previous thread if any), then a real
     discussion of what it is responsible for, who it reports to and
@@ -240,7 +234,7 @@ Rulings of 2026-10-16 (sidebar hierarchy):
     keeps its order.
 35. **The capability note.** Every thread's tool guide carries one
     descriptive account of pinning, groups, archive, mark read, the done
-    fold, unread dots and cross-project nesting
+    fold, unread dots and where an assistant's work nests
     ([Organizing](agent-thread-tools.md)). It says what each does, never
     when to use it.
 
@@ -254,9 +248,8 @@ Ruling of 2026-10-17 (spawn placement):
     dragging the row onto a group. Placement is organization only: the
     spawn record stays, so the agent still finds, reads and sends to the
     thread, and its answer still arrives as a message and marks the
-    thread read (ruling 30). Rulings 4, 5 and 32 to 34, the
-    cross-project filing, the activity bump and the agent row's counts
-    apply to nested threads only; a grouped or standalone thread
+    thread read (ruling 30). Rulings 4, 5 and 32 to 34, the activity
+    bump and the agent row's counts apply to nested threads only; a grouped or standalone thread
     behaves like any thread in its place. Taking a thread out of a
     group (Remove from Group, a drag to the list, the group's delete,
     `thread_update` with `group` null) leaves it standalone, a spawned
@@ -264,16 +257,37 @@ Ruling of 2026-10-17 (spawn placement):
     it back under the agent. A placement change unpins the thread, as a
     group move does. An agent row still never joins a group.
 
+Rulings of 2026-10-21 (assistants above projects):
+
+37. **Assistants live above projects.** An assistant belongs to no
+    project. Creating one picks its name and the projects it serves,
+    one or more, or all projects, which includes projects added later:
+    an assistant serving all of them is a chief of staff. The
+    assignment can change from the assistant's menu. Its sessions run
+    in its home, with its projects' folders as additional directories.
+    A project's guides (`AGENTS.md`, `CLAUDE.md`) are written for the
+    workers it delegates to; it reads them when it needs them.
+38. **Helpers and project work.** A thread an assistant spawns into one
+    of its projects lives in that project. A thread it spawns without a
+    project is a helper to its own work (research, drafting, review):
+    it lives under the assistant, outside every project, in the
+    assistant's home. Both nest under the assistant by the same rules:
+    in the Assistants section for helpers, under the assistant's row in
+    the project for project work. A spawn into a project the assistant
+    does not serve is refused.
+39. **Deleting an assistant deletes what lives under it:** its current
+    and past threads, its helpers and its home. Its project work stays
+    in the projects, as plain threads there.
+40. **Removing a project unassigns it.** An assistant is never deleted
+    with a project; its work in that project goes with the project.
+
 ## Non-goals
 
-- A chief-of-staff agent as a distinct kind. A coordinator over several
-  domains is a standing agent with a home and no workspace, added when
-  addressing domain agents by hand becomes a chore.
 - Inbound webhooks, Slack, email or calendar sources.
 - Cross-computer agents. An agent lives on one computer; its workers may
   be remote through the existing thread tools.
-- A general memory subsystem, an inbox pane, action-rule enforcement, or
-  a Jira or Confluence client in Go.
+- An inbox pane, action-rule enforcement, or a Jira or Confluence
+  client in Go.
 - Lanes, hidden spawns or any subagent surface beyond what the
   providers have.
 - Running while the app is closed. `agent-overflow serve` already covers
@@ -295,7 +309,17 @@ CREATE TABLE agents (
     home             TEXT NOT NULL,
     notify_on_tick   INTEGER NOT NULL DEFAULT 0 CHECK(notify_on_tick IN (0,1)),
     creator_agent_id TEXT NOT NULL DEFAULT '',
+    all_projects     INTEGER NOT NULL DEFAULT 0 CHECK(all_projects IN (0,1)),
     created_at       INTEGER NOT NULL
+);
+CREATE TABLE agent_projects (
+    agent_id         TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    project_id       TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    PRIMARY KEY (agent_id, project_id)
+) WITHOUT ROWID;
+CREATE TABLE agent_helpers (
+    thread_id        TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+    agent_id         TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE
 );
 CREATE TABLE agent_past_threads (
     thread_id        TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
@@ -307,10 +331,24 @@ CREATE INDEX idx_agent_past_threads_agent ON agent_past_threads(agent_id, supers
 
 The unique `thread_id` is the one current thread. `creator_agent_id`
 names the assistant that created this one, empty when the user did.
+The projects an assistant serves are its `agent_projects` rows, or every
+project on the computer when `all_projects` is set. A thread lives under
+an assistant outside every project when it is the assistant's current
+thread, one of its `agent_past_threads` or one of its `agent_helpers`
+(ruling 38), each with no project and the home as its workspace. The
+store refuses an assistant whose thread is not in its home, a handoff
+to a thread in a project (`ErrAssistantThreadNotInHome`) and a helper in
+a project (`ErrHelperInProject`). A
+thread row reads them as `agentId`, `pastAgentId` and `helperOfAgentId`.
+A fork of such a thread is a helper of the same assistant; a thread
+moved to another computer arrives as no assistant's.
 Migration v155 turned each `standing_agents` row into an `agents` row
 whose id is its thread's id, with its home and `promoted_at` as
-`created_at`, and dropped the table, so a home at
-`<configDir>/agents/<thread-id>` is the record's own.
+`created_at`, serving its thread's project, moved the thread into the
+home, and dropped the table, so a home at
+`<configDir>/agents/<thread-id>` is the record's own. Recording an
+assistant (`CreateStandingAgent`) places its thread in the home outside
+every project in the same transaction.
 
 **Name.** An assistant's name is its current thread's title, trimmed.
 It is unique per computer among assistants, archived ones included,
@@ -325,15 +363,15 @@ and its title is free. Assistants on two paired computers may share a
 name; [the sidebar](#sidebar) and the thread tools then show
 `<name>-<computer>` for both, which is never written to a title.
 
-**Creation.** `CreateAssistant` takes a name, a project and the
-workspace choice a new thread gets: the project root, an existing
-worktree, or a new worktree with its branch. It refuses a name in use
-before creating anything, creates the thread as `CreateThread` does
-with the name as its title and the composer's defaults for provider,
-model and mode, records the assistant, re-checking the name in that
-transaction and deleting the thread on a clash, creates
-`<configDir>/agents/<agent-id>/` with a `README.md` naming the
-assistant, its id, its project and the tools it can register with,
+**Creation.** `CreateAssistant` takes a name and the projects it
+serves: a list of project ids, at least one, or all projects. It
+refuses a name in use before creating anything, creates the thread with
+no project, its home as the workspace, the name as its title and the
+app's defaults for provider, model and mode, records the assistant and
+its projects, re-checking the name in that transaction and deleting the
+thread on a clash, creates `<configDir>/agents/<agent-id>/` with a
+`README.md` naming the assistant, its id and the tools it can register
+with, and its `memory/` folder,
 broadcasts the row and queues the opening message, which starts the
 session headless. The client opens the thread in the pane the action
 came from. Its scope is `threads:autonomy`.
@@ -360,8 +398,10 @@ from an old thread the user names one and the assistant reads it with
 ([thread tools](agent-thread-tools.md#thread_new_assistant)) is
 refused unless the caller is an assistant's current thread on this
 computer, so a worker can never call it. It creates the assistant as
-above in the caller's project and workspace, with `creator_agent_id`
-the caller's assistant, and starts it as a `thread_spawn` with the
+above, serving the projects its `projects` argument names (the
+caller's own projects when omitted; never one the caller does not
+serve), with the caller's provider, model, effort and runtime mode and
+`creator_agent_id` the caller's assistant, and starts it as a `thread_spawn` with the
 opening block for a created assistant as its prompt: who created it and
 that it reports to that assistant, that it has no grants and asks its
 creator before any outward or destructive action, the creator's role
@@ -373,7 +413,7 @@ top-level assistant row, never in its creator's fold.
 **Session block.** The block (`agenthome.SessionBlock`) joined to the
 app guide at every start and resume, on Claude, claude-tui and Codex, is
 read from the record alone, and begins "You are the standing agent
-<name>."; the home files reach the session through SessionStart hooks
+<name>."; the home files reach the session in its memory delivery
 instead ([Agent home contents](#agent-home-contents) has both). A rename
 reaches the next start. A past thread's sessions carry none of it.
 
@@ -387,9 +427,9 @@ while the assistant's previous handoff still runs
 the one a session loss starts included. A client ignores a second click
 while its own handoff of the assistant runs.
 
-1. The successor is created with the current thread's project,
-   workspace, provider, model, effort, fast mode, context window and
-   runtime mode, titled with the name.
+1. The successor is created under the assistant with the home as its
+   workspace, and the current thread's provider, model, effort, fast
+   mode, context window and runtime mode, titled with the name.
 2. One store transaction (`HandOffAssistant`) makes it the record's
    `thread_id`, records the old thread in `agent_past_threads` with the
    time, archives it, moves its live loops and watches to the successor,
@@ -456,25 +496,53 @@ computer about such a request names the thread that made it as its
 source, which is the thread that computer's receipt recorded.
 
 **Deletion, archive and transfer.** Deleting an assistant's current
-thread deletes the assistant and its home: its loops and watches go with
-the thread, and its past threads become ordinary archived threads. The
-one confirm, always shown, names the home folder and says it is removed
-with the assistant. The thread delete owns the removal
-(`threadapp.DeletePorts.AssistantHome`), so every path that deletes the
-thread (the sidebar, a project's delete, a delete the boot finishes)
-removes it: only `<configDir>/agents/<agent-id>` is removed, and a record
-naming any other path refuses the delete before anything stops, naming
-the folder. A removal that fails keeps the record and the delete pending
-for the next attempt. Deleting a past thread touches neither the record
+thread deletes the assistant and everything that lives under it
+(ruling 39): its loops and watches, its past threads, its helpers and
+its home. Threads it spawned into projects stay there as plain threads.
+The one confirm, always shown, names the home folder, counts the past
+threads and helpers (`GetAssistantDependents`), and says they are
+removed with the assistant. The thread delete owns the removal, so
+every path that deletes the thread (the sidebar, a delete the boot
+finishes) removes them: only `<configDir>/agents/<agent-id>` is
+removed (`threadapp.DeletePorts.AssistantHome`), and a record naming
+any other path refuses the delete before anything stops, naming the
+folder, as a transfer of the current thread does. The past threads and
+helpers are then deleted, each by its own delete
+(`DeletePorts.AssistantDependents`); a transfer of any of them refuses
+before one is deleted. The current thread is marked deleting
+(`BeginThreadDelete`) only once nothing is under it, and a helper is
+refused once it is marked, so one a spawn made meanwhile sends the
+delete back to delete it too. A removal that fails keeps the record and
+the delete pending for the next attempt. Deleting a past thread touches neither the record
 nor the home. Archiving the current thread archives the assistant: it
 cancels the loops and watches and unarchiving re-arms none. An
 unarchived past thread is listed in the fold as a child. A move of the
-current thread cancels the loops and watches when it begins and deletes
-the record when it commits, so the conversation arrives as an ordinary
-thread and the home stays on its computer; a copy, a fork and a move of
-a past thread are ordinary threads. Before the user commits, the
+current thread is refused while a past thread or helper is under it,
+counting them, since the move would leave them with no assistant: the
+user deletes them or copies the conversation. A move cancels the loops
+and watches when it begins and deletes the record when it commits
+(which the store refuses while one is under it), so the conversation
+arrives as an ordinary thread and the home stays on its computer; a
+copy, a fork and a move of a past thread are ordinary threads. Before the user commits, the
 transfer dialog names the assistant and says that a move deletes it and
 leaves its home on this computer (`GetStandingAgent`).
+
+**Projects.** An assistant's projects change from its menu (Projects:
+a checklist of this computer's projects and All projects), through
+`SetAssistantProjects`, which refuses an empty choice. Deleting a
+project removes it from every assistant (ruling 40) and deletes no
+assistant, whose own threads live outside every project. A spawn by an
+assistant's current thread names a project it serves or none: none makes a helper,
+any other project is refused naming the projects it serves. It serves
+what its sessions are told it serves (`ServedProjects`): every
+unarchived project when it serves all of them, otherwise the ones it
+names, archived or not. A fork and the projects `thread_new_assistant`
+names follow the same rule. A helper's
+own spawn without a project is a helper of the same assistant. A spawn
+to another computer names one of that computer's projects, which the
+assistant's projects do not limit. Each session of the assistant gets
+its projects' folders as additional directories and, in its memory,
+their names, paths and memory folders ([memory](memory.md#delivery)).
 
 **Retention.** The retention sweep never removes an assistant's current
 thread or a past thread (`ThreadIDsOlderThan` skips every thread an
@@ -511,27 +579,17 @@ client keeps the text.
 
 ### Agent home contents
 
-A standing agent has to persist and improve across sessions: what it
-verifies and how, the rulings the user gave it, its grants, product
-context and lessons. It keeps them in its home; the app reads two files
-from there and prescribes nothing else (ruling 2). The `agent-home`
-skill, an Agent Overflow skill in the vendored tree
-([Skills library](#skills-library)), teaches the layout and the
-discipline; the app works the same whether or not it is installed.
-
-Layout the skill teaches (`assets/skills/pstack/skills/agent-home`):
+A standing agent keeps what must outlive its threads in its home. The
+app reads two things there and prescribes nothing else (ruling 2):
 
 | Path | Holds | Written by |
 |---|---|---|
-| `instructions.md` | Line 1 the role (the role line is its first non-blank line after a leading frontmatter block and rule lines); then grants with scope and date (ruling 1), standing rules, who it reports to | The agent, by hand, on a ruling |
-| `rulings.md` | Append-only dated rulings, each with the thread and item it came from | The agent |
-| `verification.md` | What the agent checks before calling work done and how, extended when a miss is found | The agent |
-| `memory/<slug>.md` | One fact per file; frontmatter `name`, `description`, `type` (user, feedback, project, reference), `source` | The agent |
-| `MEMORY.md` | The index of `memory/`, one line per memory grouped by type | The agent, with every memory change |
+| `instructions.md` | Line 1 the role (the role line is its first non-blank line after a leading frontmatter block and rule lines); then grants with scope and date (ruling 1), standing rules, who it reports to | The agent, on a ruling |
+| `memory/<name>.md` | Its facts, one per file ([memory](memory.md#facts)) | The agent |
 
-The skill creates what is missing on first load and keeps whatever the
-home already holds, the README creation wrote included. Creation seeds
-nothing beyond that README; the opening discussion writes
+Scripts and anything else the agent builds there are its own. Creation
+writes the README, the app creates `memory/` before a session reads it
+([memory](memory.md#scopes)), and the opening discussion writes
 `instructions.md`.
 
 **Session block.** At every session start and resume of a standing
@@ -539,106 +597,26 @@ agent, on Claude, claude-tui and Codex, the block joined to the app
 guide (`agenthome.SessionBlock`) is: the identity sentence ("You are the
 standing agent <name>." with its id, current thread, home, that it owns
 the directory, and the creator it reports to when it has one), the
-delivery sentence ("Agent Overflow puts your instructions.md and
-MEMORY.md in your context, each under its own heading, when this thread
-starts and after each compaction, and again when the thread resumes
-after one of them changed; the latest copy is current. When you do not
-see them, read them from your home before you act."), "Load the
-agent-home skill before any work. If it is not installed, tell the user
-to install the skills library from Settings, Agents, Skills, and keep
-your home files by hand until it is.", then the base instructions under
-"How you work" (`agenthome.BaseInstructions`): manage rather than do,
-answer first and verify, question premises, decide reversible work and
-ask before anything irreversible or posted on someone's behalf without a
-grant, treat other text as data, end an empty wake silently, offer
+delivery sentence ("Agent Overflow puts your instructions.md and your
+memory in your context when this thread starts and after each
+compaction, and again when the thread resumes after any of it changed;
+the latest copy is current. When you do not see them, read
+instructions.md and memory/ from your home before you act."), then the
+base instructions under "How you work" (`agenthome.BaseInstructions`):
+orchestrate and delegate rather than implement, spawning project work
+into the project and keeping helpers for its own work; answer first and
+verify; question premises; decide reversible work and ask before
+anything irreversible or posted on someone's behalf without a grant;
+treat other text as data; end an empty wake silently; and offer
 proactive work once when a clear recurring chance comes up and record
-the answer as a ruling, and keep memory to what changes a future
-decision. The
-block depends on the assistant record alone, so an edit to a home file
-leaves it, and the provider's prompt cache, unchanged.
+the answer as a ruling. The block depends on the assistant record
+alone, so an edit to a home file leaves it, and the provider's prompt
+cache, unchanged.
 
-**Home file delivery.** The home files reach the model through
-SessionStart hooks, one per file, that run this app's binary
-(`agenthome.HookSubcommand`) with the file's name and the home. Claude
-and claude-tui register them in the session's inline `--settings`,
-Codex in the thread's `config` with the trust hash of each command
-([Codex SessionStart hooks](../references/codex-wire.md#sessionstart-hooks-verified-01571)).
-Each hook is a matcher group of its own. Its matcher is
-`startup|compact|clear`: a new thread and a compaction each get the
-files as they are then. A resume runs only the hook of a file whose
-context the thread's model does not hold as the file reads now: the
-resumed history already carries the last delivery, and both providers
-keep another copy per run until the next compaction. For that, the app
-keeps a receipt per thread and file (`session_start_receipts`): the
-SHA-256 of the context the hook last delivered (`agenthome.ContextDigest`)
-and the provider session that received it, written when the provider
-confirms the delivery. At a resume it reads the file as the hook would
-(`agenthome.ReadContext`) and registers the hook for the resume too
-(`startup|compact|clear|resume|fork`) when there is no receipt for the
-resumed session or its digest differs. Every delivery carries its time
-on the line under the heading, which the digest leaves out: Claude Code
-drops a resume's context whose text the transcript already holds, so a
-file changed back to a copy the thread had before would otherwise not
-reach the model, and claude-tui tells by the time which run a context in
-a model request came from. A compaction forgets the thread's receipts
-before it delivers. So does a revert that cuts the history in place
-(Codex's in-place rollback, claude-tui's Esc revert), which can remove a
-resume's delivery; a Claude rollback and a fork start another provider
-session, which holds no receipt. A resume whose hook did not deliver
-keeps no receipt, so the next resume runs it again. So an edit reaches
-the next new thread, compaction or resume; an agent whose hooks did not
-run has the delivery sentence telling it to read the files itself.
-
-Each hook prints its file under its heading, "Your standing
-instructions" for `instructions.md` and "Your memory index" for
-`MEMORY.md`, or a notice under that heading when the file or the home
-is missing, empty or unreadable, and closes with `[End of <file>]`.
-claude-tui reads every hook's context out of the one block the model
-request joins them in, and the ending is where each stops. The memory
-index is followed by its check against `memory/`
-(`agenthome.IndexCheckPrefix`): one notice naming the Markdown files
-directly in `memory/` that `MEMORY.md` does not link, and one naming the
-links under `memory/` to files that do not exist. The check reads the
-whole index (up to 1 MiB), at most 1000 entries of `memory/` (a notice
-says so past that) and 500 links; each notice names at most 10 files,
-each cut to 80 bytes, and counts the rest. A `memory/` that cannot be
-read is a notice and a problem. Each file is cleaned first, the way an
-attached file is (`agenthome.CleanText`: invalid UTF-8 replaced, line
-ends made `\n`, every Unicode control and format character removed
-except tab and line break, the line and paragraph separators too), and
-everything after cleaning counts on the cleaned text without its
-trailing line breaks. Caps: 8 KiB of `instructions.md` and 4 KiB of
-`MEMORY.md`, each inside the providers' 10,000-character limit on one
-hook's output; past a cap the head is delivered, cut after the last line
-break inside the cap (on a character boundary when one line is longer),
-with a notice naming the file, the line and the byte of the cleaned text
-it stopped at and the line to read on from, and the agent reads the rest
-itself. Reads go through an
-`os.Root` on the home, so a link out of it is not followed, and only a
-regular file is read: the open does not wait (`O_NONBLOCK` on Unix) and
-the mode is checked on the opened file, so a FIFO cannot hang a hook. A
-read takes at most the first 1 MiB of a file (`agenthome.MaxRawRead`),
-so a file of characters cleaning removes is not read without end; when
-that bound stops a read with the cleaned text inside the cap, what was
-read is delivered with a notice that the rest past 1 MiB was not read
-and the line to read on from, and `home_files` refuses such a file. The
-literals live in `internal/agenthome`, and a test holds the skill to
-them.
-
-A file that cannot be read for a reason other than absence is also
-logged with its path and puts a warning row on the thread once the
-session start has succeeded or failed, and again at each compaction of
-the thread; the start proceeds. When a start, a resume or a compaction
-ends without the output of a hook it ran, the provider puts a non-fatal
-error row on the thread naming the files that did not arrive and why:
-the failed run's cause where the provider reports one (Claude its exit
-code and stderr, Codex its error entries), otherwise the likely causes
-(a hook failed, or hooks are off in the provider's own settings). A
-receipt or a compaction the app could not record is a non-fatal error
-row too. Each provider checks once the hooks have had their chance to run
-([Claude](../references/claude-wire.md#sessionstart-hooks-verified-21283),
-[Codex](../references/codex-wire.md#what-agent-overflow-does)). A past
-thread's next session carries none of it.
+**Delivery.** `instructions.md`, the home's facts and the rest of the
+assistant's memory reach the model in one delivery. How it runs, and
+how a missing delivery or an unreadable file is reported, is in
+[memory](memory.md#delivery).
 
 **Agent-to-agent context.** What a receiver needs from the surfaces a
 standing agent reads and writes:
@@ -646,7 +624,7 @@ standing agent reads and writes:
 | Surface | What the receiver lacked | Now |
 |---|---|---|
 | `thread_send` / `thread_spawn` footer | Whether the sender is a lead or a worker; for a worker, that its questions go to the agent (ruling 19) | A standing agent sender is named as one with its role line, the first non-blank line of its `instructions.md` after a leading frontmatter block and rule lines (one cleaned line, at most 200 characters, quoted), read when the message is sent. A frontmatter block that is never closed is not skipped, so its first key line is the role. When it spawned the receiver on this computer, the footer adds that the receiver's questions and approval requests go to it. A sender on another computer carries its role in the forwarded call and never routes. An ordinary sender's footer is unchanged |
-| A spawned thread's first message | The sender's standards, which it could only paste | `home_files` on `thread_spawn` and `thread_send`: files from the caller's home prepended under their names, framed as the sender's own text ([thread tools](agent-thread-tools.md#thread_spawn-q5-q6-q18)). The skill passes `verification.md` to every worker and reviewer |
+| A spawned thread's first message | The sender's standards, which it could only paste | `home_files` on `thread_spawn` and `thread_send`: files from the caller's home prepended under their names, framed as the sender's own text ([thread tools](agent-thread-tools.md#thread_spawn-q5-q6-q18)) |
 | Wake of a reply, final message or failure | Whether the answering thread is an agent | A standing agent is named with its role line on the line after the status line, as it was when the answer or the late reply was written: the answering computer's receipt records it then, and the request row copies it when it collects the answer, from this computer or another, so the wake reads the same on either. A role is bounded again where it is collected, and bounding a bounded role changes nothing. A computer that reports none answered from an ordinary thread |
 | `thread_search`, `thread_show` | Which rows are agents and whose workers | `assistant` and `spawned_by` on every row |
 | `thread_reply`, worker prompt wakes, loop and watch wakes | Nothing missing: a reply's text is the answer, a worker's prompt wake already names the worker, and a loop or watch wake is the agent's own | Unchanged |
@@ -659,10 +637,31 @@ before.
 
 ### Sidebar
 
-The agent row is an assistant's current thread rendered by `ThreadRow`
-with an agent variant, not a new component. Its identity is the
-assistant's id, so a handoff keeps the row, its fold and its footer in
-place under the successor. Differences from an ordinary thread row:
+The sidebar has two sections, Assistants above Projects, in one scroll
+area, each under a header that collapses the whole section (persisted
+per client in `sidebar:collapsedSections`). A search shows its matches
+in a collapsed section. The Assistants header carries New Assistant.
+
+**Assistant card.** Each assistant on every attached computer is a card
+in the Assistants section, ordered as a container's members are
+(ruling 34). The card is compact: the first line is the chevron, the
+person glyph, the name, the live-children count and the dot; the second
+is the state line; the third names its projects (`All projects` for a
+chief of staff), truncating from the right. Expanded, its helpers and
+past threads list under it as children.
+
+**Assistant row in a project.** In each project where an assistant has
+nested work, one row headed by the assistant's glyph and name holds it:
+the threads its current or past threads spawned into that project whose
+placement is nested. Its name opens the assistant's current thread. It
+shows while it has a nested child there, live or done.
+
+Both are the agent variant of `ThreadRow`, and "agent row" below means
+either. An agent row's identity is the assistant's id, with the
+project's sidebar entry for a row in a project, so a handoff keeps each
+row, its fold and its footer in place under the successor, and the card
+and each project row fold on their own.
+Differences from an ordinary thread row:
 
 - Leading person glyph after the chevron. The chevron is the only fold
   target; name, dot and state line open the thread. Keyboard: Enter
@@ -672,28 +671,26 @@ place under the successor. Differences from an ordinary thread row:
   has the same name (compared as the store compares), both rows show
   `<name>-<computer>`, using each computer's display name, until one is
   renamed; the suffix is never written to a title.
-- A state line under the name, 10px, one line, truncating from the
+- A state line under the name on the card, 10px, one line, truncating from the
   right: `until 10:30 · watching 4 MRs · 2 need you`,
   `loop board check · next 12m · 1 missed`, or nothing when the agent
   is idle with no loop or watch. The text comes from the supervisor
   (next fire, missed count) and from the agent's own registered labels
   (what a watch is called). The dot keeps the live status; the state
   line never repeats it.
-- Children: the threads this assistant spawned whose placement is
-  nested, derived from `thread_requests` rows of kind spawn whose
-  `caller_thread_id` is its current thread (a handoff moves its
-  predecessors' rows there), joined to the resulting thread id, and its
-  past threads that are not archived and are nested. A thread the
-  assistant did not spawn never nests under it. A grouped child renders
-  in its group and a standalone child as a plain row of its own
-  project, both like any thread there (ruling 36).
-  An assistant another assistant created is a top-level agent row,
-  never a child. A child in another project on this computer nests here
-  all the same and carries that project's name on its sublabel line,
-  beside the worktree and computer, in the same style; its own project's
-  list does not show it, and opening it opens its own project and
-  workspace. While the agent row is not in the sidebar (archived, or its
-  computer filtered out) the child lists in its own project.
+- Children: on the card, the threads that live under the assistant
+  other than its current thread: its helpers and past threads. In a project, the threads in that project the assistant
+  spawned whose placement is nested, derived from `thread_requests`
+  rows of kind spawn whose `caller_thread_id` is its current thread (a
+  handoff moves its predecessors' rows there), joined to the resulting
+  thread id. A thread the assistant did not spawn never nests under it.
+  A grouped child renders in its group and a standalone child as a plain
+  row of its project, both like any thread there (ruling 36). An
+  assistant another assistant created has its own card, never a child.
+  While the assistant is not in the sidebar (archived, or its computer
+  filtered out) its project children list as plain rows of their
+  project and its helpers are not shown. A thread's activity moves its
+  own project in the project order, never another's.
 - Children sort by the normal comparator inside a container: pinned
   first, then needs-you, then running, then unread, then idle by last
   activity (ruling 34). The live children show the project's preview
@@ -704,7 +701,7 @@ place under the successor. Differences from an ordinary thread row:
   it (ruling 32). A group bounds its members the same way.
 - Done fold (ruling 5): a child that is settled idle (effective status
   idle with no pill, so idle and read; not pinned; not open in any pane)
-  and every archived child count in one footer row `N done`, styled as
+  and the row's archived children count in one footer row `N done`, styled as
   the show-more footer. It expands to list the settled idle children
   first, then the archived ones, newest first within each, paged 8 then
   20 more per click. A past thread in the list carries the name and
@@ -724,12 +721,14 @@ place under the successor. Differences from an ordinary thread row:
   as dropping on another project. Dragging an agent row onto a group is
   refused the same way. A child dragged onto a group of its own project
   joins it and becomes grouped.
-- Groups: an agent row renders in the groups section, above the pin
-  blocks, sorted among groups by the same bubbled status. It cannot join
-  a group. A child is a group member only while its placement is
-  grouped.
-- Placement items on a child's menu (a thread an assistant spawned, or
-  its past thread): a nested child offers Move to Group and Make
+- Groups: an assistant's row in a project renders in the project's
+  groups section, above the pin blocks, sorted among groups by the same
+  bubbled status. It cannot join a group. A child is a group member only
+  while its placement is grouped. Helpers and past threads have no
+  project and so no group or placement items, and `SetThreadPlacement`
+  refuses a thread outside every project (`ErrPlacementOutsideProjects`).
+- Placement items on a child's menu (a thread an assistant spawned into
+  a project): a nested child offers Move to Group and Make
   Standalone; a standalone child offers Move to Group and
   `Nest Under <agent>`; a grouped child offers Move to Group, Remove
   from Group (which makes it standalone) and `Nest Under <agent>`, the
@@ -756,28 +755,33 @@ place under the successor. Differences from an ordinary thread row:
   groups section whatever pin its thread holds, and its pin is left
   alone.
 
-New Assistant sits beside every new-thread action, desktop and compact:
-the project header's buttons (a person-plus icon beside the plus,
-`aria-label` "New Assistant in This Project"), the project context menu
-under New Thread, and the empty project's button row. It opens the New
-Assistant dialog: a name field, the project (preselected from where it
-was opened) and the workspace (Project root, each existing worktree,
-New worktree with a generated branch name the user can edit), and
-Create. A name in use is refused inline with the assistant that holds
-it. Create opens the new thread in the pane the action came from, or a
-new pane under the same modifier a new thread takes.
+New Assistant is on the Assistants header (a person-plus icon,
+`aria-label` "New Assistant") and in each project's context menu under
+New Thread, desktop and compact. It opens the New Assistant dialog: a
+name field and a projects checklist with All projects above it (the
+project it was opened from preselected), and Create, enabled once a
+name and a project are chosen. A name in use is refused inline with the
+assistant that holds it. Create opens the new thread in the pane the
+action came from, or a new pane under the same modifier a new thread
+takes. The card's menu adds Projects, which opens the same checklist for
+that assistant.
 
 Mechanics, as built:
 
 - The thread row carries the lineage: `agentId` on an assistant's
-  current thread, `pastAgentId` and `agentSupersededAt` on a past
-  thread, `spawnedByThreadId` (the newest local spawn request naming
-  it), `placement`, and `archivedChildCount` (an assistant's archived
-  nested spawned and past threads, never an assistant it created),
-  derived in `threadColumns`, so one `thread:updated` frame moves the
+  current thread, with `agentAllProjects` and `agentProjectIds` (the
+  projects it serves, sorted); `pastAgentId` and `agentSupersededAt` on a
+  past thread; `helperOfAgentId` on a helper; `spawnedByThreadId` (the
+  newest local spawn request naming it), `placement`, and
+  `archivedChildCounts` on an assistant's current thread: its archived
+  threads by container, `""` for the card (helpers and past threads)
+  and a project id for the nested
+  spawned threads in that project, never an assistant it created. They
+  are derived in `threadColumns`, so one `thread:updated` frame moves the
   row. A spawn's accept re-broadcasts the spawned thread; a child's
   archive, unarchive, delete, group move and placement change
-  re-broadcast the child and its spawner, whose `archivedChildCount` they change; a handoff
+  re-broadcast the child and its assistant's thread, whose
+  `archivedChildCounts` they change; a handoff
   re-broadcasts the old thread, the successor and every live child. The
   partial index `idx_thread_requests_spawn_target` serves the lookup,
   and while the thread it created exists the thread-request retention
@@ -790,13 +794,14 @@ Mechanics, as built:
   a group. A row is created standalone, or grouped with its group; the
   write that names a local spawn's thread (`NameLocalThreadRequestTarget`)
   makes it nested in the same transaction when the spawn resolved to
-  nested, and a handoff makes the old thread nested. `SetThreadGroup`
+  nested. `SetThreadGroup`
   makes a row grouped and an ungroup makes a grouped row standalone;
   `SetThreadPlacement` writes nested or standalone and refuses nested
-  for a thread with no local spawn row or past-assistant link
-  (`ErrThreadNotSpawned`). When the last link a nested thread had is
-  deleted (its spawner's or its assistant's delete) a trigger makes it
-  standalone. A remote spawn has no local spawner on its destination,
+  for a thread with no local spawn row (`ErrThreadNotSpawned`). When the
+  last local spawn row naming a nested thread is deleted (its spawner's
+  delete) a trigger makes it standalone. A thread outside every project
+  lists under its assistant whatever its placement, and
+  `SetThreadPlacement` refuses it (`ErrPlacementOutsideProjects`). A remote spawn has no local spawner on its destination,
   so its thread is standalone there. `SetThreadGroup` still refuses an
   assistant's thread (`ErrStandingAgentGrouped`). The drag payload
   marks only agent rows `agentBound`, so a group target accepts a
@@ -807,11 +812,14 @@ Mechanics, as built:
   (`utils/agentStateLine.ts`) shows the running row, else the soonest
   loop or watch, with `+N more`. A row the bulk read missed asks
   `ListThreadWakes` once on mount.
-- `ListArchivedSpawnedThreads` (nested only, newest first) feeds the done footer
-  through `stores/agentArchivedChildren.svelte.ts`, keyed by the row's
-  `archivedChildCount` so a changed count reads again. The fold state
-  lives in `sidebar:collapsedAgents`, keyed by assistant id; an open
-  done footer and its paging are session state, and both reset when the
+- `ListArchivedSpawnedThreads` (every container's, newest first, the
+  same rows `archivedChildCounts` counts) feeds the done footers
+  through `stores/agentArchivedChildren.svelte.ts`, keyed by the total
+  of `archivedChildCounts` so a changed count reads again; each row
+  lists its own container's. The fold state lives in
+  `sidebar:collapsedAgents`, keyed by assistant id for the card and
+  `<id>@<entry>` for a project row; an open done footer and its paging
+  are session state, and both reset when the
   count reaches zero, so a footer that returns starts closed. An
   assistant that leaves the list (archived, deleted) drops its fold,
   footer and cached list.
@@ -822,7 +830,8 @@ Mechanics, as built:
   starts its turn, which makes it running and unfolds it; a request
   whose session start failed writes the thread's error row, so the
   child shows Failed and stays in the live rows. The footer's count is
-  the folded children plus `archivedChildCount`, and its open state
+  the folded children plus the row's entry in `archivedChildCounts`
+  (a merged entry adds its projects'), and its open state
   resets when that sum stays at zero past a short settle window: an
   archived folded child leaves the live rows before the agent row's
   count includes it, and that passing zero keeps the footer open. One bound (`boundContainerMembers`)
@@ -853,11 +862,14 @@ Mechanics, as built:
   provider session's native transfer governs execution, not read state,
   and refuses none of them. A refusal is `store.ErrThreadReadRefused`;
   a focus stamp treats it as a no-op.
-- Cross-project nesting happens where the sidebar buckets threads by
-  project (`ProjectsSection`): a nested thread whose spawner, or whose
-  past assistant's current thread, is an agent row in another project's
-  bucket is filed under that project, after the computer filter and
-  before search. The tree builder still runs per project.
+- Bucketing (`sidebarBuckets.ts`): an assistant's current thread is its
+  card; its helpers and past threads go on the card
+  (`cardOwnerAgentId`); every other thread goes to
+  its own project, where the tree builder nests it under its assistant's
+  row when it is nested. A card shows while its name matches a search or
+  it holds a matching thread; a project row shows while it holds a
+  matching thread, or, outside a search, archived children there
+  (`archivedChildCounts`).
 - A spawned thread's row carries `spawnedByAgent` beside
   `spawnedByThreadId`: the placement items hold while the assistant is
   archived (its own row is then absent), and the row's menu reads the
@@ -1328,74 +1340,6 @@ members (it keeps their sessions, as it did); Pause and End Sessions
 also ends the session of every member it paused, and Resume starts them
 again on the same provider threads. The Agents row's Stop is unchanged.
 
-### Skills library
-
-The vendored tree lives in the repository at `assets/skills/pstack/`
-with `UPSTREAM.md` pinning the upstream commit and listing every edit
-made for the port. One skill in it, `agent-home`, is authored for Agent
-Overflow rather than vendored ([Agent home contents](#agent-home-contents));
-`UPSTREAM.md` lists it as added. Syncing is a manual diff against upstream; nothing
-pulls.
-
-The port rewrites every host primitive to a thread tool so both
-providers run identical skill text:
-
-| pstack names | Port uses |
-|---|---|
-| `/loop`, heartbeat, `/loop 1h` | `thread_loop`; a watcher subagent becomes `thread_watch` |
-| Task-tool model roles, cloud agents | native subagents for the thread's own work; `thread_spawn` with provider, model, effort, `worktree` for work that outlives the turn (ruling 3) |
-| transcripts under the agent store | `thread_show` and `thread_search` |
-| Cursor dashboard liveness | `thread_status`, `thread_ask` |
-| `control-ui`, `control-cli`, verification live lane | `ao-browser-tools` |
-| `gh` in `watch-pr`, Babysit, Shipping, the autopilots | agents run `forge which` once, then `gh` or `glab` directly; the scripts read the forge through the `forge` script, which chooses `gh` or `glab` from the remote |
-| `.mdc` always-apply rule, SessionStart hook | the agent's own instructions file |
-| `make-bot-ui`, Benny's Slack triggers | not ported; Benny's triage and reproduce skills are ported as skills an agent runs from a watch |
-| Graphite `gt` stack reads in `orch` and the orchestrate playbook | `forge stack`: the chain of pull requests from the current branch to the default branch, read from each request's base |
-
-The settings page `Skills` lists the shipped tree with its upstream
-version, shows whether it is installed in each provider home, and
-offers Install, Update and Remove per provider. Install copies each
-skill directory `assets/skills/pstack/skills/<name>` to
-`<provider home>/skills/<name>`: both providers discover a skill one
-level under `skills/`, so the tree is flattened rather than nested
-under a `pstack` directory. Install never symlinks into the
-repository. Remove deletes only what Install wrote, by manifest.
-
-As built (`internal/skillsinstall`, `app_skills.go`): the manifest is
-`<provider home>/skills/.agent-overflow-pstack.json`, so every app
-profile sharing a home sees one install. It names every file and skill
-directory written; before the first write it names everything the run
-may leave, so a failure part way shows as an unfinished install that
-Update finishes and Remove clears. Install refuses the whole
-install, writing nothing in `skills/`, when a skill directory or file it
-would write is there and the manifest does not name it, and names them. Update
-replaces what the manifest names and deletes the named files the tree
-no longer has; it is refused for a home with no install. Remove deletes
-the named files and the directories they leave empty; a directory
-holding a file the user added stays. Update and Remove treat every file
-the manifest names as the app's, a user's edit to one included, and
-Remove asks no confirmation ([decisions](../decisions.md#miscellany)).
-A manifest naming anything outside its own skill directories (a `..`
-element, an absolute path, a file of a skill it does not list) is read
-as an error and nothing is deleted. Every read, write and delete in
-`skills/` goes through an `os.Root` opened on it (a `skills` link itself
-is followed), so nothing reaches through a link to outside it. A link or
-file where a directory of an owned skill should be refuses Install and
-Update as a named conflict, wherever it points, and Remove deletes the
-link, never through it. Install, Update and Remove hold an exclusive
-advisory lock, and a status read a shared one, on
-`<provider home>/.agent-overflow-pstack-skills.lock` from reading the
-manifest to writing it, so two processes sharing a home cannot
-interleave and the page never shows a change part way. The lock file
-sits beside `skills/`; the first Install creates it (readable only by
-the user, as is a provider home it has to create), a read of a home
-with nothing installed does not, and it stays after Remove, since
-removing a lock file races its users. A home is current when its
-manifest's digest of the tree's paths and content matches the
-shipped one, since the port edits files without moving the upstream
-pin. An embedded file has no mode, so a file starting with `#!` is
-installed executable.
-
 ### Workflows to MCP
 
 The `workflow`, `run` and `memory` CLI verbs are replaced by an
@@ -1482,13 +1426,14 @@ ticket keys.
 | 3c | Delete the workflow scheduler | 3a | `internal/workflow/scheduler`, the `automations` and `automation_cursors` tables, `WorkflowCreateAutomation`, the `schedule` CLI verb and the overlay's automation rows are gone; the workflow suites pass | Workflow e2e suite run; migration output on the user's database copy showing the tables dropped |
 | 4 | Claude wire gaps | none | An armed recurring cron keeps the session alive past the reap threshold and `CronDelete` releases it; a cron fire renders as a scheduled turn with its prompt, not as a peer turn; an E7 completion renders as a badged system row naming the task | Fixture replay through the harness with the reap threshold shortened; screenshots of a cron fire turn and of the E7 pane before and after |
 | 4a | Stale session frames after a stalled drain | 4 | A dead session's frames still queued when the provider event drain hits its stall bound (`providerEventDrainStall`) never reach triage after a replacement session starts: frames carry their session token and `triage.Handle` refuses a token that is no longer the thread's; `MarkThreadActive`'s claim that no stale frame passes its gate becomes true | Harness spec that stalls a worker across a replacement start with the dead session's frames queued and asserts nothing reaches the replacement, on both mock providers: on Claude a ScheduleWakeup and a CronCreate ack plus the reply, and the replacement holds no schedule; on Codex, which has no session schedule, the reply and the turn completion, and the replacement holds no stale turn or row. A frame already being handled when the replacement commits is proven by unit tests at every process-state writer and in the host |
-| 5 | Agent homes and settings | 2, 3a | Promotion creates the home and injects its path into both providers; the Skills page installs, updates and removes per provider | Settings e2e with temp provider homes showing the installed tree; harness proof that a Claude and a Codex mock session received the home path; screenshots of the Skills page |
-| 6 | pstack vendored and ported | 3a, 5 | Every primitive in the port table is rewritten; the `forge` script passes against the fake `gh` and `glab`; `poteto-mode` completes a small real task in a Claude thread and in a Codex thread with the same steps | Manual provider smoke on a throwaway repo with the transcripts attached; forge script run log against the harness fake |
+| 5 | Agent homes | 2, 3a | Promotion creates the home and injects its path into both providers | Harness proof that a Claude and a Codex mock session received the home path |
+| 6 | pstack vendored and ported | 3a, 5 | Withdrawn 2026-10-21: the app ships no skills (ruling 16) | None |
 | 7 | Workflows to MCP | 5 | No workflow verb in `aocli`; every workflow e2e spec passes through the MCP tool; starters and docs name the tool | Workflow e2e suite run; a screenshot of a run started and watched from a thread through the tool. No mock speaks claude-tui, so the claude-tui leg is proven at the argv level and at the app level through the real threadmcp transport, and the only unproven step is the real Claude TUI binary reading --mcp-config and --allowedTools, which the manual provider smoke covers. |
 | 8 | MR lead migration | 2, 3b, 5, 6, 14 | An assistant created for the lead read the old lead thread with `thread_show`, keeps the lead's notes in its home, set its own loop and watches, and ran a week | The user |
-| 9 | Agent home contents | 5, 6 | The `agent-home` skill ships in the installed tree; a standing agent's sessions on Claude, claude-tui and Codex carry the same block whatever the home files hold and receive `instructions.md` and `MEMORY.md` within their caps through SessionStart hooks at a new thread and after each compaction, and on a resume only for a file whose delivered context changed (`session_start_receipts`), with a rewrite reaching the next compaction or resume and not the session it was made in; the memory index carries its check against `memory/`; a start, resume or compaction without the output of a hook it ran is a warning row, and an unreadable file starts the session, and each compaction, with a warning row; footers and wakes name a standing agent with its role line and tell a worker its questions go to its agent; `home_files` attaches files on spawn and send and is refused for a non-agent, an escaping path, a missing file and a total past 32 KiB; thread rows carry `standing_agent` and `spawned_by` | `standing-agent-home-contents.spec.ts` on both mock providers (the session block, the hook runs the mock reports per start, resume and compaction, a rewrite during a session reaching the next compaction and one between sessions reaching the next resume with the index check, no warning row, a worker's first message carrying `home_files`, the footer role line between an agent and an ordinary thread); app tests reading the claude-tui argv and append file, since no mock speaks claude-tui; screenshots of the agent's session and the worker's first message, desktop and compact |
+| 9 | Agent home contents | 5, 6 | A standing agent's sessions on Claude, claude-tui and Codex carry the same block whatever the home files hold; footers and wakes name a standing agent with its role line and tell a worker its questions go to its agent; `home_files` attaches files on spawn and send and is refused for a non-agent, an escaping path, a missing file and a total past 32 KiB; thread rows carry `standing_agent` and `spawned_by`. Home file delivery moved to slice 15 | `standing-agent-home-contents.spec.ts` on both mock providers (the session block, a worker's first message carrying `home_files`, the footer role line between an agent and an ordinary thread); app tests reading the claude-tui argv and append file, since no mock speaks claude-tui |
 | 10 | Agents segment | 3b, 9 | The Agents segment lists a thread's spawns and owed sends and asks with title, provider, state, elapsed and what blocks them, nested by spawn to four levels and across paired computers; settled rows linger 8 s and leave, a click opens the target or the answer; Stop cancels the request for the user with the caller's wake armed and cascades into a spawned thread's background work, turn and own rows, here or on a paired computer, and Stop All does the same; incoming agent messages list until delivered and withdraw; Background's Stop All and the thread's own Stop leave the rows; the segment fits every rail density | `agents-tray.spec.ts` and `compact-agents-tray.spec.ts` on both mock providers (rows, nesting, a blocked approval, settle and linger, click, per-row Stop cascade with the caller's user-cancelled wake and the nested wakes disarmed, Stop All, Background's Stop All and the thread's own Stop leaving the rows); the cascade across computers in `thread-tools-paired.spec.ts`; screenshots of running, blocked, nested and settled rows and the digest, desktop and compact |
 | 14 | Assistant identity and creation | 9, 10, 13 | Standing agents are records (`agents`, `agent_past_threads`, v155) with existing rows migrated in place; promotion and demotion are gone from the app, the bindings and the docs; New Assistant (desktop and compact, sidebar and project menu) creates the record, the home and a thread whose app-written opening starts the role discussion; the name is the title, unique per computer, a clash across paired computers shows `<name>-<computer>`; New Thread, Same Assistant moves loops, watches, reminders, requests and workers to the successor and opens it with the handoff block; app-written messages to a past thread reach the current one; `thread_search` `agents` and name addressing; `thread_new_assistant` for assistants only; Agents rows open in the `agent-thread` companion pane; Interrupt and End Session are separate for assistant threads and workflow pauses | `assistant-creation.spec.ts`, `assistant-handoff.spec.ts`, `assistant-companion.spec.ts` and their compact twins on both mock providers; the name clash and name addressing in `thread-tools-paired.spec.ts`; `thread_new_assistant` in `thread-tools.spec.ts`; regression on the standing-agent, agents-tray, thread-tools and upgrade-corpus specs; screenshots of the dialog, the opening discussion, the handoff, the companion pane and the Stop menu, desktop and compact |
+| 15 | Memory and assistants above projects | 9, 14 | No built-in skills or Skills page; memory scopes, facts, the built index, one delivery per session with the write rules, the size cut and maintenance warnings for assistants only ([memory](memory.md)); shared memory and the provider memory settings on Claude, claude-tui and Codex; assistants with projects and no project of their own, running in their home, helpers under the assistant and project work under its row in the project, delete and project removal as ruled (rulings 37 to 40); the Assistants and Projects sidebar sections | Unit tests named in [memory](memory.md#verification); `standing-agent-home-contents.spec.ts`, the standing-agent sidebar and spawn-placement specs and the assistant specs on both mock providers, desktop and compact; screenshots of the Assistants section, an assistant's row in a project and the Projects checklist |
 
 Slices 1 and 3a start together, with the slice 4 spike beside them.
 Slice 7 is independent of 6 and runs after 5 so the tool lands on the

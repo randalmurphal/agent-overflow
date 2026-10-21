@@ -11,11 +11,12 @@ import (
 	"testing"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil"
 )
 
 var testSessionStartHooks = []provider.SessionStartHook{
-	{Label: "instructions.md", Command: `'/opt/ao' __agent-home-context 'instructions.md' '/h'`, Heading: "## Your standing instructions", Ending: "[End of instructions.md]", Stamp: "[Delivered at "},
-	{Label: "MEMORY.md", Command: `'/opt/ao' __agent-home-context 'MEMORY.md' '/h'`, Heading: "## Your memory index", Ending: "[End of MEMORY.md]", Stamp: "[Delivered at "},
+	{Label: "first hook", Command: `'/opt/ao' deliver 'first' '/h'`, Heading: "## First hook", Ending: "[End of first hook]", Stamp: "[Delivered at "},
+	{Label: "second hook", Command: `'/opt/ao' deliver 'second' '/h'`, Heading: "## Second hook", Ending: "[End of second hook]", Stamp: "[Delivered at "},
 }
 
 func trustHash(command, matcher string) string {
@@ -240,10 +241,58 @@ func TestNewSessionRefusesHooksItCannotFollow(t *testing.T) {
 	binary := filepath.Join(t.TempDir(), "codex-never-run")
 	_, err := NewSession(t.Context(), "thread-1", Config{
 		Binary: binary, WorkDir: t.TempDir(),
-		SessionStartHooks: []provider.SessionStartHook{{Label: "MEMORY.md", Command: "hook"}},
+		SessionStartHooks: []provider.SessionStartHook{{Label: "second hook", Command: "hook"}},
 	}, func(provider.ProviderEvent) {})
 	if err == nil || !strings.Contains(err.Error(), "heading") {
 		t.Fatalf("NewSession error = %v, want the refused hook", err)
+	}
+}
+
+// A turn the app-server starts as it answers the resume, and the hooks it
+// runs, may reach the read loop before NewSession reads the answer: the
+// expectation is armed before the request, so that turn settles it and
+// keeps its receipts.
+func TestATurnRunBeforeTheResumeAnswerSettlesTheResume(t *testing.T) {
+	t.Parallel()
+	const root = "codex-early-turn"
+	line := func(method string, params map[string]any) string {
+		params["threadId"] = root
+		raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// printf reads the template as its format: keep JSON's escapes.
+		return strings.ReplaceAll(string(raw), `\`, `\\`) + "\n"
+	}
+	run := map[string]any{
+		"id": "session_start:0:0", "eventName": "sessionStart", "handlerType": "command", "executionMode": "sync",
+		"scope": "thread", "sourcePath": "/<session-flags>/config.toml", "source": "sessionFlags", "displayOrder": 0,
+		"status": "completed", "startedAt": 1,
+		"entries": []any{map[string]any{"kind": "context", "text": instructionsContext}, map[string]any{"kind": "context", "text": memoryContext}},
+	}
+	early := line("turn/started", map[string]any{"turn": map[string]any{"id": "t0", "status": "inProgress", "items": []any{}}}) +
+		line("hook/completed", map[string]any{"turnId": "t0", "run": run}) +
+		line("turn/completed", map[string]any{"turn": map[string]any{"id": "t0", "status": "completed", "items": []any{}}})
+	binary := testutil.WriteMockCodexSession(t, t.TempDir(), map[string]string{
+		`"method":"initialize"`:    `{"jsonrpc":"2.0","id":%s,"result":{}}`,
+		`"method":"thread/resume"`: early + `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"` + root + `"}}}`,
+		"":                         `{"jsonrpc":"2.0","id":%s,"result":{}}`,
+	})
+	recorder := &receiptRecorder{}
+	sess, err := NewSession(t.Context(), "thread-1", Config{
+		Binary: binary, WorkDir: t.TempDir(), ResumeThreadID: root,
+		SessionStartHooks: hooksResumingAt(0, 1), SessionStartReceipts: recorder.receipts(),
+	}, recorder.onEvent)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	if got := sess.sessionStart.Expecting(); got != "" {
+		t.Fatalf("still expecting %q after the turn that ran the hooks", got)
+	}
+	records, errs := recorder.take()
+	if want := []string{"keep " + root + " first hook " + instructionsContext, "keep " + root + " second hook " + memoryContext}; strings.Join(records, "\n") != strings.Join(want, "\n") || len(errs) > 0 {
+		t.Fatalf("records %q, errors %v; want records %q", records, errs, want)
 	}
 }
 
@@ -287,7 +336,7 @@ func TestResumeRegistersTheHooksTheDeliveryStillWaitsFor(t *testing.T) {
 		}
 	}
 	records, errs := recorder.take()
-	if want := []string{"keep mock-thread instructions.md " + instructionsContext, "keep mock-thread MEMORY.md " + memoryContext}; strings.Join(records, "\n") != strings.Join(want, "\n") || len(errs) > 0 {
+	if want := []string{"keep mock-thread first hook " + instructionsContext, "keep mock-thread second hook " + memoryContext}; strings.Join(records, "\n") != strings.Join(want, "\n") || len(errs) > 0 {
 		t.Fatalf("records %q, errors %v; want records %q", records, errs, want)
 	}
 }
@@ -381,8 +430,8 @@ func compacted(t *testing.T, s *Session, turn string) {
 }
 
 const (
-	instructionsContext = "## Your standing instructions (instructions.md in your home)\n\nRole\n\n[End of instructions.md]"
-	memoryContext       = "## Your memory index (MEMORY.md in your home)\n\n- a\n\n[End of MEMORY.md]"
+	instructionsContext = "## First hook (first hook in your home)\n\nRole\n\n[End of first hook]"
+	memoryContext       = "## Second hook (second hook in your home)\n\n- a\n\n[End of second hook]"
 )
 
 // warningsBeforeCompletion are the delivery warnings among events; each must
@@ -432,7 +481,7 @@ func TestCodexSettlesTheStartAtItsFirstCompletedTurn(t *testing.T) {
 	hookRun(t, s, "t1", "sessionFlags", "failed", instructionsContext)
 	turnCompleted(t, s, "t1", "completed")
 	if warnings := warningsBeforeCompletion(t, rec.take()); len(warnings) != 1 ||
-		warnings[0] != "instructions.md and MEMORY.md did not reach this session after its start: a SessionStart hook failed (status failed)." {
+		warnings[0] != "first hook and second hook did not reach this session after its start: a SessionStart hook failed (status failed)." {
 		t.Fatalf("warnings = %v", warnings)
 	}
 	turnStarted(t, s, "t2")
@@ -455,7 +504,7 @@ func TestCodexQuotesAFailedRun(t *testing.T) {
 	})
 	turnCompleted(t, s, "t1", "completed")
 	if warnings := warningsBeforeCompletion(t, rec.take()); len(warnings) != 1 ||
-		warnings[0] != "MEMORY.md did not reach this session after its start: a SessionStart hook failed (hook exited with code 127; sh: /gone/agent-overflow: not found)." {
+		warnings[0] != "second hook did not reach this session after its start: a SessionStart hook failed (hook exited with code 127; sh: /gone/agent-overflow: not found)." {
 		t.Fatalf("warnings = %v", warnings)
 	}
 }
@@ -502,11 +551,11 @@ func TestCodexKeepsTheReceiptsOfWhatArrived(t *testing.T) {
 	compacted(t, s, "t1")
 	hookRun(t, s, "t1", "sessionFlags", "completed", memoryContext)
 	turnCompleted(t, s, "t1", "completed")
-	if warnings := warningsBeforeCompletion(t, rec.take()); len(warnings) != 1 || !strings.HasPrefix(warnings[0], "instructions.md did not reach this session after its compaction") {
+	if warnings := warningsBeforeCompletion(t, rec.take()); len(warnings) != 1 || !strings.HasPrefix(warnings[0], "first hook did not reach this session after its compaction") {
 		t.Fatalf("warnings = %v", warnings)
 	}
 	records, _ := recorder.take()
-	if want := []string{"forget", "keep codex-thread-1 MEMORY.md " + memoryContext}; strings.Join(records, "\n") != strings.Join(want, "\n") {
+	if want := []string{"forget", "keep codex-thread-1 second hook " + memoryContext}; strings.Join(records, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("records %q, want %q", records, want)
 	}
 
@@ -526,7 +575,7 @@ func TestCodexKeepsTheReceiptsOfWhatArrived(t *testing.T) {
 		}
 	}
 	if len(failures) != 2 || !strings.HasPrefix(failures[0], "Agent Overflow could not record that this compaction") || !strings.HasSuffix(failures[0], ": disk full") ||
-		!strings.HasPrefix(failures[1], "Agent Overflow could not record that instructions.md and MEMORY.md reached this session") {
+		!strings.HasPrefix(failures[1], "Agent Overflow could not record that first hook and second hook reached this session") {
 		t.Fatalf("record failure rows = %v", failures)
 	}
 }
@@ -539,7 +588,7 @@ func TestCodexSettlesAResumeAtItsFirstCompletedTurn(t *testing.T) {
 	s, rec := sessionStartSessionWith(t, provider.SessionStartAfterResume, hooksResumingAt(1), recorder.receipts())
 	turnStarted(t, s, "t1")
 	turnCompleted(t, s, "t1", "completed")
-	if warnings := warningsBeforeCompletion(t, rec.take()); len(warnings) != 1 || !strings.HasPrefix(warnings[0], "MEMORY.md did not reach this session after its resume") {
+	if warnings := warningsBeforeCompletion(t, rec.take()); len(warnings) != 1 || !strings.HasPrefix(warnings[0], "second hook did not reach this session after its resume") {
 		t.Fatalf("warnings = %v", warnings)
 	}
 
@@ -550,7 +599,7 @@ func TestCodexSettlesAResumeAtItsFirstCompletedTurn(t *testing.T) {
 	if warnings := warningsBeforeCompletion(t, rec.take()); len(warnings) > 0 {
 		t.Fatalf("warnings = %v", warnings)
 	}
-	if records, _ := recorder.take(); len(records) != 1 || records[0] != "keep codex-thread-1 MEMORY.md "+memoryContext {
+	if records, _ := recorder.take(); len(records) != 1 || records[0] != "keep codex-thread-1 second hook "+memoryContext {
 		t.Fatalf("records = %q", records)
 	}
 }
@@ -569,7 +618,7 @@ func TestCodexKeepsTheExpectationPastAnUnfinishedTurn(t *testing.T) {
 		turnStarted(t, s, "t2")
 		hookRun(t, s, "t2", "sessionFlags", "completed", memoryContext)
 		turnCompleted(t, s, "t2", "completed")
-		if warnings := warningsBeforeCompletion(t, rec.take()); len(warnings) != 1 || !strings.HasPrefix(warnings[0], "instructions.md did not reach") {
+		if warnings := warningsBeforeCompletion(t, rec.take()); len(warnings) != 1 || !strings.HasPrefix(warnings[0], "first hook did not reach") {
 			t.Fatalf("%s: warnings = %v", status, warnings)
 		}
 	}
@@ -592,7 +641,7 @@ func TestCodexDropsTheDeliveriesARevertCut(t *testing.T) {
 	}
 	turnStarted(t, s, "t2")
 	turnCompleted(t, s, "t2", "completed")
-	if warnings := warningsBeforeCompletion(t, rec.take()); len(warnings) != 1 || !strings.HasPrefix(warnings[0], "MEMORY.md did not reach this session after its resume") {
+	if warnings := warningsBeforeCompletion(t, rec.take()); len(warnings) != 1 || !strings.HasPrefix(warnings[0], "second hook did not reach this session after its resume") {
 		t.Fatalf("warnings = %v", warnings)
 	}
 	if records, _ := recorder.take(); len(records) != 0 {
@@ -626,7 +675,7 @@ func TestCodexSettlesACompactionAtTheTurnThatRanItsHooks(t *testing.T) {
 	turnStarted(t, s, "t3")
 	turnCompleted(t, s, "t3", "completed")
 	if warnings := warningsBeforeCompletion(t, rec.take()); len(warnings) != 1 ||
-		!strings.HasPrefix(warnings[0], "instructions.md and MEMORY.md did not reach this session after its compaction") {
+		!strings.HasPrefix(warnings[0], "first hook and second hook did not reach this session after its compaction") {
 		t.Fatalf("warnings = %v", warnings)
 	}
 
@@ -654,7 +703,7 @@ func TestCodexCountsOnlyTheHooksAfterACompaction(t *testing.T) {
 	hookRun(t, s, "t1", "sessionFlags", "completed", memoryContext)
 	turnCompleted(t, s, "t1", "completed")
 	if warnings := warningsBeforeCompletion(t, rec.take()); len(warnings) != 1 ||
-		!strings.HasPrefix(warnings[0], "instructions.md did not reach this session after its compaction") {
+		!strings.HasPrefix(warnings[0], "first hook did not reach this session after its compaction") {
 		t.Fatalf("warnings = %v", warnings)
 	}
 }
@@ -684,7 +733,7 @@ func TestCodexLeavesOtherHookRunsAlone(t *testing.T) {
 			warnings = append(warnings, event.Content)
 		}
 	}
-	if len(warnings) != 1 || !strings.HasPrefix(warnings[0], "instructions.md and MEMORY.md did not reach") {
+	if len(warnings) != 1 || !strings.HasPrefix(warnings[0], "first hook and second hook did not reach") {
 		t.Fatalf("warnings = %v", warnings)
 	}
 }
@@ -769,7 +818,7 @@ func TestCodexIgnoresAChildThreadsHookRuns(t *testing.T) {
 	}
 	turnCompleted(t, s, "t1", "completed")
 	if warnings := warningsBeforeCompletion(t, rec.take()); len(warnings) != 1 ||
-		!strings.HasPrefix(warnings[0], "instructions.md and MEMORY.md did not reach this session after its start") {
+		!strings.HasPrefix(warnings[0], "first hook and second hook did not reach this session after its start") {
 		t.Fatalf("warnings = %v", warnings)
 	}
 }

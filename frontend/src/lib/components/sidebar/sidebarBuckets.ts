@@ -1,8 +1,10 @@
-// Threads and groups bucketed by sidebar ENTRY for the project lists. Pure:
-// ProjectsSection hands in the stores' rows and its filters, so the
+// Threads and groups bucketed for the sidebar's two sections: the
+// assistants' cards and what they hold, and each project ENTRY's rows.
+// Pure: ProjectsSection hands in the stores' rows and its filters, so the
 // bucketing is table-drivable from unit tests.
 import type { Thread, ThreadGroup } from '../../types/models';
-import { nestingAgentThreadId } from '../../utils/sidebarTree';
+import { cardOwnerAgentId, nestingAgentThreadId } from '../../utils/sidebarTree';
+import { archivedCountsByContainer } from '../../utils/sidebarTreeView';
 import { threadGroupMatchesQuery, threadMatchesQuery } from './threadSearch';
 
 export interface SidebarBucketsInput {
@@ -21,43 +23,30 @@ export interface SidebarBucketsInput {
 export interface SidebarBuckets {
   threadsByProject: Map<string, Thread[]>;
   groupsByProject: Map<string, ThreadGroup[]>;
+  /** By entry: the assistants whose row in that project holds a thread there. */
+  agentsByProject: Map<string, Thread[]>;
+  /** The assistants' cards in the Assistants section: their current threads. */
+  assistants: Thread[];
+  /** What the cards hold: the helpers and past threads of `assistants`. */
+  assistantChildren: Thread[];
 }
 
 /**
- * Bucket threads and groups by sidebar entry, both filtered by the search
- * query in ONE pass because the two filters are coupled: a group whose NAME
- * matches shows all of its members, including the ones the thread filter
- * would have dropped.
- *
- * Project-less threads have no sidebar surface and are skipped. A group
- * that neither matches by name nor holds a surviving member is dropped, so
- * search never leaves an empty container behind.
- *
- * A thread a standing agent spawned into another project (or a past thread
- * of an assistant whose current thread sits in another project) is filed
- * under the agent's entry, so the agent row there nests it and its own
- * project's list does not show it (docs/specs/standing-agents.md ruling 4).
- * The agent must be in the sidebar for that: not archived, and on a
- * computer the device filter shows. Otherwise the thread stays in its own
- * project, as a plain row.
- */
-/**
- * Whether an agent's row is in the sidebar, so it can nest the threads it
- * spawned: an assistant's current thread in a project, listed (not
+ * Whether an assistant's card is in the sidebar, so it and its rows in
+ * projects can nest what lives under it: its current thread, listed (not
  * archived), on a computer the device filter shows (threadVisible), and
  * not a mode the sidebar never lists.
  */
 export function sidebarAgentRowShown(agent: Thread, threadVisible: (thread: Thread) => boolean): boolean {
-  return Boolean(agent.agentId) && Boolean(agent.projectId) && !agent.archived
+  return Boolean(agent.agentId) && !agent.archived
     && threadVisible(agent) && threadMatchesQuery(agent, '');
 }
 
 /**
- * The agent row in the sidebar that nests this thread, if any: its spawner,
- * or its assistant's current thread for a past thread
- * (nestingAgentThreadId), when that row is shown (sidebarAgentRowShown).
- * The bucketing files the thread under that agent's project and its
- * activity bumps that project, both through this one answer.
+ * The agent row in the sidebar that nests this thread, if any: its
+ * assistant's card for a helper or past thread, its spawner's row in its
+ * project for project work (nestingAgentThreadId), when that assistant is
+ * shown (sidebarAgentRowShown).
  */
 export function sidebarNestingAgent(
   thread: Thread,
@@ -72,6 +61,24 @@ export function sidebarNestingAgent(
   return agent && sidebarAgentRowShown(agent, lookup.threadVisible) ? agent : undefined;
 }
 
+/**
+ * Bucket threads and groups for the sidebar, both filtered by the search
+ * query in ONE pass because the two filters are coupled: a group whose NAME
+ * matches shows all of its members, including the ones the thread filter
+ * would have dropped. A group that neither matches by name nor holds a
+ * surviving member is dropped, so search never leaves an empty container
+ * behind.
+ *
+ * An assistant's current thread is its card in the Assistants section,
+ * never a project row (docs/specs/standing-agents.md ruling 37); the card
+ * shows while it matches the query or holds a thread that does. Its
+ * helpers and past threads list on the card (cardOwnerAgentId). Project
+ * work stays in its own project, under the assistant's row there when it
+ * is nested; the row also shows for archived children alone. While the
+ * assistant is not shown, its project work and its past threads in a
+ * project list as plain rows of their project, and a thread outside every
+ * project is not shown.
+ */
 export function bucketSidebarThreads(input: SidebarBucketsInput): SidebarBuckets {
   const { query } = input;
   const nameMatchedGroupIds = new Set<string>();
@@ -98,14 +105,32 @@ export function bucketSidebarThreads(input: SidebarBucketsInput): SidebarBuckets
   };
 
   const threadsByProject = new Map<string, Thread[]>();
+  const agentsByProject = new Map<string, Thread[]>();
+  const holdAgent = (key: string, agent: Thread) => {
+    const held = agentsByProject.get(key);
+    if (!held) agentsByProject.set(key, [agent]);
+    else if (!held.includes(agent)) held.push(agent);
+  };
+  const assistantChildren: Thread[] = [];
+  // The shown assistants, and those a matching card child keeps on screen.
+  const shownAgents: Thread[] = [];
+  const cardsKept = new Set<string>();
   const populatedGroupIds = new Set<string>();
   for (const thread of input.threads) {
     if (!listed(thread)) continue;
-    let key = thread.projectId ? input.entryOf(thread.projectId) : '';
-    if (!key) continue;
+    if (thread.agentId) {
+      if (sidebarAgentRowShown(thread, input.threadVisible)) shownAgents.push(thread);
+      continue;
+    }
     const agent = sidebarNestingAgent(thread, nesting);
-    const agentEntry = agent?.projectId ? input.entryOf(agent.projectId) : '';
-    if (agentEntry) key = agentEntry;
+    if (agent && cardOwnerAgentId(thread)) {
+      if (!threadMatchesQuery(thread, query)) continue;
+      assistantChildren.push(thread);
+      cardsKept.add(agent.id);
+      continue;
+    }
+    const key = thread.projectId ? input.entryOf(thread.projectId) : '';
+    if (!key) continue;
     const groupId = thread.groupId ?? '';
     // A name-matched group brings its whole membership back. The
     // empty-query call is the "is this row eligible at all" test: it still
@@ -117,7 +142,19 @@ export function bucketSidebarThreads(input: SidebarBucketsInput): SidebarBuckets
     const bucket = threadsByProject.get(key);
     if (bucket) bucket.push(thread);
     else threadsByProject.set(key, [thread]);
+    if (agent) holdAgent(key, agent);
   }
+  // A row in a project shows while it has a child there, live or done, so
+  // its archived children alone keep it: its done footer lists them. A
+  // search shows only the rows holding a matching thread.
+  if (!query) {
+    for (const agent of shownAgents) {
+      for (const scope of archivedCountsByContainer(agent, input.entryOf).keys()) {
+        if (scope !== '') holdAgent(scope, agent);
+      }
+    }
+  }
+  const assistants = shownAgents.filter((agent) => cardsKept.has(agent.id) || threadMatchesQuery(agent, query));
 
   const groupsByProject = new Map<string, ThreadGroup[]>();
   for (const group of input.groups) {
@@ -132,5 +169,5 @@ export function bucketSidebarThreads(input: SidebarBucketsInput): SidebarBuckets
     if (bucket) bucket.push(group);
     else groupsByProject.set(key, [group]);
   }
-  return { threadsByProject, groupsByProject };
+  return { threadsByProject, groupsByProject, agentsByProject, assistants, assistantChildren };
 }

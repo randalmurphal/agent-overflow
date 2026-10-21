@@ -123,7 +123,8 @@ obsolete planning material. Update incoming links when moving or retiring a doc.
 | [`prompt-tool-overrides.md`](specs/prompt-tool-overrides.md) | Settings-level system-prompt overrides, per-provider tool toggles, and the app guide appended to interactive sessions. |
 | [`workflows-system-ui/UI-SPEC.md`](specs/workflows-system-ui/UI-SPEC.md) | The binding workflows-overlay UI spec (rev 2). Cited as `UI-SPEC §N` across the frontend. |
 | [`cursor-provider.md`](specs/cursor-provider.md) | Cursor as a third provider over ACP, signed off 2026-08-31. Living gap table + spike backlog; not implemented yet. |
-| [`standing-agents.md`](specs/standing-agents.md) | Assistants the user creates: the record, its home and current thread, New Thread, Same Assistant, wake supervisor (remind, loop, watch), agent sidebar row, skills library settings, discussions removed, workflows to MCP. Signed off 2026-10-10; built in slices. |
+| [`standing-agents.md`](specs/standing-agents.md) | Assistants the user creates: the record, its home and current thread, New Thread, Same Assistant, wake supervisor (remind, loop, watch), agent sidebar row, assistants above projects, discussions removed, workflows to MCP. Signed off 2026-10-10; built in slices. |
+| [`memory.md`](specs/memory.md) | What the app delivers to a session as memory: home, project and user scopes, typed facts and the built index, the write rules, maintenance warnings for assistants, and the shared and provider memory settings. Agreed 2026-10-21. |
 | [`plan-mode.md`](specs/plan-mode.md) | Plan mode as AO's own intent-to-merge-ready protocol: provider plan modes removed, per-thread plan files, the plan pane with anchored comments, project contract and personal settings, `PostCompact` re-injection. Signed off 2026-09-27; not implemented. |
 | [`codex-app-server-sharing.md`](specs/codex-app-server-sharing.md) | Many Codex threads on one app-server: the provider connection/session split, pool key and drain, End Session, crash, identity, and the resumed-thread developer-instructions fix. Design, not scheduled. |
 
@@ -148,7 +149,6 @@ External repos and tools we track, and how to use them. Under
 | [`ao-cli.md`](references/ao-cli.md) | The `ao` scoped-token CLI: command tree and `--json` result shapes. |
 | [`android-emulator.md`](references/android-emulator.md) | Running the Android emulator for the shell smoke under a memory cap, the emulator 37.1 adb-proxy leak behind that rule, and WebView-driving pitfalls. |
 | [`mobile-browser-testing.md`](references/mobile-browser-testing.md) | Emulator-free Chromium/WebKit checks, real browser visibility events and the real-phone validation boundary. |
-| [`pstack-port.md`](references/pstack-port.md) | The vendored pstack skills: what the port maps, how the forge script picks GitHub or GitLab, its tests, and how to resync from upstream. |
 | [`fixtures/`](references/fixtures/) | Recorded provider wire captures backing `claude-wire.md` and the parser replay tests. |
 
 ## Glossary

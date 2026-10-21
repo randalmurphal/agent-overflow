@@ -12,6 +12,7 @@ import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-
 import { clearThreadSelection, setThreadSelection } from '../../stores/threadFilter.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { getThreadById, replaceAllThreads } from '../../stores/threads.svelte';
+import { closeAssistantProjectsDialog, getAssistantProjectsAgentId } from '../../stores/newAssistant.svelte';
 import { setThreadStatus } from '../../stores/threadStatuses.svelte';
 import {
   consumePendingGroupRename,
@@ -832,6 +833,7 @@ describe('<ThreadContextMenu> standing agent', () => {
       'Open in New Pane',
       'Rename Thread',
       'New Thread, Same Assistant',
+      'Projects…',
       'Loops and Watches',
       'Mark All Read',
       'Archive Done Children',
@@ -866,11 +868,7 @@ describe('<ThreadContextMenu> standing agent', () => {
     for (const label of absent) expect(labels).not.toContain(label);
   });
 
-  it('names an assistant past thread by its current title and offers no placement moves on a plain thread', () => {
-    replaceAllThreads([makeThread({ id: 'current', projectId: 'project-1', title: 'Ops', agentId: 'agent-a' })]);
-    const past = renderAgentMenu(makeThread({ projectId: 'project-1', pastAgentId: 'agent-a', placement: 'standalone' }));
-    expect(labelsOf(past.baseElement)).toContain('Nest Under Ops');
-    past.unmount();
+  it('offers no placement moves on a plain thread', () => {
     const plain = renderAgentMenu(makeThread({ projectId: 'project-1', placement: 'standalone' }));
     const labels = labelsOf(plain.baseElement);
     expect(labels).toContain('Move to Group');
@@ -895,6 +893,18 @@ describe('<ThreadContextMenu> standing agent', () => {
     expect(labelsOf(shown.baseElement).filter(placementItem)).toEqual([
       placement === 'nested' ? 'Make Standalone' : 'Nest Under Release agent',
     ]);
+  });
+
+  it('offers a helper or a past thread outside every project no placement items', () => {
+    replaceAllThreads([makeThread({ id: 'agent-1', projectId: '', title: 'Ops', agentId: 'agent-1' })]);
+    for (const thread of [
+      makeThread({ projectId: '', helperOfAgentId: 'agent-1', spawnedByThreadId: 'agent-1', spawnedByAgent: true, placement: 'nested' }),
+      makeThread({ projectId: '', pastAgentId: 'agent-1', placement: 'nested' }),
+    ]) {
+      const view = renderAgentMenu(thread);
+      expect(labelsOf(view.baseElement).some((label) => label.startsWith('Nest Under') || label === 'Make Standalone')).toBe(false);
+      view.unmount();
+    }
   });
 
   it('offers no placement items to a child of a thread that is no assistant', () => {
@@ -937,12 +947,23 @@ describe('<ThreadContextMenu> standing agent', () => {
     await waitFor(() => expect(next).toHaveBeenCalledWith('thread-1'));
   });
 
-  it('disables New Thread, Same Assistant on a device without threads:autonomy', async () => {
+  it('Projects… opens the assistant\'s Projects dialog', async () => {
+    closeAssistantProjectsDialog();
+    const thread = makeThread({ projectId: '', agentId: 'agent-1' });
+    const { baseElement } = renderAgentMenu(thread);
+    await fireEvent.click(item(baseElement, 'Projects…'));
+    expect(getAssistantProjectsAgentId()).toBe('agent-1');
+    closeAssistantProjectsDialog();
+  });
+
+  it('disables New Thread, Same Assistant and Projects… on a device without threads:autonomy', async () => {
     await pairWithScopes([...OBSERVE_SCOPES, 'threads:operate']);
     try {
       const { baseElement } = renderAgentMenu(makeThread({ agentId: 'agent-1' }));
-      expect(item(baseElement, 'New Thread, Same Assistant').getAttribute('aria-disabled')).toBe('true');
-      expect(item(baseElement, 'New Thread, Same Assistant').getAttribute('title')).toBe('Not granted to this device');
+      for (const label of ['New Thread, Same Assistant', 'Projects…']) {
+        expect(item(baseElement, label).getAttribute('aria-disabled')).toBe('true');
+        expect(item(baseElement, label).getAttribute('title')).toBe('Not granted to this device');
+      }
       expect(item(baseElement, 'Rename Thread').getAttribute('aria-disabled')).not.toBe('true');
     } finally {
       resetToLocalPage();
@@ -954,6 +975,7 @@ describe('<ThreadContextMenu> standing agent', () => {
     await loadSettings();
     setBindingMock('StopSession', async () => {});
     setBindingMock('GetStandingAgent', async () => ({ id: 'agent-1', threadId: 'thread-1', home: '/config/agents/agent-1' }));
+    setBindingMock('GetAssistantDependents', async () => ({ pastThreads: 2, helpers: 1 }));
     const remove = setBindingMock('DeleteThread', async () => {});
     const { baseElement } = renderAgentMenu(makeThread({ title: 'Ops', agentId: 'agent-1' }));
     await fireEvent.click(item(baseElement, 'Delete'));
@@ -961,13 +983,25 @@ describe('<ThreadContextMenu> standing agent', () => {
     const dialog = () => baseElement.querySelector('[role="alertdialog"], [role="dialog"]');
     expect(dialog()?.textContent).toContain('Delete Assistant');
     await waitFor(() => expect(dialog()?.textContent).toContain(
-      'The assistant "Ops" is deleted too, and its home folder /config/agents/agent-1 is removed with everything in it.',
+      'The assistant "Ops" is deleted too, with its 2 past threads and 1 helper, and its home folder /config/agents/agent-1 is removed with everything in it.',
     ));
     expect(remove).not.toHaveBeenCalled();
     const confirm = Array.from(baseElement.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Delete');
     if (!confirm) throw new Error('confirm button not rendered');
     await fireEvent.click(confirm);
     await waitFor(() => expect(remove).toHaveBeenCalledWith('thread-1'));
+  });
+
+  it("still says an assistant's threads go with it when they could not be counted", async () => {
+    setBindingMock('GetStandingAgent', async () => ({ id: 'agent-1', threadId: 'thread-1', home: '/config/agents/agent-1' }));
+    setBindingMock('GetAssistantDependents', async () => {
+      throw new Error('database is locked');
+    });
+    const { baseElement } = renderAgentMenu(makeThread({ title: 'Ops', agentId: 'agent-1' }));
+    await fireEvent.click(item(baseElement, 'Delete'));
+    await waitFor(() => expect(baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain(
+      'The assistant "Ops" is deleted too, with every thread that lives under it, and its home folder /config/agents/agent-1 is removed with everything in it.',
+    ));
   });
 
   it("names every selected assistant's home in the bulk delete confirm", async () => {
@@ -977,6 +1011,7 @@ describe('<ThreadContextMenu> standing agent', () => {
     ]);
     setThreadSelection(['a', 'b']);
     setBindingMock('GetStandingAgent', async () => ({ id: 'agent-a', threadId: 'a', home: '/config/agents/agent-a' }));
+    setBindingMock('GetAssistantDependents', async () => ({ pastThreads: 0, helpers: 0 }));
     const { baseElement } = renderAgentMenu(makeThread({ id: 'a', projectId: 'project-1' }));
     await fireEvent.click(item(baseElement, 'Delete (2)'));
     await waitFor(() => expect(baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain(

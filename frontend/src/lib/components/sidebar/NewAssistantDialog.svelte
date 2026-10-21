@@ -1,49 +1,47 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   // The New Assistant dialog (docs/specs/standing-agents.md, "Sidebar"): a
-  // name, the project and the workspace, and Create. The backend creates the
-  // record, the home and the thread, and queues the opening message that
-  // starts the discussion of the assistant's role; a name in use is refused
-  // inline naming the assistant that holds it.
+  // name, the projects it serves (one or more, or all), and Create. The
+  // backend creates the record, the home and the thread outside every
+  // project, and queues the opening message that starts the discussion of
+  // the assistant's role; a name in use is refused inline naming the
+  // assistant that holds it.
   import Modal from '../primitives/Modal.svelte';
   import Button from '../primitives/Button.svelte';
-  import { CreateAssistant, GitListWorktrees, type WorktreeListItem } from '../../stores/bindings';
+  import { CreateAssistant } from '../../stores/bindings';
   import { closeNewAssistantDialog, getNewAssistantRequest } from '../../stores/newAssistant.svelte';
-  import { getProjects } from '../../stores/projects.svelte';
   import { prependThreadReply } from '../../stores/threads.svelte';
   import { threadRowFrameMark } from '../../stores/threadRowFrames';
-  import { expandProject } from '../../stores/sidebar.svelte';
   import { openThreadInNewPane, openThreadInPane } from '../../stores/panes.svelte';
+  import { selectedBackend } from '../../stores/selectedBackend.svelte';
+  import { attachedBackendEntry, backendDisplayName, hasMultipleBackends } from '../../stores/attachedBackends.svelte';
   import { requireEntityBackend, withBackendTarget } from '../../transport/backends';
   import { projectBackend } from '../../transport/entityIndex';
-  import { projectHasScope } from '../../transport/entityScopes';
-  import { isPassiveConnectionFailure } from '../../transport/passiveReadFailure';
+  import { hasScope } from '../../transport/scopes';
   import type { Thread } from '../../types/models';
   import { userFacingError } from '../../utils/userFacingError';
-  import { workspaceRefForProject } from '../../utils/workspaceKey';
-  import { generateWorktreeBranchName } from '../../utils/worktreeBranchName';
-  import { pathBasename } from '../../utils/pathDisplay';
+  import AssistantProjectsPicker from './AssistantProjectsPicker.svelte';
 
-  const ROOT = 'root';
-  const NEW_WORKTREE = 'new';
-  const SELECT_CLASS = 'min-w-0 flex-1 rounded-[var(--radius-field)] border border-border-subtle bg-surface-1 px-2 py-2 text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40';
   const INPUT_CLASS = 'min-w-0 flex-1 rounded-[var(--radius-field)] border border-border-subtle bg-surface-1 px-2 py-1.5 text-sm text-fg placeholder:text-fg-hint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40';
 
   let request = $derived(getNewAssistantRequest());
   let name = $state('');
-  let projectId = $state('');
-  let workspace = $state(ROOT);
-  let branch = $state('');
-  let worktrees: WorktreeListItem[] = $state([]);
+  let all = $state(false);
+  let selected: string[] = $state([]);
   let submitting = $state(false);
   let error: string | null = $state(null);
-  let listGeneration = 0;
 
-  let projects = $derived(getProjects());
-  let ungranted = $derived(projectId !== '' && !projectHasScope('threads:autonomy', projectId));
+  // The computer the assistant is made on: the project's it came from, or
+  // the selected one from the Assistants header.
+  let backend = $derived(request?.projectId ? projectBackend(request.projectId) : selectedBackend());
+  let computerName = $derived.by(() => {
+    if (!hasMultipleBackends() || backend === undefined) return '';
+    const entry = attachedBackendEntry(backend);
+    return entry ? backendDisplayName(entry) : '';
+  });
+  let ungranted = $derived(backend !== undefined && !hasScope('threads:autonomy', backend));
   let canCreate = $derived(
-    name.trim() !== '' && projectId !== '' && !ungranted && !submitting
-      && (workspace !== NEW_WORKTREE || branch.trim() !== ''),
+    name.trim() !== '' && (all || selected.length > 0) && backend !== undefined && !ungranted && !submitting,
   );
 
   // Each opening starts clean, on the project the action came from. Only
@@ -55,35 +53,12 @@
       name = '';
       error = null;
       submitting = false;
-      branch = generateWorktreeBranchName();
-      selectProject(current.projectId);
+      all = false;
+      selected = current.projectId ? [current.projectId] : [];
     });
   });
 
-  function selectProject(id: string): void {
-    projectId = id;
-    workspace = ROOT;
-    worktrees = [];
-    const generation = ++listGeneration;
-    const ws = workspaceRefForProject(id, '');
-    if (!ws) return;
-    let backend;
-    try {
-      backend = requireEntityBackend(projectBackend(id));
-    } catch {
-      return;
-    }
-    void withBackendTarget(backend, () => GitListWorktrees(ws)).then((rows) => {
-      if (generation !== listGeneration) return;
-      worktrees = ((rows ?? []) as WorktreeListItem[]).filter((row) => !row.missing);
-    }).catch((err: unknown) => {
-      if (generation !== listGeneration || isPassiveConnectionFailure(err)) return;
-      error = `The project's worktrees could not be listed: ${userFacingError(err)}`;
-    });
-  }
-
   function close(): void {
-    listGeneration++;
     closeNewAssistantDialog();
   }
 
@@ -92,19 +67,12 @@
     if (!current || !canCreate) return;
     submitting = true;
     error = null;
-    const worktree = worktrees.find((row) => row.path === workspace);
-    const options = {
-      projectId,
-      name: name.trim(),
-      ...(workspace === NEW_WORKTREE ? { worktreeBranch: branch.trim() } : {}),
-      ...(worktree ? { worktreePath: worktree.path, branch: worktree.branch } : {}),
-    };
+    const options = { name: name.trim(), projectIds: all ? [] : selected.slice(), allProjects: all };
     try {
-      const backend = requireEntityBackend(projectBackend(projectId));
+      const target = requireEntityBackend(backend);
       const mark = threadRowFrameMark();
-      const reply = (await withBackendTarget(backend, () => CreateAssistant(options))) as Thread;
+      const reply = (await withBackendTarget(target, () => CreateAssistant(options))) as Thread;
       const thread = prependThreadReply(reply, mark);
-      expandProject(projectId);
       closeNewAssistantDialog();
       if (current.openInNewPane) await openThreadInNewPane(thread);
       else await openThreadInPane(thread, current.targetPane ?? undefined);
@@ -127,7 +95,7 @@
   {#snippet children()}
     <div class="flex flex-col gap-3 text-xs text-fg-muted" data-testid="new-assistant-dialog">
       <p>
-        An assistant is a standing thread with its own home folder. It starts by discussing its role with you.
+        An assistant orchestrates work across the projects it serves from a home folder of its own{computerName ? ` on ${computerName}` : ''}. It starts by discussing its role with you.
       </p>
       <label class="flex min-w-0 items-center gap-3">
         <span class="w-20 shrink-0">Name</span>
@@ -145,49 +113,18 @@
           data-testid="new-assistant-name"
         />
       </label>
-      <label class="flex min-w-0 items-center gap-3">
-        <span class="w-20 shrink-0">Project</span>
-        <select
-          class={SELECT_CLASS}
-          value={projectId}
-          aria-label="Project"
-          data-testid="new-assistant-project"
-          onchange={(e) => selectProject(e.currentTarget.value)}
-        >
-          {#each projects as entry (entry.project.id)}
-            <option value={entry.project.id}>{entry.project.name}</option>
-          {/each}
-        </select>
-      </label>
-      <label class="flex min-w-0 items-center gap-3">
-        <span class="w-20 shrink-0">Workspace</span>
-        <select
-          class={SELECT_CLASS}
-          value={workspace}
-          onchange={(e) => { workspace = e.currentTarget.value; }}
-          aria-label="Workspace"
-          data-testid="new-assistant-workspace"
-        >
-          <option value={ROOT}>Project root</option>
-          {#each worktrees as worktree (worktree.path)}
-            <option value={worktree.path}>{worktree.branch || pathBasename(worktree.path)}</option>
-          {/each}
-          <option value={NEW_WORKTREE}>New worktree</option>
-        </select>
-      </label>
-      {#if workspace === NEW_WORKTREE}
-        <label class="flex min-w-0 items-center gap-3">
-          <span class="w-20 shrink-0">Branch</span>
-          <input
-            type="text"
-            class={INPUT_CLASS}
-            bind:value={branch}
-            onkeydown={handleKeydown}
-            aria-label="Branch"
-            data-testid="new-assistant-branch"
+      <div class="flex min-w-0 items-start gap-3">
+        <span class="w-20 shrink-0 pt-0.5">Serves</span>
+        <div class="min-w-0 flex-1">
+          <AssistantProjectsPicker
+            {backend}
+            {all}
+            {selected}
+            disabled={submitting}
+            onChange={(nextAll, nextSelected) => { all = nextAll; selected = nextSelected; error = null; }}
           />
-        </label>
-      {/if}
+        </div>
+      </div>
       {#if error}
         <p
           role="alert"

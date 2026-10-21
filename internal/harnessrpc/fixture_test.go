@@ -154,6 +154,9 @@ func (h *testHost) ArchiveThread(threadID string) error {
 }
 func (h *testHost) MakeAssistant(threadID string) (store.StandingAgent, error) {
 	agent := store.StandingAgent{ID: threadID, ThreadID: threadID, Home: "/agents/" + threadID, CreatedAt: 1}
+	if err := h.store.PlaceThreadInHome(threadID, agent.Home); err != nil {
+		return store.StandingAgent{}, err
+	}
 	return agent, h.store.CreateStandingAgent(agent)
 }
 func (h *testHost) BroadcastThreadRow(threadID string) {
@@ -172,6 +175,7 @@ func (h *testHost) AwaitSessionEndWork() []string {
 	return live
 }
 func (h *testHost) DeleteProject(projectID string) error  { return h.store.DeleteProject(projectID) }
+func (h *testHost) DeleteThread(threadID string) error    { return h.store.DeleteThread(threadID) }
 func (h *testHost) RecoverCrashedTurns() error            { return nil }
 func (h *testHost) RecoverOrphanedBackgroundTasks() error { return nil }
 func (h *testHost) ClearUIState() error {

@@ -290,6 +290,10 @@ func (a *App) settlePendingWorktreeExit(threadID, sessionToken string, followed 
 // against the registry, reattaching the thread if its worktree is gone.
 func (a *App) resweepThreadProject(threadID string) {
 	thread, err := a.store.GetThread(threadID)
+	if err == nil && thread.ProjectID == "" {
+		// A thread outside every project has no worktrees to sweep.
+		return
+	}
 	if err == nil {
 		var project store.Project
 		project, err = a.store.GetProject(thread.ProjectID)

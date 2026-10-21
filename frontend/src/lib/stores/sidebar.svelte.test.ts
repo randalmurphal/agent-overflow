@@ -2,6 +2,12 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   collapseProject,
   forgetAgentSidebarState,
+  getCollapsedAgents,
+  getExpandedDoneAgents,
+  isSidebarSectionExpanded,
+  setAgentExpanded,
+  toggleAgentDone,
+  toggleSidebarSection,
   getContainerVisibleLimit,
   setContainerVisibleLimit,
   expandProject,
@@ -49,6 +55,41 @@ describe('sidebar store', () => {
     expect(getContainerVisibleLimit('group-1')).toBe(THREAD_PREVIEW_LIMIT);
     expect(getContainerVisibleLimit('agent-1')).toBe(THREAD_PREVIEW_LIMIT);
     expect(getContainerVisibleLimit('other')).toBe(THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
+  });
+
+  it('forgets an assistant\'s card and every row of it in a project, and no other assistant\'s', () => {
+    for (const key of ['agent-1', 'agent-1@p1', 'agent-1@p2', 'agent-10', 'agent-10@p1']) {
+      setAgentExpanded(key, false);
+      setContainerVisibleLimit(key, THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
+      toggleAgentDone(key);
+    }
+    forgetAgentSidebarState('agent-1');
+    expect([...getCollapsedAgents()]).toEqual(['agent-10', 'agent-10@p1']);
+    expect([...getExpandedDoneAgents()]).toEqual(['agent-10', 'agent-10@p1']);
+    for (const key of ['agent-1', 'agent-1@p1', 'agent-1@p2']) expect(getContainerVisibleLimit(key)).toBe(THREAD_PREVIEW_LIMIT);
+    expect(getContainerVisibleLimit('agent-10@p1')).toBe(THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
+  });
+
+  describe('sections', () => {
+    it('folds each section on its own and persists the folds', () => {
+      expect(isSidebarSectionExpanded('assistants') && isSidebarSectionExpanded('projects')).toBe(true);
+      toggleSidebarSection('projects');
+      expect(isSidebarSectionExpanded('projects')).toBe(false);
+      expect(isSidebarSectionExpanded('assistants')).toBe(true);
+      expect(JSON.parse(appStorageGet('sidebar:collapsedSections')!)).toEqual(['projects']);
+      toggleSidebarSection('projects');
+      expect(isSidebarSectionExpanded('projects')).toBe(true);
+      expect(JSON.parse(appStorageGet('sidebar:collapsedSections')!)).toEqual([]);
+    });
+
+    it('adopts the folds from storage and forgets them on reset', async () => {
+      setBindingMock('GetUIState', async () => ({ 'sidebar:collapsedSections': JSON.stringify(['assistants']) }));
+      await hydrateAppStorage();
+      syncSidebarFromAppStorage();
+      expect(isSidebarSectionExpanded('assistants')).toBe(false);
+      resetSidebarForTest();
+      expect(isSidebarSectionExpanded('assistants')).toBe(true);
+    });
   });
 
   describe('expansion', () => {

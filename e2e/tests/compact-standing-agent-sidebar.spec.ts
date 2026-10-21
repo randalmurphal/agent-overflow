@@ -1,14 +1,15 @@
-// The standing agent's sidebar row under the compact layout
-// (docs/specs/standing-agents.md, "Sidebar"): the row, its state line and
-// its children fit a phone width; the fold survives thread-screen
-// navigation and reload; a collapsed agent keeps the focused child beneath
-// it on the way back from the thread screen; and the done footer opens to
-// its archived children.
+// The standing agent's sidebar rows under the compact layout
+// (docs/specs/standing-agents.md, "Sidebar"): the card, its state line, the
+// agent's row in its project and that row's children fit a phone width;
+// the fold survives thread-screen navigation and reload; a collapsed agent
+// keeps the focused child beneath it on the way back from the thread
+// screen; and the done footer opens to its archived children.
 import type { Locator } from '@playwright/test';
 
 import { test, expect, type SeedResult } from './fixtures.js';
 import { awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
 import { awaitSidebarSettled, capture } from './wake-rows-helpers.js';
+import { cardShell, projectRow } from './sidebar-sections-helpers.js';
 
 async function expectFits(target: Locator, viewportWidth: number): Promise<void> {
   const box = (await target.boundingBox())!;
@@ -30,14 +31,15 @@ test('an agent row folds, previews and lists its done children on a phone', asyn
       ],
     }],
   });
-  const { path: cwd, threadIds } = seed.projects[0];
+  const { threadIds } = seed.projects[0];
   const [agent, workerA, workerB, finished] = threadIds;
-  await harness.rpc('HarnessMakeAssistant', agent);
+  // The assistant runs in its home.
+  const { home: cwd } = await harness.rpc<{ home: string }>('HarnessMakeAssistant', agent);
   await harness.rpc('ArchiveThread', finished);
   // Unread, so the workers stay live rows: a settled idle worker folds into
   // the done footer.
   for (const id of [workerA, workerB]) await harness.rpc('MarkThreadUnread', id);
-  // The agent registers a loop so the row carries a state line.
+  // The agent registers a loop so the card carries a state line.
   await setScenario(
     harness,
     cwd,
@@ -57,7 +59,9 @@ test('an agent row folds, previews and lists its done children on a phone', asyn
   await harness.open(page);
   await awaitSidebarSettled(page);
   const width = page.viewportSize()!.width;
-  const agentRow = page.locator(`[data-sidebar-thread-id="${agent}"]`);
+  // The agent's row in its project, which holds the workers.
+  const agentRow = projectRow(page, agent);
+  const card = cardShell(page, agent);
   // The live rows behind the rail, not the done list's.
   const members = page.locator('[data-agent-member]:not([data-agent-done-row]) [data-sidebar-thread-id]');
   const chevron = agentRow.getByTestId('thread-row-agent-expand');
@@ -65,13 +69,13 @@ test('an agent row folds, previews and lists its done children on a phone', asyn
   await expect(agentRow).toHaveAttribute('data-sidebar-agent', '');
   await expect(members).toHaveCount(2);
   await expect(footer.getByTestId('thread-row-agent-done-label')).toHaveText('1 done');
-  // The state line is the row's sibling inside its shell.
-  const state = page.locator(`[data-testid="thread-row-shell"]:has([data-sidebar-thread-id="${agent}"]) [data-testid="thread-row-agent-state"]`);
+  // The state line is the card's, under its name.
+  const state = card.getByTestId('thread-row-agent-state');
   await expect(state).toHaveText(/^loop board check · next (59m|1h)$/);
-  for (const target of [agentRow, state, page.locator(`[data-sidebar-thread-id="${workerA}"]`), footer]) await expectFits(target, width);
+  for (const target of [card, state, card.getByTestId('thread-row-agent-projects'), agentRow, page.locator(`[data-sidebar-thread-id="${workerA}"]`), footer]) await expectFits(target, width);
   // The chevron is a touch target of its own.
   expect((await chevron.boundingBox())!.width).toBeGreaterThanOrEqual(16);
-  await capture(page, 'compact-agent-expanded.png', agentRow, footer);
+  await capture(page, 'compact-agent-expanded.png', card, agentRow, footer);
 
   // The fold holds through the thread screen and a reload.
   await chevron.click();

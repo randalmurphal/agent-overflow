@@ -45,16 +45,16 @@ func TestThreadRowsCarryAgentLineage(t *testing.T) {
 			t.Errorf("%s spawnedBy = %q, want %q", id, got, want)
 		}
 	}
-	if got := row("agent"); got.AgentID != "" || got.ArchivedChildCount != 0 {
-		t.Errorf("ordinary row = agent %q, archived children %d", got.AgentID, got.ArchivedChildCount)
+	if got := row("agent"); got.AgentID != "" || archivedTotal(got) != 0 {
+		t.Errorf("ordinary row = agent %q, archived children %d", got.AgentID, archivedTotal(got))
 	}
 	if row("child-1").SpawnedByAgent {
 		t.Error("a thread spawned by an ordinary thread says it is agent-bound")
 	}
 
 	mustCreateAssistant(t, s, "agent", "/h/agent")
-	if got := row("agent"); got.AgentID != "agent" || got.ArchivedChildCount != 0 {
-		t.Errorf("assistant row = agent %q, archived children %d", got.AgentID, got.ArchivedChildCount)
+	if got := row("agent"); got.AgentID != "agent" || archivedTotal(got) != 0 {
+		t.Errorf("assistant row = agent %q, archived children %d", got.AgentID, archivedTotal(got))
 	}
 	if !row("child-1").SpawnedByAgent || row("far-child").SpawnedByAgent {
 		t.Error("spawnedByAgent follows whether the local spawner is an assistant's")
@@ -72,7 +72,7 @@ func TestThreadRowsCarryAgentLineage(t *testing.T) {
 	if _, _, err := s.ArchiveThread("child-1"); err != nil {
 		t.Fatal(err)
 	}
-	if got := row("agent").ArchivedChildCount; got != 1 {
+	if got := archivedTotal(row("agent")); got != 1 {
 		t.Errorf("archived children after one archive = %d, want 1", got)
 	}
 	// Only a nested child counts in the agent's done footer: placed as a
@@ -80,7 +80,7 @@ func TestThreadRowsCarryAgentLineage(t *testing.T) {
 	if _, err := s.SetThreadPlacement([]string{"child-1"}, PlacementStandalone); err != nil {
 		t.Fatal(err)
 	}
-	if got := row("agent").ArchivedChildCount; got != 0 {
+	if got := archivedTotal(row("agent")); got != 0 {
 		t.Errorf("archived children with the child standalone = %d, want 0", got)
 	}
 	if listed, err := s.ListArchivedSpawnedThreads("agent"); err != nil || len(listed) != 0 {
@@ -93,7 +93,7 @@ func TestThreadRowsCarryAgentLineage(t *testing.T) {
 	if _, _, err := s.ArchiveThread("far-child"); err != nil {
 		t.Fatal(err)
 	}
-	if got := row("far-spawner").ArchivedChildCount; got != 0 {
+	if got := archivedTotal(row("far-spawner")); got != 0 {
 		t.Errorf("plain spawner archived children = %d, want 0", got)
 	}
 	if listed, err := s.ListArchivedSpawnedThreads("agent"); err != nil || len(listed) != 1 || listed[0].ID != "child-1" {
@@ -110,7 +110,7 @@ func TestThreadRowsCarryAgentLineage(t *testing.T) {
 	for _, thread := range listed {
 		switch thread.ID {
 		case "agent":
-			if thread.AgentID != "agent" || thread.ArchivedChildCount != 1 {
+			if thread.AgentID != "agent" || archivedTotal(thread) != 1 {
 				t.Errorf("listed agent row = %+v", thread)
 			}
 		case "child-2":
@@ -125,8 +125,8 @@ func TestThreadRowsCarryAgentLineage(t *testing.T) {
 	if _, err := s.db.Exec(`DELETE FROM agents WHERE thread_id = 'agent'`); err != nil {
 		t.Fatal(err)
 	}
-	if got := row("agent"); got.AgentID != "" || got.ArchivedChildCount != 0 {
-		t.Errorf("row without a record = agent %q, archived children %d", got.AgentID, got.ArchivedChildCount)
+	if got := row("agent"); got.AgentID != "" || archivedTotal(got) != 0 {
+		t.Errorf("row without a record = agent %q, archived children %d", got.AgentID, archivedTotal(got))
 	}
 	if row("child-2").SpawnedByAgent {
 		t.Error("a thread spawned by a thread that is no longer an assistant's still says it is agent-bound")
@@ -161,8 +161,8 @@ func TestACreatedAssistantIsNeverItsCreatorsChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if creator.ArchivedChildCount != 1 {
-		t.Errorf("archived children = %d, want the worker alone", creator.ArchivedChildCount)
+	if archivedTotal(creator) != 1 {
+		t.Errorf("archived children = %d, want the worker alone", archivedTotal(creator))
 	}
 	if listed, err := s.ListArchivedSpawnedThreads("creator"); err != nil || len(listed) != 1 || listed[0].ID != "worker" {
 		t.Errorf("archived threads spawned by the creator = %+v, %v; want the worker alone", listed, err)

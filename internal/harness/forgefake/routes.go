@@ -47,13 +47,6 @@ var commands = []command{
 		{long: "target-branch", short: "b", value: true}, {long: "draft"},
 		{long: "yes", short: "y"}, {long: "no-editor"},
 	}, run: glabMRCreate},
-	{cli: "gh", path: []string{"pr", "view"}, flags: []flagDef{{long: "repo", short: "R", value: true}, {long: "json", value: true}}, run: ghPRView},
-	{cli: "gh", path: []string{"pr", "list"}, flags: []flagDef{
-		{long: "repo", short: "R", value: true}, {long: "state", short: "s", value: true}, {long: "head", short: "H", value: true},
-		{long: "author", short: "A", value: true}, {long: "limit", short: "L", value: true}, {long: "json", value: true},
-	}, run: ghPRList},
-	{cli: "gh", path: []string{"api"}, flags: apiFlags, run: cliAPI},
-	{cli: "glab", path: []string{"api"}, flags: apiFlags, run: cliAPI},
 }
 
 // githubAPI is GitHub's REST surface, served over HTTP only; GitHub's
@@ -69,11 +62,10 @@ var gitlabAPI = []apiRoute{
 	{name: "glab repository identity", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)$`), flags: []string{"hostname"}, run: forgeRepositoryIdentity},
 	{name: "glab api merge request", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)$`), flags: []string{"hostname", "if-none-match"}, run: glabMR},
 	{name: "glab api approvals", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/approvals$`), flags: []string{"hostname"}, run: glabApprovals},
-	{name: "glab api discussions", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions(?:\?(.*))?$`), flags: []string{"hostname", "paginate"}, run: glabDiscussions},
+	{name: "glab api discussions", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabDiscussions},
 	{name: "glab api discussion note", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions/([0-9a-f]+)/notes$`), flags: []string{"hostname"}, run: glabDiscussionNote},
-	{name: "glab api merge request pipelines", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/pipelines(?:\?(.*))?$`), flags: []string{"hostname", "paginate"}, run: glabMRPipelines},
 	{name: "glab api merge request list", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests(?:\?(.*))?$`), flags: []string{"hostname", "if-none-match"}, run: glabMRList},
-	{name: "glab api pipeline jobs", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/pipelines/(\d+)/jobs(?:\?(.*))?$`), flags: []string{"hostname", "paginate"}, run: glabPipelineJobs},
+	{name: "glab api pipeline jobs", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/pipelines/(\d+)/jobs(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabPipelineJobs},
 	{name: "glab api job trace", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/jobs/(\d+)/trace$`), flags: []string{"hostname", "if-none-match", "range"}, run: glabJobTrace},
 	{name: "glab api upload", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/uploads/([0-9a-f]{32})/([^/?]+)$`), flags: []string{"hostname"}, run: glabUpload},
 }

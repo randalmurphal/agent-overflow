@@ -7,7 +7,7 @@
 // an assistant thread's own action beside Interrupt ("Interrupt and end
 // session").
 
-import { GetStandingAgent, StopSession } from './bindings';
+import { GetAssistantDependents, GetStandingAgent, StopSession } from './bindings';
 import { addErrorToast } from './toast.svelte';
 import { backendDisplayName, getAttachedBackends } from './attachedBackends.svelte';
 import { getThreads } from './threads.svelte';
@@ -15,7 +15,7 @@ import { getSettings } from './settings.svelte';
 import { withBackendTarget } from '../transport/backends';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { threadBackend } from '../transport/entityIndex';
-import type { Thread } from '../types/models';
+import type { AssistantDependents, Thread } from '../types/models';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { userFacingError } from '../utils/userFacingError';
 import { TransportError } from '../transport/wsClient';
@@ -107,18 +107,31 @@ export function threadDeleteTitle(thread: Thread): string {
   return thread.agentId ? 'Delete Assistant' : 'Delete Thread';
 }
 
-/**
- * The sentence for one assistant a delete removes. Until its record is read
- * the folder is not named; the dialog shows the named sentence once it is.
- */
-export function assistantDeleteSentence(name: string, home: string | undefined): string {
-  const folder = home ? `its home folder ${home}` : 'its home folder';
-  return `The assistant "${name}" is deleted too, and ${folder} is removed with everything in it.`;
+function counted(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
 }
 
-/** The sentences for the assistants a project's delete removes, or ''. */
-export function projectAssistantsNote(assistants: readonly { name: string; home: string }[] | null | undefined): string {
-  return (assistants ?? []).map((assistant) => assistantDeleteSentence(assistant.name, assistant.home)).join(' ');
+/**
+ * The sentence for one assistant a delete removes (docs/specs/standing-
+ * agents.md ruling 39). Until its record is read the folder is not named
+ * and nothing is counted; the dialog shows the full sentence once it is.
+ * `dependents` is null when they could not be counted: the sentence still
+ * says the threads under it go.
+ */
+export function assistantDeleteSentence(
+  name: string,
+  home: string | undefined,
+  dependents?: AssistantDependents | null,
+): string {
+  const folder = home ? `its home folder ${home}` : 'its home folder';
+  const under = [
+    dependents?.pastThreads ? counted(dependents.pastThreads, 'past thread', 'past threads') : '',
+    dependents?.helpers ? counted(dependents.helpers, 'helper', 'helpers') : '',
+  ].filter(Boolean);
+  const also = dependents === null
+    ? ' with every thread that lives under it,'
+    : under.length > 0 ? ` with its ${under.join(' and ')},` : '';
+  return `The assistant "${name}" is deleted too,${also} and ${folder} is removed with everything in it.`;
 }
 
 /** `description` followed by the assistant sentences, when there are any. */
@@ -130,20 +143,25 @@ export function withAssistantNote(description: string, note: string): string {
  * The assistant sentences a delete confirmation shows while it is open.
  * `load` starts reading the homes for the dialog being opened; `clear` drops
  * them when it closes, so a late answer for an earlier opening never shows.
+ * A count that could not be read is null.
  */
 export class AssistantDeleteNote {
   #assistants = $state<readonly Thread[]>([]);
   #homes = $state<ReadonlyMap<string, string>>(new Map());
+  #dependents = $state<ReadonlyMap<string, AssistantDependents | null>>(new Map());
   #generation = 0;
 
   get note(): string {
-    return this.#assistants.map((thread) => assistantDeleteSentence(thread.title, this.#homes.get(thread.id))).join(' ');
+    return this.#assistants
+      .map((thread) => assistantDeleteSentence(thread.title, this.#homes.get(thread.id), this.#dependents.get(thread.id)))
+      .join(' ');
   }
 
   load(threads: readonly Thread[]): void {
     const generation = ++this.#generation;
     this.#assistants = threads.filter((thread) => Boolean(thread.agentId));
     this.#homes = new Map();
+    this.#dependents = new Map();
     for (const thread of this.#assistants) {
       const backend = threadBackend(thread.id) ?? HOME_BACKEND;
       void withBackendTarget(backend, () => GetStandingAgent(thread.id)).then((agent) => {
@@ -154,6 +172,13 @@ export class AssistantDeleteNote {
       }).catch((err: unknown) => {
         reportFrontendDiagnostic('assistant home for a delete confirmation failed', userFacingError(err));
       });
+      void withBackendTarget(backend, () => GetAssistantDependents(thread.id)).then((counts) => {
+        if (generation !== this.#generation || !counts) return;
+        this.#setDependents(thread.id, counts);
+      }).catch((err: unknown) => {
+        reportFrontendDiagnostic('assistant threads for a delete confirmation failed', userFacingError(err));
+        if (generation === this.#generation) this.#setDependents(thread.id, null);
+      });
     }
   }
 
@@ -161,5 +186,12 @@ export class AssistantDeleteNote {
     this.#generation++;
     this.#assistants = [];
     this.#homes = new Map();
+    this.#dependents = new Map();
+  }
+
+  #setDependents(threadId: string, counts: AssistantDependents | null): void {
+    const next = new Map(this.#dependents);
+    next.set(threadId, counts);
+    this.#dependents = next;
   }
 }

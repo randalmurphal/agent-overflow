@@ -6,14 +6,11 @@ import (
 	"fmt"
 	"mime"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 )
 
-// The GitLab discussion note the app writes over HTTP, and the merge
-// request pipelines the pstack forge script reads through `glab api`
-// (assets/skills/pstack/skills/poteto-mode/scripts/forge). A write's JSON
+// The GitLab discussion note the app writes over HTTP. A write's JSON
 // body is decoded strictly: a key the handler does not implement is
 // refused. It changes the fixture the next read answers from.
 
@@ -70,33 +67,4 @@ func glabDiscussionNote(e *Engine, c *call, m []string) response {
 	resp := glabOK(jsonResponse(gitlabNote(comment, map[string]any{"type": "DiffNote", "resolvable": true, "resolved": thread.Resolved})))
 	resp.status = http.StatusCreated
 	return resp
-}
-
-func gitlabPipeline(r *Repo, p *Pull) map[string]any {
-	return map[string]any{
-		"id":      p.CI.ID,
-		"sha":     p.HeadSHA,
-		"ref":     p.HeadRef,
-		"status":  p.CI.Status,
-		"web_url": fmt.Sprintf("https://%s/%s/-/pipelines/%d", r.Host, r.Project, p.CI.ID),
-	}
-}
-
-// glabMRPipelines answers GET projects/P/merge_requests/N/pipelines: the
-// fixture's head pipeline, the only one it records.
-func glabMRPipelines(e *Engine, c *call, m []string) response {
-	r, p, fail, ok := e.glabMRFrom(c, m)
-	if !ok {
-		return fail
-	}
-	_, perPage, page, err := glabPage(m[3])
-	if err != nil {
-		return unhandled("%v", err)
-	}
-	pipelines := []map[string]any{}
-	if p.CI != nil {
-		pipelines = append(pipelines, gitlabPipeline(r, p))
-	}
-	items, next := paginate(pipelines, perPage, page)
-	return glabOK(jsonResponse(items), "X-Next-Page: "+next, "X-Page: "+strconv.Itoa(page))
 }

@@ -3,6 +3,9 @@ import type { Thread, ThreadGroup } from '../types/models';
 import { buildSidebarThreadTree } from './sidebarTree';
 import { flattenSidebarThreadTree, sameSidebarVisibleNodes, sidebarVisibleNodeId } from './sidebarTreeView';
 
+/** Every project its own sidebar entry. */
+const ownEntry = (projectId: string) => projectId;
+
 const group: ThreadGroup = { id: 'group', projectId: 'project', name: 'Work', createdAt: 0, updatedAt: 0 };
 
 function thread(id: string, overrides: Partial<Thread> = {}): Thread {
@@ -21,6 +24,7 @@ const threads = [
 
 function flatten(activeThreadId: string | null, collapsed = true) {
   return flattenSidebarThreadTree({
+    entryOf: ownEntry,
     nodes: buildSidebarThreadTree({ threads, groups: [group] }),
     collapsedGroupIds: new Set(collapsed ? [group.id] : []),
     activeThreadId,

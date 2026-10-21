@@ -1381,6 +1381,14 @@ export class StandingAgent {
     "creatorAgentId"?: string;
     "createdAt": number;
 
+    /**
+     * AllProjects is set for an assistant that serves every project, those
+     * added later included; otherwise it serves the projects
+     * AgentProjectIDs names, which may be none once its last one is
+     * deleted.
+     */
+    "allProjects": boolean;
+
     /** Creates a new StandingAgent instance. */
     constructor($$source: Partial<StandingAgent> = {}) {
         if (!("id" in $$source)) {
@@ -1397,6 +1405,9 @@ export class StandingAgent {
         }
         if (!("createdAt" in $$source)) {
             this["createdAt"] = 0;
+        }
+        if (!("allProjects" in $$source)) {
+            this["allProjects"] = false;
         }
 
         Object.assign(this, $$source);
@@ -1582,6 +1593,23 @@ export class Thread {
     "agentSupersededAt"?: number | null;
 
     /**
+     * HelperOfAgentID names the assistant this thread is a helper of: a
+     * thread it spawned without a project, which lives under it
+     * (agent_helpers). Read like the three above; CreateThread and a fork
+     * record it from this field.
+     */
+    "helperOfAgentId"?: string;
+
+    /**
+     * AgentAllProjects and AgentProjectIDs are the projects the assistant
+     * whose current thread this is serves (agents.all_projects,
+     * agent_projects), for the sidebar's assistant card. Derived; empty for
+     * any other thread.
+     */
+    "agentAllProjects"?: boolean;
+    "agentProjectIds"?: string[];
+
+    /**
      * SpawnedByThreadID names the local thread whose thread_spawn made this
      * one, read from the newest spawn request that targets it, or "" when
      * the user started it. Derived, like the two below: the spawn request
@@ -1600,12 +1628,15 @@ export class Thread {
     "spawnedByAgent"?: boolean;
 
     /**
-     * ArchivedChildCount is how many threads this one spawned that are now
-     * archived, with its assistant's archived past threads. Only an
-     * assistant's current thread carries it (zero elsewhere);
-     * the sidebar's agent row shows the count and lists them on demand.
+     * ArchivedChildCounts counts, by container, the archived threads that
+     * live under the assistant whose current thread this is
+     * (archivedAgentChildrenSQL): key "" for its card (helpers and past
+     * threads), a project id for its row in that project (the nested
+     * threads it spawned there). Only an assistant's current thread
+     * carries it; the sidebar's agent rows show each count and list the
+     * threads on demand.
      */
-    "archivedChildCount"?: number;
+    "archivedChildCounts"?: { [_ in string]?: number };
 
     /**
      * HasActionableProposedPlan is derived for sidebar boot state. It is
@@ -1735,9 +1766,17 @@ export class Thread {
      */
     static createFrom($$source: any = {}): Thread {
         const $$createField35_0 = $$createType18;
+        const $$createField41_0 = $$createType5;
+        const $$createField44_0 = $$createType19;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("origin" in $$parsedSource) {
             $$parsedSource["origin"] = $$createField35_0($$parsedSource["origin"]);
+        }
+        if ("agentProjectIds" in $$parsedSource) {
+            $$parsedSource["agentProjectIds"] = $$createField41_0($$parsedSource["agentProjectIds"]);
+        }
+        if ("archivedChildCounts" in $$parsedSource) {
+            $$parsedSource["archivedChildCounts"] = $$createField44_0($$parsedSource["archivedChildCounts"]);
         }
         return new Thread($$parsedSource as Partial<Thread>);
     }
@@ -2022,8 +2061,8 @@ export class TimelineDigestContext {
      * Creates a new TimelineDigestContext instance from a string or object.
      */
     static createFrom($$source: any = {}): TimelineDigestContext {
-        const $$createField0_0 = $$createType19;
-        const $$createField1_0 = $$createType19;
+        const $$createField0_0 = $$createType20;
+        const $$createField1_0 = $$createType20;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("after" in $$parsedSource) {
             $$parsedSource["after"] = $$createField0_0($$parsedSource["after"]);
@@ -2065,7 +2104,7 @@ export class TimelineScopeContext {
         const $$createField0_0 = $$createType0;
         const $$createField1_0 = $$createType0;
         const $$createField2_0 = $$createType12;
-        const $$createField3_0 = $$createType21;
+        const $$createField3_0 = $$createType22;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("root" in $$parsedSource) {
             $$parsedSource["root"] = $$createField0_0($$parsedSource["root"]);
@@ -2632,6 +2671,7 @@ const $$createType15 = $Create.Array($$createType2);
 const $$createType16 = TimelineCursor.createFrom;
 const $$createType17 = Project.createFrom;
 const $$createType18 = ThreadOrigin.createFrom;
-const $$createType19 = $Create.Nullable($$createType16);
-const $$createType20 = TimelineDigestContext.createFrom;
-const $$createType21 = $Create.Nullable($$createType20);
+const $$createType19 = $Create.Map($Create.Any, $Create.Any);
+const $$createType20 = $Create.Nullable($$createType16);
+const $$createType21 = TimelineDigestContext.createFrom;
+const $$createType22 = $Create.Nullable($$createType21);

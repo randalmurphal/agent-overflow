@@ -4,11 +4,13 @@ import { render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import '../../../app.css';
 import ProjectThreadList from './ProjectThreadList.svelte';
+import AssistantsSection from './AssistantsSection.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { registerPaneForTest } from '../../stores/panes.svelte';
 import { getCollapsedAgents, getCollapsedGroups, resetSidebarForTest } from '../../stores/sidebar.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { replaceAllThreads, touchThreadActivity } from '../../stores/threads.svelte';
+import { refreshProjects, resetProjectsForTest } from '../../stores/projects.svelte';
 import { resetThreadWakesForTest } from '../../stores/threadWakes.svelte';
 import { resetArchivedChildrenForTest } from '../../stores/agentArchivedChildren.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
@@ -175,12 +177,23 @@ describe('standing agent rows', () => {
   beforeEach(() => {
     resetThreadWakesForTest();
     resetArchivedChildrenForTest();
+    resetProjectsForTest();
     setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: false }));
   });
 
+  // The list's props as the sidebar hands them in: the assistant apart
+  // from the threads its row in this project holds.
+  function agentListProps(threads: Thread[], pane: ReturnType<typeof createThreadPane>) {
+    return {
+      projectId: 'project', groups: [], pane,
+      threads: threads.filter((t) => !t.agentId),
+      agents: threads.filter((t) => Boolean(t.agentId)),
+    };
+  }
+
   function agentThreads(): Thread[] {
     const threads = [
-      thread('agent', { agentId: 'agent', archivedChildCount: 2, updatedAt: 5 }),
+      thread('agent', { agentId: 'agent', archivedChildCounts: { project: 2 }, updatedAt: 5 }),
       // Pinned, so neither folds into the done footer (a settled idle
       // worker would) and neither shows a status dot.
       thread('worker-a', { spawnedByThreadId: 'agent', updatedAt: 4, pinnedAt: 1 }),
@@ -193,13 +206,16 @@ describe('standing agent rows', () => {
 
   it('nests the spawned threads under the agent with a group\'s geometry and folds them on the chevron', async () => {
     const threads = agentThreads();
-    const view = render(ProjectThreadList, { projectId: 'project', threads, groups: [], pane: createThreadPane() });
+    const view = render(ProjectThreadList, agentListProps(threads, createThreadPane()));
     view.container.style.width = '360px';
     await settled(view.container);
 
     const agent = row(view.container, 'agent');
     expect(agent.dataset.sidebarAgent).toBe('');
     expect(agent.dataset.expanded).toBe('true');
+    // The state and projects lines are the card's, not a project row's.
+    expect(view.queryByTestId('thread-row-agent-state')).toBeNull();
+    expect(view.queryByTestId('thread-row-agent-projects')).toBeNull();
     expect(agent.querySelector('[data-testid="thread-row-pin"]')).toBeNull();
     expect(agent.querySelector('[data-testid="thread-row-agent-icon"]')).not.toBeNull();
     const members = view.container.querySelectorAll('[data-agent-member] [data-sidebar-thread-id]');
@@ -234,8 +250,9 @@ describe('standing agent rows', () => {
     expect(agent.dataset.expanded).toBe('false');
     expect(view.container.querySelectorAll('[data-agent-member]')).toHaveLength(0);
     expect(agent.querySelector('[data-testid="thread-row-agent-count"]')!.textContent?.trim()).toBe('2');
-    expect([...getCollapsedAgents()]).toEqual(['agent']);
-    expect(JSON.parse(appStorageGet('sidebar:collapsedAgents')!)).toEqual(['agent']);
+    // The row folds as the assistant's row in this project, not its card.
+    expect([...getCollapsedAgents()]).toEqual(['agent@project']);
+    expect(JSON.parse(appStorageGet('sidebar:collapsedAgents')!)).toEqual(['agent@project']);
 
     // Keyboard: Right unfolds, Left folds, on the row itself.
     agent.focus();
@@ -253,7 +270,7 @@ describe('standing agent rows', () => {
     const pane = createThreadPane();
     registerPaneForTest('main', pane);
     pane.replaceThread(threads[2]);
-    const view = render(ProjectThreadList, { projectId: 'project', threads, groups: [], pane });
+    const view = render(ProjectThreadList, agentListProps(threads, pane));
     view.container.style.width = '360px';
     await settled(view.container);
     row(view.container, 'agent').querySelector<HTMLElement>('[data-testid="thread-row-agent-expand"]')!.click();
@@ -269,7 +286,7 @@ describe('standing agent rows', () => {
       thread('done-old', { spawnedByThreadId: 'agent', archived: true, updatedAt: 8 }),
     ];
     const list = setBindingMock('ListArchivedSpawnedThreads', async () => archived);
-    const view = render(ProjectThreadList, { projectId: 'project', threads, groups: [], pane: createThreadPane() });
+    const view = render(ProjectThreadList, agentListProps(threads, createThreadPane()));
     view.container.style.width = '360px';
     await settled(view.container);
 
@@ -288,10 +305,10 @@ describe('standing agent rows', () => {
 
     // A third child archived: the row's count moves and the list is read again.
     list.mockImplementation(async () => [thread('done-newest', { spawnedByThreadId: 'agent', archived: true, updatedAt: 11 }), ...archived]);
-    await view.rerender({
-      projectId: 'project', groups: [], pane: createThreadPane(),
-      threads: threads.map((t) => t.id === 'agent' ? { ...t, archivedChildCount: 3 } : t),
-    });
+    await view.rerender(agentListProps(
+      threads.map((t) => t.id === 'agent' ? { ...t, archivedChildCounts: { project: 3 } } : t),
+      createThreadPane(),
+    ));
     await waitFor(() => expect(view.container.querySelectorAll('[data-archived-child]')).toHaveLength(3));
     expect(list).toHaveBeenCalledTimes(2);
     expect(view.getByTestId('thread-row-agent-done').textContent).toContain('3 done');
@@ -304,12 +321,12 @@ describe('standing agent rows', () => {
   });
 
   it('pages a long done list by the preview limit', async () => {
-    const threads = agentThreads().map((t) => t.id === 'agent' ? { ...t, archivedChildCount: THREAD_PREVIEW_LIMIT + 3 } : t);
+    const threads = agentThreads().map((t) => t.id === 'agent' ? { ...t, archivedChildCounts: { project: THREAD_PREVIEW_LIMIT + 3 } } : t);
     replaceAllThreads(threads);
     const archived = Array.from({ length: THREAD_PREVIEW_LIMIT + 3 }, (_, i) =>
       thread(`done-${i}`, { spawnedByThreadId: 'agent', archived: true, updatedAt: 100 - i }));
     setBindingMock('ListArchivedSpawnedThreads', async () => archived);
-    const view = render(ProjectThreadList, { projectId: 'project', threads, groups: [], pane: createThreadPane() });
+    const view = render(ProjectThreadList, agentListProps(threads, createThreadPane()));
     view.container.style.width = '360px';
     await settled(view.container);
     view.getByTestId('thread-row-agent-done-toggle').click();
@@ -322,8 +339,15 @@ describe('standing agent rows', () => {
     expect(view.queryByTestId('thread-row-agent-done-more')).toBeNull();
   });
 
-  it('shows the agent\'s soonest loop under its name and keeps it off plain rows', async () => {
-    const threads = agentThreads();
+  it('shows the card\'s soonest loop and served projects under its name, and keeps them off plain rows', async () => {
+    setBindingMock('ListProjects', async () => [
+      { project: { id: 'p-a', path: '/repo/a', name: 'Alpha', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 0 },
+      { project: { id: 'p-b', path: '/repo/b', name: 'Beta', sortPosition: 1, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 0 },
+    ]);
+    await refreshProjects();
+    const agent = thread('agent', { agentId: 'agent', projectId: '', agentProjectIds: ['p-a', 'p-b'], updatedAt: 5 });
+    const helper = thread('helper', { projectId: '', helperOfAgentId: 'agent', spawnedByThreadId: 'agent', pinnedAt: 1, updatedAt: 4 });
+    replaceAllThreads([agent, helper]);
     setBindingMock('ListThreadWakes', async (threadId: unknown) => ({
       moreReminders: false,
       rows: threadId === 'agent' ? [{
@@ -331,14 +355,29 @@ describe('standing agent rows', () => {
         intervalSeconds: 900, nextAt: Date.now() + 12 * 60_000, missed: 1,
       }] : [],
     }));
-    const view = render(ProjectThreadList, { projectId: 'project', threads, groups: [], pane: createThreadPane() });
+    const card = (assistant: Thread) => ({ assistants: [assistant], held: [helper], pane: createThreadPane(), searching: false });
+    const view = render(AssistantsSection, card(agent));
     view.container.style.width = '360px';
     await waitFor(() => expect(view.queryByTestId('thread-row-agent-state')).not.toBeNull());
+    expect(view.getByTestId('assistant-card-list')).toBeInTheDocument();
     const line = view.getByTestId('thread-row-agent-state');
     expect(line.textContent?.trim()).toBe('loop board check · next 12m · 1 missed');
-    // The line starts under the person glyph, as the mockup draws it.
+    // The lines start under the person glyph, as the mockup draws them.
     const glyphLeft = row(view.container, 'agent').querySelector('[data-testid="thread-row-agent-icon"]')!.getBoundingClientRect().left;
     expect(Math.abs(line.querySelector('span')!.getBoundingClientRect().left - glyphLeft)).toBeLessThanOrEqual(1);
+    const projects = view.getByTestId('thread-row-agent-projects');
+    expect(projects.textContent?.trim()).toBe('Alpha, Beta');
+    expect(Math.abs(projects.querySelector('span')!.getBoundingClientRect().left - glyphLeft)).toBeLessThanOrEqual(1);
     expect(view.container.querySelectorAll('[data-testid="thread-row-agent-state"]')).toHaveLength(1);
+    expect(view.container.querySelectorAll('[data-testid="thread-row-agent-projects"]')).toHaveLength(1);
+    // The helper nests on the card.
+    expect(row(view.container, 'helper').closest('[data-agent-member]')).not.toBeNull();
+
+    await view.rerender(card({ ...agent, agentAllProjects: true, agentProjectIds: [] }));
+    await settled(view.container);
+    expect(view.getByTestId('thread-row-agent-projects').textContent?.trim()).toBe('All projects');
+    await view.rerender(card({ ...agent, agentProjectIds: [] }));
+    await settled(view.container);
+    expect(view.getByTestId('thread-row-agent-projects').textContent?.trim()).toBe('No projects');
   });
 });

@@ -48,6 +48,9 @@
   let machineLabel = $derived(machinePicker?.label() ?? 'Computer');
   let machinePickable = $derived(machinePicker?.canPick() ?? false);
   let hasProject = $derived(Boolean(pane.thread?.projectId));
+  // A thread outside every project, such as an assistant's, has no
+  // checkout: no branch or worktree segment.
+  let hasCheckout = $derived(pane.workspace !== null);
   let branchLabel = $derived(branchPicker?.label() ?? pane.thread?.branch ?? 'No branch');
   let worktreeLabel = $derived(envPicker?.label() ?? 'Base');
   let atBase = $derived(envPicker?.atBase() ?? true);
@@ -55,7 +58,7 @@
   let namingBranch = $derived(intent.creatingBranch || intent.mode === 'new-worktree');
 </script>
 
-{#if pane.thread}
+{#if pane.thread && (showMachine || hasProject || hasCheckout)}
   <div
     class="flex w-full min-w-0 items-center gap-1 pl-7"
     data-testid="chat-header-facts"
@@ -80,45 +83,47 @@
       {/if}
     {/if}
     <ChatHeaderProject {pane} class="shrink-0 max-w-[9rem] text-text-secondary" />
-    {#if showMachine || hasProject}
-      <span class={headerSegmentSeparatorClasses} aria-hidden="true">·</span>
-    {/if}
-    <button
-      bind:this={branchEl}
-      type="button"
-      onclick={() => branchPicker?.openPicker()}
-      aria-haspopup="menu"
-      title={`Branch: ${branchLabel}`}
-      data-testid="chat-header-branch"
-      class="{headerSegmentClasses} min-w-0 text-text-secondary"
-    >
-      <Icon icon={GitBranchIcon} size={11} strokeWidth={2} class="shrink-0 opacity-70" />
-      <span class="truncate">{branchLabel}</span>
-    </button>
-    <BranchPicker bind:this={branchPicker} {pane} hideTrigger anchor={branchEl} />
-    <span class={headerSegmentSeparatorClasses} aria-hidden="true">·</span>
-    <button
-      bind:this={worktreeEl}
-      type="button"
-      onclick={() => envPicker?.openPicker()}
-      aria-haspopup="menu"
-      aria-label={`Worktree: ${worktreeLabel}`}
-      title={`Worktree: ${worktreeLabel}`}
-      data-testid="chat-header-worktree"
-      data-at-base={atBase || undefined}
-      class="{headerSegmentClasses} {atBase ? 'shrink-0 text-text-secondary' : 'min-w-0 shrink-[100] text-accent enabled:hover:text-accent'}"
-    >
-      <Icon icon={atBase ? Folder : FolderGit2} size={12} strokeWidth={2} class="shrink-0 {atBase ? 'opacity-80' : ''}" />
-      {#if !atBase}
-        <!-- The name shows while there is room. Its shrink weight dwarfs the
-             branch's, so it gives way to the ellipsis first and the branch
-             only starts truncating once the name is down to its icon. -->
-        <span class="truncate" data-testid="chat-header-worktree-label">{worktreeLabel}</span>
+    {#if hasCheckout}
+      {#if showMachine || hasProject}
+        <span class={headerSegmentSeparatorClasses} aria-hidden="true">·</span>
       {/if}
-    </button>
-    <EnvPicker bind:this={envPicker} {pane} {workspaceLock} hideTrigger anchor={worktreeEl} />
+      <button
+        bind:this={branchEl}
+        type="button"
+        onclick={() => branchPicker?.openPicker()}
+        aria-haspopup="menu"
+        title={`Branch: ${branchLabel}`}
+        data-testid="chat-header-branch"
+        class="{headerSegmentClasses} min-w-0 text-text-secondary"
+      >
+        <Icon icon={GitBranchIcon} size={11} strokeWidth={2} class="shrink-0 opacity-70" />
+        <span class="truncate">{branchLabel}</span>
+      </button>
+      <BranchPicker bind:this={branchPicker} {pane} hideTrigger anchor={branchEl} />
+      <span class={headerSegmentSeparatorClasses} aria-hidden="true">·</span>
+      <button
+        bind:this={worktreeEl}
+        type="button"
+        onclick={() => envPicker?.openPicker()}
+        aria-haspopup="menu"
+        aria-label={`Worktree: ${worktreeLabel}`}
+        title={`Worktree: ${worktreeLabel}`}
+        data-testid="chat-header-worktree"
+        data-at-base={atBase || undefined}
+        class="{headerSegmentClasses} {atBase ? 'shrink-0 text-text-secondary' : 'min-w-0 shrink-[100] text-accent enabled:hover:text-accent'}"
+      >
+        <Icon icon={atBase ? Folder : FolderGit2} size={12} strokeWidth={2} class="shrink-0 {atBase ? 'opacity-80' : ''}" />
+        {#if !atBase}
+          <!-- The name shows while there is room. Its shrink weight dwarfs the
+               branch's, so it gives way to the ellipsis first and the branch
+               only starts truncating once the name is down to its icon. -->
+          <span class="truncate" data-testid="chat-header-worktree-label">{worktreeLabel}</span>
+        {/if}
+      </button>
+      <EnvPicker bind:this={envPicker} {pane} {workspaceLock} hideTrigger anchor={worktreeEl} />
+    {/if}
   </div>
-  {#if namingBranch}
+  {#if hasCheckout && namingBranch}
     <div class="flex w-full min-w-0 items-center pl-7" data-testid="chat-header-worktree-naming">
       <WorktreeNameInput {pane} workspaceDirty={false} {workspaceLock} />
     </div>

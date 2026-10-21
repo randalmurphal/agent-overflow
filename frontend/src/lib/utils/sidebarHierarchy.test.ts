@@ -1,13 +1,17 @@
 // The sidebar hierarchy rulings (docs/specs/standing-agents.md rulings 4, 5
 // and 30 to 34): an agent's done fold, the one container bound for groups
 // and agent rows, the order inside a container, the rolled-up dot of a
-// collapsed container, and cross-project children filed under their agent.
+// collapsed container, and where an assistant's card and its rows in
+// projects list what lives under it.
 
 import { describe, expect, it } from 'vitest';
 import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
 import type { Thread, ThreadGroup } from '../types/models';
-import { buildSidebarThreadTree, nestingAgentThreadId, type SidebarAgentTreeNode, type SidebarGroupTreeNode } from './sidebarTree';
+import { agentContainerKey, buildSidebarThreadTree, nestingAgentThreadId, type SidebarAgentTreeNode, type SidebarGroupTreeNode } from './sidebarTree';
 import {
+  agentArchivedCount,
+  agentArchivedTotal,
+  archivedCountsByContainer,
   agentDoneCount,
   agentLiveChildCount,
   boundContainerMembers,
@@ -19,6 +23,9 @@ import {
   sidebarVisibleNodeId,
   type SidebarTreeVisibleNode,
 } from './sidebarTreeView';
+
+/** Every project its own sidebar entry. */
+const ownEntry = (projectId: string) => projectId;
 import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from './sidebarThreadLimits';
 import { bucketSidebarThreads, sidebarNestingAgent } from '../components/sidebar/sidebarBuckets';
 
@@ -73,31 +80,33 @@ describe('done fold', () => {
 
   it('folds settled idle children and keeps every child with something to show', () => {
     const node = agentNode(threads, live);
-    const rows = flattenSidebarThreadTree({ nodes: [node], openThreadIds: new Set(['open']) });
+    const rows = flattenSidebarThreadTree({ entryOf: ownEntry, nodes: [node], openThreadIds: new Set(['open']) });
     // Pinned first, then needs-you (Failed), running, unread, then the open
     // idle child; the two settled children fold into the footer.
     expect(ids(rows)).toEqual(['agent:ops', 'pinned', 'failed-start', 'working', 'unread', 'open', 'agent:ops:done']);
     const footer = rows[rows.length - 1];
     if (footer.kind !== 'agent-done') throw new Error('no footer');
     expect(footer).toMatchObject({ count: 2, expanded: false });
-    expect(agentDoneCount(node, new Set(['open']), null)).toBe(2);
+    expect(agentDoneCount(node, new Set(['open']), null, ownEntry)).toBe(2);
   });
 
   it('never folds the focused child', () => {
     const node = agentNode(threads, live);
-    const rows = flattenSidebarThreadTree({ nodes: [node], openThreadIds: new Set(['open']), activeThreadId: 'settled' });
+    const rows = flattenSidebarThreadTree({ entryOf: ownEntry, nodes: [node], openThreadIds: new Set(['open']), activeThreadId: 'settled' });
     expect(ids(rows)).toContain('settled');
     const footer = rows[rows.length - 1];
     expect(footer.kind === 'agent-done' && footer.count).toBe(1);
   });
 
   it('lists settled idle children first, newest first, then the archived ones, paged together', () => {
-    const node = agentNode([{ ...agent, archivedChildCount: 2 }, ...threads], live);
+    const node = agentNode([{ ...agent, archivedChildCounts: { '': 2 } }, ...threads], live);
+    // The card's archived ones: helpers, outside every project.
     const archived = [
-      child('done-1', { archived: true, updatedAt: 5 }),
-      child('done-2', { archived: true, updatedAt: 4 }),
+      child('done-1', { archived: true, updatedAt: 5, helperOfAgentId: 'ops', projectId: '' }),
+      child('done-2', { archived: true, updatedAt: 4, helperOfAgentId: 'ops', projectId: '' }),
     ];
     const open = flattenSidebarThreadTree({
+      entryOf: ownEntry,
       nodes: [node],
       openThreadIds: new Set(['open']),
       expandedDoneAgentIds: new Set(['ops']),
@@ -114,11 +123,54 @@ describe('done fold', () => {
     expect(footer).toMatchObject({ kind: 'agent-done', count: 4, expanded: true, hiddenCount: 1 });
   });
 
+  it('keeps each row\'s archived children and their count to that row', () => {
+    // The card holds the helpers and past threads; a project's row holds
+    // what the assistant spawned there, over every project of its entry.
+    const counted = { ...agent, projectId: '', archivedChildCounts: { '': 1, 'project-1': 1, 'project-2': 1, 'project-3': 1 } };
+    const archived = [
+      child('helper', { archived: true, updatedAt: 9, helperOfAgentId: 'ops', projectId: '' }),
+      child('in-1', { archived: true, updatedAt: 8, projectId: 'project-1' }),
+      child('in-2', { archived: true, updatedAt: 7, projectId: 'project-2' }),
+      child('in-3', { archived: true, updatedAt: 6, projectId: 'project-3' }),
+    ];
+    // project-2 is a checkout merged into project-1's entry.
+    const entryOf = (projectId: string) => (projectId === 'project-2' ? 'project-1' : projectId);
+    const rowsOf = (scope: string) => {
+      const nodes = buildSidebarThreadTree({ threads: [child('live', { projectId: scope || '', helperOfAgentId: scope ? undefined : 'ops' })], agents: [counted], scope });
+      const node = nodes.find((n) => n.kind === 'agent');
+      if (!node || node.kind !== 'agent') throw new Error('no agent node');
+      const rows = flattenSidebarThreadTree({
+        nodes,
+        entryOf,
+        expandedDoneAgentIds: new Set([agentContainerKey(node)]),
+        archivedChildrenOf: () => archived,
+      });
+      return { node, rows };
+    };
+    const card = rowsOf('');
+    expect(agentArchivedCount(card.node, entryOf)).toBe(1);
+    expect(ids(card.rows).filter((id) => id !== 'live')).toEqual(['agent:ops', 'helper', 'agent:ops:done']);
+    const project = rowsOf('project-1');
+    expect(agentArchivedCount(project.node, entryOf)).toBe(2);
+    expect(agentDoneCount(project.node, undefined, null, entryOf)).toBe(3);
+    expect(ids(project.rows)).toEqual(['agent:ops@project-1', 'live', 'in-1', 'in-2', 'agent:ops@project-1:done']);
+    expect(agentArchivedTotal(counted)).toBe(4);
+  });
+
+  it('counts archived threads by the row whose footer holds them, a merged entry adding its projects\'', () => {
+    const counts = archivedCountsByContainer(
+      { archivedChildCounts: { '': 1, 'project-1': 1, 'project-2': 2, 'project-3': 0 } },
+      (projectId) => (projectId === 'project-2' ? 'project-1' : projectId),
+    );
+    expect([...counts]).toEqual([['', 1], ['project-1', 3]]);
+    expect(archivedCountsByContainer({}, ownEntry).size).toBe(0);
+  });
+
   it('shows the footer for folded children alone, and returns a child to the live rows on new activity', () => {
     const quiet = agentNode([agent, child('settled')]);
-    expect(ids(flattenSidebarThreadTree({ nodes: [quiet] }))).toEqual(['agent:ops', 'agent:ops:done']);
+    expect(ids(flattenSidebarThreadTree({ entryOf: ownEntry, nodes: [quiet] }))).toEqual(['agent:ops', 'agent:ops:done']);
     const busy = agentNode([agent, child('settled')], { settled: 'running' });
-    expect(ids(flattenSidebarThreadTree({ nodes: [busy] }))).toEqual(['agent:ops', 'settled']);
+    expect(ids(flattenSidebarThreadTree({ entryOf: ownEntry, nodes: [busy] }))).toEqual(['agent:ops', 'settled']);
   });
 });
 
@@ -133,7 +185,7 @@ describe('container bound', () => {
       ...many('pin', 2, { groupId: 'g', pinnedAt: 1 }),
     ];
     const nodes = buildSidebarThreadTree({ threads: members, groups: [group] });
-    const rows = flattenSidebarThreadTree({ nodes, openThreadIds: new Set([`m${THREAD_PREVIEW_LIMIT + 3}`]) });
+    const rows = flattenSidebarThreadTree({ entryOf: ownEntry, nodes, openThreadIds: new Set([`m${THREAD_PREVIEW_LIMIT + 3}`]) });
     const shown = ids(rows);
     expect(shown.slice(1, 3)).toEqual(['pin0', 'pin1']);
     expect(shown.filter((id) => /^m\d/.test(id))).toEqual([
@@ -148,13 +200,13 @@ describe('container bound', () => {
     const children = many('c', THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT + 5, { spawnedByThreadId: 'agent' });
     const live = Object.fromEntries(children.map((c) => [c.id, 'running' as const]));
     const node = agentNode([agent, ...children], live);
-    const rows = flattenSidebarThreadTree({ nodes: [node] });
+    const rows = flattenSidebarThreadTree({ entryOf: ownEntry, nodes: [node] });
     expect(rows.filter((row) => row.kind === 'thread')).toHaveLength(THREAD_PREVIEW_LIMIT);
     expect(rows[rows.length - 1]).toMatchObject({ kind: 'container-more', containerKey: 'ops', ownerAgentId: 'ops' });
 
     const next = nextContainerRevealLimit(node.children, undefined, THREAD_PREVIEW_LIMIT);
     expect(next).toBe(THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
-    const revealed = flattenSidebarThreadTree({ nodes: [node], memberLimitOf: () => next });
+    const revealed = flattenSidebarThreadTree({ entryOf: ownEntry, nodes: [node], memberLimitOf: () => next });
     expect(revealed.filter((row) => row.kind === 'thread')).toHaveLength(next);
     expect(revealed[revealed.length - 1]).toMatchObject({ kind: 'container-more', hiddenCount: 5 });
   });
@@ -172,6 +224,7 @@ describe('container bound', () => {
     const group: ThreadGroup = { id: 'g', projectId: 'project-1', name: 'g', createdAt: 0, updatedAt: 0 };
     const members = many('m', THREAD_PREVIEW_LIMIT + 3, { groupId: 'g' });
     const build = (n: number) => flattenSidebarThreadTree({
+      entryOf: ownEntry,
       nodes: buildSidebarThreadTree({ threads: members.slice(0, n), groups: [group] }),
     });
     expect(sameSidebarVisibleNodes(build(THREAD_PREVIEW_LIMIT + 2), build(THREAD_PREVIEW_LIMIT + 2))).toBe(true);
@@ -192,7 +245,7 @@ describe('collapsed agent count', () => {
       child('grouped-done', { placement: 'grouped', groupId: 'g1' }),
     ]);
     expect(agentLiveChildCount(node, undefined, null)).toBe(1);
-    expect(agentDoneCount(node, undefined, null)).toBe(1);
+    expect(agentDoneCount(node, undefined, null, ownEntry)).toBe(1);
   });
 
   it('counts the live children, not the folded ones', () => {
@@ -209,7 +262,7 @@ describe('row identity cutoff', () => {
     const group: ThreadGroup = { id: 'g', projectId: 'project-1', name: 'g', createdAt: 0, updatedAt: 0 };
     const members = Array.from({ length: THREAD_PREVIEW_LIMIT + 2 }, (_, i) =>
       mkThread(`m${i}`, { groupId: 'g', updatedAt: 1000 - i, ...unread }));
-    const rows = flattenSidebarThreadTree({ nodes: buildSidebarThreadTree({ threads: members, groups: [group] }) });
+    const rows = flattenSidebarThreadTree({ entryOf: ownEntry, nodes: buildSidebarThreadTree({ threads: members, groups: [group] }) });
     const at = rows.findIndex((row) => row.kind === 'thread');
     const more = rows.length - 1;
     const with_ = (i: number, patch: object) => rows.map((row, j) => (j === i ? { ...row, ...patch } : row)) as SidebarTreeVisibleNode[];
@@ -289,12 +342,14 @@ describe('rolled-up dot', () => {
     // Unread rows sort first, so every member is unread for one to be cut.
     // A group's:
     const groupRows = flattenSidebarThreadTree({
+      entryOf: ownEntry,
       nodes: buildSidebarThreadTree({ threads: members('m', { groupId: 'g', ...unread }), groups: [group] }),
     });
     expect(moreOf(groupRows)).toMatchObject({ liveStatus: 'idle', pill: { label: 'Completed' } });
 
     // An agent's: every live child is unread, the hidden one included.
     const agentRows = flattenSidebarThreadTree({
+      entryOf: ownEntry,
       nodes: [agentNode([agent, ...members('c', { spawnedByThreadId: 'agent', ...unread })])],
     });
     expect(moreOf(agentRows)).toMatchObject({ liveStatus: 'idle', pill: { label: 'Completed' } });
@@ -317,84 +372,108 @@ describe('rolled-up dot', () => {
   });
 });
 
-describe('cross-project children', () => {
-  const entryOf = (projectId: string) => projectId;
-  const base = { groups: [], query: '', entryOf, threadVisible: () => true, filterDevices: false };
-  const home = mkThread('agent', { agentId: 'ops', projectId: 'home' });
+describe('assistants and their projects', () => {
+  const base = { groups: [], query: '', entryOf: ownEntry, threadVisible: () => true, filterDevices: false };
+  // An assistant lives outside every project.
+  const home = mkThread('agent', { agentId: 'ops', projectId: '' });
   const away = mkThread('away', { spawnedByThreadId: 'agent', projectId: 'other' });
   const local = mkThread('local', { projectId: 'other' });
-  const ids = (threads: Thread[] | undefined) => (threads ?? []).map((t) => t.id);
-
-  it('files a child spawned into another project under its agent, and the other project does not list it', () => {
-    const { threadsByProject } = bucketSidebarThreads({ ...base, threads: [home, away, local] });
-    expect(ids(threadsByProject.get('home'))).toEqual(['agent', 'away']);
-    expect(ids(threadsByProject.get('other'))).toEqual(['local']);
-    const node = buildSidebarThreadTree({ threads: threadsByProject.get('home') ?? [] }).find((n) => n.kind === 'agent');
-    expect(node?.kind === 'agent' && node.children.map((c) => c.thread.id)).toEqual(['away']);
+  const helper = mkThread('helper', { helperOfAgentId: 'ops', spawnedByThreadId: 'agent', projectId: '' });
+  const ids = (threads: readonly Thread[] | undefined) => (threads ?? []).map((t) => t.id);
+  const lookup = (agent: Thread, threadVisible: (t: Thread) => boolean = () => true) => ({
+    threadById: (id: string) => (id === agent.id ? agent : undefined),
+    currentThreadIdOf: (agentId: string) => (agentId === agent.agentId ? agent.id : undefined),
+    threadVisible,
   });
 
-  it('files a past thread under its assistant\'s current thread in another project', () => {
-    const past = mkThread('past', { pastAgentId: 'ops', projectId: 'other' });
-    const { threadsByProject } = bucketSidebarThreads({ ...base, threads: [home, past] });
-    expect(ids(threadsByProject.get('home'))).toEqual(['agent', 'past']);
+  it('lists the assistant as a card and its project work in that project, under its row there', () => {
+    const buckets = bucketSidebarThreads({ ...base, threads: [home, away, local] });
+    expect(ids(buckets.assistants)).toEqual(['agent']);
+    expect(ids(buckets.threadsByProject.get('other'))).toEqual(['away', 'local']);
+    expect(ids(buckets.agentsByProject.get('other'))).toEqual(['agent']);
+    expect([...buckets.threadsByProject.keys()]).toEqual(['other']);
+    const nodes = buildSidebarThreadTree({ threads: buckets.threadsByProject.get('other') ?? [], agents: buckets.agentsByProject.get('other'), scope: 'other' });
+    const row = nodes.find((n) => n.kind === 'agent');
+    expect(row?.kind === 'agent' && row.children.map((c) => c.thread.id)).toEqual(['away']);
+    expect(nodes.filter((n) => n.kind === 'thread').map((n) => n.kind === 'thread' && n.thread.id)).toEqual(['local']);
   });
 
-  it('answers where a child sits and where its activity goes with one rule', () => {
-    // The activity bump asks sidebarNestingAgent with the same lookup the
-    // bucketing builds; for every case, the two land in the same project.
-    const cases: { name: string; agent: Thread; threadVisible: (t: Thread) => boolean; want: string }[] = [
-      { name: 'shown', agent: home, threadVisible: () => true, want: 'home' },
-      { name: 'archived', agent: { ...home, archived: true }, threadVisible: () => true, want: 'other' },
-      { name: 'on a hidden computer', agent: home, threadVisible: (t) => t.id !== 'agent', want: 'other' },
+  it('puts the helpers and the past threads on the card', () => {
+    const past = mkThread('past', { pastAgentId: 'ops', projectId: '', placement: 'standalone' });
+    const buckets = bucketSidebarThreads({ ...base, threads: [home, helper, past, local] });
+    expect(ids(buckets.assistantChildren)).toEqual(['helper', 'past']);
+    expect(ids(buckets.threadsByProject.get('other'))).toEqual(['local']);
+    expect(buckets.agentsByProject.get('other')).toBeUndefined();
+    const card = buildSidebarThreadTree({ threads: buckets.assistantChildren, agents: buckets.assistants }).find((n) => n.kind === 'agent');
+    expect(card?.kind === 'agent' && card.children.map((c) => c.thread.id).sort()).toEqual(['helper', 'past']);
+  });
+
+  it('answers where a child sits with one rule, and its activity goes to its own project', () => {
+    // sidebarNestingAgent decides both whether the bucketing nests a
+    // thread and under which assistant; activity bumps the thread's own
+    // project whatever the answer.
+    const cases: { name: string; agent: Thread; threadVisible: (t: Thread) => boolean; nested: boolean }[] = [
+      { name: 'shown', agent: home, threadVisible: () => true, nested: true },
+      { name: 'archived', agent: { ...home, archived: true }, threadVisible: () => true, nested: false },
+      { name: 'on a hidden computer', agent: home, threadVisible: (t) => t.id !== 'agent', nested: false },
     ];
-    for (const { name, agent, threadVisible, want } of cases) {
-      const nested = sidebarNestingAgent(away, {
-        threadById: (id) => (id === agent.id ? agent : undefined),
-        currentThreadIdOf: (agentId) => (agentId === agent.agentId ? agent.id : undefined),
-        threadVisible,
-      });
-      expect(nested?.projectId ?? away.projectId, name).toBe(want);
-      const { threadsByProject } = bucketSidebarThreads({ ...base, threads: [agent, away], threadVisible, filterDevices: true });
-      expect(ids(threadsByProject.get(want)), name).toContain('away');
+    for (const { name, agent, threadVisible, nested } of cases) {
+      expect(sidebarNestingAgent(away, lookup(agent, threadVisible))?.id, name).toBe(nested ? 'agent' : undefined);
+      const buckets = bucketSidebarThreads({ ...base, threads: [agent, away, helper], threadVisible, filterDevices: true });
+      expect(ids(buckets.threadsByProject.get('other')), name).toEqual(['away']);
+      expect(ids(buckets.agentsByProject.get('other')), name).toEqual(nested ? ['agent'] : []);
+      expect(ids(buckets.assistants), name).toEqual(nested ? ['agent'] : []);
+      // A helper has no project to fall back to: it shows on the card or not at all.
+      expect(ids(buckets.assistantChildren), name).toEqual(nested ? ['helper'] : []);
     }
   });
 
-  it('never nests an agent row under another agent', () => {
+  it('keeps the row in a project while only archived children are there, outside a search', () => {
+    const archivedOnly = { ...home, archivedChildCounts: { other: 2, '': 1 } };
+    const buckets = bucketSidebarThreads({ ...base, threads: [archivedOnly, local] });
+    expect(ids(buckets.agentsByProject.get('other'))).toEqual(['agent']);
+    // The card's own archived children name no project.
+    expect([...buckets.agentsByProject.keys()]).toEqual(['other']);
+    const nodes = buildSidebarThreadTree({ threads: buckets.threadsByProject.get('other') ?? [], agents: buckets.agentsByProject.get('other'), scope: 'other' });
+    const row = nodes.find((n) => n.kind === 'agent');
+    expect(row?.kind === 'agent' && row.children).toEqual([]);
+    expect(bucketSidebarThreads({ ...base, threads: [archivedOnly, local], query: 'local' }).agentsByProject.size).toBe(0);
+    // An archived assistant shows no row anywhere.
+    expect(bucketSidebarThreads({ ...base, threads: [{ ...archivedOnly, archived: true }] }).agentsByProject.size).toBe(0);
+  });
+
+  it('never nests an assistant under another', () => {
     // An assistant another agent created records its creator as spawner.
-    const created = mkThread('created', { agentId: 'helper', spawnedByThreadId: 'agent', projectId: 'other' });
+    const created = mkThread('created', { agentId: 'helper', spawnedByThreadId: 'agent', projectId: '' });
     expect(nestingAgentThreadId(created, () => undefined)).toBeUndefined();
-    const { threadsByProject } = bucketSidebarThreads({ ...base, threads: [home, created] });
-    expect(ids(threadsByProject.get('other'))).toEqual(['created']);
-    expect(ids(threadsByProject.get('home'))).toEqual(['agent']);
+    const buckets = bucketSidebarThreads({ ...base, threads: [home, created] });
+    expect(ids(buckets.assistants)).toEqual(['agent', 'created']);
+    expect(buckets.assistantChildren).toEqual([]);
+    expect(buckets.threadsByProject.size).toBe(0);
   });
 
-  it('leaves the child in its own project while the agent row is not in the sidebar', () => {
-    const archived = bucketSidebarThreads({ ...base, threads: [{ ...home, archived: true }, away] });
-    expect(ids(archived.threadsByProject.get('other'))).toEqual(['away']);
-    const filtered = bucketSidebarThreads({
-      ...base, threads: [home, away], filterDevices: true, threadVisible: (t) => t.id !== 'agent',
-    });
-    expect(ids(filtered.threadsByProject.get('other'))).toEqual(['away']);
-  });
-
-  it('leaves a grouped or standalone child in its own project, and its activity there', () => {
+  it('leaves a grouped or standalone child in its own project as a plain row', () => {
     const standalone = { ...away, id: 'standalone', placement: 'standalone' as const };
     const grouped = { ...away, id: 'grouped', placement: 'grouped' as const, groupId: 'g-other' };
-    const { threadsByProject } = bucketSidebarThreads({ ...base, threads: [home, away, standalone, grouped] });
-    expect(ids(threadsByProject.get('home'))).toEqual(['agent', 'away']);
-    expect(ids(threadsByProject.get('other'))).toEqual(['standalone', 'grouped']);
+    const only = bucketSidebarThreads({ ...base, threads: [home, standalone, grouped] });
+    expect(ids(only.threadsByProject.get('other'))).toEqual(['standalone', 'grouped']);
+    expect(only.agentsByProject.get('other')).toBeUndefined();
     for (const thread of [standalone, grouped]) {
-      expect(sidebarNestingAgent(thread, {
-        threadById: (id) => (id === home.id ? home : undefined),
-        currentThreadIdOf: () => home.id,
-        threadVisible: () => true,
-      }), thread.id).toBeUndefined();
+      expect(sidebarNestingAgent(thread, lookup(home)), thread.id).toBeUndefined();
     }
   });
 
-  it('applies search after the move', () => {
-    const { threadsByProject } = bucketSidebarThreads({ ...base, threads: [home, away, local], query: 'away' });
-    expect(ids(threadsByProject.get('home'))).toEqual(['away']);
-    expect(threadsByProject.get('other')).toBeUndefined();
+  it('shows what search matches: a card for its name or a matching card child, a project row for a matching child', () => {
+    const byChild = bucketSidebarThreads({ ...base, threads: [home, away, local, helper], query: 'away' });
+    expect(ids(byChild.threadsByProject.get('other'))).toEqual(['away']);
+    expect(ids(byChild.agentsByProject.get('other'))).toEqual(['agent']);
+    expect(byChild.assistants).toEqual([]);
+    const byHelper = bucketSidebarThreads({ ...base, threads: [home, away, local, helper], query: 'helper' });
+    expect(ids(byHelper.assistants)).toEqual(['agent']);
+    expect(ids(byHelper.assistantChildren)).toEqual(['helper']);
+    expect(byHelper.threadsByProject.size).toBe(0);
+    const byName = bucketSidebarThreads({ ...base, threads: [home, away, local, helper], query: 'agent' });
+    expect(ids(byName.assistants)).toEqual(['agent']);
+    expect(byName.assistantChildren).toEqual([]);
   });
 });

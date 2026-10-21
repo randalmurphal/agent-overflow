@@ -42,14 +42,17 @@ describe('<ProjectThreadList>', () => {
     resetThreadStatuses();
   });
 
-  it('shows a "+ New Thread" empty-state button when threads is empty', () => {
+  it('shows a "+ New Thread" empty-state button when threads is empty, and no other', () => {
     const pane = createThreadPane();
-    const { getByTestId } = render(ProjectThreadList, {
+    const { getByTestId, container } = render(ProjectThreadList, {
       props: { projectId: 'p1', threads: [], pane },
     });
     expect(normalizedTextContent(getByTestId('project-thread-list-empty'))).toMatch(
       /New thread/i,
     );
+    // New Assistant is on the Assistants header and the project's menu
+    // (docs/specs/standing-agents.md, "Sidebar"), not here.
+    expect([...container.querySelectorAll('button')].map((button) => normalizedTextContent(button))).toEqual(['New Thread']);
   });
 
   it('empty-state button calls onNewThread with the projectId', async () => {

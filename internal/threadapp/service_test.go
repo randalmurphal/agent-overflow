@@ -3,6 +3,7 @@ package threadapp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -469,5 +470,153 @@ func TestDefaultsCarriesItsCallersDeadlineIntoTheStore(t *testing.T) {
 	}
 	if defaults.WorkspacePath != "/repo" {
 		t.Fatalf("WorkspacePath = %q, want /repo", defaults.WorkspacePath)
+	}
+}
+
+// A thread in a home has no project and the home as its workspace; it
+// reads no branch or origin, joins no recent workspaces, and records the
+// assistant it helps. Project, group, worktree, branch and workspace
+// choices are refused beside a home, and a relative home is refused.
+func TestCreateInAHome(t *testing.T) {
+	service, database, _ := newServiceFixture(t)
+	recent := &recentRecorder{}
+	service.deps.RecentWorkspaces = recent
+	service.deps.Workspace = &testWorkspace{currentBranch: "main", origin: store.ThreadOrigin{Branch: "main", HeadCommit: "0123456789abcdef0123456789abcdef01234567"}}
+	ids := []string{"assistant", "helper"}
+	made := 0
+	service.deps.NewID = func() string {
+		made++
+		if made <= len(ids) {
+			return ids[made-1]
+		}
+		return fmt.Sprintf("thread-%d", made)
+	}
+
+	thread, err := service.Create(CreateOptions{Home: " /config/agents/a1 ", Title: "Ops"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	reloaded, err := database.GetThread(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.ProjectID != "" || reloaded.WorkspacePath != "/config/agents/a1" || reloaded.Branch != "" || !reloaded.Origin.IsZero() || reloaded.HelperOfAgentID != "" {
+		t.Fatalf("home thread = project %q workspace %q branch %q origin %+v helperOf %q",
+			reloaded.ProjectID, reloaded.WorkspacePath, reloaded.Branch, reloaded.Origin, reloaded.HelperOfAgentID)
+	}
+	if len(recent.paths) != 0 {
+		t.Fatalf("a home joined the recent workspaces: %v", recent.paths)
+	}
+	if err := database.CreateStandingAgent(store.StandingAgent{ID: "a1", ThreadID: thread.ID, Home: "/config/agents/a1"}); err != nil {
+		t.Fatal(err)
+	}
+	helper, err := service.Create(CreateOptions{Home: "/config/agents/a1", HelperOfAgentID: "a1"})
+	if err != nil {
+		t.Fatalf("Create helper: %v", err)
+	}
+	if reloaded, err := database.GetThread(helper.ID); err != nil || reloaded.HelperOfAgentID != "a1" {
+		t.Fatalf("helper = %+v, %v", reloaded, err)
+	}
+
+	for name, opts := range map[string]CreateOptions{
+		"project":   {Home: "/h", ProjectID: "project"},
+		"group":     {Home: "/h", GroupID: "g"},
+		"worktree":  {Home: "/h", WorktreeBranch: "feature"},
+		"inherited": {Home: "/h", WorktreePath: "/repo-worktrees/feature"},
+		"workspace": {Home: "/h", WorkspaceOverride: "/elsewhere"},
+		"branch":    {Home: "/h", Branch: "feature"},
+		"relative":  {Home: "agents/a1"},
+	} {
+		if _, err := service.Create(opts); err == nil {
+			t.Errorf("%s: a thread was created", name)
+		}
+	}
+	// A helper lives in its assistant's home, never in a project.
+	for name, opts := range map[string]CreateOptions{
+		"helper in a project": {ProjectID: "project", HelperOfAgentID: "a1"},
+		"helper with no home": {HelperOfAgentID: "a1"},
+	} {
+		if _, err := service.Create(opts); err == nil || !strings.Contains(err.Error(), "a helper lives in its assistant's home") {
+			t.Errorf("%s = %v, want the helper refused", name, err)
+		}
+	}
+}
+
+// An assistant's delete deletes what lives under it before the mark. A
+// helper made after they went (a spawn that read the assistant before the
+// pass) refuses the mark and sends the delete back for it, so the record
+// goes with nothing left without it; one that keeps coming gives up with
+// the assistant whole.
+func TestDeletingAnAssistantDeletesWhatLivesUnderItFirst(t *testing.T) {
+	service, database, _ := newServiceFixture(t)
+	next := 0
+	service.deps.NewID = func() string { next++; return fmt.Sprintf("thread-%d", next) }
+	assistant := func(t *testing.T, id string) store.Thread {
+		t.Helper()
+		home := "/config/agents/" + id
+		thread, err := service.Create(CreateOptions{Home: home, Title: id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := database.CreateStandingAgent(store.StandingAgent{ID: id, ThreadID: thread.ID, Home: home}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.Create(CreateOptions{Home: home, HelperOfAgentID: id}); err != nil {
+			t.Fatal(err)
+		}
+		return thread
+	}
+	// dependents deletes the threads under the assistant, as the app's
+	// port does, and then lets late make one more.
+	dependents := func(passes *int, late func(pass int) bool) DeletePorts {
+		return DeletePorts{AssistantDependents: func(threadID string) error {
+			*passes++
+			agent, _, err := database.GetStandingAgent(threadID)
+			if err != nil {
+				return err
+			}
+			ids, err := database.AssistantDependentThreadIDs(agent.ID)
+			if err != nil {
+				return err
+			}
+			for _, id := range ids {
+				if err := service.DeleteThread(id, DeletePorts{}); err != nil {
+					return err
+				}
+			}
+			if late(*passes) {
+				_, err = service.Create(CreateOptions{Home: agent.Home, HelperOfAgentID: agent.ID})
+			}
+			return err
+		}}
+	}
+
+	ops := assistant(t, "ops")
+	passes := 0
+	if err := service.DeleteThread(ops.ID, dependents(&passes, func(pass int) bool { return pass == 1 })); err != nil {
+		t.Fatalf("DeleteThread: %v", err)
+	}
+	if passes != 2 {
+		t.Fatalf("passes = %d, want a second for the late helper", passes)
+	}
+	if outside, err := database.ThreadIDsOutsideProjects(); err != nil || len(outside) != 0 {
+		t.Fatalf("threads left outside every project = %q %v", outside, err)
+	}
+	if _, found, err := database.GetAgent("ops"); err != nil || found {
+		t.Fatalf("the record after the delete = %v %v", found, err)
+	}
+
+	busy := assistant(t, "busy")
+	passes = 0
+	err := service.DeleteThread(busy.ID, dependents(&passes, func(int) bool { return true }))
+	var left *store.AssistantDependentsError
+	if !errors.As(err, &left) || left.Helpers != 1 || passes != maxDependentPasses {
+		t.Fatalf("a delete helpers keep coming to = %v after %d passes", err, passes)
+	}
+	if _, found, err := database.GetStandingAgent(busy.ID); err != nil || !found {
+		t.Fatalf("the assistant after the delete gave up = %v %v", found, err)
+	}
+	if pending, err := database.ListPendingThreadDeletes(); err != nil || len(pending) != 0 {
+		t.Fatalf("pending deletes = %q %v, want the assistant unmarked", pending, err)
 	}
 }

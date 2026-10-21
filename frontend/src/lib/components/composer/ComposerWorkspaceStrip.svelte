@@ -63,10 +63,14 @@
         -->
         <MachinePicker {pane} />
       {/if}
-      <BranchPicker {pane} />
-      <EnvPicker {pane} {workspaceLock} />
-      {#if !readonly}
-        <WorktreeNameInput {pane} workspaceDirty={false} {workspaceLock} />
+      {#if pane.workspace}
+        <!-- A thread outside every project, such as an assistant's, has no
+             checkout: no branch or worktree to show or change. -->
+        <BranchPicker {pane} />
+        <EnvPicker {pane} {workspaceLock} />
+        {#if !readonly}
+          <WorktreeNameInput {pane} workspaceDirty={false} {workspaceLock} />
+        {/if}
       {/if}
     </div>
     <div class="ml-auto shrink-0 whitespace-nowrap">

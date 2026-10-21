@@ -14,7 +14,7 @@ import { resetThreadWakesForTest } from '../../stores/threadWakes.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { endThreadRowDrag, THREAD_ROW_DRAG_MIME, type ThreadDragPayload } from '../../utils/threadDragPayload';
 import { replaceAllThreads } from '../../stores/threads.svelte';
-import type { Thread } from '../../types/models';
+import type { Thread, ThreadGroup } from '../../types/models';
 
 function thread(id: string, overrides: Partial<Thread> = {}): Thread {
   return {
@@ -34,6 +34,21 @@ function dragEventInit(payload: ThreadDragPayload) {
   } as unknown as DataTransfer;
   return { dataTransfer };
 }
+
+// The list's props as the sidebar hands them in: the assistant apart from
+// the threads its row in this project holds.
+function listProps(threads: Thread[], groups: ThreadGroup[] = []) {
+  return {
+    projectId: 'project',
+    threads: threads.filter((t) => !t.agentId),
+    agents: threads.filter((t) => Boolean(t.agentId)),
+    groups,
+    pane: createThreadPane(),
+  };
+}
+
+// The agent row's container key in this project (agentContainerKey).
+const ROW = 'agent@project';
 
 async function flush(): Promise<void> {
   for (let i = 0; i < 5; i += 1) await Promise.resolve();
@@ -58,16 +73,12 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
   // the done footer as a settled idle child would.
   function renderList() {
     const threads = [
-      thread('agent', { agentId: 'agent', archivedChildCount: 1 }),
+      thread('agent', { agentId: 'agent', archivedChildCounts: { project: 1 } }),
       thread('child', { spawnedByThreadId: 'agent', pinnedAt: 1 }),
       thread('loose', { groupId: 'ops' }),
     ];
     replaceAllThreads(threads);
-    const view = render(ProjectThreadList, {
-      projectId: 'project', threads,
-      groups: [{ id: 'ops', projectId: 'project', name: 'Ops', createdAt: 0, updatedAt: 0 }],
-      pane: createThreadPane(),
-    });
+    const view = render(ProjectThreadList, listProps(threads, [{ id: 'ops', projectId: 'project', name: 'Ops', createdAt: 0, updatedAt: 0 }]));
     return view;
   }
 
@@ -154,7 +165,7 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
     const list = setBindingMock('ListArchivedSpawnedThreads', vi.fn(async () => [thread('done', { spawnedByThreadId: 'agent', archived: true })]));
     const { container } = renderList();
     await flush();
-    toggleAgentDone('agent');
+    toggleAgentDone(ROW);
     await flush();
     expect(list).toHaveBeenCalledTimes(1);
     expect(container.querySelector('[data-sidebar-thread-id="done"]')).not.toBeNull();
@@ -180,7 +191,7 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
       calls.push(ids);
       return [];
     }));
-    const view = render(ProjectThreadList, { projectId: 'project', threads, groups: [], pane: createThreadPane() });
+    const view = render(ProjectThreadList, listProps(threads));
     await flush();
     await fireEvent.contextMenu(view.container.querySelector<HTMLElement>('[data-sidebar-thread-id="agent"]')!);
     await flush();
@@ -197,8 +208,8 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
       thread('settled-child', { spawnedByThreadId: 'agent' }),
     ];
     replaceAllThreads(threads);
-    setAgentExpanded('agent', false);
-    const view = render(ProjectThreadList, { projectId: 'project', threads, groups: [], pane: createThreadPane() });
+    setAgentExpanded(ROW, false);
+    const view = render(ProjectThreadList, listProps(threads));
     await flush();
     expect(view.container.querySelector('[data-testid="thread-row-agent-count"]')?.textContent?.trim()).toBe('2');
   });
@@ -206,21 +217,16 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
   it('comes back closed after its last archived child leaves', async () => {
     const view = renderList();
     await flush();
-    toggleAgentDone('agent');
+    toggleAgentDone(ROW);
     await flush();
     expect(view.container.querySelector('[data-sidebar-thread-id="done"]')).not.toBeNull();
     // The last archived child is unarchived: no footer, and the open state
     // goes with it.
-    const rerender = (count: number) => view.rerender({
-      projectId: 'project',
-      threads: [
-        thread('agent', { agentId: 'agent', archivedChildCount: count }),
-        thread('child', { spawnedByThreadId: 'agent', pinnedAt: 1 }),
-        thread('loose', { groupId: 'ops' }),
-      ],
-      groups: [{ id: 'ops', projectId: 'project', name: 'Ops', createdAt: 0, updatedAt: 0 }],
-      pane: createThreadPane(),
-    });
+    const rerender = (count: number) => view.rerender(listProps([
+      thread('agent', { agentId: 'agent', archivedChildCounts: { project: count } }),
+      thread('child', { spawnedByThreadId: 'agent', pinnedAt: 1 }),
+      thread('loose', { groupId: 'ops' }),
+    ], [{ id: 'ops', projectId: 'project', name: 'Ops', createdAt: 0, updatedAt: 0 }]));
     // A zero that passes (the agent row's count catching up with a child
     // that just left) keeps the footer open, however long after it the
     // settle window ends.
@@ -233,15 +239,15 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
       await rerender(1);
       await tick();
       vi.advanceTimersByTime(2000);
-      expect(isAgentDoneExpanded('agent')).toBe(true);
+      expect(isAgentDoneExpanded(ROW)).toBe(true);
       // A zero that stays closes it once the 750 ms window has passed, not
       // before.
       await rerender(0);
       await tick();
       vi.advanceTimersByTime(749);
-      expect(isAgentDoneExpanded('agent')).toBe(true);
+      expect(isAgentDoneExpanded(ROW)).toBe(true);
       vi.advanceTimersByTime(1);
-      expect(isAgentDoneExpanded('agent')).toBe(false);
+      expect(isAgentDoneExpanded(ROW)).toBe(false);
     } finally {
       vi.useRealTimers();
     }
@@ -258,26 +264,26 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
     const list = setBindingMock('ListArchivedSpawnedThreads', vi.fn(async () => [thread('done', { spawnedByThreadId: 'agent', archived: true })]));
     const view = renderList();
     await flush();
-    setAgentExpanded('agent', false);
-    toggleAgentDone('agent');
+    setAgentExpanded(ROW, false);
+    toggleAgentDone(ROW);
     await flush();
     expect(list).toHaveBeenCalledTimes(1);
     const rows = (promoted: boolean) => [
-      thread('agent', promoted ? { agentId: 'agent', archivedChildCount: 1 } : {}),
+      thread('agent', promoted ? { agentId: 'agent', archivedChildCounts: { project: 1 } } : {}),
       thread('child', { spawnedByThreadId: 'agent', pinnedAt: 1 }),
       thread('loose', { groupId: 'ops' }),
     ];
     // Demoted: the row is a plain thread and every agent-only state goes.
     replaceAllThreads(rows(false));
-    await view.rerender({ projectId: 'project', threads: rows(false), groups: [], pane: createThreadPane() });
+    await view.rerender(listProps(rows(false)));
     await flush();
     expect(view.container.querySelector('[data-sidebar-agent]')).toBeNull();
-    expect(isAgentExpanded('agent')).toBe(true);
-    expect(isAgentDoneExpanded('agent')).toBe(false);
+    expect(isAgentExpanded(ROW)).toBe(true);
+    expect(isAgentDoneExpanded(ROW)).toBe(false);
     // Promoted again at the same count: unfolded, footer shut, and opening
     // it reads the list again instead of showing the one from before.
     replaceAllThreads(rows(true));
-    await view.rerender({ projectId: 'project', threads: rows(true), groups: [], pane: createThreadPane() });
+    await view.rerender(listProps(rows(true)));
     await flush();
     expect(view.container.querySelector('[data-sidebar-agent]')?.getAttribute('data-expanded')).toBe('true');
     expect(view.container.querySelector('[data-testid="thread-row-agent-done-toggle"]')?.getAttribute('aria-expanded')).toBe('false');

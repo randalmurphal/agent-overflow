@@ -162,7 +162,8 @@ export async function switchDraftProject(
  * Resolve which project the next draft thread should land in when the
  * source of the request doesn't supply one (e.g. the global Ctrl+N
  * keybinding firing without a focused thread). Prefers the focused
- * pane's current project, then falls back to the most recently active
+ * pane's current project, then, for no thread or one outside every
+ * project such as an assistant's, falls back to the most recently active
  * project (ListProjects is sorted server-side by lastActive
  * descending). Returns null when no projects exist at all — the caller should surface "add a
  * project first".

@@ -28,32 +28,47 @@ describe('<NewAssistantDialog>', () => {
       { project: project('p2', 'Beta'), threadCount: 0 },
     ]);
     await refreshProjects();
-    setBindingMock('GitListWorktrees', async () => [
-      { path: '/repo/p2/.worktrees/feature', branch: 'feature', head: 'abc', deleteBlocked: false, missing: false },
-    ]);
     setBindingMock('SwitchThread', async () => {});
     setBindingMock('ListItems', async () => []);
   });
   afterEach(() => closeNewAssistantDialog());
 
-  it('opens on the project it came from and creates the assistant with the name and workspace', async () => {
-    const created = makeThread({ id: 'assistant-thread', title: 'Ops', projectId: 'p2', agentId: 'agent-1' });
+  const item = (view: { getAllByTestId: (id: string) => HTMLElement[] }, id: string) =>
+    view.getAllByTestId('assistant-projects-item').find((el) => el.getAttribute('data-project-id') === id) as HTMLInputElement;
+
+  it('opens with the project it came from checked and creates the assistant serving the chosen projects', async () => {
+    const created = makeThread({ id: 'assistant-thread', title: 'Ops', projectId: '', agentId: 'agent-1' });
     const create = setBindingMock('CreateAssistant', vi.fn(async () => created));
     const view = render(NewAssistantDialog);
     openNewAssistantDialog({ projectId: 'p2' });
     await tick();
 
-    expect((view.getByTestId('new-assistant-project') as HTMLSelectElement).value).toBe('p2');
+    expect(view.getAllByTestId('assistant-projects-item').map((el) => el.getAttribute('data-project-id'))).toEqual(['p1', 'p2']);
+    expect(item(view, 'p2').checked).toBe(true);
+    expect(item(view, 'p1').checked).toBe(false);
+    await fireEvent.click(item(view, 'p1'));
     await fireEvent.input(view.getByTestId('new-assistant-name'), { target: { value: '  Ops  ' } });
-    await waitFor(() => expect(view.getByRole('option', { name: 'feature' })).toBeInTheDocument());
-    await fireEvent.change(view.getByTestId('new-assistant-workspace'), { target: { value: '/repo/p2/.worktrees/feature' } });
     await fireEvent.click(view.getByTestId('new-assistant-create'));
 
-    await waitFor(() => expect(create).toHaveBeenCalledWith({
-      projectId: 'p2', name: 'Ops', worktreePath: '/repo/p2/.worktrees/feature', branch: 'feature',
-    }));
+    await waitFor(() => expect(create).toHaveBeenCalledWith({ name: 'Ops', projectIds: ['p2', 'p1'], allProjects: false }));
     await waitFor(() => expect(view.queryByTestId('new-assistant-dialog')).toBeNull());
     expect(getThreads().some((thread) => thread.id === 'assistant-thread')).toBe(true);
+  });
+
+  it('serves every project with All projects, and returns to the checked ones without it', async () => {
+    const create = setBindingMock('CreateAssistant', vi.fn(async () => makeThread({ id: 't', projectId: '', agentId: 'a' })));
+    const view = render(NewAssistantDialog);
+    openNewAssistantDialog({ projectId: 'p1' });
+    await tick();
+    const all = view.getByTestId('assistant-projects-all') as HTMLInputElement;
+    await fireEvent.click(all);
+    expect(item(view, 'p1').disabled && item(view, 'p2').disabled && item(view, 'p2').checked).toBe(true);
+    await fireEvent.click(all);
+    expect([item(view, 'p1').checked, item(view, 'p2').checked]).toEqual([true, false]);
+    await fireEvent.click(all);
+    await fireEvent.input(view.getByTestId('new-assistant-name'), { target: { value: 'Scout' } });
+    await fireEvent.click(view.getByTestId('new-assistant-create'));
+    await waitFor(() => expect(create).toHaveBeenCalledWith({ name: 'Scout', projectIds: [], allProjects: true }));
   });
 
   it('keeps the row a frame brought during the creation over the older reply', async () => {
@@ -71,18 +86,6 @@ describe('<NewAssistantDialog>', () => {
     expect(getThreads().find((thread) => thread.id === 'assistant-raced')?.title).toBe('Ops renamed meanwhile');
   });
 
-  it('asks for a new worktree by its branch name', async () => {
-    const create = setBindingMock('CreateAssistant', vi.fn(async () => makeThread({ id: 't', projectId: 'p1', agentId: 'a' })));
-    const view = render(NewAssistantDialog);
-    openNewAssistantDialog({ projectId: 'p1' });
-    await tick();
-    await fireEvent.input(view.getByTestId('new-assistant-name'), { target: { value: 'Scout' } });
-    await fireEvent.change(view.getByTestId('new-assistant-workspace'), { target: { value: 'new' } });
-    await fireEvent.input(view.getByTestId('new-assistant-branch'), { target: { value: 'scout-home' } });
-    await fireEvent.click(view.getByTestId('new-assistant-create'));
-    await waitFor(() => expect(create).toHaveBeenCalledWith({ projectId: 'p1', name: 'Scout', worktreeBranch: 'scout-home' }));
-  });
-
   it('refuses a name in use inline, naming the assistant that holds it, and stays open', async () => {
     setBindingMock('CreateAssistant', async () => {
       throw new TransportError('assistant_name_taken', 'The assistant "Ops" already has that name; names are unique on this computer.');
@@ -96,12 +99,35 @@ describe('<NewAssistantDialog>', () => {
     expect(view.getByTestId('new-assistant-dialog')).toBeInTheDocument();
   });
 
-  it('keeps Create inert until a name is typed', async () => {
+  it('keeps Create inert until a name is typed and a project is chosen', async () => {
+    const view = render(NewAssistantDialog);
+    // From the Assistants header: no project comes preselected.
+    openNewAssistantDialog({});
+    await tick();
+    const create = view.getByTestId('new-assistant-create') as HTMLButtonElement;
+    expect(create.disabled).toBe(true);
+    await fireEvent.input(view.getByTestId('new-assistant-name'), { target: { value: '   ' } });
+    expect(create.disabled).toBe(true);
+    await fireEvent.input(view.getByTestId('new-assistant-name'), { target: { value: 'Ops' } });
+    expect(create.disabled).toBe(true);
+    await fireEvent.click(item(view, 'p1'));
+    expect(create.disabled).toBe(false);
+    await fireEvent.click(item(view, 'p1'));
+    expect(create.disabled).toBe(true);
+  });
+
+  it('starts each opening clean', async () => {
     const view = render(NewAssistantDialog);
     openNewAssistantDialog({ projectId: 'p1' });
     await tick();
-    expect((view.getByTestId('new-assistant-create') as HTMLButtonElement).disabled).toBe(true);
-    await fireEvent.input(view.getByTestId('new-assistant-name'), { target: { value: '   ' } });
-    expect((view.getByTestId('new-assistant-create') as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.input(view.getByTestId('new-assistant-name'), { target: { value: 'Ops' } });
+    await fireEvent.click(view.getByTestId('assistant-projects-all'));
+    closeNewAssistantDialog();
+    await tick();
+    openNewAssistantDialog({ projectId: 'p2' });
+    await tick();
+    expect((view.getByTestId('new-assistant-name') as HTMLInputElement).value).toBe('');
+    expect((view.getByTestId('assistant-projects-all') as HTMLInputElement).checked).toBe(false);
+    expect([item(view, 'p1').checked, item(view, 'p2').checked]).toEqual([false, true]);
   });
 });

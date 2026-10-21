@@ -22,7 +22,6 @@ import (
 	"syscall"
 	"time"
 
-	"agent-overflow/internal/agenthome"
 	"agent-overflow/internal/aocli"
 	appservice "agent-overflow/internal/app"
 	"agent-overflow/internal/appdirs"
@@ -35,6 +34,7 @@ import (
 	"agent-overflow/internal/diagenv"
 	"agent-overflow/internal/harness/darwinbundle"
 	"agent-overflow/internal/logging"
+	"agent-overflow/internal/memory"
 	"agent-overflow/internal/network"
 	"agent-overflow/internal/observability/goroutinedump"
 	"agent-overflow/internal/observability/pprofserve"
@@ -130,12 +130,11 @@ func main() {
 		return
 	}
 
-	// A standing agent's sessions run this binary as their SessionStart hook,
-	// once per home file, at a start and after a compaction; it prints the
-	// file as hook output. Same tiny-sidecar shape. See
-	// internal/agenthome/hook.go.
-	if len(os.Args) > 1 && os.Args[1] == agenthome.HookSubcommand {
-		os.Exit(agenthome.RunHook(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	// A session that receives memory runs this binary as its SessionStart
+	// hook, at a start and after a compaction; it prints the delivery as hook
+	// output. Same tiny-sidecar shape. See internal/memory/hook.go.
+	if len(os.Args) > 1 && os.Args[1] == memory.HookSubcommand {
+		os.Exit(memory.RunHook(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 	}
 
 	// A supervisor asks a staged binary what it is before it writes anything

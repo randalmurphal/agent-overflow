@@ -57,9 +57,6 @@ func TestMain(m *testing.M) {
 type rig struct {
 	engine *forgefake.Engine
 	core   *gitops.Core
-	// env reaches the harness control channel, for a process that runs
-	// ao-mockforge as gh, glab or ssh itself.
-	env []string
 }
 
 func newRig(t *testing.T, fixture forgefake.Fixture) *rig {
@@ -91,7 +88,7 @@ func newRig(t *testing.T, fixture forgefake.Fixture) *rig {
 		t.Fatal(err)
 	}
 	t.Cleanup(svc.Close)
-	return &rig{engine: engine, core: gitops.NewCore(gitops.WithIsolatedForgeCLIs(fakeBin, env), gitops.WithForgeAPI(svc)), env: env}
+	return &rig{engine: engine, core: gitops.NewCore(gitops.WithIsolatedForgeCLIs(fakeBin, env), gitops.WithForgeAPI(svc))}
 }
 
 func intPtr(n int) *int { return &n }

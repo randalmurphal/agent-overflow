@@ -38,7 +38,7 @@ export const run = (script: string) => `exec sh "$AO_AGENT_HOME/${script}"`;
 
 export interface WakeAgent {
   thread: string;
-  cwd: string;
+  /** The assistant's home, where its sessions and its watches run. */
   home: string;
   dataDir: string;
 }
@@ -49,11 +49,10 @@ export async function seedWakeAgent(harness: HarnessApp, provider: ProviderName,
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [{ name: `${tag}-${provider}`, repo: {}, threads: [{ title, provider }] }],
   });
-  const { path: cwd, threadIds } = seed.projects[0];
-  const thread = threadIds[0];
+  const thread = seed.projects[0].threadIds[0];
   const agent = await harness.rpc<{ home: string }>('HarnessMakeAssistant', thread);
   for (const [name, body] of Object.entries(SCRIPTS)) await writeFile(join(agent.home, name), body);
-  return { thread, cwd, home: agent.home, dataDir: harness.bootstrap.dataDir };
+  return { thread, home: agent.home, dataDir: harness.bootstrap.dataDir };
 }
 
 /**
@@ -70,7 +69,7 @@ export async function registerThrough(
 ): Promise<Record<string, unknown>[]> {
   await setScenario(
     harness,
-    agent.cwd,
+    agent.home,
     threadToolsScenario({
       name,
       provider,
@@ -83,7 +82,7 @@ export async function registerThrough(
   await harness.rpc('SendMessage', agent.thread, 'set up the schedule', null);
   const answers: Record<string, unknown>[] = [];
   for (const call of calls) {
-    const answer = await awaitToolAnswer(harness, { tool: call.tool, cwd: agent.cwd, timeoutMs: 60_000 });
+    const answer = await awaitToolAnswer(harness, { tool: call.tool, cwd: agent.home, timeoutMs: 60_000 });
     expect(answer.isError, answer.text).toBe(false);
     answers.push(answer.value!);
   }

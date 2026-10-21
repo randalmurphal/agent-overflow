@@ -37,6 +37,16 @@ func (f *requestFixture) assistantCaller(t *testing.T) store.StandingAgent {
 	return row
 }
 
+// assistantServingAll is assistantCaller serving every project.
+func (f *requestFixture) assistantServingAll(t *testing.T) store.StandingAgent {
+	t.Helper()
+	row := f.assistantCaller(t)
+	if _, _, err := f.app.store.SetAgentProjects(row.ID, true, nil); err != nil {
+		t.Fatal(err)
+	}
+	return row
+}
+
 func TestStandingAgentSpawnCarriesItsHomeFilesAndNamesItself(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)

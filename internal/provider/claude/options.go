@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -620,6 +621,28 @@ type cliInlineSettings struct {
 	// Hooks carries Config.SessionStartHooks. The flagSettings layer's hooks
 	// merge with the user's own and run beside them.
 	Hooks map[string]any `json:"hooks,omitempty"`
+	// AutoMemoryEnabled is false for Config.NativeMemoryOff and nil, so
+	// omitted, otherwise: the CLI then neither reads nor writes its
+	// auto-memory directory.
+	AutoMemoryEnabled *bool `json:"autoMemoryEnabled,omitempty"`
+	// Permissions carries Config.AccessDirs.
+	Permissions *InlinePermissions `json:"permissions,omitempty"`
+}
+
+// InlinePermissions is the permissions block of an inline `--settings`
+// payload. The flagSettings layer's additionalDirectories join the user's
+// own as working directories of the session.
+type InlinePermissions struct {
+	AdditionalDirectories []string `json:"additionalDirectories"`
+}
+
+// AccessPermissions is the permissions block that grants dirs, nil for
+// none.
+func AccessPermissions(dirs []string) *InlinePermissions {
+	if len(dirs) == 0 {
+		return nil
+	}
+	return &InlinePermissions{AdditionalDirectories: slices.Clone(dirs)}
 }
 
 // inlineSettingsForCLI builds the JSON payload for the `--settings` CLI
@@ -634,12 +657,19 @@ func inlineSettingsForCLI(cfg Config) (string, bool) {
 		OutputStyle:         strings.TrimSpace(cfg.OutputStyle),
 		Env:                 inlineSettingsEnvForCLI(cfg),
 		Hooks:               inlineSettingsHooksForCLI(cfg),
+		Permissions:         AccessPermissions(cfg.AccessDirs),
+	}
+	if cfg.NativeMemoryOff {
+		off := false
+		settings.AutoMemoryEnabled = &off
 	}
 	if !settings.FastMode &&
 		settings.CrossSessionInbound == "" &&
 		settings.OutputStyle == "" &&
 		len(settings.Env) == 0 &&
-		len(settings.Hooks) == 0 {
+		len(settings.Hooks) == 0 &&
+		settings.AutoMemoryEnabled == nil &&
+		settings.Permissions == nil {
 		return "", false
 	}
 	data, err := json.Marshal(settings)
@@ -749,6 +779,9 @@ func inlineSettingsEnvForCLI(cfg Config) map[string]string {
 	if limit := strings.TrimSpace(cfg.ToolMemoryLimit); limit != "" {
 		env[claudeToolMemoryLimitEnv] = limit
 	}
+	// With Claude's own memory off, the variable that would force it back
+	// on is the app's to state.
+	maps.Copy(env, NativeMemoryOffEnv(cfg.NativeMemoryOff))
 	if len(env) == 0 {
 		return nil
 	}

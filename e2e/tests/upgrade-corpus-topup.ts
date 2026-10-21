@@ -14,7 +14,7 @@ import { topUpScenarios, type TopUpScenario } from './upgrade-corpus-config.js';
 import type { CensusGrowth } from './upgrade-corpus-helpers.js';
 import { timed } from './upgrade-corpus-tools.js';
 import { compactBoundaryLine } from './agent-visibility-helpers.js';
-import { awaitToolAnswer, awaitTurnCompleted, threadToolsScenario } from './thread-tools-helpers.js';
+import { awaitToolAnswer, awaitTurnCompleted, plainScenario, threadToolsScenario } from './thread-tools-helpers.js';
 import {
   doneResult,
   humanGateWorkflow,
@@ -136,12 +136,12 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     await harness.rpc('ArchiveThread', scenarioThreads['session-death']);
     await harness.rpc('RenameThread', scenarioThreads['usage-limit-claude'], `Top-up v${version}: renamed after its usage limit`);
     await harness.rpc('SetChatBarFavorite', { kind: 'model', provider: 'claude', value: MODEL.claude, label: 'Opus' }, true);
-    // Two assistants made by New Assistant, one told about every tick and
-    // one moved to a new thread by New Thread, Same Assistant, which leaves
-    // a past thread. Each opening and handoff message takes a turn, whose
-    // session keeps the receipts of the home files its start delivered. A
-    // new assistant takes the provider of the thread created last, so a
-    // Claude thread goes first.
+    // Two assistants made by New Assistant, one serving every project and
+    // told about every tick and one moved to a new thread by New Thread,
+    // Same Assistant, which leaves a past thread. Each opening and handoff
+    // message takes a turn, whose session keeps the receipts of its memory
+    // delivery. A new assistant takes the provider of the thread created
+    // last, so a Claude thread goes first.
     const remembered = await harness.rpc<{ id: string }>('CreateThread', {
       projectId,
       title: `Top-up v${version}: the profile New Assistant takes`,
@@ -153,13 +153,13 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     await harness.rpc('HarnessSetScenario', {
       scenario: threadToolsScenario({ name: 'topup-assistants', provider: 'claude', turns: [{ text: 'Noted.' }], afterTurns: 'repeatLast' }),
     });
-    const assistant = async (name: string): Promise<string> => {
-      const created = await harness.rpc<{ id: string }>('CreateAssistant', { projectId, name });
+    const assistant = async (name: string, allProjects = false): Promise<string> => {
+      const created = await harness.rpc<{ id: string }>('CreateAssistant', { name, projectIds: allProjects ? [] : [projectId], allProjects });
       await awaitTurnCompleted(harness, created.id, TURN_TIMEOUT_MS);
       threadIds.push(created.id);
       return created.id;
     };
-    const told = await assistant(`Top-up v${version} ${nonce}: told every tick`);
+    const told = await assistant(`Top-up v${version} ${nonce}: told every tick`, true);
     await harness.rpc('SetStandingAgentNotifyOnTick', told, true);
     const moved = await assistant(`Top-up v${version} ${nonce}: moved on`);
     // Unsent text with an attachment, which the handoff moves to the new
@@ -169,23 +169,30 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     const successor = await harness.rpc<{ id: string }>('StartNextAssistantThread', moved);
     await awaitTurnCompleted(harness, successor.id, TURN_TIMEOUT_MS);
     threadIds.push(successor.id);
-    // An assistant that set itself a loop and a watch through the thread
-    // tools, an hour out, and stopped a second loop. The hourly watch is run
-    // once now and keeps its stderr; a short watch fires once, and the turn
-    // its wake starts cancels it before a second fire is due; a long-running
-    // watch is started and stopped. Nothing is left running for a later
-    // boot of the corpus to restart.
+    // An assistant that spawned a helper of its own work and set itself a
+    // loop and a watch through the thread tools, an hour out, and stopped a
+    // second loop. The helper runs on Codex in the home, from a script of
+    // its own. The hourly watch is run once now and keeps its stderr; a
+    // short watch fires once, and the turn its wake starts cancels it
+    // before a second fire is due; a long-running watch is started and
+    // stopped. Nothing is left running for a later boot of the corpus to
+    // restart.
     const agent = { id: await assistant(`Top-up v${version} ${nonce}: loop and watch`) };
     const record = await harness.rpc<{ home: string }>('GetStandingAgent', agent.id);
     const home = record.home;
     // The scenario below applies to the session it starts.
     await harness.rpc('StopSession', agent.id);
     await harness.rpc('HarnessSetScenario', {
+      cwd: home,
+      scenario: plainScenario({ name: 'topup-helper', provider: 'codex', texts: ['Collected the notes.'] }),
+    });
+    await harness.rpc('HarnessSetScenario', {
       scenario: threadToolsScenario({
         name: 'topup-wakes',
         provider: 'claude',
         turns: [{
           steps: [
+            { call: { tool: 'thread_spawn', args: { prompt: 'Collect the inbox notes.', title: `Top-up v${version}: helper`, provider: 'codex', wait_seconds: 0 } } },
             { call: { tool: 'thread_loop', args: { label: 'board', note: 'look at the board', every_seconds: 3600 } } },
             // A run prints nothing on stdout, so it wakes nobody, and the
             // line on stderr is kept on the row (last_stderr).
@@ -220,6 +227,10 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     await harness.rpc('StartSession', agent.id);
     const scheduled = awaitTurnCompleted(harness, agent.id, TURN_TIMEOUT_MS);
     await harness.rpc('SendMessage', agent.id, 'Look at the board and the inbox every hour.', null);
+    const spawned = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', timeoutMs: TURN_TIMEOUT_MS });
+    if (spawned.isError || !spawned.value) throw new Error(`top-up thread_spawn of a helper was refused: ${spawned.text}`);
+    await awaitTurnCompleted(harness, spawned.value.thread_id, TURN_TIMEOUT_MS);
+    threadIds.push(spawned.value.thread_id);
     for (const label of ['inbox', 'once', 'tail', 'tail stopped']) {
       const answer = await awaitToolAnswer(harness, { tool: 'thread_watch', timeoutMs: TURN_TIMEOUT_MS });
       if (answer.isError) throw new Error(`top-up thread_watch ${label} was refused: ${answer.text}`);

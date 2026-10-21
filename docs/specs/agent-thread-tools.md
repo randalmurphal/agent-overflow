@@ -319,7 +319,13 @@ Creates a normal sidebar thread, sends `prompt` as its first user
 message, starts the turn, and returns the thread id, its computer, and
 a request token. Locally it inherits the caller's project, workspace,
 provider, model, effort, mode, and runtime mode; each has an override
-param, plus `title`. `workspace_path` names a checkout git has for the
+param, plus `title`. An assistant's current thread and its helpers have
+no project to inherit: without `project_id` the spawn is a helper of
+that assistant, in its home outside every project, and takes no
+`workspace_path` or `worktree`; a `project_id` the assistant does not
+serve is refused naming the ones it serves, and so is its `from_thread`
+fork of a thread in such a project or under another assistant
+([standing agents](standing-agents.md) ruling 38). `workspace_path` names a checkout git has for the
 project, the root or any linked worktree, including one made outside the
 app. `worktree` (optional branch name) runs the thread on that branch
 instead of inheriting the workspace. A branch already checked out runs in
@@ -398,10 +404,8 @@ with no more authority than its message, each file under a `### <path>`
 heading, cleaned as the session block is (control and format characters
 removed), and a line ending them before the prompt. A body line in them
 that opens like a footer is quoted, as in the message itself. This is how an agent
-hands its verification checklist and the rulings that bear on a task
-to a worker without pasting them. At most 16 paths, enough for a
-checklist and the rulings and memories a task needs, and 32 KiB of
-cleaned text together;
+hands the facts from its memory that bear on a task to a worker without
+pasting them. At most 16 paths and 32 KiB of cleaned text together;
 the composed prompt is held to the prompt bound. Refused before any
 request exists, each with its reason: a caller that is not a standing
 agent, a path that is absolute or leaves the home (by `..` or through a
@@ -653,12 +657,15 @@ background tray, where the person can fire or cancel each one
 ### `thread_new_assistant`
 
 Creates an assistant ([standing agents](standing-agents.md#standing-agent),
-ruling 6): `name`, and `role`, the caller's opening role text for it.
-Refused with the reason unless the caller is an assistant's current
-thread on this computer, so a worker never creates one; never forwarded
-to another computer. The assistant is created on the caller's computer
-in the caller's project and workspace, with provider and model as
-`thread_spawn` defaults them, its home made and its creator recorded,
+rulings 6 and 37): `name`; `role`, the caller's opening role text for
+it; and `projects`, the ids of the projects it serves, each one the
+caller serves, default every project the caller serves (all projects
+for a caller serving all of them). Refused with the reason unless the
+caller is an assistant's current thread on this computer, so a worker
+never creates one; never forwarded to another computer. The assistant
+is created on the caller's computer outside every project, in its
+home, with provider and model as `thread_spawn` defaults them, its home
+made and its creator recorded,
 and it is started as a spawn whose prompt is the opening block for a
 created assistant: its creator, that it reports to it, that it has no
 grants, and the role text quoted as the creator's words. It answers as
@@ -728,16 +735,20 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > asks a question of a hidden, read-only, throwaway copy of a thread, so
 > the real thread is never touched and the copy cannot wait on a person.
 > A standing agent passes `home_files` to `thread_spawn` or
-> `thread_send` to attach files from its home, such as its verification
-> checklist, prepended to the message under their names.
+> `thread_send` to attach files from its home, such as facts from its
+> memory folder, prepended to the message under their names.
 > Use ask to consult a thread's context; use send to give it work. All
 > three return a `token`. Use your own subagents for pieces of your
 > current task. Use `thread_spawn` when the user asks for a separate
 > thread, when another provider or model should do the work, or when
 > the work should be visible in the sidebar and outlive your turn. You
-> cannot send to or ask your own thread. An assistant may create another
+> cannot send to or ask your own thread. An assistant lives outside
+> every project: its `thread_spawn` without `project_id` makes a helper
+> for its own work in its home, and with one names a project it serves;
+> `thread_options` lists the projects. An assistant may create another
 > assistant that reports to it with `thread_new_assistant`, giving its
-> `name` and your opening `role` text; a worker cannot.
+> `name`, your opening `role` text and the `projects` it serves; a
+> worker cannot.
 >
 > Defaults. Omit provider, model, effort and runtime mode to inherit
 > yours. Use `thread_options` when you want another provider, model,
@@ -821,10 +832,10 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > fold of its list, or of the group or agent row it sits under, where
 > the user sees it. A group gathers threads of one project under one
 > named row. Archiving takes a thread out of the list; a thread a
-> standing agent spawned then counts in that agent's done footer. A
-> standing agent's row holds the threads it spawned, including ones it
-> spawned into another project on this computer, which show under it
-> with that project's name. A thread it spawned that is idle, read,
+> standing agent spawned then counts in that agent's done footer. An
+> assistant's card, in the Assistants section above the projects, holds
+> its helpers; in each project, a row with its name holds the threads it
+> spawned there. A thread it spawned that is idle, read,
 > unpinned and not open folds into its done footer too, and returns to
 > the row with new activity. An answer a spawned thread delivers to
 > the thread on this computer that spawned it, an error included,

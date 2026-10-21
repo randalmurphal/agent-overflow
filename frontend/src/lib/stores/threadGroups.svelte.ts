@@ -34,7 +34,7 @@ export const NO_GROUPS: readonly ThreadGroup[] = Object.freeze([]);
 
 // Per-project buckets, rebuilt only when the source array identity
 // changes and re-using the PREVIOUS bucket array whenever its members
-// are element-identical. ProjectsSection / ProjectThreadList read this
+// are element-identical. ProjectsSection / SidebarTreeList read this
 // per render, so a group write in project A must not re-mint project B's
 // array and wake its tree derived.
 let bucketSource: ThreadGroup[] | null = null;

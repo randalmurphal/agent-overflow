@@ -190,6 +190,13 @@ func TestCodexReadMethodsAnswerDecodableShapes(t *testing.T) {
 		}
 	})
 
+	t.Run("thread/memoryMode/set", func(t *testing.T) {
+		frame := codexRequest(t, a, &buf, "thread/memoryMode/set", `{"threadId":"th-unit","mode":"disabled"}`)
+		if frame.Error != nil {
+			t.Fatalf("thread/memoryMode/set = %+v", frame.Error)
+		}
+	})
+
 	t.Run("skills/list", func(t *testing.T) {
 		frame := codexRequest(t, a, &buf, "skills/list", `{"cwds":["/ws"]}`)
 		if frame.Error != nil {

@@ -99,6 +99,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3977213964: 'thread', // ForkThreadFromMessage
 	1669373286: 'workspace', // GenerateCommitMessage
 	1559710962: 'home', // GetAccessOverview
+	3538357009: 'thread', // GetAssistantDependents
 	3414107538: 'thread', // GetAttachmentThumbnail
 	1573335127: 'selected', // GetClaudeSkills
 	2854892544: 'selected', // GetClaudeSlashCommands
@@ -120,6 +121,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	4139359668: 'home', // GetMcpServerStatus
 	3176695009: 'workspace', // GetMergeConflictFile
 	1632984917: 'selected', // GetModelsForProvider
+	709651497: 'selected', // GetNativeMemoryStatus
 	652617244: 'home', // GetNativeNetworkConfig
 	1026796858: 'home', // GetNetworkSettings
 	1435724188: 'selected', // GetPRCILogLines
@@ -138,7 +140,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	324671375: 'home', // GetSSHConnection
 	2230314013: 'selected', // GetServiceUpdateStatus
 	2554697378: 'home', // GetSettings
-	2615616704: 'selected', // GetSkillsLibrary
 	3138117849: 'home', // GetSoundFiles
 	2622552651: 'home', // GetSpinnerFiles
 	634025932: 'thread', // GetStandingAgent
@@ -195,7 +196,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	786331585: 'selected', // ImportSessions
 	535929682: 'thread', // ImportThreadUpdates
 	969607096: 'selected', // InspectProjectFolder
-	4029120194: 'selected', // InstallSkills
 	753394581: 'thread', // InterruptAndRevertIfClean
 	850013031: 'thread', // InterruptTurn
 	2219602920: 'home', // IntroduceOwnDevice
@@ -320,7 +320,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2899196344: 'workspace', // RemoveOtherWorktree
 	3065006869: 'home', // RemoveOwnDevice
 	684418419: 'home', // RemoveProviderAccount
-	2871723263: 'selected', // RemoveSkills
 	1528076361: 'home', // RenameBackend
 	3728890856: 'project', // RenameProject
 	727416435: 'thread', // RenameThread
@@ -365,6 +364,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1407159655: 'thread', // SendPlanRevisionComments
 	1204782690: 'selected', // SetAgentComputerEnabled
 	3167202905: 'home', // SetAppearance
+	2249378563: 'thread', // SetAssistantProjects
 	4291273674: 'thread', // SetAsyncQuestionDismissed
 	2813580982: 'home', // SetChatBarFavorite
 	2755315818: 'home', // SetDeviceName
@@ -432,7 +432,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3717363955: 'home', // UpdateProjectSortPositions
 	2747956806: 'thread', // UpdateProposedPlanComment
 	2894041249: 'home', // UpdateSettings
-	2905127526: 'selected', // UpdateSkills
 	2929723500: 'selected', // UpdateThreadBranch
 	2621473242: 'thread', // UpdateThreadContextSettings
 	2456875639: 'thread', // UpdateThreadContextWindow

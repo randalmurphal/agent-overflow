@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 
@@ -93,6 +94,30 @@ func (a *App) beginThreadTransfer(ctx context.Context, threadID, operationID, de
 	backendID, _ := a.backendIdentity()
 	if destinationBackendID == backendID {
 		return ThreadTransferIntent{}, errors.New("Choose another computer for this transfer.")
+	}
+	if includeWorkspace {
+		thread, err := a.store.GetThread(threadID)
+		if err != nil {
+			return ThreadTransferIntent{}, err
+		}
+		// A thread outside every project runs in its assistant's home,
+		// which stays on this computer: there is no workspace to carry.
+		if thread.ProjectID == "" {
+			return ThreadTransferIntent{}, errors.New("This conversation has no project workspace to include. Transfer it without workspace changes.")
+		}
+	}
+	// Moving an assistant's current thread deletes the assistant. Its past
+	// threads and helpers live under it, outside every project, so they
+	// would be left with no assistant: the move waits until they are
+	// deleted. The store refuses the record's delete at commit as well.
+	if kind == "move" {
+		dependents, err := a.GetAssistantDependents(threadID)
+		if err != nil {
+			return ThreadTransferIntent{}, err
+		}
+		if dependents.PastThreads > 0 || dependents.Helpers > 0 {
+			return ThreadTransferIntent{}, fmt.Errorf("This assistant has %s, which a move would leave without their assistant. Delete them first, or copy the conversation instead.", dependents.describe())
+		}
 	}
 	// A move takes the conversation away from the computer that owns its
 	// remote commands; stop them before fencing the thread. A copy leaves

@@ -199,6 +199,15 @@ type appMarkThreadReadState struct {
 // appAgentNoticeWorkState joins what a notice runs after it is accepted
 // (`app_agent_notice.go`). stopped is set under mu, which is also where the
 // work registers, so none can register after Shutdown began its join.
+// appMemoryReportsState joins the reads of a thread's memory for its
+// warning rows that run off a session start or the provider event worker
+// (goMemoryReport).
+type appMemoryReportsState struct {
+	mu      sync.Mutex
+	stopped bool
+	wg      sync.WaitGroup
+}
+
 type appAgentNoticeWorkState struct {
 	mu      sync.Mutex
 	stopped bool

@@ -149,11 +149,11 @@ func TestASpawnedThreadsArchiveMovesItsAgentsRow(t *testing.T) {
 	agentCount := func(step string, want int) {
 		t.Helper()
 		got := fullFrameFor(f.threadFrames(t), agent.ID)
-		if got == nil || got.ArchivedChildCount != want {
-			t.Errorf("%s: agent frame = %+v, want archivedChildCount %d", step, got, want)
+		if got == nil || archivedTotal(got.ArchivedChildCounts) != want {
+			t.Errorf("%s: agent frame = %+v, want archived children %d", step, got, want)
 		}
-		if row := f.reload(t, agent.ID); row.ArchivedChildCount != want {
-			t.Errorf("%s: agent row = archivedChildCount %d, want %d", step, row.ArchivedChildCount, want)
+		if row := f.reload(t, agent.ID); archivedTotal(row.ArchivedChildCounts) != want {
+			t.Errorf("%s: agent row = archived children %d, want %d", step, archivedTotal(row.ArchivedChildCounts), want)
 		}
 	}
 
@@ -258,6 +258,10 @@ func TestASpawnedThreadsBondFollowsItsAgentsRow(t *testing.T) {
 	}
 	childFrame("handoff", successor.ID, true)
 
+	// A move waits until nothing lives under the assistant.
+	if err := f.app.DeleteThread(agent.ID); err != nil {
+		t.Fatal(err)
+	}
 	transfer, err := f.app.store.CreateThreadTransfer(store.ThreadTransfer{
 		ID: uuid.NewString(), ThreadID: successor.ID, PeerBackendID: uuid.NewString(), Kind: "move", Direction: "outgoing",
 		ActivationHash: strings.Repeat("a", 64), PrivateState: []byte(`{}`),
@@ -333,9 +337,9 @@ func TestASpawnBroadcastsItsThreadNamingTheSpawner(t *testing.T) {
 		placement string
 		group     string
 	}{
-		{threadtools.SpawnCall{Prompt: "start", Group: "Sweep"}, store.PlacementGrouped, "Sweep"},
-		{threadtools.SpawnCall{Prompt: "start", Placement: threadtools.PlacementStandalone}, store.PlacementStandalone, ""},
-		{threadtools.SpawnCall{Prompt: "start", Placement: threadtools.PlacementNested}, store.PlacementNested, ""},
+		{threadtools.SpawnCall{Prompt: "start", ProjectID: f.caller.ProjectID, Group: "Sweep"}, store.PlacementGrouped, "Sweep"},
+		{threadtools.SpawnCall{Prompt: "start", ProjectID: f.caller.ProjectID, Placement: threadtools.PlacementStandalone}, store.PlacementStandalone, ""},
+		{threadtools.SpawnCall{Prompt: "start", ProjectID: f.caller.ProjectID, Placement: threadtools.PlacementNested}, store.PlacementNested, ""},
 	} {
 		ack, err := f.adapter().Spawn(context.Background(), f.callerIdentity(), tc.call)
 		if err != nil {
@@ -422,7 +426,7 @@ func TestAHandOffBroadcastsBothRows(t *testing.T) {
 	if unlisted == nil || !unlisted.Archived || unlisted.PastAgentID != agent.ID || unlisted.AgentID != "" {
 		t.Errorf("old row frame = %+v, want it unlisted as the assistant's past thread", unlisted)
 	}
-	if listed == nil || listed.AgentID != agent.ID || listed.ArchivedChildCount != 2 || listed.Title != agent.Title {
+	if listed == nil || listed.AgentID != agent.ID || archivedTotal(listed.ArchivedChildCounts) != 2 || listed.Title != agent.Title {
 		t.Errorf("successor frame = %+v, want the assistant's row counting the archived child and the past thread", listed)
 	}
 	if got := started(); !slices.Equal(got, []string{successor.ID}) {

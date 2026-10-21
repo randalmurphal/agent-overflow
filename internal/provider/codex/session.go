@@ -355,7 +355,12 @@ type Session struct {
 	turn       sessionTurnState
 	origins    sessionTurnOrigins
 	turnConfig sessionTurnConfig
-	settings   sessionSettingsState
+	// writableRoots and nativeMemoryOff are Config.WritableRoots and
+	// Config.NativeMemoryOff, set at construction and never changed, so a
+	// turn or a fork reads them without a lock.
+	writableRoots   []string
+	nativeMemoryOff bool
+	settings        sessionSettingsState
 	// review is the bounded correlation state for Codex's built-in inline
 	// review. A review has two turn ids: the outer id carried by visible item
 	// events and turn/completed, and a private execution id carried only by
@@ -735,6 +740,19 @@ type Config struct {
 	// SessionStartReceipts keeps what the hooks delivered. Nil for a
 	// session that never runs a turn.
 	SessionStartReceipts *provider.SessionStartReceipts
+	// NativeMemoryOff turns Codex's own memories off for the thread:
+	// `features.memories` and `memories.generate_memories` false in the
+	// thread/start|resume|fork `config` map, and a resumed thread's stored
+	// memory mode set to disabled, so the thread neither uses memories nor
+	// is mined for them. A loaded thread keeps the config it was loaded
+	// with. Stamped at spawn by the app, like SessionStartHooks.
+	NativeMemoryOff bool
+	// WritableRoots are folders outside the workspace a turn may write in
+	// the workspace-write sandbox, sent in every turn's `sandboxPolicy`
+	// (turnSandboxPolicy): the memory folders and an assistant's projects.
+	// The other sandboxes treat a write there as they treat a workspace
+	// write. Stamped at spawn.
+	WritableRoots []string
 	// DeveloperInstructionsDelivery records what the thread's model has
 	// read as developer instructions, so a resume can inject a changed
 	// text. Nil for a session that never runs a turn.

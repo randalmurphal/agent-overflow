@@ -25,9 +25,6 @@ inputs:
   e2e-deps:
     description: Install e2e dependencies (e2e/).
     default: "false"
-  bun:
-    description: Provide Bun at ci/Dockerfile's BUN_VERSION, for the pstack script tests.
-    default: "false"
   browsers:
     description: Playwright browsers to provide, space separated (chromium, webkit), with OS dependencies. Empty provides none.
     default: ""
@@ -158,30 +155,6 @@ runs:
       if: inputs.e2e-deps == 'true'
       shell: bash
       run: pnpm --dir e2e install --frozen-lockfile
-
-    # The image carries Bun at the pin. A job on an image without it (a
-    # change that moves the pin, run on the main image a fork falls back
-    # to) installs the same release, checked the same way.
-    - name: Provide Bun
-      if: inputs.bun == 'true'
-      shell: bash
-      run: |
-        set -euo pipefail
-        version=$(sed -n 's/^ARG BUN_VERSION=//p' ci/Dockerfile)
-        if [[ "$(bun --version 2>/dev/null || true)" == "$version" ]]; then
-          echo "Bun $version present."
-          exit 0
-        fi
-        arch=$(uname -m)
-        [[ "$arch" == x86_64 ]] && arch=x64
-        release="https://github.com/oven-sh/bun/releases/download/bun-v${version}"
-        dir="$RUNNER_TEMP/bun"
-        mkdir -p "$dir"
-        cd "$dir"
-        curl -fsSLO "$release/bun-linux-$arch.zip"
-        curl -fsSL "$release/SHASUMS256.txt" | grep " bun-linux-$arch.zip\$" | sha256sum -c -
-        unzip -q "bun-linux-$arch.zip"
-        echo "$dir/bun-linux-$arch" >> "$GITHUB_PATH"
 
     - name: Restore Playwright browsers
       if: inputs.browsers != '' && steps.image.outputs.baked != 'true'

@@ -295,23 +295,34 @@ func (a *App) startSessionNow(threadID string) error {
 		}
 	}
 
-	agent, err := a.readStandingAgentSession(t, opts.Resume)
+	agent, err := a.readStandingAgentSession(t)
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
-	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, browserServers, credential, agent, onEvent)
+	// A read-only session refuses every write, so its memory comes
+	// without the write rules; claude-tui leaves approvals to the
+	// terminal, so its mode never refuses one.
+	readOnly := opts.RuntimeMode == provider.RuntimeReadOnly && provider.CapabilitiesForProvider(t.Provider).EnforcesRuntimeMode
+	mem, err := a.readSessionMemory(t, agent.Agent, opts.Resume, readOnly)
+	if err != nil {
+		return fmt.Errorf("start session: %w", err)
+	}
+	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, browserServers, credential, agent, mem, onEvent)
 	if err != nil {
 		if codex.IsThreadNotFound(err) && agent.Block != "" {
 			// An assistant's Codex thread the provider no longer has.
 			err = errors.Join(errAssistantSessionGone, err)
 		}
 		a.emitProviderStatusOnSessionStartError(t.Provider)
-		// The start failed for its own reason; the home file that could not
-		// be read is still news the user needs before the next attempt.
-		a.reportStandingAgentHomeProblems(threadID, agent.Problems)
+		// The start failed for its own reason; the memory that could not be
+		// read is still news the user needs before the next attempt.
+		a.reportSessionMemory(threadID, mem)
 		return fmt.Errorf("start session: %w", err)
 	}
 
+	if len(mem.Hooks) > 0 {
+		newSess.MemoryPlan = mem.Plan
+	}
 	a.sessionManager().put(threadID, newSess)
 	registeredTools = true
 	// Codex reports its thread in an EventInit emitted before NewSession
@@ -323,7 +334,7 @@ func (a *App) startSessionNow(threadID string) error {
 		a.signalRemotePeers()
 	}
 	a.emitProviderSessionAccount(threadID)
-	a.reportStandingAgentHomeProblems(threadID, agent.Problems)
+	a.reportSessionMemory(threadID, mem)
 	// The fresh session launched with today's prompt, which clears any
 	// prompt change flag; a save that landed while it spawned flags it.
 	a.reconcileStalePromptSession(threadID)
@@ -537,6 +548,7 @@ func (a *App) spawnProviderSession(
 	mcpServers map[string]any,
 	credential aoSessionCredential,
 	agent standingAgentSession,
+	mem sessionMemory,
 	onEvent func(provider.ProviderEvent),
 ) (session, error) {
 	// liveness is initialized once and attached to whichever provider
@@ -558,10 +570,11 @@ func (a *App) spawnProviderSession(
 		return session{}, err
 	}
 	// A standing agent's block (app_standing_agents.go) rides the same
-	// channels, spawn-only too, and whatever the guide setting says. Its home
-	// files ride SessionStart hooks instead, so an edit to them leaves the
-	// prompt, and the provider's prompt cache, as they were.
+	// channels, spawn-only too, and whatever the guide setting says. Memory
+	// rides a SessionStart hook instead (app_memory.go), so an edit to it
+	// leaves the prompt, and the provider's prompt cache, as they were.
 	appGuide = joinPromptParts(appGuide, agent.Block)
+	appSettings := a.currentSettings()
 
 	switch t.Provider {
 	case string(provider.Claude):
@@ -571,8 +584,9 @@ func (a *App) spawnProviderSession(
 		}
 		cfg.Binary = a.providerBinaryPath(t.Provider)
 		cfg.AppendSystemPrompt = appGuide
-		cfg.SessionStartHooks = agent.Hooks
-		cfg.SessionStartReceipts = agent.Receipts
+		cfg.SessionStartHooks = mem.Hooks
+		cfg.SessionStartReceipts = mem.Receipts
+		cfg.NativeMemoryOff = appSettings.ClaudeNativeMemoryDisabled
 		cfg.InstalledCLIVersion = a.installedProviderVersion(t.Provider)
 		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env, credential)
 		if mcpServers[remoteMCPName] != nil {
@@ -591,7 +605,8 @@ func (a *App) spawnProviderSession(
 		cfg.EventLogger = a.logger
 		cfg.MCPServers = mcpServers
 		cfg.AdditionalDirs = a.claudeAdditionalDirs()
-		applyClaudeSessionAxes(&cfg, a.settings.Get().ClaudeSessionAxesForProvider(t.Provider))
+		cfg.AccessDirs = mem.Dirs
+		applyClaudeSessionAxes(&cfg, appSettings.ClaudeSessionAxesForProvider(t.Provider))
 		// The peer-visible name rides the Config rather than the options
 		// bundle on purpose: it is live-changeable through `/rename`, so
 		// letting the reconciler see it would queue a restart every time a
@@ -637,8 +652,10 @@ func (a *App) spawnProviderSession(
 		// the next start or resume: a resumed thread whose text changed
 		// gets it injected (codexDeveloperInstructionsDelivery).
 		cfg.DeveloperInstructions = a.codexDeveloperInstructions(threadID, appGuide, mcpServers)
-		cfg.SessionStartHooks = agent.Hooks
-		cfg.SessionStartReceipts = agent.Receipts
+		cfg.SessionStartHooks = mem.Hooks
+		cfg.SessionStartReceipts = mem.Receipts
+		cfg.WritableRoots = mem.Dirs
+		cfg.NativeMemoryOff = appSettings.CodexNativeMemoryDisabled
 		cfg.DeveloperInstructionsDelivery, err = a.codexDeveloperInstructionsDelivery(threadID, cfg.ResumeThreadID)
 		if err != nil {
 			return session{}, err
@@ -764,8 +781,9 @@ func (a *App) spawnProviderSession(
 		// headless one; there is no separate TUI binary setting.
 		cfg.Binary = a.providerBinaryPath(string(provider.Claude))
 		cfg.AppendSystemPrompt = appGuide
-		cfg.SessionStartHooks = agent.Hooks
-		cfg.SessionStartReceipts = agent.Receipts
+		cfg.SessionStartHooks = mem.Hooks
+		cfg.SessionStartReceipts = mem.Receipts
+		cfg.NativeMemoryOff = appSettings.ClaudeNativeMemoryDisabled
 		cfg.InstalledCLIVersion = a.installedProviderVersion(string(provider.Claude))
 		cfg.ModelAliases = a.providerDiscoveryService().ClaudeModelAliases()
 		cfg.AgentLaunchByTask = a.claudeAgentLaunchLookup(threadID)
@@ -792,6 +810,7 @@ func (a *App) spawnProviderSession(
 			opts.ClaudeMaxCommandTimeoutHours,
 		))
 		cfg.AdditionalDirs = a.claudeAdditionalDirs()
+		cfg.AccessDirs = mem.Dirs
 		cfg.MCPServers, cfg.AllowedTools = claudeTUIMCPServers(mcpServers)
 		cfg.Upstream = a.claudetuiUpstream()
 		cfg.EventLogger = a.logger

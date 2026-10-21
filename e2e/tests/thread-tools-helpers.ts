@@ -12,7 +12,7 @@
 
 import { expect } from '@playwright/test';
 
-import type { HarnessApp } from '../src/harness.js';
+import type { HarnessApp, HarnessMockEventData } from '../src/harness.js';
 
 export const THREAD_TOOLS_SERVER = 'ao-thread-tools';
 
@@ -245,6 +245,17 @@ export async function setScenario(
   await harness.rpc('HarnessSetScenario', { cwd, scenario });
 }
 
+/**
+ * The home of the assistant whose current thread is threadId: its
+ * sessions run there, outside every project, so a scenario for them is set
+ * on it.
+ */
+export async function assistantHome(harness: HarnessApp, threadId: string): Promise<string> {
+  const agent = await harness.rpc<{ home: string } | null>('GetStandingAgent', threadId);
+  if (!agent?.home) throw new Error(`thread ${threadId} is no assistant's current thread`);
+  return agent.home;
+}
+
 /** The tool answer, decoded. A refusal carries `isError` and prose. */
 export interface ToolAnswer<T = Record<string, unknown>> {
   isError: boolean;
@@ -283,6 +294,26 @@ export async function awaitToolAnswer<T = Record<string, unknown>>(
     }
   }
   return answer;
+}
+
+/**
+ * Await the next input a mock takes whose text includes every part, from
+ * the mock in `cwd` when one is named. `input` on the report is the text
+ * the provider received for the turn.
+ */
+export async function awaitMockInput(
+  harness: HarnessApp,
+  filter: { includes: string | readonly string[]; cwd?: string; timeoutMs?: number },
+): Promise<HarnessMockEventData> {
+  const parts = typeof filter.includes === 'string' ? [filter.includes] : filter.includes;
+  return await harness.waitForEvent<HarnessMockEventData>(
+    'harness:mock',
+    (ev) =>
+      ev.report.kind === 'user_input' &&
+      (filter.cwd === undefined || ev.cwd === filter.cwd) &&
+      parts.every((part) => (ev.report.input ?? '').includes(part)),
+    filter.timeoutMs ?? 60_000,
+  );
 }
 
 /** Release one parked `gate` step. */

@@ -12,11 +12,11 @@
 // disabled with no session left.
 import type { Page } from '@playwright/test';
 
-import { test, expect, type SeedResult } from './fixtures.js';
+import { test, expect } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
 import { captureAgentMessage } from './wake-rows-helpers.js';
-import { agentRow, mockInterrupt, openAgents } from './agents-tray-helpers.js';
-import { awaitToolAnswer, awaitTurnCompleted, setScenario, threadRows, threadToolsScenario, type ProviderName } from './thread-tools-helpers.js';
+import { agentRow, mockInterrupt, openAgents, seedLeadWithWorker } from './agents-tray-helpers.js';
+import { awaitTurnCompleted, threadRows, type ProviderName } from './thread-tools-helpers.js';
 import type { MockInfo } from './workflows-helpers.js';
 
 const LEAD = 'Release lead';
@@ -44,33 +44,7 @@ async function liveIn(harness: HarnessApp, cwd: string): Promise<boolean> {
 for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
   test(`${provider}: a tray row opens the worker in a companion with its own Stop, Open as Pane promotes it, and the session menu ends the assistant's session`, async ({ harness, page }) => {
     test.setTimeout(240_000);
-    const seed = await harness.rpc<SeedResult>('HarnessSeed', {
-      projects: [
-        { name: `assistant-companion-${provider}`, repo: {}, threads: [{ title: LEAD, provider, assistant: true }] },
-        { name: `assistant-companion-worker-${provider}`, repo: {}, threads: [] },
-      ],
-    });
-    const [leadProject, workerProject] = seed.projects;
-    const lead = leadProject.threadIds[0];
-    await setScenario(harness, leadProject.path, threadToolsScenario({
-      name: `assistant-companion-lead-${provider}`, provider, echoUserMessage: true,
-      turns: [
-        { steps: [{ call: { tool: 'thread_spawn', args: { prompt: 'Write the changelog.', title: WORKER, project_id: workerProject.projectId, provider, notify: true } } }], text: 'Started the changelog.' },
-        { text: 'Noted.' },
-      ],
-      afterTurns: 'repeatLast',
-    }));
-    await setScenario(harness, workerProject.path, threadToolsScenario({
-      name: `assistant-companion-worker-${provider}`, provider, echoUserMessage: true,
-      turns: [{ steps: [{ gate: 'worker-hold' }], text: 'Written.' }, { text: 'Noted.' }],
-      afterTurns: 'repeatLast',
-    }));
-    await harness.rpc('StartSession', lead);
-    await harness.rpc('SendMessage', lead, 'Get the changelog written.', null);
-    const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(harness, { tool: 'thread_spawn', cwd: leadProject.path, timeoutMs: 60_000 });
-    expect(spawn.isError, spawn.text).toBe(false);
-    const { token, thread_id: worker } = spawn.value!;
-    await awaitTurnCompleted(harness, lead);
+    const { home, workerPath, token, worker } = await seedLeadWithWorker(harness, { tag: `assistant-companion-${provider}`, provider, lead: LEAD, worker: WORKER });
 
     // ---- A tray click opens the worker beside the assistant.
     await harness.open(page);
@@ -88,7 +62,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const interrupt = companion(page).getByTestId('composer-interrupt');
     await expect(interrupt).toBeVisible();
     await expect(mainPane(page).getByTestId('composer-interrupt')).toHaveCount(0);
-    const stopped = mockInterrupt(harness, workerProject.path);
+    const stopped = mockInterrupt(harness, workerPath);
     await interrupt.click();
     await stopped;
     await expect(companion(page).getByTestId('composer-send')).toBeVisible();
@@ -109,7 +83,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
     // ---- The session menu on the assistant: Interrupt off while idle, End Session ends it.
     const leadPane = paneTitled(page, LEAD);
-    expect(await liveIn(harness, leadProject.path)).toBe(true);
+    expect(await liveIn(harness, home)).toBe(true);
     await leadPane.getByTestId('composer-session-menu').click();
     const menu = page.getByRole('menu', { name: 'Session' });
     await expect(menu.getByRole('menuitem', { name: 'Interrupt' })).toBeDisabled();
@@ -120,8 +94,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(page.getByRole('tooltip')).toHaveCount(0);
     await captureAgentMessage(page, `${provider}-assistant-session-menu.png`, menu);
     await menu.getByRole('menuitem', { name: 'End Session' }).click();
-    await expect.poll(() => liveIn(harness, leadProject.path), { timeout: 20_000 }).toBe(false);
-    expect(await liveIn(harness, workerProject.path)).toBe(true);
+    await expect.poll(() => liveIn(harness, home), { timeout: 20_000 }).toBe(false);
+    expect(await liveIn(harness, workerPath)).toBe(true);
     // With no session left, End Session has nothing to end.
     await leadPane.getByTestId('composer-session-menu').click();
     const ended = page.getByRole('menu', { name: 'Session' }).getByRole('menuitem', { name: 'End Session' });

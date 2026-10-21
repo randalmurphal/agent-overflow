@@ -567,16 +567,18 @@ describe('buildSidebarThreadTree with standing agents', () => {
         mkThread('nested', { spawnedByThreadId: 'agent', placement: 'nested', updatedAt: 10 }),
         mkThread('grouped', { spawnedByThreadId: 'agent', placement: 'grouped', groupId: 'g1', updatedAt: 20 }),
         mkThread('standalone', { spawnedByThreadId: 'agent', placement: 'standalone', updatedAt: 30 }),
-        mkThread('past-standalone', { pastAgentId: 'agent', placement: 'standalone', updatedAt: 40 }),
+        // Outside every project a past thread or a helper has no other
+        // place: it nests whatever its placement says.
+        mkThread('past-home', { pastAgentId: 'agent', projectId: '', placement: 'standalone', updatedAt: 50 }),
+        mkThread('helper', { helperOfAgentId: 'agent', projectId: '', spawnedByThreadId: 'other', placement: 'standalone', updatedAt: 60 }),
       ],
       groups: [mkGroup('g1')],
     });
     const byId = new Map(tree.map((node) => [nodeId(node), node] as const));
-    expect(agentNode(byId.get('agent')!).children.map(nodeId)).toEqual(['nested']);
+    expect(agentNode(byId.get('agent')!).children.map(nodeId).sort()).toEqual(['helper', 'nested', 'past-home']);
     expect(groupNode(byId.get('g1')!).children.map(nodeId)).toEqual(['grouped']);
     expect(byId.get('standalone')?.kind).toBe('thread');
     expect(byId.get('standalone')?.depth).toBe(0);
-    expect(byId.get('past-standalone')?.kind).toBe('thread');
   });
 
   it('bubbles only nested children into the agent row', () => {

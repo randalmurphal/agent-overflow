@@ -1,9 +1,10 @@
-// The standing agent's sidebar row (docs/specs/standing-agents.md,
-// "Sidebar"), end to end: an assistant's row is an agent row; the threads
-// the agent spawned, seeded or spawned live
-// through thread_spawn, nest under it behind the group rail; a spawn that
-// names a group lands in that group and does not fold (ruling 36); the
-// state line names the agent's soonest loop; the chevron and the arrow keys
+// The standing agent's sidebar rows (docs/specs/standing-agents.md,
+// "Sidebar"), end to end: an assistant is a card in the Assistants section
+// and an agent row in the project it spawned into; the threads it spawned
+// there, seeded or spawned live through thread_spawn, nest under that row
+// behind the group rail; a spawn that names a group lands in that group and
+// does not fold (ruling 36); the card's state line names the agent's
+// soonest loop; the chevron and the arrow keys
 // fold the children, a collapsed agent previews the focused child; a drag
 // onto an agent, or of an agent onto a group, moves nothing, while a child
 // dragged onto a group joins it and Nest Under returns it; the menu offers
@@ -16,6 +17,7 @@ import type { Locator, Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
 import {
+  assistantHome,
   awaitToolAnswer,
   awaitTurnCompleted,
   plainScenario,
@@ -25,6 +27,7 @@ import {
   type ProviderName,
 } from './thread-tools-helpers.js';
 import { awaitSidebarSettled, capture } from './wake-rows-helpers.js';
+import { cardRow, cardShell, doneIds, liveIds, projectRow, projectsSection, railEntry } from './sidebar-sections-helpers.js';
 
 interface ThreadGroup {
   id: string;
@@ -36,29 +39,6 @@ interface SidebarRow {
   groupId?: string;
   placement?: string;
   archived: boolean;
-}
-
-function row(page: Page, id: string): Locator {
-  return page.locator(`[data-sidebar-thread-id="${id}"]`);
-}
-
-/** The state line under a row: the row's sibling inside its shell. */
-function stateLine(page: Page, id: string): Locator {
-  return page.locator(`[data-testid="thread-row-shell"]:has([data-sidebar-thread-id="${id}"]) [data-testid="thread-row-agent-state"]`);
-}
-
-/** The ids of the live rows behind the agent's rail, top to bottom. */
-async function memberIds(page: Page): Promise<string[]> {
-  return await page.locator('[data-agent-member]:not([data-agent-done-row]) [data-sidebar-thread-id]').evaluateAll((els) =>
-    els.map((el) => (el as HTMLElement).dataset.sidebarThreadId ?? ''),
-  );
-}
-
-/** The ids of the rows an open done footer lists, top to bottom. */
-async function doneIds(page: Page): Promise<string[]> {
-  return await page.locator('[data-agent-done-row] [data-sidebar-thread-id]').evaluateAll((els) =>
-    els.map((el) => (el as HTMLElement).dataset.sidebarThreadId ?? ''),
-  );
 }
 
 async function rowById(harness: HarnessApp, id: string): Promise<SidebarRow | undefined> {
@@ -93,6 +73,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     });
     const { projectId, path: cwd, threadIds } = seed.projects[0];
     const [agent, workerA, workerB, loose] = threadIds;
+    const home = await assistantHome(harness, agent);
     await harness.rpc('PinThread', workerB);
     // Unread, so Worker A stays a live row: a settled idle worker folds
     // into the done footer, as the live spawn below does.
@@ -100,39 +81,43 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
     await harness.open(page);
     await awaitSidebarSettled(page);
-    const agentRow = row(page, agent);
+    // The card names the project the assistant serves and holds nothing:
+    // its workers are in that project, under its row there.
+    await expect(cardRow(page, agent)).toHaveAttribute('data-sidebar-agent', '');
+    await expect(cardShell(page, agent).getByTestId('thread-row-agent-projects')).toHaveText(`agent-row-${provider}`);
+    const agentRow = projectRow(page, agent);
     await expect(agentRow).toHaveAttribute('data-sidebar-agent', '');
     await expect(agentRow).toHaveAttribute('data-expanded', 'true');
     await expect(agentRow.getByTestId('thread-row-agent-icon')).toBeVisible();
     await expect(agentRow.getByTestId('thread-row-pin')).toHaveCount(0);
     // The children sit behind the agent's rail; the pinned one keeps its pin
     // inside the fold and is offered its placement moves.
-    await expect.poll(async () => (await memberIds(page)).sort()).toEqual([workerA, workerB].sort());
-    await expect(row(page, workerB).getByTestId('thread-row-pin')).toHaveAttribute('data-pin-group', 'front');
-    expect(await menuLabels(page, row(page, workerB))).toEqual(expect.arrayContaining(['Move to Group', 'Make Standalone']));
+    await expect.poll(async () => (await liveIds(page, '[data-agent-member]')).sort()).toEqual([workerA, workerB].sort());
+    await expect(projectRow(page, workerB).getByTestId('thread-row-pin')).toHaveAttribute('data-pin-group', 'front');
+    expect(await menuLabels(page, projectRow(page, workerB))).toEqual(expect.arrayContaining(['Move to Group', 'Make Standalone']));
     // The agent block sits above the divider, Loose thread below it.
     const divider = page.getByTestId('thread-section-divider');
     await expect(divider).toHaveCount(1);
-    expect((await row(page, workerB).boundingBox())!.y).toBeLessThan((await divider.boundingBox())!.y);
-    expect((await row(page, loose).boundingBox())!.y).toBeGreaterThan((await divider.boundingBox())!.y);
-    await capture(page, `${provider}-agent-row.png`, agentRow, row(page, workerB));
+    expect((await projectRow(page, workerB).boundingBox())!.y).toBeLessThan((await divider.boundingBox())!.y);
+    expect((await projectRow(page, loose).boundingBox())!.y).toBeGreaterThan((await divider.boundingBox())!.y);
+    await capture(page, `${provider}-agent-row.png`, agentRow, projectRow(page, workerB));
 
-    // ---- A live spawn nests under the agent at once; a spawn naming a
-    // group lands in it; a loop puts the state line under the name. The
-    // worker runs on the other provider so its own session answers from a
-    // plain script in the same project.
+    // ---- A live spawn into the project nests under the agent's row there
+    // at once; a spawn naming a group lands in it; a loop puts the state
+    // line under the card's name. The agent runs in its home; the worker,
+    // on the other provider, answers from a plain script in the project.
     await setScenario(harness, cwd, plainScenario({ name: `agent-row-worker-${provider}`, provider: other(provider), texts: ['Working.'], afterTurns: 'silent' }));
     await setScenario(
       harness,
-      cwd,
+      home,
       threadToolsScenario({
         name: `agent-row-${provider}`,
         provider,
         echoUserMessage: true,
         turns: [{
           steps: [
-            { call: { tool: 'thread_spawn', args: { prompt: 'Ship it.', title: 'Spawned worker', provider: other(provider) } } },
-            { call: { tool: 'thread_spawn', args: { prompt: 'Ship it.', title: 'Grouped worker', provider: other(provider), group: 'Release' } } },
+            { call: { tool: 'thread_spawn', args: { prompt: 'Ship it.', title: 'Spawned worker', provider: other(provider), project_id: projectId } } },
+            { call: { tool: 'thread_spawn', args: { prompt: 'Ship it.', title: 'Grouped worker', provider: other(provider), project_id: projectId, group: 'Release' } } },
             { call: { tool: 'thread_loop', args: { label: 'board check', note: 'look at the board', every_seconds: 3600 } } },
           ],
           text: 'Spawned and scheduled.',
@@ -142,13 +127,13 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     );
     await harness.rpc('StartSession', agent);
     await harness.rpc('SendMessage', agent, 'spawn a worker', null);
-    const spawn = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', cwd });
+    const spawn = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', cwd: home });
     expect(spawn.isError, spawn.text).toBe(false);
     const spawned = spawn.value!.thread_id;
-    const groupedSpawn = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', cwd });
+    const groupedSpawn = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', cwd: home });
     expect(groupedSpawn.isError, groupedSpawn.text).toBe(false);
     const grouped = groupedSpawn.value!.thread_id;
-    const loop = await awaitToolAnswer(harness, { tool: 'thread_loop', cwd });
+    const loop = await awaitToolAnswer(harness, { tool: 'thread_loop', cwd: home });
     expect(loop.isError, loop.text).toBe(false);
     await awaitTurnCompleted(harness, agent);
     expect(await threadRows(harness)).toHaveLength(6);
@@ -169,18 +154,18 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const groupedRow = (await threadRows(harness)).find((r) => r.id === grouped) as { lastReadAt?: number; latestTurnCompletedAt?: number } | undefined;
       return groupedRow?.latestTurnCompletedAt !== undefined && (groupedRow.lastReadAt ?? 0) >= groupedRow.latestTurnCompletedAt;
     }, { timeout: 60_000 }).toBe(true);
-    await expect(row(page, grouped)).toBeVisible();
-    await expect(row(page, grouped).getByTestId('thread-row-status-dot')).toHaveCount(0);
+    await expect(projectRow(page, grouped)).toBeVisible();
+    await expect(projectRow(page, grouped).getByTestId('thread-row-status-dot')).toHaveCount(0);
     const footer = page.getByTestId('thread-row-agent-done');
     await expect(footer.getByTestId('thread-row-agent-done-label')).toHaveText('1 done');
-    await expect.poll(() => memberIds(page)).toEqual(expect.not.arrayContaining([spawned]));
+    await expect.poll(() => liveIds(page, '[data-agent-member]')).toEqual(expect.not.arrayContaining([spawned]));
     await footer.getByTestId('thread-row-agent-done-toggle').click();
     await expect.poll(() => doneIds(page)).toEqual([spawned]);
-    await expect(row(page, spawned).getByTestId('thread-row-title')).toHaveText('Spawned worker');
-    await expect(row(page, spawned).getByTestId('thread-row-status-dot')).toHaveCount(0);
+    await expect(projectRow(page, spawned).getByTestId('thread-row-title')).toHaveText('Spawned worker');
+    await expect(projectRow(page, spawned).getByTestId('thread-row-status-dot')).toHaveCount(0);
     await footer.getByTestId('thread-row-agent-done-toggle').click();
     await expect.poll(() => doneIds(page)).toEqual([]);
-    const state = stateLine(page, agent);
+    const state = cardShell(page, agent).getByTestId('thread-row-agent-state');
     await expect(state).toHaveText(/^loop board check · next (59m|1h)$/);
     await expect(page.getByTestId('thread-row-agent-state')).toHaveCount(1);
 
@@ -196,7 +181,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await agentRow.focus();
     await page.keyboard.press('ArrowRight');
     await expect(agentRow).toHaveAttribute('data-expanded', 'true');
-    await expect.poll(() => memberIds(page)).toHaveLength(2);
+    await expect.poll(() => liveIds(page, '[data-agent-member]')).toHaveLength(2);
     await page.keyboard.press('ArrowLeft');
     await expect(agentRow).toHaveAttribute('data-expanded', 'false');
     await page.reload();
@@ -205,14 +190,14 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
     // ---- A collapsed agent previews the focused child alone.
     await chevron.click();
-    await row(page, workerB).click();
+    await projectRow(page, workerB).click();
     await expect(page.getByTestId('chat-header-title')).toHaveText('Worker B');
     await chevron.click();
-    await expect.poll(() => memberIds(page)).toEqual([workerB]);
+    await expect.poll(() => liveIds(page, '[data-agent-member]')).toEqual([workerB]);
     await expect(agentRow.getByTestId('thread-row-agent-count')).toHaveText('2');
-    await capture(page, `${provider}-agent-collapsed-preview.png`, agentRow, row(page, workerB));
+    await capture(page, `${provider}-agent-collapsed-preview.png`, agentRow, projectRow(page, workerB));
     await chevron.click();
-    await expect.poll(() => memberIds(page)).toHaveLength(2);
+    await expect.poll(() => liveIds(page, '[data-agent-member]')).toHaveLength(2);
 
     // ---- Drags: an agent row joins no group and adopts no thread; a child
     // dragged onto a group joins it, and Nest Under returns it. A new group
@@ -222,17 +207,17 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const groupRow = page.getByTestId('thread-group-row').filter({ hasText: 'Ops' });
     await expect(groupRow).toHaveCount(1);
     await agentRow.dragTo(groupRow);
-    await row(page, loose).dragTo(agentRow);
-    await expect.poll(() => memberIds(page)).toHaveLength(2);
+    await projectRow(page, loose).dragTo(agentRow);
+    await expect.poll(() => liveIds(page, '[data-agent-member]')).toHaveLength(2);
     expect((await rowById(harness, agent))?.groupId ?? null).toBeNull();
     expect((await rowById(harness, loose))?.groupId).toBe(ops.id);
-    await row(page, workerA).dragTo(groupRow);
+    await projectRow(page, workerA).dragTo(groupRow);
     await expect.poll(async () => (await rowById(harness, workerA))?.groupId).toBe(ops.id);
-    await expect.poll(() => memberIds(page)).toEqual([workerB]);
-    await row(page, workerA).click({ button: 'right' });
+    await expect.poll(() => liveIds(page, '[data-agent-member]')).toEqual([workerB]);
+    await projectRow(page, workerA).click({ button: 'right' });
     await page.getByRole('menuitem', { name: 'Nest Under Release agent' }).click();
     await expect.poll(async () => (await rowById(harness, workerA))?.placement).toBe('nested');
-    await expect.poll(async () => (await memberIds(page)).sort()).toEqual([workerA, workerB].sort());
+    await expect.poll(async () => (await liveIds(page, '[data-agent-member]')).sort()).toEqual([workerA, workerB].sort());
     expect((await rowById(harness, workerA))?.groupId ?? null).toBeNull();
     await expect(groupRow.getByTestId('thread-group-row-count')).toHaveCount(0);
 
@@ -242,11 +227,11 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     expect(agentMenu.some((label) => label.startsWith('Archive Done Children'))).toBe(true);
     for (const absent of ['Pin Thread', 'Move to Group']) expect(agentMenu).not.toContain(absent);
     expect(agentMenu.some((label) => /Promote|Demote/.test(label))).toBe(false);
-    const childMenu = await menuLabels(page, row(page, workerA));
+    const childMenu = await menuLabels(page, projectRow(page, workerA));
     expect(childMenu).toContain('Pin Thread');
     expect(childMenu.some((label) => /Promote|Demote/.test(label))).toBe(false);
     expect(childMenu).toEqual(expect.arrayContaining(['Move to Group', 'Make Standalone']));
-    const looseMenu = await menuLabels(page, row(page, loose));
+    const looseMenu = await menuLabels(page, projectRow(page, loose));
     expect(looseMenu).toContain('Remove from Group');
     // Loops and Watches opens the agent with its background tray open.
     await agentRow.click({ button: 'right' });
@@ -256,29 +241,29 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(page.locator('[data-testid="wake-tray-row"][data-kind="loop"][data-label="board check"]')).toBeVisible();
 
     // ---- A child archived from its menu drops into the done footer.
-    await row(page, workerA).click({ button: 'right' });
+    await projectRow(page, workerA).click({ button: 'right' });
     await page.getByRole('menuitem', { name: 'Archive Thread' }).click();
     await page.getByRole('dialog').or(page.getByRole('alertdialog')).getByRole('button', { name: 'Archive', exact: true }).click();
-    await expect.poll(() => memberIds(page)).toEqual(expect.not.arrayContaining([workerA]));
+    await expect.poll(() => liveIds(page, '[data-agent-member]')).toEqual(expect.not.arrayContaining([workerA]));
     await expect(footer.getByTestId('thread-row-agent-done-label')).toHaveText('2 done');
     await expect(footer).toHaveAttribute('data-expanded', 'false');
     await footer.getByTestId('thread-row-agent-done-toggle').click();
     // Settled idle first, then the archived ones.
     await expect.poll(() => doneIds(page)).toEqual([spawned, workerA]);
-    await expect(row(page, workerA)).toHaveAttribute('data-archived-child', 'true');
-    expect(await row(page, workerA).evaluate((el) => getComputedStyle(el).opacity)).not.toBe('1');
+    await expect(projectRow(page, workerA)).toHaveAttribute('data-archived-child', 'true');
+    expect(await projectRow(page, workerA).evaluate((el) => getComputedStyle(el).opacity)).not.toBe('1');
     // An archived row offers no pin: pinning belongs to live rows.
-    await expect(row(page, workerA).getByTestId('thread-row-pin')).toHaveCount(0);
-    await expect(page.locator('[data-agent-member]', { has: row(page, workerA) })).toHaveCount(1);
-    await capture(page, `${provider}-agent-done-footer.png`, agentRow, footer, row(page, workerA));
+    await expect(projectRow(page, workerA).getByTestId('thread-row-pin')).toHaveCount(0);
+    await expect(railEntry(projectsSection(page), '[data-agent-member]', workerA)).toHaveCount(1);
+    await capture(page, `${provider}-agent-done-footer.png`, agentRow, footer, projectRow(page, workerA));
     // An archived child opens from the footer like any row.
-    await row(page, workerA).click();
+    await projectRow(page, workerA).click();
     await expect(page.getByTestId('chat-header-title')).toHaveText('Worker A');
     // Unarchived, it returns to the live rows: it is open in the pane, and
     // an open thread never folds. The footer keeps the settled worker.
     await harness.rpc('UnarchiveThread', workerA);
-    await expect.poll(() => memberIds(page)).toContain(workerA);
-    await expect(row(page, workerA)).not.toHaveAttribute('data-archived-child', 'true');
+    await expect.poll(() => liveIds(page, '[data-agent-member]')).toContain(workerA);
+    await expect(projectRow(page, workerA)).not.toHaveAttribute('data-archived-child', 'true');
     await expect(footer.getByTestId('thread-row-agent-done-label')).toHaveText('1 done');
 
     // ---- Archive Done Children archives every idle child behind a confirm.
@@ -287,7 +272,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const dialog = page.getByRole('dialog').or(page.getByRole('alertdialog'));
     await expect(dialog).toContainText('3 spawned threads');
     await dialog.getByRole('button', { name: 'Archive', exact: true }).click();
-    await expect.poll(() => memberIds(page)).toEqual([]);
+    await expect.poll(() => liveIds(page, '[data-agent-member]')).toEqual([]);
     await expect(footer.getByTestId('thread-row-agent-done-label')).toHaveText('3 done');
     // The grouped worker is a member of its group, not the agent's child, so
     // Archive Done Children leaves it live.
@@ -319,18 +304,22 @@ test('a spawned thread that is an assistant leaves the fold, a thread nobody spa
   await harness.open(page);
   // Only the lead's direct spawn nests; the grandchild's spawner is not an
   // agent, so it stays a plain row with the stranger.
-  await expect.poll(() => memberIds(page)).toEqual([child]);
-  for (const id of [grandchild, stranger]) await expect(page.locator('[data-agent-member]', { has: row(page, id) })).toHaveCount(0);
+  await expect.poll(() => liveIds(page, '[data-agent-member]')).toEqual([child]);
+  for (const id of [grandchild, stranger]) await expect(railEntry(projectsSection(page), '[data-agent-member]', id)).toHaveCount(0);
 
-  // The child made an assistant is an agent row of its own with the grandchild under it.
+  // The child made an assistant moves to its home: a card of its own, never
+  // the lead's child, and an agent row in the project with the grandchild
+  // under it. The lead's row there, left with no nested child, goes.
   await harness.rpc('HarnessMakeAssistant', child);
+  await expect(cardRow(page, child)).toBeVisible();
   // Its agent row arrives as its member row leaves: wait out the exit.
-  await expect(page.locator(`[data-sidebar-agent][data-sidebar-thread-id="${child}"]`)).toBeVisible();
-  await expect(row(page, child)).toHaveCount(1);
-  await expect.poll(() => memberIds(page)).toEqual([grandchild]);
-  await expect(row(page, lead).getByTestId('thread-row-agent-count')).toHaveCount(0);
-  await row(page, lead).getByTestId('thread-row-agent-expand').click();
-  await expect(row(page, lead).getByTestId('thread-row-agent-count')).toHaveCount(0);
+  await expect(page.getByTestId('sidebar-projects-section').locator(`[data-sidebar-agent][data-sidebar-thread-id="${child}"]`)).toBeVisible();
+  await expect(projectRow(page, child)).toHaveCount(1);
+  await expect.poll(() => liveIds(page, '[data-agent-member]')).toEqual([grandchild]);
+  await expect(projectRow(page, lead)).toHaveCount(0);
+  await expect(cardRow(page, lead).getByTestId('thread-row-agent-count')).toHaveCount(0);
+  await cardRow(page, lead).getByTestId('thread-row-agent-expand').click();
+  await expect(cardRow(page, lead).getByTestId('thread-row-agent-count')).toHaveCount(0);
 
   // The store refuses to file an agent in a group; its child joins one and
   // leaves the agent row (ruling 36).
@@ -340,6 +329,6 @@ test('a spawned thread that is an assistant leaves the fold, a thread nobody spa
   await harness.rpc('SetThreadGroup', [grandchild, stranger], group.id);
   expect((await rowById(harness, stranger))?.groupId).toBe(group.id);
   expect((await rowById(harness, grandchild))?.placement).toBe('grouped');
-  await expect(page.locator('[data-group-member]', { has: row(page, grandchild) })).toHaveCount(1);
-  await expect(page.locator('[data-agent-member]', { has: row(page, grandchild) })).toHaveCount(0);
+  await expect(railEntry(projectsSection(page), '[data-group-member]', grandchild)).toHaveCount(1);
+  await expect(railEntry(projectsSection(page), '[data-agent-member]', grandchild)).toHaveCount(0);
 });

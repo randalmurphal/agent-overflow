@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -129,7 +128,7 @@ func TestCreateAssistantMakesTheRecordHomeAndOpening(t *testing.T) {
 	f := newAssistantFixture(t)
 	sent := f.mockClaudeRecording(t, "I am Ops. What am I responsible for?")
 
-	thread, err := f.app.CreateAssistant(t.Context(), CreateAssistantOptions{ProjectID: f.caller.ProjectID, Name: " Ops "})
+	thread, err := f.app.CreateAssistant(t.Context(), CreateAssistantOptions{ProjectIDs: []string{f.caller.ProjectID}, Name: " Ops "})
 	if err != nil {
 		t.Fatalf("CreateAssistant: %v", err)
 	}
@@ -154,7 +153,7 @@ func TestCreateAssistantMakesTheRecordHomeAndOpening(t *testing.T) {
 		t.Fatal(err)
 	}
 	var taken *store.AssistantNameTakenError
-	if _, err := f.app.CreateAssistant(t.Context(), CreateAssistantOptions{ProjectID: f.caller.ProjectID, Name: "OPS"}); !errors.As(err, &taken) || taken.ThreadID != thread.ID {
+	if _, err := f.app.CreateAssistant(t.Context(), CreateAssistantOptions{ProjectIDs: []string{f.caller.ProjectID}, Name: "OPS"}); !errors.As(err, &taken) || taken.ThreadID != thread.ID {
 		t.Fatalf("a clashing name = %v, want the holder named", err)
 	}
 	after, err := f.app.store.ListThreads()
@@ -180,6 +179,17 @@ func TestNewAssistantToolCreatesAnAssistantThatReportsToItsCreator(t *testing.T)
 	}
 
 	creator := f.assistantCaller(t)
+	// Settings no default gives, so the created thread shows it took them.
+	if err := f.app.store.UpdateModel(f.caller.ID, "claude-sonnet-4-6"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.app.store.UpdateReasoningEffort(f.caller.ID, "low"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.store.UpdateRuntimeMode(f.caller.ID, string(provider.RuntimeAutoAcceptEdits)); err != nil {
+		t.Fatal(err)
+	}
+	f.caller = mustThread(t, f.app, f.caller.ID)
 	// A computer forwarding the call is refused here too, not only by the
 	// tool server in front of it.
 	if _, err := f.adapter().NewAssistant(threadtools.WithForwarded(t.Context()), f.callerIdentity(), call); err == nil || !strings.Contains(err.Error(), "never forwarded") {
@@ -208,12 +218,20 @@ func TestNewAssistantToolCreatesAnAssistantThatReportsToItsCreator(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent, err := f.app.readStandingAgentSession(thread, "")
+	// It runs with its creator's settings, in its own home, and is no
+	// helper of the creator.
+	if thread.Provider != f.caller.Provider || thread.Model != f.caller.Model || thread.ReasoningEffort != f.caller.ReasoningEffort ||
+		thread.RuntimeMode != f.caller.RuntimeMode || thread.WorkspacePath != created.Home || thread.HelperOfAgentID != "" {
+		t.Fatalf("created thread = provider %q model %q effort %q runtime %q workspace %q helperOf %q, creator %q %q %q %q",
+			thread.Provider, thread.Model, thread.ReasoningEffort, thread.RuntimeMode, thread.WorkspacePath, thread.HelperOfAgentID,
+			f.caller.Provider, f.caller.Model, f.caller.ReasoningEffort, f.caller.RuntimeMode)
+	}
+	agent, err := f.app.readStandingAgentSession(thread)
 	if err != nil || !strings.Contains(agent.Block, `You report to the standing agent "`+f.caller.Title+`" (thread `+f.caller.ID+`), which created you.`) {
 		t.Fatalf("session block = %q, %v", agent.Block, err)
 	}
 	// An assistant it created is its own row, never the creator's child.
-	if caller, err := f.app.store.GetThread(f.caller.ID); err != nil || caller.ArchivedChildCount != 0 {
+	if caller, err := f.app.store.GetThread(f.caller.ID); err != nil || archivedTotal(caller.ArchivedChildCounts) != 0 {
 		t.Fatalf("creator row = %+v %v", caller, err)
 	}
 	if listed, err := f.app.ListArchivedSpawnedThreads(f.caller.ID); err != nil || len(listed) != 0 {
@@ -255,6 +273,7 @@ func TestSendToAPastThreadGoesToTheCurrentThread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	placeInAssistantHome(t, f.app, successor.ID, target.ID)
 	if _, err := f.app.store.HandOffAssistant(target.ID, successor.ID, time.Now().UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +393,7 @@ func TestAssistantRowsAreAnnouncedUnderWorkAdmission(t *testing.T) {
 		announced[event.Thread.ID] = reason
 		mu.Unlock()
 	}
-	thread, err := f.app.CreateAssistant(t.Context(), CreateAssistantOptions{ProjectID: f.caller.ProjectID, Name: "Ops"})
+	thread, err := f.app.CreateAssistant(t.Context(), CreateAssistantOptions{ProjectIDs: []string{f.caller.ProjectID}, Name: "Ops"})
 	if err != nil {
 		t.Fatalf("CreateAssistant: %v", err)
 	}
@@ -398,16 +417,16 @@ func TestATakenAssistantNameIsRefusedWithItsCode(t *testing.T) {
 	t.Parallel()
 	f := newAssistantFixture(t)
 	f.mockClaude(t, "Ready.")
-	ops, err := f.app.CreateAssistant(t.Context(), CreateAssistantOptions{ProjectID: f.caller.ProjectID, Name: "Ops"})
+	ops, err := f.app.CreateAssistant(t.Context(), CreateAssistantOptions{ProjectIDs: []string{f.caller.ProjectID}, Name: "Ops"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	scout, err := f.app.CreateAssistant(t.Context(), CreateAssistantOptions{ProjectID: f.caller.ProjectID, Name: "Scout"})
+	scout, err := f.app.CreateAssistant(t.Context(), CreateAssistantOptions{ProjectIDs: []string{f.caller.ProjectID}, Name: "Scout"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	wantMessage := `The assistant "Ops" already has that name; names are unique on this computer.`
-	_, err = f.app.CreateAssistant(t.Context(), CreateAssistantOptions{ProjectID: f.caller.ProjectID, Name: "ops"})
+	_, err = f.app.CreateAssistant(t.Context(), CreateAssistantOptions{ProjectIDs: []string{f.caller.ProjectID}, Name: "ops"})
 	if code, message, ok := errorsx.PublicDetails(err); !ok || code != transport.ErrCodeAssistantNameTaken || message != wantMessage {
 		t.Fatalf("creation refusal = %q %q %v (%v)", code, message, ok, err)
 	}
@@ -421,40 +440,6 @@ func TestATakenAssistantNameIsRefusedWithItsCode(t *testing.T) {
 	}
 	if ops.ID == scout.ID {
 		t.Fatal("two assistants share a thread")
-	}
-}
-
-// Deleting a project deletes its assistants with their homes, so its delete
-// preview names each one and its home folder; another project's list is empty.
-func TestProjectDeletionPreviewNamesTheProjectsAssistants(t *testing.T) {
-	t.Parallel()
-	f := newAssistantFixture(t)
-	f.mockClaude(t, "Ready.")
-	thread, err := f.app.CreateAssistant(t.Context(), CreateAssistantOptions{ProjectID: f.caller.ProjectID, Name: "Ops"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	agent, _, err := f.app.store.GetStandingAgent(thread.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	preview, err := f.app.ProjectDeletionPreview(f.caller.ProjectID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := []ProjectDeletionAssistant{{Name: "Ops", Home: agent.Home}}; !reflect.DeepEqual(preview.Assistants, want) {
-		t.Fatalf("assistants = %+v, want %+v", preview.Assistants, want)
-	}
-	other, err := f.app.CreateProject(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	preview, err = f.app.ProjectDeletionPreview(other.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if preview.Assistants == nil || len(preview.Assistants) != 0 {
-		t.Fatalf("another project's assistants = %#v, want an empty list", preview.Assistants)
 	}
 }
 

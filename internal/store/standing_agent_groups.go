@@ -43,22 +43,14 @@ func (s *Store) ListSpawnedThreadIDs(spawnerID string) ([]string, error) {
 	return ids, nil
 }
 
-// ListArchivedSpawnedThreads lists the archived threads a thread spawned on
-// this computer and, for an assistant's current thread, the assistant's
-// archived past threads, newest activity first: the agent row's finished
-// work, read when the user opens it. An assistant it created is a row of
-// its own, never a child.
+// ListArchivedSpawnedThreads lists the archived threads the done footers of
+// an assistant's rows hold (archivedAgentChildrenSQL), newest activity
+// first, read when the user opens one; each row's project says which. An
+// assistant it created is a row of its own, never a child.
 func (s *Store) ListArchivedSpawnedThreads(spawnerID string) (threads []Thread, err error) {
 	action := fmt.Sprintf("store: list archived threads spawned by %s", spawnerID)
 	rows, err := s.reader().Query(`SELECT `+threadColumns+` FROM owned_threads AS threads
-		WHERE archived = 1 AND placement = 'nested' AND (id IN (
-			SELECT target_thread_id FROM thread_requests
-			 WHERE caller_thread_id = ?1 AND kind = 'spawn' AND target_computer_id = '')
-		OR id IN (
-			SELECT agent_past_threads.thread_id FROM agent_past_threads
-			  JOIN agents ON agents.id = agent_past_threads.agent_id
-			 WHERE agents.thread_id = ?1))
-		AND id NOT IN (SELECT thread_id FROM agents)
+		WHERE id IN (SELECT id FROM (`+archivedAgentChildrenSQL("?1")+`))
 		ORDER BY updated_at DESC`, spawnerID)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", action, err)

@@ -119,7 +119,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     // the thread, its stderr shows when the row is expanded, and its
     // schedule stands.
     const ciNext = await ci.getAttribute('data-next-at');
-    const ciWake = wakeInput(harness, agent.cwd, 'Watch "ci" reported.');
+    const ciWake = wakeInput(harness, agent.home, 'Watch "ci" reported.');
     await ci.getByTestId('wake-tray-row-wake-now').click();
     expect((await ciWake).report.input).toContain('"pipeline 12 failed: lint"');
     await awaitTurnCompleted(harness, agent.thread);
@@ -130,7 +130,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     expect(String(ciRow.next_at)).toBe(ciNext);
     await ci.getByTestId('wake-tray-row-toggle').click();
     await expect(ci.getByTestId('wake-tray-row-command')).toHaveText(run('ci.sh'));
-    await expect(ci.getByTestId('wake-tray-row-cwd')).toHaveText(agent.cwd);
+    await expect(ci.getByTestId('wake-tray-row-cwd')).toHaveText(agent.home);
     await expect(ci.getByTestId('wake-tray-row-stderr')).toHaveText('ci: checked pipeline 12 at the default branch');
     await capture(page, `${provider}-tray-watch-expanded.png`, ci);
     await ci.getByTestId('wake-tray-row-toggle').click();
@@ -140,7 +140,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
     // ---- Wake now on a loop fires it once and keeps its schedule.
     const standupNext = await standup.getAttribute('data-next-at');
-    const standupWake = wakeInput(harness, agent.cwd, 'Loop "standup" fired.');
+    const standupWake = wakeInput(harness, agent.home, 'Loop "standup" fired.');
     await standup.getByTestId('wake-tray-row-wake-now').click();
     expect((await standupWake).report.input).toContain('post the standup summary');
     await awaitTurnCompleted(harness, agent.thread);
@@ -164,7 +164,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(held.getByTestId('wake-tray-row-wake-now')).toBeEnabled();
 
     // ---- Wake now on a reminder fires it, and it leaves the tray.
-    const reviewWake = wakeInput(harness, agent.cwd, 'review the deploy notes');
+    const reviewWake = wakeInput(harness, agent.home, 'review the deploy notes');
     await review.getByTestId('wake-tray-row-wake-now').click();
     await reviewWake;
     await awaitTurnCompleted(harness, agent.thread);
@@ -245,7 +245,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     // goes to a session still starting, which reads it and holds.
     if (provider === 'claude') {
       await harness.rpc('StopSession', agent.thread);
-      await setScenario(harness, agent.cwd, {
+      await setScenario(harness, agent.home, {
         ...threadToolsScenario({ name: `wake-lost-slow-${provider}`, provider, turns: [{ text: 'unreached' }] }),
         startupDelayMs: 30_000,
       });
@@ -253,9 +253,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await harness.open(page);
     await openTray(page, 'Doomed agent');
     const standup = trayRow(page, 'loop', 'standup');
-    const taken = wakeInput(harness, agent.cwd, 'Loop "standup" fired.');
+    const taken = wakeInput(harness, agent.home, 'Loop "standup" fired.');
     await standup.getByTestId('wake-tray-row-wake-now').click();
-    const mockId = provider === 'claude' ? (await taken).mockId : (await awaitGate(harness, 'hold', agent.cwd)).mockId;
+    const mockId = provider === 'claude' ? (await taken).mockId : (await awaitGate(harness, 'hold', agent.home)).mockId;
     // The fire is over before the session dies: its row says delivered, and
     // nothing else is due to write it. The one frame that can turn the row
     // is the session end's.

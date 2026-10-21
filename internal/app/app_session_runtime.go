@@ -300,7 +300,10 @@ func aoEndpointFromOrigin(origin string) (string, error) {
 // deriveCallerScope answers "what authority does this thread's session have".
 // A workflow phase or fan-out unit thread carries its frozen phase's grants and
 // its own frozen access (derivePhaseScope). Every other app-owned session in a
-// project is interactive: the user's authority over that project's runs.
+// project is interactive: the user's authority over that project's runs. The
+// threads of an assistant, which live outside every project, are interactive
+// with no project: they drive threads and remote jobs, and have no project to
+// run workflows in (workflowCallerScope).
 func (a *App) deriveCallerScope(thread store.Thread) (transport.CallerScope, bool, error) {
 	if a.store == nil {
 		return transport.CallerScope{}, false, nil
@@ -308,14 +311,23 @@ func (a *App) deriveCallerScope(thread store.Thread) (transport.CallerScope, boo
 	if thread.Mode == threadmode.ModeWorkflow {
 		return a.derivePhaseScope(thread)
 	}
-	if strings.TrimSpace(thread.ProjectID) == "" {
-		// A projectless thread has nothing to scope runs against: there is no
-		// project to start or list runs in.
+	if strings.TrimSpace(thread.ProjectID) == "" && thread.OwnerAgentID() == "" {
+		// Any other projectless thread has nothing to scope against.
 		return transport.CallerScope{}, false, nil
 	}
 	return transport.CallerScope{
 		Kind: transport.ScopeKindInteractive, ThreadID: thread.ID, ProjectID: thread.ProjectID,
 	}, true, nil
+}
+
+// workflowCallerScope is deriveCallerScope for the workflow tools: a thread
+// with no project has no runs to start or list, and gets none.
+func (a *App) workflowCallerScope(thread store.Thread) (transport.CallerScope, bool, error) {
+	scope, ok, err := a.deriveCallerScope(thread)
+	if err != nil || !ok || strings.TrimSpace(scope.ProjectID) == "" {
+		return transport.CallerScope{}, false, err
+	}
+	return scope, true, nil
 }
 
 // derivePhaseScope resolves the run, phase, frozen grants and access behind a

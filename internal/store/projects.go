@@ -436,6 +436,19 @@ func (s *Store) DeleteProject(id string) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: delete project %s", id))
 }
 
+// ThreadIDsOutsideProjects returns every thread that belongs to no
+// project, archived ones included, assistants' current threads first: a
+// project's delete leaves them, and an assistant's delete takes its past
+// threads and helpers with it.
+func (s *Store) ThreadIDsOutsideProjects() ([]string, error) {
+	ids, err := queryIDs(s.reader(), `SELECT id FROM threads WHERE project_id IS NULL
+		ORDER BY EXISTS (SELECT 1 FROM agents WHERE agents.thread_id = threads.id) DESC, id`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list threads outside every project: %w", err)
+	}
+	return ids, nil
+}
+
 // ListThreadIDsForProject returns every thread owned by a project. The app
 // layer uses the list to tear each thread down and to tell the frontend which
 // pane state to prune after project deletion.

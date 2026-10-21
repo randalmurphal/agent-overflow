@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"maps"
 	"testing"
 )
 
@@ -273,28 +274,21 @@ func TestNestedThreadLosingItsLinkBecomesStandalone(t *testing.T) {
 	}
 }
 
-// A handoff nests the old thread under the agent as its past thread, and
-// the assistant's delete, which takes the past-thread row, leaves it
-// standalone.
-func TestHandoffNestsThePastThread(t *testing.T) {
+// A handoff leaves the old thread's placement alone: a past thread lives
+// outside every project, under its assistant, and takes no placement.
+func TestAHandOffLeavesThePastThreadUnplaced(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "old")
 	mustCreateThread(t, s, "new")
 	mustCreateAssistant(t, s, "old", "/h/agent")
+	mustPlaceInHome(t, s, "new", "/h/agent")
 	if _, err := s.HandOffAssistant("old", "new", 10); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := placementOf(t, s, "old"); got != PlacementNested {
-		t.Fatalf("past thread = %s, want nested", got)
-	}
-	if got, _ := placementOf(t, s, "new"); got != PlacementStandalone {
-		t.Errorf("successor = %s, want standalone", got)
-	}
-	if _, err := s.db.Exec(`DELETE FROM agent_past_threads WHERE thread_id = 'old'`); err != nil {
-		t.Fatal(err)
-	}
-	if got, _ := placementOf(t, s, "old"); got != PlacementStandalone {
-		t.Errorf("past thread without its link = %s, want standalone", got)
+	for _, id := range []string{"old", "new"} {
+		if got, _ := placementOf(t, s, id); got != PlacementStandalone {
+			t.Errorf("%s = %s, want standalone", id, got)
+		}
 	}
 }
 
@@ -379,34 +373,30 @@ func TestNamingWriteWithoutItsSourceRowLeavesTheThreadStandalone(t *testing.T) {
 	}
 }
 
-// An assistant's done-footer count takes its archived past threads only
-// while they are nested: placed as a plain row, one leaves the count.
-func TestArchivedChildCountTakesNestedPastThreadsOnly(t *testing.T) {
+// An assistant's archived past thread counts on its card, and, outside
+// every project, it takes no placement.
+func TestAnArchivedPastThreadCountsOnTheCard(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "old")
 	mustCreateThread(t, s, "new")
 	mustCreateAssistant(t, s, "old", "/h/agent")
+	mustPlaceInHome(t, s, "new", "/h/agent")
 	if _, err := s.HandOffAssistant("old", "new", 10); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := s.ArchiveThread("old"); err != nil {
 		t.Fatal(err)
 	}
-	count := func() int {
-		t.Helper()
-		row, err := s.GetThread("new")
-		if err != nil {
-			t.Fatal(err)
-		}
-		return row.ArchivedChildCount
-	}
-	if got := count(); got != 1 {
-		t.Fatalf("archived children with the past thread nested = %d, want 1", got)
-	}
-	if _, err := s.SetThreadPlacement([]string{"old"}, PlacementStandalone); err != nil {
+	row, err := s.GetThread("new")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got := count(); got != 0 {
-		t.Errorf("archived children with the past thread standalone = %d, want 0", got)
+	if want := map[string]int{"": 1}; !maps.Equal(row.ArchivedChildCounts, want) {
+		t.Fatalf("archived children = %v, want %v", row.ArchivedChildCounts, want)
+	}
+	for _, placement := range []string{PlacementStandalone, PlacementNested} {
+		if _, err := s.SetThreadPlacement([]string{"old"}, placement); !errors.Is(err, ErrPlacementOutsideProjects) {
+			t.Errorf("%s for a past thread = %v, want ErrPlacementOutsideProjects", placement, err)
+		}
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"agent-overflow/internal/agenthome"
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
+	"agent-overflow/internal/memory"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
@@ -87,9 +88,9 @@ func TestCodexDeveloperInstructionsCarryTheHomeBlock(t *testing.T) {
 	f := newThreadToolsFixture(t)
 	thread := f.thread(t, "agent")
 	row := testAssistant(t, f.app, thread.ID)
-	agent, err := f.app.readStandingAgentSession(thread, "")
+	agent, err := f.app.readStandingAgentSession(thread)
 	block := agent.Block
-	if err != nil || len(agent.Problems) > 0 || !strings.HasPrefix(block, standingAgentIdentity(thread.Title, thread.ID, row.Home)) {
+	if err != nil || !strings.HasPrefix(block, standingAgentIdentity(thread.Title, thread.ID, row.Home)) {
 		t.Fatalf("readStandingAgentSession = %+v, %v", agent, err)
 	}
 	// What spawnProviderSession hands Codex with the guide off.
@@ -116,6 +117,9 @@ func TestDeletingAnAssistantRemovesItsHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	successor := f.thread(t, "agent next")
+	if err := f.app.store.PlaceThreadInHome(successor.ID, row.Home); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := f.app.store.HandOffAssistant(thread.ID, successor.ID, 1); err != nil {
 		t.Fatal(err)
 	}
@@ -185,6 +189,9 @@ func TestDeletingAnAssistantRefusesAnyOtherHomePath(t *testing.T) {
 				if err := os.WriteFile(marker, nil, 0o600); err != nil {
 					t.Fatal(err)
 				}
+			}
+			if err := f.app.store.PlaceThreadInHome(thread.ID, home); err != nil {
+				t.Fatal(err)
 			}
 			if err := f.app.store.CreateStandingAgent(storeAgent(thread.ID, home)); err != nil {
 				t.Fatalf("seed the record: %v", err)
@@ -365,13 +372,12 @@ func codexHookMatchers(t *testing.T, requestLog, method string) []string {
 	return matchers
 }
 
-// A Codex assistant's resume registers for the resume the hook of each home
-// file whose context the thread's model did not receive as it reads now:
-// every file the thread holds no receipt for, then only the file that
-// changed since its receipt. The receipts the session keeps are the digests
-// of what arrived, under the provider session. An ordinary thread registers
-// no hooks.
-func TestCodexAssistantResumeRunsTheHooksWhoseFileChanged(t *testing.T) {
+// A Codex assistant's resume registers the memory hook for the resume when
+// the thread's model did not receive the delivery as it reads now: with no
+// receipt, then only after a change since its receipt. The receipt the
+// session keeps is the digest of what arrived, under the provider session.
+// An ordinary thread, with shared memory off, registers no hook.
+func TestCodexAssistantResumeRunsTheHookWhenItsMemoryChanged(t *testing.T) {
 	t.Parallel()
 	app, bus := setupE2EApp(t)
 	requestLog := filepath.Join(t.TempDir(), "requests.jsonl")
@@ -395,13 +401,13 @@ func TestCodexAssistantResumeRunsTheHooksWhoseFileChanged(t *testing.T) {
 
 	startCodexSessionAndWait(t, app, bus, thread.ID)
 	awaitSessionRef(t, app, thread.ID, "codex-root")
-	if got := codexHookMatchers(t, requestLog, "thread/start"); strings.Join(got, ",") != plain+";"+plain {
+	if got := codexHookMatchers(t, requestLog, "thread/start"); strings.Join(got, ",") != plain {
 		t.Fatalf("thread/start matchers = %q", got)
 	}
-	// No turn delivered the start, so the resume runs both hooks.
+	// No turn delivered the start, so the resume runs the hook.
 	restart()
-	if got := codexHookMatchers(t, requestLog, "thread/resume"); strings.Join(got, ",") != resume+";"+resume {
-		t.Fatalf("thread/resume matchers = %q, want both hooks registered for the resume", got)
+	if got := codexHookMatchers(t, requestLog, "thread/resume"); strings.Join(got, ",") != resume {
+		t.Fatalf("thread/resume matchers = %q, want the hook registered for the resume", got)
 	}
 
 	// What the session keeps is the digest of what arrived.
@@ -409,40 +415,37 @@ func TestCodexAssistantResumeRunsTheHooksWhoseFileChanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent, err := app.readStandingAgentSession(thread, "codex-root")
-	if err != nil || agent.Receipts == nil {
-		t.Fatalf("readStandingAgentSession = %+v, %v", agent, err)
+	mem, err := app.readSessionMemory(thread, &row, "codex-root", false)
+	if err != nil || mem.Receipts == nil || len(mem.Problems) > 0 {
+		t.Fatalf("readSessionMemory = %+v, %v", mem, err)
 	}
-	for _, file := range agenthome.ContextFiles {
-		text, _ := agenthome.ReadContext(row.Home, file)
-		if err := agent.Receipts.Keep("codex-root", file.Name, text); err != nil {
-			t.Fatal(err)
-		}
+	plan, _, err := app.memoryPlan(thread, &row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivered, _ := memory.Build(plan, time.Now())
+	if err := mem.Receipts.Keep("codex-root", memory.Label, memory.Stamp(delivered, time.Now())); err != nil {
+		t.Fatal(err)
 	}
 	received, err := app.store.SessionStartReceipts(thread.ID, "codex-root")
-	if err != nil || len(received) != len(agenthome.ContextFiles) {
+	if err != nil || len(received) != 1 || received[memory.Label] != memory.Digest(delivered) {
 		t.Fatalf("receipts = %v, %v", received, err)
 	}
-	for _, file := range agenthome.ContextFiles {
-		if text, _ := agenthome.ReadContext(row.Home, file); received[file.Name] != agenthome.ContextDigest(text) {
-			t.Fatalf("receipt of %s = %q", file.Name, received[file.Name])
-		}
-	}
 	restart()
-	if got := codexHookMatchers(t, requestLog, "thread/resume"); len(got) != 2 || got[1] != plain+";"+plain {
-		t.Fatalf("thread/resume matchers = %q, want no hook registered for an unchanged home", got)
+	if got := codexHookMatchers(t, requestLog, "thread/resume"); len(got) != 2 || got[1] != plain {
+		t.Fatalf("thread/resume matchers = %q, want the hook not registered for unchanged memory", got)
 	}
 
-	if err := os.WriteFile(filepath.Join(row.Home, agenthome.MemoryIndexFile), []byte("- a new fact\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(memory.HomeDir(row.Home), "a.md"), []byte("---\ndescription: a new fact\ntype: ruling\nsource: user\nconfirmed: 2026-10-20\n---\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	restart()
-	if got := codexHookMatchers(t, requestLog, "thread/resume"); len(got) != 3 || got[2] != plain+";"+resume {
-		t.Fatalf("thread/resume matchers = %q, want MEMORY.md registered for the resume", got)
+	if got := codexHookMatchers(t, requestLog, "thread/resume"); len(got) != 3 || got[2] != resume {
+		t.Fatalf("thread/resume matchers = %q, want the hook registered for the resume after a new fact", got)
 	}
 
 	// A compaction forgets the receipts: what it dropped is no longer held.
-	if err := agent.Receipts.Forget(); err != nil {
+	if err := mem.Receipts.Forget(); err != nil {
 		t.Fatal(err)
 	}
 	if received, err := app.store.SessionStartReceipts(thread.ID, "codex-root"); err != nil || len(received) != 0 {

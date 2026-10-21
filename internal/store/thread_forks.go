@@ -30,10 +30,19 @@ import (
 // sidebar group (migration v76). The pin is not: a pin belongs to the
 // thread that holds it, and a thread starts unpinned in a group.
 //
+// A fork of a thread that lives under an assistant outside every project
+// (its current or a past thread, or a helper) is a helper of that
+// assistant (docs/specs/standing-agents.md, ruling 38).
+//
 // Pure: this only builds the row. CreatePointerFork persists it.
 func BuildForkedThread(source Thread) Thread {
 	now := time.Now().UnixMilli()
+	helperOf := ""
+	if source.ProjectID == "" {
+		helperOf = source.OwnerAgentID()
+	}
 	return Thread{
+		HelperOfAgentID:    helperOf,
 		ID:                 entityid.New(),
 		ProjectID:          source.ProjectID,
 		Title:              source.Title + " (fork)",
@@ -123,6 +132,9 @@ func (s *Store) CreatePointerFork(fork Thread, sourceID string, cut ForkCut, sum
 	}
 	defer tx.Rollback()
 	if err := insertThread(tx, prepared, lastReadAtArg); err != nil {
+		return fmt.Errorf("store: create fork thread: %w", err)
+	}
+	if err := recordAgentHelperTx(tx, prepared); err != nil {
 		return fmt.Errorf("store: create fork thread: %w", err)
 	}
 	if err := s.linkPointerForkTx(tx, prepared.ID, sourceID, cut, summarise, now); err != nil {

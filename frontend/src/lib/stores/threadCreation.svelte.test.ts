@@ -114,6 +114,15 @@ describe('resolveDraftTargetProject', () => {
     expect(resolved).toEqual({ projectId: 'newer' });
   });
 
+  it('falls back to the most recently active project when the pane shows a thread outside every project', () => {
+    addProjectLocal(makeProject({ id: 'older', path: '/tmp/old', name: 'Older' }));
+    addProjectLocal(makeProject({ id: 'newer', path: '/tmp/new', name: 'Newer' }));
+    const pane = createThreadPane({ paneId: 'main' });
+    pane.replaceThread(makeThread({ projectId: '', agentId: 'ops', workspacePath: '/config/agents/ops' }));
+
+    expect(resolveDraftTargetProject(pane)).toEqual({ projectId: 'newer' });
+  });
+
   it('falls back to the most recently active project when target pane is null', () => {
     addProjectLocal(makeProject({ id: 'older', path: '/tmp/old', name: 'Older' }));
     addProjectLocal(makeProject({ id: 'newer', path: '/tmp/new', name: 'Newer' }));

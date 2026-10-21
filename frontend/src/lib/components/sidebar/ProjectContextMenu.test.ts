@@ -49,7 +49,6 @@ function emptyPreview(): ProjectDeletionPreview {
     liveRunIds: [],
     worktrees: [],
     hasWork: false,
-    assistants: [],
   };
 }
 
@@ -74,7 +73,6 @@ function workPreview(): ProjectDeletionPreview {
       },
     ],
     hasWork: true,
-    assistants: [],
   };
 }
 

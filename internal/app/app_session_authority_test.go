@@ -172,6 +172,18 @@ func TestDeriveCallerScopeByThreadKind(t *testing.T) {
 	if _, ok, err := app.deriveCallerScope(store.Thread{ID: "loose", Mode: threadmode.ModeChat}); err != nil || ok {
 		t.Fatalf("projectless thread: ok=%t err=%v", ok, err)
 	}
+	// The threads of an assistant live outside every project and are
+	// interactive with no project.
+	for name, thread := range map[string]store.Thread{
+		"current": {ID: "current", Mode: threadmode.ModeChat, AgentID: "a1"},
+		"past":    {ID: "past", Mode: threadmode.ModeChat, PastAgentID: "a1"},
+		"helper":  {ID: "helper", Mode: threadmode.ModeChat, HelperOfAgentID: "a1"},
+	} {
+		scope, ok, err := app.deriveCallerScope(thread)
+		if err != nil || !ok || scope.Kind != transport.ScopeKindInteractive || scope.ProjectID != "" || scope.ThreadID != thread.ID {
+			t.Fatalf("%s thread of an assistant: scope %#v ok=%t err=%v", name, scope, ok, err)
+		}
+	}
 
 	// A workflow thread carries the phase's FROZEN grants.
 	snapshot, err := json.Marshal(engine.Snapshot{Workflow: def.Workflow{

@@ -144,7 +144,9 @@ export const ForkThread = dispatch('ForkThread');
 export const ForkSideChat = dispatch('ForkSideChat');
 export const PromoteScratchThread = dispatch('PromoteScratchThread');
 export const GetStandingAgent = dispatch('GetStandingAgent');
+export const GetAssistantDependents = dispatch('GetAssistantDependents');
 export const CreateAssistant = dispatch('CreateAssistant');
+export const SetAssistantProjects = dispatch('SetAssistantProjects');
 export const StartNextAssistantThread = dispatch('StartNextAssistantThread');
 export const SetStandingAgentNotifyOnTick = dispatch('SetStandingAgentNotifyOnTick');
 export const ListArchivedSpawnedThreads = dispatch('ListArchivedSpawnedThreads');
@@ -295,10 +297,6 @@ export const GetSpinnerFiles = dispatch('GetSpinnerFiles');
 export const GetSoundFiles = dispatch('GetSoundFiles');
 export const PutSoundFile = dispatch('PutSoundFile');
 export const DeleteSoundFile = dispatch('DeleteSoundFile');
-export const GetSkillsLibrary = dispatch('GetSkillsLibrary');
-export const InstallSkills = dispatch('InstallSkills');
-export const UpdateSkills = dispatch('UpdateSkills');
-export const RemoveSkills = dispatch('RemoveSkills');
 export const SetAppearance = dispatch('SetAppearance');
 export const SetWindowBackgroundColor = dispatch('SetWindowBackgroundColor');
 
@@ -515,6 +513,7 @@ export class NetworkSettings {
 
 export const GetProviderStatuses = dispatch('GetProviderStatuses');
 export const GetModelsForProvider = dispatch('GetModelsForProvider');
+export const GetNativeMemoryStatus = dispatch('GetNativeMemoryStatus');
 // Composer command-menu sources + the two Codex thread commands the menu
 // drives. All four are re-exported from stores/bindings.ts, so the mock has to
 // carry them or the browser project's strict ESM loader fails the import.

@@ -21,7 +21,8 @@ test('compact: the agent session and the worker first message fit the phone', as
 
   await harness.open(page);
   await expect(page.getByLabel(/^Could not fully verify/)).toHaveCount(0);
-  await page.getByTestId('thread-row').getByText('Release lead', { exact: true }).tap();
+  // The card, not the agent's row in the workers' project.
+  await page.getByTestId('sidebar-assistants-section').getByTestId('thread-row').getByText('Release lead', { exact: true }).tap();
   await expect(page.getByText('Noted.', { exact: true })).toBeVisible();
   await expect(page.getByText('Your standing instructions')).toHaveCount(0);
   const opening = page.getByTestId('user-message-bubble').filter({ hasText: 'Set up your home.' });

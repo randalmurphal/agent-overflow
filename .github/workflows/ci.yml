@@ -176,8 +176,8 @@ jobs:
 
   # Three shards: internal/store is the longest package by far, app and
   # triage are the next two, and the rest fits beside them. The release
-  # candidate, installer and pstack script tests ride with the rest. The
-  # noremote shard runs every package compiled without remote access
+  # candidate and installer script tests ride with the rest. The noremote
+  # shard runs every package compiled without remote access
   # (docs/architecture/noremote-build.md).
   go-test:
     name: Go tests (${{ matrix.shard }})
@@ -213,23 +213,17 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
-        id: setup
         with:
           go: "true"
           gtk: "true"
           node: "true"
           frontend-dist: "true"
           netns: "true"
-          bun: ${{ matrix.shard == 'rest' }}
           cache-name: test-${{ matrix.shard }}
       - run: make go-test GO_TEST_PKGS="${{ matrix.packages }}" GO_TEST_EXCLUDE="${{ matrix.exclude }}" GO_TEST_FLAGS="${{ matrix.flags }}"
       - name: Release candidate script tests
         if: matrix.shard == 'rest'
         run: bin/ao-netns node --test scripts/release-candidate.test.mjs
-      # Independent of the Go tests, so it reports even when they fail.
-      - name: pstack script tests (bun)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.shard == 'rest' }}
-        run: make pstack-scripts
       - name: Installer download tests
         if: matrix.shard == 'rest'
         run: bin/ao-netns sh scripts/test-install-download.sh

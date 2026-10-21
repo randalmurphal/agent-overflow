@@ -376,6 +376,76 @@ func awaitTransferPhase(t *testing.T, a *App, id, phase string, recovering ...bo
 	return row
 }
 
+func TestAThreadOutsideEveryProjectTransfersWithoutAWorkspace(t *testing.T) {
+	remotetest.Require(t)
+	source, destination := transferTestBackend(t), transferTestBackend(t)
+	ctx := context.Background()
+	// An assistant's thread runs in its home, which stays on this computer.
+	thread := store.Thread{ID: uuid.NewString(), Title: "Ops", Provider: "claude", RuntimeMode: string(provider.RuntimeApprovalRequired), WorkspacePath: t.TempDir(), CreatedAt: 1, UpdatedAt: 1}
+	if err := source.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	destinationID, _ := destination.backendIdentity()
+	refused := uuid.NewString()
+	if _, err := source.BeginThreadTransfer(ctx, thread.ID, refused, destinationID, "move", true); err == nil || !strings.Contains(err.Error(), "no project workspace") {
+		t.Fatalf("a workspace transfer of a thread outside every project = %v, want the refusal", err)
+	}
+	if _, err := source.store.GetThreadTransfer(refused); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("the refused transfer left a row: %v", err)
+	}
+	if _, err := source.BeginThreadTransfer(ctx, thread.ID, uuid.NewString(), destinationID, "move", false); err != nil {
+		t.Fatalf("a transfer without the workspace: %v", err)
+	}
+}
+
+// Moving an assistant's current thread deletes the assistant, so it waits
+// until nothing lives under it: the begin names the past threads and
+// helpers and leaves no transfer, the record and every thread in place.
+func TestMovingAnAssistantWaitsForWhatLivesUnderIt(t *testing.T) {
+	remotetest.Require(t)
+	source, destination := transferTestBackend(t), transferTestBackend(t)
+	ctx := context.Background()
+	home := t.TempDir()
+	thread := func(id, title, helperOf string) {
+		t.Helper()
+		if err := source.store.CreateThread(store.Thread{ID: id, Title: title, Provider: "claude", RuntimeMode: string(provider.RuntimeApprovalRequired),
+			WorkspacePath: home, HelperOfAgentID: helperOf, CreatedAt: 1, UpdatedAt: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	thread("past", "Ops", "")
+	if err := source.store.CreateStandingAgent(store.StandingAgent{ID: "ops", ThreadID: "past", Home: home, CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	thread("current", "Ops", "")
+	if _, err := source.store.HandOffAssistant("past", "current", 2); err != nil {
+		t.Fatal(err)
+	}
+	thread("helper", "Research", "ops")
+	thread("helper-2", "Drafts", "ops")
+	destinationID, _ := destination.backendIdentity()
+
+	refused := uuid.NewString()
+	_, err := source.BeginThreadTransfer(ctx, "current", refused, destinationID, "move", false)
+	if err == nil || !strings.Contains(err.Error(), "This assistant has 1 past thread and 2 helpers, which a move would leave without their assistant. Delete them first") {
+		t.Fatalf("moving an assistant with threads under it = %v, want the refusal naming them", err)
+	}
+	if _, err := source.store.GetThreadTransfer(refused); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("the refused move left a transfer: %v", err)
+	}
+	if _, found, err := source.store.GetStandingAgent("current"); err != nil || !found {
+		t.Fatalf("the record after the refusal = %v %v", found, err)
+	}
+	for _, id := range []string{"past", "helper", "helper-2"} {
+		if err := source.DeleteThread(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := source.BeginThreadTransfer(ctx, "current", uuid.NewString(), destinationID, "move", false); err != nil {
+		t.Fatalf("moving an assistant with nothing under it: %v", err)
+	}
+}
+
 // TestPointerForkTransferReadsThroughItsDeletedSource: the export of a
 // pointer fork reads the rows it shows where they are, here in the holder
 // its deleted source became, and writes nothing: the fork shows the same

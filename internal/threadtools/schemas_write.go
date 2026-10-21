@@ -92,7 +92,7 @@ func homeFilesProperty(field string) map[string]any {
 		"items":       map[string]any{"type": "string", "minLength": 1},
 		"minItems":    1,
 		"maxItems":    agenthome.MaxHomeFiles,
-		"description": fmt.Sprintf("Only for a standing agent: files in your agent home, by path relative to it (for example verification.md), prepended to %s under their names so the receiver has them without you pasting them. Pass verification.md to every worker and reviewer. At most %d files and %d KiB together. Refused for a thread that is not a standing agent, and for a path that is absolute, leaves your home or is not a file there.", field, agenthome.MaxHomeFiles, agenthome.HomeFilesCap>>10),
+		"description": fmt.Sprintf("Only for a standing agent: files in your agent home, by path relative to it (for example memory/release-checks.md), prepended to %s under their names so the receiver has them without you pasting them. At most %d files and %d KiB together. Refused for a thread that is not a standing agent, and for a path that is absolute, leaves your home or is not a file there.", field, agenthome.MaxHomeFiles, agenthome.HomeFilesCap>>10),
 	}
 }
 

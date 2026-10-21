@@ -1787,9 +1787,8 @@ that a later independent batch cannot settle.
 
 Spikes 2026-10-18, codex-cli 0.157.1 against a mock Responses server;
 source read at `rust-v0.143.0`, `rust-v0.153.4` and `rust-v0.162.1`, which
-agree on everything below. Agent Overflow uses these hooks to deliver a
-standing agent's home files
-([standing agents](../specs/standing-agents.md#agent-home-contents));
+agree on everything below. Agent Overflow uses one of these hooks to
+deliver a session's memory ([memory](../specs/memory.md#delivery));
 the mechanism is `internal/provider/codex/session_start_hooks.go`.
 
 ### Registration in the thread config
@@ -1940,7 +1939,11 @@ the text as it was at the last start or compaction.
   with one of the hooks' headings.
 - A fresh `thread/start`, a `thread/resume` that registers a hook for
   `resume`, and a compaction (the `contextCompaction` item, or the
-  deprecated `thread/compacted`) expect a delivery, checked when the turn
+  deprecated `thread/compacted`) expect a delivery. A start or resume
+  arms the expectation before it sends the request: the read loop is
+  live, and a turn the app-server starts as it answers (a queued
+  message, a running turn) can run the hooks before the answer is read.
+  The delivery is checked when the turn
   that ran the hooks, or else the next regular turn, completes with
   status `completed`; an interrupted or failed turn leaves it to the turn
   after (`observeSessionStartHooks`). The check keeps the context each
@@ -1955,6 +1958,58 @@ the text as it was at the last start or compaction.
   start or compaction whose hooks never ran before the thread unloaded
   leaves no receipt that matches, so the next `thread/resume` registers
   them for `resume`.
+
+## Memories and writable roots (verified 0.162.1)
+
+Source read at `rust-v0.162.1`; the feature key, the creation-time
+memory mode and the turn sandbox policy are the same at `rust-v0.153.4`
+and `rust-v0.157.1`, the installed release. No spike. Agent Overflow
+relies on these for its Codex memory setting and its writable memory
+folders ([memory](../specs/memory.md#settings)).
+
+### Memories config
+
+The `config` map of `thread/start`, `thread/resume` and `thread/fork`
+is applied as `-c` overrides would be, dotted keys included
+(`load_with_cli_overrides`, `app-server/src/config_manager.rs`), above
+the user's `config.toml`. A feature the map sets is not changed by the
+app-server's runtime feature enablement (`protected_feature_keys`).
+
+- `features.memories` (`Feature::MemoryTool`, stable, off by default;
+  `features/src/lib.rs`) gates the memory extension's context and tools
+  (`ext/memories/src/extension.rs`), the memories folder as a readable
+  root (`core/src/config/mod.rs`), and the startup pipeline that writes
+  memories from earlier threads for a root session
+  (`start_memories_startup_task`, `memories/write/src/start.rs`).
+- `memories.generate_memories` (default `true`; `config/src/types.rs`)
+  sets the memory mode of a thread Codex creates: a new, cleared or
+  forked thread is stored with `memory_mode` `disabled` when it is
+  `false` (`core/src/session/session.rs`, `rollout/src/recorder.rs`).
+  A resume passes the mode in its parameters, but the local thread store
+  keeps the stored mode of the existing thread
+  (`thread-store/src/local/live_writer.rs`,
+  `thread_metadata_sync.rs`). `thread/memoryMode/set`, experimental and
+  present since `rust-v0.143.0`, changes a stored mode:
+  `{"threadId": "...", "mode": "disabled"}` answers `{}`
+  (`ThreadMemoryModeSetParams`, `v2/thread.rs`). Agent Overflow sends it
+  after a resume when its Codex memory setting is off.
+- The pipeline reads only other threads whose stored mode is `enabled`
+  (`state/src/runtime/memories.rs`), so a `disabled` thread is never
+  mined, whichever session runs it.
+
+### Writable roots on `turn/start`
+
+`turn/start` takes `sandboxPolicy`, which overrides the thread's policy
+for that turn and the turns after it (`TurnStartParams`,
+`app-server-protocol/src/protocol/v2/turn.rs`). Its `workspaceWrite`
+form carries `writableRoots`, absolute paths
+(`v2/permissions.rs`). Each becomes a write entry beside the workspace
+roots and the temporary directories, with an existing `.git`, `.agents`,
+`.codex` or `.aws` in it kept read-only
+(`FileSystemSandboxPolicy::workspace_write`, `protocol/src/permissions.rs`).
+A patch under a writable root is checked as one under the workspace is
+(`is_write_patch_constrained_to_writable_paths`, `core/src/safety.rs`).
+The `readOnly` and `dangerFullAccess` forms take no roots.
 
 ## Manual compaction: `thread/compact/start`
 

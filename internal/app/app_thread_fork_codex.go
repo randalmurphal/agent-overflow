@@ -117,6 +117,8 @@ func (a *App) forkCodexThreadAt(ctx context.Context, source store.Thread, lastTu
 		Env:            a.sessionProcessEnv(source.Provider, nil, aoSessionCredential{}),
 		SourceThreadID: source.SessionRef,
 		LastTurnID:     lastTurnID,
+		// The child is a new thread of this app's.
+		NativeMemoryOff: a.currentSettings().CodexNativeMemoryDisabled,
 	})
 }
 
@@ -161,6 +163,9 @@ func (a *App) withCodexThreadSessionPreparedBy(
 		// agent takes a turn in.
 		Env:         a.sessionProcessEnv(source.Provider, nil, aoSessionCredential{}),
 		EventLogger: a.logger,
+		// The resume loads the thread with the memory mode it states, as
+		// every process that loads one of this app's threads does.
+		NativeMemoryOff: a.currentSettings().CodexNativeMemoryDisabled,
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		return fmt.Errorf("resume source thread: %w", err)

@@ -48,9 +48,9 @@ What this breaks today, on Codex only:
 - The app guide and the browser, thread and workflow tool guides: a setting
   change or a tool switch "reaches the text at the next start or resume"
   (`spawnProviderSession`, `app_session.go`) only for a new thread.
-- A standing agent's session block, which a rename changes. Its home files
-  do not travel in developer instructions: SessionStart hooks deliver them
-  ([home file delivery](standing-agents.md#agent-home-contents)).
+- A standing agent's session block, which a rename changes. Its memory
+  does not travel in developer instructions: one SessionStart hook
+  delivers it ([memory delivery](memory.md#delivery)).
 - The user's own `developer_instructions` in `config.toml`.
 
 A fork has the same defect: `InitialHistory::Forked` also runs
@@ -525,7 +525,7 @@ What must pass unchanged, at both stages:
   `codex-terminal-polls`, `agent-visibility-codex`, `fork-midturn`,
   `session-replace-midturn`, `stale-session-frames`,
   `request-requeue-on-session-end`, `standing-agent-wakes`,
-  `standing-agent-home-contents`, `skills-settings`, `mcp-menu` and
+  `standing-agent-home-contents`, `mcp-menu` and
   `harness-provider-signin`;
 - the Go tests of every package the rows change: `internal/provider/codex`
   (76 test files: `ls internal/provider/codex/*_test.go | wc -l`),

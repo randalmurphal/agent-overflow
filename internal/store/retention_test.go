@@ -94,6 +94,7 @@ func TestThreadIDsOlderThanSkipsAssistants(t *testing.T) {
 		}
 	}
 	mustCreateAssistant(t, s, "past", "/h/past")
+	mustPlaceInHome(t, s, "current", "/h/past")
 	if _, err := s.HandOffAssistant("past", "current", 150); err != nil {
 		t.Fatal(err)
 	}

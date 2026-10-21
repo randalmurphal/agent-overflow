@@ -170,7 +170,8 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (c
 		// mirrors the native revert in its own timeline + draft below. claude-tui
 		// Send clears the composer before its next paste so the prompt the TUI
 		// restored can't fuse with the re-send. The dropped prompt may have
-		// carried the home files a resume delivered.
+		// carried the memory a resume delivered, so the next resume
+		// delivers it again.
 		a.forgetSessionStartReceiptsAfterCut(args.thread.ID)
 	} else {
 		// Mark BEFORE the stop, mirroring the Codex branch: the stop's

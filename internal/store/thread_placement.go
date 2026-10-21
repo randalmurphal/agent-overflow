@@ -10,10 +10,10 @@ import (
 // docs/specs/standing-agents.md ruling 36). The schema makes a row grouped
 // exactly when it has a group, so a group move is the one writer of
 // grouped (SetThreadGroup) and this file writes the other two. Nested needs
-// a link that would nest the thread: a local spawn row naming it, or an
-// assistant past-thread row. A row created later starts standalone or
-// grouped, and the triggers of v159 return a nested row to standalone when
-// its last link is deleted.
+// a local spawn row naming the thread. A thread outside every project (an
+// assistant's own, past or helper thread) takes no placement. A row
+// created later starts standalone or grouped, and the triggers of v159
+// return a nested row to standalone when its last link is deleted.
 
 const (
 	PlacementNested     = "nested"
@@ -29,12 +29,17 @@ var ErrInvalidPlacement = errors.New("store: invalid thread placement")
 var ErrPlacementNeedsGroup = errors.New("store: a grouped placement needs a group; move the thread into one")
 
 // ErrThreadNotSpawned is nested asked for a thread nothing would nest under:
-// no local spawn row names it and it is no assistant's past thread.
+// no local spawn row names it.
 var ErrThreadNotSpawned = errors.New("store: no thread on this computer spawned that thread, so it cannot nest")
 
 // ErrStandingAgentPlaced is a placement asked for an assistant's current
 // thread, whose row is an agent row of its own wherever it sits.
 var ErrStandingAgentPlaced = errors.New("store: an assistant's own thread is a row of its own and takes no placement")
+
+// ErrPlacementOutsideProjects is a placement asked for a thread outside
+// every project, an assistant's helper or past thread, which is always
+// listed under its assistant.
+var ErrPlacementOutsideProjects = errors.New("store: a thread outside every project is listed under its assistant and takes no placement")
 
 // insertedPlacement is the placement a new row is written with: grouped
 // with its group, else standalone. Nothing is inserted nested, because the
@@ -47,10 +52,9 @@ func insertedPlacement(groupID string) string {
 }
 
 // nestingLinkSQL is true when ?1 names a thread that a local spawn row
-// names or that is an assistant's past thread.
-const nestingLinkSQL = `(EXISTS (SELECT 1 FROM thread_requests
-       WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = ?1)
-   OR EXISTS (SELECT 1 FROM agent_past_threads WHERE agent_past_threads.thread_id = ?1))`
+// names.
+const nestingLinkSQL = `EXISTS (SELECT 1 FROM thread_requests
+       WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = ?1)`
 
 // SetThreadPlacement makes each named thread nested or standalone, out of
 // any group it was in, and returns the rows as they now stand. A row whose
@@ -95,16 +99,20 @@ func setThreadPlacementTx(tx *sql.Tx, threadID, placement string) (bool, error) 
 	if err := checkThreadTransferAccess(tx, threadID); err != nil {
 		return false, err
 	}
-	var exists, agent, linked bool
-	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM threads WHERE id = ?1),
-		EXISTS(SELECT 1 FROM agents WHERE thread_id = ?1), `+nestingLinkSQL, threadID).Scan(&exists, &agent, &linked); err != nil {
+	var agent, outside, linked bool
+	err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM agents WHERE thread_id = ?1), project_id IS NULL, `+nestingLinkSQL+`
+		FROM threads WHERE id = ?1`, threadID).Scan(&agent, &outside, &linked)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, ErrThreadGone
+	}
+	if err != nil {
 		return false, fmt.Errorf("store: probe placement of %s: %w", threadID, err)
 	}
 	switch {
-	case !exists:
-		return false, ErrThreadGone
 	case agent:
 		return false, ErrStandingAgentPlaced
+	case outside:
+		return false, ErrPlacementOutsideProjects
 	case placement == PlacementNested && !linked:
 		return false, ErrThreadNotSpawned
 	}

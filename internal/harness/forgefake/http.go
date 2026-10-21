@@ -90,7 +90,25 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		// An attachment is served from the forge's web host, outside the
 		// API quota.
-		resp = e.answerAPI(c, mount != "absolute")
+		limit, limited := RateLimit{}, false
+		if mount != "absolute" {
+			limit, limited = e.rateLimitLocked(c, time.Now())
+		}
+		switch {
+		case limited && limit.Remaining == 0:
+			resp = limit.refusal(time.Now())
+		case c.graphQL != nil:
+			resp = e.graphQL(c)
+		default:
+			routes := githubAPI
+			if c.cli == "glab" {
+				routes = gitlabAPI
+			}
+			resp = e.api(c, routes)
+		}
+		if limited && limit.Remaining > 0 && resp.unhandled == "" {
+			resp = limit.decorate(resp)
+		}
 	}
 	if resp.unhandled != "" && resp.status == 0 {
 		resp.status = http.StatusNotFound
@@ -168,7 +186,6 @@ func (e *Engine) httpCall(r *http.Request, forge, mount, rest string, body []byt
 	case forge == "github" && mount == "rest" && rest != "":
 		endpoint = rest + query
 		c.flags["hostname"] = []string{c.http.host}
-		c.body = body
 	case forge == "github" && mount == "graphql" && rest == "":
 		if r.Method != http.MethodPost || query != "" {
 			return c, "graphql", "GraphQL is a POST with no query string"
@@ -202,33 +219,6 @@ func (e *Engine) httpCall(r *http.Request, forge, mount, rest string, body []byt
 	}
 	c.positional = []string{endpoint}
 	return c, recorded, ""
-}
-
-// answerAPI answers one REST or GraphQL call, from the HTTP mounts or a
-// CLI's api command, under the rate limit of its pool when metered.
-// Callers hold mu.
-func (e *Engine) answerAPI(c *call, metered bool) response {
-	limit, limited := RateLimit{}, false
-	if metered {
-		limit, limited = e.rateLimitLocked(c, time.Now())
-	}
-	var resp response
-	switch {
-	case limited && limit.Remaining == 0:
-		return limit.refusal(time.Now())
-	case c.graphQL != nil:
-		resp = e.graphQL(c)
-	default:
-		routes := githubAPI
-		if c.cli == "glab" {
-			routes = gitlabAPI
-		}
-		resp = e.api(c, routes)
-	}
-	if limited && limit.Remaining > 0 && resp.unhandled == "" {
-		resp = limit.decorate(resp)
-	}
-	return resp
 }
 
 // authorized reports whether r carries the fixed token in either header

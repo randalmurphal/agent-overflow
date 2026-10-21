@@ -7,14 +7,14 @@
 // floor, and nothing in the header overflows the pane.
 import { test, expect, type SeedResult } from './fixtures.js';
 import { captureAgentMessage } from './wake-rows-helpers.js';
-import { agentRow, openAgents } from './agents-tray-helpers.js';
+import { agentRow, openAgents, seedLeadWithWorker } from './agents-tray-helpers.js';
 import { awaitTurnCompleted, plainScenario, setScenario, type ProviderName } from './thread-tools-helpers.js';
-import { LEAD, WORKER, expectHeadersShareTheWidth, expectStripFits, pane, seedLeadWithWorker } from './companion-pane-headers-helpers.js';
+import { LEAD, WORKER, expectHeadersShareTheWidth, expectStripFits, pane } from './companion-pane-headers-helpers.js';
 
 for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
   test(`${provider}: an agent thread companion fits beside its source at 1280 with both titles readable`, async ({ harness, page }) => {
     test.setTimeout(120_000);
-    const { token } = await seedLeadWithWorker(harness, `companion-headers-${provider}`, provider);
+    const { token } = await seedLeadWithWorker(harness, { tag: `companion-headers-${provider}`, provider, lead: LEAD, worker: WORKER });
     await page.setViewportSize({ width: 1280, height: 720 });
     await harness.open(page);
     await openAgents(page, LEAD);

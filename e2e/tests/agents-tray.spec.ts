@@ -18,7 +18,7 @@
 // cross-computer rows are thread-tools-paired.spec.ts's.
 import { test, expect, type SeedResult } from './fixtures.js';
 import { rename } from 'node:fs/promises';
-import { advanceGate, awaitGate, awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario, type ProviderName } from './thread-tools-helpers.js';
+import { advanceGate, awaitGate, awaitMockInput, awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario, type ProviderName } from './thread-tools-helpers.js';
 import { capture } from './wake-rows-helpers.js';
 import { scrollTimelineToTop } from './standing-agent-home-contents-helpers.js';
 import {
@@ -31,7 +31,6 @@ import {
   agentsBody,
   heldSendIds,
   ledgerRow,
-  mockInput,
   mockInterrupt,
   openAgents,
   seedAgentsTree,
@@ -118,8 +117,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     // person stopped, takes no new turn for it.
     const childInterrupted = mockInterrupt(harness, tree.childPath);
     const grandInterrupted = mockInterrupt(harness, tree.grandPath);
-    const leadWoken = mockInput(harness, tree.leadPath, [started.childToken, USER_STOP]);
-    const childWoken = mockInput(harness, tree.childPath, [started.grandToken], 20_000).then(() => true, () => false);
+    const leadWoken = awaitMockInput(harness, { cwd: tree.leadPath, includes: [started.childToken, USER_STOP] });
+    const childWoken = awaitMockInput(harness, { cwd: tree.childPath, includes: [started.grandToken], timeoutMs: 20_000 }).then(() => true, () => false);
     await child.getByTestId('agent-tray-row-stop').click();
     await expect(page.getByTestId('toast-message').filter({ hasText: `Stopped ${CHILD}` }))
       .toHaveText(`Stopped ${CHILD}: its turn, 1 background task and 1 agent of its own.`, { timeout: 30_000 });

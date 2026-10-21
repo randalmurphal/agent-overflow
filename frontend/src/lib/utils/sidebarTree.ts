@@ -31,18 +31,17 @@
 //     is the newest of its own and its children's.
 //
 // A standing agent (docs/specs/standing-agents.md, "Sidebar"): an
-// assistant's current thread (`agentId`) is an agent node, and its children
-// are the live nested threads whose `spawnedByThreadId` names it, unless
-// they are assistants themselves, and its nested past threads that are not
-// archived. A grouped or standalone child is a member of its group or a
+// assistant's current thread (`agentId`) is an agent node, in one of two
+// containers. Its card, in the Assistants section, holds what lives under
+// it (cardChild): its helpers and its past threads. Its row in a project
+// holds the live nested threads it spawned there that are not assistants
+// themselves. A grouped or standalone child is a member of its group or a
 // plain row, like any thread there (ruling 36). The backend keeps an agent
-// out of groups; a `groupId` or pin left on an agent's row is ignored here. An agent whose
-// row is not in the list (archived, or filtered out) nests nothing: its
-// spawned threads render as plain rows. The builder runs per project, but
-// what it receives is the sidebar's per-project bucket, and the bucketing
-// (ProjectsSection) files a nested thread an agent spawned into another
-// project under the agent's project. So a child of another project nests here, and
-// its own project's list never sees it.
+// out of groups; a `groupId` or pin left on an agent's row is ignored
+// here. An agent whose row is not in the sidebar (archived, or filtered
+// out) nests nothing: its project children render as plain rows. The
+// builder runs per list, on what the bucketing (sidebarBuckets.ts) filed
+// there.
 
 import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
 import type { Thread, ThreadGroup, ThreadPlacement } from '../types/models';
@@ -145,8 +144,13 @@ export interface SidebarAgentTreeNode extends SidebarTreeNodeBase {
   kind: 'agent';
   /** The standing agent's own thread. */
   thread: Thread;
-  /** The live threads it spawned, sorted. */
+  /** The live threads this row holds, sorted. */
   children: SidebarThreadTreeNode[];
+  /**
+   * The container this row is: '' for the assistant's card, or the sidebar
+   * entry of the project whose list holds this row.
+   */
+  scope: string;
 }
 
 /**
@@ -177,30 +181,65 @@ export function threadPlacement(
   return thread.groupId ? 'grouped' : 'nested';
 }
 
+type NestingFields = Pick<Thread, 'agentId' | 'pastAgentId' | 'helperOfAgentId' | 'spawnedByThreadId' | 'placement' | 'groupId' | 'projectId'>;
+
 /**
- * The thread id of the agent row that would nest this thread: its spawner,
- * or, for an assistant's past thread, that assistant's current thread
- * (currentThreadIdOf). Undefined for an agent's own row, for a thread no
- * agent spawned, and for one placed in a group or as a plain row
- * (ruling 36). Whether that agent row is in the sidebar is the caller's to
- * check.
+ * The assistant on whose card this thread lists (ruling 38): the one it is
+ * a helper or a past thread of. Both live outside every project and have
+ * no other place, so placement does not apply. Undefined for any other
+ * thread.
+ */
+export function cardOwnerAgentId(thread: NestingFields): string | undefined {
+  if (thread.agentId) return undefined;
+  return thread.helperOfAgentId || thread.pastAgentId || undefined;
+}
+
+/**
+ * The thread id of the agent row that would nest this thread: its
+ * assistant's current thread (currentThreadIdOf) for a card child
+ * (cardOwnerAgentId), else its spawner while it is nested. Undefined for
+ * an agent's own row, for a thread no agent spawned, and for one placed in
+ * a group or as a plain row (ruling 36). Whether that agent row is in the
+ * sidebar is the caller's to check.
  */
 export function nestingAgentThreadId(
-  thread: Pick<Thread, 'agentId' | 'pastAgentId' | 'spawnedByThreadId' | 'placement' | 'groupId'>,
+  thread: NestingFields,
   currentThreadIdOf: (agentId: string) => string | undefined,
 ): string | undefined {
   if (thread.agentId) return undefined;
+  const owner = cardOwnerAgentId(thread);
+  if (owner) return currentThreadIdOf(owner);
   if (threadPlacement(thread) !== 'nested') return undefined;
-  if (thread.pastAgentId) return currentThreadIdOf(thread.pastAgentId);
   return thread.spawnedByThreadId || undefined;
 }
 
 /**
- * The key of an agent row's sidebar state (its fold, its done footer): the
- * assistant's id, so a handoff to a new thread keeps it.
+ * The key of an assistant's sidebar state that follows it across a
+ * handoff: the assistant's id.
  */
 export function assistantKey(thread: Pick<Thread, 'id' | 'agentId'>): string {
   return thread.agentId || thread.id;
+}
+
+/**
+ * The key of one agent row's own state (its fold, its done footer, its
+ * member bound): the assistant's key for its card, and that key with the
+ * project entry for its row in a project (agentProjectRowKey), so each row
+ * folds on its own.
+ */
+export function agentContainerKey(node: Pick<SidebarAgentTreeNode, 'thread' | 'scope'>): string {
+  const key = assistantKey(node.thread);
+  return node.scope ? agentProjectRowKey(key, node.scope) : key;
+}
+
+/** The container key of an assistant's row in the project with this sidebar entry. */
+export function agentProjectRowKey(agentKey: string, entry: string): string {
+  return `${agentKey}@${entry}`;
+}
+
+/** Whether a container key is one of this assistant's rows: its card or a row in a project. */
+export function isAgentRowKey(containerKey: string, agentKey: string): boolean {
+  return containerKey === agentKey || containerKey.startsWith(agentProjectRowKey(agentKey, ''));
 }
 
 export interface BuildSidebarThreadTreeInput {
@@ -224,6 +263,18 @@ export interface BuildSidebarThreadTreeInput {
    * Defaults to the row's own updatedAt.
    */
   activityOf?: (thread: Thread) => number;
+  /**
+   * The agent rows this list holds. Defaults to the standing agents among
+   * `threads`.
+   */
+  agents?: readonly Thread[];
+  /**
+   * The container the list is: '' (the default) for the Assistants
+   * section, where every agent has a card; a project's sidebar entry for
+   * its list, where `agents` are the ones with a row there
+   * (sidebarBuckets).
+   */
+  scope?: string;
   /**
    * The name of the thread's computer while it is unreachable, else null.
    * Its status is the last one reported and is shown still and attributed
@@ -414,11 +465,11 @@ function compareTreeNodes(left: SidebarTreeNode, right: SidebarTreeNode): number
  * comparator, so a group with a running member rises within the group
  * section. Members sort by the same comparator, their own pins included.
  *
- * Agents: an assistant's current thread is an agent node in the same
- * section, and a nested thread it spawned or a nested past thread of the
- * assistant is built at depth 1 under it. A nested thread has no group. An
- * assistant never nests under the assistant that spawned it: it is an agent
- * row of its own.
+ * Agents: each of `agents` is an agent node in the same section, and a
+ * thread that nests under it (nestingAgentThreadId) is built at depth 1
+ * under it. A nested thread has no group. An assistant never nests under
+ * the assistant that spawned it: it is an agent row of its own. In a
+ * project's list an agent holding nothing there has no row.
  */
 export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): SidebarTreeNode[] {
   const visibleThreads = input.threads.filter((thread) => !isHiddenThreadMode(thread.mode));
@@ -467,6 +518,7 @@ export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): Side
     };
   };
 
+  const scope = input.scope ?? '';
   const buildAgentNode = (agent: Thread, children: SidebarThreadTreeNode[]): SidebarAgentTreeNode => {
     const own = buildThreadNode(agent, 0);
     const display = groupDisplay([own, ...children]);
@@ -479,6 +531,7 @@ export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): Side
       thread: agent,
       depth: 0,
       children,
+      scope,
       ownLiveStatus: own.ownLiveStatus,
       ownStatus: own.ownStatus,
       displayLiveStatus: display.displayLiveStatus,
@@ -490,7 +543,7 @@ export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): Side
   };
 
   const groups = input.groups ?? [];
-  const agents = visibleThreads.filter(isStandingAgent);
+  const agents = input.agents ?? visibleThreads.filter(isStandingAgent);
   if (groups.length === 0 && agents.length === 0) {
     return visibleThreads.map((t) => buildThreadNode(t, 0)).sort(compareTreeNodes);
   }

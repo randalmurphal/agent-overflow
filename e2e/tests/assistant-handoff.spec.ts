@@ -16,6 +16,8 @@ import type { HarnessApp } from '../src/harness.js';
 import { captureAgentMessage, trayRow } from './wake-rows-helpers.js';
 import { methodIdByName } from './offhost-helpers.js';
 import {
+  assistantHome,
+  awaitMockInput,
   awaitToolAnswer,
   awaitTurnCompleted,
   plainScenario,
@@ -26,15 +28,6 @@ import {
 } from './thread-tools-helpers.js';
 
 /** The next input a mock in cwd takes whose text includes `contains`. */
-async function inputIn(harness: HarnessApp, cwd: string, contains: string): Promise<string> {
-  const event = await harness.waitForEvent<{ cwd: string; report: { kind: string; input?: string } }>(
-    'harness:mock',
-    (ev) => ev.report.kind === 'user_input' && ev.cwd === cwd && (ev.report.input ?? '').includes(contains),
-    60_000,
-  );
-  return event.report.input ?? '';
-}
-
 /** The assistant's current thread: its live row named `name`. */
 async function currentThread(harness: HarnessApp, name: string, not: string): Promise<string> {
   let id = '';
@@ -57,8 +50,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const seed = await harness.rpc<SeedResult>('HarnessSeed', {
       projects: [{ name: `assistant-handoff-${provider}`, repo: {}, threads: [{ title: 'Ops', provider, assistant: true }] }],
     });
-    const { path: cwd, threadIds } = seed.projects[0];
-    const [first] = threadIds;
+    const [first] = seed.projects[0].threadIds;
+    // Every thread of the assistant runs in its home.
+    const cwd = await assistantHome(harness, first);
 
     // The first thread registers a loop.
     await setScenario(harness, cwd, threadToolsScenario({
@@ -78,12 +72,12 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await harness.open(page);
     await row(page, first).click();
     await expect(page.getByTestId('chat-header-title')).toHaveText('Ops');
-    const handedOff = inputIn(harness, cwd, `The user replaced your previous thread ${first} with this one`);
+    const handedOff = awaitMockInput(harness, { cwd, includes: `The user replaced your previous thread ${first} with this one` });
     await page.getByTestId('chat-header-next-thread').filter({ visible: true }).click();
 
     // The successor opens in the same pane with the handoff block.
     const second = await currentThread(harness, 'Ops', first);
-    const input = await handedOff;
+    const input = (await handedOff).report.input ?? '';
     expect(input).toContain('You are "Ops", a standing agent.');
     expect(input).toContain('your 1 loop or watch');
     expect(input).toContain(`Read your previous thread with thread_show (thread_id ${first})`);
@@ -118,7 +112,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(trayRow(page, 'loop', 'board check')).toBeVisible();
 
     // ---- The sidebar row's button does the same from the list.
-    const third = inputIn(harness, cwd, `The user replaced your previous thread ${second} with this one`);
+    const third = awaitMockInput(harness, { cwd, includes: `The user replaced your previous thread ${second} with this one` });
     await row(page, second).hover();
     await row(page, second).getByTestId('thread-row-next-thread').click();
     await third;
@@ -133,7 +127,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const seed = await harness.rpc<SeedResult>('HarnessSeed', {
       projects: [{ name: `assistant-handoff-twice-${provider}`, repo: {}, threads: [{ title: 'Ops', provider, assistant: true }] }],
     });
-    const { path: cwd, threadIds: [first] } = seed.projects[0];
+    const [first] = seed.projects[0].threadIds;
+    const cwd = await assistantHome(harness, first);
     await setScenario(harness, cwd, plainScenario({ name: `assistant-handoff-twice-${provider}`, provider, texts: ['Picked up.'], afterTurns: 'repeatLast', echoUserMessage: true }));
     const turn = awaitTurnCompleted(harness, first);
     await harness.rpc('SendMessage', first, 'hello', null);

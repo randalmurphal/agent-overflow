@@ -7,7 +7,8 @@ import (
 )
 
 // v155 over a populated database: every standing_agents row becomes an
-// assistant whose id is its thread's, with its home and tick setting kept;
+// assistant whose id is its thread's, with its home and tick setting kept,
+// serving its thread's project, and its thread moves into the home;
 // standing_agents is gone; every request reads as made by its caller; every
 // remote watch reads as launched by the thread that owns it; and the new
 // tables cascade as the spec says.
@@ -20,8 +21,10 @@ func TestMigrationV155AgentRecords(t *testing.T) {
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
 	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at) VALUES ('p', '/p', 'p', 1, 1)`)
+	mustExec(t, db, `INSERT INTO thread_groups (id, project_id, name, created_at, updated_at) VALUES ('g', 'p', 'Release', 1, 1)`)
+	mustExec(t, db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, worktree_path, branch, group_id, created_branch, created_head_commit, model, created_at, updated_at, archived) VALUES
+		('lead', 'p', 'Lead', 'claude', '/p/.worktrees/lead', '/p/.worktrees/lead', 'lead', 'g', 'main', 'abc', '', 1, 1, 0)`)
 	mustExec(t, db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at, archived) VALUES
-		('lead', 'p', 'Lead', 'claude', '/p', '', 1, 1, 0),
 		('quiet', 'p', 'Quiet', 'codex', '/p', '', 1, 1, 1),
 		('worker', 'p', 'Worker', 'claude', '/p', '', 1, 1, 0),
 		('next', 'p', 'Next', 'claude', '/p', '', 1, 1, 0)`)
@@ -46,6 +49,18 @@ func TestMigrationV155AgentRecords(t *testing.T) {
 		t.Fatal(err)
 	} else if want := []string{"lead|lead|/config/agents/lead|1||10", "quiet|quiet|/config/agents/quiet|0||20"}; !slices.Equal(got, want) {
 		t.Errorf("agents = %q, want %q", got, want)
+	}
+	if got, err := queryIDs(db, `SELECT agent_id || '|' || project_id FROM agent_projects ORDER BY agent_id`); err != nil || !slices.Equal(got, []string{"lead|p", "quiet|p"}) {
+		t.Errorf("agent_projects = %q %v", got, err)
+	}
+	const placed = `id || '|' || COALESCE(project_id, '') || '|' || workspace_path || '|' || COALESCE(worktree_path, '') || '|' ||
+		COALESCE(branch, '') || '|' || COALESCE(group_id, '') || '|' || created_branch || '|' || created_head_commit`
+	if got, err := queryIDs(db, `SELECT `+placed+` FROM threads ORDER BY id`); err != nil {
+		t.Fatal(err)
+	} else if want := []string{
+		"lead||/config/agents/lead|||||", "next|p|/p|||||", "quiet||/config/agents/quiet|||||", "worker|p|/p|||||",
+	}; !slices.Equal(got, want) {
+		t.Errorf("threads = %q, want %q", got, want)
 	}
 	var left int
 	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name = 'standing_agents'`).Scan(&left); err != nil || left != 0 {

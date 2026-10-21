@@ -2,7 +2,9 @@ package harnessrpc
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -197,6 +199,60 @@ func TestHarnessSeedMakesAnAssistant(t *testing.T) {
 	worker, err := host.store.GetThread(ids[1])
 	if err != nil || worker.SpawnedByThreadID != ids[0] || !worker.SpawnedByAgent || worker.Placement != store.PlacementNested {
 		t.Fatalf("worker = spawnedBy %q agent %v placement %s (%v)", worker.SpawnedByThreadID, worker.SpawnedByAgent, worker.Placement, err)
+	}
+}
+
+// A seeded assistant lives outside every project, so the project cascade
+// leaves it; the reset deletes it and every other thread outside a
+// project, archived ones included.
+func TestHarnessResetDeletesThreadsOutsideProjects(t *testing.T) {
+	receiver, host := newHarnessTestHost(t)
+	result, err := Seed(receiver, HarnessSeedSpec{Projects: []HarnessSeedProject{{
+		Name:    "assistant-reset",
+		Repo:    &harness.RepoSpec{},
+		Threads: []HarnessSeedThread{{Title: "Ops", Assistant: true}},
+	}}})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	ops := result.Projects[0].ThreadIDs[0]
+	now := time.Now().UnixMilli()
+	if err := host.store.CreateThread(store.Thread{ID: "loose", Title: "Loose", Provider: "claude", WorkspacePath: t.TempDir(), CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := host.store.ArchiveThread("loose"); err != nil {
+		t.Fatal(err)
+	}
+	if outside, err := host.store.ThreadIDsOutsideProjects(); err != nil || len(outside) != 2 || outside[0] != ops {
+		t.Fatalf("before the reset: %v, %v; want the assistant first of two", outside, err)
+	}
+	if err := receiver.HarnessReset(); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	if outside, err := host.store.ThreadIDsOutsideProjects(); err != nil || len(outside) != 0 {
+		t.Fatalf("after the reset: %v, %v", outside, err)
+	}
+	if _, found, err := host.store.GetStandingAgent(ops); err != nil || found {
+		t.Fatalf("the assistant survived the reset: %v %v", found, err)
+	}
+}
+
+// The reset removes the user and project memory scopes, which no thread
+// owns.
+func TestHarnessResetRemovesTheMemoryScopes(t *testing.T) {
+	receiver, _ := newHarnessTestHost(t)
+	fact := filepath.Join(receiver.config.DataDir, "memory", "user", "a.md")
+	if err := os.MkdirAll(filepath.Dir(fact), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fact, []byte("---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := receiver.HarnessReset(); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(filepath.Dir(fact))); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the memory scopes survived the reset: %v", err)
 	}
 }
 

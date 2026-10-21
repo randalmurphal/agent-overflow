@@ -17,8 +17,8 @@ import (
 )
 
 var testSessionStartHooks = []provider.SessionStartHook{
-	{Label: "instructions.md", Command: `'/opt/ao' __agent-home-context 'instructions.md' '/h'`, Heading: "## Your standing instructions", Ending: "[End of instructions.md]", Stamp: "[Delivered at "},
-	{Label: "MEMORY.md", Command: `'/opt/ao' __agent-home-context 'MEMORY.md' '/h'`, Heading: "## Your memory index", Ending: "[End of MEMORY.md]", Stamp: "[Delivered at "},
+	{Label: "first hook", Command: `'/opt/ao' deliver 'first' '/h'`, Heading: "## First hook", Ending: "[End of first hook]", Stamp: "[Delivered at "},
+	{Label: "second hook", Command: `'/opt/ao' deliver 'second' '/h'`, Heading: "## Second hook", Ending: "[End of second hook]", Stamp: "[Delivered at "},
 }
 
 // The hooks join the relay's SessionStart entry, each as a matcher group of
@@ -118,8 +118,8 @@ func hookBlock(contexts ...string) string {
 }
 
 const (
-	instructionsContext = "## Your standing instructions\n\nRole\n\n[End of instructions.md]"
-	memoryContext       = "## Your memory index\n\n- a\n\n[End of MEMORY.md]"
+	instructionsContext = "## First hook\n\nRole\n\n[End of first hook]"
+	memoryContext       = "## Second hook\n\n- a\n\n[End of second hook]"
 )
 
 // stampedAt is context as a run at at delivers it, stamped under its
@@ -159,7 +159,7 @@ func TestTheFirstMainRequestSettlesTheStart(t *testing.T) {
 
 	s, rec = sessionStartTestSession(t, "")
 	s.observeMainRequest(requestBody(hookBlock(memoryNow)))
-	onlyWarning(t, rec.take(), "instructions.md did not reach this session after its start: ")
+	onlyWarning(t, rec.take(), "first hook did not reach this session after its start: ")
 	s.observeMainRequest(requestBody())
 	if events := rec.take(); len(events) > 0 {
 		t.Fatalf("a later request settled again: %+v", events)
@@ -182,12 +182,12 @@ func TestTheFirstMainRequestSettlesAResume(t *testing.T) {
 		hookBlock(instructionsOld, memoryOld),
 		hookBlock(instructionsOld, memoryOld),
 		hookBlock(memoryNow)))
-	onlyWarning(t, rec.take(), "instructions.md did not reach this session after its resume: ")
+	onlyWarning(t, rec.take(), "first hook did not reach this session after its resume: ")
 
 	// This run's hook failed: an earlier run's block is not its delivery.
 	s, rec = sessionStartTestSessionWith(t, "sess-1", resumingHooks(1), nil)
 	s.observeMainRequest(requestBody(hookBlock(instructionsOld, memoryOld)))
-	onlyWarning(t, rec.take(), "MEMORY.md did not reach this session after its resume: ")
+	onlyWarning(t, rec.take(), "second hook did not reach this session after its resume: ")
 
 	s, rec = sessionStartTestSessionWith(t, "sess-1", resumingHooks(1), nil)
 	s.observeMainRequest(requestBody(hookBlock(memoryNow), "the user's prompt"))
@@ -212,7 +212,7 @@ func TestTheMainRequestKeepsTheReceipts(t *testing.T) {
 	if events := rec.take(); len(events) > 0 {
 		t.Fatalf("events: %+v", events)
 	}
-	if want := []string{"sess-1 instructions.md " + instructionsNow, "sess-1 MEMORY.md " + later}; strings.Join(kept, "\n") != strings.Join(want, "\n") {
+	if want := []string{"sess-1 first hook " + instructionsNow, "sess-1 second hook " + later}; strings.Join(kept, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("kept %q, want %q", kept, want)
 	}
 }
@@ -240,7 +240,7 @@ func TestTheMainRequestAfterACompactionSettlesIt(t *testing.T) {
 	}
 	s.finalizeCompaction("manual", "")
 	s.observeMainRequest(requestBody("an older summary", hookBlock(instructionsOld, memoryOld)))
-	onlyWarning(t, rec.take(), "instructions.md and MEMORY.md did not reach this session after its compaction: ")
+	onlyWarning(t, rec.take(), "first hook and second hook did not reach this session after its compaction: ")
 }
 
 // Only a hook block's context stamped after the expectation opened counts:
@@ -253,13 +253,13 @@ func TestOnlyAStampedHookBlockDelivers(t *testing.T) {
 		texts []string
 		want  string
 	}{
-		"quoted in a summary":      {[]string{"Summary: the agent read " + instructionsNow + " and " + memoryNow}, "instructions.md and MEMORY.md "},
-		"an earlier run's block":   {[]string{hookBlock(instructionsOld, memoryOld)}, "instructions.md and MEMORY.md "},
-		"no stamp":                 {[]string{hookBlock(instructionsContext, memoryNow)}, "instructions.md did not"},
-		"a stamp that is no time":  {[]string{hookBlock(strings.Replace(instructionsNow, "T", "x", 1), memoryNow)}, "instructions.md did not"},
-		"after the block's string": {[]string{hookBlock(instructionsNow), memoryNow}, "MEMORY.md did not"},
+		"quoted in a summary":      {[]string{"Summary: the agent read " + instructionsNow + " and " + memoryNow}, "first hook and second hook "},
+		"an earlier run's block":   {[]string{hookBlock(instructionsOld, memoryOld)}, "first hook and second hook "},
+		"no stamp":                 {[]string{hookBlock(instructionsContext, memoryNow)}, "first hook did not"},
+		"a stamp that is no time":  {[]string{hookBlock(strings.Replace(instructionsNow, "T", "x", 1), memoryNow)}, "first hook did not"},
+		"after the block's string": {[]string{hookBlock(instructionsNow), memoryNow}, "second hook did not"},
 		"past an escaped quote":    {[]string{hookBlock(`a "quoted" word`, instructionsNow, memoryNow)}, ""},
-		"cut short":                {[]string{hookBlock(instructionsNow, strings.TrimSuffix(memoryNow, "[End of MEMORY.md]"))}, ""},
+		"cut short":                {[]string{hookBlock(instructionsNow, strings.TrimSuffix(memoryNow, "[End of second hook]"))}, ""},
 	} {
 		s, rec := sessionStartTestSession(t, "sess-1")
 		s.finalizeCompaction("auto", "")
@@ -281,8 +281,8 @@ func TestOnlyAStampedHookBlockDelivers(t *testing.T) {
 	var logged []string
 	s.logf = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
 	s.finalizeCompaction("auto", "")
-	s.observeMainRequest([]byte(`{"messages":[{"role":"user","content":"` + sessionStartMarker + `## Your memory index\x"}]}`))
-	onlyWarning(t, rec.take(), "instructions.md and MEMORY.md did not reach")
+	s.observeMainRequest([]byte(`{"messages":[{"role":"user","content":"` + sessionStartMarker + `## Second hook\x"}]}`))
+	onlyWarning(t, rec.take(), "first hook and second hook did not reach")
 	if !slices.ContainsFunc(logged, func(line string) bool {
 		return strings.Contains(line, "SessionStart context block in a model request is not a JSON string")
 	}) {

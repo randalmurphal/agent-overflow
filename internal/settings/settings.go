@@ -118,14 +118,28 @@ type Settings struct {
 	// the chat pane renders and which built-in tool servers are on
 	// (internal/app/app_agent_guide.go). Default on; spawn-only, so a
 	// change reaches a session at its next start or resume.
-	AgentGuideEnabled bool   `json:"agentGuideEnabled"`
-	ConfirmArchive    bool   `json:"confirmArchive"`
-	ConfirmDelete     bool   `json:"confirmDelete"`
-	AutoPinNewThreads bool   `json:"autoPinNewThreads"`
-	ClaudeBinaryPath  string `json:"claudeBinaryPath"`
-	CodexBinaryPath   string `json:"codexBinaryPath"`
-	ClaudeEnabled     bool   `json:"claudeEnabled"`
-	CodexEnabled      bool   `json:"codexEnabled"`
+	AgentGuideEnabled bool `json:"agentGuideEnabled"`
+	// SharedMemoryEnabled delivers project and user memory to every
+	// thread's sessions, not only to assistants' (docs/specs/memory.md,
+	// "Settings"). Default off; spawn-only, so a change reaches a session at
+	// its next start or resume.
+	SharedMemoryEnabled bool `json:"sharedMemoryEnabled"`
+	// ClaudeNativeMemoryDisabled turns Claude Code's own auto memory off in
+	// this app's Claude and claude-tui sessions, through their inline
+	// settings; the user's settings files are never touched. Spawn-only.
+	ClaudeNativeMemoryDisabled bool `json:"claudeNativeMemoryDisabled"`
+	// CodexNativeMemoryDisabled turns Codex's own memories off in this app's
+	// Codex threads, through their thread config, so a thread neither uses
+	// memories nor is mined for them. Spawn-only; a loaded thread keeps the
+	// memory mode it was loaded with.
+	CodexNativeMemoryDisabled bool   `json:"codexNativeMemoryDisabled"`
+	ConfirmArchive            bool   `json:"confirmArchive"`
+	ConfirmDelete             bool   `json:"confirmDelete"`
+	AutoPinNewThreads         bool   `json:"autoPinNewThreads"`
+	ClaudeBinaryPath          string `json:"claudeBinaryPath"`
+	CodexBinaryPath           string `json:"codexBinaryPath"`
+	ClaudeEnabled             bool   `json:"claudeEnabled"`
+	CodexEnabled              bool   `json:"codexEnabled"`
 
 	// ClaudeTUIEnabled surfaces the claude-tui provider — the real
 	// interactive Claude TUI driven inside a PTY — in the model/provider

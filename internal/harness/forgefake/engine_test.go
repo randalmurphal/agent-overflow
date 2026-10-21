@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -152,12 +151,11 @@ func TestUnknownInvocationsFailLoudlyWithTheFullArgv(t *testing.T) {
 	e, _ := seeded(t, Options{})
 	cases := [][]string{
 		{"gh", "pr", "create", "--title", "t", "--body", "b", "--web"},
-		{"gh", "pr", "view", "--repo", "acme/widgets", "7", "--json", "title,labels"},
+		// GitHub reads are HTTP requests; the gh CLI answers only pr create.
+		{"gh", "pr", "view", "--repo", "acme/widgets", "7", "--json", "title"},
 		{"gh", "pr", "list", "--head", "feature", "--state", "open", "--json", "url"},
-		{"gh", "pr", "comment", "7", "--repo", "acme/widgets", "--body", "b"},
 		{"gh", "api", "user", "--jq", ".login"},
-		{"gh", "api", "--hostname", "github.com", "repos/acme/widgets", "--jq", ".id"},
-		{"gh", "api", "--hostname", "github.com", "-X", "POST", "repos/acme/widgets/issues/7/comments", "-f", "body=b"},
+		{"gh", "api", "--hostname", "github.com", "repos/acme/widgets"},
 		{"gh", "run", "view", "1", "--repo", "acme/widgets", "--json", "jobs"},
 		{"glab", "mr", "create", "--title", "t"},
 		{"glab", "api", "--hostname", "gitlab.com", "projects/grp%2Fsub%2Ftool/merge_requests/3/discussions?per_page=50&page=1&sort=asc", "--include"},
@@ -400,18 +398,6 @@ func TestCreateOpensAPullForTheCheckoutsBranch(t *testing.T) {
 	}
 	if inv := gh("pr", "create", "--title", "Filled", "--body", "", "--fill"); !strings.Contains(inv.Stderr, "unhandled") {
 		t.Errorf("gh pr create --fill = %q, want unhandled", inv.Stderr)
-	}
-}
-
-// glab api --paginate prints each page's array straight after the last.
-func TestGlabAPIPrintsPagesBackToBack(t *testing.T) {
-	e := New(Options{APIToken: testAPIToken})
-	if _, err := seedJSON(e, `{"repos":[{"forge":"gitlab","project":"grp/tool","pulls":[{"number":1,"title":"x","comments":[{"id":1,"body":"a"},{"id":2,"body":"b"}]}]}]}`); err != nil {
-		t.Fatalf("Seed: %v", err)
-	}
-	paged := e.Handle(control.ForgeCall{CLI: "glab", Cwd: "/work", Args: []string{"api", "--hostname", "gitlab.com", "--paginate", "projects/grp%2Ftool/merge_requests/1/discussions?per_page=1"}})
-	if paged.ExitCode != 0 || !regexp.MustCompile(`^\[\{[^\n]*\}\]\[\{[^\n]*\}\]$`).Match(paged.Stdout) {
-		t.Fatalf("glab api --paginate = %d %q %q, want two arrays back to back", paged.ExitCode, paged.Stdout, paged.Stderr)
 	}
 }
 
@@ -1616,11 +1602,6 @@ func TestGitLabMergeRequestsByIID(t *testing.T) {
 	}
 	if opened := httpRequest(t, srv, "GET", "gitlab.com", "/gitlab/api/v4/projects/g%2Fr/merge_requests?iids%5B%5D=1&state=opened", "", nil); opened.status != 404 {
 		t.Fatalf("iids with state=opened = %+v, want unhandled", opened)
-	}
-	for _, filter := range []string{"author_username=ao-author", "scope=created_by_me"} {
-		if filtered := httpRequest(t, srv, "GET", "gitlab.com", "/gitlab/api/v4/projects/g%2Fr/merge_requests?iids%5B%5D=1&state=all&"+filter, "", nil); filtered.status != 404 {
-			t.Fatalf("iids with %s = %+v, want unhandled", filter, filtered)
-		}
 	}
 }
 

@@ -68,7 +68,7 @@ func (s *Session) ForkAt(ctx context.Context, lastTurnID string) (string, error)
 	// A fork is a new thread and resolves developer instructions from
 	// config like any cold start, so the composed value has to ride the
 	// request or the child loses it.
-	return forkThreadWith(ctx, s.sendRequest, s.rootThreadID(), lastTurnID, s.developerInstructionsValue())
+	return forkThreadWith(ctx, s.sendRequest, s.rootThreadID(), lastTurnID, s.developerInstructionsValue(), s.nativeMemoryOff)
 }
 
 // rpcCaller is one JSON-RPC request over some app-server connection. A
@@ -90,6 +90,9 @@ type ForkSpec struct {
 	SourceThreadID string
 	// LastTurnID is the inclusive cut; empty forks the full history.
 	LastTurnID string
+	// NativeMemoryOff creates the child with Codex's own memories off, as
+	// Config.NativeMemoryOff starts a thread.
+	NativeMemoryOff bool
 }
 
 // ForkThread cuts a fork of SourceThreadID over a threadless app-server and
@@ -122,13 +125,13 @@ func ForkThread(ctx context.Context, spec ForkSpec) (string, error) {
 		return "", err
 	}
 	defer client.close()
-	return forkThreadWith(ctx, client.request, spec.SourceThreadID, spec.LastTurnID, "")
+	return forkThreadWith(ctx, client.request, spec.SourceThreadID, spec.LastTurnID, "", spec.NativeMemoryOff)
 }
 
 // forkThreadWith is the cut itself: the request, the response check and,
 // for an anchored fork, the tail validation, over whichever connection the
 // caller holds.
-func forkThreadWith(ctx context.Context, call rpcCaller, sourceThreadID, lastTurnID, developerInstructions string) (string, error) {
+func forkThreadWith(ctx context.Context, call rpcCaller, sourceThreadID, lastTurnID, developerInstructions string, nativeMemoryOff bool) (string, error) {
 	params := map[string]any{
 		"threadId":     sourceThreadID,
 		"excludeTurns": true,
@@ -136,7 +139,7 @@ func forkThreadWith(ctx context.Context, call rpcCaller, sourceThreadID, lastTur
 		// session resumes it in a fresh one with the full thread params;
 		// the features ride here too so no process ever holds the child
 		// loaded without them.
-		"config": threadFeatureOverrides(),
+		"config": threadFeatureOverrides(nativeMemoryOff),
 	}
 	if lastTurnID != "" {
 		params["lastTurnId"] = lastTurnID

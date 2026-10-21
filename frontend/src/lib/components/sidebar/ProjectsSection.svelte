@@ -1,9 +1,11 @@
 <script lang="ts">
   import { selectedBackend } from '../../stores/selectedBackend.svelte';
-  // Section header + project list. Owns the "Add project" modal open state
-  // and the sort-direction toggle. Search-driven filtering happens here so
-  // the list only sees projects that match the current query (with their
-  // matching threads).
+  // The sidebar's two sections, Assistants above Projects, in one scroll
+  // area: the Projects header and list here, the Assistants section
+  // (AssistantsSection) fed from the same bucketing. Owns the "Add project"
+  // modal open state and the sort-direction toggle. Search-driven
+  // filtering happens here so each section only sees what matches the
+  // current query.
 
   import { onDestroy } from 'svelte';
   import type { ProjectWithCounts } from '../../types/models';
@@ -20,7 +22,9 @@
     expandProject,
     collapseProject,
     isProjectExpanded,
+    isSidebarSectionShown,
     getProjectSortMode,
+    setSidebarSectionExpanded,
   } from '../../stores/sidebar.svelte';
   import { getThreadFilterQuery } from '../../stores/threadFilter.svelte';
   import { getThreads } from '../../stores/threads.svelte';
@@ -56,6 +60,8 @@
   } from './projectNewThread';
   import ProjectSortMenu from './ProjectSortMenu.svelte';
   import AddProjectModal from './AddProjectModal.svelte';
+  import AssistantsSection from './AssistantsSection.svelte';
+  import SidebarSectionToggle from './SidebarSectionToggle.svelte';
 
   interface Props {
     pane: ThreadPane | null;
@@ -75,13 +81,13 @@
 
   // Threads and groups bucketed by sidebar ENTRY (a repo checked out on
   // two attached machines is one entry, and both machines' rows sit under
-  // it), filtered by the search query, with an agent's cross-project
-  // children filed under the agent's entry (bucketSidebarThreads).
+  // it), filtered by the search query, with the assistants' cards and
+  // what they hold apart (bucketSidebarThreads).
   //
   // Both maps are re-minted per derivation, as threadsByProject always
   // was: the ROWS inside them are stable references, and the identity
   // cutoffs downstream (visibleProjects here, sameSidebarVisibleNodes in
-  // ProjectThreadList) are what keep a streaming beat off the DOM.
+  // SidebarTreeList) are what keep a streaming beat off the DOM.
   let searchBuckets = $derived.by(() => {
     const filterDevices = sidebarDeviceFilterActive();
     return bucketSidebarThreads({
@@ -96,6 +102,8 @@
 
   let threadsByProject = $derived(searchBuckets.threadsByProject);
   let groupsByProject = $derived(searchBuckets.groupsByProject);
+  let agentsByProject = $derived(searchBuckets.agentsByProject);
+  let projectsShown = $derived(isSidebarSectionShown('projects', query !== ''));
 
   // Visible computers whose threads or projects have not loaded, each with
   // a status row. While any remains, what the list shows is incomplete, so
@@ -290,6 +298,9 @@
   // component and writing to $state in an orphaned reactivity scope.
   let flashTimer: ReturnType<typeof setTimeout> | null = null;
   function flashProject(id: string): void {
+    // The added or duplicate project is brought into view: a folded
+    // Projects section unfolds, and so does its row.
+    setSidebarSectionExpanded('projects', true);
     expandProject(id);
     flashProjectId = id;
     if (flashTimer) clearTimeout(flashTimer);
@@ -305,69 +316,78 @@
   });
 </script>
 
-<section
-  class="flex flex-col min-h-0 flex-1"
-  aria-label="Projects"
-  data-testid="sidebar-projects-section"
->
-  <header class="flex items-center gap-1 px-3 pt-2 pb-1.5">
-    <h2 class="flex-1 min-w-0"><SidebarDeviceFilter /></h2>
-    <ProjectSortMenu />
-    <IconButton
-      label="Import Sessions"
-      title={importUngranted ? 'Not granted to this device' : undefined}
-      size="sm"
-      disabled={importUngranted}
-      onClick={() => openSessionImport()}
-    >
-      {#snippet children()}
-        <span data-testid="sidebar-import-sessions-icon" class="flex items-center">
-          <Icon icon={History} size={13} strokeWidth={2} class="opacity-80" />
-        </span>
-      {/snippet}
-    </IconButton>
-    <IconButton
-      label="Add Project"
-      size="sm"
-      onClick={handleAddClick}
-    >
-      {#snippet children()}
-        <span data-testid="sidebar-add-project-icon" class="flex items-center">
-          <Icon icon={Plus} size={14} strokeWidth={2.2} class="opacity-80" />
-        </span>
-      {/snippet}
-    </IconButton>
-  </header>
-
-  <!--
-    ProjectList itself doesn't scroll (it dropped its own overflow); this
-    wrapper owns the scroll.
-  -->
-  <div
-    class="flex-1 min-h-0 overflow-y-auto"
-    data-flashing-project={flashProjectId}
+<!--
+  One scroll area for both sections: the Assistants section above, then
+  the Projects header and list. ProjectList itself doesn't scroll.
+-->
+<div class="flex-1 min-h-0 overflow-y-auto" data-testid="sidebar-sections">
+  <AssistantsSection
+    assistants={searchBuckets.assistants}
+    held={searchBuckets.assistantChildren}
+    {pane}
+    searching={query !== ''}
+  />
+  <section
+    class="flex flex-col"
+    aria-label="Projects"
+    data-testid="sidebar-projects-section"
   >
-    {#if pendingCatalogs.length > 0}
-      <div class="px-2 pt-1" data-testid="sidebar-catalog-status">
-        {#each pendingCatalogs as pending (pending.backend)}
-          <CatalogStatusRow backend={pending.backend} name={pending.name} kind={pending.kind} error={pending.error} />
-        {/each}
+    <header class="flex items-center gap-1 px-3 pt-2 pb-1.5">
+      <SidebarSectionToggle section="projects" label="Projects" shown={projectsShown} />
+      <h2 class="flex-1 min-w-0"><SidebarDeviceFilter /></h2>
+      <ProjectSortMenu />
+      <IconButton
+        label="Import Sessions"
+        title={importUngranted ? 'Not granted to this device' : undefined}
+        size="sm"
+        disabled={importUngranted}
+        onClick={() => openSessionImport()}
+      >
+        {#snippet children()}
+          <span data-testid="sidebar-import-sessions-icon" class="flex items-center">
+            <Icon icon={History} size={13} strokeWidth={2} class="opacity-80" />
+          </span>
+        {/snippet}
+      </IconButton>
+      <IconButton
+        label="Add Project"
+        size="sm"
+        onClick={handleAddClick}
+      >
+        {#snippet children()}
+          <span data-testid="sidebar-add-project-icon" class="flex items-center">
+            <Icon icon={Plus} size={14} strokeWidth={2.2} class="opacity-80" />
+          </span>
+        {/snippet}
+      </IconButton>
+    </header>
+
+    {#if projectsShown}
+      <div data-flashing-project={flashProjectId}>
+        {#if pendingCatalogs.length > 0}
+          <div class="px-2 pt-1" data-testid="sidebar-catalog-status">
+            {#each pendingCatalogs as pending (pending.backend)}
+              <CatalogStatusRow backend={pending.backend} name={pending.name} kind={pending.kind} error={pending.error} />
+            {/each}
+          </div>
+        {/if}
+        {#if visibleProjects.length > 0 || pendingCatalogs.length === 0}
+          <ProjectList
+            projects={visibleProjects}
+            emptyMessage={sidebarDeviceFilterActive() ? 'No projects on the selected computers.' : undefined}
+            {threadsByProject}
+            {groupsByProject}
+            {agentsByProject}
+            {pane}
+            onNewThread={handleNewThread}
+            onNewTerminal={handleNewTerminal}
+            onReorder={handleReorder}
+          />
+        {/if}
       </div>
     {/if}
-    {#if visibleProjects.length > 0 || pendingCatalogs.length === 0}
-      <ProjectList
-        projects={visibleProjects}
-        emptyMessage={sidebarDeviceFilterActive() ? 'No projects on the selected computers.' : undefined}
-        {threadsByProject}
-        {groupsByProject}
-        {pane}
-        onNewThread={handleNewThread}
-        onNewTerminal={handleNewTerminal}
-        onReorder={handleReorder}
-      />
-    {/if}
-  </div>
-</section>
+  </section>
+</div>
 
 <AddProjectModal
   open={addProjectOpen}

@@ -1248,18 +1248,6 @@ var channelPolicies = []ChannelPolicy{
 			"`fontSize` would keep rendering the old size forever.",
 	},
 	{
-		Channel:   eventchan.SkillsChanged,
-		Audience:  AudienceAny,
-		Retention: RetentionLatestOnly,
-		Scope:     ScopeSettingsRead,
-		Why: "A payload-less nudge after an Install, Update or Remove of the " +
-			"shipped skills in a provider home; the Settings page re-reads " +
-			"GetSkillsLibrary, whose scope is the same, so the push discloses " +
-			"nothing the read would not. Latest-only: every frame means the " +
-			"same \"read again\", and a client that missed it while " +
-			"disconnected needs one, not one per change.",
-	},
-	{
 		Channel:   eventchan.SoundChanged,
 		Audience:  AudienceAny,
 		Retention: RetentionLatestOnly,

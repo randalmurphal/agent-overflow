@@ -93,7 +93,13 @@ func TestRunRetentionSweepKeepsAssistantThreads(t *testing.T) {
 	for _, id := range []string{"assistant-past", "assistant-current", "plain-archived"} {
 		seedThread(t, app, id, old)
 	}
-	if err := app.store.CreateStandingAgent(store.StandingAgent{ID: "agent", ThreadID: "assistant-past", Home: t.TempDir(), CreatedAt: old}); err != nil {
+	home := t.TempDir()
+	for _, id := range []string{"assistant-past", "assistant-current"} {
+		if err := app.store.PlaceThreadInHome(id, home); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := app.store.CreateStandingAgent(store.StandingAgent{ID: "agent", ThreadID: "assistant-past", Home: home, CreatedAt: old}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := app.store.HandOffAssistant("assistant-past", "assistant-current", old); err != nil {

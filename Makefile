@@ -1,4 +1,4 @@
-.PHONY: help ao-harness-docs methodgen go-lint go-vet fmt-check go-vuln bindings-check frontend-lint install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool go-test pstack-check pstack-scripts test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
+.PHONY: help ao-harness-docs methodgen go-lint go-vet fmt-check go-vuln bindings-check frontend-lint install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -9,7 +9,6 @@ help:
 	@printf '%s\n' \
 		'Build:   make build | make check | make verify' \
 		'Tests:   make test | make test-race | make go-test GO_TEST_PKGS=./internal/x GO_TEST_FLAGS=...' \
-		'Skills:  make pstack-check (forge script on both fake forges, skills tripwires, pstack-scripts) | make pstack-scripts (watch-pr and orch under bun)' \
 		'Static:  make fmt-check | make go-vet | make go-lint | make frontend-lint | make bindings-check | make go-vuln' \
 		'Android: make apk | make apk-release | make e2e-android' \
 		'Mobile browser: make e2e-mobile-browser (Chromium + WebKit)' \
@@ -172,24 +171,6 @@ go-test: netns-tool
 	if [ -z "$$packages" ]; then echo "ERROR: no Go packages found"; exit 1; fi; \
 	$(call go-prefetch,$(GO_PACKAGE_ROOTS)); \
 	$(NETNS) go test $(GO_TEST_FLAGS) $$packages
-
-# The vendored pstack skills (assets/skills/pstack): the forge script against
-# the fake gh and glab, the tripwires (every thread_* and browser_* name the
-# skills use exists, no replaced host primitive came back, and every
-# relative link resolves), and pstack-scripts.
-pstack-check: pstack-scripts
-	$(MAKE) go-test GO_TEST_PKGS="./cmd/ao-mockforge ./internal/threadtools" GO_TEST_FLAGS="-count=1 -v -run '^(TestForgeScript|TestSkills)'"
-
-# The pstack TypeScript tools, watch-pr and orch, under bun at ci/Dockerfile's
-# BUN_VERSION. orch's own bootstrap installs their dependencies from bun.lock
-# on the network (a --help run does only that); the tests and the type check
-# then run in the isolated namespace. CI runs this in the Go tests (rest) job,
-# whose go-test already covers pstack-check's Go tests.
-PSTACK_SCRIPTS := assets/skills/pstack/skills/poteto-mode/scripts
-pstack-scripts: netns-tool
-	cd $(PSTACK_SCRIPTS) && bun orch/orch.ts --help > /dev/null
-	cd $(PSTACK_SCRIPTS) && $(NETNS) bun test orch watch-pr
-	cd $(PSTACK_SCRIPTS) && $(NETNS) bun run typecheck
 
 # Static checks. Each is one CI job (.github/workflows/ci.yml) and runs the
 # same way here. go-lint runs golangci-lint at the pinned version through

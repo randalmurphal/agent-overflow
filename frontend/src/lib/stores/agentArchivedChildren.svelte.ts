@@ -1,9 +1,9 @@
-// A standing agent's archived spawned threads, read when the user opens the
-// agent row's `N done` footer (docs/specs/standing-agents.md, "Sidebar").
-// Keyed by the count the agent's row carries: the row's archivedChildCount
-// moves with every archive, unarchive and delete of a child, so a list
-// loaded for one count is stale once the row says another, and the footer
-// asks again.
+// The archived threads under an assistant, every container's, read when
+// the user opens one of its rows' `N done` footer (docs/specs/
+// standing-agents.md, "Sidebar"). Keyed by the total of the counts the
+// assistant's row carries (agentArchivedTotal): it moves with every
+// archive, unarchive and delete of a thread under it, so a list loaded for
+// one total is stale once the row says another, and the footer asks again.
 
 import { ListArchivedSpawnedThreads } from './bindings';
 import { withBackendTarget } from '../transport/backends';
@@ -14,7 +14,7 @@ import type { Thread } from '../types/models';
 import { addErrorToast } from './toast.svelte';
 
 interface ArchivedChildren {
-  /** The archivedChildCount the list was read for. */
+  /** The archived total the list was read for. */
   count: number;
   threads: readonly Thread[];
 }

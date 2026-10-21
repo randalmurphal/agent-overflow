@@ -52,6 +52,9 @@ type Host interface {
 	ArchiveThread(threadID string) error
 	// MakeAssistant makes a thread an assistant's current thread, with its
 	// record and home, as New Assistant does, without the opening message.
+	// The thread moves into the home, out of its project, group and
+	// worktree, and the assistant serves the project it came from. A name
+	// another assistant holds is refused before the thread moves.
 	MakeAssistant(threadID string) (store.StandingAgent, error)
 	// BroadcastThreadRow re-reads one thread and emits it to connected
 	// clients as a full row. The seeder writes history behind the store,
@@ -64,6 +67,10 @@ type Host interface {
 	// session afterwards.
 	AwaitSessionEndWork() []string
 	DeleteProject(projectID string) error
+	// DeleteThread deletes a thread as the sidebar's Delete does: an
+	// assistant's current thread takes the assistant, its past threads,
+	// its helpers and its home with it.
+	DeleteThread(threadID string) error
 	RecoverCrashedTurns() error
 	RecoverOrphanedBackgroundTasks() error
 	ClearUIState() error

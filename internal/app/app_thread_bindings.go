@@ -44,6 +44,11 @@ type CreateThreadOptions struct {
 	WorkspaceOverride          string `json:"workspaceOverride,omitempty"`          // empty = project.path
 	WorktreePath               string `json:"worktreePath,omitempty"`               // non-empty = inherit existing worktree, skip git ops
 	Branch                     string `json:"branch,omitempty"`                     // non-empty = use directly, skip currentGitBranch lookup
+	// home and helperOfAgentID place the thread outside every project
+	// (threadapp.CreateOptions.Home, HelperOfAgentID): an assistant's
+	// thread or helper. Never set from the wire.
+	home            string
+	helperOfAgentID string
 }
 
 // StartTerminalOptions selects where a new terminal thread is rooted.
@@ -156,6 +161,8 @@ func (a *App) createThreadRow(ctx context.Context, opts CreateThreadOptions, rem
 		WorkspaceOverride:          opts.WorkspaceOverride,
 		WorktreePath:               opts.WorktreePath,
 		Branch:                     opts.Branch,
+		Home:                       opts.home,
+		HelperOfAgentID:            opts.helperOfAgentID,
 		CreatedByDevice:            creatingDevice(ctx),
 		SettingsBucket:             settingsBucket,
 		SettingsClass:              string(settingsClass),

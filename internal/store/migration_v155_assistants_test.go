@@ -74,7 +74,7 @@ func TestV155TwoAssistantsKeepEverything(t *testing.T) {
 	}
 	// A handoff of a migrated assistant carries its loop and its reminder.
 	if _, err := s.db.Exec(`INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at, archived)
-		VALUES ('a2', 'p', 'Ops', 'claude', '/p', '', 2, 2, 0)`); err != nil {
+		VALUES ('a2', NULL, 'Ops', 'claude', '/config/agents/a', '', 2, 2, 0)`); err != nil {
 		t.Fatal(err)
 	}
 	handOff, err := s.HandOffAssistant("a", "a2", 50)
@@ -101,9 +101,9 @@ func TestAssistantNameCaseClash(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 	mustExec(t, s.db, `INSERT INTO projects (id, path, name, created_at, updated_at) VALUES ('p', '/p', 'p', 1, 1)`)
 	mustExec(t, s.db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at, archived) VALUES
-		('a', 'p', 'Ops', 'claude', '/p', '', 1, 1, 0),
-		('b', 'p', 'Mail', 'claude', '/p', '', 1, 1, 0),
-		('c', 'p', '  OPS ', 'claude', '/p', '', 1, 1, 0)`)
+		('a', NULL, 'Ops', 'claude', '/h/A', '', 1, 1, 0),
+		('b', NULL, 'Mail', 'claude', '/h/B', '', 1, 1, 0),
+		('c', NULL, '  OPS ', 'claude', '/h/C', '', 1, 1, 0)`)
 	if err := s.CreateStandingAgent(StandingAgent{ID: "A", ThreadID: "a", Home: "/h/A", CreatedAt: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestHandOffMovesOwedRemoteJobs(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 	mustExec(t, s.db, `INSERT INTO projects (id, path, name, created_at, updated_at) VALUES ('p', '/p', 'p', 1, 1)`)
 	mustExec(t, s.db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at, archived) VALUES
-		('a', 'p', 'Ops', 'claude', '/p', '', 1, 1, 0), ('a2', 'p', 'Ops', 'claude', '/p', '', 2, 2, 0)`)
+		('a', NULL, 'Ops', 'claude', '/h/A', '', 1, 1, 0), ('a2', NULL, 'Ops', 'claude', '/h/A', '', 2, 2, 0)`)
 	if err := s.CreateStandingAgent(StandingAgent{ID: "A", ThreadID: "a", Home: "/h/A", CreatedAt: 1}); err != nil {
 		t.Fatal(err)
 	}

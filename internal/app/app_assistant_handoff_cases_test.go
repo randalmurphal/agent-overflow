@@ -289,6 +289,7 @@ func TestHandOffTeardownTakesBackAQueuedWake(t *testing.T) {
 	if err := f.app.store.QueueAgentWake(store.FlushQueueItem{ID: "row-1", ThreadID: target.ID, SendID: sendID, Message: "inbox fired", EnqueuedAt: 1}, agentWakeSendIDPrefix(watch.ID), 0); err != nil {
 		t.Fatal(err)
 	}
+	placeInAssistantHome(t, f.app, successor.ID, target.ID)
 	if _, err := f.app.store.HandOffAssistant(target.ID, successor.ID, time.Now().UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
@@ -314,6 +315,7 @@ func TestARemoteCompletionOfAPastThreadReachesTheCurrentThread(t *testing.T) {
 	testAssistant(t, a, old.ID)
 	w := completedRemoteWatch(t, a, old)
 	successor := remoteWatchThread(t, a, string(provider.Claude))
+	placeInAssistantHome(t, a, successor.ID, old.ID)
 	if _, err := a.store.HandOffAssistant(old.ID, successor.ID, time.Now().UnixMilli()); err != nil {
 		t.Fatal(err)
 	}

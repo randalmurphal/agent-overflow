@@ -1,8 +1,12 @@
 # components/sidebar/
 
-The sidebar projects threads, groups, and repositories from their
-entity stores. `Sidebar.svelte` owns the top-level render boundary;
-`ProjectThreadList.svelte` owns each project's visible tree.
+The sidebar projects assistants, threads, groups, and repositories from
+their entity stores. `Sidebar.svelte` owns the top-level render boundary;
+`ProjectsSection.svelte` holds the Assistants section
+(`AssistantsSection.svelte`) above the Projects section in one scroll
+area. `SidebarTreeList.svelte` renders the rows of one tree: the
+assistants' cards, and each project's inside `ProjectThreadList.svelte`,
+which adds the project's empty state and drop targets.
 
 ## Rows and actions
 
@@ -12,18 +16,21 @@ entity stores. `Sidebar.svelte` owns the top-level render boundary;
   `ThreadRowPinButton` receive callbacks; they do not own entities.
 - Groups are not pinnable. A group's members pin like top-level threads, but
   never as numbered jump targets.
-- A standing agent row is `ThreadRow`'s agent variant, not a component of its
-  own: it uses the group row's geometry, folds the threads it spawned on its
-  chevron (`sidebar:collapsedAgents`), and offers no pin or group item. Its
-  state line reads `stores/threadWakes.svelte.ts`; its `N done` footer
+- An assistant's card and its row in each project are `ThreadRow`'s agent
+  variant, not components of their own: they use the group row's geometry,
+  fold what they hold on their chevron (`sidebar:collapsedAgents`, keyed
+  by `agentContainerKey`), and offer no pin or group item. The card's
+  state line reads `stores/threadWakes.svelte.ts`; each row's `N done` footer
   (`AgentDoneFooter.svelte`) counts the settled idle children the view folds
   (`utils/sidebarTreeView.ts`) and reads the archived ones from
   `stores/agentArchivedChildren.svelte.ts`. Groups and agent rows share one
   member bound (`boundContainerMembers`, `ContainerShowMore.svelte`).
   Rules: [standing agents](../../../../../docs/specs/standing-agents.md#sidebar).
-- A nested thread an agent spawned into another project is filed under the agent's
-  project where the sidebar buckets threads (`sidebarBuckets.ts`); the tree
-  builder still runs per project.
+- `sidebarBuckets.ts` decides where each thread lists: an assistant's
+  helpers and past threads on its card (`cardOwnerAgentId`), everything
+  else in its own project, nested under the assistant's row there when
+  its placement is nested. The tree builder runs per card list and per
+  project with the assistants it is handed.
 - `threadRowActions.ts` and `threadGroupActions.ts` own mutations from this
   directory. Reconcile rows from each RPC response.
 - Inline rename stays in the owning row. Context menus delegate through the

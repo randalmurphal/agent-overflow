@@ -538,20 +538,27 @@ const STATIC_FIELDS = [
     keywords: ['system prompt', 'append', 'guide', 'mcp'],
   },
 
-  // --- Skills -------------------------------------------------------------
+  // --- Memory -------------------------------------------------------------
   {
-    id: 'skills.claude',
-    section: 'skills',
-    label: 'Claude Code',
-    keywords: ['skills', 'pstack', 'install', 'update', 'remove'],
-    conditional: true,
+    id: 'memory.shared',
+    section: 'memory',
+    label: 'Shared memory',
+    hint: 'Give every conversation the memory of its project and the memory of you, which it reads when it starts and may add to. Assistants always have memory.',
+    keywords: ['facts', 'remember', 'project memory', 'user memory'],
   },
   {
-    id: 'skills.codex',
-    section: 'skills',
-    label: 'Codex',
-    keywords: ['skills', 'pstack', 'install', 'update', 'remove'],
-    conditional: true,
+    id: 'memory.claude-off',
+    section: 'memory',
+    label: "Turn off Claude's own memory",
+    hint: 'Sessions this app starts send autoMemoryEnabled: false. Your Claude settings files are not changed.',
+    keywords: ['auto memory', 'MEMORY.md', 'autoMemoryEnabled'],
+  },
+  {
+    id: 'memory.codex-off',
+    section: 'memory',
+    label: "Turn off Codex's own memory",
+    hint: 'Threads this app starts neither use memories nor are mined for them. Your Codex config is not changed.',
+    keywords: ['memories', 'generate_memories'],
   },
 
   // --- Projects -----------------------------------------------------------

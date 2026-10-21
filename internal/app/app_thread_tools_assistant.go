@@ -14,10 +14,11 @@ import (
 
 // NewAssistant is thread_new_assistant: an assistant creates another one
 // (docs/specs/agent-thread-tools.md#thread_new_assistant). The new
-// assistant is created as the user's New Assistant creates one, in the
-// caller's project and workspace with the settings a spawn inherits, and is
-// started as the caller's spawn whose prompt is its opening block, so it
-// answers its creator and its questions and approvals route there.
+// assistant is created as the user's New Assistant creates one, outside
+// every project, serving projects its creator serves, with the settings a
+// spawn inherits, and is started as the caller's spawn whose prompt is its
+// opening block, so it answers its creator and its questions and approvals
+// route there.
 func (t threadToolsApp) NewAssistant(ctx context.Context, caller threadtools.Caller, call threadtools.NewAssistantCall) (threadtools.NewAssistantAck, error) {
 	if threadtools.Forwarded(ctx) {
 		return threadtools.NewAssistantAck{}, errorsx.Public(threadtools.CodeInvalidRequest,
@@ -39,11 +40,21 @@ func (t threadToolsApp) NewAssistant(ctx context.Context, caller threadtools.Cal
 	if err != nil {
 		return threadtools.NewAssistantAck{}, err
 	}
-	create, err := t.spawnThreadOptions(ctx, origin, threadtools.SpawnCall{Prompt: call.Role, Title: call.Name})
+	settings, err := t.spawnSettings(origin, threadtools.SpawnCall{})
 	if err != nil {
 		return threadtools.NewAssistantAck{}, err
 	}
-	thread, agent, err := t.app.createAssistant(ctx, assistantSpec{name: call.Name, thread: create, creatorAgentID: creator.ID})
+	if err := t.app.requireAutonomy(ctx, settings.RuntimeMode); err != nil {
+		return threadtools.NewAssistantAck{}, err
+	}
+	projects, err := t.createdAssistantProjects(creator, call.Projects)
+	if err != nil {
+		return threadtools.NewAssistantAck{}, err
+	}
+	thread, agent, err := t.app.createAssistant(ctx, assistantSpec{
+		name: call.Name, provider: settings.Provider, model: settings.Model, effort: settings.ReasoningEffort,
+		runtimeMode: settings.RuntimeMode, projects: projects, creatorAgentID: creator.ID,
+	})
 	if err != nil {
 		return threadtools.NewAssistantAck{}, publicAssistantNameError(err)
 	}
@@ -90,4 +101,31 @@ func publicAssistantNameError(err error) error {
 		return errorsx.Public(threadtools.CodeInvalidRequest, "name is required and cannot be blank.", err)
 	}
 	return err
+}
+
+// createdAssistantProjects are the projects an assistant creator's new
+// assistant serves: the ones named, each of which the creator must serve
+// (requireServedProject), or every one the creator serves when none is
+// named.
+func (t threadToolsApp) createdAssistantProjects(creator store.StandingAgent, named []string) (assistantProjects, error) {
+	if len(named) == 0 {
+		if creator.AllProjects {
+			return assistantProjects{all: true}, nil
+		}
+		ids, err := t.app.store.AgentProjectIDs(creator.ID)
+		if err != nil {
+			return assistantProjects{}, err
+		}
+		if len(ids) == 0 {
+			return assistantProjects{}, errorsx.Public(threadtools.CodeInvalidRequest,
+				"You serve no project, so the new assistant would serve none. Ask the user to give you a project from your menu.", nil)
+		}
+		return assistantProjects{ids: ids}, nil
+	}
+	for _, id := range named {
+		if err := t.requireServedProject(creator, id); err != nil {
+			return assistantProjects{}, err
+		}
+	}
+	return assistantProjects{ids: named}, nil
 }

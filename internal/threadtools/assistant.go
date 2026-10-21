@@ -13,8 +13,9 @@ import (
 // block, so it answers, and routes its questions, to its creator.
 
 type newAssistantArgs struct {
-	Name string `json:"name"`
-	Role string `json:"role"`
+	Name     string   `json:"name"`
+	Role     string   `json:"role"`
+	Projects []string `json:"projects"`
 }
 
 // NewAssistantCall creates an assistant on the caller's computer.
@@ -23,6 +24,10 @@ type NewAssistantCall struct {
 	// Role is the creator's opening role text, quoted to the new assistant
 	// as the creator's words.
 	Role string `json:"role"`
+	// Projects are the ids of the projects the new assistant serves, each
+	// one its creator serves; empty means every project the creator
+	// serves.
+	Projects []string `json:"projects,omitempty"`
 }
 
 // NewAssistantAck is the spawn's receipt with the assistant it created.
@@ -49,6 +54,11 @@ func (c *session) newAssistant(ctx context.Context, raw json.RawMessage) (any, e
 		return nil, invalidf("thread_new_assistant creates an assistant on the caller's own computer and is never forwarded.")
 	}
 	call := NewAssistantCall{Name: trim(args.Name), Role: trim(args.Role)}
+	for _, project := range args.Projects {
+		if project = trim(project); project != "" {
+			call.Projects = append(call.Projects, project)
+		}
+	}
 	if call.Name == "" {
 		return nil, invalidf("name is required and cannot be blank.")
 	}
@@ -83,7 +93,12 @@ func newAssistantSchema() map[string]any {
 			"type":        "string",
 			"description": "Your opening role text for it: what it is responsible for and what it may do. It is quoted to the new assistant as your words, and it proposes its role line from it.",
 		},
+		"projects": map[string]any{
+			"type":        "array",
+			"items":       map[string]any{"type": "string"},
+			"description": "Ids of the projects it serves, each one you serve. Omitted, it serves every project you serve.",
+		},
 	}
-	description := "Create a new assistant (a standing agent with its own home) that reports to you. Only an assistant's current thread may call it, never a worker. The assistant is created on this computer in your project and workspace with your provider and model, starts with no grants, and appears as its own sidebar row. Its first message tells it who created it and quotes role; it replies to you with thread_reply, and its questions and approvals come to you. Returns its assistant_id, name, home and the request token its replies answer. The answer arrives in this thread as a message."
+	description := "Create a new assistant (a standing agent with its own home) that reports to you. Only an assistant's current thread may call it, never a worker. The assistant is created on this computer outside every project, in its own home, serving the projects you name, with your provider and model; it starts with no grants and appears as its own sidebar row. Its first message tells it who created it and quotes role; it replies to you with thread_reply, and its questions and approvals come to you. Returns its assistant_id, name, home and the request token its replies answer. The answer arrives in this thread as a message."
 	return tool("thread_new_assistant", description, properties, "name", "role")
 }

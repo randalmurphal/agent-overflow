@@ -1,16 +1,17 @@
 // The sidebar hierarchy under the compact layout
 // (docs/specs/standing-agents.md rulings 30 to 34,
 // docs/specs/sidebar-thread-groups.md "Member bound"): an agent's and a
-// group's show-more footers and a cross-project child's project sublabel fit
-// a phone width and reveal on a tap; Mark All Read is on the agent row's and
+// group's show-more footers and the agent's row in another project fit a
+// phone width and reveal on a tap; Mark All Read is on the agent row's and
 // the group row's menu buttons and clears the collapsed rows' rolled-up dot.
 // Screenshots are dark mode.
-import type { Locator, Page } from '@playwright/test';
+import type { Locator } from '@playwright/test';
 
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
 import { threadRows, type ThreadRow } from './thread-tools-helpers.js';
 import { awaitSidebarSettled, capture } from './wake-rows-helpers.js';
+import { liveIds, projectItem, rowIn, shellIn } from './sidebar-sections-helpers.js';
 
 interface ThreadGroup {
   id: string;
@@ -24,12 +25,6 @@ async function expectFits(target: Locator, viewportWidth: number): Promise<void>
   expect(box.x).toBeGreaterThanOrEqual(0);
   expect(box.x + box.width).toBeLessThanOrEqual(viewportWidth);
   expect(await target.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
-}
-
-async function liveIds(page: Page, rail: '[data-agent-member]' | '[data-group-member]'): Promise<string[]> {
-  return await page.locator(`${rail}:not([data-agent-done-row]) [data-sidebar-thread-id]`).evaluateAll((els) =>
-    els.map((el) => (el as HTMLElement).dataset.sidebarThreadId ?? ''),
-  );
 }
 
 async function allRead(harness: HarnessApp, ids: readonly string[]): Promise<boolean> {
@@ -75,24 +70,28 @@ test('bounded agent and group rows, a cross-project child and Mark All Read fit 
   await harness.open(page);
   await awaitSidebarSettled(page);
   const width = page.viewportSize()!.width;
-  const agentRow = page.locator(`[data-sidebar-thread-id="${lead}"]`);
-  const agentShell = page.locator('[data-testid="thread-row-shell"]', { has: agentRow });
+  const homeProject = projectItem(page, projectId);
+  const awayProject = projectItem(page, away.projects[0].projectId);
+  const agentRow = rowIn(homeProject, lead);
+  const agentShell = shellIn(homeProject, lead);
 
-  // Nine unread workers and the away child: eight live, a show-more for two.
-  const agentMore = page.locator('[data-agent-member] [data-testid="sidebar-container-show-more"]');
-  await expect(agentMore).toHaveText('Show 2 More');
+  // Nine unread workers: eight live, a show-more for one.
+  const agentMore = homeProject.locator('[data-agent-member] [data-testid="sidebar-container-show-more"]');
+  await expect(agentMore).toHaveText('Show 1 More');
   await expect(agentMore.getByTestId('sidebar-container-hidden-status')).toHaveAttribute('data-status', 'idle');
   await expectFits(agentMore, width);
   await agentMore.tap();
-  await expect.poll(async () => (await liveIds(page, '[data-agent-member]')).length).toBe(10);
-  const awayShell = page.locator('[data-testid="thread-row-shell"]', { has: page.locator(`[data-sidebar-thread-id="${awayChild}"]`) });
+  await expect.poll(async () => (await liveIds(homeProject, '[data-agent-member]')).length).toBe(9);
+  // The away child nests under the agent's row in its own project.
+  const awayAgentShell = shellIn(awayProject, lead);
+  const awayShell = shellIn(awayProject, awayChild);
   // Bottom-aligned, the away row keeps the agent row above it in view,
   // wherever the show-more tap left the list scrolled.
   await awayShell.evaluate((el) => el.scrollIntoView({ block: 'end', behavior: 'instant' }));
-  await expect(awayShell.getByTestId('thread-row-project-name')).toHaveText('compact-hierarchy-away-project-with-a-long-name');
+  expect(await liveIds(awayProject, '[data-agent-member]')).toEqual([awayChild]);
+  await expectFits(awayAgentShell, width);
   await expectFits(awayShell, width);
-  await expectFits(awayShell.getByTestId('thread-row-project'), width);
-  await capture(page, 'compact-hierarchy-cross-project-child.png', agentRow, awayShell);
+  await capture(page, 'compact-hierarchy-cross-project-child.png', awayAgentShell, awayShell);
 
   // The group's bound and its show-more.
   const groupRow = page.getByTestId('thread-group-row');
@@ -102,10 +101,11 @@ test('bounded agent and group rows, a cross-project child and Mark All Read fit 
   await expectFits(groupMore, width);
   await capture(page, 'compact-hierarchy-group-bound.png', groupMore);
   await groupMore.tap();
-  await expect.poll(async () => (await liveIds(page, '[data-group-member]')).length).toBe(9);
+  await expect.poll(async () => (await liveIds(homeProject, '[data-group-member]')).length).toBe(9);
 
   // Collapsed, the agent row carries its children's dot; Mark All Read on
-  // its menu button clears it.
+  // its menu button clears it and covers this row's children: the away
+  // child stays unread.
   await agentRow.getByTestId('thread-row-agent-expand').tap();
   const agentDot = agentRow.getByTestId('thread-row-status-dot');
   await expect(agentDot).toHaveAttribute('data-rolled-up', '');
@@ -113,7 +113,8 @@ test('bounded agent and group rows, a cross-project child and Mark All Read fit 
   await capture(page, 'compact-hierarchy-agent-rolled-up-dot.png', agentRow);
   await agentShell.getByTestId('thread-row-menu').tap();
   await page.locator('[data-popover]').getByRole('menuitem', { name: 'Mark All Read' }).tap();
-  await expect.poll(() => allRead(harness, [lead, ...workerIds, awayChild]), { timeout: 20_000 }).toBe(true);
+  await expect.poll(() => allRead(harness, [lead, ...workerIds]), { timeout: 20_000 }).toBe(true);
+  expect(await allRead(harness, [awayChild])).toBe(false);
   await expect(agentDot).toHaveCount(0);
   await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'list');
 

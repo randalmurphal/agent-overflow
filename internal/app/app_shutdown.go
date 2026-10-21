@@ -249,6 +249,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// After every producer of a notice: a session start a notice began
 	// registers its session, and Step 4 must see it to close it.
 	a.stopAgentNoticeWork()
+	// A memory report writes warning rows, so it is joined before the
+	// store is closed; the session starts that begin them are done.
+	a.stopMemoryReports()
 	// The project identity refresh writes project rows. appCtx is already
 	// cancelled, which kills its git read and stops the pass unrecorded.
 	a.projectIdentityWG.Wait()

@@ -2,17 +2,18 @@
 // end to end on both mock providers.
 //
 // Coverage: an assistant's home is `<config>/agents/<assistant-id>/` with a
-// README naming the assistant, its id, its first thread and its project;
+// README naming the assistant, its id and its first thread, and its
+// sessions run there;
 // the home block (home path, assistant id, thread id, the sentence that the
 // agent owns the directory) reaches the provider on a start and, the same
 // bytes, on a resume, as Claude's appended system prompt and as Codex's
 // developer instructions, with the app guide switched off so the block
-// cannot ride on it; the start's SessionStart hooks deliver both context
-// files, here the notices of files that do not exist yet, each stamped with
-// its delivery time, and a resume runs none; on Codex, a rewrite of
-// instructions.md between two sessions leaves the resumed thread's
-// developer instructions as they were and injects nothing, and the resume's
-// hook delivers the rewritten file; deleting the assistant's thread is
+// cannot ride on it; the start's SessionStart hook delivers the agent's
+// memory, here the notice that instructions.md does not exist yet and an
+// empty index, stamped with its delivery time, and a resume runs none; on
+// Codex, a rewrite of instructions.md between two sessions leaves the
+// resumed thread's developer instructions as they were and injects
+// nothing, and the resume's hook delivers the rewritten file; deleting the assistant's thread is
 // confirmed once, whatever the confirmDelete setting, naming the home
 // folder, and removes the home with the record; and a home that cannot be
 // removed leaves the delete unfinished with a toast saying why and the
@@ -23,7 +24,7 @@ import type { Page } from '@playwright/test';
 
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
-import { unstamped } from './standing-agent-home-contents-helpers.js';
+import { blockOf, deliveryOf, unstamped } from './standing-agent-home-contents-helpers.js';
 import { capture } from './wake-rows-helpers.js';
 import { awaitTurnCompleted, plainScenario, setScenario, type ProviderName } from './thread-tools-helpers.js';
 import type { MockInfo, MockSessionConfig, MockSessionStartRun } from './workflows-helpers.js';
@@ -102,26 +103,26 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const seed = await harness.rpc<SeedResult>('HarnessSeed', {
       projects: [{ name: `agent-home-${provider}`, repo: {}, threads: [{ title: 'Release agent', provider }] }],
     });
-    const { path: cwd, threadIds } = seed.projects[0];
-    const [thread] = threadIds;
-    await setScenario(harness, cwd, plainScenario({ name: `home-${provider}`, provider, texts: ['ok'], afterTurns: 'repeatLast' }));
+    const [thread] = seed.projects[0].threadIds;
     await harness.rpc('GetProviderStatuses');
 
-    // ---- The record makes the home and its README.
+    // ---- The record makes the home and its README, and the thread runs there.
     const agent = await harness.rpc<{ id: string; home: string }>('HarnessMakeAssistant', thread);
     expect(agent.home.endsWith(join('agents', agent.id))).toBe(true);
+    const cwd = agent.home;
+    await setScenario(harness, cwd, plainScenario({ name: `home-${provider}`, provider, texts: ['ok'], afterTurns: 'repeatLast' }));
     const readme = readFileSync(join(agent.home, 'README.md'), 'utf8');
     expect(readme).toContain('# Release agent');
     expect(readme).toContain(`- Assistant id: ${agent.id}`);
     expect(readme).toContain(`- First thread: ${thread}`);
-    expect(readme).toContain(`agent-home-${provider}`);
     expect(readme).toContain('thread_watch');
 
     // With the guide off, nothing else is appended: the block stands alone.
     await harness.rpc('UpdateSettings', { agentGuideEnabled: false });
     try {
-      // ---- A first start carries the block, and its hooks deliver both
-      // context files: notices, as neither exists yet.
+      // ---- A first start carries the block, and its hook delivers the
+      // agent's memory: a notice for instructions.md, which does not exist
+      // yet, and an empty index.
       await runSession(harness, thread, 'first');
       const [started] = await configsIn(harness, cwd, 1);
       const block = appended(provider, started);
@@ -131,18 +132,15 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(block).toContain(OWNS_SENTENCE);
       if (provider === 'codex') expect(started.resumed ?? false).toBe(false);
       else expect(started.resumeRef).toBe('');
-      expect(started.sessionStartRuns.map(unstamped)).toEqual([
-        {
-          source: 'startup',
-          contexts: [
-            '## Your standing instructions (instructions.md in your home)\n\n[instructions.md does not exist yet.]\n\n[End of instructions.md]',
-            '## Your memory index (MEMORY.md in your home)\n\n[MEMORY.md does not exist yet.]\n\n[End of MEMORY.md]',
-          ],
-        },
-      ]);
+      const runs = started.sessionStartRuns.map(unstamped);
+      expect(runs.map((run) => run.source)).toEqual(['startup']);
+      const delivery = deliveryOf(runs[0]);
+      const instructionsHeading = `### Your standing instructions (${join(agent.home, 'instructions.md')})`;
+      expect(blockOf(delivery, instructionsHeading)).toBe(`${instructionsHeading}\n[instructions.md does not exist yet.]`);
+      expect(blockOf(delivery, '### Your memory (')).toBe(`### Your memory (${join(agent.home, 'memory')}/)\nNo facts yet.`);
 
       // ---- A resume carries the same block and runs no hook: the
-      // thread's model holds both files as they read now.
+      // thread's model holds its memory as it reads now.
       await runSession(harness, thread, 'second');
       const resumed = (await configsIn(harness, cwd, 2))[1];
       if (provider === 'codex') expect(resumed.resumed).toBe(true);
@@ -174,9 +172,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 // A resumed Codex thread restores its context from the rollout and never
 // shows a changed developerInstructions to the model; the app injects a
 // developer message when the instructions it composes change. The home
-// block is static and the home files reach the thread through its hooks, so
-// a rewrite of instructions.md leaves the developer instructions a resume
-// sends alone, and the resume runs that file's hook. Each session is its
+// block is static and instructions.md reaches the thread through the memory
+// hook, so a rewrite of it leaves the developer instructions a resume sends
+// alone, and the resume runs the hook. Each session is its
 // own mock process, so a mock's latched injectedItems is that session's
 // alone.
 test("codex: a rewrite of an assistant's instructions.md leaves a resumed thread's instructions alone", async ({ harness }) => {
@@ -184,11 +182,11 @@ test("codex: a rewrite of an assistant's instructions.md leaves a resumed thread
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [{ name: 'agent-instructions-codex', repo: {}, threads: [{ title: 'Release agent', provider: 'codex' }] }],
   });
-  const { path: cwd, threadIds } = seed.projects[0];
-  const [thread] = threadIds;
-  await setScenario(harness, cwd, plainScenario({ name: 'instructions-codex', provider: 'codex', texts: ['ok'], afterTurns: 'repeatLast' }));
+  const [thread] = seed.projects[0].threadIds;
   await harness.rpc('GetProviderStatuses');
   const agent = await harness.rpc<{ id: string; home: string }>('HarnessMakeAssistant', thread);
+  const cwd = agent.home;
+  await setScenario(harness, cwd, plainScenario({ name: 'instructions-codex', provider: 'codex', texts: ['ok'], afterTurns: 'repeatLast' }));
   const instructions = join(agent.home, 'instructions.md');
   const BEFORE = 'Carry parser changes from review to merge.';
   writeFileSync(instructions, `${BEFORE}\n`);
@@ -201,11 +199,14 @@ test("codex: a rewrite of an assistant's instructions.md leaves a resumed thread
   const block = started.sessionConfig?.developerInstructions ?? '';
   expect(block).toContain(OWNS_SENTENCE);
   expect(block).not.toContain(BEFORE);
-  expect((started.sessionStartRuns ?? []).map(unstamped)[0]?.contexts[0]).toBe(`## Your standing instructions (instructions.md in your home)\n\n${BEFORE}\n\n[End of instructions.md]`);
+  const instructionsHeading = `### Your standing instructions (${instructions})`;
+  const startRuns = (started.sessionStartRuns ?? []).map(unstamped);
+  expect(startRuns.map((run) => run.source)).toEqual(['startup']);
+  expect(blockOf(deliveryOf(startRuns[0]), instructionsHeading)).toBe(`${instructionsHeading}\n${BEFORE}`);
   expect(started.injectedItems ?? []).toEqual([]);
 
   // ---- After the rewrite, the resume sends the same instructions and
-  // injects nothing; its hook delivers the rewritten file alone.
+  // injects nothing; its hook delivers the rewritten file.
   const AFTER = 'Carry release notes from draft to publication.';
   writeFileSync(instructions, `${AFTER}\n`);
   await runSession(harness, thread, 'second');
@@ -213,9 +214,9 @@ test("codex: a rewrite of an assistant's instructions.md leaves a resumed thread
   expect(resumed.sessionConfig?.resumed).toBe(true);
   expect(resumed.sessionConfig?.developerInstructions).toBe(block);
   expect(resumed.injectedItems ?? []).toEqual([]);
-  expect((resumed.sessionStartRuns ?? []).map(unstamped)).toEqual([
-    { source: 'resume', contexts: [`## Your standing instructions (instructions.md in your home)\n\n${AFTER}\n\n[End of instructions.md]`] },
-  ]);
+  const resumeRuns = (resumed.sessionStartRuns ?? []).map(unstamped);
+  expect(resumeRuns.map((run) => run.source)).toEqual(['resume']);
+  expect(blockOf(deliveryOf(resumeRuns[0]), instructionsHeading)).toBe(`${instructionsHeading}\n${AFTER}`);
 });
 
 test('an assistant whose home cannot be removed is not deleted, and the toast says why', async ({ harness, page }) => {

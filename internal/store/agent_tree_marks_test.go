@@ -176,6 +176,22 @@ func (r *agentTreeMarksRun) step(check func(what string)) {
 				t.Fatal(err)
 			}
 		}
+		// An assistant's delete takes what lives under it first, as the
+		// app's does: the store refuses the record's delete before.
+		if agent, found, err := s.GetStandingAgent(victim); err != nil {
+			t.Fatal(err)
+		} else if found {
+			dependents, err := s.AssistantDependentThreadIDs(agent.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, id := range dependents {
+				if err := s.DeleteThread(id); err != nil {
+					t.Fatal(err)
+				}
+				r.forget(id)
+			}
+		}
 		if err := s.DeleteThread(victim); err != nil {
 			t.Fatal(err)
 		}
@@ -221,6 +237,7 @@ func (r *agentTreeMarksRun) handOff(check func(what string)) {
 	}
 	successor := r.name("successor")
 	mustCreateThread(t, s, successor)
+	mustPlaceInHome(t, s, successor, "/h/"+successor)
 	token, spawned := r.spawned[old]
 	if spawned {
 		if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{Token: token, OwnerDeviceID: "local",

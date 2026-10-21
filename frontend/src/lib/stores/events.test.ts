@@ -2228,83 +2228,34 @@ describe('setupEventListeners', () => {
     expect(liveProjectActivity('project-stale')).toBe(100);
   });
 
-  it('bumps the agent\'s project for activity on a child it nests from another project', async () => {
+  it('bumps a spawned thread\'s own project, and no project for an assistant or its helper', async () => {
+    // Project work lists in its own project under the assistant's row
+    // there; the assistant and its helpers live outside every project.
     setBindingMock('ListThreads', async () => [
-      makeThread({ id: 'agent', projectId: 'project-agent', agentId: 'ops', updatedAt: 100 }),
+      makeThread({ id: 'agent', projectId: '', agentId: 'ops', updatedAt: 100 }),
+      makeThread({ id: 'helper', projectId: '', helperOfAgentId: 'ops', spawnedByThreadId: 'agent', updatedAt: 100 }),
       makeThread({ id: 'child', projectId: 'project-child', spawnedByThreadId: 'agent', updatedAt: 100 }),
-      makeThread({ id: 'plain', projectId: 'project-child', updatedAt: 100 }),
+      makeThread({ id: 'plain', projectId: 'project-other', updatedAt: 100 }),
     ]);
     setBindingMock('ListProjects', async () => [
-      projectWithCounts('project-agent', 100),
       projectWithCounts('project-child', 100),
+      projectWithCounts('project-other', 100),
     ]);
     await refreshThreads();
     await refreshProjects();
-
-    emitWailsEvent('provider:turn_completed', {
-      threadId: 'child', turnId: 'turn-1', turnIndex: 0, startedAt: 150,
-      completedAt: 5000, stopReason: 'end_turn', assistantMessageId: '', tokenUsage: '',
+    const complete = (threadId: string, completedAt: number) => emitWailsEvent('provider:turn_completed', {
+      threadId, turnId: 'turn-1', turnIndex: 0, startedAt: 150,
+      completedAt, stopReason: 'end_turn', assistantMessageId: '', tokenUsage: '',
     });
-    expect(liveProjectActivity('project-agent')).toBe(5000);
-    expect(liveProjectActivity('project-child')).toBe(100);
 
-    // A thread the agent did not spawn bumps its own project.
-    emitWailsEvent('provider:turn_completed', {
-      threadId: 'plain', turnId: 'turn-1', turnIndex: 0, startedAt: 150,
-      completedAt: 6000, stopReason: 'end_turn', assistantMessageId: '', tokenUsage: '',
-    });
-    expect(liveProjectActivity('project-child')).toBe(6000);
-  });
-
-  it('bumps the child\'s own project while the device filter hides its agent\'s computer', async () => {
-    const { stageBackend, resetStagedBackends } = await import('../../test/helpers/backends');
-    const { noteThread } = await import('../transport/entityIndex');
-    const { setSidebarDeviceVisible } = await import('./sidebarDevices.svelte');
-    setBindingMock('ListThreads', async () => [
-      makeThread({ id: 'agent', projectId: 'project-agent', agentId: 'ops', updatedAt: 100 }),
-      makeThread({ id: 'child', projectId: 'project-child', spawnedByThreadId: 'agent', updatedAt: 100 }),
-    ]);
-    setBindingMock('ListProjects', async () => [
-      projectWithCounts('project-agent', 100),
-      projectWithCounts('project-child', 100),
-    ]);
-    await refreshThreads();
-    await refreshProjects();
-    stageBackend({ id: 'agent-host', backendId: 'agent-computer' });
-    try {
-      noteThread('agent', 'agent-host', 1);
-      setSidebarDeviceVisible('agent-computer', false);
-
-      emitWailsEvent('provider:turn_completed', {
-        threadId: 'child', turnId: 'turn-1', turnIndex: 0, startedAt: 150,
-        completedAt: 5000, stopReason: 'end_turn', assistantMessageId: '', tokenUsage: '',
-      });
-      expect(liveProjectActivity('project-child')).toBe(5000);
-      expect(liveProjectActivity('project-agent')).toBe(100);
-    } finally {
-      setSidebarDeviceVisible('agent-computer', true);
-      resetStagedBackends();
-    }
-  });
-
-  it('bumps the child\'s own project while its agent is archived, where the child then lists', async () => {
-    setBindingMock('ListThreads', async () => [
-      makeThread({ id: 'agent', projectId: 'project-agent', agentId: 'ops', archived: true, updatedAt: 100 }),
-      makeThread({ id: 'child', projectId: 'project-child', spawnedByThreadId: 'agent', updatedAt: 100 }),
-    ]);
-    setBindingMock('ListProjects', async () => [
-      projectWithCounts('project-agent', 100),
-      projectWithCounts('project-child', 100),
-    ]);
-    await refreshThreads();
-    await refreshProjects();
-
-    emitWailsEvent('provider:turn_completed', {
-      threadId: 'child', turnId: 'turn-1', turnIndex: 0, startedAt: 150,
-      completedAt: 5000, stopReason: 'end_turn', assistantMessageId: '', tokenUsage: '',
-    });
+    complete('child', 5000);
     expect(liveProjectActivity('project-child')).toBe(5000);
-    expect(liveProjectActivity('project-agent')).toBe(100);
+    complete('agent', 6000);
+    complete('helper', 7000);
+    expect(liveProjectActivity('project-child')).toBe(5000);
+    expect(liveProjectActivity('project-other')).toBe(100);
+    complete('plain', 8000);
+    expect(liveProjectActivity('project-other')).toBe(8000);
   });
 
   it('does NOT bump cached project activity from item_event deltas', async () => {

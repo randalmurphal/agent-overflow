@@ -392,3 +392,37 @@ func TestBuildLaunchOptionsEmitsAddDir(t *testing.T) {
 		t.Fatalf("--add-dir values = %v, want both directories in order", dirs)
 	}
 }
+
+// NativeMemoryOff turns Claude Code's auto memory off through the same
+// settings block as the headless provider; without it the key is absent.
+func TestHookSettingsCarryNativeMemoryOff(t *testing.T) {
+	rendered, err := hookSettingsJSON(Config{NativeMemoryOff: true})
+	if err != nil {
+		t.Fatalf("hookSettingsJSON: %v", err)
+	}
+	if !strings.Contains(rendered, `"autoMemoryEnabled":false`) || !strings.Contains(rendered, `"env":{"`+claude.AutoMemoryOffEnv+`":"1"}`) || !strings.Contains(rendered, `"hooks"`) {
+		t.Fatalf("settings block: %s", rendered)
+	}
+	rendered, err = hookSettingsJSON(Config{})
+	if err != nil {
+		t.Fatalf("hookSettingsJSON: %v", err)
+	}
+	if strings.Contains(rendered, "autoMemoryEnabled") || strings.Contains(rendered, claude.AutoMemoryOffEnv) {
+		t.Fatalf("sent the memory switch without NativeMemoryOff: %s", rendered)
+	}
+}
+
+// AccessDirs reach the TUI the way they reach the headless provider: in the
+// settings block's permissions, never as `--add-dir`.
+func TestHookSettingsCarryTheAccessDirs(t *testing.T) {
+	rendered, err := hookSettingsJSON(Config{AccessDirs: []string{"/memory/user"}})
+	if err != nil {
+		t.Fatalf("hookSettingsJSON: %v", err)
+	}
+	if !strings.Contains(rendered, `"permissions":{"additionalDirectories":["/memory/user"]}`) {
+		t.Fatalf("settings block: %s", rendered)
+	}
+	if rendered, _ := hookSettingsJSON(Config{}); strings.Contains(rendered, "permissions") {
+		t.Fatalf("permissions sent without AccessDirs: %s", rendered)
+	}
+}

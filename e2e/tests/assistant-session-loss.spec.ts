@@ -16,7 +16,7 @@ import { join } from 'node:path';
 
 import { test, expect, type SeedResult } from './fixtures.js';
 import { captureAgentMessage } from './wake-rows-helpers.js';
-import { awaitTurnCompleted, plainScenario, setScenario, threadRows, type ProviderName } from './thread-tools-helpers.js';
+import { assistantHome, awaitMockInput, awaitTurnCompleted, plainScenario, setScenario, threadRows, type ProviderName } from './thread-tools-helpers.js';
 
 const NO_ROLLOUT = '{"jsonrpc":"2.0","id":${REQUEST_ID},"error":{"code":-32600,"message":"no rollout found for thread id ${THREAD_ID}"}}';
 
@@ -26,8 +26,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const seed = await harness.rpc<SeedResult>('HarnessSeed', {
       projects: [{ name: `assistant-session-loss-${provider}`, repo: {}, threads: [{ title: 'Ops', provider, assistant: true }] }],
     });
-    const { path: cwd, threadIds } = seed.projects[0];
-    const [first] = threadIds;
+    const [first] = seed.projects[0].threadIds;
+    const cwd = await assistantHome(harness, first);
     const scenario = plainScenario({ name: `assistant-session-loss-${provider}`, provider, texts: ['On it.'], afterTurns: 'repeatLast', echoUserMessage: true });
     await setScenario(harness, cwd, scenario);
 
@@ -52,11 +52,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await harness.open(page);
     await page.locator(`[data-sidebar-thread-id="${first}"]`).click();
     await expect(page.getByTestId('chat-header-title')).toHaveText('Ops');
-    const moved = harness.waitForEvent<{ cwd: string; report: { kind: string; input?: string } }>(
-      'harness:mock',
-      (ev) => ev.report.kind === 'user_input' && ev.cwd === cwd && (ev.report.input ?? '').includes(`The provider cleaned up the session of your previous thread ${first}`),
-      60_000,
-    );
+    const moved = awaitMockInput(harness, { cwd, includes: `The provider cleaned up the session of your previous thread ${first}` });
     await page.getByLabel('Message Input').filter({ visible: true }).fill('Anything new?');
     await page.getByTestId('composer-send').filter({ visible: true }).click();
 

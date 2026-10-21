@@ -752,7 +752,9 @@ func TestAForkSpawnTakesItsPlacementOverItsSourcesGroup(t *testing.T) {
 	run := func(t *testing.T, assistant bool, cases []forkCase) {
 		f := newRequestFixture(t)
 		if assistant {
-			f.assistantCaller(t)
+			// The source is in another project, which the assistant
+			// must serve to fork it.
+			f.assistantServingAll(t)
 		}
 		replies := make([]string, len(cases))
 		for i := range replies {
@@ -824,7 +826,9 @@ func TestThreadSpawnToolForkOfAGroupedSource(t *testing.T) {
 			t.Parallel()
 			f := newRequestFixture(t)
 			if tc.assistant {
-				f.assistantCaller(t)
+				// The source is in another project, which the assistant
+				// must serve to fork it.
+				f.assistantServingAll(t)
 			}
 			f.mockClaude(t, "on it")
 			source := f.forkableThread(t, "tool-fork-source")

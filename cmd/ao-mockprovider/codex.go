@@ -420,7 +420,7 @@ func (a *codexAdapter) handleReadRequest(id json.RawMessage, method string, para
 		// thread, and claiming them for the root thread would make every
 		// harness thread look like someone's subagent.
 		result = `{"thread":{"id":"${THREAD_ID}","status":{"type":"idle","activeFlags":[]}}}`
-	case "thread/settings/update":
+	case "thread/settings/update", "thread/memoryMode/set":
 		// Upstream answers a bare result; the app only checks for an error.
 		result = `{}`
 	case "skills/list":

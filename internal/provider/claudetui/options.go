@@ -37,6 +37,10 @@ type Config struct {
 	// one answer; a take-control session must not be the surface that
 	// prompts.
 	AdditionalDirs []string
+	// AccessDirs are folders outside the workspace the session may read and
+	// write, granted as claude.Config.AccessDirs grants them: in the
+	// session's `--settings` block (hookSettingsJSON).
+	AccessDirs []string
 	// SystemPrompt REPLACES the CLI's default system prompt for this
 	// session. It reaches the TUI as `--system-prompt-file <path>`, never as
 	// an argv value — same MAX_ARG_STRLEN / /proc reasoning as the headless
@@ -63,6 +67,11 @@ type Config struct {
 	// SessionStartReceipts keeps what the hooks delivered; nil keeps
 	// nothing.
 	SessionStartReceipts *provider.SessionStartReceipts
+	// NativeMemoryOff turns Claude Code's auto memory off for the session,
+	// as claude.Config.NativeMemoryOff does: `autoMemoryEnabled: false` in
+	// the session's `--settings` block (hookSettingsJSON), with
+	// claude.AutoMemoryOffEnv=1 in the block's env.
+	NativeMemoryOff bool
 	// SystemPromptDir is the directory both prompt files are created in;
 	// required when either prompt is set. Same contract as
 	// claude.Config.SystemPromptDir.

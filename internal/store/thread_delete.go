@@ -90,12 +90,33 @@ func (s *Store) DeleteThreadPaced(id string, pause ChunkPause) error {
 // so what the forks read is settled before the delete releases anything
 // (ReleasableAttachments). Marking a marked row again is how a repeated
 // delete resumes.
-func (s *Store) BeginThreadDelete(id string) error {
-	result, err := s.db.Exec(`UPDATE threads SET deleting = 1 WHERE id = ?`, id)
+//
+// An assistant's current thread is marked only once nothing lives under
+// the assistant (*AssistantDependentsError): its delete deletes them first.
+// The check and the mark are one transaction, and a helper is recorded only
+// for an assistant whose current thread is not marked (recordAgentHelperTx),
+// so a helper made meanwhile either refuses the mark or is refused itself.
+func (s *Store) BeginThreadDelete(id string) (err error) {
+	action := fmt.Sprintf("store: mark thread %s deleting", id)
+	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("store: mark thread %s deleting: %w", id, err)
+		return fmt.Errorf("%s: begin: %w", action, err)
 	}
-	return requireRowsAffected(result, fmt.Sprintf("store: delete thread %s", id))
+	defer rollbackAgentWakeTx(tx, action, &err)
+	if err := requireNoAssistantDependents(tx, id); err != nil {
+		return err
+	}
+	result, err := tx.Exec(`UPDATE threads SET deleting = 1 WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("%s: %w", action, err)
+	}
+	if err := requireRowsAffected(result, fmt.Sprintf("store: delete thread %s", id)); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("%s: commit: %w", action, err)
+	}
+	return nil
 }
 
 // ListPendingThreadDeletes returns the threads whose delete began and did

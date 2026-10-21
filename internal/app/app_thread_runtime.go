@@ -233,10 +233,11 @@ func (a *App) threadDeletePorts() threadapp.DeletePorts {
 			}
 			return a.terminals.CloseThread(threadID)
 		},
-		CloseBrowserPages:  a.closeThreadBrowserPages,
-		ClearAutoReconnect: a.clearAutoReconnectAttempted,
-		CleanupAttachments: a.cleanupThreadAttachmentFiles,
-		AssistantHome:      a.assistantHomeForDelete,
+		CloseBrowserPages:   a.closeThreadBrowserPages,
+		ClearAutoReconnect:  a.clearAutoReconnectAttempted,
+		CleanupAttachments:  a.cleanupThreadAttachmentFiles,
+		AssistantHome:       a.assistantHomeForDelete,
+		AssistantDependents: a.deleteAssistantDependents,
 		CleanupReplayLog: func(threadID string) error {
 			if a.replay == nil {
 				return nil

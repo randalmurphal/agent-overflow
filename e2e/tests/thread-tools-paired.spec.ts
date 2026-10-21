@@ -372,13 +372,16 @@ test('a standing agent on the other computer is named on its wake as a local one
   const caller = await seed(home, 'wake-role-caller', ['Wake role caller']);
   const local = await seed(home, 'wake-role-local', ['Local reviewer']);
   const there = await seed(remote, 'wake-role-remote', ['Remote reviewer']);
+  // Each reviewer runs in its home.
+  const homes: string[] = [];
   for (const [app, threadID] of [[home, local.threadIds[0]], [remote, there.threadIds[0]]] as const) {
     const promoted = await app.rpc<{ home: string }>('HarnessMakeAssistant', threadID);
+    homes.push(promoted.home);
     // Two heading markers: the remote role is bounded on both computers.
     writeFileSync(join(promoted.home, 'instructions.md'), `# #\t${role}\n\nGrants: none.\n`);
   }
-  await setScenario(home, local.path, plainScenario({ name: 'wake-role-local', provider: 'claude', texts: ['Local review: the parser is fine.'] }));
-  await setScenario(remote, there.path, plainScenario({ name: 'wake-role-remote', provider: 'claude', texts: ['Remote review: the parser is fine.'] }));
+  await setScenario(home, homes[0], plainScenario({ name: 'wake-role-local', provider: 'claude', texts: ['Local review: the parser is fine.'] }));
+  await setScenario(remote, homes[1], plainScenario({ name: 'wake-role-remote', provider: 'claude', texts: ['Remote review: the parser is fine.'] }));
   const send = (threadID: string, computerID?: string) => ({
     call: {
       tool: 'thread_send',
@@ -2190,8 +2193,9 @@ test('two assistants with one name on the two computers show and resolve as <nam
   const here = await seed(home, 'name-clash-here', ['Night ops'], true);
   const there = await seed(remote, 'name-clash-there', ['Night ops'], true);
   await home.rpc('HarnessMakeAssistant', here.threadIds[0]);
-  await remote.rpc('HarnessMakeAssistant', there.threadIds[0]);
-  await setScenario(remote, there.path, plainScenario({ name: 'name-clash-there', provider: 'claude', texts: ['Night ops over there, on it.'] }));
+  // The one over there runs in its home.
+  const thereAgent = await remote.rpc<{ home: string }>('HarnessMakeAssistant', there.threadIds[0]);
+  await setScenario(remote, thereAgent.home, plainScenario({ name: 'name-clash-there', provider: 'claude', texts: ['Night ops over there, on it.'] }));
   await setScenario(
     home,
     caller.path,

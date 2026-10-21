@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/memory"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"errors"
@@ -683,7 +684,7 @@ func TestInterruptAndRevertIfCleanRevertsClaudeTUIWithoutKillingSession(t *testi
 	if err := app.store.UpdateThread(thread); err != nil {
 		t.Fatalf("update thread: %v", err)
 	}
-	if err := app.store.PutSessionStartReceipt(thread.ID, thread.SessionRef, "MEMORY.md", "digest"); err != nil {
+	if err := app.store.PutSessionStartReceipt(thread.ID, thread.SessionRef, memory.Label, "digest"); err != nil {
 		t.Fatalf("put receipt: %v", err)
 	}
 
@@ -976,12 +977,12 @@ func TestInterruptAndRevertIfCleanCodexUsesLiveThreadRevert(t *testing.T) {
 // delivered: a delivery an interrupt kept from settling leaves the session,
 // so the next completed turn warns and keeps no receipt, and a receipt the
 // turn kept while the cut ran is forgotten once the cut lands.
-func TestInterruptAndRevertIfCleanCodexDropsTheCutHomeFiles(t *testing.T) {
+func TestInterruptAndRevertIfCleanCodexDropsTheCutMemoryDelivery(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
 		status string
-		// warns is whether the turn after the cut reports the home file
-		// missing.
+		// warns is whether the turn after the cut reports the memory
+		// delivery missing.
 		warns bool
 	}{
 		"settled by the interrupt": {"interrupted", true},
@@ -1011,7 +1012,7 @@ func TestInterruptAndRevertIfCleanCodexDropsTheCutHomeFiles(t *testing.T) {
 				userAgent:              "codex_cli_rs/0.149.0 (Linux; x86_64)",
 				historyMode:            "paginated",
 				activeTurnID:           "turn-dropped",
-				sessionStartContext:    "## Memory [End]",
+				sessionStartContext:    memory.Heading + " " + memory.Ending,
 				activeTurnRevertStatus: tc.status,
 				nextTurnID:             "turn-after",
 			})
@@ -1024,7 +1025,7 @@ func TestInterruptAndRevertIfCleanCodexDropsTheCutHomeFiles(t *testing.T) {
 				WorkDir:        workspace,
 				ResumeThreadID: thread.SessionRef,
 				SessionStartHooks: []provider.SessionStartHook{
-					{Label: "MEMORY.md", Command: "true", Heading: "## Memory", Ending: "[End]", Stamp: "[Delivered at ", Resume: true},
+					{Label: memory.Label, Command: "true", Heading: memory.Heading, Ending: memory.Ending, Stamp: memory.StampPrefix, Resume: true},
 				},
 				SessionStartReceipts: app.sessionStartReceipts(thread.ID),
 			}, func(event provider.ProviderEvent) {
@@ -1065,7 +1066,7 @@ func TestInterruptAndRevertIfCleanCodexDropsTheCutHomeFiles(t *testing.T) {
 			mu.Lock()
 			defer mu.Unlock()
 			missing := slices.ContainsFunc(warnings, func(w string) bool {
-				return strings.HasPrefix(w, "MEMORY.md did not reach this session after its resume")
+				return strings.HasPrefix(w, memory.Label+" did not reach this session after its resume")
 			})
 			if missing != tc.warns {
 				t.Fatalf("warnings = %q, want the missing-delivery warning %v", warnings, tc.warns)

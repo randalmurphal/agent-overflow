@@ -15,30 +15,12 @@ import (
 // reader.
 func TestAFIFOInTheHomeIsRefusedWithoutBlocking(t *testing.T) {
 	t.Parallel()
-	home := writeHome(t, map[string]string{MemoryIndexFile: "index"})
-	for _, name := range []string{InstructionsFile, "verification.md", memoryDir} {
+	home := writeHome(t, nil)
+	for _, name := range []string{InstructionsFile, "verification.md"} {
 		if err := syscall.Mkfifo(filepath.Join(home, name), 0o600); err != nil {
 			t.Skip("no FIFOs here:", err)
 		}
 	}
-	within(t, "ReadContext", func() {
-		text, problem := readContext(t, home, InstructionsFile)
-		if problem == nil || !strings.Contains(problem.Error(), "not a regular file") || !strings.HasPrefix(text, instructionsHeading) {
-			t.Errorf("ReadContext = %q, %v", text, problem)
-		}
-	})
-	within(t, "the index check", func() {
-		if notices, problem := indexCheck(t, home); problem == nil || !strings.HasPrefix(notices, "[Index check: memory/ could not be read: ") {
-			t.Errorf("index check = %q, %v", notices, problem)
-		}
-	})
-	within(t, "RunHook", func() {
-		var stdout, stderr strings.Builder
-		if code := RunHook([]string{InstructionsFile, home}, strings.NewReader("{}"), &stdout, &stderr); code != 0 ||
-			!strings.Contains(stdout.String(), "not a regular file") || !strings.Contains(stderr.String(), "not a regular file") {
-			t.Errorf("RunHook = %d, %q, %q", code, stdout.String(), stderr.String())
-		}
-	})
 	within(t, "RoleLine", func() {
 		if _, err := RoleLine(home); err == nil || !strings.Contains(err.Error(), "not a regular file") {
 			t.Errorf("RoleLine error = %v", err)
@@ -51,7 +33,7 @@ func TestAFIFOInTheHomeIsRefusedWithoutBlocking(t *testing.T) {
 	})
 }
 
-// The open itself does not wait on a FIFO, which is what lets openRegular
+// The open itself does not wait on a FIFO, which is what lets OpenRegular
 // check the mode on the opened file.
 func TestOpenRegularDoesNotBlockOnAFIFO(t *testing.T) {
 	t.Parallel()

@@ -1,10 +1,6 @@
 import type { Locator, Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 
-import type { SeedResult } from './fixtures.js';
-import type { HarnessApp } from '../src/harness.js';
-import { awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario, type ProviderName } from './thread-tools-helpers.js';
-
 /** The title floor a narrow chat header keeps: 8rem. */
 export const TITLE_FLOOR_PX = 128;
 
@@ -63,32 +59,6 @@ export async function expectHeadersShareTheWidth(panes: Locator[]): Promise<void
 
 export const LEAD = 'Release lead for the quarterly platform migration';
 export const WORKER = 'Changelog worker for the quarterly platform migration';
-
-/** An assistant whose spawn holds, so its Agents row stays to click. */
-export async function seedLeadWithWorker(harness: HarnessApp, tag: string, provider: ProviderName): Promise<{ token: string; worker: string }> {
-  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
-    projects: [
-      { name: `${tag}-lead`, repo: {}, threads: [{ title: LEAD, provider, assistant: true }] },
-      { name: `${tag}-worker`, repo: {}, threads: [] },
-    ],
-  });
-  const [leadProject, workerProject] = seed.projects;
-  const lead = leadProject.threadIds[0];
-  await setScenario(harness, leadProject.path, threadToolsScenario({
-    name: `${tag}-lead`, provider, echoUserMessage: true,
-    turns: [{ steps: [{ call: { tool: 'thread_spawn', args: { prompt: 'Write the changelog.', title: WORKER, project_id: workerProject.projectId, provider, notify: true } } }], text: 'Started.' }, { text: 'Noted.' }],
-    afterTurns: 'repeatLast',
-  }));
-  await setScenario(harness, workerProject.path, threadToolsScenario({
-    name: `${tag}-worker`, provider, turns: [{ steps: [{ gate: 'worker-hold' }], text: 'Written.' }],
-  }));
-  await harness.rpc('StartSession', lead);
-  await harness.rpc('SendMessage', lead, 'Get the changelog written.', null);
-  const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(harness, { tool: 'thread_spawn', cwd: leadProject.path, timeoutMs: 60_000 });
-  expect(spawn.isError, spawn.text).toBe(false);
-  await awaitTurnCompleted(harness, lead);
-  return { token: spawn.value!.token, worker: spawn.value!.thread_id };
-}
 
 export function pane(page: Page, kind: string): Locator {
   return page.locator(`section[data-pane-kind="${kind}"]`);

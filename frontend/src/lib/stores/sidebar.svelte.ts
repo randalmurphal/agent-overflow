@@ -30,6 +30,7 @@
 
 import type { ProjectSortMode } from '../types/settings';
 import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../utils/sidebarThreadLimits';
+import { isAgentRowKey } from '../utils/sidebarTree';
 import {
   appStorageAdoptLegacyKey,
   appStorageDelete,
@@ -49,8 +50,12 @@ const THREAD_LIST_VISIBLE_LIMITS_KEY = 'sidebar:threadListVisibleLimits';
 // a group the user has never touched must show its members. No legacy
 // key: the feature never existed before appStorage.
 const COLLAPSED_GROUPS_KEY = 'sidebar:collapsedGroups';
-// A standing agent's fold persists the same way, keyed by its thread id.
+// An agent row's fold persists the same way, keyed by its container key
+// (agentContainerKey): the assistant's id for its card, with `@<entry>` for
+// its row in a project.
 const COLLAPSED_AGENTS_KEY = 'sidebar:collapsedAgents';
+// The Assistants and Projects sections, each folded whole from its header.
+const COLLAPSED_SECTIONS_KEY = 'sidebar:collapsedSections';
 
 // Pre-appStorage localStorage keys, adopted once at module init.
 const LEGACY_COLLAPSED_STORAGE_KEY = 'agent-overflow:sidebar:collapsedProjects';
@@ -192,14 +197,18 @@ function removeLocalStorageKey(key: string): void {
 let collapsedProjects: Set<string> = $state(readCollapsed());
 let collapsedGroups: Set<string> = $state(stringSetFromStorage(COLLAPSED_GROUPS_KEY));
 let collapsedAgents: Set<string> = $state(stringSetFromStorage(COLLAPSED_AGENTS_KEY));
+let collapsedSections: Set<string> = $state(stringSetFromStorage(COLLAPSED_SECTIONS_KEY));
 // An agent's open done footer and its paging are for this page load only:
 // a list of finished work is something the user opens to look at, not a
 // layout to come back to.
 let expandedDoneAgents: Set<string> = $state(new Set());
 let doneVisibleLimits: Record<string, number> = $state({});
-// How many unpinned members each group (by id) or agent (by assistant key)
-// shows before its show-more footer. Page-load state, like the done paging.
+// How many unpinned members each group (by id) or agent row (by container
+// key) shows before its show-more footer. Page-load state, like the done
+// paging.
 let containerVisibleLimits: Record<string, number> = $state({});
+// How many top-level rows each list shows: a project's by its entry id,
+// and the Assistants section's cards by ASSISTANTS_LIST_KEY.
 let threadListVisibleLimits: Record<string, number> = $state(readThreadListVisibleLimits());
 let projectSortMode: ProjectSortMode = $state(readProjectSortMode());
 
@@ -288,6 +297,12 @@ export function syncSidebarFromAppStorage(): void {
   if (!setsEqual(agents, collapsedAgents)) {
     collapsedAgents = agents;
   }
+  const sections = new Set(
+    parseStringArray(appStorageGet(COLLAPSED_SECTIONS_KEY) ?? '[]') ?? [],
+  );
+  if (!setsEqual(sections, collapsedSections)) {
+    collapsedSections = sections;
+  }
   const rawLimits = appStorageGet(THREAD_LIST_VISIBLE_LIMITS_KEY);
   threadListVisibleLimits = rawLimits === null ? {} : (parseThreadListVisibleLimits(rawLimits) ?? {});
 }
@@ -323,42 +338,73 @@ export function toggleGroup(id: string): void {
   writeStringSet(COLLAPSED_GROUPS_KEY, next);
 }
 
+export type SidebarSectionId = 'assistants' | 'projects';
+
+/** Whether a whole sidebar section is unfolded; unfolded until the user folds it. */
+export function isSidebarSectionExpanded(section: SidebarSectionId): boolean {
+  return !collapsedSections.has(section);
+}
+
 /**
- * Standing-agent fold state, by the agent's thread id. Expanded until the
+ * Whether a section shows its rows: while it is unfolded, and during a
+ * search, which shows its matches in a folded section too. Its header's
+ * chevron and `aria-expanded` follow this.
+ */
+export function isSidebarSectionShown(section: SidebarSectionId, searching: boolean): boolean {
+  return searching || isSidebarSectionExpanded(section);
+}
+
+export function setSidebarSectionExpanded(section: SidebarSectionId, expanded: boolean): void {
+  if (collapsedSections.has(section) === !expanded) return;
+  const next = new Set(collapsedSections);
+  if (expanded) next.delete(section);
+  else next.add(section);
+  collapsedSections = next;
+  writeStringSet(COLLAPSED_SECTIONS_KEY, next);
+}
+
+export function toggleSidebarSection(section: SidebarSectionId): void {
+  setSidebarSectionExpanded(section, !isSidebarSectionExpanded(section));
+}
+
+/**
+ * Agent-row fold state, by the row's container key. Expanded until the
  * user folds it, like a group.
  */
-export function isAgentExpanded(threadId: string): boolean {
-  return !collapsedAgents.has(threadId);
+export function isAgentExpanded(containerKey: string): boolean {
+  return !collapsedAgents.has(containerKey);
 }
 
 export function getCollapsedAgents(): ReadonlySet<string> {
   return collapsedAgents;
 }
 
-export function setAgentExpanded(threadId: string, expanded: boolean): void {
-  if (collapsedAgents.has(threadId) === !expanded) return;
+export function setAgentExpanded(containerKey: string, expanded: boolean): void {
+  if (collapsedAgents.has(containerKey) === !expanded) return;
   const next = new Set(collapsedAgents);
-  if (expanded) next.delete(threadId);
-  else next.add(threadId);
+  if (expanded) next.delete(containerKey);
+  else next.add(containerKey);
   collapsedAgents = next;
   writeStringSet(COLLAPSED_AGENTS_KEY, next);
 }
 
-export function toggleAgent(threadId: string): void {
-  setAgentExpanded(threadId, !isAgentExpanded(threadId));
+export function toggleAgent(containerKey: string): void {
+  setAgentExpanded(containerKey, !isAgentExpanded(containerKey));
 }
 
 /**
- * Drop everything the sidebar keeps for a standing agent once the thread
- * stops being one here (demoted, archived, deleted, or listed without the
- * mark): its fold, its done footer and the footer's paging. A thread
- * promoted again starts as a fresh agent row. The threads store calls this
- * from its one write path, so no caller has to remember it.
+ * Drop everything the sidebar keeps for an assistant once it is gone here
+ * (archived, deleted, or listed without the mark): the fold, the done
+ * footer, its paging and the member bound of its card and of each of its
+ * project rows. An assistant listed again starts with fresh rows. The
+ * threads store calls this from its one write path, so no caller has to
+ * remember it.
  */
-export function forgetAgentSidebarState(threadId: string): void {
-  setAgentExpanded(threadId, true);
-  closeAgentDone(threadId);
-  forgetContainerVisibleLimit(threadId);
+export function forgetAgentSidebarState(agentKey: string): void {
+  const rows = (keys: Iterable<string>) => [...keys].filter((key) => isAgentRowKey(key, agentKey));
+  for (const key of rows(collapsedAgents)) setAgentExpanded(key, true);
+  for (const key of rows(expandedDoneAgents)) closeAgentDone(key);
+  for (const key of rows(Object.keys(containerVisibleLimits))) forgetContainerVisibleLimit(key);
 }
 
 /** How many unpinned members a group or an agent row shows; grows by reveals. */
@@ -383,17 +429,17 @@ export function getExpandedDoneAgents(): ReadonlySet<string> {
   return expandedDoneAgents;
 }
 
-export function isAgentDoneExpanded(threadId: string): boolean {
-  return expandedDoneAgents.has(threadId);
+export function isAgentDoneExpanded(containerKey: string): boolean {
+  return expandedDoneAgents.has(containerKey);
 }
 
-export function toggleAgentDone(threadId: string): void {
-  if (expandedDoneAgents.has(threadId)) {
-    closeAgentDone(threadId);
+export function toggleAgentDone(containerKey: string): void {
+  if (expandedDoneAgents.has(containerKey)) {
+    closeAgentDone(containerKey);
     return;
   }
   const next = new Set(expandedDoneAgents);
-  next.add(threadId);
+  next.add(containerKey);
   expandedDoneAgents = next;
 }
 
@@ -403,33 +449,41 @@ export function toggleAgentDone(threadId: string): void {
  * archived child was unarchived or deleted): a footer that returns later
  * starts closed.
  */
-export function closeAgentDone(threadId: string): void {
-  if (!expandedDoneAgents.has(threadId)) return;
+export function closeAgentDone(containerKey: string): void {
+  if (!expandedDoneAgents.has(containerKey)) return;
   const next = new Set(expandedDoneAgents);
-  next.delete(threadId);
+  next.delete(containerKey);
   expandedDoneAgents = next;
-  if (threadId in doneVisibleLimits) {
-    const { [threadId]: _dropped, ...rest } = doneVisibleLimits;
+  if (containerKey in doneVisibleLimits) {
+    const { [containerKey]: _dropped, ...rest } = doneVisibleLimits;
     doneVisibleLimits = rest;
   }
 }
 
 /** How many archived rows an open done footer lists; grows by reveals. */
-export function getAgentDoneVisibleLimit(threadId: string): number {
-  return doneVisibleLimits[threadId] ?? THREAD_PREVIEW_LIMIT;
+export function getAgentDoneVisibleLimit(containerKey: string): number {
+  return doneVisibleLimits[containerKey] ?? THREAD_PREVIEW_LIMIT;
 }
 
-export function revealMoreAgentDone(threadId: string): void {
+export function revealMoreAgentDone(containerKey: string): void {
   doneVisibleLimits = {
     ...doneVisibleLimits,
-    [threadId]: getAgentDoneVisibleLimit(threadId) + THREAD_REVEAL_INCREMENT,
+    [containerKey]: getAgentDoneVisibleLimit(containerKey) + THREAD_REVEAL_INCREMENT,
   };
 }
 
 /**
- * Per-project thread preview size. Projects start at THREAD_PREVIEW_LIMIT;
- * each "Show more" click adds THREAD_REVEAL_INCREMENT, and "Show less"
- * drops the project back to the default preview.
+ * The key the Assistants section's cards page under in the per-list
+ * preview sizes below. A project's list pages under its entry id, a UUID,
+ * so the two never meet.
+ */
+export const ASSISTANTS_LIST_KEY = 'assistants';
+
+/**
+ * Per-list thread preview size, by a project's entry id or
+ * ASSISTANTS_LIST_KEY. Lists start at THREAD_PREVIEW_LIMIT; each "Show
+ * more" click adds THREAD_REVEAL_INCREMENT, and "Show less" drops the list
+ * back to the default preview.
  */
 export function isThreadListExpanded(id: string): boolean {
   return getThreadListVisibleLimit(id) > THREAD_PREVIEW_LIMIT;
@@ -480,6 +534,7 @@ export function resetSidebarForTest(): void {
   collapsedProjects = new Set();
   collapsedGroups = new Set();
   collapsedAgents = new Set();
+  collapsedSections = new Set();
   expandedDoneAgents = new Set();
   doneVisibleLimits = {};
   containerVisibleLimits = {};

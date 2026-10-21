@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"time"
 
@@ -250,7 +251,26 @@ func (h *harnessHost) MakeAssistant(threadID string) (store.StandingAgent, error
 	if err != nil {
 		return store.StandingAgent{}, err
 	}
-	agent, err := h.app.makeAssistantRecord(thread, "")
+	// A name another assistant holds is refused before the thread moves.
+	if err := h.app.store.CheckAssistantName(thread.Title); err != nil {
+		return store.StandingAgent{}, err
+	}
+	// New Assistant creates its thread in the home. The harness moves an
+	// existing thread there, out of its project, group and worktree, so a
+	// mock scenario for its sessions is keyed on the home, and the
+	// assistant serves the project the thread came from.
+	var projects assistantProjects
+	if thread.ProjectID != "" {
+		projects.ids = []string{thread.ProjectID}
+	}
+	_, agent, err := h.app.recordNewAssistant(func(home string) (store.Thread, error) {
+		if err := h.app.store.PlaceThreadInHome(thread.ID, home); err != nil {
+			return store.Thread{}, err
+		}
+		return h.app.store.GetThread(thread.ID)
+	}, func(moved store.Thread) {
+		log.Printf("harness: thread %s stays in the home %s of an assistant that was not recorded", moved.ID, moved.WorkspacePath)
+	}, projects, "")
 	if err != nil {
 		return store.StandingAgent{}, err
 	}
@@ -281,6 +301,10 @@ func (h *harnessHost) AwaitSessionEndWork() []string {
 func (h *harnessHost) DeleteProject(projectID string) error {
 	_, err := h.app.DeleteProject(projectID)
 	return err
+}
+
+func (h *harnessHost) DeleteThread(threadID string) error {
+	return h.app.DeleteThread(threadID)
 }
 
 func (h *harnessHost) RecoverCrashedTurns() error {

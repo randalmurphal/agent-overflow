@@ -54,10 +54,12 @@ func proposedPlanItemSQL() string {
 // cost does not grow with the thread's rows. hasFailedTurn's turn-error
 // half reads the write-time pair thread_turn_error_aggregate.go maintains,
 // and the pending-plan flag finds its row and payload by id
-// (proposedPlanItemSQL). The three agent columns read the standing agent
-// row and the local spawn requests (idx_thread_requests_spawn_target for
-// the spawner, idx_thread_requests_caller for the finished-child count,
-// which only an agent row pays for).
+// (proposedPlanItemSQL). The agent columns read the assistant records and
+// the local spawn requests (idx_thread_requests_spawn_target for the
+// spawner). An assistant's current thread reads its record once, as one
+// JSON object (threadAgentColumn) that also carries the projects it serves
+// and its archived children by container (idx_thread_requests_caller), and
+// any other thread reads NULL there, so only an agent row pays for them.
 var threadColumns = `id, COALESCE(project_id, ''),
     COALESCE((SELECT path FROM projects WHERE projects.id = threads.project_id), ''),
     title, provider, model,
@@ -113,9 +115,18 @@ var threadColumns = `id, COALESCE(project_id, ''),
     NOT EXISTS (SELECT 1 FROM timeline_items WHERE timeline_items.thread_id = threads.id),
     (SELECT COALESCE(MAX(ownership_epoch),0) FROM thread_transfers
       WHERE thread_id = threads.id AND direction = 'incoming' AND phase = 'complete'),
-    COALESCE((SELECT id FROM agents WHERE agents.thread_id = threads.id), ''),
+    (SELECT json_object(
+        'id', agents.id,
+        'allProjects', agents.all_projects,
+        'projectIds', json((SELECT json_group_array(project_id) FROM (
+          SELECT project_id FROM agent_projects WHERE agent_projects.agent_id = agents.id ORDER BY project_id))),
+        'archivedChildCounts', json((SELECT json_group_object(scope, n) FROM (SELECT scope, COUNT(*) AS n FROM (
+          ` + archivedAgentChildrenSQL("threads.id") + `
+        ) GROUP BY scope))))
+       FROM agents WHERE agents.thread_id = threads.id),
     COALESCE((SELECT agent_id FROM agent_past_threads WHERE agent_past_threads.thread_id = threads.id), ''),
     (SELECT superseded_at FROM agent_past_threads WHERE agent_past_threads.thread_id = threads.id),
+    COALESCE((SELECT agent_id FROM agent_helpers WHERE agent_helpers.thread_id = threads.id), ''),
     COALESCE((
       SELECT caller_thread_id FROM thread_requests
        WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = threads.id
@@ -125,18 +136,45 @@ var threadColumns = `id, COALESCE(project_id, ''),
       SELECT caller_thread_id FROM thread_requests
        WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = threads.id
        ORDER BY created_at DESC LIMIT 1
-    )),
-    (SELECT COUNT(*) FROM thread_requests
-       JOIN owned_threads AS child ON child.id = thread_requests.target_thread_id
-      WHERE thread_requests.caller_thread_id = threads.id
-        AND thread_requests.kind = 'spawn' AND thread_requests.target_computer_id = ''
-        AND child.archived = 1 AND child.placement = 'nested'
-        AND NOT EXISTS (SELECT 1 FROM agents AS created WHERE created.thread_id = child.id)
-        AND EXISTS (SELECT 1 FROM agents WHERE agents.thread_id = threads.id))
-    + (SELECT COUNT(*) FROM agent_past_threads
-       JOIN agents ON agents.id = agent_past_threads.agent_id
-       JOIN owned_threads AS past ON past.id = agent_past_threads.thread_id
-      WHERE agents.thread_id = threads.id AND past.archived = 1 AND past.placement = 'nested')`
+    ))`
+
+// threadAgentColumn is the record column threadColumns reads for an
+// assistant's current thread.
+type threadAgentColumn struct {
+	ID                  string         `json:"id"`
+	AllProjects         int            `json:"allProjects"`
+	ProjectIDs          []string       `json:"projectIds"`
+	ArchivedChildCounts map[string]int `json:"archivedChildCounts"`
+}
+
+// archivedAgentChildrenSQL lists the archived threads an agent row's done
+// footers hold, for the assistant whose current thread is agentThread (a
+// column or a placeholder), each with the container it belongs to
+// (docs/specs/standing-agents.md, "Sidebar"): the empty scope is the
+// assistant's card, holding its helpers and its past threads; a project id
+// is its row in that project, holding the nested threads it spawned there
+// that live under no assistant.
+func archivedAgentChildrenSQL(agentThread string) string {
+	return `
+        SELECT child.id AS id, '' AS scope FROM agent_helpers
+          JOIN agents ON agents.id = agent_helpers.agent_id
+          JOIN owned_threads AS child ON child.id = agent_helpers.thread_id
+         WHERE agents.thread_id = ` + agentThread + ` AND child.archived = 1
+        UNION ALL
+        SELECT child.id, '' FROM agent_past_threads
+          JOIN agents ON agents.id = agent_past_threads.agent_id
+          JOIN owned_threads AS child ON child.id = agent_past_threads.thread_id
+         WHERE agents.thread_id = ` + agentThread + ` AND child.archived = 1
+        UNION ALL
+        SELECT child.id, child.project_id FROM thread_requests
+          JOIN owned_threads AS child ON child.id = thread_requests.target_thread_id
+         WHERE thread_requests.caller_thread_id = ` + agentThread + `
+           AND thread_requests.kind = 'spawn' AND thread_requests.target_computer_id = ''
+           AND child.archived = 1 AND child.placement = 'nested' AND child.project_id IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM agents AS created WHERE created.thread_id = child.id)
+           AND NOT EXISTS (SELECT 1 FROM agent_past_threads AS past WHERE past.thread_id = child.id)
+           AND NOT EXISTS (SELECT 1 FROM agent_helpers AS helper WHERE helper.thread_id = child.id)`
+}
 
 // -- Validation errors for enum fields. Each binding checks against the
 // -- list before hitting SQLite so the caller sees a typed error instead
@@ -235,6 +273,7 @@ func validAutoCompactPercent(percent int) bool {
 func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
 	var archived, fastMode, hasActionableProposedPlan, hasIncompleteTurn, hasFailedTurn, isDraft, spawnedByAgent int
+	var agentRecord sql.NullString
 	var latestTurnCompletedAt, lastReadAt, pinnedAt, pinGroup, agentSupersededAt sql.NullInt64
 	if err := scanner.Scan(
 		&t.ID, &t.ProjectID, &t.ProjectPath, &t.Title, &t.Provider, &t.Model,
@@ -249,7 +288,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.WorktreeSetupState, &t.ImportSource,
 		&t.CreatedByDevice, &t.Origin.Branch, &t.Origin.HeadCommit,
 		&hasActionableProposedPlan, &hasIncompleteTurn, &hasFailedTurn, &isDraft, &t.OwnershipEpoch,
-		&t.AgentID, &t.PastAgentID, &agentSupersededAt, &t.SpawnedByThreadID, &spawnedByAgent, &t.ArchivedChildCount,
+		&agentRecord, &t.PastAgentID, &agentSupersededAt, &t.HelperOfAgentID, &t.SpawnedByThreadID, &spawnedByAgent,
 	); err != nil {
 		return Thread{}, err
 	}
@@ -280,6 +319,19 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		v := agentSupersededAt.Int64
 		t.AgentSupersededAt = &v
 	}
+	if agentRecord.Valid {
+		var agent threadAgentColumn
+		if err := json.Unmarshal([]byte(agentRecord.String), &agent); err != nil {
+			return Thread{}, fmt.Errorf("read the assistant of thread %s: %w", t.ID, err)
+		}
+		t.AgentID, t.AgentAllProjects = agent.ID, agent.AllProjects != 0
+		if len(agent.ProjectIDs) > 0 {
+			t.AgentProjectIDs = agent.ProjectIDs
+		}
+		if len(agent.ArchivedChildCounts) > 0 {
+			t.ArchivedChildCounts = agent.ArchivedChildCounts
+		}
+	}
 	return t, nil
 }
 
@@ -297,6 +349,9 @@ func (s *Store) CreateThread(t Thread) error {
 	}
 	defer tx.Rollback()
 	if err := insertThread(tx, prepared, lastReadAtArg); err != nil {
+		return fmt.Errorf("store: create thread: %w", err)
+	}
+	if err := recordAgentHelperTx(tx, prepared); err != nil {
 		return fmt.Errorf("store: create thread: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -350,6 +405,49 @@ const threadInsertColumns = `id, project_id, title, provider, model,
 const threadInsertSQL = `INSERT INTO threads (` + threadInsertColumns + `)
 		 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 		 WHERE ? = '' OR EXISTS (SELECT 1 FROM thread_groups WHERE id = ? AND project_id = ?)`
+
+// ErrHelperInProject refuses a helper in a project: a helper lives under
+// its assistant, outside every project.
+var ErrHelperInProject = errors.New("store: a helper lives outside every project")
+
+// ErrHelperOfNoAssistant refuses a helper of an assistant that is gone or
+// whose delete has begun (BeginThreadDelete).
+var ErrHelperOfNoAssistant = errors.New("store: the assistant is gone or being deleted")
+
+// recordAgentHelperTx records a new thread as a helper of the assistant
+// t.HelperOfAgentID names, if any. A created thread and a fork take it; a
+// thread another computer sent arrives as no assistant's. The thread must
+// be outside every project, and the assistant here with no delete begun on
+// its current thread, so none is recorded after its dependents were
+// counted for that delete.
+func recordAgentHelperTx(tx *sql.Tx, t Thread) error {
+	if t.HelperOfAgentID == "" {
+		return nil
+	}
+	action := fmt.Sprintf("record %s as a helper of assistant %s", t.ID, t.HelperOfAgentID)
+	result, err := tx.Exec(`INSERT INTO agent_helpers (thread_id, agent_id)
+		SELECT threads.id, agents.id FROM threads, agents JOIN threads AS current ON current.id = agents.thread_id
+		 WHERE threads.id = ?1 AND threads.project_id IS NULL AND agents.id = ?2 AND current.deleting = 0`,
+		t.ID, t.HelperOfAgentID)
+	if err != nil {
+		return fmt.Errorf("%s: %w", action, err)
+	}
+	inserted, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("%s: %w", action, err)
+	}
+	if inserted == 1 {
+		return nil
+	}
+	var inProject bool
+	if err := tx.QueryRow(`SELECT project_id IS NOT NULL FROM threads WHERE id = ?`, t.ID).Scan(&inProject); err != nil {
+		return fmt.Errorf("%s: %w", action, err)
+	}
+	if inProject {
+		return fmt.Errorf("%s: %w", action, ErrHelperInProject)
+	}
+	return fmt.Errorf("%s: %w", action, ErrHelperOfNoAssistant)
+}
 
 func insertThread(tx *sql.Tx, t Thread, lastReadAtArg any) error {
 	return writeThread(tx, t, lastReadAtArg, "")
@@ -1560,7 +1658,7 @@ func (s *Store) UpdateFastMode(threadID string, on bool) (Thread, bool, error) {
 func (s *Store) GetThreadContextSettings(threadID string) (ThreadContextSettings, error) {
 	var settings ThreadContextSettings
 	err := s.reader().QueryRow(
-		`SELECT provider, model, project_id, context_window,
+		`SELECT provider, model, COALESCE(project_id, ''), context_window,
 		        auto_compact_standard_percent, auto_compact_extended_percent
 		   FROM threads
 		  WHERE id = ?`,

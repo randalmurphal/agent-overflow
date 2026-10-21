@@ -447,7 +447,7 @@ func TestReadOnlySandboxIsAcceptedByThreadAndTurnParams(t *testing.T) {
 	if got := normalizeThreadSandbox(sandbox); got != sandbox {
 		t.Errorf("normalizeThreadSandbox(%q) = %q — read-only must survive verbatim", sandbox, got)
 	}
-	policy, err := turnSandboxPolicy(sandbox)
+	policy, err := turnSandboxPolicy(sandbox, []string{"/tmp/memory"})
 	if err != nil {
 		t.Fatalf("turnSandboxPolicy(%q): %v", sandbox, err)
 	}

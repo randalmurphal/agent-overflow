@@ -38,6 +38,17 @@ describe('<ComposerWorkspaceStrip>', () => {
     expect(queryByTestId('chat-header-project')).toBeNull();
   });
 
+  it('offers no branch or worktree for a thread outside every project', async () => {
+    const list = setBindingMock('GitListWorktrees', async () => []);
+    const pane = await buildPane(makeThread({ projectId: '', projectPath: '', workspacePath: '/config/agents/ops', agentId: 'ops' }));
+    const { getByTestId, queryByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });
+    await tick();
+    expect(getByTestId('composer-workspace-strip')).toBeInTheDocument();
+    expect(queryByTestId('branch-picker-trigger')).toBeNull();
+    expect(queryByTestId('env-picker-trigger')).toBeNull();
+    expect(list).not.toHaveBeenCalled();
+  });
+
   it('does not mount under compact: the header facts line and the rail carry its facts', async () => {
     setCompactLayoutForTest(true);
     const pane = await buildPane(makeThread({ branch: 'feature/mobile' }));
@@ -53,7 +64,7 @@ describe('<ComposerWorkspaceStrip>', () => {
     // Branch, then the worktree — the same order as the compact header's
     // facts line, so the two surfaces read alike. A revert or accidental
     // re-order would otherwise sail past the existence-only assertion above.
-    const pane = await buildPane(makeThread({ projectId: undefined }));
+    const pane = await buildPane(makeThread());
     const { getByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });
     const strip = getByTestId('composer-workspace-strip');
     const triggers = Array.from(

@@ -317,6 +317,9 @@ func threadToolsOrganizeError(threadID string, err error) error {
 	case errors.Is(err, store.ErrStandingAgentPlaced):
 		return errorsx.Public(threadtools.CodeInvalidRequest,
 			"That thread is an assistant's, and its own sidebar row is a row of its own: it takes no placement.", err)
+	case errors.Is(err, store.ErrPlacementOutsideProjects):
+		return errorsx.Public(threadtools.CodeInvalidRequest,
+			"That thread is outside every project, a helper or past thread of an assistant, and is always listed under the assistant: it takes no placement.", err)
 	case errors.Is(err, store.ErrThreadNotSpawned):
 		return errorsx.Public(threadtools.CodeInvalidRequest,
 			"No thread on this computer spawned that thread, so there is no agent row to nest it under. Use standalone, or group it.", err)

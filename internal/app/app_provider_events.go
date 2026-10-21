@@ -106,9 +106,9 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 			a.clearAutoReconnectAttempted(threadID)
 		}
 		a.dispatchTurnObservers(threadID, evt)
-		// A compaction runs a standing agent's home hooks again.
+		// A compaction runs the memory hook again.
 		if evt.Kind == provider.EventCompactBoundary && strings.TrimSpace(evt.ParentToolUseID) == "" {
-			a.reportStandingAgentCompactionProblems(threadID)
+			a.reportMemoryCompactionProblems(threadID)
 		}
 		// A provider reroute rewrites the thread's model, which picks the
 		// override the next start would use.

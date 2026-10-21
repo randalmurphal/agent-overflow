@@ -2,7 +2,8 @@
 // and compact-agents-tray.spec.ts): a lead thread that spawns a child and
 // sends to a peer, a child that spawns a grandchild and starts a background
 // shell, a grandchild held on an approval, the row locators, and reads of
-// the request ledger.
+// the request ledger. seedLeadWithWorker is the companion pane specs' one
+// assistant with one held worker.
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { Locator, Page } from '@playwright/test';
@@ -10,7 +11,9 @@ import type { Locator, Page } from '@playwright/test';
 import { expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp, HarnessMockEventData } from '../src/harness.js';
 import {
+  assistantHome,
   awaitToolAnswer,
+  awaitTurnCompleted,
   setScenario,
   threadToolsScenario,
   type ProviderName,
@@ -170,6 +173,61 @@ export async function startTree(harness: HarnessApp, tree: AgentsTree): Promise<
   };
 }
 
+/** What seedLeadWithWorker made. */
+export interface LeadWithWorker {
+  /** The assistant's current thread, which runs in its home. */
+  lead: string;
+  home: string;
+  /** The worker's project checkout, where its mock runs. */
+  workerPath: string;
+  /** The spawn's request token: the worker's Agents row. */
+  token: string;
+  worker: string;
+}
+
+/**
+ * An assistant titled `lead`, serving its own project (`<tag>-lead`) and
+ * the worker's (`<tag>-worker`), that has spawned one worker titled
+ * `worker` there and finished its turn. The worker's first turn holds on
+ * the `worker-hold` gate, so its Agents row stays to click; any later turn
+ * of either answers 'Noted.'.
+ */
+export async function seedLeadWithWorker(
+  harness: HarnessApp,
+  opts: { tag: string; provider: ProviderName; lead: string; worker: string },
+): Promise<LeadWithWorker> {
+  const { tag, provider } = opts;
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      { name: `${tag}-lead`, repo: {}, threads: [{ title: opts.lead, provider, assistant: true }] },
+      { name: `${tag}-worker`, repo: {}, threads: [] },
+    ],
+  });
+  const [leadProject, workerProject] = seed.projects;
+  const lead = leadProject.threadIds[0];
+  const home = await assistantHome(harness, lead);
+  await harness.rpc('SetAssistantProjects', lead, false, [leadProject.projectId, workerProject.projectId]);
+  await setScenario(harness, home, threadToolsScenario({
+    name: `${tag}-lead`, provider, echoUserMessage: true,
+    turns: [
+      { steps: [{ call: { tool: 'thread_spawn', args: { prompt: 'Write the changelog.', title: opts.worker, project_id: workerProject.projectId, provider, notify: true } } }], text: 'Started the changelog.' },
+      { text: 'Noted.' },
+    ],
+    afterTurns: 'repeatLast',
+  }));
+  await setScenario(harness, workerProject.path, threadToolsScenario({
+    name: `${tag}-worker`, provider, echoUserMessage: true,
+    turns: [{ steps: [{ gate: 'worker-hold' }], text: 'Written.' }, { text: 'Noted.' }],
+    afterTurns: 'repeatLast',
+  }));
+  await harness.rpc('StartSession', lead);
+  await harness.rpc('SendMessage', lead, 'Get the changelog written.', null);
+  const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(harness, { tool: 'thread_spawn', cwd: home, timeoutMs: 60_000 });
+  expect(spawn.isError, spawn.text).toBe(false);
+  await awaitTurnCompleted(harness, lead);
+  return { lead, home, workerPath: workerProject.path, token: spawn.value!.token, worker: spawn.value!.thread_id };
+}
+
 /** The Agents body of the visible pane. */
 export function agentsBody(page: Page): Locator {
   return page.getByTestId('activity-rail-agents-body').filter({ visible: true });
@@ -214,15 +272,6 @@ export function heldSendIds(harness: HarnessApp, threadId: string): string[] {
   } finally {
     db.close();
   }
-}
-
-/** The next input the mock in `cwd` takes whose text includes every part. */
-export function mockInput(harness: HarnessApp, cwd: string, parts: string[], timeoutMs = 60_000) {
-  return harness.waitForEvent<HarnessMockEventData>(
-    'harness:mock',
-    (ev) => ev.report.kind === 'user_input' && ev.cwd === cwd && parts.every((part) => (ev.report.input ?? '').includes(part)),
-    timeoutMs,
-  );
 }
 
 /** The next interrupt the mock in `cwd` reports. */

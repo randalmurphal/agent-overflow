@@ -1,6 +1,12 @@
 import type { ProviderID } from './providers';
 import type { ReasoningEffort } from './settings';
 
+// Wire shapes re-exported so feature code does not import from the
+// generated bindings tree: what an assistant's delete removes
+// (GetAssistantDependents), and whether Claude's and Codex's own memory is
+// on (GetNativeMemoryStatus).
+export type { AssistantDependents, NativeMemoryStatus } from '../../../bindings/agent-overflow/internal/app/models';
+
 export type RuntimeMode =
   | "read-only"
   | "approval-required"
@@ -87,6 +93,16 @@ export interface Thread {
   pastAgentId?: string;
   /** Unix ms when that handoff superseded it. */
   agentSupersededAt?: number | null;
+  /**
+   * The assistant this thread is a helper of: one it spawned without a
+   * project, which lives under it outside every project
+   * (docs/specs/standing-agents.md ruling 38).
+   */
+  helperOfAgentId?: string;
+  /** On an assistant's current thread: it serves every project. */
+  agentAllProjects?: boolean;
+  /** On an assistant's current thread: the projects it serves, unless all. */
+  agentProjectIds?: string[];
   /** The local thread whose thread_spawn made this one; absent when the user started it. */
   spawnedByThreadId?: string;
   /**
@@ -102,8 +118,13 @@ export interface Thread {
    * none; read it through `threadPlacement`.
    */
   placement?: ThreadPlacement | '';
-  /** Spawned threads now archived. Set only on a standing agent's row. */
-  archivedChildCount?: number;
+  /**
+   * The archived threads that live under the assistant whose current
+   * thread this is, counted by container: '' for its card (helpers and
+   * past threads), a project id for its row in that project. Set only on
+   * an assistant's current thread.
+   */
+  archivedChildCounts?: Record<string, number>;
   /**
    * Unix-ms timestamp of when the user last viewed the thread. New rows
    * start with a creation-time baseline; undefined means "never tracked"

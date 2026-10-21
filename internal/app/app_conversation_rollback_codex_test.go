@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/memory"
 	"agent-overflow/internal/testutil/mockexec"
 	"cmp"
 	"context"
@@ -232,6 +233,47 @@ func TestConversationRollbackCodexForksThroughTempSessionWhenStopped(t *testing.
 	}
 	if updated.SessionRef != "forked-provider-thread" {
 		t.Fatalf("SessionRef = %q, want forked-provider-thread", updated.SessionRef)
+	}
+}
+
+// The cold cut resumes the source and forks it in a throwaway app-server,
+// and both load a thread of this app's: with Codex's own memory off, both
+// state it, so the cut child follows the setting as a session's thread does.
+func TestConversationRollbackCodexColdCutStatesTheMemorySetting(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(t)
+	thread := createAppTestThread(t, app, "codex-cold-memory", "codex", t.TempDir())
+	thread.SessionRef = "provider-cold-memory"
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
+	insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
+	insertCodexTurn(t, app.store, thread.ID, 1, "turn-b")
+	seedMessageAnchor(t, app.store, thread.ID, "user:1", 1, "", "")
+	dir := t.TempDir()
+	forkLog, resumeLog := filepath.Join(dir, "fork.jsonl"), filepath.Join(dir, "resume.jsonl")
+	binary := writeCodexForkAtBinary(t, codexForkMock{
+		resumedThreadID: "provider-cold-memory",
+		forkedThreadID:  "forked-cold-memory",
+		requestLogPath:  forkLog,
+		resumeLogPath:   resumeLog,
+	})
+	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary, "codexNativeMemoryDisabled": true}); err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+	resume, err := os.ReadFile(resumeLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for what, request := range map[string]string{"thread/resume": string(resume), "thread/fork": readCodexForkRequest(t, forkLog)} {
+		if !strings.Contains(request, `"features.memories":false`) || !strings.Contains(request, `"memories.generate_memories":false`) {
+			t.Errorf("%s does not turn Codex's memory off: %s", what, request)
+		}
 	}
 }
 
@@ -726,15 +768,15 @@ func TestConversationRollbackCodexRevertsInPlaceWhenSupported(t *testing.T) {
 	if err := app.store.PutCodexDeveloperInstructionsDigest(thread.ID, "provider-inplace-revert", strings.Repeat("d", 64)); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.store.PutSessionStartReceipt(thread.ID, "provider-inplace-revert", "MEMORY.md", strings.Repeat("e", 64)); err != nil {
+	if err := app.store.PutSessionStartReceipt(thread.ID, "provider-inplace-revert", memory.Label, strings.Repeat("e", 64)); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
 		t.Fatalf("revert: %v", err)
 	}
-	// It can drop a home file a resume delivered too, so the next resume
-	// must run every hook.
+	// It can drop the memory a resume delivered too, so the next resume
+	// must run the hook.
 	if received, err := app.store.SessionStartReceipts(thread.ID, "provider-inplace-revert"); err != nil || len(received) != 0 {
 		t.Fatalf("receipts after an in-place revert = %v, %v; want none", received, err)
 	}

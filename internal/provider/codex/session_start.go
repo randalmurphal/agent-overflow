@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"slices"
 	"time"
 
 	"agent-overflow/internal/provider"
@@ -68,6 +69,8 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 			sandbox:             cfg.Sandbox,
 			approvalsReviewer:   threadApprovalsReviewer(cfg),
 		},
+		writableRoots:     slices.Clone(cfg.WritableRoots),
+		nativeMemoryOff:   cfg.NativeMemoryOff,
 		pending:           make(map[int64]chan json.RawMessage),
 		onEvent:           onEvent,
 		sessionStart:      sessionStart,
@@ -224,6 +227,18 @@ func (s *Session) startOrResumeThread(ctx context.Context, cfg Config) error {
 	// and only with a non-empty value — but the downgrade retry is the one
 	// place that must not depend on that staying true.
 	_, asked := threadParams["historyMode"]
+	// Armed before the request: the read loop is live, and a turn the
+	// app-server starts right after its answer (a queued message, a resumed
+	// running turn) runs the hooks before this goroutine reads the answer.
+	// A resumed thread carries the hooks' earlier output in its history, so
+	// the resume runs only the hooks whose Resume is set; a new thread runs
+	// every hook in its first turn. Only a compaction's expectation writes
+	// and can warn.
+	if method == "thread/resume" {
+		s.sessionStart.Expect(provider.SessionStartAfterResume)
+	} else {
+		s.sessionStart.Expect(provider.SessionStartAfterStart)
+	}
 
 	resp, err := s.sendRequest(ctx, method, threadParams)
 	if err != nil && asked && isHistoryPaginationUnsupported(err) {
@@ -280,13 +295,8 @@ func (s *Session) startOrResumeThread(ctx context.Context, cfg Config) error {
 		// Before the session is handed to a caller, so no turn runs on the
 		// earlier instructions. A failure leaves the session usable.
 		s.reportDeveloperInstructionsFailure(s.ensureDeveloperInstructions(ctx, developerInstructions))
-		// A resumed thread carries the hooks' earlier output in its
-		// history; the resume runs the hooks whose Resume is set. Only a
-		// compaction's expectation writes and can warn.
-		s.sessionStart.Expect(provider.SessionStartAfterResume)
+		s.reportResumedThreadMemoriesFailure(s.disableResumedThreadMemories(ctx))
 	} else {
-		// A new thread runs its SessionStart hooks in its first turn.
-		s.sessionStart.Expect(provider.SessionStartAfterStart)
 		if s.developerInstructionsRecord != nil && developerInstructions.known {
 			// A new thread reads the composed text in its initial context.
 			s.reportDeveloperInstructionsFailure(s.recordDeveloperInstructions(DeveloperInstructionsDigest(developerInstructions.text)))
