@@ -211,7 +211,7 @@
   // wants — later changes are the effect's job.
   const initialText = untrack(() => displayText);
   if (!untrack(() => expanded) && initialText.length > TAIL_WINDOW_CAP_CHARS) {
-    const initialCut = newlineCutOffset(initialText, 0, TAIL_WINDOW_MIN_KEEP_CHARS);
+    const initialCut = newlineCutOffset(initialText, 0, TAIL_WINDOW_MIN_KEEP_CHARS, TAIL_WINDOW_KEEP_LINES);
     if (initialCut !== null) {
       cutOffset = untrack(() => textStart) + initialCut;
       cutFirstCharCode = initialText.charCodeAt(initialCut);
@@ -250,7 +250,7 @@
     prevLastCharCode = t.length > 0 ? t.charCodeAt(t.length - 1) : 0;
 
     if (!expanded && end - cut > TAIL_WINDOW_CAP_CHARS) {
-      const nlCut = newlineCutOffset(t, cut - start, TAIL_WINDOW_MIN_KEEP_CHARS);
+      const nlCut = newlineCutOffset(t, cut - start, TAIL_WINDOW_MIN_KEEP_CHARS, TAIL_WINDOW_KEEP_LINES);
       if (nlCut !== null) {
         cut = start + nlCut;
       } else if (cut === Math.max(renderedCut, start) && end >= measureFloor) {

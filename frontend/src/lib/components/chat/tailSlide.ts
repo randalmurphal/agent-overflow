@@ -38,18 +38,11 @@
 //   - unusable geometry (hidden ancestor) — recalibrate so re-showing
 //     doesn't misread the reappearance as an append.
 //
-// A clip advance of a full window or more slides through it: no
-// previously visible line survives, but a ticker through the new lines
-// still reads as motion where a snap reads as a glitch. The pending
-// offset has no cap. A cap pinned the offset whenever lines landed
-// faster than the drain took them (two windows held short list lines at
-// 60Hz and not under a slow paint; no finite cap holds a code block's
-// one-character lines, a paragraph's preserved blank lines or an
-// oversized unit landing whole), and every line past it re-packed the
-// visible text in one frame. Uncapped, the drain's exponential settles
-// any offset in about twenty frames, the ticker just runs faster the
-// more landed at once, and a visible line never moves by more than one
-// drain step.
+// A clip advance of a full window or more slides through it (up to
+// SLIDE_MAX_WINDOWS): no previously visible line survives, but a ticker
+// through the new lines still reads as motion where a snap reads as a
+// glitch. The offset never exceeds the content above the box either: a
+// translate past it would show nothing.
 //
 // Kept pure (no DOM) so the guard matrix and the drain curve are
 // unit-testable in the default vitest project; the component supplies
@@ -62,11 +55,30 @@
  * and, at a full-window offset, drains one line per frame — more than
  * the reveal smoother's ceiling (MAX_ADAPTIVE_CHARS_PER_SEC, ~5 chars a
  * frame) can land on any line longer than five characters, so under
- * prose the offset settles within a window. A fraction of the pending
- * offset bounds the time to settle, not the offset: from any start the
- * drain is under EPS within ln(start / EPS) / ln(1 / 0.65) frames.
+ * prose the offset settles within a window. The time to settle is
+ * bounded by the cap, not the intake: from SLIDE_MAX_WINDOWS windows the
+ * drain is under EPS within ln(cap / EPS) / ln(1 / 0.65) frames, sixteen
+ * for a three-line clamp.
  */
 export const SLIDE_DRAIN_PER_FRAME = 0.35;
+
+/**
+ * The pending offset is capped at this many clamp windows. The cap is
+ * the bound on how far the visible text moves in one frame: the drain
+ * takes SLIDE_DRAIN_PER_FRAME of the offset, so at the cap the ticker
+ * runs at 0.35 × 6 windows, about six lines a frame. Past that rate the
+ * text is unreadable regardless, and the excess snaps instead of
+ * compounding into a faster blur. Below it every line that lands
+ * compounds: the reveal smoother lands at most one paint period of
+ * budget per tick (MAX_REVEAL_TICK_DT_MS, 16 chars at the ceiling), so
+ * even a code block's one-character lines or a paragraph's preserved
+ * blank lines fit under the cap at a steady 60Hz and after a stall, and
+ * only a run of blank lines at the ceiling or an oversized unit landing
+ * whole reaches it. The tail window retains the clamp plus this many
+ * windows of lines above it (TAIL_WINDOW_KEEP_LINES), so a cut never
+ * removes a line the offset has yet to show.
+ */
+export const SLIDE_MAX_WINDOWS = 6;
 
 /**
  * Minimum drain per 60Hz frame, so the exponential tail lands on zero
@@ -119,7 +131,11 @@ const clipOf = (o: SlideObservation): number => Math.max(0, o.innerH - o.outerH)
 /**
  * Classify one ResizeObserver delivery. `prev` is the last stored
  * baseline (null = recalibrate), `currentOffset` the offset still
- * pending from earlier advances — a new advance compounds onto it.
+ * pending from earlier advances — a new advance compounds onto it, capped
+ * at SLIDE_MAX_WINDOWS clamp windows and at the content above the box.
+ * Content cut from above the box while an offset past it was pending (a
+ * window cut shorter than the retention contract) brings the offset down
+ * to what remains rather than translating into blank space.
  */
 export function slideDecision(
   prev: SlideObservation | null,
@@ -133,8 +149,12 @@ export function slideDecision(
   if (Math.abs(next.outerH - prev.outerH) > EPS && (next.outerH < prev.outerH || delta <= EPS)) {
     return { kind: 'clear', memory: next };
   }
-  if (delta <= EPS) return { kind: 'none', memory: next };
-  return { kind: 'slide', memory: next, startPx: currentOffset + delta };
+  const clip = clipOf(next);
+  if (delta <= EPS) {
+    if (currentOffset > clip + EPS) return { kind: 'slide', memory: next, startPx: clip };
+    return { kind: 'none', memory: next };
+  }
+  return { kind: 'slide', memory: next, startPx: Math.min(currentOffset + delta, SLIDE_MAX_WINDOWS * next.outerH, clip) };
 }
 
 /**

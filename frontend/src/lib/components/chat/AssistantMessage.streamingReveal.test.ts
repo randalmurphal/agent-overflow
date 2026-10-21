@@ -123,7 +123,7 @@ describe('assistant streaming reveal integration', () => {
       if (clock.hasPendingFrame()) throw new Error('reveal did not drain');
     };
 
-    // A tick accrues at most one gate wait of budget (`MAX_REVEAL_TICK_DT_MS`),
+    // A tick accrues at most one paint period of budget (`MAX_REVEAL_TICK_DT_MS`),
     // which at the base rate lands the first word; every reveal after that
     // first parse paints directly, so the parser source stays at it.
     await appendAndDrain('first words ', 2);

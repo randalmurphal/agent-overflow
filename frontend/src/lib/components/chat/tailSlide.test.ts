@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   SLIDE_DRAIN_PER_FRAME,
+  SLIDE_MAX_WINDOWS,
   SLIDE_MIN_STEP_PX,
   slideDecision,
   stepSlide,
@@ -38,15 +39,32 @@ describe('slideDecision', () => {
     if (d.kind === 'slide') expect(d.startPx).toBeCloseTo(10 + LH);
   });
 
-  it('compounds every line that lands, however many land at once', () => {
-    // Fifty lines in one frame (a code block of one-character lines after
-    // a stalled paint, or a unit landing whole) onto a slide already five
-    // windows deep: a cap here pinned the offset and every further line
-    // re-packed the visible text in one frame, the snap the browser
-    // continuity test caught under slow paints.
-    const d = slideDecision(obs(5), obs(55), 5 * BOX);
+  it('caps a compounded start at SLIDE_MAX_WINDOWS windows', () => {
+    // Fifty lines in one frame (a run of blank lines at the ceiling, or a
+    // unit landing whole) onto a slide already five windows deep: past the
+    // cap the ticker would be a blur, so the excess snaps.
+    const d = slideDecision(obs(60), obs(110), 5 * BOX);
     expect(d.kind).toBe('slide');
-    if (d.kind === 'slide') expect(d.startPx).toBeCloseTo(5 * BOX + 50 * LH);
+    if (d.kind === 'slide') expect(d.startPx).toBeCloseTo(SLIDE_MAX_WINDOWS * BOX);
+  });
+
+  it('never translates past the content above the box', () => {
+    // Four lines of content hold one line above the box: an offset past
+    // that would show blank space, whatever is pending.
+    const d = slideDecision(obs(3), obs(4), 2 * BOX);
+    expect(d.kind).toBe('slide');
+    if (d.kind === 'slide') expect(d.startPx).toBeCloseTo(LH);
+  });
+
+  it('brings a pending offset down to what a cut left above the box', () => {
+    // The window cut shortened the content below the pending offset (a cut
+    // shorter than the retention contract): the offset follows the content
+    // that remains instead of translating into blank space.
+    const d = slideDecision(obs(55), obs(10), 20 * LH);
+    expect(d.kind).toBe('slide');
+    if (d.kind === 'slide') expect(d.startPx).toBeCloseTo(7 * LH);
+    // A cut that keeps the retention contract leaves the offset alone.
+    expect(slideDecision(obs(55), obs(21), 18 * LH)).toEqual({ kind: 'none', memory: obs(21) });
   });
 
   it('never pins under a sustained intake faster than the drain holds in a window', () => {

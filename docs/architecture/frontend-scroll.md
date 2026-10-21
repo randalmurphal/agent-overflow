@@ -1243,11 +1243,12 @@ scroller:
    animation, on the one region that is genuinely in motion: the line
    being streamed. After a stalled frame the slide, the reveal smoother
    (`MAX_REVEAL_TICK_DT_MS`) and the spring each resume at their pace
-   rather than landing the gap at once. The slide's pending offset has
-   no cap: every line that lands compounds onto it and its exponential
-   drain settles any offset in about twenty frames, so a visible line
-   never moves by more than one drain step however many lines a frame
-   brings.
+   rather than landing the gap at once. The slide's pending offset is
+   capped at `SLIDE_MAX_WINDOWS` clamp windows, the bound on how far the
+   visible text moves in one frame (the drain's share of the cap), and
+   at the content above the box; the tail window retains the clamp plus
+   that many windows (`TAIL_WINDOW_KEEP_LINES`), so a cut never removes
+   a line the slide has yet to show.
 
 Everything else is still ink. No CSS transitions (the app.css timeline
 kill rule zeroes them, per the chat guide's
