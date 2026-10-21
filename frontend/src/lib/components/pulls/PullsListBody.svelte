@@ -12,8 +12,9 @@
   // range, reported by key on every scroll, resize and data change, and
   // none while the list is not shown (the compact detail covers it); the
   // store turns them into the rows whose detail it reads. The heading of
-  // the group under the viewport top is drawn over the list once its own
-  // row has scrolled under the top.
+  // the group under the viewport top sticks over the list once its own
+  // row has scrolled under the top; the rows' own headings cannot stick,
+  // each row being positioned on its own.
 
   const IS_TEST = import.meta.env.MODE === 'test'
     && typeof window !== 'undefined' && 'happyDOM' in window;
@@ -52,8 +53,7 @@
   let scrollEl: HTMLElement | undefined = $state();
   let listRef: LongListHandle | undefined = $state();
   let stuck: PullsListHeading | null = $state(null);
-  let scrollbarInset = $state(0);
-  let reported: string | null = null;
+  let reported = '';
 
   // This list is the only writer of its scrollTop.
   function applyScrollTarget(top: number): void {
@@ -104,47 +104,45 @@
     const ref = listRef;
     if (!ref) return;
     // The subscription replays its sample at once, inside this effect.
-    return ref.subscribeContentGeometry(() => untrack(() => {
-      if (scrollEl) scrollbarInset = scrollEl.offsetWidth - scrollEl.clientWidth;
-      update();
-    }));
+    return ref.subscribeContentGeometry(() => untrack(update));
   });
 </script>
 
-<div class="relative min-h-0 flex-1 border-t border-border-subtle">
-  <div
-    bind:this={scrollEl}
-    class="h-full overflow-y-auto"
-    style:overflow-anchor="none"
-    data-testid={testid}
-  >
-    <LongListVirtualizer
-      bind:this={listRef}
-      data={items}
-      {getKey}
-      scrollRef={scrollEl}
-      {estimate}
-      renderAll={IS_TEST}
-      {applyScrollTarget}
-      onCompensation={(compensation) => applyScrollTarget(compensation.target)}
-      onscroll={update}
-    >
-      {#snippet children(item: PullsListItem<R>)}
-        {#if item.kind === 'row'}
-          {@render renderRow(item.row)}
-        {:else if item.kind === 'heading'}
-          <PullsGroupHeader label={item.heading.label} count={item.heading.count} testid={item.heading.testid} />
-        {:else}
-          <PullsGroupHeader label={item.heading.label} testid={item.heading.testid} />
-          <PullsProjectError message={item.error.message} failure={item.error.failure} forge={item.error.forge} {onRetry} {retrying} />
-        {/if}
-      {/snippet}
-    </LongListVirtualizer>
-    {@render after?.()}
-  </div>
+<div
+  bind:this={scrollEl}
+  class="min-h-0 flex-1 overflow-y-auto border-t border-border-subtle"
+  style:overflow-anchor="none"
+  data-testid={testid}
+>
+  <!-- Takes no height, so the rows' offsets are the scroller's. -->
   {#if stuck}
-    <div class="pointer-events-none absolute left-0 top-0 z-[1]" style:right="{scrollbarInset}px" aria-hidden="true">
-      <PullsGroupHeader label={stuck.label} count={stuck.count} testid="pulls-list-stuck-heading" />
+    <div class="sticky top-0 z-[1] h-0" aria-hidden="true">
+      <div class="absolute inset-x-0 top-0">
+        <PullsGroupHeader label={stuck.label} count={stuck.count} testid="pulls-list-stuck-heading" />
+      </div>
     </div>
   {/if}
+  <LongListVirtualizer
+    bind:this={listRef}
+    data={items}
+    {getKey}
+    scrollRef={scrollEl}
+    {estimate}
+    renderAll={IS_TEST}
+    {applyScrollTarget}
+    onCompensation={(compensation) => applyScrollTarget(compensation.target)}
+    onscroll={update}
+  >
+    {#snippet children(item: PullsListItem<R>)}
+      {#if item.kind === 'row'}
+        {@render renderRow(item.row)}
+      {:else if item.kind === 'heading'}
+        <PullsGroupHeader label={item.heading.label} count={item.heading.count} testid={item.heading.testid} />
+      {:else}
+        <PullsGroupHeader label={item.heading.label} testid={item.heading.testid} />
+        <PullsProjectError message={item.error.message} failure={item.error.failure} forge={item.error.forge} {onRetry} {retrying} />
+      {/if}
+    {/snippet}
+  </LongListVirtualizer>
+  {@render after?.()}
 </div>

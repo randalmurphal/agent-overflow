@@ -163,6 +163,15 @@ describe('PullsList', () => {
     await settle(scrollEl);
     await waitFor(() => stuckHeading(host) !== null, 'a stuck heading');
     expect(stuckHeading(host)).toBe(`Needs you ${NEEDS_YOU}`);
+    // Pinned at the list's top inside the scroller, as a sticky heading:
+    // a press there lands on it, not on the row under it, and a wheel
+    // over it scrolls the list.
+    const stuckEl = host.querySelector<HTMLElement>('[data-testid="pulls-list-stuck-heading"]')!;
+    const box = scrollEl.getBoundingClientRect();
+    expect(stuckEl.getBoundingClientRect().top).toBe(box.top + scrollEl.clientTop);
+    expect(scrollEl.contains(stuckEl)).toBe(true);
+    const hit = document.elementFromPoint(box.left + 20, box.top + 5);
+    expect(stuckEl.contains(hit)).toBe(true);
 
     scrollEl.scrollTop = scrollEl.scrollHeight;
     await settle(scrollEl);
