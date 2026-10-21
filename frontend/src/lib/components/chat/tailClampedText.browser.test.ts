@@ -513,6 +513,7 @@ describe('TailClampedText wrap-stable window', () => {
     const { body, rerender } = mountTail(before, 600);
     await tick();
     await raf();
+    await raf(); // initial RO calibration: the first slide needs a baseline
     expect(appliedCut(body, before)).toBe(0);
 
     const samples = [1, 2, 3, 4, 5, 6, 7, 8].map((k) => before.length - k * 40);
@@ -551,13 +552,16 @@ describe('TailClampedText wrap-stable window', () => {
     const { body, rerender } = mountTail(before, 600);
     await tick();
     await raf();
+    await raf(); // initial RO calibration: the first slide needs a baseline
     expect(appliedCut(body, before)).toBe(0);
 
     const samples = [1, 2, 3, 4, 5, 6, 7, 8].map((k) => before.length - k * 40);
     const relBefore = sampleRelative(body, before, samples);
     const lh = parseFloat(getComputedStyle(body).lineHeight);
 
-    const after = `${before} and the paragraph keeps running with even more appended words`;
+    // Enough appended text to land a row at any font: the slide is for the
+    // rows that landed, and words that fit on the previous row land none.
+    const after = `${before} and the paragraph keeps running with even more appended words`.padEnd(before.length + 3 * 120, ' word');
     await rerender({ text: after });
     flushSync();
     await raf();
@@ -620,6 +624,7 @@ describe('TailClampedText wrap-stable window', () => {
     const { body, rerender } = mountTail(before, 600);
     await tick();
     await raf();
+    await raf(); // initial RO calibration: the first slide needs a baseline
     expect(appliedCut(body, before)).toBe(0);
 
     // Extend the final word past the room left on its row.
