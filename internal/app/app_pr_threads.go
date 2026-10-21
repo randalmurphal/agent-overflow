@@ -134,6 +134,10 @@ type OpenPRThreadRequest struct {
 	URL             string             `json:"url"`
 	NodeID          string             `json:"nodeId"`
 	Title           string             `json:"title"`
+	// Seed is the composer draft the thread opens with ("Reviewing !N:
+	// TITLE URL"); saved here, inside the same rollback as the worktree and
+	// the record, so a thread is never left seedless or a branch behind.
+	Seed string `json:"seed"`
 }
 
 // OpenPRThreadResult is the new thread, its worktree and its branch.
@@ -208,6 +212,12 @@ func (a *App) OpenPRThread(ctx context.Context, req OpenPRThreadRequest) (OpenPR
 	if err != nil {
 		cause := fmt.Errorf("open PR thread: record the pull request: %w", err)
 		return OpenPRThreadResult{}, errors.Join(cause, a.rollBackPRThread(project, thread, createdBranch))
+	}
+	if seed := strings.TrimSpace(req.Seed); seed != "" {
+		if err := a.SaveDraft(ctx, thread.ID, seed, nil, nil, nil); err != nil {
+			cause := fmt.Errorf("open PR thread: seed the draft: %w", err)
+			return OpenPRThreadResult{}, errors.Join(cause, a.rollBackPRThread(project, thread, createdBranch))
+		}
 	}
 	return OpenPRThreadResult{ThreadID: thread.ID, WorktreePath: thread.WorktreePath, Branch: thread.Branch}, nil
 }

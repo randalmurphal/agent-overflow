@@ -5,7 +5,7 @@
 // the page lists.
 
 import { SvelteMap } from 'svelte/reactivity';
-import { DeleteThread, GetThread, GitRemoveWorktree, ListThreadsOnPR, OpenPRThread, SaveDraft } from './bindings';
+import { GetThread, ListThreadsOnPR, OpenPRThread } from './bindings';
 import type { PRThread } from './bindings';
 import { mountThreadInPane, syncThreadReply } from './panes.svelte';
 import { pullsPageBackend, pullsSnapshotSeq, selectedPR, type PullsSelection } from './pullsPage.svelte';
@@ -15,7 +15,6 @@ import { threadRowFrameMark } from './threadRowFrames';
 import { getThreads, prependThreadReply } from './threads.svelte';
 import { getThreadStatus } from './threadStatuses.svelte';
 import { addErrorToast } from './toast.svelte';
-import { syncRemovedWorktreeThreads, type WorktreeRemovalResult } from './worktreeRemoval.svelte';
 import { pullNumberLabel } from '../components/pulls/pullRowView';
 import type { BackendKey } from '../transport/backendKey';
 import { withBackendTarget } from '../transport/backends';
@@ -133,6 +132,8 @@ export async function openPRThread(paneId: string): Promise<boolean> {
   const label = pullNumberLabel(pr.forge, pr.number);
   const mark = threadRowFrameMark();
   try {
+    // The backend creates the worktree, the thread, the PR record and the
+    // seeded draft inside one rollback, so nothing here undoes anything.
     const opened = await withBackendTarget(backend, () => OpenPRThread({
       projectId: selection.projectId,
       pr: prReferenceWire(pr),
@@ -141,15 +142,9 @@ export async function openPRThread(paneId: string): Promise<boolean> {
       url: row.url,
       nodeId: row.nodeID ?? '',
       title: row.title,
+      seed: prThreadSeed(selection),
     }));
-    let thread: Thread;
-    try {
-      thread = (await withBackendTarget(backend, () => GetThread(opened.threadId))) as Thread;
-      await withBackendTarget(backend, () => SaveDraft(opened.threadId, prThreadSeed(selection), [], [], null));
-    } catch (err) {
-      await rollBackPRThread(backend, opened.threadId, label);
-      throw err;
-    }
+    let thread = (await withBackendTarget(backend, () => GetThread(opened.threadId))) as Thread;
     threadsByKey.delete(selection.key);
     thread = prependThreadReply(thread, mark);
     if (thread.projectId) expandProject(thread.projectId);
@@ -158,23 +153,6 @@ export async function openPRThread(paneId: string): Promise<boolean> {
   } catch (err) {
     addErrorToast(`Could not open a thread on ${label}: ${errString(err)}`, err);
     return false;
-  }
-}
-
-// The thread exists with no draft: its worktree goes first, then the row,
-// so the sidebar never shows a thread nobody seeded.
-async function rollBackPRThread(backend: BackendKey, threadId: string, label: string): Promise<void> {
-  const mark = threadRowFrameMark();
-  try {
-    const removal = await withBackendTarget(backend, () => GitRemoveWorktree(threadId));
-    syncRemovedWorktreeThreads(removal as WorktreeRemovalResult, mark);
-  } catch (err) {
-    addErrorToast(`The worktree of the thread opened on ${label} could not be removed: ${errString(err)}`, err);
-  }
-  try {
-    await withBackendTarget(backend, () => DeleteThread(threadId));
-  } catch (err) {
-    addErrorToast(`The thread opened on ${label} could not be deleted: ${errString(err)}`, err);
   }
 }
 

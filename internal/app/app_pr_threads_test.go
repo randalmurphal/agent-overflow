@@ -80,6 +80,7 @@ func (c *prThreadCase) request(head string, cross bool) OpenPRThreadRequest {
 	return OpenPRThreadRequest{
 		ProjectID: c.project.ID, PR: openPRThreadPR, HeadRefName: head, CrossRepository: cross,
 		URL: "https://github.com/acme/widgets/pull/5", NodeID: "PR_five", Title: "Fork work",
+		Seed: "Reviewing #5: Fork work\nhttps://github.com/acme/widgets/pull/5",
 	}
 }
 
@@ -117,6 +118,9 @@ func TestOpenPRThreadOnABranchOfTheRepository(t *testing.T) {
 	row, ok, err := c.app.store.GetThreadPullRequest(result.ThreadID)
 	if err != nil || !ok || row.Number != 5 || row.Project != "acme/widgets" || row.Branch != "feature-x" || row.NodeID != "PR_five" || !samePath(row.WorktreePath, result.WorktreePath) {
 		t.Fatalf("tracked PR = %+v ok=%v err=%v", row, ok, err)
+	}
+	if draft, err := c.app.GetDraft(result.ThreadID); err != nil || draft.Content != c.request("feature-x", false).Seed {
+		t.Fatalf("draft = %+v, %v; want the seed", draft, err)
 	}
 
 	// A thread already on the branch in the project root.
@@ -210,6 +214,30 @@ func TestOpenPRThreadRefusesADivergedPRBranch(t *testing.T) {
 
 // A failure once the thread exists takes back the thread, its worktree
 // and the pr/N the call made, and returns the cause.
+// The seed is saved inside the same rollback: a draft that cannot be
+// written leaves no thread, worktree or fetched branch.
+func TestOpenPRThreadRollsBackWhenTheSeedFails(t *testing.T) {
+	t.Parallel()
+	c := newPRThreadCase(t)
+	c.push(t, "refs/pull/5/head")
+	execOnStore(t, c.dbPath, `CREATE TRIGGER refuse_draft BEFORE INSERT ON thread_drafts BEGIN SELECT RAISE(ABORT, 'injected draft failure'); END`)
+
+	_, err := c.app.OpenPRThread(context.Background(), c.request("fork-work", true))
+	if err == nil || !strings.Contains(err.Error(), "injected draft failure") {
+		t.Fatalf("OpenPRThread = %v, want the draft's failure", err)
+	}
+	if threads := c.threads(t); len(threads) != 0 {
+		t.Fatalf("threads left = %+v", threads)
+	}
+	if branchExists(c.repo, "pr/5") {
+		t.Fatal("pr/5 was left behind")
+	}
+	worktrees, err := c.app.gitCore().ListWorktrees(c.repo)
+	if err != nil || len(worktrees) != 1 {
+		t.Fatalf("worktrees = %+v (%v), want the main checkout alone", worktrees, err)
+	}
+}
+
 func TestOpenPRThreadRollsBackWhenTheRecordFails(t *testing.T) {
 	t.Parallel()
 	c := newPRThreadCase(t)

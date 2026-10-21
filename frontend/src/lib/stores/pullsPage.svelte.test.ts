@@ -550,7 +550,6 @@ describe('open with agent', () => {
     await selected();
     const open = setBindingMock('OpenPRThread', async () => ({ threadId: 't9', worktreePath: '/wt', branch: 'feature-1' }));
     setBindingMock('GetThread', async () => ({ id: 't9', projectId: 'p1', title: '', updatedAt: 1 }));
-    const save = setBindingMock('SaveDraft', async () => undefined);
     const panes = await import('./panes.svelte');
     const mount = vi.spyOn(panes, 'mountThreadInPane').mockImplementation(async () => ({}) as never);
     expect(await openPRThread(PANE)).toBe(true);
@@ -560,31 +559,10 @@ describe('open with agent', () => {
     expect(open).toHaveBeenCalledWith({
       projectId: 'p1', pr: { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 1 },
       headRefName: 'feature-1', crossRepository: false, url: 'https://github.com/owner/repo/pull/1', nodeId: 'node-1', title: 'PR 1',
+      seed: 'Reviewing #1: PR 1\nhttps://github.com/owner/repo/pull/1',
     });
-    expect(save).toHaveBeenCalledWith('t9', 'Reviewing #1: PR 1\nhttps://github.com/owner/repo/pull/1', [], [], null);
     expect(prThreadSeed(selectedPR(PANE)!)).toBe('Reviewing #1: PR 1\nhttps://github.com/owner/repo/pull/1');
     mount.mockRestore();
-  });
-
-  it('removes the worktree and the thread when the draft cannot be seeded', async () => {
-    await selected();
-    setBindingMock('OpenPRThread', async () => ({ threadId: 't9', worktreePath: '/wt', branch: 'feature-1' }));
-    setBindingMock('GetThread', async () => ({ id: 't9', projectId: 'p1', title: '', updatedAt: 1 }));
-    setBindingMock('SaveDraft', async () => {
-      throw new Error('disk full');
-    });
-    const order: string[] = [];
-    const remove = setBindingMock('GitRemoveWorktree', async () => {
-      order.push('worktree');
-      return { removedThreadIds: [] };
-    });
-    const del = setBindingMock('DeleteThread', async () => {
-      order.push('thread');
-    });
-    expect(await openPRThread(PANE)).toBe(false);
-    expect(remove).toHaveBeenCalledWith('t9');
-    expect(del).toHaveBeenCalledWith('t9');
-    expect(order).toEqual(['worktree', 'thread']);
   });
 
   it('touches nothing when the backend refuses the thread', async () => {

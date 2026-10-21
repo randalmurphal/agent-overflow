@@ -3313,6 +3313,13 @@ export class OpenPRThreadRequest {
     "nodeId": string;
     "title": string;
 
+    /**
+     * Seed is the composer draft the thread opens with ("Reviewing !N:
+     * TITLE URL"); saved here, inside the same rollback as the worktree and
+     * the record, so a thread is never left seedless or a branch behind.
+     */
+    "seed": string;
+
     /** Creates a new OpenPRThreadRequest instance. */
     constructor($$source: Partial<OpenPRThreadRequest> = {}) {
         if (!("projectId" in $$source)) {
@@ -3335,6 +3342,9 @@ export class OpenPRThreadRequest {
         }
         if (!("title" in $$source)) {
             this["title"] = "";
+        }
+        if (!("seed" in $$source)) {
+            this["seed"] = "";
         }
 
         Object.assign(this, $$source);
