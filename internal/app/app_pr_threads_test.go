@@ -238,6 +238,72 @@ func TestOpenPRThreadRollsBackWhenTheSeedFails(t *testing.T) {
 	}
 }
 
+// A thread row that cannot be written leaves no worktree and no fetched
+// pr/N behind, and a retry once the store recovers succeeds.
+func TestOpenPRThreadRollsBackWhenTheThreadCannotBeWritten(t *testing.T) {
+	t.Parallel()
+	c := newPRThreadCase(t)
+	c.push(t, "refs/pull/5/head")
+	execOnStore(t, c.dbPath, `CREATE TRIGGER refuse_thread BEFORE INSERT ON threads BEGIN SELECT RAISE(ABORT, 'injected thread failure'); END`)
+
+	_, err := c.app.OpenPRThread(context.Background(), c.request("fork-work", true))
+	if err == nil || !strings.Contains(err.Error(), "injected thread failure") {
+		t.Fatalf("OpenPRThread = %v, want the thread insert's failure", err)
+	}
+	if strings.Contains(err.Error(), "delete branch") || strings.Contains(err.Error(), "undo the worktree") {
+		t.Fatalf("OpenPRThread rollback failed: %v", err)
+	}
+	if branchExists(c.repo, "pr/5") {
+		t.Fatal("pr/5 was left behind")
+	}
+	worktrees, err := c.app.gitCore().ListWorktrees(c.repo)
+	if err != nil || len(worktrees) != 1 {
+		t.Fatalf("worktrees = %+v (%v), want the main checkout alone", worktrees, err)
+	}
+
+	execOnStore(t, c.dbPath, `DROP TRIGGER refuse_thread`)
+	if _, err := c.app.OpenPRThread(context.Background(), c.request("fork-work", true)); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+}
+
+// A head only origin has is checked out as a local branch the call made,
+// which a later failure deletes with the worktree; a head already local
+// is kept.
+func TestOpenPRThreadRollsBackTheLocalBranchOfAnOriginHead(t *testing.T) {
+	t.Parallel()
+	for _, trigger := range []string{
+		`CREATE TRIGGER refuse BEFORE INSERT ON threads BEGIN SELECT RAISE(ABORT, 'injected failure'); END`,
+		`CREATE TRIGGER refuse BEFORE INSERT ON thread_pull_requests BEGIN SELECT RAISE(ABORT, 'injected failure'); END`,
+	} {
+		c := newPRThreadCase(t)
+		c.push(t, "refs/heads/feature-x")
+		testutil.RunGit(t, c.repo, "fetch", "-q", "origin")
+		testutil.RunGit(t, c.repo, "branch", "-q", "local-head", "origin/feature-x")
+		testutil.RunGit(t, c.repo, "push", "-q", "origin", "local-head")
+		execOnStore(t, c.dbPath, trigger)
+
+		for _, head := range []string{"feature-x", "local-head"} {
+			_, err := c.app.OpenPRThread(context.Background(), c.request(head, false))
+			if err == nil || !strings.Contains(err.Error(), "injected failure") {
+				t.Fatalf("%s: OpenPRThread = %v, want the injected failure", head, err)
+			}
+		}
+		if branchExists(c.repo, "feature-x") {
+			t.Fatalf("%s: the local feature-x the call made was left behind", trigger)
+		}
+		if !branchExists(c.repo, "local-head") {
+			t.Fatalf("%s: the rollback deleted local-head, which the call did not make", trigger)
+		}
+		if worktrees, err := c.app.gitCore().ListWorktrees(c.repo); err != nil || len(worktrees) != 1 {
+			t.Fatalf("%s: worktrees = %+v (%v), want the main checkout alone", trigger, worktrees, err)
+		}
+		if threads := c.threads(t); len(threads) != 0 {
+			t.Fatalf("%s: threads left = %+v", trigger, threads)
+		}
+	}
+}
+
 func TestOpenPRThreadRollsBackWhenTheRecordFails(t *testing.T) {
 	t.Parallel()
 	c := newPRThreadCase(t)

@@ -99,7 +99,7 @@ func TestUnitWorktreeSetupFailureRollsBackOnlyFreshCut(t *testing.T) {
 	// Adopted: a checkout already on the unit's branch is a re-entered try.
 	// Give it uncommitted prior work; a failed setup must leave both alone.
 	adoptedPath := filepath.Join(t.TempDir(), "adopted")
-	if err := core.AttachWorktree(repo, adoptedPath, unitBranch); err != nil {
+	if _, err := core.AttachWorktree(repo, adoptedPath, unitBranch); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = core.RemoveWorktreeForce(repo, adoptedPath, true) })
