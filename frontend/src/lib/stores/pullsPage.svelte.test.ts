@@ -493,6 +493,33 @@ describe('selection and viewed marks', () => {
     held.release();
   });
 
+  it('marks a reopened PR viewed at the head its held review moved to while another was open', async () => {
+    installListMocks(snapshot(1, [project('p1', [item(1), item(2)])]));
+    const mark = installPRMocks();
+    attachPullsPage(PANE, HOME_BACKEND);
+    await flush();
+    selectPR(PANE, rowKey(1));
+    const held = attachPR(rowKey(1), { ref: ref(1) });
+    await flush();
+    expect(mark).toHaveBeenCalledTimes(1);
+
+    // The pane keeps !1's review while !2 is open; a push lands on it then.
+    selectPR(PANE, rowKey(2));
+    applyPRUpdatedEvent({ prKey: prKey(ref(1)), detail: null, threads: [], headSHA: 'sha-2', seq: 2 });
+    await flush();
+    expect(mark).toHaveBeenCalledTimes(1);
+    selectPR(PANE, rowKey(1));
+    await flush();
+    expect(mark).toHaveBeenCalledTimes(2);
+    expect(mark).toHaveBeenLastCalledWith({ Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 1 }, 'sha-2');
+    // Opening it again at the same head marks nothing more.
+    selectPR(PANE, rowKey(2));
+    selectPR(PANE, rowKey(1));
+    await flush();
+    expect(mark).toHaveBeenCalledTimes(2);
+    held.release();
+  });
+
   it('marks nothing on the compact list screen, where the review is not showing', async () => {
     installListMocks();
     const mark = installPRMocks();

@@ -23,7 +23,7 @@ import type { PRListItem, PRListSnapshot, PRSeen } from './bindings';
 import { createEntityStore } from './entityStore.svelte';
 import { getCompactScreen, isCompactLayout, onScreenCompactPaneId } from './layoutMode.svelte';
 import { applyPipelineFrame, applyPipelineLogFrame, resyncPipelinesAfterGap } from './pipelineCI.svelte';
-import { onPRSnapshotApplied, type PRSnapshotApplied } from './prReviewStore.svelte';
+import { onPRSnapshotApplied, peekPRSnapshot, type PRSnapshotApplied } from './prReviewStore.svelte';
 import { setPullsNeedsYouCount } from './pullsAttention.svelte';
 import { ensurePullsFilters, mrFilters } from './pullsPageFilters.svelte';
 import {
@@ -402,6 +402,7 @@ export function selectPR(paneId: string, key: string): boolean {
     const row = entry ? pages.get(entry.backend)?.rowsByKey.get(key) : undefined;
     if (!entry || !row) return false;
     entry.selection = { key, backend: entry.backend, projectId: row.project.projectId, pr: row.pr, row: row.item };
+    markHeldViewed(paneId, entry.selection);
     return true;
   });
 }
@@ -448,6 +449,15 @@ function markViewedOnSnapshot(key: string, applied: PRSnapshotApplied): void {
     const page = pages.get(entry.backend);
     if (page) void markViewed(page, selection, applied.headSHA);
   }
+}
+
+// The pane keeps the review of a PR it opened before, so opening it again
+// applies no snapshot: the open marks the head that review holds.
+function markHeldViewed(paneId: string, selection: PullsSelection): void {
+  const held = peekPRSnapshot(selection.key);
+  const page = pages.get(selection.backend);
+  if (!held?.headSHA || !page || documentHidden() || !paneShowing(paneId)) return;
+  void markViewed(page, selection, held.headSHA);
 }
 
 async function markViewed(page: PullsPageBackend, selection: PullsSelection, headSHA: string): Promise<void> {
