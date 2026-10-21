@@ -6,6 +6,9 @@
 // a call, read again with the list); and the selected pipeline's live CI
 // (pipelineCI.svelte.ts) through a CI subject state. Every call is pinned
 // to the computer the page lists. A project's failed read fails alone.
+// Opening the tab, its refresh and a filter change are the user's reads,
+// which may spend the forge's rate limit reserve; the interval and
+// scrolling read in the background, which may not.
 
 import { SvelteMap } from 'svelte/reactivity';
 import { untrack } from 'svelte';
@@ -91,6 +94,13 @@ class PipelinesPageBackend {
   lastRead = 0;
   /** The filters the last list read used; another status reads again. */
   readWith: PipelineFilters | null = null;
+  /** A pending list read is the user's action (open, refresh, a filter
+   * change), which may spend the forge's rate limit reserve; the interval
+   * is not, and coalesced requests keep it. The stage read that follows a
+   * list read, or the first one with rows on screen after it, has the
+   * list's intent; scrolling reads in the background. */
+  listInteractive = false;
+  stagesInteractive = false;
 
   readonly rows: readonly PipelineRowView[] = $derived.by(() => {
     const refKind = pipelineFilters(this.backend).refKind;
@@ -131,10 +141,18 @@ class PipelinesPageBackend {
     };
   }
 
+  /** Asks for a list read now, as the user's action when interactive. */
+  requestList(interactive: boolean): void {
+    if (interactive) this.listInteractive = true;
+    this.list.request({ immediate: true });
+  }
+
   async read(token: { isCurrent(): boolean }): Promise<void> {
     this.clearTimer();
     this.loading = true;
     const filters = pipelineFilters(this.backend);
+    const interactive = this.listInteractive;
+    this.listInteractive = false;
     try {
       let projects: ForgeProject[];
       try {
@@ -153,7 +171,7 @@ class PipelinesPageBackend {
         const repo = repoRefFromWire(project.repo);
         try {
           const result = await withBackendTarget(this.backend, () =>
-            ListProjectPipelines(project.projectId, { status: filters.status || undefined }));
+            ListProjectPipelines(project.projectId, { status: filters.status || undefined }, interactive));
           return { project, repo, rows: result?.rows ?? [], error: null };
         } catch (err) {
           return { project, repo, rows: null, error: err };
@@ -184,7 +202,9 @@ class PipelinesPageBackend {
       this.listed = listed;
       this.readWith = filters;
       this.loaded = true;
-      // The stages re-read with the list.
+      // The stages re-read with the list, as its action: the first rows on
+      // screen after the user's read are read as theirs.
+      this.stagesInteractive = interactive;
       this.stageReads.request({ immediate: true });
     } finally {
       if (token.isCurrent()) {
@@ -196,6 +216,7 @@ class PipelinesPageBackend {
   }
 
   async readStages(token: { isCurrent(): boolean }): Promise<void> {
+    const interactive = this.stagesInteractive;
     const onScreen = new Set<string>();
     for (const paneId of this.panes) for (const key of paneEntries.get(paneId)?.onScreen ?? []) onScreen.add(key);
     // On-screen rows by repository, at most one call's worth each.
@@ -212,10 +233,11 @@ class PipelinesPageBackend {
       batch.keys.push(pipeline.key);
       batch.ids.push(pipeline.summary.id);
     }
+    if (byRepo.size > 0) this.stagesInteractive = false;
     await Promise.all([...byRepo.values()].map(async (batch) => {
       let answer: Record<string, PipelineStages | undefined>;
       try {
-        answer = (await withBackendTarget(this.backend, () => ReadPipelineStages(repoReferenceWire(batch.repo), batch.ids))) ?? {};
+        answer = (await withBackendTarget(this.backend, () => ReadPipelineStages(repoReferenceWire(batch.repo), batch.ids, interactive))) ?? {};
       } catch {
         // The row shows no dots; the list's own read reports the repository.
         return;
@@ -228,14 +250,14 @@ class PipelinesPageBackend {
     }));
   }
 
-  /** The next list read, while the document is visible. */
+  /** The next list read, while the document is visible: background. */
   arm(): void {
     this.clearTimer();
     if (documentHidden() || this.panes.size === 0) return;
     const wait = Math.max(0, this.lastRead + PIPELINES_REFRESH_MS - Date.now());
     this.timer = setTimeout(() => {
       this.timer = null;
-      this.list.request({ immediate: true });
+      this.requestList(false);
     }, wait);
   }
 
@@ -276,7 +298,7 @@ export function attachPipelinesPage(paneId: string, backend: BackendKey): void {
     }
     paneEntries.set(paneId, new PaneEntry(backend));
     page.panes.add(paneId);
-    page.list.request({ immediate: true });
+    page.requestList(true);
   });
 }
 
@@ -305,7 +327,7 @@ function pageOf(paneId: string): PipelinesPageBackend | null {
 
 /** The header's refresh, and what a filter change runs. */
 export function refreshPipelinesPage(paneId: string): void {
-  pageOf(paneId)?.list.request({ immediate: true });
+  pageOf(paneId)?.requestList(true);
 }
 
 /** Changes the tab's remembered filters: other projects or another
@@ -318,7 +340,7 @@ export function setPipelinesFilters(paneId: string, next: Partial<PipelineFilter
     const page = pages.get(entry.backend);
     const now = pipelineFilters(entry.backend);
     const was = page?.readWith;
-    if (page && (!was || was.status !== now.status || was.projects.join('\n') !== now.projects.join('\n'))) page.list.request({ immediate: true });
+    if (page && (!was || was.status !== now.status || was.projects.join('\n') !== now.projects.join('\n'))) page.requestList(true);
   });
 }
 

@@ -13,7 +13,18 @@ import (
 // The Pipelines tab's plain reads: a project's pipelines on any ref, and
 // the stage summaries of the rows on screen. The page refreshes them
 // while visible; the selected pipeline is a pipeline pump's
-// (app_pipeline_pump.go).
+// (app_pipeline_pump.go). Each read says whether it is the user's action
+// (interactive: opening the tab, its refresh, a filter change), which may
+// spend the rate limit reserve, or the page's own refresh, which may not
+// (forgeapi.WithInteractive).
+
+// pipelineReadContext is ctx marked as the user's action when interactive.
+func pipelineReadContext(ctx context.Context, interactive bool) context.Context {
+	if interactive {
+		return forgeapi.WithInteractive(ctx)
+	}
+	return ctx
+}
 
 // PipelineListResult answers ListProjectPipelines: the rows, most recent
 // first, and when the forge answered (RFC 3339).
@@ -23,11 +34,11 @@ type PipelineListResult struct {
 }
 
 // ListProjectPipelines lists the pipelines of projectID's forge repository
-// that filter admits (git.PipelineListFilter). A failure is the forge's,
-// explained for the project.
+// that filter admits (git.PipelineListFilter), as the user's action when
+// interactive. A failure is the forge's, explained for the project.
 //
 //ao:scope git:operate
-func (a *App) ListProjectPipelines(ctx context.Context, projectID string, filter gitops.PipelineListFilter) (PipelineListResult, error) {
+func (a *App) ListProjectPipelines(ctx context.Context, projectID string, filter gitops.PipelineListFilter, interactive bool) (PipelineListResult, error) {
 	if a.shuttingDown.Load() {
 		return PipelineListResult{}, ErrShuttingDown
 	}
@@ -35,7 +46,7 @@ func (a *App) ListProjectPipelines(ctx context.Context, projectID string, filter
 	if err != nil {
 		return PipelineListResult{}, err
 	}
-	rows, err := a.gitCore().ListPipelines(forgeapi.WithInteractive(ctx), repo, filter)
+	rows, err := a.gitCore().ListPipelines(pipelineReadContext(ctx, interactive), repo, filter)
 	if err != nil {
 		return PipelineListResult{}, gitops.ExplainRepoForgeError(repo, gitops.ActionRead, err)
 	}
@@ -67,10 +78,11 @@ type PipelineStages struct {
 // dropped. Each is a ReadPipeline: an unchanged GitHub run costs 304s,
 // an unchanged GitLab pipeline its two reads in full, since GitLab's jobs
 // list answers 200 to If-None-Match (docs/architecture/forge-transport.md).
+// They are the user's action when interactive.
 //
 //ao:scope git:operate
 //ao:route selected
-func (a *App) ReadPipelineStages(ctx context.Context, repo gitops.RepoReference, ids []string) (map[string]PipelineStages, error) {
+func (a *App) ReadPipelineStages(ctx context.Context, repo gitops.RepoReference, ids []string, interactive bool) (map[string]PipelineStages, error) {
 	if a.shuttingDown.Load() {
 		return nil, ErrShuttingDown
 	}
@@ -85,7 +97,7 @@ func (a *App) ReadPipelineStages(ctx context.Context, repo gitops.RepoReference,
 			return nil, fmt.Errorf("pipeline id: %w", err)
 		}
 	}
-	ctx = forgeapi.WithInteractive(ctx)
+	ctx = pipelineReadContext(ctx, interactive)
 	rows := make([]PipelineStages, len(ids))
 	runBounded(len(ids), pipelineStageReadConcurrency, func(i int) {
 		pipeline, err := a.fetchPipeline(ctx, repo, ids[i], nil, nil)

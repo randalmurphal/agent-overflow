@@ -2,13 +2,84 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/harness/forgefake"
 )
+
+// The Pipelines tab's own refresh is background work: under the rate
+// limit reserve it is refused before it reaches the forge, while the
+// user's open, refresh or filter change (interactive) still reads; above
+// the reserve both read.
+func TestPipelineReadsSpendTheReserveOnlyWhenInteractive(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	engine := forgefake.New(forgefake.Options{APIToken: mergeForgeToken})
+	if _, err := engine.Seed(forgefake.Fixture{Repos: []forgefake.Repo{
+		{Forge: "github", Project: "acme/pipes", Pipelines: []forgefake.Pipeline{{ID: 200, Name: "CI", Ref: "main", Jobs: pipelineJobs(2001, "success")}}},
+		{Forge: "gitlab", Project: "grp/pipes", Pipelines: []forgefake.Pipeline{{ID: 20, Ref: "main", Jobs: pipelineJobs(2101, "success")}}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	useForgefake(t, app, engine)
+	reset := time.Now().Add(time.Hour).Unix()
+	for _, c := range []struct {
+		origin, forge, pool, id string
+		repo                    gitops.RepoReference
+	}{
+		{"https://github.com/acme/pipes.git", "github", "core", "200", gitops.RepoReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "pipes"}},
+		{"https://gitlab.com/grp/pipes.git", "gitlab", "throttle_authenticated_api", "20", gitops.RepoReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "pipes"}},
+	} {
+		project := forgeProjectRepo(t, app, c.origin)
+		read := func(interactive bool) (listErr error, stagesKind string) {
+			if _, err := app.ListProjectPipelines(context.Background(), project, gitops.PipelineListFilter{}, interactive); err != nil {
+				listErr = err
+			}
+			stages, err := app.ReadPipelineStages(context.Background(), c.repo, []string{c.id}, interactive)
+			if err != nil {
+				t.Fatalf("%s: ReadPipelineStages: %v", c.forge, err)
+			}
+			return listErr, stages[c.id].ErrorKind
+		}
+		// Just above the 10% reserve, the background refresh reads.
+		if err := engine.SetRateLimit(forgefake.RateLimit{Forge: c.forge, Pool: c.pool, Remaining: 501, Reset: reset}); err != nil {
+			t.Fatal(err)
+		}
+		if listErr, stagesKind := read(true); listErr != nil || stagesKind != "" {
+			t.Fatalf("%s above the reserve, interactive: %v / %q", c.forge, listErr, stagesKind)
+		}
+		if listErr, stagesKind := read(false); listErr != nil || stagesKind != "" {
+			t.Fatalf("%s above the reserve, background: %v / %q", c.forge, listErr, stagesKind)
+		}
+
+		// Just under it, the user's read primes the quota and goes through;
+		// the background refresh is refused without a request.
+		if err := engine.SetRateLimit(forgefake.RateLimit{Forge: c.forge, Pool: c.pool, Remaining: 499, Reset: reset}); err != nil {
+			t.Fatal(err)
+		}
+		if listErr, stagesKind := read(true); listErr != nil || stagesKind != "" {
+			t.Fatalf("%s under the reserve, interactive: %v / %q", c.forge, listErr, stagesKind)
+		}
+		before := len(engine.Invocations(0).Invocations)
+		listErr, stagesKind := read(false)
+		var forgeErr *gitops.ForgeActionError
+		if !errors.As(listErr, &forgeErr) || forgeErr.Kind != gitops.ForgeErrorRateLimited || stagesKind != gitops.ForgeErrorRateLimited {
+			t.Fatalf("%s under the reserve, background: %v / %q, want both refused as rate limited", c.forge, listErr, stagesKind)
+		}
+		if after := len(engine.Invocations(0).Invocations); after != before {
+			t.Fatalf("%s: the refused background reads made %d requests", c.forge, after-before)
+		}
+		if listErr, stagesKind := read(true); listErr != nil || stagesKind != "" {
+			t.Fatalf("%s under the reserve, interactive again: %v / %q", c.forge, listErr, stagesKind)
+		}
+	}
+	expectForgeCallsHandled(t, engine)
+}
 
 // pipelineJobs is one job of status, for a fixture pipeline.
 func pipelineJobs(id int, status string) []forgefake.Job {
@@ -59,7 +130,7 @@ func TestPipelinesListMarksEveryGitLabTagRunThroughTheFake(t *testing.T) {
 		"one tag ref":       {gitops.PipelineListFilter{Ref: "v1", Status: "success"}, "20:tag"},
 		"one branch ref":    {gitops.PipelineListFilter{Ref: "main"}, "10:branch"},
 	} {
-		result, err := app.ListProjectPipelines(context.Background(), project, c.filter)
+		result, err := app.ListProjectPipelines(context.Background(), project, c.filter, true)
 		if err != nil {
 			t.Fatalf("%s: ListProjectPipelines: %v", name, err)
 		}
@@ -95,7 +166,7 @@ func TestPipelineStagesRereadCostsWhatEachForgeCharges(t *testing.T) {
 	} {
 		for read := range 2 {
 			since := len(engine.Invocations(0).Invocations)
-			got, err := app.ReadPipelineStages(context.Background(), c.repo, []string{c.id})
+			got, err := app.ReadPipelineStages(context.Background(), c.repo, []string{c.id}, true)
 			if err != nil {
 				t.Fatalf("%s read %d: %v", c.repo.Forge, read, err)
 			}

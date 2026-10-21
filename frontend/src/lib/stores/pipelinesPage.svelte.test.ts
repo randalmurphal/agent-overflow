@@ -188,10 +188,10 @@ describe('filters', () => {
     await settle();
     setPipelinesFilters(PANE, { status: 'failed' });
     await settle();
-    expect(mocks.list).toHaveBeenLastCalledWith('p2', { status: 'failed' });
+    expect(mocks.list).toHaveBeenLastCalledWith('p2', { status: 'failed' }, true);
     setPipelinesFilters(PANE, { projects: ['p1'] });
     await settle();
-    expect(mocks.list).toHaveBeenLastCalledWith('p1', { status: 'failed' });
+    expect(mocks.list).toHaveBeenLastCalledWith('p1', { status: 'failed' }, true);
     expect(pipelinesRows(PANE).map((row) => row.id)).toEqual(['3', '1']);
     const calls = mocks.list.mock.calls.length;
     setPipelinesFilters(PANE, { refKind: 'tag' });
@@ -222,6 +222,44 @@ describe('stage summaries', () => {
     refreshPipelinesPage(PANE);
     await settle();
     expect(mocks.stages).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('read intent', () => {
+  it('reads as the user on open, refresh and a filter change, and in the background on the interval and on scroll', async () => {
+    const mocks = installMocks();
+    const lastList = () => mocks.list.mock.calls.at(-1)![2];
+    const lastStages = () => mocks.stages.mock.calls.at(-1)![2];
+    attachPipelinesPage(PANE, HOME_BACKEND);
+    await settle();
+    expect(mocks.list.mock.calls.map((call) => call[2])).toEqual([true, true]);
+    // The first rows on screen after the open are the open's.
+    const keys = pipelinesRows(PANE).map((row) => row.key);
+    setVisiblePipelines(PANE, keys.slice(0, 1));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(mocks.stages).toHaveBeenCalledTimes(1);
+    expect(lastStages()).toBe(true);
+    // Scrolling is not.
+    setVisiblePipelines(PANE, keys);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(mocks.stages).toHaveBeenCalledTimes(3);
+    expect(lastStages()).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(PIPELINES_REFRESH_MS);
+    expect(mocks.list).toHaveBeenCalledTimes(4);
+    expect(lastList()).toBe(false);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(mocks.stages.mock.calls.slice(3).map((call) => call[2])).toEqual([false, false]);
+
+    refreshPipelinesPage(PANE);
+    await settle();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(mocks.list.mock.calls.slice(4).map((call) => call[2])).toEqual([true, true]);
+    expect(mocks.stages.mock.calls.slice(5).map((call) => call[2])).toEqual([true, true]);
+
+    setPipelinesFilters(PANE, { status: 'failed' });
+    await settle();
+    expect(lastList()).toBe(true);
   });
 });
 

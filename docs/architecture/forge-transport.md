@@ -431,8 +431,13 @@ are a repository's (`ciLogKey(repo, job)`), whichever PR or pipeline
 showed them, so `GetPRCILogLines`, `SavePRCIJobLog` and
 `SavePRCIJobLogSection` take a `RepoReference`.
 
-`ListProjectPipelines(projectID, filter)` is one `ListPipelines`.
-`ReadPipelineStages(repo, ids)` reads at most `maxPipelineStageReads` (30)
+`ListProjectPipelines(projectID, filter, interactive)` is one
+`ListPipelines`. Both calls carry `interactive`: the Pipelines tab passes
+true for its open, its refresh and a filter change, and for the stage
+read of the first rows on screen after one, and false for its interval
+read and for stages read on scroll, so the page's own polling never
+spends the rate limit reserve.
+`ReadPipelineStages(repo, ids, interactive)` reads at most `maxPipelineStageReads` (30)
 pipelines, 4 at a time, with `ReadPipeline` and answers each stage's name
 and status, or that pipeline's failure. An unchanged pipeline costs what
 `ReadPipeline` does (the table in "Project lists"): on GitHub the run and

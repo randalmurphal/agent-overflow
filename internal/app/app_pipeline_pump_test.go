@@ -265,10 +265,10 @@ func TestPipelineStagesAreBoundedAndReportPerPipelineFailures(t *testing.T) {
 	for i := range ids {
 		ids[i] = fmt.Sprint(i + 1)
 	}
-	if _, err := app.ReadPipelineStages(context.Background(), testPR.Repository(), ids); err == nil {
+	if _, err := app.ReadPipelineStages(context.Background(), testPR.Repository(), ids, true); err == nil {
 		t.Fatal("a read over the bound was accepted")
 	}
-	got, err := app.ReadPipelineStages(context.Background(), testPR.Repository(), []string{"1", "2"})
+	got, err := app.ReadPipelineStages(context.Background(), testPR.Repository(), []string{"1", "2"}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
