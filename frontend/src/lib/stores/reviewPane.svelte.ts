@@ -2895,7 +2895,7 @@ function userFacingError(err: unknown): string {
 export function __resetReviewPaneStateForTest(): void {
   for (const state of statesBySourcePane.values()) state.dispose();
   statesBySourcePane.clear();
-  for (const owner of [...pinnedStatesByOwner.keys()]) disposePRReviewStates(owner);
+  for (const owner of pinnedStatesByOwner.keys()) disposePRReviewStates(owner);
   heldPRByRow.clear();
   resetPRDraftsForTest();
 }
