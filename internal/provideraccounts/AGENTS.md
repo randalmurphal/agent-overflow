@@ -85,8 +85,8 @@ slot is missing, signed out, or strictly behind it on the rotation chain
 canonical home only for the selected account over the same login
 (`LoginID`).
 
-Every slot write holds the slot's lock file (`lockSlot`); a writer that
-decides from the slot's contents holds it from the read to the write.
+Every slot write and removal holds the slot's lock (`lockSlot`); a writer
+that decides from the slot's contents holds it from the read to the write.
 
 Credential bytes travel as `CredentialSnapshot` or `secret.Bytes`, which
 print as `<redacted>` from any field. A raw `[]byte` credential is a
