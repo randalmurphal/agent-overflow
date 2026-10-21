@@ -64,8 +64,9 @@ type PipelineStages struct {
 
 // ReadPipelineStages reads the stages of up to maxPipelineStageReads
 // pipelines of repo, keyed by id: names and statuses only, the jobs
-// dropped. The reads are GETs the transport revalidates with the ETag it
-// holds, so an unchanged pipeline costs a 304.
+// dropped. Each is a ReadPipeline: an unchanged GitHub run costs 304s,
+// an unchanged GitLab pipeline its two reads in full, since GitLab's jobs
+// list answers 200 to If-None-Match (docs/architecture/forge-transport.md).
 //
 //ao:scope git:operate
 //ao:route selected

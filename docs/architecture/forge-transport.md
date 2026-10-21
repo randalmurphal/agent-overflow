@@ -334,6 +334,7 @@ GitLab's list stops at the 1000 most recently updated.
 | Open PRs of a project | 1 `PullsSearch` per 100 PRs | 1 merge request list page per 100 MRs; + 1 `user` per login and host per 10 minutes |
 | Pipelines of a project (`ListPipelines`, at most 100 rows) | 1 `GET repos/O/R/actions/runs?per_page=N[&branch=][&status=]` | 1 `GET projects/P/pipelines?per_page=N[&ref=][&status=]`; + `GET projects/P/pipelines?per_page=100&scope=tags[&ref=]` pages, at most `gitlabTagScopeMaxPages` (10): 1 for a ref, 1 or 2 without a status filter, none for a merge request ref or an empty list |
 | One pipeline (`ReadPipeline`) | 1 `GET repos/O/R/actions/runs/ID` + 1 jobs page per 100 jobs, at most `githubReadMaxPages` | 1 `GET projects/P/pipelines/ID` + 1 jobs page per 100 jobs, at most `gitlabCIJobsMaxPages` |
+| Stages of 30 unchanged rows (`ReadPipelineStages`) | 30 runs + 30 jobs pages, each a 304 | 30 pipelines + 30 jobs pages, each a 200 with its body |
 
 `PipelineListFilter.Status` is a normalized status each forge filters by
 its own value: success, failed, running, pending (GitHub `queued`),
@@ -433,8 +434,13 @@ showed them, so `GetPRCILogLines`, `SavePRCIJobLog` and
 `ListProjectPipelines(projectID, filter)` is one `ListPipelines`.
 `ReadPipelineStages(repo, ids)` reads at most `maxPipelineStageReads` (30)
 pipelines, 4 at a time, with `ReadPipeline` and answers each stage's name
-and status, or that pipeline's failure; every request is a GET the ETag
-store revalidates, so an unchanged pipeline costs a 304.
+and status, or that pipeline's failure. An unchanged pipeline costs what
+`ReadPipeline` does (the table in "Project lists"): on GitHub the run and
+its jobs list are GETs the ETag store revalidates, a 304 each (the jobs
+list measured free of the limit); on GitLab the jobs list answers 200 to
+`If-None-Match` (measured) and the single pipeline's revalidation is not
+measured, so 30 unchanged rows cost 30 pipeline reads and 30 jobs list
+bodies.
 
 ## Merged PR worktree cleanup
 

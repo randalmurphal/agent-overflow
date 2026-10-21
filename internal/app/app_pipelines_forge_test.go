@@ -69,3 +69,50 @@ func TestPipelinesListMarksEveryGitLabTagRunThroughTheFake(t *testing.T) {
 	}
 	expectForgeCallsHandled(t, engine)
 }
+
+// A repeated stage read of an unchanged pipeline costs what the forge
+// charges: GitHub revalidates the run and its jobs list (304 each);
+// GitLab's jobs list answers 200 whatever the ETag, as measured, and the
+// single pipeline is read whole.
+func TestPipelineStagesRereadCostsWhatEachForgeCharges(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	engine := forgefake.New(forgefake.Options{APIToken: mergeForgeToken})
+	if _, err := engine.Seed(forgefake.Fixture{Repos: []forgefake.Repo{
+		{Forge: "github", Project: "acme/pipes", Pipelines: []forgefake.Pipeline{{ID: 200, Name: "CI", Ref: "main", Jobs: pipelineJobs(2001, "success")}}},
+		{Forge: "gitlab", Project: "grp/pipes", Pipelines: []forgefake.Pipeline{{ID: 20, Ref: "main", Jobs: pipelineJobs(2101, "success")}}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	useForgefake(t, app, engine)
+	for _, c := range []struct {
+		repo gitops.RepoReference
+		id   string
+		want string
+	}{
+		{gitops.RepoReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "pipes"}, "200", "gh api run:304 gh api run jobs:304"},
+		{gitops.RepoReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "pipes"}, "20", "glab api pipeline:200 glab api pipeline jobs:200"},
+	} {
+		for read := range 2 {
+			since := len(engine.Invocations(0).Invocations)
+			got, err := app.ReadPipelineStages(context.Background(), c.repo, []string{c.id})
+			if err != nil {
+				t.Fatalf("%s read %d: %v", c.repo.Forge, read, err)
+			}
+			if stages := got[c.id]; stages.Error != "" || len(stages.Stages) != 1 {
+				t.Fatalf("%s read %d: stages = %+v", c.repo.Forge, read, stages)
+			}
+			if read == 0 {
+				continue
+			}
+			var calls []string
+			for _, inv := range engine.Invocations(0).Invocations[since:] {
+				calls = append(calls, fmt.Sprintf("%s:%d", inv.Route, inv.Status))
+			}
+			if strings.Join(calls, " ") != c.want {
+				t.Errorf("%s reread = %v, want %s", c.repo.Forge, calls, c.want)
+			}
+		}
+	}
+	expectForgeCallsHandled(t, engine)
+}
