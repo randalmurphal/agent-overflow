@@ -23,6 +23,10 @@ type gitlabForge struct {
 	// viewers each login's account on a host (gitlab_merge_read.go).
 	projects gitlabCache[gitlabProjectSettings]
 	viewers  gitlabCache[gitlabViewer]
+	// noApprovalState marks a host whose GraphQL has no
+	// MergeRequest.approvalState (GitLab CE), for gitlabCacheTTL
+	// (pr_list_gitlab.go).
+	noApprovalState gitlabCache[bool]
 	// activity is each host's viewer activity, read once per list round
 	// (pr_list_gitlab.go).
 	activity gitlabActivityRounds

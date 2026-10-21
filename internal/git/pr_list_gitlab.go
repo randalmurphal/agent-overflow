@@ -3,6 +3,7 @@ package git
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -56,7 +57,9 @@ const gitlabPullsActivityFields = `iid resolvableDiscussionsCount resolvedDiscus
 // gitlabPullsApprovalFields are the merge request's own approval rules,
 // which already apply its target branch and any per-merge-request
 // override. approvalsRequired and approvalsLeft would answer the count
-// directly but cost GitLab about 2 s more on 57 rows.
+// directly but cost GitLab about 2 s more on 57 rows. approvalState is an
+// EE field: GitLab CE answers that it does not exist, and has no required
+// approvals (gitlabNoApprovalState).
 const gitlabPullsApprovalFields = `iid approvalState { rules { type approvalsRequired } }`
 
 // gitlabPullsQuery is one GraphQL read of a project's open merge requests
@@ -180,7 +183,11 @@ func (f *gitlabForge) ListProjectPRs(ctx context.Context, repo RepoReference) ([
 		eventsErr error
 	)
 	wg.Go(func() { raw, listErr = readGitLabMRList(ctx, client, repo) })
+	_, noApprovals := f.noApprovalState.get(repo.Host, f.core.nowFn())
 	for i, read := range gitlabPullsReads {
+		if read.selection == gitlabPullsApprovals && noApprovals {
+			continue
+		}
 		wg.Go(func() {
 			nodes[i], nodeErrs[i] = readGitLabPulls(ctx, client, repo, viewer.Username, read.operation, read.query)
 		})
@@ -189,6 +196,12 @@ func (f *gitlabForge) ListProjectPRs(ctx context.Context, repo RepoReference) ([
 	wg.Wait()
 	if listErr != nil {
 		return nil, listErr
+	}
+	for i, read := range gitlabPullsReads {
+		if read.selection == gitlabPullsApprovals && gitlabNoApprovalState(nodeErrs[i]) {
+			nodeErrs[i], noApprovals = nil, true
+			f.noApprovalState.put(repo.Host, true, f.core.nowFn())
+		}
 	}
 	rows := make([]PRListRow, 0, len(raw))
 	byIID := make(map[int]int, len(raw))
@@ -219,7 +232,32 @@ func (f *gitlabForge) ListProjectPRs(ctx context.Context, repo RepoReference) ([
 			}
 		}
 	}
+	if noApprovals {
+		// No approval rules: a merge request a review read covers needs
+		// none.
+		for i := range rows {
+			if rows[i].ApprovalsGiven != nil && rows[i].ApprovalsRequired == nil {
+				none := 0
+				rows[i].ApprovalsRequired = &none
+			}
+		}
+	}
 	return rows, detailError(append(nodeErrs, eventsErr)...)
+}
+
+// gitlabNoApprovalState reports whether err is GitLab CE's answer to a
+// selection of approvalState: the field does not exist on its schema.
+func gitlabNoApprovalState(err error) bool {
+	var gqlErr *forgeapi.GraphQLError
+	if !errors.As(err, &gqlErr) {
+		return false
+	}
+	for _, problem := range gqlErr.Problems {
+		if strings.Contains(problem.Message, "Field 'approvalState' doesn't exist") {
+			return true
+		}
+	}
+	return false
 }
 
 // readGitLabMRList is the open merge request list.

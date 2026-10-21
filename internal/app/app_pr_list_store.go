@@ -114,7 +114,12 @@ func (a *App) commitPRListStore(gen uint64, write func() (bool, error)) (bool, e
 	// The badge counts what was committed, read back with the app's
 	// context: a writer's own context may end with its last subscriber.
 	snapshot, err := a.storedPRListSnapshot(a.lifeCtx())
-	if err != nil {
+	switch {
+	case err != nil && a.lifeCtx().Err() != nil:
+		// Shutting down: the write committed and no client is left to
+		// tell.
+		return true, nil
+	case err != nil:
 		return true, fmt.Errorf("count the badge: %w", err)
 	}
 	a.emitPRListBadge(snapshot.NeedsYou)

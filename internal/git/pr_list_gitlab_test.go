@@ -367,3 +367,46 @@ func TestGitLabListProjectPRsPagesTheReads(t *testing.T) {
 		}
 	}
 }
+
+// GitLab CE has no approvalState: its answer that the field does not
+// exist is not a failure but a host with no required approvals, the
+// covered rows requiring none, and the approval reads are not sent again
+// for gitlabCacheTTL.
+func TestGitLabWithoutApprovalStateRequiresNoApprovals(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	approvalReads := 0
+	core, _ := newForgeAPICore(t, gitlabListAnswers(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
+		if !strings.HasSuffix(call.Op, "Approvals") {
+			return forgeAPIAnswer{}, false
+		}
+		mu.Lock()
+		approvalReads++
+		mu.Unlock()
+		return forgeAPIAnswer{Body: `{"errors":[{"message":"Field 'approvalState' doesn't exist on type 'MergeRequest'","locations":[{"line":5,"column":19}],"path":["query PullsReviewingApprovals","project","mergeRequests","nodes","approvalState"],"extensions":{"code":"undefinedField","typeName":"MergeRequest","fieldName":"approvalState"}}]}`}, true
+	}))
+	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	core.nowFn = func() time.Time { return now }
+	reads := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return approvalReads
+	}
+	for i := range 2 {
+		rows, err := core.ListProjectPRs(t.Context(), gitlabTestRepo())
+		if err != nil {
+			t.Fatalf("read %d: ListProjectPRs: %v", i, err)
+		}
+		own, fork, other := rows[0], rows[1], rows[2]
+		if own.ApprovalsRequired == nil || *own.ApprovalsRequired != 0 || fork.ApprovalsRequired == nil || *fork.ApprovalsRequired != 0 || other.ApprovalsRequired != nil {
+			t.Fatalf("read %d: required own %v fork %v other %v; want 0, 0 and unknown", i, own.ApprovalsRequired, fork.ApprovalsRequired, other.ApprovalsRequired)
+		}
+	}
+	if got := reads(); got != 2 {
+		t.Fatalf("approval reads = %d, want the first read's two only", got)
+	}
+	now = now.Add(gitlabCacheTTL)
+	if _, err := core.ListProjectPRs(t.Context(), gitlabTestRepo()); err != nil || reads() != 4 {
+		t.Fatalf("after the TTL: err %v, approval reads %d, want them sent again", err, reads())
+	}
+}

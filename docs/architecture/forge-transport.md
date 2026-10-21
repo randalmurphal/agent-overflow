@@ -356,7 +356,10 @@ project), then concurrently:
 - `PullsReviewingApprovals` and `PullsAuthoredApprovals`, the same
   filters selecting `approvalState { rules { type approvalsRequired } }`:
   the merge request's own rules, its target branch and any override
-  applied. The required count is the larger of the any-approver rule's
+  applied. `approvalState` is an EE field: GitLab CE answers that it
+  does not exist, which marks the host as having no required approvals
+  for 10 minutes (the covered rows require none, and the two reads are
+  not sent). The required count is the larger of the any-approver rule's
   and the other rules' sum (an approval from a rule's member also counts
   toward any approver), which matched `approvalsRequired` on all 56 merge
   requests measured. The review, the discussion and commit, and the
@@ -625,7 +628,8 @@ func (c *Client) CredentialFingerprint(ctx context.Context) (string, error) // s
   `MaxConnsPerHost: 8`, `MaxIdleConnsPerHost: 8`, `IdleConnTimeout: 90s`,
   `ResponseHeaderTimeout: 30s`, dial timeout 10s. No `http.Client.Timeout`;
   deadlines come from `ctx` and `Request.Timeout`. A per-host semaphore of 8
-  (`hostConcurrency`, enough for one project's list read beside another's)
+  (`hostConcurrency`, one cold GitLab project read: its list, six GraphQL
+  reads and the viewer's events)
   bounds concurrency so a burst of panes cannot open more sockets.
 
 ## Errors
