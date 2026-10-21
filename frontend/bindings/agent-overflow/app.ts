@@ -2926,11 +2926,11 @@ export function ListPendingInteractiveRequests(threadID: string): $CancellablePr
 
 /**
  * ListProjectPipelines lists the pipelines of projectID's forge repository
- * that filter admits (git.PipelineListFilter). A failure is the forge's,
- * explained for the project.
+ * that filter admits (git.PipelineListFilter), as the user's action when
+ * interactive. A failure is the forge's, explained for the project.
  */
-export function ListProjectPipelines(projectID: string, filter: git$0.PipelineListFilter): $CancellablePromise<app$0.PipelineListResult> {
-    return $Call.ByID(647538989, projectID, filter).then(($result: any) => {
+export function ListProjectPipelines(projectID: string, filter: git$0.PipelineListFilter, interactive: boolean): $CancellablePromise<app$0.PipelineListResult> {
+    return $Call.ByID(647538989, projectID, filter, interactive).then(($result: any) => {
         return $$createType144($result);
     });
 }
@@ -3902,11 +3902,13 @@ export function PutSoundFile(id: string, wavBase64: string): $CancellablePromise
 /**
  * ReadPipelineStages reads the stages of up to maxPipelineStageReads
  * pipelines of repo, keyed by id: names and statuses only, the jobs
- * dropped. The reads are GETs the transport revalidates with the ETag it
- * holds, so an unchanged pipeline costs a 304.
+ * dropped. Each is a ReadPipeline: an unchanged GitHub run costs 304s,
+ * an unchanged GitLab pipeline its two reads in full, since GitLab's jobs
+ * list answers 200 to If-None-Match (docs/architecture/forge-transport.md).
+ * They are the user's action when interactive.
  */
-export function ReadPipelineStages(repo: git$0.RepoReference, ids: string[]): $CancellablePromise<{ [_ in string]?: app$0.PipelineStages }> {
-    return $Call.ByID(2036690300, repo, ids).then(($result: any) => {
+export function ReadPipelineStages(repo: git$0.RepoReference, ids: string[], interactive: boolean): $CancellablePromise<{ [_ in string]?: app$0.PipelineStages }> {
+    return $Call.ByID(2036690300, repo, ids, interactive).then(($result: any) => {
         return $$createType178($result);
     });
 }
@@ -4994,8 +4996,9 @@ export function SetPRCILogFollows(subscriptionID: string, jobIDs: string[]): $Ca
 
 /**
  * SetPRListActive reports whether one subscriber shows the list; the pump
- * reads nothing while every subscriber is hidden. An unknown id is a
- * no-op.
+ * reads nothing while every subscriber is hidden. Only a visible
+ * subscriber's focus selects detail reads, so a change of a focusing
+ * subscriber recomputes the selection at once. An unknown id is a no-op.
  */
 export function SetPRListActive(subscriptionID: string, active: boolean): $CancellablePromise<void> {
     return $Call.ByID(2324570575, subscriptionID, active);
@@ -5003,10 +5006,10 @@ export function SetPRListActive(subscriptionID: string, active: boolean): $Cance
 
 /**
  * SetPRListFocus replaces the PR keys (git.PRReference.Key) whose detail
- * one subscriber wants read: the rows on its screen and the needs-you set,
- * at most maxPRListFocus. A key the list holds no row for is ignored and
- * reported. A newly focused row's detail is read at once, not at the next
- * tick.
+ * one subscriber wants read while it is visible: the rows on its screen
+ * and the needs-you set, at most maxPRListFocus. A key the list holds no
+ * row for is ignored and reported. A newly focused row's detail is read
+ * at once, not at the next tick.
  */
 export function SetPRListFocus(subscriptionID: string, prKeys: string[]): $CancellablePromise<app$0.PRListFocusResult> {
     return $Call.ByID(910260531, subscriptionID, prKeys).then(($result: any) => {
