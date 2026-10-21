@@ -7,6 +7,7 @@ import (
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -499,4 +500,148 @@ func TestSendPRDiffReviewCommentsNeedsThreadsOperate(t *testing.T) {
 	gitOnly := pairSessionWithScopes(t, app, "thumb-git", []identity.Scope{identity.ScopeGitOperate})
 	_, err := app.SendPRDiffReviewComments(callFrom(gitOnly.ID, false), diffReviewSendPR, "thread", "pr", "key", []string{"c"}, SendDiffReviewCommentsInput{})
 	wantScopeRefusal(t, err, transport.ScopeThreadsOperate)
+}
+
+// raceTheClaim makes a send's claim of its drafts lose to raceSQL, run in
+// its place against the claimed row (NEW.id), as a write that lands between
+// the send's read of the drafts and its claim does.
+func raceTheClaim(t *testing.T, dbPath, raceSQL string) {
+	t.Helper()
+	execOnStore(t, dbPath, `CREATE TRIGGER race_claim BEFORE UPDATE OF status ON diff_review_comments
+		WHEN OLD.status = 'draft' AND NEW.status = 'sent' AND NEW.sent_turn_id <> 'elsewhere:9'
+		BEGIN `+raceSQL+`; SELECT RAISE(IGNORE); END`)
+}
+
+// A PR's draft another thread's message took between this send's read and
+// its claim fails this send before anything is delivered: two threads
+// never both carry it.
+func TestSendPRDiffReviewCommentsRefusesADraftAnotherMessageTook(t *testing.T) {
+	t.Parallel()
+	app, dbPath := newTestAppWithStorePath(t)
+	thread := diffReviewSendThread(t, app, "thread-pr-draft-taken")
+	draft, err := app.CreatePRDiffReviewComment(diffReviewSendPR, diffReviewPRInput("Name this better."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raceTheClaim(t, dbPath, `UPDATE diff_review_comments SET status = 'sent', sent_turn_id = 'elsewhere:9' WHERE id = NEW.id`)
+
+	_, err = app.SendPRDiffReviewComments(context.Background(), diffReviewSendPR, thread.ID, draft.Scope, draft.SourceKey, []string{draft.ID}, diffReviewPRContext(draft.ID))
+	if !errors.Is(err, store.ErrDiffReviewCommentsSentElsewhere) {
+		t.Fatalf("SendPRDiffReviewComments = %v, want ErrDiffReviewCommentsSentElsewhere", err)
+	}
+	if items, _ := app.store.ListItems(thread.ID); len(items) != 0 {
+		t.Fatalf("the refused send appended %d items", len(items))
+	}
+	// The other message's mark rode the refused claim's transaction here,
+	// so it rolled back with it; what matters is that this thread's turn
+	// holds nothing.
+	if got, err := app.store.GetDiffReviewComment(store.PRReviewOwner(diffReviewSendPR.Key()), draft.ID); err != nil || strings.HasPrefix(got.SentTurnID, thread.ID) {
+		t.Fatalf("draft = %+v (%v), want it not marked for this thread", got, err)
+	}
+}
+
+// diffReviewSendEnvelope reads drafts for a message to threadID as a send
+// does, before its claim.
+func diffReviewSendEnvelope(t *testing.T, app *App, threadID string, source *SourceDiffReview, ids []string) resolvedUserMessage {
+	t.Helper()
+	resolved, err := app.resolveUserMessageEnvelope(threadID, "", userMessageInputs{
+		revisionSourceDiffReview: source, revisionSourceDiffCommentIDs: ids,
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	return resolved
+}
+
+// An edit saved between a send's read of its drafts and its claim stays a
+// draft, on a PR's drafts and a thread's own: the message carries the text
+// it read, and the new text was never sent.
+func TestDiffReviewClaimLeavesAnEditMadeDuringTheSendADraft(t *testing.T) {
+	t.Parallel()
+	for _, prOwned := range []bool{true, false} {
+		app := newTestAppWithStore(t)
+		thread := diffReviewSendThread(t, app, fmt.Sprintf("thread-edit-during-send-%v", prOwned))
+		var draft store.DiffReviewComment
+		var err error
+		if prOwned {
+			draft, err = app.CreatePRDiffReviewComment(diffReviewSendPR, diffReviewPRInput("Before."))
+		} else {
+			draft, err = app.CreateDiffReviewComment(thread.ID, diffReviewPRInput("Before."))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := &SourceDiffReview{ThreadID: thread.ID, Scope: draft.Scope, SourceKey: draft.SourceKey}
+		owner := store.ThreadReviewOwner(thread.ID)
+		if prOwned {
+			source = &SourceDiffReview{PRKey: diffReviewSendPR.Key(), Scope: draft.Scope, SourceKey: draft.SourceKey}
+			owner = store.PRReviewOwner(diffReviewSendPR.Key())
+		}
+		resolved := diffReviewSendEnvelope(t, app, thread.ID, source, []string{draft.ID})
+		if !strings.Contains(resolved.content, "Before.") {
+			t.Fatalf("pr-owned %v: the message = %q, want the text it read", prOwned, resolved.content)
+		}
+		if prOwned {
+			_, err = app.UpdatePRDiffReviewComment(diffReviewSendPR, draft.ID, store.DiffReviewCommentUpdate{Body: "After."})
+		} else {
+			_, err = app.UpdateDiffReviewComment(thread.ID, draft.ID, store.DiffReviewCommentUpdate{Body: "After."})
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		claim, err := app.claimDiffReviewDelivery(thread.ID, 1, resolved)
+		if err != nil || len(claim.ids) != 0 {
+			t.Fatalf("pr-owned %v: claim = %+v, %v; want nothing claimed", prOwned, claim, err)
+		}
+		if got, err := app.store.GetDiffReviewComment(owner, draft.ID); err != nil || got.Status != "draft" || got.Body != "After." {
+			t.Fatalf("pr-owned %v: draft = %+v (%v), want the edit left a draft", prOwned, got, err)
+		}
+	}
+}
+
+// Two threads that both read a PR's draft: the one whose message claims it
+// first delivers it, and the other's claim refuses.
+func TestDiffReviewClaimRefusesADraftAnotherThreadDelivered(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	first := diffReviewSendThread(t, app, "thread-pr-draft-first")
+	second := diffReviewSendThread(t, app, "thread-pr-draft-second")
+	draft, err := app.CreatePRDiffReviewComment(diffReviewSendPR, diffReviewPRInput("Name this better."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := &SourceDiffReview{PRKey: diffReviewSendPR.Key(), Scope: draft.Scope, SourceKey: draft.SourceKey}
+	late := diffReviewSendEnvelope(t, app, second.ID, source, []string{draft.ID})
+
+	if _, err := app.SendPRDiffReviewComments(context.Background(), diffReviewSendPR, first.ID, draft.Scope, draft.SourceKey, []string{draft.ID}, diffReviewPRContext(draft.ID)); err != nil {
+		t.Fatalf("first send: %v", err)
+	}
+	if _, err := app.claimDiffReviewDelivery(second.ID, 1, late); !errors.Is(err, store.ErrDiffReviewCommentsSentElsewhere) {
+		t.Fatalf("second claim = %v, want ErrDiffReviewCommentsSentElsewhere", err)
+	}
+	if got, err := app.store.GetDiffReviewComment(store.PRReviewOwner(diffReviewSendPR.Key()), draft.ID); err != nil || !strings.HasPrefix(got.SentTurnID, first.ID+":") {
+		t.Fatalf("draft = %+v (%v), want it the first thread's", got, err)
+	}
+}
+
+// A send that fails before its message lands hands its claimed drafts
+// back.
+func TestSendPRDiffReviewCommentsReturnsTheDraftsWhenTheMessageFails(t *testing.T) {
+	t.Parallel()
+	app, dbPath := newTestAppWithStorePath(t)
+	thread := diffReviewSendThread(t, app, "thread-pr-draft-send-fails")
+	draft, err := app.CreatePRDiffReviewComment(diffReviewSendPR, diffReviewPRInput("Name this better."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	execOnStore(t, dbPath, `CREATE TRIGGER refuse_user_row BEFORE INSERT ON items WHEN NEW.kind = 'user_text' BEGIN SELECT RAISE(ABORT, 'injected persist failure'); END`)
+
+	_, err = app.SendPRDiffReviewComments(context.Background(), diffReviewSendPR, thread.ID, draft.Scope, draft.SourceKey, []string{draft.ID}, diffReviewPRContext(draft.ID))
+	if err == nil || !strings.Contains(err.Error(), "injected persist failure") {
+		t.Fatalf("SendPRDiffReviewComments = %v, want the persist failure", err)
+	}
+	if got, err := app.store.GetDiffReviewComment(store.PRReviewOwner(diffReviewSendPR.Key()), draft.ID); err != nil || got.Status != "draft" || got.SentTurnID != "" {
+		t.Fatalf("draft = %+v (%v), want it a draft again", got, err)
+	}
 }
