@@ -310,6 +310,10 @@ Back, for a pipeline as for an MR, and closes an open log first;
 the CI model is keyed by `(repository, pipeline id)`, the MR's head
 pipeline being one case. GitLab `projects/P/pipelines`, GitHub
 `actions/runs`. The review pane's CI line stays the head pipeline only.
+The tab reads its list on open, on its refresh button and every
+PR-update interval while visible; hidden, it reads neither the list nor
+the stages, and a read that came due then (the interval, a reconnect, a
+regained grant) runs once when the window shows.
 
 ## State matrix (phase 1)
 

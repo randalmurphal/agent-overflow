@@ -15,7 +15,9 @@
 // computer is connected and that grant is known and held; they stop on a
 // disconnect, a revoked grant or the computer's removal, discarding the
 // reads in flight, and the list reads again at once when both hold again.
-// The refresh button reads regardless, so a refusal shows.
+// While the document is hidden the list and stage reads wait: one that
+// comes due then runs when it shows. The refresh button reads regardless,
+// so a refusal shows.
 // Opening the tab, its refresh and a filter change are the user's reads,
 // which may spend the forge's rate limit reserve; the interval and
 // scrolling read in the background, which may not.
@@ -138,6 +140,10 @@ class PipelinesPageBackend {
   connected = false;
   /** The next list read is the refresh button's, which runs ungated. */
   explicit = false;
+  /** A list or stage read came due while the document was hidden; it
+   * runs when the document shows. */
+  listDeferred = false;
+  stagesDeferred = false;
   readonly list: RefreshScheduler;
   readonly stageReads: RefreshScheduler;
   timer: ReturnType<typeof setTimeout> | null = null;
@@ -202,6 +208,9 @@ class PipelinesPageBackend {
     this.clearTimer();
     this.list.reset();
     this.stageReads.reset();
+    // The live edge reads again.
+    this.listDeferred = false;
+    this.stagesDeferred = false;
     this.loading = false;
   }
 
@@ -251,6 +260,11 @@ class PipelinesPageBackend {
     const explicit = this.explicit;
     this.explicit = false;
     if (!explicit && !this.live) return;
+    if (!explicit && documentHidden()) {
+      this.listDeferred = true;
+      return;
+    }
+    this.listDeferred = false;
     this.clearTimer();
     this.loading = true;
     const filters = pipelineFilters(this.backend);
@@ -342,6 +356,11 @@ class PipelinesPageBackend {
 
   async readStages(token: { isCurrent(): boolean }): Promise<void> {
     if (!this.live) return;
+    if (documentHidden()) {
+      this.stagesDeferred = true;
+      return;
+    }
+    this.stagesDeferred = false;
     const interactive = this.stagesInteractive;
     const onScreen = new Set<string>();
     for (const paneId of this.panes) for (const key of paneEntries.get(paneId)?.onScreen ?? []) onScreen.add(key);
@@ -388,6 +407,17 @@ class PipelinesPageBackend {
       this.timer = null;
       this.requestList(false);
     }, wait);
+  }
+
+  /** The document shows again: a read that came due while hidden runs. */
+  shown(): void {
+    // The list read arms the next one and reads the stages again.
+    if (this.listDeferred) {
+      this.list.request({ immediate: true });
+      return;
+    }
+    if (this.stagesDeferred) this.stageReads.request({ immediate: true });
+    this.arm();
   }
 
   clearTimer(): void {
@@ -637,8 +667,7 @@ if (typeof document !== 'undefined') {
         page.clearTimer();
         continue;
       }
-      // Back on screen: a read that came due while hidden runs now.
-      page.arm();
+      page.shown();
     }
   });
 }

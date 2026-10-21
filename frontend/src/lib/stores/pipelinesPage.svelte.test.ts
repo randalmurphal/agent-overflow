@@ -279,6 +279,48 @@ describe('the owning computer', () => {
     expect(mocks.stages).toHaveBeenCalledTimes(2);
   });
 
+  it('waits out a hidden document on a reconnect and a regrant, then reads once as it shows', async () => {
+    const laptop = stageBackend();
+    await grantBackendScopes('laptop', ['git:operate']);
+    const mocks = installMocks();
+    attachPipelinesPage(PANE, 'laptop');
+    await settle();
+    setVisiblePipelines(PANE, pipelinesRows(PANE).map((row) => row.key));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(mocks.projects).toHaveBeenCalledTimes(1);
+    expect(mocks.stages).toHaveBeenCalledTimes(2);
+
+    setDocumentVisibility('hidden');
+    laptop.setStatus('disconnected');
+    await settle();
+    laptop.setStatus('connected');
+    await settle();
+    revokeBackendScopes('laptop');
+    await settle();
+    await grantBackendScopes('laptop', ['git:operate']);
+    await settle();
+    await vi.advanceTimersByTimeAsync(PIPELINES_REFRESH_MS * 3);
+    expect(mocks.projects).toHaveBeenCalledTimes(1);
+    expect(mocks.list).toHaveBeenCalledTimes(2);
+    expect(mocks.stages).toHaveBeenCalledTimes(2);
+
+    setDocumentVisibility('visible');
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(mocks.projects).toHaveBeenCalledTimes(2);
+    expect(mocks.list).toHaveBeenCalledTimes(4);
+    expect(mocks.stages).toHaveBeenCalledTimes(4);
+
+    // Rows reported on screen while hidden read their stages as it shows.
+    setDocumentVisibility('hidden');
+    setVisiblePipelines(PANE, pipelinesRows(PANE).slice(0, 1).map((row) => row.key));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(mocks.stages).toHaveBeenCalledTimes(4);
+    setDocumentVisibility('visible');
+    await settle();
+    expect(mocks.stages).toHaveBeenCalledTimes(5);
+    expect(mocks.projects).toHaveBeenCalledTimes(2);
+  });
+
   it('forgets a removed computer while the tab is open, reads nothing for it, and reads again once it is back', async () => {
     stageBackend();
     await grantBackendScopes('laptop', ['git:operate']);
