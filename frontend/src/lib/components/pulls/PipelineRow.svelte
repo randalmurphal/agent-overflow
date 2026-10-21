@@ -10,7 +10,8 @@
   // One pipeline (GitLab) or workflow run (GitHub) in the Pipelines tab:
   // status dot and id, the ref it ran on with its kind glyph (branch, tag,
   // merge request) and the commit, stage dots once the row has been on
-  // screen long enough to read them, and the age. A row opens the
+  // screen long enough to read them (or that their read failed), and the
+  // age. A row opens the
   // stages / jobs / log view beside the list.
 
   interface Props {
@@ -66,9 +67,13 @@
       </span>
     </span>
     <span class="flex items-center gap-[3px]" title={stageTitle} data-testid="pipeline-stages">
-      {#each row.stages ?? [] as stage, index (`${index}:${stage.name}`)}
-        <span class="h-2 w-2 rounded-full {ciStatusDotClass(stage.status)}" aria-hidden="true"></span>
-      {/each}
+      {#if row.stagesError}
+        <span class="text-[0.6875rem] text-error" title={row.stagesError} data-testid="pipeline-stages-error">Stages unavailable</span>
+      {:else}
+        {#each row.stages ?? [] as stage, index (`${index}:${stage.name}`)}
+          <span class="h-2 w-2 rounded-full {ciStatusDotClass(stage.status)}" aria-hidden="true"></span>
+        {/each}
+      {/if}
     </span>
     <span class="shrink-0 text-[0.6875rem] text-fg-muted">{row.age}</span>
   </button>

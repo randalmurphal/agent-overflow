@@ -29,6 +29,7 @@ const ROW: PipelineRowView = {
   age: '5m ago',
   url: 'https://gitlab.com/group/app/-/pipelines/77',
   stages: null,
+  stagesError: null,
 };
 
 function mountView() {

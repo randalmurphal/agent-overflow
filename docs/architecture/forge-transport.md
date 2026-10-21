@@ -416,7 +416,9 @@ are a repository's (`ciLogKey(repo, job)`), whichever PR or pipeline
 showed them, so `GetPRCILogLines`, `SavePRCIJobLog` and
 `SavePRCIJobLogSection` take a `RepoReference`.
 
-`ListProjectPipelines(projectID, filter)` is one `ListPipelines`.
+`ListProjectPipelines(projectID, filter)` is one `ListPipelines`; the
+Pipelines tab reads each repository once, through the first picked project
+that clones it, so a repository two projects clone lists each pipeline once.
 `ReadPipelineStages(repo, ids)` reads at most `maxPipelineStageReads` (30)
 pipelines, 4 at a time, with `ReadPipeline` and answers each stage's name
 and status, or that pipeline's failure; every request is a GET the ETag

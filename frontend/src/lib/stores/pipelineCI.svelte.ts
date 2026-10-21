@@ -12,9 +12,12 @@
 // and every frame rank against one watermark per key, so an older frame
 // never overwrites a newer state. The backend's key for the pipeline is
 // aliased to the local key before the subscribe leaves, so a frame the
-// pump emits between its join and the answer reaching here routes too, and
-// the answer is ranked against it like a frame. A pipeline's followed logs
-// ride `pr:ci_log` with the pipeline's key (prReviewCIFollows.svelte.ts).
+// pump emits between its join and the answer reaching here routes too: it
+// is buffered until the answer seeds the watermark, then replayed in
+// sequence order. A pipeline frame and an error-only frame are kept apart,
+// so an error newer than the answer does not cost the answer's pipeline.
+// A pipeline's followed logs ride `pr:ci_log` with the pipeline's key
+// (prReviewCIFollows.svelte.ts).
 
 import {
   RefreshPipeline,
@@ -65,6 +68,16 @@ const localKeysByWireKey = new Map<string, Map<string, symbol>>();
 const appliedSeqByKey = new Map<string, number>();
 // The live handle per local key, for the visibility votes.
 const subscriptionByKey = new Map<string, { backend: BackendKey; id: string }>();
+// The frames routed to a key while its subscribe is in flight, stamped
+// with the source run that opened the window: the newest pipeline frame,
+// and the newest error-only frame after it (a pipeline frame clears the
+// pump's error, so it supersedes an earlier one).
+interface JoinFrames {
+  readonly owner: symbol;
+  pipeline: PipelineUpdatedEvent | null;
+  error: PipelineUpdatedEvent | null;
+}
+const joiningByKey = new Map<string, JoinFrames>();
 
 const votes = createPumpVotes('pipelineCI', (id, active) => SetPipelineActive(id, active));
 
@@ -95,6 +108,23 @@ function admit(key: string, seq: number): boolean {
   return true;
 }
 
+function closeJoin(key: string, owner: symbol): JoinFrames | null {
+  const join = joiningByKey.get(key);
+  if (join?.owner !== owner) return null;
+  joiningByKey.delete(key);
+  return join;
+}
+
+/** Applies the frames a join buffered, oldest first, through the
+ * watermark the subscribe result seeded. */
+function replayJoin(key: string, join: JoinFrames | null): void {
+  const frames = [join?.pipeline, join?.error].filter((frame): frame is PipelineUpdatedEvent => !!frame);
+  frames.sort((a, b) => Number(a.seq ?? 0) - Number(b.seq ?? 0));
+  for (const frame of frames) {
+    if (admit(key, Number(frame.seq ?? 0))) applyPRCIUpdated(key, frame);
+  }
+}
+
 const store = createEntityStore<{ readonly seq: number }, PipelineCtx>({
   name: 'pipelineCI',
   backendForKey: workspaceKeyBackend,
@@ -105,11 +135,13 @@ const store = createEntityStore<{ readonly seq: number }, PipelineCtx>({
     const expected = wireKeyFor(ctx);
     const owner = Symbol(key);
     appliedSeqByKey.delete(key);
+    joiningByKey.set(key, { owner, pipeline: null, error: null });
     addAlias(expected, key, owner);
     let result;
     try {
       result = await withBackendTarget(backend, () => SubscribePipeline(repoReferenceWire(ctx.repo), ctx.pipelineId));
     } catch (err) {
+      closeJoin(key, owner);
       removeAlias(expected, key, owner);
       throw err;
     }
@@ -132,7 +164,10 @@ const store = createEntityStore<{ readonly seq: number }, PipelineCtx>({
         if (!isTransportClassError(err)) throw err;
       }
     };
-    if (signal.aborted) return cleanup;
+    if (signal.aborted) {
+      closeJoin(key, owner);
+      return cleanup;
+    }
     if (wireKey !== expected) {
       // Frames in the join window went to the key this client spelled;
       // the backend's own spelling routes from here on.
@@ -143,11 +178,11 @@ const store = createEntityStore<{ readonly seq: number }, PipelineCtx>({
     subscriptionByKey.set(key, { backend, id });
     if (documentHidden()) votes.setActive(backend, id, false);
     const seq = Number(result.seq ?? 0);
-    // A frame that landed during the subscribe and outranks the answer
-    // already holds a newer state.
-    if (admit(key, seq)) {
-      seedPRCI(key, (result.pipeline ?? null) as CIPipeline | null, String(result.error ?? ''), result);
-    }
+    // The answer is the key's state as of its sequence; a frame the join
+    // buffered and the answer does not account for applies over it.
+    appliedSeqByKey.set(key, seq);
+    seedPRCI(key, (result.pipeline ?? null) as CIPipeline | null, String(result.error ?? ''), result);
+    replayJoin(key, closeJoin(key, owner));
     // The follow set lives on the handle, and this one is new.
     resendPRCILogFollows(key);
     apply({ seq });
@@ -155,6 +190,7 @@ const store = createEntityStore<{ readonly seq: number }, PipelineCtx>({
   },
   onDrop: (key) => {
     appliedSeqByKey.delete(key);
+    joiningByKey.delete(key);
     dropPRCIFollows(key);
     dropPRCI(key);
   },
@@ -178,6 +214,16 @@ export function attachPipelineCI(backend: BackendKey, repo: RepoRef, pipelineId:
 /** A `ci:pipeline_updated` frame from `backend`. */
 export function applyPipelineFrame(event: PipelineUpdatedEvent, backend: BackendKey): void {
   for (const key of localKeysFor(composeWorkspaceKey(backend, event.key))) {
+    const join = joiningByKey.get(key);
+    if (join) {
+      if (event.error) {
+        join.error = event;
+      } else if (event.pipeline) {
+        join.pipeline = event;
+        join.error = null;
+      }
+      continue;
+    }
     if (!admit(key, Number(event.seq ?? 0))) continue;
     applyPRCIUpdated(key, event);
   }
@@ -222,6 +268,7 @@ export function __resetPipelineCIForTest(): void {
   store.resetAll();
   localKeysByWireKey.clear();
   appliedSeqByKey.clear();
+  joiningByKey.clear();
   subscriptionByKey.clear();
   votes.resetForTest();
   __resetCIHandlesForTest();

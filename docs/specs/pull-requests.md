@@ -284,7 +284,9 @@ detail beside it) and loses its modal.
 ### Pipelines tab (phase 3)
 
 Rows are pipelines of the selected projects on any ref: id, ref (branch,
-MR, tag), head commit, stage dots for the rows on screen, age. Filters:
+MR, tag), head commit, stage dots for the rows on screen (or that their
+read failed), age. A project whose pipelines or origin could not be read
+shows its failure above the rows, as on the Merge requests tab. Filters:
 project, ref kind, status, default all; the ref and status pickers are
 one choice each and close on the pick. A row opens the stages / jobs /
 log view beside the list; on compact the page header's Back is the one

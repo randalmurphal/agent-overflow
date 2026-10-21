@@ -1,12 +1,14 @@
 // The Pipelines tab store: list reads on open, refresh and the interval
-// (paused while hidden), the filters, the stage summaries for rows on
-// screen and their batching cap, per-project failures, and the selected
-// pipeline's subscription.
+// (paused while hidden), one read per repository, the filters, the stage
+// summaries for rows on screen, their batching cap, failures and
+// retention, per-project failures, the owning computer's connection,
+// removal and grant, and the selected pipeline's subscription.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { probeReactivity } from '../../test/helpers/reactivity.svelte';
 import {
+  __pipelineStageKeysForTest,
   __resetPipelinesPageForTest,
   attachPipelinesPage,
   clearPipelineSelection,
@@ -14,7 +16,10 @@ import {
   PIPELINE_STAGE_READS_MAX,
   PIPELINES_REFRESH_MS,
   pipelineDetailOpen,
+  pipelinesError,
+  pipelinesLoading,
   pipelinesProjectErrors,
+  pipelinesReading,
   pipelinesRows,
   refreshPipelinesPage,
   selectedPipeline,
@@ -22,14 +27,19 @@ import {
   setPipelinesFilters,
   setVisiblePipelines,
 } from './pipelinesPage.svelte';
+import { DEFAULT_RETRY } from './entityStore.svelte';
 import { __resetPipelineCIForTest } from './pipelineCI.svelte';
 import { PIPELINE_FILTERS_KEY, resetPullsFiltersForTest } from './pullsPageFilters.svelte';
 import { appStorageGet, resetAppStorageForTest } from './appStorage';
 import { HOME_BACKEND } from '../transport/backendKey';
-import { takePinnedBackend } from '../transport/backends';
+import { detachBackend, takePinnedBackend } from '../transport/backends';
+import { presentScope } from '../transport/scopeRefusal';
 import { TransportError } from '../transport/wsClient';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { grantBackendScopes, revokeBackendScopes } from '../../test/helpers/scopes';
+
+const NOT_GRANTED = `${presentScope('git:operate').title} ${presentScope('git:operate').hint}`;
 
 const PANE = 'tools-pulls';
 
@@ -94,6 +104,7 @@ beforeEach(() => {
 afterEach(() => {
   __resetPipelinesPageForTest();
   __resetPipelineCIForTest();
+  revokeBackendScopes('laptop');
   resetStagedBackends();
   delete (document as unknown as Record<string, unknown>).visibilityState;
   vi.useRealTimers();
@@ -102,6 +113,7 @@ afterEach(() => {
 describe('list reads', () => {
   it('lists every project on open, newest first, pinned to the computer the page lists', async () => {
     stageBackend();
+    await grantBackendScopes('laptop', ['git:operate']);
     const mocks = installMocks();
     attachPipelinesPage(PANE, 'laptop');
     await settle();
@@ -179,6 +191,170 @@ describe('list reads', () => {
       projectId: 'p2', name: 'Project p2', message: 'No access to group/api with this login.', failure: { kind: 'forbidden', reserve: false, resumeAt: '' }, forge: 'gitlab',
     }]);
   });
+
+  it('reads a repository two projects clone once, lists each pipeline once, and lists it when either project is picked', async () => {
+    const mocks = installMocks({ p1: [summary(1), summary(2)], p2: [summary(1), summary(2)] });
+    mocks.projects.mockImplementation(async () => [forgeProject('p1', 'app'), forgeProject('p2', 'app')]);
+    attachPipelinesPage(PANE, HOME_BACKEND);
+    await settle();
+    expect(mocks.list.mock.calls.map((call) => call[0])).toEqual(['p1']);
+    const keys = pipelinesRows(PANE).map((row) => row.key);
+    expect(keys).toHaveLength(2);
+    expect(new Set(keys).size).toBe(2);
+    expect(pipelinesRows(PANE).map((row) => row.projectName)).toEqual(['Project p1', 'Project p1']);
+
+    setPipelinesFilters(PANE, { projects: ['p2'] });
+    await settle();
+    expect(mocks.list).toHaveBeenLastCalledWith('p2', { status: undefined });
+    expect(pipelinesRows(PANE).map((row) => [row.id, row.projectName])).toEqual([['2', 'Project p2'], ['1', 'Project p2']]);
+
+    // A failed read of the repository shows on every picked clone, and
+    // the rows read before stay.
+    setPipelinesFilters(PANE, { projects: [] });
+    await settle();
+    mocks.list.mockImplementation(async () => {
+      throw new TransportError('forge_forbidden', 'No access to group/app with this login.');
+    });
+    refreshPipelinesPage(PANE);
+    await settle();
+    expect(pipelinesProjectErrors(PANE).map((failed) => failed.projectId)).toEqual(['p1', 'p2']);
+    expect(pipelinesRows(PANE).map((row) => row.id)).toEqual(['2', '1']);
+  });
+
+  it('shows a project whose origin could not be read beside the projects that list', async () => {
+    const mocks = installMocks();
+    const unreadable = { ...forgeProject('p2', 'api'), repo: { Forge: '', Host: '', Namespace: '', Repo: '' }, error: 'The origin of Project p2 could not be read.' };
+    mocks.projects.mockImplementation(async () => [forgeProject('p1', 'app'), unreadable]);
+    attachPipelinesPage(PANE, HOME_BACKEND);
+    await settle();
+    expect(mocks.list.mock.calls.map((call) => call[0])).toEqual(['p1']);
+    expect(pipelinesRows(PANE).map((row) => row.id)).toEqual(['3', '1']);
+    expect(pipelinesProjectErrors(PANE)).toEqual([{
+      projectId: 'p2', name: 'Project p2', message: 'The origin of Project p2 could not be read.', failure: { kind: 'forge', reserve: false, resumeAt: '' }, forge: '',
+    }]);
+    // Picking only the other project drops its header.
+    setPipelinesFilters(PANE, { projects: ['p1'] });
+    await settle();
+    expect(pipelinesProjectErrors(PANE)).toEqual([]);
+  });
+});
+
+describe('the owning computer', () => {
+  it('stops reading on a disconnect, discards the read in flight, and reads at once on the reconnect', async () => {
+    const laptop = stageBackend();
+    await grantBackendScopes('laptop', ['git:operate']);
+    const mocks = installMocks();
+    attachPipelinesPage(PANE, 'laptop');
+    await settle();
+    expect(mocks.projects).toHaveBeenCalledTimes(1);
+    expect(pipelinesRows(PANE).map((row) => row.id)).toEqual(['3', '2', '1']);
+
+    let answer!: (value: unknown) => void;
+    mocks.projects.mockImplementationOnce(() => new Promise((resolve) => {
+      answer = resolve;
+    }));
+    await vi.advanceTimersByTimeAsync(PIPELINES_REFRESH_MS);
+    expect(mocks.projects).toHaveBeenCalledTimes(2);
+    expect(pipelinesReading(PANE)).toBe(true);
+    laptop.setStatus('disconnected');
+    await settle();
+    expect(pipelinesReading(PANE)).toBe(false);
+    // The read the disconnect cut applies nothing; the rows listed stay.
+    answer([forgeProject('p9', 'other')]);
+    await settle();
+    expect(mocks.list.mock.calls.map((call) => call[0])).toEqual(['p1', 'p2']);
+    expect(pipelinesRows(PANE).map((row) => row.id)).toEqual(['3', '2', '1']);
+
+    // Nothing reads while it is down: no interval, no stages.
+    await vi.advanceTimersByTimeAsync(PIPELINES_REFRESH_MS * 3);
+    setVisiblePipelines(PANE, pipelinesRows(PANE).map((row) => row.key));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(mocks.projects).toHaveBeenCalledTimes(2);
+    expect(mocks.stages).not.toHaveBeenCalled();
+
+    laptop.setStatus('connected');
+    await settle();
+    expect(mocks.projects).toHaveBeenCalledTimes(3);
+    expect(mocks.stages).toHaveBeenCalledTimes(2);
+  });
+
+  it('forgets a removed computer while the tab is open, reads nothing for it, and reads again once it is back', async () => {
+    stageBackend();
+    await grantBackendScopes('laptop', ['git:operate']);
+    const mocks = installMocks();
+    setBindingMock('SubscribePipeline', async (_repo: unknown, id: string) => ({
+      id: `pipe-${id}`, key: `gitlab:group/app:pipeline:${id}`, pipeline: { id, status: 'running', stages: [] }, error: '', errorKind: '', reserve: false, resumeAt: '', seq: 1,
+    }));
+    const unsubscribe = setBindingMock('UnsubscribePipeline', async () => undefined);
+    attachPipelinesPage(PANE, 'laptop');
+    await settle();
+    selectPipeline(PANE, pipelinesRows(PANE)[0]!.key);
+    await settle();
+
+    detachBackend('laptop');
+    await settle();
+    expect(pipelinesRows(PANE)).toEqual([]);
+    expect(selectedPipeline(PANE)).toBeNull();
+    expect(unsubscribe).toHaveBeenCalledWith('pipe-3');
+    await vi.advanceTimersByTimeAsync(PIPELINES_REFRESH_MS * 3);
+    expect(mocks.projects).toHaveBeenCalledTimes(1);
+
+    stageBackend();
+    await grantBackendScopes('laptop', ['git:operate']);
+    await settle();
+    expect(mocks.projects).toHaveBeenCalledTimes(2);
+    expect(pipelinesRows(PANE).map((row) => row.id)).toEqual(['3', '2', '1']);
+  });
+
+  it('reads nothing until the computer grants git, stops when it is revoked, and the refresh still shows the refusal', async () => {
+    stageBackend();
+    const mocks = installMocks();
+    const subscribe = setBindingMock('SubscribePipeline', async (_repo: unknown, id: string) => ({
+      id: `pipe-${id}`, key: `gitlab:group/app:pipeline:${id}`, pipeline: { id, status: 'running', stages: [] }, error: '', errorKind: '', reserve: false, resumeAt: '', seq: 1,
+    }));
+    const unsubscribe = setBindingMock('UnsubscribePipeline', async () => undefined);
+    attachPipelinesPage(PANE, 'laptop');
+    await settle();
+    expect(mocks.projects).not.toHaveBeenCalled();
+    expect(pipelinesError(PANE)).toBe(NOT_GRANTED);
+    expect(pipelinesLoading(PANE)).toBe(false);
+
+    // The refresh button asks anyway, shows the refusal, and arms nothing.
+    mocks.projects.mockImplementationOnce(async () => {
+      throw new TransportError('scope_required', 'refused', { scope: 'git:operate' });
+    });
+    refreshPipelinesPage(PANE);
+    await settle();
+    expect(mocks.projects).toHaveBeenCalledTimes(1);
+    expect(pipelinesError(PANE)).toBe(NOT_GRANTED);
+    await vi.advanceTimersByTimeAsync(PIPELINES_REFRESH_MS * 3);
+    expect(mocks.projects).toHaveBeenCalledTimes(1);
+
+    await grantBackendScopes('laptop', ['git:operate']);
+    await settle();
+    expect(mocks.projects).toHaveBeenCalledTimes(2);
+    expect(pipelinesError(PANE)).toBeNull();
+    selectPipeline(PANE, pipelinesRows(PANE)[0]!.key);
+    await settle();
+    expect(subscribe).toHaveBeenCalledTimes(1);
+    expect(selectedPipeline(PANE)?.ci.pipeline?.status).toBe('running');
+
+    // Revoked: the reads stop, the subscription goes, and both say why.
+    revokeBackendScopes('laptop');
+    await settle();
+    expect(unsubscribe).toHaveBeenCalledWith('pipe-3');
+    expect(selectedPipeline(PANE)?.ci.error).toBe(NOT_GRANTED);
+    expect(pipelinesError(PANE)).toBe(NOT_GRANTED);
+    await vi.advanceTimersByTimeAsync(PIPELINES_REFRESH_MS * 3);
+    expect(mocks.projects).toHaveBeenCalledTimes(2);
+
+    await grantBackendScopes('laptop', ['git:operate']);
+    await settle();
+    expect(mocks.projects).toHaveBeenCalledTimes(3);
+    expect(subscribe).toHaveBeenCalledTimes(2);
+    expect(selectedPipeline(PANE)?.ci.error).toBeNull();
+    expect(selectedPipeline(PANE)?.ci.pipeline?.status).toBe('running');
+  });
 });
 
 describe('filters', () => {
@@ -223,9 +399,103 @@ describe('stage summaries', () => {
     await settle();
     expect(mocks.stages).toHaveBeenCalledTimes(2);
   });
+
+  it('shows a failed stage read on its rows in place of their dots, and the dots again once a read answers', async () => {
+    const mocks = installMocks({ p1: [summary(1), summary(2)] });
+    attachPipelinesPage(PANE, HOME_BACKEND);
+    await settle();
+    const keys = pipelinesRows(PANE).map((row) => row.key);
+    const shown = () => pipelinesRows(PANE).map((row) => [row.id, row.stages?.map((stage) => stage.status) ?? null, row.stagesError]);
+    setVisiblePipelines(PANE, keys);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(shown()).toEqual([['2', ['success', 'failed'], null], ['1', ['success', 'failed'], null]]);
+
+    // The call fails: every row it read shows the failure, not the old dots.
+    mocks.stages.mockImplementationOnce(async () => {
+      throw new TransportError('forge_transient', 'GitLab did not answer.');
+    });
+    setVisiblePipelines(PANE, keys);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(shown()).toEqual([['2', null, 'GitLab did not answer.'], ['1', null, 'GitLab did not answer.']]);
+
+    // One pipeline's own failure is that row's alone.
+    mocks.stages.mockImplementationOnce(async () => ({
+      2: { stages: [], error: 'Pipeline 2 could not be read.' },
+      1: { stages: [{ name: 'build', status: 'running', jobs: [] }] },
+    }));
+    setVisiblePipelines(PANE, keys);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(shown()).toEqual([['2', null, 'Pipeline 2 could not be read.'], ['1', ['running'], null]]);
+
+    setVisiblePipelines(PANE, keys);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(shown()).toEqual([['2', ['success', 'failed'], null], ['1', ['success', 'failed'], null]]);
+  });
+
+  it('holds stages for listed rows only, and drops a stage reply for a list that has moved on', async () => {
+    const mocks = installMocks({ p1: [summary(1), summary(2), summary(3)] });
+    attachPipelinesPage(PANE, HOME_BACKEND);
+    await settle();
+    setVisiblePipelines(PANE, pipelinesRows(PANE).map((row) => row.key));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(__pipelineStageKeysForTest(PANE)).toHaveLength(3);
+
+    // Every refresh lists other pipelines: what is held is what is listed.
+    for (let id = 4; id < 10; id += 1) {
+      mocks.list.mockImplementation(async () => ({ rows: [summary(id)], fetchedAt: '' }));
+      refreshPipelinesPage(PANE);
+      await settle();
+      setVisiblePipelines(PANE, pipelinesRows(PANE).map((row) => row.key));
+      await vi.advanceTimersByTimeAsync(2_000);
+      const listedKeys = pipelinesRows(PANE).map((row) => row.key);
+      expect(listedKeys).toHaveLength(2);
+      expect(__pipelineStageKeysForTest(PANE).sort()).toEqual(listedKeys.sort());
+    }
+
+    // A stage read in flight when the list moves on applies nothing.
+    const stale = pipelinesRows(PANE)[0]!.key;
+    let answer!: (value: unknown) => void;
+    mocks.stages.mockImplementationOnce(() => new Promise((resolve) => {
+      answer = resolve;
+    }));
+    setVisiblePipelines(PANE, [stale]);
+    await vi.advanceTimersByTimeAsync(400);
+    mocks.list.mockImplementation(async () => ({ rows: [summary(10)], fetchedAt: '' }));
+    refreshPipelinesPage(PANE);
+    await settle();
+    expect(__pipelineStageKeysForTest(PANE)).toEqual([]);
+    answer({ 9: { stages: [{ name: 'late', status: 'success', jobs: [] }] } });
+    await settle();
+    expect(__pipelineStageKeysForTest(PANE)).toEqual([]);
+  });
 });
 
 describe('selection', () => {
+  it('shows a failing subscribe on the detail, and clears it once the subscribe answers', async () => {
+    installMocks();
+    let refuse = true;
+    const subscribe = setBindingMock('SubscribePipeline', async (_repo: unknown, id: string) => {
+      if (refuse) throw new TransportError('pipeline_subscriptions_full', 'Too many pipelines are followed.');
+      return { id: `pipe-${id}`, key: `gitlab:group/app:pipeline:${id}`, pipeline: { id, status: 'running', stages: [] }, error: '', errorKind: '', reserve: false, resumeAt: '', seq: 1 };
+    });
+    setBindingMock('UnsubscribePipeline', async () => undefined);
+    attachPipelinesPage(PANE, HOME_BACKEND);
+    await settle();
+    selectPipeline(PANE, pipelinesRows(PANE).find((row) => row.id === '1')!.key);
+    await settle();
+    const ci = selectedPipeline(PANE)!.ci;
+    expect(subscribe).toHaveBeenCalledTimes(1);
+    expect(ci.error).toBe('Too many pipelines are followed.');
+    expect(ci.loading).toBe(false);
+
+    refuse = false;
+    await vi.advanceTimersByTimeAsync(DEFAULT_RETRY.initialMs);
+    await settle();
+    expect(subscribe).toHaveBeenCalledTimes(2);
+    expect(ci.error).toBeNull();
+    expect(ci.pipeline?.status).toBe('running');
+  });
+
   it('follows the selected pipeline and releases it on deselect and detach', async () => {
     installMocks();
     const subscribe = setBindingMock('SubscribePipeline', async (_repo: unknown, id: string) => ({
