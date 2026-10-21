@@ -90,6 +90,11 @@ type RepoMerge struct {
 	// only_allow_merge_if_all_discussions_are_resolved.
 	PipelineMustSucceed    bool `json:"pipelineMustSucceed,omitempty"`
 	DiscussionsMustResolve bool `json:"discussionsMustResolve,omitempty"`
+	// ApprovalRules are a GitLab project's approval rules, each rule's
+	// approvals_required (projects/P/approval_rules); none by default.
+	// A merge request's own approval state is its readiness'
+	// requiredApprovals.
+	ApprovalRules []int `json:"approvalRules,omitempty"`
 }
 
 // Pull is one pull request (GitHub) or merge request (GitLab).
@@ -541,8 +546,8 @@ func (r *Repo) normalize(ids *idSource) error {
 
 func (m *RepoMerge) normalize(forge string) error {
 	if forge == "github" {
-		if m.MergeMethod != "" || m.SquashOption != "" || m.PipelineMustSucceed || m.DiscussionsMustResolve {
-			return errors.New("mergeMethod, squashOption, pipelineMustSucceed and discussionsMustResolve are GitLab project settings")
+		if m.MergeMethod != "" || m.SquashOption != "" || m.PipelineMustSucceed || m.DiscussionsMustResolve || m.ApprovalRules != nil {
+			return errors.New("mergeMethod, squashOption, pipelineMustSucceed, discussionsMustResolve and approvalRules are GitLab project settings")
 		}
 		m.Permission = defaultString(m.Permission, "WRITE")
 		if githubRoles[m.Permission] == 0 {
@@ -567,6 +572,11 @@ func (m *RepoMerge) normalize(forge string) error {
 	}
 	if m.Methods != nil || m.DefaultMethod != "" || m.AutoMergeAllowed {
 		return errors.New("methods, defaultMethod and autoMergeAllowed are GitHub repository settings")
+	}
+	for i, required := range m.ApprovalRules {
+		if required < 0 {
+			return fmt.Errorf("approvalRules[%d] is negative", i)
+		}
 	}
 	m.Permission = defaultString(m.Permission, "developer")
 	if gitlabRoles[m.Permission] == 0 {

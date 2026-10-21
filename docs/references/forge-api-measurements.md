@@ -130,6 +130,17 @@ flagged `tag`, so a branch sharing the name is never in it. The release
 that added the `tag` restriction was not checked; an older
 self-managed instance may answer otherwise. None of this was probed.
 
+Measured against gitlab.com on 2026-10-21 (read-only, a project of 57
+open merge requests): the list page takes 0.9 to 1.7 s; in GraphQL
+`mergeRequests(reviewerUsername:|authorUsername:)`, the reviewer and
+approval fields and the discussion and commit fields each cost 1 to 2 s,
+and `approvalsRequired`/`approvalsLeft` 2 to 2.7 s alone. The sum of
+`approvals_required` over `projects/P/approval_rules` matched an MR whose
+`approvalsRequired` was 2 (rules of 1 and 1). The extended GitHub
+`PullsSearch` costs 3 points and 0.4 s. That `approval_rules` sends an
+`ETag` the list revalidates, and the events feed's `after` and paging,
+follow GitLab's REST conventions and were not probed.
+
 ## Merge readiness and actions
 
 ### GitHub

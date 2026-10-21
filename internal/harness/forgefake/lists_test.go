@@ -2,6 +2,8 @@ package forgefake
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -62,7 +64,8 @@ func TestPullsSearchAnswersTheRepositorysOpenPulls(t *testing.T) {
 	if mine["number"] != float64(1) || mine["isDraft"] != true || mine["viewerDidAuthor"] != true || mine["totalCommentsCount"] != float64(3) ||
 		mine["createdAt"] != "2026-10-01T00:00:00Z" || mine["updatedAt"] != "2026-10-02T00:00:00Z" ||
 		mustJSON(t, mine["commits"]) != `{"nodes":[{"commit":{"committedDate":"2026-10-01T12:00:00Z","statusCheckRollup":{"state":"SUCCESS"}}}],"totalCount":3}` ||
-		mine["viewerLatestReview"] != nil || mine["id"] == "" {
+		mine["viewerLatestReview"] != nil || mine["id"] == "" || mustJSON(t, mine["reviewThreads"]) != `{"nodes":[{"isResolved":false}]}` ||
+		mustJSON(t, mine["baseRef"]) != `{"refUpdateRule":null,"rules":{"nodes":[]}}` {
 		t.Errorf("own draft = %v", mustJSON(t, mine))
 	}
 	if fork["isCrossRepository"] != true || fork["mergeable"] != "CONFLICTING" || fork["mergeStateStatus"] != "DIRTY" ||
@@ -71,7 +74,7 @@ func TestPullsSearchAnswersTheRepositorysOpenPulls(t *testing.T) {
 		t.Errorf("fork = %v", mustJSON(t, fork))
 	}
 	if mustJSON(t, asked["viewerLatestReview"]) != `{"state":"CHANGES_REQUESTED","submittedAt":"2026-10-03T00:00:00Z"}` ||
-		mustJSON(t, asked["latestOpinionatedReviews"]) != `{"nodes":[{"viewerDidAuthor":true}]}` || asked["reviewDecision"] != "CHANGES_REQUESTED" ||
+		mustJSON(t, asked["latestOpinionatedReviews"]) != `{"nodes":[{"state":"CHANGES_REQUESTED","viewerDidAuthor":true}]}` || asked["reviewDecision"] != "CHANGES_REQUESTED" ||
 		!strings.Contains(mustJSON(t, asked["commits"]), `"statusCheckRollup":null`) {
 		t.Errorf("changes requested = %v", mustJSON(t, asked))
 	}
@@ -185,80 +188,200 @@ func TestSeedRejectsMalformedListFields(t *testing.T) {
 	}
 }
 
-// GitLab's reviewers read carries each reviewer's review state, and an
-// approval replaces the viewer's change request.
-func TestGitLabReviewersCarryEachReviewersState(t *testing.T) {
+// gitlabGraphQLCall sends one operation to the GitLab GraphQL mount for
+// host, declaring its operation's variables.
+func gitlabGraphQLCall(t *testing.T, srv *httptest.Server, host, op string, vars map[string]any) httpAnswer {
+	t.Helper()
+	return httpRequest(t, srv, "POST", host, "/gitlab/api/graphql", mustJSON(t, map[string]any{
+		"query":         "query " + op + "($fullPath: ID!, $viewer: String!, $after: String) { project(fullPath: $fullPath) { id } }",
+		"operationName": op, "variables": vars,
+	}), http.Header{"Private-Token": {testAPIToken}})
+}
+
+type gitlabPullsAnswer struct {
+	Data struct {
+		Project *struct {
+			MergeRequests struct {
+				PageInfo struct {
+					HasNextPage bool    `json:"hasNextPage"`
+					EndCursor   *string `json:"endCursor"`
+				} `json:"pageInfo"`
+				Nodes []map[string]any `json:"nodes"`
+			} `json:"mergeRequests"`
+		} `json:"project"`
+	} `json:"data"`
+}
+
+// GitLab's reviewing reads answer the open merge requests the viewer
+// reviews, newest update first, with each reviewer's state (an approval
+// replaces the viewer's change request, a comment makes it reviewed),
+// who approved and the head pipeline; the activity reads the thread
+// counts and the head commit's time; the authored reads the viewer's own.
+func TestGitLabPullsReadsAnswerTheViewersMergeRequests(t *testing.T) {
 	t.Parallel()
 	e := New(Options{APIToken: testAPIToken})
 	if _, err := seedJSON(e, `{"viewer": "octo", "repos": [{"forge": "gitlab", "project": "grp/r", "pulls": [
 	  {"number": 1, "title": "t", "author": "carol", "reviewers": ["octo", "bob", "dave"], "changeRequests": ["octo"],
-	   "reviews": [{"author": "bob", "state": "APPROVED"}]}]}]}`); err != nil {
+	   "reviews": [{"author": "bob", "state": "APPROVED"}], "updatedAt": "2026-10-02T00:00:00Z", "committedAt": "2026-10-01T05:00:00Z",
+	   "ci": {"jobs": [{"name": "unit", "status": "failed"}]},
+	   "threads": [{"path": "a.go", "line": 1, "comments": [{"author": "dave", "body": "x"}]}, {"path": "b.go", "line": 1, "resolved": true, "comments": [{"body": "y"}]}]},
+	  {"number": 2, "title": "t", "author": "carol", "reviewers": ["Octo"], "updatedAt": "2026-10-03T00:00:00Z", "comments": [{"author": "octo", "body": "hm"}]},
+	  {"number": 3, "title": "mine", "author": "octo", "reviewers": ["bob"]},
+	  {"number": 4, "title": "closed", "author": "carol", "reviewers": ["octo"], "state": "closed"}]}]}`); err != nil {
 		t.Fatal(err)
 	}
 	srv := testServer(t, e)
-	path := "projects/grp%2Fr/merge_requests/1"
-	states := func() string {
+	read := func(op string) []map[string]any {
 		t.Helper()
-		var got []struct {
-			User struct {
-				Username string `json:"username"`
-			} `json:"user"`
-			State string `json:"state"`
+		var got gitlabPullsAnswer
+		decodeBody(t, gitlabGraphQLCall(t, srv, "gitlab.com", op, map[string]any{"fullPath": "grp/r", "viewer": "octo"}), &got)
+		if got.Data.Project == nil || got.Data.Project.MergeRequests.PageInfo.HasNextPage {
+			t.Fatalf("%s = %+v", op, got)
 		}
-		decodeBody(t, glabGET(t, srv, "gitlab.com", path+"/reviewers"), &got)
-		var out []string
-		for _, reviewer := range got {
-			out = append(out, reviewer.User.Username+"="+reviewer.State)
-		}
-		return strings.Join(out, " ")
+		return got.Data.Project.MergeRequests.Nodes
 	}
-	if got := states(); got != "octo=requested_changes bob=approved dave=unreviewed" {
-		t.Fatalf("reviewers = %s", got)
+	reviewing := read("PullsReviewing")
+	if len(reviewing) != 2 || mustJSON(t, reviewing[0]) != `{"approvedBy":{"nodes":[]},"headPipeline":null,"iid":"2","reviewers":{"nodes":[{"mergeRequestInteraction":{"reviewState":"REVIEWED"},"username":"Octo"}]}}` ||
+		mustJSON(t, reviewing[1]) != `{"approvedBy":{"nodes":[{"username":"bob"}]},"headPipeline":{"status":"FAILED"},"iid":"1","reviewers":{"nodes":[`+
+			`{"mergeRequestInteraction":{"reviewState":"REQUESTED_CHANGES"},"username":"octo"},{"mergeRequestInteraction":{"reviewState":"APPROVED"},"username":"bob"},`+
+			`{"mergeRequestInteraction":{"reviewState":"REVIEWED"},"username":"dave"}]}}` {
+		t.Fatalf("PullsReviewing = %s", mustJSON(t, reviewing))
+	}
+	if activity := read("PullsReviewingActivity"); mustJSON(t, activity[1]) != `{"commits":{"nodes":[{"committedDate":"2026-10-01T05:00:00Z"}]},"iid":"1","resolvableDiscussionsCount":2,"resolvedDiscussionsCount":1}` {
+		t.Fatalf("PullsReviewingActivity = %s", mustJSON(t, activity))
+	}
+	if authored := read("PullsAuthored"); len(authored) != 1 || authored[0]["iid"] != "3" || len(read("PullsAuthoredActivity")) != 1 {
+		t.Fatalf("PullsAuthored = %s", mustJSON(t, authored))
 	}
 	var mr map[string]any
-	decodeBody(t, glabGET(t, srv, "gitlab.com", path), &mr)
-	if mr["detailed_merge_status"] != "requested_changes" {
-		t.Fatalf("detailed_merge_status = %v", mr["detailed_merge_status"])
-	}
-	if got := glabSend(t, srv, "POST", path+"/approve", `{"sha":"`+mr["sha"].(string)+`"}`); got.status != 201 {
+	decodeBody(t, glabGET(t, srv, "gitlab.com", "projects/grp%2Fr/merge_requests/1"), &mr)
+	if got := glabSend(t, srv, "POST", "projects/grp%2Fr/merge_requests/1/approve", `{"sha":"`+mr["sha"].(string)+`"}`); got.status != 201 {
 		t.Fatalf("approve = %d %s", got.status, got.body)
 	}
-	if got := states(); got != "octo=approved bob=approved dave=unreviewed" {
-		t.Fatalf("reviewers after approving = %s", got)
+	if after := mustJSON(t, read("PullsReviewing")[1]["reviewers"]); !strings.Contains(after, `{"mergeRequestInteraction":{"reviewState":"APPROVED"},"username":"octo"}`) {
+		t.Fatalf("reviewers after approving = %s", after)
+	}
+
+	var missing gitlabPullsAnswer
+	decodeBody(t, gitlabGraphQLCall(t, srv, "gitlab.com", "PullsReviewing", map[string]any{"fullPath": "grp/none", "viewer": "octo"}), &missing)
+	if missing.Data.Project != nil {
+		t.Errorf("unknown project = %+v, want a null project", missing)
+	}
+	drift := httpRequest(t, srv, "POST", "gitlab.com", "/gitlab/api/graphql", mustJSON(t, map[string]any{
+		"query": "query PullsReviewing($fullPath: ID!) { project(fullPath: $fullPath) { id } }", "operationName": "PullsReviewing",
+		"variables": map[string]any{"fullPath": "grp/r"},
+	}), http.Header{"Private-Token": {testAPIToken}})
+	if drift.status != 404 || !lastInvocation(t, e).Unhandled {
+		t.Errorf("a drifted document = %d, want unhandled", drift.status)
+	}
+	if github := gitlabGraphQLCall(t, srv, "gitlab.com", "PullsSearch", map[string]any{"fullPath": "grp/r", "viewer": "octo"}); github.status != 404 {
+		t.Errorf("a GitHub operation on GitLab = %d, want unhandled", github.status)
+	}
+	if err := e.SetRefusal(Refusal{Route: "glab graphql PullsAuthored", Status: 403, Times: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if refused := gitlabGraphQLCall(t, srv, "gitlab.com", "PullsAuthored", map[string]any{"fullPath": "grp/r", "viewer": "octo"}); refused.status != 403 || lastInvocation(t, e).Route != "glab graphql PullsAuthored" {
+		t.Errorf("refused = %d %s", refused.status, lastInvocation(t, e).Route)
 	}
 }
 
-// GitLab's reviewers read is paginated, 20 a page by default, with
-// X-Next-Page while more pages exist.
-func TestGitLabReviewersArePaginated(t *testing.T) {
+// A GraphQL read pages by after, 100 a page.
+func TestGitLabPullsReadsPageByAfter(t *testing.T) {
 	t.Parallel()
 	e := New(Options{APIToken: testAPIToken})
-	var reviewers []string
-	for i := range 25 {
-		reviewers = append(reviewers, fmt.Sprintf("%q", fmt.Sprintf("r%02d", i)))
+	pulls := make([]string, 150)
+	for i := range pulls {
+		pulls[i] = fmt.Sprintf(`{"number":%d,"title":"p%d","author":"octo"}`, i+1, i+1)
 	}
-	if _, err := seedJSON(e, `{"viewer": "octo", "repos": [{"forge": "gitlab", "project": "grp/r", "pulls": [
-	  {"number": 1, "title": "t", "author": "carol", "reviewers": [`+strings.Join(reviewers, ",")+`]}]}]}`); err != nil {
+	if _, err := seedJSON(e, `{"viewer":"octo","repos":[{"forge":"gitlab","project":"a/many","pulls":[`+strings.Join(pulls, ",")+`]}]}`); err != nil {
 		t.Fatal(err)
 	}
 	srv := testServer(t, e)
-	page := func(query string) (string, int) {
-		t.Helper()
-		answer := glabGET(t, srv, "gitlab.com", "projects/grp%2Fr/merge_requests/1/reviewers"+query)
-		var got []map[string]any
-		decodeBody(t, answer, &got)
-		return answer.header.Get("X-Next-Page"), len(got)
+	var first, second gitlabPullsAnswer
+	decodeBody(t, gitlabGraphQLCall(t, srv, "gitlab.com", "PullsAuthored", map[string]any{"fullPath": "a/many", "viewer": "octo"}), &first)
+	page := first.Data.Project.MergeRequests
+	if len(page.Nodes) != 100 || !page.PageInfo.HasNextPage || page.Nodes[0]["iid"] != "150" {
+		t.Fatalf("first page = %d nodes, %+v", len(page.Nodes), page.PageInfo)
 	}
-	if next, n := page(""); next != "2" || n != 20 {
-		t.Fatalf("default page: next %q, %d reviewers", next, n)
+	decodeBody(t, gitlabGraphQLCall(t, srv, "gitlab.com", "PullsAuthored", map[string]any{"fullPath": "a/many", "viewer": "octo", "after": *page.PageInfo.EndCursor}), &second)
+	if rest := second.Data.Project.MergeRequests; len(rest.Nodes) != 50 || rest.PageInfo.HasNextPage || rest.Nodes[49]["iid"] != "1" {
+		t.Fatalf("second page = %d nodes, %+v", len(rest.Nodes), rest.PageInfo)
 	}
-	if next, n := page("?per_page=20&page=2"); next != "" || n != 5 {
-		t.Fatalf("second page: next %q, %d reviewers", next, n)
+}
+
+// The viewer's events are its comments and approvals on the host's merge
+// requests, newest first, after the date, in pages; another user is
+// GitLab's 404 and a parameter the route does not implement is unhandled.
+func TestGitLabUserEventsAreTheViewersCommentsAndApprovals(t *testing.T) {
+	t.Parallel()
+	e := New(Options{APIToken: testAPIToken})
+	if _, err := seedJSON(e, `{"viewer": "octo", "repos": [
+	  {"forge": "gitlab", "project": "grp/a", "id": 11, "pulls": [
+	    {"number": 1, "title": "t", "author": "carol", "comments": [{"author": "octo", "body": "a", "createdAt": "2026-10-05T00:00:00Z"}, {"author": "carol", "body": "b", "createdAt": "2026-10-06T00:00:00Z"}],
+	     "reviews": [{"author": "octo", "state": "APPROVED", "submittedAt": "2026-10-07T00:00:00Z"}]},
+	    {"number": 2, "title": "t", "author": "carol", "threads": [{"path": "a.go", "line": 1, "comments": [{"author": "octo", "body": "c", "createdAt": "2026-09-01T00:00:00Z"}]}]}]},
+	  {"forge": "gitlab", "project": "grp/b", "id": 12, "pulls": [
+	    {"number": 1, "title": "t", "author": "carol", "comments": [{"author": "octo", "body": "d", "createdAt": "2026-10-08T00:00:00Z"}]}]},
+	  {"forge": "gitlab", "host": "gitlab.example", "project": "grp/c", "pulls": [
+	    {"number": 1, "title": "t", "author": "carol", "comments": [{"author": "octo", "body": "e", "createdAt": "2026-10-09T00:00:00Z"}]}]}]}`); err != nil {
+		t.Fatal(err)
 	}
-	if next, n := page("?per_page=100"); next != "" || n != 25 {
-		t.Fatalf("per_page=100: next %q, %d reviewers", next, n)
+	srv := testServer(t, e)
+	var events []map[string]any
+	decodeBody(t, glabGET(t, srv, "gitlab.com", "users/1/events?per_page=100&after=2026-09-15"), &events)
+	var got []string
+	for _, event := range events {
+		iid := event["target_iid"]
+		if note, ok := event["note"].(map[string]any); ok {
+			iid = note["noteable_iid"]
+		}
+		got = append(got, fmt.Sprintf("%v %v !%v %v", event["project_id"], event["action_name"], iid, event["created_at"]))
 	}
-	if bad := glabGET(t, srv, "gitlab.com", "projects/grp%2Fr/merge_requests/1/reviewers?per_page=200"); bad.status != 404 || !lastInvocation(t, e).Unhandled {
-		t.Fatalf("per_page=200 = %d, want unhandled", bad.status)
+	if want := "12 commented on !1 2026-10-08T00:00:00Z|11 approved !1 2026-10-07T00:00:00Z|11 commented on !1 2026-10-05T00:00:00Z"; strings.Join(got, "|") != want {
+		t.Fatalf("events = %s\nwant     %s", strings.Join(got, "|"), want)
+	}
+	paged := glabGET(t, srv, "gitlab.com", "users/1/events?per_page=2")
+	var first []map[string]any
+	decodeBody(t, paged, &first)
+	if len(first) != 2 || paged.header.Get("X-Next-Page") != "2" {
+		t.Fatalf("first page = %d events, next %q", len(first), paged.header.Get("X-Next-Page"))
+	}
+	if other := glabGET(t, srv, "gitlab.com", "users/2/events?per_page=100"); other.status != 404 || lastInvocation(t, e).Unhandled {
+		t.Errorf("another user = %d, want a handled 404", other.status)
+	}
+	if bad := glabGET(t, srv, "gitlab.com", "users/1/events?action=commented"); bad.status != 404 || !lastInvocation(t, e).Unhandled {
+		t.Errorf("an unimplemented filter = %d, want unhandled", bad.status)
+	}
+}
+
+// A GitLab project's approval rules answer its seeded rules and
+// revalidate with their ETag.
+func TestGitLabApprovalRulesAnswerTheProjectsRules(t *testing.T) {
+	t.Parallel()
+	e := New(Options{APIToken: testAPIToken})
+	if _, err := seedJSON(e, `{"repos": [{"forge": "gitlab", "project": "grp/r", "merge": {"approvalRules": [1, 2]}}, {"forge": "gitlab", "project": "grp/none"}]}`); err != nil {
+		t.Fatal(err)
+	}
+	srv := testServer(t, e)
+	answer := glabGET(t, srv, "gitlab.com", "projects/grp%2Fr/approval_rules?per_page=100")
+	var rules []map[string]any
+	decodeBody(t, answer, &rules)
+	if len(rules) != 2 || rules[0]["approvals_required"] != float64(1) || rules[1]["approvals_required"] != float64(2) || answer.header.Get("ETag") == "" {
+		t.Fatalf("rules = %v, ETag %q", rules, answer.header.Get("ETag"))
+	}
+	again := httpRequest(t, srv, "GET", "gitlab.com", "/gitlab/api/v4/projects/grp%2Fr/approval_rules?per_page=100", "", http.Header{"Private-Token": {testAPIToken}, "If-None-Match": {answer.header.Get("ETag")}})
+	if again.status != 304 {
+		t.Fatalf("revalidation = %d", again.status)
+	}
+	var none []map[string]any
+	decodeBody(t, glabGET(t, srv, "gitlab.com", "projects/grp%2Fnone/approval_rules"), &none)
+	if len(none) != 0 {
+		t.Fatalf("a project without rules = %v", none)
+	}
+	if missing := glabGET(t, srv, "gitlab.com", "projects/grp%2Fmissing/approval_rules"); missing.status != 404 || lastInvocation(t, e).Unhandled {
+		t.Fatalf("unknown project = %d", missing.status)
+	}
+	if _, err := seedJSON(New(Options{}), `{"repos": [{"forge": "github", "project": "a/b", "merge": {"approvalRules": [1]}}]}`); err == nil {
+		t.Error("a GitHub repository seeded GitLab approval rules")
 	}
 }

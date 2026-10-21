@@ -1736,6 +1736,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: codexDeveloperInstructionsMigrationVersion, Name: "codex_developer_instructions", SQL: codexDeveloperInstructionsV143SQL},
 	{Version: pullRequestsPageMigrationVersion, Name: "pull_requests_page", SQL: pullRequestsPageV144SQL, Rebuild: true},
 	{Version: reviewClaimRowsMigrationVersion, Name: "review_claim_rows", SQL: reviewClaimRowsV145SQL},
+	{Version: prListSnapshotMigrationVersion, Name: "pr_list_snapshot", SQL: prListSnapshotV146SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

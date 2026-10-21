@@ -39,7 +39,9 @@ export interface MigrationException {
   reason: string;
 }
 
-export const migrationExceptions: MigrationException[] = [];
+export const migrationExceptions: MigrationException[] = [
+  { version: 146, table: 'pr_views', dropped: true, reason: 'the Pull requests page no longer records which PRs the app opened; attention comes from the forge' },
+];
 
 /**
  * Tables the old-row comparison skips, with the reason. Row counts are
@@ -188,7 +190,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'proposed_plan_comments', reason: 'review comments on a proposed plan' },
   { table: 'thread_drafts', columns: ['pending_plan_implementation'], values: { has_content: [0] }, reason: 'a draft seeded from an accepted plan, and an empty draft that only holds attachments' },
   { table: 'diff_review_comments', reason: 'review comments on a pull request diff through the forge' },
-  { table: 'pr_views', reason: 'the Pull requests page marks a PR viewed when it opens one; the top-up opens no forge pull request' },
+  { table: 'pr_list_projects', reason: "the Pull requests list's stored copy of a forge project's read; the top-up's one forge-origin project names a repository the fake forge does not have, so its read fails and nothing is stored" },
   { table: 'thread_pull_requests', reason: "an open pull request a forge reports for a thread's linked worktree; the top-up seeds no forge pull request" },
   { table: 'chat_bar_favorites', values: { kind: ['discussion'], provider: ['codex', 'claude-tui'] }, reason: 'favorites of other kinds and providers; one favorite proves the table' },
   { table: 'chat_model_profiles', values: { provider: ['claude-tui'], reasoning_effort: ['none', 'minimal', 'low', 'high', 'xhigh'], runtime_mode: ['read-only', 'approval-required', 'auto-accept-edits'] }, reason: 'one remembered profile per provider and model holds the settings used last; the claude-tui provider has no mock' },

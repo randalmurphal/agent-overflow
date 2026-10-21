@@ -40,7 +40,7 @@ var refusalStatuses = map[int]bool{
 func (e *Engine) SetRefusal(refusal Refusal) error {
 	graphQL, known := refusableRoute(refusal.Route)
 	if !known {
-		return fmt.Errorf("forge refusal: no route %q (a REST route name from routes.go or \"gh graphql <operation>\")", refusal.Route)
+		return fmt.Errorf("forge refusal: no route %q (a REST route name from routes.go, \"gh graphql <operation>\" or \"glab graphql <operation>\")", refusal.Route)
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -84,6 +84,9 @@ func (e *Engine) SetRefusal(refusal Refusal) error {
 func refusableRoute(route string) (graphQL, known bool) {
 	if op, ok := strings.CutPrefix(route, "gh graphql "); ok {
 		return true, slices.ContainsFunc(githubGraphQL, func(o graphQLOp) bool { return o.name == op })
+	}
+	if op, ok := strings.CutPrefix(route, "glab graphql "); ok {
+		return true, slices.ContainsFunc(gitlabGraphQL, func(o graphQLOp) bool { return o.name == op })
 	}
 	for _, routes := range [][]apiRoute{githubAPI, gitlabAPI} {
 		if slices.ContainsFunc(routes, func(r apiRoute) bool { return r.name == route }) {

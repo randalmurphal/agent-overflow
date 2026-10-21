@@ -27,7 +27,8 @@ own loopback listener and hands its base URL and fixed token to the boot
 [forge transport](../../../docs/architecture/forge-transport.md#isolation)).
 `ServeHTTP` maps a REST request onto the `api` route it stands for
 (`http.go`) and a GraphQL request onto the operation its `operationName`
-names (`github_graphql.go`), and answers from the same fixture. Offline
+names (`github_graphql.go`; GitLab's in `gitlab_lists.go`), and answers
+from the same fixture. Offline
 drops the listener's open connections and records each request that
 arrives as route `offline`, dropping it without a reply.
 
@@ -42,7 +43,7 @@ inspection go through the harness wire with no fixture files.
   `detail` (HTTP), recorded with `unhandled: true`. So is a GraphQL
   request for an operation the fake does not implement, or whose
   document declares, or whose request supplies, other variables than the
-  operation's entry in `githubGraphQL`. An HTTP request with a token
+  operation's entry in `githubGraphQL` or `gitlabGraphQL`. An HTTP request with a token
   other than the fixed one is an unhandled 401; one with no token at all
   (the boot's dev-server scan probing its own listeners) is a 401 that is
   not recorded. Specs assert none occurred
@@ -67,13 +68,14 @@ inspection go through the harness wire with no fixture files.
   `times` requests or until cleared (status 0): 401, 403, 405, 409 or
   422 on any route, or 200 with an `errors` body on a GraphQL operation,
   which is how GitHub refuses a mutation. The route is a REST route's
-  name (`glab api approve`) or `gh graphql <operation>`. It is answered
+  name (`glab api approve`), `gh graphql <operation>` or
+  `glab graphql <operation>`. It is answered
   after the route matched and before its handler runs, so nothing
   changes, and is recorded under the route. A 401 on a mutation is
   retried once after the transport's token refresh and then probed with
   `GET user`, so drive one with `times` 0.
-- `routes.go` is the whole CLI and REST route table, `githubGraphQL` the
-  whole GraphQL one. A route's flag list is closed; a REST route's flags
+- `routes.go` is the whole CLI and REST route table, `githubGraphQL` and
+  `gitlabGraphQL` the whole GraphQL ones. A route's flag list is closed; a REST route's flags
   are the request properties `httpCall` synthesizes (`hostname`,
   `method`).
 - A handler answers status and headers through its response (`status`,
@@ -118,7 +120,8 @@ status and CI make, the thread resolve toggle and the Create PR/MR
 dialog. Every row but the CLI ones is served over HTTP only: GitHub REST at `/github/rest/E`, GraphQL at
 `/github/graphql` (a POST of `{"query", "operationName", "variables"}`),
 an attachment URL at `/github/absolute/<host>/<path>`, GitLab REST at
-`/gitlab/api/v4/E`. The request's Host header is the invocation's
+`/gitlab/api/v4/E`, GitLab GraphQL at `/gitlab/api/graphql` (recorded as
+`glab graphql <operation>`). The request's Host header is the invocation's
 recorded `host` (an attachment's is the host in its path); a GraphQL
 invocation also records its `operation` and `variables`. P is the
 project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
@@ -140,7 +143,7 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitHub | `POST repos/O/R/pulls/N/reviews` with `{event, body?, commit_id?}` (`gh api pull reviews`) | Approve and the send strip's verdict without line comments: the viewer's review, a timeline item; the author's approval is GitHub's 422 |
 | GitHub | `DELETE repos/O/R/git/refs/heads/B` (`gh api delete branch`) | the head branch delete after a merge: 204, then 422 "Reference does not exist" |
 | GitHub | GraphQL `SetThreadResolved(threadID, resolved)` | SetThreadResolved (flips the seeded thread) |
-| GitHub | GraphQL `PullsSearch(query, after)` | project PR list: `search` over `is:pr is:open repo:O/R` (any other query is unhandled), the repository's open pulls newest first in pages of 100, beside the viewer, each with its last 10 `comments` and submitted `reviews`; a repository not on the host answers GitHub's search refusal (null `search` beside an error) |
+| GitHub | GraphQL `PullsSearch(query, after)` | project PR list: `search` over `is:pr is:open repo:O/R` (any other query is unhandled), the repository's open pulls newest first in pages of 100, beside the viewer, each with its last 10 `comments` and submitted `reviews`, its opinionated reviews (state, `viewerDidAuthor`), the first 100 review threads' `isResolved`, and the base's `refUpdateRule` (its `requiredApprovingReviewCount` alone) and `rules` as PRTick answers them; a repository not on the host answers GitHub's search refusal (null `search` beside an error) |
 | GitHub | GraphQL `OpenPRsByHead(owner, name, head, after)` | open PR lookup (checkout origin): pages of 100 with each PR's node id and `isCrossRepository` (a pull with `headRepo`) |
 | GitHub | GraphQL `PRStates(ids)` | merged-PR cleanup: state and `mergedAt` of tracked PRs by node id; an unknown id is a `NOT_FOUND` error at its `nodes` index |
 | GitHub | GraphQL `MergedPRs(owner, name, first, after)` | merged heads (checkout origin), in fixture order |
@@ -151,12 +154,15 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitHub | `GET <attachment URL>` (`gh api attachment`) | forge attachments |
 | GitLab | `GET projects/P/merge_requests/N` (`glab api merge request`, conditional) | ReadPR, once per read: detail, head SHA for threads, head pipeline for CI, the merge fields with `detailed_merge_status` derived from the fixture |
 | GitLab | `GET projects/P/merge_requests/N/approvals` (`glab api approvals`) | ReadPR detail: approvals required and left, the viewer's standing |
-| GitLab | `GET projects/P/merge_requests/N/reviewers?[per_page=N][&page=N]` (`glab api reviewers`) | ReadPRSummary: each reviewer's review state (approved, requested_changes from `changeRequests`, else unreviewed); `X-Next-Page` while more pages exist |
+| GitLab | GraphQL `PullsReviewing`, `PullsAuthored(fullPath, viewer, after)` | project PR list: the open merge requests `viewer` reviews or authored, newest update first in pages of 100, each with its reviewers' `reviewState`, `approvedBy` and `headPipeline.status`; a project not on the host is a null `project` |
+| GitLab | GraphQL `PullsReviewingActivity`, `PullsAuthoredActivity(fullPath, viewer, after)` | project PR list: the same merge requests with resolvable and resolved discussion counts and the head commit's `committedDate` |
+| GitLab | `GET users/ID/events?per_page=N[&page=N][&after=YYYY-MM-DD]` (`glab api user events`) | project PR list: the viewer's (id 1) `commented on` notes on merge requests and `approved` events across the host's projects, newest first, created after the date; another id is a 404; `X-Next-Page` while more pages exist |
+| GitLab | `GET projects/P/approval_rules?[per_page=N]` (`glab api approval rules`, conditional) | project PR list: the required approvals, one `regular` rule per `merge.approvalRules` entry |
 | GitLab | `GET projects/P/merge_requests/N/discussions?per_page=N[&page=N]` (`glab api discussions`) | ReadPR threads and, from the system notes, events; `X-Next-Page` while more pages exist |
 | GitLab | `POST .../approve` with `{sha}`, `POST .../unapprove` (`glab api approve`, `glab api unapprove`) | Approve (409 on a moved head, 401 for a viewer GitLab takes no approval from) and Unapprove (404 with none), each with its system note |
 | GitLab | `PUT .../merge` with `{sha, squash, should_remove_source_branch, auto_merge, merge_when_pipeline_succeeds}` (`glab api merge`) | Merge now (405 while blocked, 401 without the role, 409 on a moved head) and Auto-merge (either key or both: arms a blocked merge request, with its system note) |
 | GitLab | `POST .../cancel_auto_merge`, `PUT .../rebase`, `PUT projects/P/merge_requests/N` with `{title}` | Cancel auto-merge (409 with none armed), Update branch (202, the head moves), Mark ready (the title loses its draft prefix) |
-| GitHub, GitLab | `GET user` (`gh api user`, `glab api user`) | the fixture's viewer: GitLab's detail read (once per host per 10 minutes), and the transport's probe after a 401 on a mutation on both forges |
+| GitHub, GitLab | `GET user` (`gh api user`, `glab api user`) | the fixture's viewer (GitLab's with account id 1): GitLab's detail and project list reads (once per host per 10 minutes), and the transport's probe after a 401 on a mutation on both forges |
 | GitLab | `GET projects/P/merge_requests?state=opened\|merged&...` (`glab api merge request list`, conditional) | open MR lookup, merged heads (checkout origin), project MR list; the full view, with `project_id` and `source_project_id` (a pull with `headRepo` answers its fork's id) and the list fields (author, reviewers, draft, times, `user_notes_count`, conflicts, blocking discussions, `detailed_merge_status`), no pipeline |
 | GitLab | `GET projects/P/merge_requests?iids[]=N...&state=all&per_page=100` (`glab api merge request list`) | merged-PR cleanup: state and `merged_at` of tracked MRs |
 | GitLab | `GET projects/P/pipelines?[per_page=N][&page=N][&ref=R][&status=S][&scope=tags\|branches]` (`glab api pipelines`) | pipelines list: every pipeline of the project, highest id first; a scope answers each tag's latest tag pipeline or each branch's latest branch pipeline (a branch may share a tag's name), then the ref and status filters apply; `X-Next-Page` while more pages exist |
@@ -212,7 +218,13 @@ bulk publish, discussion note POST, discussion resolve PUT and
   `reviewRequests`, GitLab `reviewers`); a GitHub review from one ends its
   request. `changeRequests` are the GitLab reviewers who requested
   changes (their reviewer state, and `detailed_merge_status`
-  `requested_changes`); an approval replaces the viewer's. `createdAt`,
+  `requested_changes`); an approval replaces the viewer's. A GitLab
+  reviewer's `reviewState` is `approved` while their approval stands,
+  `requested_changes` when in `changeRequests`, `reviewed` once they
+  commented (a thread comment or a note), else `unreviewed`; the
+  viewer's comments and approvals are also its events feed.
+  `merge.approvalRules` (GitLab only) are the project's approval rules'
+  `approvals_required`. `createdAt`,
   `updatedAt`, `committedAt` and `commits` feed the project list rows.
 - Generated ids start at 1,000,000 and stay unique across reseeds and
   resets.

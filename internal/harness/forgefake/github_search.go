@@ -23,7 +23,8 @@ const githubSearchNotVisible = "The listed users and repositories cannot be sear
 
 // ghPullsSearch answers search(type: ISSUE, query: "is:pr is:open
 // repo:O/R", first: 100, after:) with the repository's open pulls, newest
-// first, a page of 100 from after, beside the viewer.
+// first, a page of 100 from after, beside the viewer: each with its
+// opinions, first 100 review threads and the base's required approvals.
 func ghPullsSearch(e *Engine, c *call, v graphQLVars) response {
 	query, err1 := v.str("query")
 	offset, err2 := v.cursor("after")
@@ -63,7 +64,21 @@ func (e *Engine) githubSearchPull(r *Repo, p *Pull) map[string]any {
 	}
 	opinions := []map[string]any{}
 	for _, review := range githubOpinions(p) {
-		opinions = append(opinions, map[string]any{"viewerDidAuthor": strings.EqualFold(review.Author, e.viewer)})
+		opinions = append(opinions, map[string]any{"state": review.State, "viewerDidAuthor": strings.EqualFold(review.Author, e.viewer)})
+	}
+	threads := []map[string]any{}
+	for _, thread := range p.Threads {
+		threads = append(threads, map[string]any{"isResolved": thread.Resolved})
+	}
+	// The base's required approvals, in the list's selection of it.
+	var base any
+	if p.State == "open" {
+		ref := githubBaseRef(p)
+		var rule any
+		if full, ok := ref["refUpdateRule"].(map[string]any); ok {
+			rule = map[string]any{"requiredApprovingReviewCount": full["requiredApprovingReviewCount"]}
+		}
+		base = map[string]any{"refUpdateRule": rule, "rules": ref["rules"]}
 	}
 	var latest any
 	for _, review := range p.Reviews {
@@ -110,6 +125,8 @@ func (e *Engine) githubSearchPull(r *Repo, p *Pull) map[string]any {
 		"reviewRequests":           map[string]any{"nodes": requests},
 		"latestOpinionatedReviews": map[string]any{"nodes": opinions},
 		"viewerLatestReview":       latest,
+		"reviewThreads":            map[string]any{"nodes": threads[:min(len(threads), githubGraphQLPageSize)]},
+		"baseRef":                  base,
 		"commits": map[string]any{"totalCount": p.Commits, "nodes": []map[string]any{{"commit": map[string]any{
 			"committedDate": p.CommittedAt, "statusCheckRollup": rollup,
 		}}}},

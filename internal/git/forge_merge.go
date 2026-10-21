@@ -66,7 +66,7 @@ type MergeReadiness struct {
 	// Approvals counts the approvals that stand and the approvals the
 	// merge requires (0 when nothing is required). Unresolved counts the
 	// review threads not yet resolved when the read has every thread's
-	// state (PRReadParts.Unresolved asks for it); nil otherwise.
+	// state; nil otherwise.
 	Approvals  ApprovalCount `json:"approvals"`
 	Unresolved *int          `json:"unresolved,omitempty"`
 }

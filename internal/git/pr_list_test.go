@@ -3,8 +3,6 @@ package git
 import (
 	"errors"
 	"fmt"
-	"net/http"
-	"net/url"
 	"strings"
 	"testing"
 )
@@ -54,21 +52,35 @@ func TestGitHubListProjectPRsParsesTheSearch(t *testing.T) {
 		Comments: 4, Commits: 3, LastCommitAt: "2026-10-19T11:58:00Z",
 		ViewerIsAuthor: true, ReviewDecision: "REVIEW_REQUIRED", MergeStatus: "blocked", ChecksState: "success",
 	}
+	// The base requires the larger of its protection's and its rulesets'
+	// approvals; one of two threads is open.
+	if own.ApprovalsGiven == nil || *own.ApprovalsGiven != 1 || own.ApprovalsRequired == nil || *own.ApprovalsRequired != 2 ||
+		own.Unresolved == nil || *own.Unresolved != 1 || own.PipelineStatus != CIStatusSuccess {
+		t.Errorf("own detail = given %v required %v unresolved %v ci %q", own.ApprovalsGiven, own.ApprovalsRequired, own.Unresolved, own.PipelineStatus)
+	}
+	own.ApprovalsGiven, own.ApprovalsRequired, own.Unresolved, own.PipelineStatus = nil, nil, nil, ""
 	if own != want {
 		t.Errorf("own draft = %+v\nwant       %+v", own, want)
 	}
-	// Comments by others (and a deleted account) are not the author's.
+	// Comments by others (and a deleted account) are not the author's. A
+	// review requested from the viewer is its turn; a base without
+	// protection requires no approval.
 	if !fork.CrossRepository || !fork.ReviewRequested || !fork.ViewerIsReviewer || fork.ViewerIsAuthor ||
 		!fork.Conflicts || fork.MergeStatus != "dirty" || fork.ChecksState != "failure" || fork.ReviewDecision != "" ||
-		fork.Author != (PRListAuthor{Login: "carol"}) || fork.ViewerReview != (PRListReview{}) || fork.AuthorActivityAt != "" {
+		fork.Author != (PRListAuthor{Login: "carol"}) || fork.ViewerReview != (PRListReview{}) || fork.AuthorActivityAt != "" ||
+		fork.ViewerReviewState != "unreviewed" || fork.PipelineStatus != CIStatusFailed ||
+		*fork.ApprovalsGiven != 1 || *fork.ApprovalsRequired != 0 || *fork.Unresolved != 0 {
 		t.Errorf("fork row = %+v", fork)
 	}
 	// The author's latest activity is their review thread reply, later than
 	// their conversation comment; the viewer's later comment and a pending
-	// review are not it.
+	// review are not it. Both of the author's replies follow the viewer's
+	// review, which is its activity and its standing change request.
 	if changes.ReviewRequested || !changes.ViewerIsReviewer || changes.ViewerReview != (PRListReview{State: "CHANGES_REQUESTED", SubmittedAt: "2026-10-01T10:00:00Z"}) ||
 		changes.ChecksState != "" || changes.Conflicts || changes.Commits != 7 || changes.BaseRefName != "release" ||
-		changes.AuthorActivityAt != "2026-10-01T12:30:00Z" {
+		changes.AuthorActivityAt != "2026-10-01T12:30:00Z" || changes.ViewerReviewState != "requested_changes" ||
+		changes.ViewerActivityAt != "2026-10-01T10:00:00Z" || changes.AuthorReplies != 2 || changes.PipelineStatus != "" ||
+		*changes.Unresolved != 2 || *changes.ApprovalsRequired != 0 || *changes.ApprovalsGiven != 0 {
 		t.Errorf("changes-requested row = %+v", changes)
 	}
 }
@@ -107,120 +119,6 @@ func TestGitHubListProjectPRsPagesTheSearch(t *testing.T) {
 	}
 	if after := calls.all()[1].Vars["after"]; after != "c1" {
 		t.Fatalf("second page after = %v, want the first page's endCursor", after)
-	}
-}
-
-// The recorded list answer parses into rows: the viewer's own draft, a
-// fork's merge request with the viewer among its reviewers, and one a
-// reviewer requested changes on.
-func TestGitLabListProjectPRsParsesTheList(t *testing.T) {
-	t.Parallel()
-	answer := readTestdata(t, "gitlab-mr-list.json")
-	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-		switch {
-		case call.Path == "user":
-			return forgeAPIAnswer{Body: `{"id":1,"username":"alice"}`}
-		case strings.HasPrefix(call.Path, "projects/grp%2Fsub%2Fapp/merge_requests?"):
-			return forgeAPIAnswer{Body: answer}
-		}
-		return forgeUnexpected(t, call)
-	})
-	rows, err := core.ListProjectPRs(t.Context(), gitlabTestRepo())
-	if err != nil {
-		t.Fatalf("ListProjectPRs: %v", err)
-	}
-	list := calls.all()[0]
-	query, _ := url.ParseQuery(strings.SplitN(list.Path, "?", 2)[1])
-	if query.Encode() != "order_by=updated_at&per_page=100&sort=desc&state=opened" {
-		t.Fatalf("list query = %s", query.Encode())
-	}
-	if len(rows) != 3 {
-		t.Fatalf("rows = %+v", rows)
-	}
-	own, fork, changes := rows[0], rows[1], rows[2]
-	want := PRListRow{
-		Ref: PRReference{Forge: "gitlab", Host: testForgeHost, Namespace: "grp/sub", Repo: "app", Number: 21},
-		URL: "https://gitlab.example/grp/sub/app/-/merge_requests/21", Title: "Draft: speed up builds", Draft: true,
-		Author:    PRListAuthor{Login: "alice", Name: "Alice Ng"},
-		CreatedAt: "2026-10-20T22:05:15.053Z", UpdatedAt: "2026-10-20T22:05:16.934Z",
-		HeadSHA: strings.Repeat("4", 40), HeadRefName: "alice/builds", BaseRefName: "main",
-		Comments: 1, ViewerIsAuthor: true, MergeStatus: "draft_status",
-	}
-	if own != want {
-		t.Errorf("own draft = %+v\nwant       %+v", own, want)
-	}
-	if !fork.CrossRepository || !fork.ViewerIsReviewer || !fork.ReviewRequested || fork.ViewerIsAuthor ||
-		!fork.Conflicts || !fork.UnresolvedBlocking || fork.ReviewDecision != "REVIEW_REQUIRED" || fork.Comments != 9 || fork.NodeID != "" {
-		t.Errorf("fork row = %+v", fork)
-	}
-	if changes.ViewerIsReviewer || changes.ReviewRequested || changes.ReviewDecision != "CHANGES_REQUESTED" || changes.UnresolvedBlocking || changes.CrossRepository {
-		t.Errorf("changes-requested row = %+v", changes)
-	}
-}
-
-// A login GitLab will not name fails the list read: every attention
-// state hangs on the viewer, so rows that read as nobody's would be
-// wrong, not empty. The refusal is cached, so the second read fails
-// without asking again.
-func TestGitLabListProjectPRsWithoutAViewerFails(t *testing.T) {
-	t.Parallel()
-	answer := readTestdata(t, "gitlab-mr-list.json")
-	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-		if call.Path == "user" {
-			return forgeAPIAnswer{Status: http.StatusForbidden, Body: `{"message":"403 Forbidden"}`}
-		}
-		return forgeAPIAnswer{Body: answer}
-	})
-	for i := range 2 {
-		rows, err := core.ListProjectPRs(t.Context(), gitlabTestRepo())
-		if err == nil || len(rows) != 0 {
-			t.Fatalf("read %d: ListProjectPRs = %d rows, %v; want the viewer failure", i, len(rows), err)
-		}
-	}
-	userReads := 0
-	for _, call := range calls.all() {
-		if call.Path == "user" {
-			userReads++
-		}
-	}
-	if userReads != 1 {
-		t.Fatalf("GET user was sent %d times; the refusal should be cached", userReads)
-	}
-}
-
-// The list follows X-Next-Page for full pages and stops at
-// prListMaxPages.
-func TestGitLabListProjectPRsPagesTheList(t *testing.T) {
-	t.Parallel()
-	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-		if call.Path == "user" {
-			return forgeAPIAnswer{Body: `{"username":"alice"}`}
-		}
-		query, _ := url.ParseQuery(strings.SplitN(call.Path, "?", 2)[1])
-		page := 1
-		if raw := query.Get("page"); raw != "" {
-			if _, err := fmt.Sscanf(raw, "%d", &page); err != nil {
-				t.Errorf("page %q: %v", raw, err)
-			}
-		}
-		mrs := make([]string, 100)
-		for i := range mrs {
-			mrs[i] = fmt.Sprintf(`{"iid":%d,"project_id":1,"source_project_id":1,"blocking_discussions_resolved":true}`, (page-1)*100+i+1)
-		}
-		return forgeAPIAnswer{Header: http.Header{"X-Next-Page": {fmt.Sprint(page + 1)}}, Body: "[" + strings.Join(mrs, ",") + "]"}
-	})
-	rows, err := core.ListProjectPRs(t.Context(), gitlabTestRepo())
-	if err != nil {
-		t.Fatalf("ListProjectPRs: %v", err)
-	}
-	lists := 0
-	for _, call := range calls.all() {
-		if call.Path != "user" {
-			lists++
-		}
-	}
-	if lists != prListMaxPages || len(rows) != prListMaxPages*100 {
-		t.Fatalf("list pages = %d, rows = %d", lists, len(rows))
 	}
 }
 

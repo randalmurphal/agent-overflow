@@ -75,9 +75,13 @@ func TestGitLabBaseFromGlabConfig(t *testing.T) {
 	if rest.String() != "https://ghe.example:8443/api/v3/" || gql.String() != "https://ghe.example:8443/api/graphql" {
 		t.Fatalf("GHE bases = %v %v", rest, gql)
 	}
-	rest, _, _ = s.defaultBase(ForgeGitLab, "gl.example:8443", SourceInfo{})
-	if rest.String() != "https://gl.example:8443/api/v4/" {
-		t.Fatalf("GitLab default base = %v", rest)
+	rest, gql, _ = s.defaultBase(ForgeGitLab, "gl.example:8443", SourceInfo{})
+	if rest.String() != "https://gl.example:8443/api/v4/" || gql.String() != "https://gl.example:8443/api/graphql" {
+		t.Fatalf("GitLab default bases = %v %v", rest, gql)
+	}
+	rest, gql, _ = s.defaultBase(ForgeGitLab, "gitlab.example", SourceInfo{APIProtocol: "http", APIHost: "API.Example:8080"})
+	if rest.String() != "http://api.example:8080/api/v4/" || gql.String() != "http://api.example:8080/api/graphql" {
+		t.Fatalf("GitLab api_host bases = %v %v", rest, gql)
 	}
 	if _, _, err := s.defaultBase(ForgeGitLab, "gl.example", SourceInfo{APIProtocol: "ftp"}); err == nil {
 		t.Fatal("an ftp api_protocol was accepted")

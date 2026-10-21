@@ -33,7 +33,7 @@ type Service struct { /* per-host clients, token sources, gates, caches */ }
 
 func New(opts Options) (*Service, error)        // misconfiguration is a construction error
 func (s *Service) GitHub(host string) *Client   // REST base + GraphQL URL for host
-func (s *Service) GitLab(host string) *Client   // REST base for host
+func (s *Service) GitLab(host string) *Client   // REST base + GraphQL URL for host
 func (s *Service) Close()                       // zero every token, close idle connections
 ```
 
@@ -108,7 +108,7 @@ Three kinds of forge method, two sources of the host:
 |---|---|---|
 | `github.com` | `https://api.github.com/` | `https://api.github.com/graphql` |
 | GitHub Enterprise `H` | `https://H/api/v3/` | `https://H/api/graphql` |
-| GitLab `H` | `api_protocol://api_host/api/v4/` from glab's per-host config, default `https://H/api/v4/` | none |
+| GitLab `H` | `api_protocol://api_host/api/v4/` from glab's per-host config, default `https://H/api/v4/` | `api_protocol://api_host/api/graphql`, default `https://H/api/graphql`; one quota pool with REST |
 
 Base URLs are resolved once per host and kept with the host's client.
 
@@ -186,7 +186,7 @@ func (Token) MarshalText() ([]byte, error)
 ## Reads per tick
 
 The PR pump reads a PR with one `Forge.ReadPR(ctx, ref, want, prev,
-stepsFor)` per tick. `want` (`git.PRReadParts{Detail, Threads, CI, Events, Unresolved}`) names
+stepsFor)` per tick. `want` (`git.PRReadParts{Detail, Threads, CI, Events}`) names
 the parts the caller needs and the read fetches nothing else: the pump
 asks for `Detail`, `Threads` and `Events` (the forge events the
 Conversation feed shows: approvals, merges, draft flips, auto-merge,
@@ -219,9 +219,9 @@ own operation from the page's `endCursor`: `PRThreadsPage` and
 after)` and `RollupContextsPage(commitID, number, after)` through `node(id:)`.
 `PRThreadStatesPage(owner, name, number, after)` continues the thread
 states only when readiness needs them (the base requires conversation
-resolution and the first page has no unresolved thread) or the read asks
-for `Unresolved` (the exact count `MergeReadiness.Unresolved` carries;
-without every page it is nil), and
+resolution and the first page has no unresolved thread);
+`MergeReadiness.Unresolved` is the exact count when the states fit one
+page and nil otherwise, and
 `PRTimelinePage(owner, name, number, before)` reads the timeline backwards
 from the tick's newest page. Each connection reads at most
 `githubReadMaxPages` (10) pages of 100. A
@@ -257,7 +257,7 @@ adds its approvals, the project's merge settings (`projects/P`, cached
 per login and project for 10 minutes, then revalidated through the ETag
 store: a `W/` ETag answered 304) and the viewer's login (`user`, cached
 per login and host for 10 minutes; the author may cancel an auto-merge, and a refused read
-is cached as an unknown viewer), `Threads`, `Events` and `Unresolved` its discussions
+is cached as an unknown viewer), `Threads` and `Events` its discussions
 (`per_page=100`, paged by `X-Next-Page`, positions normalized against
 `diff_refs.head_sha`; one read serves both, system notes are the events,
 and the merge request's `merged_at`/`closed_at` supply the merge and close
@@ -315,27 +315,66 @@ Pipelines tab a project's pipelines on any ref with one
 `ci_github.go`, `ci_gitlab.go`). The rows' fields, and which a forge
 leaves zero, are documented on `PRListRow` and `PipelineSummary`.
 
+`ListProjectPRs` returns every field the page shows, so no row is read
+on its own. Its requests run concurrently; only a failed list fails the
+read. Another failed request leaves its fields unknown (nil or empty) and
+comes back as a `*PRListDetailError` beside the rows, which the page shows
+as the project's `DetailError`.
+
 GitHub lists open PRs with one GraphQL `PullsSearch(query, after)`:
 `search(type: ISSUE, query: "is:pr is:open repo:O/R", first: 100)`
 beside `viewer { login }`. Each node selects its review state
 (`reviewDecision`, `reviewRequests(first: 20)`,
-`latestOpinionatedReviews(first: 100) { viewerDidAuthor }`,
-`viewerLatestReview`, since the login is not known before the answer),
-its merge state, `totalCommentsCount`, `commits(last: 1)` with the
-head commit's time and rollup `state`, and `comments(last: 10)` and
-`reviews(last: 10)` with each author and time, from which the row takes
-the PR author's latest reply (`AuthorActivityAt`; a review thread reply
-is a review of its own). Each of those connections costs one point per
-page of 100 PRs. GitLab lists
-`projects/P/merge_requests?state=opened&order_by=updated_at&sort=desc&per_page=100`,
-whose basic view carries no pipeline; the viewer is the login's cached
-username, as the detail read uses it. Both read at most `prListMaxPages`
-(10) pages of 100: GitHub search answers at most 1000 results, and
-GitLab's list stops at the 1000 most recently updated.
+`latestOpinionatedReviews(first: 100) { state viewerDidAuthor }`, whose
+`APPROVED` count is the approvals given, `viewerLatestReview`, since the
+login is not known before the answer), the approvals required
+(`baseRef { refUpdateRule rules(first: 100) }`, as the detail read
+derives them), `reviewThreads(first: 100) { isResolved }` (unresolved, of
+the first 100), its merge state, `totalCommentsCount`, `commits(last: 1)`
+with the head commit's time and rollup `state` (the CI status), and
+`comments(last: 10)` and `reviews(last: 10)` with each author and time,
+from which the row takes the PR author's latest reply
+(`AuthorActivityAt`; a review thread reply is a review of its own) and
+the count of the author's replies after the viewer's latest review. The
+viewer's activity is `viewerLatestReview.submittedAt`.
+
+GitLab reads, per repository, the viewer first (`user`, cached per login
+and host for 10 minutes; a viewer that cannot be read fails the
+project), then concurrently:
+
+- `projects/P/merge_requests?state=opened&order_by=updated_at&sort=desc&per_page=100`,
+  the rows, whose basic view carries no pipeline.
+- GraphQL `PullsReviewing` and `PullsAuthored(fullPath, viewer, after)`:
+  the opened merge requests the viewer reviews or authored
+  (`reviewerUsername:` or `authorUsername:`, `sort: UPDATED_DESC`), each
+  with its reviewers' `mergeRequestInteraction.reviewState`,
+  `approvedBy` and `headPipeline.status`.
+- `PullsReviewingActivity` and `PullsAuthoredActivity`, the same filters
+  selecting `resolvableDiscussionsCount`, `resolvedDiscussionsCount` and
+  the head commit's `committedDate`. The approval fields and the
+  discussion and commit fields each cost seconds on a large project, so
+  they are separate concurrent requests; `approvalsRequired` and
+  `approvalsLeft` are never selected, since they cost more than both.
+- `projects/P/approval_rules?per_page=100`: the required approvals, the
+  sum of `approvals_required`, cached per login and project for 10
+  minutes and revalidated through the ETag store; a 404 (no rules on the
+  tier) requires none.
+- `users/ID/events?per_page=100&after=<30 days ago>`, at most
+  `gitlabActivityMaxPages` (3) pages: the viewer's latest
+  `commented on` (a `MergeRequest` note) or `approved` event per project
+  and merge request is the row's viewer activity. It is read once per
+  host per round (`git.WithPRListRound`, one per tick or prefetch): the
+  round's concurrent project reads share it and a later round replaces
+  it.
+
+A merge request neither filter returns carries no review detail. Both
+forges read at most `prListMaxPages` (10) pages of 100 per connection:
+GitHub search answers at most 1000 results, and GitLab's list stops at
+the 1000 most recently updated.
 
 | Read | GitHub | GitLab |
 |---|---|---|
-| Open PRs of a project | 1 `PullsSearch` per 100 PRs | 1 merge request list page per 100 MRs; + 1 `user` per login and host per 10 minutes |
+| Open PRs of a project | 1 `PullsSearch` per 100 PRs | 1 merge request list page per 100 MRs + 4 GraphQL reads, each 1 page per 100 MRs it returns + 1 `approval_rules` per login and project per 10 minutes (then a 304) + 1 to 3 `users/ID/events` per host per round; + 1 `user` per login and host per 10 minutes |
 | Pipelines of a project (`ListPipelines`, at most `Limit` rows, 100 when unset or larger) | 1 `GET repos/O/R/actions/runs?per_page=N[&branch=][&status=]` | 1 `GET projects/P/pipelines?per_page=N[&ref=][&status=]`; + `GET projects/P/pipelines?per_page=100&scope=tags[&ref=]` pages, at most `gitlabTagScopeMaxPages` (10): 1 for a ref, 1 or 2 without a status filter, none for a merge request ref or an empty list; + 1 `GET projects/P/pipelines/ID` per row on a tag's ref name whose id the tag scope does not hold, once per pipeline while the repository's listings hold it and shared by concurrent listings, 4 at a time per listing |
 | One pipeline (`ReadPipeline`) | 1 `GET repos/O/R/actions/runs/ID` + 1 jobs page per 100 jobs, at most `githubReadMaxPages` | 1 `GET projects/P/pipelines/ID` + 1 jobs page per 100 jobs, at most `gitlabCIJobsMaxPages` |
 | Stages of 30 unchanged rows (`ReadPipelineStages`) | 30 runs + 30 jobs pages, each a 304 | 30 pipelines + 30 jobs pages, each a 200 with its body |
@@ -384,22 +423,28 @@ span many runs, so `ReadPR` leaves its `ID` empty.
 
 `SubscribePRList` (`internal/app/app_pr_list.go`) starts or joins the one
 list pump of a backend; its handle calls (`SetPRListActive`,
-`SetPRListFocus`, `RefreshPRList`, `UnsubscribePRList`) route home and
-the caller pins them to the computer whose subscribe answered, as the
-PR pump's. The pump shares the PR pump's core (`app_pump_core.go`):
-refcounted handles bound to their connections, paused while every handle
-is hidden, frames stamped from the shared PR update sequence. The
-subscribe waits for the first tick, which is the user's action and so
-interactive, as a refresh is; later ticks run at the PR update interval.
+`RefreshPRList`, `UnsubscribePRList`) route home and the caller pins
+them to the computer whose subscribe answered, as the PR pump's. The pump
+shares the PR pump's core (`app_pump_core.go`): refcounted handles bound
+to their connections, paused while every handle is hidden, frames stamped
+from the shared PR update sequence. The subscribe answers at once: with
+the pump's last frame when one runs, else with the snapshot assembled
+from the store (`pr_list_projects`, one row per repository holding its
+`ProjectPRList`) for the current forge projects, `Stale` while a
+project's stored read is missing or older than the PR update interval.
+Its first tick is the user's action and so interactive, as a refresh is;
+later ticks run at the PR update interval.
 
 A tick (`app_pr_list_tick.go`) reads the backend's forge projects
 (`ListForgeProjects`: the non-archived projects whose origin names a
 forge repository, and those whose origin git could not read, with that
-failure as their `Error`), lists each repository once however many projects
-clone it, at most `prListReadConcurrency` (4) at a time, then reads the
-summary detail of the rows the subscribers focus, joins the user's
-`pr_views` and emits `pulls:updated` when the snapshot changed. A
-project's failed list keeps the rows read before beside its error
+failure as their `Error`) and lists each repository once however many
+projects clone it, at most `prListReadConcurrency` (4) at a time. Each
+repository's read, as it lands, is stored with its `ReadAt` and the
+whole snapshot published (`pulls:updated` when it changed), so one slow
+project holds no other back. The first tick of a pump seeds it from the
+store; frames are `Stale` until that tick's reads landed. A project's
+failed list keeps the rows read before beside its error
 (`ProjectPRList.Error`, the caller-safe sentence, and `ErrorDetails`, the
 correlation id the server log holds the raw error under with that
 error's chain, fixed while the same failure repeats), a
@@ -407,47 +452,24 @@ first transient failure with rows on screen is held back once, a
 rate-limited repository is skipped by background ticks until its
 release, a project whose origin cannot be read keeps the repository and
 rows the last tick read beside that error, and a removed project takes
-its rows along. Each row's
-attention state and group come from `prAttention`
-(`app_pr_attention.go`); `NeedsYou`, the sidebar badge, counts each PR
-once.
+its rows along, from the pump and the store. Each row's attention state,
+group and reason come from `prAttention` (`app_pr_attention.go`), a pure
+function of the row; `NeedsYou`, the sidebar badge, counts each PR once.
+The last unsubscribe stops the pump and drops what it held.
 
-`SetPRListFocus` names at most `maxPRListFocus` (60) PR keys per handle:
-the rows on screen. The tick reads the detail of the rows a visible
-handle focuses and then of the user's own and reviewed rows
-(`ViewerIsAuthor`, `ViewerIsReviewer`), whose attention state needs it
-whether or not a filter shows them, at most `maxPRListFocus` in all:
-each group newest update time first, then by PR key, so unchanged rows
-keep the same set every tick. A row that falls out of the set loses its
-detail. A focusing handle that hides or shows recomputes the set at
-once (`SetPRListActive`), as does one that leaves. The reads a focus
-change or a show starts are the user's and interactive; those a hide or
-a leave starts are background, since they read rows no user action
-asked for. A pending user wake keeps its admission: it is recorded with
-the focus or visibility change, and the loop reads the pause and takes
-the admission in the critical section that selects the rows, so a show
-that lands while the loop holds a wake from the pause still reads as the
-user's. A background read refused at the reserve is not a read: focusing
-that row wakes the loop like an unread one, and the next interactive
-pass reads it again. A row's detail is
-`Core.ReadPRSummary`: `ReadPR` with `Detail` and `Unresolved`, which adds
-the approval count and the unresolved thread count to the readiness. It
-is read when the row is first a candidate, when its list row changes
-(update time, head, comments, checks, merge status, draft, review
-decision), on a refresh, and otherwise once `prListDetailMaxAge` (5
-minutes) old. Reading
-60 GitHub details every interval would spend the 5000 points an hour
-GitHub's GraphQL allows; the age bound is what a GitLab pipeline that
-finished needs, since that moves no list field.
-
-`MarkPRViewed` records an opening in `pr_views` with the comment and
-commit counts of the pump's latest row, and the pump republishes so the
-row's `Seen` and `Since` follow at once.
+The boot prefetch (`app_pr_list_store.go`) runs once after
+`awaitFirstReadsSettled`: one background read of every forge project
+with no pump, storing each landed read, pruning repositories no project
+names, and holding nothing after. It reads nothing when the store's
+newest read is younger than the PR update interval or a list pump runs.
+`GetPRListNeedsYou` answers the badge from the store, and every store
+write (a pump publish, a prefetch read) emits `pulls:badge`
+`{needsYou}`, so the badge is right before the page opens.
 
 | Tick | GitHub | GitLab |
 |---|---|---|
-| Lists | 1 `PullsSearch` per repository per 100 PRs | 1 merge request list page per repository per 100 MRs |
-| A focused row's detail, when due | 1 `PRTick` (detail and checks), + 1 `PRThreadStatesPage` per 100 threads past 100 | 1 merge request + 1 approvals + 1 reviewers page per 100 reviewers until the viewer's (the viewer's own review state) + 1 discussions page per 100 discussions |
+| Per repository | 1 `PullsSearch` per 100 PRs | the project list read above |
+| Per host | none | 1 to 3 viewer events pages |
 
 ### The pipeline pump and stage reads
 
@@ -583,9 +605,10 @@ func (c *Client) CredentialFingerprint(ctx context.Context) (string, error) // s
   GitLab requests add `Accept: application/json`.
 - Transport: one `http.Transport` per `Service` with
   `ProxyFromEnvironment`, system roots, `ForceAttemptHTTP2`,
-  `MaxConnsPerHost: 4`, `MaxIdleConnsPerHost: 4`, `IdleConnTimeout: 90s`,
+  `MaxConnsPerHost: 8`, `MaxIdleConnsPerHost: 8`, `IdleConnTimeout: 90s`,
   `ResponseHeaderTimeout: 30s`, dial timeout 10s. No `http.Client.Timeout`;
-  deadlines come from `ctx` and `Request.Timeout`. A per-host semaphore of 4
+  deadlines come from `ctx` and `Request.Timeout`. A per-host semaphore of 8
+  (`hostConcurrency`, enough for one project's list read beside another's)
   bounds concurrency so a burst of panes cannot open more sockets.
 
 ## Errors
@@ -738,7 +761,8 @@ method's rate-limited failure (`forge_rate_limited`) carries the same
   project path), served from its own loopback listener owned by the
   harness, separate from the control server. `Options.Isolated{BaseURL,
   Token}` points every host's REST base at `BaseURL/github/rest/` or
-  `BaseURL/gitlab/api/v4/` and GraphQL at `BaseURL/github/graphql`, sets
+  `BaseURL/gitlab/api/v4/` and GraphQL at `BaseURL/github/graphql` or
+  `BaseURL/gitlab/api/graphql`, sets
   the fixed token, and sends the forge host (port included) as the `Host`
   header, which the fake compares with the seeded repository's host and
   records on the invocation. The fake refuses any other bearer and does not
@@ -746,7 +770,8 @@ method's rate-limited failure (`forge_rate_limited`) carries the same
   every listener it owns). REST route names (`gh api job logs`, `glab api job trace`,
   ...) are unchanged so specs keep asserting them; a GitHub GraphQL request
   is dispatched on its `operationName` and recorded under
-  `gh graphql <operation>` (`gh graphql PRTick`).
+  `gh graphql <operation>` (`gh graphql PRTick`), a GitLab one under
+  `glab graphql <operation>`.
 - The invocation record becomes a union:
   `{seq, route, unhandled, via: 'cli', cli, args, cwd, stdin, exitCode, stderr}`
   for the commands above and
