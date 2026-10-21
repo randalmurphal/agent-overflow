@@ -761,6 +761,20 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 	leadQueueItemID := members[0].item.ID
 	leadEnqueuedAt := members[0].item.EnqueuedAt
 
+	// The review drafts each member carries are claimed for the row's turn
+	// before anything reaches the provider, so two threads dispatching the
+	// same drafts cannot both deliver them (claimDiffReviewDelivery). Every
+	// path below that requeues the group hands them back (unclaim).
+	var claims diffReviewClaims
+	for _, member := range members {
+		claim, claimErr := a.claimDiffReviewDelivery(threadID, persistTurnIndex, member.resolved)
+		if claimErr != nil {
+			return nil, false, requeue, errors.Join(claimErr, claims.release(a))
+		}
+		claims = append(claims, claim)
+	}
+	unclaim := func(err error) error { return errors.Join(err, claims.release(a)) }
+
 	if eagerPersist {
 		// Emit queue_flushed so the frontend creates the Zone 2 entry
 		// (queued marker above the composer). Persist the row quietly —
@@ -769,7 +783,7 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 		// until the provider echo confirms it entered context.
 		if persistErr := a.triage.PersistAndRegisterPendingQuietFlushSendWithExpectation(
 			threadID, leadQueueItemID, userItem, responseTurnIndex, leadEnqueuedAt, sendExpect); persistErr != nil {
-			return nil, false, requeue, fmt.Errorf("eager persist flush: %w", persistErr)
+			return nil, false, requeue, unclaim(fmt.Errorf("eager persist flush: %w", persistErr))
 		}
 		a.publishFlushDispatch(threadID, group, flushedItems)
 		// One row, one cleanup obligation: the first member owns it.
@@ -798,7 +812,7 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 	if dispatchErr != nil {
 		if codex.IsAmbiguousSteerTimeout(dispatchErr) {
 			log.Printf("flush dispatch: thread=%s items=[%s]: codex steer timed out after write; leaving pending confirmation for provider echo", threadID, flushGroupIDs(group))
-			a.applyJoinedPlanAcceptance(threadID, userItem, members)
+			a.applyJoinedPlanAcceptance(threadID, userItem, members, claims)
 			return flushedItems, eagerPersist, nil, nil
 		}
 		// A turn IS running and simply cannot take input — Codex is running a
@@ -815,19 +829,19 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 			a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
 			log.Printf("flush dispatch: thread=%s items=[%s]: the active codex turn cannot take input (%v); leaving the message queued for the next turn boundary",
 				threadID, flushGroupIDs(group), dispatchErr)
-			return nil, eagerPersist, requeue, dispatchErr
+			return nil, eagerPersist, requeue, unclaim(dispatchErr)
 		}
 		if sess.Codex != nil && codex.IsNoActiveTurnRace(dispatchErr) {
 			a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
 			fallback, allocErr := a.resolveUserMessagePlacement(thread, messageFlushFallback)
 			if allocErr != nil {
-				return nil, eagerPersist, requeue, allocErr
+				return nil, eagerPersist, requeue, unclaim(allocErr)
 			}
 			responseTurnIndex = fallback.responseTurn
 			freshFlushItemID, allocErr := a.userMessageItemID(threadID, joined.sendID, responseTurnIndex, messageFlushFallback)
 			if allocErr != nil {
 				a.persistFlushDispatchError(threadID, responseTurnIndex, allocErr)
-				return nil, eagerPersist, requeue, allocErr
+				return nil, eagerPersist, requeue, unclaim(allocErr)
 			}
 			userItem.ID = freshFlushItemID
 			userItem.TurnIndex = responseTurnIndex
@@ -848,32 +862,37 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 					// coming. A requeue would double-send (round-14,
 					// D14-2) — leave the pending entry for the echo.
 					log.Printf("flush dispatch: thread=%s items=[%s]: codex turn/start timed out after write; leaving pending confirmation for provider echo", threadID, flushGroupIDs(group))
-					a.applyJoinedPlanAcceptance(threadID, userItem, members)
+					a.applyJoinedPlanAcceptance(threadID, userItem, members, claims)
 					return retargetFlushedItems(flushedItems, userItem.ID), eagerPersist, nil, nil
 				}
 				a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
 				a.persistFlushDispatchError(threadID, responseTurnIndex, sendErr)
-				return nil, eagerPersist, requeue, sendErr
+				return nil, eagerPersist, requeue, unclaim(sendErr)
 			}
-			a.applyJoinedPlanAcceptance(threadID, userItem, members)
+			a.applyJoinedPlanAcceptance(threadID, userItem, members, claims)
 			return retargetFlushedItems(flushedItems, userItem.ID), eagerPersist, nil, nil
 		}
 		a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
 		a.persistFlushDispatchError(threadID, persistTurnIndex, dispatchErr)
-		return nil, eagerPersist, requeue, dispatchErr
+		return nil, eagerPersist, requeue, unclaim(dispatchErr)
 	}
-	a.applyJoinedPlanAcceptance(threadID, userItem, members)
+	a.applyJoinedPlanAcceptance(threadID, userItem, members, claims)
 	return flushedItems, eagerPersist, nil, nil
 }
 
 // applyJoinedPlanAcceptance marks each member's plan / comment bookkeeping
 // against the single row the group became. The refs are per-message even when
 // the message is joined, so the marking loop is too; the joined row's meta
-// carries only the refs it renders (joinFlushMeta).
-func (a *App) applyJoinedPlanAcceptance(threadID string, userItem store.Item, members []flushMember) {
+// carries only the refs it renders (joinFlushMeta). The members' review
+// drafts, claimed before dispatch, follow the row to its turn.
+func (a *App) applyJoinedPlanAcceptance(threadID string, userItem store.Item, members []flushMember, claims diffReviewClaims) {
 	for _, member := range members {
 		a.applyProposedPlanAcceptance(threadID, userItem, member.resolved)
 	}
+	if err := claims.retarget(a, userItem.TurnIndex); err != nil {
+		log.Printf("flush dispatch: thread=%s: %v", threadID, err)
+	}
+	claims.announce(a)
 }
 
 // retargetFlushedItems re-points a group's acknowledgements at the row id a

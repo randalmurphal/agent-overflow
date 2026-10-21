@@ -265,8 +265,14 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		if err != nil {
 			return PRRead{}, err
 		}
+		viewer := f.viewerLogin(ctx, client, ref.Host)
 		out.Detail = gitlabPRDetail(mr, gitlabApprovalVerdicts(approvals))
-		gitlabFillMerge(&out.Detail, mr, approvals, settings, events, f.viewerLogin(ctx, client, ref.Host))
+		gitlabFillMerge(&out.Detail, mr, approvals, settings, events, viewer)
+		if want.ViewerReview {
+			if out.Detail.ViewerReviewState, err = readGitLabViewerReview(ctx, client, ref, viewer); err != nil {
+				return PRRead{}, err
+			}
+		}
 		if want.Unresolved {
 			unresolved := UnresolvedThreads(threads)
 			out.Detail.Readiness.Unresolved = &unresolved
@@ -279,6 +285,29 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		out.HasCI = true
 	}
 	return out, nil
+}
+
+// readGitLabViewerReview is the state of viewer's own review of ref, from
+// the merge request's reviewers (the list and the single merge request
+// carry the reviewers' accounts only), or "" when the viewer is not one
+// or is unknown.
+func readGitLabViewerReview(ctx context.Context, client *forgeapi.Client, ref PRReference, viewer string) (string, error) {
+	if viewer == "" {
+		return "", nil
+	}
+	var reviewers []struct {
+		User  gitlabAuthorRaw `json:"user"`
+		State string          `json:"state"`
+	}
+	if _, err := client.JSON(ctx, forgeapi.Request{Path: gitlabMRPath(ref) + "/reviewers"}, &reviewers); err != nil {
+		return "", err
+	}
+	for _, reviewer := range reviewers {
+		if strings.EqualFold(reviewer.User.Username, viewer) {
+			return reviewer.State, nil
+		}
+	}
+	return "", nil
 }
 
 // readGitLabMR reads the merge request itself. The single-MR endpoint is

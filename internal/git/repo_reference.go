@@ -53,15 +53,18 @@ func (r RepoReference) Validate() error {
 }
 
 // ErrOriginNotForge matches every *OriginUnknownError: the checkout's
-// origin remote is missing, unreadable, or does not name a repository on
-// a supported forge, so it has no forge repository.
+// origin remote is missing or does not name a repository on a supported
+// forge, so it has no forge repository. A checkout git could not read
+// fails with another error.
 var ErrOriginNotForge = errors.New("origin is not a known forge repository")
 
 // OriginRepository is the forge repository cwd's origin remote names,
 // from the origin identity forge detection caches (read again when none
 // is cached). A checkout whose origin names no repository on a
 // supported forge fails with an *OriginUnknownError, which matches
-// ErrOriginNotForge. The host is the remote's hostname, lowercase.
+// ErrOriginNotForge; one whose origin git failed to read (not a
+// repository, a git or I/O failure) fails with that cause, which does
+// not. The host is the remote's hostname, lowercase.
 func (c *Core) OriginRepository(ctx context.Context, cwd string) (RepoReference, error) {
 	if err := ctx.Err(); err != nil {
 		return RepoReference{}, err

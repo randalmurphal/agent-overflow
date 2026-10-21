@@ -3,6 +3,8 @@ package git
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -112,5 +114,23 @@ func TestOriginRepositoryRefusesACheckoutWithNoForgeOrigin(t *testing.T) {
 	cancel()
 	if _, err := NewCore().OriginRepository(ctx, noOrigin); !errors.Is(err, context.Canceled) {
 		t.Errorf("cancelled: OriginRepository = %v, want context.Canceled", err)
+	}
+}
+
+// A checkout git cannot read says nothing about its origin: the failure is
+// the cause, never ErrOriginNotForge.
+func TestOriginRepositoryReportsAnUnreadableCheckout(t *testing.T) {
+	t.Parallel()
+	broken := initGitRepo(t)
+	testutil.RunGit(t, broken, "remote", "add", "origin", "https://github.com/acme/widgets.git")
+	if err := os.WriteFile(filepath.Join(broken, ".git", "config"), []byte("[core\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for name, dir := range map[string]string{"bad config": broken, "not a repository": t.TempDir()} {
+		_, err := NewCore().OriginRepository(t.Context(), dir)
+		var unknown *OriginUnknownError
+		if err == nil || errors.Is(err, ErrOriginNotForge) || errors.As(err, &unknown) {
+			t.Errorf("%s: OriginRepository = %v, want git's failure, not ErrOriginNotForge", name, err)
+		}
 	}
 }

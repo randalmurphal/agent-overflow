@@ -127,6 +127,10 @@ type Pull struct {
 	// reviewRequests, GitLab reviewers). A GitHub review from one ends
 	// its request, as on GitHub; GitLab keeps its reviewers.
 	Reviewers []string `json:"reviewers,omitempty"`
+	// ChangeRequests are the GitLab reviewers (each one of Reviewers) whose
+	// review requested changes: their reviewer state is requested_changes
+	// and the merge request's detailed_merge_status is requested_changes.
+	ChangeRequests []string `json:"changeRequests,omitempty"`
 	// CreatedAt and UpdatedAt are RFC 3339; they default to
 	// 2026-01-01T00:00:00Z and to CreatedAt. CommittedAt is the head
 	// commit's time (GitHub committedDate), defaulting to CreatedAt, and
@@ -662,6 +666,17 @@ func (p *Pull) normalize(forge string, ids *idSource) error {
 		}
 		p.Reviews[i].SubmittedAt = defaultString(review.SubmittedAt, "2026-01-01T00:00:00Z")
 		p.Reviews[i].CommitSHA = defaultString(review.CommitSHA, p.HeadSHA)
+	}
+	for i, login := range p.ChangeRequests {
+		same := func(other string) bool { return strings.EqualFold(other, login) }
+		switch {
+		case forge != "gitlab":
+			return fmt.Errorf("changeRequests: GitLab only; a GitHub change request is a review")
+		case !slices.ContainsFunc(p.Reviewers, same):
+			return fmt.Errorf("changeRequests[%d]: %q is not one of the reviewers", i, login)
+		case slices.ContainsFunc(p.Reviews, func(r Review) bool { return same(r.Author) }):
+			return fmt.Errorf("changeRequests[%d]: %q also approved", i, login)
+		}
 	}
 	if p.CI != nil {
 		if err := p.CI.normalize(ids); err != nil {

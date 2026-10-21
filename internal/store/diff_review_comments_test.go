@@ -1,6 +1,9 @@
 package store
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestDiffReviewCommentsDraftLifecycle(t *testing.T) {
 	s := newTestStore(t)
@@ -228,5 +231,83 @@ func TestListDraftDiffReviewCommentsByIDRejectsStaleIDs(t *testing.T) {
 
 	if _, err := s.ListDraftDiffReviewCommentsByID(ThreadReviewOwner(thread.ID), string(DiffReviewScopeWorkspace), "diff-1", []string{created.ID, "missing"}); err == nil {
 		t.Fatal("ListDraftDiffReviewCommentsByID accepted a stale id")
+	}
+}
+
+// A claim settles exactly the text the message carries: an edit since
+// stays a draft, another turn's claim refuses the whole claim and marks
+// nothing, the same turn's is left as it is, and a release or retarget
+// moves only what the claim marked.
+func TestClaimDiffReviewCommentsSentSettlesTheTextTheMessageCarries(t *testing.T) {
+	s := newTestStore(t)
+	owner := PRReviewOwner("github:o/r:7")
+	scope, source := string(DiffReviewScopePR), "pr:github:o/r:7"
+	create := func(id, body string) {
+		t.Helper()
+		if _, err := s.CreateDiffReviewComment(DiffReviewComment{
+			ID: id, PRKey: owner.PRKey, Scope: scope, SourceKey: source, FilePath: "a.go", NewLine: 1, Side: "new", Body: body,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	status := func(id string) (string, string) {
+		t.Helper()
+		comment, err := s.GetDiffReviewComment(owner, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return comment.Status, comment.SentTurnID
+	}
+	create("a", "first")
+	create("b", "second")
+	create("c", "third")
+	snapshot := []DiffReviewCommentSnapshot{{ID: "a", Body: "first"}, {ID: "b", Body: "second"}, {ID: "gone", Body: "x"}}
+	if _, err := s.UpdateDiffReviewComment(owner, "b", DiffReviewCommentUpdate{Body: "second, edited"}, 50); err != nil {
+		t.Fatal(err)
+	}
+
+	claimed, err := s.ClaimDiffReviewCommentsSent(owner, scope, source, snapshot, 100, "x:1")
+	if err != nil || len(claimed) != 1 || claimed[0] != "a" {
+		t.Fatalf("claim = %v, %v; want [a]", claimed, err)
+	}
+	if st, turn := status("a"); st != "sent" || turn != "x:1" {
+		t.Fatalf("a = %s %s", st, turn)
+	}
+	if st, _ := status("b"); st != "draft" {
+		t.Fatalf("the edited b = %s, want it left a draft", st)
+	}
+	// The same turn again (a joined message naming a twice) is no conflict.
+	if again, err := s.ClaimDiffReviewCommentsSent(owner, scope, source, snapshot[:1], 100, "x:1"); err != nil || len(again) != 0 {
+		t.Fatalf("same turn = %v, %v", again, err)
+	}
+	// Another turn naming c and a: refused whole, c untouched.
+	other := []DiffReviewCommentSnapshot{{ID: "c", Body: "third"}, {ID: "a", Body: "first"}}
+	if got, err := s.ClaimDiffReviewCommentsSent(owner, scope, source, other, 200, "y:4"); !errors.Is(err, ErrDiffReviewCommentsSentElsewhere) || got != nil {
+		t.Fatalf("another turn = %v, %v; want ErrDiffReviewCommentsSentElsewhere", got, err)
+	}
+	if st, _ := status("c"); st != "draft" {
+		t.Fatalf("c = %s after a refused claim", st)
+	}
+
+	if err := s.RetargetDiffReviewCommentsSent(owner, scope, source, []string{"a", "b"}, "x:1", "x:2"); err != nil {
+		t.Fatal(err)
+	}
+	if st, turn := status("a"); st != "sent" || turn != "x:2" {
+		t.Fatalf("retargeted a = %s %s", st, turn)
+	}
+	if st, turn := status("b"); st != "draft" || turn != "" {
+		t.Fatalf("b moved with the retarget: %s %s", st, turn)
+	}
+	if err := s.ReleaseDiffReviewCommentsSent(owner, scope, source, []string{"a"}, "x:1"); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := status("a"); st != "sent" {
+		t.Fatal("a release naming a turn a is no longer in moved it")
+	}
+	if err := s.ReleaseDiffReviewCommentsSent(owner, scope, source, []string{"a"}, "x:2"); err != nil {
+		t.Fatal(err)
+	}
+	if comment, err := s.GetDiffReviewComment(owner, "a"); err != nil || comment.Status != "draft" || comment.SentAt != 0 || comment.SentTurnID != "" {
+		t.Fatalf("released a = %+v, %v", comment, err)
 	}
 }

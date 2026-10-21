@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -210,12 +211,19 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
+	// The review drafts are claimed before the row lands, as the send
+	// path does (claimDiffReviewDelivery).
+	claim, err := a.claimDiffReviewDelivery(threadID, turnIndex, resolved)
+	if err != nil {
+		return store.Item{}, fmt.Errorf("steer message: %w", err)
+	}
 	if err = a.triage.PersistItem(userItem, nil); err != nil {
-		return store.Item{}, fmt.Errorf("steer message: persist user message: %w", err)
+		return store.Item{}, errors.Join(fmt.Errorf("steer message: persist user message: %w", err), claim.release(a))
 	}
 	// Click-time plan/diff-review acceptance. Same sticky semantics as
 	// the send path — a downstream Steer failure does NOT revert.
 	a.applyProposedPlanAcceptance(threadID, userItem, resolved)
+	claim.announce(a)
 
 	// Register the pending-send marker BEFORE the steer RPC writes to
 	// stdin — the wire `item/completed userMessage` echo can otherwise

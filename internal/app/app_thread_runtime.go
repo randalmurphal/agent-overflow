@@ -91,7 +91,7 @@ func (p threadWorkspacePort) CreateWorktree(
 	ctx context.Context,
 	projectPath string,
 	cut threadapp.WorktreeCut,
-) (string, string, error) {
+) (threadapp.CutWorktree, error) {
 	if existing := strings.TrimSpace(cut.Branch); existing != "" && cut.Base == "" && !cut.BaseLocal {
 		exists, fetchErr, err := p.app.gitCore().BranchToCheckOut(ctx, projectPath, existing)
 		if fetchErr != nil {
@@ -99,23 +99,24 @@ func (p threadWorkspacePort) CreateWorktree(
 				projectPath, existing, fetchErr)
 		}
 		if err != nil {
-			return "", "", err
+			return threadapp.CutWorktree{}, err
 		}
 		if exists {
 			worktreePath, err := p.app.defaultWorktreePath(projectPath, existing)
 			if err != nil {
-				return "", "", err
+				return threadapp.CutWorktree{}, err
 			}
-			if err := p.app.gitCore().AttachWorktree(projectPath, worktreePath, existing); err != nil {
-				return "", "", err
+			created, err := p.app.gitCore().AttachWorktree(projectPath, worktreePath, existing)
+			if err != nil {
+				return threadapp.CutWorktree{}, err
 			}
-			return worktreePath, existing, nil
+			return threadapp.CutWorktree{Path: worktreePath, Branch: existing, CreatedBranch: created}, nil
 		}
 	}
 	resolvedBranch := p.app.resolveWorktreeBranch(cut.Branch)
 	worktreePath, err := p.app.defaultWorktreePath(projectPath, resolvedBranch)
 	if err != nil {
-		return "", "", err
+		return threadapp.CutWorktree{}, err
 	}
 	baseBranch := strings.TrimSpace(cut.Base)
 	if baseBranch == "" {
@@ -125,14 +126,27 @@ func (p threadWorkspacePort) CreateWorktree(
 		// The caller asked for this computer's head of the base, unpushed
 		// commits included, so origin is not consulted at all.
 		if err := p.app.gitCore().CreateWorktreeFromBranch(projectPath, worktreePath, baseBranch, resolvedBranch); err != nil {
-			return "", "", err
+			return threadapp.CutWorktree{}, err
 		}
-		return worktreePath, resolvedBranch, nil
+		return threadapp.CutWorktree{Path: worktreePath, Branch: resolvedBranch, CreatedBranch: true}, nil
 	}
 	if err := p.app.cutWorktreeFromFreshBase(ctx, projectPath, worktreePath, baseBranch, resolvedBranch); err != nil {
-		return "", "", err
+		return threadapp.CutWorktree{}, err
 	}
-	return worktreePath, resolvedBranch, nil
+	return threadapp.CutWorktree{Path: worktreePath, Branch: resolvedBranch, CreatedBranch: true}, nil
+}
+
+func (p threadWorkspacePort) RemoveCutWorktree(projectPath string, cut threadapp.CutWorktree) error {
+	core := p.app.gitCore()
+	if err := core.RemoveWorktreeForce(projectPath, cut.Path, true); err != nil {
+		return fmt.Errorf("remove worktree %s: %w", cut.Path, err)
+	}
+	if cut.CreatedBranch {
+		if err := core.DeleteBranch(projectPath, cut.Branch, true); err != nil {
+			return fmt.Errorf("delete branch %s: %w", cut.Branch, err)
+		}
+	}
+	return nil
 }
 
 type threadWorktreeSetupPort struct{ app *App }

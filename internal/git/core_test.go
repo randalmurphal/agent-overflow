@@ -291,8 +291,8 @@ func TestAttachWorktreeAttachesExistingBranch(t *testing.T) {
 	}
 
 	worktreePath := filepath.Join(t.TempDir(), "existing-wt")
-	if err := core.AttachWorktree(repo, worktreePath, "feature/existing"); err != nil {
-		t.Fatalf("AttachWorktree: %v", err)
+	if created, err := core.AttachWorktree(repo, worktreePath, "feature/existing"); err != nil || created {
+		t.Fatalf("AttachWorktree = created %v, %v; want the local branch used", created, err)
 	}
 
 	worktrees, err := core.ListWorktrees(repo)
@@ -318,7 +318,7 @@ func TestAttachWorktreeAttachesExistingBranch(t *testing.T) {
 func TestAttachWorktreeRequiresPath(t *testing.T) {
 	t.Parallel()
 	core := NewCore()
-	if err := core.AttachWorktree(t.TempDir(), "  ", "main"); err == nil ||
+	if _, err := core.AttachWorktree(t.TempDir(), "  ", "main"); err == nil ||
 		!strings.Contains(err.Error(), "path is required") {
 		t.Fatalf("expected path-required error, got %v", err)
 	}
@@ -327,7 +327,7 @@ func TestAttachWorktreeRequiresPath(t *testing.T) {
 func TestAttachWorktreeRequiresBranch(t *testing.T) {
 	t.Parallel()
 	core := NewCore()
-	if err := core.AttachWorktree(t.TempDir(), filepath.Join(t.TempDir(), "wt"), "  "); err == nil ||
+	if _, err := core.AttachWorktree(t.TempDir(), filepath.Join(t.TempDir(), "wt"), "  "); err == nil ||
 		!strings.Contains(err.Error(), "branch is required") {
 		t.Fatalf("expected branch-required error, got %v", err)
 	}
@@ -336,7 +336,7 @@ func TestAttachWorktreeRequiresBranch(t *testing.T) {
 func TestAttachWorktreeRejectsFlagShapedBranch(t *testing.T) {
 	t.Parallel()
 	core := NewCore()
-	err := core.AttachWorktree(t.TempDir(), filepath.Join(t.TempDir(), "wt"), "--orphan")
+	_, err := core.AttachWorktree(t.TempDir(), filepath.Join(t.TempDir(), "wt"), "--orphan")
 	if err == nil || !strings.Contains(err.Error(), "must not start with -") {
 		t.Fatalf("expected flag-shape rejection, got %v", err)
 	}
@@ -349,7 +349,7 @@ func TestAttachWorktreeRefusesBranchAlreadyCheckedOut(t *testing.T) {
 
 	// Default branch ("main") is already checked out in `repo`. Attaching a
 	// second worktree to the same branch should fail with git's invariant.
-	err := core.AttachWorktree(repo, filepath.Join(t.TempDir(), "wt"), "main")
+	_, err := core.AttachWorktree(repo, filepath.Join(t.TempDir(), "wt"), "main")
 	if err == nil {
 		t.Fatal("expected error attaching a branch already checked out")
 	}

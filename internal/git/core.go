@@ -439,17 +439,19 @@ func (c *Core) CreateWorktree(cwd, path, branch string) error {
 // AttachWorktree creates a new worktree at path pointing at an existing
 // branch, a local one or one only origin has. Fails if the branch already
 // has a worktree (git's own invariant — one branch checked out in one
-// place at a time).
-func (c *Core) AttachWorktree(cwd, path, branch string) error {
+// place at a time). createdBranch reports that the branch was origin's
+// alone and this call made the local branch, which a caller undoing the
+// attach deletes with the worktree.
+func (c *Core) AttachWorktree(cwd, path, branch string) (createdBranch bool, err error) {
 	if strings.TrimSpace(path) == "" {
-		return errors.New("git worktree path is required")
+		return false, errors.New("git worktree path is required")
 	}
 	branch = strings.TrimSpace(branch)
 	if branch == "" {
-		return errors.New("git worktree branch is required")
+		return false, errors.New("git worktree branch is required")
 	}
 	if err := validateBranchName(branch); err != nil {
-		return err
+		return false, err
 	}
 	args := []string{"worktree", "add", "--", path, branch}
 	// A branch only origin has is checked out as a new local branch tracking
@@ -457,10 +459,11 @@ func (c *Core) AttachWorktree(cwd, path, branch string) error {
 	// to have the name, and a fork's second remote often does too.
 	local, err := c.branchExistsChecked(cwd, branch)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if remoteRef, ok := c.originTrackingRef(cwd, branch); !local && ok {
 		args = []string{"worktree", "add", "--track", "-b", branch, "--", path, remoteRef}
+		createdBranch = true
 	}
 	_, stderr, err := c.Execute(cwd, args...)
 	if err != nil {
@@ -468,9 +471,9 @@ func (c *Core) AttachWorktree(cwd, path, branch string) error {
 		if message == "" {
 			message = err.Error()
 		}
-		return fmt.Errorf("git worktree add failed: %s", message)
+		return false, fmt.Errorf("git worktree add failed: %s", message)
 	}
-	return nil
+	return createdBranch, nil
 }
 
 // CreateWorktreeFromBranch creates a new worktree backed by newBranch from an

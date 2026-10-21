@@ -2779,7 +2779,7 @@ export function ListDiscussionsForThread(threadID: string): $CancellablePromise<
  * ListForgeProjects lists this backend's projects (the non-archived ones
  * the sidebar shows) whose origin is a known forge repository, in the
  * sidebar's name order. A project with another origin, or none, is
- * omitted.
+ * omitted; one whose origin could not be read is listed with its Error.
  */
 export function ListForgeProjects(): $CancellablePromise<app$0.ForgeProject[]> {
     return $Call.ByID(3779338822).then(($result: any) => {
@@ -3565,9 +3565,11 @@ export function OpenPRDiff(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: g
  * records the PR for it. A head in this repository is checked out as its
  * branch, fetched from origin when only origin has it; a fork's head is
  * fetched from the forge's head ref into the local branch pr/N, which is
- * refused when pr/N exists at another commit. A failure once the thread
- * exists removes the thread, its worktree and a pr/N this call created,
- * and returns the cause. The frontend seeds the thread's draft.
+ * refused when pr/N exists at another commit. A failure at any step,
+ * creating the thread included, removes the thread, its worktree and a
+ * local branch this call created (pr/N, or the local branch of a head
+ * only origin had), and returns the cause. The frontend seeds the
+ * thread's draft.
  */
 export function OpenPRThread(req: app$0.OpenPRThreadRequest): $CancellablePromise<app$0.OpenPRThreadResult> {
     return $Call.ByID(2660387675, req).then(($result: any) => {

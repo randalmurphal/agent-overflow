@@ -321,8 +321,12 @@ beside `viewer { login }`. Each node selects its review state
 (`reviewDecision`, `reviewRequests(first: 20)`,
 `latestOpinionatedReviews(first: 100) { viewerDidAuthor }`,
 `viewerLatestReview`, since the login is not known before the answer),
-its merge state, `totalCommentsCount` and `commits(last: 1)` with the
-head commit's time and rollup `state`. GitLab lists
+its merge state, `totalCommentsCount`, `commits(last: 1)` with the
+head commit's time and rollup `state`, and `comments(last: 10)` and
+`reviews(last: 10)` with each author and time, from which the row takes
+the PR author's latest reply (`AuthorActivityAt`; a review thread reply
+is a review of its own). Each of those connections costs one point per
+page of 100 PRs. GitLab lists
 `projects/P/merge_requests?state=opened&order_by=updated_at&sort=desc&per_page=100`,
 whose basic view carries no pipeline; the viewer is the login's cached
 username, as the detail read uses it. Both read at most `prListMaxPages`
@@ -364,14 +368,17 @@ interactive, as a refresh is; later ticks run at the PR update interval.
 
 A tick (`app_pr_list_tick.go`) reads the backend's forge projects
 (`ListForgeProjects`: the non-archived projects whose origin names a
-forge repository), lists each repository once however many projects
+forge repository, and those whose origin git could not read, with that
+failure as their `Error`), lists each repository once however many projects
 clone it, at most `prListReadConcurrency` (4) at a time, then reads the
 summary detail of the rows the subscribers focus, joins the user's
 `pr_views` and emits `pulls:updated` when the snapshot changed. A
 project's failed list keeps the rows read before beside its error, a
 first transient failure with rows on screen is held back once, a
 rate-limited repository is skipped by background ticks until its
-release, and a removed project takes its rows along. Each row's
+release, a project whose origin cannot be read keeps the repository and
+rows the last tick read beside that error, and a removed project takes
+its rows along. Each row's
 attention state and group come from `prAttention`
 (`app_pr_attention.go`); `NeedsYou`, the sidebar badge, counts each PR
 once.
@@ -398,7 +405,7 @@ row's `Seen` and `Since` follow at once.
 | Tick | GitHub | GitLab |
 |---|---|---|
 | Lists | 1 `PullsSearch` per repository per 100 PRs | 1 merge request list page per repository per 100 MRs |
-| A focused row's detail, when due | 1 `PRTick` (detail and checks), + 1 `PRThreadStatesPage` per 100 threads past 100 | 1 merge request + 1 approvals + 1 discussions page per 100 discussions |
+| A focused row's detail, when due | 1 `PRTick` (detail and checks), + 1 `PRThreadStatesPage` per 100 threads past 100 | 1 merge request + 1 approvals + 1 reviewers (the viewer's own review state) + 1 discussions page per 100 discussions |
 
 ### The pipeline pump and stage reads
 

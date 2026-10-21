@@ -16,6 +16,7 @@ import (
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/terminal"
+	"agent-overflow/internal/threadapp"
 	"agent-overflow/internal/triage"
 )
 
@@ -191,7 +192,7 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 	// back down rather than leaking a directory — and a transcript that
 	// cannot be relocated refuses the whole create, leaving the thread
 	// resumable from the workspace it still occupies.
-	move.rollback = func() { _ = core.RemoveWorktreeForce(project, worktreePath, true) }
+	move.rollback = func() { a.undoWorktreeCut(project, worktreePath, resolvedBranch, true) }
 	thread.WorktreePath = worktreePath
 	thread.WorkspacePath = worktreePath
 	thread.Branch = resolvedBranch
@@ -257,15 +258,17 @@ func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error
 	if err != nil {
 		return store.Thread{}, err
 	}
-	if err := core.AttachWorktree(project, worktreePath, branch); err != nil {
+	createdBranch, err := core.AttachWorktree(project, worktreePath, branch)
+	if err != nil {
 		return store.Thread{}, err
 	}
 
 	move := checkoutMoveFrom(thread, "attach worktree")
 	// Same posture as the create path: the checkout exists on disk now, so a
 	// transcript that cannot be relocated (or a store write that fails) tears
-	// it back down instead of leaving it behind.
-	move.rollback = func() { _ = core.RemoveWorktreeForce(project, worktreePath, true) }
+	// it back down instead of leaving it behind, with the local branch the
+	// attach made from origin's.
+	move.rollback = func() { a.undoWorktreeCut(project, worktreePath, branch, createdBranch) }
 	thread.WorktreePath = worktreePath
 	thread.WorkspacePath = worktreePath
 	thread.Branch = branch
@@ -1235,6 +1238,16 @@ func (a *App) findWorktree(project, path string) (gitops.Worktree, bool, error) 
 // The user asked for a worktree, not for a network round trip, and the cut
 // they asked for succeeded — from the local base, exactly as it did before
 // this behaviour existed.
+// undoWorktreeCut takes back a worktree a checkout move cut, and its branch
+// when the cut made it. The move's own error is what its caller reports, so
+// a failure here is logged.
+func (a *App) undoWorktreeCut(projectPath, worktreePath, branch string, createdBranch bool) {
+	err := (threadWorkspacePort{app: a}).RemoveCutWorktree(projectPath, threadapp.CutWorktree{Path: worktreePath, Branch: branch, CreatedBranch: createdBranch})
+	if err != nil {
+		log.Printf("worktree %s: undo the cut after a failed move: %v", worktreePath, err)
+	}
+}
+
 func (a *App) cutWorktreeFromFreshBase(ctx context.Context, projectPath, worktreePath, baseBranch, newBranch string) error {
 	seed, err := a.gitCore().CreateWorktreeFromFreshBase(ctx, projectPath, worktreePath, baseBranch, newBranch)
 	if seed.FetchErr != nil {

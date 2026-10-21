@@ -802,6 +802,15 @@ export class PRDetail {
      */
     "readiness": MergeReadiness;
     "merge": MergeOptions;
+
+    /**
+     * ViewerReviewState is the viewer's own review of a GitLab merge
+     * request as its reviewers read words it (unreviewed, review_started,
+     * reviewed, requested_changes, approved, unapproved); empty when the
+     * viewer is not a reviewer, on GitHub, and when the read did not ask
+     * (PRReadParts.ViewerReview).
+     */
+    "viewerReviewState"?: string;
     "mergedAt"?: string;
     "mergedBy"?: string;
     "closedAt"?: string;
