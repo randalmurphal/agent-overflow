@@ -26,6 +26,9 @@ type gitlabForge struct {
 	// routes remembers, per host, a server that answered the older cancel
 	// route (gitlab_merge.go).
 	routes gitlabRouteMemory
+	// pipelineTags remembers which listed pipelines ran on a tag
+	// (ci_gitlab.go).
+	pipelineTags gitlabPipelineTags
 }
 
 func (f *gitlabForge) ID() string         { return "gitlab" }
@@ -290,24 +293,38 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 // readGitLabViewerReview is the state of viewer's own review of ref, from
 // the merge request's reviewers (the list and the single merge request
 // carry the reviewers' accounts only), or "" when the viewer is not one
-// or is unknown.
+// or is unknown. The reviewers are paginated: pages are read until the
+// viewer is found or the list ends.
 func readGitLabViewerReview(ctx context.Context, client *forgeapi.Client, ref PRReference, viewer string) (string, error) {
 	if viewer == "" {
 		return "", nil
 	}
-	var reviewers []struct {
-		User  gitlabAuthorRaw `json:"user"`
-		State string          `json:"state"`
+	request := forgeapi.Request{
+		Path:  gitlabMRPath(ref) + "/reviewers",
+		Query: url.Values{"per_page": {strconv.Itoa(gitlabPageSize)}},
 	}
-	if _, err := client.JSON(ctx, forgeapi.Request{Path: gitlabMRPath(ref) + "/reviewers"}, &reviewers); err != nil {
+	state := ""
+	page := 1
+	err := client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
+		var reviewers []struct {
+			User  gitlabAuthorRaw `json:"user"`
+			State string          `json:"state"`
+		}
+		if err := json.Unmarshal(resp.Body, &reviewers); err != nil {
+			return false, fmt.Errorf("GitLab merge request reviewers: decode response: %w", err)
+		}
+		for _, reviewer := range reviewers {
+			if strings.EqualFold(reviewer.User.Username, viewer) {
+				state = reviewer.State
+				return false, nil
+			}
+		}
+		return advanceGitLabPage(resp, &page), nil
+	})
+	if err != nil {
 		return "", err
 	}
-	for _, reviewer := range reviewers {
-		if strings.EqualFold(reviewer.User.Username, viewer) {
-			return reviewer.State, nil
-		}
-	}
-	return "", nil
+	return state, nil
 }
 
 // readGitLabMR reads the merge request itself. The single-MR endpoint is

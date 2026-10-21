@@ -106,3 +106,43 @@ func TestPipelinesThroughTheAppsForgeCode(t *testing.T) {
 	}
 	expectHandled(t, r)
 }
+
+// A GitLab branch and tag sharing a name: the tag scope names the tag's
+// latest pipeline, and each other pipeline on that name is classified by
+// one single pipeline read, remembered on the next listing.
+func TestGitLabPipelinesClassifyABranchSharingATagsName(t *testing.T) {
+	job := func(id int64) []forgefake.Job { return []forgefake.Job{{ID: id, Name: "build", Status: "success"}} }
+	r := newRig(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "gitlab", Project: "grp/clash", Pipelines: []forgefake.Pipeline{
+		{ID: 10, Ref: "main", Jobs: job(1001)},
+		{ID: 20, RefKind: "tag", Ref: "release", Jobs: job(2001)},
+		{ID: 25, Ref: "release", Jobs: job(2501)},
+		{ID: 30, RefKind: "tag", Ref: "release", Jobs: job(3001)},
+		{ID: 35, Ref: "release", Jobs: job(3501)},
+	}}}})
+	gl := gitops.RepoReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "clash"}
+	singleReads := func() int {
+		n := 0
+		for _, route := range expectHandled(t, r) {
+			if route == "glab api pipeline" {
+				n++
+			}
+		}
+		return n
+	}
+	for listing, wantReads := range []int{3, 3} {
+		rows, err := r.core.ListPipelines(t.Context(), gl, gitops.PipelineListFilter{})
+		if err != nil {
+			t.Fatalf("listing %d: %v", listing, err)
+		}
+		var got []string
+		for _, row := range rows {
+			got = append(got, row.ID+":"+row.RefKind)
+		}
+		if want := "35:branch 30:tag 25:branch 20:tag 10:branch"; strings.Join(got, " ") != want {
+			t.Errorf("listing %d: rows = %s, want %s", listing, strings.Join(got, " "), want)
+		}
+		if n := singleReads(); n != wantReads {
+			t.Errorf("after listing %d: %d single pipeline reads, want %d (35, 25 and 20 once)", listing, n, wantReads)
+		}
+	}
+}

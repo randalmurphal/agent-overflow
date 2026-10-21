@@ -3,12 +3,14 @@ package git
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
+	"sync"
 
 	"agent-overflow/internal/forgeapi"
 )
@@ -121,9 +123,14 @@ var gitlabMergeRequestRef = regexp.MustCompile(`^refs/merge-requests/(\d+)/(?:he
 // oldest listed pipeline.
 const gitlabTagScopeMaxPages = 10
 
+// gitlabPipelineTagReadConcurrency bounds the single pipeline reads one
+// ListPipelines has in flight to classify its rows.
+const gitlabPipelineTagReadConcurrency = 4
+
 // ListPipelines lists the project's pipelines, the most recent first: one
-// list request and the tag scope reads that say which refs are tags
-// (gitlabTagPipelines).
+// list request, the tag scope reads that say which refs are tags
+// (gitlabTagPipelines) and the single pipeline reads that classify a
+// pipeline the scope leaves ambiguous (gitlabPipelineTags.kinds).
 func (f *gitlabForge) ListPipelines(ctx context.Context, repo RepoReference, filter PipelineListFilter) ([]PipelineSummary, error) {
 	status, err := pipelineStatusFilter("gitlab", filter.Status)
 	if err != nil {
@@ -145,33 +152,45 @@ func (f *gitlabForge) ListPipelines(ctx context.Context, repo RepoReference, fil
 	if _, err := client.JSON(ctx, forgeapi.Request{Path: path, Query: query}, &raw); err != nil {
 		return nil, err
 	}
-	tags, tagged, err := gitlabTagPipelines(ctx, client, path, filter.Ref, raw)
+	tagRefs, tagged, err := gitlabTagPipelines(ctx, client, path, filter.Ref, raw)
 	if err != nil {
 		return nil, err
 	}
-	// A tag's latest pipeline the list did not hold (past its page) is
-	// appended when the status filter admits it, at most a list's worth.
-	listed := map[int64]bool{}
+	// The rows are the newest filter.Limit of the list and the tag scope's
+	// pipelines the list did not hold, the status filter applied to those.
+	// A listed page is the newest pipelines, so a scope pipeline survives
+	// only when it is newer than a listed one (created between the reads).
+	scope := make(map[int64]bool, len(tagged))
+	for _, pipeline := range tagged {
+		scope[pipeline.ID] = true
+	}
+	listed := make(map[int64]bool, len(raw))
 	for _, pipeline := range raw {
 		listed[pipeline.ID] = true
 	}
-	appended := 0
 	for _, pipeline := range tagged {
-		if appended == filter.Limit {
-			break
-		}
 		if !listed[pipeline.ID] && (status == "" || pipeline.Status == status) {
 			raw = append(raw, pipeline)
-			appended++
+			listed[pipeline.ID] = true
 		}
+	}
+	sort.SliceStable(raw, func(i, j int) bool { return raw[i].ID > raw[j].ID })
+	raw = raw[:min(len(raw), filter.Limit)]
+	kinds, err := f.pipelineTags.kinds(ctx, client, repo, raw, tagRefs, scope)
+	if err != nil {
+		return nil, err
 	}
 	rows := make([]PipelineSummary, 0, len(raw))
 	for _, pipeline := range raw {
+		kind, ok := kinds[pipeline.ID]
+		if !ok {
+			continue
+		}
 		row := PipelineSummary{
 			ID:        strconv.FormatInt(pipeline.ID, 10),
 			Status:    NormalizeCIStatus(pipeline.Status, ""),
 			Ref:       pipeline.Ref,
-			RefKind:   PipelineRefBranch,
+			RefKind:   kind,
 			SHA:       pipeline.SHA,
 			Source:    pipeline.Source,
 			CreatedAt: pipeline.CreatedAt,
@@ -179,21 +198,134 @@ func (f *gitlabForge) ListPipelines(ctx context.Context, repo RepoReference, fil
 			URL:       pipeline.WebURL,
 		}
 		if m := gitlabMergeRequestRef.FindStringSubmatch(pipeline.Ref); m != nil {
-			row.RefKind = PipelineRefMergeRequest
 			row.MRNumber, _ = strconv.Atoi(m[1])
-		} else if tags[pipeline.Ref] {
-			row.RefKind = PipelineRefTag
 		}
 		rows = append(rows, row)
 	}
 	return rows, nil
 }
 
-// gitlabTagPipelines answers which refs of the listed pipelines are tags,
-// and the tag pipelines read to learn it. GitLab's list does not say
-// (only the single pipeline carries `tag`), and its tag scope answers
-// only the latest pipeline of each tag, so a pipeline is a tag's when its
-// ref is a ref the tag scope names: a ref is a tag or a branch. The scope
+// gitlabPipelineTags remembers, per repository, whether each pipeline of
+// its latest listing on a tag's ref name ran on the tag, so the single
+// pipeline read that classifies an ambiguous one is made once while it
+// stays listed: a pipeline's tag flag never changes. Each listing prunes
+// its repository's entry to the pipelines it answered.
+type gitlabPipelineTags struct {
+	mu    sync.Mutex
+	repos map[string]map[int64]bool
+}
+
+// kinds answers each pipeline's RefKind. A merge request ref is a merge
+// request's; a pipeline in the tag scope (the latest tag pipeline of its
+// ref, which GitLab selects among pipelines flagged tag) is a tag's; one
+// on a ref name the scope does not name is a branch's. One on a ref name
+// the scope names but not in it is an older run of the tag or a run of a
+// branch of the same name, and its kind is the single pipeline's `tag`,
+// remembered or read with ctx's admission. A pipeline that read answers
+// 404 for (deleted since the list) has no kind and is left out; any other
+// failure fails the listing.
+func (c *gitlabPipelineTags) kinds(ctx context.Context, client *forgeapi.Client, repo RepoReference, pipelines []gitlabPipelineRaw, tagRefs map[string]bool, scope map[int64]bool) (map[int64]string, error) {
+	key := repo.Host + " " + repo.Project()
+	known := map[int64]bool{}
+	c.mu.Lock()
+	remembered := c.repos[key]
+	for _, pipeline := range pipelines {
+		if tag, ok := remembered[pipeline.ID]; ok {
+			known[pipeline.ID] = tag
+		}
+	}
+	c.mu.Unlock()
+
+	kinds := make(map[int64]string, len(pipelines))
+	var ambiguous []int64
+	for _, pipeline := range pipelines {
+		switch {
+		case gitlabMergeRequestRef.MatchString(pipeline.Ref):
+			kinds[pipeline.ID] = PipelineRefMergeRequest
+		case scope[pipeline.ID]:
+			known[pipeline.ID] = true
+		case !tagRefs[pipeline.Ref]:
+			kinds[pipeline.ID] = PipelineRefBranch
+		default:
+			if _, ok := known[pipeline.ID]; !ok {
+				ambiguous = append(ambiguous, pipeline.ID)
+			}
+		}
+	}
+	tags := make([]bool, len(ambiguous))
+	errs := make([]error, len(ambiguous))
+	slots := make(chan struct{}, gitlabPipelineTagReadConcurrency)
+	var wg sync.WaitGroup
+	for i, id := range ambiguous {
+		wg.Go(func() {
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			tags[i], errs[i] = readGitLabPipelineTag(ctx, client, repo.Project(), id)
+		})
+	}
+	wg.Wait()
+	// A deleted pipeline (404) stays unknown and so has no kind.
+	var failure error
+	for i, id := range ambiguous {
+		switch {
+		case errs[i] == nil:
+			known[id] = tags[i]
+		case errors.Is(errs[i], forgeapi.ErrNotFound):
+		case failure == nil:
+			failure = errs[i]
+		}
+	}
+
+	next := map[int64]bool{}
+	for _, pipeline := range pipelines {
+		tag, ok := known[pipeline.ID]
+		if !ok || kinds[pipeline.ID] != "" {
+			continue
+		}
+		next[pipeline.ID] = tag
+		kinds[pipeline.ID] = PipelineRefBranch
+		if tag {
+			kinds[pipeline.ID] = PipelineRefTag
+		}
+	}
+	c.mu.Lock()
+	if len(next) == 0 {
+		delete(c.repos, key)
+	} else {
+		if c.repos == nil {
+			c.repos = map[string]map[int64]bool{}
+		}
+		c.repos[key] = next
+	}
+	c.mu.Unlock()
+	if failure != nil {
+		return nil, failure
+	}
+	return kinds, nil
+}
+
+// readGitLabPipelineTag reads one pipeline's tag flag, which GitLab's
+// list does not carry.
+func readGitLabPipelineTag(ctx context.Context, client *forgeapi.Client, project string, id int64) (bool, error) {
+	var pipeline struct {
+		ID  int64 `json:"id"`
+		Tag bool  `json:"tag"`
+	}
+	if _, err := client.JSON(ctx, forgeapi.Request{Path: gitlabProjectPath(project) + "/pipelines/" + strconv.FormatInt(id, 10)}, &pipeline); err != nil {
+		return false, err
+	}
+	if pipeline.ID != id {
+		return false, fmt.Errorf("GitLab answered pipeline %d for pipeline %d", pipeline.ID, id)
+	}
+	return pipeline.Tag, nil
+}
+
+// gitlabTagPipelines answers the tag names among the listed pipelines'
+// refs and the tag scope pipelines read to learn them. GitLab's list does
+// not say (only the single pipeline carries `tag`), and its tag scope
+// answers only the latest tag pipeline of each tag, so a listed pipeline
+// on a ref the scope names but not in it is an older run of the tag or a
+// branch of the same name (gitlabPipelineTags.kinds). The scope
 // is read without the status filter, since a tag whose latest pipeline
 // has another status is a tag still. It is ordered by id, newest first,
 // and the latest pipeline of a listed pipeline's tag is no older than

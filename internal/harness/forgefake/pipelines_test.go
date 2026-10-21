@@ -137,7 +137,8 @@ func TestGitHubRunAnswersOneRunAndRevalidates(t *testing.T) {
 
 // GitLab's tag and branch scopes answer each ref's latest pipeline, and
 // the status and ref filters narrow those: an older run of a tag is not
-// in the tag scope, nor is a tag whose latest run has another status.
+// in the tag scope, nor is a tag whose latest run has another status, nor
+// a branch sharing a tag's name.
 func TestGitLabPipelineScopesAnswerEachRefsLatestPipeline(t *testing.T) {
 	t.Parallel()
 	e := New(Options{APIToken: testAPIToken})
@@ -149,7 +150,8 @@ func TestGitLabPipelineScopesAnswerEachRefsLatestPipeline(t *testing.T) {
 	  {"id": 20, "ref": "main", "jobs": `+job(2001, "success")+`},
 	  {"id": 30, "refKind": "tag", "ref": "v2", "jobs": `+job(3001, "success")+`},
 	  {"id": 35, "refKind": "tag", "ref": "v1", "jobs": `+job(3501, "success")+`},
-	  {"id": 40, "refKind": "tag", "ref": "v1", "jobs": `+job(4001, "failed")+`}
+	  {"id": 40, "refKind": "tag", "ref": "v1", "jobs": `+job(4001, "failed")+`},
+	  {"id": 45, "ref": "v1", "jobs": `+job(4501, "success")+`}
 	]}]}`); err != nil {
 		t.Fatal(err)
 	}
@@ -168,11 +170,20 @@ func TestGitLabPipelineScopesAnswerEachRefsLatestPipeline(t *testing.T) {
 		"scope=tags&status=success": "30",
 		"scope=tags&ref=v1":         "40",
 		"scope=tags&ref=main":       "",
-		"scope=branches":            "20",
-		"ref=v1":                    "40,35",
+		"scope=branches":            "45,20",
+		"ref=v1":                    "45,40,35",
 	} {
 		if got := ids(query); got != want {
 			t.Errorf("%s = [%s], want [%s]", query, got, want)
+		}
+	}
+	// A branch sharing a tag's name: the single pipeline says which ran
+	// on the tag.
+	for id, want := range map[int]bool{45: false, 40: true, 35: true} {
+		var single map[string]any
+		decodeBody(t, glabGET(t, srv, "gitlab.com", fmt.Sprintf("projects/grp%%2Ftags/pipelines/%d", id)), &single)
+		if single["tag"] != want || single["ref"] != "v1" {
+			t.Errorf("pipeline %d = %v, want tag %v", id, single, want)
 		}
 	}
 }

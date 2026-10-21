@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -117,77 +120,212 @@ func gitlabListBody(t *testing.T, pipelines ...map[string]any) string {
 	return string(body)
 }
 
-// GitLab's tag scope answers only each tag's latest pipeline, so a
-// pipeline is a tag's when its ref is one the scope names: an older run
-// of the same tag is a tag pipeline too. The scope is read without the
-// status filter (a tag whose latest run failed is a tag still), and a
-// tag's latest pipeline past the list's page is appended when the status
-// filter admits it.
-func TestGitLabListPipelinesMarksTagsFromTheTagScope(t *testing.T) {
-	t.Parallel()
-	list := gitlabListBody(t,
-		gitlabListPipeline(7002, "v2.0.0", "success"),
-		gitlabListPipeline(6990, "v2.0.0", "success"),
-		gitlabListPipeline(6985, "v2.1.0", "success"),
-		gitlabListPipeline(6980, "main", "success"),
-	)
-	tags := gitlabListBody(t,
-		gitlabListPipeline(7005, "v2.1.0", "failed"),
-		gitlabListPipeline(7002, "v2.0.0", "success"),
-		gitlabListPipeline(6970, "v1.0.0", "success"),
-		gitlabListPipeline(6960, "v0.9.0", "canceled"),
-	)
-	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+// gitlabPipelinesFake answers the pipelines list, its tag scope and the
+// single pipeline reads from fields a test changes between listings.
+type gitlabPipelinesFake struct {
+	mu    sync.Mutex
+	list  []map[string]any
+	scope []map[string]any
+	// single is each pipeline's tag flag; a missing id answers 404 and
+	// one in refused answers 403.
+	single  map[int64]bool
+	refused map[int64]bool
+}
+
+func (f *gitlabPipelinesFake) answer(t *testing.T) func(call forgeAPICall) forgeAPIAnswer {
+	return func(call forgeAPICall) forgeAPIAnswer {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		const prefix = "projects/grp%2Fsub%2Fapp/pipelines"
 		switch {
-		case !strings.HasPrefix(call.Path, "projects/grp%2Fsub%2Fapp/pipelines?"):
-		case strings.Contains(call.Path, "scope=tags"):
-			return forgeAPIAnswer{Body: tags}
-		default:
-			return forgeAPIAnswer{Body: list}
+		case strings.HasPrefix(call.Path, prefix+"?") && strings.Contains(call.Path, "scope=tags"):
+			return forgeAPIAnswer{Body: gitlabListBody(t, f.scope...)}
+		case strings.HasPrefix(call.Path, prefix+"?"):
+			return forgeAPIAnswer{Body: gitlabListBody(t, f.list...)}
+		case strings.HasPrefix(call.Path, prefix+"/"):
+			id, err := strconv.ParseInt(strings.TrimPrefix(call.Path, prefix+"/"), 10, 64)
+			if err != nil {
+				break
+			}
+			if f.refused[id] {
+				return forgeAPIAnswer{Status: http.StatusForbidden, Body: `{"message":"403 Forbidden"}`}
+			}
+			tag, ok := f.single[id]
+			if !ok {
+				return forgeAPIAnswer{Status: http.StatusNotFound, Body: `{"message":"404 Not found"}`}
+			}
+			return forgeAPIAnswer{Body: fmt.Sprintf(`{"id":%d,"ref":"x","status":"success","tag":%v}`, id, tag)}
 		}
 		return forgeUnexpected(t, call)
-	})
-	rows, err := core.ListPipelines(t.Context(), gitlabTestRepo(), PipelineListFilter{Status: CIStatusSuccess, Limit: 4})
-	if err != nil {
-		t.Fatalf("ListPipelines: %v", err)
 	}
-	if got := calls.all(); len(got) != 2 || listQuery(t, got[1].Path).Encode() != "per_page=100&scope=tags" {
-		t.Fatalf("calls = %+v, want the list then the tag scope without the status filter", got)
+}
+
+func (f *gitlabPipelinesFake) set(fn func(*gitlabPipelinesFake)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	fn(f)
+}
+
+// singleReads is the single pipeline reads among calls[from:].
+func singleReads(calls []forgeAPICall, from int) []string {
+	var out []string
+	for _, call := range calls[from:] {
+		if id, ok := strings.CutPrefix(call.Path, "projects/grp%2Fsub%2Fapp/pipelines/"); ok {
+			out = append(out, id)
+		}
 	}
+	slices.Sort(out)
+	return out
+}
+
+func pipelineKinds(rows []PipelineSummary) string {
 	var got []string
 	for _, row := range rows {
 		got = append(got, row.ID+":"+row.Ref+":"+row.RefKind)
 	}
-	want := []string{"7002:v2.0.0:tag", "6990:v2.0.0:tag", "6985:v2.1.0:tag", "6980:main:branch", "6970:v1.0.0:tag"}
-	if strings.Join(got, " ") != strings.Join(want, " ") {
-		t.Fatalf("rows = %v\nwant   %v", got, want)
+	return strings.Join(got, " ")
+}
+
+// A pipeline in GitLab's tag scope (each tag's latest tag pipeline) is a
+// tag's, one on a ref the scope does not name a branch's, and one on a
+// ref the scope names but not in it (an older run of the tag, or a
+// branch of the same name) is classified by its single pipeline's tag
+// flag, read once per pipeline while it stays listed. The scope is read
+// without the status filter.
+func TestGitLabListPipelinesClassifiesTagsByTheScopeAndTheSinglePipeline(t *testing.T) {
+	t.Parallel()
+	fake := &gitlabPipelinesFake{
+		list: []map[string]any{
+			gitlabListPipeline(7002, "release", "success"),
+			gitlabListPipeline(6995, "release", "success"), // the branch named release
+			gitlabListPipeline(6990, "v2", "success"),      // an older run of tag v2
+			gitlabListPipeline(6985, "v2", "success"),      // deleted since the list
+			gitlabListPipeline(6980, "main", "success"),
+		},
+		scope:  []map[string]any{gitlabListPipeline(7005, "v2", "failed"), gitlabListPipeline(7002, "release", "success")},
+		single: map[int64]bool{6995: false, 6990: true},
+	}
+	core, calls := newForgeAPICore(t, fake.answer(t))
+	list := func() []PipelineSummary {
+		t.Helper()
+		rows, err := core.ListPipelines(t.Context(), gitlabTestRepo(), PipelineListFilter{Status: CIStatusSuccess})
+		if err != nil {
+			t.Fatalf("ListPipelines: %v", err)
+		}
+		return rows
+	}
+
+	rows := list()
+	if got := calls.all(); listQuery(t, got[1].Path).Encode() != "per_page=100&scope=tags" {
+		t.Fatalf("calls = %+v, want the list then the tag scope without the status filter", got)
+	}
+	if got := singleReads(calls.all(), 0); strings.Join(got, " ") != "6985 6990 6995" {
+		t.Fatalf("single reads = %v, want the ambiguous pipelines only", got)
+	}
+	if got, want := pipelineKinds(rows), "7002:release:tag 6995:release:branch 6990:v2:tag 6980:main:branch"; got != want {
+		t.Fatalf("rows = %s\nwant   %s", got, want)
+	}
+
+	// Listed again, the remembered pipelines cost no read.
+	fake.set(func(f *gitlabPipelinesFake) { f.list = slices.Delete(f.list, 3, 4) })
+	before := len(calls.all())
+	rows = list()
+	if got := singleReads(calls.all(), before); len(got) != 0 || len(calls.all()) != before+2 {
+		t.Fatalf("second listing read %v, want only the list and the scope", got)
+	}
+	if got, want := pipelineKinds(rows), "7002:release:tag 6995:release:branch 6990:v2:tag 6980:main:branch"; got != want {
+		t.Fatalf("second rows = %s\nwant          %s", got, want)
+	}
+
+	// A newer run of tag release leaves 7002 out of the scope; it was
+	// remembered from the scope and costs no read.
+	fake.set(func(f *gitlabPipelinesFake) {
+		f.list = append([]map[string]any{gitlabListPipeline(7010, "release", "success")}, f.list...)
+		f.scope = []map[string]any{gitlabListPipeline(7010, "release", "success"), gitlabListPipeline(7005, "v2", "failed")}
+	})
+	before = len(calls.all())
+	rows = list()
+	if got := singleReads(calls.all(), before); len(got) != 0 {
+		t.Fatalf("third listing read %v, want none", got)
+	}
+	if got, want := pipelineKinds(rows), "7010:release:tag 7002:release:tag 6995:release:branch 6990:v2:tag 6980:main:branch"; got != want {
+		t.Fatalf("third rows = %s\nwant         %s", got, want)
+	}
+
+	// A refused single read fails the listing.
+	fake.set(func(f *gitlabPipelinesFake) {
+		f.list = append(f.list, gitlabListPipeline(6970, "v2", "success"))
+		f.refused = map[int64]bool{6970: true}
+	})
+	if _, err := core.ListPipelines(t.Context(), gitlabTestRepo(), PipelineListFilter{Status: CIStatusSuccess}); err == nil {
+		t.Fatal("a refused single pipeline read did not fail the listing")
+	}
+}
+
+// The listed and appended rows are one list of at most Limit, newest
+// first: a tag's latest pipeline newer than a listed one (created between
+// the reads) takes the oldest listed row's place, an older one is past
+// the limit, and the status filter applies to the appended rows.
+func TestGitLabListPipelinesAnswersAtMostTheLimit(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		status string
+		list   []map[string]any
+		want   string
+	}{
+		"status filter": {
+			status: CIStatusSuccess,
+			list:   []map[string]any{gitlabListPipeline(500, "a", "success"), gitlabListPipeline(490, "b", "success"), gitlabListPipeline(480, "c", "success")},
+			want:   "510:t1:tag 500:a:branch 490:b:branch",
+		},
+		"no filter": {
+			list: []map[string]any{gitlabListPipeline(500, "a", "success"), gitlabListPipeline(490, "b", "failed"), gitlabListPipeline(480, "c", "success")},
+			want: "510:t1:tag 505:t2:tag 500:a:branch",
+		},
+	} {
+		fake := &gitlabPipelinesFake{
+			list:  tc.list,
+			scope: []map[string]any{gitlabListPipeline(510, "t1", "success"), gitlabListPipeline(505, "t2", "failed"), gitlabListPipeline(400, "t3", "success")},
+		}
+		core, calls := newForgeAPICore(t, fake.answer(t))
+		rows, err := core.ListPipelines(t.Context(), gitlabTestRepo(), PipelineListFilter{Status: tc.status, Limit: 3})
+		if err != nil {
+			t.Fatalf("%s: ListPipelines: %v", name, err)
+		}
+		if got := pipelineKinds(rows); got != tc.want {
+			t.Errorf("%s: rows = %s\nwant   %s", name, got, tc.want)
+		}
+		if n := len(calls.all()); n != 2 {
+			t.Errorf("%s: %d calls, want the list and the scope", name, n)
+		}
 	}
 }
 
 // A list of one ref reads that ref's tag scope once, without the status
-// filter, which classifies every row: the ref is a tag or it is not.
+// filter. A ref the scope does not name is a branch with no further read;
+// one it names has every listed pipeline outside the scope read once.
 func TestGitLabListPipelinesClassifiesARefWithOneTagRead(t *testing.T) {
 	t.Parallel()
 	for ref, wantKind := range map[string]string{"v2.0.0": PipelineRefTag, "main": PipelineRefBranch} {
-		core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-			switch {
-			case !strings.HasPrefix(call.Path, "projects/grp%2Fsub%2Fapp/pipelines?"):
-			case strings.Contains(call.Path, "scope=tags") && ref == "v2.0.0":
-				return forgeAPIAnswer{Body: gitlabListBody(t, gitlabListPipeline(7002, ref, "success"))}
-			case strings.Contains(call.Path, "scope=tags"):
-				return forgeAPIAnswer{Body: "[]"}
-			default:
-				return forgeAPIAnswer{Body: gitlabListBody(t, gitlabListPipeline(6995, ref, "failed"), gitlabListPipeline(6990, ref, "failed"))}
-			}
-			return forgeUnexpected(t, call)
-		})
+		fake := &gitlabPipelinesFake{
+			list:   []map[string]any{gitlabListPipeline(6995, ref, "failed"), gitlabListPipeline(6990, ref, "failed")},
+			single: map[int64]bool{6995: true, 6990: true},
+		}
+		if ref == "v2.0.0" {
+			fake.scope = []map[string]any{gitlabListPipeline(7002, ref, "success")}
+		}
+		core, calls := newForgeAPICore(t, fake.answer(t))
 		rows, err := core.ListPipelines(t.Context(), gitlabTestRepo(), PipelineListFilter{Ref: ref, Status: CIStatusFailed})
 		if err != nil {
 			t.Fatalf("%s: ListPipelines: %v", ref, err)
 		}
 		got := calls.all()
-		if len(got) != 2 || listQuery(t, got[1].Path).Encode() != "per_page=100&ref="+ref+"&scope=tags" {
+		if listQuery(t, got[1].Path).Encode() != "per_page=100&ref="+ref+"&scope=tags" {
 			t.Fatalf("%s: calls = %+v, want the list then the ref's tag scope", ref, got)
+		}
+		wantReads := map[string]string{"v2.0.0": "6990 6995", "main": ""}[ref]
+		if reads := singleReads(got, 0); strings.Join(reads, " ") != wantReads {
+			t.Fatalf("%s: single reads = %v, want [%s]", ref, reads, wantReads)
 		}
 		if len(rows) != 2 || rows[0].RefKind != wantKind || rows[1].RefKind != wantKind {
 			t.Fatalf("%s: rows = %+v, want two %s rows and the success not appended", ref, rows, wantKind)

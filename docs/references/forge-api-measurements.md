@@ -121,7 +121,14 @@ comment model, not measured), and the
 `tag` flag; the single pipeline has one. GitLab's pipelines API
 documentation says of the list's `scope`: "When `scope` is set to
 `branches` or `tags`, the API returns only the latest pipeline for each
-branch or tag ref." None of this was probed.
+branch or tag ref." GitLab's source on master (read 2026-10-21,
+`app/finders/ci/pipelines_finder.rb`) answers `scope=tags` with
+`pipelines_for_refs(items.tag, tags)` and `scope=branches` with
+`pipelines_for_refs(items.no_tag, branches)`, before the status and ref
+filters: the tag scope picks each tag name's latest pipeline among those
+flagged `tag`, so a branch sharing the name is never in it. The release
+that added the `tag` restriction was not checked; an older
+self-managed instance may answer otherwise. None of this was probed.
 
 ## Merge readiness and actions
 

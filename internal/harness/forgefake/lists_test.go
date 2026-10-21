@@ -227,3 +227,38 @@ func TestGitLabReviewersCarryEachReviewersState(t *testing.T) {
 		t.Fatalf("reviewers after approving = %s", got)
 	}
 }
+
+// GitLab's reviewers read is paginated, 20 a page by default, with
+// X-Next-Page while more pages exist.
+func TestGitLabReviewersArePaginated(t *testing.T) {
+	t.Parallel()
+	e := New(Options{APIToken: testAPIToken})
+	var reviewers []string
+	for i := range 25 {
+		reviewers = append(reviewers, fmt.Sprintf("%q", fmt.Sprintf("r%02d", i)))
+	}
+	if _, err := seedJSON(e, `{"viewer": "octo", "repos": [{"forge": "gitlab", "project": "grp/r", "pulls": [
+	  {"number": 1, "title": "t", "author": "carol", "reviewers": [`+strings.Join(reviewers, ",")+`]}]}]}`); err != nil {
+		t.Fatal(err)
+	}
+	srv := testServer(t, e)
+	page := func(query string) (string, int) {
+		t.Helper()
+		answer := glabGET(t, srv, "gitlab.com", "projects/grp%2Fr/merge_requests/1/reviewers"+query)
+		var got []map[string]any
+		decodeBody(t, answer, &got)
+		return answer.header.Get("X-Next-Page"), len(got)
+	}
+	if next, n := page(""); next != "2" || n != 20 {
+		t.Fatalf("default page: next %q, %d reviewers", next, n)
+	}
+	if next, n := page("?per_page=20&page=2"); next != "" || n != 5 {
+		t.Fatalf("second page: next %q, %d reviewers", next, n)
+	}
+	if next, n := page("?per_page=100"); next != "" || n != 25 {
+		t.Fatalf("per_page=100: next %q, %d reviewers", next, n)
+	}
+	if bad := glabGET(t, srv, "gitlab.com", "projects/grp%2Fr/merge_requests/1/reviewers?per_page=200"); bad.status != 404 || !lastInvocation(t, e).Unhandled {
+		t.Fatalf("per_page=200 = %d, want unhandled", bad.status)
+	}
+}

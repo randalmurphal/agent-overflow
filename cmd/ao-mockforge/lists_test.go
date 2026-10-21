@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os/exec"
 	"strings"
 	"testing"
@@ -133,9 +134,12 @@ func TestGitLabSummaryReadsTheViewersOwnReview(t *testing.T) {
 			{Number: 3, Title: "Alice approved", Author: "carol", Reviewers: []string{"alice", "bob"}, ChangeRequests: []string{"bob"},
 				Reviews: []forgefake.Review{{Author: "alice", State: "APPROVED"}}},
 			{Number: 4, Title: "Not asked", Author: "carol", Reviewers: []string{"bob"}},
+			// Alice is past the reviewers' first page of 100.
+			{Number: 5, Title: "Alice asked for changes, 101st", Author: "carol", Reviewers: append(otherReviewers(100), "alice"), ChangeRequests: []string{"alice"}},
+			{Number: 6, Title: "Not asked, two pages", Author: "carol", Reviewers: otherReviewers(101)},
 		}},
 	}})
-	for number, want := range map[int]string{1: "unreviewed", 2: "requested_changes", 3: "approved", 4: ""} {
+	for number, want := range map[int]string{1: "unreviewed", 2: "requested_changes", 3: "approved", 4: "", 5: "requested_changes", 6: ""} {
 		ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "reviews", Number: number}
 		detail, err := r.core.ReadPRSummary(t.Context(), ref)
 		if err != nil {
@@ -145,5 +149,23 @@ func TestGitLabSummaryReadsTheViewersOwnReview(t *testing.T) {
 			t.Errorf("!%d viewer review = %q, want %q", number, detail.ViewerReviewState, want)
 		}
 	}
-	expectHandled(t, r)
+	reviewerPages := 0
+	for _, route := range expectHandled(t, r) {
+		if route == "glab api reviewers" {
+			reviewerPages++
+		}
+	}
+	// One page for each of !1..!4, two for !5 and !6.
+	if reviewerPages != 8 {
+		t.Errorf("reviewers pages read = %d, want 8", reviewerPages)
+	}
+}
+
+// otherReviewers is n reviewers other than the viewer.
+func otherReviewers(n int) []string {
+	reviewers := make([]string, n)
+	for i := range reviewers {
+		reviewers[i] = fmt.Sprintf("reviewer-%03d", i)
+	}
+	return reviewers
 }

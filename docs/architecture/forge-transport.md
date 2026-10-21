@@ -336,7 +336,7 @@ GitLab's list stops at the 1000 most recently updated.
 | Read | GitHub | GitLab |
 |---|---|---|
 | Open PRs of a project | 1 `PullsSearch` per 100 PRs | 1 merge request list page per 100 MRs; + 1 `user` per login and host per 10 minutes |
-| Pipelines of a project (`ListPipelines`, at most 100 rows) | 1 `GET repos/O/R/actions/runs?per_page=N[&branch=][&status=]` | 1 `GET projects/P/pipelines?per_page=N[&ref=][&status=]`; + `GET projects/P/pipelines?per_page=100&scope=tags[&ref=]` pages, at most `gitlabTagScopeMaxPages` (10): 1 for a ref, 1 or 2 without a status filter, none for a merge request ref or an empty list |
+| Pipelines of a project (`ListPipelines`, at most `Limit` rows, 100 when unset or larger) | 1 `GET repos/O/R/actions/runs?per_page=N[&branch=][&status=]` | 1 `GET projects/P/pipelines?per_page=N[&ref=][&status=]`; + `GET projects/P/pipelines?per_page=100&scope=tags[&ref=]` pages, at most `gitlabTagScopeMaxPages` (10): 1 for a ref, 1 or 2 without a status filter, none for a merge request ref or an empty list; + 1 `GET projects/P/pipelines/ID` per row on a tag's ref name whose id the tag scope does not hold, once per pipeline while the repository's listings hold it, 4 at a time |
 | One pipeline (`ReadPipeline`) | 1 `GET repos/O/R/actions/runs/ID` + 1 jobs page per 100 jobs, at most `githubReadMaxPages` | 1 `GET projects/P/pipelines/ID` + 1 jobs page per 100 jobs, at most `gitlabCIJobsMaxPages` |
 | Stages of 30 unchanged rows (`ReadPipelineStages`) | 30 runs + 30 jobs pages, each a 304 | 30 pipelines + 30 jobs pages, each a 200 with its body |
 
@@ -350,17 +350,28 @@ for a GitLab `refs/merge-requests/N` ref or a GitHub `pull_request`
 event, `tag` for a GitLab tag pipeline or a GitHub `release` event, and
 `branch` otherwise. GitLab's list does not say which pipelines ran on a
 tag (only the single pipeline carries `tag`), and its `scope=tags`
-answers only the latest pipeline of each tag ref (GitLab's pipelines API
-documentation), so `ListPipelines` reads the tag scope for the ref names
-it holds and marks every listed pipeline on one of those refs, an older
-run of a tag included; a ref is a tag or a branch. The scope is read
-without the status filter, since a tag whose latest run has another
-status is still a tag. It is ordered by id, newest first, and a listed
-pipeline's tag has its latest pipeline no older than it, so the pages
-stop once one reaches past the oldest listed id or comes back short. A
-list of one ref reads that ref's tag scope once; a merge request ref
-reads none. A tag's latest pipeline the list did not hold (past its
-page) is appended when the status filter admits it. `CIPipeline`
+answers only the latest tag pipeline of each tag name (GitLab's pipelines
+API documentation and its pipelines finder), so `ListPipelines` reads the
+tag scope for the ref names it holds. A pipeline in the scope is a tag's;
+one on a ref name the scope does not name is a branch's. One on a ref
+name the scope names but not in it is an older run of the tag or a run
+of a branch of the same name, which GitLab allows, and is classified by
+the single pipeline's `tag`. Those reads use the list's admission and
+their answers, with the scope's, are remembered per repository by
+pipeline id (a pipeline's tag flag never changes); each listing prunes
+the repository's memory to the pipelines it answered. A read that
+answers 404 (the pipeline was deleted) leaves the row out; any other
+failure fails the listing. The scope is read without the status filter,
+since a tag whose latest run has another status is still a tag. It is
+ordered by id, newest first, and a listed pipeline's tag has its latest
+pipeline no older than it, so the pages stop once one reaches past the
+oldest listed id or comes back short. A list of one ref reads that
+ref's tag scope once; a merge request ref reads none. The rows are the
+newest `Limit` of the list and the scope's pipelines the list did not
+hold that the status filter admits. The list is the newest pipelines,
+so a scope pipeline is among them only when it is newer than a listed
+one (created between the two reads); a tag whose latest run is older
+than the newest `Limit` pipelines has no row. `CIPipeline`
 carries the pipeline's `ID`, `Ref` and `SHA`; a GitHub PR's head checks
 span many runs, so `ReadPR` leaves its `ID` empty.
 
@@ -404,7 +415,10 @@ whether or not a filter shows them, at most `maxPRListFocus` in all:
 each group newest update time first, then by PR key, so unchanged rows
 keep the same set every tick. A row that falls out of the set loses its
 detail. A focusing handle that hides or shows recomputes the set at
-once (`SetPRListActive`), as does one that leaves. A row's detail is
+once (`SetPRListActive`), as does one that leaves. The reads a focus
+change or a show starts are the user's and interactive; those a hide or
+a leave starts are background, since they read rows no user action
+asked for, and a pending user wake keeps its admission. A row's detail is
 `Core.ReadPRSummary`: `ReadPR` with `Detail` and `Unresolved`, which adds
 the approval count and the unresolved thread count to the readiness. It
 is read when the row is first a candidate, when its list row changes
@@ -422,7 +436,7 @@ row's `Seen` and `Since` follow at once.
 | Tick | GitHub | GitLab |
 |---|---|---|
 | Lists | 1 `PullsSearch` per repository per 100 PRs | 1 merge request list page per repository per 100 MRs |
-| A focused row's detail, when due | 1 `PRTick` (detail and checks), + 1 `PRThreadStatesPage` per 100 threads past 100 | 1 merge request + 1 approvals + 1 reviewers (the viewer's own review state) + 1 discussions page per 100 discussions |
+| A focused row's detail, when due | 1 `PRTick` (detail and checks), + 1 `PRThreadStatesPage` per 100 threads past 100 | 1 merge request + 1 approvals + 1 reviewers page per 100 reviewers until the viewer's (the viewer's own review state) + 1 discussions page per 100 discussions |
 
 ### The pipeline pump and stage reads
 
