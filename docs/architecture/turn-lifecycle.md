@@ -990,8 +990,13 @@ echo. Either way the message is visible above the composer, not in the
 timeline, until its confirmation proves consumption
 (`docs/architecture/user-message-ordering.md` § Confirmation). The review
 comments a queued message carries are delivered by that confirmation, not
-by the quiet row; a restore that takes the message back returns them to
-drafts with its row (`RetireUndeliveredUserRow`).
+by the quiet row. A restore that takes the message back returns them to
+drafts with its row (`RetireUndeliveredUserRow`) and gives the composer
+the text before them (`usermessage.Meta.TextBeforeReviewComments`), never
+both. A requeue rebuilt from the row sends that text with the comment ids,
+so the resend renders each comment once; while a stale row it could not
+delete still holds them, the resend reads them as its own and retires the
+row before claiming them again.
 
 **The frontend mirror** (`frontend/src/lib/stores/sendQueue.svelte.ts`) has
 two zones, both per-thread and both surviving thread switches:

@@ -44,7 +44,7 @@ func TestDiffReviewCommentsDraftLifecycle(t *testing.T) {
 		t.Fatalf("updated = %+v", updated)
 	}
 
-	selected, err := s.ListDraftDiffReviewCommentsByID(ThreadReviewOwner(thread.ID), string(DiffReviewScopeWorkspace), "diff-1", []string{created.ID})
+	selected, err := s.ListDraftDiffReviewCommentsByID(ThreadReviewOwner(thread.ID), string(DiffReviewScopeWorkspace), "diff-1", []string{created.ID}, DiffReviewMessageRows{})
 	if err != nil {
 		t.Fatalf("ListDraftDiffReviewCommentsByID: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestListDraftDiffReviewCommentsByIDRejectsStaleIDs(t *testing.T) {
 		t.Fatalf("CreateDiffReviewComment: %v", err)
 	}
 
-	if _, err := s.ListDraftDiffReviewCommentsByID(ThreadReviewOwner(thread.ID), string(DiffReviewScopeWorkspace), "diff-1", []string{created.ID, "missing"}); err == nil {
+	if _, err := s.ListDraftDiffReviewCommentsByID(ThreadReviewOwner(thread.ID), string(DiffReviewScopeWorkspace), "diff-1", []string{created.ID, "missing"}, DiffReviewMessageRows{}); err == nil {
 		t.Fatal("ListDraftDiffReviewCommentsByID accepted a stale id")
 	}
 }

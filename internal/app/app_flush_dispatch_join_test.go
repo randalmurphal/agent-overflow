@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
@@ -734,4 +735,295 @@ func joinedFlushRow(t *testing.T, app *App, threadID string) store.Item {
 		t.Fatalf("flush rows: got %d, want exactly 1 joined row; items: %+v", len(found), items)
 	}
 	return found[0]
+}
+
+// reviewDispatch is a queued message carrying two review drafts that an
+// active Claude turn persisted as a quiet row, on a fake CLI that records
+// every stdin envelope.
+type reviewDispatch struct {
+	app     *App
+	rec     *emitRecorder
+	dbPath  string
+	logPath string
+	thread  store.Thread
+	drafts  []store.DiffReviewComment
+	row     store.Item
+}
+
+const reviewDispatchText = "Please address these."
+
+func startReviewDispatch(t *testing.T, name string) reviewDispatch {
+	t.Helper()
+	app, dbPath := newTestAppWithStorePath(t)
+	rec := &emitRecorder{}
+	app.testEmitHook = rec.capture
+	app.triage = triage.NewRouter(app.store, rec.captureChannel)
+	app.configureTriageQueueCallbacks()
+	d := reviewDispatch{app: app, rec: rec, dbPath: dbPath, logPath: filepath.Join(t.TempDir(), "stdin.log")}
+	d.thread = testThread(name)
+	d.thread.Provider = string(provider.Claude)
+	d.thread.WorkspacePath = initGitRepo(t)
+	if err := app.store.CreateThread(d.thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	for _, body := range []string{"Rename the counter.", "Check the nil map."} {
+		draft, err := app.CreateDiffReviewComment(d.thread.ID, diffReviewPRInput(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		d.drafts = append(d.drafts, draft)
+	}
+	if err := app.store.InsertTurn(store.Turn{TurnID: "turn-0", ThreadID: d.thread.ID, TurnIndex: 0, StartedAt: time.Now().UnixMilli()}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+	sess, err := claude.NewSession(context.Background(), d.thread.ID,
+		claude.Config{Binary: writeClaudeStdinRecorderBinary(t, d.logPath), WorkDir: d.thread.WorkspacePath},
+		func(provider.ProviderEvent) {})
+	if err != nil {
+		t.Fatalf("claude.NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	app.sessionManager().put(d.thread.ID, session{Provider: string(provider.Claude), Token: "tok", Claude: sess, Liveness: newSessionLiveness(time.Now())})
+	app.dispatchFlush(d.thread.ID, []triage.QueuedFlushItem{{
+		ID: "queue:review", Message: reviewDispatchText,
+		Payload: flushQueuePayloadJSON(t, flushQueuePayload{
+			RevisionSourceDiffReview:     &SourceDiffReview{ThreadID: d.thread.ID, Scope: d.drafts[0].Scope, SourceKey: d.drafts[0].SourceKey},
+			RevisionSourceDiffCommentIDs: []string{d.drafts[0].ID, d.drafts[1].ID},
+		}),
+	}})
+	d.row = d.messageRow(t)
+	d.wantEnvelope(t, 1)
+	return d
+}
+
+// messageRow is the one user row carrying the message.
+func (d reviewDispatch) messageRow(t *testing.T) store.Item {
+	t.Helper()
+	items, err := d.app.store.ListItems(d.thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []store.Item
+	for _, item := range items {
+		if item.Kind == "user_text" && strings.Contains(item.Summary, reviewDispatchText) {
+			rows = append(rows, item)
+		}
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows carrying the message = %+v, want one", rows)
+	}
+	return rows[0]
+}
+
+// wantEnvelope fails unless the fake CLI saw n envelopes, the last of which
+// carries the message's text and each review comment exactly once.
+func (d reviewDispatch) wantEnvelope(t *testing.T, n int) {
+	t.Helper()
+	envelopes := waitForRecordedUserEnvelopes(t, d.logPath, n)
+	if len(envelopes) != n {
+		t.Fatalf("outbound envelopes = %d, want %d", len(envelopes), n)
+	}
+	text, _ := envelopeText(t, envelopes[n-1])
+	for _, want := range []string{reviewDispatchText, d.drafts[0].Body, d.drafts[1].Body} {
+		if got := strings.Count(text, want); got != 1 {
+			t.Fatalf("envelope %d carries %q %d times, want once:\n%s", n, want, got, text)
+		}
+	}
+}
+
+// resend dispatches the message the restore put back on the queue, as the
+// next drain would.
+func (d reviewDispatch) resend(t *testing.T) {
+	t.Helper()
+	item, ok := d.app.triage.RemoveQueuedFlushItem(d.thread.ID, "queue:review")
+	if !ok {
+		t.Fatal("the restore did not put the message back on the queue")
+	}
+	d.app.dispatchFlush(d.thread.ID, []triage.QueuedFlushItem{item})
+}
+
+// wantStatus fails unless every review comment has status.
+func (d reviewDispatch) wantStatus(t *testing.T, app *App, status, when string) {
+	t.Helper()
+	for _, draft := range d.drafts {
+		got, err := app.store.GetDiffReviewComment(store.ThreadReviewOwner(d.thread.ID), draft.ID)
+		if err != nil || got.Status != status {
+			t.Fatalf("%s: comment %q = %+v (%v), want %s", when, draft.Body, got, err, status)
+		}
+	}
+}
+
+// A session death whose composer write fails requeues the message it took
+// back. Its row is gone and its comments are drafts again, so the requeue
+// sends the message's own text and renders the comments once more from the
+// drafts: the provider sees the text once, with each comment once.
+func TestRequeueAfterAFailedDraftWriteSendsTheReviewCommentsOnce(t *testing.T) {
+	t.Parallel()
+	d := startReviewDispatch(t, "requeue-failed-draft-write")
+	execOnStore(t, d.dbPath, `CREATE TRIGGER refuse_draft_insert BEFORE INSERT ON thread_drafts BEGIN SELECT RAISE(ABORT, 'injected draft failure'); END`)
+	execOnStore(t, d.dbPath, `CREATE TRIGGER refuse_draft_update BEFORE UPDATE ON thread_drafts BEGIN SELECT RAISE(ABORT, 'injected draft failure'); END`)
+	if requeued := d.app.restoreUnconfirmedQueueOnSessionDeath(d.thread.ID); len(requeued) != 1 {
+		t.Fatalf("requeued = %+v, want the message back on the queue", requeued)
+	}
+	d.wantStatus(t, d.app, "draft", "after the restore")
+	execOnStore(t, d.dbPath, `DROP TRIGGER refuse_draft_insert`)
+	execOnStore(t, d.dbPath, `DROP TRIGGER refuse_draft_update`)
+
+	d.resend(t)
+	d.wantEnvelope(t, 2)
+	waitForCondition(t, "the resend to claim the comments", func() bool {
+		got, err := d.app.store.GetDiffReviewComment(store.ThreadReviewOwner(d.thread.ID), d.drafts[1].ID)
+		return err == nil && got.Status == "sent"
+	})
+	d.wantStatus(t, d.app, "sent", "after the resend")
+	row := d.messageRow(t)
+	for _, draft := range d.drafts {
+		if got := strings.Count(row.Summary, draft.Body); got != 1 {
+			t.Fatalf("resent row renders %q %d times, want once:\n%s", draft.Body, got, row.Summary)
+		}
+	}
+}
+
+// A session death that cannot delete the message's row requeues it with
+// the row still holding its comments. The resend reads them as its own,
+// retires the old row, and claims them again: the provider sees each once.
+func TestRequeueAfterAFailedRowCleanupResolvesItsReviewComments(t *testing.T) {
+	t.Parallel()
+	d := startReviewDispatch(t, "requeue-failed-cleanup")
+	execOnStore(t, d.dbPath, fmt.Sprintf(`CREATE TRIGGER refuse_row_delete BEFORE DELETE ON items WHEN OLD.id = '%s' BEGIN SELECT RAISE(ABORT, 'injected delete failure'); END`, d.row.ID))
+	requeued := d.app.restoreUnconfirmedQueueOnSessionDeath(d.thread.ID)
+	if len(requeued) != 1 || requeued[0].StaleUserItemID != d.row.ID {
+		t.Fatalf("requeued = %+v, want the message back on the queue naming its row", requeued)
+	}
+	d.wantStatus(t, d.app, "sent", "while the old row holds them")
+	execOnStore(t, d.dbPath, `DROP TRIGGER refuse_row_delete`)
+
+	d.resend(t)
+	d.wantEnvelope(t, 2)
+	waitForCondition(t, "the resend to replace the old row", func() bool {
+		items, err := d.app.store.ListItems(d.thread.ID)
+		if err != nil {
+			return false
+		}
+		n := 0
+		for _, item := range items {
+			if item.Kind == "user_text" && strings.Contains(item.Summary, reviewDispatchText) {
+				n++
+			}
+		}
+		return n == 1
+	})
+	d.wantStatus(t, d.app, "sent", "after the resend")
+	if released, err := d.app.store.ReleaseUnsettledDiffReviewClaims(); err != nil || released != 2 {
+		// The resend's claims wait for the provider's confirmation, which
+		// the fake CLI never sends; both belong to the new row.
+		t.Fatalf("ReleaseUnsettledDiffReviewClaims = %d, %v; want the resend's two claims", released, err)
+	}
+}
+
+// A message taken back by a session death returns its own text to the
+// composer and its review comments to drafts, never the rendered comments
+// with them; a boot keeps that state.
+func TestSessionDeathRestoresTheTextWithoutItsReviewComments(t *testing.T) {
+	t.Parallel()
+	d := startReviewDispatch(t, "restore-text-without-comments")
+	d.app.restoreUnconfirmedQueueOnSessionDeath(d.thread.ID)
+	wantRestored := func(app *App, when string) {
+		t.Helper()
+		draft, _, err := app.store.GetThreadDraft(d.thread.ID)
+		if err != nil || draft.Content != reviewDispatchText {
+			t.Fatalf("%s: composer draft = %q (%v), want the message's own text", when, draft.Content, err)
+		}
+		d.wantStatus(t, app, "draft", when)
+	}
+	wantRestored(d.app, "after the restore")
+	if err := d.app.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rebooted := newTestAppAtStorePath(t, d.dbPath)
+	rebooted.triage = triage.NewRouter(rebooted.store, func(eventchan.Channel, any) {})
+	rebooted.settlePriorInstance()
+	wantRestored(rebooted, "after a boot")
+}
+
+// A direct send Claude retires unrun returns the same way: its text to the
+// composer, its review comments to drafts.
+func TestUndeliveredDirectSendRestoresTheTextWithoutItsReviewComments(t *testing.T) {
+	t.Parallel()
+	app, _ := newAppForFlushQueueRPC(t)
+	thread := testThread("undelivered-direct-review")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	var ids []string
+	var bodies []string
+	for _, body := range []string{"Rename the counter.", "Check the nil map."} {
+		draft, err := app.CreateDiffReviewComment(thread.ID, diffReviewPRInput(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids, bodies = append(ids, draft.ID), append(bodies, body)
+	}
+	source := &SourceDiffReview{ThreadID: thread.ID, Scope: string(store.DiffReviewScopePR), SourceKey: diffReviewPRInput("").SourceKey}
+	resolved, err := app.resolveUserMessageEnvelope(thread.ID, reviewDispatchText, userMessageInputs{revisionSourceDiffReview: source, revisionSourceDiffCommentIDs: ids})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.claimDiffReviewDelivery(thread.ID, 0, "user:0", resolved, false); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	if _, err := app.store.AppendItem(store.Item{ID: "user:0", ThreadID: thread.ID, Kind: "user_text", Role: "user", Status: "completed", Summary: resolved.content, Meta: resolved.userMessageMeta, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	app.triage.RegisterPendingSendWithExpectation(thread.ID, "user:0", 0, triage.PendingSendExpectation{ProviderItemID: "u-direct"})
+	for _, state := range []provider.CommandLifecycleState{provider.CommandQueued, provider.CommandCancelled} {
+		meta, err := json.Marshal(provider.CommandLifecycleMeta{CommandUUID: "u-direct", State: state})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := app.triage.Handle(provider.ProviderEvent{Kind: provider.EventCommandLifecycle, ThreadID: thread.ID, ItemID: "u-direct", Meta: meta, Timestamp: time.Now()}); err != nil {
+			t.Fatalf("lifecycle %s: %v", state, err)
+		}
+	}
+	waitForCondition(t, "the undelivered send in the composer", func() bool {
+		draft, _, err := app.store.GetThreadDraft(thread.ID)
+		return err == nil && draft.Content != ""
+	})
+	draft, _, err := app.store.GetThreadDraft(thread.ID)
+	if err != nil || draft.Content != reviewDispatchText {
+		t.Fatalf("composer draft = %q (%v), want the message's own text", draft.Content, err)
+	}
+	for i, id := range ids {
+		wantReviewDraft(t, app, store.ThreadReviewOwner(thread.ID), id, "after the restore of "+bodies[i])
+	}
+}
+
+// A joined message records its text before the review comments any member
+// rendered, joined by the same walk as its summary, so a restore of the one
+// row returns every member's own text and none of the rendered comments.
+func TestJoinFlushMembersRecordsTheTextBeforeReviewComments(t *testing.T) {
+	t.Parallel()
+	own := "first, own"
+	members := []flushMember{
+		{resolved: resolvedUserMessage{content: own + "\n\nrendered comment", providerContent: own + "\n\nrendered comment", textBeforeReviewComments: &own}},
+		{resolved: resolvedUserMessage{content: "second", providerContent: "second"}},
+	}
+	joined, err := joinFlushMembers(members)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, err := usermessage.FromItem(store.Item{Meta: joined.meta})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := own + joinedFlushSeparator + "second"
+	if got := meta.TextWithoutReviewComments(joined.content); got != want {
+		t.Fatalf("joined text without review comments = %q, want %q", got, want)
+	}
+	if !strings.Contains(joined.content, "rendered comment") {
+		t.Fatalf("joined summary = %q, want the rendered comment", joined.content)
+	}
 }

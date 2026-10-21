@@ -118,6 +118,11 @@ type userMessageInputs struct {
 	// is what keeps the chip off ordinary rows.
 	origin       string
 	originThread *usermessage.OriginThread
+	// heldBy are the rows an earlier dispatch of this same message landed
+	// as and that are still to be retired (a requeue's stale row): the
+	// review comments their claims hold are this message's own, so its
+	// resolution reads them as drafts.
+	heldBy []string
 }
 
 var errEmptyUserMessage = errors.New("enter a message or attach a file before sending")
@@ -167,7 +172,11 @@ type resolvedUserMessage struct {
 	// revisionDiffComments are the drafts as content carries them; the
 	// delivery claims exactly these (claimDiffReviewDelivery).
 	revisionDiffComments []store.DiffReviewCommentSnapshot
-	userMessageMeta      string
+	// textBeforeReviewComments is content before those drafts were
+	// rendered into it, or nil when it renders none
+	// (usermessage.Meta.TextBeforeReviewComments).
+	textBeforeReviewComments *string
+	userMessageMeta          string
 }
 
 // resolveUserMessageEnvelope runs the shared prologue that every
@@ -218,11 +227,15 @@ func (a *App) resolveUserMessageEnvelope(
 	}
 	revisionDiffCommentIDs := inputs.revisionSourceDiffCommentIDs
 	var revisionDiffComments []store.DiffReviewCommentSnapshot
+	var textBeforeReviewComments *string
 	if revisionSourceDiff != nil && len(revisionDiffCommentIDs) > 0 {
-		nextContent, comments, err := a.appendDiffReviewCommentsToContent(diffReviewSourceOwner(revisionSourceDiff), content, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, revisionDiffCommentIDs, revisionSourceDiff.PR)
+		heldBy := store.DiffReviewMessageRows{ThreadID: threadID, ItemIDs: inputs.heldBy}
+		nextContent, comments, err := a.appendDiffReviewCommentsToContent(diffReviewSourceOwner(revisionSourceDiff), content, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, revisionDiffCommentIDs, revisionSourceDiff.PR, heldBy)
 		if err != nil {
 			return resolvedUserMessage{}, fmt.Errorf("diff review comments: %w", err)
 		}
+		before := strings.TrimSpace(content)
+		textBeforeReviewComments = &before
 		content = nextContent
 		revisionDiffComments = comments
 		revisionDiffCommentIDs = make([]string, 0, len(comments))
@@ -270,6 +283,8 @@ func (a *App) resolveUserMessageEnvelope(
 		SendID:                 inputs.sendID,
 		Origin:                 inputs.origin,
 		OriginThread:           inputs.originThread,
+
+		TextBeforeReviewComments: textBeforeReviewComments,
 	})
 	if err != nil {
 		return resolvedUserMessage{}, fmt.Errorf("user meta: %w", err)
@@ -287,7 +302,9 @@ func (a *App) resolveUserMessageEnvelope(
 		revisionSourceDiff:     revisionSourceDiff,
 		revisionDiffCommentIDs: revisionDiffCommentIDs,
 		revisionDiffComments:   revisionDiffComments,
-		userMessageMeta:        userMeta,
+
+		textBeforeReviewComments: textBeforeReviewComments,
+		userMessageMeta:          userMeta,
 	}, nil
 }
 

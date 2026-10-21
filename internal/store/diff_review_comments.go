@@ -812,7 +812,19 @@ func (s *Store) ListDiffReviewComments(owner DiffReviewOwner, scope, sourceKey s
 	return out, nil
 }
 
-func (s *Store) ListDraftDiffReviewCommentsByID(owner DiffReviewOwner, scope, sourceKey string, ids []string) ([]DiffReviewComment, error) {
+// DiffReviewMessageRows are user rows of thread ThreadID that an earlier
+// dispatch of one message landed as, and that are still to be retired.
+type DiffReviewMessageRows struct {
+	ThreadID string
+	ItemIDs  []string
+}
+
+// ListDraftDiffReviewCommentsByID reads the owner's drafts ids for a
+// message to send, failing unless every one is a draft. A comment the
+// claim of one of heldBy's rows holds counts as a draft: it is the same
+// message's, sent again, and the retire of that row returns it before the
+// new claim takes it (RetireUndeliveredUserRow).
+func (s *Store) ListDraftDiffReviewCommentsByID(owner DiffReviewOwner, scope, sourceKey string, ids []string, heldBy DiffReviewMessageRows) ([]DiffReviewComment, error) {
 	if err := owner.validate(); err != nil {
 		return nil, err
 	}
@@ -831,17 +843,23 @@ func (s *Store) ListDraftDiffReviewCommentsByID(owner DiffReviewOwner, scope, so
 	if len(wanted) > MaxDiffReviewCommentIDs {
 		return nil, fmt.Errorf("store: too many diff review comments selected")
 	}
+	held, err := json.Marshal(uniqueNonEmptyStrings(heldBy.ItemIDs))
+	if err != nil {
+		return nil, fmt.Errorf("store: encode the rows holding diff review comments: %w", err)
+	}
 	column, value := owner.column()
 	query := `SELECT ` + diffReviewCommentColumns + `
 	            FROM diff_review_comments
 	           WHERE ` + column + ` = ?
 	             AND scope = ?
 	             AND source_key = ?
-	             AND status = 'draft'
+	             AND (status = 'draft'
+	                  OR (status = 'sent' AND claim_item_id <> '' AND claim_thread_id = ` + boundText + `
+	                      AND claim_item_id IN (SELECT value FROM json_each(?))))
 	             AND id IN (` + placeholders(len(wanted)) + `)
 	           ORDER BY file_path ASC, old_line ASC, new_line ASC, created_at ASC`
-	args := make([]any, 0, 3+len(wanted))
-	args = append(args, value, scope, sourceKey)
+	args := make([]any, 0, 5+len(wanted))
+	args = append(args, value, scope, sourceKey, heldBy.ThreadID, string(held))
 	for _, id := range wanted {
 		args = append(args, id)
 	}

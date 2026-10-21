@@ -381,7 +381,7 @@ func (a *App) requeueEagerPersistedFlushes(threadID string, persisted []triage.E
 		}
 		a.triage.RegisterQueueItem(threadID, triage.QueuedFlushItem{
 			ID:              queueID,
-			Message:         p.Content,
+			Message:         rowTextWithoutReviewComments(p.Content, p.Meta),
 			Payload:         payload,
 			EnqueuedAt:      p.EnqueuedAt,
 			StaleUserItemID: p.UserItemID,
@@ -391,14 +391,7 @@ func (a *App) requeueEagerPersistedFlushes(threadID string, persisted []triage.E
 }
 
 // flushPayloadFromUserMeta rebuilds a flush-queue payload from a
-// persisted user row's usermessage meta — the inverse of the
-// resolveUserMessageEnvelope → Marshal step the original dispatch ran.
-//
-// The revision COMMENT ID lists are deliberately dropped: the original
-// resolution already appended their excerpts into the persisted content
-// this requeue re-sends, and carrying the IDs would make the redispatch
-// append them a second time (round-14, CT14-4). The source refs stay so
-// provenance survives on the re-persisted row.
+// persisted user row's usermessage meta (requeuePayloadFromMeta).
 func flushPayloadFromUserMeta(meta string) (json.RawMessage, error) {
 	if meta == "" {
 		return nil, nil
@@ -412,6 +405,21 @@ func flushPayloadFromUserMeta(meta string) (json.RawMessage, error) {
 	if err := json.Unmarshal([]byte(meta), &m); err != nil {
 		return nil, err
 	}
+	return json.Marshal(requeuePayloadFromMeta(m))
+}
+
+// requeuePayloadFromMeta is the payload that sends a message again from the
+// row an earlier dispatch of it landed as, the inverse of the
+// resolveUserMessageEnvelope -> Marshal step that dispatch ran; its text is
+// rowTextWithoutReviewComments. The row's summary renders the revision
+// comments the message carried. Plan comments stay sent with that dispatch,
+// so their excerpts stay in the text and their ids drop out: carrying them
+// would append the excerpts a second time (round-14, CT14-4). The diff
+// review comments go back to drafts with the row
+// (store.RetireUndeliveredUserRow) and the text is the one before them, so
+// their ids stay and the resend renders them once from the drafts. The
+// source refs stay so provenance survives on the re-persisted row.
+func requeuePayloadFromMeta(m usermessage.Meta) flushQueuePayload {
 	payload := flushQueuePayload{
 		SourceProposedPlan:         m.SourceProposedPlan,
 		RevisionSourceProposedPlan: m.RevisionSourceProposedPlan,
@@ -420,14 +428,35 @@ func flushPayloadFromUserMeta(meta string) (json.RawMessage, error) {
 		// command expansion and whether an otherwise-unexpanded leading slash
 		// reaches Claude's native command router.
 		ExpandComposerCommands: m.ExpandComposerCommands,
-		// So does the send id: the redispatch's fresh row carries it, which
-		// is what keeps a re-sent frame deduping across a requeue.
-		SendID: m.SendID,
+		// The send id travels with the message, not with the row it happened
+		// to be in: a requeued message that is dispatched again persists a
+		// fresh row, and that row is the idempotency record from then on.
+		// A joined row answers for several sends, so all of them travel.
+		SendID:        m.SendID,
+		JoinedSendIDs: m.JoinedSendIDs,
+	}
+	if m.TextBeforeReviewComments != nil {
+		payload.RevisionSourceDiffCommentIDs = m.RevisionSourceDiffCommentIDs
 	}
 	for _, att := range m.Attachments {
-		payload.AttachmentIDs = append(payload.AttachmentIDs, att.ID)
+		if id := strings.TrimSpace(att.ID); id != "" {
+			payload.AttachmentIDs = append(payload.AttachmentIDs, id)
+		}
 	}
-	return json.Marshal(payload)
+	return payload
+}
+
+// rowTextWithoutReviewComments is the text of the user row whose summary
+// and meta are given, without the diff review comments rendered into it
+// (usermessage.Meta.TextWithoutReviewComments): what a resend or the
+// composer gets back when the message is taken back undelivered and its
+// comments return to drafts.
+func rowTextWithoutReviewComments(summary, meta string) string {
+	decoded, err := usermessage.FromItem(store.Item{Summary: summary, Meta: meta})
+	if err != nil {
+		return summary
+	}
+	return decoded.TextWithoutReviewComments(summary)
 }
 
 // attachmentIDsFromUserMeta extracts the attachment ids recorded on a
@@ -525,11 +554,11 @@ func queuedFlushItemFromUnconfirmed(item triage.UnconfirmedFlushItem) (triage.Qu
 	message := strings.TrimSpace(item.Message)
 	payload := append(json.RawMessage(nil), item.Payload...)
 	if item.DeferredItem != nil {
-		message = strings.TrimSpace(item.DeferredItem.Summary)
+		message = strings.TrimSpace(rowTextWithoutReviewComments(item.DeferredItem.Summary, item.DeferredItem.Meta))
 		payload = queuePayloadFromUserItem(*item.DeferredItem, payload)
 	}
 	if item.QuietItem != nil {
-		message = strings.TrimSpace(item.QuietItem.Summary)
+		message = strings.TrimSpace(rowTextWithoutReviewComments(item.QuietItem.Summary, item.QuietItem.Meta))
 		payload = queuePayloadFromUserItem(*item.QuietItem, payload)
 	}
 	if queueItemID == "" {
@@ -548,45 +577,31 @@ func queuedFlushItemFromUnconfirmed(item triage.UnconfirmedFlushItem) (triage.Qu
 	}, true
 }
 
+// queuePayloadFromUserItem is the requeue payload of a row's message
+// (requeuePayloadFromMeta), or fallback when the row's meta does not decode.
 func queuePayloadFromUserItem(item store.Item, fallback json.RawMessage) json.RawMessage {
 	meta, err := usermessage.FromItem(item)
 	if err != nil {
 		return fallback
 	}
-	attachmentIDs := make([]string, 0, len(meta.Attachments))
-	for _, attachment := range meta.Attachments {
-		id := strings.TrimSpace(attachment.ID)
-		if id != "" {
-			attachmentIDs = append(attachmentIDs, id)
-		}
-	}
-	payload, err := json.Marshal(flushQueuePayload{
-		AttachmentIDs:                attachmentIDs,
-		SourceProposedPlan:           meta.SourceProposedPlan,
-		RevisionSourceProposedPlan:   meta.RevisionSourceProposedPlan,
-		RevisionSourceCommentIDs:     meta.RevisionSourceCommentIDs,
-		RevisionSourceDiffReview:     meta.RevisionSourceDiffReview,
-		RevisionSourceDiffCommentIDs: meta.RevisionSourceDiffCommentIDs,
-		ExpandComposerCommands:       meta.ExpandComposerCommands,
-		// The send id travels with the message, not with the row it happened
-		// to be in: a requeued message that is dispatched again persists a
-		// fresh row, and that row is the idempotency record from then on.
-		// A joined row answers for several sends, so all of them travel.
-		SendID:        meta.SendID,
-		JoinedSendIDs: meta.JoinedSendIDs,
-	})
+	payload, err := json.Marshal(requeuePayloadFromMeta(meta))
 	if err != nil {
 		return fallback
 	}
 	return payload
 }
 
+// draftPartFromUserItem is the composer part of a message taken back
+// undelivered from its row: its text without the review comments, which
+// the row's retire returned to drafts, so the composer and the drafts never
+// both carry them.
 func draftPartFromUserItem(item store.Item) composerdraft.Part {
 	part, err := composerdraft.PartFromUserItem(item)
 	if err != nil {
 		log.Printf("flush queue: decode restored user item meta %s/%s: %v", item.ThreadID, item.ID, err)
 		return composerdraft.Part{Content: item.Summary}
 	}
+	part.Content = rowTextWithoutReviewComments(item.Summary, item.Meta)
 	return part
 }
 

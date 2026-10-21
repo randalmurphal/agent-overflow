@@ -116,7 +116,7 @@ func TestPROwnedDiffReviewCommentsStayWithTheirPR(t *testing.T) {
 	if updated, err := s.UpdateDiffReviewComment(pr, "p1", DiffReviewCommentUpdate{Body: "edited"}, 20); err != nil || updated.Body != "edited" {
 		t.Fatalf("update = %+v, %v", updated, err)
 	}
-	if _, err := s.ListDraftDiffReviewCommentsByID(pr, "pr", "pr:"+key, []string{"p1", "t1"}); err == nil {
+	if _, err := s.ListDraftDiffReviewCommentsByID(pr, "pr", "pr:"+key, []string{"p1", "t1"}, DiffReviewMessageRows{}); err == nil {
 		t.Fatal("a PR's selection took a thread's draft")
 	}
 	if err := s.MarkDiffReviewCommentsSent(pr, "pr", "pr:"+key, []string{"p1"}, 30, "user:2"); err != nil {

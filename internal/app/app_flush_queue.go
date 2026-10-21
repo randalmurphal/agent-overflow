@@ -618,6 +618,10 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 			// would have had if the thread had been idle.
 			origin:       payload.Origin,
 			originThread: payload.OriginThread,
+			// The review drafts a previous dispatch's stale row still
+			// holds are this message's; the cleanup below returns them
+			// before the claim takes them again.
+			heldBy: staleRowsOf(item),
 		})
 		if err != nil {
 			return nil, false, requeue, err
@@ -1448,4 +1452,13 @@ func (a *App) nextFlushUserItemID(threadID string, turnIndex int) (string, error
 		return "", err
 	}
 	return fmt.Sprintf("user:%d:flush:%d", turnIndex, seq), nil
+}
+
+// staleRowsOf is the stale row a requeued item's earlier dispatch left, if
+// any (QueuedFlushItem.StaleUserItemID).
+func staleRowsOf(item triage.QueuedFlushItem) []string {
+	if item.StaleUserItemID == "" {
+		return nil
+	}
+	return []string{item.StaleUserItemID}
 }

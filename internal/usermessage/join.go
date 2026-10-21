@@ -111,6 +111,7 @@ func (in Input) Projection() Meta {
 		JoinedSendIDs:                in.JoinedSendIDs,
 		Origin:                       in.Origin,
 		OriginThread:                 in.OriginThread,
+		TextBeforeReviewComments:     in.TextBeforeReviewComments,
 	}
 }
 
@@ -217,6 +218,7 @@ func (m Meta) isZero() bool {
 		len(m.JoinedSendIDs) == 0 &&
 		m.Origin == "" &&
 		m.OriginThread == nil &&
+		m.TextBeforeReviewComments == nil &&
 		!m.ExpandComposerCommands
 }
 
@@ -241,6 +243,7 @@ var metaTypedKeys = []string{
 	"joinedSendIds",
 	"origin",
 	"originThread",
+	"textBeforeReviewComments",
 }
 
 // MergeJoinedMeta rewrites the typed usermessage fields of `existing` to those

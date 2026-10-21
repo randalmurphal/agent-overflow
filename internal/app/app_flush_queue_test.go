@@ -3423,6 +3423,28 @@ func TestFlushPayloadFromUserMeta_DropsBakedRevisionCommentIDs(t *testing.T) {
 	if !payload.ExpandComposerCommands {
 		t.Error("ExpandComposerCommands = false, want composer provenance preserved across requeue")
 	}
+
+	// A row that records its text before the review comments it rendered
+	// resends that text, so the comments' ids stay for the resend to
+	// render them once; the plan excerpts stay in the text and their ids
+	// still drop, from both rebuilds.
+	rendered := strings.Replace(meta, `"expandComposerCommands":true`, `"expandComposerCommands":true,"textBeforeReviewComments":"own text"`, 1)
+	fromMeta, err := flushPayloadFromUserMeta(rendered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []json.RawMessage{fromMeta, queuePayloadFromUserItem(store.Item{Summary: "own text, rendered", Meta: rendered}, nil)} {
+		var payload flushQueuePayload
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if len(payload.RevisionSourceCommentIDs) != 0 || strings.Join(payload.RevisionSourceDiffCommentIDs, ",") != "d1" {
+			t.Errorf("payload plan ids %v, diff ids %v; want none and [d1]", payload.RevisionSourceCommentIDs, payload.RevisionSourceDiffCommentIDs)
+		}
+	}
+	if got := rowTextWithoutReviewComments("own text, rendered", rendered); got != "own text" {
+		t.Errorf("resend text = %q, want the text before the review comments", got)
+	}
 }
 
 func TestQueuePayloadFromUserItemPreservesComposerCommandProvenance(t *testing.T) {
