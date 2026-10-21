@@ -552,8 +552,11 @@ describe('open with agent', () => {
     setBindingMock('GetThread', async () => ({ id: 't9', projectId: 'p1', title: '', updatedAt: 1 }));
     const save = setBindingMock('SaveDraft', async () => undefined);
     const panes = await import('./panes.svelte');
-    const mount = vi.spyOn(panes, 'mountThreadInPane');
+    const mount = vi.spyOn(panes, 'mountThreadInPane').mockImplementation(async () => ({}) as never);
     expect(await openPRThread(PANE)).toBe(true);
+    // In the focused pane's place: no target, so the tool pane's slot goes to it.
+    expect(mount).toHaveBeenCalledWith(expect.objectContaining({ id: 't9' }));
+    expect(mount.mock.calls[0]).toHaveLength(1);
     expect(open).toHaveBeenCalledWith({
       projectId: 'p1', pr: { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 1 },
       headRefName: 'feature-1', crossRepository: false, url: 'https://github.com/owner/repo/pull/1', nodeId: 'node-1', title: 'PR 1',
