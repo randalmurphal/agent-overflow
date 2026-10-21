@@ -41,19 +41,28 @@ func CredentialOrgID(data []byte) (string, bool) {
 }
 
 // CredentialLoginID identifies the login a Codex `auth.json` holds: the
-// ChatGPT user (`chatgpt_user_id`, or `user_id` as Codex falls back to it in
-// login/src/token_data.rs) together with the workspace CredentialOrgID
-// reports. A workspace alone is shared by every member of a team plan.
-// Either half missing reports ("", false), which matches nothing.
+// ChatGPT user together with the workspace CredentialOrgID reports. A
+// workspace alone is shared by every member of a team plan. The user is
+// `chatgpt_user_id`, or `user_id` as Codex falls back to it in
+// login/src/token_data.rs; Codex treats both as optional, so a token with
+// neither is named by its email, the identity AO's saved accounts match
+// on. Each kind is tagged, so a credential named one way never matches
+// one named another. No user and no email, or no workspace, reports
+// ("", false), which matches nothing.
 func CredentialLoginID(data []byte) (string, bool) {
 	tokens, ok := credentialTokens(data)
 	if !ok {
 		return "", false
 	}
 	claims := idTokenAuthClaims(tokens.IDToken)
-	user := claims.ChatGPTUserID
-	if user == "" {
-		user = claims.UserID
+	var user string
+	switch {
+	case claims.ChatGPTUserID != "":
+		user = "user:" + claims.ChatGPTUserID
+	case claims.UserID != "":
+		user = "user:" + claims.UserID
+	case claims.Email != "":
+		user = "email:" + strings.ToLower(claims.Email)
 	}
 	org, ok := CredentialOrgID(data)
 	if user == "" || !ok {
@@ -78,11 +87,13 @@ func credentialTokens(data []byte) (credentialTokenFields, bool) {
 }
 
 // idTokenAuthClaimSet is the `https://api.openai.com/auth` namespace of a
-// Codex id_token, trimmed.
+// Codex id_token, trimmed, plus the email Codex reads beside it: the
+// top-level claim, else the `https://api.openai.com/profile` one.
 type idTokenAuthClaimSet struct {
 	ChatGPTAccountID string `json:"chatgpt_account_id"`
 	ChatGPTUserID    string `json:"chatgpt_user_id"`
 	UserID           string `json:"user_id"`
+	Email            string `json:"-"`
 }
 
 // maxIDTokenBytes bounds the JWT this parser will look at. A real Codex
@@ -109,14 +120,23 @@ func idTokenAuthClaims(jwt string) idTokenAuthClaimSet {
 		return idTokenAuthClaimSet{}
 	}
 	var claims struct {
+		Email   string `json:"email"`
+		Profile struct {
+			Email string `json:"email"`
+		} `json:"https://api.openai.com/profile"`
 		Auth idTokenAuthClaimSet `json:"https://api.openai.com/auth"`
 	}
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		return idTokenAuthClaimSet{}
 	}
+	email := strings.TrimSpace(claims.Email)
+	if email == "" {
+		email = strings.TrimSpace(claims.Profile.Email)
+	}
 	return idTokenAuthClaimSet{
 		ChatGPTAccountID: strings.TrimSpace(claims.Auth.ChatGPTAccountID),
 		ChatGPTUserID:    strings.TrimSpace(claims.Auth.ChatGPTUserID),
 		UserID:           strings.TrimSpace(claims.Auth.UserID),
+		Email:            email,
 	}
 }

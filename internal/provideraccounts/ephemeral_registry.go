@@ -187,14 +187,16 @@ func sweepableEphemeralHome(providerName, configHome string) bool {
 // SweepEphemeralCredentials recovers and removes credentials left behind
 // by ephemeral homes that never reached their cleanup — a crash or kill
 // mid-probe or mid-login. Run at boot, after the orphan-slot prune.
+// selected maps each provider to this store's selected account ID.
 //
 // Per entry whose owner is gone: read whatever credential the home still
 // holds (Keychain item for Claude on darwin, credential file otherwise).
-// When the canonical store holds the same login behind the orphan on its
-// chain, the orphan replaces it first, as CommitSelectedCredential orders a
-// selected rotation. Which store's account the orphan came from does not
-// matter: the canonical store is shared, and the orphan's rotation consumed
-// the refresh token it holds. Then,
+// When the owning account is this store's selected one and the canonical
+// store holds the same login behind the orphan on its chain, the orphan
+// replaces it first, as CommitSelectedCredential orders a selected
+// rotation. Only the store that selected an account writes its canonical
+// credential: another store's sweep restores the slot alone, and the owner
+// promotes it (PromoteSlotOverCanonical). Then,
 // if the owning account's slot still exists and the orphan's bytes are
 // usable and the slot's are not (missing, the provider's sign-out husk, or
 // behind the orphan on the rotation chain), restore them into the slot:
@@ -202,11 +204,11 @@ func sweepableEphemeralHome(providerName, configHome string) bool {
 // remnant credential, the leftover directory, and the entry. Any step that
 // cannot prove it is safe keeps the entry for the next boot instead of
 // guessing.
-func (c *Credentials) SweepEphemeralCredentials(now time.Time) ([]EphemeralSweepResult, error) {
+func (c *Credentials) SweepEphemeralCredentials(now time.Time, selected map[string]string) ([]EphemeralSweepResult, error) {
 	var results []EphemeralSweepResult
 	var sweepErrs []error
 	for _, providerName := range ephemeralProviders {
-		providerResults, err := c.sweepEphemeralHomes(providerName, now)
+		providerResults, err := c.sweepEphemeralHomes(providerName, now, selected[providerName])
 		results = append(results, providerResults...)
 		if err != nil {
 			sweepErrs = append(sweepErrs, err)
@@ -215,7 +217,7 @@ func (c *Credentials) SweepEphemeralCredentials(now time.Time) ([]EphemeralSweep
 	return results, errors.Join(sweepErrs...)
 }
 
-func (c *Credentials) sweepEphemeralHomes(providerName string, now time.Time) ([]EphemeralSweepResult, error) {
+func (c *Credentials) sweepEphemeralHomes(providerName string, now time.Time, selectedAccountID string) ([]EphemeralSweepResult, error) {
 	dir, err := c.ephemeralRegistryDir(providerName)
 	if err != nil {
 		return nil, err
@@ -274,7 +276,7 @@ func (c *Credentials) sweepEphemeralHomes(providerName string, now time.Time) ([
 			continue
 		}
 
-		result, entryErr := c.sweepOneEphemeralHome(providerName, entry)
+		result, entryErr := c.sweepOneEphemeralHome(providerName, entry, selectedAccountID)
 		if entryErr != nil {
 			// Kept for the next boot: the orphan may still hold the only
 			// live copy of a chain, so an indeterminate state is never
@@ -376,7 +378,7 @@ func claimEphemeralEntry(entryPath, leasePath string, entry ephemeralRegistryEnt
 	return lease, entryClaimed, nil
 }
 
-func (c *Credentials) sweepOneEphemeralHome(providerName string, entry ephemeralRegistryEntry) (EphemeralSweepResult, error) {
+func (c *Credentials) sweepOneEphemeralHome(providerName string, entry ephemeralRegistryEntry, selectedAccountID string) (EphemeralSweepResult, error) {
 	result := EphemeralSweepResult{Provider: providerName, ConfigHome: entry.ConfigHome, AccountID: entry.AccountID}
 
 	orphan, readErr := c.readCredentialAt(providerName, entry.ConfigHome, false)
@@ -390,11 +392,13 @@ func (c *Credentials) sweepOneEphemeralHome(providerName string, entry ephemeral
 
 	result.Action = "discarded"
 	if entry.AccountID != "" && !c.credentialSignedOut(providerName, orphan.Bytes()) {
-		replaced, err := c.adoptIntoCanonical(providerName, orphan.Bytes())
-		if err != nil {
-			return result, err
+		if entry.AccountID == selectedAccountID {
+			replaced, err := c.promoteOverCanonical(providerName, orphan.Bytes())
+			if err != nil {
+				return result, err
+			}
+			result.Canonical = replaced
 		}
-		result.Canonical = replaced
 		adopted, err := c.adoptIntoSlot(providerName, entry.AccountID, orphan.Bytes())
 		if err != nil {
 			return result, err
@@ -406,19 +410,20 @@ func (c *Credentials) sweepOneEphemeralHome(providerName string, entry ephemeral
 	return result, c.removeEphemeralRemnants(providerName, entry.ConfigHome)
 }
 
-// adoptIntoCanonical replaces the canonical credential with an orphan when
-// the canonical store holds the same login (Policy.LoginID) strictly behind
-// it on the chain, whichever account and store the orphan came from. A different login there
-// is an outside sign-in, and unknown identity or position proves nothing,
-// so either leaves the canonical store alone.
+// promoteOverCanonical replaces the canonical credential with candidate
+// when the canonical store holds the same login (Policy.LoginID) strictly
+// behind it on the chain. A different login there is an outside sign-in,
+// and unknown identity or position proves nothing, so either leaves the
+// canonical store alone. The caller is the store that selected the
+// candidate's account.
 //
 // Nothing serializes this read-compare-write against the provider CLI:
 // Codex takes no lock AO can share, so every AO write of the canonical
 // Codex credential has the same window. The rotation chain narrows it to
-// sign-ins: the canonical bytes behind the orphan hold a refresh token the
-// orphan's rotation consumed, so no CLI can rotate them, and only a sign-in
-// completing inside the read-compare-write would be replaced.
-func (c *Credentials) adoptIntoCanonical(providerName string, orphan []byte) (bool, error) {
+// sign-ins: the canonical bytes behind the candidate hold a refresh token
+// the candidate's rotation consumed, so no CLI can rotate them, and only a
+// sign-in completing inside the read-compare-write would be replaced.
+func (c *Credentials) promoteOverCanonical(providerName string, candidate []byte) (bool, error) {
 	if c.policy.LoginID == nil {
 		return false, nil
 	}
@@ -429,13 +434,35 @@ func (c *Credentials) adoptIntoCanonical(providerName string, orphan []byte) (bo
 	if err != nil {
 		return false, fmt.Errorf("provideraccounts: inspect canonical %s credential before adoption: %w", providerName, err)
 	}
-	if !c.laterOnSameLogin(providerName, orphan, canonical.Bytes()) {
+	if !c.laterOnSameLogin(providerName, candidate, canonical.Bytes()) {
 		return false, nil
 	}
-	if err := c.writeActiveCredential(providerName, orphan); err != nil {
-		return false, fmt.Errorf("provideraccounts: restore crash-orphaned %s credential to the canonical home: %w", providerName, err)
+	if err := c.writeActiveCredential(providerName, candidate); err != nil {
+		return false, fmt.Errorf("provideraccounts: restore the later %s credential to the canonical home: %w", providerName, err)
 	}
 	return true, nil
+}
+
+// PromoteSlotOverCanonical puts an account's saved credential into the
+// canonical store when the slot holds the same login strictly later on its
+// chain. Another store's boot sweep leaves that state: it restores a
+// crashed probe's rotation into the slot, and the canonical credential
+// still holds the token that rotation consumed. Only the store that
+// selected the account calls this, under its provider reconcile lock. It
+// returns the credential it wrote, if it wrote one.
+func (c *Credentials) PromoteSlotOverCanonical(providerName, accountID string) (CredentialSnapshot, bool, error) {
+	slot, err := c.ReadCredentialSnapshot(providerName, accountID, false)
+	if IsCredentialMissing(err) {
+		return CredentialSnapshot{}, false, nil
+	}
+	if err != nil {
+		return CredentialSnapshot{}, false, fmt.Errorf("provideraccounts: read %s slot %s before promoting it: %w", providerName, accountID, err)
+	}
+	promoted, err := c.promoteOverCanonical(providerName, slot.Bytes())
+	if err != nil || !promoted {
+		return CredentialSnapshot{}, false, err
+	}
+	return slot, true, nil
 }
 
 // adoptIntoSlot restores the orphan into the account's slot when the slot

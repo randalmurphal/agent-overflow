@@ -116,4 +116,29 @@ func TestCredentialLoginIDNeedsTheUserAndTheWorkspace(t *testing.T) {
 	if id, ok := CredentialLoginID(authFile(map[string]any{"chatgpt_user_id": "user-alice"})); ok {
 		t.Fatalf("a token without a workspace has login id %q", id)
 	}
+
+	// Codex treats both user claims as optional; the email names the login
+	// then, and a different email or workspace is a different login.
+	withEmail := func(claims map[string]any) []byte {
+		data, _ := json.Marshal(map[string]any{"tokens": map[string]any{"id_token": encodeIDToken(t, claims)}})
+		return data
+	}
+	workspace := map[string]any{"chatgpt_account_id": "ws-team"}
+	byEmail, ok := CredentialLoginID(withEmail(map[string]any{"email": "Alice@example.com", "https://api.openai.com/auth": workspace}))
+	if !ok {
+		t.Fatal("a token with an email and a workspace has no login id")
+	}
+	byProfile, ok := CredentialLoginID(withEmail(map[string]any{
+		"https://api.openai.com/profile": map[string]any{"email": "alice@example.com"},
+		"https://api.openai.com/auth":    workspace,
+	}))
+	if !ok || byProfile != byEmail {
+		t.Fatalf("profile email = %q, %v; want %q", byProfile, ok, byEmail)
+	}
+	if other, _ := CredentialLoginID(withEmail(map[string]any{"email": "bob@example.com", "https://api.openai.com/auth": workspace})); other == byEmail {
+		t.Fatal("two emails in one workspace share a login id")
+	}
+	if byEmail == alice {
+		t.Fatal("an email-named login matches a user-named one")
+	}
 }

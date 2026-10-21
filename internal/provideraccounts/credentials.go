@@ -637,13 +637,14 @@ func releaseSlot(lock *os.File) error {
 // put a later credential there, and an unconditional write would rewind
 // the slot onto a refresh token that has already been used.
 //
-// A slot that holds expected but is the same login strictly later on its
-// chain than data is kept too. The boot sweep can leave a slot there, ahead
-// of the canonical credential a selected probe derives data from, and the
-// bytes behind it hold a refresh token its rotation consumed. Unlike the
-// unconditional writes noteSupersededSlotWrite only observes, this refusal
-// cannot wedge a slot: a switch away still saves the canonical credential
-// over it.
+// A slot that holds expected but sits strictly later on the rotation chain
+// than data is kept too, whatever login either holds. Another store's boot
+// sweep can leave a slot there, ahead of the canonical credential a
+// selected probe derives data from, and bytes behind a rotation hold the
+// refresh token it consumed. When data is instead a different live login,
+// keeping the slot loses nothing either. Unlike the unconditional writes
+// noteSupersededSlotWrite only observes, this refusal cannot wedge a slot:
+// sign-ins and switches still write it.
 func (c *Credentials) ReplaceAccountCredential(providerName, accountID string, expected, data []byte) (replaced bool, retErr error) {
 	accountDir, err := c.accountDirectory(providerName, accountID)
 	if err != nil {
@@ -664,7 +665,7 @@ func (c *Credentials) ReplaceAccountCredential(providerName, accountID string, e
 		return true, nil
 	case !bytes.Equal(current.Bytes(), expected):
 		return false, nil
-	case c.laterOnSameLogin(providerName, current.Bytes(), data):
+	case c.chainAdvances(providerName, data, current.Bytes()):
 		return false, nil
 	}
 	if err := c.writeCredentialAt(providerName, accountDir, false, data); err != nil {
@@ -675,6 +676,30 @@ func (c *Credentials) ReplaceAccountCredential(providerName, accountID string, e
 
 func (c *Credentials) WriteAccountCredential(providerName, accountID string, data []byte) error {
 	return c.writeCredential(providerName, accountID, false, data)
+}
+
+// preserveAccountCredential saves an outgoing account's canonical
+// credential into its slot, unless the slot holds the same login strictly
+// later on its chain: another store's boot sweep restored a crashed probe's
+// rotation there, and the canonical bytes hold the token it consumed. Any
+// other slot content is overwritten, as a switch always has; refusing on
+// chain position alone would refuse a sign-in whose new chain sits behind
+// the old one.
+func (c *Credentials) preserveAccountCredential(providerName, accountID string, data []byte) (retErr error) {
+	lock, err := c.lockSlot(providerName, accountID)
+	if err != nil {
+		return err
+	}
+	defer func() { retErr = errors.Join(retErr, releaseSlot(lock)) }()
+	home, err := c.ensureAccountDirectory(providerName, accountID)
+	if err != nil {
+		return err
+	}
+	if current, err := c.readCredentialAt(providerName, home, false); err == nil &&
+		c.laterOnSameLogin(providerName, current.Bytes(), data) {
+		return nil
+	}
+	return c.writeCredentialAt(providerName, home, false, data)
 }
 
 // CommitSelectedCredential publishes a refreshed credential to the canonical

@@ -404,14 +404,32 @@ func TestSelectedCodexUsageRefreshNeverRewindsTheSlot(t *testing.T) {
 	}
 }
 
+// chatGPTIdentity is how a test ID token names its login.
+type chatGPTIdentity int
+
+const (
+	identifiedByUserID chatGPTIdentity = iota
+	// identifiedByEmail leaves out both user-id claims, which Codex treats
+	// as optional.
+	identifiedByEmail
+	// identifiedByNothing leaves out the email too.
+	identifiedByNothing
+)
+
 // chatGPTAuthForTest is a ChatGPT-mode Codex auth.json for one login at one
 // point on its rotation chain.
-func chatGPTAuthForTest(t *testing.T, user, refreshToken string, lastRefresh time.Time) []byte {
+func chatGPTAuthForTest(t *testing.T, identity chatGPTIdentity, refreshToken string, lastRefresh time.Time) []byte {
 	t.Helper()
-	claims, err := json.Marshal(map[string]any{"https://api.openai.com/auth": map[string]any{
-		"chatgpt_account_id": "ws-1",
-		"chatgpt_user_id":    user,
-	}})
+	auth := map[string]any{"chatgpt_account_id": "ws-1"}
+	idClaims := map[string]any{"https://api.openai.com/auth": auth}
+	switch identity {
+	case identifiedByUserID:
+		auth["chatgpt_user_id"] = "user-1"
+		idClaims["email"] = "selected@example.com"
+	case identifiedByEmail:
+		idClaims["email"] = "selected@example.com"
+	}
+	claims, err := json.Marshal(idClaims)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,15 +451,33 @@ func chatGPTAuthForTest(t *testing.T, user, refreshToken string, lastRefresh tim
 
 // The boot sweep of another data root can restore a crashed probe's
 // rotation into the selected account's slot while the canonical credential
-// stays on the token that rotation consumed. A selected probe that starts
-// after that reads the consumed canonical credential and, its access token
-// still valid, rotates nothing; its commit must not save those bytes over
-// the slot's live ones.
+// stays on the token that rotation consumed. The selected probe first
+// promotes the slot into the canonical store when both name one login. When
+// nothing names the login it cannot, and the probe reads the consumed
+// canonical credential and, its access token still valid, rotates nothing;
+// its commit must still not save those bytes over the slot's live ones.
 func TestSelectedCodexUsageRefreshKeepsASlotAheadOfCanonical(t *testing.T) {
 	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		identity chatGPTIdentity
+		promotes bool
+	}{
+		{name: "user id", identity: identifiedByUserID, promotes: true},
+		{name: "email only", identity: identifiedByEmail, promotes: true},
+		{name: "no identity", identity: identifiedByNothing},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			testSelectedCodexUsageRefreshKeepsASlotAheadOfCanonical(t, tc.identity, tc.promotes)
+		})
+	}
+}
+
+func testSelectedCodexUsageRefreshKeepsASlotAheadOfCanonical(t *testing.T, identity chatGPTIdentity, promotes bool) {
 	app := newTestAppWithStore(t)
-	consumed := chatGPTAuthForTest(t, "user-1", "rt-10", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
-	live := chatGPTAuthForTest(t, "user-1", "rt-20", time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
+	consumed := chatGPTAuthForTest(t, identity, "rt-10", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
+	live := chatGPTAuthForTest(t, identity, "rt-20", time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
 	installIdentityTestAccount(t, app, string(provider.Codex), "selected", "selected@example.com", consumed)
 	credentials := providerCredentialsForTest(t, app)
 	if err := credentials.WriteAccountCredential(string(provider.Codex), "selected", live); err != nil {
@@ -463,6 +499,14 @@ func TestSelectedCodexUsageRefreshKeepsASlotAheadOfCanonical(t *testing.T) {
 	got, err := credentials.ReadCredential(string(provider.Codex), "selected", false)
 	if err != nil || !bytes.Equal(got, live) {
 		t.Fatalf("slot lost the live credential (err %v)", err)
+	}
+	canonical, err := credentials.ReadCredential(string(provider.Codex), "", true)
+	want := consumed
+	if promotes {
+		want = live
+	}
+	if err != nil || !bytes.Equal(canonical, want) {
+		t.Fatalf("canonical holds the wrong credential (err %v); want promoted=%v", err, promotes)
 	}
 }
 

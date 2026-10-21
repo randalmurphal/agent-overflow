@@ -188,10 +188,12 @@ func TestReplaceAccountCredentialNeverRewindsTheSlot(t *testing.T) {
 }
 
 // A selected probe derives its write from the canonical credential, which
-// can sit behind a slot the boot sweep restored. The slot still holds what
-// the probe read, but it is the same login further along, so it is kept. A
-// different login, or a position nothing proves, is the caller's call.
-func TestReplaceAccountCredentialKeepsALaterPointOfTheSameLogin(t *testing.T) {
+// can sit behind a slot another store's sweep restored. The slot still
+// holds what the probe read, but it is further along the chain, so it is
+// kept whatever login either holds: identity can be unknown, and a
+// different login behind it is live too. Only an unknown position lets the
+// write through.
+func TestReplaceAccountCredentialNeverMovesASlotBackward(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		data string
@@ -199,7 +201,8 @@ func TestReplaceAccountCredentialKeepsALaterPointOfTheSameLogin(t *testing.T) {
 	}{
 		{name: "same login behind", data: "pos:10 login:alice", want: "pos:20 login:alice"},
 		{name: "same login ahead", data: "pos:30 login:alice", want: "pos:30 login:alice"},
-		{name: "another login", data: "pos:10 login:bob", want: "pos:10 login:bob"},
+		{name: "another login behind", data: "pos:10 login:bob", want: "pos:20 login:alice"},
+		{name: "login unknown behind", data: "pos:10", want: "pos:20 login:alice"},
 		{name: "position unknown", data: "relogin login:alice", want: "relogin login:alice"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

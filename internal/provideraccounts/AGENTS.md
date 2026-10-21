@@ -81,15 +81,23 @@ owning process holds before a credential can exist in it
 (`ephemeral_registry.go`). The boot sweep acts only on homes whose lease it
 can take. It adopts a crash-orphaned credential into its slot only when the
 slot is missing, signed out, or strictly behind it on the rotation chain
-(`ChainPosition`: Claude token expiry, Codex `last_refresh`), and into the
-canonical home only over the same login (`LoginID`), whichever store's
-account the orphan came from.
+(`ChainPosition`: Claude token expiry, Codex `last_refresh`).
+
+Only the store that selected an account writes the canonical credential
+for it. Its sweep also restores a selected account's orphan into the
+canonical home over the same login (`LoginID`). Another data root's sweep
+restores the slot alone. The owner then promotes a slot holding a later
+point of the same login (`PromoteSlotOverCanonical`), at boot and before a
+selected probe. Coherence of the shared canonical credential across stores
+otherwise belongs to external-login reconciliation.
 
 Every slot write and removal holds the slot's lock (`lockSlot`); a writer
 that decides from the slot's contents holds it from the read to the write.
 A writer holding bytes it read earlier replaces only what it read, and
-never with an earlier point of the same login (`ReplaceAccountCredential`);
-rollback removes only what it wrote.
+never moves the slot backward on its chain (`ReplaceAccountCredential`).
+A switch's preserve skips a slot holding a later point of the same login.
+It does not refuse on position alone, because a sign-in can start a chain
+behind the old one. Rollback removes only what it wrote.
 
 Credential bytes travel as `CredentialSnapshot` or `secret.Bytes`, which
 print as `<redacted>` from any field. A raw `[]byte` credential is a

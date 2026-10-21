@@ -15,16 +15,24 @@ import (
 	"agent-overflow/internal/provideraccounts"
 )
 
-const crashHomeEnv = "AO_TEST_CRASHED_CODEX_PROBE_HOME"
+const (
+	crashHomeEnv = "AO_TEST_CRASHED_CODEX_PROBE_HOME"
+	crashUserEnv = "AO_TEST_CRASHED_CODEX_PROBE_USER"
+)
 
 // codexAuthFile is a ChatGPT-mode auth.json for one login at one point on
-// its rotation chain.
+// its rotation chain. An empty user leaves out both user-id claims, which
+// Codex treats as optional; the email then names the login.
 func codexAuthFile(t *testing.T, user, refreshToken string, lastRefresh time.Time) []byte {
 	t.Helper()
-	claims, err := json.Marshal(map[string]any{"https://api.openai.com/auth": map[string]any{
-		"chatgpt_account_id": "ws-1",
-		"chatgpt_user_id":    user,
-	}})
+	auth := map[string]any{"chatgpt_account_id": "ws-1"}
+	if user != "" {
+		auth["chatgpt_user_id"] = user
+	}
+	claims, err := json.Marshal(map[string]any{
+		"email":                       "user@example.com",
+		"https://api.openai.com/auth": auth,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +73,7 @@ func TestCrashedCodexProbeHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rotated := codexAuthFile(t, "user-1", "rt-2", time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
+	rotated := codexAuthFile(t, os.Getenv(crashUserEnv), "rt-2", time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
 	if err := os.WriteFile(filepath.Join(home.Path, "auth.json"), rotated, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -79,15 +87,26 @@ func TestCrashedCodexProbeHelper(t *testing.T) {
 // next boot, however soon, puts the rotation back in both: the owner's
 // death released its lease, and the canonical store still held that login
 // behind the orphan. A backend on another data root sharing the provider
-// home can take the orphan first; it has no such account selected, and
-// must repair the canonical store all the same, or the owner's next probe
-// starts from the consumed credential while its slot holds the live one.
+// home can take the orphan first. It restores the slot and leaves the
+// canonical credential, which only the store that selected the account
+// writes; the owner's next boot promotes the slot. Both hold with the
+// user-id claims Codex treats as optional left out.
 func TestBootRecoversTheSelectedCodexAccountsRotation(t *testing.T) {
-	t.Run("own backend sweeps", func(t *testing.T) { testBootRecoversASelectedCodexRotation(t, false) })
-	t.Run("another data root sweeps", func(t *testing.T) { testBootRecoversASelectedCodexRotation(t, true) })
+	for _, tc := range []struct {
+		name         string
+		foreignSweep bool
+		user         string
+	}{
+		{name: "own backend sweeps", user: "user-1"},
+		{name: "another data root sweeps", foreignSweep: true, user: "user-1"},
+		{name: "own backend sweeps a login without user ids"},
+		{name: "another data root sweeps a login without user ids", foreignSweep: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) { testBootRecoversASelectedCodexRotation(t, tc.foreignSweep, tc.user) })
+	}
 }
 
-func testBootRecoversASelectedCodexRotation(t *testing.T, foreignSweep bool) {
+func testBootRecoversASelectedCodexRotation(t *testing.T, foreignSweep bool, user string) {
 	userHome := t.TempDir()
 	dbDir := t.TempDir()
 	store, err := provideraccounts.NewStore(dbDir)
@@ -107,7 +126,7 @@ func testBootRecoversASelectedCodexRotation(t *testing.T, foreignSweep bool) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	consumed := codexAuthFile(t, "user-1", "rt-1", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
+	consumed := codexAuthFile(t, user, "rt-1", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
 	if err := credentials.WriteAccountCredential(string(provider.Codex), "acct-1", consumed); err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +135,7 @@ func testBootRecoversASelectedCodexRotation(t *testing.T, foreignSweep bool) {
 	}
 
 	helper := exec.Command(os.Args[0], "-test.run=^TestCrashedCodexProbeHelper$", "-test.count=1")
-	helper.Env = append(os.Environ(), crashHomeEnv+"="+userHome)
+	helper.Env = append(os.Environ(), crashHomeEnv+"="+userHome, crashUserEnv+"="+user)
 	var stdout, stderr bytes.Buffer
 	helper.Stdout, helper.Stderr = &stdout, &stderr
 	if err := helper.Run(); err != nil {
@@ -129,9 +148,9 @@ func testBootRecoversASelectedCodexRotation(t *testing.T, foreignSweep bool) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(homePath) })
 
-	sweeper, sweepDir := manager, dbDir
+	rotated := codexAuthFile(t, user, "rt-2", time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
 	if foreignSweep {
-		sweepDir = t.TempDir()
+		sweepDir := t.TempDir()
 		foreignStore, err := provideraccounts.NewStore(sweepDir)
 		if err != nil {
 			t.Fatal(err)
@@ -140,15 +159,25 @@ func testBootRecoversASelectedCodexRotation(t *testing.T, foreignSweep bool) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		sweeper = NewManager(Deps{})
+		sweeper := NewManager(Deps{})
 		if err := sweeper.Attach(foreignStore, foreignCredentials, ""); err != nil {
 			t.Fatal(err)
 		}
+		if err := sweeper.ReconcileProviderHome(sweepDir, userHome); err != nil {
+			t.Fatal(err)
+		}
+		slot, err := credentials.ReadCredential(string(provider.Codex), "acct-1", false)
+		if err != nil || !bytes.Equal(slot, rotated) {
+			t.Fatalf("another store's sweep did not restore the slot (err %v)", err)
+		}
+		canonical, err := credentials.ReadCredential(string(provider.Codex), "", true)
+		if err != nil || !bytes.Equal(canonical, consumed) {
+			t.Fatalf("another store's sweep wrote the canonical credential (err %v)", err)
+		}
 	}
-	if err := sweeper.ReconcileProviderHome(sweepDir, userHome); err != nil {
+	if err := manager.ReconcileProviderHome(dbDir, userHome); err != nil {
 		t.Fatal(err)
 	}
-	rotated := codexAuthFile(t, "user-1", "rt-2", time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
 	canonical, err := credentials.ReadCredential(string(provider.Codex), "", true)
 	if err != nil || !bytes.Equal(canonical, rotated) {
 		t.Fatalf("canonical credential not restored to the rotation (err %v)", err)

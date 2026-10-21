@@ -39,7 +39,13 @@ func (m *Manager) ReconcileProviderHome(dbDir, userHome string) error {
 		}
 	}
 
-	sweepResults, sweepErr := m.credentials.SweepEphemeralCredentials(time.Now())
+	selected := make(map[string]string)
+	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
+		if active, ok := m.store.Active(providerName, time.Now()); ok {
+			selected[providerName] = active.ID
+		}
+	}
+	sweepResults, sweepErr := m.credentials.SweepEphemeralCredentials(time.Now(), selected)
 	for _, result := range sweepResults {
 		if result.Action == "skipped" {
 			continue
@@ -53,5 +59,29 @@ func (m *Manager) ReconcileProviderHome(dbDir, userHome string) error {
 	if sweepErr != nil {
 		m.audit("ephemeral sweep errors: %v", sweepErr)
 	}
+	for providerName, accountID := range selected {
+		if err := m.promoteSelectedSlot(providerName, accountID); err != nil {
+			m.audit("%v", err)
+		}
+	}
+	return nil
+}
+
+// promoteSelectedSlot brings the canonical credential up to the selected
+// account's slot when another store's boot sweep restored a later point of
+// the same login there (provideraccounts.PromoteSlotOverCanonical). The
+// caller holds the provider's reconcile mutex or runs before any can.
+func (m *Manager) promoteSelectedSlot(providerName, accountID string) error {
+	promoted, changed, err := m.credentials.PromoteSlotOverCanonical(providerName, accountID)
+	if err != nil {
+		return fmt.Errorf("restore the saved %s credential of account %s to the canonical home: %w", providerName, accountID, err)
+	}
+	if !changed {
+		return nil
+	}
+	m.mu.Lock()
+	m.rememberProviderCredentialFingerprintLocked(providerName, promoted.Bytes())
+	m.mu.Unlock()
+	m.audit("restored the later saved %s credential of account %s to the canonical home", providerName, accountID)
 	return nil
 }
