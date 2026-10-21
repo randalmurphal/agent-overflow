@@ -115,7 +115,10 @@ against GitHub's GraphQL and REST documentation only, not probed:
 `totalCommentsCount`, `StatusCheckRollup.state`, and the
 `workflow_runs` fields `head_branch`, `event`, `display_title` and
 `pull_requests`. GitLab's pipelines list entity (`PipelineBasic`) has no
-`tag` flag; the single pipeline has one. Neither was probed.
+`tag` flag; the single pipeline has one. GitLab's pipelines API
+documentation says of the list's `scope`: "When `scope` is set to
+`branches` or `tags`, the API returns only the latest pipeline for each
+branch or tag ref." None of this was probed.
 
 ## Merge readiness and actions
 
