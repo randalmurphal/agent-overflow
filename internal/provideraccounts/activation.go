@@ -155,7 +155,9 @@ func (c *Credentials) RemoveActive(providerName string) error {
 
 // RemoveAccount deletes one saved credential slot. The validated account ID
 // and non-symlink managed root confine removal to Agent Overflow's own storage.
-func (c *Credentials) RemoveAccount(providerName, accountID string) error {
+// It holds the slot lock, so no slot write lands inside the removal and an
+// adoption that waited on it finds the slot gone.
+func (c *Credentials) RemoveAccount(providerName, accountID string) (retErr error) {
 	paths, err := c.Paths(providerName)
 	if err != nil {
 		return err
@@ -164,6 +166,11 @@ func (c *Credentials) RemoveAccount(providerName, accountID string) error {
 	if err != nil {
 		return err
 	}
+	lock, err := c.lockSlot(providerName, accountID)
+	if err != nil {
+		return err
+	}
+	defer func() { retErr = errors.Join(retErr, releaseSlot(lock)) }()
 	if runtime.GOOS == "darwin" && providerName == "claude" {
 		if err := c.keychain.remove(accountDir, false); err != nil {
 			return err

@@ -264,39 +264,145 @@ func TestSweepAdoptionHoldsTheSlotLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lock, err := lockSlot(accountDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	type sweep struct {
-		results []EphemeralSweepResult
-		err     error
-	}
-	done := make(chan sweep, 1)
-	go func() {
-		results, err := credentials.SweepEphemeralCredentials(time.Now(), nil)
-		done <- sweep{results, err}
-	}()
-	select {
-	case got := <-done:
-		_ = releaseSlot(lock)
-		t.Fatalf("sweep finished while another writer held the slot: %+v, %v", got.results, got.err)
-	case <-time.After(200 * time.Millisecond):
-	}
-	if err := credentials.storeCredentialAt("codex", accountDir, false, []byte("pos:30")); err != nil {
-		t.Fatal(err)
-	}
-	if err := releaseSlot(lock); err != nil {
-		t.Fatal(err)
-	}
-	got := <-done
-	if got.err != nil || len(got.results) != 1 || got.results[0].Action != "discarded" {
-		t.Fatalf("sweep = %+v, %v; want the orphan discarded behind the newer write", got.results, got.err)
+	done := sweepWhileSlotLocked(t, credentials, "acct-1", func() {
+		if err := credentials.storeCredentialAt("codex", accountDir, false, []byte("pos:30")); err != nil {
+			t.Error(err)
+		}
+	})
+	if done.err != nil || len(done.results) != 1 || done.results[0].Action != "discarded" {
+		t.Fatalf("sweep = %+v, %v; want the orphan discarded behind the newer write", done.results, done.err)
 	}
 	slot, err := credentials.ReadCredential("codex", "acct-1", false)
 	if err != nil || string(slot) != "pos:30" {
 		t.Fatalf("slot = %q, %v; want the newer write kept", slot, err)
+	}
+}
+
+// An account removed while the sweep waits for its slot stays removed: the
+// sweep checks the slot exists under the same lock removal holds.
+func TestSweepNeverRecreatesASlotRemovedDuringAdoption(t *testing.T) {
+	credentials := chainFixture(t)
+	writeCodexSlot(t, credentials, "acct-1", "pos:10")
+	crashEphemeralHome(t, credentials, "codex", []byte("pos:20"), "acct-1")
+	accountDir, err := credentials.accountDirectory("codex", "acct-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := sweepWhileSlotLocked(t, credentials, "acct-1", func() {
+		if err := os.RemoveAll(accountDir); err != nil {
+			t.Error(err)
+		}
+	})
+	if done.err != nil || len(done.results) != 1 || done.results[0].Action != "discarded" {
+		t.Fatalf("sweep = %+v, %v; want the orphan discarded for the removed account", done.results, done.err)
+	}
+	if _, err := os.Stat(accountDir); !os.IsNotExist(err) {
+		t.Fatalf("removed slot was recreated: %v", err)
+	}
+}
+
+// Removal waits for a slot write in progress, so it never interleaves with
+// the sweep's existence check and write.
+func TestRemoveAccountWaitsForTheSlotLock(t *testing.T) {
+	credentials := chainFixture(t)
+	writeCodexSlot(t, credentials, "acct-1", "pos:10")
+	lock, err := credentials.lockSlot("codex", "acct-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- credentials.RemoveAccount("codex", "acct-1") }()
+	select {
+	case err := <-done:
+		_ = releaseSlot(lock)
+		t.Fatalf("removal finished while another process held the slot: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err := releaseSlot(lock); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := credentials.ReadCredential("codex", "acct-1", false); !IsCredentialMissing(err) {
+		t.Fatalf("slot after removal: %v", err)
+	}
+}
+
+type sweepOutcome struct {
+	results []EphemeralSweepResult
+	err     error
+}
+
+// sweepWhileSlotLocked holds the account's slot lock as another process
+// would, starts a sweep, proves it waits, runs during while the lock is
+// still held, then releases it and returns what the sweep did.
+func sweepWhileSlotLocked(t *testing.T, credentials *Credentials, accountID string, during func()) sweepOutcome {
+	t.Helper()
+	lock, err := credentials.lockSlot("codex", accountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan sweepOutcome, 1)
+	go func() {
+		results, err := credentials.SweepEphemeralCredentials(time.Now(), nil)
+		done <- sweepOutcome{results, err}
+	}()
+	select {
+	case got := <-done:
+		_ = releaseSlot(lock)
+		t.Fatalf("sweep finished while another process held the slot: %+v, %v", got.results, got.err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	during()
+	if err := releaseSlot(lock); err != nil {
+		t.Fatal(err)
+	}
+	return <-done
+}
+
+// A lease file whose entry is gone (a cleanup that could not delete it) is
+// removed once it is old enough not to be a registration in progress and
+// nobody holds it.
+func TestSweepRemovesStrandedLeases(t *testing.T) {
+	credentials := sweepFixture(t)
+	dir, err := credentials.ephemeralRegistryDir("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stranded := filepath.Join(dir, "0000000000000001.lock")
+	held := filepath.Join(dir, "0000000000000002.lock")
+	for _, path := range []string{stranded, held} {
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	holder, err := filelock.Open(held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if locked, err := filelock.TryLock(holder); !locked || err != nil {
+		t.Fatalf("hold lease: %v, %v", locked, err)
+	}
+	defer func() { _ = filelock.Release(holder) }()
+
+	if _, err := credentials.SweepEphemeralCredentials(time.Now(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stranded); err != nil {
+		t.Fatalf("a fresh lease was removed: %v", err)
+	}
+	if _, err := credentials.SweepEphemeralCredentials(time.Now().Add(2*unleasedEntryGrace), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stranded); !os.IsNotExist(err) {
+		t.Fatalf("stranded lease survived: %v", err)
+	}
+	if _, err := os.Stat(held); err != nil {
+		t.Fatalf("a held lease was removed: %v", err)
 	}
 }
 

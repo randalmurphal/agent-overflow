@@ -7,7 +7,7 @@ codes, or OAuth URLs.
 Credential bytes are opaque. Read only bounded regular files without symlinks,
 write through `atomicfile.Write` with mode 0600, and validate account IDs
 before using them as path components. Saved slots contain only the provider's
-native credential file and the slot lock. Normal provider processes always use the canonical
+native credential file. Normal provider processes always use the canonical
 native home.
 
 `Account` is the frontend-facing card. Backend-only per-account state belongs

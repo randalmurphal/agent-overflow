@@ -100,9 +100,8 @@ type Policy struct {
 
 // Credentials owns Agent Overflow's opaque copies of provider-native
 // credentials. Provider processes always run against SharedHome; saved account
-// directories receive only the provider's credential file and the slot lock
-// from Agent Overflow (or, on macOS for Claude, identify a config-scoped
-// native Keychain entry).
+// directories receive only the provider's credential file from Agent Overflow
+// (or, on macOS for Claude, identify a config-scoped native Keychain entry).
 // Unrecognized contents in registered directories are ignored.
 type Credentials struct {
 	userHome string
@@ -571,35 +570,50 @@ func (c *Credentials) writeCredential(
 		return err
 	}
 	if !active {
-		home, err = c.ensureAccountDirectory(providerName, accountID)
-		if err != nil {
-			return err
-		}
-		lock, err := lockSlot(home)
+		lock, err := c.lockSlot(providerName, accountID)
 		if err != nil {
 			return err
 		}
 		defer func() { retErr = errors.Join(retErr, releaseSlot(lock)) }()
+		home, err = c.ensureAccountDirectory(providerName, accountID)
+		if err != nil {
+			return err
+		}
 	}
 	return c.writeCredentialAt(providerName, home, active, data)
 }
 
-// slotLockName is the lock file inside an account slot. Every slot write
-// holds it, so a writer that reads the slot to decide what to write (the
-// ephemeral sweep's adoption) can hold it across the read and the write
-// against other processes sharing the provider home.
-const slotLockName = ".agent-overflow-write.lock"
+// accountLockDirectoryName holds one lock file per account slot, beside the
+// slot directories rather than inside them: removal deletes a slot
+// directory while holding its lock, and the lock file outlives the
+// directory so every contender keeps opening the same inode.
+const accountLockDirectoryName = "agent-overflow-account-locks"
 
-// slotLockWait bounds the wait for another process's slot write, which is
-// one small file write.
+// slotLockWait bounds the wait for another process's slot write or
+// removal, which is one small file operation.
 const slotLockWait = 5 * time.Second
 
-func lockSlot(accountDir string) (*os.File, error) {
+// lockSlot takes an account slot's lock. Every slot write and removal holds
+// it, so a writer that reads the slot to decide what to write (the
+// ephemeral sweep's adoption) can hold it across the read and the write
+// against other processes sharing the provider home.
+func (c *Credentials) lockSlot(providerName, accountID string) (*os.File, error) {
+	paths, err := c.Paths(providerName)
+	if err != nil {
+		return nil, err
+	}
+	if !safeAccountID.MatchString(accountID) {
+		return nil, fmt.Errorf("provideraccounts: invalid account id %q", accountID)
+	}
+	dir := filepath.Join(paths.SharedHome, accountLockDirectoryName)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("provideraccounts: create account lock directory: %w", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), slotLockWait)
 	defer cancel()
-	lock, err := filelock.Acquire(ctx, filepath.Join(accountDir, slotLockName))
+	lock, err := filelock.Acquire(ctx, filepath.Join(dir, accountID+".lock"))
 	if err != nil {
-		return nil, fmt.Errorf("provideraccounts: lock account slot %s: %w", accountDir, err)
+		return nil, fmt.Errorf("provideraccounts: lock %s account slot %s: %w", providerName, accountID, err)
 	}
 	return lock, nil
 }

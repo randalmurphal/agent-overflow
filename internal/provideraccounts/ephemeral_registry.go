@@ -230,6 +230,12 @@ func (c *Credentials) sweepEphemeralHomes(providerName string, now time.Time, se
 	var results []EphemeralSweepResult
 	var sweepErrs []error
 	for _, dirEntry := range dirEntries {
+		if !dirEntry.IsDir() && strings.HasSuffix(dirEntry.Name(), ".lock") {
+			if err := removeStrandedLease(dir, dirEntry.Name(), now); err != nil {
+				sweepErrs = append(sweepErrs, err)
+			}
+			continue
+		}
 		if dirEntry.IsDir() || !strings.HasSuffix(dirEntry.Name(), ".json") {
 			continue
 		}
@@ -289,6 +295,41 @@ func (c *Credentials) sweepEphemeralHomes(providerName string, now time.Time, se
 		results = append(results, result)
 	}
 	return results, errors.Join(sweepErrs...)
+}
+
+// removeStrandedLease deletes a lease file whose entry is gone, left when
+// a cleanup could not delete it (Windows refuses to delete a file another
+// process has open). A lease younger than unleasedEntryGrace may belong to
+// a registration that has not written its entry yet, and a held one to an
+// owner still cleaning up; both are left alone.
+func removeStrandedLease(dir, name string, now time.Time) error {
+	leasePath := filepath.Join(dir, name)
+	if _, err := os.Stat(filepath.Join(dir, strings.TrimSuffix(name, ".lock")+".json")); !errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	info, err := os.Stat(leasePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("provideraccounts: inspect stranded ephemeral lease %s: %w", name, err)
+	}
+	if now.Sub(info.ModTime()) < unleasedEntryGrace {
+		return nil
+	}
+	lease, err := os.OpenFile(leasePath, os.O_RDWR, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("provideraccounts: open stranded ephemeral lease %s: %w", name, err)
+	}
+	locked, err := filelock.TryLock(lease)
+	if err != nil || !locked {
+		_ = lease.Close()
+		return err
+	}
+	return releaseEphemeralLease(lease, leasePath)
 }
 
 type ephemeralClaim int
@@ -372,11 +413,12 @@ func (c *Credentials) sweepOneEphemeralHome(providerName string, entry ephemeral
 // is an outside sign-in, and unknown identity or position proves nothing,
 // so either leaves the canonical store alone.
 //
-// Nothing serializes this read-compare-write against a provider CLI writing
-// the canonical store itself. The rotation chain does: the canonical bytes
-// behind the orphan hold a refresh token the orphan's rotation consumed, so
-// no CLI can advance them, and a sign-in lands a different login or a later
-// position.
+// Nothing serializes this read-compare-write against the provider CLI:
+// Codex takes no lock AO can share, so every AO write of the canonical
+// Codex credential has the same window. The rotation chain narrows it to
+// sign-ins: the canonical bytes behind the orphan hold a refresh token the
+// orphan's rotation consumed, so no CLI can rotate them, and only a sign-in
+// completing inside the read-compare-write would be replaced.
 func (c *Credentials) adoptIntoCanonical(providerName string, orphan []byte) (bool, error) {
 	if c.policy.LoginID == nil {
 		return false, nil
@@ -409,21 +451,22 @@ func (c *Credentials) adoptIntoCanonical(providerName string, orphan []byte) (bo
 // orphan on the rotation chain. A slot at or past the orphan's position,
 // or one whose position is unknown, is never overwritten: the user may
 // have re-logged-in since the crash, and those bytes are newer than any
-// orphan. The slot lock is held from the read to the write, so another
-// process's slot write lands wholly before the decision or after it.
+// orphan. The slot lock is held from the existence check to the write, so
+// another process's slot write or removal lands wholly before the decision
+// or after it.
 func (c *Credentials) adoptIntoSlot(providerName, accountID string, orphan []byte) (adopted bool, retErr error) {
 	accountDir, err := c.accountDirectory(providerName, accountID)
 	if err != nil {
 		return false, nil
 	}
-	if _, statErr := os.Stat(accountDir); statErr != nil {
-		return false, nil
-	}
-	lock, err := lockSlot(accountDir)
+	lock, err := c.lockSlot(providerName, accountID)
 	if err != nil {
 		return false, err
 	}
 	defer func() { retErr = errors.Join(retErr, releaseSlot(lock)) }()
+	if _, statErr := os.Stat(accountDir); statErr != nil {
+		return false, nil
+	}
 	slot, readErr := c.readCredentialAt(providerName, accountDir, false)
 	switch {
 	case IsCredentialMissing(readErr):
