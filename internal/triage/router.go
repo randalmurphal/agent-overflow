@@ -68,6 +68,16 @@ type Router struct {
 	// entry is popped and BEFORE its row persists — the window
 	// NextFlushSequence's anchor exists to close. Nil in production.
 	deferredPersistGate func()
+	// turnRowWrittenGate is a test-only hook (SetTurnRowWrittenGate)
+	// called in handleTurnStart AFTER the turns row is written and
+	// BEFORE the open turn is set — the window InterruptTurnIndex waits
+	// out. Read under mu. Nil in production.
+	turnRowWrittenGate func(threadID string)
+	// interruptWaitHook is a test-only hook (SetInterruptWaitHook) called
+	// by InterruptTurnIndex right before it waits on a turn start in
+	// progress (woke false) and right after that start ends, before the
+	// state is read again (woke true). Read under mu. Nil in production.
+	interruptWaitHook func(threadID string, woke bool)
 	// delays holds the router's debounce and throttle intervals, the
 	// production values from NewRouter. A same-package test lengthens
 	// one so its timer cannot fire inside a window that asserts what a
@@ -386,6 +396,28 @@ func (r *Router) SetTelemetry(tracer trace.Tracer, m TurnMetrics) {
 func (r *Router) SetEventHook(hook func(provider.ProviderEvent)) {
 	r.mu.Lock()
 	r.eventHook = hook
+	r.mu.Unlock()
+}
+
+// SetTurnRowWrittenGate installs a test-only hook that handleTurnStart
+// calls between writing the turns row and setting the open turn, so a
+// test can hold a turn start in that window. Production code must leave
+// this nil. Pass nil to clear.
+func (r *Router) SetTurnRowWrittenGate(gate func(threadID string)) {
+	r.mu.Lock()
+	r.turnRowWrittenGate = gate
+	r.mu.Unlock()
+}
+
+// SetInterruptWaitHook installs a test-only hook that InterruptTurnIndex
+// calls right before it waits on a turn start in progress (woke false)
+// and right after that start ends, before it reads the state again
+// (woke true). A test can release a held start only once the interrupt
+// is waiting on it, and hold the woken interrupt while the event worker
+// moves on. Production code must leave this nil. Pass nil to clear.
+func (r *Router) SetInterruptWaitHook(hook func(threadID string, woke bool)) {
+	r.mu.Lock()
+	r.interruptWaitHook = hook
 	r.mu.Unlock()
 }
 

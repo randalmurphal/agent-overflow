@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-overflow/internal/eventchan"
@@ -35,6 +36,11 @@ import (
 // per-turn cascade. See internal/triage/AGENTS.md "Wire-round vs
 // logical-turn".
 func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
+	// An interrupt sampled from here until the open turn is set waits
+	// for it (InterruptTurnIndex): the row written below is already the
+	// active turn GetActiveTurn-gated callers stop.
+	started := r.beginTurnStart(evt.ThreadID)
+	defer started()
 	turnIndex := r.resolveTurnIndexOnStart(evt)
 	startedAt := eventTimestampMillis(evt)
 
@@ -55,9 +61,17 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 		ProviderTurnID: strings.TrimSpace(evt.TurnID),
 	})
 
+	r.mu.Lock()
+	gate := r.turnRowWrittenGate
+	r.mu.Unlock()
+	if gate != nil {
+		gate(evt.ThreadID)
+	}
+
 	// A failed ownership read is reported once the turn is open: the turn
 	// starts either way.
 	openErr := r.setOpenTurn(evt.ThreadID, turnIndex)
+	started()
 	r.openTurnSpan(evt, turnIndex)
 
 	// Open the first wire round for this logical turn. Frontend
@@ -925,17 +939,92 @@ func (r *Router) openTurnIndex(threadID string) (int, bool) {
 }
 
 // OpenTurnIndex returns the currently-open logical turn for threadID,
-// or -1 when none is in flight. Interrupt paths sample this BEFORE
-// awaiting the provider's interrupt ack and pass the value to
-// EagerPersistDeferredFlushSends: the ack wait processes wire events,
-// so the turn the user cut can settle during it, and a post-ack sample
-// would report -1 for exactly that turn — its echo would then settle
-// it "end_turn" instead of "interrupted" (round-5, R5-4).
+// or -1 when none is in flight. Interrupt paths sample
+// InterruptTurnIndex instead, which waits out a turn start in progress.
 func (r *Router) OpenTurnIndex(threadID string) int {
 	if turnIndex, ok := r.openTurnIndex(threadID); ok {
 		return turnIndex
 	}
 	return -1
+}
+
+// InterruptTurnIndex returns the turn an interrupt of threadID cuts: the
+// open turn, or -1 when none is in flight. While handleTurnStart runs it
+// first waits for the start to finish, whether or not a turn is already
+// open. That handler writes the active turns row before it sets the open
+// turn, and GetActiveTurn-gated callers (workflow takeover, revert) can
+// interrupt in between; an immediate sample would read -1 and lose the
+// user's stop. A marker written before setOpenTurn would not hold
+// either, even on a turn a queued echo already opened at the same index:
+// setOpenTurn resets the turn's error sequence (its re-init contract),
+// so the turn's next error row would reuse the marker's id.
+//
+// The store's row is never consulted. An active row with no open turn
+// and no start in progress is a turn the router already closed: a fatal
+// provider error awaiting its wire completion, or a settlement whose
+// write failed. Stopping then cuts nothing.
+//
+// Interrupt paths sample this BEFORE awaiting the provider's interrupt
+// ack and pass the value to MarkFlushSendsInterrupted, MarkUserInterrupt
+// and EagerPersistDeferredFlushSends: the ack wait processes wire
+// events, so the turn the user cut can settle during it, and a post-ack
+// sample would report -1 for exactly that turn — its echo would then
+// settle it "end_turn" instead of "interrupted" (round-5, R5-4).
+//
+// The wait is bounded by the start's own store writes, and nothing it
+// runs takes the app's thread action lock the interrupt paths hold.
+// It must not be called from the event worker.
+func (r *Router) InterruptTurnIndex(threadID string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for {
+		st := r.threadStateIfPresent(threadID)
+		if st == nil {
+			return -1
+		}
+		if st.turnStarting == nil {
+			if !st.openTurnSet {
+				return -1
+			}
+			return st.openTurn
+		}
+		// The event worker can finish this start, complete its turn and
+		// begin the next one before this waiter resumes, so the state is
+		// read again after every wait until no start is in progress.
+		starting := st.turnStarting
+		hook := r.interruptWaitHook
+		r.mu.Unlock()
+		if hook != nil {
+			hook(threadID, false)
+		}
+		<-starting
+		if hook != nil {
+			hook(threadID, true)
+		}
+		r.mu.Lock()
+	}
+}
+
+// beginTurnStart marks threadID as starting a turn and returns the
+// function that ends the mark, releasing InterruptTurnIndex waiters.
+// Ending is idempotent: handleTurnStart ends it once the open turn is
+// set and again, as a no-op, when it returns.
+func (r *Router) beginTurnStart(threadID string) func() {
+	starting := make(chan struct{})
+	r.mu.Lock()
+	r.state(threadID).turnStarting = starting
+	r.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.mu.Lock()
+			if st := r.threadStateIfPresent(threadID); st != nil && st.turnStarting == starting {
+				st.turnStarting = nil
+			}
+			r.mu.Unlock()
+			close(starting)
+		})
+	}
 }
 
 // HasInFlightTurnOrRound reports whether the router still has any
@@ -1567,8 +1656,8 @@ func (r *Router) RecoverCrashedTurns() (int, error) {
 // new "Stopped by user" system error row so the timeline carries the
 // explicit user-facing signal.
 //
-// sampledTurnIndex is the caller's PRE-ACK OpenTurnIndex sample (-1
-// when none was open) — the turn the user actually cut. It must not be
+// sampledTurnIndex is the caller's PRE-ACK InterruptTurnIndex sample
+// (-1 when none was open) — the turn the user actually cut. It must not be
 // re-resolved here: a queued echo consumed during the ack wait opens
 // the queued message's turn, and a post-ack "current turn" read would
 // land the stopped flips and the error row on that new turn, which
@@ -1587,11 +1676,10 @@ func (r *Router) MarkUserInterrupt(threadID string, sampledTurnIndex int, tok Fl
 		return "", nil
 	}
 	if sampledTurnIndex < 0 {
-		// No turn was open at the pre-ack sample: nothing was cut. The
-		// UI only offers Stop while a turn shows active, and the router
-		// opens the turn before that emission — so a -1 sample means the
-		// turn completed in the click-to-sample race and the interrupt
-		// ack'd an idle CLI. Resolving a fallback here would relabel
+		// No turn was open at the pre-ack sample, which waits out a
+		// turn start in progress (InterruptTurnIndex): nothing was cut.
+		// The turn completed or failed in the click-to-sample race and
+		// the interrupt ack'd an idle CLI. Resolving a fallback here would relabel
 		// completed history (LastTurnIndex) or a queued echo's freshly
 		// opened turn as "Stopped by user" (round-12, CT12-1).
 		return "", nil

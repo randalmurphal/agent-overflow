@@ -272,7 +272,7 @@ func (a *App) runPlainInterruptLocked(threadID string) error {
 	interruptedTurn := -1
 	var stampToken triage.FlushStampToken
 	if a.triage != nil {
-		interruptedTurn = a.triage.OpenTurnIndex(threadID)
+		interruptedTurn = a.triage.InterruptTurnIndex(threadID)
 		stampToken = a.triage.MarkFlushSendsInterrupted(threadID, interruptedTurn)
 	}
 	if err := providerSess.Interrupt(context.Background()); err != nil {
@@ -286,6 +286,7 @@ func (a *App) runPlainInterruptLocked(threadID string) error {
 		// (round-11, C11-1 / CT11-1).
 		if _, err := a.triage.MarkUserInterrupt(threadID, interruptedTurn, stampToken); err != nil {
 			log.Printf("app: interrupt-and-revert: plain fallback: mark user interrupt: %v", err)
+			a.emitErrorToThread(threadID, fmt.Sprintf("The turn stopped, but recording the stop failed: %v", err))
 		}
 		a.eagerPersistFlushSendsOnInterrupt(threadID, sess, interruptedTurn, stampToken)
 	}

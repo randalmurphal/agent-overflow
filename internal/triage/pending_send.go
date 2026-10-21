@@ -808,7 +808,7 @@ type EagerPersistedFlush struct {
 //
 // interruptedTurnIndex is the turn that was open when the user issued
 // the interrupt (-1 when none), sampled by the caller via
-// OpenTurnIndex BEFORE awaiting the provider's interrupt ack. Sampling
+// InterruptTurnIndex BEFORE awaiting the provider's interrupt ack. Sampling
 // here instead would race the ack wait: the read loop keeps processing
 // wire events during it, so the cut turn can settle (clearing
 // openTurns) before this runs, and its echo would then settle it

@@ -955,7 +955,7 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 	interruptedTurn := anyOpenTurn
 	var stampToken triage.FlushStampToken
 	if a.triage != nil {
-		interruptedTurn = a.triage.OpenTurnIndex(threadID)
+		interruptedTurn = a.triage.InterruptTurnIndex(threadID)
 		if expectTurnIndex != anyOpenTurn && interruptedTurn != anyOpenTurn && interruptedTurn != expectTurnIndex {
 			// The thread has moved on to a turn this caller does not own.
 			// Stopping it would take work away from whoever started it.
