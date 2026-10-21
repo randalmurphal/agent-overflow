@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -131,10 +130,6 @@ func chainFixture(t *testing.T) *Credentials {
 			}
 			return position, true
 		},
-		LoginID: func(_ string, data []byte) (string, bool) {
-			_, login, ok := strings.Cut(string(data), " login:")
-			return login, ok && login != ""
-		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -152,6 +147,17 @@ func writeCodexSlot(t *testing.T, c *Credentials, accountID, credential string) 
 		t.Fatal(err)
 	}
 	if err := c.WriteAccountCredential("codex", accountID, []byte(credential)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func makeCodexSlotDir(t *testing.T, c *Credentials, accountID string) {
+	t.Helper()
+	accountDir, err := c.accountDirectory("codex", accountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(accountDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -198,48 +204,64 @@ func TestSweepRecoversACrashedCodexRotation(t *testing.T) {
 	}
 }
 
+// crashRotatedHome is crashEphemeralHome for a probe that rotated its seed
+// before the crash: the home was seeded with seed and holds rotated.
+func crashRotatedHome(t *testing.T, c *Credentials, seed, rotated []byte, ownerAccountID string) string {
+	t.Helper()
+	home, err := c.NewEphemeralHomeWithCredential("codex", seed, ownerAccountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.writeCredentialAt("codex", home.Path, false, rotated); err != nil {
+		t.Fatal(err)
+	}
+	abandonEphemeralHome(t, home)
+	return home.Path
+}
+
 // The selected account's probe starts from the canonical credential, so a
-// crash after its rotation leaves the canonical store as far behind as the
-// slot. The sweep brings both forward, but only over the same login: a
-// different login in the canonical store is an outside sign-in. Only the
-// store that selected the account writes its canonical credential; another
-// data root's sweep restores the slot alone.
+// crash after its rotation leaves the canonical store on the consumed seed.
+// The sweep of the store that selected the account restores the rotation
+// there while the canonical store still holds exactly that seed. Another
+// store's sweep restores the slot alone, and nothing is restored from an
+// orphan that rotated nothing.
 func TestSweepRestoresTheSelectedAccountsCanonicalCredential(t *testing.T) {
 	selected := map[string]string{"codex": "acct-1"}
 	for _, tc := range []struct {
 		name          string
 		selected      map[string]string
 		canonical     string
+		orphan        string
 		wantCanonical string
-		wantReplaced  bool
 	}{
-		{name: "same login behind", selected: selected, canonical: "pos:10 login:alice", wantCanonical: "pos:20 login:alice", wantReplaced: true},
-		{name: "outside sign-in", selected: selected, canonical: "pos:5 login:bob", wantCanonical: "pos:5 login:bob"},
-		{name: "same login ahead", selected: selected, canonical: "pos:30 login:alice", wantCanonical: "pos:30 login:alice"},
-		{name: "canonical login unknown", selected: selected, canonical: "pos:10", wantCanonical: "pos:10"},
-		{name: "another store's account", canonical: "pos:10 login:alice", wantCanonical: "pos:10 login:alice"},
-		{name: "no canonical credential", selected: selected},
+		{name: "canonical on the seed", selected: selected, canonical: "pos:10", orphan: "pos:20", wantCanonical: "pos:20"},
+		{name: "outside sign-in", selected: selected, canonical: "pos:5 bob", orphan: "pos:20", wantCanonical: "pos:5 bob"},
+		{name: "canonical moved on", selected: selected, canonical: "pos:30", orphan: "pos:20", wantCanonical: "pos:30"},
+		{name: "another store's account", canonical: "pos:10", orphan: "pos:20", wantCanonical: "pos:10"},
+		{name: "orphan rotated nothing", selected: selected, canonical: "pos:10", orphan: "pos:10", wantCanonical: "pos:10"},
+		{name: "no canonical credential", selected: selected, orphan: "pos:20"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			credentials := chainFixture(t)
-			writeCodexSlot(t, credentials, "acct-1", "pos:10 login:alice")
+			writeCodexSlot(t, credentials, "acct-1", "pos:10")
 			if tc.canonical != "" {
 				if err := credentials.writeActiveCredential("codex", []byte(tc.canonical)); err != nil {
 					t.Fatal(err)
 				}
 			}
-			crashEphemeralHome(t, credentials, "codex", []byte("pos:20 login:alice"), "acct-1")
+			crashRotatedHome(t, credentials, []byte("pos:10"), []byte(tc.orphan), "acct-1")
 
 			results, err := credentials.SweepEphemeralCredentials(time.Now(), tc.selected)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(results) != 1 || results[0].Action != "adopted" || results[0].Canonical != tc.wantReplaced {
-				t.Fatalf("sweep results = %+v, want adoption with canonical=%v", results, tc.wantReplaced)
+			wantReplaced := tc.wantCanonical != tc.canonical
+			if len(results) != 1 || results[0].Canonical != wantReplaced {
+				t.Fatalf("sweep results = %+v, want canonical=%v", results, wantReplaced)
 			}
 			slot, err := credentials.ReadCredential("codex", "acct-1", false)
-			if err != nil || string(slot) != "pos:20 login:alice" {
-				t.Fatalf("slot = %q, %v; want the orphan", slot, err)
+			if err != nil || string(slot) != tc.orphan {
+				t.Fatalf("slot = %q, %v; want %q", slot, err, tc.orphan)
 			}
 			canonical, err := credentials.ReadCredential("codex", "", true)
 			if tc.wantCanonical == "" {
@@ -255,32 +277,44 @@ func TestSweepRestoresTheSelectedAccountsCanonicalCredential(t *testing.T) {
 	}
 }
 
-// The store that selected an account repairs its canonical credential
-// from a later point of the same login another store's sweep restored to
-// the slot, and from nothing else.
+// recoverForeign leaves acct-1 the way another store's sweep does after a
+// crashed selected probe rotated pos:10 to pos:20: slot on pos:20, the
+// seed recorded as consumed, canonical still on pos:10.
+func recoverForeign(t *testing.T, credentials *Credentials) {
+	t.Helper()
+	writeCodexSlot(t, credentials, "acct-1", "pos:10")
+	if err := credentials.writeActiveCredential("codex", []byte("pos:10")); err != nil {
+		t.Fatal(err)
+	}
+	crashRotatedHome(t, credentials, []byte("pos:10"), []byte("pos:20"), "acct-1")
+	results, err := credentials.SweepEphemeralCredentials(time.Now(), nil)
+	if err != nil || len(results) != 1 || results[0].Action != "adopted" || results[0].Canonical {
+		t.Fatalf("foreign sweep = %+v, %v", results, err)
+	}
+}
+
+// The store that selected the account puts the recovered slot into the
+// canonical store while the canonical store still holds the consumed seed,
+// and only then.
 func TestPromoteSlotOverCanonical(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
-		slot          string
 		canonical     string
 		wantCanonical string
 	}{
-		{name: "same login ahead", slot: "pos:20 login:alice", canonical: "pos:10 login:alice", wantCanonical: "pos:20 login:alice"},
-		{name: "same login behind", slot: "pos:10 login:alice", canonical: "pos:20 login:alice", wantCanonical: "pos:20 login:alice"},
-		{name: "outside sign-in", slot: "pos:20 login:alice", canonical: "pos:10 login:bob", wantCanonical: "pos:10 login:bob"},
-		{name: "slot login unknown", slot: "pos:20", canonical: "pos:10 login:alice", wantCanonical: "pos:10 login:alice"},
-		{name: "no slot", canonical: "pos:10 login:alice", wantCanonical: "pos:10 login:alice"},
+		{name: "canonical on the consumed seed", wantCanonical: "pos:20"},
+		{name: "signed in since", canonical: "pos:5 bob", wantCanonical: "pos:5 bob"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			credentials := chainFixture(t)
-			if tc.slot != "" {
-				writeCodexSlot(t, credentials, "acct-1", tc.slot)
-			}
-			if err := credentials.writeActiveCredential("codex", []byte(tc.canonical)); err != nil {
-				t.Fatal(err)
+			recoverForeign(t, credentials)
+			if tc.canonical != "" {
+				if err := credentials.writeActiveCredential("codex", []byte(tc.canonical)); err != nil {
+					t.Fatal(err)
+				}
 			}
 			promoted, changed, err := credentials.PromoteSlotOverCanonical("codex", "acct-1")
-			wantChanged := tc.wantCanonical != tc.canonical
+			wantChanged := tc.canonical == ""
 			if err != nil || changed != wantChanged || (changed && string(promoted.Bytes()) != tc.wantCanonical) {
 				t.Fatalf("promote = %v, %v; want changed=%v", changed, err, wantChanged)
 			}
@@ -290,43 +324,121 @@ func TestPromoteSlotOverCanonical(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("nothing recovered", func(t *testing.T) {
+		credentials := chainFixture(t)
+		writeCodexSlot(t, credentials, "acct-1", "pos:20")
+		if err := credentials.writeActiveCredential("codex", []byte("pos:10")); err != nil {
+			t.Fatal(err)
+		}
+		if _, changed, err := credentials.PromoteSlotOverCanonical("codex", "acct-1"); err != nil || changed {
+			t.Fatalf("promote without a recovery = %v, %v", changed, err)
+		}
+	})
 }
 
-// A switch away saves the outgoing canonical credential into its slot, but
-// not over a later point of the same login: that is another store's sweep
-// restoring a crashed probe's rotation, and the canonical bytes hold the
-// token it consumed. Anything else is overwritten as before, a different
-// login or an unknown one included.
-func TestSwitchNeverSavesOverALaterPointOfTheSameLogin(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		slot     string
-		wantSlot string
-	}{
-		{name: "same login ahead", slot: "pos:20 login:alice", wantSlot: "pos:20 login:alice"},
-		{name: "same login behind", slot: "pos:5 login:alice", wantSlot: "pos:10 login:alice"},
-		{name: "another login ahead", slot: "pos:20 login:bob", wantSlot: "pos:10 login:alice"},
-		{name: "slot login unknown", slot: "pos:20", wantSlot: "pos:10 login:alice"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			credentials := chainFixture(t)
-			writeCodexSlot(t, credentials, "acct-1", tc.slot)
-			writeCodexSlot(t, credentials, "acct-2", "pos:1 login:carol")
-			if err := credentials.writeActiveCredential("codex", []byte("pos:10 login:alice")); err != nil {
-				t.Fatal(err)
-			}
-			if err := credentials.Activate("codex", "acct-1", "acct-2"); err != nil {
-				t.Fatal(err)
-			}
-			slot, err := credentials.ReadCredential("codex", "acct-1", false)
-			if err != nil || string(slot) != tc.wantSlot {
-				t.Fatalf("outgoing slot = %q, %v; want %q", slot, err, tc.wantSlot)
-			}
-			canonical, err := credentials.ReadCredential("codex", "", true)
-			if err != nil || string(canonical) != "pos:1 login:carol" {
-				t.Fatalf("canonical = %q, %v; want the target", canonical, err)
-			}
-		})
+// After a recovery, the consumed seed never lands in the slot again, by any
+// writer: a switch's preserve, an adoption, a delayed commit. Anything else
+// still writes, and the record goes with the account.
+func TestConsumedCredentialNeverReturnsToTheSlot(t *testing.T) {
+	credentials := chainFixture(t)
+	recoverForeign(t, credentials)
+	writeCodexSlot(t, credentials, "acct-2", "pos:1 carol")
+
+	if err := credentials.Activate("codex", "acct-1", "acct-2"); err != nil {
+		t.Fatalf("switch away: %v", err)
+	}
+	if err := credentials.WriteAccountCredential("codex", "acct-1", []byte("pos:10")); err != nil {
+		t.Fatalf("write of the consumed seed: %v", err)
+	}
+	if replaced, err := credentials.ReplaceAccountCredential("codex", "acct-1", []byte("pos:20"), []byte("pos:10")); err != nil || replaced {
+		t.Fatalf("replace with the consumed seed = %v, %v", replaced, err)
+	}
+	slot, err := credentials.ReadCredential("codex", "acct-1", false)
+	if err != nil || string(slot) != "pos:20" {
+		t.Fatalf("slot = %q, %v; want the recovered rotation", slot, err)
+	}
+
+	if err := credentials.WriteAccountCredential("codex", "acct-1", []byte("pos:40 signed in again")); err != nil {
+		t.Fatal(err)
+	}
+	slot, err = credentials.ReadCredential("codex", "acct-1", false)
+	if err != nil || string(slot) != "pos:40 signed in again" {
+		t.Fatalf("slot = %q, %v; a sign-in must still write", slot, err)
+	}
+
+	if err := credentials.RemoveAccount("codex", "acct-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := credentials.WriteAccountCredential("codex", "acct-1", []byte("pos:10")); err != nil {
+		t.Fatal(err)
+	}
+	if slot, err := credentials.ReadCredential("codex", "acct-1", false); err != nil || string(slot) != "pos:10" {
+		t.Fatalf("slot = %q, %v; the record outlived its account", slot, err)
+	}
+}
+
+// The record is honored on chain position alone too: bytes with no
+// position, which the chain guard cannot order, are still refused.
+func TestConsumedCredentialIsRefusedWithoutAChainPosition(t *testing.T) {
+	credentials := sweepFixture(t)
+	if err := credentials.RecoverRotationForTest("codex", "acct-1", []byte("seed"), []byte("rotated")); err != nil {
+		t.Fatal(err)
+	}
+	if replaced, err := credentials.ReplaceAccountCredential("codex", "acct-1", []byte("rotated"), []byte("seed")); err != nil || replaced {
+		t.Fatalf("replace with the consumed seed = %v, %v", replaced, err)
+	}
+	if err := credentials.WriteAccountCredential("codex", "acct-1", []byte("seed")); err != nil {
+		t.Fatal(err)
+	}
+	if slot, err := credentials.ReadCredential("codex", "acct-1", false); err != nil || string(slot) != "rotated" {
+		t.Fatalf("slot = %q, %v; want the rotation", slot, err)
+	}
+}
+
+// An orphan that rotated nothing consumed nothing: its seed stays writable.
+func TestUnrotatedOrphanRecordsNothing(t *testing.T) {
+	credentials := chainFixture(t)
+	makeCodexSlotDir(t, credentials, "acct-1")
+	crashRotatedHome(t, credentials, []byte("pos:10"), []byte("pos:10"), "acct-1")
+	if _, err := credentials.SweepEphemeralCredentials(time.Now(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := credentials.WriteAccountCredential("codex", "acct-1", []byte("pos:30")); err != nil {
+		t.Fatal(err)
+	}
+	if err := credentials.WriteAccountCredential("codex", "acct-1", []byte("pos:10")); err != nil {
+		t.Fatal(err)
+	}
+	if slot, err := credentials.ReadCredential("codex", "acct-1", false); err != nil || string(slot) != "pos:10" {
+		t.Fatalf("slot = %q, %v; an unrotated seed was recorded as consumed", slot, err)
+	}
+}
+
+// A record that cannot be read cannot be honored, so nothing writes the
+// slot: the switch fails visibly and leaves both credentials as they were.
+func TestUnreadableRecoveryRecordStopsSlotWrites(t *testing.T) {
+	credentials := chainFixture(t)
+	writeCodexSlot(t, credentials, "acct-1", "pos:20")
+	writeCodexSlot(t, credentials, "acct-2", "pos:1 carol")
+	if err := credentials.writeActiveCredential("codex", []byte("pos:10")); err != nil {
+		t.Fatal(err)
+	}
+	markerPath, err := credentials.consumedMarkerPath("codex", "acct-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(markerPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := credentials.Activate("codex", "acct-1", "acct-2"); err == nil {
+		t.Fatal("a switch wrote a slot whose recovery record it could not read")
+	}
+	if slot, err := credentials.ReadCredential("codex", "acct-1", false); err != nil || string(slot) != "pos:20" {
+		t.Fatalf("slot = %q, %v; want it untouched", slot, err)
+	}
+	if canonical, err := credentials.ReadCredential("codex", "", true); err != nil || string(canonical) != "pos:10" {
+		t.Fatalf("canonical = %q, %v; want it untouched", canonical, err)
 	}
 }
 

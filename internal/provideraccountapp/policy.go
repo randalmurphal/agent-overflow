@@ -50,23 +50,12 @@ func CredentialLoginExpiresAt(providerName string, data []byte) (int64, bool) {
 	return expiresAt.UnixMilli(), true
 }
 
-// CredentialLoginID names the login provider-native bytes hold. Only Codex
-// credentials carry their identity (codex.CredentialLoginID); Claude's lives
-// in `oauthAccount`, apart from the credential, so it reports ok=false.
-func CredentialLoginID(providerName string, data []byte) (string, bool) {
-	if providerName != string(provider.Codex) {
-		return "", false
-	}
-	return codex.CredentialLoginID(data)
-}
-
 // CredentialPolicy is the shared provider-native credential write policy.
 func CredentialPolicy() provideraccounts.Policy {
 	return provideraccounts.Policy{
 		SignedOut:      CredentialSignedOut,
 		ChainPosition:  CredentialChainPosition,
 		LoginExpiresAt: CredentialLoginExpiresAt,
-		LoginID:        CredentialLoginID,
 	}
 }
 

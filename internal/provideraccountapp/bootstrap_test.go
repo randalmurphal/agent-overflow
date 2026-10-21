@@ -89,8 +89,8 @@ func TestCrashedCodexProbeHelper(t *testing.T) {
 // behind the orphan. A backend on another data root sharing the provider
 // home can take the orphan first. It restores the slot and leaves the
 // canonical credential, which only the store that selected the account
-// writes; the owner's next boot promotes the slot. Both hold with the
-// user-id claims Codex treats as optional left out.
+// writes; the owner's next boot promotes the slot. Neither depends on the
+// user-id claims Codex treats as optional.
 func TestBootRecoversTheSelectedCodexAccountsRotation(t *testing.T) {
 	for _, tc := range []struct {
 		name         string

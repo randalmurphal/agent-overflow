@@ -62,7 +62,7 @@ func (c *Credentials) ActivateWithSnapshot(
 		// is no rotation to detect against bytes that were never a token.
 		if c.credentialSignedOut(providerName, current.Bytes()) {
 			current = nil
-		} else if err := c.preserveAccountCredential(providerName, currentAccountID, current.Bytes()); err != nil {
+		} else if err := c.WriteAccountCredential(providerName, currentAccountID, current.Bytes()); err != nil {
 			return fmt.Errorf("provideraccounts: preserve current account before switch: %w", err)
 		}
 	}
@@ -95,7 +95,7 @@ func (c *Credentials) ActivateWithSnapshot(
 		if latest, err := c.ReadCredentialSnapshot(providerName, "", true); err == nil &&
 			!bytes.Equal(latest.Bytes(), current.Bytes()) &&
 			!c.credentialSignedOut(providerName, latest.Bytes()) {
-			if err := c.preserveAccountCredential(providerName, currentAccountID, latest.Bytes()); err != nil {
+			if err := c.WriteAccountCredential(providerName, currentAccountID, latest.Bytes()); err != nil {
 				return fmt.Errorf(
 					"provideraccounts: preserve rotated current account before switch: %w",
 					err,
@@ -195,7 +195,7 @@ func (c *Credentials) removeAccountLocked(providerName, accountID string) error 
 	if err := root.RemoveAll(filepath.Join(accountDirectoryName, accountID)); err != nil {
 		return fmt.Errorf("provideraccounts: remove saved account credentials: %w", err)
 	}
-	return nil
+	return c.removeConsumedMarker(providerName, accountID)
 }
 
 // PruneOrphanedAccounts removes credential slots that have no corresponding

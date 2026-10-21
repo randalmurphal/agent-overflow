@@ -86,7 +86,11 @@ func (c *Credentials) newEphemeralHome(
 	// the home — the CLI in a login home writes one on its own — because
 	// an unrecorded home that crashes is invisible to the boot sweep
 	// forever (ephemeral_registry.go).
-	lease, err := c.registerEphemeralHome(providerName, path, ownerAccountID)
+	seedDigest := ""
+	if credential != nil {
+		seedDigest = credentialDigest(credential)
+	}
+	lease, err := c.registerEphemeralHome(providerName, path, ownerAccountID, seedDigest)
 	if err != nil {
 		// Never registered, so nothing outlives the directory.
 		if removeErr := os.RemoveAll(path); removeErr != nil {

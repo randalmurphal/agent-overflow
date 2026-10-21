@@ -409,10 +409,8 @@ type chatGPTIdentity int
 
 const (
 	identifiedByUserID chatGPTIdentity = iota
-	// identifiedByEmail leaves out both user-id claims, which Codex treats
-	// as optional.
-	identifiedByEmail
-	// identifiedByNothing leaves out the email too.
+	// identifiedByNothing leaves out the user-id claims, which Codex treats
+	// as optional, and the email.
 	identifiedByNothing
 )
 
@@ -425,8 +423,6 @@ func chatGPTAuthForTest(t *testing.T, identity chatGPTIdentity, refreshToken str
 	switch identity {
 	case identifiedByUserID:
 		auth["chatgpt_user_id"] = "user-1"
-		idClaims["email"] = "selected@example.com"
-	case identifiedByEmail:
 		idClaims["email"] = "selected@example.com"
 	}
 	claims, err := json.Marshal(idClaims)
@@ -449,65 +445,119 @@ func chatGPTAuthForTest(t *testing.T, identity chatGPTIdentity, refreshToken str
 	return data
 }
 
-// The boot sweep of another data root can restore a crashed probe's
-// rotation into the selected account's slot while the canonical credential
-// stays on the token that rotation consumed. The selected probe first
-// promotes the slot into the canonical store when both name one login. When
-// nothing names the login it cannot, and the probe reads the consumed
-// canonical credential and, its access token still valid, rotates nothing;
-// its commit must still not save those bytes over the slot's live ones.
-func TestSelectedCodexUsageRefreshKeepsASlotAheadOfCanonical(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name     string
-		identity chatGPTIdentity
-		promotes bool
-	}{
-		{name: "user id", identity: identifiedByUserID, promotes: true},
-		{name: "email only", identity: identifiedByEmail, promotes: true},
-		{name: "no identity", identity: identifiedByNothing},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			testSelectedCodexUsageRefreshKeepsASlotAheadOfCanonical(t, tc.identity, tc.promotes)
-		})
-	}
-}
-
-func testSelectedCodexUsageRefreshKeepsASlotAheadOfCanonical(t *testing.T, identity chatGPTIdentity, promotes bool) {
-	app := newTestAppWithStore(t)
-	consumed := chatGPTAuthForTest(t, identity, "rt-10", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
-	live := chatGPTAuthForTest(t, identity, "rt-20", time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
-	installIdentityTestAccount(t, app, string(provider.Codex), "selected", "selected@example.com", consumed)
-	credentials := providerCredentialsForTest(t, app)
-	if err := credentials.WriteAccountCredential(string(provider.Codex), "selected", live); err != nil {
+// installRecoveredCodexAccounts leaves "selected" the way another data
+// root's boot sweep does after a crash of its probe: the rotation restored
+// to the slot and its consumed seed recorded, the canonical credential
+// still on that seed. "other" is a second saved account to switch to.
+func installRecoveredCodexAccounts(t *testing.T, app *App, identity chatGPTIdentity) (consumed, live []byte) {
+	t.Helper()
+	consumed = chatGPTAuthForTest(t, identity, "rt-10", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
+	live = chatGPTAuthForTest(t, identity, "rt-20", time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
+	installProviderUsageTestAccounts(
+		t,
+		app,
+		string(provider.Codex),
+		usageTestAccount{"other", []byte(`{"tokens":{"access_token":"other"}}`)},
+		usageTestAccount{"selected", consumed},
+	)
+	if err := providerCredentialsForTest(t, app).RecoverRotationForTest(string(provider.Codex), "selected", consumed, live); err != nil {
 		t.Fatal(err)
 	}
+	return consumed, live
+}
+
+// writeCodexAppServerMock answers every app-server request by method: the
+// account read names no email, the shape a ChatGPT token without one gives.
+func writeCodexAppServerMock(t *testing.T, app *App) {
+	t.Helper()
 	binary := filepath.Join(t.TempDir(), "mock-codex")
 	mockexec.Write(t, binary, "#!/bin/bash\n"+
-		"read -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\n"+
-		`printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"v2"}}'`+"\n"+
-		`printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"account":{"type":"chatgpt","email":"selected@example.com","planType":"pro"},"requiresOpenaiAuth":true}}'`+"\n"+
-		`printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","planType":"pro","primary":{"usedPercent":7,"windowDurationMins":300,"resetsAt":1778479200}}}}'`+"\n")
+		"while read -r line; do\n"+
+		"  id=$(printf '%s' \"$line\" | sed -n 's/.*\"id\":\\([0-9]*\\).*/\\1/p')\n"+
+		"  [ -z \"$id\" ] && continue\n"+
+		"  case \"$line\" in\n"+
+		"    *'\"method\":\"account/read\"'*) result='{\"account\":{\"type\":\"chatgpt\",\"email\":null,\"planType\":\"pro\"},\"requiresOpenaiAuth\":true}' ;;\n"+
+		"    *'\"method\":\"account/rateLimits/read\"'*) result='{\"rateLimits\":{\"limitId\":\"codex\",\"planType\":\"pro\",\"primary\":{\"usedPercent\":7,\"windowDurationMins\":300,\"resetsAt\":1778479200}}}' ;;\n"+
+		"    *) result='{\"protocolVersion\":\"v2\",\"userAgent\":\"codex/0.200.0\"}' ;;\n"+
+		"  esac\n"+
+		"  printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":%s}\\n' \"$id\" \"$result\"\n"+
+		"done\n")
 	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
 		t.Fatal(err)
 	}
+}
 
-	if err := app.refreshProviderAccountUsage(context.Background(), string(provider.Codex), "selected"); err != nil {
-		t.Fatal(err)
+func assertCodexCredentials(t *testing.T, app *App, wantSlot, wantCanonical []byte) {
+	t.Helper()
+	credentials := providerCredentialsForTest(t, app)
+	slot, err := credentials.ReadCredential(string(provider.Codex), "selected", false)
+	if err != nil || !bytes.Equal(slot, wantSlot) {
+		t.Fatalf("selected slot lost the recovered rotation (err %v)", err)
 	}
-	got, err := credentials.ReadCredential(string(provider.Codex), "selected", false)
-	if err != nil || !bytes.Equal(got, live) {
-		t.Fatalf("slot lost the live credential (err %v)", err)
+	if wantCanonical == nil {
+		return
 	}
 	canonical, err := credentials.ReadCredential(string(provider.Codex), "", true)
-	want := consumed
-	if promotes {
-		want = live
+	if err != nil || !bytes.Equal(canonical, wantCanonical) {
+		t.Fatalf("canonical credential is not the recovered rotation (err %v)", err)
 	}
-	if err != nil || !bytes.Equal(canonical, want) {
-		t.Fatalf("canonical holds the wrong credential (err %v); want promoted=%v", err, promotes)
+}
+
+// The boot sweep of another data root can restore a crashed probe's
+// rotation into the selected account's slot while the canonical credential
+// stays on the seed that rotation consumed. Every path that reads the
+// canonical credential as the selected login first promotes the slot, and
+// none of them writes the consumed seed back over it. Nothing here depends
+// on the token naming its user.
+func TestRecoveredCodexRotationSurvivesEverySelectedPath(t *testing.T) {
+	t.Parallel()
+	for _, identity := range []struct {
+		name  string
+		value chatGPTIdentity
+	}{
+		{"user id", identifiedByUserID},
+		{"no identity", identifiedByNothing},
+	} {
+		for _, path := range []struct {
+			name string
+			run  func(*App) error
+		}{
+			{"usage refresh", func(app *App) error {
+				return app.refreshProviderAccountUsage(context.Background(), string(provider.Codex), "selected")
+			}},
+			{"reconciliation", func(app *App) error {
+				return app.providerAccounts.ReconcileExternalProviderAccount(string(provider.Codex))
+			}},
+			{"account probe", func(app *App) error {
+				_, err := app.ProbeCodexAccount()
+				return err
+			}},
+		} {
+			t.Run(identity.name+"/"+path.name, func(t *testing.T) {
+				t.Parallel()
+				app := newTestAppWithStore(t)
+				_, live := installRecoveredCodexAccounts(t, app, identity.value)
+				writeCodexAppServerMock(t, app)
+				if err := path.run(app); err != nil {
+					t.Fatal(err)
+				}
+				assertCodexCredentials(t, app, live, live)
+			})
+		}
 	}
+}
+
+// A switch away saves the outgoing canonical credential into its slot. It
+// must not be the consumed seed, whether promotion ran first or not.
+func TestSwitchAwayKeepsARecoveredCodexRotation(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	_, live := installRecoveredCodexAccounts(t, app, identifiedByNothing)
+	writeCodexAppServerMock(t, app)
+	if _, err := app.SwitchProviderAccount(string(provider.Codex), "other"); err != nil {
+		t.Fatal(err)
+	}
+	assertCodexCredentials(t, app, live, nil)
 }
 
 // An inactive Codex probe works on bytes it read before it ran. Another

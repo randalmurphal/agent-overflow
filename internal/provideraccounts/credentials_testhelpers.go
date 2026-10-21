@@ -27,3 +27,26 @@ func (c *Credentials) WriteNativeCredentialForTest(providerName string, data []b
 	}
 	return c.storeActiveCredential(providerName, data)
 }
+
+// RecoverRotationForTest leaves a slot the way another store's boot sweep
+// does after restoring a crashed probe's rotation: rotated in the slot and
+// seed recorded as consumed (consumed.go), with the canonical credential
+// untouched. Tests use it to reach that state without a crashing process.
+func (c *Credentials) RecoverRotationForTest(providerName, accountID string, seed, rotated []byte) (retErr error) {
+	if !testing.Testing() {
+		return errors.New("provideraccounts: RecoverRotationForTest is only available inside a test binary")
+	}
+	lock, err := c.lockSlot(providerName, accountID)
+	if err != nil {
+		return err
+	}
+	defer func() { retErr = errors.Join(retErr, releaseSlot(lock)) }()
+	accountDir, err := c.ensureAccountDirectory(providerName, accountID)
+	if err != nil {
+		return err
+	}
+	if err := c.writeConsumedMarker(providerName, accountID, credentialDigest(seed)); err != nil {
+		return err
+	}
+	return c.writeCredentialAt(providerName, accountDir, false, rotated)
+}

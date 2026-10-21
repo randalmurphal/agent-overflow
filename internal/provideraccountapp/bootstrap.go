@@ -67,10 +67,27 @@ func (m *Manager) ReconcileProviderHome(dbDir, userHome string) error {
 	return nil
 }
 
+// promoteActiveSlot is promoteSelectedSlot for whichever account is
+// selected now. Every path that reads the canonical credential as the
+// selected login calls it first, under the provider's reconcile mutex.
+func (m *Manager) promoteActiveSlot(providerName string) error {
+	if !m.available() {
+		return nil
+	}
+	m.mu.RLock()
+	active, ok := m.store.Active(providerName, time.Now())
+	m.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	return m.promoteSelectedSlot(providerName, active.ID)
+}
+
 // promoteSelectedSlot brings the canonical credential up to the selected
-// account's slot when another store's boot sweep restored a later point of
-// the same login there (provideraccounts.PromoteSlotOverCanonical). The
-// caller holds the provider's reconcile mutex or runs before any can.
+// account's slot when another store's boot sweep recovered a rotation there
+// and the canonical store still holds the seed it consumed
+// (provideraccounts.PromoteSlotOverCanonical). The caller holds the
+// provider's reconcile mutex or runs before any can.
 func (m *Manager) promoteSelectedSlot(providerName, accountID string) error {
 	promoted, changed, err := m.credentials.PromoteSlotOverCanonical(providerName, accountID)
 	if err != nil {

@@ -83,21 +83,27 @@ can take. It adopts a crash-orphaned credential into its slot only when the
 slot is missing, signed out, or strictly behind it on the rotation chain
 (`ChainPosition`: Claude token expiry, Codex `last_refresh`).
 
+Each registry entry records the digest of the credential its home was
+seeded with. An adoption of an orphan that rotated that seed first records
+the seed as consumed beside the slot's lock (`consumed.go`), and no slot
+write ever lands those exact bytes again: a switch's preserve, an
+adoption, a delayed commit. A recovery record that cannot be read stops
+every write to its slot.
+
 Only the store that selected an account writes the canonical credential
 for it. Its sweep also restores a selected account's orphan into the
-canonical home over the same login (`LoginID`). Another data root's sweep
-restores the slot alone. The owner then promotes a slot holding a later
-point of the same login (`PromoteSlotOverCanonical`), at boot and before a
-selected probe. Coherence of the shared canonical credential across stores
-otherwise belongs to external-login reconciliation.
+canonical home while that still holds the consumed seed. Another data
+root's sweep restores the slot alone. While the canonical store still holds
+the consumed seed, the owner promotes the slot (`PromoteSlotOverCanonical`):
+at boot, before reconciliation and before a selected probe. Coherence of the
+shared canonical credential across stores otherwise belongs to
+external-login reconciliation.
 
 Every slot write and removal holds the slot's lock (`lockSlot`); a writer
 that decides from the slot's contents holds it from the read to the write.
 A writer holding bytes it read earlier replaces only what it read, and
 never moves the slot backward on its chain (`ReplaceAccountCredential`).
-A switch's preserve skips a slot holding a later point of the same login.
-It does not refuse on position alone, because a sign-in can start a chain
-behind the old one. Rollback removes only what it wrote.
+Rollback removes only what it wrote.
 
 Credential bytes travel as `CredentialSnapshot` or `secret.Bytes`, which
 print as `<redacted>` from any field. A raw `[]byte` credential is a

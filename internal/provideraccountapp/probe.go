@@ -60,6 +60,10 @@ func (m *Manager) RunAccountProbe(r ProbeRequest) (provider.AccountInfo, error) 
 
 	reconcileMu := m.reconcileMutex(r.ProviderName)
 	reconcileMu.Lock()
+	if err := m.promoteActiveSlot(r.ProviderName); err != nil {
+		reconcileMu.Unlock()
+		return provider.AccountInfo{}, err
+	}
 	info, credential, err := m.runStableAccountProbe(r.ProviderName, r.Probe)
 	if err != nil {
 		reconcileMu.Unlock()

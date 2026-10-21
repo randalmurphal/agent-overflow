@@ -55,6 +55,12 @@ func (m *Manager) ReconcileExternalProviderAccount(providerName string) error {
 func (m *Manager) reconcileExternalProviderAccountWithMutexHeld(
 	providerName string,
 ) error {
+	// A rotation another store's sweep recovered into the selected slot
+	// goes back into the canonical store before anything reads it as the
+	// selected login.
+	if err := m.promoteActiveSlot(providerName); err != nil {
+		return err
+	}
 	before, present, err := m.readCanonicalCredentialIfPresent(providerName)
 	if err != nil {
 		return err

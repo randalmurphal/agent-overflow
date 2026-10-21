@@ -80,12 +80,6 @@ type ChainPosition func(providerName string, data []byte) (int64, bool)
 // a sign-in repairs is the worse failure.
 type LoginExpiry func(providerName string, data []byte) (int64, bool)
 
-// LoginIdentity names the login provider-native credential bytes hold, as a
-// value equal for every credential on one login's rotation chain and
-// different across logins. ok=false means the bytes do not say, which
-// matches nothing.
-type LoginIdentity func(providerName string, data []byte) (string, bool)
-
 // Policy carries the provider-specific credential predicates this package
 // cannot implement itself without importing a provider package. They are
 // supplied at construction rather than through setters, so a store that
@@ -96,7 +90,6 @@ type Policy struct {
 	SignedOut      SignedOutDetector
 	ChainPosition  ChainPosition
 	LoginExpiresAt LoginExpiry
-	LoginID        LoginIdentity
 }
 
 // Credentials owns Agent Overflow's opaque copies of provider-native
@@ -580,6 +573,9 @@ func (c *Credentials) writeCredential(
 		if err != nil {
 			return err
 		}
+		if consumed, err := c.consumedSlotWrite(providerName, accountID, data); err != nil || consumed {
+			return err
+		}
 	}
 	return c.writeCredentialAt(providerName, home, active, data)
 }
@@ -668,6 +664,9 @@ func (c *Credentials) ReplaceAccountCredential(providerName, accountID string, e
 	case c.chainAdvances(providerName, data, current.Bytes()):
 		return false, nil
 	}
+	if consumed, err := c.consumedSlotWrite(providerName, accountID, data); err != nil || consumed {
+		return false, err
+	}
 	if err := c.writeCredentialAt(providerName, accountDir, false, data); err != nil {
 		return false, err
 	}
@@ -676,30 +675,6 @@ func (c *Credentials) ReplaceAccountCredential(providerName, accountID string, e
 
 func (c *Credentials) WriteAccountCredential(providerName, accountID string, data []byte) error {
 	return c.writeCredential(providerName, accountID, false, data)
-}
-
-// preserveAccountCredential saves an outgoing account's canonical
-// credential into its slot, unless the slot holds the same login strictly
-// later on its chain: another store's boot sweep restored a crashed probe's
-// rotation there, and the canonical bytes hold the token it consumed. Any
-// other slot content is overwritten, as a switch always has; refusing on
-// chain position alone would refuse a sign-in whose new chain sits behind
-// the old one.
-func (c *Credentials) preserveAccountCredential(providerName, accountID string, data []byte) (retErr error) {
-	lock, err := c.lockSlot(providerName, accountID)
-	if err != nil {
-		return err
-	}
-	defer func() { retErr = errors.Join(retErr, releaseSlot(lock)) }()
-	home, err := c.ensureAccountDirectory(providerName, accountID)
-	if err != nil {
-		return err
-	}
-	if current, err := c.readCredentialAt(providerName, home, false); err == nil &&
-		c.laterOnSameLogin(providerName, current.Bytes(), data) {
-		return nil
-	}
-	return c.writeCredentialAt(providerName, home, false, data)
 }
 
 // CommitSelectedCredential publishes a refreshed credential to the canonical

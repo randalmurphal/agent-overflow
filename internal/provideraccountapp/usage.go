@@ -84,17 +84,12 @@ func (m *Manager) refreshProviderAccountUsage(
 		return err
 	}
 
-	m.mu.RLock()
-	active, isActive := m.store.Active(providerName, time.Now())
-	m.mu.RUnlock()
-	// The probe starts from the canonical credential, which another store's
-	// boot sweep can leave behind a later point of the same login in the
-	// slot. Starting from the slot's instead keeps the probe off a consumed
+	// The selected probe starts from the canonical credential, which another
+	// store's boot sweep can leave on a seed whose rotation it recovered
+	// into the slot. Promoting the slot first keeps the probe off a consumed
 	// token. The reconcile mutex keeps the selection fixed from here on.
-	if isActive && active.ID == accountID {
-		if err := m.promoteSelectedSlot(providerName, accountID); err != nil {
-			return err
-		}
+	if err := m.promoteActiveSlot(providerName); err != nil {
+		return err
 	}
 
 	m.mu.RLock()
@@ -103,7 +98,7 @@ func (m *Manager) refreshProviderAccountUsage(
 		m.mu.RUnlock()
 		return fmt.Errorf("%s account %q is not saved", providerName, accountID)
 	}
-	active, isActive = m.store.Active(providerName, time.Now())
+	active, isActive := m.store.Active(providerName, time.Now())
 	isSelected := isActive && active.ID == accountID
 	generation := m.store.Generation(providerName)
 	selection := Selection{
