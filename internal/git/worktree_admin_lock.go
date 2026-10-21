@@ -19,12 +19,14 @@ var worktreeAdminLocks = keyedlock.New()
 
 // worktreeCheckoutLocks serializes the worktree attaches and creates of one
 // repository, keyed by its common dir, across the whole operation: the
-// branch checks, the branch creation, the registration snapshot, the add
-// and the undo of a failed add. The admin lock covers one git command, so
-// without this one two attaches of a branch to one path could both
-// snapshot no registration, and the attach git refuses would remove the
-// other's checkout as its own. Process-wide like worktreeAdminLocks: the
-// app builds more than one Core.
+// branch checks, the branch creation, the add and the undo of a failed
+// add. The admin lock covers one git command, so without this one two
+// attaches of one origin branch would both see no local branch and the
+// slower would fail creating it instead of at git's one-checkout rule.
+// Which registration an undo removes does not depend on it: that is the
+// one locked with the attempt's own reason (checkoutWorktree), which also
+// holds against another process. Process-wide like worktreeAdminLocks:
+// the app builds more than one Core.
 var worktreeCheckoutLocks = keyedlock.New()
 
 // lockWorktreeCheckout takes the checkout lock of cwd's repository and

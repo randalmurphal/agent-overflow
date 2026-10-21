@@ -61,6 +61,21 @@ func assertAddUndone(t *testing.T, repo, branch string, wantBranch bool) {
 	}
 }
 
+// worktreeRegisteredAt reports whether git lists a worktree of the
+// repository at cwd at path.
+func worktreeRegisteredAt(cwd, path string) (bool, error) {
+	worktrees, err := NewCore().ListWorktrees(cwd)
+	if err != nil {
+		return false, err
+	}
+	for _, worktree := range worktrees {
+		if SameFilesystemPath(worktree.Path, path) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func assertOccupiedPathKept(t *testing.T, path string) {
 	t.Helper()
 	if data, err := os.ReadFile(filepath.Join(path, "keep.txt")); err != nil || string(data) != "mine\n" {
@@ -134,10 +149,111 @@ func TestAttachWorktreeKeepsAWorktreeThatWasAlreadyThere(t *testing.T) {
 	if _, err := core.AttachWorktree(repo, path, "feature/there"); err == nil {
 		t.Fatal("a second attach at the same path succeeded")
 	}
-	registered, err := core.worktreeRegisteredAt(repo, path)
+	registered, err := worktreeRegisteredAt(repo, path)
 	if err != nil || !registered {
 		t.Fatalf("the existing worktree was removed (%v)", err)
 	}
+}
+
+// Another process (a terminal, another app process) that checks the
+// branch out at the path between this attach's branch checks and its add
+// keeps its checkout, untracked work included: the attach git refuses
+// removes only a registration locked with its own reason.
+func TestAttachWorktreeKeepsAnotherProcessesCheckoutAtThePath(t *testing.T) {
+	t.Parallel()
+	repo := initGitRepo(t)
+	testutil.RunGit(t, repo, "branch", "feature/theirs")
+	path := filepath.Join(t.TempDir(), "theirs")
+	core := NewCore()
+	core.beforeWorktreeAdd = func(string) {
+		testutil.RunGit(t, repo, "worktree", "add", "--", path, "feature/theirs")
+		if err := os.WriteFile(filepath.Join(path, "work.txt"), []byte("theirs\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := core.AttachWorktree(repo, path, "feature/theirs"); err == nil {
+		t.Fatal("the attach succeeded over another process's checkout")
+	} else if strings.Contains(err.Error(), "undo") {
+		t.Fatalf("the refused attach undid something: %v", err)
+	}
+	registered, err := worktreeRegisteredAt(repo, path)
+	if err != nil || !registered {
+		t.Fatalf("the other process's worktree was removed (%v)", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(path, "work.txt")); err != nil || string(data) != "theirs\n" {
+		t.Fatalf("the other process's untracked work changed: %q, %v", data, err)
+	}
+}
+
+// A checkout that succeeded drops the lock its add took.
+func TestCheckoutsLeaveTheWorktreeUnlocked(t *testing.T) {
+	t.Parallel()
+	repo := initGitRepo(t)
+	core := NewCore()
+	testutil.RunGit(t, repo, "branch", "feature/open")
+	attached := filepath.Join(t.TempDir(), "attached")
+	if _, err := core.AttachWorktree(repo, attached, "feature/open"); err != nil {
+		t.Fatal(err)
+	}
+	created := filepath.Join(t.TempDir(), "created")
+	if err := core.CreateWorktreeFromBranch(repo, created, "", "ao-open"); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{attached, created} {
+		if locked, err := core.worktreeLocked(repo, path); err != nil || locked {
+			t.Fatalf("%s locked = %v (%v), want unlocked", path, locked, err)
+		}
+	}
+}
+
+// A checkout git made that cannot be unlocked is usable and reported as
+// that partial failure; it stays locked, as a crash between the add and
+// the unlock leaves it, and removal still lifts that lock.
+func TestAttachWorktreeReportsACheckoutItCouldNotUnlock(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell hook and directory modes are unix-only")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root unlinks in a read-only directory")
+	}
+	repo := initGitRepo(t)
+	testutil.RunGit(t, repo, "branch", "feature/held")
+	hooks := t.TempDir()
+	// The hook makes the worktree's admin directory read-only, so the
+	// unlock cannot delete its locked file.
+	if err := os.WriteFile(filepath.Join(hooks, "post-checkout"), []byte("#!/bin/sh\nchmod 0555 \"$(git rev-parse --absolute-git-dir)\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	testutil.RunGit(t, repo, "config", "core.hooksPath", hooks)
+	path := filepath.Join(t.TempDir(), "held")
+	adminDir := filepath.Join(repo, ".git", "worktrees", "held")
+	t.Cleanup(func() { _ = os.Chmod(adminDir, 0o755) })
+
+	core := NewCore()
+	_, err := core.AttachWorktree(repo, path, "feature/held")
+	if err == nil || !strings.Contains(err.Error(), "checked out but still locked") {
+		t.Fatalf("AttachWorktree = %v, want the unlock's partial failure", err)
+	}
+	head, _, err := core.Execute(path, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil || strings.TrimSpace(head) != "feature/held" {
+		t.Fatalf("the checkout is on %q (%v)", head, err)
+	}
+	if locked, err := core.worktreeLocked(repo, path); err != nil || !locked {
+		t.Fatalf("worktree locked = %v (%v), want the add's lock kept", locked, err)
+	}
+	if registered, err := worktreeRegisteredAt(repo, path); err != nil || !registered {
+		t.Fatalf("ListWorktrees does not show the locked checkout (%v)", err)
+	}
+
+	if err := os.Chmod(adminDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := core.RemoveWorktree(repo, path); err != nil {
+		t.Fatalf("RemoveWorktree of the still-locked checkout: %v", err)
+	}
+	assertAddUndone(t, repo, "feature/held", true)
 }
 
 // A new branch cut for a worktree is deleted when its checkout fails, and
@@ -187,9 +303,9 @@ func TestCreateWorktreeKeepsAnExistingBranch(t *testing.T) {
 	assertAddUndone(t, repo, "ao-taken", true)
 }
 
-// holdBeforeAdd makes each core hold every checkout between its
-// registration snapshot and its add until two checkouts reached that
-// point or wait elapsed, and reports whether the wait ever elapsed.
+// holdBeforeAdd makes each core hold every checkout just before its add
+// until two checkouts reached that point or wait elapsed, and reports
+// whether the wait ever elapsed.
 func holdBeforeAdd(wait time.Duration, cores ...*Core) (elapsed *atomic.Bool) {
 	var arrived atomic.Int32
 	both := make(chan struct{})
@@ -211,9 +327,8 @@ func holdBeforeAdd(wait time.Duration, cores ...*Core) (elapsed *atomic.Bool) {
 
 // Two attaches of one branch to one path, from two Cores: one wins, and
 // the one git refuses leaves the winner's checkout as it was. Each
-// attach is held after its registration snapshot until the other
-// reaches it too, which only an attach not waiting on the other's whole
-// operation can.
+// attach is held before its add until the other reaches it too, which
+// only an attach not waiting on the other's whole operation can.
 func TestCompetingAttachesOfOneBranchKeepTheWinnersWorktree(t *testing.T) {
 	t.Parallel()
 	repo := initGitRepo(t)
@@ -237,7 +352,7 @@ func TestCompetingAttachesOfOneBranchKeepTheWinnersWorktree(t *testing.T) {
 		}
 	}
 	core := NewCore()
-	registered, err := core.worktreeRegisteredAt(repo, path)
+	registered, err := worktreeRegisteredAt(repo, path)
 	if err != nil || !registered {
 		t.Fatalf("the winner's worktree is not registered (%v)", err)
 	}

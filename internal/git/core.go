@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"golang.org/x/sync/singleflight"
 
 	"agent-overflow/internal/appimage"
@@ -245,9 +246,9 @@ type Core struct {
 	// production code.
 	fetchFn func(ctx context.Context, cwd string) error
 
-	// beforeWorktreeAdd runs between checkoutWorktree's registration
-	// snapshot and its `git worktree add`. Nil in production; tests set it
-	// to hold one checkout there while another runs.
+	// beforeWorktreeAdd runs just before checkoutWorktree's
+	// `git worktree add`. Nil in production; tests set it to hold one
+	// checkout there while another runs.
 	beforeWorktreeAdd func(path string)
 }
 
@@ -447,7 +448,8 @@ func (c *Core) CreateWorktree(cwd, path, branch string) error {
 // place at a time). createdBranch reports that the branch was origin's
 // alone and this call made the local branch, which a caller undoing the
 // attach deletes with the worktree. A failed attach leaves neither a
-// worktree nor a branch it made (checkoutWorktree).
+// worktree nor a branch it made, except a checkout git made that could not
+// be unlocked (checkoutWorktree).
 func (c *Core) AttachWorktree(cwd, path, branch string) (createdBranch bool, err error) {
 	if strings.TrimSpace(path) == "" {
 		return false, errors.New("git worktree path is required")
@@ -551,45 +553,40 @@ func (c *Core) createWorktreeAt(cwd, path, startPoint, newBranch string, noTrack
 	return c.checkoutWorktree(cwd, path, newBranch, true)
 }
 
-// checkoutWorktree checks branch out in a new worktree at path. A failed
-// checkout takes back what it left: a failing post-checkout hook leaves the
-// worktree registered, so a worktree git lists at path on branch that was
-// not registered before is removed, and then, when ownsBranch (the caller
-// made the branch for this worktree), the branch is deleted. A branch the
-// caller did not make is never deleted, and a destination git refused as
-// occupied stays as it was. What the undo could not take back is joined to
-// git's diagnosis. The caller holds the repository's checkout lock
-// (lockWorktreeCheckout), which is what makes a registration absent from
-// the snapshot and present after the add this add's own.
+// checkoutWorktree checks branch out in a new worktree at path. The add
+// locks the worktree with a reason unique to this attempt
+// (checkoutLockReason), and a failed checkout takes back only what carries
+// it: a failing post-checkout hook leaves the worktree registered and
+// locked, so the registration locked with this attempt's reason is
+// removed, and then, when ownsBranch (the caller made the branch for this
+// worktree), the branch is deleted. A registration another process made at
+// path, or one git refused the add for, carries no such lock and stays as
+// it was; a branch the caller did not make is never deleted. What the undo
+// could not take back is joined to git's diagnosis. A checkout that
+// succeeded and could not be unlocked is reported as that partial failure:
+// the worktree is usable at path, locked against prune.
 func (c *Core) checkoutWorktree(cwd, path, branch string, ownsBranch bool) error {
-	// A worktree on a branch made for this checkout can only be this
-	// checkout's; on any other branch it may predate it.
-	registered := false
-	if !ownsBranch {
-		var err error
-		if registered, err = c.worktreeRegisteredAt(cwd, path); err != nil {
-			return fmt.Errorf("git worktree add: %w", err)
-		}
-	}
+	reason := checkoutLockReason + uuid.NewString()
 	if c.beforeWorktreeAdd != nil {
 		c.beforeWorktreeAdd(path)
 	}
-	_, stderr, err := c.Execute(cwd, "worktree", "add", "--", path, branch)
+	_, stderr, err := c.Execute(cwd, "worktree", "add", "--lock", "--reason", reason, "--", path, branch)
 	if err == nil {
+		if _, stderr, err := c.Execute(cwd, "worktree", "unlock", "--", path); err != nil {
+			return fmt.Errorf("git worktree add: %s is checked out but still locked: git worktree unlock failed: %s", path, firstNonEmpty(strings.TrimSpace(stderr), err.Error()))
+		}
 		return nil
 	}
 	failure := fmt.Errorf("git worktree add failed: %s", firstNonEmpty(strings.TrimSpace(stderr), err.Error()))
 	var undo []error
-	if !registered {
-		worktrees, listErr := c.ListWorktrees(cwd)
-		if listErr != nil {
-			undo = append(undo, listErr)
-		}
-		for _, worktree := range worktrees {
-			if worktree.Branch == branch && SameFilesystemPath(worktree.Path, path) {
-				undo = append(undo, c.RemoveWorktreeForce(cwd, worktree.Path, true))
-				break
-			}
+	entries, listErr := c.listWorktreeEntries(cwd)
+	if listErr != nil {
+		undo = append(undo, listErr)
+	}
+	for _, entry := range entries {
+		if entry.locked && entry.lockReason == reason {
+			undo = append(undo, c.RemoveWorktreeForce(cwd, entry.Path, true))
+			break
 		}
 	}
 	if ownsBranch {
@@ -601,20 +598,9 @@ func (c *Core) checkoutWorktree(cwd, path, branch string, ownsBranch bool) error
 	return failure
 }
 
-// worktreeRegisteredAt reports whether git lists a worktree of the
-// repository at cwd at path.
-func (c *Core) worktreeRegisteredAt(cwd, path string) (bool, error) {
-	worktrees, err := c.ListWorktrees(cwd)
-	if err != nil {
-		return false, err
-	}
-	for _, worktree := range worktrees {
-		if SameFilesystemPath(worktree.Path, path) {
-			return true, nil
-		}
-	}
-	return false, nil
-}
+// checkoutLockReason prefixes the lock reason checkoutWorktree adds a
+// worktree with; a random id follows it, so the lock names one attempt.
+const checkoutLockReason = "Agent Overflow checkout "
 
 // RemoveWorktree removes a worktree from a repository.
 func (c *Core) RemoveWorktree(cwd, path string) error {
@@ -1001,19 +987,29 @@ type worktreeEntry struct {
 // at cwd. A path git does not list is not locked; the caller's own git
 // command reports it as unknown.
 func (c *Core) worktreeLocked(cwd, path string) (bool, error) {
-	result, err := c.run(cwd, "worktree", "list", "--porcelain")
+	entries, err := c.listWorktreeEntries(cwd)
 	if err != nil {
 		return false, err
 	}
-	if result.exitCode != 0 {
-		return false, fmt.Errorf("git worktree list failed: %s", strings.TrimSpace(result.stderr))
-	}
-	for _, entry := range parseWorktreeEntries(result.stdout) {
+	for _, entry := range entries {
 		if SameFilesystemPath(entry.Path, path) {
 			return entry.locked, nil
 		}
 	}
 	return false, nil
+}
+
+// listWorktreeEntries is every worktree record of the repository at cwd,
+// with its lock.
+func (c *Core) listWorktreeEntries(cwd string) ([]worktreeEntry, error) {
+	result, err := c.run(cwd, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, err
+	}
+	if result.exitCode != 0 {
+		return nil, fmt.Errorf("git worktree list failed: %s", strings.TrimSpace(result.stderr))
+	}
+	return parseWorktreeEntries(result.stdout), nil
 }
 
 func parseWorktreeList(stdout string) []Worktree {

@@ -27,8 +27,9 @@ Every `git worktree` command runSpec runs holds a process-wide lock per
 repository common dir (`worktree_admin_lock.go`), because Git dies reading a
 linked worktree's admin directory that a concurrent add has not finished.
 A worktree attach or create also holds an outer per-repository lock across
-its branch checks, branch creation, registration snapshot, add and undo, so
-a failed add removes only a registration it made.
+its branch checks, branch creation, add and undo, and adds the worktree
+locked with a reason unique to the attempt; a failed add removes only the
+registration carrying that reason, so another process's checkout survives.
 Worktree operations confirm the target through Git before removing or reusing
 it. Never recursively delete a path merely because it appears under a project
 directory. Keep main-worktree resolution and stale registration rules in
