@@ -1,18 +1,26 @@
 # components/workflows/
 
-The workflow overlay presents runs from local and attached computers. Engine
+The workflows pane presents runs from local and attached computers. Engine
 and phase semantics live in
 [`workflows-system.md`](../../../../../docs/specs/workflows-system.md); run-map
 layout and motion live in
 [`workflow-run-map.md`](../../../../../docs/architecture/workflow-run-map.md).
 
-## Overlay structure
+## Pane structure
 
-`WorkflowsOverlay.svelte` is a full-surface sibling of the pane host so opening
-it does not unmount panes. Home, run detail, and terminal all-clear share one
-scroller. Supply that scroller through `overlayScroller.ts`; the context value
-must remain a getter because the bound element arrives after first render.
-Fail at mount when the provider is absent instead of searching ancestors.
+`WorkflowsPane.svelte` is the body of the `workflows` tool pane
+(`stores/toolPanes.svelte.ts`, mounted by `panes/ToolPane.svelte`). The pane
+exists exactly while Workflows is open; navigation state outlives it in
+`stores/workflowsOverlay.svelte.ts`. Home, run detail, and terminal all-clear
+share one scroller. Supply that scroller through `workflowsScroller.ts`; the
+context value must remain a getter because the bound element arrives after
+first render. Fail at mount when the provider is absent instead of searching
+ancestors.
+
+A detail step (run detail, all-clear, a dialog, an armed confirm) reports
+itself through the tool's `toolDetailOpen` probe, which gates
+`workflows.escape`. At home the gate is closed, so Escape and the phone's Back
+pass through instead of being consumed.
 
 ## Run-map scroll
 

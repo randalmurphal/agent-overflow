@@ -2555,8 +2555,8 @@ text above was deviated from:
   phone-sized BROWSER pointed at a remote host answers its own Back
   (swipe or button) the same way: `utils/compactHistoryBack.svelte.ts`
   keeps one sentinel `pushState` entry while the app is away from root
-  (the thread screen, or any registered overlay surface: settings and
-  workflows overlays, companions, modals, popovers, context menus), a
+  (the thread screen, or any registered overlay surface: the settings
+  overlay, companions, modals, popovers, context menus), a
   `popstate` over it runs the shell's `stepBack` ladder, and the sentinel
   is re-pushed while there is still somewhere to go back to. At the
   list with nothing open there is no sentinel, so Back leaves the page,
