@@ -57,7 +57,7 @@ import { composeWorkspaceKey } from '../utils/workspaceKey';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { probeReactivity } from '../../test/helpers/reactivity.svelte';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
-import { grantBackendScopes, revokeBackendScopes } from '../../test/helpers/scopes';
+import { grantBackendScopes, pairViewOnly, resetToLocalPage, revokeBackendScopes } from '../../test/helpers/scopes';
 import { getToasts, resetToastsForTest } from './toast.svelte';
 
 const PANE = 'tools-pulls';
@@ -535,7 +535,7 @@ describe('selection and viewed marks', () => {
     expect(detailOpen(PANE)).toBe(false);
   });
 
-  it('marks the selected PR viewed once per head while its review shows, and clears its since text at once', async () => {
+  it('marks the selected PR viewed once per head and comment count while its review shows, and clears its since text at once', async () => {
     installListMocks(snapshot(1, [project('p1', [item(1, { seen: { openedAt: 1, headSHA: 'old', comments: 0, commits: 1 }, since: { headMoved: true, newComments: 1, newCommits: 0 } })])]));
     const mark = installPRMocks();
     attachPullsPage(PANE, HOME_BACKEND);
@@ -560,6 +560,93 @@ describe('selection and viewed marks', () => {
     applyPRUpdatedEvent({ prKey: prKey(ref(1)), detail: null, threads: [], headSHA: 'sha-3', seq: 4 });
     expect(mark).toHaveBeenCalledTimes(2);
     held.release();
+  });
+
+  // One pump per PR number, as the pinned reviews the page keeps hold them.
+  function installPRPumps(): ReturnType<typeof vi.fn> {
+    setBindingMock('SubscribePRUpdates', async (wire: { Number: number }) => ({
+      id: `pr-sub-${wire.Number}`, prKey: prKey(ref(wire.Number)), detail: null, threads: [], headSHA: `sha-${wire.Number}`, seq: 1,
+    }));
+    setBindingMock('UnsubscribePRUpdates', async () => undefined);
+    setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
+    let openedAt = 100;
+    return setBindingMock('MarkPRViewed', async (_pr: unknown, headSHA: string) => ({ openedAt: ++openedAt, headSHA, comments: 0, commits: 1 }));
+  }
+
+  it('marks a PR again on returning to it after comments without a push, and only then', async () => {
+    installListMocks(snapshot(1, [project('p1', [item(1, { comments: 3 }), item(2)])]));
+    const mark = installPRPumps();
+    attachPullsPage(PANE, HOME_BACKEND);
+    await flush();
+    setMRFilters(HOME_BACKEND, { filter: 'all' });
+    selectPR(PANE, rowKey(1));
+    const one = attachPR(rowKey(1), { ref: ref(1) });
+    await flush();
+    selectPR(PANE, rowKey(2));
+    const two = attachPR(rowKey(2), { ref: ref(2) });
+    await flush();
+    expect(mark.mock.calls.map((call) => call[1])).toEqual(['sha-1', 'sha-2']);
+
+    // Two comments land on #1 while #2 is open; its row, whose record now
+    // holds the mark, says so.
+    applyPullsSnapshot(snapshot(2, [project('p1', [
+      item(1, { comments: 5, seen: { openedAt: 102, headSHA: 'sha-1', comments: 3, commits: 1 }, since: { headMoved: false, newComments: 2, newCommits: 0 } }),
+      item(2),
+    ])]), HOME_BACKEND);
+    expect(mark).toHaveBeenCalledTimes(2);
+    const since = () => pullsRowsByGroup(PANE)[0]!.rows.find((row) => row.number === 1)!.since;
+    expect(sinceYouLookedText(since())).toBe('2 new comments since you looked');
+
+    // Back to #1, whose kept review applies no snapshot: marked at its
+    // head, and the fragment clears.
+    selectPR(PANE, rowKey(1));
+    await flush();
+    expect(mark).toHaveBeenCalledTimes(3);
+    expect(mark.mock.calls[2]![1]).toBe('sha-1');
+    expect(since()).toBeNull();
+
+    // Stepping between them with nothing new marks nothing.
+    selectPR(PANE, rowKey(2));
+    selectPR(PANE, rowKey(1));
+    await flush();
+    expect(mark).toHaveBeenCalledTimes(3);
+    one.release();
+    two.release();
+  });
+
+  it('marks a comment that lands while the PR\'s review is on screen', async () => {
+    installListMocks(snapshot(1, [project('p1', [item(1)])]));
+    const mark = installPRPumps();
+    attachPullsPage(PANE, HOME_BACKEND);
+    await flush();
+    selectPR(PANE, rowKey(1));
+    const held = attachPR(rowKey(1), { ref: ref(1) });
+    await flush();
+    expect(mark).toHaveBeenCalledTimes(1);
+    applyPullsSnapshot(snapshot(2, [project('p1', [item(1, { comments: 1 })])]), HOME_BACKEND);
+    await flush();
+    expect(mark).toHaveBeenCalledTimes(2);
+    applyPullsSnapshot(snapshot(3, [project('p1', [item(1, { comments: 1, title: 'Renamed' })])]), HOME_BACKEND);
+    await flush();
+    expect(mark).toHaveBeenCalledTimes(2);
+    held.release();
+  });
+
+  it('marks nothing once this device may not operate git on the computer', async () => {
+    installListMocks(snapshot(1, [project('p1', [item(1)])]));
+    const mark = installPRPumps();
+    attachPullsPage(PANE, HOME_BACKEND);
+    await flush();
+    selectPR(PANE, rowKey(1));
+    const held = attachPR(rowKey(1), { ref: ref(1) });
+    await flush();
+    expect(mark).toHaveBeenCalledTimes(1);
+    await pairViewOnly();
+    applyPRUpdatedEvent({ prKey: prKey(ref(1)), detail: null, threads: [], headSHA: 'sha-9', seq: 2 });
+    await flush();
+    expect(mark).toHaveBeenCalledTimes(1);
+    held.release();
+    resetToLocalPage();
   });
 
   it('marks nothing on the compact list screen, where the review is not showing', async () => {

@@ -227,9 +227,11 @@ the one before it; older ones are released with their subscription. Line
 comment drafts have no thread row to live under, so the MR owns them
 (stored under its key on its computer) until a review posts them or they
 are sent to a thread; they survive stepping through the list and a
-restart. The PR store's `onPRSnapshotApplied` observer
-(key, live head, window visibility) is the page's signal to mark an MR
-viewed in `pr_views`.
+restart. The page marks an MR viewed in `pr_views` while its review is
+on screen and the window visible, whenever the head the review shows (the
+PR store's `onPRSnapshotApplied` observer, or the snapshot it holds when
+the page returns to a kept review) or the listed comment count differs
+from what it last marked.
 
 Rows carry number, title, project, author, age, CI dot, approvals `n/m`,
 unresolved count, one state pill and a "since you looked" fragment.

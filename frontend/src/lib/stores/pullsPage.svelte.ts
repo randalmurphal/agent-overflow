@@ -23,7 +23,7 @@ import type { PRListItem, PRListSnapshot, PRSeen } from './bindings';
 import { createEntityStore } from './entityStore.svelte';
 import { getCompactScreen, isCompactLayout, onScreenCompactPaneId } from './layoutMode.svelte';
 import { applyPipelineFrame, applyPipelineLogFrame, resyncPipelinesAfterGap } from './pipelineCI.svelte';
-import { onPRSnapshotApplied, type PRSnapshotApplied } from './prReviewStore.svelte';
+import { onPRSnapshotApplied, peekPRSnapshot, type PRSnapshotApplied } from './prReviewStore.svelte';
 import { setPullsNeedsYouCount } from './pullsAttention.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
 import { ensurePullsFilters, mrFilters } from './pullsPageFilters.svelte';
@@ -142,8 +142,9 @@ class PullsPageBackend {
   /** Seen records this client wrote (MarkPRViewed answers) by row key,
    * shown until the list's own record catches up. */
   readonly seenOverrides = new SvelteMap<string, PRSeen>();
-  /** `<row key>\n<head>` pairs marked viewed. */
-  readonly marked = new Set<string>();
+  /** The content revision (`viewedRevision`) each PR was last marked
+   * viewed at, by row key; a row leaving the list takes its entry. */
+  readonly markedRevision = new Map<string, string>();
   readonly focus: RefreshScheduler;
   sentFocus: string | null = null;
 
@@ -184,14 +185,19 @@ class PullsPageBackend {
 
   applied(snapshot: PRListSnapshot): void {
     if (badgeBackend() === this.backend) setPullsNeedsYouCount(snapshot.needsYou);
+    const byKey = new Map(listedRows(snapshot, this.backend).map((row) => [row.key, row.item]));
     // A record this client wrote goes once the list's own catches up, or
     // the PR leaves the list.
-    if (this.seenOverrides.size > 0) {
-      const byKey = new Map(listedRows(snapshot, this.backend).map((row) => [row.key, row.item]));
-      for (const [key, seen] of this.seenOverrides) {
-        const row = byKey.get(key);
-        if (!row || (row.seen !== null && row.seen.openedAt >= seen.openedAt)) this.seenOverrides.delete(key);
-      }
+    for (const [key, seen] of this.seenOverrides) {
+      const row = byKey.get(key);
+      if (!row || (row.seen !== null && row.seen.openedAt >= seen.openedAt)) this.seenOverrides.delete(key);
+    }
+    for (const key of this.markedRevision.keys()) if (!byKey.has(key)) this.markedRevision.delete(key);
+    // A comment on a PR whose review is on screen is seen as it lands.
+    for (const paneId of this.panes) {
+      const selected = paneEntries.get(paneId)?.selection?.key;
+      const row = selected === undefined ? undefined : byKey.get(selected);
+      if (row) markShownSelection(paneId, null, row);
     }
     // Rows on screen may have joined or left the list.
     this.focus.request();
@@ -453,6 +459,8 @@ export function selectPR(paneId: string, key: string): boolean {
     const row = entry ? pages.get(entry.backend)?.rowsByKey.get(key) : undefined;
     if (!entry || !row) return false;
     entry.selection = { key, backend: entry.backend, projectId: row.project.projectId, pr: row.pr, row: row.item };
+    // A review state the page kept applies no snapshot when it returns.
+    markShownSelection(paneId, null, row.item);
     return true;
   });
 }
@@ -494,24 +502,45 @@ function paneShowing(paneId: string): boolean {
 function markViewedOnSnapshot(key: string, applied: PRSnapshotApplied): void {
   if (!applied.visible || !applied.headSHA) return;
   for (const [paneId, entry] of paneEntries) {
-    const selection = entry.selection;
-    if (selection?.key !== key || !paneShowing(paneId)) continue;
-    const page = pages.get(entry.backend);
-    if (page) void markViewed(page, selection, applied.headSHA);
+    if (entry.selection?.key === key) markShownSelection(paneId, applied.headSHA, null);
   }
 }
 
-async function markViewed(page: PullsPageBackend, selection: PullsSelection, headSHA: string): Promise<void> {
+// What `pr_views` records of a PR: the head the review shows and the
+// list's comment count. A change to either is something new to have seen.
+function viewedRevision(headSHA: string, comments: number | null): string {
+  return `${headSHA}\n${comments ?? ''}`;
+}
+
+/**
+ * Marks the pane's selected PR viewed when its review is on screen at a
+ * revision this client has not marked yet. `headSHA` is the snapshot just
+ * applied, else the one the PR store holds (none before the review
+ * loads); `row` is the PR as just listed, else as the page lists it.
+ */
+function markShownSelection(paneId: string, headSHA: string | null, row: PRListItem | null): void {
+  untrack(() => {
+    const entry = paneEntries.get(paneId);
+    const selection = entry?.selection ?? null;
+    const page = entry ? pages.get(entry.backend) : undefined;
+    if (!selection || !page || documentHidden() || !paneShowing(paneId)) return;
+    const head = headSHA ?? peekPRSnapshot(selection.key)?.headSHA ?? '';
+    if (!head) return;
+    const listed = row ?? page.rowsByKey.get(selection.key)?.item ?? null;
+    void markViewed(page, selection, viewedRevision(head, listed?.comments ?? null), head);
+  });
+}
+
+async function markViewed(page: PullsPageBackend, selection: PullsSelection, revision: string, headSHA: string): Promise<void> {
   if (!pageGrantsKnown() || !hasScope(LIST_SCOPE, page.backend)) return;
-  const tag = `${selection.key}\n${headSHA}`;
-  if (page.marked.has(tag)) return;
-  page.marked.add(tag);
+  if (page.markedRevision.get(selection.key) === revision) return;
+  page.markedRevision.set(selection.key, revision);
   try {
     const seen = await withBackendTarget(page.backend, () => MarkPRViewed(prReferenceWire(selection.pr), headSHA));
     if (pages.get(page.backend) === page && seen) page.seenOverrides.set(selection.key, seen);
   } catch (err) {
-    // The next snapshot of this head tries again.
-    page.marked.delete(tag);
+    // The next snapshot or selection of this revision tries again.
+    if (page.markedRevision.get(selection.key) === revision) page.markedRevision.delete(selection.key);
     if (!isTransportClassError(err)) reportFrontendDiagnostic('pulls: marking a PR viewed failed', errString(err));
   }
 }
