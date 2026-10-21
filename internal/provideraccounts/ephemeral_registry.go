@@ -429,12 +429,7 @@ func (c *Credentials) adoptIntoCanonical(providerName string, orphan []byte) (bo
 	if err != nil {
 		return false, fmt.Errorf("provideraccounts: inspect canonical %s credential before adoption: %w", providerName, err)
 	}
-	canonicalLogin, ok := c.policy.LoginID(providerName, canonical.Bytes())
-	if !ok {
-		return false, nil
-	}
-	orphanLogin, ok := c.policy.LoginID(providerName, orphan)
-	if !ok || orphanLogin != canonicalLogin || !c.chainAdvances(providerName, canonical.Bytes(), orphan) {
+	if !c.laterOnSameLogin(providerName, orphan, canonical.Bytes()) {
 		return false, nil
 	}
 	if err := c.writeActiveCredential(providerName, orphan); err != nil {
@@ -482,6 +477,21 @@ func (c *Credentials) adoptIntoSlot(providerName, accountID string, orphan []byt
 		return false, fmt.Errorf("provideraccounts: restore crash-orphaned %s credential to slot %s: %w", providerName, accountID, err)
 	}
 	return true, nil
+}
+
+// laterOnSameLogin reports that ahead holds the same login (Policy.LoginID)
+// as behind, strictly later on its rotation chain. Unknown identity or
+// position proves nothing.
+func (c *Credentials) laterOnSameLogin(providerName string, ahead, behind []byte) bool {
+	if c.policy.LoginID == nil {
+		return false
+	}
+	aheadLogin, ok := c.policy.LoginID(providerName, ahead)
+	if !ok {
+		return false
+	}
+	behindLogin, ok := c.policy.LoginID(providerName, behind)
+	return ok && aheadLogin == behindLogin && c.chainAdvances(providerName, behind, ahead)
 }
 
 // chainAdvances reports that next sits strictly later than current on one

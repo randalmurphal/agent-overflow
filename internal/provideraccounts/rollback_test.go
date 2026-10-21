@@ -187,6 +187,37 @@ func TestReplaceAccountCredentialNeverRewindsTheSlot(t *testing.T) {
 	}
 }
 
+// A selected probe derives its write from the canonical credential, which
+// can sit behind a slot the boot sweep restored. The slot still holds what
+// the probe read, but it is the same login further along, so it is kept. A
+// different login, or a position nothing proves, is the caller's call.
+func TestReplaceAccountCredentialKeepsALaterPointOfTheSameLogin(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		data string
+		want string
+	}{
+		{name: "same login behind", data: "pos:10 login:alice", want: "pos:20 login:alice"},
+		{name: "same login ahead", data: "pos:30 login:alice", want: "pos:30 login:alice"},
+		{name: "another login", data: "pos:10 login:bob", want: "pos:10 login:bob"},
+		{name: "position unknown", data: "relogin login:alice", want: "relogin login:alice"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			credentials := chainFixture(t)
+			slot := "pos:20 login:alice"
+			writeCodexSlot(t, credentials, "acct", slot)
+			replaced, err := credentials.ReplaceAccountCredential("codex", "acct", []byte(slot), []byte(tc.data))
+			if err != nil || replaced != (tc.want == tc.data) {
+				t.Fatalf("replace = %v, %v", replaced, err)
+			}
+			got, err := credentials.ReadCredential("codex", "acct", false)
+			if err != nil || string(got) != tc.want {
+				t.Fatalf("slot = %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
 // Rollback runs on the failure path. An uncaptured value must do
 // nothing rather than delete something or mask the original error.
 func TestRestoreOfAnUncapturedValueIsANoOp(t *testing.T) {

@@ -2,7 +2,10 @@ package app
 
 import (
 	"agent-overflow/internal/testutil/mockexec"
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -398,6 +401,68 @@ func TestSelectedCodexUsageRefreshNeverRewindsTheSlot(t *testing.T) {
 				t.Fatalf("slot = %s, %v; want the later credential %s kept", got, err, later)
 			}
 		})
+	}
+}
+
+// chatGPTAuthForTest is a ChatGPT-mode Codex auth.json for one login at one
+// point on its rotation chain.
+func chatGPTAuthForTest(t *testing.T, user, refreshToken string, lastRefresh time.Time) []byte {
+	t.Helper()
+	claims, err := json.Marshal(map[string]any{"https://api.openai.com/auth": map[string]any{
+		"chatgpt_account_id": "ws-1",
+		"chatgpt_user_id":    user,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	segment := base64.RawURLEncoding.EncodeToString
+	data, err := json.Marshal(map[string]any{
+		"auth_mode": "chatgpt",
+		"tokens": map[string]any{
+			"id_token":      segment([]byte(`{"alg":"none"}`)) + "." + segment(claims) + "." + segment([]byte("sig")),
+			"access_token":  "access-" + refreshToken,
+			"refresh_token": refreshToken,
+		},
+		"last_refresh": lastRefresh.UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+// The boot sweep of another data root can restore a crashed probe's
+// rotation into the selected account's slot while the canonical credential
+// stays on the token that rotation consumed. A selected probe that starts
+// after that reads the consumed canonical credential and, its access token
+// still valid, rotates nothing; its commit must not save those bytes over
+// the slot's live ones.
+func TestSelectedCodexUsageRefreshKeepsASlotAheadOfCanonical(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	consumed := chatGPTAuthForTest(t, "user-1", "rt-10", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
+	live := chatGPTAuthForTest(t, "user-1", "rt-20", time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
+	installIdentityTestAccount(t, app, string(provider.Codex), "selected", "selected@example.com", consumed)
+	credentials := providerCredentialsForTest(t, app)
+	if err := credentials.WriteAccountCredential(string(provider.Codex), "selected", live); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(t.TempDir(), "mock-codex")
+	mockexec.Write(t, binary, "#!/bin/bash\n"+
+		"read -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\n"+
+		`printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"v2"}}'`+"\n"+
+		`printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"account":{"type":"chatgpt","email":"selected@example.com","planType":"pro"},"requiresOpenaiAuth":true}}'`+"\n"+
+		`printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","planType":"pro","primary":{"usedPercent":7,"windowDurationMins":300,"resetsAt":1778479200}}}}'`+"\n")
+	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := app.refreshProviderAccountUsage(context.Background(), string(provider.Codex), "selected"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := credentials.ReadCredential(string(provider.Codex), "selected", false)
+	if err != nil || !bytes.Equal(got, live) {
+		t.Fatalf("slot lost the live credential (err %v)", err)
 	}
 }
 

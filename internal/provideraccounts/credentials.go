@@ -636,6 +636,14 @@ func releaseSlot(lock *os.File) error {
 // WriteAccountCredential: by the time it writes, another process may have
 // put a later credential there, and an unconditional write would rewind
 // the slot onto a refresh token that has already been used.
+//
+// A slot that holds expected but is the same login strictly later on its
+// chain than data is kept too. The boot sweep can leave a slot there, ahead
+// of the canonical credential a selected probe derives data from, and the
+// bytes behind it hold a refresh token its rotation consumed. Unlike the
+// unconditional writes noteSupersededSlotWrite only observes, this refusal
+// cannot wedge a slot: a switch away still saves the canonical credential
+// over it.
 func (c *Credentials) ReplaceAccountCredential(providerName, accountID string, expected, data []byte) (replaced bool, retErr error) {
 	accountDir, err := c.accountDirectory(providerName, accountID)
 	if err != nil {
@@ -655,6 +663,8 @@ func (c *Credentials) ReplaceAccountCredential(providerName, accountID string, e
 	case bytes.Equal(current.Bytes(), data):
 		return true, nil
 	case !bytes.Equal(current.Bytes(), expected):
+		return false, nil
+	case c.laterOnSameLogin(providerName, current.Bytes(), data):
 		return false, nil
 	}
 	if err := c.writeCredentialAt(providerName, accountDir, false, data); err != nil {
