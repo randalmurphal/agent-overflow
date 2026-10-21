@@ -754,6 +754,228 @@ func TestMarkUserInterrupt_ExemptsBackgroundedLaunches(t *testing.T) {
 	}
 }
 
+// requireStoppedByUserRow asserts errID names a persisted "Stopped by
+// user" row on turnIndex.
+func requireStoppedByUserRow(t *testing.T, st *store.Store, threadID, errID string, turnIndex int) {
+	t.Helper()
+	if errID == "" {
+		t.Fatal("MarkUserInterrupt wrote no error row")
+	}
+	row, ok, err := st.GetThreadItem(threadID, errID)
+	if err != nil || !ok {
+		t.Fatalf("missing error row %s: found=%v err=%v", errID, ok, err)
+	}
+	if row.Summary != "Stopped by user" || row.TurnIndex != turnIndex {
+		t.Fatalf("error row = summary %q turn %d, want 'Stopped by user' on turn %d",
+			row.Summary, row.TurnIndex, turnIndex)
+	}
+}
+
+// TestInterruptTurnIndex_ActiveRowWithoutOpenTurnIsCut pins the
+// handleTurnStart gap: the turns row is active in SQLite (what
+// GetActiveTurn-gated callers such as workflow takeover see) but the
+// open turn is not set yet. An interrupt sampled there cuts the row's
+// turn and records "Stopped by user" on it.
+func TestInterruptTurnIndex_ActiveRowWithoutOpenTurnIsCut(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	if err := st.InsertTurn(store.Turn{TurnID: "t1:1", ThreadID: "t1", TurnIndex: 1, StartedAt: time.Now().UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
+	if got := router.OpenTurnIndex("t1"); got != -1 {
+		t.Fatalf("precondition: OpenTurnIndex = %d, want -1", got)
+	}
+
+	got, err := router.InterruptTurnIndex("t1")
+	if err != nil || got != 1 {
+		t.Fatalf("InterruptTurnIndex = %d, %v; want 1", got, err)
+	}
+	errID, err := markUserInterruptForTest(router, "t1")
+	if err != nil {
+		t.Fatalf("MarkUserInterrupt: %v", err)
+	}
+	requireStoppedByUserRow(t, st, "t1", errID, 1)
+}
+
+// TestInterruptTurnIndex_CompletedTurnIsNotCut pins the CT12-1 guard
+// through the resolver: with no open turn and the latest row settled,
+// the interrupt cuts nothing and completed history is not relabelled
+// "Stopped by user". The row is written directly so no router record of
+// a closed turn masks the settled-row check.
+func TestInterruptTurnIndex_CompletedTurnIsNotCut(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	now := time.Now().UnixMilli()
+	if err := st.InsertTurn(store.Turn{TurnID: "t1:1", ThreadID: "t1", TurnIndex: 1, StartedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateTurnCompleted("t1:1", now, "end_turn", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	before, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := router.InterruptTurnIndex("t1")
+	if err != nil || got != -1 {
+		t.Fatalf("InterruptTurnIndex = %d, %v; want -1", got, err)
+	}
+	tok := router.MarkFlushSendsInterrupted("t1", got)
+	errID, err := router.MarkUserInterrupt("t1", got, tok)
+	if err != nil || errID != "" {
+		t.Fatalf("MarkUserInterrupt = %q, %v; want no row", errID, err)
+	}
+	after, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("items = %d after interrupt, want %d", len(after), len(before))
+	}
+
+	// Positive control: the same token writes when given the turn, so
+	// the -1 sample alone kept the row out.
+	errID, err = router.MarkUserInterrupt("t1", 1, tok)
+	if err != nil {
+		t.Fatalf("MarkUserInterrupt control: %v", err)
+	}
+	requireStoppedByUserRow(t, st, "t1", errID, 1)
+}
+
+// TestInterruptTurnIndex_OpenTurnWinsOverRow: the router's open turn is
+// the turn being cut; the store's latest active row is only the fallback
+// for the moment before the open turn is set.
+func TestInterruptTurnIndex_OpenTurnWinsOverRow(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 1, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	if err := st.InsertTurn(store.Turn{TurnID: "t1:2", ThreadID: "t1", TurnIndex: 2, StartedAt: time.Now().UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
+	if active, ok, err := st.GetActiveTurn("t1"); err != nil || !ok || active.TurnIndex != 2 {
+		t.Fatalf("precondition: GetActiveTurn = %+v, %v, %v; want turn 2", active, ok, err)
+	}
+
+	got, err := router.InterruptTurnIndex("t1")
+	if err != nil || got != 1 {
+		t.Fatalf("InterruptTurnIndex = %d, %v; want open turn 1", got, err)
+	}
+	errID, err := markUserInterruptForTest(router, "t1")
+	if err != nil {
+		t.Fatalf("MarkUserInterrupt: %v", err)
+	}
+	requireStoppedByUserRow(t, st, "t1", errID, 1)
+}
+
+// handleFatalTurnError routes a fatal turn error whose wire completion
+// is still expected: the router closes the open turn and the row stays
+// active until that completion.
+func handleFatalTurnError(t *testing.T, router *Router, threadID string) {
+	t.Helper()
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventError, ThreadID: threadID, Content: "usage is exhausted",
+		Meta: json.RawMessage(`{"fatal":true,"expect_turn_complete":true,"codexErrorInfo":"usageLimitExceeded"}`),
+		Failure: &provider.FailureMeta{
+			Class: provider.FailureFatal, Boundary: provider.FailureBoundaryTurn,
+			Reason: provider.FailureReasonUsageLimit, Code: "usageLimitExceeded",
+		},
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("fatal error: %v", err)
+	}
+}
+
+// TestInterruptTurnIndex_FatallyClosedTurnIsNotCut: a fatal error closes
+// the turn while its row stays active, and an interrupt then (workflow
+// cleanup) is not a user stop. The next turn's start gap is still cut.
+func TestInterruptTurnIndex_FatallyClosedTurnIsNotCut(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 1, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	handleFatalTurnError(t, router, "t1")
+	if got := router.OpenTurnIndex("t1"); got != -1 {
+		t.Fatalf("precondition: OpenTurnIndex = %d, want -1", got)
+	}
+	if active, ok, err := st.GetActiveTurn("t1"); err != nil || !ok || active.TurnIndex != 1 {
+		t.Fatalf("precondition: GetActiveTurn = %+v, %v, %v; want active turn 1", active, ok, err)
+	}
+
+	got, err := router.InterruptTurnIndex("t1")
+	if err != nil || got != -1 {
+		t.Fatalf("InterruptTurnIndex = %d, %v; want -1", got, err)
+	}
+	errID, err := markUserInterruptForTest(router, "t1")
+	if err != nil || errID != "" {
+		t.Fatalf("MarkUserInterrupt = %q, %v; want no row", errID, err)
+	}
+
+	if err := st.InsertTurn(store.Turn{TurnID: "t1:2", ThreadID: "t1", TurnIndex: 2, StartedAt: time.Now().UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := router.InterruptTurnIndex("t1"); err != nil || got != 2 {
+		t.Fatalf("InterruptTurnIndex in the next turn's start gap = %d, %v; want 2", got, err)
+	}
+}
+
+// TestInterruptTurnIndex_ReplacementSessionForgetsClosedTurn: a revert
+// cuts history and its replacement session reuses the cut turn's index.
+// The dead process's closed turn must not hide that index's start gap.
+func TestInterruptTurnIndex_ReplacementSessionForgetsClosedTurn(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 1, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"},
+		Timestamp:    time.Now(),
+	}); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+	if _, _, err := st.DeleteConversationFromTurn("t1", 1); err != nil {
+		t.Fatal(err)
+	}
+	router.MarkThreadActive("t1")
+	if err := st.InsertTurn(store.Turn{TurnID: "t1:1", ThreadID: "t1", TurnIndex: 1, StartedAt: time.Now().UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, err := router.InterruptTurnIndex("t1"); err != nil || got != 1 {
+		t.Fatalf("InterruptTurnIndex = %d, %v; want reused turn 1", got, err)
+	}
+}
+
+// TestCleanupThreadSettlesFatallyClosedTurnRow pins what lets closedTurn
+// live in thread state: the fatal path leaves the wire round open, so
+// CleanupThread synthesizes the completion and no active row outlives
+// the state that records the turn as closed.
+func TestCleanupThreadSettlesFatallyClosedTurnRow(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 1, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	handleFatalTurnError(t, router, "t1")
+	router.CleanupThread("t1")
+	if active, ok, err := st.GetActiveTurn("t1"); err != nil || ok {
+		t.Fatalf("GetActiveTurn after cleanup = %+v, %v, %v; want no active row", active, ok, err)
+	}
+}
+
 // TestHandleEventTurnStartScopesCodexTurnIDAndPreservesWireID pins both
 // identities Codex needs. evt.TurnID comes from `turn/started.turn.id`; AO
 // scopes the durable row id to the thread and preserves that wire id in

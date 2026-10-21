@@ -955,7 +955,14 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 	interruptedTurn := anyOpenTurn
 	var stampToken triage.FlushStampToken
 	if a.triage != nil {
-		interruptedTurn = a.triage.OpenTurnIndex(threadID)
+		var sampleErr error
+		interruptedTurn, sampleErr = a.triage.InterruptTurnIndex(threadID)
+		if sampleErr != nil {
+			// The stop still goes out; without the turn it cut, the
+			// thread cannot record it.
+			log.Printf("app: interrupt turn: sample interrupted turn: %v", sampleErr)
+			a.emitErrorToThread(threadID, fmt.Sprintf("Stopping the turn, but its stop may not be recorded: %v", sampleErr))
+		}
 		if expectTurnIndex != anyOpenTurn && interruptedTurn != anyOpenTurn && interruptedTurn != expectTurnIndex {
 			// The thread has moved on to a turn this caller does not own.
 			// Stopping it would take work away from whoever started it.
