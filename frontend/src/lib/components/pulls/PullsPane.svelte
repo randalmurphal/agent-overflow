@@ -65,6 +65,7 @@
     selectPR,
     selectedPR,
     setFocusedRows,
+    setReviewShown,
   } from '../../stores/pullsPage.svelte';
   import {
     loadThreadsOnPR,
@@ -140,6 +141,11 @@
       attachPipelinesPage(paneId, backend);
       return () => detachPipelinesPage(paneId);
     }
+  });
+  // The selected MR is seen only while its review is displayed: not under
+  // the Pipelines tab, and on compact not while the list is the page.
+  $effect(() => {
+    setReviewShown(paneId, tab === 'mrs' && (!compact || detailShown));
   });
   const disposeProbe = registerToolDetailProbe('pulls', () => (tab === 'mrs' ? detailOpen(paneId) : pipelineDetailOpen(paneId)));
   const disposeBack = registerPullsBackHandler(stepBack);

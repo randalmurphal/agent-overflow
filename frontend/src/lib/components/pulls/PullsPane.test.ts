@@ -6,12 +6,15 @@
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import PullsPane from './PullsPane.svelte';
-import { selectedPR } from '../../stores/pullsPage.svelte';
+import { tick } from 'svelte';
+import { applyPullsSnapshot, selectedPR } from '../../stores/pullsPage.svelte';
+import { applyPRUpdatedEvent } from '../../stores/prReviewStore.svelte';
+import { HOME_BACKEND } from '../../transport/backendKey';
 import { stepPullsBack } from '../../stores/pullsCommands.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { TransportError } from '../../transport/wsClient';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
-import { PULLS_PANE, installPullsPaneMocks, pullRowKey, resetPullsPane } from '../../../test/helpers/pullsPane';
+import { PULLS_PANE, installPullsPaneMocks, pullItem, pullRowKey, pullsProject, pullsSnapshot, resetPullsPane } from '../../../test/helpers/pullsPane';
 
 function mountPane() {
   return render(PullsPane, { paneId: PULLS_PANE });
@@ -109,6 +112,31 @@ describe('a failed refresh', () => {
 
     await fireEvent.click(view.getByTestId('pulls-refresh'));
     await waitFor(() => expect(view.getByTestId('pulls-refresh-error')).toBeInTheDocument());
+  });
+});
+
+describe('viewed marks', () => {
+  it('marks nothing while the Pipelines tab shows, and the review once it shows again', async () => {
+    installPullsPaneMocks();
+    const mark = setBindingMock('MarkPRViewed', async () => null);
+    const view = mountPane();
+    await rowsListed(view);
+    await fireEvent.click(rowOf(view, 5).querySelector('button')!);
+    await waitFor(() => expect(mark).toHaveBeenCalledTimes(1));
+    expect(mark).toHaveBeenLastCalledWith(expect.objectContaining({ Number: 5 }), 'sha-5');
+
+    // The MR stays selected under the Pipelines tab; a comment and a push land on it.
+    await fireEvent.click(view.getByRole('radio', { name: 'Pipelines' }));
+    await waitFor(() => expect(view.queryByTestId('review-pane')).toBeNull());
+    applyPullsSnapshot({ ...pullsSnapshot([pullsProject([pullItem(5, { headSHA: 'sha-9', comments: 1 }), pullItem(6)])]), seq: 2 }, HOME_BACKEND);
+    applyPRUpdatedEvent({ prKey: 'github:owner/repo:5', detail: null, threads: [], headSHA: 'sha-9', seq: 2 });
+    for (let i = 0; i < 8; i += 1) await tick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mark).toHaveBeenCalledTimes(1);
+
+    await fireEvent.click(view.getByRole('radio', { name: 'Merge requests' }));
+    await waitFor(() => expect(mark).toHaveBeenCalledTimes(2));
+    expect(mark).toHaveBeenLastCalledWith(expect.objectContaining({ Number: 5 }), 'sha-9');
   });
 });
 

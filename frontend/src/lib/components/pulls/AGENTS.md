@@ -14,9 +14,11 @@ the detail beside it (the review pane pinned to the picked MR through
 `reviewSubjectForPR`, or `PipelineView` on the picked pipeline). It
 attaches `stores/pullsPage.svelte.ts` for its lifetime and
 `stores/pipelinesPage.svelte.ts` while the Pipelines tab shows, and
-detaches both on destroy. Filters are per computer in
-`stores/pullsPageFilters.svelte.ts`; the tab and the list width are
-appStorage. `listWidth.svelte.ts` holds the width the reader asked for and
+detaches both on destroy. It reports whether the selected MR's review is
+displayed (`setReviewShown`: the Merge requests tab, and on compact the
+detail screen); the store marks an MR viewed only while it is. Filters
+are per computer in `stores/pullsPageFilters.svelte.ts`; the tab and the
+list width are appStorage. `listWidth.svelte.ts` holds the width the reader asked for and
 the width rendered, clamped to leave the detail its minimum in the pane as
 measured; the pointer and keyboard paths of `PullsListResizer` set it
 through that one clamp.
