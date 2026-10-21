@@ -349,6 +349,21 @@ describe('PipelinesList', () => {
     expect(new Set(lastReport(again.reports))).toEqual(new Set(onScreenKeys(again.scrollEl, 'data-pipeline-key')));
   });
 
+  it('stays at its top when the rows move under it there', async () => {
+    const { props, reports, scrollEl } = mountPipelines(Array.from({ length: 5_000 }, (_, index) => pipelineRow(index)));
+    await settle(scrollEl);
+    await waitFor(() => lastReport(reports)[0] === pipelineRow(0).key, 'the first rows reported');
+    expect(scrollEl.scrollTop).toBe(0);
+
+    // The row at the top moves to the end; the list does not follow it.
+    props.rows = [...props.rows.slice(1), props.rows[0]!];
+    flushSync();
+    await settle(scrollEl);
+    expect(scrollEl.scrollTop).toBe(0);
+    expect(lastReport(reports)[0]).toBe(pipelineRow(1).key);
+    expect(new Set(lastReport(reports))).toEqual(new Set(onScreenKeys(scrollEl, 'data-pipeline-key')));
+  });
+
   it('reports the rows on screen when the rows change under a still viewport', async () => {
     const { props, reports, scrollEl } = mountPipelines(Array.from({ length: 5_000 }, (_, index) => pipelineRow(index)));
     props.rows = Array.from({ length: 20 }, (_, index) => pipelineRow(index));
@@ -357,13 +372,11 @@ describe('PipelinesList', () => {
     await waitFor(() => lastReport(reports)[0] === pipelineRow(0).key, 'the first rows reported');
 
     // The same rows re-sorted: every height is measured and unchanged, so
-    // nothing but the data says which rows are on screen now (the
-    // virtualizer follows its anchor row, so the list may have scrolled).
-    const before = lastReport(reports);
+    // nothing but the data says which rows are on screen now.
     props.rows = [...props.rows].reverse();
     flushSync();
     await settle(scrollEl);
-    expect(lastReport(reports)).not.toEqual(before);
+    expect(lastReport(reports)[0]).toBe(pipelineRow(19).key);
     expect(new Set(lastReport(reports))).toEqual(new Set(onScreenKeys(scrollEl, 'data-pipeline-key')));
 
     props.rows = [];

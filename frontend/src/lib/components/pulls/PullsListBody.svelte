@@ -11,11 +11,12 @@
   // rows on screen. A list that asks (`onVisible`) is told the rows on
   // screen, the virtualizer's viewport range, by key on every scroll,
   // resize and data change, and none while the list is not shown (the
-  // compact detail covers it) or once it unmounts. The virtualizer keeps
-  // the row at the viewport top in view when the rows move under it (a
-  // refresh re-sorts by update time while the reader reads); an order the
-  // reader chose (`orderKey`) scrolls the list to its top instead. The
-  // heading of
+  // compact detail covers it) or once it unmounts. When the rows move
+  // under the list (a refresh re-sorts by update time, a filter changes),
+  // a list at its top stays at its top, and a list scrolled into its rows
+  // keeps the row at the viewport top in view, as the virtualizer does;
+  // an order the reader chose (`orderKey`) scrolls to the top from
+  // anywhere. The heading of
   // the group under the viewport top sticks over the list once its own
   // row has scrolled under the top; the rows' own headings cannot stick,
   // each row being positioned on its own.
@@ -61,6 +62,8 @@
   let listRef: LongListHandle | undefined = $state();
   let stuck: PullsListHeading | null = $state(null);
   let reported = '';
+  // The scroll offset as of the last scroll, resize or data change.
+  let lastOffset = 0;
 
   // This list is the only writer of its scrollTop.
   function applyScrollTarget(top: number): void {
@@ -74,6 +77,7 @@
     let heading: PullsListHeading | null = null;
     if (ref && shown && items.length > 0 && viewport > 0) {
       const offset = ref.getScrollOffset();
+      lastOffset = offset;
       const first = ref.findItemIndex(offset);
       const last = ref.findItemIndex(offset + viewport - 1);
       for (let index = first; index <= last; index += 1) {
@@ -108,6 +112,12 @@
     void items;
     untrack(update);
   });
+  // The virtualizer's compensation keeps the row at the viewport top in
+  // view when rows move under it. A list at its top stays at its top:
+  // the reader was not reading a row there.
+  function compensate(target: number): void {
+    applyScrollTarget(lastOffset === 0 ? 0 : target);
+  }
   // The reader picked another order: the list opens it from the top.
   let shownOrder = untrack(() => orderKey);
   $effect(() => {
@@ -154,7 +164,7 @@
     {estimate}
     renderAll={IS_TEST}
     {applyScrollTarget}
-    onCompensation={(compensation) => applyScrollTarget(compensation.target)}
+    onCompensation={(compensation) => compensate(compensation.target)}
     onscroll={update}
   >
     {#snippet children(item: PullsListItem<R>)}
