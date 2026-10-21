@@ -6,9 +6,10 @@
   // keyboard navigation as ordinary actions.
   //
   // The `onSelect` callback is what Menu consumers actually care about;
-  // after firing it we also bubble a `menuitem-select` CustomEvent so an
-  // outer Popover / Menu can trigger `onClose` without wiring a prop on
-  // every item.
+  // after firing it we also bubble a `menuitem-select` CustomEvent, which
+  // only MenuSubmenuItem listens for (to close its submenu). Neither Menu
+  // nor Popover closes on a select: a single-choice picker closes itself
+  // from its onSelect, and a checkbox picker stays open for more ticks.
 
   import type { Snippet } from 'svelte';
 
