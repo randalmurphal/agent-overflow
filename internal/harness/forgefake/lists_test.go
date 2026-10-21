@@ -368,7 +368,20 @@ func TestGitLabUserEventsAreTheViewersCommentsAndApprovals(t *testing.T) {
 	if other := glabGET(t, srv, "gitlab.com", "users/2/events?per_page=100"); other.status != 404 || lastInvocation(t, e).Unhandled {
 		t.Errorf("another user = %d, want a handled 404", other.status)
 	}
-	if bad := glabGET(t, srv, "gitlab.com", "users/1/events?action=commented"); bad.status != 404 || !lastInvocation(t, e).Unhandled {
+	// The action filter keeps one kind, as GitLab's does.
+	var comments, approvals []map[string]any
+	decodeBody(t, glabGET(t, srv, "gitlab.com", "users/1/events?per_page=100&after=2026-09-15&action=commented"), &comments)
+	decodeBody(t, glabGET(t, srv, "gitlab.com", "users/1/events?per_page=100&after=2026-09-15&action=approved"), &approvals)
+	if got, want := describe(comments), "12 commented on Note !1 2026-10-08T00:00:00Z|11 commented on Note !1 2026-10-05T00:00:00Z"; got != want {
+		t.Errorf("commented = %s\nwant        %s", got, want)
+	}
+	if got, want := describe(approvals), "11 approved MergeRequest !1 2026-10-07T00:00:00Z"; got != want {
+		t.Errorf("approved = %s\nwant       %s", got, want)
+	}
+	if bad := glabGET(t, srv, "gitlab.com", "users/1/events?action=pushed"); bad.status != 404 || !lastInvocation(t, e).Unhandled {
+		t.Errorf("an unimplemented action = %d, want unhandled", bad.status)
+	}
+	if bad := glabGET(t, srv, "gitlab.com", "users/1/events?target_type=note"); bad.status != 404 || !lastInvocation(t, e).Unhandled {
 		t.Errorf("an unimplemented filter = %d, want unhandled", bad.status)
 	}
 }

@@ -1,10 +1,12 @@
 package git
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -25,7 +27,25 @@ func gitlabListAnswers(t *testing.T, over func(call forgeAPICall) (forgeAPIAnswe
 		"PullsAuthoredApprovals":  readTestdata(t, "gitlab-pulls-authored-approvals.json"),
 	}
 	list := readTestdata(t, "gitlab-mr-list.json")
-	events := readTestdata(t, "gitlab-user-events.json")
+	// The feed recorded unfiltered; each action's read answers its own,
+	// as GitLab filters it.
+	var recorded []map[string]any
+	if err := json.Unmarshal([]byte(readTestdata(t, "gitlab-user-events.json")), &recorded); err != nil {
+		t.Fatal(err)
+	}
+	eventsOf := func(action string) string {
+		kept := []map[string]any{}
+		for _, event := range recorded {
+			if name := event["action_name"]; (action == "commented" && name == "commented on") || (action == "approved" && name == "approved") {
+				kept = append(kept, event)
+			}
+		}
+		body, err := json.Marshal(kept)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(body)
+	}
 	return func(call forgeAPICall) forgeAPIAnswer {
 		if over != nil {
 			if answer, ok := over(call); ok {
@@ -41,7 +61,8 @@ func gitlabListAnswers(t *testing.T, over func(call forgeAPICall) (forgeAPIAnswe
 		case strings.HasPrefix(call.Path, "projects/grp%2Fsub%2Fapp/merge_requests?"):
 			return forgeAPIAnswer{Body: list}
 		case strings.HasPrefix(call.Path, "users/1/events?"):
-			return forgeAPIAnswer{Body: events}
+			query, _ := url.ParseQuery(strings.SplitN(call.Path, "?", 2)[1])
+			return forgeAPIAnswer{Body: eventsOf(query.Get("action"))}
 		}
 		return forgeUnexpected(t, call)
 	}
@@ -51,9 +72,9 @@ func gitlabListAnswers(t *testing.T, over func(call forgeAPICall) (forgeAPIAnswe
 // authored reads cover it), a fork's merge request the viewer reviews
 // (the reviewing reads and its events cover it) and one the viewer has no
 // part in, which no detail read covers. A GraphQL node the list does not
-// hold is dropped. The events feed ended within its first page, so a row
-// with no activity in it carries the window's floor: the day after the
-// after date.
+// hold is dropped. The comment and approval feeds are read apart; a row
+// with no activity in them carries the window's floor, the older of the
+// feeds' oldest events.
 func TestGitLabListProjectPRsParsesTheReads(t *testing.T) {
 	t.Parallel()
 	core, calls := newForgeAPICore(t, gitlabListAnswers(t, nil))
@@ -63,15 +84,20 @@ func TestGitLabListProjectPRsParsesTheReads(t *testing.T) {
 		t.Fatalf("ListProjectPRs: %v", err)
 	}
 	ops := map[string]forgeAPICall{}
+	var eventQueries []string
 	for _, call := range calls.all() {
 		key := call.Op
 		if key == "" {
 			key, _, _ = strings.Cut(call.Path, "?")
 		}
+		if key == "users/1/events" {
+			query, _ := url.ParseQuery(strings.SplitN(call.Path, "?", 2)[1])
+			eventQueries = append(eventQueries, query.Encode())
+		}
 		ops[key] = call
 	}
-	if len(ops) != 9 || len(calls.all()) != 9 {
-		t.Fatalf("requests = %v %v, want user, the list, six GraphQL reads and events once each", calls.ops(), calls.all())
+	if len(ops) != 9 || len(calls.all()) != 10 {
+		t.Fatalf("requests = %v %v, want user, the list, six GraphQL reads once each and the two events feeds", calls.ops(), calls.all())
 	}
 	for _, op := range []string{"PullsReviewing", "PullsAuthored", "PullsReviewingActivity", "PullsAuthoredActivity", "PullsReviewingApprovals", "PullsAuthoredApprovals"} {
 		vars := ops[op].Vars
@@ -87,9 +113,9 @@ func TestGitLabListProjectPRsParsesTheReads(t *testing.T) {
 			t.Errorf("%s does not filter by %s: %s", op, filter, ops[op].Query)
 		}
 	}
-	query, _ := url.ParseQuery(strings.SplitN(ops["users/1/events"].Path, "?", 2)[1])
-	if query.Encode() != "after=2026-09-21&per_page=100" {
-		t.Errorf("events query = %s", query.Encode())
+	slices.Sort(eventQueries)
+	if want := []string{"action=approved&after=2026-09-21&per_page=100", "action=commented&after=2026-09-21&per_page=100"}; !slices.Equal(eventQueries, want) {
+		t.Errorf("events queries = %v, want %v", eventQueries, want)
 	}
 	list, _ := url.ParseQuery(strings.SplitN(ops["projects/grp%2Fsub%2Fapp/merge_requests"].Path, "?", 2)[1])
 	if list.Encode() != "order_by=updated_at&per_page=100&sort=desc&state=opened" {
@@ -109,7 +135,7 @@ func TestGitLabListProjectPRsParsesTheReads(t *testing.T) {
 		Comments: 1, ViewerIsAuthor: true, MergeStatus: "draft_status",
 		LastCommitAt: "2026-10-20T22:04:00Z", PipelineStatus: CIStatusRunning, ProjectID: 77,
 		ApprovalsGiven: &zero, ApprovalsRequired: &two, Unresolved: &zero,
-		ViewerActivityFloor: "2026-09-22T00:00:00Z",
+		ViewerActivityFloor: "2026-10-18T08:30:00.000Z",
 	}
 	if fmt.Sprintf("%+v", deref(own)) != fmt.Sprintf("%+v", deref(want)) {
 		t.Errorf("own draft = %+v\nwant       %+v", deref(own), deref(want))
@@ -225,71 +251,86 @@ func TestGitLabViewerEventsAreReadOncePerRound(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	if got := count(); got != 1 {
-		t.Fatalf("events requests in one round = %d, want 1", got)
+	if got := count(); got != 2 {
+		t.Fatalf("events requests in one round = %d, want the two feeds once", got)
 	}
-	if _, err := core.ListProjectPRs(WithPRListRound(t.Context()), other); err != nil || count() != 2 {
-		t.Fatalf("a new round: err %v, events requests %d, want 2", err, count())
+	if _, err := core.ListProjectPRs(WithPRListRound(t.Context()), other); err != nil || count() != 4 {
+		t.Fatalf("a new round: err %v, events requests %d, want 4", err, count())
 	}
 	for range 2 {
 		if _, err := core.ListProjectPRs(t.Context(), other); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if got := count(); got != 4 {
-		t.Fatalf("reads under no round sent %d events requests in all, want 4", got)
+	if got := count(); got != 8 {
+		t.Fatalf("reads under no round sent %d events requests in all, want 8", got)
 	}
 }
 
-// The events feed is a lower bound. A feed that ended within its pages
-// reaches back to the after date; one cut at gitlabActivityMaxPages full
-// pages reaches back only to its oldest event, which is the floor a row
-// with no activity in the window carries.
-func TestGitLabViewerActivityFloorIsTheWindowsOldestReach(t *testing.T) {
+// The events feeds are a lower bound. Each feed's floor is its oldest
+// event read: the comments feed, cut at gitlabActivityMaxPages full
+// pages, reaches back 299 minutes; the approvals feed, one event, two
+// days. The window's floor, which a row with no activity in it carries,
+// is the older of the two; a feed with no events reaches back to the
+// after date.
+func TestGitLabViewerActivityFloorIsTheOlderFeedsReach(t *testing.T) {
 	t.Parallel()
+	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
 	var mu sync.Mutex
-	pages := 0
+	commentPages := 0
+	approvals := true
 	core, _ := newForgeAPICore(t, gitlabListAnswers(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
 		if !strings.HasPrefix(call.Path, "users/1/events?") {
 			return forgeAPIAnswer{}, false
 		}
 		query, _ := url.ParseQuery(strings.SplitN(call.Path, "?", 2)[1])
+		mu.Lock()
+		defer mu.Unlock()
+		if query.Get("action") == "approved" {
+			if !approvals {
+				return forgeAPIAnswer{Body: `[]`}, true
+			}
+			at := now.Add(-48 * time.Hour).Format(time.RFC3339)
+			return forgeAPIAnswer{Body: fmt.Sprintf(`[{"project_id":88,"action_name":"approved","target_type":"MergeRequest","target_iid":1,"created_at":%q}]`, at)}, true
+		}
 		page := 1
 		if raw := query.Get("page"); raw != "" {
 			if _, err := fmt.Sscanf(raw, "%d", &page); err != nil {
 				t.Errorf("page %q: %v", raw, err)
 			}
 		}
-		mu.Lock()
-		pages++
-		mu.Unlock()
-		// A pushes-only feed, one event a minute back from 2026-10-21
-		// 12:00, with more pages than the read follows.
+		commentPages++
+		// Comments on another project's merge request, one a minute back
+		// from now, with more pages than the read follows.
 		events := make([]string, 100)
 		for i := range events {
-			at := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC).Add(-time.Duration((page-1)*100+i) * time.Minute)
-			events[i] = fmt.Sprintf(`{"project_id":77,"action_name":"pushed to","created_at":%q}`, at.Format(time.RFC3339))
+			at := now.Add(-time.Duration((page-1)*100+i) * time.Minute).Format(time.RFC3339)
+			events[i] = fmt.Sprintf(`{"project_id":88,"action_name":"commented on","target_type":"DiffNote","created_at":%q,"note":{"noteable_type":"MergeRequest","noteable_iid":1}}`, at)
 		}
 		return forgeAPIAnswer{Header: http.Header{"X-Next-Page": {fmt.Sprint(page + 1)}}, Body: "[" + strings.Join(events, ",") + "]"}, true
 	}))
-	core.nowFn = func() time.Time { return time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC) }
-	rows, err := core.ListProjectPRs(t.Context(), gitlabTestRepo())
-	if err != nil {
-		t.Fatalf("ListProjectPRs: %v", err)
-	}
-	mu.Lock()
-	read := pages
-	mu.Unlock()
-	if read != gitlabActivityMaxPages {
-		t.Fatalf("events pages read = %d, want %d", read, gitlabActivityMaxPages)
-	}
-	// The 300th event, 299 minutes back.
-	floor := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC).Add(-299 * time.Minute).Format(time.RFC3339)
-	for _, row := range rows {
-		if row.ViewerActivityAt != "" || row.ViewerActivityFloor != floor {
-			t.Errorf("!%d activity %q floor %q, want none and %s", row.Ref.Number, row.ViewerActivityAt, row.ViewerActivityFloor, floor)
+	core.nowFn = func() time.Time { return now }
+	check := func(floor string) {
+		t.Helper()
+		rows, err := core.ListProjectPRs(t.Context(), gitlabTestRepo())
+		if err != nil {
+			t.Fatalf("ListProjectPRs: %v", err)
+		}
+		for _, row := range rows {
+			if row.ViewerActivityAt != "" || row.ViewerActivityFloor != floor {
+				t.Errorf("!%d activity %q floor %q, want none and %s", row.Ref.Number, row.ViewerActivityAt, row.ViewerActivityFloor, floor)
+			}
 		}
 	}
+	check(now.Add(-48 * time.Hour).Format(time.RFC3339))
+	mu.Lock()
+	read := commentPages
+	approvals = false
+	mu.Unlock()
+	if read != gitlabActivityMaxPages {
+		t.Fatalf("comment pages read = %d, want %d", read, gitlabActivityMaxPages)
+	}
+	check("2026-09-22T00:00:00Z")
 }
 
 // A login GitLab will not name fails the list read: every attention

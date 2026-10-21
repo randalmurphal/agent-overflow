@@ -17,7 +17,8 @@ import (
 
 // The GitLab project read of the Pull requests page: the open merge
 // request list, six GraphQL requests over the merge requests the viewer
-// reviews and authored and the viewer's events (once per host per round),
+// reviews and authored and the viewer's comment and approval events
+// (once per host per round),
 // all concurrent (docs/architecture/forge-transport.md#project-lists).
 // The list's basic view carries no pipeline and cannot say how the viewer
 // reviewed, so the GraphQL requests fill those fields for the rows they
@@ -131,8 +132,8 @@ type gitlabPullNodeRaw struct {
 }
 
 // gitlabActivityDays is how far back the viewer's events are read, and
-// gitlabActivityMaxPages the pages of 100 read of them. A busy viewer's
-// 300 newest events can span only days: the window's floor
+// gitlabActivityMaxPages the pages of 100 read of each feed. A busy
+// viewer's 300 newest comments can span only days: the window's floor
 // (gitlabActivity.floor) says how far back they reach.
 const (
 	gitlabActivityDays     = 30
@@ -385,31 +386,69 @@ type gitlabEventRaw struct {
 	} `json:"note"`
 }
 
-// readGitLabViewerActivity reads the viewer's events of the last
-// gitlabActivityDays, at most gitlabActivityMaxPages pages of 100, and
-// keeps its latest comment on (a note, diff note or discussion note) or
-// approval of each merge request. The floor is the start of the day
-// after the after date when the feed ended within the pages (GitLab
-// answers events created after that date), else the oldest event read.
+// gitlabActivityActions are the two events feeds the viewer's activity
+// is read from, each filtered by GitLab (the events API's action), so
+// pushes and other events do not use up the pages: its comments (a
+// note, diff note or discussion note) and its approvals.
+var gitlabActivityActions = []string{"commented", "approved"}
+
+// readGitLabViewerActivity reads the viewer's comment and approval
+// events of the last gitlabActivityDays, concurrently, each at most
+// gitlabActivityMaxPages pages of 100, and keeps its latest comment on or
+// approval of each merge request. A feed's floor is its oldest event
+// read, since GitLab can end a feed short of the after date without
+// saying so, or the start of the day after the after date when it held
+// none; the window's floor is the older of the two.
 func readGitLabViewerActivity(ctx context.Context, client *forgeapi.Client, viewer gitlabViewer, now time.Time) (gitlabActivity, error) {
 	if viewer.ID <= 0 {
 		return gitlabActivity{}, fmt.Errorf("gitlab: the login %q has no account id to read its events by", viewer.Username)
 	}
 	after := now.UTC().AddDate(0, 0, -gitlabActivityDays)
+	type feed struct {
+		at    map[gitlabMRKey]string
+		floor string
+		err   error
+	}
+	feeds := make([]feed, len(gitlabActivityActions))
+	var wg sync.WaitGroup
+	for i, action := range gitlabActivityActions {
+		wg.Go(func() {
+			feeds[i].at, feeds[i].floor, feeds[i].err = readGitLabEvents(ctx, client, viewer, after, action)
+		})
+	}
+	wg.Wait()
+	out := gitlabActivity{at: map[gitlabMRKey]string{}}
+	for _, feed := range feeds {
+		if feed.err != nil {
+			return gitlabActivity{}, feed.err
+		}
+		for key, at := range feed.at {
+			out.at[key] = laterRFC3339(out.at[key], at)
+		}
+		out.floor = earlierRFC3339(out.floor, feed.floor)
+	}
+	return out, nil
+}
+
+// readGitLabEvents reads one action's events of the viewer created after
+// the after date and keeps the latest per merge request, with the feed's
+// floor (readGitLabViewerActivity).
+func readGitLabEvents(ctx context.Context, client *forgeapi.Client, viewer gitlabViewer, after time.Time, action string) (map[gitlabMRKey]string, string, error) {
 	request := forgeapi.Request{
 		Path: "users/" + strconv.FormatInt(viewer.ID, 10) + "/events",
 		Query: url.Values{
+			"action":   {action},
 			"per_page": {strconv.Itoa(gitlabPageSize)},
 			"after":    {after.Format(time.DateOnly)},
 		},
 	}
-	out := gitlabActivity{at: map[gitlabMRKey]string{}}
-	oldest, ended := "", false
+	out := map[gitlabMRKey]string{}
+	oldest := ""
 	page, pages := 1, 0
 	err := client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
 		var events []gitlabEventRaw
 		if err := json.Unmarshal(resp.Body, &events); err != nil {
-			return false, fmt.Errorf("GitLab events of %s: decode response: %w", viewer.Username, err)
+			return false, fmt.Errorf("GitLab %s events of %s: decode response: %w", action, viewer.Username, err)
 		}
 		for _, event := range events {
 			oldest = earlierRFC3339(oldest, event.CreatedAt)
@@ -423,22 +462,19 @@ func readGitLabViewerActivity(ctx context.Context, client *forgeapi.Client, view
 				continue
 			}
 			key := gitlabMRKey{project: event.ProjectID, iid: iid}
-			out.at[key] = laterRFC3339(out.at[key], event.CreatedAt)
+			out[key] = laterRFC3339(out[key], event.CreatedAt)
 		}
 		pages++
-		more := len(events) == gitlabPageSize && advanceGitLabPage(resp, &page)
-		ended = !more
-		return more && pages < gitlabActivityMaxPages, nil
+		return len(events) == gitlabPageSize && pages < gitlabActivityMaxPages && advanceGitLabPage(resp, &page), nil
 	})
 	if err != nil {
-		return gitlabActivity{}, err
+		return nil, "", err
 	}
-	out.floor = oldest
-	if ended || oldest == "" {
+	if oldest == "" {
 		day := time.Date(after.Year(), after.Month(), after.Day(), 0, 0, 0, 0, time.UTC)
-		out.floor = day.AddDate(0, 0, 1).Format(time.RFC3339)
+		oldest = day.AddDate(0, 0, 1).Format(time.RFC3339)
 	}
-	return out, nil
+	return out, oldest, nil
 }
 
 // earlierRFC3339 is the earlier of two RFC 3339 times; an unreadable or

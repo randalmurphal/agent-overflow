@@ -171,18 +171,28 @@ func gitlabActivityNode(p *Pull) map[string]any {
 // gitlabViewerID is the viewer's account id (GET user answers it).
 const gitlabViewerID = 1
 
-// glabUserEvents answers GET users/ID/events?per_page=N[&page=N][&after=D]
-// for the viewer: its comments on open and closed merge requests of every
-// project on the host ("commented on" with the note's noteable) and its
-// approvals ("approved"), newest first, created after the date. Another
-// user is GitLab's 404.
+// glabUserEvents answers GET
+// users/ID/events?per_page=N[&page=N][&after=D][&action=A] for the viewer:
+// its comments on open and closed merge requests of every project on the
+// host ("commented on" with the note's noteable) and its approvals
+// ("approved"), newest first, created after the date; action commented or
+// approved keeps those alone, as GitLab filters the feed. Another user is
+// GitLab's 404; another action is unhandled.
 func glabUserEvents(e *Engine, c *call, m []string) response {
 	if m[1] != strconv.Itoa(gitlabViewerID) {
 		return glabNotFound("User")
 	}
-	query, perPage, page, err := glabPage(m[2], "after")
+	query, perPage, page, err := glabPage(m[2], "after", "action")
 	if err != nil {
 		return unhandled("%v", err)
+	}
+	actions := map[string]string{"commented": "commented on", "approved": "approved"}
+	keep, filtered := "", query.Has("action")
+	if filtered {
+		var ok bool
+		if keep, ok = actions[query.Get("action")]; !ok {
+			return unhandled("events action %q is not implemented", query.Get("action"))
+		}
 	}
 	var after time.Time
 	if raw := query.Get("after"); raw != "" {
@@ -224,7 +234,7 @@ func glabUserEvents(e *Engine, c *call, m []string) response {
 	// GitLab's after is a date: events created after its first instant.
 	events = slices.DeleteFunc(events, func(ev event) bool {
 		at, _ := time.Parse(time.RFC3339, ev.at)
-		return !after.IsZero() && !at.After(after)
+		return (!after.IsZero() && !at.After(after)) || (filtered && ev.body["action_name"] != keep)
 	})
 	slices.SortStableFunc(events, func(a, b event) int {
 		if c := cmp.Compare(rfc3339(b.at), rfc3339(a.at)); c != 0 {

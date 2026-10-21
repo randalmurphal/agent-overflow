@@ -185,10 +185,13 @@ func TestPRListReadsBothForgesThroughTheirAPIs(t *testing.T) {
 	}
 	for _, route := range []string{"gh graphql PullsSearch", "glab api merge request list", "glab graphql PullsReviewing", "glab graphql PullsAuthored",
 		"glab graphql PullsReviewingActivity", "glab graphql PullsAuthoredActivity", "glab graphql PullsReviewingApprovals",
-		"glab graphql PullsAuthoredApprovals", "glab api user events", "glab api user"} {
+		"glab graphql PullsAuthoredApprovals", "glab api user"} {
 		if perRoute[route] != 1 {
 			t.Errorf("route %s sent %d times, want once: %v", route, perRoute[route], perRoute)
 		}
+	}
+	if perRoute["glab api user events"] != 2 {
+		t.Errorf("events sent %d times, want the comment and approval feeds once each: %v", perRoute["glab api user events"], perRoute)
 	}
 	if len(perRoute) != 10 {
 		t.Errorf("routes = %v, want only the project reads", perRoute)
