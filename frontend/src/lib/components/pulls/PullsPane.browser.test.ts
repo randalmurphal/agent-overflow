@@ -98,6 +98,14 @@ it('resizes from the keyboard through the same clamp, with its value announced',
   await userEvent.keyboard('{Home}');
   await waitFor(() => width('pulls-list-column') === LIST_MIN_PX, 'the narrowest');
   expect(appStorageGet('pullsListWidth')).toBe(String(LIST_MIN_PX));
+
+  // Page Down and Page Up move four steps.
+  await userEvent.keyboard('{PageDown}');
+  await waitFor(() => width('pulls-list-column') === LIST_MIN_PX + 4 * LIST_KEY_STEP_PX, 'four steps wider');
+  expect(handle.getAttribute('aria-valuenow')).toBe(String(LIST_MIN_PX + 4 * LIST_KEY_STEP_PX));
+  await userEvent.keyboard('{PageUp}');
+  await waitFor(() => width('pulls-list-column') === LIST_MIN_PX, 'four steps narrower');
+  expect(appStorageGet('pullsListWidth')).toBe(String(LIST_MIN_PX));
 });
 
 it("returns focus to the header's agent button on Escape", async () => {
