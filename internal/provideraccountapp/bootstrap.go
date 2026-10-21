@@ -39,13 +39,7 @@ func (m *Manager) ReconcileProviderHome(dbDir, userHome string) error {
 		}
 	}
 
-	selected := make(map[string]string)
-	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
-		if active, ok := m.store.Active(providerName, time.Now()); ok {
-			selected[providerName] = active.ID
-		}
-	}
-	sweepResults, sweepErr := m.credentials.SweepEphemeralCredentials(time.Now(), selected)
+	sweepResults, sweepErr := m.credentials.SweepEphemeralCredentials(time.Now())
 	for _, result := range sweepResults {
 		if result.Action == "skipped" {
 			continue

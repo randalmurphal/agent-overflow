@@ -82,8 +82,8 @@ owning process holds before a credential can exist in it
 can take. It adopts a crash-orphaned credential into its slot only when the
 slot is missing, signed out, or strictly behind it on the rotation chain
 (`ChainPosition`: Claude token expiry, Codex `last_refresh`), and into the
-canonical home only for the selected account over the same login
-(`LoginID`).
+canonical home only over the same login (`LoginID`), whichever store's
+account the orphan came from.
 
 Every slot write and removal holds the slot's lock (`lockSlot`); a writer
 that decides from the slot's contents holds it from the read to the write.

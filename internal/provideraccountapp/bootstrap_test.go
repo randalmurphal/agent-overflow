@@ -78,8 +78,16 @@ func TestCrashedCodexProbeHelper(t *testing.T) {
 // with the canonical credential and the slot both on the consumed one. The
 // next boot, however soon, puts the rotation back in both: the owner's
 // death released its lease, and the canonical store still held that login
-// behind the orphan.
+// behind the orphan. A backend on another data root sharing the provider
+// home can take the orphan first; it has no such account selected, and
+// must repair the canonical store all the same, or the owner's next probe
+// starts from the consumed credential while its slot holds the live one.
 func TestBootRecoversTheSelectedCodexAccountsRotation(t *testing.T) {
+	t.Run("own backend sweeps", func(t *testing.T) { testBootRecoversASelectedCodexRotation(t, false) })
+	t.Run("another data root sweeps", func(t *testing.T) { testBootRecoversASelectedCodexRotation(t, true) })
+}
+
+func testBootRecoversASelectedCodexRotation(t *testing.T, foreignSweep bool) {
 	userHome := t.TempDir()
 	dbDir := t.TempDir()
 	store, err := provideraccounts.NewStore(dbDir)
@@ -121,7 +129,23 @@ func TestBootRecoversTheSelectedCodexAccountsRotation(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(homePath) })
 
-	if err := manager.ReconcileProviderHome(dbDir, userHome); err != nil {
+	sweeper, sweepDir := manager, dbDir
+	if foreignSweep {
+		sweepDir = t.TempDir()
+		foreignStore, err := provideraccounts.NewStore(sweepDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		foreignCredentials, err := provideraccounts.NewCredentialsWithFileKeychain(userHome, CredentialPolicy())
+		if err != nil {
+			t.Fatal(err)
+		}
+		sweeper = NewManager(Deps{})
+		if err := sweeper.Attach(foreignStore, foreignCredentials, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := sweeper.ReconcileProviderHome(sweepDir, userHome); err != nil {
 		t.Fatal(err)
 	}
 	rotated := codexAuthFile(t, "user-1", "rt-2", time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))

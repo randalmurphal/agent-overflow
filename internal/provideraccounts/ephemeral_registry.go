@@ -187,13 +187,14 @@ func sweepableEphemeralHome(providerName, configHome string) bool {
 // SweepEphemeralCredentials recovers and removes credentials left behind
 // by ephemeral homes that never reached their cleanup — a crash or kill
 // mid-probe or mid-login. Run at boot, after the orphan-slot prune.
-// selected maps each provider to its selected account ID.
 //
 // Per entry whose owner is gone: read whatever credential the home still
 // holds (Keychain item for Claude on darwin, credential file otherwise).
-// When the owning account is the selected one and the canonical store
-// holds the same login behind the orphan on its chain, the orphan replaces
-// it first, as CommitSelectedCredential orders a selected rotation. Then,
+// When the canonical store holds the same login behind the orphan on its
+// chain, the orphan replaces it first, as CommitSelectedCredential orders a
+// selected rotation. Which store's account the orphan came from does not
+// matter: the canonical store is shared, and the orphan's rotation consumed
+// the refresh token it holds. Then,
 // if the owning account's slot still exists and the orphan's bytes are
 // usable and the slot's are not (missing, the provider's sign-out husk, or
 // behind the orphan on the rotation chain), restore them into the slot:
@@ -201,11 +202,11 @@ func sweepableEphemeralHome(providerName, configHome string) bool {
 // remnant credential, the leftover directory, and the entry. Any step that
 // cannot prove it is safe keeps the entry for the next boot instead of
 // guessing.
-func (c *Credentials) SweepEphemeralCredentials(now time.Time, selected map[string]string) ([]EphemeralSweepResult, error) {
+func (c *Credentials) SweepEphemeralCredentials(now time.Time) ([]EphemeralSweepResult, error) {
 	var results []EphemeralSweepResult
 	var sweepErrs []error
 	for _, providerName := range ephemeralProviders {
-		providerResults, err := c.sweepEphemeralHomes(providerName, now, selected[providerName])
+		providerResults, err := c.sweepEphemeralHomes(providerName, now)
 		results = append(results, providerResults...)
 		if err != nil {
 			sweepErrs = append(sweepErrs, err)
@@ -214,7 +215,7 @@ func (c *Credentials) SweepEphemeralCredentials(now time.Time, selected map[stri
 	return results, errors.Join(sweepErrs...)
 }
 
-func (c *Credentials) sweepEphemeralHomes(providerName string, now time.Time, selectedAccountID string) ([]EphemeralSweepResult, error) {
+func (c *Credentials) sweepEphemeralHomes(providerName string, now time.Time) ([]EphemeralSweepResult, error) {
 	dir, err := c.ephemeralRegistryDir(providerName)
 	if err != nil {
 		return nil, err
@@ -273,7 +274,7 @@ func (c *Credentials) sweepEphemeralHomes(providerName string, now time.Time, se
 			continue
 		}
 
-		result, entryErr := c.sweepOneEphemeralHome(providerName, entry, selectedAccountID)
+		result, entryErr := c.sweepOneEphemeralHome(providerName, entry)
 		if entryErr != nil {
 			// Kept for the next boot: the orphan may still hold the only
 			// live copy of a chain, so an indeterminate state is never
@@ -375,7 +376,7 @@ func claimEphemeralEntry(entryPath, leasePath string, entry ephemeralRegistryEnt
 	return lease, entryClaimed, nil
 }
 
-func (c *Credentials) sweepOneEphemeralHome(providerName string, entry ephemeralRegistryEntry, selectedAccountID string) (EphemeralSweepResult, error) {
+func (c *Credentials) sweepOneEphemeralHome(providerName string, entry ephemeralRegistryEntry) (EphemeralSweepResult, error) {
 	result := EphemeralSweepResult{Provider: providerName, ConfigHome: entry.ConfigHome, AccountID: entry.AccountID}
 
 	orphan, readErr := c.readCredentialAt(providerName, entry.ConfigHome, false)
@@ -389,13 +390,11 @@ func (c *Credentials) sweepOneEphemeralHome(providerName string, entry ephemeral
 
 	result.Action = "discarded"
 	if entry.AccountID != "" && !c.credentialSignedOut(providerName, orphan.Bytes()) {
-		if entry.AccountID == selectedAccountID {
-			replaced, err := c.adoptIntoCanonical(providerName, orphan.Bytes())
-			if err != nil {
-				return result, err
-			}
-			result.Canonical = replaced
+		replaced, err := c.adoptIntoCanonical(providerName, orphan.Bytes())
+		if err != nil {
+			return result, err
 		}
+		result.Canonical = replaced
 		adopted, err := c.adoptIntoSlot(providerName, entry.AccountID, orphan.Bytes())
 		if err != nil {
 			return result, err
@@ -407,9 +406,9 @@ func (c *Credentials) sweepOneEphemeralHome(providerName string, entry ephemeral
 	return result, c.removeEphemeralRemnants(providerName, entry.ConfigHome)
 }
 
-// adoptIntoCanonical replaces the canonical credential with the selected
-// account's orphan when the canonical store holds the same login
-// (Policy.LoginID) strictly behind it on the chain. A different login there
+// adoptIntoCanonical replaces the canonical credential with an orphan when
+// the canonical store holds the same login (Policy.LoginID) strictly behind
+// it on the chain, whichever account and store the orphan came from. A different login there
 // is an outside sign-in, and unknown identity or position proves nothing,
 // so either leaves the canonical store alone.
 //
