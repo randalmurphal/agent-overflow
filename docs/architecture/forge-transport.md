@@ -186,7 +186,7 @@ func (Token) MarshalText() ([]byte, error)
 ## Reads per tick
 
 The PR pump reads a PR with one `Forge.ReadPR(ctx, ref, want, prev,
-stepsFor)` per tick. `want` (`git.PRReadParts{Detail, Threads, CI, Events}`) names
+stepsFor)` per tick. `want` (`git.PRReadParts{Detail, Threads, CI, Events, Unresolved}`) names
 the parts the caller needs and the read fetches nothing else: the pump
 asks for `Detail`, `Threads` and `Events` (the forge events the
 Conversation feed shows: approvals, merges, draft flips, auto-merge,
@@ -219,7 +219,9 @@ own operation from the page's `endCursor`: `PRThreadsPage` and
 after)` and `RollupContextsPage(commitID, number, after)` through `node(id:)`.
 `PRThreadStatesPage(owner, name, number, after)` continues the thread
 states only when readiness needs them (the base requires conversation
-resolution and the first page has no unresolved thread), and
+resolution and the first page has no unresolved thread) or the read asks
+for `Unresolved` (the exact count `MergeReadiness.Unresolved` carries;
+without every page it is nil), and
 `PRTimelinePage(owner, name, number, before)` reads the timeline backwards
 from the tick's newest page. Each connection reads at most
 `githubReadMaxPages` (10) pages of 100. A
@@ -255,7 +257,7 @@ adds its approvals, the project's merge settings (`projects/P`, cached
 per login and project for 10 minutes, then revalidated through the ETag
 store: a `W/` ETag answered 304) and the viewer's login (`user`, cached
 per login and host for 10 minutes; the author may cancel an auto-merge, and a refused read
-is cached as an unknown viewer), `Threads` and `Events` its discussions
+is cached as an unknown viewer), `Threads`, `Events` and `Unresolved` its discussions
 (`per_page=100`, paged by `X-Next-Page`, positions normalized against
 `diff_refs.head_sha`; one read serves both, system notes are the events,
 and the merge request's `merged_at`/`closed_at` supply the merge and close
@@ -344,6 +346,74 @@ a GitHub `pull_request` event, `tag` for a GitHub `release` event, and
 `branch` otherwise. `CIPipeline` carries the pipeline's `ID`, `Ref` and
 `SHA`; a GitHub PR's head checks span many runs, so `ReadPR` leaves its
 `ID` empty.
+
+### The PR list pump
+
+`SubscribePRList` (`internal/app/app_pr_list.go`) starts or joins the one
+list pump of a backend; its handle calls (`SetPRListActive`,
+`SetPRListFocus`, `RefreshPRList`, `UnsubscribePRList`) route home and
+the caller pins them to the computer whose subscribe answered, as the
+PR pump's. The pump shares the PR pump's core (`app_pump_core.go`):
+refcounted handles bound to their connections, paused while every handle
+is hidden, frames stamped from the shared PR update sequence. The
+subscribe waits for the first tick, which is the user's action and so
+interactive, as a refresh is; later ticks run at the PR update interval.
+
+A tick (`app_pr_list_tick.go`) reads the backend's forge projects
+(`ListForgeProjects`: the non-archived projects whose origin names a
+forge repository), lists each repository once however many projects
+clone it, at most `prListReadConcurrency` (4) at a time, then reads the
+summary detail of the rows the subscribers focus, joins the user's
+`pr_views` and emits `pulls:updated` when the snapshot changed. A
+project's failed list keeps the rows read before beside its error, a
+first transient failure with rows on screen is held back once, a
+rate-limited repository is skipped by background ticks until its
+release, and a removed project takes its rows along. Each row's
+attention state and group come from `prAttention`
+(`app_pr_attention.go`); `NeedsYou`, the sidebar badge, counts each PR
+once.
+
+`SetPRListFocus` names at most `maxPRListFocus` (60) PR keys per handle:
+the rows on screen and the needs-you set. A focused row's detail is
+`Core.ReadPRSummary`: `ReadPR` with `Detail` and `Unresolved`, which adds
+the approval count and the unresolved thread count to the readiness. It
+is read when the row is first focused, when its list row changes (update
+time, head, comments, checks, merge status, draft, review decision), on a
+refresh, and otherwise once `prListDetailMaxAge` (5 minutes) old. Reading
+60 GitHub details every interval would spend the 5000 points an hour
+GitHub's GraphQL allows; the age bound is what a GitLab pipeline that
+finished needs, since that moves no list field.
+
+`MarkPRViewed` records an opening in `pr_views` with the comment and
+commit counts of the pump's latest row, and the pump republishes so the
+row's `Seen` and `Since` follow at once.
+
+| Tick | GitHub | GitLab |
+|---|---|---|
+| Lists | 1 `PullsSearch` per repository per 100 PRs | 1 merge request list page per repository per 100 MRs |
+| A focused row's detail, when due | 1 `PRTick` (detail and checks), + 1 `PRThreadStatesPage` per 100 threads past 100 | 1 merge request + 1 approvals + 1 discussions page per 100 discussions |
+
+### The pipeline pump and stage reads
+
+`SubscribePipeline(repo, id)` (`app_pipeline_pump.go`) follows one
+pipeline of a repository, one pump per (repository, id) however many
+panes show it. It is the PR pump's CI phase without a PR
+(`app_ci_phase.go`): the first subscriber reads the pipeline, a joiner
+takes the pump's state, the pipeline is polled at the live cadence while
+it runs and its followed job logs (`SetPipelineFollows`) at the follow
+cadence, and frames go out on `ci:pipeline_updated`; a log frame rides
+`pr:ci_log` with the pipeline's key and no PR key. A terminal pipeline
+is read again at the PR update interval while visible, since a job
+retried on the forge restarts it with nothing else to say so. Job logs
+are a repository's (`ciLogKey(repo, job)`), whichever PR or pipeline
+showed them, so `GetPRCILogLines`, `SavePRCIJobLog` and
+`SavePRCIJobLogSection` take a `RepoReference`.
+
+`ListProjectPipelines(projectID, filter)` is one `ListPipelines`.
+`ReadPipelineStages(repo, ids)` reads at most `maxPipelineStageReads` (30)
+pipelines, 4 at a time, with `ReadPipeline` and answers each stage's name
+and status, or that pipeline's failure; every request is a GET the ETag
+store revalidates, so an unchanged pipeline costs a 304.
 
 ## Merged PR worktree cleanup
 
