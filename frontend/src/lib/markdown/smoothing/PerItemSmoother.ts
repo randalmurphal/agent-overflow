@@ -126,26 +126,33 @@ export function __resetRevealFrameGateForTest(): void {
 // SPRING_MAX_VELOCITY_PX_PER_FRAME) — raise the two in step.
 export const MAX_ADAPTIVE_CHARS_PER_SEC = 320;
 // Hard cap on how many characters the smoother may reveal in a single
-// PROCESSED tick, regardless of accumulated budget. With the rate
-// ceiling above owning speed, this is purely the per-frame WORK
-// bound: one tick's markdown re-parse + DOM mutation stays bounded
-// even right after a stalled frame (where dt, and so the tick's
-// budget, is large). 21 keeps the 320cps ceiling reachable at the
-// slowest throttled cadence with recovery headroom: the floor is
-// 320/48 ≈ 6.7 chars per processed tick, and the extra room lets a
-// jittered stretch (a ~50ms gap at 320cps = 16 chars of accrued
-// budget) catch back up in one tick instead of throttling the average
-// below the ceiling. Excess budget is clamped after each tick (not
-// rolled over) so a stall can't burst a multi-tick chunk. No rush
-// regime survives — the end-of-turn drain (END_OF_TURN_DRAIN_MS) went
-// in 2026-07 and the successor-waiting fast-drain in 2026-08, both
-// because rushed reveal motion read as jank; a long final message
-// finishing a few seconds after the wire settles is the accepted trade
-// for uniform reveal speed. One path still puts more than this cap in a
-// single delta, and it doesn't speed the ANIMATION up: `revealImmediately`
-// (low power / streaming-off) hands over the pending buffer in one
-// mutation instead of animating at all.
-export const MAX_ADVANCE_PER_TICK_CHARS = 21;
+// PROCESSED tick, regardless of accumulated budget: one tick's worth at
+// the rate ceiling on the slowest regular processed cadence (~48Hz,
+// MIN_REVEAL_TICK_INTERVAL_MS against a 144Hz panel: 320/48 ≈ 6.7
+// chars), so the cap never becomes the ceiling. It is also the stall
+// rule. A frame gap (a long task, a GC pause, an occluded window)
+// accrues budget far past this; the tick after it spends one tick's
+// worth and the residual is clamped (not rolled over), so the reveal
+// resumes at its pace instead of landing the gap's text at once. The
+// scroll spring (SPRING_MAX_CATCHUP_STEPS) and the thinking tail's
+// line slide (SLIDE_MAX_CATCHUP_FRAMES) resume the same way, and the
+// slide's pending-offset cap (SLIDE_MAX_WINDOWS) is sized from this
+// cap: the lines one tick can land are what the slide must absorb
+// without re-packing. A larger cap (21, recovery headroom after
+// jitter) let a slow paint land four frames of short lines at once,
+// past what the slide could hold, and the visible lines snapped. A
+// pane starved by the frame gate (three or more streams on a high-Hz
+// panel) runs under the ceiling for that stretch; that is the gate's
+// degraded case, not this cap's. No rush regime survives — the
+// end-of-turn drain (END_OF_TURN_DRAIN_MS) went in 2026-07 and the
+// successor-waiting fast-drain in 2026-08, both because rushed reveal
+// motion read as jank; a long final message finishing a few seconds
+// after the wire settles is the accepted trade for uniform reveal
+// speed. One path still puts more than this cap in a single delta, and
+// it doesn't speed the ANIMATION up: `revealImmediately` (low power /
+// streaming-off) hands over the pending buffer in one mutation instead
+// of animating at all.
+export const MAX_ADVANCE_PER_TICK_CHARS = 7;
 
 export interface PerItemSmootherOptions {
   /**

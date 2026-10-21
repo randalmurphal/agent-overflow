@@ -1241,7 +1241,12 @@ scroller:
 2. **The streaming line-slide** (`TailClampedText`'s inverted translateY,
    drained by a rAF tracker — `tailSlide.ts`) is the one in-content
    animation, on the one region that is genuinely in motion: the line
-   being streamed.
+   being streamed. After a stalled frame the slide, the reveal smoother
+   (`MAX_ADVANCE_PER_TICK_CHARS`) and the spring each resume at their
+   pace rather than landing the gap at once, and the slide's pending
+   offset cap (`SLIDE_MAX_WINDOWS`) is sized from the most lines one
+   smoother tick can land, so no stream pins it and re-packs the visible
+   lines.
 
 Everything else is still ink. No CSS transitions (the app.css timeline
 kill rule zeroes them, per the chat guide's

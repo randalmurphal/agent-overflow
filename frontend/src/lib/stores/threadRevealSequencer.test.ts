@@ -12,6 +12,7 @@ import {
 } from '../markdown/smoothing/PerItemSmoother';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
+import { revealTickBound } from '../../test/helpers/revealUnits';
 import { FakeSmoothingClock, installThreadPaneTestEnv } from '../../test/helpers/threadPane';
 
 describe('threadRevealGate', () => {
@@ -1191,7 +1192,7 @@ describe('threadRevealGate', () => {
           // Per-frame WORK bound: no frame ever dumps a chunk, and no
           // frame ever jumps a skipped middle.
           expect(length - previousLength).toBeLessThanOrEqual(
-            MAX_ADVANCE_PER_TICK_CHARS,
+            revealTickBound(text),
           );
           previousLength = length;
         }
@@ -1315,7 +1316,7 @@ describe('threadRevealGate', () => {
           const length = pane.items[0].summary.length;
           expect(length).toBeGreaterThanOrEqual(previousLength);
           expect(length - previousLength).toBeLessThanOrEqual(
-            MAX_ADVANCE_PER_TICK_CHARS,
+            revealTickBound(streamed + finalSuffix),
           );
           previousLength = length;
         }

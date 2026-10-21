@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   SLIDE_DRAIN_PER_FRAME,
+  SLIDE_MAX_LINES_PER_TICK,
   SLIDE_MAX_WINDOWS,
   SLIDE_MIN_STEP_PX,
   slideDecision,
@@ -40,11 +41,35 @@ describe('slideDecision', () => {
   });
 
   it('caps a compounded start at SLIDE_MAX_WINDOWS windows', () => {
-    const d = slideDecision(obs(5), obs(9), 2 * BOX - 5);
+    const d = slideDecision(obs(5), obs(9), SLIDE_MAX_WINDOWS * BOX - 5);
     expect(d.kind).toBe('slide');
-    // true continuity would be (2·BOX - 5) + 4·LH — past the cap, where the
-    // rate is unreadable regardless and the excess snaps.
+    // true continuity would be (cap - 5) + 4·LH — past the cap, where the
+    // excess snaps.
     if (d.kind === 'slide') expect(d.startPx).toBeCloseTo(SLIDE_MAX_WINDOWS * BOX);
+  });
+
+  it('holds the most lines the smoother can land per tick without reaching the cap', () => {
+    // The smoother lands at most SLIDE_MAX_LINES_PER_TICK lines in one
+    // processed tick (its per-tick cap on one-character lines), every
+    // frame at the ceiling. The drain must settle below the cap under that
+    // intake, or the offset pins on the cap and every further line
+    // re-packs the visible text in one frame (the snap the browser
+    // continuity test caught under slow paints).
+    const intake = SLIDE_MAX_LINES_PER_TICK * LH;
+    let lines = 5;
+    let prev = obs(lines);
+    let offset = 0;
+    for (let frame = 0; frame < 300; frame += 1) {
+      lines += SLIDE_MAX_LINES_PER_TICK;
+      const next = obs(lines);
+      const d = slideDecision(prev, next, offset);
+      expect(d.kind).toBe('slide');
+      if (d.kind !== 'slide') return;
+      expect(d.startPx).toBeCloseTo(offset + intake);
+      expect(d.startPx).toBeLessThan(SLIDE_MAX_WINDOWS * BOX);
+      offset = stepSlide(d.startPx, 1000 / 60);
+      prev = next;
+    }
   });
 
   it('lets a second window of catch-up compound past one window', () => {

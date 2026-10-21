@@ -554,15 +554,16 @@ describe('PerItemSmoother — rate ceiling and per-tick work cap', () => {
     );
 
     reveals.length = 0;
-    clock.tickFrame(16);
-    clock.tickFrame(16);
-    clock.tickFrame(16);
+    const frames = 30;
+    for (let i = 0; i < frames; i += 1) clock.tickFrame(16);
     const revealedAfterStall = reveals.reduce((n, r) => n + r.delta.length, 0);
     // Clamped: one residual spend of ≤ the cap, then the ordinary
-    // rate-limited accrual. Unclamped, all three frames would run at the
-    // full cap off the stall's leftover budget.
+    // rate-limited accrual at the ceiling (a 3-char unit may round each
+    // frame up). Unclamped, every frame would run at the full cap off the
+    // stall's leftover budget.
+    const accrual = (MAX_ADAPTIVE_CHARS_PER_SEC * 16) / 1000;
     expect(revealedAfterStall).toBeLessThanOrEqual(
-      MAX_ADVANCE_PER_TICK_CHARS * 2,
+      MAX_ADVANCE_PER_TICK_CHARS + frames * accrual + 3,
     );
     expect(revealedAfterStall).toBeGreaterThan(0);
   });

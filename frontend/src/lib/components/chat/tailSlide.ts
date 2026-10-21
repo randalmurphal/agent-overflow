@@ -39,13 +39,17 @@
 //     doesn't misread the reappearance as an append.
 //
 // A clip advance of a full window or more slides through it (up to
-// SLIDE_MAX_WINDOWS): no previously visible line survives, but a ticker
+// SLIDE_MAX_WINDOWS, sized from the most lines the reveal smoother can
+// land in one tick): no previously visible line survives, but a ticker
 // through the new lines still reads as motion where a snap reads as a
 // glitch.
 //
 // Kept pure (no DOM) so the guard matrix and the drain curve are
 // unit-testable in the default vitest project; the component supplies
 // real geometry and applies the styles.
+
+import { MAX_ADVANCE_PER_TICK_CHARS } from '../../markdown/smoothing/PerItemSmoother';
+import { TAIL_CLAMP_LINES } from './tailWindow';
 
 /**
  * Fraction of the pending offset drained per 60Hz frame: an ease-out
@@ -59,15 +63,24 @@
 export const SLIDE_DRAIN_PER_FRAME = 0.35;
 
 /**
- * The pending offset is capped at this many clamp windows. Past one
- * window the inversion starts on content that was never visible, but a
- * burst that lands two lines in one frame (a paragraph break plus the
- * next words at catch-up rate) would otherwise pin the offset at the cap
- * and teleport the excess every frame; a second window of catch-up
- * tickers through it instead. Beyond two windows per frame the rate is
- * unreadable regardless and the excess snaps.
+ * The most lines the reveal smoother can land in one processed tick: its
+ * per-tick cap in characters, on lines of one character and a newline
+ * (a code block's shortest lines; a paragraph's soft breaks collapse).
  */
-export const SLIDE_MAX_WINDOWS = 2;
+export const SLIDE_MAX_LINES_PER_TICK = Math.floor(MAX_ADVANCE_PER_TICK_CHARS / 2);
+
+/**
+ * The pending offset is capped at this many clamp windows, sized so the
+ * drain holds the most the smoother can land per tick. An intake of L
+ * lines a frame settles the offset where the drain takes L lines a
+ * frame, at L / SLIDE_DRAIN_PER_FRAME lines, and the cap is the next
+ * whole window above that, so no stream the smoother can produce pins
+ * the offset on it. Past one window the inversion starts on content
+ * that was never visible, but an offset pinned at the cap teleports the
+ * excess every frame, the snap the slide exists to prevent, where a
+ * ticker through never-seen lines still reads as motion.
+ */
+export const SLIDE_MAX_WINDOWS = Math.ceil(SLIDE_MAX_LINES_PER_TICK / (SLIDE_DRAIN_PER_FRAME * TAIL_CLAMP_LINES));
 
 /**
  * Minimum drain per 60Hz frame, so the exponential tail lands on zero
