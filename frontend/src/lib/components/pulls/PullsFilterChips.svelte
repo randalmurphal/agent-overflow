@@ -2,6 +2,7 @@
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import CountBadge from '../primitives/CountBadge.svelte';
   import Icon from '../primitives/Icon.svelte';
+  import { chipClasses } from '../primitives/chipClasses';
   import Menu from '../primitives/Menu.svelte';
   import MenuDivider from '../primitives/MenuDivider.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
@@ -34,9 +35,6 @@
     { value: 'all', label: 'All open' },
   ];
 
-  const chipClass = 'inline-flex h-6 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border px-2.5 text-[0.6875rem] font-medium transition-colors compact:h-8 compact:select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40';
-  const onClass = 'border-accent/45 bg-accent/12 text-fg';
-  const offClass = 'border-border-subtle text-fg-muted hover:border-border hover:text-fg';
 
   let projectsOpen = $state(false);
   let projectsEl: HTMLButtonElement | undefined = $state(undefined);
@@ -68,7 +66,7 @@
     {@const active = chip.value === filter}
     <button
       type="button"
-      class="{chipClass} {active ? onClass : offClass}"
+      class={chipClasses(active)}
       aria-pressed={active}
       data-testid="pulls-filter-{chip.value}"
       onclick={() => onFilter(chip.value)}
@@ -83,7 +81,7 @@
     <button
       bind:this={projectsEl}
       type="button"
-      class="{chipClass} {offClass} ml-auto"
+      class="{chipClasses(false)} ml-auto"
       aria-haspopup="menu"
       aria-expanded={projectsOpen}
       data-testid="pulls-projects-picker"

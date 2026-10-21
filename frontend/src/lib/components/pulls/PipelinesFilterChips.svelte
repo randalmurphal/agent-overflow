@@ -1,6 +1,7 @@
 <script lang="ts">
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import Icon from '../primitives/Icon.svelte';
+  import { chipClasses } from '../primitives/chipClasses';
   import Menu from '../primitives/Menu.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import Popover from '../primitives/Popover.svelte';
@@ -37,9 +38,6 @@
     { value: 'manual', label: 'Manual' },
   ];
 
-  const chipClass = 'inline-flex h-6 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border px-2.5 text-[0.6875rem] font-medium transition-colors compact:h-8 compact:select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40';
-  const onClass = 'border-accent/45 bg-accent/12 text-fg';
-  const offClass = 'border-border-subtle text-fg-muted hover:border-border hover:text-fg';
 
   const refLabel = $derived(REF_KINDS.find((kind) => kind.value === filters.refKind)?.label ?? 'Any ref');
   const statusLabel = $derived(STATUSES.find((status) => status.value === filters.status)?.label ?? 'All statuses');
@@ -80,7 +78,7 @@
       {@const active = projectOn(project.id)}
       <button
         type="button"
-        class="{chipClass} {active ? onClass : offClass}"
+        class={chipClasses(active)}
         aria-pressed={active}
         data-testid="pipelines-project-{project.id}"
         onclick={() => toggleProject(project.id)}
@@ -92,7 +90,7 @@
   <button
     bind:this={refEl}
     type="button"
-    class="{chipClass} {filters.refKind ? onClass : offClass} ml-auto"
+    class="{chipClasses(filters.refKind !== '')} ml-auto"
     aria-haspopup="menu"
     aria-expanded={openPicker === 'ref'}
     data-testid="pipelines-ref-picker"
@@ -104,7 +102,7 @@
   <button
     bind:this={statusEl}
     type="button"
-    class="{chipClass} {filters.status ? onClass : offClass}"
+    class={chipClasses(filters.status !== '')}
     aria-haspopup="menu"
     aria-expanded={openPicker === 'status'}
     data-testid="pipelines-status-picker"
