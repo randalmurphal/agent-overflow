@@ -214,12 +214,74 @@ func TestCheckoutsLeaveTheWorktreeUnlocked(t *testing.T) {
 // names the unlock. The fake git fails the first unlock alone, so the
 // undo's own unlock runs.
 func TestAttachWorktreeUndoesACheckoutItCouldNotUnlock(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell wrapper is unix-only")
-	}
 	repo, bare := testutil.InitGitRepoWithOrigin(t)
 	originOnlyBranch(t, bare, "feature/held")
 	testutil.RunGit(t, repo, "fetch", "-q", "origin")
+	failFirstUnlock(t)
+	path := filepath.Join(t.TempDir(), "held")
+
+	created, err := NewCore().AttachWorktree(repo, path, "feature/held")
+	if err == nil || created || !strings.Contains(err.Error(), "injected unlock failure") {
+		t.Fatalf("AttachWorktree = created %v, %v; want the unlock's failure", created, err)
+	}
+	if strings.Contains(err.Error(), "undo") {
+		t.Fatalf("the undo failed: %v", err)
+	}
+	assertAddUndone(t, repo, "feature/held", false)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("the checkout directory remains (%v)", err)
+	}
+}
+
+// The undo removes the registration carrying the attempt's reason at its
+// exact path: an attempt at a path that differs from another worktree's
+// by a trailing space takes back its own checkout, and the other one keeps
+// its untracked work.
+func TestAttachWorktreeUndoTakesItsOwnRegistrationAtANearIdenticalPath(t *testing.T) {
+	repo := initGitRepo(t)
+	testutil.RunGit(t, repo, "branch", "feature/keep")
+	testutil.RunGit(t, repo, "branch", "feature/attempt")
+	keep := filepath.Join(t.TempDir(), "keep")
+	testutil.RunGit(t, repo, "worktree", "add", "--", keep, "feature/keep")
+	if err := os.WriteFile(filepath.Join(keep, "work.txt"), []byte("keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	failFirstUnlock(t)
+	attempt := keep + " "
+
+	if _, err := NewCore().AttachWorktree(repo, attempt, "feature/attempt"); err == nil || !strings.Contains(err.Error(), "injected unlock failure") {
+		t.Fatalf("AttachWorktree = %v, want the unlock's failure", err)
+	} else if strings.Contains(err.Error(), "undo") {
+		t.Fatalf("the undo failed: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(keep, "work.txt")); err != nil || string(data) != "keep\n" {
+		t.Fatalf("the other worktree's untracked work changed: %q, %v", data, err)
+	}
+	if _, err := os.Stat(attempt); !os.IsNotExist(err) {
+		t.Fatalf("the attempted checkout remains (%v)", err)
+	}
+	worktrees, err := NewCore().ListWorktrees(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, worktree := range worktrees {
+		paths = append(paths, worktree.Path)
+	}
+	if len(paths) != 2 || !SameFilesystemPath(paths[1], keep) || paths[1] != keep {
+		t.Fatalf("worktrees = %q, want the main checkout and %q", paths, keep)
+	}
+}
+
+// failFirstUnlock puts a git on PATH that fails the first
+// `git worktree unlock` and runs the real git for everything else, so an
+// undo's own unlock runs. It sets the environment, so its tests are
+// serial.
+func failFirstUnlock(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell wrapper is unix-only")
+	}
 	realGit, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatal(err)
@@ -236,19 +298,6 @@ exec "$AO_REAL_GIT" "$@"
 	t.Setenv("AO_REAL_GIT", realGit)
 	t.Setenv("AO_UNLOCK_FAILED", filepath.Join(t.TempDir(), "unlock-failed"))
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	path := filepath.Join(t.TempDir(), "held")
-
-	created, err := NewCore().AttachWorktree(repo, path, "feature/held")
-	if err == nil || created || !strings.Contains(err.Error(), "injected unlock failure") {
-		t.Fatalf("AttachWorktree = created %v, %v; want the unlock's failure", created, err)
-	}
-	if strings.Contains(err.Error(), "undo") {
-		t.Fatalf("the undo failed: %v", err)
-	}
-	assertAddUndone(t, repo, "feature/held", false)
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("the checkout directory remains (%v)", err)
-	}
 }
 
 // A checkout a crash left locked with this package's reason, between the
