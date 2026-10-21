@@ -112,6 +112,13 @@
   let listWidth = $state(readListWidth());
 
   const selection = $derived(selectedPR(paneId));
+  // The pinned review's subject, one nullable value the template reads
+  // through its guard: the pane id and the selection never split into
+  // two render effects.
+  const pinnedReview = $derived.by(() => {
+    if (!selection) return null;
+    return { key: selection.key, subject: { ownerPaneId: paneId, backend: selection.backend, projectId: selection.projectId, pr: selection.pr } };
+  });
   const pipeline = $derived(selectedPipeline(paneId));
   const detailShown = $derived(tab === 'mrs' ? selection !== null : pipeline !== null);
   const filters = $derived(mrFilters(backend));
@@ -402,11 +409,9 @@
     <!-- The detail: the review pinned to the picked MR, or the picked pipeline. -->
     <div class="flex min-h-0 min-w-0 flex-1 flex-col {compact && !detailShown ? 'hidden' : ''}" data-testid="pulls-detail">
       {#if tab === 'mrs'}
-        {#if selection}
-          {#key selection.key}
-            <ReviewPane
-              pr={{ ownerPaneId: paneId, backend: selection.backend, projectId: selection.projectId, pr: selection.pr }}
-            />
+        {#if pinnedReview}
+          {#key pinnedReview.key}
+            <ReviewPane pr={pinnedReview.subject} />
           {/key}
         {:else}
           <div class="flex flex-1 items-center justify-center px-6" data-testid="pulls-detail-empty">
