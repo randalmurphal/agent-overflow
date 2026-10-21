@@ -194,7 +194,11 @@ func (a *App) pollPRList(ctx context.Context, pump *prListPump, forceDetails boo
 // limit reserve is not a read: a user wake reads that row again.
 func (a *App) pollPRListFocus(pump *prListPump) (snapshot PRListSnapshot, changed, paused bool) {
 	a.prUpdates.mu.Lock()
-	if pump.paused.Load() {
+	paused = pump.paused.Load()
+	if hook := a.prUpdates.listFocusPauseHook; hook != nil {
+		hook()
+	}
+	if paused {
 		pump.focusAdmissionLocked()
 		a.prUpdates.mu.Unlock()
 		return PRListSnapshot{}, false, true

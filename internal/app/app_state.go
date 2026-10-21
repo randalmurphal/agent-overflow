@@ -137,9 +137,10 @@ type appPRUpdateState struct {
 	listProjectsFn func(ctx context.Context) ([]ForgeProject, error)
 	listFetchFn    func(ctx context.Context, repo gitops.RepoReference) ([]gitops.PRListRow, error)
 	listDetailFn   func(ctx context.Context, pr gitops.PRReference) (gitops.PRDetail, error)
-	// listFocusWakeHook runs when the list pump's loop takes a focus wake,
-	// before it reads the pause; tests hold the loop there.
-	listFocusWakeHook func()
+	// listFocusPauseHook runs in pollPRListFocus right after it reads the
+	// pause, before it takes the wake's admission, under App.prUpdates.mu;
+	// tests start a resume there.
+	listFocusPauseHook func()
 }
 
 // appSessionImportState is the session-import concern

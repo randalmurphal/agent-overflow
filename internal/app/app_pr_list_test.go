@@ -937,10 +937,13 @@ func TestPRListFocusOfARowRefusedAtTheReserveReadsIt(t *testing.T) {
 	}
 }
 
-// A show that lands while the loop holds a focus wake taken during the
-// pause is the user's: the loop reads the pause and takes the admission
-// under the lock the show changes them under, so the focused rows read
-// past the reserve.
+// A show that lands after the loop read the pause for a focus wake taken
+// during it, and before the loop took that wake's admission, is the
+// user's: the loop reads both under the lock the show changes them under,
+// so the show waits for the paused wake to be dropped, then wakes the
+// loop with the user's admission, and the focused rows read past the
+// reserve. The hook starts the show at that boundary and gives it a
+// moment to land, which only a split of the two reads lets it do.
 func TestPRListShowDuringAPausedFocusWakeReadsAsTheUsers(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -954,17 +957,26 @@ func TestPRListShowDuringAPausedFocusWakeReadsAsTheUsers(t *testing.T) {
 			keys = append(keys, row.Ref.Key())
 		}
 	})
-	entered, release := make(chan struct{}), make(chan struct{})
+	shown := make(chan error, 1)
 	var hold sync.Mutex
 	armed := false
-	app.prUpdates.listFocusWakeHook = func() {
+	var subID string
+	app.prUpdates.listFocusPauseHook = func() {
 		hold.Lock()
-		run := armed
+		run, id := armed, subID
 		armed = false
 		hold.Unlock()
-		if run {
-			close(entered)
-			<-release
+		if !run {
+			return
+		}
+		done := make(chan struct{})
+		go func() {
+			shown <- app.SetPRListActive(context.Background(), id, true)
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(200 * time.Millisecond):
 		}
 	}
 	events := capturePRList(t, app)
@@ -975,21 +987,20 @@ func TestPRListShowDuringAPausedFocusWakeReadsAsTheUsers(t *testing.T) {
 		t.Fatal(err)
 	}
 	hold.Lock()
-	armed = true
+	armed, subID = true, sub.ID
 	hold.Unlock()
-	// A focus while hidden wakes the loop, which the hook holds.
+	// A focus while hidden wakes the loop, and the hook shows the page.
 	if _, err := app.SetPRListFocus(context.Background(), sub.ID, keys); err != nil {
 		t.Fatal(err)
 	}
 	select {
-	case <-entered:
+	case err := <-shown:
+		if err != nil {
+			t.Fatal(err)
+		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("the focus wake never reached the loop")
+		t.Fatal("the focus wake never reached the pause read")
 	}
-	if err := app.SetPRListActive(context.Background(), sub.ID, true); err != nil {
-		t.Fatal(err)
-	}
-	close(release)
 
 	awaitPRList(t, events, "the focused rows read past the reserve", func(s PRListSnapshot) bool {
 		n := 0

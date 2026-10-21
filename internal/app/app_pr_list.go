@@ -429,9 +429,6 @@ func (a *App) pumpPRList(pump *prListPump) {
 			tick(forgeapi.WithInteractive(pump.ctx), true)
 			close(req.done)
 		case <-pump.focusWake:
-			if hook := a.prUpdates.listFocusWakeHook; hook != nil {
-				hook()
-			}
 			event, changed, paused := a.pollPRListFocus(pump)
 			if paused {
 				missed = true

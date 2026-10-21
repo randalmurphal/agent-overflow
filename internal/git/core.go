@@ -671,14 +671,11 @@ func (c *Core) ListWorktrees(cwd string) ([]Worktree, error) {
 
 // ListWorktreesContext allows discovery callers to bound the complete scan.
 func (c *Core) ListWorktreesContext(ctx context.Context, cwd string) ([]Worktree, error) {
-	result, err := c.runSpec(commandSpec{ctx: ctx, binary: "git", cwd: cwd, args: []string{"worktree", "list", "--porcelain"}})
+	entries, err := c.listWorktreeEntriesContext(ctx, cwd)
 	if err != nil {
 		return nil, err
 	}
-	if result.exitCode != 0 {
-		return nil, fmt.Errorf("git worktree list failed: %s", strings.TrimSpace(result.stderr))
-	}
-	return parseWorktreeList(result.stdout), nil
+	return selectableWorktrees(entries), nil
 }
 
 func (c *Core) run(cwd string, args ...string) (commandResult, error) {
@@ -981,7 +978,7 @@ func (b *limitedBuffer) Truncated() bool {
 	return b.truncated
 }
 
-// worktreeEntry is one `git worktree list --porcelain` record before the
+// worktreeEntry is one `git worktree list --porcelain -z` record before the
 // selectable-workspace filter: a transfer reservation is not a workspace the
 // user can pick, but it is a checkout removal must be able to unlock.
 type worktreeEntry struct {
@@ -1009,7 +1006,11 @@ func (c *Core) worktreeLocked(cwd, path string) (bool, error) {
 // listWorktreeEntries is every worktree record of the repository at cwd,
 // with its lock.
 func (c *Core) listWorktreeEntries(cwd string) ([]worktreeEntry, error) {
-	result, err := c.run(cwd, "worktree", "list", "--porcelain")
+	return c.listWorktreeEntriesContext(context.Background(), cwd)
+}
+
+func (c *Core) listWorktreeEntriesContext(ctx context.Context, cwd string) ([]worktreeEntry, error) {
+	result, err := c.runSpec(commandSpec{ctx: ctx, binary: "git", cwd: cwd, args: []string{"worktree", "list", "--porcelain", "-z"}})
 	if err != nil {
 		return nil, err
 	}
@@ -1019,9 +1020,10 @@ func (c *Core) listWorktreeEntries(cwd string) ([]worktreeEntry, error) {
 	return parseWorktreeEntries(result.stdout), nil
 }
 
-func parseWorktreeList(stdout string) []Worktree {
+// selectableWorktrees drops the records that are not workspaces.
+func selectableWorktrees(entries []worktreeEntry) []Worktree {
 	var worktrees []Worktree
-	for _, entry := range parseWorktreeEntries(stdout) {
+	for _, entry := range entries {
 		// A transfer's registered staging index retains its objects through
 		// GC, but is not a workspace the user can select before activation.
 		if !isTransferPreparationWorktree(entry.Path, entry.lockReason) {
@@ -1031,40 +1033,40 @@ func parseWorktreeList(stdout string) []Worktree {
 	return worktrees
 }
 
-// parseWorktreeEntries reads every record of `git worktree list --porcelain`.
-// The `locked` line is bare when the lock carries no reason (Claude Code's
-// EnterWorktree) and `locked <reason>` otherwise.
+// parseWorktreeEntries reads every record of
+// `git worktree list --porcelain -z`: each attribute ends in NUL and an
+// empty one ends the record. Paths and lock reasons are verbatim there, so
+// nothing is trimmed: a path that differs from another by a trailing space
+// or holds a newline is its own. The `locked` attribute is bare when the
+// lock carries no reason (Claude Code's EnterWorktree) and
+// `locked <reason>` otherwise.
 func parseWorktreeEntries(stdout string) []worktreeEntry {
 	var entries []worktreeEntry
 	current := worktreeEntry{}
 
 	flush := func() {
-		if strings.TrimSpace(current.Path) != "" {
+		if current.Path != "" {
 			entries = append(entries, current)
 		}
 		current = worktreeEntry{}
 	}
 
-	for _, rawLine := range strings.Split(stdout, "\n") {
-		line := strings.TrimSpace(rawLine)
-		if line == "" {
-			flush()
-			continue
-		}
-
+	for _, field := range strings.Split(stdout, "\x00") {
 		switch {
-		case strings.HasPrefix(line, "worktree "):
+		case field == "":
 			flush()
-			current.Path = strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
-		case strings.HasPrefix(line, "HEAD "):
-			current.HEAD = strings.TrimSpace(strings.TrimPrefix(line, "HEAD "))
-		case strings.HasPrefix(line, "branch "):
-			current.Branch = trimBranchRef(strings.TrimSpace(strings.TrimPrefix(line, "branch ")))
-		case line == "locked":
+		case strings.HasPrefix(field, "worktree "):
+			flush()
+			current.Path = strings.TrimPrefix(field, "worktree ")
+		case strings.HasPrefix(field, "HEAD "):
+			current.HEAD = strings.TrimPrefix(field, "HEAD ")
+		case strings.HasPrefix(field, "branch "):
+			current.Branch = trimBranchRef(strings.TrimPrefix(field, "branch "))
+		case field == "locked":
 			current.locked = true
-		case strings.HasPrefix(line, "locked "):
+		case strings.HasPrefix(field, "locked "):
 			current.locked = true
-			current.lockReason = strings.TrimPrefix(line, "locked ")
+			current.lockReason = strings.TrimPrefix(field, "locked ")
 		}
 	}
 

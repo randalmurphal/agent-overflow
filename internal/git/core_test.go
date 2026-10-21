@@ -129,9 +129,9 @@ func TestExecuteExitErrorKeepsTheTailOfLongStderr(t *testing.T) {
 
 func TestParseWorktreeList(t *testing.T) {
 	t.Parallel()
-	worktrees := parseWorktreeList(
-		"worktree /tmp/repo\nHEAD abc123\nbranch refs/heads/main\n\nworktree /tmp/repo-feature\nHEAD def456\nbranch refs/heads/feature/demo\n",
-	)
+	worktrees := selectableWorktrees(parseWorktreeEntries(
+		"worktree /tmp/repo\x00HEAD abc123\x00branch refs/heads/main\x00\x00worktree /tmp/repo-feature\x00HEAD def456\x00branch refs/heads/feature/demo\x00\x00",
+	))
 
 	if len(worktrees) != 2 {
 		t.Fatalf("len(worktrees) = %d, want 2", len(worktrees))
@@ -147,6 +147,49 @@ func TestParseWorktreeList(t *testing.T) {
 	}
 	if worktrees[1].HEAD != "def456" {
 		t.Fatalf("worktrees[1].HEAD = %q, want def456", worktrees[1].HEAD)
+	}
+}
+
+// Paths and lock reasons are read verbatim: a space inside, a trailing
+// space and a newline stay part of the path, and a detached or prunable
+// record parses beside them.
+func TestParseWorktreeEntriesKeepsPathsVerbatim(t *testing.T) {
+	t.Parallel()
+	odd := "/tmp/a b/keep \nnext "
+	entries := parseWorktreeEntries("worktree /tmp/repo\x00HEAD abc\x00branch refs/heads/main\x00\x00" +
+		"worktree " + odd + "\x00HEAD def\x00branch refs/heads/feature/odd\x00locked  two  spaces \x00\x00" +
+		"worktree /tmp/keep\x00HEAD 123\x00detached\x00prunable gitdir file points to non-existent location\x00\x00")
+	if len(entries) != 3 {
+		t.Fatalf("entries = %d, want 3: %+v", len(entries), entries)
+	}
+	if entries[1].Path != odd || entries[1].Branch != "feature/odd" || entries[1].HEAD != "def" {
+		t.Errorf("odd record = %+v, want path %q on feature/odd at def", entries[1], odd)
+	}
+	if !entries[1].locked || entries[1].lockReason != " two  spaces " {
+		t.Errorf("odd lock = %v %q, want the reason verbatim", entries[1].locked, entries[1].lockReason)
+	}
+	if entries[2].Path != "/tmp/keep" || entries[2].Branch != "" || entries[2].locked {
+		t.Errorf("detached record = %+v", entries[2])
+	}
+}
+
+// git reports a worktree whose path holds a newline and a trailing space
+// at exactly that path.
+func TestListWorktreesReportsAnOddPathExactly(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("newlines are not valid in Windows paths")
+	}
+	repo := initGitRepo(t)
+	testutil.RunGit(t, repo, "branch", "feature/odd")
+	path := filepath.Join(t.TempDir(), "odd \nname ")
+	testutil.RunGit(t, repo, "worktree", "add", "--", path, "feature/odd")
+	worktrees, err := NewCore().ListWorktrees(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(worktrees) != 2 || worktrees[1].Path != path || worktrees[1].Branch != "feature/odd" {
+		t.Fatalf("worktrees = %+v, want the second at %q", worktrees, path)
 	}
 }
 
@@ -534,9 +577,9 @@ func TestRemoveWorktreeLiftsLockButKeepsDirtyGuard(t *testing.T) {
 
 func TestParseWorktreeEntriesReadsBareAndReasonedLocks(t *testing.T) {
 	t.Parallel()
-	entries := parseWorktreeEntries("worktree /repo\nHEAD abc\nbranch refs/heads/main\n\n" +
-		"worktree /repo/.claude/worktrees/x\nHEAD abc\nbranch refs/heads/worktree-x\nlocked\n\n" +
-		"worktree /repo/.claude/worktrees/y\nHEAD abc\nbranch refs/heads/worktree-y\nlocked keep me\n\n")
+	entries := parseWorktreeEntries("worktree /repo\x00HEAD abc\x00branch refs/heads/main\x00\x00" +
+		"worktree /repo/.claude/worktrees/x\x00HEAD abc\x00branch refs/heads/worktree-x\x00locked\x00\x00" +
+		"worktree /repo/.claude/worktrees/y\x00HEAD abc\x00branch refs/heads/worktree-y\x00locked keep me\x00\x00")
 	if len(entries) != 3 {
 		t.Fatalf("entries = %d, want 3: %+v", len(entries), entries)
 	}
