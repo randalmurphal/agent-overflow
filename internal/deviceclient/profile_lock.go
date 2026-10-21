@@ -3,10 +3,11 @@ package deviceclient
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"time"
+
+	"agent-overflow/internal/filelock"
 )
 
 // profileWriteTimeout bounds every wait for a profile lock. A variable so a
@@ -30,49 +31,16 @@ func lockProfile(ctx context.Context, dir, name string) (func() error, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(filepath.Join(root, name+".lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := filelock.Acquire(ctx, filepath.Join(root, name+".lock"))
 	if err != nil {
 		return nil, err
 	}
-	for {
-		if err := ctx.Err(); err != nil {
-			f.Close()
-			return nil, err
-		}
-		locked, err := tryProfileLock(f)
-		if err != nil {
-			f.Close()
-			return nil, err
-		}
-		if locked {
-			return func() error { return releaseProfileLock(f) }, nil
-		}
-		timer := time.NewTimer(20 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			f.Close()
-			return nil, ctx.Err()
-		case <-timer.C:
-		}
-	}
+	return func() error { return releaseProfileLock(f) }, nil
 }
 
-// releaseProfile ends a lock's ownership. flock belongs to the open file
-// description, so a forked child's copy keeps it until exec: unlock rather
-// than rely on the close. A failed unlock leaves the close to release it;
-// either failure is returned so the caller's operation reports it.
+// releaseProfile ends a lock's ownership; see filelock.Release.
 func releaseProfile(f *os.File) error {
-	unlockErr := unlockProfile(f)
-	closeErr := f.Close()
-	if unlockErr != nil {
-		unlockErr = fmt.Errorf("deviceclient: unlock %s: %w", f.Name(), unlockErr)
-	}
-	if closeErr != nil {
-		// The close error is a PathError that already names the file.
-		closeErr = fmt.Errorf("deviceclient: %w", closeErr)
-	}
-	return errors.Join(unlockErr, closeErr)
+	return filelock.Release(f)
 }
 
 // WithProfileLock serializes a short catalog transaction across controllers

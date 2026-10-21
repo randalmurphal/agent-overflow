@@ -21,7 +21,11 @@ type EphemeralHome struct {
 	Path         string
 	providerName string
 	credentials  *Credentials
-	cleaned      bool
+	// lease is the registry lease held until cleanup succeeds; a failed
+	// cleanup keeps it, so no sweep touches the home while this process
+	// lives (ephemeral_registry.go).
+	lease   *os.File
+	cleaned bool
 }
 
 // NewEphemeralHome creates an isolated provider home for a new login. Only the
@@ -82,9 +86,15 @@ func (c *Credentials) newEphemeralHome(
 	// the home — the CLI in a login home writes one on its own — because
 	// an unrecorded home that crashes is invisible to the boot sweep
 	// forever (ephemeral_registry.go).
-	if err := c.registerEphemeralHome(providerName, path, ownerAccountID); err != nil {
-		return cleanupOnError(err)
+	lease, err := c.registerEphemeralHome(providerName, path, ownerAccountID)
+	if err != nil {
+		// Never registered, so nothing outlives the directory.
+		if removeErr := os.RemoveAll(path); removeErr != nil {
+			return nil, errors.Join(err, fmt.Errorf("provideraccounts: remove temporary %s home: %w", providerName, removeErr))
+		}
+		return nil, err
 	}
+	home.lease = lease
 	if err := os.Chmod(path, 0o700); err != nil {
 		return cleanupOnError(fmt.Errorf("provideraccounts: secure temporary %s home: %w", providerName, err))
 	}
@@ -207,14 +217,15 @@ func (h *EphemeralHome) Cleanup() error {
 	}
 	// The registry entry goes last: it must outlive any partial cleanup,
 	// or the boot sweep loses its only pointer to whatever remains.
-	if len(cleanupErrs) == 0 {
-		if err := h.credentials.unregisterEphemeralHome(h.providerName, h.Path); err != nil {
-			cleanupErrs = append(cleanupErrs, err)
-		}
+	if len(cleanupErrs) > 0 {
+		return errors.Join(cleanupErrs...)
 	}
-	err := errors.Join(cleanupErrs...)
-	if err == nil {
+	removed, err := h.credentials.unregisterEphemeralHome(h.providerName, h.Path, h.lease)
+	if removed {
+		// The home and its entry are gone and the lease is spent; a failure
+		// to end the lease cleanly is reported but leaves nothing to retry.
 		h.cleaned = true
+		h.lease = nil
 	}
 	return err
 }

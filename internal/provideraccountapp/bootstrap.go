@@ -9,7 +9,7 @@ import (
 )
 
 // ReconcileProviderHome binds metadata to its credential home, prunes only
-// slots owned by that pairing, and recovers crash-orphaned Claude rotations.
+// slots owned by that pairing, and recovers crash-orphaned provider rotations.
 func (m *Manager) ReconcileProviderHome(dbDir, userHome string) error {
 	if !m.available() {
 		return fmt.Errorf("provider account storage is unavailable")
@@ -39,11 +39,22 @@ func (m *Manager) ReconcileProviderHome(dbDir, userHome string) error {
 		}
 	}
 
-	sweepResults, sweepErr := m.credentials.SweepEphemeralCredentials(time.Now())
-	for _, result := range sweepResults {
-		if result.Action != "skipped" {
-			m.audit("ephemeral %s sweep: %s crash-orphaned home %s (account %q)", result.Provider, result.Action, result.ConfigHome, result.AccountID)
+	selected := make(map[string]string)
+	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
+		if active, ok := m.store.Active(providerName, time.Now()); ok {
+			selected[providerName] = active.ID
 		}
+	}
+	sweepResults, sweepErr := m.credentials.SweepEphemeralCredentials(time.Now(), selected)
+	for _, result := range sweepResults {
+		if result.Action == "skipped" {
+			continue
+		}
+		canonical := ""
+		if result.Canonical {
+			canonical = ", canonical credential included"
+		}
+		m.audit("ephemeral %s sweep: %s crash-orphaned home %s (account %q%s)", result.Provider, result.Action, result.ConfigHome, result.AccountID, canonical)
 	}
 	if sweepErr != nil {
 		m.audit("ephemeral sweep errors: %v", sweepErr)

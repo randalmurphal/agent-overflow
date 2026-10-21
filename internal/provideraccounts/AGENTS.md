@@ -7,7 +7,7 @@ codes, or OAuth URLs.
 Credential bytes are opaque. Read only bounded regular files without symlinks,
 write through `atomicfile.Write` with mode 0600, and validate account IDs
 before using them as path components. Saved slots contain only the provider's
-native credential file. Normal provider processes always use the canonical
+native credential file and the slot lock. Normal provider processes always use the canonical
 native home.
 
 `Account` is the frontend-facing card. Backend-only per-account state belongs
@@ -76,11 +76,17 @@ argv, as Claude Code's own write does. The item's ACL trusts only
 every switch. Moving the login to the plaintext file instead would expose it
 longer to the same readers.
 
-Every ephemeral home, Claude or Codex, is registered before a credential
-can exist in it (`ephemeral_registry.go`). The boot sweep adopts a
-crash-orphaned credential into its slot only when the slot is missing,
-signed out, or strictly behind it on the rotation chain (`ChainPosition`:
-Claude token expiry, Codex `last_refresh`).
+Every ephemeral home, Claude or Codex, is registered with a lease the
+owning process holds before a credential can exist in it
+(`ephemeral_registry.go`). The boot sweep acts only on homes whose lease it
+can take. It adopts a crash-orphaned credential into its slot only when the
+slot is missing, signed out, or strictly behind it on the rotation chain
+(`ChainPosition`: Claude token expiry, Codex `last_refresh`), and into the
+canonical home only for the selected account over the same login
+(`LoginID`).
+
+Every slot write holds the slot's lock file (`lockSlot`); a writer that
+decides from the slot's contents holds it from the read to the write.
 
 Credential bytes travel as `CredentialSnapshot` or `secret.Bytes`, which
 print as `<redacted>` from any field. A raw `[]byte` credential is a

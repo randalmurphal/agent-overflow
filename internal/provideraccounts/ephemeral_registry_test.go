@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/atomicfile"
+	"agent-overflow/internal/filelock"
 )
 
 func sweepFixture(t *testing.T) *Credentials {
@@ -22,41 +24,35 @@ func sweepFixture(t *testing.T) *Credentials {
 	return credentials
 }
 
-// backdateRegistryEntry rewrites one home's registry entry so the sweep
-// sees it as older than the grace period.
-func backdateRegistryEntry(t *testing.T, c *Credentials, configHome string) {
+// abandonEphemeralHome ends a home's lease without cleaning it up: what
+// the kernel does when the owning process dies.
+func abandonEphemeralHome(t *testing.T, home *EphemeralHome) {
 	t.Helper()
-	dir, err := c.ephemeralRegistryDir("claude")
-	if err != nil {
+	if err := filelock.Release(home.lease); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, ephemeralRegistryFileName(configHome))
-	var entry ephemeralRegistryEntry
-	found, err := atomicfile.ReadJSON(path, &entry)
-	if err != nil || !found {
-		t.Fatalf("registry entry for %s: found=%v err=%v", configHome, found, err)
-	}
-	entry.CreatedAt = entry.CreatedAt.Add(-2 * ephemeralSweepGrace)
-	if err := atomicfile.WriteJSON(path, entry); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// crashEphemeralClaudeHome creates a seeded ephemeral home and abandons
-// it without Cleanup — the crash scenario the registry exists for —
-// returning its path. The registry entry is backdated past the grace
-// period so a sweep will act on it.
-func crashEphemeralClaudeHome(t *testing.T, c *Credentials, credential []byte, ownerAccountID string) string {
-	t.Helper()
-	home, err := c.NewEphemeralHomeWithCredential("claude", credential, ownerAccountID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	home.lease = nil
 	// The temp home lives outside t.TempDir; make sure an assertion
 	// failure cannot leak it.
 	t.Cleanup(func() { _ = os.RemoveAll(home.Path) })
-	backdateRegistryEntry(t, c, home.Path)
+}
+
+// crashEphemeralHome creates a seeded ephemeral home and abandons it
+// without Cleanup, the crash the registry exists for, returning its path.
+// The entry is as young as a crash right before a restart leaves it.
+func crashEphemeralHome(t *testing.T, c *Credentials, providerName string, credential []byte, ownerAccountID string) string {
+	t.Helper()
+	home, err := c.NewEphemeralHomeWithCredential(providerName, credential, ownerAccountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	abandonEphemeralHome(t, home)
 	return home.Path
+}
+
+func crashEphemeralClaudeHome(t *testing.T, c *Credentials, credential []byte, ownerAccountID string) string {
+	t.Helper()
+	return crashEphemeralHome(t, c, "claude", credential, ownerAccountID)
 }
 
 // writeProviderAuthoredCredential puts bytes into a store the way the CLI
@@ -82,8 +78,8 @@ func makeSlotDir(t *testing.T, c *Credentials, accountID string) string {
 }
 
 // Every ephemeral home, whatever its provider, is recorded in that
-// provider's registry before any credential can exist in it and
-// unrecorded only by a fully successful cleanup.
+// provider's registry with a held lease before any credential can exist
+// in it, and unrecorded only by a fully successful cleanup.
 func TestEphemeralHomesAreRegisteredForTheirLifetime(t *testing.T) {
 	credentials := sweepFixture(t)
 	for _, providerName := range ephemeralProviders {
@@ -96,20 +92,34 @@ func TestEphemeralHomesAreRegisteredForTheirLifetime(t *testing.T) {
 			t.Fatal(err)
 		}
 		entryPath := filepath.Join(dir, ephemeralRegistryFileName(home.Path))
+		leasePath := filepath.Join(dir, ephemeralLeaseFileName(home.Path))
 		if _, err := os.Stat(entryPath); err != nil {
 			t.Fatalf("%s registry entry missing while home lives: %v", providerName, err)
+		}
+		probe, err := filelock.Open(leasePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if locked, err := filelock.TryLock(probe); locked || err != nil {
+			t.Fatalf("%s lease not held while home lives: locked=%v err=%v", providerName, locked, err)
+		}
+		if err := probe.Close(); err != nil {
+			t.Fatal(err)
 		}
 		if err := home.Cleanup(); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := os.Stat(entryPath); !os.IsNotExist(err) {
-			t.Fatalf("%s registry entry survived cleanup: %v", providerName, err)
+		for _, path := range []string{entryPath, leasePath} {
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("%s registry file %s survived cleanup: %v", providerName, filepath.Base(path), err)
+			}
 		}
 	}
 }
 
 // chainFixture orders "pos:N" credentials by N, the way the production
-// policy orders Claude by token expiry and Codex by last_refresh.
+// policy orders Claude by token expiry and Codex by last_refresh, and names
+// the login of "pos:N login:X" credentials X.
 func chainFixture(t *testing.T) *Credentials {
 	t.Helper()
 	credentials, err := NewCredentials(t.TempDir(), Policy{
@@ -121,6 +131,10 @@ func chainFixture(t *testing.T) *Credentials {
 			}
 			return position, true
 		},
+		LoginID: func(_ string, data []byte) (string, bool) {
+			_, login, ok := strings.Cut(string(data), " login:")
+			return login, ok && login != ""
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -128,29 +142,18 @@ func chainFixture(t *testing.T) *Credentials {
 	return credentials
 }
 
-// crashEphemeralHome abandons a seeded home of any provider without
-// Cleanup and backdates its registry entry past the grace period.
-func crashEphemeralHome(t *testing.T, c *Credentials, providerName string, credential []byte, ownerAccountID string) string {
+func writeCodexSlot(t *testing.T, c *Credentials, accountID, credential string) {
 	t.Helper()
-	home, err := c.NewEphemeralHomeWithCredential(providerName, credential, ownerAccountID)
+	accountDir, err := c.accountDirectory("codex", accountID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(home.Path) })
-	dir, err := c.ephemeralRegistryDir(providerName)
-	if err != nil {
+	if err := os.MkdirAll(accountDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, ephemeralRegistryFileName(home.Path))
-	var entry ephemeralRegistryEntry
-	if found, err := atomicfile.ReadJSON(path, &entry); err != nil || !found {
-		t.Fatalf("%s registry entry: found=%v err=%v", providerName, found, err)
-	}
-	entry.CreatedAt = entry.CreatedAt.Add(-2 * ephemeralSweepGrace)
-	if err := atomicfile.WriteJSON(path, entry); err != nil {
+	if err := c.WriteAccountCredential("codex", accountID, []byte(credential)); err != nil {
 		t.Fatal(err)
 	}
-	return home.Path
 }
 
 // A Codex usage probe rotates the chain inside its temporary home and the
@@ -174,19 +177,10 @@ func TestSweepRecoversACrashedCodexRotation(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			credentials := chainFixture(t)
-			accountDir, err := credentials.accountDirectory("codex", "acct-1")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.MkdirAll(accountDir, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if err := credentials.WriteAccountCredential("codex", "acct-1", []byte(tc.slot)); err != nil {
-				t.Fatal(err)
-			}
+			writeCodexSlot(t, credentials, "acct-1", tc.slot)
 			homePath := crashEphemeralHome(t, credentials, "codex", []byte(tc.orphan), "acct-1")
 
-			results, err := credentials.SweepEphemeralCredentials(time.Now())
+			results, err := credentials.SweepEphemeralCredentials(time.Now(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -204,6 +198,108 @@ func TestSweepRecoversACrashedCodexRotation(t *testing.T) {
 	}
 }
 
+// The selected account's probe starts from the canonical credential, so a
+// crash after its rotation leaves the canonical store as far behind as the
+// slot. The sweep brings both forward, but only over the same login: a
+// different login in the canonical store is an outside sign-in.
+func TestSweepRestoresTheSelectedAccountsCanonicalCredential(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		selected      map[string]string
+		canonical     string
+		wantCanonical string
+		wantReplaced  bool
+	}{
+		{name: "same login behind", selected: map[string]string{"codex": "acct-1"}, canonical: "pos:10 login:alice", wantCanonical: "pos:20 login:alice", wantReplaced: true},
+		{name: "outside sign-in", selected: map[string]string{"codex": "acct-1"}, canonical: "pos:5 login:bob", wantCanonical: "pos:5 login:bob"},
+		{name: "same login ahead", selected: map[string]string{"codex": "acct-1"}, canonical: "pos:30 login:alice", wantCanonical: "pos:30 login:alice"},
+		{name: "canonical login unknown", selected: map[string]string{"codex": "acct-1"}, canonical: "pos:10", wantCanonical: "pos:10"},
+		{name: "account not selected", selected: map[string]string{"codex": "acct-2"}, canonical: "pos:10 login:alice", wantCanonical: "pos:10 login:alice"},
+		{name: "no canonical credential", selected: map[string]string{"codex": "acct-1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			credentials := chainFixture(t)
+			writeCodexSlot(t, credentials, "acct-1", "pos:10 login:alice")
+			if tc.canonical != "" {
+				if err := credentials.writeActiveCredential("codex", []byte(tc.canonical)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			crashEphemeralHome(t, credentials, "codex", []byte("pos:20 login:alice"), "acct-1")
+
+			results, err := credentials.SweepEphemeralCredentials(time.Now(), tc.selected)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(results) != 1 || results[0].Action != "adopted" || results[0].Canonical != tc.wantReplaced {
+				t.Fatalf("sweep results = %+v, want adoption with canonical=%v", results, tc.wantReplaced)
+			}
+			slot, err := credentials.ReadCredential("codex", "acct-1", false)
+			if err != nil || string(slot) != "pos:20 login:alice" {
+				t.Fatalf("slot = %q, %v; want the orphan", slot, err)
+			}
+			canonical, err := credentials.ReadCredential("codex", "", true)
+			if tc.wantCanonical == "" {
+				if !IsCredentialMissing(err) {
+					t.Fatalf("canonical = %q, %v; want none written", canonical, err)
+				}
+				return
+			}
+			if err != nil || string(canonical) != tc.wantCanonical {
+				t.Fatalf("canonical = %q, %v; want %q", canonical, err, tc.wantCanonical)
+			}
+		})
+	}
+}
+
+// Adoption decides and writes under the slot lock, so a slot write from
+// another process lands wholly before the decision or after it. Here a
+// newer credential lands while the sweep waits for the lock, and the sweep
+// must see it and keep it.
+func TestSweepAdoptionHoldsTheSlotLock(t *testing.T) {
+	credentials := chainFixture(t)
+	writeCodexSlot(t, credentials, "acct-1", "pos:10")
+	crashEphemeralHome(t, credentials, "codex", []byte("pos:20"), "acct-1")
+	accountDir, err := credentials.accountDirectory("codex", "acct-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := lockSlot(accountDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type sweep struct {
+		results []EphemeralSweepResult
+		err     error
+	}
+	done := make(chan sweep, 1)
+	go func() {
+		results, err := credentials.SweepEphemeralCredentials(time.Now(), nil)
+		done <- sweep{results, err}
+	}()
+	select {
+	case got := <-done:
+		_ = releaseSlot(lock)
+		t.Fatalf("sweep finished while another writer held the slot: %+v, %v", got.results, got.err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err := credentials.storeCredentialAt("codex", accountDir, false, []byte("pos:30")); err != nil {
+		t.Fatal(err)
+	}
+	if err := releaseSlot(lock); err != nil {
+		t.Fatal(err)
+	}
+	got := <-done
+	if got.err != nil || len(got.results) != 1 || got.results[0].Action != "discarded" {
+		t.Fatalf("sweep = %+v, %v; want the orphan discarded behind the newer write", got.results, got.err)
+	}
+	slot, err := credentials.ReadCredential("codex", "acct-1", false)
+	if err != nil || string(slot) != "pos:30" {
+		t.Fatalf("slot = %q, %v; want the newer write kept", slot, err)
+	}
+}
+
 // A crashed Codex login home owns no account. Its credential is never
 // adopted anywhere, but the home and its live credential are removed.
 func TestSweepRemovesACrashedCodexLoginHome(t *testing.T) {
@@ -212,27 +308,33 @@ func TestSweepRemovesACrashedCodexLoginHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(home.Path) })
 	if err := os.WriteFile(filepath.Join(home.Path, "auth.json"), []byte("pos:5"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	dir, err := credentials.ephemeralRegistryDir("codex")
+	abandonEphemeralHome(t, home)
+
+	results, err := credentials.SweepEphemeralCredentials(time.Now(), nil)
+	if err != nil || len(results) != 1 || results[0].Action != "discarded" {
+		t.Fatalf("sweep = %+v, %v; want the login home discarded", results, err)
+	}
+	if _, err := os.Stat(home.Path); !os.IsNotExist(err) {
+		t.Fatalf("crashed login home survived: %v", err)
+	}
+}
+
+// A login home whose owner died before any sign-in landed holds nothing;
+// the sweep removes it at once.
+func TestSweepCleansAnUnseededLoginHome(t *testing.T) {
+	credentials := chainFixture(t)
+	home, err := credentials.NewEphemeralHome("codex")
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, ephemeralRegistryFileName(home.Path))
-	var entry ephemeralRegistryEntry
-	if found, err := atomicfile.ReadJSON(path, &entry); err != nil || !found {
-		t.Fatalf("login home not registered: found=%v err=%v", found, err)
-	}
-	entry.CreatedAt = entry.CreatedAt.Add(-2 * ephemeralSweepGrace)
-	if err := atomicfile.WriteJSON(path, entry); err != nil {
-		t.Fatal(err)
-	}
+	abandonEphemeralHome(t, home)
 
-	results, err := credentials.SweepEphemeralCredentials(time.Now())
-	if err != nil || len(results) != 1 || results[0].Action != "discarded" {
-		t.Fatalf("sweep = %+v, %v; want the login home discarded", results, err)
+	results, err := credentials.SweepEphemeralCredentials(time.Now(), nil)
+	if err != nil || len(results) != 1 || results[0].Action != "cleaned" {
+		t.Fatalf("sweep = %+v, %v; want the empty login home cleaned", results, err)
 	}
 	if _, err := os.Stat(home.Path); !os.IsNotExist(err) {
 		t.Fatalf("crashed login home survived: %v", err)
@@ -248,7 +350,7 @@ func TestSweepAdoptsOrphanIntoADeadSlot(t *testing.T) {
 	makeSlotDir(t, credentials, "acct-1")
 	homePath := crashEphemeralClaudeHome(t, credentials, []byte("rotated-chain"), "acct-1")
 
-	results, err := credentials.SweepEphemeralCredentials(time.Now())
+	results, err := credentials.SweepEphemeralCredentials(time.Now(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,9 +364,16 @@ func TestSweepAdoptsOrphanIntoADeadSlot(t *testing.T) {
 	if _, err := os.Stat(homePath); !os.IsNotExist(err) {
 		t.Fatalf("crashed home survived the sweep: %v", err)
 	}
+	dir, err := credentials.ephemeralRegistryDir("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+		t.Fatalf("registry after the sweep = %v, %v; want empty", entries, err)
+	}
 
 	// The sweep is idempotent: nothing left to do on the next boot.
-	results, err = credentials.SweepEphemeralCredentials(time.Now())
+	results, err = credentials.SweepEphemeralCredentials(time.Now(), nil)
 	if err != nil || len(results) != 0 {
 		t.Fatalf("second sweep = %+v, %v; want empty", results, err)
 	}
@@ -277,7 +386,7 @@ func TestSweepAdoptsOverASignedOutHusk(t *testing.T) {
 	writeProviderAuthoredCredential(t, makeSlotDir(t, credentials, "acct-1"), []byte("husk"))
 	crashEphemeralClaudeHome(t, credentials, []byte("rotated-chain"), "acct-1")
 
-	results, err := credentials.SweepEphemeralCredentials(time.Now())
+	results, err := credentials.SweepEphemeralCredentials(time.Now(), nil)
 	if err != nil || len(results) != 1 || results[0].Action != "adopted" {
 		t.Fatalf("sweep = %+v, %v; want adoption over the husk", results, err)
 	}
@@ -305,7 +414,7 @@ func TestSweepNeverOverwritesAHealthySlotAndNeverAdoptsAHusk(t *testing.T) {
 	huskHome := crashEphemeralClaudeHome(t, credentials, []byte("live-seed"), "empty")
 	writeProviderAuthoredCredential(t, huskHome, []byte("husk"))
 
-	results, err := credentials.SweepEphemeralCredentials(time.Now())
+	results, err := credentials.SweepEphemeralCredentials(time.Now(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,22 +435,82 @@ func TestSweepNeverOverwritesAHealthySlotAndNeverAdoptsAHusk(t *testing.T) {
 	}
 }
 
-// Entries younger than the grace period may belong to another live
-// instance's in-flight probe — the sweep must not touch them.
-func TestSweepSkipsEntriesInsideTheGracePeriod(t *testing.T) {
+// A home whose owner still runs is never touched, however old its entry:
+// a stopped or suspended process can hold a home far longer than any probe
+// takes. Once the owner is gone the next sweep recovers it.
+func TestSweepSkipsHomesWhoseOwnerIsRunning(t *testing.T) {
 	credentials := sweepFixture(t)
+	makeSlotDir(t, credentials, "acct-1")
 	home, err := credentials.NewEphemeralHomeWithCredential("claude", []byte("in-flight"), "acct-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = home.Cleanup() }()
 
-	results, err := credentials.SweepEphemeralCredentials(time.Now())
+	results, err := credentials.SweepEphemeralCredentials(time.Now().Add(30*24*time.Hour), nil)
 	if err != nil || len(results) != 1 || results[0].Action != "skipped" {
 		t.Fatalf("sweep = %+v, %v; want one skip", results, err)
 	}
 	if data, err := credentials.ReadEphemeralCredential(home); err != nil || string(data.Bytes()) != "in-flight" {
 		t.Fatalf("in-flight home disturbed by sweep: %q, %v", data.Bytes(), err)
+	}
+
+	abandonEphemeralHome(t, home)
+	results, err = credentials.SweepEphemeralCredentials(time.Now(), nil)
+	if err != nil || len(results) != 1 || results[0].Action != "adopted" {
+		t.Fatalf("sweep after the owner died = %+v, %v; want adoption", results, err)
+	}
+}
+
+// Entries without a lease were written by a build that predates leases,
+// which may still be running: they are judged by age.
+func TestSweepJudgesUnleasedEntriesByAge(t *testing.T) {
+	credentials := sweepFixture(t)
+	home, err := credentials.NewEphemeralHomeWithCredential("claude", []byte("in-flight"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	abandonEphemeralHome(t, home)
+	dir, err := credentials.ephemeralRegistryDir("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, ephemeralLeaseFileName(home.Path))); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := credentials.SweepEphemeralCredentials(time.Now(), nil)
+	if err != nil || len(results) != 1 || results[0].Action != "skipped" {
+		t.Fatalf("sweep of a young unleased entry = %+v, %v; want one skip", results, err)
+	}
+	results, err = credentials.SweepEphemeralCredentials(time.Now().Add(2*unleasedEntryGrace), nil)
+	if err != nil || len(results) != 1 || results[0].Action != "discarded" {
+		t.Fatalf("sweep of an old unleased entry = %+v, %v; want it discarded", results, err)
+	}
+	if _, err := os.Stat(home.Path); !os.IsNotExist(err) {
+		t.Fatalf("old unleased home survived: %v", err)
+	}
+}
+
+// A sweep holds the lease of the entry it is working on, so a second
+// sweep sees that entry as owned.
+func TestTwoSweepsNeverClaimOneEntry(t *testing.T) {
+	credentials := sweepFixture(t)
+	homePath := crashEphemeralClaudeHome(t, credentials, []byte("rotated-chain"), "")
+	dir, err := credentials.ephemeralRegistryDir("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entryPath := filepath.Join(dir, ephemeralRegistryFileName(homePath))
+	leasePath := filepath.Join(dir, ephemeralLeaseFileName(homePath))
+	entry := ephemeralRegistryEntry{ConfigHome: homePath, CreatedAt: time.Now()}
+	lease, claim, err := claimEphemeralEntry(entryPath, leasePath, entry, time.Now())
+	if err != nil || claim != entryClaimed {
+		t.Fatalf("first claim = %v, %v", claim, err)
+	}
+	defer func() { _ = filelock.Release(lease) }()
+	if _, claim, err := claimEphemeralEntry(entryPath, leasePath, entry, time.Now()); err != nil || claim != entryOwned {
+		t.Fatalf("second claim = %v, %v; want owned", claim, err)
 	}
 }
 
@@ -354,7 +523,7 @@ func TestSweepCleansEntriesWithNothingLeftBehind(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err := credentials.SweepEphemeralCredentials(time.Now())
+	results, err := credentials.SweepEphemeralCredentials(time.Now(), nil)
 	if err != nil || len(results) != 1 || results[0].Action != "cleaned" {
 		t.Fatalf("sweep = %+v, %v; want one cleaned entry", results, err)
 	}
@@ -381,14 +550,14 @@ func TestSweepRefusesToTouchNonEphemeralPaths(t *testing.T) {
 	entry := ephemeralRegistryEntry{
 		ConfigHome: realDir,
 		AccountID:  "acct-1",
-		CreatedAt:  time.Now().Add(-2 * ephemeralSweepGrace),
+		CreatedAt:  time.Now().Add(-2 * unleasedEntryGrace),
 	}
 	entryPath := filepath.Join(dir, ephemeralRegistryFileName(realDir))
 	if err := atomicfile.WriteJSON(entryPath, entry); err != nil {
 		t.Fatal(err)
 	}
 
-	results, err := credentials.SweepEphemeralCredentials(time.Now())
+	results, err := credentials.SweepEphemeralCredentials(time.Now(), nil)
 	if err != nil || len(results) != 0 {
 		t.Fatalf("sweep = %+v, %v; want the unsafe entry silently dropped", results, err)
 	}
@@ -407,7 +576,7 @@ func TestSweepDiscardsWhenTheAccountWasRemoved(t *testing.T) {
 	credentials := sweepFixture(t)
 	crashEphemeralClaudeHome(t, credentials, []byte("rotated-chain"), "deleted-acct")
 
-	results, err := credentials.SweepEphemeralCredentials(time.Now())
+	results, err := credentials.SweepEphemeralCredentials(time.Now(), nil)
 	if err != nil || len(results) != 1 || results[0].Action != "discarded" {
 		t.Fatalf("sweep = %+v, %v; want discard for the deleted account", results, err)
 	}

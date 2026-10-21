@@ -87,3 +87,33 @@ func TestCredentialOrgIDAbsentForNonChatGPTModes(t *testing.T) {
 		}
 	}
 }
+
+// A login is the user within the workspace: two members of one team
+// workspace are different logins, and either half missing matches nothing.
+func TestCredentialLoginIDNeedsTheUserAndTheWorkspace(t *testing.T) {
+	t.Parallel()
+	authFile := func(auth map[string]any) []byte {
+		data, _ := json.Marshal(map[string]any{"tokens": map[string]any{
+			"id_token": encodeIDToken(t, map[string]any{"https://api.openai.com/auth": auth}),
+		}})
+		return data
+	}
+	alice, ok := CredentialLoginID(authFile(map[string]any{"chatgpt_account_id": "ws-team", "chatgpt_user_id": "user-alice"}))
+	if !ok {
+		t.Fatal("a token with both claims has no login id")
+	}
+	bob, _ := CredentialLoginID(authFile(map[string]any{"chatgpt_account_id": "ws-team", "chatgpt_user_id": "user-bob"}))
+	if alice == bob {
+		t.Fatal("two members of one workspace share a login id")
+	}
+	legacy, ok := CredentialLoginID(authFile(map[string]any{"chatgpt_account_id": "ws-team", "user_id": "user-alice"}))
+	if !ok || legacy != alice {
+		t.Fatalf("user_id fallback = %q, %v; want %q", legacy, ok, alice)
+	}
+	if id, ok := CredentialLoginID(authFile(map[string]any{"chatgpt_account_id": "ws-team"})); ok {
+		t.Fatalf("a token without a user has login id %q", id)
+	}
+	if id, ok := CredentialLoginID(authFile(map[string]any{"chatgpt_user_id": "user-alice"})); ok {
+		t.Fatalf("a token without a workspace has login id %q", id)
+	}
+}

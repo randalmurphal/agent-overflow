@@ -1,6 +1,7 @@
 package provideraccounts
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/atomicfile"
+	"agent-overflow/internal/filelock"
 	"agent-overflow/internal/secret"
 )
 
@@ -77,6 +79,12 @@ type ChainPosition func(providerName string, data []byte) (int64, bool)
 // a sign-in repairs is the worse failure.
 type LoginExpiry func(providerName string, data []byte) (int64, bool)
 
+// LoginIdentity names the login provider-native credential bytes hold, as a
+// value equal for every credential on one login's rotation chain and
+// different across logins. ok=false means the bytes do not say, which
+// matches nothing.
+type LoginIdentity func(providerName string, data []byte) (string, bool)
+
 // Policy carries the provider-specific credential predicates this package
 // cannot implement itself without importing a provider package. They are
 // supplied at construction rather than through setters, so a store that
@@ -87,12 +95,14 @@ type Policy struct {
 	SignedOut      SignedOutDetector
 	ChainPosition  ChainPosition
 	LoginExpiresAt LoginExpiry
+	LoginID        LoginIdentity
 }
 
 // Credentials owns Agent Overflow's opaque copies of provider-native
 // credentials. Provider processes always run against SharedHome; saved account
-// directories receive only the provider's credential file from Agent Overflow
-// (or, on macOS for Claude, identify a config-scoped native Keychain entry).
+// directories receive only the provider's credential file and the slot lock
+// from Agent Overflow (or, on macOS for Claude, identify a config-scoped
+// native Keychain entry).
 // Unrecognized contents in registered directories are ignored.
 type Credentials struct {
 	userHome string
@@ -555,7 +565,7 @@ func (c *Credentials) writeCredential(
 	accountID string,
 	active bool,
 	data []byte,
-) error {
+) (retErr error) {
 	home, err := c.credentialLocation(providerName, accountID, active)
 	if err != nil {
 		return err
@@ -565,8 +575,40 @@ func (c *Credentials) writeCredential(
 		if err != nil {
 			return err
 		}
+		lock, err := lockSlot(home)
+		if err != nil {
+			return err
+		}
+		defer func() { retErr = errors.Join(retErr, releaseSlot(lock)) }()
 	}
 	return c.writeCredentialAt(providerName, home, active, data)
+}
+
+// slotLockName is the lock file inside an account slot. Every slot write
+// holds it, so a writer that reads the slot to decide what to write (the
+// ephemeral sweep's adoption) can hold it across the read and the write
+// against other processes sharing the provider home.
+const slotLockName = ".agent-overflow-write.lock"
+
+// slotLockWait bounds the wait for another process's slot write, which is
+// one small file write.
+const slotLockWait = 5 * time.Second
+
+func lockSlot(accountDir string) (*os.File, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), slotLockWait)
+	defer cancel()
+	lock, err := filelock.Acquire(ctx, filepath.Join(accountDir, slotLockName))
+	if err != nil {
+		return nil, fmt.Errorf("provideraccounts: lock account slot %s: %w", accountDir, err)
+	}
+	return lock, nil
+}
+
+func releaseSlot(lock *os.File) error {
+	if err := filelock.Release(lock); err != nil {
+		return fmt.Errorf("provideraccounts: release account slot lock: %w", err)
+	}
+	return nil
 }
 
 func (c *Credentials) WriteAccountCredential(providerName, accountID string, data []byte) error {
