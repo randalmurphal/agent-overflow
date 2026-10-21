@@ -204,10 +204,23 @@ const pages = new SvelteMap<BackendKey, PullsPageBackend>();
 class PaneEntry {
   selection = $state.raw<PullsSelection | null>(null);
   onScreen: ReadonlySet<string> = new Set();
-  constructor(readonly backend: BackendKey) {}
+  constructor(readonly backend: BackendKey, readonly attachment: number) {}
 }
 
 const paneEntries = new SvelteMap<string, PaneEntry>();
+let nextAttachment = 0;
+
+type PullsPageDetachedObserver = (paneId: string) => void;
+let detachedObservers: readonly PullsPageDetachedObserver[] = [];
+
+/** Observes a pane's page detaching, for state kept beside the page that
+ * must go with it. Returns the unsubscribe. */
+export function onPullsPageDetached(observer: PullsPageDetachedObserver): () => void {
+  detachedObservers = [...detachedObservers, observer];
+  return () => {
+    detachedObservers = detachedObservers.filter((existing) => existing !== observer);
+  };
+}
 // Attach order, newest last: the badge counts the newest page's computer.
 const attachOrder: string[] = [];
 
@@ -248,7 +261,7 @@ export function attachPullsPage(paneId: string, backend: BackendKey): void {
       page = new PullsPageBackend(backend);
       pages.set(backend, page);
     }
-    paneEntries.set(paneId, new PaneEntry(backend));
+    paneEntries.set(paneId, new PaneEntry(backend, ++nextAttachment));
     attachOrder.push(paneId);
     page.panes.add(paneId);
     page.attachment ??= listStore.attach(backend, backend);
@@ -266,6 +279,7 @@ export function detachPullsPage(paneId: string): void {
     paneEntries.delete(paneId);
     attachOrder.splice(attachOrder.indexOf(paneId), 1);
     disposePRReviewStates(paneId);
+    for (const observer of detachedObservers) observer(paneId);
     const page = pages.get(entry.backend);
     if (page) {
       page.panes.delete(paneId);
@@ -309,6 +323,12 @@ export function pullsPageBackend(paneId: string): BackendKey | null {
   return paneEntries.get(paneId)?.backend ?? null;
 }
 
+/** The pane's page attachment, new on every attach (the pane id outlives
+ * a closed and reopened page); null while no page is attached. */
+export function pullsPageAttachment(paneId: string): number | null {
+  return untrack(() => paneEntries.get(paneId)?.attachment ?? null);
+}
+
 function pageOf(paneId: string): PullsPageBackend | null {
   const entry = paneEntries.get(paneId);
   return entry ? (pages.get(entry.backend) ?? null) : null;
@@ -328,11 +348,6 @@ export function pullsError(paneId: string): string | null {
 /** Reactive: the snapshot's own failure (no projects read); null when none. */
 export function pullsSnapshotError(paneId: string): string | null {
   return pageOf(paneId)?.snapshot?.error || null;
-}
-
-/** Reactive: the sequence of the snapshot shown; 0 before one. */
-export function pullsSnapshotSeq(backend: BackendKey): number {
-  return pages.get(backend)?.snapshot?.seq ?? 0;
 }
 
 export function pullsProjects(paneId: string): readonly PullsProjectChoice[] {

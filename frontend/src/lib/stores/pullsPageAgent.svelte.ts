@@ -4,11 +4,12 @@
 // review's drafts to one of them. Every call is pinned to the computer
 // the page lists.
 
+import { untrack } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { GetThread, ListThreadsOnPR, OpenPRThread } from './bindings';
 import type { PRThread } from './bindings';
 import { mountThreadInPane, syncThreadReply } from './panes.svelte';
-import { pullsPageBackend, pullsSnapshotSeq, selectedPR, type PullsSelection } from './pullsPage.svelte';
+import { onPullsPageDetached, pullsPageAttachment, pullsPageBackend, selectedPR, type PullsSelection } from './pullsPage.svelte';
 import { currentPinnedReviewState, reviewSubjectForPR } from './reviewPane.svelte';
 import { expandProject } from './sidebar.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
@@ -32,15 +33,21 @@ export interface AgentThreadChoice {
 }
 
 interface ThreadsOnPR {
+  /** The read that wrote the entry; a later read supersedes its answer. */
+  request: number;
+  /** The selected PR's row key the threads belong to. */
+  key: string;
   threads: readonly PRThread[];
-  /** The list snapshot the read belongs to; the next one makes it stale. */
-  seq: number;
   loading: boolean;
   error: string | null;
 }
 
-// By row key. An entry is written wholesale.
-const threadsByKey = new SvelteMap<string, ThreadsOnPR>();
+// By page pane, written wholesale, gone with the page: another client can
+// start or remove a thread on the PR without touching anything this client
+// holds, so each menu open reads again and an entry only bridges that read.
+const threadsByPane = new SvelteMap<string, ThreadsOnPR>();
+let nextRequest = 0;
+onPullsPageDetached((paneId) => threadsByPane.delete(paneId));
 const EMPTY: readonly AgentThreadChoice[] = Object.freeze([]);
 
 function choice(id: string, title: string, updatedAt: number, backend: BackendKey): AgentThreadChoice {
@@ -48,34 +55,37 @@ function choice(id: string, title: string, updatedAt: number, backend: BackendKe
   return { id, title: title || 'Untitled thread', detail: [getThreadStatus(id), age].filter(Boolean).join(' · ') };
 }
 
-/** Reads the threads on the selected PR when the menu opens; a read for
- * the snapshot on screen is kept until the next snapshot. */
+/** Reads the threads on the selected PR; the menu calls it on every open.
+ * The threads read before for the same PR stay on screen meanwhile. */
 export async function loadThreadsOnPR(paneId: string): Promise<void> {
-  const selection = selectedPR(paneId);
-  if (!selection) return;
-  const seq = pullsSnapshotSeq(selection.backend);
-  const held = threadsByKey.get(selection.key);
-  if (held && held.seq === seq && (held.loading || held.error === null)) return;
-  threadsByKey.set(selection.key, { threads: held?.threads ?? [], seq, loading: true, error: null });
+  const selection = untrack(() => selectedPR(paneId));
+  if (!selection || pullsPageAttachment(paneId) === null) return;
+  const request = ++nextRequest;
+  const held = untrack(() => threadsByPane.get(paneId));
+  const threads = held?.key === selection.key ? held.threads : [];
+  const write = (next: Omit<ThreadsOnPR, 'request' | 'key'>): void => {
+    // A newer read, or the page detaching, supersedes this one.
+    if (untrack(() => threadsByPane.get(paneId))?.request !== request) return;
+    threadsByPane.set(paneId, { request, key: selection.key, ...next });
+  };
+  threadsByPane.set(paneId, { request, key: selection.key, threads, loading: true, error: null });
   try {
-    const threads = await withBackendTarget(selection.backend, () => ListThreadsOnPR({
+    const read = await withBackendTarget(selection.backend, () => ListThreadsOnPR({
       projectId: selection.projectId,
       pr: prReferenceWire(selection.pr),
       headRefName: selection.row.headRefName,
       crossRepository: selection.row.crossRepository,
     }));
-    if (threadsByKey.get(selection.key)?.seq !== seq) return;
-    threadsByKey.set(selection.key, { threads: threads ?? [], seq, loading: false, error: null });
+    write({ threads: read ?? [], loading: false, error: null });
   } catch (err) {
-    if (threadsByKey.get(selection.key)?.seq !== seq) return;
-    threadsByKey.set(selection.key, { threads: held?.threads ?? [], seq, loading: false, error: errString(err) });
+    write({ threads, loading: false, error: errString(err) });
   }
 }
 
 function heldThreads(paneId: string): { selection: PullsSelection; entry: ThreadsOnPR } | null {
   const selection = selectedPR(paneId);
-  const entry = selection ? threadsByKey.get(selection.key) : undefined;
-  return selection && entry ? { selection, entry } : null;
+  const entry = selection ? threadsByPane.get(paneId) : undefined;
+  return selection && entry?.key === selection.key ? { selection, entry } : null;
 }
 
 /** Reactive: the threads tracking the selected PR, as last read. */
@@ -145,7 +155,6 @@ export async function openPRThread(paneId: string): Promise<boolean> {
       seed: prThreadSeed(selection),
     }));
     let thread = (await withBackendTarget(backend, () => GetThread(opened.threadId))) as Thread;
-    threadsByKey.delete(selection.key);
     thread = prependThreadReply(thread, mark);
     if (thread.projectId) expandProject(thread.projectId);
     await mountThreadInPane(thread);
@@ -192,5 +201,5 @@ export async function sendDrafts(paneId: string, threadId: string): Promise<bool
 }
 
 export function __resetPullsPageAgentForTest(): void {
-  threadsByKey.clear();
+  threadsByPane.clear();
 }

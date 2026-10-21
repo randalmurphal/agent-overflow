@@ -532,21 +532,55 @@ describe('open with agent', () => {
     selectPR(PANE, rowKey(1));
   }
 
-  it('lists the threads on the PR once per snapshot and names the one holding its branch', async () => {
+  it('reads the threads on the PR on every menu open and names the one holding its branch', async () => {
     await selected();
     const list = setBindingMock('ListThreadsOnPR', async () => [
       { threadId: 't1', title: 'Fix it', status: 'idle', worktreeBranch: 'feature-1', updatedAt: Date.now() - 3 * 86_400_000 },
     ]);
-    await loadThreadsOnPR(PANE);
     await loadThreadsOnPR(PANE);
     expect(list).toHaveBeenCalledTimes(1);
     expect(list).toHaveBeenCalledWith({ projectId: 'p1', pr: { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 1 }, headRefName: 'feature-1', crossRepository: false });
     expect(threadsOnPR(PANE)).toEqual([{ id: 't1', title: 'Fix it', detail: 'idle · 3d ago' }]);
     expect(newThreadCheckedOutBy(PANE)?.id).toBe('t1');
 
-    applyPullsSnapshot(snapshot(2, [project('p1', [item(1)])]), HOME_BACKEND);
+    // Another client removed the thread: nothing this client holds moved,
+    // and the next open reads it gone.
+    list.mockImplementation(async () => []);
     await loadThreadsOnPR(PANE);
     expect(list).toHaveBeenCalledTimes(2);
+    expect(threadsOnPR(PANE)).toEqual([]);
+    expect(newThreadCheckedOutBy(PANE)).toBeNull();
+  });
+
+  it('drops the answer of a read a reopened menu superseded', async () => {
+    await selected();
+    const answers: Array<(threads: unknown[]) => void> = [];
+    const list = setBindingMock('ListThreadsOnPR', () => new Promise((resolve) => answers.push(resolve)));
+    const first = loadThreadsOnPR(PANE);
+    const second = loadThreadsOnPR(PANE);
+    expect(list).toHaveBeenCalledTimes(2);
+    answers[1]!([{ threadId: 'new', title: 'Newer', status: 'idle', worktreeBranch: '', updatedAt: 0 }]);
+    await second;
+    answers[0]!([{ threadId: 'old', title: 'Older', status: 'idle', worktreeBranch: '', updatedAt: 0 }]);
+    await first;
+    expect(threadsOnPR(PANE).map((thread) => thread.id)).toEqual(['new']);
+  });
+
+  it('holds nothing for a page that detached with a read in flight', async () => {
+    await selected();
+    let answer!: (threads: unknown[]) => void;
+    setBindingMock('ListThreadsOnPR', () => new Promise((resolve) => {
+      answer = resolve;
+    }));
+    const read = loadThreadsOnPR(PANE);
+    detachPullsPage(PANE);
+    answer([{ threadId: 't1', title: 'Fix it', status: 'idle', worktreeBranch: 'feature-1', updatedAt: 0 }]);
+    await read;
+    attachPullsPage(PANE, HOME_BACKEND);
+    await flush();
+    selectPR(PANE, rowKey(1));
+    expect(threadsOnPR(PANE)).toEqual([]);
+    expect(newThreadCheckedOutBy(PANE)).toBeNull();
   });
 
   it('opens a thread on the PR head, seeds its draft, and mounts it', async () => {
