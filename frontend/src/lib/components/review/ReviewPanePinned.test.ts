@@ -13,6 +13,8 @@ import { HOME_BACKEND } from '../../transport/backendKey';
 import type { PRDetail } from '../../types/models';
 import type { PRRef } from '../../utils/prReference';
 import { setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
+import { __diffSpanCacheStatsForTest, resetDiffSpanCacheForTest } from '../../utils/diffSpanCache.svelte';
+import { resetSyntaxClassNamesForTest } from '../../utils/syntaxSpans';
 
 // The review pane on the Pull requests page: a PR with no thread pane.
 
@@ -141,6 +143,32 @@ describe('<ReviewPane> pinned to a PR with no thread', () => {
     disposePRReviewStates(OWNER);
     expect(__pinnedReviewStatesForTest(OWNER)).toHaveLength(0);
     expect(prReviewKeys()).toEqual([]);
+  });
+
+  it('files its diff spans under the PR and drops them with the last state on that PR', async () => {
+    resetDiffSpanCacheForTest();
+    resetSyntaxClassNamesForTest();
+    setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
+    setBindingMock('HighlightClassNames', async () => ['none', 'c1']);
+    const highlight = async (req: unknown) => ({
+      lines: (req as { patch: string }).patch.split('\n').map((row) => (row.startsWith('+') ? { r: [row.length - 1, 1] } : {})),
+      incomplete: false,
+    });
+    setBindingMock('HighlightPatchWithContext', async (_ws: unknown, req: unknown) => highlight(req));
+    setBindingMock('HighlightPatch', async (req: unknown) => highlight(req));
+    const mine = render(ReviewPane, { pr: { ownerPaneId: OWNER, backend: HOME_BACKEND, projectId: 'project-1', pr: PR } });
+    const theirs = render(ReviewPane, { pr: { ownerPaneId: 'tools-2', backend: HOME_BACKEND, projectId: 'project-1', pr: PR } });
+    await waitFor(() => {
+      expect(__diffSpanCacheStatsForTest().entries).toBeGreaterThan(0);
+    });
+    const filed = __diffSpanCacheStatsForTest().entries;
+    mine.unmount();
+    disposePRReviewStates(OWNER);
+    // The other page on the same PR still shows them.
+    expect(__diffSpanCacheStatsForTest().entries).toBe(filed);
+    theirs.unmount();
+    disposePRReviewStates('tools-2');
+    expect(__diffSpanCacheStatsForTest()).toMatchObject({ entries: 0, ownerKeys: 0 });
   });
 
   it('says why when the PR has no project', () => {
