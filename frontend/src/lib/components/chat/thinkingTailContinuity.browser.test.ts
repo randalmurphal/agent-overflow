@@ -28,7 +28,6 @@ import {
   type QuietBottomOptions,
 } from '../../../test/helpers/timelineBrowserHarness';
 import type { Item } from '../../types/models';
-import { MAX_REVEAL_TICK_DT_MS } from '../../markdown/smoothing/PerItemSmoother';
 import { stepSlide } from './tailSlide';
 import { TAIL_CLAMP_LINES } from './tailWindow';
 
@@ -46,13 +45,12 @@ const FRAME_MS = 1000 / 60;
 // is the whole gap, which each tracker's own catch-up rule bounds.
 const paintedDt = (frames: Frame[], i: number): number =>
   i >= 2 ? frames[i - 1]!.t - frames[i - 2]!.t : frames[i]!.t - frames[i - 1]!.t;
-// Between two samples the slide tracker moves a glyph by at most one drain
-// step, at the slowest paint period it drains in full, of the offset that
-// was pending at the first sample; anything past that (with slack for
-// sub-pixel geometry) is a teleport.
+// Between two samples the slide tracker moves a glyph by exactly one drain
+// step of the offset that was pending at the first sample; anything past
+// that (with slack for sub-pixel geometry) is a teleport.
 const GLYPH_SLACK_PX = 3;
 const legitGlyphMove = (pendingTy: number, dtMs: number): number =>
-  pendingTy - stepSlide(pendingTy, dtMs, MAX_REVEAL_TICK_DT_MS) + GLYPH_SLACK_PX;
+  pendingTy - stepSlide(pendingTy, dtMs) + GLYPH_SLACK_PX;
 // A scroll offset that moves once, alone, is a snap: a glide accelerates in
 // over several frames and decelerates out, so its neighbours are never this
 // much smaller. Compared per frame of wall time so a gap's catch-up step

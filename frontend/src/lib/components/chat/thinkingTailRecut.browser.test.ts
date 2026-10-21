@@ -16,7 +16,6 @@ import {
 } from '../../../test/helpers/timelineBrowserHarness';
 import type { Item } from '../../types/models';
 import { LIVE_WINDOW_RECUT_CHARS } from '../../utils/liveText';
-import { MAX_REVEAL_TICK_DT_MS } from '../../markdown/smoothing/PerItemSmoother';
 import { stepSlide, transformTranslateY } from './tailSlide';
 import { TAIL_WINDOW_KEEP_LINES } from './tailWindow';
 
@@ -277,7 +276,7 @@ describe.each(CASES)('streaming thinking tail through a live window recut ($name
       const b = frames[i]!;
       if (b.yPrev === null || Number.isNaN(a.y)) continue;
       const dy = b.yPrev - a.y;
-      const legit = a.ty - stepSlide(a.ty, paintedDt(frames, i), MAX_REVEAL_TICK_DT_MS) + GLYPH_SLACK_PX;
+      const legit = a.ty - stepSlide(a.ty, paintedDt(frames, i)) + GLYPH_SLACK_PX;
       if (Math.abs(dy) > legit) {
         teleports.push(`frame ${i}${i === recut ? ' (recut)' : ''}: dy ${dy.toFixed(1)}, ty ${a.ty.toFixed(1)} -> ${b.ty.toFixed(1)}`);
       }

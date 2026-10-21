@@ -46,7 +46,7 @@
   // `block`; full text flows to full height).
   import { tick, untrack } from 'svelte';
   import { motionReduced } from '../../utils/reducedMotion';
-  import { paintPeriodAfter, slideDecision, stepSlide, type SlideObservation } from './tailSlide';
+  import { slideDecision, stepSlide, type SlideObservation } from './tailSlide';
   import {
     TAIL_CLAMP_LINES,
     TAIL_WINDOW_CAP_CHARS,
@@ -132,10 +132,6 @@
   // no size and wakes no observer, so the cut's own update runs the
   // decision once the DOM shows the cut (settleCut).
   let slideCutPx = 0;
-  // The last paint period of the drain's own frame gaps (paintPeriodAfter):
-  // the stall bound of the next gap, so a slow paint drains its whole
-  // period and a stall drains one.
-  let slidePeriodMs = 1000 / 60;
 
   function applySlide(inner: HTMLElement): void {
     inner.style.transform = slideOffset > 0 ? `translateY(${slideOffset}px)` : '';
@@ -150,9 +146,7 @@
 
   function drainSlide(inner: HTMLElement, ts: number): void {
     slideFrame = 0;
-    const dt = ts - slideLastTs;
-    slideOffset = stepSlide(slideOffset, dt, slidePeriodMs);
-    slidePeriodMs = paintPeriodAfter(slidePeriodMs, dt);
+    slideOffset = stepSlide(slideOffset, ts - slideLastTs);
     slideLastTs = ts;
     applySlide(inner);
     if (slideOffset > 0) slideFrame = requestAnimationFrame((next) => drainSlide(inner, next));

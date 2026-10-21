@@ -93,35 +93,24 @@ const FRAME_MS = 1000 / 60;
 /**
  * Most frames of drain one painted frame may apply, however long the
  * gap since the last one: the reveal smoother's stall bound
- * (MAX_REVEAL_TICK_DT_MS), the longest gap that is a paint period. A
- * paint drains the last paint period (`paintPeriodAfter`), never more
- * than this: at a 20Hz paint the reveal lands three frames of text a
- * paint, and a drain of one frame a paint fell behind it on
- * one-character lines until the offset pinned at its cap and every
- * further line snapped. A gap longer than the period is a stall (a long
- * task, a GC pause, a compositor drop) that paints nothing while it
- * lasts; catching up the whole of one on the next paint moved every
- * visible line by most of the pending offset at once, the snap the slide
- * exists to prevent, so the ticker resumes at the last paint's pace
- * instead.
+ * (MAX_REVEAL_TICK_DT_MS), the longest gap it accrues budget for. The
+ * drain mirrors the reveal exactly: a paint drains the elapsed time the
+ * reveal landed text for, so under any pattern of gaps (a 20Hz paint, a
+ * 165Hz panel alternating 6ms and 48ms paints, a dropped frame) the
+ * drain keeps pace with the intake and the offset settles under the cap;
+ * a drain of one frame a paint fell behind at 20Hz on one-character
+ * lines until the offset pinned at its cap and every further line
+ * snapped. A gap past the bound is a stall (a long task, a GC pause, a
+ * compositor drop) that paints nothing while it lasts; the reveal lands
+ * this much budget on the paint after it, and the slide drains this
+ * much of its offset (72% at three frames, 35% at one), so text and
+ * lines recover from a stall together. No estimate of the paint cadence
+ * stands between the two: any rule that drains less than the reveal
+ * accrues on some gap pattern pins under that pattern, and any rule that
+ * tells a slow paint from a stall by recent gaps is wrong for an isolated
+ * slow paint, a mixed cadence or a stale estimate.
  */
 export const SLIDE_MAX_CATCHUP_FRAMES = MAX_REVEAL_TICK_DT_MS / FRAME_MS;
-
-/**
- * The paint period after a frame gap of `gapMs`, given the period before
- * it: a gap up to MAX_REVEAL_TICK_DT_MS is a paint and is the period from
- * now on; a longer gap is a stall and leaves it. The period is the stall
- * bound of the next gap (`stepSlide`), so a paint as long as the last
- * drains in full, the first slower paint drains the previous period, and
- * a stall drains the period of the paints before it, whether they were
- * fast or slow: a slow spell is forgotten by the first fast paint after
- * it, not averaged out over many (a smoothed cadence drained a stall just
- * after a slow spell by two frames or more). The first period, before any
- * gap, is a 60Hz frame.
- */
-export function paintPeriodAfter(periodMs: number, gapMs: number): number {
-  return gapMs >= 1 && gapMs <= MAX_REVEAL_TICK_DT_MS ? gapMs : periodMs;
-}
 
 /**
  * Sub-pixel slack for geometry comparisons. Fractional client rects can
@@ -187,16 +176,12 @@ export function slideDecision(
 
 /**
  * One drain step of the pending offset after `dtMs` of wall time: a
- * sub-frame dt drains its share, and a gap drains at most the last paint
- * period `periodMs` (paintPeriodAfter; a 60Hz frame by default), itself
- * at most SLIDE_MAX_CATCHUP_FRAMES. A period under a 60Hz frame still
- * drains a whole frame's gap, so one dropped frame on a high-refresh
- * panel is not a stall.
+ * sub-frame dt drains its share, anything past SLIDE_MAX_CATCHUP_FRAMES
+ * drains that many frames' worth.
  */
-export function stepSlide(offset: number, dtMs: number, periodMs: number = FRAME_MS): number {
+export function stepSlide(offset: number, dtMs: number): number {
   if (offset <= 0) return 0;
-  const bound = Math.min(Math.max(FRAME_MS, periodMs), MAX_REVEAL_TICK_DT_MS);
-  const frames = Math.min(bound, Math.max(0, dtMs)) / FRAME_MS;
+  const frames = Math.min(SLIDE_MAX_CATCHUP_FRAMES, Math.max(0, dtMs) / FRAME_MS);
   const drained = offset * (1 - Math.pow(1 - SLIDE_DRAIN_PER_FRAME, frames));
   const next = offset - Math.max(drained, SLIDE_MIN_STEP_PX * frames);
   return next > EPS ? next : 0;
