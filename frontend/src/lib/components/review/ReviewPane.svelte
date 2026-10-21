@@ -183,9 +183,10 @@
     };
   });
 
-  // A pinned state is the page's retention to dispose, not this mount's.
+  // A pinned state is the page's retention to dispose, not this mount's:
+  // the companion registry never holds one, so this leaves it alone.
   onDestroy(() => {
-    if (review && !review.pinned) disposeReviewStateForPane(sourcePaneId, review);
+    if (review) disposeReviewStateForPane(sourcePaneId, review);
   });
 
   function toggleTree(): void {
