@@ -68,7 +68,9 @@ export interface PipelinesSelection {
 
 function failureOf(err: unknown): ForgeFailure | null {
   // A forge refusal reaches the caller as `forge_<kind>`.
-  if (err instanceof TransportError && err.code.startsWith('forge_')) return forgeFailureFrom({ errorKind: err.code.slice('forge_'.length) });
+  if (err instanceof TransportError && err.code.startsWith('forge_')) {
+    return forgeFailureFrom({ errorKind: err.code.slice('forge_'.length), reserve: err.reserve, resumeAt: err.resumeAt });
+  }
   return null;
 }
 

@@ -181,6 +181,23 @@ describe('list reads', () => {
   });
 });
 
+describe('rate limits', () => {
+  it('keeps a background read refused under the reserve as a reserve pause with its release', async () => {
+    installMocks();
+    setBindingMock('ListProjectPipelines', async (projectId: string) => {
+      if (projectId === 'p2') {
+        throw new TransportError('forge_rate_limited', 'paused', { reserve: true, resumeAt: '2026-10-21T08:30:00Z' });
+      }
+      return { rows: [summary(1)], fetchedAt: '' };
+    });
+    attachPipelinesPage(PANE, HOME_BACKEND);
+    await settle();
+    expect(pipelinesProjectErrors(PANE).map((failed) => failed.failure)).toEqual([
+      { kind: 'rate_limited', reserve: true, resumeAt: '2026-10-21T08:30:00Z' },
+    ]);
+  });
+});
+
 describe('filters', () => {
   it('reads again for a status or projects, filters the ref kind in place, and remembers them', async () => {
     const mocks = installMocks();

@@ -394,7 +394,7 @@ whether or not a filter shows them, at most `maxPRListFocus` in all:
 each group newest update time first, then by PR key, so unchanged rows
 keep the same set every tick. A row that falls out of the set loses its
 detail. A focusing handle that hides or shows recomputes the set at
-once (`SetPRListActive`). A row's detail is
+once (`SetPRListActive`), as does one that leaves. A row's detail is
 `Core.ReadPRSummary`: `ReadPR` with `Detail` and `Unresolved`, which adds
 the approval count and the unresolved thread count to the readiness. It
 is read when the row is first a candidate, when its list row changes
@@ -632,7 +632,10 @@ out when the resume time moves and not on every tick. `pr:updated`,
 `rate_limited`, `setup`, `forbidden`, `forge`), `Reserve` and `ResumeAt` (RFC 3339, set
 for `rate_limited` only) beside the caller-safe `Error`, so the pane
 chooses the surface instead of parsing text. `classifyForgeFailure`
-(`internal/app/app_forge_failure.go`) is the one classification.
+(`internal/app/app_forge_failure.go`) is the one classification. A bound
+method's rate-limited failure (`forge_rate_limited`) carries the same
+`reserve` and `resumeAt` on its error frame
+([RPC failures](transport.md#rpc-failures)).
 
 - `transient` while the snapshot poll has a snapshot on screen and shows
   no failure: nothing is sent until the retry (the retry base) also fails,

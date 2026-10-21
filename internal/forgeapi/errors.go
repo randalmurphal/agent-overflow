@@ -246,6 +246,14 @@ type RateLimitedError struct {
 	Reserve bool
 }
 
+// RateLimitRelease answers whether the refusal kept the reserve and when
+// the pool may be asked again, for the transport's error frame (its
+// reserve and resumeAt fields), so a client words the refusal without
+// parsing this error's text.
+func (e *RateLimitedError) RateLimitRelease() (reserve bool, until time.Time) {
+	return e.Reserve, e.Until
+}
+
 func (e *RateLimitedError) Error() string {
 	if e.Reserve {
 		return fmt.Sprintf("forge %s rate limit (%s) nearly used up; background requests paused until %s", e.Host, e.Pool, e.Until.Format(time.RFC3339))

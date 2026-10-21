@@ -119,6 +119,20 @@ func TestServerFrame_RPCError(t *testing.T) {
 	}
 }
 
+// A forge rate limit's release rides the names the client reads
+// (frontend/src/lib/transport/frames.ts).
+func TestServerFrame_ForgeRateLimitWireNames(t *testing.T) {
+	buf, err := json.Marshal(ServerFrame{Type: frameTypeRPC, ID: "req-1", Error: &FrameError{
+		Code: ErrCodeForgeRateLimited, Message: "paused", Reserve: true, ResumeAt: "2026-10-21T08:30:00Z",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(string(buf), `"reserve":true`) || !contains(string(buf), `"resumeAt":"2026-10-21T08:30:00Z"`) {
+		t.Fatalf("the release is not on the wire under the names the client reads: %s", buf)
+	}
+}
+
 // TestServerFrame_ScopeRefusalRoundTrip — the missing capability rides a
 // FIELD, so it has to survive marshal/unmarshal under the exact JSON name
 // the client reads (frontend/src/lib/transport/frames.ts). Prose does not

@@ -293,6 +293,39 @@ describe('WSClient', () => {
     client.close();
   });
 
+  it('carries a forge rate limit’s reserve and release onto the rejection, and only that code’s', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const p = client.callByID(9, []);
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+    ws.pushFrame({
+      type: 'rpc',
+      id: ws.sent[1]!.id as string,
+      error: { code: 'forge_rate_limited', message: 'paused', reserve: true, resumeAt: '2026-10-21T08:30:00Z' },
+    });
+    await expect(p).rejects.toMatchObject({ code: 'forge_rate_limited', reserve: true, resumeAt: '2026-10-21T08:30:00Z' });
+
+    const rejections: TransportError[] = [];
+    for (const error of [
+      { code: 'forge_rate_limited', message: 'reached', resumeAt: 'soon' },
+      { code: 'forge_transient', message: 'down', reserve: true, resumeAt: '2026-10-21T08:30:00Z' },
+    ]) {
+      const q = client.callByID(10, []);
+      await flushMicrotasks();
+      ws.pushFrame({ type: 'rpc', id: ws.sent.at(-1)!.id as string, error });
+      try {
+        await q;
+      } catch (err) {
+        rejections.push(err as TransportError);
+      }
+    }
+    // A release that is no time is dropped; another code carries neither.
+    expect(rejections.map((err) => [err.reserve, err.resumeAt])).toEqual([[false, undefined], [undefined, undefined]]);
+    client.close();
+  });
+
   it.each(['thread_moved', 'thread_transfer_pending'])('preserves %s ownership on a lost-owner call', async (code) => {
     const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
     const promise = client.callByID(7, []);

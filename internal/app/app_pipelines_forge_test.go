@@ -8,8 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/errorsx"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/harness/forgefake"
+	"agent-overflow/internal/transport"
 )
 
 // The Pipelines tab's own refresh is background work: under the rate
@@ -70,6 +72,14 @@ func TestPipelineReadsSpendTheReserveOnlyWhenInteractive(t *testing.T) {
 		var forgeErr *gitops.ForgeActionError
 		if !errors.As(listErr, &forgeErr) || forgeErr.Kind != gitops.ForgeErrorRateLimited || stagesKind != gitops.ForgeErrorRateLimited {
 			t.Fatalf("%s under the reserve, background: %v / %q, want both refused as rate limited", c.forge, listErr, stagesKind)
+		}
+		// The error frame says the reserve was kept and when it lifts.
+		var release interface{ RateLimitRelease() (bool, time.Time) }
+		if code, _, _ := errorsx.PublicDetails(listErr); code != transport.ErrCodeForgeRateLimited || !errors.As(listErr, &release) {
+			t.Fatalf("%s: refusal code %q carries no release: %v", c.forge, code, listErr)
+		}
+		if reserve, until := release.RateLimitRelease(); !reserve || until.Unix() != reset {
+			t.Fatalf("%s: release = %v %v, want the reserve until the reset", c.forge, reserve, until)
 		}
 		if after := len(engine.Invocations(0).Invocations); after != before {
 			t.Fatalf("%s: the refused background reads made %d requests", c.forge, after-before)

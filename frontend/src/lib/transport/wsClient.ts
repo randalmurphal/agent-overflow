@@ -488,11 +488,16 @@ export class TransportError extends Error {
   // shape belongs to the method that refused, so ./backgroundKillRefusal.ts
   // validates it before anything renders it.
   backgroundAgents?: unknown;
+  // reserve and resumeAt are set only on code 'forge_rate_limited':
+  // whether the forge's quota was kept for the user's own actions, and
+  // when the forge may be asked again (RFC 3339).
+  reserve?: boolean;
+  resumeAt?: string;
   // detail is the backend's diagnostic record of a failure: its log
   // reference, method and, for a same-machine caller, the wrap chain.
   detail?: ErrorDetail;
   constructor(code: string, message: string, fields: TransportErrorFields = {}) {
-    const { reason, scope, transfer, backgroundAgents, detail, backend = HOME_BACKEND } = fields;
+    const { reason, scope, transfer, backgroundAgents, reserve, resumeAt, detail, backend = HOME_BACKEND } = fields;
     super(code === 'auth_failed' ? presentAuthReason(reason).title : message);
     this.name = 'TransportError';
     this.code = code;
@@ -506,6 +511,10 @@ export class TransportError extends Error {
     if (code === 'background_agents_running' && backgroundAgents !== undefined) {
       this.backgroundAgents = backgroundAgents;
     }
+    if (code === 'forge_rate_limited') {
+      this.reserve = reserve === true;
+      if (typeof resumeAt === 'string' && resumeAt.length <= 64 && Number.isFinite(Date.parse(resumeAt))) this.resumeAt = resumeAt;
+    }
     this.detail = parseErrorDetail(detail, backend);
   }
 }
@@ -516,6 +525,8 @@ export interface TransportErrorFields {
   scope?: string;
   transfer?: { operationId: string; backendId: string };
   backgroundAgents?: unknown;
+  reserve?: unknown;
+  resumeAt?: unknown;
   detail?: unknown;
   /** The backend that answered, stamped onto detail. Defaults to HOME. */
   backend?: BackendKey;
@@ -3055,6 +3066,8 @@ export class WSClient {
               scope: frame.error.scope,
               transfer: frame.error.transfer,
               backgroundAgents: frame.error.backgroundAgents,
+              reserve: frame.error.reserve,
+              resumeAt: frame.error.resumeAt,
               detail: frame.error.detail,
               backend: this.backend,
             },
