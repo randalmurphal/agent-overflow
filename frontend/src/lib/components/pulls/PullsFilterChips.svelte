@@ -8,17 +8,12 @@
   import Popover from '../primitives/Popover.svelte';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
   import type { PopoverCloseReason } from '../../utils/popoverOwnership';
+  import type { PullsFilter } from '../../stores/pullsPageFilters.svelte';
+  import type { PullsProjectChoice } from '../../stores/pullsPageRows';
 
   // The Merge requests tab's filter row: one state chip (Needs you, with
   // its count; Mine; Review requested; All open) and the project picker
   // at the end. The page remembers both per tab.
-
-  export type PullsFilter = 'needs_you' | 'mine' | 'review_requested' | 'all';
-
-  export interface PullsProjectChoice {
-    id: string;
-    name: string;
-  }
 
   interface Props {
     filter: PullsFilter;

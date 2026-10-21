@@ -341,6 +341,19 @@ export const KEYBINDING_DEFAULTS: readonly KeybindingRule[] = [
     "defaultKey": "esc"
   },
   {
+    "key": "mod+shift+p",
+    "command": "pulls.toggle",
+    "defaultId": "pulls.toggle",
+    "defaultKey": "mod+shift+p"
+  },
+  {
+    "key": "esc",
+    "command": "pulls.escape",
+    "when": "pullsPaneFocused \u0026\u0026 toolDetailOpen",
+    "defaultId": "pulls.escape",
+    "defaultKey": "esc"
+  },
+  {
     "key": "backspace",
     "command": "workflows.back",
     "when": "workflowsRunDetail",

@@ -246,6 +246,9 @@ var Defaults = []Keybinding{
 	// pass through.
 	{Key: "mod+shift+w", Command: "workflows.toggle", DefaultID: "workflows.toggle"},
 	{Key: "esc", Command: "workflows.escape", When: "workflowsPaneFocused && toolDetailOpen", DefaultID: "workflows.escape"},
+	// The Pull requests pane: the same shape, its own flag.
+	{Key: "mod+shift+p", Command: "pulls.toggle", DefaultID: "pulls.toggle"},
+	{Key: "esc", Command: "pulls.escape", When: "pullsPaneFocused && toolDetailOpen", DefaultID: "pulls.escape"},
 	{Key: "backspace", Command: "workflows.back", When: "workflowsRunDetail", DefaultID: "workflows.back"},
 	{Key: "j", Command: "workflows.sweep.next", When: "workflowsRunDetail", DefaultID: "workflows.sweep.next"},
 	{Key: "arrowdown", Command: "workflows.sweep.next", When: "workflowsRunDetail", DefaultID: "workflows.sweep.next.down"},

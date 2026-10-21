@@ -5,20 +5,15 @@
   import MenuSectionHeader from '../primitives/MenuSectionHeader.svelte';
   import MenuSubmenuItem from '../primitives/MenuSubmenuItem.svelte';
   import Popover from '../primitives/Popover.svelte';
+  import type { Snippet } from 'svelte';
   import type { PopoverCloseReason } from '../../utils/popoverOwnership';
+  import type { AgentThreadChoice } from '../../stores/pullsPageAgent.svelte';
 
   // The "Open with agent" menu on an MR opened from the page (the toolbar
   // button and each row's menu): a new thread in a linked worktree on the
   // MR's branch, the threads already on this MR, and sending the review's
   // drafts to a thread of the project. Every row names what it does; the
   // page runs it.
-
-  export interface AgentThreadChoice {
-    id: string;
-    title: string;
-    /** "running", "idle · 3d": the thread's live status and age. */
-    detail: string;
-  }
 
   interface Props {
     anchor: HTMLElement | undefined;
@@ -33,7 +28,12 @@
     /** The project's other threads, for sending drafts. */
     projectThreads: readonly AgentThreadChoice[];
     draftsCount: number;
+    /** A thread already has the branch checked out: a second worktree on
+     * it is impossible, so the row names that thread instead. */
+    checkedOutBy?: AgentThreadChoice | null;
     busy?: boolean;
+    /** Rows the page appends after the agent rows (Open on forge, Copy URL). */
+    extra?: Snippet;
     onNewThread: () => void;
     onOpenThread: (threadId: string) => void;
     onSendDrafts: (threadId: string) => void;
@@ -48,14 +48,18 @@
     threadsOnPR,
     projectThreads,
     draftsCount,
+    checkedOutBy = null,
     busy = false,
+    extra,
     onNewThread,
     onOpenThread,
     onSendDrafts,
   }: Props = $props();
 
   const newThreadDescription = $derived(
-    crossRepository
+    checkedOutBy
+      ? `${checkedOutBy.title} already has ${branch} checked out; open it below.`
+      : crossRepository
       ? `Fetches the fork's head into ${branch} in a linked worktree; the draft opens with the MR linked.`
       : "Checks out the MR's branch in a linked worktree; the draft opens with the MR linked.",
   );
@@ -74,7 +78,7 @@
       label="New thread on {branch}"
       description={newThreadDescription}
       suffix="worktree"
-      disabled={busy || !branch}
+      disabled={busy || !branch || checkedOutBy !== null}
       onSelect={onNewThread}
       testId="open-with-agent-new-thread"
     />
@@ -93,5 +97,9 @@
         <MenuItem label={thread.title} suffix={thread.detail} onSelect={() => onSendDrafts(thread.id)} testId="open-with-agent-send-target" />
       {/each}
     </MenuSubmenuItem>
+    {#if extra}
+      <MenuDivider />
+      {@render extra()}
+    {/if}
   </Menu>
 </Popover>

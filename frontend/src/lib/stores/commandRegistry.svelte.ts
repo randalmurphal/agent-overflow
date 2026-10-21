@@ -67,6 +67,8 @@ export interface CommandFlags {
   toolDetailOpen: boolean;
   /** True while the raw focused pane is the workflows pane. */
   workflowsPaneFocused: boolean;
+  /** True while the raw focused pane is the Pull requests pane. */
+  pullsPaneFocused: boolean;
   /** True while the focused workflows pane is showing a run detail level. */
   workflowsRunDetail: boolean;
   /**

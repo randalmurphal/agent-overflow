@@ -90,6 +90,7 @@ import { reportNonBenignInterruptError } from './interruptErrors';
 import { PICKER_TOGGLE_INPUT_EVENT, type GitDialogKind } from './eventNames';
 import { startPaneTitleRename } from './paneTitleRename';
 import { registerWorkflowCommands } from './workflowCommands.svelte';
+import { isPullsPaneFocused, registerPullsCommands } from './pullsCommands.svelte';
 import {
   getWorkflowsOverlayTop,
   isWorkflowsPaneFocused,
@@ -1135,6 +1136,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   // Workflows overlay + `/workflow` composer context. Kept in their own module
   // so this file doesn't grow another surface's worth of registrations.
   registerWorkflowCommands();
+  registerPullsCommands();
 }
 
 /**
@@ -1179,6 +1181,7 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     toolPaneFocused: focusedToolKind() !== null,
     toolDetailOpen: focusedToolDetailOpen(),
     workflowsPaneFocused: isWorkflowsPaneFocused(),
+    pullsPaneFocused: isPullsPaneFocused(),
     workflowsRunDetail: isWorkflowsPaneFocused() && getWorkflowsOverlayTop().level === 'run',
     compactLayout: isCompactLayout(),
     // Derived here, not passed in, for the same reason as the overlay flags:
