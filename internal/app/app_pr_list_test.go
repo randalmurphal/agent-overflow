@@ -280,6 +280,10 @@ func TestPRListTickPublishesEachProjectAsItLands(t *testing.T) {
 	app.prUpdates.interval = time.Hour
 	fake := newPRListFake(t, app)
 	release := make(chan struct{})
+	// A failed assertion before B's release still releases it, so the
+	// pump's stop is not held by the gated read.
+	releaseB := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseB)
 	fake.set(func(f *prListFake) {
 		f.rows[prListRepoA.Key()] = []gitops.PRListRow{prListRow(prListRepoA, 1, func(r *gitops.PRListRow) { r.ViewerReviewState = "unreviewed" })}
 		f.rows[prListRepoB.Key()] = []gitops.PRListRow{prListRow(prListRepoB, 7, nil)}
@@ -308,7 +312,7 @@ func TestPRListTickPublishesEachProjectAsItLands(t *testing.T) {
 	if keys := storedPRListKeys(t, app); !slices.Equal(keys, []string{prListRepoA.Key()}) {
 		t.Fatalf("stored before B landed = %v", keys)
 	}
-	close(release)
+	releaseB()
 	last := awaitPRListRead(t, events)
 	if len(prListProject(t, last, "p-b").Rows) != 1 || last.Seq <= first.Seq {
 		t.Fatalf("last frame = %+v", last)
