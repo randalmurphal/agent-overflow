@@ -251,13 +251,15 @@ requested changes, nothing since), `Approved by you` or `Reviewed by you`
 (your approval stands, or you reviewed without approving, nothing since),
 `Draft`, `Open`. The first three are Needs you, listed before the rest.
 Your activity is the forge's own record: GitHub `viewerLatestReview`,
-GitLab your notes (conversation, diff and discussion notes) and approvals
-in your events feed. GitLab's feed is a lower bound: the read covers the
-last 30 days or your newest 300 events, whichever reaches less far back
-(its floor), so a reviewer state of reviewed, approved or changes
-requested with no activity in the window means your activity is older
-than the floor; a head commit after the floor is then a push since your
-review, an update after it (past the slack) a reply, and neither keeps
+GitLab your notes (conversation, diff and discussion notes) and approvals,
+read as two events feeds GitLab filters to comments and to approvals.
+The feeds are a lower bound: each covers the last 30 days or your newest
+300 such events, and its floor is the oldest event it returned (GitLab
+can end a feed early without saying so); the window's floor is the older
+of the two. A reviewer state of reviewed, approved or changes requested
+with no activity in the window means your activity is older than the
+floor; a head commit after the floor is then a push since your review,
+an update after it (past the slack) a reply, and neither keeps
 `Approved by you` or `Reviewed by you`. The toolbar's three
 menu buttons, the filter (`Needs you` with its count, `Mine`,
 `Reviewing`, `All open`), the projects and the sort (`Updated` newest
@@ -277,7 +279,8 @@ review (`PullsReviewing`, reviewer states, approvals, head pipeline;
 `PullsReviewingActivity`, discussions and the head commit's time;
 `PullsReviewingApprovals`, the MR's own approval rules, so the required
 count follows its target branch and any override) and the same three of
-the MRs you authored, and, once per host per refresh, your events. Only a
+the MRs you authored, and, once per host per refresh, your comment and
+approval events. Only a
 failed list fails the project; another failed request leaves its fields
 unknown and shows on the project beside its rows. A GitLab MR you neither
 review nor authored carries no review detail and reads `Draft` or `Open`.

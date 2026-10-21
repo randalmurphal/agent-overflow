@@ -366,15 +366,18 @@ project), then concurrently:
   approval fields each cost about a second on a large project, so they
   are separate concurrent requests; `approvalsRequired` and
   `approvalsLeft` are never selected, since they add about 2 s.
-- `users/ID/events?per_page=100&after=<30 days ago>`, at most
+- `users/ID/events?action=commented&per_page=100&after=<30 days ago>`
+  and the same with `action=approved`, concurrently, each at most
   `gitlabActivityMaxPages` (3) pages: the viewer's latest
   `commented on` (a note, diff note or discussion note on a
   `MergeRequest`) or `approved` event per project and merge request is
-  the row's viewer activity. The read's floor is the day after the after
-  date when the feed ended within the pages, else the oldest event read
-  (a busy viewer's 300 events can span days); a row with no activity in
-  the window carries it as `ViewerActivityFloor`, which attention reads
-  as the activity's upper bound. It is read once per host per round
+  the row's viewer activity. GitLab filters each feed, so pushes and
+  other events do not use up the pages. A feed's floor is its oldest
+  event read, or the day after the after date when it returned none:
+  GitLab can end a feed short of the after date with a short page. The
+  window's floor is the older of the two; a row with no activity in the
+  window carries it as `ViewerActivityFloor`, which attention reads as
+  the activity's upper bound. They are read once per host per round
   (`git.WithPRListRound`, one per tick or prefetch): the round's
   concurrent project reads share it and a later round replaces it.
 
@@ -385,7 +388,7 @@ the 1000 most recently updated.
 
 | Read | GitHub | GitLab |
 |---|---|---|
-| Open PRs of a project | 1 `PullsSearch` per 100 PRs | 1 merge request list page per 100 MRs + 6 GraphQL reads, each 1 page per 100 MRs it returns + 1 to 3 `users/ID/events` per host per round; + 1 `user` per login and host per 10 minutes |
+| Open PRs of a project | 1 `PullsSearch` per 100 PRs | 1 merge request list page per 100 MRs + 6 GraphQL reads, each 1 page per 100 MRs it returns + 2 to 6 `users/ID/events` (two feeds) per host per round; + 1 `user` per login and host per 10 minutes |
 | Pipelines of a project (`ListPipelines`, at most `Limit` rows, 100 when unset or larger) | 1 `GET repos/O/R/actions/runs?per_page=N[&branch=][&status=]` | 1 `GET projects/P/pipelines?per_page=N[&ref=][&status=]`; + `GET projects/P/pipelines?per_page=100&scope=tags[&ref=]` pages, at most `gitlabTagScopeMaxPages` (10): 1 for a ref, 1 or 2 without a status filter, none for a merge request ref or an empty list; + 1 `GET projects/P/pipelines/ID` per row on a tag's ref name whose id the tag scope does not hold, once per pipeline while the repository's listings hold it and shared by concurrent listings, 4 at a time per listing |
 | One pipeline (`ReadPipeline`) | 1 `GET repos/O/R/actions/runs/ID` + 1 jobs page per 100 jobs, at most `githubReadMaxPages` | 1 `GET projects/P/pipelines/ID` + 1 jobs page per 100 jobs, at most `gitlabCIJobsMaxPages` |
 | Stages of 30 unchanged rows (`ReadPipelineStages`) | 30 runs + 30 jobs pages, each a 304 | 30 pipelines + 30 jobs pages, each a 200 with its body |
@@ -489,7 +492,7 @@ a pump stopped mid-write.
 | Tick | GitHub | GitLab |
 |---|---|---|
 | Per repository | 1 `PullsSearch` per 100 PRs | the project list read above |
-| Per host | none | 1 to 3 viewer events pages |
+| Per host | none | 2 to 6 viewer events pages (comments and approvals) |
 
 ### The pipeline pump and stage reads
 
@@ -628,8 +631,8 @@ func (c *Client) CredentialFingerprint(ctx context.Context) (string, error) // s
   `MaxConnsPerHost: 8`, `MaxIdleConnsPerHost: 8`, `IdleConnTimeout: 90s`,
   `ResponseHeaderTimeout: 30s`, dial timeout 10s. No `http.Client.Timeout`;
   deadlines come from `ctx` and `Request.Timeout`. A per-host semaphore of 8
-  (`hostConcurrency`, one cold GitLab project read: its list, six GraphQL
-  reads and the viewer's events)
+  (`hostConcurrency`: a cold GitLab project read is its list, six GraphQL
+  reads and two events feeds, so the ninth waits for the first to finish)
   bounds concurrency so a burst of panes cannot open more sockets.
 
 ## Errors
