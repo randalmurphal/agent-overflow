@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"slices"
 	"time"
 
 	"agent-overflow/internal/forgeapi"
@@ -64,6 +65,17 @@ func (a *App) readPRListDetail(ctx context.Context, pr gitops.PRReference) (gito
 }
 
 // prListFingerprint is what a detail read depends on in a list row.
+// lastForgeRepo is the repository a tick before read for projectID, from
+// the projects it read (forge), carried forward while its origin fails.
+func lastForgeRepo(forge []ForgeProject, projectID string) (gitops.RepoReference, bool) {
+	for _, project := range forge {
+		if project.ProjectID == projectID && project.Repo != (gitops.RepoReference{}) {
+			return project.Repo, true
+		}
+	}
+	return gitops.RepoReference{}, false
+}
+
 func prListFingerprint(row gitops.PRListRow) string {
 	encoded, _ := json.Marshal([]any{row.UpdatedAt, row.HeadSHA, row.Comments, row.ChecksState, row.MergeStatus, row.Draft, row.ReviewDecision})
 	return string(encoded)
@@ -93,9 +105,17 @@ func (a *App) pollPRList(ctx context.Context, pump *prListPump, forceDetails boo
 	repos := map[string]gitops.RepoReference{}
 	var order []string
 	current := map[string]bool{}
+	projects = slices.Clone(projects)
 	a.prUpdates.mu.Lock()
-	for _, project := range projects {
+	for i, project := range projects {
 		if project.Error != "" {
+			// An origin this tick could not read keeps the repository the
+			// last tick read for the project, and so its rows, beside the
+			// error; it is not read again until the origin reads.
+			if repo, ok := lastForgeRepo(pump.forge, project.ProjectID); ok {
+				projects[i].Repo = repo
+				current[repo.Key()] = true
+			}
 			continue
 		}
 		key := project.Repo.Key()
@@ -315,23 +335,27 @@ func (a *App) publishPRList(pump *prListPump) (PRListSnapshot, bool, bool, time.
 	needsYou := map[string]bool{}
 	for _, project := range projects {
 		list := ProjectPRList{ProjectID: project.ProjectID, Name: project.Name, Repo: project.Repo, Rows: []PRListItem{}, Error: project.Error}
-		if project.Error != "" {
-			list.ErrorKind = forgeFailureForge
-			snapshot.Projects = append(snapshot.Projects, list)
-			continue
+		var state *prListProjectState
+		if project.Repo != (gitops.RepoReference{}) {
+			state = pump.projects[project.Repo.Key()]
 		}
-		state := pump.projects[project.Repo.Key()]
+		switch {
+		case project.Error != "":
+			// The origin's failure, beside the rows read before it.
+			list.ErrorKind = forgeFailureForge
+		case state != nil:
+			if state.fail.failing() || state.graced {
+				failing = failing || !state.fail.rateLimited()
+				if state.fail.rateLimited() && (release.IsZero() || state.fail.release.Before(release)) {
+					release = state.fail.release
+				}
+			}
+			list.Error, list.ErrorKind, list.Reserve, list.ResumeAt = state.fail.wire, state.fail.kind, state.fail.reserve, state.fail.resumeAt
+		}
 		if state == nil {
 			snapshot.Projects = append(snapshot.Projects, list)
 			continue
 		}
-		if state.fail.failing() || state.graced {
-			failing = failing || !state.fail.rateLimited()
-			if state.fail.rateLimited() && (release.IsZero() || state.fail.release.Before(release)) {
-				release = state.fail.release
-			}
-		}
-		list.Error, list.ErrorKind, list.Reserve, list.ResumeAt = state.fail.wire, state.fail.kind, state.fail.reserve, state.fail.resumeAt
 		for _, row := range state.rows {
 			item := PRListItem{PRListRow: row}
 			if detail := pump.details[row.Ref.Key()]; detail != nil {

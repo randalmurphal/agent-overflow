@@ -364,14 +364,17 @@ interactive, as a refresh is; later ticks run at the PR update interval.
 
 A tick (`app_pr_list_tick.go`) reads the backend's forge projects
 (`ListForgeProjects`: the non-archived projects whose origin names a
-forge repository), lists each repository once however many projects
+forge repository, and those whose origin git could not read, with that
+failure as their `Error`), lists each repository once however many projects
 clone it, at most `prListReadConcurrency` (4) at a time, then reads the
 summary detail of the rows the subscribers focus, joins the user's
 `pr_views` and emits `pulls:updated` when the snapshot changed. A
 project's failed list keeps the rows read before beside its error, a
 first transient failure with rows on screen is held back once, a
 rate-limited repository is skipped by background ticks until its
-release, and a removed project takes its rows along. Each row's
+release, a project whose origin cannot be read keeps the repository and
+rows the last tick read beside that error, and a removed project takes
+its rows along. Each row's
 attention state and group come from `prAttention`
 (`app_pr_attention.go`); `NeedsYou`, the sidebar badge, counts each PR
 once.

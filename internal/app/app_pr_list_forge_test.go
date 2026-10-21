@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -79,11 +81,14 @@ func TestPRListReadsBothForgesThroughTheirAPIs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(projects) != 2 {
-		t.Fatalf("forge projects = %+v, want the two with forge origins", projects)
+	// The fixture's default project points at a directory that does not
+	// exist: git cannot read it, so it is listed with that failure.
+	if len(projects) != 3 {
+		t.Fatalf("forge projects = %+v, want the two with forge origins and the unreadable one", projects)
 	}
 	for _, project := range projects {
-		if project.Error != "" || project.Repo.Validate() != nil {
+		unreadable := project.ProjectID == "default-test-project"
+		if unreadable != (project.Error != "") || (!unreadable && project.Repo.Validate() != nil) {
 			t.Fatalf("project = %+v", project)
 		}
 	}
@@ -132,5 +137,58 @@ func TestPRListReadsBothForgesThroughTheirAPIs(t *testing.T) {
 		if row.Ref.Number == 1 && (row.State != PRStateReady || row.Detail.ApprovalsGiven != 1 || row.Detail.Unresolved != 1) {
 			t.Fatalf("PR 1 = %s %+v (%s)", row.State, row.Detail, row.DetailError)
 		}
+	}
+}
+
+// A checkout whose origin git cannot read, once the cached origin is gone,
+// stays listed with the failure beside the rows read before it, and
+// recovers when the checkout reads again.
+func TestPRListKeepsAProjectWhoseOriginCannotBeRead(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	engine := forgefake.New(forgefake.Options{APIToken: mergeForgeToken})
+	if _, err := engine.Seed(forgefake.Fixture{Repos: []forgefake.Repo{
+		{Forge: "github", Project: "acme/widgets", Pulls: []forgefake.Pull{{Number: 1, Title: "One", Author: "carol"}}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	useForgefake(t, app, engine)
+	projectID := forgeProjectRepo(t, app, "https://github.com/acme/widgets.git")
+	project, err := app.store.GetProject(projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(app.prUpdates.wg.Wait)
+	sub := subscribePRList(t, app)
+	if got := prListProject(t, sub.Snapshot, projectID); got.Error != "" || len(got.Rows) != 1 {
+		t.Fatalf("project = %+v", got)
+	}
+
+	config := filepath.Join(project.Path, ".git", "config")
+	good, err := os.ReadFile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.gitCore().InvalidateForgeCache(project.Path)
+	if err := os.WriteFile(config, []byte("[core\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.RefreshPRList(context.Background(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	got := prListProject(t, prListSnapshotNow(app), projectID)
+	if got.Error == "" || got.ErrorKind != forgeFailureForge || len(got.Rows) != 1 || got.Repo.Key() != "github:acme/widgets" {
+		t.Fatalf("unreadable project = %+v, want its error beside the rows read before", got)
+	}
+
+	if err := os.WriteFile(config, good, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.RefreshPRList(context.Background(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := prListProject(t, prListSnapshotNow(app), projectID); got.Error != "" || len(got.Rows) != 1 {
+		t.Fatalf("recovered project = %+v", got)
 	}
 }

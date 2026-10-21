@@ -31,6 +31,10 @@ type forgeCacheEntry struct {
 type originIdentity struct {
 	url   string
 	known bool
+	// readErr is why an unknown identity could not be read: git failed, or
+	// the path is not a repository. Nil for a known identity and for a
+	// repository with no origin remote.
+	readErr error
 }
 
 // retargets reports whether o is a successfully-read identity that differs
@@ -40,15 +44,26 @@ func (o originIdentity) retargets(other originIdentity) bool {
 	return o.known && other.known && o.url != other.url
 }
 
+// gitNoSuchRemoteExit is `git remote get-url`'s exit code for a remote the
+// repository does not have ("No such remote"); git's own failures exit 128.
+const gitNoSuchRemoteExit = 2
+
 // readOriginRemote runs `git remote get-url origin` and reports the URL.
 // The returned identity is unknown when the cwd has no "origin" remote, is
-// not a repository, or git failed for any other reason. Callers go through
-// originRemote (repo_meta_cache.go), which fronts this read with the
-// per-repository TTL cache.
+// not a repository, or git failed for any other reason; readErr says which
+// of the last two it was. Callers go through originRemote
+// (repo_meta_cache.go), which fronts this read with the per-repository TTL
+// cache.
 func (c *Core) readOriginRemote(cwd string) originIdentity {
-	result, err := c.run(cwd, "remote", "get-url", "origin")
-	if err != nil || result.exitCode != 0 {
+	spec := commandSpec{binary: "git", cwd: cwd, extraEnv: localeCEnv, args: []string{"remote", "get-url", "origin"}}
+	result, err := c.runSpec(spec)
+	switch {
+	case err != nil:
+		return originIdentity{readErr: fmt.Errorf("read the origin remote: %w", err)}
+	case result.exitCode == gitNoSuchRemoteExit:
 		return originIdentity{}
+	case result.exitCode != 0:
+		return originIdentity{readErr: fmt.Errorf("read the origin remote: %w", exitError(spec, result))}
 	}
 	return originIdentity{url: strings.TrimSpace(result.stdout), known: true}
 }
@@ -304,8 +319,13 @@ func (c *Core) originCoordinates(cwd string) (forge, host, project string, err e
 	if !origin.known {
 		origin = c.originRemote(cwd)
 	}
-	if !origin.known {
-		return "", "", "", &OriginUnknownError{Cwd: cwd, Reason: "no origin remote could be read"}
+	switch {
+	case origin.readErr != nil:
+		// Not an OriginUnknownError: a checkout git cannot read says nothing
+		// about what its origin names.
+		return "", "", "", fmt.Errorf("origin remote of %s: %w", cwd, origin.readErr)
+	case !origin.known:
+		return "", "", "", &OriginUnknownError{Cwd: cwd, Reason: "there is none"}
 	}
 	locator := repoidentity.Locator(origin.url)
 	if locator == "" {

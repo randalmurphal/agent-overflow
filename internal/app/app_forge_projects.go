@@ -11,8 +11,9 @@ import (
 
 // ForgeProject is one of this backend's projects whose origin names a
 // repository on a supported forge: the Pull requests page lists its PRs
-// and pipelines. Error is set, with Repo zero, when the origin could not
-// be read for a reason other than naming no forge repository.
+// and pipelines. Error is set, with Repo zero, when git could not read the
+// origin (not a repository, a git or I/O failure); the PR list keeps the
+// repository and rows it read before beside it.
 type ForgeProject struct {
 	ProjectID string               `json:"projectId"`
 	Name      string               `json:"name"`
@@ -24,7 +25,7 @@ type ForgeProject struct {
 // ListForgeProjects lists this backend's projects (the non-archived ones
 // the sidebar shows) whose origin is a known forge repository, in the
 // sidebar's name order. A project with another origin, or none, is
-// omitted.
+// omitted; one whose origin could not be read is listed with its Error.
 //
 //ao:scope git:operate
 //ao:route selected
