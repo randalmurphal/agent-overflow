@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // failCheckoutHook makes every checkout in repo fail after git has
@@ -207,53 +209,67 @@ func TestCheckoutsLeaveTheWorktreeUnlocked(t *testing.T) {
 	}
 }
 
-// A checkout git made that cannot be unlocked is usable and reported as
-// that partial failure; it stays locked, as a crash between the add and
-// the unlock leaves it, and removal still lifts that lock.
-func TestAttachWorktreeReportsACheckoutItCouldNotUnlock(t *testing.T) {
-	t.Parallel()
+// A checkout whose unlock fails is a failed checkout: the worktree and
+// the branch the attach made from origin's are taken back, and the error
+// names the unlock. The fake git fails the first unlock alone, so the
+// undo's own unlock runs.
+func TestAttachWorktreeUndoesACheckoutItCouldNotUnlock(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("shell hook and directory modes are unix-only")
+		t.Skip("shell wrapper is unix-only")
 	}
-	if os.Geteuid() == 0 {
-		t.Skip("root unlinks in a read-only directory")
-	}
-	repo := initGitRepo(t)
-	testutil.RunGit(t, repo, "branch", "feature/held")
-	hooks := t.TempDir()
-	// The hook makes the worktree's admin directory read-only, so the
-	// unlock cannot delete its locked file.
-	if err := os.WriteFile(filepath.Join(hooks, "post-checkout"), []byte("#!/bin/sh\nchmod 0555 \"$(git rev-parse --absolute-git-dir)\"\n"), 0o755); err != nil {
+	repo, bare := testutil.InitGitRepoWithOrigin(t)
+	originOnlyBranch(t, bare, "feature/held")
+	testutil.RunGit(t, repo, "fetch", "-q", "origin")
+	realGit, err := exec.LookPath("git")
+	if err != nil {
 		t.Fatal(err)
 	}
-	testutil.RunGit(t, repo, "config", "core.hooksPath", hooks)
+	binDir := t.TempDir()
+	mockexec.Write(t, filepath.Join(binDir, "git"), `#!/bin/sh
+if [ "$1" = worktree ] && [ "$2" = unlock ] && [ ! -f "$AO_UNLOCK_FAILED" ]; then
+  : > "$AO_UNLOCK_FAILED"
+  echo "error: injected unlock failure" >&2
+  exit 1
+fi
+exec "$AO_REAL_GIT" "$@"
+`)
+	t.Setenv("AO_REAL_GIT", realGit)
+	t.Setenv("AO_UNLOCK_FAILED", filepath.Join(t.TempDir(), "unlock-failed"))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	path := filepath.Join(t.TempDir(), "held")
-	adminDir := filepath.Join(repo, ".git", "worktrees", "held")
-	t.Cleanup(func() { _ = os.Chmod(adminDir, 0o755) })
 
+	created, err := NewCore().AttachWorktree(repo, path, "feature/held")
+	if err == nil || created || !strings.Contains(err.Error(), "injected unlock failure") {
+		t.Fatalf("AttachWorktree = created %v, %v; want the unlock's failure", created, err)
+	}
+	if strings.Contains(err.Error(), "undo") {
+		t.Fatalf("the undo failed: %v", err)
+	}
+	assertAddUndone(t, repo, "feature/held", false)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("the checkout directory remains (%v)", err)
+	}
+}
+
+// A checkout a crash left locked with this package's reason, between the
+// add and the unlock, is listed and removable.
+func TestRemoveWorktreeLiftsTheLockOfAnInterruptedCheckout(t *testing.T) {
+	t.Parallel()
+	repo := initGitRepo(t)
+	testutil.RunGit(t, repo, "branch", "feature/crashed")
+	path := filepath.Join(t.TempDir(), "crashed")
+	testutil.RunGit(t, repo, "worktree", "add", "--lock", "--reason", checkoutLockReason+"00000000-0000-0000-0000-000000000000", "--", path, "feature/crashed")
 	core := NewCore()
-	_, err := core.AttachWorktree(repo, path, "feature/held")
-	if err == nil || !strings.Contains(err.Error(), "checked out but still locked") {
-		t.Fatalf("AttachWorktree = %v, want the unlock's partial failure", err)
-	}
-	head, _, err := core.Execute(path, "rev-parse", "--abbrev-ref", "HEAD")
-	if err != nil || strings.TrimSpace(head) != "feature/held" {
-		t.Fatalf("the checkout is on %q (%v)", head, err)
-	}
 	if locked, err := core.worktreeLocked(repo, path); err != nil || !locked {
-		t.Fatalf("worktree locked = %v (%v), want the add's lock kept", locked, err)
+		t.Fatalf("worktree locked = %v (%v)", locked, err)
 	}
 	if registered, err := worktreeRegisteredAt(repo, path); err != nil || !registered {
 		t.Fatalf("ListWorktrees does not show the locked checkout (%v)", err)
 	}
-
-	if err := os.Chmod(adminDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
 	if err := core.RemoveWorktree(repo, path); err != nil {
-		t.Fatalf("RemoveWorktree of the still-locked checkout: %v", err)
+		t.Fatalf("RemoveWorktree of the locked checkout: %v", err)
 	}
-	assertAddUndone(t, repo, "feature/held", true)
+	assertAddUndone(t, repo, "feature/crashed", true)
 }
 
 // A new branch cut for a worktree is deleted when its checkout fails, and

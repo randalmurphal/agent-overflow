@@ -448,8 +448,7 @@ func (c *Core) CreateWorktree(cwd, path, branch string) error {
 // place at a time). createdBranch reports that the branch was origin's
 // alone and this call made the local branch, which a caller undoing the
 // attach deletes with the worktree. A failed attach leaves neither a
-// worktree nor a branch it made, except a checkout git made that could not
-// be unlocked (checkoutWorktree).
+// worktree nor a branch it made (checkoutWorktree).
 func (c *Core) AttachWorktree(cwd, path, branch string) (createdBranch bool, err error) {
 	if strings.TrimSpace(path) == "" {
 		return false, errors.New("git worktree path is required")
@@ -563,21 +562,29 @@ func (c *Core) createWorktreeAt(cwd, path, startPoint, newBranch string, noTrack
 // path, or one git refused the add for, carries no such lock and stays as
 // it was; a branch the caller did not make is never deleted. What the undo
 // could not take back is joined to git's diagnosis. A checkout that
-// succeeded and could not be unlocked is reported as that partial failure:
-// the worktree is usable at path, locked against prune.
+// succeeded and could not be unlocked is a failure too, undone the same
+// way, so an error means the call left nothing behind.
 func (c *Core) checkoutWorktree(cwd, path, branch string, ownsBranch bool) error {
 	reason := checkoutLockReason + uuid.NewString()
 	if c.beforeWorktreeAdd != nil {
 		c.beforeWorktreeAdd(path)
 	}
 	_, stderr, err := c.Execute(cwd, "worktree", "add", "--lock", "--reason", reason, "--", path, branch)
-	if err == nil {
-		if _, stderr, err := c.Execute(cwd, "worktree", "unlock", "--", path); err != nil {
-			return fmt.Errorf("git worktree add: %s is checked out but still locked: git worktree unlock failed: %s", path, firstNonEmpty(strings.TrimSpace(stderr), err.Error()))
-		}
-		return nil
+	if err != nil {
+		failure := fmt.Errorf("git worktree add failed: %s", firstNonEmpty(strings.TrimSpace(stderr), err.Error()))
+		return c.undoCheckout(cwd, branch, reason, ownsBranch, failure)
 	}
-	failure := fmt.Errorf("git worktree add failed: %s", firstNonEmpty(strings.TrimSpace(stderr), err.Error()))
+	if _, stderr, err := c.Execute(cwd, "worktree", "unlock", "--", path); err != nil {
+		failure := fmt.Errorf("git worktree add: git worktree unlock failed: %s", firstNonEmpty(strings.TrimSpace(stderr), err.Error()))
+		return c.undoCheckout(cwd, branch, reason, ownsBranch, failure)
+	}
+	return nil
+}
+
+// undoCheckout takes back what a failed checkoutWorktree made: the
+// registration locked with reason and, when ownsBranch, the branch. It
+// returns failure joined with what it could not take back.
+func (c *Core) undoCheckout(cwd, branch, reason string, ownsBranch bool, failure error) error {
 	var undo []error
 	entries, listErr := c.listWorktreeEntries(cwd)
 	if listErr != nil {
