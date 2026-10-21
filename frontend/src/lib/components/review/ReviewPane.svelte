@@ -46,11 +46,9 @@
      * `disposePRReviewStates(ownerPaneId)` when its page goes; the states
      * of the PR on screen and the one before it outlive this component. */
     pr?: { ownerPaneId: string; backend: BackendKey; projectId: string; pr: PRRef };
-    /** A pinned review: returns to the page's list, in Close's place. */
-    onBack?: () => void;
   }
 
-  let { ctx, pr, onBack }: Props = $props();
+  let { ctx, pr }: Props = $props();
   // File-filter state (type chips, hide tests) is owned here, not in the
   // tree, so the dropdown's "Apply filter to diff" toggle can also narrow
   // the diff body, and the selection survives the rail hiding.
@@ -227,8 +225,7 @@
     {gitStatus}
     stats={diffStats}
     {collapsibleFileCount}
-    onClose={ctx && !onBack ? () => ctx?.close() : undefined}
-    {onBack}
+    onClose={ctx ? () => ctx?.close() : undefined}
   />
 
   {#if !review}

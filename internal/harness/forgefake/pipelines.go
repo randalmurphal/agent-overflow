@@ -211,7 +211,7 @@ func glabPipelines(e *Engine, c *call, m []string) response {
 	if !ok {
 		return fail
 	}
-	query, perPage, page, err := glabPage(m[2], "ref", "status")
+	query, perPage, page, err := glabPage(m[2], "ref", "status", "scope")
 	if err != nil {
 		return unhandled("%v", err)
 	}
@@ -219,9 +219,18 @@ func glabPipelines(e *Engine, c *call, m []string) response {
 	if query.Has("status") && !gitlabPipelineStatuses[status] {
 		return unhandled("status=%q is not a GitLab pipeline status", status)
 	}
+	// scope=tags and scope=branches narrow by what the ref is, as GitLab
+	// does; the list itself never says.
+	scope := query.Get("scope")
+	if query.Has("scope") && scope != "tags" && scope != "branches" {
+		return unhandled("scope=%q is not implemented", scope)
+	}
 	rows := []map[string]any{}
 	for _, pipeline := range r.pipelines() {
 		if (query.Has("ref") && pipeline.Ref != query.Get("ref")) || (status != "" && pipeline.Status != status) {
+			continue
+		}
+		if (scope == "tags" && pipeline.RefKind != "tag") || (scope == "branches" && pipeline.RefKind != "branch") {
 			continue
 		}
 		rows = append(rows, gitlabPipelineJSON(r, pipeline))

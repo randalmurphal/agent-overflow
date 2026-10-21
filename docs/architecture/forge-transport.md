@@ -332,7 +332,7 @@ GitLab's list stops at the 1000 most recently updated.
 | Read | GitHub | GitLab |
 |---|---|---|
 | Open PRs of a project | 1 `PullsSearch` per 100 PRs | 1 merge request list page per 100 MRs; + 1 `user` per login and host per 10 minutes |
-| Pipelines of a project (`ListPipelines`, at most 100 rows) | 1 `GET repos/O/R/actions/runs?per_page=N[&branch=][&status=]` | 1 `GET projects/P/pipelines?per_page=N[&ref=][&status=]` |
+| Pipelines of a project (`ListPipelines`, at most 100 rows) | 1 `GET repos/O/R/actions/runs?per_page=N[&branch=][&status=]` | 1 `GET projects/P/pipelines?per_page=N[&ref=][&status=]`; + 1 with `&scope=tags` when no ref is asked |
 | One pipeline (`ReadPipeline`) | 1 `GET repos/O/R/actions/runs/ID` + 1 jobs page per 100 jobs, at most `githubReadMaxPages` | 1 `GET projects/P/pipelines/ID` + 1 jobs page per 100 jobs, at most `gitlabCIJobsMaxPages` |
 
 `PipelineListFilter.Status` is a normalized status each forge filters by
@@ -340,10 +340,13 @@ its own value: success, failed, running, pending (GitHub `queued`),
 canceled, skipped, and manual on GitLab only; another value is refused
 before any request. A GitHub run is one row and, read, one stage named
 after its workflow; its jobs list carries every job's steps, so
-`stepsFor` costs no extra request. Neither list marks a tag: a row's
-`RefKind` is `merge_request` for a GitLab `refs/merge-requests/N` ref or
-a GitHub `pull_request` event, `tag` for a GitHub `release` event, and
-`branch` otherwise. `CIPipeline` carries the pipeline's `ID`, `Ref` and
+`stepsFor` costs no extra request. A row's `RefKind` is `merge_request`
+for a GitLab `refs/merge-requests/N` ref or a GitHub `pull_request`
+event, `tag` for a GitHub `release` event, and `branch` otherwise.
+GitLab's list does not say which pipelines ran on a tag (only the single
+pipeline carries `tag`), so a list of any ref reads the tag scope as
+well and marks those ids, appending a tag pipeline the first list did
+not hold; a list of one ref needs no second read. `CIPipeline` carries the pipeline's `ID`, `Ref` and
 `SHA`; a GitHub PR's head checks span many runs, so `ReadPR` leaves its
 `ID` empty.
 
@@ -374,12 +377,16 @@ attention state and group come from `prAttention`
 once.
 
 `SetPRListFocus` names at most `maxPRListFocus` (60) PR keys per handle:
-the rows on screen and the needs-you set. A focused row's detail is
+the rows on screen. The tick reads the detail of the focused rows and
+then of the user's own and reviewed rows (`ViewerIsAuthor`,
+`ViewerIsReviewer`), whose attention state needs it whether or not a
+filter shows them, at most `maxPRListFocus` in all. A row's detail is
 `Core.ReadPRSummary`: `ReadPR` with `Detail` and `Unresolved`, which adds
 the approval count and the unresolved thread count to the readiness. It
-is read when the row is first focused, when its list row changes (update
-time, head, comments, checks, merge status, draft, review decision), on a
-refresh, and otherwise once `prListDetailMaxAge` (5 minutes) old. Reading
+is read when the row is first a candidate, when its list row changes
+(update time, head, comments, checks, merge status, draft, review
+decision), on a refresh, and otherwise once `prListDetailMaxAge` (5
+minutes) old. Reading
 60 GitHub details every interval would spend the 5000 points an hour
 GitHub's GraphQL allows; the age bound is what a GitLab pipeline that
 finished needs, since that moves no list field.

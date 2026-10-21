@@ -1,6 +1,5 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import ChevronLeft from '@lucide/svelte/icons/chevron-left';
   import ChevronsDownUp from '@lucide/svelte/icons/chevrons-down-up';
   import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
@@ -38,11 +37,9 @@
     stats: { files: number; additions: number; deletions: number };
     collapsibleFileCount: number;
     onClose?: () => void;
-    /** A pinned review returns to its page's list instead of closing. */
-    onBack?: () => void;
   }
 
-  let { review, workspace, threadId, branches, gitStatus, stats, collapsibleFileCount, onClose, onBack }: Props = $props();
+  let { review, workspace, threadId, branches, gitStatus, stats, collapsibleFileCount, onClose }: Props = $props();
 
   // The "..." menu: view toggles that are set once per reading session
   // (whitespace, wrap, split), off the toolbar so the row fits a phone.
@@ -183,19 +180,6 @@
 <!-- Wraps: a narrow pane carries the counts and the icon run on a second
      row instead of clipping them. -->
 <div class="flex shrink-0 flex-wrap items-center gap-2 border-b border-border-subtle px-3 py-2" data-testid="review-toolbar">
-  {#if onBack}
-    <button
-      type="button"
-      class="inline-flex h-7 w-7 compact:h-9 compact:w-9 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle text-fg-muted hover:text-fg"
-      aria-label="Back to the list"
-      title="Back to the list"
-      data-testid="review-back"
-      onclick={() => onBack?.()}
-    >
-      <Icon icon={ChevronLeft} size={14} />
-    </button>
-  {/if}
-
   {#if scopeOptions.length > 0}
     <ReviewToolbarMenu ariaLabel="Review scope" testId="review-scope-select" disabled={!review}>
       {#snippet label()}<span>{scopeLabel}</span>{/snippet}

@@ -1,5 +1,5 @@
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import PipelineView from './PipelineView.svelte';
 import type { PipelineRowView } from './pipelineRowView';
 import { createCISubjectState } from '../../stores/ciSubject.svelte';
@@ -31,7 +31,7 @@ const ROW: PipelineRowView = {
   stages: null,
 };
 
-function mountView(onBack?: () => void) {
+function mountView() {
   setBindingMock('SubscribePipeline', async () => ({
     id: 'pipe-1', key: 'gitlab:group/app:pipeline:77', error: '', errorKind: '', reserve: false, resumeAt: '', seq: 1,
     pipeline: {
@@ -46,7 +46,7 @@ function mountView(onBack?: () => void) {
   setBindingMock('GetPRCILogLines', async () => ({ from: 0, lines: ['boom'], totalLines: 1, version: 1 }));
   const hold = attachPipelineCI(HOME_BACKEND, REPO, '77');
   const ci = createCISubjectState(() => ({ kind: 'pipeline', backend: HOME_BACKEND, repo: REPO, pipelineId: '77' }));
-  const view = render(PipelineView, { row: ROW, ci, onBack });
+  const view = render(PipelineView, { row: ROW, ci });
   return { view, ci, hold, follows };
 }
 
@@ -65,7 +65,6 @@ describe('<PipelineView>', () => {
     expect(header).toHaveTextContent('Fix the parser');
     expect(header).toHaveTextContent('5m ago');
     await waitFor(() => expect(view.getByTestId('pipeline-view-status')).toHaveTextContent('failed'));
-    expect(view.queryByTestId('pipeline-view-back')).toBeNull();
     await fireEvent.click(view.getByTestId('pipeline-view-open-forge'));
     expect(open).toHaveBeenCalledWith(ROW.url);
     hold.release();
@@ -86,11 +85,4 @@ describe('<PipelineView>', () => {
     hold.release();
   });
 
-  it('offers Back when the page gives one', async () => {
-    const onBack = vi.fn();
-    const { view, hold } = mountView(onBack);
-    await fireEvent.click(view.getByTestId('pipeline-view-back'));
-    expect(onBack).toHaveBeenCalledTimes(1);
-    hold.release();
-  });
 });

@@ -1,5 +1,5 @@
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import ReviewPane from './ReviewPane.svelte';
 import {
   __pinnedReviewStatesForTest,
@@ -60,12 +60,11 @@ function patch(): string {
   ].join('\n');
 }
 
-function renderPinned(onBack = vi.fn()) {
+function renderPinned() {
   const view = render(ReviewPane, {
     pr: { ownerPaneId: OWNER, backend: HOME_BACKEND, projectId: 'project-1', pr: PR },
-    onBack,
   });
-  return { view, onBack };
+  return { view };
 }
 
 beforeEach(() => {
@@ -89,8 +88,8 @@ beforeEach(() => {
 });
 
 describe('<ReviewPane> pinned to a PR with no thread', () => {
-  it('shows the PR with its readiness and Merge section, Back in Close\'s place, and no scope selector', async () => {
-    const { view, onBack } = renderPinned();
+  it('shows the PR with its readiness and Merge section, no close and no scope selector', async () => {
+    const { view } = renderPinned();
     await waitFor(() => {
       expect(view.getByTestId('review-pr-readiness')).toBeInTheDocument();
       expect(view.getByTestId('review-overview')).toBeInTheDocument();
@@ -99,10 +98,6 @@ describe('<ReviewPane> pinned to a PR with no thread', () => {
     expect(view.queryByTestId('review-scope-select')).toBeNull();
     expect(view.queryByTestId('review-scope-option-edits')).toBeNull();
     expect(view.queryByTestId('review-close')).toBeNull();
-    const back = view.getByTestId('review-back');
-    expect(back).toHaveAttribute('aria-label', 'Back to the list');
-    await fireEvent.click(back);
-    expect(onBack).toHaveBeenCalledTimes(1);
   });
 
   it('drafts a line comment and submits it as a PR review, with no agent target', async () => {

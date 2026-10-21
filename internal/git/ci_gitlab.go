@@ -134,9 +134,36 @@ func (f *gitlabForge) ListPipelines(ctx context.Context, repo RepoReference, fil
 	if status != "" {
 		query.Set("status", status)
 	}
+	path := gitlabProjectPath(repo.Project()) + "/pipelines"
 	var raw []gitlabPipelineRaw
-	if _, err := client.JSON(ctx, forgeapi.Request{Path: gitlabProjectPath(repo.Project()) + "/pipelines", Query: query}, &raw); err != nil {
+	if _, err := client.JSON(ctx, forgeapi.Request{Path: path, Query: query}, &raw); err != nil {
 		return nil, err
+	}
+	// The list does not say which pipelines ran on a tag (only the single
+	// pipeline carries `tag`), so a list of any ref reads the tag scope as
+	// well, one more request, and marks those ids; a tag pipeline past the
+	// first list's page is appended.
+	tags := map[int64]bool{}
+	if filter.Ref == "" {
+		tagQuery := url.Values{}
+		for key, values := range query {
+			tagQuery[key] = values
+		}
+		tagQuery.Set("scope", "tags")
+		var tagged []gitlabPipelineRaw
+		if _, err := client.JSON(ctx, forgeapi.Request{Path: path, Query: tagQuery}, &tagged); err != nil {
+			return nil, err
+		}
+		listed := map[int64]bool{}
+		for _, pipeline := range raw {
+			listed[pipeline.ID] = true
+		}
+		for _, pipeline := range tagged {
+			tags[pipeline.ID] = true
+			if !listed[pipeline.ID] {
+				raw = append(raw, pipeline)
+			}
+		}
 	}
 	rows := make([]PipelineSummary, 0, len(raw))
 	for _, pipeline := range raw {
@@ -154,6 +181,8 @@ func (f *gitlabForge) ListPipelines(ctx context.Context, repo RepoReference, fil
 		if m := gitlabMergeRequestRef.FindStringSubmatch(pipeline.Ref); m != nil {
 			row.RefKind = PipelineRefMergeRequest
 			row.MRNumber, _ = strconv.Atoi(m[1])
+		} else if tags[pipeline.ID] {
+			row.RefKind = PipelineRefTag
 		}
 		rows = append(rows, row)
 	}

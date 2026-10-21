@@ -167,8 +167,13 @@ func TestGitLabPipelinesAnswerEveryPipelineNewestFirst(t *testing.T) {
 	if bad := glabGET(t, srv, "gitlab.com", "projects/grp%2Fpipes/pipelines?status=done"); bad.status != 404 {
 		t.Errorf("status=done = %d, want unhandled", bad.status)
 	}
-	if bad := glabGET(t, srv, "gitlab.com", "projects/grp%2Fpipes/pipelines?scope=tags"); bad.status != 404 {
-		t.Errorf("scope=tags = %d, want unhandled", bad.status)
+	var tags []map[string]any
+	decodeBody(t, glabGET(t, srv, "gitlab.com", "projects/grp%2Fpipes/pipelines?scope=tags"), &tags)
+	if len(tags) != 1 || tags[0]["id"] != float64(20) {
+		t.Errorf("scope=tags = %v, want the tag pipeline alone", tags)
+	}
+	if bad := glabGET(t, srv, "gitlab.com", "projects/grp%2Fpipes/pipelines?scope=finished"); bad.status != 404 {
+		t.Errorf("scope=finished = %d, want unhandled", bad.status)
 	}
 
 	var single map[string]any

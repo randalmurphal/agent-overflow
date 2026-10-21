@@ -106,7 +106,7 @@ describe('tool panes in the strip', () => {
     const rendered = render(PaneHost);
     const tool = section(rendered.container, 'tool-pulls');
     expect(tool.dataset.paneKind).toBe('pulls');
-    await waitFor(() => expect(rendered.getByTestId('pulls-pane-empty')).toBeInTheDocument());
+    await waitFor(() => expect(rendered.getByTestId('pulls-pane')).toBeInTheDocument());
     expect(tool.querySelector('[data-testid="tool-pane-title"]')).toHaveTextContent('Pull requests');
     expect(tool.querySelector('[data-testid="pane-close"]')).not.toBeNull();
   });
@@ -125,7 +125,7 @@ describe('tool panes in the strip', () => {
     setPaneLayoutItemsForTest([thread('left'), pulls]);
     focusPane('tool-pulls');
     const rendered = render(PaneHost);
-    await waitFor(() => expect(rendered.getByTestId('pulls-pane-empty')).toBeInTheDocument());
+    await waitFor(() => expect(rendered.getByTestId('pulls-pane')).toBeInTheDocument());
     await fireEvent.click(section(rendered.container, 'tool-pulls').querySelector('[data-testid="pane-close"]')!);
     expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['left']);
     expect(getFocusedPaneId()).toBe('left');
@@ -237,7 +237,7 @@ describe('tool panes under compact', () => {
     const rendered = render(PaneHost);
     const tool = section(rendered.container, 'tool-pulls');
     expect(tool.style.minWidth).toBe('100%');
-    await waitFor(() => expect(rendered.getByTestId('pulls-pane-empty')).toBeInTheDocument());
+    await waitFor(() => expect(rendered.getByTestId('pulls-pane')).toBeInTheDocument());
     expect(tool.querySelector('[data-testid="pane-close"]')).toBeNull();
     expect(tool.querySelector('[data-testid="tool-pane-title"]')?.getAttribute('draggable')).toBe('false');
     await fireEvent.click(tool.querySelector('[data-testid="compact-back"]')!);

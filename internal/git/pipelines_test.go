@@ -1,6 +1,7 @@
 package git
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -86,11 +87,53 @@ func TestGitLabListPipelinesParsesThePipelines(t *testing.T) {
 	if rows[0] != want {
 		t.Errorf("merge request pipeline = %+v\nwant                     %+v", rows[0], want)
 	}
+	// A list of one ref cannot hold a tag of another name: no tag scope read.
 	if tag := rows[1]; tag.RefKind != PipelineRefBranch || tag.Ref != "v2.0.0" || tag.Status != CIStatusSuccess {
 		t.Errorf("tag pipeline = %+v", tag)
 	}
 	if manual := rows[2]; manual.Status != CIStatusManual || manual.Source != "schedule" || manual.Name != "" || manual.Title != "" {
 		t.Errorf("manual pipeline = %+v", manual)
+	}
+	if len(calls.all()) != 1 {
+		t.Fatalf("calls = %d, want the list alone for one ref", len(calls.all()))
+	}
+}
+
+// A list of any ref reads the tag scope too, since the list does not say
+// which pipelines ran on a tag, and marks them; a tag past the first list
+// is appended.
+func TestGitLabListPipelinesMarksTagsFromTheTagScope(t *testing.T) {
+	t.Parallel()
+	answer := readTestdata(t, "gitlab-pipelines.json")
+	var all []map[string]any
+	if err := json.Unmarshal([]byte(answer), &all); err != nil {
+		t.Fatal(err)
+	}
+	tagged, _ := json.Marshal([]map[string]any{all[1], {
+		"id": 7000, "sha": "bbbb000000000000000000000000000000000000", "ref": "v1.0.0", "status": "success", "source": "push",
+		"created_at": "2026-10-17T10:00:00.000Z", "updated_at": "2026-10-17T10:30:00.000Z", "web_url": "https://gitlab.example/grp/sub/app/-/pipelines/7000",
+	}})
+	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		switch {
+		case strings.Contains(call.Path, "scope=tags"):
+			return forgeAPIAnswer{Body: string(tagged)}
+		case strings.HasPrefix(call.Path, "projects/grp%2Fsub%2Fapp/pipelines?"):
+			return forgeAPIAnswer{Body: answer}
+		}
+		return forgeUnexpected(t, call)
+	})
+	rows, err := core.ListPipelines(t.Context(), gitlabTestRepo(), PipelineListFilter{Status: CIStatusSuccess})
+	if err != nil {
+		t.Fatalf("ListPipelines: %v", err)
+	}
+	if got := calls.all(); len(got) != 2 || listQuery(t, got[1].Path).Encode() != "per_page=100&scope=tags&status=success" {
+		t.Fatalf("calls = %+v, want the list then the tag scope with the same filter", got)
+	}
+	if len(rows) != 4 || rows[1].RefKind != PipelineRefTag || rows[1].Ref != "v2.0.0" || rows[3].RefKind != PipelineRefTag || rows[3].ID != "7000" {
+		t.Fatalf("rows = %+v", rows)
+	}
+	if rows[0].RefKind != PipelineRefMergeRequest || rows[2].RefKind != PipelineRefBranch {
+		t.Fatalf("rows = %+v", rows)
 	}
 }
 

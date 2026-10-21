@@ -1,5 +1,4 @@
 <script lang="ts">
-  import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import ExternalLink from '@lucide/svelte/icons/external-link';
   import GitBranch from '@lucide/svelte/icons/git-branch';
   import GitPullRequestArrow from '@lucide/svelte/icons/git-pull-request-arrow';
@@ -27,11 +26,9 @@
   interface Props {
     row: PipelineRowView;
     ci: CISubjectState;
-    /** Back to the list; compact only. */
-    onBack?: () => void;
   }
 
-  let { row, ci, onBack }: Props = $props();
+  let { row, ci }: Props = $props();
 
   const refIcon = $derived(row.refKind === 'tag' ? Tag : row.refKind === 'merge_request' ? GitPullRequestArrow : GitBranch);
   const refLabel = $derived(row.refKind === 'merge_request' && row.mrNumber > 0 ? pullNumberLabel(row.forge, row.mrNumber) : row.ref);
@@ -51,11 +48,6 @@
 <RenderBoundary label="The pipeline view" testId="pipeline-view-render-error">
   <section class="flex min-h-0 min-w-0 flex-1 flex-col" data-testid="pipeline-view" data-pipeline-key={row.key}>
     <header class="flex min-w-0 items-center gap-2 border-b border-border-subtle px-3 py-2 text-[0.75rem]">
-      {#if onBack}
-        <IconButton label="Back to the list" size="sm" onClick={onBack} testId="pipeline-view-back">
-          <Icon icon={ArrowLeft} size={14} strokeWidth={1.75} />
-        </IconButton>
-      {/if}
       <span class="inline-flex shrink-0 items-center text-fg-subtle"><Icon icon={refIcon} size={12} strokeWidth={1.75} /></span>
       <span class="min-w-0 truncate font-medium text-fg" title={row.ref}>{refLabel}</span>
       <span class="shrink-0 font-mono text-[0.6875rem] text-fg-muted">#{row.id}</span>

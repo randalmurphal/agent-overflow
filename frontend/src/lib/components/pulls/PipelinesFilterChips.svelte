@@ -54,6 +54,12 @@
     restorePickerFocus(reason, { triggerEl: trigger });
   }
 
+  // One choice at a time: the pick closes the picker.
+  function pick(next: Partial<PipelineFilters>): void {
+    onChange(next);
+    closePicker();
+  }
+
   function projectOn(id: string): boolean {
     return filters.projects.length === 0 || filters.projects.includes(id);
   }
@@ -111,13 +117,13 @@
     {#if openPicker === 'ref'}
       <Menu ariaLabel="Ref kind" onClose={closePicker} minWidthClass="min-w-[180px]">
         {#each REF_KINDS as kind (kind.value)}
-          <MenuItem label={kind.label} checkbox checked={filters.refKind === kind.value} onSelect={() => onChange({ refKind: kind.value })} testId="pipelines-ref-{kind.value || 'any'}" />
+          <MenuItem label={kind.label} checkbox checked={filters.refKind === kind.value} onSelect={() => pick({ refKind: kind.value })} testId="pipelines-ref-{kind.value || 'any'}" />
         {/each}
       </Menu>
     {:else}
       <Menu ariaLabel="Status" onClose={closePicker} minWidthClass="min-w-[180px]">
         {#each STATUSES as status (status.value)}
-          <MenuItem label={status.label} checkbox checked={filters.status === status.value} onSelect={() => onChange({ status: status.value })} testId="pipelines-status-{status.value || 'all'}" />
+          <MenuItem label={status.label} checkbox checked={filters.status === status.value} onSelect={() => pick({ status: status.value })} testId="pipelines-status-{status.value || 'all'}" />
         {/each}
       </Menu>
     {/if}

@@ -44,8 +44,8 @@ func forgeProjectRepo(t *testing.T, app *App, originURL string) string {
 
 // The list pump against the fake forge on both forges: the projects come
 // from the store and their origins, the rows from each forge's list, and
-// the focus read adds approvals, unresolved threads and the pipeline,
-// which moves the attention state.
+// the detail read of the user's own and reviewed rows adds approvals,
+// unresolved threads and the pipeline, which moves the attention state.
 func TestPRListReadsBothForgesThroughTheirAPIs(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -89,9 +89,9 @@ func TestPRListReadsBothForgesThroughTheirAPIs(t *testing.T) {
 	}
 
 	t.Cleanup(app.prUpdates.wg.Wait)
-	events := capturePRList(t, app)
 	sub := subscribePRList(t, app)
-	gh := prListProject(t, sub.Snapshot, github)
+	snapshot := sub.Snapshot
+	gh := prListProject(t, snapshot, github)
 	if gh.Error != "" || len(gh.Rows) != 3 {
 		t.Fatalf("github project = %+v", gh)
 	}
@@ -102,39 +102,20 @@ func TestPRListReadsBothForgesThroughTheirAPIs(t *testing.T) {
 	if states[1] != PRStateReady || states[2] != PRStateYourTurn || states[3] != PRStatePipelineFailed {
 		t.Fatalf("github states = %v", states)
 	}
-	gl := prListProject(t, sub.Snapshot, gitlab)
+	gl := prListProject(t, snapshot, gitlab)
 	if gl.Error != "" || len(gl.Rows) != 2 {
 		t.Fatalf("gitlab project = %+v", gl)
 	}
-	states = map[int]string{}
-	var keys []string
-	for _, row := range gl.Rows {
-		states[row.Ref.Number] = row.State
-		keys = append(keys, row.Ref.Key())
-	}
-	// Before the detail: GitLab's list has no pipeline and cannot say the
-	// viewer approved.
-	if states[7] == PRStatePipelineFailed || states[8] != PRStateYourTurn {
-		t.Fatalf("gitlab states before the detail = %v", states)
-	}
-	for _, row := range gh.Rows {
-		keys = append(keys, row.Ref.Key())
-	}
-	if _, err := app.SetPRListFocus(context.Background(), sub.ID, keys); err != nil {
-		t.Fatal(err)
-	}
-	snapshot := awaitPRList(t, events, "the focused details", func(s PRListSnapshot) bool {
-		for _, project := range s.Projects {
-			for _, row := range project.Rows {
-				for _, key := range keys {
-					if row.Ref.Key() == key && row.Detail == nil {
-						return false
-					}
-				}
+	// Every row is the user's own or one they review, so the first tick
+	// read each detail: GitLab's list alone has no pipeline and cannot say
+	// the viewer approved.
+	for _, project := range snapshot.Projects {
+		for _, row := range project.Rows {
+			if row.Detail == nil {
+				t.Fatalf("%s has no detail (%s)", row.Ref.Key(), row.DetailError)
 			}
 		}
-		return true
-	})
+	}
 	for _, row := range prListProject(t, snapshot, gitlab).Rows {
 		switch row.Ref.Number {
 		case 7:

@@ -71,7 +71,7 @@ test('Workflows is a full-width pane and Back steps detail, home, then list', as
   await page.getByTestId('sidebar-tool-pulls').click();
   await expect(screen(page)).toHaveAttribute('data-compact-screen', 'thread');
   const pulls = page.locator('section[data-pane-kind="pulls"]');
-  await expect(pulls.getByTestId('pulls-pane-empty')).toBeVisible();
+  await expect(pulls.getByTestId('pulls-pane')).toBeVisible();
   await expect(pulls.getByTestId('pane-close')).toHaveCount(0);
   await pulls.getByTestId('compact-back').click();
   await expect(screen(page)).toHaveAttribute('data-compact-screen', 'list');

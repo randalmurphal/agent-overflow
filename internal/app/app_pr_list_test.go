@@ -179,6 +179,9 @@ func TestPRListSubscribeReadsEachRepositoryOnceAndJoinersShareIt(t *testing.T) {
 			prListRow(prListRepoA, 3, func(r *gitops.PRListRow) { r.ViewerIsAuthor, r.MergeStatus = true, "clean" }),
 		}
 		f.rows[prListRepoB.Key()] = []gitops.PRListRow{prListRow(prListRepoB, 7, func(r *gitops.PRListRow) { r.Draft = true })}
+		// The user's own row is read for its detail at once; the fake's
+		// default (a zero detail) would read as not ready.
+		f.details[prListRow(prListRepoA, 3, nil).Ref.Key()] = gitops.PRDetail{Readiness: gitops.MergeReadiness{State: gitops.MergeStateReady}}
 	})
 
 	sub := subscribePRList(t, app)
@@ -270,10 +273,12 @@ func TestPRListFocusIsBoundedAndReportsUnknownKeys(t *testing.T) {
 			State: gitops.MergeStateReady, Approvals: gitops.ApprovalCount{Given: 1, Required: 1}, Unresolved: &unresolved,
 		}}
 	})
-	events := capturePRList(t, app)
+	capturePRList(t, app)
 	sub := subscribePRList(t, app)
-	if got := prListProject(t, sub.Snapshot, "p-a").Rows[0]; got.Detail != nil || got.State != PRStateOpen {
-		t.Fatalf("row before focus = %+v", got)
+	// The user's own row needs its detail for its state whether or not it
+	// is on screen: the first tick reads it.
+	if got := prListProject(t, sub.Snapshot, "p-a").Rows[0]; got.Detail == nil || got.State != PRStateReady {
+		t.Fatalf("own row before focus = %+v", got)
 	}
 
 	tooMany := make([]string, maxPRListFocus+1)
@@ -290,9 +295,7 @@ func TestPRListFocusIsBoundedAndReportsUnknownKeys(t *testing.T) {
 	if !slices.Equal(result.Unknown, []string{"github:github.com:acme/widgets#99"}) {
 		t.Fatalf("unknown = %v", result.Unknown)
 	}
-	snapshot := awaitPRList(t, events, "the focused row's detail", func(s PRListSnapshot) bool {
-		return prListProject(t, s, "p-a").Rows[0].Detail != nil
-	})
+	snapshot := sub.Snapshot
 	got := prListProject(t, snapshot, "p-a").Rows[0]
 	if got.State != PRStateReady || got.Detail.ApprovalsGiven != 1 || got.Detail.ApprovalsRequired != 1 || got.Detail.Unresolved != 2 {
 		t.Fatalf("focused row = %+v detail %+v", got, got.Detail)
@@ -303,6 +306,32 @@ func TestPRListFocusIsBoundedAndReportsUnknownKeys(t *testing.T) {
 	if _, err := app.SetPRListFocus(context.Background(), "nope", nil); !errors.Is(err, errPRUpdatesUnknownSubscription) {
 		t.Fatalf("unknown subscription: %v", err)
 	}
+}
+
+// Someone else's row the user does not review is read only once a
+// subscriber focuses it (it is on screen): its state at list stage needs
+// no detail.
+func TestPRListReadsAnotherPersonsRowOnlyOnFocus(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	fake := newPRListFake(t, app)
+	row := prListRow(prListRepoA, 1, nil)
+	fake.set(func(f *prListFake) {
+		f.rows[prListRepoA.Key()] = []gitops.PRListRow{row}
+		f.details[row.Ref.Key()] = gitops.PRDetail{Readiness: gitops.MergeReadiness{State: gitops.MergeStateReady}}
+	})
+	events := capturePRList(t, app)
+	sub := subscribePRList(t, app)
+	if got := prListProject(t, sub.Snapshot, "p-a").Rows[0]; got.Detail != nil || fake.readCount(row.Ref) != 0 {
+		t.Fatalf("row before focus = %+v (reads %d)", got, fake.readCount(row.Ref))
+	}
+	if _, err := app.SetPRListFocus(context.Background(), sub.ID, []string{row.Ref.Key()}); err != nil {
+		t.Fatal(err)
+	}
+	awaitPRList(t, events, "the focused row's detail", func(s PRListSnapshot) bool {
+		return prListProject(t, s, "p-a").Rows[0].Detail != nil
+	})
 }
 
 // A focused detail is read again only when its list row changed or the

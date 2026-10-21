@@ -186,9 +186,13 @@ type prListFocusRead struct {
 	fingerprint string
 }
 
-// prListFocusLocked lists the focused rows whose detail is due: never
-// read, read for another list row, older than prListDetailMaxAge, or every
-// one when forced. A detail no row is focused on any more is dropped.
+// prListFocusLocked lists the rows whose detail is due: the rows the
+// subscribers focus (on screen), then the user's own and the ones they
+// review, whose attention state (ready, pipeline failed, your turn on
+// GitLab) needs the detail whether or not the list shows them, at most
+// maxPRListFocus in all; among those, never read, read for another list
+// row, older than prListDetailMaxAge, or every one when forced. A detail
+// no candidate row holds any more is dropped.
 func (a *App) prListFocusLocked(pump *prListPump, force bool) []prListFocusRead {
 	focused := map[string]bool{}
 	for _, handle := range a.prUpdates.listHandles {
@@ -196,25 +200,42 @@ func (a *App) prListFocusLocked(pump *prListPump, force bool) []prListFocusRead 
 			focused[key] = true
 		}
 	}
-	now := time.Now()
-	var due []prListFocusRead
+	var onScreen, own []gitops.PRListRow
 	seen := map[string]bool{}
 	for _, state := range pump.projects {
 		for _, row := range state.rows {
 			key := row.Ref.Key()
-			if !focused[key] || seen[key] {
+			if seen[key] {
 				continue
 			}
-			seen[key] = true
-			fingerprint := prListFingerprint(row)
-			last := pump.details[key]
-			if force || last == nil || last.fingerprint != fingerprint || now.Sub(last.readAt) >= prListDetailMaxAge {
-				due = append(due, prListFocusRead{pr: row.Ref, fingerprint: fingerprint})
+			switch {
+			case focused[key]:
+				seen[key] = true
+				onScreen = append(onScreen, row)
+			case row.ViewerIsAuthor || row.ViewerIsReviewer:
+				seen[key] = true
+				own = append(own, row)
 			}
 		}
 	}
+	candidates := append(onScreen, own...)
+	if len(candidates) > maxPRListFocus {
+		candidates = candidates[:maxPRListFocus]
+	}
+	now := time.Now()
+	var due []prListFocusRead
+	kept := map[string]bool{}
+	for _, row := range candidates {
+		key := row.Ref.Key()
+		kept[key] = true
+		fingerprint := prListFingerprint(row)
+		last := pump.details[key]
+		if force || last == nil || last.fingerprint != fingerprint || now.Sub(last.readAt) >= prListDetailMaxAge {
+			due = append(due, prListFocusRead{pr: row.Ref, fingerprint: fingerprint})
+		}
+	}
 	for key := range pump.details {
-		if !seen[key] {
+		if !kept[key] {
 			delete(pump.details, key)
 		}
 	}

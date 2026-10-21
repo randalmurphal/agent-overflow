@@ -89,7 +89,7 @@ test('the tools row opens a tool in the focused pane\'s place, or beside it with
 
   // ctrl/cmd+click inserts beside the focused pane and replaces nothing.
   await page.getByTestId('sidebar-tool-pulls').click({ modifiers: ['ControlOrMeta'] });
-  await expect(page.getByTestId('pulls-pane-empty')).toBeVisible();
+  await expect(page.getByTestId('pulls-pane')).toBeVisible();
   await page.getByTestId('sidebar-tool-workflows').click({ modifiers: ['ControlOrMeta'] });
   await expect(page.getByTestId('workflows-pane')).toBeVisible();
   expect(await stripKinds(page)).toEqual(['thread', 'pulls', 'workflows']);
@@ -121,7 +121,7 @@ test('tool panes keep their slots and focus across a reload, and Escape at home 
 
   await page.reload();
   await expect(page.getByTestId('workflows-pane')).toBeVisible();
-  await expect(page.getByTestId('pulls-pane-empty')).toBeVisible();
+  await expect(page.getByTestId('pulls-pane')).toBeVisible();
   expect(await stripKinds(page)).toEqual(before);
   expect(await focusedKind(page)).toBe('workflows');
   // The label survives the reload with the focus it follows.

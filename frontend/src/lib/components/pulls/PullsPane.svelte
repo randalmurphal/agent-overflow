@@ -406,7 +406,6 @@
           {#key selection.key}
             <ReviewPane
               pr={{ ownerPaneId: paneId, backend: selection.backend, projectId: selection.projectId, pr: selection.pr }}
-              onBack={compact ? () => { stepBack(); } : undefined}
             />
           {/key}
         {:else}
@@ -416,7 +415,7 @@
         {/if}
       {:else if pipeline}
         {#key pipeline.key}
-          <PipelineView row={pipeline.row} ci={pipeline.ci} onBack={compact ? () => { stepBack(); } : undefined} />
+          <PipelineView row={pipeline.row} ci={pipeline.ci} />
         {/key}
       {:else}
         <div class="flex flex-1 items-center justify-center px-6" data-testid="pipelines-detail-empty">

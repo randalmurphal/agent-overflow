@@ -73,6 +73,8 @@
 </script>
 
 <Popover {anchor} {open} {onClose} placement="bottom-start" ariaLabel="Open with agent">
+  <!-- Bounded so the first row's description truncates rather than widening the menu past the pane. -->
+  <div class="max-w-[min(26rem,calc(100vw-1rem))]">
   <Menu ariaLabel="Open with agent" onClose={() => onClose()} minWidthClass="min-w-[300px]">
     <MenuItem
       label="New thread on {branch}"
@@ -102,4 +104,5 @@
       {@render extra()}
     {/if}
   </Menu>
+  </div>
 </Popover>
