@@ -46,6 +46,11 @@ func (s *Store) CaptureUserPlacementBoundary(threadID string, turnIndex int, mov
 // first row's metadata is transformed using the predecessor's CURRENT index
 // (the placed first-row index for head). All affected positions and numeric promotion boundaries commit
 // atomically. Returns every changed row, with the user group first, for emission.
+//
+// The first row is the message the provider confirmed it consumed: the
+// review-comment claims it carries settle in the same transaction
+// (settleDiffReviewClaimsTx). The rest of the group moves with it
+// unconfirmed.
 func (s *Store) PlaceUserItemsAfterBoundary(threadID string, turnIndex int, boundaryID string, items []Item, transformFirstMeta func(string, int) (string, error), updatedAt int64) ([]Item, error) {
 	if threadID == "" || len(items) == 0 {
 		return nil, fmt.Errorf("store: user placement requires a thread and rows")
@@ -160,6 +165,9 @@ func (s *Store) PlaceUserItemsAfterBoundary(threadID string, turnIndex int, boun
 			}
 		}
 	}
+	if err := settleDiffReviewClaimsTx(tx, threadID, group[0].ID); err != nil {
+		return nil, err
+	}
 	if err := w.finish(); err != nil {
 		return nil, err
 	}
@@ -179,6 +187,8 @@ func (s *Store) PlaceUserItemsAfterBoundary(threadID string, turnIndex int, boun
 
 // UpdateItemMetaAtBoundary keeps an interrupt-anchored row in place while
 // resolving the separate consumption boundary in the metadata transaction.
+// The row is the message the provider confirmed it consumed: the
+// review-comment claims it carries settle in the same transaction.
 func (s *Store) UpdateItemMetaAtBoundary(threadID, itemID, boundaryID string, transform func(string, int) (string, error), updatedAt int64) (Item, error) {
 	var item Item
 	err := s.writeItems(threadID, nil, "confirm user metadata", func(tx *sql.Tx, w *cardWrite) error {
@@ -204,6 +214,9 @@ func (s *Store) UpdateItemMetaAtBoundary(threadID, itemID, boundaryID string, tr
 			if err := updateItemMetaTx(tx, w, old, meta, &updatedAt); err != nil {
 				return err
 			}
+		}
+		if err := settleDiffReviewClaimsTx(tx, threadID, itemID); err != nil {
+			return err
 		}
 		item, err = readBackItemTx(tx, threadID, itemID)
 		return err

@@ -134,7 +134,7 @@ func (a *App) SendPRDiffReviewComments(ctx context.Context, pr gitops.PRReferenc
 		return store.Thread{}, fmt.Errorf("send PR diff review comments: too many comments selected")
 	}
 	// Refuses an id that is not a draft of pr's for this source.
-	if _, err := a.store.ListDraftDiffReviewCommentsByID(owner, scope, sourceKey, ids); err != nil {
+	if _, err := a.store.ListDraftDiffReviewCommentsByID(owner, scope, sourceKey, ids, store.DiffReviewMessageRows{}); err != nil {
 		return store.Thread{}, fmt.Errorf("send PR diff review comments of %s: %w", pr.Key(), err)
 	}
 	// The send runs on ctx's values, not its cancel, as SendMessageWithOptions.

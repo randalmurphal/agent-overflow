@@ -27,9 +27,10 @@ import (
 // reads the values, only their order — so no renumber runs.
 //
 // deferredIDs are the merged messages that never had a row. The review
-// drafts a message claimed settle when its row lands
-// (ClaimDiffReviewCommentsSent); theirs settle with the fold, since the
-// survivor now carries their text.
+// drafts a queued message claimed settle when the provider confirms it
+// (ClaimDiffReviewCommentsSent); the fold is that confirmation for every
+// merged message, folded or deferred, since the survivor carries their
+// text.
 //
 // Returns the survivor row as stored.
 func (s *Store) FoldUserTextRows(threadID, survivorID string, foldedIDs, deferredIDs []string, summary, meta string, updatedAt int64) (Item, error) {
@@ -42,9 +43,9 @@ func (s *Store) FoldUserTextRows(threadID, survivorID string, foldedIDs, deferre
 	if len(foldedIDs) == 0 && len(deferredIDs) == 0 {
 		return Item{}, fmt.Errorf("store: fold user text rows %s/%s: no rows to fold", threadID, survivorID)
 	}
-	deferred, err := json.Marshal(uniqueNonEmptyStrings(deferredIDs))
+	merged, err := json.Marshal(uniqueNonEmptyStrings(append(slices.Clone(foldedIDs), deferredIDs...)))
 	if err != nil {
-		return Item{}, fmt.Errorf("store: fold user text rows %s/%s: encode deferred ids: %w", threadID, survivorID, err)
+		return Item{}, fmt.Errorf("store: fold user text rows %s/%s: encode merged ids: %w", threadID, survivorID, err)
 	}
 
 	// The fold carries no card: it recomputes the chains of the rows it
@@ -87,9 +88,9 @@ func (s *Store) FoldUserTextRows(threadID, survivorID string, foldedIDs, deferre
 		}
 		if _, err := tx.Exec(
 			`UPDATE diff_review_comments
-			    SET claim_thread_id = '', claim_item_id = ''
-			  WHERE claim_item_id <> '' AND claim_thread_id = ? AND claim_item_id IN (SELECT value FROM json_each(?))`,
-			threadID, string(deferred),
+			    SET claim_settles = ''
+			  WHERE claim_item_id <> '' AND claim_thread_id = ? AND claim_item_id IN (SELECT value FROM json_each(?)) AND claim_settles <> ''`,
+			threadID, string(merged),
 		); err != nil {
 			return fmt.Errorf("store: fold %s/%s: settle the review claims of merged messages: %w", threadID, survivorID, err)
 		}

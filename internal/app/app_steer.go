@@ -213,7 +213,7 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 	}
 	// The review drafts are claimed before the row lands, as the send
 	// path does (claimDiffReviewDelivery).
-	claim, err := a.claimDiffReviewDelivery(threadID, turnIndex, steerItemID, resolved)
+	claim, err := a.claimDiffReviewDelivery(threadID, turnIndex, steerItemID, resolved, false)
 	if err != nil {
 		return store.Item{}, fmt.Errorf("steer message: %w", err)
 	}

@@ -44,7 +44,7 @@ func TestDiffReviewCommentsDraftLifecycle(t *testing.T) {
 		t.Fatalf("updated = %+v", updated)
 	}
 
-	selected, err := s.ListDraftDiffReviewCommentsByID(ThreadReviewOwner(thread.ID), string(DiffReviewScopeWorkspace), "diff-1", []string{created.ID})
+	selected, err := s.ListDraftDiffReviewCommentsByID(ThreadReviewOwner(thread.ID), string(DiffReviewScopeWorkspace), "diff-1", []string{created.ID}, DiffReviewMessageRows{})
 	if err != nil {
 		t.Fatalf("ListDraftDiffReviewCommentsByID: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestListDraftDiffReviewCommentsByIDRejectsStaleIDs(t *testing.T) {
 		t.Fatalf("CreateDiffReviewComment: %v", err)
 	}
 
-	if _, err := s.ListDraftDiffReviewCommentsByID(ThreadReviewOwner(thread.ID), string(DiffReviewScopeWorkspace), "diff-1", []string{created.ID, "missing"}); err == nil {
+	if _, err := s.ListDraftDiffReviewCommentsByID(ThreadReviewOwner(thread.ID), string(DiffReviewScopeWorkspace), "diff-1", []string{created.ID, "missing"}, DiffReviewMessageRows{}); err == nil {
 		t.Fatal("ListDraftDiffReviewCommentsByID accepted a stale id")
 	}
 }
@@ -401,4 +401,228 @@ func TestDiffReviewClaimsTheirRowNeverSettledReturnAtBoot(t *testing.T) {
 	}
 	// The released draft can be claimed again.
 	claim("lost", "user:6", 6)
+}
+
+// claimFor claims the owner's comment for the message the row itemID of
+// thread carries, in the turn turnID.
+func claimFor(t *testing.T, s *Store, owner DiffReviewOwner, scope, source, comment, thread, itemID, turnID string, queued bool) {
+	t.Helper()
+	claimed, err := s.ClaimDiffReviewCommentsSent(owner, scope, source, []DiffReviewCommentSnapshot{{ID: comment, Body: comment}}, DiffReviewDelivery{
+		SentAt: 10, TurnID: turnID, ThreadID: thread, ItemID: itemID, Queued: queued,
+	})
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim %s = %v, %v", comment, claimed, err)
+	}
+}
+
+func createReviewComments(t *testing.T, s *Store, owner DiffReviewOwner, scope, source string, ids ...string) {
+	t.Helper()
+	for _, id := range ids {
+		if _, err := s.CreateDiffReviewComment(DiffReviewComment{
+			ID: id, ThreadID: owner.ThreadID, PRKey: owner.PRKey, Scope: scope, SourceKey: source, FilePath: "a.go", NewLine: 1, Side: "new", Body: id,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func reviewCommentStatus(t *testing.T, s *Store, owner DiffReviewOwner, id string) string {
+	t.Helper()
+	comment, err := s.GetDiffReviewComment(owner, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return comment.Status
+}
+
+// A queued message's claim settles when the provider confirms the message,
+// not when its row lands: a confirmation that places a group settles the
+// confirmed row's claim and not the claim of a sibling that moves with it
+// unconfirmed, one that inserts a deferred row settles that row's, and one
+// in place settles its row's. A boot returns what no confirmation settled.
+func TestQueuedDiffReviewClaimsSettleWhenTheProviderConfirmsTheMessage(t *testing.T) {
+	s := newTestStore(t)
+	seedPlacement(t, s)
+	owner := ThreadReviewOwner("t")
+	scope, source := string(DiffReviewScopeWorkspace), "k"
+	createReviewComments(t, s, owner, scope, source, "placed", "sibling", "in-place", "deferred")
+	claimFor(t, s, owner, scope, source, "placed", "t", "a", "t:0", true)
+	claimFor(t, s, owner, scope, source, "sibling", "t", "b", "t:0", true)
+	claimFor(t, s, owner, scope, source, "in-place", "t", "c", "t:0", true)
+	claimFor(t, s, owner, scope, source, "deferred", "t", "d", "t:0", true)
+	// The quiet row of in-place lands before the provider has the message.
+	if err := s.InsertItem(placementItem("t", "c", "user_text", 4)); err != nil {
+		t.Fatal(err)
+	}
+	var settles string
+	if err := s.db.QueryRow(`SELECT claim_settles FROM diff_review_comments WHERE id = 'in-place'`).Scan(&settles); err != nil || settles != diffReviewClaimSettlesAtConfirm {
+		t.Fatalf("in-place claim after its row = %q (%v), want it waiting for the confirmation", settles, err)
+	}
+
+	same := func(meta string, _ int) (string, error) { return meta, nil }
+	boundary, err := s.CaptureUserPlacementBoundary("t", 0, []string{"a", "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PlaceUserItemsAfterBoundary("t", 0, boundary, []Item{{ID: "a"}, {ID: "b"}}, same, 20); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateItemMetaAtBoundary("t", "c", "", same, 21); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PlaceUserItemsAfterBoundary("t", 0, "", []Item{placementItem("t", "d", "user_text", 0)}, same, 22); err != nil {
+		t.Fatal(err)
+	}
+
+	released, err := s.ReleaseUnsettledDiffReviewClaims()
+	if err != nil || released != 1 {
+		t.Fatalf("ReleaseUnsettledDiffReviewClaims = %d, %v; want the unconfirmed sibling's claim", released, err)
+	}
+	for id, want := range map[string]string{"placed": "sent", "sibling": "draft", "in-place": "sent", "deferred": "sent"} {
+		if got := reviewCommentStatus(t, s, owner, id); got != want {
+			t.Errorf("%s = %s, want %s", id, got, want)
+		}
+	}
+}
+
+// A message the provider retired undelivered takes back the review drafts
+// it claimed with its row, in one transaction: a direct send's, whose row
+// settled its claim, a queued one's, and a deferred one's, which has no row.
+// Another message's drafts stay sent.
+func TestRetireUndeliveredUserRowReturnsTheDraftsItsMessageClaimed(t *testing.T) {
+	s := newTestStore(t)
+	thread := makeThread("retire-thread", "claude")
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	pr := PRReviewOwner("forge:o/r:7")
+	prScope, prSource := string(DiffReviewScopePR), "pr:forge:o/r:7"
+	own := ThreadReviewOwner(thread.ID)
+	scope, source := string(DiffReviewScopeWorkspace), "k"
+	createReviewComments(t, s, pr, prScope, prSource, "direct", "kept")
+	createReviewComments(t, s, own, scope, source, "queued", "deferred")
+	userRow := func(id string) {
+		t.Helper()
+		if _, err := s.UpsertItem(Item{ID: id, ThreadID: thread.ID, TurnIndex: 1, Kind: "user_text", Role: "user", Status: "completed", Summary: id, CreatedAt: 1, UpdatedAt: 1}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	claimFor(t, s, pr, prScope, prSource, "direct", thread.ID, "user:1", thread.ID+":1", false)
+	userRow("user:1")
+	claimFor(t, s, own, scope, source, "queued", thread.ID, "user:2", thread.ID+":1", true)
+	userRow("user:2")
+	claimFor(t, s, own, scope, source, "deferred", thread.ID, "user:3", thread.ID+":1", true)
+	claimFor(t, s, pr, prScope, prSource, "kept", thread.ID, "user:4", thread.ID+":1", false)
+	userRow("user:4")
+
+	// A delete that fails returns nothing.
+	if _, err := s.db.Exec(`CREATE TRIGGER refuse_delete BEFORE DELETE ON items WHEN OLD.id = 'user:1' BEGIN SELECT RAISE(ABORT, 'injected delete failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RetireUndeliveredUserRow(thread.ID, "user:1"); err == nil || !strings.Contains(err.Error(), "injected delete failure") {
+		t.Fatalf("retire = %v, want the injected failure", err)
+	}
+	if got := reviewCommentStatus(t, s, pr, "direct"); got != "sent" {
+		t.Fatalf("direct after a failed retire = %s, want sent", got)
+	}
+	if _, err := s.db.Exec(`DROP TRIGGER refuse_delete`); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		row     string
+		comment string
+		owner   DiffReviewOwner
+		want    DiffReviewCommentSource
+	}{
+		{"user:1", "direct", pr, DiffReviewCommentSource{Owner: pr, Scope: prScope, SourceKey: prSource}},
+		{"user:2", "queued", own, DiffReviewCommentSource{Owner: own, Scope: scope, SourceKey: source}},
+		{"user:3", "deferred", own, DiffReviewCommentSource{Owner: own, Scope: scope, SourceKey: source}},
+	} {
+		sources, err := s.RetireUndeliveredUserRow(thread.ID, tc.row)
+		if err != nil || len(sources) != 1 || sources[0] != tc.want {
+			t.Fatalf("retire %s = %+v, %v; want %+v", tc.row, sources, err, tc.want)
+		}
+		if _, found, err := s.GetThreadItem(thread.ID, tc.row); err != nil || found {
+			t.Fatalf("row %s after its retire: found=%v err=%v", tc.row, found, err)
+		}
+		comment, err := s.GetDiffReviewComment(tc.owner, tc.comment)
+		if err != nil || comment.Status != "draft" || comment.SentAt != 0 || comment.SentTurnID != "" {
+			t.Fatalf("%s after its message's retire = %+v (%v), want a draft", tc.comment, comment, err)
+		}
+	}
+	if sources, err := s.RetireUndeliveredUserRow(thread.ID, "user:3"); err != nil || len(sources) != 0 {
+		t.Fatalf("second retire = %+v, %v; want nothing left", sources, err)
+	}
+	if got := reviewCommentStatus(t, s, pr, "kept"); got != "sent" {
+		t.Fatalf("kept = %s, want sent", got)
+	}
+	if released, err := s.ReleaseUnsettledDiffReviewClaims(); err != nil || released != 0 {
+		t.Fatalf("ReleaseUnsettledDiffReviewClaims = %d, %v; want nothing pending", released, err)
+	}
+}
+
+// An edit, a publish and a resolve each supersede the message that claimed
+// a comment, on a thread's comments and a PR's: none leaves a claim that a
+// boot or the message's undelivered retire could turn back into a draft.
+func TestSupersedingAClaimedCommentClearsItsClaim(t *testing.T) {
+	s := newTestStore(t)
+	thread := makeThread("supersede-thread", "claude")
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	owners := []DiffReviewOwner{ThreadReviewOwner(thread.ID), PRReviewOwner("forge:o/r:7")}
+	sourceOf := func(owner DiffReviewOwner) (string, string) {
+		if owner.PRKey != "" {
+			return string(DiffReviewScopePR), "pr:forge:o/r:7"
+		}
+		return string(DiffReviewScopeWorkspace), "k"
+	}
+	claimed := func(id string) bool {
+		t.Helper()
+		var linked bool
+		if err := s.db.QueryRow(`SELECT claim_item_id <> '' OR claim_thread_id <> '' OR claim_settles <> '' FROM diff_review_comments WHERE id = ?`, id).Scan(&linked); err != nil {
+			t.Fatal(err)
+		}
+		return linked
+	}
+	for i, owner := range owners {
+		scope, source := sourceOf(owner)
+		published, resolved := fmt.Sprintf("published-%d", i), fmt.Sprintf("resolved-%d", i)
+		createReviewComments(t, s, owner, scope, source, published, resolved)
+		claimFor(t, s, owner, scope, source, published, thread.ID, "user:1", thread.ID+":1", true)
+		claimFor(t, s, owner, scope, source, resolved, thread.ID, "user:1", thread.ID+":1", false)
+		if _, err := s.UpdateDiffReviewComment(owner, published, DiffReviewCommentUpdate{Body: "edited"}, 20); err != nil {
+			t.Fatal(err)
+		}
+		if claimed(published) {
+			t.Fatalf("%s: the edit kept the claim", owner)
+		}
+		if err := s.MarkDiffReviewCommentsSent(owner, scope, source, []string{published}, 30, ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.DeleteOrResolveDiffReviewComment(owner, resolved, 40); err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range []string{published, resolved} {
+			if claimed(id) {
+				t.Fatalf("%s: %s keeps its claim", owner, id)
+			}
+		}
+	}
+	if sources, err := s.RetireUndeliveredUserRow(thread.ID, "user:1"); err != nil || len(sources) != 0 {
+		t.Fatalf("retire = %+v, %v; want nothing the message still carries", sources, err)
+	}
+	if released, err := s.ReleaseUnsettledDiffReviewClaims(); err != nil || released != 0 {
+		t.Fatalf("ReleaseUnsettledDiffReviewClaims = %d, %v; want nothing", released, err)
+	}
+	for i, owner := range owners {
+		comment, err := s.GetDiffReviewComment(owner, fmt.Sprintf("published-%d", i))
+		if err != nil || comment.Status != "sent" || comment.Body != "edited" || comment.SentTurnID != "" {
+			t.Fatalf("%s published = %+v (%v), want the edit sent with no turn", owner, comment, err)
+		}
+		if got := reviewCommentStatus(t, s, owner, fmt.Sprintf("resolved-%d", i)); got != "resolved" {
+			t.Fatalf("%s resolved = %s", owner, got)
+		}
+	}
 }

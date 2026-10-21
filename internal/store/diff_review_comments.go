@@ -317,6 +317,8 @@ func nullableText(value string) any {
 	return value
 }
 
+// UpdateDiffReviewComment saves a new body as a draft. The edit supersedes
+// any message that carried the old text, so the comment's claim goes with it.
 func (s *Store) UpdateDiffReviewComment(owner DiffReviewOwner, commentID string, update DiffReviewCommentUpdate, now int64) (DiffReviewComment, error) {
 	if err := owner.validate(); err != nil {
 		return DiffReviewComment{}, err
@@ -328,7 +330,8 @@ func (s *Store) UpdateDiffReviewComment(owner DiffReviewOwner, commentID string,
 	column, value := owner.column()
 	res, err := s.db.Exec(
 		`UPDATE diff_review_comments
-		    SET body = ?, status = 'draft', sent_at = 0, sent_turn_id = '', updated_at = ?
+		    SET body = ?, status = 'draft', sent_at = 0, sent_turn_id = '', updated_at = ?,
+		        claim_thread_id = '', claim_item_id = '', claim_settles = ''
 		  WHERE `+column+` = ? AND id = ? AND status <> 'resolved'`,
 		body, now, value, commentID,
 	)
@@ -341,6 +344,9 @@ func (s *Store) UpdateDiffReviewComment(owner DiffReviewOwner, commentID string,
 	return s.GetDiffReviewComment(owner, commentID)
 }
 
+// DeleteOrResolveDiffReviewComment deletes a draft and resolves any other
+// comment. A resolved comment keeps no claim: no message's delivery can
+// return it to a draft.
 func (s *Store) DeleteOrResolveDiffReviewComment(owner DiffReviewOwner, commentID string, now int64) error {
 	comment, err := s.GetDiffReviewComment(owner, commentID)
 	if err != nil {
@@ -355,7 +361,7 @@ func (s *Store) DeleteOrResolveDiffReviewComment(owner DiffReviewOwner, commentI
 	}
 	_, err = s.db.Exec(
 		`UPDATE diff_review_comments
-		    SET status = 'resolved', updated_at = ?
+		    SET status = 'resolved', updated_at = ?, claim_thread_id = '', claim_item_id = '', claim_settles = ''
 		  WHERE `+column+` = ? AND id = ?`,
 		now, value, commentID,
 	)
@@ -367,7 +373,8 @@ func (s *Store) DeleteOrResolveDiffReviewComment(owner DiffReviewOwner, commentI
 
 // MarkDiffReviewCommentsSent marks the owner's drafts commentIDs sent in
 // the turn sentTurnID: the owner's own thread's turn, or for a PR's drafts
-// the turn of the thread they were sent to.
+// the turn of the thread they were sent to, or published to the forge. It
+// is a delivery of its own: the comments keep no claim of a message.
 func (s *Store) MarkDiffReviewCommentsSent(owner DiffReviewOwner, scope, sourceKey string, commentIDs []string, sentAt int64, sentTurnID string) error {
 	if err := owner.validate(); err != nil {
 		return err
@@ -389,7 +396,8 @@ func (s *Store) MarkDiffReviewCommentsSent(owner DiffReviewOwner, scope, sourceK
 	}
 	column, value := owner.column()
 	query := `UPDATE diff_review_comments
-	             SET status = 'sent', sent_at = ?, sent_turn_id = ?, updated_at = ?
+	             SET status = 'sent', sent_at = ?, sent_turn_id = ?, updated_at = ?,
+	                 claim_thread_id = '', claim_item_id = '', claim_settles = ''
 	           WHERE ` + column + ` = ? AND scope = ? AND source_key = ? AND status = 'draft' AND id IN (` + placeholders(len(ids)) + `)`
 	args := make([]any, 0, 6+len(ids))
 	args = append(args, sentAt, sentTurnID, sentAt, value, scope, sourceKey)
@@ -426,12 +434,24 @@ var ErrDiffReviewCommentsSentElsewhere = errors.New("a selected review comment w
 
 // DiffReviewDelivery is the message a claim marks drafts sent by: the turn
 // they are sent in and the user row, ThreadID/ItemID, that carries them.
+// Queued is a message the flush queue dispatches: its row can land before
+// the provider has it, so its claim settles when the provider confirms
+// consumption (settleDiffReviewClaimsTx), not when the row lands.
 type DiffReviewDelivery struct {
 	SentAt   int64
 	TurnID   string
 	ThreadID string
 	ItemID   string
+	Queued   bool
 }
+
+// What a claim waits for (claim_settles): nothing, its row's insert, or the
+// provider's confirmation that it consumed the message.
+const (
+	diffReviewClaimSettled          = ""
+	diffReviewClaimSettlesAtRow     = "row"
+	diffReviewClaimSettlesAtConfirm = "confirm"
+)
 
 // ClaimDiffReviewCommentsSent marks sent in the turn delivery.TurnID each
 // of the owner's drafts in snapshot whose body is still the one the message
@@ -441,10 +461,14 @@ type DiffReviewDelivery struct {
 // resolved, fails the whole claim with ErrDiffReviewCommentsSentElsewhere
 // and marks nothing: that text reached another message.
 //
-// Until the message's row lands, the claim names it (claim_thread_id,
-// claim_item_id); the row's insert clears that in its own transaction
-// (items_settle_diff_review_claims). A claim no row settled is released at
-// boot (ReleaseUnsettledDiffReviewClaims).
+// The claim names the message's row (claim_thread_id, claim_item_id) and
+// waits for its delivery (claim_settles): a direct send or steer is
+// delivered when its row lands, which settles the claim in the row's
+// transaction (items_settle_diff_review_claims); a queued one when the
+// provider confirms it (delivery.Queued, settleDiffReviewClaimsTx). A
+// message retired undelivered returns its comments by the row
+// (RetireUndeliveredUserRow), and a claim still unsettled at boot is
+// released (ReleaseUnsettledDiffReviewClaims).
 func (s *Store) ClaimDiffReviewCommentsSent(owner DiffReviewOwner, scope, sourceKey string, snapshot []DiffReviewCommentSnapshot, delivery DiffReviewDelivery) ([]string, error) {
 	if err := owner.validate(); err != nil {
 		return nil, err
@@ -473,25 +497,28 @@ func (s *Store) ClaimDiffReviewCommentsSent(owner DiffReviewOwner, scope, source
 		return nil, fmt.Errorf("store: claim diff review comments for %s/%s: %w", owner, scope, err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	// A row that has already landed settles the claim at once.
-	var landed bool
-	if err := tx.QueryRow(
-		`SELECT EXISTS (SELECT 1 FROM items WHERE thread_id = ? AND id = ?)`, delivery.ThreadID, delivery.ItemID,
-	).Scan(&landed); err != nil {
-		return nil, fmt.Errorf("store: claim diff review comments: read the message row: %w", err)
-	}
-	claimThreadID, claimItemID := delivery.ThreadID, delivery.ItemID
-	if landed {
-		claimThreadID, claimItemID = "", ""
+	settles := diffReviewClaimSettlesAtConfirm
+	if !delivery.Queued {
+		// A row that has already landed delivers the message at once.
+		var landed bool
+		if err := tx.QueryRow(
+			`SELECT EXISTS (SELECT 1 FROM items WHERE thread_id = ? AND id = ?)`, delivery.ThreadID, delivery.ItemID,
+		).Scan(&landed); err != nil {
+			return nil, fmt.Errorf("store: claim diff review comments: read the message row: %w", err)
+		}
+		settles = diffReviewClaimSettlesAtRow
+		if landed {
+			settles = diffReviewClaimSettled
+		}
 	}
 	sentAt := delivery.SentAt
 	claimed := make([]string, 0, len(snapshot))
 	for _, comment := range snapshot {
 		res, err := tx.Exec(
 			`UPDATE diff_review_comments
-			    SET status = 'sent', sent_at = ?, sent_turn_id = ?, updated_at = ?, claim_thread_id = ?, claim_item_id = ?
+			    SET status = 'sent', sent_at = ?, sent_turn_id = ?, updated_at = ?, claim_thread_id = ?, claim_item_id = ?, claim_settles = ?
 			  WHERE `+column+` = ? AND scope = ? AND source_key = ? AND id = ? AND status = 'draft' AND body = ?`,
-			sentAt, sentTurnID, sentAt, claimThreadID, claimItemID, value, scope, sourceKey, comment.ID, comment.Body,
+			sentAt, sentTurnID, sentAt, delivery.ThreadID, delivery.ItemID, settles, value, scope, sourceKey, comment.ID, comment.Body,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("store: claim diff review comment %s of %s: %w", comment.ID, owner, err)
@@ -536,8 +563,8 @@ func (s *Store) ReleaseDiffReviewCommentsSent(owner DiffReviewOwner, scope, sour
 
 // RetargetDiffReviewCommentsSent moves the comments ids a claim for
 // fromTurnID marked to the turn toTurnID, when the message that claimed
-// them is placed in another turn as the row toItemID. A claim its row has
-// not settled names toItemID from then on.
+// them is placed in another turn as the row toItemID. The claim names
+// toItemID from then on and still waits for what it waited for.
 func (s *Store) RetargetDiffReviewCommentsSent(owner DiffReviewOwner, scope, sourceKey string, ids []string, fromTurnID, toTurnID, toItemID string) error {
 	if strings.TrimSpace(toTurnID) == "" || strings.TrimSpace(toItemID) == "" {
 		return fmt.Errorf("store: retarget diff review comments: the turn and the message row are required")
@@ -567,7 +594,8 @@ func (s *Store) moveClaimedDiffReviewComments(owner DiffReviewOwner, scope, sour
 		        sent_at = CASE WHEN ?1 = '' THEN 0 ELSE sent_at END,
 		        sent_turn_id = ?1,
 		        claim_thread_id = CASE WHEN ?1 = '' OR claim_item_id = '' THEN '' ELSE claim_thread_id END,
-		        claim_item_id = CASE WHEN ?1 = '' OR claim_item_id = '' THEN '' ELSE ?7 END
+		        claim_item_id = CASE WHEN ?1 = '' OR claim_item_id = '' THEN '' ELSE ?7 END,
+		        claim_settles = CASE WHEN ?1 = '' OR claim_item_id = '' THEN '' ELSE claim_settles END
 		  WHERE `+column+` = ?2 AND scope = ?3 AND source_key = ?4 AND status = 'sent' AND sent_turn_id = ?5
 		    AND id IN (SELECT value FROM json_each(?6))`,
 		toTurnID, value, scope, sourceKey, fromTurnID, string(encoded), toItemID,
@@ -578,17 +606,18 @@ func (s *Store) moveClaimedDiffReviewComments(owner DiffReviewOwner, scope, sour
 }
 
 // ReleaseUnsettledDiffReviewClaims returns to drafts every comment a claim
-// marked sent whose message row never landed, and reports how many. Run it
-// only while no message can be in flight (App boot): a claim still naming
-// its row then belongs to a message the previous instance never persisted.
+// marked sent whose message was never delivered, and reports how many. Run
+// it only while no message can be in flight (App boot): a claim still
+// unsettled then belongs to a message whose row the previous instance never
+// persisted, or that no provider confirmed.
 func (s *Store) ReleaseUnsettledDiffReviewClaims() (int, error) {
 	res, err := s.db.Exec(
 		`UPDATE diff_review_comments
 		    SET status = CASE WHEN status = 'sent' THEN 'draft' ELSE status END,
 		        sent_at = CASE WHEN status = 'sent' THEN 0 ELSE sent_at END,
 		        sent_turn_id = CASE WHEN status = 'sent' THEN '' ELSE sent_turn_id END,
-		        claim_thread_id = '', claim_item_id = ''
-		  WHERE claim_item_id <> ''`,
+		        claim_thread_id = '', claim_item_id = '', claim_settles = ''
+		  WHERE claim_item_id <> '' AND claim_settles <> ''`,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("store: release unsettled diff review claims: %w", err)
@@ -598,6 +627,90 @@ func (s *Store) ReleaseUnsettledDiffReviewClaims() (int, error) {
 		return 0, fmt.Errorf("store: release unsettled diff review claims: %w", err)
 	}
 	return int(n), nil
+}
+
+// settleDiffReviewClaimsTx settles the claims of the message the row
+// threadID/itemID carries: the provider confirmed it consumed the message.
+// The confirmation writes run it in their transaction
+// (PlaceUserItemsAfterBoundary, UpdateItemMetaAtBoundary).
+func settleDiffReviewClaimsTx(tx sqlExecutor, threadID, itemID string) error {
+	if _, err := tx.Exec(
+		`UPDATE diff_review_comments SET claim_settles = ''
+		  WHERE claim_item_id <> '' AND claim_thread_id = `+boundText+` AND claim_item_id = `+boundText+` AND claim_settles <> ''`,
+		threadID, itemID,
+	); err != nil {
+		return fmt.Errorf("store: settle the review claims of %s/%s: %w", threadID, itemID, err)
+	}
+	return nil
+}
+
+// SettleDiffReviewClaims settles the claims of the message the row
+// threadID/itemID carries, for a confirmation that writes nothing else.
+func (s *Store) SettleDiffReviewClaims(threadID, itemID string) error {
+	return settleDiffReviewClaimsTx(s.db, threadID, itemID)
+}
+
+// DiffReviewCommentSource is one owner's scope and source key, whose review
+// panes show a change.
+type DiffReviewCommentSource struct {
+	Owner     DiffReviewOwner
+	Scope     string
+	SourceKey string
+}
+
+// RetireUndeliveredUserRow takes back a message the provider never
+// consumed: in one transaction it returns to drafts the comments still
+// marked sent by the message the row threadID/itemID carries, settled or
+// not, and deletes the row if it exists (a deferred message has none). It
+// returns the sources whose comments it returned.
+func (s *Store) RetireUndeliveredUserRow(threadID, itemID string) ([]DiffReviewCommentSource, error) {
+	if strings.TrimSpace(threadID) == "" || strings.TrimSpace(itemID) == "" {
+		return nil, fmt.Errorf("store: retire undelivered user row: the thread and the row are required")
+	}
+	var sources []DiffReviewCommentSource
+	err := s.writeItems(threadID, nil, "retire undelivered user row "+threadID+"/"+itemID, func(tx *sql.Tx, w *cardWrite) error {
+		sources = sources[:0]
+		rows, err := tx.Query(
+			`UPDATE diff_review_comments
+			    SET status = CASE WHEN status = 'sent' THEN 'draft' ELSE status END,
+			        sent_at = CASE WHEN status = 'sent' THEN 0 ELSE sent_at END,
+			        sent_turn_id = CASE WHEN status = 'sent' THEN '' ELSE sent_turn_id END,
+			        claim_thread_id = '', claim_item_id = '', claim_settles = ''
+			  WHERE claim_item_id <> '' AND claim_thread_id = `+boundText+` AND claim_item_id = `+boundText+`
+			RETURNING COALESCE(thread_id, ''), COALESCE(pr_key, ''), scope, source_key`,
+			threadID, itemID,
+		)
+		if err != nil {
+			return fmt.Errorf("store: return the review comments of %s/%s: %w", threadID, itemID, err)
+		}
+		seen := map[DiffReviewCommentSource]bool{}
+		for rows.Next() {
+			var source DiffReviewCommentSource
+			if err := rows.Scan(&source.Owner.ThreadID, &source.Owner.PRKey, &source.Scope, &source.SourceKey); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("store: return the review comments of %s/%s: %w", threadID, itemID, err)
+			}
+			if !seen[source] {
+				seen[source] = true
+				sources = append(sources, source)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("store: return the review comments of %s/%s: %w", threadID, itemID, err)
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("store: return the review comments of %s/%s: %w", threadID, itemID, err)
+		}
+		if err := deleteThreadItemTx(tx, w, threadID, itemID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return sources, nil
 }
 
 func (s *Store) diffReviewCommentsAlreadySent(owner DiffReviewOwner, scope, sourceKey string, ids []string, sentTurnID string) (bool, error) {
@@ -699,7 +812,19 @@ func (s *Store) ListDiffReviewComments(owner DiffReviewOwner, scope, sourceKey s
 	return out, nil
 }
 
-func (s *Store) ListDraftDiffReviewCommentsByID(owner DiffReviewOwner, scope, sourceKey string, ids []string) ([]DiffReviewComment, error) {
+// DiffReviewMessageRows are user rows of thread ThreadID that an earlier
+// dispatch of one message landed as, and that are still to be retired.
+type DiffReviewMessageRows struct {
+	ThreadID string
+	ItemIDs  []string
+}
+
+// ListDraftDiffReviewCommentsByID reads the owner's drafts ids for a
+// message to send, failing unless every one is a draft. A comment the
+// claim of one of heldBy's rows holds counts as a draft: it is the same
+// message's, sent again, and the retire of that row returns it before the
+// new claim takes it (RetireUndeliveredUserRow).
+func (s *Store) ListDraftDiffReviewCommentsByID(owner DiffReviewOwner, scope, sourceKey string, ids []string, heldBy DiffReviewMessageRows) ([]DiffReviewComment, error) {
 	if err := owner.validate(); err != nil {
 		return nil, err
 	}
@@ -718,17 +843,23 @@ func (s *Store) ListDraftDiffReviewCommentsByID(owner DiffReviewOwner, scope, so
 	if len(wanted) > MaxDiffReviewCommentIDs {
 		return nil, fmt.Errorf("store: too many diff review comments selected")
 	}
+	held, err := json.Marshal(uniqueNonEmptyStrings(heldBy.ItemIDs))
+	if err != nil {
+		return nil, fmt.Errorf("store: encode the rows holding diff review comments: %w", err)
+	}
 	column, value := owner.column()
 	query := `SELECT ` + diffReviewCommentColumns + `
 	            FROM diff_review_comments
 	           WHERE ` + column + ` = ?
 	             AND scope = ?
 	             AND source_key = ?
-	             AND status = 'draft'
+	             AND (status = 'draft'
+	                  OR (status = 'sent' AND claim_item_id <> '' AND claim_thread_id = ` + boundText + `
+	                      AND claim_item_id IN (SELECT value FROM json_each(?))))
 	             AND id IN (` + placeholders(len(wanted)) + `)
 	           ORDER BY file_path ASC, old_line ASC, new_line ASC, created_at ASC`
-	args := make([]any, 0, 3+len(wanted))
-	args = append(args, value, scope, sourceKey)
+	args := make([]any, 0, 5+len(wanted))
+	args = append(args, value, scope, sourceKey, heldBy.ThreadID, string(held))
 	for _, id := range wanted {
 		args = append(args, id)
 	}

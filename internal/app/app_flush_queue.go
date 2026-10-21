@@ -618,6 +618,10 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 			// would have had if the thread had been idle.
 			origin:       payload.Origin,
 			originThread: payload.OriginThread,
+			// The review drafts a previous dispatch's stale row still
+			// holds are this message's; the cleanup below returns them
+			// before the claim takes them again.
+			heldBy: staleRowsOf(item),
 		})
 		if err != nil {
 			return nil, false, requeue, err
@@ -764,10 +768,13 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 	// The review drafts each member carries are claimed for the row's turn
 	// before anything reaches the provider, so two threads dispatching the
 	// same drafts cannot both deliver them (claimDiffReviewDelivery). Every
-	// path below that requeues the group hands them back (unclaim).
+	// path below that requeues the group hands them back (unclaim). The
+	// claims settle when the provider confirms the message, not when its
+	// quiet row lands, and a session death that takes the message back
+	// returns them with it (cleanupStaleFlushRow).
 	var claims diffReviewClaims
 	for _, member := range members {
-		claim, claimErr := a.claimDiffReviewDelivery(threadID, persistTurnIndex, userItem.ID, member.resolved)
+		claim, claimErr := a.claimDiffReviewDelivery(threadID, persistTurnIndex, userItem.ID, member.resolved, true)
 		if claimErr != nil {
 			return nil, false, requeue, errors.Join(claimErr, claims.release(a))
 		}
@@ -1445,4 +1452,13 @@ func (a *App) nextFlushUserItemID(threadID string, turnIndex int) (string, error
 		return "", err
 	}
 	return fmt.Sprintf("user:%d:flush:%d", turnIndex, seq), nil
+}
+
+// staleRowsOf is the stale row a requeued item's earlier dispatch left, if
+// any (QueuedFlushItem.StaleUserItemID).
+func staleRowsOf(item triage.QueuedFlushItem) []string {
+	if item.StaleUserItemID == "" {
+		return nil
+	}
+	return []string{item.StaleUserItemID}
 }

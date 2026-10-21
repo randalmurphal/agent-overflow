@@ -373,11 +373,13 @@ func diffReviewSourceOwner(source *SourceDiffReview) store.DiffReviewOwner {
 // appendDiffReviewCommentsToContent appends the prompt of the drafts
 // commentIDs to content and returns them as it read them, which is what
 // the message delivers and what its claim settles (claimDiffReviewDelivery).
-func (a *App) appendDiffReviewCommentsToContent(owner store.DiffReviewOwner, content, scope, sourceKey string, commentIDs []string, pr *store.DiffReviewPRContext) (string, []store.DiffReviewCommentSnapshot, error) {
+// heldBy are rows an earlier dispatch of the same message landed as; the
+// comments their claims hold read as drafts.
+func (a *App) appendDiffReviewCommentsToContent(owner store.DiffReviewOwner, content, scope, sourceKey string, commentIDs []string, pr *store.DiffReviewPRContext, heldBy store.DiffReviewMessageRows) (string, []store.DiffReviewCommentSnapshot, error) {
 	if len(store.UniqueNonEmptyStringsForApp(commentIDs)) > store.MaxDiffReviewCommentIDs {
 		return "", nil, fmt.Errorf("too many diff review comments selected")
 	}
-	comments, err := a.store.ListDraftDiffReviewCommentsByID(owner, scope, sourceKey, commentIDs)
+	comments, err := a.store.ListDraftDiffReviewCommentsByID(owner, scope, sourceKey, commentIDs, heldBy)
 	if err != nil {
 		return "", nil, err
 	}

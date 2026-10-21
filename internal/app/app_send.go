@@ -118,6 +118,11 @@ type userMessageInputs struct {
 	// is what keeps the chip off ordinary rows.
 	origin       string
 	originThread *usermessage.OriginThread
+	// heldBy are the rows an earlier dispatch of this same message landed
+	// as and that are still to be retired (a requeue's stale row): the
+	// review comments their claims hold are this message's own, so its
+	// resolution reads them as drafts.
+	heldBy []string
 }
 
 var errEmptyUserMessage = errors.New("enter a message or attach a file before sending")
@@ -167,7 +172,11 @@ type resolvedUserMessage struct {
 	// revisionDiffComments are the drafts as content carries them; the
 	// delivery claims exactly these (claimDiffReviewDelivery).
 	revisionDiffComments []store.DiffReviewCommentSnapshot
-	userMessageMeta      string
+	// textBeforeReviewComments is content before those drafts were
+	// rendered into it, or nil when it renders none
+	// (usermessage.Meta.TextBeforeReviewComments).
+	textBeforeReviewComments *string
+	userMessageMeta          string
 }
 
 // resolveUserMessageEnvelope runs the shared prologue that every
@@ -218,11 +227,15 @@ func (a *App) resolveUserMessageEnvelope(
 	}
 	revisionDiffCommentIDs := inputs.revisionSourceDiffCommentIDs
 	var revisionDiffComments []store.DiffReviewCommentSnapshot
+	var textBeforeReviewComments *string
 	if revisionSourceDiff != nil && len(revisionDiffCommentIDs) > 0 {
-		nextContent, comments, err := a.appendDiffReviewCommentsToContent(diffReviewSourceOwner(revisionSourceDiff), content, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, revisionDiffCommentIDs, revisionSourceDiff.PR)
+		heldBy := store.DiffReviewMessageRows{ThreadID: threadID, ItemIDs: inputs.heldBy}
+		nextContent, comments, err := a.appendDiffReviewCommentsToContent(diffReviewSourceOwner(revisionSourceDiff), content, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, revisionDiffCommentIDs, revisionSourceDiff.PR, heldBy)
 		if err != nil {
 			return resolvedUserMessage{}, fmt.Errorf("diff review comments: %w", err)
 		}
+		before := strings.TrimSpace(content)
+		textBeforeReviewComments = &before
 		content = nextContent
 		revisionDiffComments = comments
 		revisionDiffCommentIDs = make([]string, 0, len(comments))
@@ -270,6 +283,8 @@ func (a *App) resolveUserMessageEnvelope(
 		SendID:                 inputs.sendID,
 		Origin:                 inputs.origin,
 		OriginThread:           inputs.originThread,
+
+		TextBeforeReviewComments: textBeforeReviewComments,
 	})
 	if err != nil {
 		return resolvedUserMessage{}, fmt.Errorf("user meta: %w", err)
@@ -287,7 +302,9 @@ func (a *App) resolveUserMessageEnvelope(
 		revisionSourceDiff:     revisionSourceDiff,
 		revisionDiffCommentIDs: revisionDiffCommentIDs,
 		revisionDiffComments:   revisionDiffComments,
-		userMessageMeta:        userMeta,
+
+		textBeforeReviewComments: textBeforeReviewComments,
+		userMessageMeta:          userMeta,
 	}, nil
 }
 
@@ -623,7 +640,7 @@ func (a *App) sendMessageLocked(
 	// fails the send here, before anything is delivered. A failure before
 	// the row lands hands them back; the row's insert settles the claim.
 	var claim diffReviewClaim
-	if claim, err = a.claimDiffReviewDelivery(threadID, turnIndex, userItemID, resolved); err != nil {
+	if claim, err = a.claimDiffReviewDelivery(threadID, turnIndex, userItemID, resolved, false); err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)
 	}
 	defer func() {
@@ -1336,9 +1353,12 @@ type diffReviewClaim struct {
 // since stays a draft, since its new text was not sent. A draft another
 // message already carried fails the claim
 // (store.ErrDiffReviewCommentsSentElsewhere), and the caller must not
-// deliver. itemID is the user row the message lands as; its insert settles
-// the claim, and a claim no row settled returns to drafts at the next boot.
-func (a *App) claimDiffReviewDelivery(threadID string, turnIndex int, itemID string, resolved resolvedUserMessage) (diffReviewClaim, error) {
+// deliver. itemID is the user row the message lands as. A direct send or
+// steer is delivered by that row, so its insert settles the claim; a queued
+// message's row can land before the provider has it, so its claim settles
+// when the provider confirms it (store.DiffReviewDelivery.Queued). A claim
+// still unsettled returns to drafts at the next boot.
+func (a *App) claimDiffReviewDelivery(threadID string, turnIndex int, itemID string, resolved resolvedUserMessage, queued bool) (diffReviewClaim, error) {
 	rd := resolved.revisionSourceDiff
 	if rd == nil || len(resolved.revisionDiffComments) == 0 {
 		return diffReviewClaim{}, nil
@@ -1348,7 +1368,7 @@ func (a *App) claimDiffReviewDelivery(threadID string, turnIndex int, itemID str
 		turnID: diffReviewSentTurnID(threadID, turnIndex), itemID: itemID,
 	}
 	ids, err := a.store.ClaimDiffReviewCommentsSent(claim.owner, claim.scope, claim.sourceKey, resolved.revisionDiffComments, store.DiffReviewDelivery{
-		SentAt: time.Now().UnixMilli(), TurnID: claim.turnID, ThreadID: threadID, ItemID: itemID,
+		SentAt: time.Now().UnixMilli(), TurnID: claim.turnID, ThreadID: threadID, ItemID: itemID, Queued: queued,
 	})
 	if err != nil {
 		return diffReviewClaim{}, fmt.Errorf("diff review comments: %w", err)
