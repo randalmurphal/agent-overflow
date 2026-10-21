@@ -2,6 +2,8 @@ package store
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -266,7 +268,7 @@ func TestClaimDiffReviewCommentsSentSettlesTheTextTheMessageCarries(t *testing.T
 		t.Fatal(err)
 	}
 
-	claimed, err := s.ClaimDiffReviewCommentsSent(owner, scope, source, snapshot, 100, "x:1")
+	claimed, err := s.ClaimDiffReviewCommentsSent(owner, scope, source, snapshot, DiffReviewDelivery{SentAt: 100, TurnID: "x:1", ThreadID: "x", ItemID: "user:1"})
 	if err != nil || len(claimed) != 1 || claimed[0] != "a" {
 		t.Fatalf("claim = %v, %v; want [a]", claimed, err)
 	}
@@ -277,19 +279,19 @@ func TestClaimDiffReviewCommentsSentSettlesTheTextTheMessageCarries(t *testing.T
 		t.Fatalf("the edited b = %s, want it left a draft", st)
 	}
 	// The same turn again (a joined message naming a twice) is no conflict.
-	if again, err := s.ClaimDiffReviewCommentsSent(owner, scope, source, snapshot[:1], 100, "x:1"); err != nil || len(again) != 0 {
+	if again, err := s.ClaimDiffReviewCommentsSent(owner, scope, source, snapshot[:1], DiffReviewDelivery{SentAt: 100, TurnID: "x:1", ThreadID: "x", ItemID: "user:1"}); err != nil || len(again) != 0 {
 		t.Fatalf("same turn = %v, %v", again, err)
 	}
 	// Another turn naming c and a: refused whole, c untouched.
 	other := []DiffReviewCommentSnapshot{{ID: "c", Body: "third"}, {ID: "a", Body: "first"}}
-	if got, err := s.ClaimDiffReviewCommentsSent(owner, scope, source, other, 200, "y:4"); !errors.Is(err, ErrDiffReviewCommentsSentElsewhere) || got != nil {
+	if got, err := s.ClaimDiffReviewCommentsSent(owner, scope, source, other, DiffReviewDelivery{SentAt: 200, TurnID: "y:4", ThreadID: "y", ItemID: "user:4"}); !errors.Is(err, ErrDiffReviewCommentsSentElsewhere) || got != nil {
 		t.Fatalf("another turn = %v, %v; want ErrDiffReviewCommentsSentElsewhere", got, err)
 	}
 	if st, _ := status("c"); st != "draft" {
 		t.Fatalf("c = %s after a refused claim", st)
 	}
 
-	if err := s.RetargetDiffReviewCommentsSent(owner, scope, source, []string{"a", "b"}, "x:1", "x:2"); err != nil {
+	if err := s.RetargetDiffReviewCommentsSent(owner, scope, source, []string{"a", "b"}, "x:1", "x:2", "user:2"); err != nil {
 		t.Fatal(err)
 	}
 	if st, turn := status("a"); st != "sent" || turn != "x:2" {
@@ -310,4 +312,93 @@ func TestClaimDiffReviewCommentsSentSettlesTheTextTheMessageCarries(t *testing.T
 	if comment, err := s.GetDiffReviewComment(owner, "a"); err != nil || comment.Status != "draft" || comment.SentAt != 0 || comment.SentTurnID != "" {
 		t.Fatalf("released a = %+v, %v", comment, err)
 	}
+}
+
+// A claim is settled by the insert of the row that carries it, in that
+// row's transaction. A claim whose row never landed (the app stopped
+// between the two) returns to a draft at the next boot; a settled one,
+// one retargeted to the row that landed, and one whose row was already
+// there stay sent.
+func TestDiffReviewClaimsTheirRowNeverSettledReturnAtBoot(t *testing.T) {
+	s := openStoreAt(t)
+	thread := makeThread("claim-thread", "claude")
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	owner := PRReviewOwner("github:o/r:7")
+	scope, source := string(DiffReviewScopePR), "pr:github:o/r:7"
+	for _, id := range []string{"landed", "lost", "moved", "present"} {
+		if _, err := s.CreateDiffReviewComment(DiffReviewComment{
+			ID: id, PRKey: owner.PRKey, Scope: scope, SourceKey: source, FilePath: "a.go", NewLine: 1, Side: "new", Body: id,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	userRow := func(id string, turn int) error {
+		_, err := s.UpsertItem(Item{ID: id, ThreadID: thread.ID, TurnIndex: turn, Kind: "user_text", Role: "user", Status: "completed", Summary: id, CreatedAt: 1, UpdatedAt: 1}, nil)
+		return err
+	}
+	claim := func(comment, itemID string, turn int) {
+		t.Helper()
+		claimed, err := s.ClaimDiffReviewCommentsSent(owner, scope, source, []DiffReviewCommentSnapshot{{ID: comment, Body: comment}}, DiffReviewDelivery{
+			SentAt: 10, TurnID: fmt.Sprintf("%s:%d", thread.ID, turn), ThreadID: thread.ID, ItemID: itemID,
+		})
+		if err != nil || len(claimed) != 1 {
+			t.Fatalf("claim %s = %v, %v", comment, claimed, err)
+		}
+	}
+
+	claim("landed", "user:1", 1)
+	if err := userRow("user:1", 1); err != nil {
+		t.Fatal(err)
+	}
+
+	claim("lost", "user:2", 2)
+	if _, err := s.db.Exec(`CREATE TRIGGER refuse_user_row BEFORE INSERT ON items WHEN NEW.id = 'user:2' BEGIN SELECT RAISE(ABORT, 'injected persist failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := userRow("user:2", 2); err == nil || !strings.Contains(err.Error(), "injected persist failure") {
+		t.Fatalf("user:2 insert = %v, want the injected failure", err)
+	}
+	if _, err := s.db.Exec(`DROP TRIGGER refuse_user_row`); err != nil {
+		t.Fatal(err)
+	}
+
+	claim("moved", "user:3", 3)
+	if err := s.RetargetDiffReviewCommentsSent(owner, scope, source, []string{"moved"}, thread.ID+":3", thread.ID+":4", "user:4"); err != nil {
+		t.Fatal(err)
+	}
+	if err := userRow("user:4", 4); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := userRow("user:5", 5); err != nil {
+		t.Fatal(err)
+	}
+	claim("present", "user:5", 5)
+
+	// The process stops here: nothing released the claim user:2 made.
+	s = reopenStore(t, s)
+	released, err := s.ReleaseUnsettledDiffReviewClaims()
+	if err != nil || released != 1 {
+		t.Fatalf("ReleaseUnsettledDiffReviewClaims = %d, %v; want the one claim no row settled", released, err)
+	}
+	for id, want := range map[string]string{"landed": thread.ID + ":1", "lost": "", "moved": thread.ID + ":4", "present": thread.ID + ":5"} {
+		comment, err := s.GetDiffReviewComment(owner, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantStatus := "sent"
+		if want == "" {
+			wantStatus = "draft"
+		}
+		if comment.Status != wantStatus || comment.SentTurnID != want || (want == "") != (comment.SentAt == 0) {
+			t.Errorf("%s = %s in %q at %d, want %s in %q", id, comment.Status, comment.SentTurnID, comment.SentAt, wantStatus, want)
+		}
+	}
+	if again, err := s.ReleaseUnsettledDiffReviewClaims(); err != nil || again != 0 {
+		t.Fatalf("second release = %d, %v; want nothing left", again, err)
+	}
+	// The released draft can be claimed again.
+	claim("lost", "user:6", 6)
 }

@@ -767,7 +767,7 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 	// path below that requeues the group hands them back (unclaim).
 	var claims diffReviewClaims
 	for _, member := range members {
-		claim, claimErr := a.claimDiffReviewDelivery(threadID, persistTurnIndex, member.resolved)
+		claim, claimErr := a.claimDiffReviewDelivery(threadID, persistTurnIndex, userItem.ID, member.resolved)
 		if claimErr != nil {
 			return nil, false, requeue, errors.Join(claimErr, claims.release(a))
 		}
@@ -847,6 +847,12 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 			userItem.TurnIndex = responseTurnIndex
 			userItem.CreatedAt = time.Now().UnixMilli()
 			userItem.UpdatedAt = userItem.CreatedAt
+			// The claims follow the row before it can land, so its insert
+			// settles them.
+			if retargetErr := claims.retarget(a, userItem.TurnIndex, userItem.ID); retargetErr != nil {
+				a.persistFlushDispatchError(threadID, responseTurnIndex, retargetErr)
+				return nil, eagerPersist, requeue, unclaim(retargetErr)
+			}
 			// Legacy callers may get a new row id. Derive both
 			// wire stamp and expectation together; identified client sends
 			// preserve both across this placement-only fallback.
@@ -884,13 +890,10 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 // against the single row the group became. The refs are per-message even when
 // the message is joined, so the marking loop is too; the joined row's meta
 // carries only the refs it renders (joinFlushMeta). The members' review
-// drafts, claimed before dispatch, follow the row to its turn.
+// drafts were claimed for that row before dispatch.
 func (a *App) applyJoinedPlanAcceptance(threadID string, userItem store.Item, members []flushMember, claims diffReviewClaims) {
 	for _, member := range members {
 		a.applyProposedPlanAcceptance(threadID, userItem, member.resolved)
-	}
-	if err := claims.retarget(a, userItem.TurnIndex); err != nil {
-		log.Printf("flush dispatch: thread=%s: %v", threadID, err)
 	}
 	claims.announce(a)
 }

@@ -17,6 +17,7 @@ var priorInstancePhases = []string{
 	"app.recover_codex_background_runtime",
 	"app.recover_orphaned_background_tasks",
 	"app.sweep_crashed_worktree_setups",
+	"app.release_unsettled_review_claims",
 }
 
 func newPriorInstanceTestApp(t *testing.T) (*App, string, *recordingBootProgress) {

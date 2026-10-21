@@ -15,12 +15,14 @@ import (
 	"time"
 
 	"agent-overflow/internal/diffreview"
+	"agent-overflow/internal/eventchan"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/triage"
 )
 
 func TestSendPlanRevisionCommentsSendsDraftsAndMarksSent(t *testing.T) {
@@ -590,7 +592,7 @@ func TestDiffReviewClaimLeavesAnEditMadeDuringTheSendADraft(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		claim, err := app.claimDiffReviewDelivery(thread.ID, 1, resolved)
+		claim, err := app.claimDiffReviewDelivery(thread.ID, 1, "user:1", resolved)
 		if err != nil || len(claim.ids) != 0 {
 			t.Fatalf("pr-owned %v: claim = %+v, %v; want nothing claimed", prOwned, claim, err)
 		}
@@ -617,7 +619,7 @@ func TestDiffReviewClaimRefusesADraftAnotherThreadDelivered(t *testing.T) {
 	if _, err := app.SendPRDiffReviewComments(context.Background(), diffReviewSendPR, first.ID, draft.Scope, draft.SourceKey, []string{draft.ID}, diffReviewPRContext(draft.ID)); err != nil {
 		t.Fatalf("first send: %v", err)
 	}
-	if _, err := app.claimDiffReviewDelivery(second.ID, 1, late); !errors.Is(err, store.ErrDiffReviewCommentsSentElsewhere) {
+	if _, err := app.claimDiffReviewDelivery(second.ID, 1, "user:1", late); !errors.Is(err, store.ErrDiffReviewCommentsSentElsewhere) {
 		t.Fatalf("second claim = %v, want ErrDiffReviewCommentsSentElsewhere", err)
 	}
 	if got, err := app.store.GetDiffReviewComment(store.PRReviewOwner(diffReviewSendPR.Key()), draft.ID); err != nil || !strings.HasPrefix(got.SentTurnID, first.ID+":") {
@@ -643,5 +645,51 @@ func TestSendPRDiffReviewCommentsReturnsTheDraftsWhenTheMessageFails(t *testing.
 	}
 	if got, err := app.store.GetDiffReviewComment(store.PRReviewOwner(diffReviewSendPR.Key()), draft.ID); err != nil || got.Status != "draft" || got.SentTurnID != "" {
 		t.Fatalf("draft = %+v (%v), want it a draft again", got, err)
+	}
+}
+
+// A message claims its review drafts before its row lands. An app that
+// stops between the two leaves a claim no message carries; the next boot
+// returns those drafts and keeps the ones a landed row carries.
+func TestBootReturnsTheReviewDraftsOfAMessageThatNeverLanded(t *testing.T) {
+	t.Parallel()
+	app, dbPath := newTestAppWithStorePath(t)
+	thread := testThread("thread-claim-interrupted")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	landed, err := app.CreatePRDiffReviewComment(diffReviewSendPR, diffReviewPRInput("Landed."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lost, err := app.CreatePRDiffReviewComment(diffReviewSendPR, diffReviewPRInput("Lost."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := &SourceDiffReview{PRKey: diffReviewSendPR.Key(), Scope: landed.Scope, SourceKey: landed.SourceKey}
+	if _, err := app.claimDiffReviewDelivery(thread.ID, 1, "user:1", diffReviewSendEnvelope(t, app, thread.ID, source, []string{landed.ID})); err != nil {
+		t.Fatal(err)
+	}
+	app.ensureTriageRouter()
+	if err := app.triage.PersistItem(store.Item{ID: "user:1", ThreadID: thread.ID, TurnIndex: 1, Kind: "user_text", Role: "user", Status: "completed", Summary: "Landed.", CreatedAt: 1, UpdatedAt: 1}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.claimDiffReviewDelivery(thread.ID, 2, "user:2", diffReviewSendEnvelope(t, app, thread.ID, source, []string{lost.ID})); err != nil {
+		t.Fatal(err)
+	}
+	// The app stops before user:2 is written.
+	if err := app.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	rebooted := newTestAppAtStorePath(t, dbPath)
+	rebooted.triage = triage.NewRouter(rebooted.store, func(eventchan.Channel, any) {})
+	rebooted.settlePriorInstance()
+	owner := store.PRReviewOwner(diffReviewSendPR.Key())
+	if got, err := rebooted.store.GetDiffReviewComment(owner, landed.ID); err != nil || got.Status != "sent" || got.SentTurnID != thread.ID+":1" {
+		t.Fatalf("landed = %+v (%v), want it sent in turn 1", got, err)
+	}
+	if got, err := rebooted.store.GetDiffReviewComment(owner, lost.ID); err != nil || got.Status != "draft" || got.SentTurnID != "" || got.SentAt != 0 {
+		t.Fatalf("lost = %+v (%v), want it a draft again", got, err)
 	}
 }

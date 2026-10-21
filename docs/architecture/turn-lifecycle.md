@@ -816,8 +816,9 @@ the current turn" error is unsatisfiable when no session exists to
 interrupt.
 
 The boot sweeps (`App.settlePriorInstance`: crashed turns, Codex
-background runtime, orphaned Claude background launches and running
-worktree setups) each run in their own boot phase. A sweep that fails
+background runtime, orphaned Claude background launches, running
+worktree setups and review-comment claims whose message row never
+landed) each run in their own boot phase. A sweep that fails
 does not stop the boot: it is reported as a failed boot phase, which
 every client shows ([startup readiness](transport.md#startup-readiness)),
 and the next start runs it again.
