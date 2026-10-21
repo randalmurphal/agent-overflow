@@ -174,7 +174,7 @@
         <PullsGroupHeader label={item.heading.label} count={item.heading.count} testid={item.heading.testid} />
       {:else}
         <PullsGroupHeader label={item.heading.label} testid={item.heading.testid} />
-        <PullsProjectError message={item.error.message} failure={item.error.failure} forge={item.error.forge} cause={item.error.cause} {onRetry} {retrying} />
+        <PullsProjectError message={item.error.message} failure={item.error.failure} forge={item.error.forge} cause={item.error.cause} partial={item.error.partial ?? false} {onRetry} {retrying} />
       {/if}
     {/snippet}
   </LongListVirtualizer>

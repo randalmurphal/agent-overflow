@@ -11,7 +11,7 @@ import { stepPullsBack } from '../../stores/pullsCommands.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { TransportError } from '../../transport/wsClient';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
-import { PULLS_PANE, installPullsPaneMocks, pullRowKey, resetPullsPane } from '../../../test/helpers/pullsPane';
+import { PULLS_PANE, installPullsPaneMocks, pullItem, pullRowKey, pullsProject, pullsSnapshot, resetPullsPane } from '../../../test/helpers/pullsPane';
 
 function mountPane() {
   return render(PullsPane, { paneId: PULLS_PANE });
@@ -109,6 +109,19 @@ describe('a failed refresh', () => {
 
     await fireEvent.click(view.getByTestId('pulls-refresh'));
     await waitFor(() => expect(view.getByTestId('pulls-refresh-error')).toBeInTheDocument());
+  });
+});
+
+describe('a detail failure', () => {
+  it('shows beside the rows it leaves with unknown facts, and does not read as a failed list', async () => {
+    installPullsPaneMocks(pullsSnapshot([pullsProject([pullItem(5), pullItem(6)], { detailError: 'GitLab did not answer the review states.' })]));
+    const view = mountPane();
+    await rowsListed(view);
+    const notice = view.getByTestId('pulls-project-error');
+    expect(notice).toHaveAttribute('data-partial', 'true');
+    expect(notice).toHaveTextContent('GitLab did not answer the review states.');
+    expect(view.getByTestId('pulls-project-group')).toHaveTextContent('Repo: facts unavailable');
+    expect(view.queryByTestId('pulls-empty')).toBeNull();
   });
 });
 

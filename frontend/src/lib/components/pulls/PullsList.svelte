@@ -41,6 +41,7 @@
     ),
   );
   const rowCount = $derived(groups.reduce((sum, group) => sum + group.rows.length, 0));
+  const failedLists = $derived(projectErrors.filter((error) => !error.partial).length);
 
   const emptyText = $derived.by(() => {
     if (noProjects) return 'No project on this computer has a GitHub or GitLab origin.';
@@ -64,9 +65,9 @@
   {#snippet after()}
     {#if error}
       <p class="px-4 py-6 text-xs text-error" data-testid="pulls-error">{error}</p>
-    {:else if loading && rowCount === 0 && projectErrors.length === 0}
+    {:else if loading && rowCount === 0 && failedLists === 0}
       <p class="px-4 py-6 text-xs text-fg-muted" data-testid="pulls-loading">Reading merge requests…</p>
-    {:else if rowCount === 0 && projectErrors.length === 0}
+    {:else if rowCount === 0 && failedLists === 0}
       <div class="flex flex-col items-center gap-1 px-6 py-10 text-center" data-testid="pulls-empty">
         <p class="text-sm text-fg-muted">{emptyText}</p>
       </div>

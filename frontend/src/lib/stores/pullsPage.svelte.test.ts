@@ -491,14 +491,44 @@ describe('row projection', () => {
     expect(rows[4]).toMatchObject({ label: 'Reviewed by you', tone: 'muted' });
   });
 
-  it('reports each failed project with its kind', async () => {
-    installListMocks(snapshot(1, [project('p1', [], { error: 'No access to owner/repo with this login.', errorKind: 'forbidden' })]));
+  it('reports each failed project with its kind, and a detail failure beside its rows', async () => {
+    installListMocks(snapshot(1, [
+      project('p1', [], { error: 'No access to owner/repo with this login.', errorKind: 'forbidden' }),
+      project('p2', [item(2)], { detailError: 'GitLab did not answer the review states.' }),
+    ]));
     attachPullsPage(PANE, HOME_BACKEND);
     await flush();
-    expect(pullsProjectErrors(PANE)).toEqual([{
-      projectId: 'p1', name: 'Project p1', message: 'No access to owner/repo with this login.',
-      failure: { kind: 'forbidden', reserve: false, resumeAt: '' }, forge: 'github', cause: null,
-    }]);
+    expect(pullsProjectErrors(PANE)).toEqual([
+      {
+        projectId: 'p1', name: 'Project p1', message: 'No access to owner/repo with this login.',
+        failure: { kind: 'forbidden', reserve: false, resumeAt: '' }, forge: 'github', partial: false, cause: null,
+      },
+      { projectId: 'p2', name: 'Project p2', message: 'GitLab did not answer the review states.', failure: null, forge: 'github', partial: true, cause: null },
+    ]);
+    setMRFilters(HOME_BACKEND, { filter: 'all' });
+    expect(groupKeys()).toEqual([[rowKey(2)]]);
+  });
+
+  it('orders two repositories\' same number by the repository, whichever project lists first', async () => {
+    const other = { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'other' } as const;
+    const listed = (order: 'p1-first' | 'p2-first') => {
+      const p1 = project('p1', [item(1)]);
+      const p2 = project('p2', [item(1, {}, 'other')], { repo: other });
+      return snapshot(1, order === 'p1-first' ? [p1, p2] : [p2, p1]);
+    };
+    installListMocks(listed('p1-first'));
+    attachPullsPage(PANE, HOME_BACKEND);
+    await flush();
+    setMRFilters(HOME_BACKEND, { filter: 'all' });
+    const first = groupKeys();
+    applyPullsSnapshot(listed('p2-first'), HOME_BACKEND);
+    __resetPullsPageForTest();
+    installListMocks(listed('p2-first'));
+    attachPullsPage(PANE, HOME_BACKEND);
+    await flush();
+    setMRFilters(HOME_BACKEND, { filter: 'all' });
+    expect(groupKeys()).toEqual(first);
+    expect(first).toEqual([[rowKey(1, HOME_BACKEND, 'other'), rowKey(1)]]);
   });
 });
 
@@ -534,6 +564,15 @@ describe('the needs-you badge', () => {
     revokeBackendScopes('laptop');
     await hydratePullsAttention('laptop');
     expect(read).toHaveBeenCalledTimes(1);
+
+    // A read that a frame overtook answers too late to apply.
+    let answer!: (count: number) => void;
+    setBindingMock('GetPRListNeedsYou', () => new Promise<number>((resolve) => { answer = resolve; }));
+    const late = hydratePullsAttention(HOME_BACKEND);
+    applyPullsBadge({ needsYou: 5 }, HOME_BACKEND);
+    answer(1);
+    await late;
+    expect(getPullsNeedsYouCount()).toBe(5);
   });
 });
 

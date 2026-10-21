@@ -8,7 +8,9 @@
   import { capturedCause } from './causeCapture';
 
   // A project whose list read failed shows the cause under its own group
-  // header, so the rest of the page keeps working. A login to fix outside
+  // header, so the rest of the page keeps working; a project whose rows
+  // listed while a detail request failed (`partial`) shows the same
+  // block over its rows, which carry their facts as unknown. A login to fix outside
   // the app (setup, forbidden) reads in the error tone with no Retry: no
   // retry changes it until the user does. A rate limit reads as paused.
   // Anything else retries on the next tick and offers Retry now. Details
@@ -24,9 +26,10 @@
     cause?: unknown;
     onRetry: () => void;
     retrying?: boolean;
+    partial?: boolean;
   }
 
-  let { message, failure, forge, cause = null, onRetry, retrying = false }: Props = $props();
+  let { message, failure, forge, cause = null, onRetry, retrying = false, partial = false }: Props = $props();
 
   const kind = $derived(failure?.kind ?? 'forge');
   const paused = $derived(kind === 'rate_limited');
@@ -45,6 +48,7 @@
   class="mx-3 my-2 rounded-[var(--radius-field)] border px-2.5 py-2 text-[0.75rem] leading-snug {toneClass}"
   data-testid="pulls-project-error"
   data-error-kind={kind}
+  data-partial={partial ? 'true' : undefined}
 >
   <div class="flex items-start gap-2">
     <span class="mt-px shrink-0"><Icon icon={TriangleAlert} size={13} strokeWidth={1.75} /></span>
