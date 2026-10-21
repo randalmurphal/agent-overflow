@@ -299,8 +299,15 @@ type usageTestAccount struct {
 
 func installUsageTestAccounts(t *testing.T, app *App, values ...usageTestAccount) {
 	t.Helper()
+	installProviderUsageTestAccounts(t, app, string(provider.Claude), values...)
+}
+
+// installProviderUsageTestAccounts saves the accounts in order and selects
+// the last one.
+func installProviderUsageTestAccounts(t *testing.T, app *App, providerName string, values ...usageTestAccount) {
+	t.Helper()
 	if len(values) == 0 {
-		t.Fatal("installUsageTestAccounts requires accounts")
+		t.Fatal("installProviderUsageTestAccounts requires accounts")
 	}
 	accounts, err := provideraccounts.NewStore(t.TempDir())
 	if err != nil {
@@ -310,7 +317,7 @@ func installUsageTestAccounts(t *testing.T, app *App, values ...usageTestAccount
 	var activeCredential []byte
 	for _, value := range values {
 		if err := credentials.WriteAccountCredential(
-			string(provider.Claude),
+			providerName,
 			value.id,
 			value.credential,
 		); err != nil {
@@ -318,22 +325,79 @@ func installUsageTestAccounts(t *testing.T, app *App, values ...usageTestAccount
 		}
 		if _, err := accounts.UpsertAndActivate(provideraccounts.Account{
 			ID:       value.id,
-			Provider: string(provider.Claude),
+			Provider: providerName,
 			Email:    value.id + "@example.com",
 		}); err != nil {
 			t.Fatal(err)
 		}
 		activeCredential = value.credential
 	}
-	active, ok := accounts.Active(string(provider.Claude), time.Now())
+	active, ok := accounts.Active(providerName, time.Now())
 	if !ok {
 		t.Fatal("active account missing")
 	}
-	if err := credentials.Activate(string(provider.Claude), "", active.ID); err != nil {
+	if err := credentials.Activate(providerName, "", active.ID); err != nil {
 		t.Fatal(err)
 	}
 	attachProviderAccountStoresForTest(t, app, accounts, credentials)
-	app.providerAccounts.BlessCredentialForTest(string(provider.Claude), activeCredential)
+	app.providerAccounts.BlessCredentialForTest(providerName, activeCredential)
+}
+
+// An inactive Codex probe works on bytes it read before it ran. Another
+// process sharing the provider home can put a later credential in the slot
+// meanwhile (a sign-in, or the boot sweep restoring a crashed probe), and
+// the probe's commit must leave it, whether the probe rotated or not.
+func TestInactiveCodexUsageRefreshNeverRewindsTheSlot(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		rotates bool
+	}{
+		{name: "probe rotated nothing"},
+		{name: "probe rotated", rotates: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
+			original := `{"tokens":{"access_token":"original"}}`
+			installProviderUsageTestAccounts(
+				t,
+				app,
+				string(provider.Codex),
+				usageTestAccount{"inactive", []byte(original)},
+				usageTestAccount{"active", []byte(`{"tokens":{"access_token":"active"}}`)},
+			)
+			slotPath, err := providerCredentialsForTest(t, app).AccountCredentialPath(string(provider.Codex), "inactive")
+			if err != nil {
+				t.Fatal(err)
+			}
+			later := `{"tokens":{"access_token":"written-elsewhere"}}`
+			rotation := ""
+			if tc.rotates {
+				rotation = `printf '%s' '{"tokens":{"access_token":"probe-rotated"}}' > "$CODEX_HOME/auth.json"` + "\n"
+			}
+			binary := filepath.Join(t.TempDir(), "mock-codex")
+			script := "#!/bin/bash\n" +
+				"read -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\n" +
+				rotation +
+				`printf '%s' '` + later + `' > '` + slotPath + `'` + "\n" +
+				`printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"v2"}}'` + "\n" +
+				`printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"account":{"type":"chatgpt","email":"inactive@example.com","planType":"pro"},"requiresOpenaiAuth":true}}'` + "\n" +
+				`printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","planType":"pro","primary":{"usedPercent":7,"windowDurationMins":300,"resetsAt":1778479200}}}}'` + "\n"
+			mockexec.Write(t, binary, script)
+			if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := app.refreshProviderAccountUsage(context.Background(), string(provider.Codex), "inactive"); err != nil {
+				t.Fatal(err)
+			}
+			got, err := providerCredentialsForTest(t, app).ReadCredential(string(provider.Codex), "inactive", false)
+			if err != nil || string(got) != later {
+				t.Fatalf("slot = %s, %v; want the later credential %s kept", got, err, later)
+			}
+		})
+	}
 }
 
 func blockingUsageClient(

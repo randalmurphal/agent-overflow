@@ -224,19 +224,21 @@ func (m *Manager) refreshProviderAccountUsage(
 	// a rotation): the slot is keyed by account ID, and the reconcile
 	// mutex held for this whole call keeps switches, logins, and removals
 	// from re-homing that ID underneath us. A failed write falls through —
-	// the commit's own slot write below is the retry.
+	// the commit's own slot write below is the retry. Both replace only the
+	// credential the probe started from: another process sharing the home
+	// may have put a later one in the slot since.
 	// (Selected accounts stay out of this: their commit goes canonical-first
 	// through CommitSelectedCredential, and a slot-ahead-of-canonical write
 	// would invert that ordering. Inactive CLAUDE accounts never reach here
 	// with anything: they no longer refresh, so their probe returns no bytes.)
-	if !refresh.isSelected &&
-		len(refresh.refreshed.Bytes()) > 0 &&
-		!bytes.Equal(refresh.refreshed.Bytes(), refresh.probed.Bytes()) {
-		refresh.slotPersisted = m.credentials.WriteAccountCredential(
+	if refresh.slotNeedsRotation() {
+		_, err := m.credentials.ReplaceAccountCredential(
 			refresh.providerName,
 			refresh.accountID,
+			refresh.probed.Bytes(),
 			refresh.refreshed.Bytes(),
-		) == nil
+		)
+		refresh.slotPersisted = err == nil
 	}
 
 	m.mu.Lock()
@@ -282,10 +284,20 @@ type providerUsageRefresh struct {
 	// observed is the identity the provider reported during the probe, when
 	// it reports one at all. Stays zero otherwise.
 	observed provider.AccountInfo
-	// slotPersisted records that the rotated credential already reached this
-	// account's slot ahead of the commit, so the commit's non-selected slot
-	// write can skip a redundant rewrite.
+	// slotPersisted records that the early slot write settled the rotation
+	// (written, or superseded by a later credential), so the commit's
+	// non-selected slot write is skipped.
 	slotPersisted bool
+}
+
+// slotNeedsRotation reports that an inactive account's probe rotated its
+// credential, which then has to reach the slot. A probe that rotated
+// nothing writes nothing: rewriting the bytes it started from could only
+// rewind a slot another process has moved on since.
+func (r providerUsageRefresh) slotNeedsRotation() bool {
+	return !r.isSelected &&
+		len(r.refreshed.Bytes()) > 0 &&
+		!bytes.Equal(r.refreshed.Bytes(), r.probed.Bytes())
 }
 
 // refreshesInCanonicalHome reports that this account's token refresh, if the
@@ -398,12 +410,13 @@ func (m *Manager) commitProviderUsageRefreshLocked(
 		commit.account = &updated
 	}
 	if !refresh.isSelected {
-		if len(refresh.refreshed.Bytes()) == 0 || refresh.slotPersisted {
+		if !refresh.slotNeedsRotation() || refresh.slotPersisted {
 			return commit, nil
 		}
-		if err := m.credentials.WriteAccountCredential(
+		if _, err := m.credentials.ReplaceAccountCredential(
 			refresh.providerName,
 			refresh.accountID,
+			refresh.probed.Bytes(),
 			refresh.refreshed.Bytes(),
 		); err != nil {
 			return commit, fmt.Errorf(

@@ -284,7 +284,10 @@ func TestCaptureAccountCredentialTreatsAHuskAsNoCredential(t *testing.T) {
 	if saved.HadCredential() {
 		t.Fatal("a husked slot captured as holding a credential")
 	}
-	if err := credentials.RestoreAccountCredential(saved); err != nil {
+	if err := credentials.WriteAccountCredential("claude", "dead", []byte("new-login")); err != nil {
+		t.Fatal(err)
+	}
+	if err := credentials.RestoreAccountCredential(saved, []byte("new-login")); err != nil {
 		t.Fatalf("RestoreAccountCredential() error = %v", err)
 	}
 	if _, err := os.Lstat(slot); !errors.Is(err, os.ErrNotExist) {

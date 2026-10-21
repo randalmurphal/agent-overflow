@@ -260,7 +260,7 @@ func (m *Manager) reconcileObservedAccountLocked(
 		if !restoreCredentialOnError || retErr == nil {
 			return
 		}
-		if cleanupErr := m.credentials.RestoreAccountCredential(saved); cleanupErr != nil {
+		if cleanupErr := m.credentials.RestoreAccountCredential(saved, credential.Bytes()); cleanupErr != nil {
 			retErr = errors.Join(
 				retErr,
 				fmt.Errorf(

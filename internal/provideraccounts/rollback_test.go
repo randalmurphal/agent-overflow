@@ -2,6 +2,7 @@ package provideraccounts
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -47,7 +48,7 @@ func TestRestoreLeavesAPreexistingCredentialAlone(t *testing.T) {
 	if err := credentials.WriteAccountCredential("claude", "acct", []byte("rotated")); err != nil {
 		t.Fatal(err)
 	}
-	if err := credentials.RestoreAccountCredential(saved); err != nil {
+	if err := credentials.RestoreAccountCredential(saved, []byte("rotated")); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 
@@ -88,7 +89,7 @@ func TestRestoreOfIntroducedCredentialKeepsThePreexistingSlot(t *testing.T) {
 	if err := credentials.WriteAccountCredential("claude", "acct", []byte("introduced")); err != nil {
 		t.Fatal(err)
 	}
-	if err := credentials.RestoreAccountCredential(saved); err != nil {
+	if err := credentials.RestoreAccountCredential(saved, []byte("introduced")); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 
@@ -114,12 +115,75 @@ func TestRestoreRemovesASlotThisOperationCreated(t *testing.T) {
 	if err := credentials.WriteAccountCredential("claude", "acct", []byte("introduced")); err != nil {
 		t.Fatal(err)
 	}
-	if err := credentials.RestoreAccountCredential(saved); err != nil {
+	if err := credentials.RestoreAccountCredential(saved, []byte("introduced")); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 
 	if _, err := os.Stat(accountSlotDir(t, userHome, "acct")); !os.IsNotExist(err) {
 		t.Fatalf("rollback left behind a slot it created: %v", err)
+	}
+}
+
+// Between the write and the rollback another process can use the introduced
+// login, rotate it and leave the successor in the slot (the boot sweep
+// restoring a crashed probe does exactly that). The slot then holds the only
+// live copy, and the rollback must leave it, in a slot this operation
+// created or one that held nothing.
+func TestRestoreKeepsALaterCredential(t *testing.T) {
+	for _, preexisting := range []bool{false, true} {
+		t.Run(fmt.Sprintf("slot existed %v", preexisting), func(t *testing.T) {
+			credentials, userHome := rollbackFixture(t)
+			if preexisting {
+				if err := os.MkdirAll(accountSlotDir(t, userHome, "acct"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			saved, err := credentials.CaptureAccountCredential("claude", "acct")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := credentials.WriteAccountCredential("claude", "acct", []byte("introduced")); err != nil {
+				t.Fatal(err)
+			}
+			if err := credentials.WriteAccountCredential("claude", "acct", []byte("rotated-elsewhere")); err != nil {
+				t.Fatal(err)
+			}
+			if err := credentials.RestoreAccountCredential(saved, []byte("introduced")); err != nil {
+				t.Fatal(err)
+			}
+			data, err := credentials.ReadCredential("claude", "acct", false)
+			if err != nil || string(data) != "rotated-elsewhere" {
+				t.Fatalf("slot after rollback = %q, %v; want the later credential kept", data, err)
+			}
+		})
+	}
+}
+
+// A writer holding bytes it read earlier replaces the slot only while the
+// slot still holds what it started from.
+func TestReplaceAccountCredentialNeverRewindsTheSlot(t *testing.T) {
+	credentials, _ := rollbackFixture(t)
+	if err := credentials.WriteAccountCredential("claude", "acct", []byte("pos:10")); err != nil {
+		t.Fatal(err)
+	}
+	if replaced, err := credentials.ReplaceAccountCredential("claude", "acct", []byte("pos:10"), []byte("pos:20")); err != nil || !replaced {
+		t.Fatalf("replace from the expected credential = %v, %v", replaced, err)
+	}
+	if replaced, err := credentials.ReplaceAccountCredential("claude", "acct", []byte("pos:10"), []byte("pos:20")); err != nil || !replaced {
+		t.Fatalf("a retried replace that already landed = %v, %v; want true", replaced, err)
+	}
+	if replaced, err := credentials.ReplaceAccountCredential("claude", "acct", []byte("pos:10"), []byte("pos:15")); err != nil || replaced {
+		t.Fatalf("replace over a slot that moved on = %v, %v; want false", replaced, err)
+	}
+	data, err := credentials.ReadCredential("claude", "acct", false)
+	if err != nil || string(data) != "pos:20" {
+		t.Fatalf("slot = %q, %v; want pos:20", data, err)
+	}
+	if replaced, err := credentials.ReplaceAccountCredential("claude", "gone", []byte("pos:10"), []byte("pos:20")); err != nil || replaced {
+		t.Fatalf("replace into a missing slot = %v, %v; want false", replaced, err)
+	}
+	if _, err := credentials.ReadCredential("claude", "gone", false); !IsCredentialMissing(err) {
+		t.Fatalf("replace created a slot: %v", err)
 	}
 }
 
@@ -131,7 +195,7 @@ func TestRestoreOfAnUncapturedValueIsANoOp(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := credentials.RestoreAccountCredential(SavedCredential{}); err != nil {
+	if err := credentials.RestoreAccountCredential(SavedCredential{}, []byte("untouched")); err != nil {
 		t.Fatalf("restore of zero value: %v", err)
 	}
 

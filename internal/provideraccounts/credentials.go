@@ -1,6 +1,7 @@
 package provideraccounts
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -623,6 +624,43 @@ func releaseSlot(lock *os.File) error {
 		return fmt.Errorf("provideraccounts: release account slot lock: %w", err)
 	}
 	return nil
+}
+
+// ReplaceAccountCredential writes data into a slot only while the slot still
+// holds expected, the credential data was derived from. It reports whether
+// the slot holds data afterwards; false means the slot moved on (a sign-in,
+// a recovery, a removal) and was left as it stands. A write whose own
+// earlier attempt already landed reports true without writing again.
+//
+// A writer holding bytes it read earlier uses this instead of
+// WriteAccountCredential: by the time it writes, another process may have
+// put a later credential there, and an unconditional write would rewind
+// the slot onto a refresh token that has already been used.
+func (c *Credentials) ReplaceAccountCredential(providerName, accountID string, expected, data []byte) (replaced bool, retErr error) {
+	accountDir, err := c.accountDirectory(providerName, accountID)
+	if err != nil {
+		return false, err
+	}
+	lock, err := c.lockSlot(providerName, accountID)
+	if err != nil {
+		return false, err
+	}
+	defer func() { retErr = errors.Join(retErr, releaseSlot(lock)) }()
+	current, err := c.readCredentialAt(providerName, accountDir, false)
+	switch {
+	case IsCredentialMissing(err):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("provideraccounts: inspect %s slot %s before replacing it: %w", providerName, accountID, err)
+	case bytes.Equal(current.Bytes(), data):
+		return true, nil
+	case !bytes.Equal(current.Bytes(), expected):
+		return false, nil
+	}
+	if err := c.writeCredentialAt(providerName, accountDir, false, data); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (c *Credentials) WriteAccountCredential(providerName, accountID string, data []byte) error {

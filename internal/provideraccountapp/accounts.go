@@ -538,7 +538,7 @@ func (m *Manager) adoptCurrentProviderAccount(
 			AccountFromInfo(accountID, providerName, info),
 		)
 		if err != nil {
-			cleanupErr := m.credentials.RestoreAccountCredential(saved)
+			cleanupErr := m.credentials.RestoreAccountCredential(saved, credential.Bytes())
 			return provideraccounts.Account{}, SignIn{}, errors.Join(err, cleanupErr)
 		}
 		account = m.withRecordedLoginExpiry(account, credential.Bytes())
@@ -618,7 +618,7 @@ func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary strin
 		return SignIn{}, err
 	}
 	restore := func() {
-		if cleanupErr := m.credentials.RestoreAccountCredential(saved); cleanupErr != nil {
+		if cleanupErr := m.credentials.RestoreAccountCredential(saved, credential.Bytes()); cleanupErr != nil {
 			log.Printf("provider accounts: restore adoption credential: %v", cleanupErr)
 		}
 	}

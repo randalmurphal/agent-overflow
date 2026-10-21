@@ -1,6 +1,7 @@
 package provideraccounts
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -110,17 +111,37 @@ func (s SavedCredential) HadCredential() bool {
 // A slot that already held a credential is therefore left exactly as it
 // stands: whatever is in it now is at least as current as what was captured.
 //
+// The same holds for a slot that held none: introduced is what the failing
+// operation wrote, and the slot is undone only while it still holds exactly
+// that. Anything else got there after the write, from a process that may
+// have used and rotated the introduced login (another instance's probe, the
+// boot sweep restoring a crashed one), and may be its only live copy. The
+// slot lock is held from the comparison to the removal.
+//
 // An uncaptured (zero) value is a no-op rather than an error: rollback runs
 // on the failure path, where turning a missed capture into a second error
 // would bury the original cause.
-func (c *Credentials) RestoreAccountCredential(saved SavedCredential) error {
+func (c *Credentials) RestoreAccountCredential(saved SavedCredential, introduced []byte) (retErr error) {
 	if !saved.capturedForSlot || saved.hadCredential {
+		return nil
+	}
+	lock, err := c.lockSlot(saved.providerName, saved.accountID)
+	if err != nil {
+		return err
+	}
+	defer func() { retErr = errors.Join(retErr, releaseSlot(lock)) }()
+	current, readErr := c.ReadCredentialSnapshot(saved.providerName, saved.accountID, false)
+	switch {
+	case IsCredentialMissing(readErr):
+	case readErr != nil:
+		return fmt.Errorf("provideraccounts: inspect %s slot before rollback: %w", saved.providerName, readErr)
+	case !bytes.Equal(current.Bytes(), introduced):
 		return nil
 	}
 	if saved.hadAccountDir {
 		return c.removeAccountCredentialOnly(saved.providerName, saved.accountID)
 	}
-	return c.RemoveAccount(saved.providerName, saved.accountID)
+	return c.removeAccountLocked(saved.providerName, saved.accountID)
 }
 
 // removeAccountCredentialOnly deletes the credential from a slot whose

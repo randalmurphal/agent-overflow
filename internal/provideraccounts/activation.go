@@ -158,6 +158,19 @@ func (c *Credentials) RemoveActive(providerName string) error {
 // It holds the slot lock, so no slot write lands inside the removal and an
 // adoption that waited on it finds the slot gone.
 func (c *Credentials) RemoveAccount(providerName, accountID string) (retErr error) {
+	if _, err := c.accountDirectory(providerName, accountID); err != nil {
+		return err
+	}
+	lock, err := c.lockSlot(providerName, accountID)
+	if err != nil {
+		return err
+	}
+	defer func() { retErr = errors.Join(retErr, releaseSlot(lock)) }()
+	return c.removeAccountLocked(providerName, accountID)
+}
+
+// removeAccountLocked is RemoveAccount for a caller holding the slot lock.
+func (c *Credentials) removeAccountLocked(providerName, accountID string) error {
 	paths, err := c.Paths(providerName)
 	if err != nil {
 		return err
@@ -166,11 +179,6 @@ func (c *Credentials) RemoveAccount(providerName, accountID string) (retErr erro
 	if err != nil {
 		return err
 	}
-	lock, err := c.lockSlot(providerName, accountID)
-	if err != nil {
-		return err
-	}
-	defer func() { retErr = errors.Join(retErr, releaseSlot(lock)) }()
 	if runtime.GOOS == "darwin" && providerName == "claude" {
 		if err := c.keychain.remove(accountDir, false); err != nil {
 			return err

@@ -192,7 +192,7 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 		return ManagedAccount{}, fmt.Errorf("save %s login credentials: %w", providerName, err)
 	}
 	restoreTarget := func() error {
-		return m.credentials.RestoreAccountCredential(savedTarget)
+		return m.credentials.RestoreAccountCredential(savedTarget, loginCredential.Bytes())
 	}
 
 	preserveID, currentCredential, err := m.reconciledActiveCredentialLocked(
@@ -309,7 +309,7 @@ func (m *Manager) saveLoginBesideActiveLocked(
 		account, err = m.store.Add(metadata)
 	}
 	if err != nil {
-		if restoreErr := m.credentials.RestoreAccountCredential(previous); restoreErr != nil {
+		if restoreErr := m.credentials.RestoreAccountCredential(previous, credential); restoreErr != nil {
 			return provideraccounts.Account{}, fmt.Errorf(
 				"%w (saved credential rollback also failed: %v)",
 				err,
