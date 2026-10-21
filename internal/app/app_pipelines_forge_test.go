@@ -38,7 +38,7 @@ func TestPipelineReadsSpendTheReserveOnlyWhenInteractive(t *testing.T) {
 		{"https://gitlab.com/grp/pipes.git", "gitlab", "throttle_authenticated_api", "20", gitops.RepoReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "pipes"}},
 	} {
 		project := forgeProjectRepo(t, app, c.origin)
-		read := func(interactive bool) (listErr error, stagesKind string) {
+		read := func(interactive bool) (stagesKind string, listErr error) {
 			if _, err := app.ListProjectPipelines(context.Background(), project, gitops.PipelineListFilter{}, interactive); err != nil {
 				listErr = err
 			}
@@ -46,16 +46,16 @@ func TestPipelineReadsSpendTheReserveOnlyWhenInteractive(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s: ReadPipelineStages: %v", c.forge, err)
 			}
-			return listErr, stages[c.id].ErrorKind
+			return stages[c.id].ErrorKind, listErr
 		}
 		// Just above the 10% reserve, the background refresh reads.
 		if err := engine.SetRateLimit(forgefake.RateLimit{Forge: c.forge, Pool: c.pool, Remaining: 501, Reset: reset}); err != nil {
 			t.Fatal(err)
 		}
-		if listErr, stagesKind := read(true); listErr != nil || stagesKind != "" {
+		if stagesKind, listErr := read(true); listErr != nil || stagesKind != "" {
 			t.Fatalf("%s above the reserve, interactive: %v / %q", c.forge, listErr, stagesKind)
 		}
-		if listErr, stagesKind := read(false); listErr != nil || stagesKind != "" {
+		if stagesKind, listErr := read(false); listErr != nil || stagesKind != "" {
 			t.Fatalf("%s above the reserve, background: %v / %q", c.forge, listErr, stagesKind)
 		}
 
@@ -64,11 +64,11 @@ func TestPipelineReadsSpendTheReserveOnlyWhenInteractive(t *testing.T) {
 		if err := engine.SetRateLimit(forgefake.RateLimit{Forge: c.forge, Pool: c.pool, Remaining: 499, Reset: reset}); err != nil {
 			t.Fatal(err)
 		}
-		if listErr, stagesKind := read(true); listErr != nil || stagesKind != "" {
+		if stagesKind, listErr := read(true); listErr != nil || stagesKind != "" {
 			t.Fatalf("%s under the reserve, interactive: %v / %q", c.forge, listErr, stagesKind)
 		}
 		before := len(engine.Invocations(0).Invocations)
-		listErr, stagesKind := read(false)
+		stagesKind, listErr := read(false)
 		var forgeErr *gitops.ForgeActionError
 		if !errors.As(listErr, &forgeErr) || forgeErr.Kind != gitops.ForgeErrorRateLimited || stagesKind != gitops.ForgeErrorRateLimited {
 			t.Fatalf("%s under the reserve, background: %v / %q, want both refused as rate limited", c.forge, listErr, stagesKind)
@@ -84,7 +84,7 @@ func TestPipelineReadsSpendTheReserveOnlyWhenInteractive(t *testing.T) {
 		if after := len(engine.Invocations(0).Invocations); after != before {
 			t.Fatalf("%s: the refused background reads made %d requests", c.forge, after-before)
 		}
-		if listErr, stagesKind := read(true); listErr != nil || stagesKind != "" {
+		if stagesKind, listErr := read(true); listErr != nil || stagesKind != "" {
 			t.Fatalf("%s under the reserve, interactive again: %v / %q", c.forge, listErr, stagesKind)
 		}
 	}
