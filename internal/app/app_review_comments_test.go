@@ -593,7 +593,7 @@ func TestDiffReviewClaimLeavesAnEditMadeDuringTheSendADraft(t *testing.T) {
 		}
 
 		claim, err := app.claimDiffReviewDelivery(thread.ID, 1, "user:1", resolved, false)
-		if err != nil || len(claim.ids) != 0 {
+		if err != nil || len(claim.ids()) != 0 {
 			t.Fatalf("pr-owned %v: claim = %+v, %v; want nothing claimed", prOwned, claim, err)
 		}
 		if got, err := app.store.GetDiffReviewComment(owner, draft.ID); err != nil || got.Status != "draft" || got.Body != "After." {
@@ -716,7 +716,7 @@ func claimReviewDraftFor(t *testing.T, app *App, threadID, itemID string, turnIn
 		owner = store.PRReviewOwner(diffReviewSendPR.Key())
 	}
 	claim, err := app.claimDiffReviewDelivery(threadID, turnIndex, itemID, diffReviewSendEnvelope(t, app, threadID, source, []string{draft.ID}), queued)
-	if err != nil || len(claim.ids) != 1 {
+	if err != nil || len(claim.ids()) != 1 {
 		t.Fatalf("claim for %s = %+v, %v", itemID, claim, err)
 	}
 	return owner, draft

@@ -993,10 +993,12 @@ comments a queued message carries are delivered by that confirmation, not
 by the quiet row. A restore that takes the message back returns them to
 drafts with its row (`RetireUndeliveredUserRow`) and gives the composer
 the text before them (`usermessage.Meta.TextBeforeReviewComments`), never
-both. A requeue rebuilt from the row sends that text with the comment ids,
-so the resend renders each comment once; while a stale row it could not
-delete still holds them, the resend reads them as its own and retires the
-row before claiming them again.
+both. A requeue rebuilt from the row sends the row's summary as it is,
+since it renders what only the first dispatch had (a PR's hunk excerpts,
+every joined member's comments of every source), and claims again the
+comments the row's retire returned, with the bodies the summary renders: a
+comment edited meanwhile stays a draft. A stale row the restore could not
+delete is retired by the resend, which claims what it returns.
 
 **The frontend mirror** (`frontend/src/lib/stores/sendQueue.svelte.ts`) has
 two zones, both per-thread and both surviving thread switches:

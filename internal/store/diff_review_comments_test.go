@@ -3,6 +3,8 @@ package store
 import (
 	"errors"
 	"fmt"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -540,8 +542,9 @@ func TestRetireUndeliveredUserRowReturnsTheDraftsItsMessageClaimed(t *testing.T)
 		{"user:3", "deferred", own, DiffReviewCommentSource{Owner: own, Scope: scope, SourceKey: source}},
 	} {
 		sources, err := s.RetireUndeliveredUserRow(thread.ID, tc.row)
-		if err != nil || len(sources) != 1 || sources[0] != tc.want {
-			t.Fatalf("retire %s = %+v, %v; want %+v", tc.row, sources, err, tc.want)
+		want := []DiffReviewCommentSnapshot{{ID: tc.comment, Body: tc.comment}}
+		if err != nil || len(sources) != 1 || sources[0].DiffReviewCommentSource != tc.want || !reflect.DeepEqual(sources[0].Comments, want) {
+			t.Fatalf("retire %s = %+v, %v; want %+v with %+v", tc.row, sources, err, tc.want, want)
 		}
 		if _, found, err := s.GetThreadItem(thread.ID, tc.row); err != nil || found {
 			t.Fatalf("row %s after its retire: found=%v err=%v", tc.row, found, err)
@@ -553,6 +556,32 @@ func TestRetireUndeliveredUserRowReturnsTheDraftsItsMessageClaimed(t *testing.T)
 	}
 	if sources, err := s.RetireUndeliveredUserRow(thread.ID, "user:3"); err != nil || len(sources) != 0 {
 		t.Fatalf("second retire = %+v, %v; want nothing left", sources, err)
+	}
+	// A message carrying comments of two sources gets each source's back.
+	createReviewComments(t, s, pr, prScope, prSource, "joined-pr")
+	createReviewComments(t, s, own, scope, source, "joined-own-1", "joined-own-2")
+	claimFor(t, s, pr, prScope, prSource, "joined-pr", thread.ID, "user:5", thread.ID+":1", true)
+	claimFor(t, s, own, scope, source, "joined-own-1", thread.ID, "user:5", thread.ID+":1", true)
+	claimFor(t, s, own, scope, source, "joined-own-2", thread.ID, "user:5", thread.ID+":1", true)
+	joined, err := s.RetireUndeliveredUserRow(thread.ID, "user:5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[DiffReviewCommentSource][]string{}
+	for _, source := range joined {
+		for _, comment := range source.Comments {
+			got[source.DiffReviewCommentSource] = append(got[source.DiffReviewCommentSource], comment.ID+"="+comment.Body)
+		}
+	}
+	for key := range got {
+		sort.Strings(got[key])
+	}
+	wantJoined := map[DiffReviewCommentSource][]string{
+		{Owner: pr, Scope: prScope, SourceKey: prSource}: {"joined-pr=joined-pr"},
+		{Owner: own, Scope: scope, SourceKey: source}:    {"joined-own-1=joined-own-1", "joined-own-2=joined-own-2"},
+	}
+	if len(joined) != 2 || !reflect.DeepEqual(got, wantJoined) {
+		t.Fatalf("retire of a two-source message = %+v, want %+v", joined, wantJoined)
 	}
 	if got := reviewCommentStatus(t, s, pr, "kept"); got != "sent" {
 		t.Fatalf("kept = %s, want sent", got)

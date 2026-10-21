@@ -424,8 +424,8 @@ func (s *Store) MarkDiffReviewCommentsSent(owner DiffReviewOwner, scope, sourceK
 // DiffReviewCommentSnapshot is a draft as a send read it: its id and the
 // body the message carries.
 type DiffReviewCommentSnapshot struct {
-	ID   string
-	Body string
+	ID   string `json:"id"`
+	Body string `json:"body"`
 }
 
 // ErrDiffReviewCommentsSentElsewhere is a claim naming a draft another
@@ -658,16 +658,25 @@ type DiffReviewCommentSource struct {
 	SourceKey string
 }
 
+// DiffReviewReturnedComments are the comments of one source that a retire
+// returned to drafts, each with the body its message carried.
+type DiffReviewReturnedComments struct {
+	DiffReviewCommentSource
+	Comments []DiffReviewCommentSnapshot
+}
+
 // RetireUndeliveredUserRow takes back a message the provider never
 // consumed: in one transaction it returns to drafts the comments still
 // marked sent by the message the row threadID/itemID carries, settled or
 // not, and deletes the row if it exists (a deferred message has none). It
-// returns the sources whose comments it returned.
-func (s *Store) RetireUndeliveredUserRow(threadID, itemID string) ([]DiffReviewCommentSource, error) {
+// returns the comments it returned, by source. A comment edited since its
+// message claimed it is not among them: the edit cleared the claim. So
+// each returned body is the one the message carries.
+func (s *Store) RetireUndeliveredUserRow(threadID, itemID string) ([]DiffReviewReturnedComments, error) {
 	if strings.TrimSpace(threadID) == "" || strings.TrimSpace(itemID) == "" {
 		return nil, fmt.Errorf("store: retire undelivered user row: the thread and the row are required")
 	}
-	var sources []DiffReviewCommentSource
+	var sources []DiffReviewReturnedComments
 	err := s.writeItems(threadID, nil, "retire undelivered user row "+threadID+"/"+itemID, func(tx *sql.Tx, w *cardWrite) error {
 		sources = sources[:0]
 		rows, err := tx.Query(
@@ -677,23 +686,27 @@ func (s *Store) RetireUndeliveredUserRow(threadID, itemID string) ([]DiffReviewC
 			        sent_turn_id = CASE WHEN status = 'sent' THEN '' ELSE sent_turn_id END,
 			        claim_thread_id = '', claim_item_id = '', claim_settles = ''
 			  WHERE claim_item_id <> '' AND claim_thread_id = `+boundText+` AND claim_item_id = `+boundText+`
-			RETURNING COALESCE(thread_id, ''), COALESCE(pr_key, ''), scope, source_key`,
+			RETURNING COALESCE(thread_id, ''), COALESCE(pr_key, ''), scope, source_key, id, body`,
 			threadID, itemID,
 		)
 		if err != nil {
 			return fmt.Errorf("store: return the review comments of %s/%s: %w", threadID, itemID, err)
 		}
-		seen := map[DiffReviewCommentSource]bool{}
+		index := map[DiffReviewCommentSource]int{}
 		for rows.Next() {
 			var source DiffReviewCommentSource
-			if err := rows.Scan(&source.Owner.ThreadID, &source.Owner.PRKey, &source.Scope, &source.SourceKey); err != nil {
+			var comment DiffReviewCommentSnapshot
+			if err := rows.Scan(&source.Owner.ThreadID, &source.Owner.PRKey, &source.Scope, &source.SourceKey, &comment.ID, &comment.Body); err != nil {
 				_ = rows.Close()
 				return fmt.Errorf("store: return the review comments of %s/%s: %w", threadID, itemID, err)
 			}
-			if !seen[source] {
-				seen[source] = true
-				sources = append(sources, source)
+			i, seen := index[source]
+			if !seen {
+				i = len(sources)
+				index[source] = i
+				sources = append(sources, DiffReviewReturnedComments{DiffReviewCommentSource: source})
 			}
+			sources[i].Comments = append(sources[i].Comments, comment)
 		}
 		if err := rows.Err(); err != nil {
 			_ = rows.Close()

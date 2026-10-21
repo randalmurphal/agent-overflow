@@ -11,6 +11,7 @@ import (
 
 	attachmentstore "agent-overflow/internal/attachment"
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/flushqueue"
 	"agent-overflow/internal/planrevision"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
@@ -123,6 +124,13 @@ type userMessageInputs struct {
 	// review comments their claims hold are this message's own, so its
 	// resolution reads them as drafts.
 	heldBy []string
+	// textBeforeReviewComments, when set, says the content already renders
+	// its diff review comments: it is the summary of the row an earlier
+	// dispatch of the message landed as (flushqueue.Payload). The content
+	// is sent as it is, and the message claims renderedReviewComments
+	// again instead of rendering revisionSourceDiffCommentIDs.
+	textBeforeReviewComments *string
+	renderedReviewComments   []flushqueue.RenderedReviewComments
 }
 
 var errEmptyUserMessage = errors.New("enter a message or attach a file before sending")
@@ -169,9 +177,9 @@ type resolvedUserMessage struct {
 	revisionPlanCommentIDs []string
 	revisionSourceDiff     *SourceDiffReview
 	revisionDiffCommentIDs []string
-	// revisionDiffComments are the drafts as content carries them; the
-	// delivery claims exactly these (claimDiffReviewDelivery).
-	revisionDiffComments []store.DiffReviewCommentSnapshot
+	// reviewDeliveries are the review comments as content carries them, by
+	// source; the delivery claims exactly these (claimDiffReviewDelivery).
+	reviewDeliveries []reviewDelivery
 	// textBeforeReviewComments is content before those drafts were
 	// rendered into it, or nil when it renders none
 	// (usermessage.Meta.TextBeforeReviewComments).
@@ -226,9 +234,19 @@ func (a *App) resolveUserMessageEnvelope(
 		revisionCommentIDs = commentIDs
 	}
 	revisionDiffCommentIDs := inputs.revisionSourceDiffCommentIDs
-	var revisionDiffComments []store.DiffReviewCommentSnapshot
+	var reviewDeliveries []reviewDelivery
 	var textBeforeReviewComments *string
-	if revisionSourceDiff != nil && len(revisionDiffCommentIDs) > 0 {
+	if inputs.textBeforeReviewComments != nil {
+		// The content renders its comments already, with the hunk excerpts
+		// the meta does not keep; rendering them again would send each
+		// twice. The comment ids stay on the meta as provenance.
+		before := *inputs.textBeforeReviewComments
+		textBeforeReviewComments = &before
+		reviewDeliveries, err = a.renderedReviewDeliveries(threadID, inputs.renderedReviewComments)
+		if err != nil {
+			return resolvedUserMessage{}, err
+		}
+	} else if revisionSourceDiff != nil && len(revisionDiffCommentIDs) > 0 {
 		heldBy := store.DiffReviewMessageRows{ThreadID: threadID, ItemIDs: inputs.heldBy}
 		nextContent, comments, err := a.appendDiffReviewCommentsToContent(diffReviewSourceOwner(revisionSourceDiff), content, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, revisionDiffCommentIDs, revisionSourceDiff.PR, heldBy)
 		if err != nil {
@@ -237,7 +255,7 @@ func (a *App) resolveUserMessageEnvelope(
 		before := strings.TrimSpace(content)
 		textBeforeReviewComments = &before
 		content = nextContent
-		revisionDiffComments = comments
+		reviewDeliveries = []reviewDelivery{{source: revisionSourceDiff, comments: comments}}
 		revisionDiffCommentIDs = make([]string, 0, len(comments))
 		for _, comment := range comments {
 			revisionDiffCommentIDs = append(revisionDiffCommentIDs, comment.ID)
@@ -301,7 +319,7 @@ func (a *App) resolveUserMessageEnvelope(
 		revisionPlanCommentIDs: revisionCommentIDs,
 		revisionSourceDiff:     revisionSourceDiff,
 		revisionDiffCommentIDs: revisionDiffCommentIDs,
-		revisionDiffComments:   revisionDiffComments,
+		reviewDeliveries:       reviewDeliveries,
 
 		textBeforeReviewComments: textBeforeReviewComments,
 		userMessageMeta:          userMeta,
@@ -639,7 +657,7 @@ func (a *App) sendMessageLocked(
 	// before its row exists, so a draft another message already took
 	// fails the send here, before anything is delivered. A failure before
 	// the row lands hands them back; the row's insert settles the claim.
-	var claim diffReviewClaim
+	var claim diffReviewClaims
 	if claim, err = a.claimDiffReviewDelivery(threadID, turnIndex, userItemID, resolved, false); err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)
 	}
@@ -1348,6 +1366,30 @@ type diffReviewClaim struct {
 	ids       []string
 }
 
+// reviewDelivery is one source's review comments a message carries, as it
+// carries them.
+type reviewDelivery struct {
+	source   *SourceDiffReview
+	comments []store.DiffReviewCommentSnapshot
+}
+
+// renderedReviewDeliveries are the deliveries of the review comments a
+// message rebuilt from its row renders (flushqueue.Payload).
+func (a *App) renderedReviewDeliveries(threadID string, rendered []flushqueue.RenderedReviewComments) ([]reviewDelivery, error) {
+	deliveries := make([]reviewDelivery, 0, len(rendered))
+	for _, r := range rendered {
+		source, err := a.resolveSourceDiffReview(threadID, &r.Source)
+		if err != nil {
+			return nil, fmt.Errorf("rendered diff review comments: %w", err)
+		}
+		if source == nil || len(r.Comments) == 0 {
+			continue
+		}
+		deliveries = append(deliveries, reviewDelivery{source: source, comments: r.Comments})
+	}
+	return deliveries, nil
+}
+
 // claimDiffReviewDelivery marks sent, in the turn turnIndex of threadID, the
 // drafts resolved carries whose text is still what it read: a draft edited
 // since stays a draft, since its new text was not sent. A draft another
@@ -1357,24 +1399,28 @@ type diffReviewClaim struct {
 // steer is delivered by that row, so its insert settles the claim; a queued
 // message's row can land before the provider has it, so its claim settles
 // when the provider confirms it (store.DiffReviewDelivery.Queued). A claim
-// still unsettled returns to drafts at the next boot.
-func (a *App) claimDiffReviewDelivery(threadID string, turnIndex int, itemID string, resolved resolvedUserMessage, queued bool) (diffReviewClaim, error) {
-	rd := resolved.revisionSourceDiff
-	if rd == nil || len(resolved.revisionDiffComments) == 0 {
-		return diffReviewClaim{}, nil
+// still unsettled returns to drafts at the next boot. The message claims
+// each source it carries; a failure hands back what it already claimed.
+func (a *App) claimDiffReviewDelivery(threadID string, turnIndex int, itemID string, resolved resolvedUserMessage, queued bool) (diffReviewClaims, error) {
+	var claims diffReviewClaims
+	for _, delivery := range resolved.reviewDeliveries {
+		if delivery.source == nil || len(delivery.comments) == 0 {
+			continue
+		}
+		claim := diffReviewClaim{
+			threadID: threadID, owner: diffReviewSourceOwner(delivery.source), scope: delivery.source.Scope, sourceKey: delivery.source.SourceKey,
+			turnID: diffReviewSentTurnID(threadID, turnIndex), itemID: itemID,
+		}
+		ids, err := a.store.ClaimDiffReviewCommentsSent(claim.owner, claim.scope, claim.sourceKey, delivery.comments, store.DiffReviewDelivery{
+			SentAt: time.Now().UnixMilli(), TurnID: claim.turnID, ThreadID: threadID, ItemID: itemID, Queued: queued,
+		})
+		if err != nil {
+			return nil, errors.Join(fmt.Errorf("diff review comments: %w", err), claims.release(a))
+		}
+		claim.ids = ids
+		claims = append(claims, claim)
 	}
-	claim := diffReviewClaim{
-		threadID: threadID, owner: diffReviewSourceOwner(rd), scope: rd.Scope, sourceKey: rd.SourceKey,
-		turnID: diffReviewSentTurnID(threadID, turnIndex), itemID: itemID,
-	}
-	ids, err := a.store.ClaimDiffReviewCommentsSent(claim.owner, claim.scope, claim.sourceKey, resolved.revisionDiffComments, store.DiffReviewDelivery{
-		SentAt: time.Now().UnixMilli(), TurnID: claim.turnID, ThreadID: threadID, ItemID: itemID, Queued: queued,
-	})
-	if err != nil {
-		return diffReviewClaim{}, fmt.Errorf("diff review comments: %w", err)
-	}
-	claim.ids = ids
-	return claim, nil
+	return claims, nil
 }
 
 // release hands the claimed drafts back when their message was not sent.
@@ -1410,8 +1456,18 @@ func (c diffReviewClaim) announce(a *App) {
 	}
 }
 
-// diffReviewClaims are the claims of a joined message's members.
+// diffReviewClaims are the claims of a message, one per source it carries,
+// or of a joined message's members.
 type diffReviewClaims []diffReviewClaim
+
+// ids are the comment ids the claims marked.
+func (cs diffReviewClaims) ids() []string {
+	var ids []string
+	for _, c := range cs {
+		ids = append(ids, c.ids...)
+	}
+	return ids
+}
 
 func (cs diffReviewClaims) release(a *App) error {
 	var errs []error
