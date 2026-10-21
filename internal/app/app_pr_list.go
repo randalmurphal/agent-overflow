@@ -315,9 +315,18 @@ func (a *App) unsubscribePRList(id string) {
 		teardown = pump
 		a.prUpdates.list = nil
 	}
+	// A visible handle's focus leaves with it: the others' rows may take
+	// its share of the detail allowance now.
+	refocus := teardown == nil && handle.active && len(handle.focus) > 0
 	a.prUpdates.mu.Unlock()
 	if teardown != nil {
 		teardown.stop()
+	}
+	if refocus {
+		select {
+		case pump.focusWake <- struct{}{}:
+		default:
+		}
 	}
 }
 

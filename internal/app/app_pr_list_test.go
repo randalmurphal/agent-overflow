@@ -621,11 +621,26 @@ func TestPRListHiddenSubscriberFocusYieldsTheAllowance(t *testing.T) {
 	}
 	fake.mu.Unlock()
 
+	// A visible subscriber that leaves gives its share back at once.
+	if err := app.UnsubscribePRList(context.Background(), b.ID); err != nil {
+		t.Fatal(err)
+	}
+	awaitPRList(t, events, "the remaining subscriber's rows read once the other left", func(s PRListSnapshot) bool {
+		return detailed(s, older) == maxPRListFocus && detailed(s, newer) == 0
+	})
+
 	// Nothing left to read: hiding still drops the hidden rows' detail.
+	c := subscribePRList(t, app)
+	if _, err := app.SetPRListFocus(context.Background(), c.ID, newer); err != nil {
+		t.Fatal(err)
+	}
+	awaitPRList(t, events, "the newer rows read for the new subscriber", func(s PRListSnapshot) bool {
+		return detailed(s, newer) == maxPRListFocus
+	})
 	if _, err := app.SetPRListFocus(context.Background(), a.ID, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.SetPRListActive(context.Background(), b.ID, false); err != nil {
+	if err := app.SetPRListActive(context.Background(), c.ID, false); err != nil {
 		t.Fatal(err)
 	}
 	awaitPRList(t, events, "the hidden rows' detail dropped", func(s PRListSnapshot) bool {
