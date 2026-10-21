@@ -24,7 +24,7 @@
   import { CI_LOG_BLOCK_LINES, CILogBlockCache, type CILogFetch } from '../../stores/ciLogBlocks.svelte';
   import type { PRCILogState } from '../../stores/prReviewCI.svelte';
   import { getSettings } from '../../stores/settings.svelte';
-  import type { CILogView } from '../../stores/reviewPane.svelte';
+  import type { CILogView } from '../../stores/ciSubject.svelte';
   import type { CILogSection } from '../../types/models';
   import { ciJobLive, ciStatusDotClass, ciStatusTextClass, formatCIDuration } from '../../utils/ciStatus';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';

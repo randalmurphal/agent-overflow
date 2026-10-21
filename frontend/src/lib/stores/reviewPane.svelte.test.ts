@@ -7,9 +7,9 @@ import {
   replaceDiffReviewCommentsForTest,
 } from './diffReviewComments.svelte';
 import { projectTurnStarted } from './threadStatuses.svelte';
+import { CI_SECTION_INLINE_MAX_BYTES } from './ciSubject.svelte';
 import {
   __resetReviewPaneStateForTest,
-  CI_SECTION_INLINE_MAX_BYTES,
   disposeReviewStateForPane,
   openReviewCompanion,
   reviewStateForPane,
