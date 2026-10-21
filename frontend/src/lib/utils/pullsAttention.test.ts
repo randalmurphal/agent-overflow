@@ -11,7 +11,7 @@ describe('pullStateText', () => {
     expect(pullStateText('your_turn', { kind: 'pushed', commits: 0, replies: 0 })).toBe('Pushed since your review');
     expect(pullStateText('your_turn', { kind: 'replied', commits: 0, replies: 2 })).toBe('2 replies since your review');
     expect(pullStateText('your_turn', { kind: 'replied', commits: 0, replies: 1 })).toBe('1 reply since your review');
-    expect(pullStateText('your_turn', { kind: 'replied', commits: 0, replies: 0 })).toBe('Updated since your review');
+    expect(pullStateText('your_turn', { kind: 'replied', commits: 0, replies: 0 })).toBe('Author replied');
   });
 
   it('names every other state, approved by whether the viewer approved or only reviewed', () => {

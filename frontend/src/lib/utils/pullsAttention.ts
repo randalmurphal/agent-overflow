@@ -74,7 +74,7 @@ export function pullStateText(state: string, reason: PullReason | null | undefin
         case 'replied':
           return reason.replies > 0
             ? `${reason.replies === 1 ? '1 reply' : `${reason.replies} replies`} since your review`
-            : 'Updated since your review';
+            : 'Author replied';
         default:
           return 'Review requested';
       }

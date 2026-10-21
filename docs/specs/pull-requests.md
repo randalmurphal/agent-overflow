@@ -214,7 +214,7 @@ failed project's group header; the other projects keep working.
 ### The page (phase 2)
 
 A pane kind `pulls`. Left: a list column with tabs (Merge requests,
-Pipelines), a filter row, and grouped rows; right: the review pane on the
+Pipelines), a toolbar, and grouped rows; right: the review pane on the
 selected MR with the project's root as its workspace and no thread, so
 stepping through the list never loses it. The list column's width is
 remembered and clamped to leave the detail a usable width in the pane as
@@ -234,9 +234,14 @@ comment drafts have no thread row to live under, so the MR owns them
 are sent to a thread; they survive stepping through the list and a
 restart. The page records nothing about which MRs the user opened.
 
-Rows carry number, title, project, author, age, CI dot, approvals `n/m`,
-unresolved count and one state pill with its reason. States, in sort
-order across projects: `Your turn` (a review requested from you and not
+A row reads top down: the project, `!number`, the author's display name
+("you" for your own) and the age; the title, wrapping to two lines; then
+the facts, wrapping and never cut: the state label in its tone, approvals
+`n/m`, the unresolved count and, on your own MRs only, the CI dot. The
+label says why the row is where it is: `Review requested`, `+N commits
+since your review`, `N replies since your review` or `Author replied`,
+`Approved by you` or `Reviewed by you`. States, in attention order:
+`Your turn` (a review requested from you and not
 given; or, after your latest review, comment or approval, the author
 pushed, or replied: GitHub the author's latest comment or review, GitLab
 the MR's update time more than `gitlabTouchSlack` (10 s) past your
@@ -244,10 +249,17 @@ activity), `Pipeline failed` (yours), `Ready to merge` (yours, no
 blockers), `Changes requested` (yours), `Waiting on author` (you
 requested changes, nothing since), `Approved by you` or `Reviewed by you`
 (your approval stands, or you reviewed without approving, nothing since),
-`Draft`, `Open`. The first three are Needs you. Your activity is the
-forge's own record: GitHub `viewerLatestReview`, GitLab your notes and
-approvals in your events feed. Filters (`Needs you`, `Mine`, `Review
-requested`, `All open`, project) persist in appStorage per tab.
+`Draft`, `Open`. The first three are Needs you, listed before the rest.
+Your activity is the forge's own record: GitHub `viewerLatestReview`,
+GitLab your notes and approvals in your events feed. The toolbar's three
+menu buttons, the filter (`Needs you` with its count, `Mine`,
+`Reviewing`, `All open`), the projects and the sort (`Updated` newest
+first by default, `Created`, `Title`, `Author`, `Attention`; the same
+key again turns the order around) persist in appStorage per computer;
+under 380px the buttons keep their icons and drop their labels. A sort
+you pick opens the list from the top; rows that move under a list at its
+top leave it at its top, and under a list scrolled into its rows keep the
+row at the viewport top in view.
 
 Each project is read with a fixed set of concurrent requests and never a
 read per row. GitHub: one `PullsSearch` per 100 PRs, whose nodes carry the
@@ -394,6 +406,7 @@ after it `Your turn`, a refused project failing alone, "Open with agent" opening
 thread on a worktree of the branch, and the Pipelines tab's filters
 remembered across a reload, stages and a GitLab and a GitHub job log.
 `pullsList.browser.test.ts` covers the lists' virtualization: the
-mounted rows stay bounded over thousands, and the rows on screen are
-reported as the list scrolls, changes and hides. `tool-panes.spec.ts`, `workflows-pane.spec.ts` and their
+mounted rows stay bounded over thousands, a list at its top stays there
+when its rows move, a chosen sort opens from the top, and the Pipelines
+list reports the rows on screen as it scrolls, changes and hides. `tool-panes.spec.ts`, `workflows-pane.spec.ts` and their
 compact twins cover the tools row and the pane kinds.

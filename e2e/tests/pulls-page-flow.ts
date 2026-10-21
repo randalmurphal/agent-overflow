@@ -141,8 +141,15 @@ function row(page: Page, number: number): Locator {
   return page.locator(`[data-testid="pull-row"][data-pr-key$=":${number}"]`);
 }
 
-function rowPill(page: Page, number: number): Locator {
-  return row(page, number).getByTestId('pull-state-pill');
+function rowState(page: Page, number: number): Locator {
+  return row(page, number).getByTestId('pull-state');
+}
+
+/** Picks a filter from the toolbar's filter menu. */
+async function pickFilter(page: Page, pane: Locator, value: 'needs_you' | 'mine' | 'reviewing' | 'all'): Promise<void> {
+  await pane.getByTestId('pulls-filter').click();
+  await page.getByTestId(`pulls-filter-${value}`).click();
+  await expect(pane.getByTestId('pulls-filter')).toHaveAttribute('data-filter', value);
 }
 
 async function useDarkTheme(page: Page): Promise<void> {
@@ -176,11 +183,11 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       // arrives with the project's GraphQL read of the user's own rows.
       const needsYou = pane.getByTestId('pulls-group-needs_you');
       await expect(needsYou).toBeVisible();
-      await expect(pane.getByTestId('pulls-filter-needs_you')).toHaveAttribute('aria-pressed', 'true');
-      await expect(rowPill(page, 101)).toHaveText('Your turn');
-      await expect(rowPill(page, 202)).toHaveText('Your turn');
-      await expect(rowPill(page, 201)).toHaveText('Ready to merge');
-      await expect(rowPill(page, 103)).toHaveText('Pipeline failed', { timeout: 20_000 });
+      await expect(pane.getByTestId('pulls-filter')).toHaveAttribute('data-filter', 'needs_you');
+      await expect(rowState(page, 101)).toHaveText('Review requested');
+      await expect(rowState(page, 202)).toHaveText('Review requested');
+      await expect(rowState(page, 201)).toHaveText('Ready to merge');
+      await expect(rowState(page, 103)).toHaveText('Pipeline failed', { timeout: 20_000 });
       await expect(needsYou).toContainText('4');
       // What the page asked the forges for: each project's fixed request
       // set, and no read of one PR before a review opens.
@@ -195,23 +202,23 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
         });
       }).toPass({ timeout: 20_000 });
       await expect(pane.getByTestId('pull-row')).toHaveCount(4);
-      await pane.getByTestId('pulls-filter-all').click();
-      await expect(rowPill(page, 102)).toHaveText('Draft');
-      await expect(rowPill(page, 104)).toHaveText('Open');
+      await pickFilter(page, pane, 'all');
+      await expect(rowState(page, 102)).toHaveText('Draft');
+      await expect(rowState(page, 104)).toHaveText('Open');
       await expect(pane.getByTestId('pulls-group-waiting')).toContainText('2');
       await expect(page.getByTestId('sidebar-tool-pulls-badge')).toHaveText('4');
-      // The needs-you count on the chip reads the same.
+      // The needs-you count on the filter button reads the same.
       await expect(pane.getByTestId('pulls-filter-needs-you-count')).toHaveText('4');
       // Approvals and the CI dot come with each project's read.
-      await expect(row(page, 101).getByTestId('pull-approvals')).toHaveText('approvals 0/1');
-      await expect(row(page, 201).getByTestId('pull-approvals')).toHaveText('approvals 1/1');
+      await expect(row(page, 101).getByTestId('pull-approvals')).toHaveText('0/1 approvals');
+      await expect(row(page, 201).getByTestId('pull-approvals')).toHaveText('1/1 approvals');
       await shoot(compact ? page : pane, testInfo, 'pulls-list-dark');
 
       // Filters narrow the list and are remembered across a reload.
-      await pane.getByTestId('pulls-filter-mine').click();
+      await pickFilter(page, pane, 'mine');
       await expect(pane.getByTestId('pull-row')).toHaveCount(3);
       await expect(row(page, 101)).toHaveCount(0);
-      await pane.getByTestId('pulls-filter-all').click();
+      await pickFilter(page, pane, 'all');
       await expect(pane.getByTestId('pull-row')).toHaveCount(6);
       await pane.getByTestId('pulls-projects-picker').click();
       await page.getByTestId('pulls-project-' + (await projectId(harness, 'gadgets'))).click();
@@ -222,7 +229,7 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       // Compact starts on the list screen; the tools row reveals the pane.
       if (compact) await page.getByTestId('sidebar-tool-pulls').click();
       await expect(page.getByTestId('pulls-pane')).toBeVisible();
-      await expect(page.getByTestId('pulls-filter-all')).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.getByTestId('pulls-filter')).toHaveAttribute('data-filter', 'all');
       await expect(page.getByTestId('pull-row')).toHaveCount(4);
       await page.getByTestId('pulls-projects-picker').click();
       await page.getByTestId('pulls-projects-all').click();
@@ -262,14 +269,14 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
         updatedAt: '2026-10-20T15:00:00.400Z',
       };
       await seedForge(harness, [{ ...seeded.gitlab, pulls: [reviewed, ...rest] }]);
-      await expect(rowPill(page, 101)).toHaveText('Reviewed by you', { timeout: 20_000 });
+      await expect(rowState(page, 101)).toHaveText('Reviewed by you', { timeout: 20_000 });
       await expect(page.getByTestId('sidebar-tool-pulls-badge')).toHaveText('3');
       // The author answers a minute later: the viewer's turn again.
       await seedForge(harness, [{
         ...seeded.gitlab,
         pulls: [{ ...reviewed, comments: [...reviewed.comments, { author: 'sabossedgh', body: 'Three would hide a dead endpoint.', createdAt: '2026-10-20T15:01:00Z' }], updatedAt: '2026-10-20T15:01:00Z' }, ...rest],
       }]);
-      await expect(rowPill(page, 101)).toHaveText('Your turn', { timeout: 20_000 });
+      await expect(rowState(page, 101)).toHaveText('Author replied', { timeout: 20_000 });
       await expect(page.getByTestId('sidebar-tool-pulls-badge')).toHaveText('4');
 
       await expectEveryForgeCallHandled(harness);
@@ -287,8 +294,8 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       await harness.open(page);
       await useDarkTheme(page);
       const pane = await openPage(page);
-      await expect(rowPill(page, 101)).toHaveText('Your turn');
-      await pane.getByTestId('pulls-filter-all').click();
+      await expect(rowState(page, 101)).toHaveText('Review requested');
+      await pickFilter(page, pane, 'all');
       await expect(pane.getByTestId('pull-row')).toHaveCount(6);
 
       // GitLab refuses its list with a token lacking the scope: the widgets

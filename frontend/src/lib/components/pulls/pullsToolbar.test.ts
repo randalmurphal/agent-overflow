@@ -3,7 +3,7 @@
 // again turns its order around, and the project picker keeps "every
 // project" as the empty pick.
 
-import { fireEvent, render } from '@testing-library/svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
 import PullsToolbar from './PullsToolbar.svelte';
 import PipelinesFilterChips from './PipelinesFilterChips.svelte';
@@ -35,10 +35,17 @@ describe('PullsToolbar', () => {
     await fireEvent.click(filter);
     await fireEvent.click(view.getByTestId('pulls-filter-reviewing'));
     expect(onFilter).toHaveBeenCalledWith('reviewing');
+    // A single choice closes its menu, and the menu opens again after.
+    await waitFor(() => expect(view.queryByTestId('pulls-filter-reviewing')).toBeNull());
+    await fireEvent.click(filter);
+    await waitFor(() => expect(view.getByTestId('pulls-filter-mine')).toBeInTheDocument());
+    await fireEvent.click(view.getByTestId('pulls-filter-mine'));
+    await waitFor(() => expect(view.queryByTestId('pulls-filter-mine')).toBeNull());
 
     await fireEvent.click(view.getByTestId('pulls-sort'));
     await fireEvent.click(view.getByTestId('pulls-sort-title'));
     expect(onSort).toHaveBeenCalledWith({ key: 'title', reversed: false });
+    await waitFor(() => expect(view.queryByTestId('pulls-sort-title')).toBeNull());
   });
 
   it('turns the order around when the current sort key is picked again', async () => {
@@ -58,9 +65,10 @@ describe('PullsToolbar', () => {
   it('picks projects with every project as the empty pick, and names a single pick', async () => {
     const { view, onProjects } = mountToolbar();
     await fireEvent.click(view.getByTestId('pulls-projects-picker'));
-    // Unticking one from "all" picks the others.
+    // Unticking one from "all" picks the others; the menu stays open for more.
     await fireEvent.click(view.getByTestId('pulls-project-p1'));
     expect(onProjects).toHaveBeenLastCalledWith(['p2']);
+    expect(view.getByTestId('pulls-project-p2')).toBeInTheDocument();
     view.unmount();
 
     const picked = mountToolbar({ selectedProjects: ['p2'] });

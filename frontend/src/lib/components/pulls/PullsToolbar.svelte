@@ -92,9 +92,17 @@
     onProjects(next.length === projects.length ? [] : next);
   }
 
+  // A single choice closes its menu; the projects menu stays open for
+  // ticking several.
+  function pickFilter(value: PullsFilter): void {
+    onFilter(value);
+    closeFilter();
+  }
+
   // Picking the current key again turns the order around.
   function pickSort(key: PullsSortKey): void {
     onSort(key === sort.key ? { key, reversed: !sort.reversed } : { key, reversed: false });
+    closeSort();
   }
 </script>
 
@@ -125,7 +133,7 @@
           description={entry.description}
           suffix={entry.value === 'needs_you' && needsYouCount > 0 ? String(needsYouCount) : undefined}
           checked={entry.value === filter}
-          onSelect={() => onFilter(entry.value)}
+          onSelect={() => pickFilter(entry.value)}
           testId="pulls-filter-{entry.value}"
         />
       {/each}
