@@ -592,6 +592,30 @@ describe('transport gap — the Pull requests channels', () => {
     }
   });
 
+  it('holds the computer\'s recovery until the pipelines\' re-subscribes settle', async () => {
+    const laptop = stageBackend();
+    const phases: string[] = [];
+    const off = onBackendRecovery((backend, phase) => phases.push(`${backend}:${phase}`));
+    let done!: () => void;
+    const resync = new Promise<void>((resolve) => {
+      done = resolve;
+    });
+    const remove = setPullsReceiver({ pipelinesGap: () => resync });
+    try {
+      laptop.replay('start');
+      applyTransportGap({ channel: 'ci:pipeline_updated', seq: 3 }, { backendId: backendById('laptop')!.backendId });
+      laptop.replay('complete');
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+      expect(phases).toEqual(['laptop:start']);
+      done();
+      await vi.waitFor(() => expect(phases).toEqual(['laptop:start', 'laptop:complete']));
+    } finally {
+      remove();
+      off();
+      resetStagedBackends();
+    }
+  });
+
   it('reads the list or the pipelines again on their computer', () => {
     const got: string[] = [];
     const remove = setPullsReceiver({
@@ -599,7 +623,10 @@ describe('transport gap — the Pull requests channels', () => {
         got.push(`pulls ${backend}`);
         return undefined;
       },
-      pipelinesGap: (backend) => got.push(`pipelines ${backend}`),
+      pipelinesGap: (backend) => {
+        got.push(`pipelines ${backend}`);
+        return undefined;
+      },
     });
     try {
       applyTransportGap({ channel: 'pulls:updated', seq: 3 });

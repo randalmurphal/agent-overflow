@@ -319,10 +319,13 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       return;
     // Log frames are deltas against the text held: re-sending the follow
     // set answers every followed job's full text.
-    case 'pr:ci_log':
-      resendPRCILogFollowsForBackend(backendKeyForOrigin(origin?.backendId ?? ''));
-      resyncPipelinesAfterGap(backendKeyForOrigin(origin?.backendId ?? ''));
+    case 'pr:ci_log': {
+      const backend = backendKeyForOrigin(origin?.backendId ?? '');
+      resendPRCILogFollowsForBackend(backend);
+      const resync = resyncPipelinesAfterGap(backend);
+      if (resync) holdBackendRecovery(backend, resync);
       return;
+    }
     // One frame per change of the list pump's snapshot, or of a pipeline:
     // a lost one is not restated, so the page reads again. The list's
     // re-subscribe holds the recovery until its snapshot is applied.
@@ -332,9 +335,13 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       if (resync) holdBackendRecovery(backend, resync);
       return;
     }
-    case 'ci:pipeline_updated':
-      resyncPipelinesAfterGap(backendKeyForOrigin(origin?.backendId ?? ''));
+    // Each pipeline's re-subscribe holds the recovery until it settles.
+    case 'ci:pipeline_updated': {
+      const backend = backendKeyForOrigin(origin?.backendId ?? '');
+      const resync = resyncPipelinesAfterGap(backend);
+      if (resync) holdBackendRecovery(backend, resync);
       return;
+    }
     case 'mcp:status':
       resyncMcpServersAfterGap(backendKeyForOrigin(origin?.backendId ?? ''));
       return;

@@ -66,6 +66,9 @@ const localKeysByWireKey = new Map<string, Map<string, symbol>>();
 // frame's. Cleared when a source run starts, since a restarted backend's
 // pump numbers from one again.
 const appliedSeqByKey = new Map<string, number>();
+// The latest source run per key, settled either way: a gap resync hands
+// the runs it started to the recovery fence.
+const sourceRunByKey = new Map<string, Promise<void>>();
 // The live handle per local key, for the visibility votes.
 const subscriptionByKey = new Map<string, { backend: BackendKey; id: string }>();
 // The frames routed to a key while its subscribe is in flight, stamped
@@ -125,11 +128,28 @@ function replayJoin(key: string, join: JoinFrames | null): void {
   }
 }
 
+type PipelineSourceArgs = Parameters<NonNullable<Parameters<typeof createEntityStore<{ readonly seq: number }, PipelineCtx>>[0]['source']>>[0];
+
 const store = createEntityStore<{ readonly seq: number }, PipelineCtx>({
   name: 'pipelineCI',
   backendForKey: workspaceKeyBackend,
   rawValue: true,
-  source: async ({ key, getCtx, apply, signal }) => {
+  source: (args) => {
+    const run = subscribePipeline(args);
+    sourceRunByKey.set(args.key, run.then(() => undefined, () => undefined));
+    return run;
+  },
+  onDrop: (key) => {
+    appliedSeqByKey.delete(key);
+    joiningByKey.delete(key);
+    sourceRunByKey.delete(key);
+    dropPRCIFollows(key);
+    dropPRCI(key);
+  },
+});
+
+async function subscribePipeline({ key, getCtx, apply, signal }: PipelineSourceArgs): Promise<() => Promise<void>> {
+  {
     const ctx = getCtx();
     const { backend } = ctx;
     const expected = wireKeyFor(ctx);
@@ -187,14 +207,8 @@ const store = createEntityStore<{ readonly seq: number }, PipelineCtx>({
     resendPRCILogFollows(key);
     apply({ seq });
     return cleanup;
-  },
-  onDrop: (key) => {
-    appliedSeqByKey.delete(key);
-    joiningByKey.delete(key);
-    dropPRCIFollows(key);
-    dropPRCI(key);
-  },
-});
+  }
+}
 
 /** Holds a pipeline's live CI until the release. */
 export function attachPipelineCI(backend: BackendKey, repo: RepoRef, pipelineId: string): PipelineCIAttachment {
@@ -237,9 +251,18 @@ export function applyPipelineLogFrame(event: PipelineCILogEvent, backend: Backen
 
 /** A gap on `ci:pipeline_updated` or a pipeline's `pr:ci_log`: the pump
  * emits only on change, so every pipeline of the computer subscribes
- * again, which restates its state and its follows. */
-export function resyncPipelinesAfterGap(backend: BackendKey): void {
-  for (const key of store.keys()) if (workspaceKeyBackend(key) === backend) store.invalidate(key);
+ * again, which restates its state and its follows. Answers the settling
+ * of the subscribes it started, or undefined when none did. */
+export function resyncPipelinesAfterGap(backend: BackendKey): Promise<void> | undefined {
+  const runs: Promise<void>[] = [];
+  for (const key of store.keys()) {
+    if (workspaceKeyBackend(key) !== backend) continue;
+    const before = sourceRunByKey.get(key);
+    store.invalidate(key);
+    const run = sourceRunByKey.get(key);
+    if (run && run !== before) runs.push(run);
+  }
+  return runs.length === 0 ? undefined : Promise.all(runs).then(() => undefined);
 }
 
 function localKeysFor(wireKey: string): string[] {
@@ -268,6 +291,7 @@ export function __resetPipelineCIForTest(): void {
   store.resetAll();
   localKeysByWireKey.clear();
   appliedSeqByKey.clear();
+  sourceRunByKey.clear();
   joiningByKey.clear();
   subscriptionByKey.clear();
   votes.resetForTest();
