@@ -41,8 +41,9 @@ func listsFixture() forgefake.Fixture {
 				Reviews: []forgefake.Review{{Author: "alice", State: "CHANGES_REQUESTED", Body: "no", SubmittedAt: "2026-10-03T00:00:00Z"}}},
 			{Number: 4, Title: "Closed", State: "closed"},
 		}},
-		{Forge: "gitlab", Project: "grp/lists", ID: 5500, Merge: &forgefake.RepoMerge{DiscussionsMustResolve: true, ApprovalRules: []int{1, 1}}, Pulls: []forgefake.Pull{
+		{Forge: "gitlab", Project: "grp/lists", ID: 5500, Merge: &forgefake.RepoMerge{DiscussionsMustResolve: true}, Pulls: []forgefake.Pull{
 			{Number: 7, Title: "Draft: mine", Author: "alice", Reviewers: []string{"bob"}, HeadSHA: strings.Repeat("7", 40), UpdatedAt: "2026-10-05T00:00:00Z",
+				Readiness:   &forgefake.Readiness{RequiredApprovals: 2},
 				CommittedAt: "2026-10-04T00:00:00Z", CI: &forgefake.Pipeline{Jobs: []forgefake.Job{{Name: "unit", Status: "failed"}}}},
 			{Number: 8, Title: "Fork", Author: "carol", HeadRepo: "carol/lists", Reviewers: []string{"dave", "alice"}, Mergeable: "conflicts",
 				Readiness: &forgefake.Readiness{RequiredApprovals: 1}, Reviews: []forgefake.Review{{Author: "dave", State: "APPROVED"}},
@@ -119,11 +120,11 @@ func TestProjectPRListsThroughTheAppsForgeCode(t *testing.T) {
 	// the comment is its activity; one of two threads is open.
 	if !mrFork.CrossRepository || !mrFork.ViewerIsReviewer || !mrFork.ReviewRequested || !mrFork.Conflicts || !mrFork.UnresolvedBlocking || mrFork.Comments != 2 ||
 		mrFork.ViewerReviewState != "reviewed" || mrFork.ViewerActivityAt != "2026-10-06T00:00:00Z" ||
-		*mrFork.ApprovalsGiven != 1 || *mrFork.ApprovalsRequired != 2 || *mrFork.Unresolved != 1 {
+		*mrFork.ApprovalsGiven != 1 || *mrFork.ApprovalsRequired != 1 || *mrFork.Unresolved != 1 {
 		t.Errorf("glab fork = %+v", mrFork)
 	}
 	if wanted.ReviewDecision != "REVIEW_REQUIRED" || wanted.MergeStatus != "not_approved" || wanted.ViewerIsReviewer ||
-		wanted.ApprovalsGiven != nil || *wanted.ApprovalsRequired != 2 || wanted.Unresolved != nil {
+		wanted.ApprovalsGiven != nil || wanted.ApprovalsRequired != nil || wanted.Unresolved != nil {
 		t.Errorf("glab approval wanted = %+v", wanted)
 	}
 
@@ -137,11 +138,12 @@ func TestProjectPRListsThroughTheAppsForgeCode(t *testing.T) {
 		}
 		return n
 	}
-	if count("gh graphql PullsSearch") != 1 || len(routes) != 9 {
-		t.Fatalf("routes = %v, want one PullsSearch for GitHub and GitLab's eight reads", routes)
+	if count("gh graphql PullsSearch") != 1 || len(routes) != 10 {
+		t.Fatalf("routes = %v, want one PullsSearch for GitHub and GitLab's nine reads", routes)
 	}
 	for _, route := range []string{"glab api user", "glab api merge request list", "glab graphql PullsReviewing", "glab graphql PullsAuthored",
-		"glab graphql PullsReviewingActivity", "glab graphql PullsAuthoredActivity", "glab api user events", "glab api approval rules"} {
+		"glab graphql PullsReviewingActivity", "glab graphql PullsAuthoredActivity", "glab graphql PullsReviewingApprovals",
+		"glab graphql PullsAuthoredApprovals", "glab api user events"} {
 		if count(route) != 1 {
 			t.Errorf("route %s read %d times, want once: %v", route, count(route), routes)
 		}

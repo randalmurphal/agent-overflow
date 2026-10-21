@@ -12,15 +12,17 @@ import (
 )
 
 // gitlabListAnswers answers a GitLab project read from the recorded
-// answers: the list, the four GraphQL reads, the viewer's events and the
-// approval rules. over replaces one call's answer when it reports true.
+// answers: the list, the six GraphQL reads and the viewer's events. over
+// replaces one call's answer when it reports true.
 func gitlabListAnswers(t *testing.T, over func(call forgeAPICall) (forgeAPIAnswer, bool)) func(call forgeAPICall) forgeAPIAnswer {
 	t.Helper()
 	answers := map[string]string{
-		"PullsReviewing":         readTestdata(t, "gitlab-pulls-reviewing.json"),
-		"PullsAuthored":          readTestdata(t, "gitlab-pulls-authored.json"),
-		"PullsReviewingActivity": readTestdata(t, "gitlab-pulls-reviewing-activity.json"),
-		"PullsAuthoredActivity":  readTestdata(t, "gitlab-pulls-authored-activity.json"),
+		"PullsReviewing":          readTestdata(t, "gitlab-pulls-reviewing.json"),
+		"PullsAuthored":           readTestdata(t, "gitlab-pulls-authored.json"),
+		"PullsReviewingActivity":  readTestdata(t, "gitlab-pulls-reviewing-activity.json"),
+		"PullsAuthoredActivity":   readTestdata(t, "gitlab-pulls-authored-activity.json"),
+		"PullsReviewingApprovals": readTestdata(t, "gitlab-pulls-reviewing-approvals.json"),
+		"PullsAuthoredApprovals":  readTestdata(t, "gitlab-pulls-authored-approvals.json"),
 	}
 	list := readTestdata(t, "gitlab-mr-list.json")
 	events := readTestdata(t, "gitlab-user-events.json")
@@ -40,8 +42,6 @@ func gitlabListAnswers(t *testing.T, over func(call forgeAPICall) (forgeAPIAnswe
 			return forgeAPIAnswer{Body: list}
 		case strings.HasPrefix(call.Path, "users/1/events?"):
 			return forgeAPIAnswer{Body: events}
-		case call.Path == "projects/grp%2Fsub%2Fapp/approval_rules?per_page=100":
-			return forgeAPIAnswer{Body: `[{"id":1,"name":"Backend","approvals_required":1},{"id":2,"name":"Security","approvals_required":1}]`}
 		}
 		return forgeUnexpected(t, call)
 	}
@@ -51,7 +51,9 @@ func gitlabListAnswers(t *testing.T, over func(call forgeAPICall) (forgeAPIAnswe
 // authored reads cover it), a fork's merge request the viewer reviews
 // (the reviewing reads and its events cover it) and one the viewer has no
 // part in, which no detail read covers. A GraphQL node the list does not
-// hold is dropped.
+// hold is dropped. The events feed ended within its first page, so a row
+// with no activity in it carries the window's floor: the day after the
+// after date.
 func TestGitLabListProjectPRsParsesTheReads(t *testing.T) {
 	t.Parallel()
 	core, calls := newForgeAPICore(t, gitlabListAnswers(t, nil))
@@ -68,16 +70,19 @@ func TestGitLabListProjectPRsParsesTheReads(t *testing.T) {
 		}
 		ops[key] = call
 	}
-	if len(ops) != 8 || len(calls.all()) != 8 {
-		t.Fatalf("requests = %v %v, want user, the list, four GraphQL reads, events and approval rules once each", calls.ops(), calls.all())
+	if len(ops) != 9 || len(calls.all()) != 9 {
+		t.Fatalf("requests = %v %v, want user, the list, six GraphQL reads and events once each", calls.ops(), calls.all())
 	}
-	for _, op := range []string{"PullsReviewing", "PullsAuthored", "PullsReviewingActivity", "PullsAuthoredActivity"} {
+	for _, op := range []string{"PullsReviewing", "PullsAuthored", "PullsReviewingActivity", "PullsAuthoredActivity", "PullsReviewingApprovals", "PullsAuthoredApprovals"} {
 		vars := ops[op].Vars
 		if vars["fullPath"] != "grp/sub/app" || vars["viewer"] != "alice" || vars["after"] != nil {
 			t.Errorf("%s variables = %v", op, vars)
 		}
 	}
-	for op, filter := range map[string]string{"PullsReviewing": "reviewerUsername: $viewer", "PullsAuthoredActivity": "authorUsername: $viewer"} {
+	for op, filter := range map[string]string{
+		"PullsReviewing": "reviewerUsername: $viewer", "PullsAuthoredActivity": "authorUsername: $viewer",
+		"PullsReviewingApprovals": "approvalState { rules { type approvalsRequired } }",
+	} {
 		if !strings.Contains(ops[op].Query, filter) {
 			t.Errorf("%s does not filter by %s: %s", op, filter, ops[op].Query)
 		}
@@ -104,24 +109,27 @@ func TestGitLabListProjectPRsParsesTheReads(t *testing.T) {
 		Comments: 1, ViewerIsAuthor: true, MergeStatus: "draft_status",
 		LastCommitAt: "2026-10-20T22:04:00Z", PipelineStatus: CIStatusRunning, ProjectID: 77,
 		ApprovalsGiven: &zero, ApprovalsRequired: &two, Unresolved: &zero,
+		ViewerActivityFloor: "2026-09-22T00:00:00Z",
 	}
 	if fmt.Sprintf("%+v", deref(own)) != fmt.Sprintf("%+v", deref(want)) {
 		t.Errorf("own draft = %+v\nwant       %+v", deref(own), deref(want))
 	}
 	// The viewer reviewed (its reviewer state), commented after its
-	// approval (the later of its two events on !20; an issue note and
-	// another project's merge request are not it), one of two approvals
-	// stands, two of three threads are open and the pipeline failed.
+	// approval (its discussion note, the latest of its three events on
+	// !20; an issue note and another project's merge request are not it),
+	// one of two approvals stands (the regular and code owner rules
+	// outnumber the any-approver one), two of three threads are open and
+	// the pipeline failed.
 	if !fork.CrossRepository || !fork.ViewerIsReviewer || !fork.ReviewRequested || fork.ViewerIsAuthor ||
 		!fork.Conflicts || !fork.UnresolvedBlocking || fork.ReviewDecision != "REVIEW_REQUIRED" || fork.Comments != 9 ||
 		fork.ViewerReviewState != "reviewed" || fork.ViewerActivityAt != "2026-10-19T08:00:00.000Z" ||
 		fork.PipelineStatus != CIStatusFailed || fork.LastCommitAt != "2026-10-19T09:00:00Z" ||
-		*fork.ApprovalsGiven != 1 || *fork.ApprovalsRequired != 2 || *fork.Unresolved != 2 {
+		*fork.ApprovalsGiven != 1 || *fork.ApprovalsRequired != 2 || *fork.Unresolved != 2 || fork.ViewerActivityFloor != "" {
 		t.Errorf("fork row = %+v", deref(fork))
 	}
-	// Neither reviewer nor author: only the list and the project's rules.
+	// Neither reviewer nor author: only the list.
 	if other.ViewerIsReviewer || other.ReviewDecision != "CHANGES_REQUESTED" || other.ViewerReviewState != "" ||
-		other.ViewerActivityAt != "" || other.ApprovalsGiven != nil || *other.ApprovalsRequired != 2 || other.Unresolved != nil ||
+		other.ViewerActivityAt != "" || other.ApprovalsGiven != nil || other.ApprovalsRequired != nil || other.Unresolved != nil ||
 		other.PipelineStatus != "" || other.LastCommitAt != "" {
 		t.Errorf("uncovered row = %+v", deref(other))
 	}
@@ -166,7 +174,7 @@ func TestGitLabListProjectPRsReportsAFailedDetailBesideTheRows(t *testing.T) {
 	if fork.ViewerReviewState != "" || fork.ApprovalsGiven != nil || fork.ViewerActivityAt != "" || fork.PipelineStatus != "" {
 		t.Errorf("fork row kept a failed read's fields: %+v", deref(fork))
 	}
-	if fork.Unresolved == nil || *fork.Unresolved != 2 || fork.LastCommitAt == "" || *fork.ApprovalsRequired != 2 {
+	if fork.Unresolved == nil || *fork.Unresolved != 2 || fork.LastCommitAt == "" || *fork.ApprovalsRequired != 2 || fork.ViewerActivityFloor != "" {
 		t.Errorf("fork row lost a read that landed: %+v", deref(fork))
 	}
 
@@ -197,8 +205,6 @@ func TestGitLabViewerEventsAreReadOncePerRound(t *testing.T) {
 			mu.Unlock()
 			return forgeAPIAnswer{Body: `[]`}, true
 		case strings.HasPrefix(call.Path, "projects/grp%2Fother/merge_requests?"):
-			return forgeAPIAnswer{Body: `[]`}, true
-		case call.Path == "projects/grp%2Fother/approval_rules?per_page=100":
 			return forgeAPIAnswer{Body: `[]`}, true
 		}
 		return forgeAPIAnswer{}, false
@@ -235,40 +241,54 @@ func TestGitLabViewerEventsAreReadOncePerRound(t *testing.T) {
 	}
 }
 
-// The approval rules are read once per login per project per
-// gitlabCacheTTL; a GitLab without them (404) requires none.
-func TestGitLabApprovalRulesAreCachedAndAbsentRulesRequireNone(t *testing.T) {
+// The events feed is a lower bound. A feed that ended within its pages
+// reaches back to the after date; one cut at gitlabActivityMaxPages full
+// pages reaches back only to its oldest event, which is the floor a row
+// with no activity in the window carries.
+func TestGitLabViewerActivityFloorIsTheWindowsOldestReach(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex
-	rules := 0
+	pages := 0
 	core, _ := newForgeAPICore(t, gitlabListAnswers(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
-		if strings.HasPrefix(call.Path, "projects/grp%2Fsub%2Fapp/approval_rules") {
-			mu.Lock()
-			rules++
-			mu.Unlock()
-			return forgeAPIAnswer{Status: http.StatusNotFound, Body: `{"message":"404 Not Found"}`}, true
+		if !strings.HasPrefix(call.Path, "users/1/events?") {
+			return forgeAPIAnswer{}, false
 		}
-		return forgeAPIAnswer{}, false
-	}))
-	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
-	core.nowFn = func() time.Time { return now }
-	for i := range 2 {
-		rows, err := core.ListProjectPRs(t.Context(), gitlabTestRepo())
-		if err != nil || rows[2].ApprovalsRequired == nil || *rows[2].ApprovalsRequired != 0 {
-			t.Fatalf("read %d: err %v, required %v", i, err, rows[2].ApprovalsRequired)
+		query, _ := url.ParseQuery(strings.SplitN(call.Path, "?", 2)[1])
+		page := 1
+		if raw := query.Get("page"); raw != "" {
+			if _, err := fmt.Sscanf(raw, "%d", &page); err != nil {
+				t.Errorf("page %q: %v", raw, err)
+			}
 		}
-	}
-	reads := func() int {
 		mu.Lock()
-		defer mu.Unlock()
-		return rules
+		pages++
+		mu.Unlock()
+		// A pushes-only feed, one event a minute back from 2026-10-21
+		// 12:00, with more pages than the read follows.
+		events := make([]string, 100)
+		for i := range events {
+			at := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC).Add(-time.Duration((page-1)*100+i) * time.Minute)
+			events[i] = fmt.Sprintf(`{"project_id":77,"action_name":"pushed to","created_at":%q}`, at.Format(time.RFC3339))
+		}
+		return forgeAPIAnswer{Header: http.Header{"X-Next-Page": {fmt.Sprint(page + 1)}}, Body: "[" + strings.Join(events, ",") + "]"}, true
+	}))
+	core.nowFn = func() time.Time { return time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC) }
+	rows, err := core.ListProjectPRs(t.Context(), gitlabTestRepo())
+	if err != nil {
+		t.Fatalf("ListProjectPRs: %v", err)
 	}
-	if got := reads(); got != 1 {
-		t.Fatalf("approval rules read %d times, want once within the TTL", got)
+	mu.Lock()
+	read := pages
+	mu.Unlock()
+	if read != gitlabActivityMaxPages {
+		t.Fatalf("events pages read = %d, want %d", read, gitlabActivityMaxPages)
 	}
-	now = now.Add(gitlabCacheTTL)
-	if _, err := core.ListProjectPRs(t.Context(), gitlabTestRepo()); err != nil || reads() != 2 {
-		t.Fatalf("after the TTL: err %v, reads %d", err, reads())
+	// The 300th event, 299 minutes back.
+	floor := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC).Add(-299 * time.Minute).Format(time.RFC3339)
+	for _, row := range rows {
+		if row.ViewerActivityAt != "" || row.ViewerActivityFloor != floor {
+			t.Errorf("!%d activity %q floor %q, want none and %s", row.Ref.Number, row.ViewerActivityAt, row.ViewerActivityFloor, floor)
+		}
 	}
 }
 
@@ -345,5 +365,48 @@ func TestGitLabListProjectPRsPagesTheReads(t *testing.T) {
 		if n != prListMaxPages {
 			t.Errorf("%s pages = %d, want %d", op, n, prListMaxPages)
 		}
+	}
+}
+
+// GitLab CE has no approvalState: its answer that the field does not
+// exist is not a failure but a host with no required approvals, the
+// covered rows requiring none, and the approval reads are not sent again
+// for gitlabCacheTTL.
+func TestGitLabWithoutApprovalStateRequiresNoApprovals(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	approvalReads := 0
+	core, _ := newForgeAPICore(t, gitlabListAnswers(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
+		if !strings.HasSuffix(call.Op, "Approvals") {
+			return forgeAPIAnswer{}, false
+		}
+		mu.Lock()
+		approvalReads++
+		mu.Unlock()
+		return forgeAPIAnswer{Body: `{"errors":[{"message":"Field 'approvalState' doesn't exist on type 'MergeRequest'","locations":[{"line":5,"column":19}],"path":["query PullsReviewingApprovals","project","mergeRequests","nodes","approvalState"],"extensions":{"code":"undefinedField","typeName":"MergeRequest","fieldName":"approvalState"}}]}`}, true
+	}))
+	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	core.nowFn = func() time.Time { return now }
+	reads := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return approvalReads
+	}
+	for i := range 2 {
+		rows, err := core.ListProjectPRs(t.Context(), gitlabTestRepo())
+		if err != nil {
+			t.Fatalf("read %d: ListProjectPRs: %v", i, err)
+		}
+		own, fork, other := rows[0], rows[1], rows[2]
+		if own.ApprovalsRequired == nil || *own.ApprovalsRequired != 0 || fork.ApprovalsRequired == nil || *fork.ApprovalsRequired != 0 || other.ApprovalsRequired != nil {
+			t.Fatalf("read %d: required own %v fork %v other %v; want 0, 0 and unknown", i, own.ApprovalsRequired, fork.ApprovalsRequired, other.ApprovalsRequired)
+		}
+	}
+	if got := reads(); got != 2 {
+		t.Fatalf("approval reads = %d, want the first read's two only", got)
+	}
+	now = now.Add(gitlabCacheTTL)
+	if _, err := core.ListProjectPRs(t.Context(), gitlabTestRepo()); err != nil || reads() != 4 {
+		t.Fatalf("after the TTL: err %v, approval reads %d, want them sent again", err, reads())
 	}
 }

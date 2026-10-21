@@ -251,7 +251,14 @@ requested changes, nothing since), `Approved by you` or `Reviewed by you`
 (your approval stands, or you reviewed without approving, nothing since),
 `Draft`, `Open`. The first three are Needs you, listed before the rest.
 Your activity is the forge's own record: GitHub `viewerLatestReview`,
-GitLab your notes and approvals in your events feed. The toolbar's three
+GitLab your notes (conversation, diff and discussion notes) and approvals
+in your events feed. GitLab's feed is a lower bound: the read covers the
+last 30 days or your newest 300 events, whichever reaches less far back
+(its floor), so a reviewer state of reviewed, approved or changes
+requested with no activity in the window means your activity is older
+than the floor; a head commit after the floor is then a push since your
+review, an update after it (past the slack) a reply, and neither keeps
+`Approved by you` or `Reviewed by you`. The toolbar's three
 menu buttons, the filter (`Needs you` with its count, `Mine`,
 `Reviewing`, `All open`), the projects and the sort (`Updated` newest
 first by default, `Created`, `Title`, `Author`, `Attention`; the same
@@ -263,13 +270,14 @@ row at the viewport top in view.
 
 Each project is read with a fixed set of concurrent requests and never a
 read per row. GitHub: one `PullsSearch` per 100 PRs, whose nodes carry the
-review state, approvals given and required, unresolved threads, the
-rollup and the head commit's time. GitLab: the merge request list (rows),
-two GraphQL reads of the MRs you review (`PullsReviewing`, reviewer
-states, approvals, head pipeline; `PullsReviewingActivity`, discussions
-and the head commit's time) and the same two of the MRs you authored,
-`projects/P/approval_rules` (required approvals, cached 10 minutes), and,
-once per host per refresh, your events of the last 30 days. Only a
+review state, approvals given and required, unresolved threads (unknown
+for a PR with more than 100) the rollup and the head commit's time.
+GitLab: the merge request list (rows), three GraphQL reads of the MRs you
+review (`PullsReviewing`, reviewer states, approvals, head pipeline;
+`PullsReviewingActivity`, discussions and the head commit's time;
+`PullsReviewingApprovals`, the MR's own approval rules, so the required
+count follows its target branch and any override) and the same three of
+the MRs you authored, and, once per host per refresh, your events. Only a
 failed list fails the project; another failed request leaves its fields
 unknown and shows on the project beside its rows. A GitLab MR you neither
 review nor authored carries no review detail and reads `Draft` or `Open`.
@@ -277,8 +285,8 @@ review nor authored carries no review detail and reads `Draft` or `Open`.
 Each project's read is stored (`pr_list_projects`), so the page opens on
 the stored list, marked stale while it is older than the PR-update
 interval, and each project replaces its rows as its read lands. The
-backend reads every forge project once after boot unless the stored copy
-is younger than the interval, so the list and the badge are current
+backend reads once after boot every forge project whose stored read is
+missing or older than the interval, so the list and the badge are current
 before the page opens. The page refreshes on open, on its own refresh
 button and every PR-update interval while visible; hidden, it reads
 nothing.

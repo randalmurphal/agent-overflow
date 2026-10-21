@@ -5482,9 +5482,10 @@ export function SubmitProviderLoginCode(providerName: string, code: string): $Ca
 /**
  * SubscribePRList starts the list pump, or joins it, and answers at once:
  * with the pump's last frame when it published one, else the snapshot
- * assembled from the stored copy (app_pr_list_store.go). The pump's first
- * tick, the user's action and so interactive, follows with a frame per
- * project as each read lands. The subscription ends with the calling
+ * assembled from the stored copy (app_pr_list_store.go). The pump starts
+ * after that read, so its first tick, the user's action and so
+ * interactive, follows the answer with a frame per project as each read
+ * lands. The subscription ends with the calling
  * connection. Routed to the selected computer like SubscribePRUpdates;
  * the handle calls route home, and the caller pins them to the computer
  * that answered.

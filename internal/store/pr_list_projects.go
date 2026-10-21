@@ -62,16 +62,6 @@ func (s *Store) ListPRListProjects() (map[string]PRListProject, error) {
 	return out, nil
 }
 
-// NewestPRListReadAt is the latest read_at of the stored project reads,
-// 0 with none.
-func (s *Store) NewestPRListReadAt() (int64, error) {
-	var newest int64
-	if err := s.reader().QueryRow(`SELECT COALESCE(MAX(read_at), 0) FROM pr_list_projects`).Scan(&newest); err != nil {
-		return 0, fmt.Errorf("store: newest PR list read: %w", err)
-	}
-	return newest, nil
-}
-
 // DeletePRListProjectsExcept deletes the stored reads of every repository
 // keep does not name, and reports how many it deleted.
 func (s *Store) DeletePRListProjectsExcept(keep []string) (int64, error) {

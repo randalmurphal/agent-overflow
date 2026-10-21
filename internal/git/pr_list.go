@@ -61,8 +61,9 @@ type PRListRow struct {
 	ViewerReviewState string `json:"viewerReviewState,omitempty"`
 	// ViewerActivityAt (RFC 3339) is the login's latest activity on the
 	// PR: GitHub its latest review; GitLab its latest comment or approval
-	// in its events of the last gitlabActivityDays, "" when there is none
-	// or the events could not be read.
+	// in the window of its events read (at most the last
+	// gitlabActivityDays), "" when there is none or the events could not
+	// be read.
 	ViewerActivityAt string `json:"viewerActivityAt,omitempty"`
 	// AuthorActivityAt (RFC 3339) is the author's latest conversation
 	// comment or submitted review, a review thread reply included, among
@@ -93,16 +94,20 @@ type PRListRow struct {
 	// ViewerActivityAt among the last githubListActivityDepth of each
 	// (GitHub; 0 on GitLab). ApprovalsGiven and ApprovalsRequired are the
 	// approvals standing and the approvals the base or project requires;
-	// Unresolved the resolvable threads not resolved (GitHub: among the
-	// first 100); PipelineStatus the head pipeline's normalized CI status
-	// ("" with none). ProjectID is GitLab's numeric project id, which the
-	// viewer's events name.
-	AuthorReplies     int    `json:"-"`
-	ApprovalsGiven    *int   `json:"-"`
-	ApprovalsRequired *int   `json:"-"`
-	Unresolved        *int   `json:"-"`
-	PipelineStatus    string `json:"-"`
-	ProjectID         int64  `json:"-"`
+	// Unresolved the resolvable threads not resolved (GitHub: nil for a
+	// PR with more than 100 threads); PipelineStatus the head pipeline's
+	// normalized CI status ("" with none). ProjectID is GitLab's numeric
+	// project id, which the viewer's events name. ViewerActivityFloor
+	// (GitLab, RFC 3339) is set when ViewerActivityAt is empty and the
+	// events were read: the login's activity on the PR, if any, is older
+	// than it.
+	AuthorReplies       int    `json:"-"`
+	ApprovalsGiven      *int   `json:"-"`
+	ApprovalsRequired   *int   `json:"-"`
+	Unresolved          *int   `json:"-"`
+	PipelineStatus      string `json:"-"`
+	ProjectID           int64  `json:"-"`
+	ViewerActivityFloor string `json:"-"`
 }
 
 // PRListDetailError is a project read whose list landed while some of
@@ -196,7 +201,7 @@ const githubPullsSearchQuery = `query PullsSearch($query: String!, $after: Strin
         reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } } } }
         latestOpinionatedReviews(first: 100) { nodes { state viewerDidAuthor } }
         viewerLatestReview { state submittedAt }
-        reviewThreads(first: 100) { nodes { isResolved } }
+        reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { isResolved } }
         baseRef { refUpdateRule { requiredApprovingReviewCount } rules(first: 100) { nodes { type parameters { __typename ... on PullRequestParameters { requiredApprovingReviewCount } } } } }
         commits(last: 1) { totalCount nodes { commit { committedDate statusCheckRollup { state } } } }
         comments(last: ` + githubListActivityDepth + `) { nodes { author { login } createdAt } }
@@ -239,6 +244,9 @@ type githubSearchPullRaw struct {
 	} `json:"latestOpinionatedReviews"`
 	ViewerLatestReview *PRListReview `json:"viewerLatestReview"`
 	ReviewThreads      struct {
+		PageInfo struct {
+			HasNextPage bool `json:"hasNextPage"`
+		} `json:"pageInfo"`
 		Nodes []struct {
 			IsResolved bool `json:"isResolved"`
 		} `json:"nodes"`
@@ -373,13 +381,16 @@ func githubPRListRow(repo RepoReference, node githubSearchPullRaw, viewer string
 	}
 	required := githubMergeInputs{pull: &githubPullRaw{BaseRef: node.BaseRef}}.baseRules().approvals
 	row.ApprovalsGiven, row.ApprovalsRequired = &given, &required
-	unresolved := 0
-	for _, thread := range node.ReviewThreads.Nodes {
-		if !thread.IsResolved {
-			unresolved++
+	// Past the first 100 threads the count would be a guess: unknown.
+	if !node.ReviewThreads.PageInfo.HasNextPage {
+		unresolved := 0
+		for _, thread := range node.ReviewThreads.Nodes {
+			if !thread.IsResolved {
+				unresolved++
+			}
 		}
+		row.Unresolved = &unresolved
 	}
-	row.Unresolved = &unresolved
 	row.ViewerActivityAt = row.ViewerReview.SubmittedAt
 	switch {
 	case row.ReviewRequested:

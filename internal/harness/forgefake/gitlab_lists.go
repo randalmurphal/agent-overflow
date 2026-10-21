@@ -9,23 +9,26 @@ import (
 )
 
 // The GitLab half of the project list's detail: the GraphQL reads of the
-// open merge requests the viewer reviews or authored, the viewer's
-// events, and a project's approval rules.
+// open merge requests the viewer reviews or authored, and the viewer's
+// events.
 
 // gitlabGraphQL is GitLab's GraphQL operation table, dispatched as
 // githubGraphQL is.
 var gitlabGraphQL = []graphQLOp{
-	{kind: "query", name: "PullsReviewing", required: []string{"fullPath", "viewer"}, optional: []string{"after"}, run: glabPullsRead("reviewer", false)},
-	{kind: "query", name: "PullsAuthored", required: []string{"fullPath", "viewer"}, optional: []string{"after"}, run: glabPullsRead("author", false)},
-	{kind: "query", name: "PullsReviewingActivity", required: []string{"fullPath", "viewer"}, optional: []string{"after"}, run: glabPullsRead("reviewer", true)},
-	{kind: "query", name: "PullsAuthoredActivity", required: []string{"fullPath", "viewer"}, optional: []string{"after"}, run: glabPullsRead("author", true)},
+	{kind: "query", name: "PullsReviewing", required: []string{"fullPath", "viewer"}, optional: []string{"after"}, run: glabPullsRead("reviewer", gitlabReviewNode)},
+	{kind: "query", name: "PullsAuthored", required: []string{"fullPath", "viewer"}, optional: []string{"after"}, run: glabPullsRead("author", gitlabReviewNode)},
+	{kind: "query", name: "PullsReviewingActivity", required: []string{"fullPath", "viewer"}, optional: []string{"after"}, run: glabPullsRead("reviewer", gitlabActivityNode)},
+	{kind: "query", name: "PullsAuthoredActivity", required: []string{"fullPath", "viewer"}, optional: []string{"after"}, run: glabPullsRead("author", gitlabActivityNode)},
+	{kind: "query", name: "PullsReviewingApprovals", required: []string{"fullPath", "viewer"}, optional: []string{"after"}, run: glabPullsRead("reviewer", gitlabApprovalsNode)},
+	{kind: "query", name: "PullsAuthoredApprovals", required: []string{"fullPath", "viewer"}, optional: []string{"after"}, run: glabPullsRead("author", gitlabApprovalsNode)},
 }
 
 // glabPullsRead answers project(fullPath) { mergeRequests(<filter>Username:
-// $viewer, state: opened, sort: UPDATED_DESC, first: 100, after) } with the
-// approval fields or, for activity, the discussion and commit fields. A
-// project not on the host answers a null project, as GitLab does.
-func glabPullsRead(filter string, activity bool) func(e *Engine, c *call, v graphQLVars) response {
+// $viewer, state: opened, sort: UPDATED_DESC, first: 100, after) } with
+// the nodes node builds: the review, the discussion and commit, or the
+// approval rule fields. A project not on the host answers a null
+// project, as GitLab does.
+func glabPullsRead(filter string, node func(*Pull) map[string]any) func(e *Engine, c *call, v graphQLVars) response {
 	return func(e *Engine, c *call, v graphQLVars) response {
 		fullPath, err1 := v.str("fullPath")
 		viewer, err2 := v.str("viewer")
@@ -56,11 +59,7 @@ func glabPullsRead(filter string, activity bool) func(e *Engine, c *call, v grap
 		slices.SortStableFunc(pulls, func(a, b *Pull) int { return cmp.Compare(rfc3339(b.UpdatedAt), rfc3339(a.UpdatedAt)) })
 		nodes := make([]map[string]any, 0, len(pulls))
 		for _, p := range pulls {
-			if activity {
-				nodes = append(nodes, gitlabActivityNode(p))
-			} else {
-				nodes = append(nodes, gitlabReviewNode(p))
-			}
+			nodes = append(nodes, node(p))
 		}
 		return graphQLData(map[string]any{"project": map[string]any{"mergeRequests": graphQLConnection(nodes, offset, githubGraphQLPageSize)}})
 	}
@@ -107,29 +106,49 @@ func gitlabReviewState(p *Pull, login string) string {
 		return "approved"
 	case slices.ContainsFunc(p.ChangeRequests, func(other string) bool { return strings.EqualFold(other, login) }):
 		return "requested_changes"
-	case len(gitlabCommentTimes(p, login)) > 0:
+	case len(gitlabComments(p, login)) > 0:
 		return "reviewed"
 	}
 	return "unreviewed"
 }
 
-// gitlabCommentTimes are the times login commented on the merge request,
-// in its conversation or its threads.
-func gitlabCommentTimes(p *Pull, login string) []string {
-	var times []string
+// gitlabComment is one note login wrote on a merge request: its time and
+// the event target type GitLab files it under (Note for a conversation
+// comment, DiffNote for a comment in a thread on the diff, every fixture
+// thread having a path).
+type gitlabComment struct {
+	at, targetType string
+}
+
+// gitlabComments are the notes login wrote on the merge request, in its
+// conversation and its threads.
+func gitlabComments(p *Pull, login string) []gitlabComment {
+	var out []gitlabComment
 	for _, comment := range p.Comments {
 		if strings.EqualFold(comment.Author, login) {
-			times = append(times, comment.CreatedAt)
+			out = append(out, gitlabComment{at: comment.CreatedAt, targetType: "Note"})
 		}
 	}
 	for _, thread := range p.Threads {
 		for _, comment := range thread.Comments {
 			if strings.EqualFold(comment.Author, login) {
-				times = append(times, comment.CreatedAt)
+				out = append(out, gitlabComment{at: comment.CreatedAt, targetType: "DiffNote"})
 			}
 		}
 	}
-	return times
+	return out
+}
+
+// gitlabApprovalsNode is a merge request's approval rules: one
+// any-approver rule requiring the pull's readiness.requiredApprovals,
+// the rule a project with no other rules has.
+func gitlabApprovalsNode(p *Pull) map[string]any {
+	return map[string]any{
+		"iid": strconv.Itoa(p.Number),
+		"approvalState": map[string]any{"rules": []map[string]any{
+			{"type": "ANY_APPROVER", "approvalsRequired": p.Readiness.RequiredApprovals},
+		}},
+	}
 }
 
 // gitlabActivityNode is a merge request's discussion and commit fields:
@@ -182,11 +201,14 @@ func glabUserEvents(e *Engine, c *call, m []string) response {
 		}
 		for i := range r.Pulls {
 			p := &r.Pulls[i]
-			for _, at := range gitlabCommentTimes(p, e.viewer) {
-				events = append(events, event{at: at, body: map[string]any{
-					"project_id": r.ID, "action_name": "commented on", "target_type": "Note", "created_at": at,
-					"author_username": e.viewer,
-					"note":            map[string]any{"noteable_type": "MergeRequest", "noteable_iid": p.Number},
+			for _, comment := range gitlabComments(p, e.viewer) {
+				note := map[string]any{"noteable_type": "MergeRequest", "noteable_iid": p.Number, "type": nil}
+				if comment.targetType == "DiffNote" {
+					note["type"] = "DiffNote"
+				}
+				events = append(events, event{at: comment.at, body: map[string]any{
+					"project_id": r.ID, "action_name": "commented on", "target_type": comment.targetType, "created_at": comment.at,
+					"author_username": e.viewer, "note": note,
 				}})
 			}
 			for _, review := range p.Reviews {
@@ -215,30 +237,6 @@ func glabUserEvents(e *Engine, c *call, m []string) response {
 		bodies = append(bodies, ev.body)
 	}
 	items, next := paginate(bodies, perPage, page)
-	if items == nil {
-		items = []map[string]any{}
-	}
-	return glabOK(jsonResponse(items), "X-Next-Page: "+next)
-}
-
-// glabApprovalRules answers GET projects/P/approval_rules[?per_page=N]
-// with the project's rules (RepoMerge.ApprovalRules), one page.
-func glabApprovalRules(e *Engine, c *call, m []string) response {
-	r, fail, ok := e.glabProject(c, m[1])
-	if !ok {
-		return fail
-	}
-	_, perPage, page, err := glabPage(m[2])
-	if err != nil {
-		return unhandled("%v", err)
-	}
-	rules := []map[string]any{}
-	for i, required := range r.Merge.ApprovalRules {
-		rules = append(rules, map[string]any{
-			"id": r.ID*100 + int64(i) + 1, "name": "Rule " + strconv.Itoa(i+1), "rule_type": "regular", "approvals_required": required,
-		})
-	}
-	items, next := paginate(rules, perPage, page)
 	if items == nil {
 		items = []map[string]any{}
 	}

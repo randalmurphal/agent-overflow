@@ -82,7 +82,6 @@ var gitlabAPI = []apiRoute{
 	{name: "glab api update merge request", method: "PUT", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)$`), flags: []string{"hostname"}, run: glabUpdateMR},
 	{name: "glab api user", method: "GET", pattern: regexp.MustCompile(`^user$`), flags: []string{"hostname"}, run: forgeUser},
 	{name: "glab api user events", method: "GET", pattern: regexp.MustCompile(`^users/(\d+)/events(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabUserEvents},
-	{name: "glab api approval rules", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/approval_rules(?:\?(.*))?$`), flags: []string{"hostname", "if-none-match"}, run: glabApprovalRules},
 }
 
 // api dispatches a REST request, mapped by httpCall onto its endpoint,

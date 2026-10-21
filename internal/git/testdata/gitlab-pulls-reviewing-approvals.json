@@ -1,0 +1,17 @@
+{
+  "data": {
+    "project": {
+      "mergeRequests": {
+        "pageInfo": { "hasNextPage": false, "endCursor": null },
+        "nodes": [
+          { "iid": "20", "approvalState": { "rules": [
+            { "type": "ANY_APPROVER", "approvalsRequired": 1 },
+            { "type": "REGULAR", "approvalsRequired": 1 },
+            { "type": "CODE_OWNER", "approvalsRequired": 1 }
+          ] } },
+          { "iid": "99", "approvalState": { "rules": [ { "type": "ANY_APPROVER", "approvalsRequired": 1 } ] } }
+        ]
+      }
+    }
+  }
+}

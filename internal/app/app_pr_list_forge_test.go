@@ -80,12 +80,12 @@ func TestPRListReadsBothForgesThroughTheirAPIs(t *testing.T) {
 				Reviews:  []forgefake.Review{{Author: "ao-viewer", State: "CHANGES_REQUESTED", SubmittedAt: "2026-01-02T00:00:00Z"}},
 				Comments: []forgefake.Comment{{Author: "dave", Body: "+1", CreatedAt: "2026-01-03T00:00:00Z"}}},
 		}},
-		{Forge: "gitlab", Project: "team/app", Merge: &forgefake.RepoMerge{ApprovalRules: []int{1}}, Pulls: []forgefake.Pull{
+		{Forge: "gitlab", Project: "team/app", Pulls: []forgefake.Pull{
 			{Number: 7, Title: "Mine, red", Author: "ao-viewer", Readiness: &forgefake.Readiness{RequiredApprovals: 1},
 				Reviews: []forgefake.Review{{Author: "bob", AuthorName: "Bob", State: "APPROVED"}},
 				Threads: []forgefake.Thread{{Path: "a.go", Line: &line, Comments: []forgefake.Comment{{Body: "fix"}}}},
 				CI:      &forgefake.Pipeline{Jobs: []forgefake.Job{{Name: "unit", Status: "failed"}}}},
-			{Number: 8, Title: "Approved by me", Author: "carol", Reviewers: []string{"ao-viewer"},
+			{Number: 8, Title: "Approved by me", Author: "carol", Reviewers: []string{"ao-viewer"}, Readiness: &forgefake.Readiness{RequiredApprovals: 2},
 				Reviews: []forgefake.Review{{Author: "ao-viewer", AuthorName: "Viewer", State: "APPROVED"}}},
 			// Dave's change request is not the viewer's.
 			{Number: 9, Title: "Dave asked for changes", Author: "carol", Reviewers: []string{"ao-viewer", "dave"}, ChangeRequests: []string{"dave"}},
@@ -159,11 +159,12 @@ func TestPRListReadsBothForgesThroughTheirAPIs(t *testing.T) {
 		5: {state: PRStateWaitingOnAuthor, approvals: &PRApprovals{}},
 	})
 	check(prListProject(t, snapshot, gitlab), map[int]want{
-		7:  {state: PRStatePipelineFailed, approvals: &PRApprovals{Given: 1, Required: 1}, unresolved: 1, ci: gitops.CIStatusFailed},
-		8:  {state: PRStateApproved, reason: PRReasonApproved, approvals: &PRApprovals{Given: 1, Required: 1}},
-		9:  {state: PRStateYourTurn, reason: PRReasonReviewRequested, approvals: &PRApprovals{Required: 1}},
-		10: {state: PRStateApproved, reason: PRReasonApproved, approvals: &PRApprovals{Given: 1, Required: 1}},
-		11: {state: PRStateWaitingOnAuthor, approvals: &PRApprovals{Required: 1}},
+		7: {state: PRStatePipelineFailed, approvals: &PRApprovals{Given: 1, Required: 1}, unresolved: 1, ci: gitops.CIStatusFailed},
+		// Each merge request requires its own rules' approvals.
+		8:  {state: PRStateApproved, reason: PRReasonApproved, approvals: &PRApprovals{Given: 1, Required: 2}},
+		9:  {state: PRStateYourTurn, reason: PRReasonReviewRequested, approvals: &PRApprovals{}},
+		10: {state: PRStateApproved, reason: PRReasonApproved, approvals: &PRApprovals{Given: 1}},
+		11: {state: PRStateWaitingOnAuthor, approvals: &PRApprovals{}},
 		12: {state: PRStateOpen, unresolved: -1},
 	})
 	for _, row := range prListProject(t, snapshot, github).Rows {
@@ -183,12 +184,13 @@ func TestPRListReadsBothForgesThroughTheirAPIs(t *testing.T) {
 		}
 	}
 	for _, route := range []string{"gh graphql PullsSearch", "glab api merge request list", "glab graphql PullsReviewing", "glab graphql PullsAuthored",
-		"glab graphql PullsReviewingActivity", "glab graphql PullsAuthoredActivity", "glab api user events", "glab api approval rules", "glab api user"} {
+		"glab graphql PullsReviewingActivity", "glab graphql PullsAuthoredActivity", "glab graphql PullsReviewingApprovals",
+		"glab graphql PullsAuthoredApprovals", "glab api user events", "glab api user"} {
 		if perRoute[route] != 1 {
 			t.Errorf("route %s sent %d times, want once: %v", route, perRoute[route], perRoute)
 		}
 	}
-	if len(perRoute) != 9 {
+	if len(perRoute) != 10 {
 		t.Errorf("routes = %v, want only the project reads", perRoute)
 	}
 }

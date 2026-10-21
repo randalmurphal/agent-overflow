@@ -150,7 +150,7 @@ func (a *App) pollPRList(ctx context.Context, pump *prListPump) (bool, time.Time
 	}
 	a.prUpdates.mu.Unlock()
 	if projectsErr == nil {
-		a.prunePRListStore(current)
+		a.prunePRListStore(pump.gen, current)
 	}
 
 	results := make(chan prListRepoRead, len(order))
@@ -174,18 +174,6 @@ func (a *App) pollPRList(ctx context.Context, pump *prListPump) (bool, time.Time
 	a.prUpdates.mu.Unlock()
 	_, failing, release := a.publishPRList(pump)
 	return failing, release
-}
-
-// prunePRListStore deletes the stored lists of repositories no project
-// names (current).
-func (a *App) prunePRListStore(current map[string]bool) {
-	keep := make([]string, 0, len(current))
-	for key := range current {
-		keep = append(keep, key)
-	}
-	if _, err := a.store.DeletePRListProjectsExcept(keep); err != nil {
-		log.Printf("pr list: prune the stored lists: %v", err)
-	}
 }
 
 // landPRListRead folds one repository's read into the pump, stores a
@@ -238,15 +226,9 @@ func (a *App) landPRListRead(pump *prListPump, read prListRepoRead) {
 	}
 	a.prUpdates.mu.Unlock()
 	if record != nil {
-		if err := a.store.PutPRListProject(store.PRListProject{RepoKey: read.key, ProjectJSON: record, ReadAt: readAt.UnixMilli()}); err != nil {
-			log.Printf("pr list: store the read of %s: %v", read.key, err)
-			record = nil
-		}
+		a.storePRListRead(pump.gen, store.PRListProject{RepoKey: read.key, ProjectJSON: record, ReadAt: readAt.UnixMilli()})
 	}
-	snapshot, _, _ := a.publishPRList(pump)
-	if record != nil {
-		a.emitPRListBadge(snapshot.NeedsYou)
-	}
+	a.publishPRList(pump)
 }
 
 // prListReadOf is a repository's landed read as the list publishes and

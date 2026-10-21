@@ -3703,8 +3703,9 @@ export class PRListItem {
     /**
      * ViewerActivityAt (RFC 3339) is the login's latest activity on the
      * PR: GitHub its latest review; GitLab its latest comment or approval
-     * in its events of the last gitlabActivityDays, "" when there is none
-     * or the events could not be read.
+     * in the window of its events read (at most the last
+     * gitlabActivityDays), "" when there is none or the events could not
+     * be read.
      */
     "viewerActivityAt"?: string;
 

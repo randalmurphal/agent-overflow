@@ -144,3 +144,35 @@ func TestCoreListProjectPRsValidatesTheRepository(t *testing.T) {
 		t.Fatalf("no transport: %v", err)
 	}
 }
+
+// A PR whose review threads run past the search's first 100 has an
+// unknown unresolved count, not the count of the first 100: with 101
+// threads only the last of which is open, the first page reads all
+// resolved. One whose threads fit the page is counted.
+func TestGitHubListUnresolvedIsUnknownPastTheFirstThreadPage(t *testing.T) {
+	t.Parallel()
+	resolved := strings.TrimSuffix(strings.Repeat(`{"isResolved":true},`, 100), ",")
+	core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Op != "PullsSearch" {
+			return forgeUnexpected(t, call)
+		}
+		if !strings.Contains(call.Query, "reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { isResolved } }") {
+			t.Errorf("PullsSearch does not ask whether the threads run past 100: %s", call.Query)
+		}
+		node := func(number int, more bool) string {
+			return fmt.Sprintf(`{"id":"PR_%d","number":%d,"author":{"login":"x"},"commits":{"totalCount":1,"nodes":[]},`+
+				`"reviewThreads":{"pageInfo":{"hasNextPage":%t},"nodes":[%s]}}`, number, number, more, resolved)
+		}
+		return githubData(fmt.Sprintf(`{"viewer":{"login":"alice"},"search":{"pageInfo":{"hasNextPage":false},"nodes":[%s,%s]}}`, node(1, true), node(2, false)))
+	})
+	rows, err := core.ListProjectPRs(t.Context(), githubTestRepo())
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("ListProjectPRs = %d rows, %v", len(rows), err)
+	}
+	if rows[0].Unresolved != nil {
+		t.Errorf("101 threads: unresolved = %d, want unknown", *rows[0].Unresolved)
+	}
+	if rows[1].Unresolved == nil || *rows[1].Unresolved != 0 {
+		t.Errorf("100 resolved threads: unresolved = %v, want 0", rows[1].Unresolved)
+	}
+}

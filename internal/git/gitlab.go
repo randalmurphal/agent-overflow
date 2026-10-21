@@ -19,13 +19,14 @@ import (
 // Core's forge API transport. Only CreatePR runs glab.
 type gitlabForge struct {
 	core *Core
-	// projects caches each login's merge settings of a project, viewers
-	// each login's account on a host (gitlab_merge_read.go) and
-	// approvalRules each login's required approvals of a project
+	// projects caches each login's merge settings of a project and
+	// viewers each login's account on a host (gitlab_merge_read.go).
+	projects gitlabCache[gitlabProjectSettings]
+	viewers  gitlabCache[gitlabViewer]
+	// noApprovalState marks a host whose GraphQL has no
+	// MergeRequest.approvalState (GitLab CE), for gitlabCacheTTL
 	// (pr_list_gitlab.go).
-	projects      gitlabCache[gitlabProjectSettings]
-	viewers       gitlabCache[gitlabViewer]
-	approvalRules gitlabCache[int]
+	noApprovalState gitlabCache[bool]
 	// activity is each host's viewer activity, read once per list round
 	// (pr_list_gitlab.go).
 	activity gitlabActivityRounds

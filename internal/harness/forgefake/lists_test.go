@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -64,7 +65,7 @@ func TestPullsSearchAnswersTheRepositorysOpenPulls(t *testing.T) {
 	if mine["number"] != float64(1) || mine["isDraft"] != true || mine["viewerDidAuthor"] != true || mine["totalCommentsCount"] != float64(3) ||
 		mine["createdAt"] != "2026-10-01T00:00:00Z" || mine["updatedAt"] != "2026-10-02T00:00:00Z" ||
 		mustJSON(t, mine["commits"]) != `{"nodes":[{"commit":{"committedDate":"2026-10-01T12:00:00Z","statusCheckRollup":{"state":"SUCCESS"}}}],"totalCount":3}` ||
-		mine["viewerLatestReview"] != nil || mine["id"] == "" || mustJSON(t, mine["reviewThreads"]) != `{"nodes":[{"isResolved":false}]}` ||
+		mine["viewerLatestReview"] != nil || mine["id"] == "" || mustJSON(t, mine["reviewThreads"]) != `{"nodes":[{"isResolved":false}],"pageInfo":{"endCursor":"cursor:1","hasNextPage":false}}` ||
 		mustJSON(t, mine["baseRef"]) != `{"refUpdateRule":null,"rules":{"nodes":[]}}` {
 		t.Errorf("own draft = %v", mustJSON(t, mine))
 	}
@@ -253,6 +254,14 @@ func TestGitLabPullsReadsAnswerTheViewersMergeRequests(t *testing.T) {
 	if authored := read("PullsAuthored"); len(authored) != 1 || authored[0]["iid"] != "3" || len(read("PullsAuthoredActivity")) != 1 {
 		t.Fatalf("PullsAuthored = %s", mustJSON(t, authored))
 	}
+	// The approval reads answer each merge request's rules: one
+	// any-approver rule requiring its readiness approvals.
+	if approvals := read("PullsReviewingApprovals"); mustJSON(t, approvals[1]) != `{"approvalState":{"rules":[{"approvalsRequired":0,"type":"ANY_APPROVER"}]},"iid":"1"}` {
+		t.Fatalf("PullsReviewingApprovals = %s", mustJSON(t, approvals))
+	}
+	if approvals := read("PullsAuthoredApprovals"); len(approvals) != 1 || approvals[0]["iid"] != "3" {
+		t.Fatalf("PullsAuthoredApprovals = %s", mustJSON(t, approvals))
+	}
 	var mr map[string]any
 	decodeBody(t, glabGET(t, srv, "gitlab.com", "projects/grp%2Fr/merge_requests/1"), &mr)
 	if got := glabSend(t, srv, "POST", "projects/grp%2Fr/merge_requests/1/approve", `{"sha":"`+mr["sha"].(string)+`"}`); got.status != 201 {
@@ -329,16 +338,26 @@ func TestGitLabUserEventsAreTheViewersCommentsAndApprovals(t *testing.T) {
 	srv := testServer(t, e)
 	var events []map[string]any
 	decodeBody(t, glabGET(t, srv, "gitlab.com", "users/1/events?per_page=100&after=2026-09-15"), &events)
-	var got []string
-	for _, event := range events {
-		iid := event["target_iid"]
-		if note, ok := event["note"].(map[string]any); ok {
-			iid = note["noteable_iid"]
+	// GitLab files a conversation note under target type Note and a
+	// comment on the diff under DiffNote, both naming the merge request.
+	describe := func(events []map[string]any) string {
+		var got []string
+		for _, event := range events {
+			iid := event["target_iid"]
+			if note, ok := event["note"].(map[string]any); ok {
+				iid = note["noteable_iid"]
+			}
+			got = append(got, fmt.Sprintf("%v %v %v !%v %v", event["project_id"], event["action_name"], event["target_type"], iid, event["created_at"]))
 		}
-		got = append(got, fmt.Sprintf("%v %v !%v %v", event["project_id"], event["action_name"], iid, event["created_at"]))
+		return strings.Join(got, "|")
 	}
-	if want := "12 commented on !1 2026-10-08T00:00:00Z|11 approved !1 2026-10-07T00:00:00Z|11 commented on !1 2026-10-05T00:00:00Z"; strings.Join(got, "|") != want {
-		t.Fatalf("events = %s\nwant     %s", strings.Join(got, "|"), want)
+	if got, want := describe(events), "12 commented on Note !1 2026-10-08T00:00:00Z|11 approved MergeRequest !1 2026-10-07T00:00:00Z|11 commented on Note !1 2026-10-05T00:00:00Z"; got != want {
+		t.Fatalf("events = %s\nwant     %s", got, want)
+	}
+	var all []map[string]any
+	decodeBody(t, glabGET(t, srv, "gitlab.com", "users/1/events?per_page=100&after=2026-08-01"), &all)
+	if got := describe(all); !strings.HasSuffix(got, "|11 commented on DiffNote !2 2026-09-01T00:00:00Z") {
+		t.Fatalf("a thread comment's event = %s, want a DiffNote", got)
 	}
 	paged := glabGET(t, srv, "gitlab.com", "users/1/events?per_page=2")
 	var first []map[string]any
@@ -354,34 +373,46 @@ func TestGitLabUserEventsAreTheViewersCommentsAndApprovals(t *testing.T) {
 	}
 }
 
-// A GitLab project's approval rules answer its seeded rules and
-// revalidate with their ETag.
-func TestGitLabApprovalRulesAnswerTheProjectsRules(t *testing.T) {
+// PullsSearch answers a pull's first 100 review threads and says when
+// more exist, as GitHub does: with 101, the open last one is past the
+// page.
+func TestPullsSearchPagesReviewThreads(t *testing.T) {
 	t.Parallel()
 	e := New(Options{APIToken: testAPIToken})
-	if _, err := seedJSON(e, `{"repos": [{"forge": "gitlab", "project": "grp/r", "merge": {"approvalRules": [1, 2]}}, {"forge": "gitlab", "project": "grp/none"}]}`); err != nil {
+	threads := make([]string, 101)
+	for i := range threads {
+		threads[i] = fmt.Sprintf(`{"path":"a.go","line":%d,"resolved":%t,"comments":[{"body":"x"}]}`, i+1, i < 100)
+	}
+	if _, err := seedJSON(e, `{"viewer":"octo","repos":[{"forge":"github","project":"o/r","pulls":[{"number":1,"title":"t","author":"carol","threads":[`+strings.Join(threads, ",")+`]}]}]}`); err != nil {
 		t.Fatal(err)
 	}
 	srv := testServer(t, e)
-	answer := glabGET(t, srv, "gitlab.com", "projects/grp%2Fr/approval_rules?per_page=100")
-	var rules []map[string]any
-	decodeBody(t, answer, &rules)
-	if len(rules) != 2 || rules[0]["approvals_required"] != float64(1) || rules[1]["approvals_required"] != float64(2) || answer.header.Get("ETag") == "" {
-		t.Fatalf("rules = %v, ETag %q", rules, answer.header.Get("ETag"))
+	var got struct {
+		Data struct {
+			Search struct {
+				Nodes []struct {
+					ReviewThreads struct {
+						PageInfo struct {
+							HasNextPage bool `json:"hasNextPage"`
+						} `json:"pageInfo"`
+						Nodes []struct {
+							IsResolved bool `json:"isResolved"`
+						} `json:"nodes"`
+					} `json:"reviewThreads"`
+				} `json:"nodes"`
+			} `json:"search"`
+		} `json:"data"`
 	}
-	again := httpRequest(t, srv, "GET", "gitlab.com", "/gitlab/api/v4/projects/grp%2Fr/approval_rules?per_page=100", "", http.Header{"Private-Token": {testAPIToken}, "If-None-Match": {answer.header.Get("ETag")}})
-	if again.status != 304 {
-		t.Fatalf("revalidation = %d", again.status)
+	decodeBody(t, graphQL(t, srv, "github.com", "PullsSearch", map[string]any{"query": "is:pr is:open repo:o/r"}), &got)
+	if len(got.Data.Search.Nodes) != 1 {
+		t.Fatalf("search = %+v", got)
 	}
-	var none []map[string]any
-	decodeBody(t, glabGET(t, srv, "gitlab.com", "projects/grp%2Fnone/approval_rules"), &none)
-	if len(none) != 0 {
-		t.Fatalf("a project without rules = %v", none)
-	}
-	if missing := glabGET(t, srv, "gitlab.com", "projects/grp%2Fmissing/approval_rules"); missing.status != 404 || lastInvocation(t, e).Unhandled {
-		t.Fatalf("unknown project = %d", missing.status)
-	}
-	if _, err := seedJSON(New(Options{}), `{"repos": [{"forge": "github", "project": "a/b", "merge": {"approvalRules": [1]}}]}`); err == nil {
-		t.Error("a GitHub repository seeded GitLab approval rules")
+	threadsPage := got.Data.Search.Nodes[0].ReviewThreads
+	if len(threadsPage.Nodes) != 100 || !threadsPage.PageInfo.HasNextPage || slices.ContainsFunc(threadsPage.Nodes, func(n struct {
+		IsResolved bool `json:"isResolved"`
+	}) bool {
+		return !n.IsResolved
+	}) {
+		t.Fatalf("review threads = %d nodes, more %v", len(threadsPage.Nodes), threadsPage.PageInfo.HasNextPage)
 	}
 }

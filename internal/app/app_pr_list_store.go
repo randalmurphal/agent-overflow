@@ -17,7 +17,10 @@ import (
 // forge read, and what the boot prefetch fills so the badge is right
 // before the page is ever opened. Every landed project read replaces its
 // repository's row; a tick or the prefetch deletes the rows of
-// repositories no project names.
+// repositories no project names. One writer owns the copy at a time
+// (commitPRListStore): the boot prefetch until a list pump starts, then
+// that pump until the next one starts, so a slower read of a writer that
+// lost the copy never replaces a newer read or undoes a prune.
 
 // storedPRLists reads every stored list, by repository key, with when
 // each read landed. A row that does not decode is skipped and logged: it
@@ -87,6 +90,70 @@ func (a *App) GetPRListNeedsYou(ctx context.Context) (int, error) {
 	return snapshot.NeedsYou, nil
 }
 
+// commitPRListStore runs write, a change to the stored copy, if gen
+// (App.prUpdates.listGen when the writer started, a pump's gen) still owns
+// the copy, then emits pulls:badge with the stored count when write
+// changed it. It reports whether write ran; a superseded writer's change
+// is dropped. The store lock orders the writes with the badges they emit.
+func (a *App) commitPRListStore(gen uint64, write func() (bool, error)) (bool, error) {
+	a.prUpdates.listStore.Lock()
+	defer a.prUpdates.listStore.Unlock()
+	a.prUpdates.mu.Lock()
+	owner := a.prUpdates.listGen == gen
+	a.prUpdates.mu.Unlock()
+	if !owner {
+		return false, nil
+	}
+	if a.prUpdates.listStoreHook != nil {
+		a.prUpdates.listStoreHook()
+	}
+	changed, err := write()
+	if err != nil || !changed {
+		return true, err
+	}
+	// The badge counts what was committed, read back with the app's
+	// context: a writer's own context may end with its last subscriber.
+	snapshot, err := a.storedPRListSnapshot(a.lifeCtx())
+	switch {
+	case err != nil && a.lifeCtx().Err() != nil:
+		// Shutting down: the write committed and no client is left to
+		// tell.
+		return true, nil
+	case err != nil:
+		return true, fmt.Errorf("count the badge: %w", err)
+	}
+	a.emitPRListBadge(snapshot.NeedsYou)
+	return true, nil
+}
+
+// storePRListRead stores one repository's landed read for writer gen,
+// and reports whether it was stored. A failure is logged: the copy is a
+// cache the next read replaces, and the page shows the read either way.
+func (a *App) storePRListRead(gen uint64, record store.PRListProject) bool {
+	stored, err := a.commitPRListStore(gen, func() (bool, error) {
+		return true, a.store.PutPRListProject(record)
+	})
+	if err != nil {
+		log.Printf("pr list: store the read of %s: %v", record.RepoKey, err)
+	}
+	return stored && err == nil
+}
+
+// prunePRListStore deletes, for writer gen, the stored lists of
+// repositories no project names (current).
+func (a *App) prunePRListStore(gen uint64, current map[string]bool) {
+	keep := make([]string, 0, len(current))
+	for key := range current {
+		keep = append(keep, key)
+	}
+	if _, err := a.commitPRListStore(gen, func() (bool, error) {
+		deleted, err := a.store.DeletePRListProjectsExcept(keep)
+		return deleted > 0, err
+	}); err != nil {
+		log.Printf("pr list: prune the stored lists: %v", err)
+	}
+}
+
 // startPRListPrefetch reads every forge project once in the background
 // after the first client's reads settled, so the stored copy, and with it
 // the badge, is current before the page opens (prefetchPRList).
@@ -102,31 +169,28 @@ func (a *App) startPRListPrefetch() {
 	})
 }
 
-// prefetchPRList reads every forge project with background admission, no
-// pump and no subscriber, stores each landed read and emits pulls:badge
-// after each write; it holds nothing after. It reads nothing when the
-// stored copy's newest read is younger than the PR update interval or a
-// list pump runs (its ticks keep the copy current), and reports how many
-// repositories it stored.
+// prefetchPRList reads, with background admission, no pump and no
+// subscriber, every forge repository whose stored read is missing or
+// older than the PR update interval, stores each landed read and holds
+// nothing after. It owns the stored copy until a list pump starts: it
+// reads nothing when one runs, and drops what lands after one started. It
+// reports how many repositories it stored.
 func (a *App) prefetchPRList(ctx context.Context) (int, error) {
-	newest, err := a.store.NewestPRListReadAt()
-	if err != nil {
-		return 0, fmt.Errorf("read the stored lists: %w", err)
-	}
-	if newest > 0 && time.Since(time.UnixMilli(newest)) < a.prUpdatePollInterval() {
-		return 0, nil
-	}
-	if prListPumpRunning(a) {
+	a.prUpdates.mu.Lock()
+	gen, running := a.prUpdates.listGen, a.prUpdates.list != nil && !a.prUpdates.list.dead
+	a.prUpdates.mu.Unlock()
+	if running {
 		return 0, nil
 	}
 	projects, err := a.forgeProjects(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("list forge projects: %w", err)
 	}
-	lists, _, err := a.storedPRLists()
+	lists, readAt, err := a.storedPRLists()
 	if err != nil {
 		return 0, err
 	}
+	interval := a.prUpdatePollInterval()
 	repos := map[string]gitops.RepoReference{}
 	names := map[string]ForgeProject{}
 	current := map[string]bool{}
@@ -143,12 +207,18 @@ func (a *App) prefetchPRList(ctx context.Context) (int, error) {
 		}
 		key := repo.Key()
 		current[key] = true
-		if _, seen := repos[key]; !seen {
-			repos[key], names[key] = repo, project
+		if _, seen := repos[key]; seen {
+			continue
+		}
+		repos[key], names[key] = repo, project
+		if at, ok := readAt[key]; !ok || time.Since(at) >= interval {
 			order = append(order, key)
 		}
 	}
-	a.prunePRListStore(current)
+	a.prunePRListStore(gen, current)
+	if len(order) == 0 {
+		return 0, nil
+	}
 
 	results := make(chan prListRepoRead, len(order))
 	round := gitops.WithPRListRound(ctx)
@@ -177,29 +247,16 @@ func (a *App) prefetchPRList(ctx context.Context) (int, error) {
 		now := time.Now()
 		project := names[read.key]
 		encoded, err := json.Marshal(prListReadOf(project.ProjectID, project.Name, read.repo, read.rows, now, detail))
-		if err == nil {
-			err = a.store.PutPRListProject(store.PRListProject{RepoKey: read.key, ProjectJSON: encoded, ReadAt: now.UnixMilli()})
-		}
 		if err != nil {
-			log.Printf("pr list: store the prefetch of %s: %v", read.key, err)
+			log.Printf("pr list: encode the prefetch of %s: %v", read.key, err)
 			continue
 		}
-		stored++
-		if snapshot, err := a.storedPRListSnapshot(ctx); err == nil {
-			a.emitPRListBadge(snapshot.NeedsYou)
-		} else if ctx.Err() == nil {
-			log.Printf("pr list: count the badge after the prefetch of %s: %v", read.key, err)
+		if a.storePRListRead(gen, store.PRListProject{RepoKey: read.key, ProjectJSON: encoded, ReadAt: now.UnixMilli()}) {
+			stored++
 		}
 	}
 	if err := ctx.Err(); err != nil {
 		return stored, err
 	}
 	return stored, nil
-}
-
-// prListPumpRunning reports whether a list pump is live.
-func prListPumpRunning(a *App) bool {
-	a.prUpdates.mu.Lock()
-	defer a.prUpdates.mu.Unlock()
-	return a.prUpdates.list != nil && !a.prUpdates.list.dead
 }
