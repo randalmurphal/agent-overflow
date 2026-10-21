@@ -17,6 +17,7 @@
 // (Open with agent), pipelinesPage.svelte.ts (the Pipelines tab).
 
 import { SvelteMap } from 'svelte/reactivity';
+import { untrack } from 'svelte';
 import { MarkPRViewed, RefreshPRList, SetPRListActive, SetPRListFocus, SubscribePRList, UnsubscribePRList } from './bindings';
 import type { PRListItem, PRListSnapshot, PRSeen } from './bindings';
 import { createEntityStore } from './entityStore.svelte';
@@ -235,45 +236,49 @@ export function installPullsReceiver(): void {
 
 /** The pane's page mounted: it lists `backend`'s PRs until detached. */
 export function attachPullsPage(paneId: string, backend: BackendKey): void {
-  const existing = paneEntries.get(paneId);
-  if (existing?.backend === backend) return;
-  if (existing) detachPullsPage(paneId);
-  installPullsReceiver();
-  unobserveSnapshots ??= onPRSnapshotApplied(markViewedOnSnapshot);
-  ensurePullsFilters(backend);
-  let page = pages.get(backend);
-  if (!page) {
-    page = new PullsPageBackend(backend);
-    pages.set(backend, page);
-  }
-  paneEntries.set(paneId, new PaneEntry(backend));
-  attachOrder.push(paneId);
-  page.panes.add(paneId);
-  page.attachment ??= listStore.attach(backend, backend);
-  const snapshot = listStore.snapshot(backend);
-  if (snapshot) setPullsNeedsYouCount(snapshot.needsYou);
+  untrack(() => {
+    const existing = paneEntries.get(paneId);
+    if (existing?.backend === backend) return;
+    if (existing) detachPullsPage(paneId);
+    installPullsReceiver();
+    unobserveSnapshots ??= onPRSnapshotApplied(markViewedOnSnapshot);
+    ensurePullsFilters(backend);
+    let page = pages.get(backend);
+    if (!page) {
+      page = new PullsPageBackend(backend);
+      pages.set(backend, page);
+    }
+    paneEntries.set(paneId, new PaneEntry(backend));
+    attachOrder.push(paneId);
+    page.panes.add(paneId);
+    page.attachment ??= listStore.attach(backend, backend);
+    const snapshot = listStore.snapshot(backend);
+    if (snapshot) setPullsNeedsYouCount(snapshot.needsYou);
+  });
 }
 
 /** The pane's page went: its selection, review states and hold on the
  * list go with it; the last page on a computer unsubscribes. */
 export function detachPullsPage(paneId: string): void {
-  const entry = paneEntries.get(paneId);
-  if (!entry) return;
-  paneEntries.delete(paneId);
-  attachOrder.splice(attachOrder.indexOf(paneId), 1);
-  disposePRReviewStates(paneId);
-  const page = pages.get(entry.backend);
-  if (page) {
-    page.panes.delete(paneId);
-    if (page.panes.size === 0) {
-      page.dispose();
-      pages.delete(entry.backend);
-    } else {
-      page.focus.request();
+  untrack(() => {
+    const entry = paneEntries.get(paneId);
+    if (!entry) return;
+    paneEntries.delete(paneId);
+    attachOrder.splice(attachOrder.indexOf(paneId), 1);
+    disposePRReviewStates(paneId);
+    const page = pages.get(entry.backend);
+    if (page) {
+      page.panes.delete(paneId);
+      if (page.panes.size === 0) {
+        page.dispose();
+        pages.delete(entry.backend);
+      } else {
+        page.focus.request();
+      }
     }
-  }
-  const badge = badgeBackend();
-  setPullsNeedsYouCount(badge === null ? 0 : (listStore.snapshot(badge)?.needsYou ?? 0));
+    const badge = badgeBackend();
+    setPullsNeedsYouCount(badge === null ? 0 : (listStore.snapshot(badge)?.needsYou ?? 0));
+  });
 }
 
 /** A `pulls:updated` frame from `backend`. */
@@ -392,16 +397,20 @@ export function selectedPR(paneId: string): PullsSelection | null {
 
 /** Selects a listed PR by row key; false when the list holds none. */
 export function selectPR(paneId: string, key: string): boolean {
-  const entry = paneEntries.get(paneId);
-  const row = entry ? pages.get(entry.backend)?.rowsByKey.get(key) : undefined;
-  if (!entry || !row) return false;
-  entry.selection = { key, backend: entry.backend, projectId: row.project.projectId, pr: row.pr, row: row.item };
-  return true;
+  return untrack(() => {
+    const entry = paneEntries.get(paneId);
+    const row = entry ? pages.get(entry.backend)?.rowsByKey.get(key) : undefined;
+    if (!entry || !row) return false;
+    entry.selection = { key, backend: entry.backend, projectId: row.project.projectId, pr: row.pr, row: row.item };
+    return true;
+  });
 }
 
 export function clearSelection(paneId: string): void {
-  const entry = paneEntries.get(paneId);
-  if (entry) entry.selection = null;
+  untrack(() => {
+    const entry = paneEntries.get(paneId);
+    if (entry) entry.selection = null;
+  });
 }
 
 /** The compact probe: a PR's review is open above the list. */
@@ -412,10 +421,12 @@ export function detailOpen(paneId: string): boolean {
 /** The rows the pane shows on screen, by row key. The focus set is their
  * union over the computer's panes and every needs-you row. */
 export function setFocusedRows(paneId: string, keys: Iterable<string>): void {
-  const entry = paneEntries.get(paneId);
-  if (!entry) return;
-  entry.onScreen = new Set(keys);
-  pages.get(entry.backend)?.focus.request();
+  untrack(() => {
+    const entry = paneEntries.get(paneId);
+    if (!entry) return;
+    entry.onScreen = new Set(keys);
+    pages.get(entry.backend)?.focus.request();
+  });
 }
 
 // ---------------------------------------------------------------------------

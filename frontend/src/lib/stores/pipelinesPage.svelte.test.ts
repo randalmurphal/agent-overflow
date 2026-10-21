@@ -4,6 +4,8 @@
 // pipeline's subscription.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { flushSync } from 'svelte';
+import { probeReactivity } from '../../test/helpers/reactivity.svelte';
 import {
   __resetPipelinesPageForTest,
   attachPipelinesPage,
@@ -107,6 +109,27 @@ describe('list reads', () => {
     expect(pipelinesRows(PANE).map((row) => row.id)).toEqual(['3', '2', '1']);
     expect(pipelinesRows(PANE)[1]).toMatchObject({ key: 'laptop pipeline:gitlab:group/api:2', projectName: 'Project p2', forge: 'gitlab', shortSHA: 'aaaaaaa', stages: null });
     expect(new Set(mocks.routed)).toEqual(new Set(['laptop']));
+  });
+
+  it('attaches and reports its rows from a mount effect without the effect depending on the tab', async () => {
+    installMocks();
+    setBindingMock('SubscribePipeline', async () => ({ id: 'pipe-1', key: 'gitlab:group/app:pipeline:1', pipeline: null, error: '', errorKind: '', reserve: false, resumeAt: '', seq: 1 }));
+    setBindingMock('UnsubscribePipeline', async () => undefined);
+    const probe = probeReactivity(() => {
+      attachPipelinesPage(PANE, HOME_BACKEND);
+      setVisiblePipelines(PANE, []);
+      return 0;
+    });
+    try {
+      await settle();
+      attachPipelinesPage('tools-other', HOME_BACKEND);
+      selectPipeline(PANE, pipelinesRows(PANE)[0]!.key);
+      detachPipelinesPage('tools-other');
+      flushSync();
+      expect(probe.evaluations).toBe(1);
+    } finally {
+      probe.dispose();
+    }
   });
 
   it('reads again on refresh and every interval while visible, and not while hidden', async () => {

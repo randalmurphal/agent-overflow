@@ -8,6 +8,7 @@
 // to the computer the page lists. A project's failed read fails alone.
 
 import { SvelteMap } from 'svelte/reactivity';
+import { untrack } from 'svelte';
 import { ListForgeProjects, ListProjectPipelines, ReadPipelineStages } from './bindings';
 import type { ForgeProject, PipelineListResult, PipelineStages } from './bindings';
 import { createCISubjectState, ciKeyFor, type CISubjectState } from './ciSubject.svelte';
@@ -262,35 +263,39 @@ const paneEntries = new SvelteMap<string, PaneEntry>();
 /** The pane's Pipelines tab opened: it lists `backend`'s pipelines until
  * detached, and reads them now. */
 export function attachPipelinesPage(paneId: string, backend: BackendKey): void {
-  const existing = paneEntries.get(paneId);
-  if (existing?.backend === backend) return;
-  if (existing) detachPipelinesPage(paneId);
-  installPullsReceiver();
-  ensurePullsFilters(backend);
-  let page = pages.get(backend);
-  if (!page) {
-    page = new PipelinesPageBackend(backend);
-    pages.set(backend, page);
-  }
-  paneEntries.set(paneId, new PaneEntry(backend));
-  page.panes.add(paneId);
-  page.list.request({ immediate: true });
+  untrack(() => {
+    const existing = paneEntries.get(paneId);
+    if (existing?.backend === backend) return;
+    if (existing) detachPipelinesPage(paneId);
+    installPullsReceiver();
+    ensurePullsFilters(backend);
+    let page = pages.get(backend);
+    if (!page) {
+      page = new PipelinesPageBackend(backend);
+      pages.set(backend, page);
+    }
+    paneEntries.set(paneId, new PaneEntry(backend));
+    page.panes.add(paneId);
+    page.list.request({ immediate: true });
+  });
 }
 
 /** The tab or its pane went: the selected pipeline's subscription goes
  * with it; the last pane on a computer stops its reads. */
 export function detachPipelinesPage(paneId: string): void {
-  const entry = paneEntries.get(paneId);
-  if (!entry) return;
-  clearPipelineSelection(paneId);
-  paneEntries.delete(paneId);
-  const page = pages.get(entry.backend);
-  if (!page) return;
-  page.panes.delete(paneId);
-  if (page.panes.size === 0) {
-    page.dispose();
-    pages.delete(entry.backend);
-  }
+  untrack(() => {
+    const entry = paneEntries.get(paneId);
+    if (!entry) return;
+    clearPipelineSelection(paneId);
+    paneEntries.delete(paneId);
+    const page = pages.get(entry.backend);
+    if (!page) return;
+    page.panes.delete(paneId);
+    if (page.panes.size === 0) {
+      page.dispose();
+      pages.delete(entry.backend);
+    }
+  });
 }
 
 function pageOf(paneId: string): PipelinesPageBackend | null {
@@ -306,13 +311,15 @@ export function refreshPipelinesPage(paneId: string): void {
 /** Changes the tab's remembered filters: other projects or another
  * status read again; the ref kind filters the rows held. */
 export function setPipelinesFilters(paneId: string, next: Partial<PipelineFilters>): void {
-  const entry = paneEntries.get(paneId);
-  if (!entry) return;
-  setPipelineFilters(entry.backend, next);
-  const page = pages.get(entry.backend);
-  const now = pipelineFilters(entry.backend);
-  const was = page?.readWith;
-  if (page && (!was || was.status !== now.status || was.projects.join('\n') !== now.projects.join('\n'))) page.list.request({ immediate: true });
+  untrack(() => {
+    const entry = paneEntries.get(paneId);
+    if (!entry) return;
+    setPipelineFilters(entry.backend, next);
+    const page = pages.get(entry.backend);
+    const now = pipelineFilters(entry.backend);
+    const was = page?.readWith;
+    if (page && (!was || was.status !== now.status || was.projects.join('\n') !== now.projects.join('\n'))) page.list.request({ immediate: true });
+  });
 }
 
 export function pipelinesRows(paneId: string): readonly PipelineRowView[] {
@@ -346,10 +353,12 @@ export function pipelinesProjectErrors(paneId: string): readonly PipelinesProjec
 
 /** The rows on screen, by key: their stages are read. */
 export function setVisiblePipelines(paneId: string, keys: Iterable<string>): void {
-  const entry = paneEntries.get(paneId);
-  if (!entry) return;
-  entry.onScreen = new Set(keys);
-  pages.get(entry.backend)?.stageReads.request();
+  untrack(() => {
+    const entry = paneEntries.get(paneId);
+    if (!entry) return;
+    entry.onScreen = new Set(keys);
+    pages.get(entry.backend)?.stageReads.request();
+  });
 }
 
 /** Reactive: the selected pipeline with its live CI. */
@@ -372,28 +381,32 @@ export function selectedPipeline(paneId: string): PipelinesSelection | null {
 
 /** Selects a listed pipeline and follows it; false when none is listed. */
 export function selectPipeline(paneId: string, key: string): boolean {
-  const entry = paneEntries.get(paneId);
-  const page = entry ? pages.get(entry.backend) : undefined;
-  const listed = page?.byKey.get(key);
-  if (!entry || !page || !listed) return false;
-  if (entry.selection?.key === key) return true;
-  clearPipelineSelection(paneId);
-  const backend = entry.backend;
-  const { repo } = listed;
-  const pipelineId = listed.summary.id;
-  const hold = attachPipelineCI(backend, repo, pipelineId);
-  const ci = createCISubjectState(() => ({ kind: 'pipeline', backend, repo, pipelineId }));
-  entry.selection = { key, projectId: listed.projectId, repo, pipelineId, row: page.view(listed), ci, hold };
-  return true;
+  return untrack(() => {
+    const entry = paneEntries.get(paneId);
+    const page = entry ? pages.get(entry.backend) : undefined;
+    const listed = page?.byKey.get(key);
+    if (!entry || !page || !listed) return false;
+    if (entry.selection?.key === key) return true;
+    clearPipelineSelection(paneId);
+    const backend = entry.backend;
+    const { repo } = listed;
+    const pipelineId = listed.summary.id;
+    const hold = attachPipelineCI(backend, repo, pipelineId);
+    const ci = createCISubjectState(() => ({ kind: 'pipeline', backend, repo, pipelineId }));
+    entry.selection = { key, projectId: listed.projectId, repo, pipelineId, row: page.view(listed), ci, hold };
+    return true;
+  });
 }
 
 export function clearPipelineSelection(paneId: string): void {
-  const entry = paneEntries.get(paneId);
-  const selection = entry?.selection;
-  if (!entry || !selection) return;
-  entry.selection = null;
-  selection.ci.dispose();
-  selection.hold.release();
+  untrack(() => {
+    const entry = paneEntries.get(paneId);
+    const selection = entry?.selection;
+    if (!entry || !selection) return;
+    entry.selection = null;
+    selection.ci.dispose();
+    selection.hold.release();
+  });
 }
 
 /** The compact probe: a pipeline's detail is open above the list. */

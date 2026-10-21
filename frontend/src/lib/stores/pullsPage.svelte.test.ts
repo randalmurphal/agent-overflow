@@ -4,7 +4,7 @@
 // Open with agent.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { tick } from 'svelte';
+import { flushSync, tick } from 'svelte';
 import {
   __resetPullsPageForTest,
   applyPullsSnapshot,
@@ -55,6 +55,7 @@ import { prKey, type PRRef } from '../utils/prReference';
 import { sinceYouLookedText } from '../utils/pullsAttention';
 import { composeWorkspaceKey } from '../utils/workspaceKey';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { probeReactivity } from '../../test/helpers/reactivity.svelte';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 
 const PANE = 'tools-pulls';
@@ -205,6 +206,26 @@ describe('the list subscription', () => {
     attachPullsPage(PANE, HOME_BACKEND);
     await flush();
     expect(mocks.subscribe).toHaveBeenCalledTimes(2);
+  });
+
+  it('attaches and reports its rows from a mount effect without the effect depending on the page', async () => {
+    installListMocks();
+    const probe = probeReactivity(() => {
+      attachPullsPage(PANE, HOME_BACKEND);
+      setFocusedRows(PANE, [rowKey(1)]);
+      return 0;
+    });
+    try {
+      await flush();
+      attachPullsPage('tools-other', HOME_BACKEND);
+      selectPR(PANE, rowKey(1));
+      applyPullsSnapshot(snapshot(9, [project('p1', [item(1), item(2)])]), HOME_BACKEND);
+      detachPullsPage('tools-other');
+      flushSync();
+      expect(probe.evaluations).toBe(1);
+    } finally {
+      probe.dispose();
+    }
   });
 
   it('pins the subscribe and every handle call to the computer the page lists', async () => {
