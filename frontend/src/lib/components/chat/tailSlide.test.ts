@@ -1,6 +1,14 @@
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect } from 'vitest';
+import {
+  MAX_ADAPTIVE_CHARS_PER_SEC,
+  MAX_REVEAL_TICK_DT_MS,
+  PerItemSmoother,
+  __resetRevealFrameGateForTest,
+  type SmoothingClock,
+} from '../../markdown/smoothing/PerItemSmoother';
 import {
   SLIDE_DRAIN_PER_FRAME,
+  SLIDE_MAX_CATCHUP_FRAMES,
   SLIDE_MAX_WINDOWS,
   SLIDE_MIN_STEP_PX,
   slideDecision,
@@ -8,6 +16,29 @@ import {
   transformTranslateY,
   type SlideObservation,
 } from './tailSlide';
+
+beforeEach(() => __resetRevealFrameGateForTest());
+
+// The reveal smoother's clock, stepped a paint at a time: callbacks
+// scheduled during a frame run on the next one, as rAF does.
+class PaintClock implements SmoothingClock {
+  private current = 0;
+  private nextHandle = 1;
+  private pending = new Map<number, (frameTimestamp?: number) => void>();
+  now(): number { return this.current; }
+  schedule(cb: (frameTimestamp?: number) => void): number {
+    const handle = this.nextHandle++;
+    this.pending.set(handle, cb);
+    return handle;
+  }
+  cancel(handle: number): void { this.pending.delete(handle); }
+  paint(ms: number): void {
+    this.current += ms;
+    const due = [...this.pending.values()];
+    this.pending.clear();
+    for (const cb of due) cb(this.current);
+  }
+}
 
 // The line-slide guard matrix. Geometry mirrors the real clamp: a 19.5px
 // line height (text-[0.75rem] + leading-relaxed) and a 58.5px 3-line box.
@@ -89,6 +120,44 @@ describe('slideDecision', () => {
     // windows, and the same every frame.
     expect(offset).toBeGreaterThan(2 * BOX);
     expect(offset).toBeLessThan(3 * BOX);
+  });
+
+  it('keeps pace with the reveal on one-character lines at every paint cadence it accrues in full', () => {
+    // A code block of one-character lines at the ceiling: the reveal
+    // lands MAX_REVEAL_TICK_DT_MS of budget a paint (16 chars, eight
+    // lines at 20Hz), and the drain catches up the same elapsed time, so
+    // the offset settles well under the cap and no line snaps. With a
+    // drain of one frame a paint, 20Hz pinned at the cap within a second.
+    for (const hz of [60, 30, 20]) {
+      __resetRevealFrameGateForTest();
+      const clock = new PaintClock();
+      let revealed = '';
+      const smoother = new PerItemSmoother({ onReveal: (delta) => { revealed += delta; }, clock });
+      smoother.appendDelta('a\n'.repeat(4000));
+      let lines = 5;
+      let prev = obs(lines);
+      let offset = 0;
+      let peak = 0;
+      for (let paint = 0; paint < 3 * hz; paint += 1) {
+        const before = revealed.length;
+        clock.paint(1000 / hz);
+        const landed = (revealed.length - before) / 2;
+        if (landed === 0) continue;
+        lines += landed;
+        const next = obs(lines);
+        const d = slideDecision(prev, next, offset);
+        expect(d.kind, `${hz}Hz`).toBe('slide');
+        if (d.kind !== 'slide') return;
+        // Every line that landed is in the offset: nothing snapped.
+        expect(d.startPx, `${hz}Hz paint ${paint}`).toBeCloseTo(offset + landed * LH);
+        peak = Math.max(peak, d.startPx);
+        offset = stepSlide(d.startPx, 1000 / hz);
+        prev = next;
+      }
+      expect(revealed.length / 3, `${hz}Hz`).toBeGreaterThan(MAX_ADAPTIVE_CHARS_PER_SEC * 0.9);
+      expect(peak, `${hz}Hz`).toBeLessThan(SLIDE_MAX_WINDOWS * BOX * 0.75);
+      smoother.dispose();
+    }
   });
 
   it('lets a second window of catch-up compound past one window', () => {
@@ -190,11 +259,16 @@ describe('stepSlide', () => {
     expect(stepSlide(BOX, FRAME / 2)).toBeCloseTo(BOX * Math.pow(1 - SLIDE_DRAIN_PER_FRAME, 0.5), 3);
   });
 
-  it('resumes after a gap instead of catching it up: a dropped frame and a stall both drain one step', () => {
-    const one = stepSlide(BOX, FRAME);
-    expect(stepSlide(BOX, 2 * FRAME)).toBeCloseTo(one, 3);
-    expect(stepSlide(BOX, 120)).toBeCloseTo(one, 3);
-    expect(stepSlide(BOX, 5000)).toBeCloseTo(one, 3);
+  it('catches up a paint period in full, and resumes after a stall instead of catching it up', () => {
+    // The reveal's stall bound is the slide's: a 20Hz paint drains three
+    // frames' worth, the most any gap drains, so a dropped frame and a
+    // stall both resume at pace.
+    expect(SLIDE_MAX_CATCHUP_FRAMES).toBeCloseTo(MAX_REVEAL_TICK_DT_MS / FRAME, 6);
+    const frames = (n: number) => BOX * Math.pow(1 - SLIDE_DRAIN_PER_FRAME, n);
+    expect(stepSlide(BOX, 2 * FRAME)).toBeCloseTo(frames(2), 3);
+    expect(stepSlide(BOX, MAX_REVEAL_TICK_DT_MS)).toBeCloseTo(frames(SLIDE_MAX_CATCHUP_FRAMES), 3);
+    expect(stepSlide(BOX, 120)).toBeCloseTo(frames(SLIDE_MAX_CATCHUP_FRAMES), 3);
+    expect(stepSlide(BOX, 5000)).toBeCloseTo(frames(SLIDE_MAX_CATCHUP_FRAMES), 3);
   });
 
   it('never drains slower than the minimum step, and lands on exactly zero', () => {

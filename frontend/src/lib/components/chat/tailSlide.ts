@@ -48,6 +48,8 @@
 // unit-testable in the default vitest project; the component supplies
 // real geometry and applies the styles.
 
+import { MAX_REVEAL_TICK_DT_MS } from '../../markdown/smoothing/PerItemSmoother';
+
 /**
  * Fraction of the pending offset drained per 60Hz frame: an ease-out
  * whose speed is proportional to the lag. 35% is the old transition's
@@ -64,19 +66,19 @@ export const SLIDE_DRAIN_PER_FRAME = 0.35;
 
 /**
  * The pending offset is capped at this many clamp windows. The cap is
- * the bound on how far the visible text moves in one frame: the drain
- * takes SLIDE_DRAIN_PER_FRAME of the offset, so at the cap the ticker
- * runs at 0.35 × 6 windows, about six lines a frame. Past that rate the
- * text is unreadable regardless, and the excess snaps instead of
- * compounding into a faster blur. Below it every line that lands
+ * the bound on how far the visible text moves in one 60Hz frame: the
+ * drain takes SLIDE_DRAIN_PER_FRAME of the offset, so at the cap the
+ * ticker runs at 0.35 × 6 windows, about six lines a frame. Past that
+ * rate the text is unreadable regardless, and the excess snaps instead
+ * of compounding into a faster blur. Below it every line that lands
  * compounds: the reveal smoother lands at most MAX_REVEAL_TICK_DT_MS of
- * budget per tick (16 chars at the ceiling), so even a code block's
- * one-character lines or a paragraph's preserved blank lines fit under
- * the cap at any paint cadence it accrues in full and after a stall, and
- * only a run of blank lines at the ceiling or an oversized unit landing
- * whole reaches it. The tail window retains the clamp plus this many
- * windows of lines above it (TAIL_WINDOW_KEEP_LINES), so a cut never
- * removes a line the offset has yet to show.
+ * budget per tick (16 chars at the ceiling), and the drain catches up the
+ * same elapsed time (SLIDE_MAX_CATCHUP_FRAMES), so a code block's
+ * one-character lines settle under the cap at any paint cadence down to
+ * 20Hz and after a stall; only a run of blank lines at the ceiling or an
+ * oversized unit landing whole reaches it. The tail window retains the
+ * clamp plus this many windows of lines above it (TAIL_WINDOW_KEEP_LINES),
+ * so a cut never removes a line the offset has yet to show.
  */
 export const SLIDE_MAX_WINDOWS = 6;
 
@@ -86,19 +88,24 @@ export const SLIDE_MAX_WINDOWS = 6;
  */
 export const SLIDE_MIN_STEP_PX = 1;
 
+const FRAME_MS = 1000 / 60;
+
 /**
  * Most frames of drain one painted frame may apply, however long the
- * gap since the last one. A stalled main thread (a long task, a GC
- * pause, a compositor drop) paints nothing while it lasts; catching up
- * the whole gap on the next paint moved every visible line by most of
- * the pending offset at once, the snap the slide exists to prevent.
- * The ticker resumes where it was instead, at its normal pace, the same
- * rule the scroll spring applies (SPRING_MAX_CATCHUP_STEPS) so text,
- * lines and scroll recover from a stall together.
+ * gap since the last one: the reveal smoother's stall bound
+ * (MAX_REVEAL_TICK_DT_MS), so the slide and the reveal agree on which
+ * gaps are paint periods. A paint up to that long drains its whole
+ * elapsed time, as the reveal lands its whole elapsed budget on it: at a
+ * 20Hz paint the reveal lands three frames of text a paint, and a drain
+ * of one frame a paint fell behind it on one-character lines until the
+ * offset pinned at its cap and every further line snapped. A longer gap
+ * is a stall (a long task, a GC pause, a compositor drop) that paints
+ * nothing while it lasts; catching up the whole of one on the next paint
+ * moved every visible line by most of the pending offset at once, the
+ * snap the slide exists to prevent, so the ticker resumes at this pace
+ * instead, as the reveal does.
  */
-export const SLIDE_MAX_CATCHUP_FRAMES = 1;
-
-const FRAME_MS = 1000 / 60;
+export const SLIDE_MAX_CATCHUP_FRAMES = MAX_REVEAL_TICK_DT_MS / FRAME_MS;
 
 /**
  * Sub-pixel slack for geometry comparisons. Fractional client rects can
@@ -160,7 +167,7 @@ export function slideDecision(
 /**
  * One drain step of the pending offset after `dtMs` of wall time: a
  * sub-frame dt drains its share, anything past SLIDE_MAX_CATCHUP_FRAMES
- * drains one frame's worth.
+ * drains that many frames' worth.
  */
 export function stepSlide(offset: number, dtMs: number): number {
   if (offset <= 0) return 0;

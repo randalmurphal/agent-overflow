@@ -30,9 +30,14 @@ const GLYPH_SLACK_PX = 3;
 type Case = {
   name: string;
   stream: string;
+  /** The text so far when the row arrives; by default up to a line end short of the recut. */
+  seed?: string;
   /** The clamp renders from one start throughout (no measured cut moves it). */
   sameStart: boolean;
 };
+
+const UNBROKEN_LINES = 'a\n'.repeat(4088);
+const UNBROKEN_TOKEN = 'x'.repeat(LIVE_WINDOW_RECUT_CHARS - UNBROKEN_LINES.length - 100);
 
 const CASES: Case[] = [
   {
@@ -47,6 +52,17 @@ const CASES: Case[] = [
     // the window's cut must still leave it that many rows.
     name: 'long lines',
     stream: Array.from({ length: 30 }, (_, i) => `line ${i} ${'word '.repeat(200)}`.slice(0, 1000)).join('\n'),
+    sameStart: false,
+  },
+  {
+    // Short lines, then one token longer than the window's keep length
+    // and a few words: an unbroken token is one rendered row however long,
+    // so the window's cut has to keep lines, not just characters, or the
+    // clamp (which keeps that many lines itself) adopts the later start
+    // and shrinks to the token's row.
+    name: 'unbroken token',
+    stream: `${UNBROKEN_LINES}${UNBROKEN_TOKEN}${'x'.repeat(100)}\n${'word '.repeat(160)}`,
+    seed: UNBROKEN_LINES + UNBROKEN_TOKEN,
     sameStart: false,
   },
 ];
@@ -148,9 +164,9 @@ type Frame = {
 const paintedDt = (frames: Frame[], i: number): number =>
   i >= 2 ? frames[i - 1]!.t - frames[i - 2]!.t : frames[i]!.t - frames[i - 1]!.t;
 
-describe.each(CASES)('streaming thinking tail through a live window recut ($name)', ({ stream, sameStart }) => {
+describe.each(CASES)('streaming thinking tail through a live window recut ($name)', ({ stream, seed: givenSeed, sameStart }) => {
   it('keeps the rendered text, its retained rows and the line slide continuous', async () => {
-    const seed = seedOf(stream);
+    const seed = givenSeed ?? seedOf(stream);
     const continuation = stream.slice(seed.length, seed.length + 800);
     const { pane, scrollEl } = await mountTimeline(THREAD_ID, seedItems(seed), QUIET_BOTTOM);
     const frames: Frame[] = [];

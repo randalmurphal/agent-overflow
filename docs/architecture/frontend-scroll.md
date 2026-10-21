@@ -1241,14 +1241,17 @@ scroller:
 2. **The streaming line-slide** (`TailClampedText`'s inverted translateY,
    drained by a rAF tracker — `tailSlide.ts`) is the one in-content
    animation, on the one region that is genuinely in motion: the line
-   being streamed. After a stalled frame the slide, the reveal smoother
-   (`MAX_REVEAL_TICK_DT_MS`) and the spring each resume at their pace
-   rather than landing the gap at once. The slide's pending offset is
-   capped at `SLIDE_MAX_WINDOWS` clamp windows, the bound on how far the
-   visible text moves in one frame (the drain's share of the cap), and
-   at the content above the box; the tail window retains the clamp plus
-   that many windows (`TAIL_WINDOW_KEEP_LINES`), so a cut never removes
-   a line the slide has yet to show.
+   being streamed. The slide drains the same elapsed time a paint earns
+   the reveal smoother, up to its stall bound (`MAX_REVEAL_TICK_DT_MS`,
+   `SLIDE_MAX_CATCHUP_FRAMES`), so the lines keep pace with the text on
+   a slow paint, and after a stalled frame the slide, the reveal and the
+   spring each resume at their pace rather than landing the gap at once.
+   The slide's pending offset is capped at `SLIDE_MAX_WINDOWS` clamp
+   windows, the bound on how far the visible text moves in one frame
+   (the drain's share of the cap), and at the content above the box; the
+   tail window and the live text window retain the clamp plus that many
+   windows of lines (`TAIL_WINDOW_KEEP_LINES`), so a cut never removes a
+   line the slide has yet to show.
 
 Everything else is still ink. No CSS transitions (the app.css timeline
 kill rule zeroes them, per the chat guide's
