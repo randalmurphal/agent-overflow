@@ -62,8 +62,10 @@ func interruptInTurnStartGap(t *testing.T, name string, interrupt func(app *App,
 	// InterruptTurnIndex; an interrupt that finishes first sampled the gap.
 	waiting := make(chan struct{})
 	var waitOnce sync.Once
-	app.triage.SetInterruptWaitHook(func(string) {
-		waitOnce.Do(func() { close(waiting) })
+	app.triage.SetInterruptWaitHook(func(_ string, woke bool) {
+		if !woke {
+			waitOnce.Do(func() { close(waiting) })
+		}
 	})
 	done := make(chan error, 1)
 	go func() { done <- interrupt(app, thread.ID) }()

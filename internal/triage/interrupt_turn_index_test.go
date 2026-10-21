@@ -85,8 +85,8 @@ func runThroughHeldStart[T any](t *testing.T, router *Router, threadID string, h
 	t.Helper()
 	waiting := make(chan struct{})
 	var once sync.Once
-	router.SetInterruptWaitHook(func(id string) {
-		if id == threadID {
+	router.SetInterruptWaitHook(func(id string, woke bool) {
+		if id == threadID && !woke {
 			once.Do(func() { close(waiting) })
 		}
 	})
@@ -272,6 +272,98 @@ func TestInterruptTurnIndex_WaitsOutStartOfEchoOpenedTurn(t *testing.T) {
 	}
 	requireStoppedByUserRow(t, st, "t1", res.errID, 1)
 	requireMarkerSurvivesLaterError(t, router, st, "t1", res.errID, 1)
+}
+
+// The event worker can finish start N, complete turn N and begin an
+// externally queued N+1 before an interrupt waiting on N resumes. The
+// woken interrupt re-reads the state, waits on N+1's start too, and
+// records the stop on N+1.
+func TestInterruptTurnIndex_WaitsOutNextStartBegunBeforeWaiterResumes(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	waits := make(chan struct{}, 2)
+	woken := make(chan struct{})
+	resume := make(chan struct{})
+	var wokeOnce, resumeOnce sync.Once
+	resumeWaiter := func() { resumeOnce.Do(func() { close(resume) }) }
+	t.Cleanup(resumeWaiter)
+	router.SetInterruptWaitHook(func(id string, woke bool) {
+		if id != "t1" {
+			return
+		}
+		if !woke {
+			waits <- struct{}{}
+			return
+		}
+		wokeOnce.Do(func() {
+			close(woken)
+			<-resume
+		})
+	})
+	t.Cleanup(func() { router.SetInterruptWaitHook(nil) })
+	await := func(ch <-chan struct{}, what string) {
+		t.Helper()
+		select {
+		case <-ch:
+		case <-time.After(10 * time.Second):
+			t.Fatal(what)
+		}
+	}
+	awaitStart := func(held heldTurnStart, what string) {
+		t.Helper()
+		select {
+		case err := <-held.handled:
+			if err != nil {
+				t.Fatalf("%s: %v", what, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s never returned", what)
+		}
+	}
+
+	heldN := holdTurnStart(t, router, turnStartEvent("t1", 1), false)
+	done := make(chan interruptResult, 1)
+	go func() {
+		errID, err := markUserInterruptForTest(router, "t1")
+		done <- interruptResult{errID: errID, err: err}
+	}()
+	await(waits, "interrupt never waited on start N")
+	heldN.release()
+	awaitStart(heldN, "start N")
+	await(woken, "interrupt never woke from start N")
+
+	// The waiter is held after waking; the event worker moves on.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"},
+		Timestamp:    time.Now(),
+	}); err != nil {
+		t.Fatalf("turn N complete: %v", err)
+	}
+	heldNext := holdTurnStart(t, router, turnStartEvent("t1", 2), false)
+	resumeWaiter()
+	select {
+	case <-waits:
+	case res := <-done:
+		t.Fatalf("interrupt finished without waiting on start N+1: %+v", res)
+	case <-time.After(10 * time.Second):
+		t.Fatal("interrupt never waited on start N+1")
+	}
+	heldNext.release()
+	awaitStart(heldNext, "start N+1")
+
+	var res interruptResult
+	select {
+	case res = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("interrupt still waiting after start N+1 returned")
+	}
+	if res.err != nil {
+		t.Fatalf("MarkUserInterrupt: %v", res.err)
+	}
+	requireStoppedByUserRow(t, st, "t1", res.errID, 2)
+	requireMarkerSurvivesLaterError(t, router, st, "t1", res.errID, 2)
 }
 
 // A turn start that unwinds before setting the open turn still releases

@@ -976,27 +976,33 @@ func (r *Router) OpenTurnIndex(threadID string) int {
 // It must not be called from the event worker.
 func (r *Router) InterruptTurnIndex(threadID string) int {
 	r.mu.Lock()
-	st := r.threadStateIfPresent(threadID)
-	if st == nil {
-		r.mu.Unlock()
-		return -1
-	}
-	if st.turnStarting != nil {
+	defer r.mu.Unlock()
+	for {
+		st := r.threadStateIfPresent(threadID)
+		if st == nil {
+			return -1
+		}
+		if st.turnStarting == nil {
+			if !st.openTurnSet {
+				return -1
+			}
+			return st.openTurn
+		}
+		// The event worker can finish this start, complete its turn and
+		// begin the next one before this waiter resumes, so the state is
+		// read again after every wait until no start is in progress.
 		starting := st.turnStarting
 		hook := r.interruptWaitHook
 		r.mu.Unlock()
 		if hook != nil {
-			hook(threadID)
+			hook(threadID, false)
 		}
 		<-starting
-		return r.OpenTurnIndex(threadID)
+		if hook != nil {
+			hook(threadID, true)
+		}
+		r.mu.Lock()
 	}
-	turnIndex, open := st.openTurn, st.openTurnSet
-	r.mu.Unlock()
-	if !open {
-		return -1
-	}
-	return turnIndex
 }
 
 // beginTurnStart marks threadID as starting a turn and returns the
