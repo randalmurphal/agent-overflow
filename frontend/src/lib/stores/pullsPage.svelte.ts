@@ -40,7 +40,7 @@ import {
 } from './pullsPageRows';
 import { setPullsReceiver } from './pullsStore.svelte';
 import { createPumpVotes } from './pumpVotes';
-import { disposePRReviewStates } from './reviewPane.svelte';
+import { disposePRReviewStates } from './reviewPanePinned.svelte';
 import { isTransportClassError } from './transportStatus.svelte';
 import type { BackendKey } from '../transport/backendKey';
 import { withBackendTarget } from '../transport/backends';

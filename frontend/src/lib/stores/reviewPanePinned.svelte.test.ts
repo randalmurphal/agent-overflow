@@ -6,16 +6,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, tick } from 'svelte';
 import { resetAppStorageForTest } from './appStorage';
+import { __resetReviewPaneStateForTest, reviewStateForPane, type ReviewPaneState } from './reviewPane.svelte';
 import {
   __pinnedReviewStatesForTest,
-  __resetReviewPaneStateForTest,
+  __resetPinnedReviewStatesForTest,
   currentPinnedReviewState,
   disposePRReviewStates,
-  reviewStateForPane,
   reviewStateForPR,
   reviewSubjectForPR,
-  type ReviewPaneState,
-} from './reviewPane.svelte';
+} from './reviewPanePinned.svelte';
 import { applyPRUpdatedEvent, prReviewKeys } from './prReviewStore.svelte';
 import { getPRDiffReviewComments } from './prDiffReviewComments.svelte';
 import { registerComposerDraft, resetComposerDraftRegistryForTest } from './composerDraftRegistry.svelte';
@@ -131,6 +130,7 @@ async function settle(): Promise<void> {
 
 beforeEach(() => {
   resetAppStorageForTest();
+  __resetPinnedReviewStatesForTest();
   __resetReviewPaneStateForTest();
   resetComposerDraftRegistryForTest();
   resetPanesForTest();
@@ -138,6 +138,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __resetPinnedReviewStatesForTest();
   __resetReviewPaneStateForTest();
   resetStagedBackends();
   resetToLocalPage();
