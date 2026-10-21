@@ -174,6 +174,33 @@ describe('a pipeline subject', () => {
     held.release();
   });
 
+  it('keeps the answer\'s pipeline under an error frame that landed during the subscribe', async () => {
+    let answer!: (value: unknown) => void;
+    setBindingMock('SubscribePipeline', () => new Promise((resolve) => {
+      answer = resolve;
+    }));
+    setBindingMock('UnsubscribePipeline', async () => undefined);
+    const held = attachPipelineCI(HOME_BACKEND, REPO, '77');
+    const state = createCISubjectState(() => pipelineSubject());
+    await flush();
+    // Older than the answer, then newer: only the newer applies over it.
+    applyPipelineFrame({ key: WIRE_KEY, pipeline: pipeline('canceled'), seq: 6 }, HOME_BACKEND);
+    applyPipelineFrame({ key: WIRE_KEY, error: 'GitLab did not answer.', errorKind: 'transient', seq: 8 }, HOME_BACKEND);
+    answer({ id: 'pipe-1', key: WIRE_KEY, pipeline: pipeline('running'), error: '', errorKind: '', reserve: false, resumeAt: '', seq: 7 });
+    await flush();
+    expect(state.pipeline?.status).toBe('running');
+    expect(state.pipeline?.stages[0]?.jobs.map((job) => job.id)).toEqual(['20']);
+    expect(state.error).toBe('GitLab did not answer.');
+    expect(state.failure?.kind).toBe('transient');
+    // The watermark is the replayed frame's.
+    applyPipelineFrame({ key: WIRE_KEY, pipeline: pipeline('failed'), seq: 8 }, HOME_BACKEND);
+    expect(state.pipeline?.status).toBe('running');
+    applyPipelineFrame({ key: WIRE_KEY, pipeline: pipeline('success'), seq: 9 }, HOME_BACKEND);
+    expect(state.pipeline?.status).toBe('success');
+    expect(state.error).toBeNull();
+    held.release();
+  });
+
   it('follows the opened job, applies its log frames, reads its lines from the repository, and stops following on close', async () => {
     const mocks = installMocks();
     const reads = setBindingMock('GetPRCILogLines', async () => ({ from: 1, lines: ['b', 'c'], totalLines: 3, version: 1 }));

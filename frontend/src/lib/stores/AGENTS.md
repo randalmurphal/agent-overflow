@@ -96,9 +96,11 @@ gives the wait up when the backend's launch (its hello's `launchId`) changes, si
 a restarted backend's pump numbers from one again, while a re-subscribe to
 the same process keeps it. CI is sourced only by
 that subscription, or for a repository pipeline by its `SubscribePipeline`
-handle (`pipelineCI.svelte.ts`); the frontend never polls it. Both feed the
-CI entry under one CI key and register their follow and refresh calls in
-`ciHandles.ts`.
+handle (`pipelineCI.svelte.ts`), whose `ci:pipeline_updated` frames rank
+the same way against one watermark per pipeline key, seeded by the result,
+with the frames of its join replayed in sequence order; the frontend never
+polls it. Both feed the CI entry under one CI key and register their follow
+and refresh calls in `ciHandles.ts`.
 `pr:ci_log` frames carry a followed job's whole log state, its index and
 never its text, so the newest by sequence wins; the follow set lives on the
 subscription handle, so it is restated after every subscribe and after a
