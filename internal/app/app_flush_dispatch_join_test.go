@@ -1002,11 +1002,16 @@ func refuseRowDelete(t *testing.T, d reviewDispatch) func() {
 	return func() { execOnStore(t, d.dbPath, `DROP TRIGGER refuse_row_delete`) }
 }
 
+// reviewRequeueFailures are the two ways a restore requeues: the row is
+// retired by the restore, or left for the resend to retire.
 var reviewRequeueFailures = []reviewRequeueFailure{
 	{name: "failed draft write", inject: refuseDraftWrites},
-	{name: "failed draft write then a teardown", inject: refuseDraftWrites, reregister: true},
 	{name: "failed row cleanup", inject: refuseRowDelete},
 }
+
+// reviewRequeueAfterTeardown is a failed draft write whose requeue a
+// teardown registers again after wiping the queue.
+var reviewRequeueAfterTeardown = reviewRequeueFailure{name: "failed draft write then a teardown", inject: refuseDraftWrites, reregister: true}
 
 // requeue takes the message back by a session death that fails as failure
 // says, then lets the store work again.
@@ -1082,7 +1087,7 @@ func (d reviewDispatch) draftIDs() []string {
 // once, and its row claims every comment of both sources.
 func TestRequeueOfAJoinedMessageResendsEveryReviewSource(t *testing.T) {
 	t.Parallel()
-	for _, failure := range reviewRequeueFailures {
+	for _, failure := range append(slices.Clone(reviewRequeueFailures), reviewRequeueAfterTeardown) {
 		t.Run(failure.name, func(t *testing.T) {
 			t.Parallel()
 			d := startReviewDispatchOf(t, "requeue-joined-two-sources",
