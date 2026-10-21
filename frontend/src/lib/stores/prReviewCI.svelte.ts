@@ -162,8 +162,12 @@ export function seedPRCI(key: string, pipeline: CIPipeline | null, ciError: stri
   entry.pumpFailure = ciError ? forgeFailureFrom(kind) : null;
 }
 
-/** Applies one pr:ci_updated frame the PR's watermark admitted. */
-export function applyPRCIUpdated(key: string, event: PRCIUpdatedEvent): void {
+/** A pipeline frame as the entry applies it: `pr:ci_updated` for a PR,
+ * `ci:pipeline_updated` for a repository pipeline. */
+export type CIFrame = Omit<PRCIUpdatedEvent, 'prKey'>;
+
+/** Applies one pipeline frame its key's watermark admitted. */
+export function applyPRCIUpdated(key: string, event: CIFrame): void {
   const entry = entryFor(key);
   if (!entry) return;
   if (event.error) {
