@@ -1,7 +1,7 @@
-// Workflows overlay navigation (UI-SPEC §2). The overlay is a full-surface
-// layer rendered as a SIBLING of the pane host — the pane tree stays mounted
-// underneath, so opening and closing rebuild nothing. This store owns the only
-// state that survives a close: the stack, the project filter, and the sweep
+// Workflows navigation (UI-SPEC §2). Workflows is the `workflows` tool pane
+// (toolPanes.svelte.ts): "open" means that pane exists in the layout, and the
+// pane persists with the layout. This store owns the navigation state that
+// survives the pane closing: the stack, the project filter, and the sweep
 // cursor.
 //
 // Two levels plus a terminal one: home › run detail, and all-clear (reachable
@@ -9,10 +9,19 @@
 // workflow's runs expand in place on home.
 //
 // Persistence rides appStorage (the ui_state table), so the stack survives a
-// restart, not just a reload. `open` is deliberately NOT persisted: a restart
-// starts on the pane tree, and reopening the overlay restores where you were.
+// restart, not just a reload, and reopening the pane restores where you were.
 
 import { appStorageGet, appStorageSet } from './appStorage';
+import {
+  addToolPaneClosedObserver,
+  closeToolPane,
+  focusedToolKind,
+  openTool,
+  registerToolDetailProbe,
+  toggleTool,
+  type OpenToolOptions,
+} from './toolPanes.svelte';
+import { toolPaneIdFor } from './paneLayout.svelte';
 
 const STACK_KEY = 'workflows:overlay';
 
@@ -63,7 +72,7 @@ export function parsePersistedOverlayState(raw: string | null): PersistedOverlay
     : [];
   // Home is always the floor: a persisted stack that lost it (or never had it)
   // is repaired rather than rejected, so a corrupt write never strands the
-  // overlay on a level with no way back.
+  // pane on a level with no way back.
   const stack = entries[0]?.level === 'home' ? entries : [HOME, ...entries.filter((entry) => entry.level !== 'home')];
   const sweepIndex = typeof record.sweepIndex === 'number' && Number.isInteger(record.sweepIndex)
     ? record.sweepIndex
@@ -78,7 +87,6 @@ export function parsePersistedOverlayState(raw: string | null): PersistedOverlay
 
 const initial = parsePersistedOverlayState(appStorageGet(STACK_KEY));
 
-let open = $state(false);
 let stack = $state<WorkflowsOverlayEntry[]>(initial.stack);
 let projectFilter = $state(initial.projectFilter);
 let sweepActive = $state(initial.sweepActive);
@@ -96,8 +104,18 @@ function clearTransient(): void {
   armedAction = null;
 }
 
-export function isWorkflowsOverlayOpen(): boolean {
-  return open;
+/** The RAW focused pane is the workflows pane: its chords are live. */
+export function isWorkflowsPaneFocused(): boolean {
+  return focusedToolKind() === 'workflows';
+}
+
+/**
+ * Something above home is open: a run detail or all-clear level, a dialog, or
+ * an armed confirm. Escape and the phone's Back consume one of these before
+ * they leave the pane (`workflows.escape`, gated on `toolDetailOpen`).
+ */
+export function isWorkflowsDetailOpen(): boolean {
+  return armedAction !== null || dialog !== null || stack.length > 1;
 }
 
 export function getWorkflowsOverlayStack(): readonly WorkflowsOverlayEntry[] {
@@ -113,40 +131,28 @@ export function getWorkflowsOverlayRunId(): string {
   return top.level === 'run' ? top.itemId : '';
 }
 
-/**
- * Closes the OTHER full-height layer over the pane strip — settings. Both are
- * siblings of PaneHost with their own focus trap, and two of them up at once
- * has no coherent Esc, so opening this one closes that one.
- *
- * Injected rather than imported to keep the import one-way: the settings store
- * imports this module (for `closeWorkflowsOverlay`) and arms this hook at its
- * own module init, so the wiring is deterministic at load time rather than
- * dependent on anything being registered first. It lands on the store rather
- * than on the `workflows.toggle` command because `openWorkflowsOverlay` is the
- * ONE writer of `open = true`: the chord, the sidebar chip and the
- * OS-notification deep link all funnel through it, so no entry point can forget
- * the exclusion.
- */
-let closeSettingsSurface: () => void = () => {};
-
-export function setWorkflowsOverlayExclusion(closeSettings: () => void): void {
-  closeSettingsSurface = closeSettings;
+/** Open or reveal the workflows pane (toolPanes.svelte#openTool). */
+export function openWorkflowsPane(options: OpenToolOptions = {}): void {
+  openTool('workflows', options);
 }
 
-export function openWorkflowsOverlay(): void {
-  closeSettingsSurface();
-  open = true;
+export function closeWorkflowsPane(): void {
+  closeToolPane(toolPaneIdFor('workflows'));
 }
 
-export function closeWorkflowsOverlay(): void {
-  open = false;
-  clearTransient();
+/** `workflows.toggle`: open or reveal the pane, or close it when focused. */
+export function toggleWorkflowsPane(): void {
+  toggleTool('workflows');
 }
 
-export function toggleWorkflowsOverlay(): void {
-  if (open) closeWorkflowsOverlay();
-  else openWorkflowsOverlay();
-}
+// A dialog or an armed confirm belongs to the pane that showed it. Whichever
+// path takes the pane down (its close button, the chord, a thread opened in
+// its place), reopening it must not bring them back.
+addToolPaneClosedObserver((kind) => {
+  if (kind === 'workflows') clearTransient();
+});
+
+registerToolDetailProbe('workflows', isWorkflowsDetailOpen);
 
 export function pushWorkflowRunDetail(itemId: string, options: { sweep?: boolean; sweepIndex?: number } = {}): void {
   if (!itemId) return;
@@ -172,7 +178,7 @@ export function pushWorkflowAllClear(): void {
   persist();
 }
 
-/** Back / Esc / Backspace at run depth. Returns false at home (caller closes). */
+/** Back / Esc / Backspace at run depth. Returns false at home. */
 export function popWorkflowsOverlay(): boolean {
   if (stack.length <= 1) return false;
   clearTransient();
@@ -235,13 +241,13 @@ export function setWorkflowArmedAction(next: string | null): void {
 /**
  * Which folded waves the reader opened, and which deep compositions they
  * expanded past the §6 depth rule — keyed by run id so a detail REMOUNT
- * (overlay close/reopen, a level round-trip, a sweep step and back) does not
+ * (pane close/reopen, a level round-trip, a sweep step and back) does not
  * silently re-fold what someone opened. The run tree itself carries no such
  * bit; this is view state about a run, which is why it lives with the
- * overlay's other navigation state rather than in the map's data store.
+ * pane's other navigation state rather than in the map's data store.
  *
  * Deliberately NOT persisted, unlike the stack: the key space is every run
- * that ever existed, and the persisted row is one small blob the whole overlay
+ * that ever existed, and the persisted row is one small blob the whole pane
  * shares. Bounded to the last few runs for the same reason — a session that
  * sweeps two hundred runs must not accumulate two hundred sets. Follow
  * engagement is not here at all: §9.4 makes it per-visit by design.
@@ -351,11 +357,11 @@ export function toggleWorkflowRunMapLane(runId: string, branchKey: string): void
 }
 
 /**
- * Esc precedence (§2.2): disarm a confirm → close a dialog → pop → close the
- * overlay. Returns what it consumed so callers can preventDefault only when
- * something actually happened.
+ * Esc precedence (§2.2): disarm a confirm → close a dialog → pop. At home with
+ * nothing armed or open there is nothing to consume and the pane stays: a
+ * pane is closed by its close control or the chord, never by Escape.
  */
-export type WorkflowsEscapeOutcome = 'disarmed' | 'dialog-closed' | 'popped' | 'closed';
+export type WorkflowsEscapeOutcome = 'disarmed' | 'dialog-closed' | 'popped' | null;
 
 export function consumeWorkflowsOverlayEscape(): WorkflowsEscapeOutcome {
   if (armedAction !== null) {
@@ -367,16 +373,15 @@ export function consumeWorkflowsOverlayEscape(): WorkflowsEscapeOutcome {
     return 'dialog-closed';
   }
   if (popWorkflowsOverlay()) return 'popped';
-  closeWorkflowsOverlay();
-  return 'closed';
+  return null;
 }
 
 /**
- * Open the overlay at one run's detail, inside the sweep — the OS-notification
- * deep link (§7) and the needs-attention row both land here.
+ * Open the workflows pane at one run's detail, inside the sweep — the
+ * OS-notification deep link (§7) and the needs-attention row both land here.
  */
-export function openWorkflowRunInOverlay(itemId: string, sweepIndex = -1): void {
-  openWorkflowsOverlay();
+export function openWorkflowRunInPane(itemId: string, sweepIndex = -1): void {
+  openWorkflowsPane();
   pushWorkflowRunDetail(itemId, { sweep: true, sweepIndex });
 }
 
@@ -411,12 +416,8 @@ export function syncWorkflowsOverlayFromAppStorage(): void {
   touchRunMapExpansion();
 }
 
-// `closeSettingsSurface` is deliberately NOT reset here: it is structural
-// wiring armed once by the settings store's module init, not per-test state,
-// and clearing it would silently disarm the exclusion for every later test.
 export function resetWorkflowsOverlayForTest(): void {
   const fresh = defaults();
-  open = false;
   stack = fresh.stack;
   projectFilter = fresh.projectFilter;
   sweepActive = fresh.sweepActive;

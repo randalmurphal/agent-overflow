@@ -1,19 +1,13 @@
 <script lang="ts">
-  // The workflows overlay frame (UI-SPEC §2.1). Mounted in App.svelte as a
-  // SIBLING of <PaneHost>, layered above it — never passed into PaneHost,
-  // never a pane kind. The pane tree stays mounted and untouched underneath,
-  // so closing is a pure unmount of this layer: zero pane rebuild, zero
-  // virtualizer resync.
+  // The Workflows tool pane (UI-SPEC §2.1): the `workflows` pane kind, mounted
+  // by panes/ToolPane.svelte. The pane exists exactly while Workflows is open;
+  // the stack, project filter and sweep cursor live in the store so they
+  // survive the pane closing and a restart.
   //
-  // Two levels plus a terminal one — home › run detail, and all-clear. The
-  // stack, project filter and sweep cursor live in the store so they survive
-  // close/reopen and restart.
+  // Two levels plus a terminal one — home › run detail, and all-clear.
 
   import { onDestroy, untrack } from 'svelte';
-  import ChevronLeft from '@lucide/svelte/icons/chevron-left';
-  import Icon from '../primitives/Icon.svelte';
-  import IconButton from '../primitives/IconButton.svelte';
-  import OverlayShell from '../primitives/OverlayShell.svelte';
+  import ToolPaneHeader from '../panes/ToolPaneHeader.svelte';
   import WorkflowsHome from './WorkflowsHome.svelte';
   import WorkflowRunDetail from './WorkflowRunDetail.svelte';
   import WorkflowAllClear from './WorkflowAllClear.svelte';
@@ -30,7 +24,6 @@
     retainWorkflowDetails,
   } from '../../stores/workflowRuns.svelte';
   import {
-    closeWorkflowsOverlay,
     getWorkflowsOverlayDialog,
     getWorkflowsOverlayTop,
     popWorkflowsOverlay,
@@ -38,10 +31,13 @@
     setWorkflowsOverlayDialog,
   } from '../../stores/workflowsOverlay.svelte';
   import { cancelWorkflowAutoAdvance } from '../../stores/workflowResolve';
-  import { setWorkflowsOverlayScroller } from './overlayScroller';
+  import { setWorkflowsScroller } from './workflowsScroller';
 
-  interface Props { open: boolean }
-  let { open }: Props = $props();
+  interface Props {
+    paneId: string;
+    onPaneDragStart?: (event: DragEvent) => void;
+  }
+  let { paneId, onPaneDragStart }: Props = $props();
 
   let top = $derived(getWorkflowsOverlayTop());
   let runId = $derived(top.level === 'run' ? top.itemId : '');
@@ -54,12 +50,12 @@
   // RUN-MAP §9.9 — this frame owns the one scroller, so it says so rather than
   // leaving the run map to find it by walking the DOM. A getter, because the
   // binding lands after this runs.
-  setWorkflowsOverlayScroller(() => bodyEl);
+  setWorkflowsScroller(() => bodyEl);
 
   // RUN-MAP §9.9 — one scroller serves every level, so where a level swap
   // leaves the reader is this component's contract, not an emergent property.
   //
-  // Today two other things happen to land the same answer: swapping the `{#if}`
+  // Two other things happen to land the same answer: swapping the `{#if}`
   // branch below empties the scroller for a moment, which makes the browser
   // clamp `scrollTop` to 0, and the run map's `placeOnOpen` writes 0 for a
   // parked or terminal run. Neither is a promise. The first is Svelte's
@@ -83,7 +79,7 @@
   // Project MEMBERSHIP as a $derived key: the projects array is replaced
   // wholesale by every activity touch (any thread's turn-completed bumps
   // its project's lastActive), so an effect reading the array re-hydrated
-  // the whole overlay on a per-turn cadence while it was open. The key
+  // the whole surface on a per-turn cadence while it was open. The key
   // changes only when a project is added or removed — which is when a
   // re-list is actually wanted. Load order is irrelevant downstream (the
   // ids land in a Set).
@@ -93,10 +89,9 @@
       .join('\u0000'),
   );
 
-  // Hydrate once per open. A reopen re-lists so a run started from the CLI
-  // while the overlay was closed is present, but keeps the cached catalogs.
+  // Hydrate once per mount. A reopened pane re-lists so a run started from the
+  // CLI while it was closed is present, but keeps the cached catalogs.
   $effect(() => {
-    if (!open) return;
     const projectIds = projectIdsKey.length === 0 ? [] : projectIdsKey.split('\u0000');
     void loadWorkflowsOverlayData(projectIds).then(() => {
       // Restored stack entries whose run no longer exists drop from the top
@@ -112,50 +107,34 @@
   });
 
   // Session receipts exist to hold a resolved run in the sweep long enough to
-  // read its receipt. Closing the overlay ends that session — and cancels any
+  // read its receipt. Closing the pane ends that session — and cancels any
   // pending auto-advance, so a step never lands on a surface nobody is on.
-  function endSession(): void {
+  onDestroy(() => {
     clearWorkflowReceipts();
     cancelWorkflowAutoAdvance();
-  }
-
-  $effect(() => {
-    if (!open) endSession();
   });
-
-  onDestroy(endSession);
 </script>
 
 <!--
   Esc is bound globally (`workflows.escape`, §8) with the precedence the stack
-  needs, so the shell deliberately carries no key handler of its own — a local
-  one would consume the same press twice.
+  needs, so the pane carries no key handler of its own — a local one would
+  consume the same press twice.
 -->
-<OverlayShell
-  {open}
-  ariaLabel="Workflows"
-  onScrimClick={closeWorkflowsOverlay}
-  scrimTestId="workflows-overlay-scrim"
-  testId="workflows-overlay"
->
-  <header class="flex shrink-0 items-center gap-2 border-b border-border-subtle px-4 py-3">
-    {#if top.level === 'home'}
-      <h2 class="text-sm font-semibold text-fg">Workflows</h2>
-    {:else}
-      <IconButton
-        size="sm"
-        label="Back (esc)"
-        testId="workflows-back"
-        onClick={() => { if (!popWorkflowsOverlay()) closeWorkflowsOverlay(); }}
-      >
-        <Icon icon={ChevronLeft} size={14} strokeWidth={2} />
-      </IconButton>
-      <nav class="min-w-0 flex-1 truncate text-sm text-fg-muted" data-testid="workflows-breadcrumb">
-        Workflows<span class="px-1.5 text-fg-subtle">›</span>
-        <span class="text-fg">{top.level === 'all-clear' ? 'All clear' : (run?.goal || 'Run')}</span>
+<div class="flex h-full min-h-0 flex-col" data-testid="workflows-pane">
+  <ToolPaneHeader
+    {paneId}
+    kind="workflows"
+    {onPaneDragStart}
+    onBack={top.level === 'home' ? undefined : () => { popWorkflowsOverlay(); }}
+    backLabel="Back (esc)"
+    backTestId="workflows-back"
+  >
+    {#if top.level !== 'home'}
+      <nav class="min-w-0 truncate text-sm text-fg-muted" data-testid="workflows-breadcrumb">
+        <span class="pr-1.5 text-fg-subtle">›</span><span class="text-fg">{top.level === 'all-clear' ? 'All clear' : (run?.goal || 'Run')}</span>
       </nav>
     {/if}
-  </header>
+  </ToolPaneHeader>
 
   <!--
     `overflow-anchor:none` because the run map owns its own compensation
@@ -163,7 +142,7 @@
     fights the anchor-hold, which is the difference between a fold that holds
     still and one that fights you.
   -->
-  <div class="min-h-0 flex-1 overflow-y-auto [overflow-anchor:none]" bind:this={bodyEl} data-testid="workflows-overlay-body">
+  <div class="min-h-0 flex-1 overflow-y-auto [overflow-anchor:none]" bind:this={bodyEl} data-testid="workflows-pane-body">
     {#if getWorkflowLoadError() && !isWorkflowOverlayLoaded()}
       <p class="px-4 py-6 text-xs text-error" data-testid="workflows-load-error">{getWorkflowLoadError()}</p>
     {:else if !isWorkflowOverlayLoaded() && isWorkflowLoading()}
@@ -176,16 +155,14 @@
       <WorkflowAllClear />
     {/if}
   </div>
-</OverlayShell>
+</div>
 
-{#if open}
-  <WorkflowIntakeDialog
-    open={dialog === 'intake'}
-    onClose={() => setWorkflowsOverlayDialog(null)}
-  />
-  <WorkflowDiscardDialog
-    open={dialog === 'discard'}
-    itemId={runId}
-    onClose={() => setWorkflowsOverlayDialog(null)}
-  />
-{/if}
+<WorkflowIntakeDialog
+  open={dialog === 'intake'}
+  onClose={() => setWorkflowsOverlayDialog(null)}
+/>
+<WorkflowDiscardDialog
+  open={dialog === 'discard'}
+  itemId={runId}
+  onClose={() => setWorkflowsOverlayDialog(null)}
+/>

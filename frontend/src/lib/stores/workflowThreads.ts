@@ -1,7 +1,7 @@
 // R3 — only threads break out. Every workflow thread (phase, unit) and the
-// full-review pane open as NORMAL panes beside the pane tree that was never
-// unmounted; opening one closes the overlay, and reopening the overlay restores
-// its stack.
+// full-review pane open as NORMAL panes. A thread opened from the focused
+// workflows pane takes that pane's slot (panes.svelte#focusedOpenTargetPane),
+// and reopening the workflows pane restores its stack.
 //
 // Nothing here creates a thread. D32 removed every affordance that spawned one
 // from a workflow surface; what is left opens a thread the run already has.
@@ -15,9 +15,8 @@
 import type { Thread } from '../types/models';
 import { GetThread, WorkflowTakeOverUnit } from './bindings';
 import { getThreadById } from './threads.svelte';
-import { findPaneShowingThread, getPane, openThreadInPane } from './panes.svelte';
+import { findPaneShowingThread, focusPane, getPane, openThreadInPane, revealPane } from './panes.svelte';
 import { openReviewCompanion, reviewSubjectForPane } from './reviewPane.svelte';
-import { closeWorkflowsOverlay } from './workflowsOverlay.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
 import { userFacingError } from '../utils/userFacingError';
 
@@ -29,12 +28,11 @@ async function resolveThread(threadId: string): Promise<Thread | null> {
 }
 
 /**
- * Open a thread as a normal pane and close the overlay. Returns the pane id so
- * callers that need a companion (full review) can attach to it.
+ * Open a thread as a normal pane in the focused pane's place. Returns the pane
+ * id so callers that need a companion (full review) can attach to it.
  */
 export async function openWorkflowThread(thread: Thread): Promise<string> {
   const pane = await openThreadInPane(thread);
-  closeWorkflowsOverlay();
   return pane.paneId;
 }
 
@@ -43,7 +41,8 @@ export async function openWorkflowThreadById(threadId: string): Promise<string |
   try {
     const existing = findPaneShowingThread(threadId);
     if (existing) {
-      closeWorkflowsOverlay();
+      focusPane(existing.paneId);
+      revealPane(existing.paneId);
       return existing.paneId;
     }
     const thread = await resolveThread(threadId);

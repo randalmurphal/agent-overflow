@@ -234,16 +234,18 @@ var Defaults = []Keybinding{
 	// palette or any modal has focus so Shift+Tab's default "focus
 	// prev" behaviour still wins inside those surfaces.
 	{Key: "shift+tab", Command: "mode.cycle", When: "hasActiveThread && !paletteOpen && !anyModalOpen", DefaultID: "mode.cycle"},
-	// Workflows overlay (docs/specs/workflows-system-ui/UI-SPEC.md §8).
-	// Every chord is gated on the overlay being open, so the bare letters and
-	// digits below are inert everywhere else; the SPA additionally suppresses
-	// them while a text field has focus (App.svelte's editable-target check),
-	// which is what lets `a` stay "primary action" on the surface and "the
-	// letter a" in the answer box. `esc` sits AFTER thread.interrupt because
-	// dispatch walks the resolved list in reverse — the overlay must consume
-	// Escape before a background turn does.
+	// Workflows pane (docs/specs/workflows-system-ui/UI-SPEC.md §8).
+	// Every chord is gated on the workflows pane holding focus, so the bare
+	// letters and digits below are inert everywhere else; the SPA additionally
+	// suppresses them while a text field has focus (App.svelte's
+	// editable-target check), which is what lets `a` stay "primary action" on
+	// the surface and "the letter a" in the answer box. `esc` sits AFTER
+	// thread.interrupt because dispatch walks the resolved list in reverse —
+	// the pane must consume Escape before a background turn does — and is live
+	// only while a detail step is open, so at home Escape and the phone's Back
+	// pass through.
 	{Key: "mod+shift+w", Command: "workflows.toggle", DefaultID: "workflows.toggle"},
-	{Key: "esc", Command: "workflows.escape", When: "workflowsOverlayOpen", DefaultID: "workflows.escape"},
+	{Key: "esc", Command: "workflows.escape", When: "workflowsPaneFocused && toolDetailOpen", DefaultID: "workflows.escape"},
 	{Key: "backspace", Command: "workflows.back", When: "workflowsRunDetail", DefaultID: "workflows.back"},
 	{Key: "j", Command: "workflows.sweep.next", When: "workflowsRunDetail", DefaultID: "workflows.sweep.next"},
 	{Key: "arrowdown", Command: "workflows.sweep.next", When: "workflowsRunDetail", DefaultID: "workflows.sweep.next.down"},
