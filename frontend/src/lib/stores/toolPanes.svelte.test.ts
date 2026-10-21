@@ -25,6 +25,7 @@ import {
   getAllPanes,
   getFocusedPaneId,
   getPane,
+  mountThreadForToolPane,
   openEmptyPane,
   openThreadFromNavigation,
   openThreadIdInNewPane,
@@ -308,6 +309,38 @@ describe('a thread opened while a tool pane is focused', () => {
     expect(pane.paneId).toBe('left');
     expect(layoutIds()).toEqual(['left', 'tool-workflows']);
     expect(getFocusedPaneId()).toBe('left');
+  });
+
+  it('gives a tool\'s own late open that tool\'s slot, whichever pane gained focus meanwhile', async () => {
+    threadLayout([threadItem('left'), toolItem('pulls', 900), threadItem('right')], 'right');
+    await openThreadInPane(makeThread({ id: 't-right' }));
+    const pane = await mountThreadForToolPane(makeThread({ id: 't-late' }), 'tool-pulls');
+    expect(layoutIds()).toEqual(['left', pane.paneId, 'right']);
+    expect(getPaneLayoutItems()[1].widthPx).toBe(900);
+    expect(pane.threadId).toBe('t-late');
+    expect(getPane('right')?.threadId).toBe('t-right');
+    expect(getFocusedPaneId()).toBe(pane.paneId);
+  });
+
+  it('opens a tool\'s late open in a new pane once the tool is gone, replacing no pane', async () => {
+    threadLayout([threadItem('left'), threadItem('right')], 'right');
+    await openThreadInPane(makeThread({ id: 't-right' }));
+    // The id names nothing in the layout, and null names nothing at all.
+    const first = await mountThreadForToolPane(makeThread({ id: 't-late' }), 'tool-pulls');
+    expect(layoutIds()).toEqual(['left', 'right', first.paneId]);
+    expect(getPane('right')?.threadId).toBe('t-right');
+    const second = await mountThreadForToolPane(makeThread({ id: 't-later' }), null);
+    expect(layoutIds()).toEqual(['left', 'right', first.paneId, second.paneId]);
+    expect(first.threadId).toBe('t-late');
+  });
+
+  it('reveals a tool\'s late open already shown elsewhere and keeps the tool pane', async () => {
+    threadLayout([threadItem('left'), toolItem('pulls')], 'left');
+    await openThreadInPane(makeThread({ id: 't-open' }));
+    focusPane('tool-pulls');
+    const pane = await mountThreadForToolPane(makeThread({ id: 't-open' }), 'tool-pulls');
+    expect(pane.paneId).toBe('left');
+    expect(layoutIds()).toEqual(['left', 'tool-pulls']);
   });
 
   it('mints main for a tool-only layout, and never a second main', async () => {

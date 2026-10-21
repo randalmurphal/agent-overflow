@@ -17,12 +17,11 @@
   import {
     disposeReviewStateForPane,
     reviewStateForPane,
-    reviewStateForPR,
     reviewSubjectForPane,
-    reviewSubjectForPR,
     type ReviewPaneState,
     type ReviewSubject,
   } from '../../stores/reviewPane.svelte';
+  import { reviewStateForPR, reviewSubjectForPR } from '../../stores/reviewPanePinned.svelte';
   import { GitListBranches } from '../../stores/bindings';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { getPane } from '../../stores/panes.svelte';

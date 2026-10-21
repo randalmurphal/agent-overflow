@@ -74,7 +74,7 @@
     threadsOnPRLoading,
   } from '../../stores/pullsPageAgent.svelte';
   import { mrFilters, pipelineFilters, setMRFilters } from '../../stores/pullsPageFilters.svelte';
-  import { currentPinnedReviewState } from '../../stores/reviewPane.svelte';
+  import { currentPinnedReviewState } from '../../stores/reviewPanePinned.svelte';
   import { selectedBackend } from '../../stores/selectedBackend.svelte';
   import { addErrorToast } from '../../stores/toast.svelte';
   import { registerToolDetailProbe } from '../../stores/toolPanes.svelte';

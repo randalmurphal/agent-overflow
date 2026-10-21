@@ -25,7 +25,7 @@ PR stores; components own presentation and interaction.
   `canDraftComments`), not `ctx`: no scope selector, Edits, Send to chat
   or agent target. Its drafts have no thread row, so they are the PR's
   (`stores/prDiffReviewComments.svelte.ts`, persisted under the PR on its
-  computer) and post as a PR review or are sent to a thread. The owner keys `ReviewPane` on the PR; `reviewStateForPR` keeps
+  computer) and post as a PR review or are sent to a thread. The owner keys `ReviewPane` on the PR; `reviewStateForPR` (`stores/reviewPanePinned.svelte.ts`) keeps
   the selected PR's state and the one before it per owner pane, and the
   owner calls `disposePRReviewStates` when its page goes.
 

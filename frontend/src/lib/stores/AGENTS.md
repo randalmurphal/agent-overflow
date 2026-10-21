@@ -54,7 +54,10 @@ Tool panes are layout items only (`toolPanes.svelte.ts`), one per kind. A
 thread open that names no pane resolves through
 `panes.svelte#focusedOpenTargetPane`, which gives a focused tool pane's slot
 to the thread; do not pass `getFocusedPaneOrNull() ?? ensureMainPane()` as a
-target, which bypasses it.
+target, which bypasses it. A tool's open that answers after an await goes
+through `mountThreadForToolPane` with the tool pane, or null once the
+surface that asked is gone, so it never lands in a pane that gained focus
+meanwhile.
 
 ## Events and convergence
 
