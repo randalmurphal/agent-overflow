@@ -109,7 +109,9 @@ func expectForgeCallsHandled(t *testing.T, engine *forgefake.Engine) {
 
 // GitLab's tag scope names only each tag's latest pipeline: the list
 // marks every run of a tag, an older one and one of a ref filter
-// included, through the app's transport and the fake's documented scope.
+// included, and not a branch sharing the tag's name, through the app's
+// transport and the fake's documented scope. An older run's single
+// pipeline read is made once while the listings hold it.
 func TestPipelinesListMarksEveryGitLabTagRunThroughTheFake(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -117,6 +119,7 @@ func TestPipelinesListMarksEveryGitLabTagRunThroughTheFake(t *testing.T) {
 	if _, err := engine.Seed(forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "gitlab", Project: "grp/tags", Pipelines: []forgefake.Pipeline{
 		{ID: 10, Ref: "main", Jobs: pipelineJobs(1001, "success")},
 		{ID: 20, RefKind: "tag", Ref: "v1", Jobs: pipelineJobs(2001, "success")},
+		{ID: 25, Ref: "v1", Jobs: pipelineJobs(2501, "success")},
 		{ID: 30, RefKind: "tag", Ref: "v1", Jobs: pipelineJobs(3001, "failed")},
 	}}}}); err != nil {
 		t.Fatal(err)
@@ -131,21 +134,40 @@ func TestPipelinesListMarksEveryGitLabTagRunThroughTheFake(t *testing.T) {
 		}
 		return strings.Join(out, " ")
 	}
-	for name, c := range map[string]struct {
+	singleReads := func() int {
+		n := 0
+		for _, inv := range engine.Invocations(0).Invocations {
+			if inv.Route == "glab api pipeline" {
+				n++
+			}
+		}
+		return n
+	}
+	// In order: the cache the first listing fills serves the next three;
+	// the branch ref's listing prunes it, so the last reads again.
+	for _, c := range []struct {
+		name   string
 		filter gitops.PipelineListFilter
 		want   string
+		reads  int
 	}{
-		"every ref":         {gitops.PipelineListFilter{}, "30:tag 20:tag 10:branch"},
-		"the older tag run": {gitops.PipelineListFilter{Status: "success"}, "20:tag 10:branch"},
-		"one tag ref":       {gitops.PipelineListFilter{Ref: "v1", Status: "success"}, "20:tag"},
-		"one branch ref":    {gitops.PipelineListFilter{Ref: "main"}, "10:branch"},
+		{"every ref", gitops.PipelineListFilter{}, "30:tag 25:branch 20:tag 10:branch", 2},
+		{"every ref again", gitops.PipelineListFilter{}, "30:tag 25:branch 20:tag 10:branch", 0},
+		{"the older tag run", gitops.PipelineListFilter{Status: "success"}, "25:branch 20:tag 10:branch", 0},
+		{"one tag ref", gitops.PipelineListFilter{Ref: "v1", Status: "success"}, "25:branch 20:tag", 0},
+		{"one branch ref", gitops.PipelineListFilter{Ref: "main"}, "10:branch", 0},
+		{"every ref after the prune", gitops.PipelineListFilter{}, "30:tag 25:branch 20:tag 10:branch", 2},
 	} {
+		before := singleReads()
 		result, err := app.ListProjectPipelines(context.Background(), project, c.filter, true)
 		if err != nil {
-			t.Fatalf("%s: ListProjectPipelines: %v", name, err)
+			t.Fatalf("%s: ListProjectPipelines: %v", c.name, err)
 		}
 		if got := kinds(result); got != c.want {
-			t.Errorf("%s: rows = %s, want %s", name, got, c.want)
+			t.Errorf("%s: rows = %s, want %s", c.name, got, c.want)
+		}
+		if n := singleReads() - before; n != c.reads {
+			t.Errorf("%s: %d single pipeline reads, want %d", c.name, n, c.reads)
 		}
 	}
 	expectForgeCallsHandled(t, engine)

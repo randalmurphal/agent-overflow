@@ -26,6 +26,9 @@ type gitlabForge struct {
 	// routes remembers, per host, a server that answered the older cancel
 	// route (gitlab_merge.go).
 	routes gitlabRouteMemory
+	// pipelineTags remembers which listed pipelines ran on a tag
+	// (ci_gitlab.go).
+	pipelineTags gitlabPipelineTags
 }
 
 func (f *gitlabForge) ID() string         { return "gitlab" }
