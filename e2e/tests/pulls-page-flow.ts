@@ -264,12 +264,13 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       await expect(row(page, 101).getByTestId('pull-since')).toHaveText('pushed · 1 new comment since you looked', { timeout: 20_000 });
       await expect(row(page, 101).getByTestId('pull-since')).toHaveCount(1);
 
-      // Opening !101 again clears it, and the backend keeps the mark: a
-      // reload drops the page's own record of the open.
+      // Opening !101 again clears it once its review holds the new head
+      // (the row stays mounted under the compact detail), and the backend
+      // keeps the mark: a reload drops the page's own record of the open.
       await row(page, 101).getByRole('button').first().click();
       await expect(page.getByTestId('review-pr-header')).toContainText('Queue: retry a failed delivery once');
-      if (compact) await page.getByTestId('pulls-back').click();
       await expect(row(page, 101).getByTestId('pull-since')).toHaveCount(0, { timeout: 20_000 });
+      if (compact) await page.getByTestId('pulls-back').click();
       await page.reload();
       if (compact) await page.getByTestId('sidebar-tool-pulls').click();
       await expect(rowPill(page, 101)).toHaveText('Your turn');
