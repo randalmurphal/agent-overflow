@@ -67,8 +67,6 @@ function owned(owner: string, where: string): EntityOwnedBinding {
 
 const GIT_STATUS_STORE = 'lib/stores/gitStatusStore.svelte.ts';
 const PR_REVIEW_STORE = 'lib/stores/prReviewStore.svelte.ts';
-const PR_REVIEW_CI = 'lib/stores/prReviewCI.svelte.ts';
-const PR_REVIEW_CI_FOLLOWS = 'lib/stores/prReviewCIFollows.svelte.ts';
 const PR_REVIEW_CONFLICTS = 'lib/stores/prReviewConflicts.svelte.ts';
 const MCP_SERVERS_STORE = 'lib/stores/mcpServers.svelte.ts';
 const CHAT_BAR_FAVORITES_STORE = 'lib/stores/chatBarFavorites.svelte.ts';
@@ -107,8 +105,8 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   SetPRUpdatesActive: owned(PR_REVIEW_STORE, 'handlePRVisibilityChange()'),
   GetPRMergeConflicts: owned(PR_REVIEW_CONFLICTS, 'openPRConflicts()'),
   GetMergeConflictFile: owned(PR_REVIEW_CONFLICTS, 'ensurePRConflictFile()'),
-  RefreshPRCI: owned(PR_REVIEW_CI, 'refreshPRCI()'),
-  SetPRCILogFollows: owned(PR_REVIEW_CI_FOLLOWS, 'setPRCILogFollow()'),
+  RefreshPRCI: owned(PR_REVIEW_STORE, 'the CI handle refreshPRCI() addresses'),
+  SetPRCILogFollows: owned(PR_REVIEW_STORE, 'the CI handle setPRCILogFollow() addresses'),
   GetPRCILogLines: owned('lib/stores/ciLogBlocks.svelte.ts', 'ciLogFetch()'),
   ListThreadMcpServers: owned(MCP_SERVERS_STORE, 'attachMcpServers()'),
   ListWorkspaceMcpServers: owned(MCP_SERVERS_STORE, 'attachMcpServers()'),

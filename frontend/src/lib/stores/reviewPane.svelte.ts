@@ -128,6 +128,7 @@ import {
   prReferenceWire,
   prScopeLabel,
   prSourceKey,
+  repoReferenceWire,
   type PRRef,
 } from '../utils/prReference';
 import { prRevision, type PRRevision } from '../utils/prRevision';
@@ -2507,9 +2508,9 @@ function createReviewPaneState(
     if (!prRef || !open) return null;
     const jobId = open.job.id;
     const jobName = ciLogView?.job.name ?? open.job.name;
-    const ref = prReferenceWire(prRef);
+    const repo = repoReferenceWire(prRef);
     try {
-      const path = String(await withBackendTarget(backend, () => SavePRCIJobLog(ref, jobId, jobName)));
+      const path = String(await withBackendTarget(backend, () => SavePRCIJobLog(repo, jobId, jobName)));
       if (ciLogOpen === open) ciLogSavedPath = path;
       return path;
     } catch (err) {
@@ -2548,7 +2549,7 @@ function createReviewPaneState(
     const open = ciLogOpen;
     const ref = prRef;
     if (!open || !ref) return Promise.reject(new Error('No CI job log is open.'));
-    return ciLogFetch(backend, prReferenceWire(ref), open.job.id)(from, count);
+    return ciLogFetch(backend, repoReferenceWire(ref), open.job.id)(from, count);
   }
 
   /** A section's lines as plain text, read from the backend's cache. */
@@ -2562,7 +2563,7 @@ function createReviewPaneState(
   async function saveCILogSection(open: NonNullable<typeof ciLogOpen>, ref: PRRef, section: CILogSection): Promise<string | null> {
     try {
       return String(await withBackendTarget(backend, () =>
-        SavePRCIJobLogSection(prReferenceWire(ref), open.job.id, open.job.name, section.key)));
+        SavePRCIJobLogSection(repoReferenceWire(ref), open.job.id, open.job.name, section.key)));
     } catch (err) {
       if (ciLogOpen === open) ciLogLocalError = userFacingError(err);
       return null;

@@ -25,7 +25,8 @@ import { HOME_BACKEND } from '../transport/backendKey';
 import { takePinnedBackend } from '../transport/backends';
 import { composeWorkspaceKey } from '../utils/workspaceKey';
 import { prKey, type PRRef } from '../utils/prReference';
-import type { DiffReviewComment, DiffReviewCommentInput, PRDetail } from '../types/models';
+import type { DiffReviewComment, PRDetail } from '../types/models';
+import { installPRDraftsFake, type PRDraftsFake } from '../../test/helpers/prDraftsFake';
 import { setBindingMock, setReviewDiffMock } from '../../test/mocks/bindings-app';
 import { grantBackendScopes, pairViewOnly, resetToLocalPage, revokeBackendScopes } from '../../test/helpers/scopes';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
@@ -84,58 +85,6 @@ interface PRMocks {
   /** The backend each subscribe was routed to. */
   routed: string[];
   drafts: PRDraftsFake;
-}
-
-interface PRDraftsFake {
-  /** Every comment the backend holds, by PR number. */
-  held: Map<number, DiffReviewComment[]>;
-  /** The backend each PR-owned draft call was routed to. */
-  routed: string[];
-  create: ReturnType<typeof vi.fn>;
-  mark: ReturnType<typeof vi.fn>;
-}
-
-// The PR-owned draft bindings over one in-memory table, as the backend's
-// diff_review_comments rows under a PR owner.
-function installPRDraftsFake(): PRDraftsFake {
-  const held = new Map<number, DiffReviewComment[]>();
-  const routed: string[] = [];
-  let next = 0;
-  const rows = (wire: { Number: number }) => {
-    routed.push(String(takePinnedBackend() ?? ''));
-    let list = held.get(wire.Number);
-    if (!list) {
-      list = [];
-      held.set(wire.Number, list);
-    }
-    return list;
-  };
-  setBindingMock('ListPRDiffReviewComments', async (wire: { Number: number }, scope: string, sourceKey: string) =>
-    rows(wire).filter((comment) => comment.scope === scope && comment.sourceKey === sourceKey).map((comment) => ({ ...comment })));
-  const create = setBindingMock('CreatePRDiffReviewComment', async (wire: { Number: number }, input: DiffReviewCommentInput) => {
-    next += 1;
-    const comment: DiffReviewComment = {
-      id: `c${next}`, threadId: '', status: 'draft', createdAt: next, updatedAt: next,
-      ...input,
-      commitSha: input.commitSha ?? '',
-    } as DiffReviewComment;
-    rows(wire).push(comment);
-    return { ...comment };
-  });
-  setBindingMock('UpdatePRDiffReviewComment', async (wire: { Number: number }, id: string, update: { body: string }) => {
-    const comment = rows(wire).find((candidate) => candidate.id === id);
-    if (!comment) throw new Error('not found');
-    comment.body = update.body;
-    return { ...comment };
-  });
-  setBindingMock('DeletePRDiffReviewComment', async (wire: { Number: number }, id: string) => {
-    const list = rows(wire);
-    list.splice(list.findIndex((candidate) => candidate.id === id), 1);
-  });
-  const mark = setBindingMock('MarkPRDiffReviewCommentsSent', async (wire: { Number: number }, _scope: string, _source: string, ids: string[]) => {
-    for (const comment of rows(wire)) if (ids.includes(comment.id)) comment.status = 'sent';
-  });
-  return { held, routed, create, mark };
 }
 
 // One pump per PR number: the subscribe answers that PR's snapshot under

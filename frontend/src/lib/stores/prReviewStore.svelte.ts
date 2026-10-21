@@ -28,10 +28,14 @@
 
 import { SvelteMap } from 'svelte/reactivity';
 import {
+  RefreshPRCI,
+  SetPRCILogFollows,
   SetPRUpdatesActive,
   SubscribePRUpdates,
   UnsubscribePRUpdates,
 } from './bindings';
+import { __resetCIHandlesForTest, clearCIHandle, setCIHandle, type CIHandle } from './ciHandles';
+import { createPumpVotes } from './pumpVotes';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { withBackendTarget } from '../transport/backends';
 import { composeWorkspaceKey, workspaceKeyBackend, workspaceKeyPath } from '../utils/workspaceKey';
@@ -336,9 +340,15 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
       }
       const id = String(result.id);
       const wireKey = composeWorkspaceKey(backend, String(result.prKey || workspaceKeyPath(key)));
+      // The handle the CI follows and refresh address (ciHandles.ts).
+      const ciHandle: CIHandle = {
+        follow: (jobIds) => withBackendTarget(backend, () => SetPRCILogFollows(id, jobIds)),
+        refresh: () => withBackendTarget(backend, () => RefreshPRCI(id)),
+      };
       const cleanup = async (): Promise<void> => {
         removeAlias(wireKey, key, owner);
         clearPRSubscriptionId(key, id);
+        clearCIHandle(key, ciHandle);
         try {
           await withBackendTarget(backend, () => UnsubscribePRUpdates(id));
         } catch (err) {
@@ -356,6 +366,7 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
       if (signal.aborted) return cleanup;
       addAlias(wireKey, key, owner);
       setPRSubscriptionId(key, id);
+      setCIHandle(key, ciHandle);
       // The result IS this key's applied state, so it is the watermark every
       // frame from here on is ranked against — the replay below included.
       appliedSeqByKey.set(key, Number(result.seq ?? 0));
@@ -564,56 +575,11 @@ onBackendStatusChange((backend, status) => {
 // Pump visibility
 // ---------------------------------------------------------------------------
 
-// Visibility votes are LAST-WRITE-WINS on the backend, but the transport
-// dispatches concurrently: a hidden→visible flurry (a window minimised and
-// restored, a tab flipped) can complete out of order and leave the pump
-// holding `false` for a client that is on screen — a review pane that
-// silently stops updating until the next visibility change. So one vote is
-// in flight per subscription at a time, with the newest value trailing
-// behind it; intermediate values are dropped, which is what "latest wins"
-// means when the far side only cares about the final state.
-interface PumpVote {
-  sending: boolean;
-  pending: boolean | null;
-}
-const pumpVotes = new Map<string, PumpVote>();
+// One vote in flight per subscription, the newest trailing (pumpVotes.ts).
+const pumpVotes = createPumpVotes('prReview', (id, active) => SetPRUpdatesActive(id, active));
 
 function setPumpActive(backend: BackendKey, id: string, active: boolean): void {
-  const key = composeWorkspaceKey(backend, id);
-  let vote = pumpVotes.get(key);
-  if (!vote) {
-    vote = { sending: false, pending: null };
-    pumpVotes.set(key, vote);
-  }
-  vote.pending = active;
-  if (vote.sending) return;
-  void drainPumpVotes(key, vote);
-}
-
-async function drainPumpVotes(key: string, vote: PumpVote): Promise<void> {
-  const id = workspaceKeyPath(key);
-  const backend = workspaceKeyBackend(key);
-  vote.sending = true;
-  try {
-    while (vote.pending !== null) {
-      const active = vote.pending;
-      vote.pending = null;
-      try {
-        await withBackendTarget(backend, () => SetPRUpdatesActive(id, active));
-      } catch (err) {
-        // Not user-surfaced: a failed pause keeps the status quo (the pump
-        // just keeps polling), and a failed resume implies a dying transport
-        // whose server-side connection cleanup closes the pump anyway.
-        console.error('prReview: SetPRUpdatesActive failed', { id, active, err });
-      }
-    }
-  } finally {
-    vote.sending = false;
-    // Nothing arrived while the last send was in flight, so this
-    // subscription owes no vote — drop the bookkeeping rather than keep an
-    // entry per subscription the app ever made.
-    if (vote.pending === null && pumpVotes.get(key) === vote) pumpVotes.delete(key);
-  }
+  pumpVotes.setActive(backend, id, active);
 }
 
 /**
@@ -882,7 +848,8 @@ export function __resetPRReviewStoreForTest(): void {
   resolveOverridesByKey.clear();
   bufferedFrameByWireKey.clear();
   appliedSeqByKey.clear();
-  pumpVotes.clear();
+  pumpVotes.resetForTest();
+  __resetCIHandlesForTest();
   snapshotAppliedObservers = [];
   // onDrop clears these for every key an entry existed for; a test that
   // seeded CI or opened conflicts without ever attaching has no entry to

@@ -13,6 +13,7 @@ import { HOME_BACKEND } from '../../transport/backendKey';
 import type { PRDetail } from '../../types/models';
 import type { PRRef } from '../../utils/prReference';
 import { setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
+import { installPRDraftsFake } from '../../../test/helpers/prDraftsFake';
 import { __diffSpanCacheStatsForTest, resetDiffSpanCacheForTest } from '../../utils/diffSpanCache.svelte';
 import { resetSyntaxClassNamesForTest } from '../../utils/syntaxSpans';
 
@@ -84,6 +85,7 @@ beforeEach(() => {
   setBindingMock('ListPRCommits', async () => []);
   setBindingMock('ListPRReviewThreads', async () => []);
   setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
+  installPRDraftsFake();
 });
 
 describe('<ReviewPane> pinned to a PR with no thread', () => {
