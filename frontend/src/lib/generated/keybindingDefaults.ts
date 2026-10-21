@@ -336,7 +336,7 @@ export const KEYBINDING_DEFAULTS: readonly KeybindingRule[] = [
   {
     "key": "esc",
     "command": "workflows.escape",
-    "when": "workflowsOverlayOpen",
+    "when": "workflowsPaneFocused \u0026\u0026 toolDetailOpen",
     "defaultId": "workflows.escape",
     "defaultKey": "esc"
   },

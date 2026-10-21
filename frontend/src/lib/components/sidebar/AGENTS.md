@@ -57,5 +57,8 @@ Synchronizing one project's tree must not remove another project's state.
   cached offline data as current totals or combine separately priced account
   reports as one host-local value.
 
+`ToolsRow.svelte` lists `panes/toolPaneMeta.ts` in order and opens through
+`toolPanes.svelte#openTool`; each tool's count comes from its own store.
+
 Compact rows expose a visible menu button and use the shared long-press bridge.
 Do not add row-specific touch handlers or enable dragging in compact mode.

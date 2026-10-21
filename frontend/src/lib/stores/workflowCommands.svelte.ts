@@ -1,10 +1,9 @@
-// Workflow commands: the overlay's keyboard vocabulary (UI-SPEC §8).
+// Workflow commands: the workflows pane's keyboard vocabulary (UI-SPEC §8).
 // Registered from registerBuiltinCommands so they live in the one command
 // registry the palette and the keybinding dispatcher both read; the shipped
-// chords are in
-// `internal/keybindings` Defaults, gated on `workflowsOverlayOpen` /
-// `workflowsRunDetail`, so a bare `a` or `j` is inert everywhere else and
-// suppressed entirely while a text field has focus.
+// chords are in `internal/keybindings` Defaults, gated on
+// `workflowsPaneFocused` / `workflowsRunDetail`, so a bare `a` or `j` is inert
+// everywhere else and suppressed entirely while a text field has focus.
 //
 // Navigation and sweep commands run straight off the stores. The four
 // resolution keys (a / r / t / Enter) need the run detail's own context — the
@@ -15,10 +14,9 @@ import { registerCommand } from './commandRegistry.svelte';
 import type { WorkflowActionKey } from '../utils/workflowActionRows';
 import {
   consumeWorkflowsOverlayEscape,
-  closeWorkflowsOverlay,
   getWorkflowsOverlayRunId,
   popWorkflowsOverlay,
-  toggleWorkflowsOverlay,
+  toggleWorkflowsPane,
 } from './workflowsOverlay.svelte';
 import { advanceWorkflowSweep } from './workflowSweep';
 
@@ -51,17 +49,21 @@ export function registerWorkflowCommands(): void {
   registerCommand({
     id: 'workflows.toggle',
     label: 'Workflows: Open',
-    description: 'Open the workflows overlay over the pane tree. Pressing the same chord while open closes it.',
+    description: 'Open or reveal the workflows pane. Pressing the same chord while it is focused closes it.',
     icon: '⧉',
-    run: () => toggleWorkflowsOverlay(),
+    run: () => toggleWorkflowsPane(),
   });
 
+  // The pane's list → detail step. Gated on `toolDetailOpen` as well as focus
+  // because it is a surface dismissal: the phone's Back runs it, and a gate
+  // that passed at home would consume Back without doing anything, so Back
+  // could never leave the pane.
   registerCommand({
     id: 'workflows.escape',
     dismissesSurface: true,
     label: 'Workflows: Escape',
-    description: 'Disarm a confirmation, close a dialog, go back, then close the overlay — in that order.',
-    when: 'workflowsOverlayOpen',
+    description: 'Disarm a confirmation, close a dialog, then go back — in that order.',
+    when: 'workflowsPaneFocused && toolDetailOpen',
     run: () => {
       consumeWorkflowsOverlayEscape();
     },
@@ -71,9 +73,9 @@ export function registerWorkflowCommands(): void {
     id: 'workflows.back',
     label: 'Workflows: Back',
     icon: '‹',
-    when: 'workflowsOverlayOpen',
+    when: 'workflowsRunDetail',
     run: () => {
-      if (!popWorkflowsOverlay()) closeWorkflowsOverlay();
+      popWorkflowsOverlay();
     },
   });
 

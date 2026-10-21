@@ -50,6 +50,12 @@ through `assignThread`, which refreshes transport watches and saves the pane
 layout before any load the change starts. Use `revealPane` for actions that
 expose a pane so compact layout moves to the thread screen.
 
+Tool panes are layout items only (`toolPanes.svelte.ts`), one per kind. A
+thread open that names no pane resolves through
+`panes.svelte#focusedOpenTargetPane`, which gives a focused tool pane's slot
+to the thread; do not pass `getFocusedPaneOrNull() ?? ensureMainPane()` as a
+target, which bypasses it.
+
 ## Events and convergence
 
 `events.ts` is the single subscription root. Add a channel there and put its
