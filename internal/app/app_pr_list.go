@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"time"
 
@@ -19,13 +18,11 @@ import (
 // open PRs of every forge project (docs/specs/pull-requests.md, "The
 // page"). It shares the PR pump's shape (pumpCore): refcounted handles
 // tied to their connections, paused while every handle is hidden, one
-// sequence. A tick reads each project's list, the detail of the rows the
-// pages focus, each row's attention state and the user's pr_views, and
-// emits pulls:updated when the snapshot changed (app_pr_list_tick.go).
-
-// maxPRListFocus bounds the PR keys one handle may focus: a screen of rows
-// and the needs-you set beyond it.
-const maxPRListFocus = 60
+// sequence. A tick reads each project with its forge's fixed request set
+// and publishes, and stores, each project as its read lands
+// (app_pr_list_tick.go). The store's copy (app_pr_list_store.go) answers a
+// subscribe before any forge read, and the pump holds nothing once its
+// last subscriber leaves.
 
 // ErrTooManyPRListSubscriptions is returned once the list handle cap
 // (maxPRUpdateHandles) is hit.
@@ -33,13 +30,17 @@ var ErrTooManyPRListSubscriptions = errors.New("pr list: too many active subscri
 
 // PRListSnapshot is the pulls:updated frame and SubscribePRList's
 // snapshot: every forge project's rows, the needs-you count (the sidebar
-// badge, each PR once), and Error when the projects themselves could not be read. Seq
-// orders frames against a subscribe's snapshot; FetchedAt (RFC 3339) is
-// when the tick that produced it read the forges.
+// badge, each PR once), and Error when the projects themselves could not
+// be read. Seq orders frames against a subscribe's snapshot; FetchedAt
+// (RFC 3339) is when it was assembled. Stale is a snapshot served from the
+// stored copy while a refresh runs: a subscribe's answer when a project's
+// stored read is older than the PR update interval or missing, and the
+// pump's frames until its first tick read every project.
 type PRListSnapshot struct {
 	Seq       uint64          `json:"seq"`
 	FetchedAt string          `json:"fetchedAt"`
 	NeedsYou  int             `json:"needsYou"`
+	Stale     bool            `json:"stale"`
 	Error     string          `json:"error,omitempty"`
 	Projects  []ProjectPRList `json:"projects"`
 }
@@ -48,12 +49,16 @@ type PRListSnapshot struct {
 // read keeps the rows last read beside the failure: Error is the
 // caller-safe sentence and ErrorKind, Reserve and ResumeAt its kind fields
 // (PRUpdatedEvent's), ErrorDetails the correlation id and raw error behind
-// it for "Details", and the other projects are unaffected.
+// it for "Details", and the other projects are unaffected. ReadAt (RFC
+// 3339) is when the rows' read landed, "" before any did. DetailError is
+// the caller-safe sentence of a detail request that failed while the
+// list read: the rows list and the fields it fills read as unknown.
 type ProjectPRList struct {
 	ProjectID string               `json:"projectId"`
 	Name      string               `json:"name"`
 	Repo      gitops.RepoReference `json:"repo"`
 	Rows      []PRListItem         `json:"rows"`
+	ReadAt    string               `json:"readAt,omitempty"`
 	Error     string               `json:"error,omitempty"`
 	ErrorKind string               `json:"errorKind,omitempty"`
 	// ErrorDetails is nil with no Error, and for a project whose origin
@@ -61,38 +66,34 @@ type ProjectPRList struct {
 	ErrorDetails *ForgeErrorDetail `json:"errorDetails,omitempty"`
 	Reserve      bool              `json:"reserve,omitempty"`
 	ResumeAt     string            `json:"resumeAt,omitempty"`
+	DetailError  string            `json:"detailError,omitempty"`
 }
 
-// PRListItem is one row: the forge's list row, its attention state and
-// group, the focus read's detail (nil until it lands; DetailError is that
-// read's last failure), and the user's last opening of the PR (Seen) with
-// what changed since (Since); both nil when the app never opened it.
+// PRListItem is one row: the forge's row, its attention state, group and
+// reason (prAttention), and the detail fields as the page shows them:
+// Approvals given and required, Unresolved threads and CI, the head
+// pipeline's normalized status; nil or "" while unknown.
 type PRListItem struct {
 	gitops.PRListRow
-	State       string        `json:"state"`
-	Group       string        `json:"group"`
-	Detail      *PRListDetail `json:"detail"`
-	DetailError string        `json:"detailError,omitempty"`
-	Seen        *PRSeen       `json:"seen"`
-	Since       *PRSince      `json:"since"`
+	State      string       `json:"state"`
+	Group      string       `json:"group"`
+	Reason     *PRReason    `json:"reason"`
+	Approvals  *PRApprovals `json:"approvals"`
+	Unresolved *int         `json:"unresolved"`
+	CI         string       `json:"ci"`
 }
 
-// PRSeen is the user's last opening of a PR (pr_views): when (unix
-// milliseconds), at which head, and the comment and commit counts the
-// list held then (nil when it held none).
-type PRSeen struct {
-	OpenedAt int64  `json:"openedAt"`
-	HeadSHA  string `json:"headSHA"`
-	Comments *int   `json:"comments"`
-	Commits  *int   `json:"commits"`
+// PRApprovals is a row's approvals standing and the approvals its base
+// (GitHub) or project rules (GitLab) require.
+type PRApprovals struct {
+	Given    int `json:"given"`
+	Required int `json:"required"`
 }
 
-// PRSince is what changed since PRSeen: the head moved, and how many
-// comments and commits were added (0 when the count was not held).
-type PRSince struct {
-	HeadMoved   bool `json:"headMoved"`
-	NewComments int  `json:"newComments"`
-	NewCommits  int  `json:"newCommits"`
+// PRListBadge is the pulls:badge frame: the needs-you count of the stored
+// snapshot, emitted whenever the store is written.
+type PRListBadge struct {
+	NeedsYou int `json:"needsYou"`
 }
 
 // PRListSubscriptionResult answers SubscribePRList.
@@ -101,72 +102,34 @@ type PRListSubscriptionResult struct {
 	Snapshot PRListSnapshot `json:"snapshot"`
 }
 
-// PRListFocusResult answers SetPRListFocus with the keys it ignored
-// because the list holds no such row.
-type PRListFocusResult struct {
-	Unknown []string `json:"unknown"`
-}
-
 type prListPump struct {
 	pumpCore
-	// ready closes once the first tick ran: a subscriber waits for it, so
-	// every subscriber starts from a read snapshot.
-	ready chan struct{}
-	// focusWake asks the loop to read the detail of newly focused rows
-	// (wakeFocusLocked) and republish to rebuild the snapshot after the
-	// user opened a PR.
-	focusWake chan struct{}
-	republish chan struct{}
 	// The tick's state (app_pr_list_tick.go), under App.prUpdates.mu:
-	// forge and forgeErr are the projects the last tick read; focusUser
-	// whether a pending focus wake is the user's.
-	focusUser bool
-	snapshot  PRListSnapshot
-	encoded   []byte
-	forge     []ForgeProject
-	forgeErr  error
-	projects  map[string]*prListProjectState
-	details   map[string]*prListDetailState
+	// snapshot and encoded the last published frame, forge and forgeErr
+	// the projects the running or last tick read, projects each
+	// repository's rows and failure by key. seeded is the store's copy
+	// loaded; landed every project of the first tick read once, which
+	// ends Stale.
+	snapshot PRListSnapshot
+	encoded  []byte
+	forge    []ForgeProject
+	forgeErr error
+	projects map[string]*prListProjectState
+	seeded   bool
+	landed   bool
 }
 
 type prListHandle struct {
 	active bool
-	focus  map[string]bool
 }
 
 func prListCleanupKey(id string) string { return "pr-list:" + id }
 
-// wakeFocusLocked asks the loop to recompute the detail set and read what
-// it newly holds; the caller holds App.prUpdates.mu, in the critical
-// section that changed the focus or visibility. interactive is the cause:
-// the user focusing rows or showing the page reads with interactive
-// admission; a handle that hides or leaves frees allowance for rows no
-// user action asked for, so those reads are background. Wakes merge, and
-// a pending user wake is never downgraded: the flag is set with the change
-// and taken with the selection that sees it (focusAdmissionLocked).
-func (p *prListPump) wakeFocusLocked(interactive bool) {
-	if interactive {
-		p.focusUser = true
-	}
-	select {
-	case p.focusWake <- struct{}{}:
-	default:
-	}
-}
-
-// focusAdmissionLocked takes the admission of the pending focus wake.
-func (p *prListPump) focusAdmissionLocked() context.Context {
-	user := p.focusUser
-	p.focusUser = false
-	if user {
-		return forgeapi.WithInteractive(p.ctx)
-	}
-	return p.ctx
-}
-
-// SubscribePRList starts the list pump, or joins it, and returns its
-// snapshot once the first tick read the forges (that tick is the user's
-// action, so interactive). The subscription ends with the calling
+// SubscribePRList starts the list pump, or joins it, and answers at once:
+// with the pump's last frame when it published one, else the snapshot
+// assembled from the stored copy (app_pr_list_store.go). The pump's first
+// tick, the user's action and so interactive, follows with a frame per
+// project as each read lands. The subscription ends with the calling
 // connection. Routed to the selected computer like SubscribePRUpdates;
 // the handle calls route home, and the caller pins them to the computer
 // that answered.
@@ -177,7 +140,7 @@ func (a *App) SubscribePRList(ctx context.Context) (PRListSubscriptionResult, er
 	if a.shuttingDown.Load() {
 		return PRListSubscriptionResult{}, ErrShuttingDown
 	}
-	id, pump, start, err := a.takePRListHandle()
+	id, pump, start, published, seq, err := a.takePRListHandle()
 	if err != nil {
 		return PRListSubscriptionResult{}, err
 	}
@@ -190,53 +153,53 @@ func (a *App) SubscribePRList(ctx context.Context) (PRListSubscriptionResult, er
 			return PRListSubscriptionResult{}, errors.New("pr list: connection closing")
 		}
 	}
-	select {
-	case <-pump.ready:
-	case <-pump.done:
-		return PRListSubscriptionResult{}, errPRUpdatesUnknownSubscription
-	case <-ctx.Done():
-		a.unsubscribePRList(id)
-		return PRListSubscriptionResult{}, ctx.Err()
+	if published != nil {
+		return PRListSubscriptionResult{ID: id, Snapshot: *published}, nil
 	}
-	a.prUpdates.mu.Lock()
-	defer a.prUpdates.mu.Unlock()
-	return PRListSubscriptionResult{ID: id, Snapshot: pump.snapshot}, nil
+	// The sequence was taken before the store is read: a frame the pump
+	// publishes meanwhile is newer than what this read can see, and
+	// outranks it.
+	snapshot, err := a.storedPRListSnapshot(ctx)
+	if err != nil {
+		a.unsubscribePRList(id)
+		return PRListSubscriptionResult{}, err
+	}
+	snapshot.Seq = seq
+	return PRListSubscriptionResult{ID: id, Snapshot: snapshot}, nil
 }
 
 // takePRListHandle registers one handle on the live pump, creating it
 // when there is none; start is true when the caller launches it.
-func (a *App) takePRListHandle() (id string, pump *prListPump, start bool, err error) {
+// published is the pump's last frame when it has one; otherwise seq is
+// the sequence the caller's stored snapshot carries.
+func (a *App) takePRListHandle() (id string, pump *prListPump, start bool, published *PRListSnapshot, seq uint64, err error) {
 	a.prUpdates.mu.Lock()
 	defer a.prUpdates.mu.Unlock()
 	if a.prUpdates.listHandles == nil {
 		a.prUpdates.listHandles = make(map[string]*prListHandle)
 	}
 	if len(a.prUpdates.listHandles) >= maxPRUpdateHandles {
-		return "", nil, false, ErrTooManyPRListSubscriptions
+		return "", nil, false, nil, 0, ErrTooManyPRListSubscriptions
 	}
 	pump = a.prUpdates.list
 	if pump == nil || pump.dead {
-		pump = &prListPump{
-			pumpCore:  a.newPumpCore(),
-			ready:     make(chan struct{}),
-			focusWake: make(chan struct{}, 1),
-			republish: make(chan struct{}, 1),
-			projects:  map[string]*prListProjectState{},
-			details:   map[string]*prListDetailState{},
-		}
+		pump = &prListPump{pumpCore: a.newPumpCore(), projects: map[string]*prListProjectState{}}
 		a.prUpdates.list = pump
 		start = true
 	}
 	id = uuid.NewString()
 	pump.takeLocked()
 	a.prUpdates.listHandles[id] = &prListHandle{active: true}
-	return id, pump, start, nil
+	if pump.snapshot.Seq != 0 {
+		snapshot := pump.snapshot
+		return id, pump, start, &snapshot, 0, nil
+	}
+	return id, pump, start, nil, a.nextPRUpdateSeqLocked(), nil
 }
 
 // SetPRListActive reports whether one subscriber shows the list; the pump
-// reads nothing while every subscriber is hidden. Only a visible
-// subscriber's focus selects detail reads, so a change of a focusing
-// subscriber recomputes the selection at once. An unknown id is a no-op.
+// reads nothing while every subscriber is hidden. An unknown id is a
+// no-op.
 //
 //ao:scope git:operate
 //ao:route home
@@ -250,9 +213,6 @@ func (a *App) SetPRListActive(ctx context.Context, subscriptionID string, active
 	}
 	handle.active = active
 	resumed := pump.voteLocked(active)
-	if len(handle.focus) > 0 {
-		pump.wakeFocusLocked(active)
-	}
 	a.prUpdates.mu.Unlock()
 	if resumed {
 		pump.wakeUp()
@@ -260,53 +220,8 @@ func (a *App) SetPRListActive(ctx context.Context, subscriptionID string, active
 	return nil
 }
 
-// SetPRListFocus replaces the PR keys (git.PRReference.Key) whose detail
-// one subscriber wants read while it is visible: the rows on its screen
-// and the needs-you set, at most maxPRListFocus. A key the list holds no
-// row for is ignored and reported. A focused row whose detail is unread,
-// or was refused at the rate limit reserve, is read at once as the user's,
-// not at the next tick.
-//
-//ao:scope git:operate
-//ao:route home
-func (a *App) SetPRListFocus(ctx context.Context, subscriptionID string, prKeys []string) (PRListFocusResult, error) {
-	if len(prKeys) > maxPRListFocus {
-		return PRListFocusResult{}, fmt.Errorf("pr list: %d rows focused, at most %d", len(prKeys), maxPRListFocus)
-	}
-	a.prUpdates.mu.Lock()
-	handle, ok := a.prUpdates.listHandles[subscriptionID]
-	pump := a.prUpdates.list
-	if !ok || pump == nil || pump.dead {
-		a.prUpdates.mu.Unlock()
-		return PRListFocusResult{}, errPRUpdatesUnknownSubscription
-	}
-	known := pump.rowKeysLocked()
-	focus := make(map[string]bool, len(prKeys))
-	result := PRListFocusResult{Unknown: []string{}}
-	fresh := false
-	for _, key := range prKeys {
-		if !known[key] {
-			result.Unknown = append(result.Unknown, key)
-			continue
-		}
-		focus[key] = true
-		// A detail a background read had refused at the rate limit reserve
-		// is not read: the user's focus reads it.
-		if last := pump.details[key]; last == nil || last.err.reserve {
-			fresh = true
-		}
-	}
-	handle.focus = focus
-	if fresh {
-		pump.wakeFocusLocked(true)
-	}
-	a.prUpdates.mu.Unlock()
-	return result, nil
-}
-
-// RefreshPRList has the pump read every project and the focused rows'
-// detail now, as the user's action. Per-project failures are in the
-// snapshot that follows.
+// RefreshPRList has the pump read every project now, as the user's
+// action. Per-project failures are in the frames that follow.
 //
 //ao:scope git:operate
 //ao:route home
@@ -346,19 +261,15 @@ func (a *App) unsubscribePRList(id string) {
 		teardown = pump
 		a.prUpdates.list = nil
 	}
-	// A visible handle's focus leaves with it: the others' rows may take
-	// its share of the detail allowance now.
-	if teardown == nil && handle.active && len(handle.focus) > 0 {
-		pump.wakeFocusLocked(false)
-	}
 	a.prUpdates.mu.Unlock()
 	if teardown != nil {
 		teardown.stop()
 	}
 }
 
-// dropPRListPump forgets a pump whose goroutine exited on its own, with
-// every handle on it.
+// dropPRListPump forgets a pump whose goroutine exited, with every handle
+// on it when it exited on its own, and drops what it held: the next
+// subscribe reads the store.
 func (a *App) dropPRListPump(pump *prListPump) {
 	pump.cancel()
 	a.prUpdates.mu.Lock()
@@ -368,6 +279,8 @@ func (a *App) dropPRListPump(pump *prListPump) {
 		a.prUpdates.list = nil
 		clear(a.prUpdates.listHandles)
 	}
+	pump.snapshot, pump.encoded = PRListSnapshot{}, nil
+	pump.forge, pump.forgeErr, pump.projects = nil, nil, nil
 }
 
 // closePRListPump releases every list handle; the caller joins the
@@ -403,9 +316,9 @@ func (a *App) pumpPRList(pump *prListPump) {
 	defer ticker.Stop()
 	var retry retrySchedule
 	missed := false
-	tick := func(ctx context.Context, forceDetails bool) {
+	tick := func(ctx context.Context) {
 		missed = false
-		event, changed, failing, release := a.pollPRList(ctx, pump, forceDetails)
+		failing, release := a.pollPRList(ctx, pump)
 		// A failing project retries on the doubling schedule; one held by a
 		// rate limit waits for its release, while the others ride the
 		// ticker.
@@ -413,12 +326,8 @@ func (a *App) pumpPRList(pump *prListPump) {
 		if !release.IsZero() && (retry.timer == nil || heldUntil(release) < retry.delay) {
 			retry.timer = time.After(heldUntil(release))
 		}
-		if changed {
-			a.emitPumpEvent(&pump.pumpCore, eventchan.PullsUpdated, event)
-		}
 	}
-	tick(forgeapi.WithInteractive(pump.ctx), false)
-	close(pump.ready)
+	tick(forgeapi.WithInteractive(pump.ctx))
 	for {
 		select {
 		case <-pump.done:
@@ -426,39 +335,31 @@ func (a *App) pumpPRList(pump *prListPump) {
 		case <-pump.ctx.Done():
 			return
 		case req := <-pump.requests:
-			tick(forgeapi.WithInteractive(pump.ctx), true)
+			tick(forgeapi.WithInteractive(pump.ctx))
 			close(req.done)
-		case <-pump.focusWake:
-			event, changed, paused := a.pollPRListFocus(pump)
-			if paused {
-				missed = true
-				continue
-			}
-			if changed {
-				a.emitPumpEvent(&pump.pumpCore, eventchan.PullsUpdated, event)
-			}
-		case <-pump.republish:
-			if event, changed, _, _ := a.publishPRList(pump); changed {
-				a.emitPumpEvent(&pump.pumpCore, eventchan.PullsUpdated, event)
-			}
 		case <-pump.wake:
 			if pump.paused.Load() || !missed {
 				continue
 			}
-			tick(pump.ctx, false)
+			tick(pump.ctx)
 		case <-retry.timer:
 			if pump.paused.Load() {
 				retry.pausedRetry()
 				missed = true
 				continue
 			}
-			tick(pump.ctx, false)
+			tick(pump.ctx)
 		case <-ticker.C:
 			if pump.paused.Load() {
 				missed = true
 				continue
 			}
-			tick(pump.ctx, false)
+			tick(pump.ctx)
 		}
 	}
+}
+
+// emitPRListBadge emits the needs-you count after a store write.
+func (a *App) emitPRListBadge(needsYou int) {
+	a.emit(eventchan.PullsBadge, PRListBadge{NeedsYou: needsYou})
 }

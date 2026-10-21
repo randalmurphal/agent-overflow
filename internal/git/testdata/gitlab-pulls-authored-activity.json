@@ -1,0 +1,12 @@
+{
+  "data": {
+    "project": {
+      "mergeRequests": {
+        "pageInfo": { "hasNextPage": false, "endCursor": null },
+        "nodes": [
+          { "iid": "21", "resolvableDiscussionsCount": 0, "resolvedDiscussionsCount": 0, "commits": { "nodes": [ { "committedDate": "2026-10-20T22:04:00Z" } ] } }
+        ]
+      }
+    }
+  }
+}

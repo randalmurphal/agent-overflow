@@ -228,36 +228,6 @@ func glabApprovals(e *Engine, c *call, m []string) response {
 	return glabOK(jsonResponse(e.gitlabApprovalsJSON(r, p)))
 }
 
-// glabReviewers answers GET .../reviewers: each reviewer with the state of
-// their review, approved for one whose approval stands, requested_changes
-// for one in changeRequests, else unreviewed; paginated by per_page (20 by
-// default) and page with X-Next-Page.
-func glabReviewers(e *Engine, c *call, m []string) response {
-	_, p, fail, ok := e.glabMRFrom(c, m)
-	if !ok {
-		return fail
-	}
-	_, perPage, page, err := glabPage(m[3])
-	if err != nil {
-		return unhandled("%v", err)
-	}
-	reviewers := []map[string]any{}
-	for _, login := range p.Reviewers {
-		state := "unreviewed"
-		switch {
-		case gitlabViewerApproved(p, login):
-			state = "approved"
-		case slices.ContainsFunc(p.ChangeRequests, func(other string) bool { return strings.EqualFold(other, login) }):
-			state = "requested_changes"
-		}
-		user := gitlabUser(login, "")
-		user["state"] = "active"
-		reviewers = append(reviewers, map[string]any{"user": user, "state": state, "created_at": p.CreatedAt})
-	}
-	items, next := paginate(reviewers, perPage, page)
-	return glabOK(jsonResponse(items), "X-Next-Page: "+next, "X-Page: "+strconv.Itoa(page))
-}
-
 // gitlabApprovalsJSON is the merge request's approval state. With no
 // approvals required (GitLab Free) any approval approves it.
 func (e *Engine) gitlabApprovalsJSON(r *Repo, p *Pull) map[string]any {

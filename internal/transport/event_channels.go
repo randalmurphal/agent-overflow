@@ -622,6 +622,18 @@ var channelPolicies = []ChannelPolicy{
 			"that never hears a change presents stale attention as live.",
 	},
 	{
+		Channel:   eventchan.PullsBadge,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeGitOperate,
+		Why: "The count of open pull requests that need the user, from the " +
+			"stored copy of the list: a number, but one that says how much " +
+			"review work waits in private repositories. Gated like " +
+			"pulls:updated; GetPRListNeedsYou (git:operate) reads the same " +
+			"count. Audience any so the sidebar badge away from the desk " +
+			"follows the list.",
+	},
+	{
 		Channel:   eventchan.PipelineUpdated,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,

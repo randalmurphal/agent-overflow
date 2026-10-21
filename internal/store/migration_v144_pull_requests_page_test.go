@@ -148,27 +148,6 @@ func TestPROwnedDiffReviewCommentsStayWithTheirPR(t *testing.T) {
 	}
 }
 
-func TestPRViewsRecordTheLatestOpening(t *testing.T) {
-	t.Parallel()
-	s := newTestStore(t)
-	comments, commits := 3, 2
-	first, err := s.PutPRView(PRView{PRKey: "github:o/r:1", OpenedAt: 10, HeadSHA: "a", Comments: &comments, Commits: &commits})
-	if err != nil || first.Comments == nil || *first.Comments != 3 || *first.Commits != 2 {
-		t.Fatalf("first = %+v, %v", first, err)
-	}
-	second, err := s.PutPRView(PRView{PRKey: "github:o/r:1", OpenedAt: 20, HeadSHA: "b"})
-	if err != nil || second.OpenedAt != 20 || second.HeadSHA != "b" || second.Comments != nil || second.Commits != nil {
-		t.Fatalf("second = %+v, %v", second, err)
-	}
-	if _, err := s.PutPRView(PRView{PRKey: "github:o/r:2", HeadSHA: "c"}); err == nil {
-		t.Fatal("a view with no time was accepted")
-	}
-	views, err := s.ListPRViews([]string{"github:o/r:1", "github:o/r:9", "github:o/r:1"})
-	if err != nil || len(views) != 1 || views["github:o/r:1"].HeadSHA != "b" {
-		t.Fatalf("views = %+v, %v", views, err)
-	}
-}
-
 func TestListThreadPullRequestsForPRFindsEveryTrackingThread(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)

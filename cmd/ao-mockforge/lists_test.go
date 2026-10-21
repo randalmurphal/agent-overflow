@@ -41,11 +41,15 @@ func listsFixture() forgefake.Fixture {
 				Reviews: []forgefake.Review{{Author: "alice", State: "CHANGES_REQUESTED", Body: "no", SubmittedAt: "2026-10-03T00:00:00Z"}}},
 			{Number: 4, Title: "Closed", State: "closed"},
 		}},
-		{Forge: "gitlab", Project: "grp/lists", ID: 5500, Merge: &forgefake.RepoMerge{DiscussionsMustResolve: true}, Pulls: []forgefake.Pull{
-			{Number: 7, Title: "Draft: mine", Author: "alice", Reviewers: []string{"bob"}, HeadSHA: strings.Repeat("7", 40), UpdatedAt: "2026-10-05T00:00:00Z"},
+		{Forge: "gitlab", Project: "grp/lists", ID: 5500, Merge: &forgefake.RepoMerge{DiscussionsMustResolve: true, ApprovalRules: []int{1, 1}}, Pulls: []forgefake.Pull{
+			{Number: 7, Title: "Draft: mine", Author: "alice", Reviewers: []string{"bob"}, HeadSHA: strings.Repeat("7", 40), UpdatedAt: "2026-10-05T00:00:00Z",
+				CommittedAt: "2026-10-04T00:00:00Z", CI: &forgefake.Pipeline{Jobs: []forgefake.Job{{Name: "unit", Status: "failed"}}}},
 			{Number: 8, Title: "Fork", Author: "carol", HeadRepo: "carol/lists", Reviewers: []string{"dave", "alice"}, Mergeable: "conflicts",
-				Readiness: &forgefake.Readiness{RequiredApprovals: 1},
-				Threads:   []forgefake.Thread{{Path: "a.go", Line: intPtr(1), Comments: []forgefake.Comment{{Body: "fix"}}}}},
+				Readiness: &forgefake.Readiness{RequiredApprovals: 1}, Reviews: []forgefake.Review{{Author: "dave", State: "APPROVED"}},
+				Threads: []forgefake.Thread{
+					{Path: "a.go", Line: intPtr(1), Comments: []forgefake.Comment{{Author: "alice", Body: "fix", CreatedAt: "2026-10-06T00:00:00Z"}}},
+					{Path: "b.go", Line: intPtr(2), Resolved: true, Comments: []forgefake.Comment{{Author: "dave", Body: "ok"}}},
+				}},
 			{Number: 9, Title: "Approval wanted", Author: "carol", Readiness: &forgefake.Readiness{RequiredApprovals: 1}},
 		}},
 	}}
@@ -80,19 +84,25 @@ func TestProjectPRListsThroughTheAppsForgeCode(t *testing.T) {
 		mine.MergeStatus != "blocked" || mine.URL != "https://github.com/acme/lists/pull/1" {
 		t.Errorf("gh own draft = %+v", mine)
 	}
-	if !fork.CrossRepository || !fork.ReviewRequested || !fork.ViewerIsReviewer || !fork.Conflicts || fork.ChecksState != "failure" || fork.MergeStatus != "dirty" {
+	if !fork.CrossRepository || !fork.ReviewRequested || !fork.ViewerIsReviewer || !fork.Conflicts || fork.ChecksState != "failure" || fork.MergeStatus != "dirty" ||
+		fork.ViewerReviewState != "unreviewed" || fork.PipelineStatus != gitops.CIStatusFailed {
 		t.Errorf("gh fork = %+v", fork)
 	}
 	if asked.ReviewRequested || !asked.ViewerIsReviewer || asked.ReviewDecision != "CHANGES_REQUESTED" || asked.BaseRefName != "release" ||
-		asked.ViewerReview != (gitops.PRListReview{State: "CHANGES_REQUESTED", SubmittedAt: "2026-10-03T00:00:00Z"}) || asked.ChecksState != "" {
+		asked.ViewerReview != (gitops.PRListReview{State: "CHANGES_REQUESTED", SubmittedAt: "2026-10-03T00:00:00Z"}) || asked.ChecksState != "" ||
+		asked.ViewerReviewState != "requested_changes" || asked.ViewerActivityAt != "2026-10-03T00:00:00Z" ||
+		*asked.ApprovalsGiven != 0 || *asked.ApprovalsRequired != 0 || *asked.Unresolved != 0 {
 		t.Errorf("gh changes requested = %+v", asked)
+	}
+	if *mine.ApprovalsRequired != 0 || mine.PipelineStatus != gitops.CIStatusPending {
+		t.Errorf("gh own draft detail = required %d ci %q", *mine.ApprovalsRequired, mine.PipelineStatus)
 	}
 
 	gl, err := r.core.OriginRepository(t.Context(), checkout("https://gitlab.com/grp/lists.git"))
 	if err != nil {
 		t.Fatalf("OriginRepository: %v", err)
 	}
-	mrs, err := r.core.ListProjectPRs(t.Context(), gl)
+	mrs, err := r.core.ListProjectPRs(gitops.WithPRListRound(t.Context()), gl)
 	if err != nil || len(mrs) != 3 {
 		t.Fatalf("glab ListProjectPRs = %+v, %v", mrs, err)
 	}
@@ -101,10 +111,19 @@ func TestProjectPRListsThroughTheAppsForgeCode(t *testing.T) {
 		mrMine.UpdatedAt != "2026-10-05T00:00:00Z" || mrMine.MergeStatus != "draft_status" || mrMine.NodeID != "" || mrMine.Commits != 0 {
 		t.Errorf("glab own draft = %+v", mrMine)
 	}
-	if !mrFork.CrossRepository || !mrFork.ViewerIsReviewer || !mrFork.ReviewRequested || !mrFork.Conflicts || !mrFork.UnresolvedBlocking || mrFork.Comments != 1 {
+	if mrMine.PipelineStatus != gitops.CIStatusFailed || mrMine.LastCommitAt != "2026-10-04T00:00:00Z" || *mrMine.ApprovalsGiven != 0 ||
+		*mrMine.ApprovalsRequired != 2 || *mrMine.Unresolved != 0 || mrMine.ViewerReviewState != "" {
+		t.Errorf("glab own draft detail = %+v", mrMine)
+	}
+	// The viewer commented in a thread: its reviewer state is reviewed and
+	// the comment is its activity; one of two threads is open.
+	if !mrFork.CrossRepository || !mrFork.ViewerIsReviewer || !mrFork.ReviewRequested || !mrFork.Conflicts || !mrFork.UnresolvedBlocking || mrFork.Comments != 2 ||
+		mrFork.ViewerReviewState != "reviewed" || mrFork.ViewerActivityAt != "2026-10-06T00:00:00Z" ||
+		*mrFork.ApprovalsGiven != 1 || *mrFork.ApprovalsRequired != 2 || *mrFork.Unresolved != 1 {
 		t.Errorf("glab fork = %+v", mrFork)
 	}
-	if wanted.ReviewDecision != "REVIEW_REQUIRED" || wanted.MergeStatus != "not_approved" || wanted.ViewerIsReviewer {
+	if wanted.ReviewDecision != "REVIEW_REQUIRED" || wanted.MergeStatus != "not_approved" || wanted.ViewerIsReviewer ||
+		wanted.ApprovalsGiven != nil || *wanted.ApprovalsRequired != 2 || wanted.Unresolved != nil {
 		t.Errorf("glab approval wanted = %+v", wanted)
 	}
 
@@ -118,47 +137,46 @@ func TestProjectPRListsThroughTheAppsForgeCode(t *testing.T) {
 		}
 		return n
 	}
-	if count("gh graphql PullsSearch") != 1 || count("glab api merge request list") != 1 {
-		t.Fatalf("routes = %v, want one list read per project", routes)
+	if count("gh graphql PullsSearch") != 1 || len(routes) != 9 {
+		t.Fatalf("routes = %v, want one PullsSearch for GitHub and GitLab's eight reads", routes)
+	}
+	for _, route := range []string{"glab api user", "glab api merge request list", "glab graphql PullsReviewing", "glab graphql PullsAuthored",
+		"glab graphql PullsReviewingActivity", "glab graphql PullsAuthoredActivity", "glab api user events", "glab api approval rules"} {
+		if count(route) != 1 {
+			t.Errorf("route %s read %d times, want once: %v", route, count(route), routes)
+		}
 	}
 }
 
-// The list row's GitLab summary reads the viewer's own review state from
-// the merge request's reviewers, so another reviewer's change request is
-// not the viewer's.
-func TestGitLabSummaryReadsTheViewersOwnReview(t *testing.T) {
+// The GitLab reviewer read names the viewer's own review state, so
+// another reviewer's change request is not the viewer's, and a reviewer
+// past the first page of reviewers still reads.
+func TestGitLabListReadsTheViewersOwnReview(t *testing.T) {
 	r := newRig(t, forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{
 		{Forge: "gitlab", Project: "grp/reviews", Pulls: []forgefake.Pull{
 			{Number: 1, Title: "Bob asked for changes", Author: "carol", Reviewers: []string{"alice", "bob"}, ChangeRequests: []string{"bob"}},
 			{Number: 2, Title: "Alice asked for changes", Author: "carol", Reviewers: []string{"alice"}, ChangeRequests: []string{"alice"}},
 			{Number: 3, Title: "Alice approved", Author: "carol", Reviewers: []string{"alice", "bob"}, ChangeRequests: []string{"bob"},
-				Reviews: []forgefake.Review{{Author: "alice", State: "APPROVED"}}},
+				Reviews: []forgefake.Review{{Author: "alice", State: "APPROVED", SubmittedAt: "2026-10-07T00:00:00Z"}}},
 			{Number: 4, Title: "Not asked", Author: "carol", Reviewers: []string{"bob"}},
-			// Alice is past the reviewers' first page of 100.
 			{Number: 5, Title: "Alice asked for changes, 101st", Author: "carol", Reviewers: append(otherReviewers(100), "alice"), ChangeRequests: []string{"alice"}},
-			{Number: 6, Title: "Not asked, two pages", Author: "carol", Reviewers: otherReviewers(101)},
 		}},
 	}})
-	for number, want := range map[int]string{1: "unreviewed", 2: "requested_changes", 3: "approved", 4: "", 5: "requested_changes", 6: ""} {
-		ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "reviews", Number: number}
-		detail, err := r.core.ReadPRSummary(t.Context(), ref)
-		if err != nil {
-			t.Fatalf("!%d ReadPRSummary: %v", number, err)
-		}
-		if detail.ViewerReviewState != want {
-			t.Errorf("!%d viewer review = %q, want %q", number, detail.ViewerReviewState, want)
-		}
+	repo := gitops.RepoReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "reviews"}
+	rows, err := r.core.ListProjectPRs(t.Context(), repo)
+	if err != nil {
+		t.Fatalf("ListProjectPRs: %v", err)
 	}
-	reviewerPages := 0
-	for _, route := range expectHandled(t, r) {
-		if route == "glab api reviewers" {
-			reviewerPages++
+	want := map[int]string{1: "unreviewed", 2: "requested_changes", 3: "approved", 4: "", 5: "requested_changes"}
+	for _, row := range rows {
+		if row.ViewerReviewState != want[row.Ref.Number] {
+			t.Errorf("!%d viewer review = %q, want %q", row.Ref.Number, row.ViewerReviewState, want[row.Ref.Number])
 		}
 	}
-	// One page for each of !1..!4, two for !5 and !6.
-	if reviewerPages != 8 {
-		t.Errorf("reviewers pages read = %d, want 8", reviewerPages)
+	if len(rows) != 5 || rows[2].ViewerActivityAt != "2026-10-07T00:00:00Z" {
+		t.Errorf("rows = %d, !3 activity %q", len(rows), rows[2].ViewerActivityAt)
 	}
+	expectHandled(t, r)
 }
 
 // otherReviewers is n reviewers other than the viewer.
