@@ -1,0 +1,54 @@
+[
+  {
+    "id": 401, "iid": 21, "project_id": 77, "target_project_id": 77, "source_project_id": 77,
+    "title": "Draft: speed up builds", "description": "", "state": "opened",
+    "created_at": "2026-10-20T22:05:15.053Z", "updated_at": "2026-10-20T22:05:16.934Z",
+    "merged_by": null, "merge_user": null, "merged_at": null, "closed_by": null, "closed_at": null,
+    "target_branch": "main", "source_branch": "alice/builds",
+    "user_notes_count": 1, "upvotes": 0, "downvotes": 0,
+    "author": { "id": 1, "username": "alice", "name": "Alice Ng", "state": "active", "locked": false, "avatar_url": null, "web_url": "https://gitlab.com/alice" },
+    "assignees": [], "assignee": null,
+    "reviewers": [ { "id": 2, "username": "bob", "name": "Bob", "state": "active", "locked": false, "avatar_url": null, "web_url": "https://gitlab.com/bob", "public_email": null } ],
+    "draft": true, "work_in_progress": true, "imported": false, "imported_from": "none",
+    "merge_when_pipeline_succeeds": false, "merge_status": "can_be_merged", "detailed_merge_status": "draft_status", "merge_after": null,
+    "sha": "4444444444444444444444444444444444444444", "merge_commit_sha": null, "squash_commit_sha": null,
+    "discussion_locked": null, "should_remove_source_branch": null, "force_remove_source_branch": true,
+    "prepared_at": "2026-10-20T22:05:16.000Z", "reference": "!21", "references": { "short": "!21", "relative": "!21", "full": "grp/sub/app!21" },
+    "web_url": "https://gitlab.example/grp/sub/app/-/merge_requests/21",
+    "time_stats": { "time_estimate": 0, "total_time_spent": 0 }, "squash": false, "squash_on_merge": false,
+    "task_completion_status": { "count": 0, "completed_count": 0 },
+    "has_conflicts": false, "blocking_discussions_resolved": true, "approvals_before_merge": null,
+    "labels": [], "milestone": null
+  },
+  {
+    "id": 400, "iid": 20, "project_id": 77, "target_project_id": 77, "source_project_id": 912,
+    "title": "Fix the parser", "description": "", "state": "opened",
+    "created_at": "2026-10-10T08:00:00.000Z", "updated_at": "2026-10-19T09:30:00.120Z",
+    "target_branch": "main", "source_branch": "main",
+    "user_notes_count": 9,
+    "author": { "id": 3, "username": "carol", "name": "Carol", "state": "active" },
+    "reviewers": [
+      { "id": 4, "username": "dave", "name": "Dave", "state": "active" },
+      { "id": 1, "username": "Alice", "name": "Alice Ng", "state": "active" }
+    ],
+    "draft": false, "work_in_progress": false,
+    "merge_status": "cannot_be_merged", "detailed_merge_status": "not_approved",
+    "sha": "5555555555555555555555555555555555555555",
+    "web_url": "https://gitlab.example/grp/sub/app/-/merge_requests/20",
+    "has_conflicts": true, "blocking_discussions_resolved": false
+  },
+  {
+    "id": 399, "iid": 19, "project_id": 77, "target_project_id": 77, "source_project_id": 77,
+    "title": "Rename the flag", "description": "", "state": "opened",
+    "created_at": "2026-09-01T08:00:00.000Z", "updated_at": "2026-09-02T08:00:00.000Z",
+    "target_branch": "release", "source_branch": "rename",
+    "user_notes_count": 0,
+    "author": { "id": 3, "username": "carol", "name": "Carol", "state": "active" },
+    "reviewers": [],
+    "draft": false, "work_in_progress": false,
+    "merge_status": "can_be_merged", "detailed_merge_status": "requested_changes",
+    "sha": "6666666666666666666666666666666666666666",
+    "web_url": "https://gitlab.example/grp/sub/app/-/merge_requests/19",
+    "has_conflicts": false, "blocking_discussions_resolved": true
+  }
+]

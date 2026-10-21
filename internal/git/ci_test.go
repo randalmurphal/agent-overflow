@@ -188,7 +188,7 @@ func TestGitLabListPRCIJobs(t *testing.T) {
 
 func TestStreamCIJobLogValidatesTheJobID(t *testing.T) {
 	t.Parallel()
-	if _, err := NewCore().ForgeByID("gitlab").StreamCIJobLog(t.Context(), testPRRef("g/r", 1), CIJobLogRequest{JobID: "abc"}, nil); err == nil {
+	if _, err := NewCore().ForgeByID("gitlab").StreamCIJobLog(t.Context(), testPRRef("g/r", 1).Repository(), CIJobLogRequest{JobID: "abc"}, nil); err == nil {
 		t.Fatal("expected error for non-numeric job id (gitlab)")
 	}
 }

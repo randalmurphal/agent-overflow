@@ -9,7 +9,9 @@
 > are **deleted**, not restyled. Rev 1's run-state grammar, evidence blocks,
 > sweep, and keyboard vocabulary survive and are restated here where they
 > still bind. The `synthesis.html` mockup remains direction for row/receipt
-> tone only. Its pane frame is superseded.
+> tone only. Its pane frame is superseded. The overlay itself has since been
+> replaced: [pull-requests.md](../pull-requests.md) ("Tools row") makes
+> Workflows the `workflows` tool pane, with the same body and stack.
 
 Vocabulary (code/spec): **workflow** = definition, **run** = execution
 (`work_items` row), **phase** = a step of a run, **unit** = one fan-out member
@@ -35,38 +37,39 @@ plain ("Runs", "History", "Needs you"); the surface is always called
   checks, cost. The word "variables" MUST NOT appear in UI copy. Typed seeds
   render as plain form fields.
 - **R3: Only threads break out, and the surface never creates one.** The
-  overlay owns all workflow navigation internally; a thread the run already has
-  (phase, unit, the thread it is bound to) opens as a **normal thread pane**,
-  never inside the overlay. Opening a thread **closes the overlay** (the pane
-  tree underneath was never unmounted, so this is instant); reopening the
-  overlay restores its stack. No affordance on this surface *starts* a
-  conversation. Every thread-spawning button was removed (D32).
+  workflows pane owns all workflow navigation internally; a thread the run
+  already has (phase, unit, the thread it is bound to) opens as a **normal
+  thread pane**, never inside the workflows pane. Opened from the focused
+  workflows pane, the thread takes that pane's slot, as any thread opened
+  while a tool pane is focused does; reopening Workflows restores its stack.
+  No affordance on this surface *starts* a conversation. Every
+  thread-spawning button was removed (D32).
 - **R4: Copy tone.** Terse, human, past-tense receipts ("Merged to main —
   fast-forward 3af92c1 · worktree cleaned"); metadata as `·`-separated
   fragments ("parked 7h", "2/5 · 14m · $1.84"). No exclamations, no emoji.
 
 ---
 
-## 2. The overlay
+## 2. The pane
 
 ### 2.1 Frame + lifecycle
 
-- Rendered in `App.svelte` as a **sibling of `<PaneHost>`**, layered above
-  it, never passed into PaneHost, never a pane kind.
-  **The pane tree stays mounted and untouched while the overlay is open**;
-  closing is a pure unmount of the overlay layer: zero pane rebuild, zero
-  virtualizer resync. Settings has since been converted to the same pattern
-  and shares the frame (`primitives/OverlayShell.svelte`); the two overlays
-  are mutually exclusive, so at most one focus trap is ever up.
-- **Entry points**: the workflows footer button (§6), OS notifications (§9),
-  and the command palette. All open the one overlay; deep links retarget its
-  stack.
-- **Dismissal**: `Esc` at home depth, clicking the scrim edge, the footer
-  button again, or any thread break-out (R3). Closing never affects runs.
-- **Persistence.** The stack (and sweep cursor) persists across overlay
-  close/reopen within a session and across restarts via the existing app
-  storage; restored entries whose target no longer exists drop from the top
-  (home is always valid).
+- Workflows is the `workflows` **tool pane kind** (`stores/toolPanes.svelte.ts`):
+  at most one, mounted by PaneHost like any pane, persisted with the pane
+  layout. Workflows is open exactly while that pane exists. Opening it
+  closes Settings, which is a layer over the strip; Settings opening over it
+  leaves the pane in place.
+- **Entry points**: the tools row (§6), OS notifications (§7), the command
+  palette and `mod+shift+w`. A plain open takes the focused pane's slot like
+  a thread does; ctrl/cmd+click on the tools row opens it in a new pane.
+  Every entry reveals the pane when it is already open; deep links retarget
+  its stack.
+- **Dismissal**: the pane's close control, `mod+shift+w` while it is
+  focused, or a thread opened in its place (R3). Closing never affects runs.
+- **Persistence.** The stack (and sweep cursor) persists across the pane
+  closing and reopening within a session and across restarts via the
+  existing app storage; restored entries whose target no longer exists drop
+  from the top (home is always valid).
 - Navigation state lives in `stores/workflowsOverlay.svelte.ts` (stack,
   project filter, sweep cursor). Data rides the typed `workflow:*` event
   channel via `stores/eventsWorkflow.ts`; RPCs through `stores/bindings.ts`.
@@ -78,13 +81,17 @@ reachable only by finishing the sweep, §4.4). Rev 1's intermediate
 workflow-detail level is folded into home. A workflow's runs and history
 expand in place; there is no third navigation depth.
 
-- **Header chrome.** Home: title "Workflows" + header controls (§3.1). Run
-  detail: back chevron `‹` (tooltip "Back (esc)"), breadcrumb
-  (`Workflows › <run title>`), state word.
-- **Back semantics.** Back, `Esc`, and `Backspace` pop to home; at home,
-  `Esc` closes the overlay. `Esc` first consumes transient state: armed
-  confirm → open dialog → pop/close. Keys are suppressed while a text field
-  has focus (typing guards in `keybindings.svelte.ts`).
+- **Header chrome.** The pane header (`panes/ToolPaneHeader.svelte`):
+  title "Workflows" as the pane drag handle, and the close control. Home
+  adds the header controls (§3.1). Run detail: back chevron `‹` (tooltip
+  "Back (esc)") ahead of the title, breadcrumb `› <run title>`, state word.
+  Compact: the header's Back returns to the thread list at home and pops at
+  run depth.
+- **Back semantics.** Back, `Esc`, and `Backspace` pop to home. `Esc` first
+  consumes transient state: armed confirm → open dialog → pop. At home with
+  nothing armed or open, `Esc` and the phone's Back pass through (the
+  `toolDetailOpen` gate), so Back leaves the pane. Keys are suppressed while
+  a text field has focus (typing guards in `keybindings.svelte.ts`).
 - Level changes reset transient state (expanded diffs, armed confirms).
 
 ---
@@ -273,8 +280,8 @@ History rows on home (§3.2) push the same view.
 
 Unchanged from rev 1: `Review comments (N)` (lazy count, single-flight,
 untrusted quoting) and `Discuss this PR` ride the run's one linked thread;
-"open full review" opens the **real ReviewPane** as a normal pane (overlay
-closes, R3). No parallel diff renderer.
+"open full review" opens the **real ReviewPane** as a companion of the
+phase thread's pane (R3). No parallel diff renderer.
 
 ### 4.8 Outputs / deliverables
 
@@ -332,11 +339,14 @@ turn to serve one message.
 
 ## 6. Sidebar integration
 
-**One footer button, nothing else.** `WorkflowsFooter.svelte` directly above
-`SettingsFooter.svelte`: icon + "Workflows" + the single global
-needs-attention count (amber, only when > 0). Click toggles the overlay.
-Rev 1's per-project sidebar section (`WorkflowsSection.svelte`) is
-**deleted**. Runs are not sidebar citizens.
+**One button in the tools row, nothing else.** `sidebar/ToolsRow.svelte`
+directly above `SettingsFooter.svelte` holds one button per tool
+([pull-requests.md](../pull-requests.md), "Tools row"). The Workflows
+button carries the single global needs-attention count (amber, only when
+> 0), and its label shows when Workflows is the focused tool pane or the
+tool used last. Click opens the pane (§2.1). Rev 1's per-project sidebar
+section (`WorkflowsSection.svelte`) is **deleted**. Runs are not sidebar
+citizens.
 
 **Thread-list exclusion stands**: phase/unit (`workflow`), studio
 (`workflow-studio`), and triage (`workflow-triage`) threads carry their
@@ -348,7 +358,7 @@ the studio spawner, and `workflow-triage` is now written only by the PR
 follow-up surfaces (§4.7), which reuse the run's one linked thread. Existing
 rows in either mode stay hidden. The mode plumbing is data compatibility, not
 a live affordance.
-Once opened (from the overlay or a wake message reference) they behave as
+Once opened (from the workflows pane or a wake message reference) they behave as
 completely normal thread panes. **Exception by design**: a thread a run is
 *bound to* (§4.1) is a normal user thread that was never mode-excluded.
 Binding never hides a thread.
@@ -359,8 +369,8 @@ Binding never hides a thread.
 
 - A run entering **`needs-human`** (any typed reason) or **`failed`** fires
   one OS notification: title = run title, body = the one-line "what it
-  needs". Click → app foreground, overlay at that run's detail, inside the
-  sweep. Thread-bound runs also wake their thread (D17); the notification
+  needs". Click → app foreground, the workflows pane at that run's detail,
+  inside the sweep. Thread-bound runs also wake their thread (D17); the notification
   still fires and the badge stays authoritative.
 - `done` / `running` never notify. Rev 1's coalesced drain summary is
   **deleted** with the queue.
@@ -375,12 +385,14 @@ Binding never hides a thread.
 ## 8. Keyboard bindings
 
 Registered through the existing keybinding/command registries, scoped to the
-open overlay; suppressed while a text field has focus.
+focused workflows pane (`workflowsPaneFocused`, run detail
+`workflowsRunDetail`); suppressed while a text field has focus.
+`mod+shift+w` opens or reveals the pane, and closes it while it is focused.
 
 | Key | Context | Action |
 |---|---|---|
 | `Esc` | run detail | disarm confirm → close dialog → back to home |
-| `Esc` | home | close the overlay |
+| `Esc` | home | disarm confirm → close dialog; otherwise nothing |
 | `Backspace` | run detail | back to home |
 | `j`/`→`/`↓` · `k`/`←`/`↑` | run detail, parked set | next / previous needs-attention run (wraps) |
 | `a` | gate / question / failed / blocked / paused (including provider-usage-limited) / unit-failed / taken-over / done | primary action (approve / focus answer / rerun / resume / retry unit / finish takeover / merge) |
@@ -396,16 +408,17 @@ open overlay; suppressed while a text field has focus.
 
 - Nothing defined anywhere → single empty state: one short line saying what a
   workflow is, and no button (D32 removed the only one it had). A project with
-  definitions but no runs → its Workflows list only. No parked runs → footer
-  badge shows no count; sweep entered empty → all-clear directly.
+  definitions but no runs → its Workflows list only. No parked runs → the
+  tools row shows no Workflows count; sweep entered empty → all-clear
+  directly.
 - The normal-view test stands: **workflows are invisible until they have a
-  reason not to be**. A quiet system is one footer row.
+  reason not to be**. A quiet system is one icon in the tools row.
 
 ---
 
 ## 10. Remote posture
 
-Remote browsers get **view-only** workflows: the overlay renders fully;
+Remote browsers get **view-only** workflows: the pane renders fully;
 every mutating affordance (pause-all, intake, action rows, notes, Run now,
 enable/disable, discard, bind) is disabled with tooltip "Local only".
 Mutation RPCs annotate `//ao:scope threads:autonomy`, so only a session
@@ -422,9 +435,8 @@ granted it reaches them. Remote gate-approval is explicitly out.
   Opening a thread the run ALREADY has (phase, unit, bound) stays.
 - NO queue surfaces: no toggle, no Queues section, no drag priority, no
   position predictions, no drain summaries.
-- NO workflows pane, NO per-project sidebar section, NO pane-kind or
-  pane-persistence integration. The overlay is the only surface and panes
-  never unmount beneath it.
+- NO per-project sidebar section, NO second workflows surface. The
+  `workflows` tool pane is the only one.
 - NO chat proposal cards. Agents use the CLI; the wake message is a plain
   message.
 - NO kanban / global work board; NO inspection modal; NO workflow-settings
@@ -441,28 +453,28 @@ As shipped. Paths under `frontend/src/lib/` unless noted.
 
 | Concern | Where |
 |---|---|
-| Overlay frame (§2.1) | `components/workflows/WorkflowsOverlay.svelte`, mounted in `App.svelte` through `primitives/LazyOverlay.svelte` as a sibling of `<PaneHost>` (never a pane kind), framed by `primitives/OverlayShell.svelte` |
+| Pane frame (§2.1) | `components/workflows/WorkflowsPane.svelte`, the lazy body `panes/ToolPane.svelte` mounts for a `workflows` layout item; open, close and placement in `stores/toolPanes.svelte.ts` |
 | Navigation (§2.2) | `stores/workflowsOverlay.svelte.ts`: stack, project filter, sweep cursor, armed confirm, dialog; restart persistence via `stores/appStorage.ts` |
 | Data cache | `stores/workflowRuns.svelte.ts` (runs, catalogs, automations, costs, the FOCUSED run's detail only, session receipts) + the pure projections in `stores/workflowData.ts`. A run's tree/shape is not here. That is the run-map entity store's |
 | Events / RPC | `stores/eventsWorkflow.ts` via `events.ts`; `stores/bindings.ts`; typed `workflow:*` channel |
 | Home (§3) | `WorkflowsHome.svelte`, `WorkflowsHomeControls.svelte`, `WorkflowProjectGroup.svelte`, `WorkflowRunRow.svelte`, `WorkflowDefinitionRow.svelte` |
 | Run detail (§4.1) | `WorkflowRunDetail.svelte` (coordinator), `WorkflowRunHeader.svelte` (position read off the map's frontier, `utils/workflowActionRows.ts` for the failed-unit lookup) |
-| Run map (§4.2) | `WorkflowRunMap{,FrontierStrip,Wave,SummaryRow,Node,Fan,Fold}.svelte` + `runMapFollow.svelte.ts` / `runMapGeometry.ts` (§9's state machine and its pure rect arithmetic) + `overlayScroller.ts` (the §9.9 scroller handoff), over the entity store `stores/workflowRunMap.svelte.ts` / `stores/workflowRunMapPatch.ts` and the pure projection `utils/workflowRunMap{,Index,Frontier,Types,Style}.ts`; backend `WorkflowGetRunMap` (`app_workflow_runmap.go`, `internal/store/work_item_run_map.go`) |
+| Run map (§4.2) | `WorkflowRunMap{,FrontierStrip,Wave,SummaryRow,Node,Fan,Fold}.svelte` + `runMapFollow.svelte.ts` / `runMapGeometry.ts` (§9's state machine and its pure rect arithmetic) + `workflowsScroller.ts` (the §9.9 scroller handoff), over the entity store `stores/workflowRunMap.svelte.ts` / `stores/workflowRunMapPatch.ts` and the pure projection `utils/workflowRunMap{,Index,Frontier,Types,Style}.ts`; backend `WorkflowGetRunMap` (`app_workflow_runmap.go`, `internal/store/work_item_run_map.go`) |
 | Evidence (§4.3) | `WorkflowEvidence.svelte` dispatching to `WorkflowGateDiff.svelte` / `WorkflowDiff.svelte` / `WorkflowFailureEvidence.svelte` / `WorkflowDisposition.svelte` / `WorkflowOutputs.svelte` / `WorkflowJobNotes.svelte`; envelope reads in `utils/workflowEnvelope.ts` |
 | Action row (§4.3) | `WorkflowActionRow.svelte` over the pure table in `utils/workflowActionRows.ts`; dispatch in `stores/workflowActions.ts`; receipts/toasts/auto-advance in `stores/workflowResolve.ts` |
 | Soft stop (§4.3, D36) | `WorkflowRequestSoftStop` binding; row entry in `utils/workflowActionRows.ts` (`softStop` input), dispatch case in `stores/workflowActions.ts`, live update via the `workflow:soft-stop` channel through `stores/eventsWorkflow.ts` → `patchWorkflowSoftStop` |
 | Sweep (§4.4) | `stores/workflowSweep.ts` over `workflowData`'s sweep helpers; `WorkflowAllClear.svelte` |
 | Discard (§4.5) | `WorkflowDiscardDialog.svelte`: loss preview is consent, and it resolves through the same `stores/workflowResolve.ts` |
 | Intake (§5.1) | `WorkflowIntakeDialog.svelte` + `WorkflowSeedFields.svelte` over `utils/workflowIntake.ts`, on the `components/primitives/Modal.svelte` shell |
-| Footer button (§6) | `components/sidebar/WorkflowsFooter.svelte` in `Sidebar.svelte`, above `SettingsFooter.svelte` |
-| Deep links (§7) | `stores/notificationActivationQueue.ts` → `openWorkflowRunInOverlay` |
+| Tools row (§6) | `components/sidebar/ToolsRow.svelte` in `Sidebar.svelte`, above `SettingsFooter.svelte` |
+| Deep links (§7) | `stores/notificationActivationQueue.ts` → `openWorkflowRunInPane` |
 | Keyboard (§8) | commands in `stores/workflowCommands.svelte.ts`, flags in `stores/builtinCommands.svelte.ts`, chords in `internal/keybindings/keybindings.go` |
 | Signals (R1) | `utils/workflowRunSignal.ts`: the one place a state maps to a hue |
 | Thread opens (R3) | `stores/workflowThreads.ts`: opens existing threads only, never creates one; thread exclusion by mode in `utils/sidebarTree.ts`, `ProjectThreadList.svelte`, `UnifiedThreadPicker.svelte` |
-| PR review | `stores/reviewPane.svelte.ts` companion flow (overlay closes; ReviewPane opens as a pane) |
+| PR review | `stores/reviewPane.svelte.ts` companion flow (the phase thread takes the workflows pane's slot; ReviewPane opens as its companion) |
 | `/workflow` command (§5.2) | registry + trigger rules in `components/composer/slashCommands.ts`, menu state in `composerSlash.svelte.ts`, popover `ComposerSlashPopover.svelte`, accent word `ComposerCommandHighlight.svelte` (composer) and `chat/UserMessage.svelte` (history, from `utils/userMessageMeta.ts`); send-time expansion in `app_composer_commands.go` over the block `app_workflow_composer.go` resolves |
 | Toasts | `stores/toast.svelte.ts` |
-| e2e | `e2e/tests/workflows-overlay.spec.ts` |
+| e2e | `e2e/tests/workflows-pane.spec.ts` |
 
 Drift from the pre-build plan, deliberately: the reactive cache is
 `stores/workflowRuns.svelte.ts` (rev 1 had no equivalent: `workflowData.ts`
@@ -476,4 +488,6 @@ detail is a coordinator over per-section components rather than one file.
 pane-stack chrome (`WorkflowOverview*`, `WorkflowQueue*`, breadcrumbs), the
 intake queue-position footer, the proposal-card component + its
 `workflow_proposal` item rendering, deep-link pane machinery, and their
-tests/e2e specs (replaced by overlay equivalents).
+tests/e2e specs (replaced by overlay equivalents). The `workflows` kind
+later returned as a tool pane over the rev-2 body; none of the rev-1 pane
+stack chrome came back with it.

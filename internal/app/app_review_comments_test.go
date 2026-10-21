@@ -1,9 +1,7 @@
 package app
 
 // Unit-level coverage for the diff-review prompt builder and helpers
-// lives in internal/diffreview. The remaining App-level integration
-// for ListDiffReviewComments / Create / Update / Delete / Send is
-// covered through app_bindings_test.go and app_send_test.go.
+// lives in internal/diffreview.
 
 import (
 	"agent-overflow/internal/testutil/mockexec"
@@ -15,9 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/diffreview"
+	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/identity"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/transport"
 )
 
 func TestSendPlanRevisionCommentsSendsDraftsAndMarksSent(t *testing.T) {
@@ -306,4 +308,195 @@ done
 `
 	mockexec.Write(t, path, script)
 	return path
+}
+
+// diffReviewSendThread is a Claude thread with a live passthrough session,
+// so a send reaches a provider and lands as a user item.
+func diffReviewSendThread(t *testing.T, app *App, id string) store.Thread {
+	t.Helper()
+	thread := testThread(id)
+	thread.Provider = string(provider.Claude)
+	thread.Mode = "chat"
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	sess, err := claude.NewSession(context.Background(), thread.ID,
+		claude.Config{Binary: writeClaudeControlPassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		func(provider.ProviderEvent) {})
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "test-token", Claude: sess})
+	return thread
+}
+
+// sentDiffReviewItem is the user item a diff review send appended.
+func sentDiffReviewItem(t *testing.T, app *App, threadID string) store.Item {
+	t.Helper()
+	items, err := app.store.ListItems(threadID)
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	for _, item := range items {
+		if item.Role == "user" {
+			return item
+		}
+	}
+	t.Fatalf("thread %s has no user item", threadID)
+	return store.Item{}
+}
+
+var diffReviewSendPR = gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "widgets", Number: 5}
+
+func diffReviewPRInput(body string) store.DiffReviewCommentInput {
+	return store.DiffReviewCommentInput{
+		Scope: string(store.DiffReviewScopePR), SourceKey: "pr:github:acme/widgets#5", FilePath: "main.go",
+		NewLine: 3, Side: "new", SelectedText: "x := 1", Body: body,
+	}
+}
+
+func diffReviewPRContext(commentID string) SendDiffReviewCommentsInput {
+	return SendDiffReviewCommentsInput{PR: &store.DiffReviewPRContext{
+		Number: 5, URL: "https://github.com/acme/widgets/pull/5",
+		Comments: []store.DiffReviewPRContextEntry{{CommentID: commentID, HunkExcerpt: "@@ -1 +1 @@\n+x := 1"}},
+	}}
+}
+
+// The thread's own drafts: the prompt with the PR context, sent on the
+// turn that carried them.
+func TestSendDiffReviewCommentsSendsTheThreadsDraftsWithThePRContext(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	thread := diffReviewSendThread(t, app, "thread-diff-review-send")
+	draft, err := app.CreateDiffReviewComment(thread.ID, diffReviewPRInput("Name this better."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := diffReviewPRContext(draft.ID)
+	if _, err := app.SendDiffReviewComments(thread.ID, draft.Scope, draft.SourceKey, []string{draft.ID}, input); err != nil {
+		t.Fatalf("SendDiffReviewComments: %v", err)
+	}
+	item := sentDiffReviewItem(t, app, thread.ID)
+	if want := diffreview.BuildPromptWithPRContext([]store.DiffReviewComment{draft}, input.PR); item.Summary != want {
+		t.Fatalf("prompt = %q, want %q", item.Summary, want)
+	}
+	sent, err := app.ListDiffReviewComments(thread.ID, draft.Scope, draft.SourceKey)
+	if err != nil || len(sent) != 1 || sent[0].Status != "sent" || sent[0].SentTurnID != fmt.Sprintf("%s:%d", thread.ID, item.TurnIndex) {
+		t.Fatalf("after send = %+v (%v)", sent, err)
+	}
+}
+
+// A PR's drafts go to the named thread exactly as a thread's own do, and
+// are marked sent on that thread's turn; an id the PR does not own is
+// refused before anything is sent.
+func TestSendPRDiffReviewCommentsSendsAPRsDraftsToAThread(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	thread := diffReviewSendThread(t, app, "thread-pr-diff-review-send")
+	draft, err := app.CreatePRDiffReviewComment(diffReviewSendPR, diffReviewPRInput("Name this better."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if draft.PRKey != diffReviewSendPR.Key() || draft.ThreadID != "" {
+		t.Fatalf("draft = %+v", draft)
+	}
+	threadOwned, err := app.CreateDiffReviewComment(thread.ID, diffReviewPRInput("The thread's own."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherPR := diffReviewSendPR
+	otherPR.Number = 6
+	otherOwned, err := app.CreatePRDiffReviewComment(otherPR, diffReviewPRInput("Another PR's."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := diffReviewPRContext(draft.ID)
+	for _, foreign := range []string{threadOwned.ID, otherOwned.ID} {
+		if _, err := app.SendPRDiffReviewComments(context.Background(), diffReviewSendPR, thread.ID, draft.Scope, draft.SourceKey, []string{draft.ID, foreign}, input); err == nil || !strings.Contains(err.Error(), "non-draft ids") {
+			t.Fatalf("sending %s with the PR's draft = %v, want it refused as not the PR's", foreign, err)
+		}
+	}
+	if items, _ := app.store.ListItems(thread.ID); len(items) != 0 {
+		t.Fatalf("a refused send appended %d items", len(items))
+	}
+	// The thread's send door refuses a PR's drafts: they are git:operate.
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "", SendMessageOptions{
+		RevisionSourceDiffReview:     &SourceDiffReview{PRKey: diffReviewSendPR.Key(), Scope: draft.Scope, SourceKey: draft.SourceKey},
+		RevisionSourceDiffCommentIDs: []string{draft.ID},
+	}); err == nil || !strings.Contains(err.Error(), "SendPRDiffReviewComments") {
+		t.Fatalf("SendMessageWithOptions with a PR's drafts = %v", err)
+	}
+
+	if _, err := app.SendPRDiffReviewComments(context.Background(), diffReviewSendPR, thread.ID, draft.Scope, draft.SourceKey, []string{draft.ID}, input); err != nil {
+		t.Fatalf("SendPRDiffReviewComments: %v", err)
+	}
+	item := sentDiffReviewItem(t, app, thread.ID)
+	if want := diffreview.BuildPromptWithPRContext([]store.DiffReviewComment{draft}, input.PR); item.Summary != want {
+		t.Fatalf("prompt = %q, want %q", item.Summary, want)
+	}
+	sent, err := app.ListPRDiffReviewComments(diffReviewSendPR, draft.Scope, draft.SourceKey)
+	if err != nil || len(sent) != 1 || sent[0].Status != "sent" || sent[0].SentTurnID != fmt.Sprintf("%s:%d", thread.ID, item.TurnIndex) {
+		t.Fatalf("PR drafts after send = %+v (%v)", sent, err)
+	}
+	if own, _ := app.ListDiffReviewComments(thread.ID, draft.Scope, draft.SourceKey); len(own) != 1 || own[0].Status != "draft" {
+		t.Fatalf("the thread's own draft moved: %+v", own)
+	}
+}
+
+// The PR-owned CRUD: pr scope only, owned by the PR key, and a sent
+// draft deleted is resolved.
+func TestPRDiffReviewCommentsAreThePRsOwn(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	if _, err := app.CreatePRDiffReviewComment(gitops.PRReference{Forge: "github", Host: "github.com", Repo: "widgets", Number: 5}, diffReviewPRInput("x")); err == nil {
+		t.Fatal("an invalid PR reference was accepted")
+	}
+	workspace := diffReviewPRInput("x")
+	workspace.Scope = string(store.DiffReviewScopeWorkspace)
+	if _, err := app.CreatePRDiffReviewComment(diffReviewSendPR, workspace); err == nil {
+		t.Fatal("a PR's draft outside pr scope was accepted")
+	}
+	draft, err := app.CreatePRDiffReviewComment(diffReviewSendPR, diffReviewPRInput("First."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherPR := diffReviewSendPR
+	otherPR.Number = 6
+	if _, err := app.UpdatePRDiffReviewComment(otherPR, draft.ID, store.DiffReviewCommentUpdate{Body: "Stolen."}); err == nil {
+		t.Fatal("another PR updated the draft")
+	}
+	updated, err := app.UpdatePRDiffReviewComment(diffReviewSendPR, draft.ID, store.DiffReviewCommentUpdate{Body: "Second."})
+	if err != nil || updated.Body != "Second." {
+		t.Fatalf("update = %+v, %v", updated, err)
+	}
+	if err := app.MarkPRDiffReviewCommentsSent(diffReviewSendPR, draft.Scope, draft.SourceKey, []string{draft.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DeletePRDiffReviewComment(diffReviewSendPR, draft.ID); err != nil {
+		t.Fatal(err)
+	}
+	// A posted draft deleted is resolved, which the list leaves out.
+	if resolved, err := app.store.GetDiffReviewComment(store.PRReviewOwner(diffReviewSendPR.Key()), draft.ID); err != nil || resolved.Status != "resolved" || resolved.SentAt == 0 {
+		t.Fatalf("after posting and deleting = %+v (%v), want resolved", resolved, err)
+	}
+	second, err := app.CreatePRDiffReviewComment(diffReviewSendPR, diffReviewPRInput("Draft."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DeletePRDiffReviewComment(diffReviewSendPR, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.store.GetDiffReviewComment(store.PRReviewOwner(diffReviewSendPR.Key()), second.ID); err == nil {
+		t.Fatal("a deleted draft is still stored")
+	}
+}
+
+func TestSendPRDiffReviewCommentsNeedsThreadsOperate(t *testing.T) {
+	t.Parallel()
+	app := identityApp(t)
+	gitOnly := pairSessionWithScopes(t, app, "thumb-git", []identity.Scope{identity.ScopeGitOperate})
+	_, err := app.SendPRDiffReviewComments(callFrom(gitOnly.ID, false), diffReviewSendPR, "thread", "pr", "key", []string{"c"}, SendDiffReviewCommentsInput{})
+	wantScopeRefusal(t, err, transport.ScopeThreadsOperate)
 }

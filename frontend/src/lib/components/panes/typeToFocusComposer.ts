@@ -22,7 +22,7 @@ import { hasActiveFocusTrap } from '../../utils/focusTrap';
 import { isImeComposingEvent } from '../../utils/imeComposition';
 
 export interface TypeToFocusSurfaceFlags {
-  workflowsOverlayOpen: boolean;
+  toolPaneFocused: boolean;
   anyModalOpen: boolean;
   anyPickerOpen: boolean;
 }
@@ -83,10 +83,10 @@ export function redirectTypingToFocusedComposer(
 ): boolean {
   if (typeof document === 'undefined') return false;
   if (!isTypeToFocusKey(ev)) return false;
-  // An open overlay/modal/picker owns the keyboard outright — never focus
-  // something behind it. The focus-trap check catches modal surfaces that
-  // don't flow through the command-context flags.
-  if (surfaces.workflowsOverlayOpen || surfaces.anyModalOpen || surfaces.anyPickerOpen) return false;
+  // A focused tool pane, or an open modal/picker, owns the keyboard outright —
+  // never focus a composer behind it. The focus-trap check catches modal
+  // surfaces that don't flow through the command-context flags.
+  if (surfaces.toolPaneFocused || surfaces.anyModalOpen || surfaces.anyPickerOpen) return false;
   if (hasActiveFocusTrap()) return false;
   if (isClaimedFocus(document.activeElement)) return false;
 

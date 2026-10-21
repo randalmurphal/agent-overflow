@@ -118,7 +118,7 @@ func TestPRCILogFollowOnANonStreamingForgeWaitsForCompletion(t *testing.T) {
 	if len(state.Sections) != 2 || state.Sections[1].Name != "Run make test" || state.Sections[1].Status != gitops.CIStatusRunning || state.Sections[1].Lines != 0 {
 		t.Fatalf("rows before the log exists = %+v, want the steps without lines", state.Sections)
 	}
-	if _, err := f.app.GetPRCILogLines(testPR, "7", 0, 10); !errors.Is(err, errCILogNotDownloaded) {
+	if _, err := f.app.GetPRCILogLines(testPR.Repository(), "7", 0, 10); !errors.Is(err, errCILogNotDownloaded) {
 		t.Fatalf("lines of an unpublished log = %v", err)
 	}
 	if frame := awaitLogEvent(t, f.logEvents, "unavailable frame"); frame.Available || frame.Error != "" {
@@ -458,15 +458,15 @@ func TestPRCILogFollowPinsItsLogInTheCache(t *testing.T) {
 	if _, err := f.app.SetPRCILogFollows(context.Background(), sub.ID, []string{"7", "8"}); err != nil {
 		t.Fatalf("follow 8: %v", err)
 	}
-	if !store.Has(ciLogKey(testPR, "7")) || !store.Has(ciLogKey(testPR, "8")) {
+	if !store.Has(ciLogKey(testPR.Repository(), "7")) || !store.Has(ciLogKey(testPR.Repository(), "8")) {
 		t.Fatal("a followed log was evicted")
 	}
 	// Unfollowing 7 lets the bound take it.
 	if _, err := f.app.SetPRCILogFollows(context.Background(), sub.ID, []string{"8"}); err != nil {
 		t.Fatalf("unfollow 7: %v", err)
 	}
-	if store.Has(ciLogKey(testPR, "7")) || !store.Has(ciLogKey(testPR, "8")) {
-		t.Fatalf("after unfollowing 7: has 7 %v, has 8 %v; want 7 evicted", store.Has(ciLogKey(testPR, "7")), store.Has(ciLogKey(testPR, "8")))
+	if store.Has(ciLogKey(testPR.Repository(), "7")) || !store.Has(ciLogKey(testPR.Repository(), "8")) {
+		t.Fatalf("after unfollowing 7: has 7 %v, has 8 %v; want 7 evicted", store.Has(ciLogKey(testPR.Repository(), "7")), store.Has(ciLogKey(testPR.Repository(), "8")))
 	}
 
 	// A pump that died on its own releases its handles' follows.
@@ -477,14 +477,14 @@ func TestPRCILogFollowPinsItsLogInTheCache(t *testing.T) {
 	if _, err := f.app.SetPRCILogFollows(context.Background(), other.ID, []string{"9"}); err != nil {
 		t.Fatalf("follow 9: %v", err)
 	}
-	if !store.Has(ciLogKey(testPR, "8")) || !store.Has(ciLogKey(testPR, "9")) {
+	if !store.Has(ciLogKey(testPR.Repository(), "8")) || !store.Has(ciLogKey(testPR.Repository(), "9")) {
 		t.Fatal("a followed log was evicted")
 	}
 	f.app.prUpdates.mu.Lock()
 	pump := f.app.prUpdates.pumps[sub.PRKey]
 	f.app.prUpdates.mu.Unlock()
 	f.app.dropPRUpdatePump(pump)
-	if store.Has(ciLogKey(testPR, "8")) || store.Has(ciLogKey(testPR, "9")) {
+	if store.Has(ciLogKey(testPR.Repository(), "8")) || store.Has(ciLogKey(testPR.Repository(), "9")) {
 		t.Fatal("a dropped pump's follows stayed pinned over the bound")
 	}
 }
@@ -503,7 +503,7 @@ func TestGetPRCILogLinesIsBounded(t *testing.T) {
 	if _, err := f.app.SetPRCILogFollows(context.Background(), sub.ID, []string{"7"}); err != nil {
 		t.Fatalf("SetPRCILogFollows: %v", err)
 	}
-	window, err := f.app.GetPRCILogLines(testPR, "7", 100, maxCILogLinesPerRead)
+	window, err := f.app.GetPRCILogLines(testPR.Repository(), "7", 100, maxCILogLinesPerRead)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -514,10 +514,10 @@ func TestGetPRCILogLinesIsBounded(t *testing.T) {
 	if window.From != 100 || window.TotalLines != 3000 || len(window.Lines) == 0 || bytes > maxCILogBytesPerRead || len(window.Lines) != maxCILogBytesPerRead/len(line) {
 		t.Fatalf("window from %d: %d lines, %d bytes of %d lines", window.From, len(window.Lines), bytes, window.TotalLines)
 	}
-	if window, err := f.app.GetPRCILogLines(testPR, "7", 2990, 50); err != nil || len(window.Lines) != 10 {
+	if window, err := f.app.GetPRCILogLines(testPR.Repository(), "7", 2990, 50); err != nil || len(window.Lines) != 10 {
 		t.Fatalf("window at the end = %d lines, %v", len(window.Lines), err)
 	}
-	if window, err := f.app.GetPRCILogLines(testPR, "7", 3000, 5); err != nil || len(window.Lines) != 0 || window.Lines == nil {
+	if window, err := f.app.GetPRCILogLines(testPR.Repository(), "7", 3000, 5); err != nil || len(window.Lines) != 0 || window.Lines == nil {
 		t.Fatalf("window past the end = %+v, %v", window.Lines, err)
 	}
 	// A line past the line bound is shown clipped, and listed.
@@ -526,7 +526,7 @@ func TestGetPRCILogLinesIsBounded(t *testing.T) {
 	if _, err := f.app.SetPRCILogFollows(context.Background(), sub.ID, []string{"8"}); err != nil {
 		t.Fatalf("SetPRCILogFollows: %v", err)
 	}
-	long, err := f.app.GetPRCILogLines(testPR, "8", 0, 3)
+	long, err := f.app.GetPRCILogLines(testPR.Repository(), "8", 0, 3)
 	if err != nil || len(long.Lines) != 3 || len(long.Lines[1]) != maxCILogLineBytes || !slices.Equal(long.Clipped, []int{1}) || long.Lines[2] != "after" {
 		t.Fatalf("long line read = %d lines, clipped %v, %v", len(long.Lines), long.Clipped, err)
 	}
@@ -541,7 +541,7 @@ func TestGetPRCILogLinesIsBounded(t *testing.T) {
 		{testPR, "7; rm", 0, 1},
 		{gitops.PRReference{Forge: "github"}, "7", 0, 1},
 	} {
-		if _, err := f.app.GetPRCILogLines(bad.pr, bad.job, bad.from, bad.count); err == nil {
+		if _, err := f.app.GetPRCILogLines(bad.pr.Repository(), bad.job, bad.from, bad.count); err == nil {
 			t.Fatalf("GetPRCILogLines(%+v, %q, %d, %d) was accepted", bad.pr, bad.job, bad.from, bad.count)
 		}
 	}

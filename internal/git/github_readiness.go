@@ -201,6 +201,18 @@ func (in githubMergeInputs) needsThreadStates() bool {
 	return in.open() && in.pull.ThreadStates.PageInfo.HasNextPage && in.unresolvedThreads() == 0 && in.baseRules().resolveThreads
 }
 
+// approvalCount is the approvals standing in latestOpinionatedReviews
+// against the base's required count.
+func (in githubMergeInputs) approvalCount() ApprovalCount {
+	out := ApprovalCount{Required: in.baseRules().approvals}
+	for _, review := range in.pull.LatestOpinionatedReviews.Nodes {
+		if strings.EqualFold(review.State, "APPROVED") {
+			out.Given++
+		}
+	}
+	return out
+}
+
 func (in githubMergeInputs) unresolvedThreads() int {
 	n := 0
 	for _, node := range in.pull.ThreadStates.Nodes {
@@ -219,7 +231,11 @@ func (in githubMergeInputs) unresolvedThreads() int {
 // blocker.
 func (in githubMergeInputs) readiness() MergeReadiness {
 	pull := in.pull
-	out := MergeReadiness{Blockers: []MergeBlocker{}, Settled: []MergeBlocker{}}
+	out := MergeReadiness{Blockers: []MergeBlocker{}, Settled: []MergeBlocker{}, Approvals: in.approvalCount()}
+	if !pull.ThreadStates.PageInfo.HasNextPage {
+		unresolved := in.unresolvedThreads()
+		out.Unresolved = &unresolved
+	}
 	switch {
 	case pull.Merged || strings.EqualFold(pull.State, "MERGED"):
 		out.State = MergeStateMerged

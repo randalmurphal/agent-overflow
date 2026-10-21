@@ -6,6 +6,35 @@
 import { Create as $Create } from "@wailsio/runtime";
 
 /**
+ * ApprovalCount is a PR's standing approvals (Given) against what its
+ * merge requires (Required).
+ */
+export class ApprovalCount {
+    "given": number;
+    "required": number;
+
+    /** Creates a new ApprovalCount instance. */
+    constructor($$source: Partial<ApprovalCount> = {}) {
+        if (!("given" in $$source)) {
+            this["given"] = 0;
+        }
+        if (!("required" in $$source)) {
+            this["required"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ApprovalCount instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ApprovalCount {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ApprovalCount($$parsedSource as Partial<ApprovalCount>);
+    }
+}
+
+/**
  * AutoMergeRequest is an armed merge-when-ready: who set it, when, with
  * which method, and the forge's own wording of what it waits for.
  */
@@ -91,14 +120,29 @@ export class CIJob {
 
 export class CIPipeline {
     /**
+     * ID is the forge's pipeline id as a decimal string: the GitLab
+     * pipeline or the GitHub workflow run ReadPipeline read. A GitHub PR's
+     * head checks span every workflow run on the head, so ReadPR leaves it
+     * empty there.
+     */
+    "id"?: string;
+
+    /**
      * Status is the normalized aggregate for the whole pipeline.
      */
     "status": string;
 
     /**
-     * URL links to the forge's pipeline page (GitLab only; empty on GitHub).
+     * URL links to the forge's pipeline page: the GitLab pipeline, the
+     * GitHub workflow run (empty for a GitHub PR's head checks).
      */
     "url"?: string;
+
+    /**
+     * Ref and SHA are the ref and commit the pipeline ran on.
+     */
+    "ref"?: string;
+    "sha"?: string;
     "stages": CIStage[];
 
     /** Creates a new CIPipeline instance. */
@@ -117,10 +161,10 @@ export class CIPipeline {
      * Creates a new CIPipeline instance from a string or object.
      */
     static createFrom($$source: any = {}): CIPipeline {
-        const $$createField2_0 = $$createType3;
+        const $$createField5_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("stages" in $$parsedSource) {
-            $$parsedSource["stages"] = $$createField2_0($$parsedSource["stages"]);
+            $$parsedSource["stages"] = $$createField5_0($$parsedSource["stages"]);
         }
         return new CIPipeline($$parsedSource as Partial<CIPipeline>);
     }
@@ -627,6 +671,15 @@ export class MergeReadiness {
     "blockers": MergeBlocker[];
     "settled": MergeBlocker[];
 
+    /**
+     * Approvals counts the approvals that stand and the approvals the
+     * merge requires (0 when nothing is required). Unresolved counts the
+     * review threads not yet resolved when the read has every thread's
+     * state (PRReadParts.Unresolved asks for it); nil otherwise.
+     */
+    "approvals": ApprovalCount;
+    "unresolved"?: number | null;
+
     /** Creates a new MergeReadiness instance. */
     constructor($$source: Partial<MergeReadiness> = {}) {
         if (!("state" in $$source)) {
@@ -638,6 +691,9 @@ export class MergeReadiness {
         if (!("settled" in $$source)) {
             this["settled"] = [];
         }
+        if (!("approvals" in $$source)) {
+            this["approvals"] = (new ApprovalCount());
+        }
 
         Object.assign(this, $$source);
     }
@@ -648,12 +704,16 @@ export class MergeReadiness {
     static createFrom($$source: any = {}): MergeReadiness {
         const $$createField1_0 = $$createType12;
         const $$createField2_0 = $$createType12;
+        const $$createField3_0 = $$createType13;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("blockers" in $$parsedSource) {
             $$parsedSource["blockers"] = $$createField1_0($$parsedSource["blockers"]);
         }
         if ("settled" in $$parsedSource) {
             $$parsedSource["settled"] = $$createField2_0($$parsedSource["settled"]);
+        }
+        if ("approvals" in $$parsedSource) {
+            $$parsedSource["approvals"] = $$createField3_0($$parsedSource["approvals"]);
         }
         return new MergeReadiness($$parsedSource as Partial<MergeReadiness>);
     }
@@ -819,11 +879,11 @@ export class PRDetail {
      * Creates a new PRDetail instance from a string or object.
      */
     static createFrom($$source: any = {}): PRDetail {
-        const $$createField17_0 = $$createType14;
-        const $$createField18_0 = $$createType15;
-        const $$createField20_0 = $$createType17;
-        const $$createField21_0 = $$createType18;
-        const $$createField22_0 = $$createType19;
+        const $$createField17_0 = $$createType15;
+        const $$createField18_0 = $$createType16;
+        const $$createField20_0 = $$createType18;
+        const $$createField21_0 = $$createType19;
+        const $$createField22_0 = $$createType20;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("latestReviews" in $$parsedSource) {
             $$parsedSource["latestReviews"] = $$createField17_0($$parsedSource["latestReviews"]);
@@ -870,6 +930,56 @@ export class PRDiffRefs {
     static createFrom($$source: any = {}): PRDiffRefs {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new PRDiffRefs($$parsedSource as Partial<PRDiffRefs>);
+    }
+}
+
+/**
+ * PRListAuthor is a PR's author: the login and, when the forge reports
+ * one, the display name.
+ */
+export class PRListAuthor {
+    "login": string;
+    "name"?: string;
+
+    /** Creates a new PRListAuthor instance. */
+    constructor($$source: Partial<PRListAuthor> = {}) {
+        if (!("login" in $$source)) {
+            this["login"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRListAuthor instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRListAuthor {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PRListAuthor($$parsedSource as Partial<PRListAuthor>);
+    }
+}
+
+/**
+ * PRListReview is the login's latest review of a PR: GitHub's review
+ * state (APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED) and when it
+ * was submitted (RFC 3339).
+ */
+export class PRListReview {
+    "state"?: string;
+    "submittedAt"?: string;
+
+    /** Creates a new PRListReview instance. */
+    constructor($$source: Partial<PRListReview> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRListReview instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRListReview {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PRListReview($$parsedSource as Partial<PRListReview>);
     }
 }
 
@@ -968,6 +1078,181 @@ export class PRRevision {
     }
 }
 
+/**
+ * PipelineListFilter narrows ListPipelines. Ref is a branch, tag or (on
+ * GitLab) merge request ref as a list row names it; Status a normalized
+ * CI status the forge can filter by: success, failed, running, pending,
+ * canceled, skipped, and manual on GitLab. GitHub's pending filter is its
+ * queued status. Limit is the rows wanted, the most recent first; 0 or
+ * more than pipelineListMaxLimit reads pipelineListMaxLimit.
+ */
+export class PipelineListFilter {
+    "ref"?: string;
+    "status"?: string;
+    "limit"?: number;
+
+    /** Creates a new PipelineListFilter instance. */
+    constructor($$source: Partial<PipelineListFilter> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PipelineListFilter instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PipelineListFilter {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PipelineListFilter($$parsedSource as Partial<PipelineListFilter>);
+    }
+}
+
+/**
+ * PipelineSummary is one pipeline of a repository as the forge's list
+ * read answers it: a GitLab pipeline or a GitHub workflow run. Neither
+ * list says whether a ref is a branch or a tag, so RefKind is
+ * merge_request for a merge request's pipeline (GitLab's
+ * refs/merge-requests/N ref, a GitHub pull_request event), tag for a
+ * GitHub release event, and branch otherwise, a tag push included.
+ */
+export class PipelineSummary {
+    /**
+     * ID is the pipeline's or run's id, a decimal string, for
+     * ReadPipeline.
+     */
+    "id": string;
+
+    /**
+     * Status is the normalized CI status (NormalizeCIStatus).
+     */
+    "status": string;
+
+    /**
+     * Name is the GitHub workflow's; GitLab's list has none.
+     */
+    "name"?: string;
+    "ref": string;
+    "refKind": string;
+
+    /**
+     * MRNumber is the merge request a merge_request pipeline ran for; 0
+     * when the forge does not name it (GitHub lists no pull request for
+     * a fork's run).
+     */
+    "mrNumber"?: number;
+    "sha": string;
+
+    /**
+     * Title is the GitHub run's display title (its commit's headline or
+     * the run's name); GitLab's list carries no commit title.
+     */
+    "title"?: string;
+
+    /**
+     * Source is what started it: GitLab's source (push,
+     * merge_request_event, schedule, ...) or GitHub's event (push,
+     * pull_request, workflow_dispatch, ...).
+     */
+    "source": string;
+
+    /**
+     * CreatedAt and UpdatedAt are RFC 3339, as the forge spells them.
+     */
+    "createdAt": string;
+    "updatedAt": string;
+    "url": string;
+
+    /** Creates a new PipelineSummary instance. */
+    constructor($$source: Partial<PipelineSummary> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+        if (!("ref" in $$source)) {
+            this["ref"] = "";
+        }
+        if (!("refKind" in $$source)) {
+            this["refKind"] = "";
+        }
+        if (!("sha" in $$source)) {
+            this["sha"] = "";
+        }
+        if (!("source" in $$source)) {
+            this["source"] = "";
+        }
+        if (!("createdAt" in $$source)) {
+            this["createdAt"] = "";
+        }
+        if (!("updatedAt" in $$source)) {
+            this["updatedAt"] = "";
+        }
+        if (!("url" in $$source)) {
+            this["url"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PipelineSummary instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PipelineSummary {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PipelineSummary($$parsedSource as Partial<PipelineSummary>);
+    }
+}
+
+/**
+ * RepoReference identifies a repository on a forge host: a PRReference
+ * without its number. Repository-scoped reads that take no checkout
+ * (ListProjectPRs, ListPipelines, ReadPipeline, StreamCIJobLog) address
+ * the repository by it; its fields mean what PRReference's do.
+ */
+export class RepoReference {
+    /**
+     * "github" | "gitlab"
+     */
+    "Forge": string;
+
+    /**
+     * URL.host spelling, as PRReference.Host
+     */
+    "Host": string;
+
+    /**
+     * "owner" or "group/sub/..."
+     */
+    "Namespace": string;
+    "Repo": string;
+
+    /** Creates a new RepoReference instance. */
+    constructor($$source: Partial<RepoReference> = {}) {
+        if (!("Forge" in $$source)) {
+            this["Forge"] = "";
+        }
+        if (!("Host" in $$source)) {
+            this["Host"] = "";
+        }
+        if (!("Namespace" in $$source)) {
+            this["Namespace"] = "";
+        }
+        if (!("Repo" in $$source)) {
+            this["Repo"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RepoReference instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RepoReference {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new RepoReference($$parsedSource as Partial<RepoReference>);
+    }
+}
+
 export class ReviewComment {
     "authorLogin": string;
     "authorName"?: string;
@@ -998,7 +1283,7 @@ export class ReviewComment {
      * Creates a new ReviewComment instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewComment {
-        const $$createField5_0 = $$createType21;
+        const $$createField5_0 = $$createType22;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("replyTo" in $$parsedSource) {
             $$parsedSource["replyTo"] = $$createField5_0($$parsedSource["replyTo"]);
@@ -1174,7 +1459,7 @@ export class ReviewThread {
      * Creates a new ReviewThread instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewThread {
-        const $$createField10_0 = $$createType23;
+        const $$createField10_0 = $$createType24;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("comments" in $$parsedSource) {
             $$parsedSource["comments"] = $$createField10_0($$parsedSource["comments"]);
@@ -1245,7 +1530,7 @@ export class SubmitReviewRequest {
      * Creates a new SubmitReviewRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): SubmitReviewRequest {
-        const $$createField2_0 = $$createType25;
+        const $$createField2_0 = $$createType26;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("comments" in $$parsedSource) {
             $$parsedSource["comments"] = $$createField2_0($$parsedSource["comments"]);
@@ -1268,16 +1553,17 @@ const $$createType9 = AutoMergeRequest.createFrom;
 const $$createType10 = $Create.Nullable($$createType9);
 const $$createType11 = MergeBlocker.createFrom;
 const $$createType12 = $Create.Array($$createType11);
-const $$createType13 = ReviewVerdict.createFrom;
-const $$createType14 = $Create.Array($$createType13);
-const $$createType15 = CheckSummary.createFrom;
-const $$createType16 = PRDiffRefs.createFrom;
-const $$createType17 = $Create.Nullable($$createType16);
-const $$createType18 = MergeReadiness.createFrom;
-const $$createType19 = MergeOptions.createFrom;
-const $$createType20 = ReviewReplyTo.createFrom;
-const $$createType21 = $Create.Nullable($$createType20);
-const $$createType22 = ReviewComment.createFrom;
-const $$createType23 = $Create.Array($$createType22);
-const $$createType24 = ReviewLineComment.createFrom;
-const $$createType25 = $Create.Array($$createType24);
+const $$createType13 = ApprovalCount.createFrom;
+const $$createType14 = ReviewVerdict.createFrom;
+const $$createType15 = $Create.Array($$createType14);
+const $$createType16 = CheckSummary.createFrom;
+const $$createType17 = PRDiffRefs.createFrom;
+const $$createType18 = $Create.Nullable($$createType17);
+const $$createType19 = MergeReadiness.createFrom;
+const $$createType20 = MergeOptions.createFrom;
+const $$createType21 = ReviewReplyTo.createFrom;
+const $$createType22 = $Create.Nullable($$createType21);
+const $$createType23 = ReviewComment.createFrom;
+const $$createType24 = $Create.Array($$createType23);
+const $$createType25 = ReviewLineComment.createFrom;
+const $$createType26 = $Create.Array($$createType25);

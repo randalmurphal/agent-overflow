@@ -58,9 +58,10 @@ import {
 } from './threadActionConfirmations.svelte';
 import { getSettings, loadSettings, resetSettingsForTest } from './settings.svelte';
 import {
-  isWorkflowsOverlayOpen,
+  pushWorkflowRunDetail,
   resetWorkflowsOverlayForTest,
 } from './workflowsOverlay.svelte';
+import { isToolOpen, openTool, resetToolPanesForTest } from './toolPanes.svelte';
 import {
   getSettingsSection,
   isSettingsOpen,
@@ -1872,7 +1873,16 @@ describe('settings commands', () => {
     clearCommandRegistry();
     resetWorkflowsOverlayForTest();
     resetSettingsOverlayForTest();
+    resetToolPanesForTest();
+    resetPanesForTest();
+    setPaneLayoutItemsForTest([]);
     registerBuiltinCommands(makeBuiltinHooks());
+  });
+
+  afterEach(() => {
+    resetToolPanesForTest();
+    resetPanesForTest();
+    resetPaneLayoutForTest();
   });
 
   it('opens the settings overlay on its General tab', () => {
@@ -1906,19 +1916,67 @@ describe('settings commands', () => {
     expect(getCommand('settings.close')?.editableReachable).toBe(true);
   });
 
-  // Both surfaces are full-height layers over the pane strip with their own
-  // focus trap, so opening either closes the other. Both directions live in
-  // the stores now: `openSettingsOverlay` calls `closeWorkflowsOverlay`, and
-  // the settings store arms the reverse hook at module init.
-  it('is mutually exclusive with the workflows overlay, both directions', () => {
+  // Settings is a layer over the pane strip; a tool pane is IN the strip. A
+  // tool opened under settings would be invisible, so opening one closes
+  // settings (armed by the settings store at module init). Settings opening
+  // over a tool pane leaves the pane where it is.
+  it('closes settings when a tool pane opens, and keeps the pane under settings', () => {
     openSettingsOverlay('theme');
     runCommand('workflows.toggle', makeCommandContext(null, {}) as CommandContext);
-    expect(isWorkflowsOverlayOpen()).toBe(true);
+    expect(isToolOpen('workflows')).toBe(true);
     expect(isSettingsOpen()).toBe(false);
 
     runCommand('settings.open', makeCommandContext(null, {}) as CommandContext);
     expect(isSettingsOpen()).toBe(true);
-    expect(isWorkflowsOverlayOpen()).toBe(false);
+    expect(isToolOpen('workflows')).toBe(true);
+  });
+});
+
+// --- tool pane flags ---
+//
+// The workflows chords gate on the RAW focused pane being the workflows pane,
+// and its surface-dismissal Escape additionally on `toolDetailOpen`. Derived
+// in makeCommandContext so every builder sees one answer.
+describe('tool pane command flags', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+    resetWorkflowsOverlayForTest();
+    resetToolPanesForTest();
+    resetPanesForTest();
+    setPaneLayoutItemsForTest([]);
+  });
+
+  afterEach(() => {
+    resetToolPanesForTest();
+    resetPanesForTest();
+    resetPaneLayoutForTest();
+  });
+
+  it('derives tool focus and the detail step from the focused pane', () => {
+    let flags = makeCommandContext(null, {}).flags;
+    expect(flags.toolPaneFocused).toBe(false);
+    expect(flags.workflowsPaneFocused).toBe(false);
+    expect(flags.toolDetailOpen).toBe(false);
+
+    openTool('workflows');
+    flags = makeCommandContext(null, {}).flags;
+    expect(flags.toolPaneFocused).toBe(true);
+    expect(flags.workflowsPaneFocused).toBe(true);
+    expect(flags.toolDetailOpen).toBe(false);
+    expect(flags.workflowsRunDetail).toBe(false);
+
+    pushWorkflowRunDetail('run-1');
+    flags = makeCommandContext(null, {}).flags;
+    expect(flags.toolDetailOpen).toBe(true);
+    expect(flags.workflowsRunDetail).toBe(true);
+
+    // Another tool focused: the workflows chords and its detail step go quiet.
+    openTool('pulls', { newPane: true });
+    flags = makeCommandContext(null, {}).flags;
+    expect(flags.toolPaneFocused).toBe(true);
+    expect(flags.workflowsPaneFocused).toBe(false);
+    expect(flags.toolDetailOpen).toBe(false);
+    expect(flags.workflowsRunDetail).toBe(false);
   });
 });
 

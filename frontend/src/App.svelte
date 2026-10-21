@@ -8,7 +8,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { documentHidden } from './lib/utils/pageVisibility';
   import { isSurfaceDismissalEvent } from './lib/utils/surfaceDismissal';
-  import { ensureMainPane, getFocusedPaneOrNull, getPane, iterPanes, openThreadFromNavigation, resetPaneRegistry } from './lib/stores/panes.svelte';
+  import { getFocusedPaneOrNull, getPane, iterPanes, openThreadFromNavigation, resetPaneRegistry } from './lib/stores/panes.svelte';
   import { setupEventListeners } from './lib/stores/events';
   import { OPEN_GIT_DIALOG_EVENT, type OpenGitDialogDetail } from './lib/stores/eventNames';
   import { getThreads, loadThreads } from './lib/stores/threads.svelte';
@@ -27,10 +27,9 @@
   import { HOME_BACKEND } from './lib/transport/backendKey';
   import { backendReachable } from './lib/stores/attachedBackends.svelte';
   import { syncSidebarFromAppStorage, syncSidebarFromSettings } from './lib/stores/sidebar.svelte';
-  import {
-    isWorkflowsOverlayOpen,
-    syncWorkflowsOverlayFromAppStorage,
-  } from './lib/stores/workflowsOverlay.svelte';
+  import { syncWorkflowsOverlayFromAppStorage } from './lib/stores/workflowsOverlay.svelte';
+  import { installToolPanes, syncToolPanesFromAppStorage } from './lib/stores/toolPanes.svelte';
+  import { syncPullsFiltersFromAppStorage } from './lib/stores/pullsPageFilters.svelte';
   import {
     closeSettingsOverlay,
     getSettingsSection,
@@ -272,7 +271,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     const targetId = ids[index - 1];
     if (!targetId) return;
     const thread = getThreads().find((t) => t.id === targetId);
-    if (thread) void openThreadFromNavigation(thread, getFocusedPaneOrNull() ?? ensureMainPane());
+    if (thread) void openThreadFromNavigation(thread);
   }
 
   function requestNewThread(openInNewPane: boolean): void {
@@ -487,14 +486,17 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
         if (disposed) return;
         syncSidebarLayoutFromAppStorage();
         syncSidebarFromAppStorage();
-        // The workflows overlay stack/filter/sweep cursor are durable per
-        // client (UI-SPEC §2.1), so they adopt the hydrated copy the same way
-        // the sidebar's view state does.
+        // The workflows stack/filter/sweep cursor and the last-used tool are
+        // durable per client (UI-SPEC §2.1), so they adopt the hydrated copy
+        // the same way the sidebar's view state does.
         syncWorkflowsOverlayFromAppStorage();
+        syncToolPanesFromAppStorage();
+        syncPullsFiltersFromAppStorage();
         await loadPersistedPaneLayout(threads, restoreRevision);
         if (disposed) return;
         installPaneLayoutPersistence();
         installCompanionPanes();
+        installToolPanes();
         installCompanionStash();
         await Promise.race([
           highlightTablesWarm,
@@ -669,11 +671,11 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
       <StartupScreen />
     {/if}
     <!--
-      Settings and the workflows overlay (UI-SPEC §2.1) are SIBLINGS of
-      PaneHost, layered over it — never a pane kind, never a surface that
-      replaces the strip. The pane tree stays mounted underneath, so opening
-      and closing rebuild nothing. Both load lazily so their chunks stay out
-      of the eager startup graph.
+      Settings (UI-SPEC §2.1) is a SIBLING of PaneHost, layered over it —
+      never a pane kind, never a surface that replaces the strip. The pane
+      tree stays mounted underneath, so opening and closing rebuild nothing.
+      It loads lazily so its chunk stays out of the eager startup graph.
+      Workflows is a tool pane inside the strip (toolPanes.svelte.ts).
     -->
     <LazyOverlay
       load={() => import('./lib/components/settings/SettingsOverlay.svelte')}
@@ -683,11 +685,6 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
         initialSection: getSettingsSection(),
         onClose: closeSettingsOverlay,
       }}
-    />
-    <LazyOverlay
-      load={() => import('./lib/components/workflows/WorkflowsOverlay.svelte')}
-      active={isWorkflowsOverlayOpen()}
-      props={{ open: isWorkflowsOverlayOpen() }}
     />
   </div>
 </main>

@@ -18,8 +18,8 @@ import (
 func TestCILogFileName(t *testing.T) {
 	t.Parallel()
 	pr := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "group/sub", Repo: "repo", Number: 42}
-	name := ciLogFileName(pr, "1234", "unit tests (linux/amd64)")
-	if name != "gitlab-group-sub-repo-pr42-1234-unit-tests--linux-amd64.log" {
+	name := ciLogFileName(pr.Repository(), "1234", "unit tests (linux/amd64)")
+	if name != "gitlab-group-sub-repo-1234-unit-tests--linux-amd64.log" {
 		t.Fatalf("name = %q", name)
 	}
 	if strings.ContainsAny(name, "/\\ ") {
@@ -71,14 +71,14 @@ func TestSavePRCIJobLogWritesFullLog(t *testing.T) {
 	})
 
 	pr := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "widgets", Number: 7}
-	path, err := app.SavePRCIJobLog(t.Context(), pr, "901", "build")
+	path, err := app.SavePRCIJobLog(t.Context(), pr.Repository(), "901", "build")
 	if err != nil {
 		t.Fatalf("SavePRCIJobLog: %v", err)
 	}
 	if !filepath.IsAbs(path) {
 		t.Fatalf("path %q is not absolute", path)
 	}
-	if filepath.Base(path) != "github-acme-widgets-pr7-901-build.log" {
+	if filepath.Base(path) != "github-acme-widgets-901-build.log" {
 		t.Fatalf("unexpected file name %q", filepath.Base(path))
 	}
 	data, err := os.ReadFile(path)
@@ -88,7 +88,7 @@ func TestSavePRCIJobLogWritesFullLog(t *testing.T) {
 	if string(data) != content {
 		t.Fatalf("saved content = %q", data)
 	}
-	again, err := app.SavePRCIJobLog(t.Context(), pr, "901", "build")
+	again, err := app.SavePRCIJobLog(t.Context(), pr.Repository(), "901", "build")
 	if err != nil || again != path || requests.Load() != 1 {
 		t.Fatalf("re-save = %q, %v after %d requests; want the same file from the cache", again, err, requests.Load())
 	}
@@ -96,7 +96,7 @@ func TestSavePRCIJobLogWritesFullLog(t *testing.T) {
 		t.Fatalf("ci-logs holds %v", got)
 	}
 
-	if _, err := app.SavePRCIJobLog(t.Context(), pr, "not-a-number", "build"); err == nil {
+	if _, err := app.SavePRCIJobLog(t.Context(), pr.Repository(), "not-a-number", "build"); err == nil {
 		t.Fatal("expected error for invalid job id")
 	}
 }
@@ -112,7 +112,7 @@ func TestSavePRCIJobLogNamesAnUnpublishedLog(t *testing.T) {
 	})
 
 	pr := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "widgets", Number: 7}
-	_, err := app.SavePRCIJobLog(t.Context(), pr, "901", "build")
+	_, err := app.SavePRCIJobLog(t.Context(), pr.Repository(), "901", "build")
 	if !errors.Is(err, errCIJobLogUnpublished) {
 		t.Fatalf("SavePRCIJobLog error = %v, want the unpublished-log answer", err)
 	}
@@ -139,7 +139,7 @@ func TestSavePRCIJobLogDropsGitLabSectionMarkers(t *testing.T) {
 	})
 
 	pr := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "acme", Repo: "widgets", Number: 7}
-	path, err := app.SavePRCIJobLog(t.Context(), pr, "901", "unit")
+	path, err := app.SavePRCIJobLog(t.Context(), pr.Repository(), "901", "unit")
 	if err != nil {
 		t.Fatalf("SavePRCIJobLog: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestSavePRCIJobLogResumesACutDownload(t *testing.T) {
 	body := strings.Repeat("0123456789abcdef\n", 1000)
 	f.setLog("7", body, nil)
 	f.cutLog("7", 5000)
-	path, err := f.app.SavePRCIJobLog(t.Context(), testPR, "7", "unit")
+	path, err := f.app.SavePRCIJobLog(t.Context(), testPR.Repository(), "7", "unit")
 	if err != nil {
 		t.Fatalf("SavePRCIJobLog: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestSavePRCIJobLogResumesACutDownload(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(f.app.configDir, "ci-logs", "cache")); err != nil {
 		t.Fatal(err)
 	}
-	if again, err := f.app.SavePRCIJobLog(t.Context(), testPR, "7", "unit"); err != nil || again != path {
+	if again, err := f.app.SavePRCIJobLog(t.Context(), testPR.Repository(), "7", "unit"); err != nil || again != path {
 		t.Fatalf("save after the cache was cleared = %q, %v", again, err)
 	}
 	if data, err := os.ReadFile(path); err != nil || string(data) != body {
@@ -183,7 +183,7 @@ func TestSavePRCIJobLogResumesACutDownload(t *testing.T) {
 	}
 
 	f.setLog("8", "", errors.New("forge down"))
-	if _, err := f.app.SavePRCIJobLog(t.Context(), testPR, "8", "lint"); err == nil {
+	if _, err := f.app.SavePRCIJobLog(t.Context(), testPR.Repository(), "8", "lint"); err == nil {
 		t.Fatal("a failed download was saved")
 	}
 	if got := savedLogs(t, f.app); !slices.Equal(got, []string{filepath.Base(path)}) {
@@ -212,7 +212,7 @@ func TestSavePRCIJobLogSectionWritesTheSection(t *testing.T) {
 	sub := f.subscribe(t)
 	awaitCIEvent(t, f.ciEvents, "pipeline frame")
 	pr := testPR
-	if _, err := f.app.SavePRCIJobLogSection(pr, "901", "build", "step:2"); !errors.Is(err, errCILogNotDownloaded) {
+	if _, err := f.app.SavePRCIJobLogSection(pr.Repository(), "901", "build", "step:2"); !errors.Is(err, errCILogNotDownloaded) {
 		t.Fatalf("section of a log not downloaded = %v", err)
 	}
 	result, err := f.app.SetPRCILogFollows(t.Context(), sub.ID, []string{"901"})
@@ -224,11 +224,11 @@ func TestSavePRCIJobLogSectionWritesTheSection(t *testing.T) {
 		t.Fatalf("sections = %+v", sections)
 	}
 
-	path, err := f.app.SavePRCIJobLogSection(pr, "901", "build", "step:2")
+	path, err := f.app.SavePRCIJobLogSection(pr.Repository(), "901", "build", "step:2")
 	if err != nil {
 		t.Fatalf("SavePRCIJobLogSection: %v", err)
 	}
-	if filepath.Base(path) != "github-owner-repo-pr9-901-build-Run-make-test.log" {
+	if filepath.Base(path) != "github-owner-repo-901-build-Run-make-test.log" {
 		t.Fatalf("unexpected file name %q", filepath.Base(path))
 	}
 	// The file is plain text: the escape sequences the view colors with
@@ -238,20 +238,20 @@ func TestSavePRCIJobLogSectionWritesTheSection(t *testing.T) {
 		t.Fatalf("saved content = %q, %v; want %q", data, err, want)
 	}
 	// A re-save refreshes the same file.
-	if again, err := f.app.SavePRCIJobLogSection(pr, "901", "build", "step:2"); err != nil || again != path {
+	if again, err := f.app.SavePRCIJobLogSection(pr.Repository(), "901", "build", "step:2"); err != nil || again != path {
 		t.Fatalf("re-save = %q, %v; want %q", again, err, path)
 	}
 
-	if _, err := f.app.SavePRCIJobLogSection(pr, "901", "build", "step:9"); err == nil {
+	if _, err := f.app.SavePRCIJobLogSection(pr.Repository(), "901", "build", "step:9"); err == nil {
 		t.Fatal("a section the index does not name was saved")
 	}
-	if _, err := f.app.SavePRCIJobLogSection(pr, "../x", "build", "step:2"); err == nil {
+	if _, err := f.app.SavePRCIJobLogSection(pr.Repository(), "../x", "build", "step:2"); err == nil {
 		t.Fatal("expected error for invalid job id")
 	}
-	if _, err := f.app.SavePRCIJobLogSection(gitops.PRReference{Forge: "github"}, "901", "build", "step:2"); err == nil {
+	if _, err := f.app.SavePRCIJobLogSection(gitops.RepoReference{Forge: "github"}, "901", "build", "step:2"); err == nil {
 		t.Fatal("expected error for an invalid pull request")
 	}
-	if _, err := f.app.SavePRCIJobLogSection(pr, "901", "build", ""); err == nil {
+	if _, err := f.app.SavePRCIJobLogSection(pr.Repository(), "901", "build", ""); err == nil {
 		t.Fatal("expected error for an empty section key")
 	}
 	if got := savedLogs(t, f.app); !slices.Equal(got, []string{filepath.Base(path)}) {

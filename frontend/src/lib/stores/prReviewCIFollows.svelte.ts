@@ -1,7 +1,8 @@
-// Which CI job logs this client follows, per PR, and the SetPRCILogFollows
-// calls that tell the backend.
+// Which CI job logs this client follows, per CI key (ciHandles.ts), and
+// the follow calls (SetPRCILogFollows, SetPipelineFollows) that tell the
+// backend.
 //
-// Each pane showing a job log holds one desire per PR key, under its own
+// Each pane showing a job log holds one desire per CI key, under its own
 // token. The backend keeps the follow set on the subscription handle and
 // this client holds one handle per key, so the union of the key's desires
 // is what gets sent: when the union changes, after every (re)subscribe (a
@@ -14,12 +15,10 @@
 
 import { SvelteMap } from 'svelte/reactivity';
 import { untrack } from 'svelte';
-import { SetPRCILogFollows } from './bindings';
+import { ciHandle } from './ciHandles';
 import { applyPRCILog, failPRCILog, replacePRCILog, retainPRCILogs, type PRCILogEvent } from './prReviewCI.svelte';
-import { prSubscriptionId } from './prReviewSubscriptions';
 import { isTransportClassError } from './transportStatus.svelte';
 import type { BackendKey } from '../transport/backendKey';
-import { withBackendTarget } from '../transport/backends';
 import { errString } from '../utils/errors';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { workspaceKeyBackend } from '../utils/workspaceKey';
@@ -126,22 +125,22 @@ async function drainFollows(key: string, record: KeyFollows): Promise<void> {
       record.owed = false;
       // No live handle: the subscribe in flight restates the union once it
       // lands (resendPRCILogFollows).
-      const id = prSubscriptionId(key);
-      if (id === null) return;
+      const handle = ciHandle(key);
+      if (handle === null) return;
       const jobs = record.union();
       if (jobs.length === 0 && record.sent.length === 0) return;
       let logs;
       try {
-        const result = await withBackendTarget(workspaceKeyBackend(key), () => SetPRCILogFollows(id, jobs));
+        const result = await handle.follow(jobs);
         logs = result?.logs ?? {};
       } catch (err) {
         // A reply for a handle that is gone is no answer: the resubscribe
         // that replaced it restates the union.
-        if (prSubscriptionId(key) !== id || recordFor(key) !== record) continue;
+        if (ciHandle(key) !== handle || recordFor(key) !== record) continue;
         reportFollowFailure(key, record, jobs, err);
         continue;
       }
-      if (prSubscriptionId(key) !== id || recordFor(key) !== record) continue;
+      if (ciHandle(key) !== handle || recordFor(key) !== record) continue;
       record.sent = jobs;
       const followed = new Set(record.union());
       for (const jobId of jobs) {
