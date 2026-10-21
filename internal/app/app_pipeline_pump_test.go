@@ -154,6 +154,25 @@ func TestPipelinePumpPollsWhileLiveAndPausesWhileHidden(t *testing.T) {
 	}
 }
 
+// A queued pipeline that lists no job yet is live: it is polled at the
+// live cadence until it runs and finishes, then the cadence stops.
+func TestPipelinePumpPollsAQueuedPipelineWithoutJobs(t *testing.T) {
+	t.Parallel()
+	f := newPipelineFixture(t)
+	f.publish(gitops.CIPipeline{Status: gitops.CIStatusPending, Stages: []gitops.CIStage{}}, nil)
+	f.subscribe(t, "41")
+
+	f.publish(pipelineWith(gitops.CIStatusRunning, gitops.CIJob{ID: "7", Name: "unit", Status: gitops.CIStatusRunning}), nil)
+	if evt := awaitPipelineEvent(t, f.events, "the queued pipeline running"); evt.Pipeline == nil || evt.Pipeline.Status != gitops.CIStatusRunning {
+		t.Fatalf("frame = %+v", evt)
+	}
+	f.publish(pipelineWith(gitops.CIStatusSuccess, gitops.CIJob{ID: "7", Name: "unit", Status: gitops.CIStatusSuccess}), nil)
+	if evt := awaitPipelineEvent(t, f.events, "the finished pipeline"); evt.Pipeline == nil || evt.Pipeline.Status != gitops.CIStatusSuccess {
+		t.Fatalf("frame = %+v", evt)
+	}
+	expectCountHolds(t, &f.ciFetches, "a terminal pipeline kept polling")
+}
+
 // A failed first read still creates the pump, carrying the failure,
 // which retries until the pipeline reads.
 func TestPipelinePumpFirstReadFailureIsCarriedAndRetried(t *testing.T) {

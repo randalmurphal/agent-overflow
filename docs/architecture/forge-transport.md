@@ -407,7 +407,8 @@ pipeline of a repository, one pump per (repository, id) however many
 panes show it. It is the PR pump's CI phase without a PR
 (`app_ci_phase.go`): the first subscriber reads the pipeline, a joiner
 takes the pump's state, the pipeline is polled at the live cadence while
-it runs and its followed job logs (`SetPipelineFollows`) at the follow
+it or a job of it is queued or running (`git.CIPipelineLive`: a queued
+pipeline may list no job yet) and its followed job logs (`SetPipelineFollows`) at the follow
 cadence, and frames go out on `ci:pipeline_updated`; a log frame rides
 `pr:ci_log` with the pipeline's key and no PR key. A terminal pipeline
 is read again at the PR update interval while visible, since a job
