@@ -12,6 +12,7 @@ import {
   attachPR,
   clearPRThreadResolveOverride,
   handlePRVisibilityChange,
+  onPRSnapshotApplied,
   overriddenPRThreads,
   peekPRError,
   peekPRFailure,
@@ -1402,6 +1403,33 @@ describe('prReviewStore — merge conflicts per checkout', () => {
       expect(peekPRConflicts(KEY, ws).state).toBeNull();
       expect(peekPRConflicts(KEY, ws).contentByPath.size).toBe(0);
     }
+  });
+});
+
+describe('prReviewStore — snapshot observers', () => {
+  it('tells an observer each applied snapshot\'s head and whether the window was on screen, until it unsubscribes', async () => {
+    installSubscribeMock();
+    const seen: { key: string; headSHA: string; visible: boolean }[] = [];
+    const failing = onPRSnapshotApplied(() => { throw new Error('observer bug'); });
+    const stop = onPRSnapshotApplied((key, applied) => { seen.push({ key, ...applied }); });
+    const holder = attachPR(KEY, { ref: REF });
+    await flush();
+    // The subscribe result, and an observer that throws costs the others nothing.
+    expect(seen).toEqual([{ key: KEY, headSHA: 'sha-a', visible: true }]);
+
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+    try {
+      applyPRUpdatedEvent({ prKey: KEY, detail: detailStub({ headSHA: 'sha-b' }), threads: [], headSHA: 'sha-b', seq: 2 });
+    } finally {
+      delete (document as unknown as Record<string, unknown>).visibilityState;
+    }
+    expect(seen[1]).toEqual({ key: KEY, headSHA: 'sha-b', visible: false });
+
+    stop();
+    failing();
+    applyPRUpdatedEvent({ prKey: KEY, detail: detailStub({ headSHA: 'sha-c' }), threads: [], headSHA: 'sha-c', seq: 3 });
+    expect(seen).toHaveLength(2);
+    holder.release();
   });
 });
 

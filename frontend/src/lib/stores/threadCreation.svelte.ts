@@ -1,9 +1,8 @@
 import { GetThreadDefaults, StartTerminal } from './bindings';
 import { getProject, getProjects } from './projects.svelte';
 import {
-  ensureMainPane,
   ensurePaneInLayout,
-  getFocusedPaneOrNull,
+  focusedOpenTargetPane,
   mountThreadInPane,
   openEmptyPane,
   threadHostPane,
@@ -218,7 +217,7 @@ export async function openDraftThreadForProject(
   const project = groupId ? source : preferredProjectTarget(source);
   const pane: ThreadPane = openInNewPane
     ? openEmptyPane()
-    : threadHostPane(targetPane ?? getFocusedPaneOrNull() ?? ensureMainPane());
+    : threadHostPane(targetPane ?? focusedOpenTargetPane());
   // The placeholder is in-memory only — it doesn't go through
   // openThreadInPane, so we need to make sure the pane is mounted in
   // the layout grid ourselves. openEmptyPane already attaches itself.

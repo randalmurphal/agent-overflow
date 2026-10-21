@@ -7,7 +7,6 @@ import { recordWorkflowReceipt, resetWorkflowRunsForTest } from '../../stores/wo
 import {
   getWorkflowArmedAction,
   getWorkflowsOverlayDialog,
-  openWorkflowsOverlay,
   pushWorkflowRunDetail,
   resetWorkflowsOverlayForTest,
 } from '../../stores/workflowsOverlay.svelte';
@@ -64,7 +63,6 @@ describe('WorkflowActionRow', () => {
     setBindingMock('WorkflowDropUnit', async () => undefined);
     setBindingMock('WorkflowRetryUnit', async () => undefined);
     setBindingMock('WorkflowRetryFailedUnits', async () => undefined);
-    openWorkflowsOverlay();
     pushWorkflowRunDetail('run-1');
   });
 

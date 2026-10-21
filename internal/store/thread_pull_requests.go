@@ -126,6 +126,29 @@ func (s *Store) ListPendingThreadPullRequests() ([]ThreadPullRequest, error) {
 	return out, nil
 }
 
+// ListThreadPullRequestsForPR lists every thread that tracks the pull
+// request (forge, host, project, number), handled or not, in thread order.
+func (s *Store) ListThreadPullRequestsForPR(forge, host, project string, number int) ([]ThreadPullRequest, error) {
+	rows, err := s.reader().QueryContext(context.Background(), `SELECT `+threadPullRequestColumns+`
+		FROM thread_pull_requests WHERE forge = ? AND host = ? AND project = ? AND number = ? ORDER BY thread_id`,
+		forge, host, project, number)
+	if err != nil {
+		return nil, fmt.Errorf("store: list threads on %s %s#%d: %w", forge, project, number, err)
+	}
+	var out []ThreadPullRequest
+	for rows.Next() {
+		pr, err := scanThreadPullRequest(rows.Scan)
+		if err != nil {
+			return nil, errors.Join(fmt.Errorf("store: scan thread pull request: %w", err), rows.Close())
+		}
+		out = append(out, pr)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: list threads on %s %s#%d: %w", forge, project, number, err)
+	}
+	return out, nil
+}
+
 // MarkThreadPullRequestsMerged records mergedAt on every unhandled row that
 // tracks the pull request (forge, host, project, number) and does not know
 // the merge yet, and returns how many rows changed.

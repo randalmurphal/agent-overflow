@@ -8,7 +8,7 @@
   // the run RECORD comes from the cached list row (bound thread, live state,
   // patched by `workflow:item-state`); the run's EVIDENCE — the attempts this
   // run recorded, its artifacts, its outputs, its spend — comes from the
-  // per-run detail load, which is root-only and evicted when the overlay
+  // per-run detail load, which is root-only and evicted when the pane
   // leaves this run; and the run's SHAPE comes from the run-map entity store,
   // which owns the whole tree and patches itself from the same events
   // (RUN-MAP §4.2). `WorkflowRunMap` attaches that store itself — this

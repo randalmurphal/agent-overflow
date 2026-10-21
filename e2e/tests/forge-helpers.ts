@@ -60,6 +60,14 @@ export interface ForgePull {
   headRef?: string;
   /** The fork the head branch lives in ("owner/repo", a GitLab path); unset is the repository itself. */
   headRepo?: string;
+  /** Logins a review is requested from (GitHub reviewRequests, GitLab reviewers). */
+  reviewers?: string[];
+  /** RFC 3339; default 2026-01-01T00:00:00Z, updatedAt and committedAt (the head commit's time) to createdAt. */
+  createdAt?: string;
+  updatedAt?: string;
+  committedAt?: string;
+  /** GitHub's commit count; defaults to 1. */
+  commits?: number;
   baseRef?: string;
   headSha?: string;
   /** GitLab's merge base. */
@@ -138,6 +146,17 @@ export interface ForgePipeline {
   /** GitHub workflow name. Defaults to "CI". */
   name?: string;
   status?: ForgeJobStatus;
+  /** What it ran on: a pull's defaults to a merge request pipeline of its
+   * head, a repository's to a branch pipeline of main (forgefake Pipeline). */
+  refKind?: 'branch' | 'tag' | 'merge_request';
+  ref?: string;
+  sha?: string;
+  /** GitLab source or GitHub event; defaults by refKind. */
+  source?: string;
+  /** GitHub run display title; defaults to name. */
+  title?: string;
+  createdAt?: string;
+  updatedAt?: string;
   jobs: ForgeJob[];
 }
 
@@ -204,6 +223,8 @@ export interface ForgeRepo {
   pulls?: ForgePull[];
   attachments?: ForgeAttachment[];
   merge?: ForgeRepoMerge;
+  /** Pipelines on any ref beside the pulls' CI. */
+  pipelines?: ForgePipeline[];
   deletedBranches?: string[];
 }
 

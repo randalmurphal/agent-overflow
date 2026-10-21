@@ -101,22 +101,22 @@ func githubRESTTime(value string) any {
 	return value
 }
 
+// pipeline is the repository's pipeline with id: a pull's or one of its
+// Pipelines.
 func (r *Repo) pipeline(id int64) *Pipeline {
-	for i := range r.Pulls {
-		if ci := r.Pulls[i].CI; ci != nil && ci.ID == id {
-			return ci
+	for _, pipeline := range r.pipelines() {
+		if pipeline.ID == id {
+			return pipeline
 		}
 	}
 	return nil
 }
 
 func (r *Repo) job(id int64) *Job {
-	for i := range r.Pulls {
-		if ci := r.Pulls[i].CI; ci != nil {
-			for j := range ci.Jobs {
-				if ci.Jobs[j].ID == id {
-					return &ci.Jobs[j]
-				}
+	for _, pipeline := range r.pipelines() {
+		for j := range pipeline.Jobs {
+			if pipeline.Jobs[j].ID == id {
+				return &pipeline.Jobs[j]
 			}
 		}
 	}
@@ -338,6 +338,8 @@ func ghPullReview(e *Engine, c *call, m []string) response {
 	}
 	review := Review{ID: e.ids.next(), Author: e.viewer, State: state, Body: in.Body, SubmittedAt: githubNow(), CommitSHA: commit}
 	p.Reviews = append(p.Reviews, review)
+	// A review answers the reviewer's request.
+	p.Reviewers = slices.DeleteFunc(p.Reviewers, func(login string) bool { return strings.EqualFold(login, review.Author) })
 	return jsonResponse(map[string]any{
 		"id":           review.ID,
 		"node_id":      githubReviewNodeID(review.ID),

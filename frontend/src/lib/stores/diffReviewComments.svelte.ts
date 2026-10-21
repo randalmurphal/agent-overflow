@@ -29,7 +29,9 @@ function cacheKey(threadId: string, scope: DiffReviewScope, sourceKey: string): 
   return `${threadId}:${scope}:${sourceKey}`;
 }
 
-function normalizeComments(comments: readonly unknown[] | null | undefined): DiffReviewComment[] {
+/** A listed set in display order: by file, then line, then creation. Shared
+ * with the PR-owned drafts (prDiffReviewComments.svelte.ts). */
+export function normalizeComments(comments: readonly unknown[] | null | undefined): DiffReviewComment[] {
   return (comments ?? []).map((comment) => comment as DiffReviewComment).sort((a, b) => {
     const file = a.filePath.localeCompare(b.filePath);
     if (file !== 0) return file;

@@ -7,9 +7,9 @@ import {
   replaceDiffReviewCommentsForTest,
 } from './diffReviewComments.svelte';
 import { projectTurnStarted } from './threadStatuses.svelte';
+import { CI_SECTION_INLINE_MAX_BYTES } from './ciSubject.svelte';
 import {
   __resetReviewPaneStateForTest,
-  CI_SECTION_INLINE_MAX_BYTES,
   disposeReviewStateForPane,
   openReviewCompanion,
   reviewStateForPane,
@@ -1725,7 +1725,7 @@ describe('reviewPane store — PR scope', () => {
     const window = await state.readCILogLines(1, 2);
     expect(window.lines).toEqual(['line 2', 'line 3']);
     expect(reads).toHaveBeenLastCalledWith(
-      { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 5 }, '20', 1, 2);
+      { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo' }, '20', 1, 2);
 
     state.closeCILogView();
     await flushPane();
@@ -1927,7 +1927,7 @@ describe('reviewPane store — PR scope', () => {
       await sending;
 
       expect(save).toHaveBeenCalledWith(
-        { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 5 },
+        { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo' },
         '20',
         'unit',
       );
@@ -2012,7 +2012,7 @@ describe('reviewPane store — PR scope', () => {
       await state.sendCILogSectionToChat(big);
       expect(reads).not.toHaveBeenCalled();
       expect(save).toHaveBeenCalledWith(
-        { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 5 },
+        { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo' },
         '20',
         'unit',
         'section:step_script:1',

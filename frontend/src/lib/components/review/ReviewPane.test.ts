@@ -1700,7 +1700,7 @@ describe('<ReviewPane> CI', () => {
     await waitFor(() => {
       expect(view.getByTestId('review-ci-log-scroll')).toHaveTextContent('error: boom');
     });
-    expect(reads).toHaveBeenCalledWith(expect.objectContaining({ Number: 5 }), '20', 0, 1);
+    expect(reads).toHaveBeenCalledWith({ Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo' }, '20', 0, 1);
     expect(jobSection()?.dataset.open).toBe('true');
 
     await fireEvent.click(view.getByRole('button', { name: 'Back' }));

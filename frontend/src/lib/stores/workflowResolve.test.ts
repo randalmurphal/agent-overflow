@@ -11,7 +11,6 @@ import {
   getWorkflowArmedAction,
   getWorkflowsOverlayRunId,
   getWorkflowsOverlayTop,
-  openWorkflowsOverlay,
   pushWorkflowRunDetail,
   resetWorkflowsOverlayForTest,
   setWorkflowArmedAction,
@@ -45,7 +44,7 @@ function bindings(over: Partial<WorkflowActionBindings> = {}): WorkflowActionBin
 }
 
 function clearToasts(): void {
-  for (const toast of [...getToasts()]) removeToast(toast.id);
+  for (const toast of getToasts().slice()) removeToast(toast.id);
 }
 
 describe('resolveWorkflowRun', () => {
@@ -102,7 +101,6 @@ describe('resolveWorkflowRun', () => {
   });
 
   it('auto-advances the sweep after the receipt has had time to read', async () => {
-    openWorkflowsOverlay();
     pushWorkflowRunDetail('run-1', { sweep: true, sweepIndex: 0 });
     await resolveWorkflowRun(parked[0], { kind: 'approve' }, 0, bindings());
     expect(getWorkflowsOverlayRunId()).toBe('run-1');
@@ -111,7 +109,6 @@ describe('resolveWorkflowRun', () => {
   });
 
   it('lands on all-clear once the last parked run is resolved', async () => {
-    openWorkflowsOverlay();
     pushWorkflowRunDetail('run-1', { sweep: true, sweepIndex: 0 });
     await resolveWorkflowRun(parked[0], { kind: 'approve' }, 0, bindings());
     await resolveWorkflowRun(parked[1], { kind: 'approve' }, 0, bindings());
@@ -120,15 +117,13 @@ describe('resolveWorkflowRun', () => {
   });
 
   it('stays put when the human is not sweeping', async () => {
-    openWorkflowsOverlay();
     pushWorkflowRunDetail('run-1', { sweep: false, sweepIndex: -1 });
     await resolveWorkflowRun(parked[0], { kind: 'approve' }, 0, bindings());
     await vi.advanceTimersByTimeAsync(WORKFLOW_AUTO_ADVANCE_MS * 4);
     expect(getWorkflowsOverlayRunId()).toBe('run-1');
   });
 
-  it('drops a pending advance when the overlay session ends', async () => {
-    openWorkflowsOverlay();
+  it('drops a pending advance when the pane session ends', async () => {
     pushWorkflowRunDetail('run-1', { sweep: true, sweepIndex: 0 });
     await resolveWorkflowRun(parked[0], { kind: 'approve' }, 0, bindings());
     cancelWorkflowAutoAdvance();
@@ -137,7 +132,6 @@ describe('resolveWorkflowRun', () => {
   });
 
   it('reports a failure and leaves the run where it was', async () => {
-    openWorkflowsOverlay();
     pushWorkflowRunDetail('run-1', { sweep: true, sweepIndex: 0 });
     const failing = bindings({ resolveGate: vi.fn(async () => { throw new Error('engine is down'); }) });
     expect(await resolveWorkflowRun(parked[0], { kind: 'approve' }, 0, failing)).toBe(false);

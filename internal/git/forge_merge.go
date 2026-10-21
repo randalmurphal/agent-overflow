@@ -63,6 +63,19 @@ type MergeReadiness struct {
 	State    string         `json:"state"`
 	Blockers []MergeBlocker `json:"blockers"`
 	Settled  []MergeBlocker `json:"settled"`
+	// Approvals counts the approvals that stand and the approvals the
+	// merge requires (0 when nothing is required). Unresolved counts the
+	// review threads not yet resolved when the read has every thread's
+	// state (PRReadParts.Unresolved asks for it); nil otherwise.
+	Approvals  ApprovalCount `json:"approvals"`
+	Unresolved *int          `json:"unresolved,omitempty"`
+}
+
+// ApprovalCount is a PR's standing approvals (Given) against what its
+// merge requires (Required).
+type ApprovalCount struct {
+	Given    int `json:"given"`
+	Required int `json:"required"`
 }
 
 // MergeBlocker is one condition of the merge. Text is the sentence the row

@@ -4,6 +4,11 @@ This directory is the only place that turns layout items into mounted panes.
 `PaneHost.svelte` owns pane selection and lazy companion mounting;
 `PaneFrame.svelte` owns the common frame and title controls.
 
+Tool panes (`pulls`, `workflows`) have no ThreadPane. `ToolPane.svelte` loads
+the tool body lazily and the body renders `ToolPaneHeader.svelte`, whose title
+is the drag handle. Open, close and placement belong to
+`stores/toolPanes.svelte.ts`; titles and icons to `toolPaneMeta.ts`.
+
 - Preserve mounted pane identity across selection and compact-screen changes.
   Thread state, scroll position, and observers must survive navigation.
 - A thread may appear in only one pane. Multiple panes may share a workspace.

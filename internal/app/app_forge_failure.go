@@ -94,12 +94,36 @@ func (f prForgeFailure) rateLimited() bool { return f.kind == forgeFailureRateLi
 // the sentence naming the login to fix (git.ExplainForgeError), which
 // carries no forge text.
 func (a *App) newPRForgeFailure(pr gitops.PRReference, err error) prForgeFailure {
+	return a.newForgeFailure(err, prUpdateErrorMessage, func(err error) error {
+		return gitops.ExplainForgeError(pr, gitops.ActionRead, err)
+	})
+}
+
+// newRepoForgeFailure is newPRForgeFailure for a read of a whole
+// repository (its PR list, a pipeline of it): the setup and forbidden
+// sentences name the project, and every other kind reads as a failed
+// refresh of the repository.
+func (a *App) newRepoForgeFailure(repo gitops.RepoReference, err error) prForgeFailure {
+	return a.newForgeFailure(err, repoRefreshErrorMessage, func(err error) error {
+		return gitops.ExplainRepoForgeError(repo, gitops.ActionRead, err)
+	})
+}
+
+// repoRefreshErrorMessage is the repository read's counterpart of
+// prUpdateErrorMessage.
+func repoRefreshErrorMessage(correlationID string) string {
+	return fmt.Sprintf("failed to refresh from the forge (id: %s)", correlationID)
+}
+
+// newForgeFailure classifies err with summary as the correlation sentence
+// and explain as the sentence of a setup or forbidden failure.
+func (a *App) newForgeFailure(err error, summary func(correlationID string) string, explain func(error) error) prForgeFailure {
 	kind, reserve, until := classifyForgeFailure(err)
 	f := prForgeFailure{key: err.Error(), kind: kind, correlationID: uuid.NewString()}
-	f.wire = prUpdateErrorMessage(f.correlationID)
+	f.wire = summary(f.correlationID)
 	switch kind {
 	case forgeFailureSetup, forgeFailureForbidden:
-		f.wire = gitops.ExplainForgeError(pr, gitops.ActionRead, err).Error()
+		f.wire = explain(err).Error()
 	case forgeFailureRateLimited:
 		f.reserve = reserve
 		f.resumeAt = until.UTC().Format(time.RFC3339)
