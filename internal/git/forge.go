@@ -71,6 +71,12 @@ type Forge interface {
 	// StreamCIJobLog reads the raw log/trace of one CI job of repo
 	// (see Core.StreamCIJobLog).
 	StreamCIJobLog(ctx context.Context, repo RepoReference, req CIJobLogRequest, begin func(CIJobLogStart) (io.Writer, error)) (bool, error)
+	// ListPipelines lists repo's pipelines (GitLab pipelines, GitHub
+	// workflow runs) with filter already validated; ReadPipeline reads one
+	// by id into stages and jobs, steps on the stepsFor jobs (see
+	// Core.ListPipelines, Core.ReadPipeline).
+	ListPipelines(ctx context.Context, repo RepoReference, filter PipelineListFilter) ([]PipelineSummary, error)
+	ReadPipeline(ctx context.Context, repo RepoReference, id string, prev *CIPipeline, stepsFor []string) (CIPipeline, error)
 	// CILogStreams reports whether StreamCIJobLog serves a running job's log
 	// as it grows (GitLab's trace), so following it at a quick cadence
 	// shows progress. GitHub answers 404 until the job's log blob exists,

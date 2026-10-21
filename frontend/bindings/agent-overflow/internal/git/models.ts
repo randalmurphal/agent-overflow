@@ -91,14 +91,29 @@ export class CIJob {
 
 export class CIPipeline {
     /**
+     * ID is the forge's pipeline id as a decimal string: the GitLab
+     * pipeline or the GitHub workflow run ReadPipeline read. A GitHub PR's
+     * head checks span every workflow run on the head, so ReadPR leaves it
+     * empty there.
+     */
+    "id"?: string;
+
+    /**
      * Status is the normalized aggregate for the whole pipeline.
      */
     "status": string;
 
     /**
-     * URL links to the forge's pipeline page (GitLab only; empty on GitHub).
+     * URL links to the forge's pipeline page: the GitLab pipeline, the
+     * GitHub workflow run (empty for a GitHub PR's head checks).
      */
     "url"?: string;
+
+    /**
+     * Ref and SHA are the ref and commit the pipeline ran on.
+     */
+    "ref"?: string;
+    "sha"?: string;
     "stages": CIStage[];
 
     /** Creates a new CIPipeline instance. */
@@ -117,10 +132,10 @@ export class CIPipeline {
      * Creates a new CIPipeline instance from a string or object.
      */
     static createFrom($$source: any = {}): CIPipeline {
-        const $$createField2_0 = $$createType3;
+        const $$createField5_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("stages" in $$parsedSource) {
-            $$parsedSource["stages"] = $$createField2_0($$parsedSource["stages"]);
+            $$parsedSource["stages"] = $$createField5_0($$parsedSource["stages"]);
         }
         return new CIPipeline($$parsedSource as Partial<CIPipeline>);
     }

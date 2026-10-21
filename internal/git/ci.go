@@ -34,10 +34,19 @@ const (
 )
 
 type CIPipeline struct {
+	// ID is the forge's pipeline id as a decimal string: the GitLab
+	// pipeline or the GitHub workflow run ReadPipeline read. A GitHub PR's
+	// head checks span every workflow run on the head, so ReadPR leaves it
+	// empty there.
+	ID string `json:"id,omitempty"`
 	// Status is the normalized aggregate for the whole pipeline.
 	Status string `json:"status"`
-	// URL links to the forge's pipeline page (GitLab only; empty on GitHub).
-	URL    string    `json:"url,omitempty"`
+	// URL links to the forge's pipeline page: the GitLab pipeline, the
+	// GitHub workflow run (empty for a GitHub PR's head checks).
+	URL string `json:"url,omitempty"`
+	// Ref and SHA are the ref and commit the pipeline ran on.
+	Ref    string    `json:"ref,omitempty"`
+	SHA    string    `json:"sha,omitempty"`
 	Stages []CIStage `json:"stages"`
 }
 
@@ -322,4 +331,143 @@ func FindCIJob(pipeline CIPipeline, jobID string) *CIJob {
 		}
 	}
 	return nil
+}
+
+// Pipeline ref kinds (PipelineSummary.RefKind).
+const (
+	PipelineRefBranch       = "branch"
+	PipelineRefTag          = "tag"
+	PipelineRefMergeRequest = "merge_request"
+)
+
+// PipelineSummary is one pipeline of a repository as the forge's list
+// read answers it: a GitLab pipeline or a GitHub workflow run. Neither
+// list says whether a ref is a branch or a tag, so RefKind is
+// merge_request for a merge request's pipeline (GitLab's
+// refs/merge-requests/N ref, a GitHub pull_request event), tag for a
+// GitHub release event, and branch otherwise, a tag push included.
+type PipelineSummary struct {
+	// ID is the pipeline's or run's id, a decimal string, for
+	// ReadPipeline.
+	ID string `json:"id"`
+	// Status is the normalized CI status (NormalizeCIStatus).
+	Status string `json:"status"`
+	// Name is the GitHub workflow's; GitLab's list has none.
+	Name    string `json:"name,omitempty"`
+	Ref     string `json:"ref"`
+	RefKind string `json:"refKind"`
+	// MRNumber is the merge request a merge_request pipeline ran for; 0
+	// when the forge does not name it (GitHub lists no pull request for
+	// a fork's run).
+	MRNumber int    `json:"mrNumber,omitempty"`
+	SHA      string `json:"sha"`
+	// Title is the GitHub run's display title (its commit's headline or
+	// the run's name); GitLab's list carries no commit title.
+	Title string `json:"title,omitempty"`
+	// Source is what started it: GitLab's source (push,
+	// merge_request_event, schedule, ...) or GitHub's event (push,
+	// pull_request, workflow_dispatch, ...).
+	Source string `json:"source"`
+	// CreatedAt and UpdatedAt are RFC 3339, as the forge spells them.
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
+	URL       string `json:"url"`
+}
+
+// PipelineListFilter narrows ListPipelines. Ref is a branch, tag or (on
+// GitLab) merge request ref as a list row names it; Status a normalized
+// CI status the forge can filter by: success, failed, running, pending,
+// canceled, skipped, and manual on GitLab. GitHub's pending filter is its
+// queued status. Limit is the rows wanted, the most recent first; 0 or
+// more than pipelineListMaxLimit reads pipelineListMaxLimit.
+type PipelineListFilter struct {
+	Ref    string `json:"ref,omitempty"`
+	Status string `json:"status,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+}
+
+// pipelineListMaxLimit is the most rows one ListPipelines reads: one
+// page of either forge's list.
+const pipelineListMaxLimit = 100
+
+// normalized validates the filter and returns it with its Limit
+// resolved.
+func (f PipelineListFilter) normalized() (PipelineListFilter, error) {
+	switch {
+	case f.Limit < 0:
+		return f, fmt.Errorf("pipeline list limit must not be negative, got %d", f.Limit)
+	case f.Limit == 0 || f.Limit > pipelineListMaxLimit:
+		f.Limit = pipelineListMaxLimit
+	}
+	if f.Ref != "" {
+		if strings.TrimSpace(f.Ref) != f.Ref || strings.HasPrefix(f.Ref, "-") || len(f.Ref) > 255 {
+			return f, fmt.Errorf("pipeline ref %q is not a ref name", f.Ref)
+		}
+		for _, r := range f.Ref {
+			if r < 0x20 || r == 0x7f {
+				return f, fmt.Errorf("pipeline ref %q contains a control character", f.Ref)
+			}
+		}
+	}
+	return f, nil
+}
+
+// pipelineStatusFilters maps a normalized status filter to each forge's
+// own filter value; a status a forge cannot filter by is absent.
+var pipelineStatusFilters = map[string]map[string]string{
+	CIStatusSuccess:  {"github": "success", "gitlab": "success"},
+	CIStatusFailed:   {"github": "failure", "gitlab": "failed"},
+	CIStatusRunning:  {"github": "in_progress", "gitlab": "running"},
+	CIStatusPending:  {"github": "queued", "gitlab": "pending"},
+	CIStatusCanceled: {"github": "cancelled", "gitlab": "canceled"},
+	CIStatusSkipped:  {"github": "skipped", "gitlab": "skipped"},
+	CIStatusManual:   {"gitlab": "manual"},
+}
+
+// pipelineStatusFilter is forge's spelling of the normalized status, ""
+// for no filter.
+func pipelineStatusFilter(forge, status string) (string, error) {
+	if status == "" {
+		return "", nil
+	}
+	value, ok := pipelineStatusFilters[status][forge]
+	if !ok {
+		return "", fmt.Errorf("%s cannot list pipelines by status %q", forge, status)
+	}
+	return value, nil
+}
+
+// ListPipelines lists repo's pipelines on any ref, the most recent first
+// (one list request; see PipelineListFilter).
+func (c *Core) ListPipelines(ctx context.Context, repo RepoReference, filter PipelineListFilter) ([]PipelineSummary, error) {
+	if err := repo.Validate(); err != nil {
+		return nil, err
+	}
+	filter, err := filter.normalized()
+	if err != nil {
+		return nil, err
+	}
+	return c.ForgeByID(repo.Forge).ListPipelines(ctx, repo, filter)
+}
+
+// ReadPipeline reads one pipeline of repo by the id ListPipelines
+// answered, grouped into stages as ReadPR's CI part is, with steps on
+// the stepsFor jobs. prev is the pipeline the caller last observed, or
+// nil (see Forge.ReadPR).
+func (c *Core) ReadPipeline(ctx context.Context, repo RepoReference, id string, prev *CIPipeline, stepsFor []string) (CIPipeline, error) {
+	if err := repo.Validate(); err != nil {
+		return CIPipeline{}, err
+	}
+	if !ciJobIDPattern.MatchString(id) {
+		return CIPipeline{}, fmt.Errorf("pipeline id must be a decimal number, got %q", id)
+	}
+	return c.ForgeByID(repo.Forge).ReadPipeline(ctx, repo, id, prev, stepsFor)
+}
+
+func (nullForge) ListPipelines(context.Context, RepoReference, PipelineListFilter) ([]PipelineSummary, error) {
+	return nil, ErrUnsupportedForge
+}
+
+func (nullForge) ReadPipeline(context.Context, RepoReference, string, *CIPipeline, []string) (CIPipeline, error) {
+	return CIPipeline{}, ErrUnsupportedForge
 }

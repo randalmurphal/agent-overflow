@@ -205,53 +205,225 @@ func settledGitHubSteps(prev *CIPipeline, job CIJob) ([]CIStep, bool) {
 // from the map.
 func githubRunSteps(ctx context.Context, client *forgeapi.Client, repo RepoReference, runID string, wanted map[string]bool) (map[string][]CIStep, error) {
 	steps := make(map[string][]CIStep, len(wanted))
-	request := forgeapi.Request{
-		Path:  githubRepoPath(repo) + "/actions/runs/" + runID + "/jobs",
-		Query: url.Values{"per_page": {strconv.Itoa(githubCIJobsPerPage)}},
-	}
-	seen := 0
-	err := client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
-		var raw struct {
-			TotalCount int `json:"total_count"`
-			Jobs       []struct {
-				ID    int64 `json:"id"`
-				Steps []struct {
-					Number      int    `json:"number"`
-					Name        string `json:"name"`
-					Status      string `json:"status"`
-					Conclusion  string `json:"conclusion"`
-					StartedAt   string `json:"started_at"`
-					CompletedAt string `json:"completed_at"`
-				} `json:"steps"`
-			} `json:"jobs"`
-		}
-		if err := json.Unmarshal(resp.Body, &raw); err != nil {
-			return false, fmt.Errorf("GitHub run %s jobs: decode response: %w", runID, err)
-		}
-		for _, job := range raw.Jobs {
-			jobID := strconv.FormatInt(job.ID, 10)
-			if !wanted[jobID] {
-				continue
+	err := readGitHubRunJobs(ctx, client, repo, runID, func(jobs []githubRunJobRaw, seen, total int) bool {
+		for _, job := range jobs {
+			if jobID := strconv.FormatInt(job.ID, 10); wanted[jobID] {
+				steps[jobID] = job.steps()
 			}
-			jobSteps := make([]CIStep, 0, len(job.Steps))
-			for _, step := range job.Steps {
-				jobSteps = append(jobSteps, CIStep{
-					Number:      step.Number,
-					Name:        step.Name,
-					Status:      NormalizeCIStatus(step.Status, step.Conclusion),
-					StartedAt:   step.StartedAt,
-					CompletedAt: step.CompletedAt,
-				})
-			}
-			steps[jobID] = jobSteps
 		}
-		seen += len(raw.Jobs)
-		return len(steps) < len(wanted) && len(raw.Jobs) == githubCIJobsPerPage && seen < raw.TotalCount, nil
+		return len(steps) < len(wanted) && len(jobs) == githubCIJobsPerPage && seen < total
 	})
 	if err != nil {
 		return nil, err
 	}
 	return steps, nil
+}
+
+// githubRunJobRaw is one job of the REST jobs list of a run. An absent
+// time is null, which decodes as "".
+type githubRunJobRaw struct {
+	ID          int64              `json:"id"`
+	Name        string             `json:"name"`
+	Status      string             `json:"status"`
+	Conclusion  string             `json:"conclusion"`
+	HTMLURL     string             `json:"html_url"`
+	StartedAt   string             `json:"started_at"`
+	CompletedAt string             `json:"completed_at"`
+	Steps       []githubRunStepRaw `json:"steps"`
+}
+
+type githubRunStepRaw struct {
+	Number      int    `json:"number"`
+	Name        string `json:"name"`
+	Status      string `json:"status"`
+	Conclusion  string `json:"conclusion"`
+	StartedAt   string `json:"started_at"`
+	CompletedAt string `json:"completed_at"`
+}
+
+func (j githubRunJobRaw) steps() []CIStep {
+	steps := make([]CIStep, 0, len(j.Steps))
+	for _, step := range j.Steps {
+		steps = append(steps, CIStep{
+			Number:      step.Number,
+			Name:        step.Name,
+			Status:      NormalizeCIStatus(step.Status, step.Conclusion),
+			StartedAt:   step.StartedAt,
+			CompletedAt: step.CompletedAt,
+		})
+	}
+	return steps
+}
+
+// readGitHubRunJobs reads a run's jobs list, 100 per request, handing each
+// page to visit with the jobs seen so far and the run's total; visit
+// answers whether to read the next page.
+func readGitHubRunJobs(ctx context.Context, client *forgeapi.Client, repo RepoReference, runID string, visit func(jobs []githubRunJobRaw, seen, total int) bool) error {
+	request := forgeapi.Request{
+		Path:  githubRepoPath(repo) + "/actions/runs/" + runID + "/jobs",
+		Query: url.Values{"per_page": {strconv.Itoa(githubCIJobsPerPage)}},
+	}
+	seen := 0
+	return client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
+		var raw struct {
+			TotalCount int               `json:"total_count"`
+			Jobs       []githubRunJobRaw `json:"jobs"`
+		}
+		if err := json.Unmarshal(resp.Body, &raw); err != nil {
+			return false, fmt.Errorf("GitHub run %s jobs: decode response: %w", runID, err)
+		}
+		seen += len(raw.Jobs)
+		return visit(raw.Jobs, seen, raw.TotalCount), nil
+	})
+}
+
+// githubRunRaw is one workflow run of the REST API.
+type githubRunRaw struct {
+	ID           int64  `json:"id"`
+	Name         string `json:"name"`
+	DisplayTitle string `json:"display_title"`
+	HeadBranch   string `json:"head_branch"`
+	HeadSHA      string `json:"head_sha"`
+	Event        string `json:"event"`
+	Status       string `json:"status"`
+	Conclusion   string `json:"conclusion"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+	HTMLURL      string `json:"html_url"`
+	PullRequests []struct {
+		Number int `json:"number"`
+	} `json:"pull_requests"`
+}
+
+// ListPipelines lists the repository's workflow runs, the most recent
+// first, in one request: each run is one row.
+func (f *githubForge) ListPipelines(ctx context.Context, repo RepoReference, filter PipelineListFilter) ([]PipelineSummary, error) {
+	if _, _, err := splitGitHubProject(repo.Project()); err != nil {
+		return nil, err
+	}
+	status, err := pipelineStatusFilter("github", filter.Status)
+	if err != nil {
+		return nil, err
+	}
+	client, err := f.core.githubAPI(repo.Host)
+	if err != nil {
+		return nil, err
+	}
+	query := url.Values{"per_page": {strconv.Itoa(filter.Limit)}}
+	if filter.Ref != "" {
+		query.Set("branch", filter.Ref)
+	}
+	if status != "" {
+		query.Set("status", status)
+	}
+	var raw struct {
+		WorkflowRuns []githubRunRaw `json:"workflow_runs"`
+	}
+	if _, err := client.JSON(ctx, forgeapi.Request{Path: githubRepoPath(repo) + "/actions/runs", Query: query}, &raw); err != nil {
+		return nil, err
+	}
+	rows := make([]PipelineSummary, 0, len(raw.WorkflowRuns))
+	for _, run := range raw.WorkflowRuns {
+		rows = append(rows, run.summary())
+	}
+	return rows, nil
+}
+
+func (run githubRunRaw) summary() PipelineSummary {
+	row := PipelineSummary{
+		ID:        strconv.FormatInt(run.ID, 10),
+		Status:    NormalizeCIStatus(run.Status, run.Conclusion),
+		Name:      run.Name,
+		Ref:       run.HeadBranch,
+		RefKind:   PipelineRefBranch,
+		SHA:       run.HeadSHA,
+		Title:     run.DisplayTitle,
+		Source:    run.Event,
+		CreatedAt: run.CreatedAt,
+		UpdatedAt: run.UpdatedAt,
+		URL:       run.HTMLURL,
+	}
+	switch {
+	case strings.HasPrefix(run.Event, "pull_request"):
+		row.RefKind = PipelineRefMergeRequest
+		if len(run.PullRequests) > 0 {
+			row.MRNumber = run.PullRequests[0].Number
+		}
+	case run.Event == "release":
+		row.RefKind = PipelineRefTag
+	}
+	return row
+}
+
+// ReadPipeline reads one workflow run and its jobs (one request per 100
+// jobs, at most githubReadMaxPages) into one stage named after the
+// workflow. The jobs list carries every job's steps, so stepsFor costs
+// nothing more and prev is not needed.
+func (f *githubForge) ReadPipeline(ctx context.Context, repo RepoReference, id string, _ *CIPipeline, stepsFor []string) (CIPipeline, error) {
+	if _, _, err := splitGitHubProject(repo.Project()); err != nil {
+		return CIPipeline{}, err
+	}
+	client, err := f.core.githubAPI(repo.Host)
+	if err != nil {
+		return CIPipeline{}, err
+	}
+	var run githubRunRaw
+	if _, err := client.JSON(ctx, forgeapi.Request{Path: githubRepoPath(repo) + "/actions/runs/" + id}, &run); err != nil {
+		return CIPipeline{}, err
+	}
+	want := make(map[string]bool, len(stepsFor))
+	for _, jobID := range stepsFor {
+		want[jobID] = true
+	}
+	var jobs []CIJob
+	pages := 0
+	err = readGitHubRunJobs(ctx, client, repo, id, func(page []githubRunJobRaw, seen, total int) bool {
+		for _, raw := range page {
+			job := raw.job()
+			if want[job.ID] {
+				job.Steps = raw.steps()
+			}
+			jobs = append(jobs, job)
+		}
+		pages++
+		return len(page) == githubCIJobsPerPage && seen < total && pages < githubReadMaxPages
+	})
+	if err != nil {
+		return CIPipeline{}, err
+	}
+	pipeline := CIPipeline{
+		ID:     id,
+		Status: NormalizeCIStatus(run.Status, run.Conclusion),
+		URL:    run.HTMLURL,
+		Ref:    run.HeadBranch,
+		SHA:    run.HeadSHA,
+	}
+	if len(jobs) > 0 {
+		name := run.Name
+		if name == "" {
+			name = "Workflow " + id
+		}
+		statuses := make([]string, len(jobs))
+		for i, job := range jobs {
+			statuses[i] = job.Status
+		}
+		pipeline.Stages = []CIStage{{Name: name, Status: AggregateCIStatus(statuses), Jobs: jobs}}
+	}
+	return pipeline, nil
+}
+
+// job is the run job as the pipeline shows it. Its log exists once it
+// started, as for a rollup check run.
+func (j githubRunJobRaw) job() CIJob {
+	status := NormalizeCIStatus(j.Status, j.Conclusion)
+	return CIJob{
+		ID:              strconv.FormatInt(j.ID, 10),
+		Name:            j.Name,
+		Status:          status,
+		DurationSeconds: ciDurationSeconds(j.StartedAt, j.CompletedAt),
+		URL:             j.HTMLURL,
+		LogsAvailable:   status != CIStatusPending && status != CIStatusSkipped && j.StartedAt != "",
+	}
 }
 
 // StreamCIJobLog reads a job's log into the writer begin returns (see

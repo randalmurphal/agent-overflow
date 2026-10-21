@@ -327,11 +327,17 @@ type gitlabMRRaw struct {
 	} `json:"user"`
 }
 
-// gitlabPipelineRaw is a merge request's head pipeline.
+// gitlabPipelineRaw is a pipeline as GitLab answers it: a merge
+// request's head pipeline, a pipeline list row or one pipeline read.
 type gitlabPipelineRaw struct {
-	ID     int64  `json:"id"`
-	Status string `json:"status"`
-	WebURL string `json:"web_url"`
+	ID        int64  `json:"id"`
+	Status    string `json:"status"`
+	WebURL    string `json:"web_url"`
+	Ref       string `json:"ref"`
+	SHA       string `json:"sha"`
+	Source    string `json:"source"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 // headSHA is the merge request's head commit: the diff's head, else the

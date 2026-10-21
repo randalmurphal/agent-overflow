@@ -100,9 +100,9 @@ const githubPRTickQuery = `query PRTick($owner: String!, $name: String!, $number
   repository(owner: $owner, name: $name) {
     ... @include(if: $wantDetail) { ` + githubRepositoryMergeFields + ` }
     pullRequest(number: $number) {
-      number
+      number headRefName
       ... @include(if: $wantDetail) { ` + githubDetailFields + ` }
-      commits(last: 1) @include(if: $wantChecks) { nodes { commit { id statusCheckRollup { contexts(first: 100) { ` + githubPageInfoFields + ` nodes { ` + githubContextFields + ` } } } } } }
+      commits(last: 1) @include(if: $wantChecks) { nodes { commit { id oid statusCheckRollup { contexts(first: 100) { ` + githubPageInfoFields + ` nodes { ` + githubContextFields + ` } } } } } }
       reviewThreads(first: 100) @include(if: $wantThreads) { ` + githubPageInfoFields + ` nodes { ` + githubThreadFields + ` } }
       comments(first: 100) @include(if: $wantThreads) { ` + githubPageInfoFields + ` nodes { ` + githubCommentFields + ` } }
       timelineItems(last: 100, itemTypes: [` + githubTimelineItemTypes + `]) @include(if: $wantEvents) { ` + githubTimelinePageInfoFields + ` nodes { ` + githubTimelineFields + ` } }
@@ -297,6 +297,7 @@ type githubPullRaw struct {
 		Nodes []struct {
 			Commit struct {
 				ID                string           `json:"id"`
+				OID               string           `json:"oid"`
 				StatusCheckRollup *githubRollupRaw `json:"statusCheckRollup"`
 			} `json:"commit"`
 		} `json:"nodes"`
@@ -406,6 +407,12 @@ func (f *githubForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 	if want.CI {
 		if out.CI, err = f.githubPipeline(ctx, client, ref.Repository(), checks, prev, stepsFor); err != nil {
 			return PRRead{}, err
+		}
+		if len(out.CI.Stages) > 0 {
+			out.CI.Ref = pull.HeadRefName
+			if len(pull.Commits.Nodes) > 0 {
+				out.CI.SHA = pull.Commits.Nodes[0].Commit.OID
+			}
 		}
 		out.HasCI = true
 	}

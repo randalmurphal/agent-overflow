@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 
@@ -35,9 +36,9 @@ type gitlabCIJobRaw struct {
 	StartedAt    *string  `json:"started_at"`
 }
 
-// readGitLabPipeline reads the jobs of the merge request's head pipeline,
-// which the MR read already named. A merge request with no pipeline costs
-// no request.
+// readGitLabPipeline reads the jobs of a pipeline already read: the merge
+// request's head pipeline, which the MR read named, or ReadPipeline's. A
+// merge request with no pipeline costs no request.
 func readGitLabPipeline(ctx context.Context, client *forgeapi.Client, repo RepoReference, pipeline *gitlabPipelineRaw) (CIPipeline, error) {
 	if pipeline == nil || pipeline.ID <= 0 {
 		return CIPipeline{}, nil
@@ -61,8 +62,11 @@ func readGitLabPipeline(ctx context.Context, client *forgeapi.Client, repo RepoR
 		return CIPipeline{}, err
 	}
 	return CIPipeline{
+		ID:     strconv.FormatInt(pipeline.ID, 10),
 		Status: NormalizeCIStatus(pipeline.Status, ""),
 		URL:    pipeline.WebURL,
+		Ref:    pipeline.Ref,
+		SHA:    pipeline.SHA,
 		Stages: groupGitLabJobsByStage(jobs),
 	}, nil
 }
@@ -106,6 +110,72 @@ func groupGitLabJobsByStage(raw []gitlabCIJobRaw) []CIStage {
 		stages[i].Status = AggregateCIStatus(statuses)
 	}
 	return stages
+}
+
+// gitlabMergeRequestRef is the ref of a merge request pipeline: the
+// merge request's head, its merged result or its merge train entry.
+var gitlabMergeRequestRef = regexp.MustCompile(`^refs/merge-requests/(\d+)/(?:head|merge|train)$`)
+
+// ListPipelines lists the project's pipelines, the most recent first, in
+// one request.
+func (f *gitlabForge) ListPipelines(ctx context.Context, repo RepoReference, filter PipelineListFilter) ([]PipelineSummary, error) {
+	status, err := pipelineStatusFilter("gitlab", filter.Status)
+	if err != nil {
+		return nil, err
+	}
+	client, err := f.core.gitlabAPI(repo.Host)
+	if err != nil {
+		return nil, err
+	}
+	query := url.Values{"per_page": {strconv.Itoa(filter.Limit)}}
+	if filter.Ref != "" {
+		query.Set("ref", filter.Ref)
+	}
+	if status != "" {
+		query.Set("status", status)
+	}
+	var raw []gitlabPipelineRaw
+	if _, err := client.JSON(ctx, forgeapi.Request{Path: gitlabProjectPath(repo.Project()) + "/pipelines", Query: query}, &raw); err != nil {
+		return nil, err
+	}
+	rows := make([]PipelineSummary, 0, len(raw))
+	for _, pipeline := range raw {
+		row := PipelineSummary{
+			ID:        strconv.FormatInt(pipeline.ID, 10),
+			Status:    NormalizeCIStatus(pipeline.Status, ""),
+			Ref:       pipeline.Ref,
+			RefKind:   PipelineRefBranch,
+			SHA:       pipeline.SHA,
+			Source:    pipeline.Source,
+			CreatedAt: pipeline.CreatedAt,
+			UpdatedAt: pipeline.UpdatedAt,
+			URL:       pipeline.WebURL,
+		}
+		if m := gitlabMergeRequestRef.FindStringSubmatch(pipeline.Ref); m != nil {
+			row.RefKind = PipelineRefMergeRequest
+			row.MRNumber, _ = strconv.Atoi(m[1])
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+// ReadPipeline reads one pipeline and its jobs, as ReadPR reads a merge
+// request's head pipeline. prev and stepsFor are unused: GitLab jobs have
+// no steps.
+func (f *gitlabForge) ReadPipeline(ctx context.Context, repo RepoReference, id string, _ *CIPipeline, _ []string) (CIPipeline, error) {
+	client, err := f.core.gitlabAPI(repo.Host)
+	if err != nil {
+		return CIPipeline{}, err
+	}
+	var pipeline gitlabPipelineRaw
+	if _, err := client.JSON(ctx, forgeapi.Request{Path: gitlabProjectPath(repo.Project()) + "/pipelines/" + id}, &pipeline); err != nil {
+		return CIPipeline{}, err
+	}
+	if strconv.FormatInt(pipeline.ID, 10) != id {
+		return CIPipeline{}, fmt.Errorf("GitLab answered pipeline %d for pipeline %s", pipeline.ID, id)
+	}
+	return readGitLabPipeline(ctx, client, repo, &pipeline)
 }
 
 // StreamCIJobLog reads a job's raw trace into the writer begin returns

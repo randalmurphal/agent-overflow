@@ -82,11 +82,7 @@ func glabMR(e *Engine, c *call, m []string) response {
 func (e *Engine) gitlabMRJSON(r *Repo, p *Pull) map[string]any {
 	var pipeline any
 	if p.CI != nil {
-		pipeline = map[string]any{
-			"id":      p.CI.ID,
-			"status":  p.CI.Status,
-			"web_url": fmt.Sprintf("https://%s/%s/-/pipelines/%d", r.Host, r.Project, p.CI.ID),
-		}
+		pipeline = gitlabPipelineJSON(r, p.CI)
 	}
 	source := r.ID
 	if p.HeadRepo != "" {
