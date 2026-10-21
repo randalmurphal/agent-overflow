@@ -882,10 +882,11 @@ func (a *App) createWorkflowThread(spec workflowhost.ThreadSpec) (store.Thread, 
 	// stampThreadCreation records the workspace's git coordinates and leaves
 	// the device empty, which is the true answer for engine-created work.
 	a.stampThreadCreation(context.Background(), &thread)
-	if err := a.store.CreateThread(thread); err != nil {
+	created, err := a.store.CreateThreadAndRead(thread)
+	if err != nil {
 		return store.Thread{}, fmt.Errorf("workflow runner: create thread for %s: %w", spec.Label, err)
 	}
-	return a.store.GetThread(thread.ID)
+	return created, nil
 }
 
 // workflowPhaseRuntimeMode maps a phase's or unit's effective access declaration

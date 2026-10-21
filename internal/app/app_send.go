@@ -621,9 +621,9 @@ func (a *App) sendMessageLocked(
 	// The review drafts this message carries are claimed for its turn
 	// before its row exists, so a draft another message already took
 	// fails the send here, before anything is delivered. A failure before
-	// the row lands hands them back.
+	// the row lands hands them back; the row's insert settles the claim.
 	var claim diffReviewClaim
-	if claim, err = a.claimDiffReviewDelivery(threadID, turnIndex, resolved); err != nil {
+	if claim, err = a.claimDiffReviewDelivery(threadID, turnIndex, userItemID, resolved); err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)
 	}
 	defer func() {
@@ -1327,6 +1327,7 @@ type diffReviewClaim struct {
 	scope     string
 	sourceKey string
 	turnID    string
+	itemID    string
 	ids       []string
 }
 
@@ -1335,17 +1336,20 @@ type diffReviewClaim struct {
 // since stays a draft, since its new text was not sent. A draft another
 // message already carried fails the claim
 // (store.ErrDiffReviewCommentsSentElsewhere), and the caller must not
-// deliver.
-func (a *App) claimDiffReviewDelivery(threadID string, turnIndex int, resolved resolvedUserMessage) (diffReviewClaim, error) {
+// deliver. itemID is the user row the message lands as; its insert settles
+// the claim, and a claim no row settled returns to drafts at the next boot.
+func (a *App) claimDiffReviewDelivery(threadID string, turnIndex int, itemID string, resolved resolvedUserMessage) (diffReviewClaim, error) {
 	rd := resolved.revisionSourceDiff
 	if rd == nil || len(resolved.revisionDiffComments) == 0 {
 		return diffReviewClaim{}, nil
 	}
 	claim := diffReviewClaim{
 		threadID: threadID, owner: diffReviewSourceOwner(rd), scope: rd.Scope, sourceKey: rd.SourceKey,
-		turnID: diffReviewSentTurnID(threadID, turnIndex),
+		turnID: diffReviewSentTurnID(threadID, turnIndex), itemID: itemID,
 	}
-	ids, err := a.store.ClaimDiffReviewCommentsSent(claim.owner, claim.scope, claim.sourceKey, resolved.revisionDiffComments, time.Now().UnixMilli(), claim.turnID)
+	ids, err := a.store.ClaimDiffReviewCommentsSent(claim.owner, claim.scope, claim.sourceKey, resolved.revisionDiffComments, store.DiffReviewDelivery{
+		SentAt: time.Now().UnixMilli(), TurnID: claim.turnID, ThreadID: threadID, ItemID: itemID,
+	})
 	if err != nil {
 		return diffReviewClaim{}, fmt.Errorf("diff review comments: %w", err)
 	}
@@ -1365,16 +1369,16 @@ func (c diffReviewClaim) release(a *App) error {
 	return nil
 }
 
-// retarget moves the claim to the turn its message landed in.
-func (c *diffReviewClaim) retarget(a *App, turnIndex int) error {
+// retarget moves the claim to the turn and row its message is placed as.
+func (c *diffReviewClaim) retarget(a *App, turnIndex int, itemID string) error {
 	turnID := diffReviewSentTurnID(c.threadID, turnIndex)
-	if len(c.ids) == 0 || turnID == c.turnID {
+	if len(c.ids) == 0 || (turnID == c.turnID && itemID == c.itemID) {
 		return nil
 	}
-	if err := a.store.RetargetDiffReviewCommentsSent(c.owner, c.scope, c.sourceKey, c.ids, c.turnID, turnID); err != nil {
+	if err := a.store.RetargetDiffReviewCommentsSent(c.owner, c.scope, c.sourceKey, c.ids, c.turnID, turnID, itemID); err != nil {
 		return fmt.Errorf("move the review comments to turn %d: %w", turnIndex, err)
 	}
-	c.turnID = turnID
+	c.turnID, c.itemID = turnID, itemID
 	return nil
 }
 
@@ -1397,10 +1401,10 @@ func (cs diffReviewClaims) release(a *App) error {
 	return errors.Join(errs...)
 }
 
-func (cs diffReviewClaims) retarget(a *App, turnIndex int) error {
+func (cs diffReviewClaims) retarget(a *App, turnIndex int, itemID string) error {
 	var errs []error
 	for i := range cs {
-		errs = append(errs, cs[i].retarget(a, turnIndex))
+		errs = append(errs, cs[i].retarget(a, turnIndex, itemID))
 	}
 	return errors.Join(errs...)
 }

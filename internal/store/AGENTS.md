@@ -102,8 +102,9 @@ an atomic persistence decision; they must not become a business-logic layer.
 ## History and trigger contracts
 
 - Item triggers maintain history stamps, the thread row's turn-error
-  aggregate, payload garbage collection, imported history integrity, and
-  background-launch settlement. Do not duplicate or bypass those invariants
+  aggregate, payload garbage collection, imported history integrity,
+  background-launch settlement, and the settlement of the review-comment
+  claims a user row carries. Do not duplicate or bypass those invariants
   in Go. The item triggers do no subagent card work: the cards are kept in
   Go (`subagent_card.go`).
 - A write to a payload or plan row an item renders calls

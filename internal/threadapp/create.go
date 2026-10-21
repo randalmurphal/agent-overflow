@@ -81,7 +81,8 @@ type Defaults struct {
 
 // Create creates a thread, cutting its worktree when opts.WorktreeBranch
 // names one. A failure after the cut removes the worktree and a branch the
-// cut made.
+// cut made: the row is written and read back in one transaction, the last
+// step that can fail, so a failed creation leaves no row either.
 func (s *Service) Create(opts CreateOptions) (store.Thread, error) {
 	return s.create(opts, nil)
 }
@@ -292,7 +293,8 @@ func (s *Service) create(opts CreateOptions, cutOut *CutWorktree) (store.Thread,
 		CreatedByDevice:            opts.CreatedByDevice,
 		Origin:                     s.observeOrigin(workspace),
 	}
-	if err := database.CreateThread(thread); err != nil {
+	created, err := database.CreateThreadAndRead(thread)
+	if err != nil {
 		if cutWorktree {
 			// No thread owns the cut, so this call takes back what it made.
 			if undoErr := s.deps.Workspace.RemoveCutWorktree(project.Path, cut); undoErr != nil {
@@ -308,9 +310,9 @@ func (s *Service) create(opts CreateOptions, cutOut *CutWorktree) (store.Thread,
 		s.deps.RecentWorkspaces.AddRecentWorkspace(opts.SettingsBucket, opts.SettingsClass, workspace)
 	}
 	if cutWorktree && s.deps.WorktreeSetup != nil {
-		s.deps.WorktreeSetup.Start(thread)
+		s.deps.WorktreeSetup.Start(created)
 	}
-	return database.GetThread(thread.ID)
+	return created, nil
 }
 
 func (s *Service) StartTerminal(opts TerminalOptions) (store.Thread, error) {
@@ -372,10 +374,11 @@ func (s *Service) StartTerminal(opts TerminalOptions) (store.Thread, error) {
 		CreatedByDevice: opts.CreatedByDevice,
 		Origin:          s.observeOrigin(workspace),
 	}
-	if err := database.CreateThread(thread); err != nil {
+	created, err := database.CreateThreadAndRead(thread)
+	if err != nil {
 		return store.Thread{}, fmt.Errorf("start terminal: %w", err)
 	}
-	return database.GetThread(thread.ID)
+	return created, nil
 }
 
 // Defaults resolves the values Create would have seeded, for a draft
