@@ -243,6 +243,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1165681857: 'thread', // ListThreadRemoteCommands
 	4176102096: 'thread', // ListThreadSliceAround
 	1090132042: 'all', // ListThreads
+	1924357569: 'selected', // ListThreadsOnPR
 	2332614075: 'home', // ListWSLDistros
 	2808137798: 'selected', // ListWorkspaceMcpServers
 	1673567995: 'thread', // MarkDiffReviewCommentsSent
@@ -272,6 +273,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	767864574: 'home', // OpenOwnComputerPairing
 	110447601: 'workspace', // OpenPRCommitDiff
 	4075510992: 'workspace', // OpenPRDiff
+	2660387675: 'selected', // OpenPRThread
 	2247958725: 'thread', // OpenTerminal
 	4078889536: 'thread', // OpenTurnEditsDiff
 	3558532873: 'workspace', // OpenWorkspaceDiff
@@ -408,7 +410,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1219107798: 'thread', // SubmitAsyncAnswers
 	2692607191: 'selected', // SubmitPRReview
 	3556446736: 'home', // SubmitProviderLoginCode
-	2065051829: 'home', // SubscribePRList
+	2065051829: 'selected', // SubscribePRList
 	3272491649: 'selected', // SubscribePRUpdates
 	2067341173: 'selected', // SubscribePipeline
 	1249964095: 'home', // SwitchProviderAccount

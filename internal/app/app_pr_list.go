@@ -132,10 +132,12 @@ func prListCleanupKey(id string) string { return "pr-list:" + id }
 // SubscribePRList starts the list pump, or joins it, and returns its
 // snapshot once the first tick read the forges (that tick is the user's
 // action, so interactive). The subscription ends with the calling
-// connection.
+// connection. Routed to the selected computer like SubscribePRUpdates;
+// the handle calls route home, and the caller pins them to the computer
+// that answered.
 //
 //ao:scope git:operate
-//ao:route home
+//ao:route selected
 func (a *App) SubscribePRList(ctx context.Context) (PRListSubscriptionResult, error) {
 	if a.shuttingDown.Load() {
 		return PRListSubscriptionResult{}, ErrShuttingDown

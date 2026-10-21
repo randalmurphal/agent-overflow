@@ -14,12 +14,12 @@ import (
 func TestFetchPRBranchCreatesTheLocalBranchAtTheHead(t *testing.T) {
 	_, clone, rev := prOrigin(t)
 	core := NewCore()
-	branch, head, err := core.FetchPRBranch(context.Background(), clone, prRevisionPR)
+	branch, head, created, err := core.FetchPRBranch(context.Background(), clone, prRevisionPR)
 	if err != nil {
 		t.Fatalf("FetchPRBranch: %v", err)
 	}
-	if branch != "pr/5" || head != rev.HeadSHA {
-		t.Fatalf("FetchPRBranch = (%q, %q), want (pr/5, %s)", branch, head, rev.HeadSHA)
+	if branch != "pr/5" || head != rev.HeadSHA || !created {
+		t.Fatalf("FetchPRBranch = (%q, %q, created %v), want (pr/5, %s, created)", branch, head, created, rev.HeadSHA)
 	}
 	if got := revParse(t, clone, "refs/heads/pr/5"); got != rev.HeadSHA {
 		t.Fatalf("pr/5 = %s, want %s", got, rev.HeadSHA)
@@ -28,8 +28,8 @@ func TestFetchPRBranchCreatesTheLocalBranchAtTheHead(t *testing.T) {
 		t.Fatalf("scratch refs left behind: %q (%v)", refs.stdout, err)
 	}
 	// Again, with the branch already at the head: used as it is.
-	if branch, head, err := core.FetchPRBranch(context.Background(), clone, prRevisionPR); err != nil || branch != "pr/5" || head != rev.HeadSHA {
-		t.Fatalf("FetchPRBranch again = (%q, %q, %v)", branch, head, err)
+	if branch, head, created, err := core.FetchPRBranch(context.Background(), clone, prRevisionPR); err != nil || branch != "pr/5" || head != rev.HeadSHA || created {
+		t.Fatalf("FetchPRBranch again = (%q, %q, created %v, %v)", branch, head, created, err)
 	}
 }
 
@@ -38,7 +38,7 @@ func TestFetchPRBranchRefusesADivergedBranch(t *testing.T) {
 	_, clone, rev := prOrigin(t)
 	testutil.RunGit(t, clone, "branch", "pr/5", "main")
 	before := revParse(t, clone, "refs/heads/pr/5")
-	_, _, err := NewCore().FetchPRBranch(context.Background(), clone, prRevisionPR)
+	_, _, _, err := NewCore().FetchPRBranch(context.Background(), clone, prRevisionPR)
 	if !errors.Is(err, ErrPRBranchDiverged) || !strings.Contains(err.Error(), "pr/5") {
 		t.Fatalf("FetchPRBranch over a diverged pr/5 = %v, want ErrPRBranchDiverged naming it", err)
 	}
@@ -53,7 +53,7 @@ func TestFetchPRBranchReportsAMissingHeadRef(t *testing.T) {
 	_, clone, _ := prOrigin(t)
 	missing := prRevisionPR
 	missing.Number = 9
-	if _, _, err := NewCore().FetchPRBranch(context.Background(), clone, missing); err == nil || !strings.Contains(err.Error(), "pull/9/head") {
+	if _, _, _, err := NewCore().FetchPRBranch(context.Background(), clone, missing); err == nil || !strings.Contains(err.Error(), "pull/9/head") {
 		t.Fatalf("FetchPRBranch of a missing head ref = %v", err)
 	}
 	if err := testutil.RunGitAllowError(clone, "rev-parse", "--verify", "--quiet", "refs/heads/pr/9"); err == nil {

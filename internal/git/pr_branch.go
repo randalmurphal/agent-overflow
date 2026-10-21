@@ -24,27 +24,28 @@ var ErrPRBranchDiverged = errors.New("the local branch is not at the pull reques
 
 // FetchPRBranch fetches pr's head from origin's forge head ref (PRHeadRef)
 // into the local branch PRLocalBranch(pr.Number) and returns that branch
-// with the head commit. A branch that does not exist is created at the
-// head; one already at the head is used as it is; one at another commit
-// fails with ErrPRBranchDiverged naming both commits. The fetch lands in
+// with the head commit, and created when this call made the branch. A
+// branch that does not exist is created at the head; one already at the
+// head is used as it is; one at another commit fails with
+// ErrPRBranchDiverged naming both commits. The fetch lands in
 // a ref of its own, deleted afterwards, so a concurrent fetch writing
 // FETCH_HEAD cannot change the answer. The fetch is the user's action
 // (a credential prompt may answer it) and ends with ctx.
-func (c *Core) FetchPRBranch(ctx context.Context, cwd string, pr PRReference) (branch, head string, err error) {
+func (c *Core) FetchPRBranch(ctx context.Context, cwd string, pr PRReference) (branch, head string, created bool, err error) {
 	if err := pr.Validate(); err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	headRef, err := PRHeadRef(pr.Forge, pr.Number)
 	if err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	branch = PRLocalBranch(pr.Number)
 	if err := validateBranchName(branch); err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	nonce := make([]byte, 8)
 	if _, err := rand.Read(nonce); err != nil {
-		return "", "", fmt.Errorf("fetch %s: %w", headRef, err)
+		return "", "", false, fmt.Errorf("fetch %s: %w", headRef, err)
 	}
 	scratch := "refs/agent-overflow/pr-fetch/" + hex.EncodeToString(nonce)
 	git := func(interactive bool, args ...string) (commandResult, error) {
@@ -55,7 +56,7 @@ func (c *Core) FetchPRBranch(ctx context.Context, cwd string, pr PRReference) (b
 		err = exitError(commandSpec{binary: "git", args: []string{"fetch", "origin", headRef}}, result)
 	}
 	if err != nil {
-		return "", "", fmt.Errorf("fetch %s from origin: %w", headRef, err)
+		return "", "", false, fmt.Errorf("fetch %s from origin: %w", headRef, err)
 	}
 	defer func() {
 		// The scratch ref is ours alone; a failure to drop it leaves a ref
@@ -67,32 +68,32 @@ func (c *Core) FetchPRBranch(ctx context.Context, cwd string, pr PRReference) (b
 	}()
 	resolved, err := git(false, "rev-parse", "--verify", "--quiet", scratch+"^{commit}")
 	if err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	head = strings.TrimSpace(resolved.stdout)
 	if resolved.exitCode != 0 || !treeOIDPattern.MatchString(head) {
-		return "", "", fmt.Errorf("fetch %s from origin: no commit arrived", headRef)
+		return "", "", false, fmt.Errorf("fetch %s from origin: no commit arrived", headRef)
 	}
 	// An empty old value creates the branch only where none exists, in one
 	// ref transaction.
-	created, err := git(false, "update-ref", "refs/heads/"+branch, head, "")
+	create, err := git(false, "update-ref", "refs/heads/"+branch, head, "")
 	if err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
-	if created.exitCode == 0 {
-		return branch, head, nil
+	if create.exitCode == 0 {
+		return branch, head, true, nil
 	}
 	existing, err := git(false, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch+"^{commit}")
 	if err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	if existing.exitCode != 0 {
-		return "", "", fmt.Errorf("create branch %s: %s", branch, strings.TrimSpace(created.stderr))
+		return "", "", false, fmt.Errorf("create branch %s: %s", branch, strings.TrimSpace(create.stderr))
 	}
 	if at := strings.TrimSpace(existing.stdout); at != head {
-		return "", "", fmt.Errorf("branch %s is at %s, and %s's head is %s: %w", branch, shortOID(at), headRef, shortOID(head), ErrPRBranchDiverged)
+		return "", "", false, fmt.Errorf("branch %s is at %s, and %s's head is %s: %w", branch, shortOID(at), headRef, shortOID(head), ErrPRBranchDiverged)
 	}
-	return branch, head, nil
+	return branch, head, false, nil
 }
 
 func shortOID(oid string) string {

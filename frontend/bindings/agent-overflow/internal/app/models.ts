@@ -3298,6 +3298,93 @@ export class NewThreadDefaultsUpdate {
     }
 }
 
+/**
+ * OpenPRThreadRequest is "New thread on BRANCH": the project the PR's
+ * repository is checked out in, the PR as the list row holds it, and the
+ * identity the merged-PR cleanup tracks it by (URL; NodeID, which GitHub's
+ * state reads need).
+ */
+export class OpenPRThreadRequest {
+    "projectId": string;
+    "pr": git$0.PRReference;
+    "headRefName": string;
+    "crossRepository": boolean;
+    "url": string;
+    "nodeId": string;
+    "title": string;
+
+    /** Creates a new OpenPRThreadRequest instance. */
+    constructor($$source: Partial<OpenPRThreadRequest> = {}) {
+        if (!("projectId" in $$source)) {
+            this["projectId"] = "";
+        }
+        if (!("pr" in $$source)) {
+            this["pr"] = (new git$0.PRReference());
+        }
+        if (!("headRefName" in $$source)) {
+            this["headRefName"] = "";
+        }
+        if (!("crossRepository" in $$source)) {
+            this["crossRepository"] = false;
+        }
+        if (!("url" in $$source)) {
+            this["url"] = "";
+        }
+        if (!("nodeId" in $$source)) {
+            this["nodeId"] = "";
+        }
+        if (!("title" in $$source)) {
+            this["title"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new OpenPRThreadRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): OpenPRThreadRequest {
+        const $$createField1_0 = $$createType52;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("pr" in $$parsedSource) {
+            $$parsedSource["pr"] = $$createField1_0($$parsedSource["pr"]);
+        }
+        return new OpenPRThreadRequest($$parsedSource as Partial<OpenPRThreadRequest>);
+    }
+}
+
+/**
+ * OpenPRThreadResult is the new thread, its worktree and its branch.
+ */
+export class OpenPRThreadResult {
+    "threadId": string;
+    "worktreePath": string;
+    "branch": string;
+
+    /** Creates a new OpenPRThreadResult instance. */
+    constructor($$source: Partial<OpenPRThreadResult> = {}) {
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("worktreePath" in $$source)) {
+            this["worktreePath"] = "";
+        }
+        if (!("branch" in $$source)) {
+            this["branch"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new OpenPRThreadResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): OpenPRThreadResult {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new OpenPRThreadResult($$parsedSource as Partial<OpenPRThreadResult>);
+    }
+}
+
 export const OwnDeviceList = owndevices$0.List;
 export type OwnDeviceList = owndevices$0.List;
 
@@ -3332,7 +3419,7 @@ export class PRActionResult {
      * Creates a new PRActionResult instance from a string or object.
      */
     static createFrom($$source: any = {}): PRActionResult {
-        const $$createField1_0 = $$createType52;
+        const $$createField1_0 = $$createType53;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("outcome" in $$parsedSource) {
             $$parsedSource["outcome"] = $$createField1_0($$parsedSource["outcome"]);
@@ -3361,7 +3448,7 @@ export class PRCILogFollowResult {
      * Creates a new PRCILogFollowResult instance from a string or object.
      */
     static createFrom($$source: any = {}): PRCILogFollowResult {
-        const $$createField0_0 = $$createType54;
+        const $$createField0_0 = $$createType55;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("logs" in $$parsedSource) {
             $$parsedSource["logs"] = $$createField0_0($$parsedSource["logs"]);
@@ -3445,7 +3532,7 @@ export class PRCILogState {
      * Creates a new PRCILogState instance from a string or object.
      */
     static createFrom($$source: any = {}): PRCILogState {
-        const $$createField4_0 = $$createType56;
+        const $$createField4_0 = $$createType57;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("sections" in $$parsedSource) {
             $$parsedSource["sections"] = $$createField4_0($$parsedSource["sections"]);
@@ -3736,7 +3823,7 @@ export class PRListItem {
      * Creates a new PRListItem instance from a string or object.
      */
     static createFrom($$source: any = {}): PRListItem {
-        const $$createField0_0 = $$createType57;
+        const $$createField0_0 = $$createType52;
         const $$createField5_0 = $$createType58;
         const $$createField18_0 = $$createType59;
         const $$createField26_0 = $$createType61;
@@ -3976,6 +4063,89 @@ export class PRSince {
     static createFrom($$source: any = {}): PRSince {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new PRSince($$parsedSource as Partial<PRSince>);
+    }
+}
+
+/**
+ * PRThread is one thread on a PR: its state as the sidebar shows it, the
+ * branch it works on and when it last changed (unix milliseconds).
+ */
+export class PRThread {
+    "threadId": string;
+    "title": string;
+    "status": string;
+    "worktreeBranch": string;
+    "updatedAt": number;
+
+    /** Creates a new PRThread instance. */
+    constructor($$source: Partial<PRThread> = {}) {
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("title" in $$source)) {
+            this["title"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+        if (!("worktreeBranch" in $$source)) {
+            this["worktreeBranch"] = "";
+        }
+        if (!("updatedAt" in $$source)) {
+            this["updatedAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRThread instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRThread {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PRThread($$parsedSource as Partial<PRThread>);
+    }
+}
+
+/**
+ * PRThreadsRequest names a PR and its head branch as the page's list row
+ * holds them: HeadRefName is the source branch, CrossRepository a head in
+ * another repository (a fork), whose local branch is pr/N.
+ */
+export class PRThreadsRequest {
+    "projectId": string;
+    "pr": git$0.PRReference;
+    "headRefName": string;
+    "crossRepository": boolean;
+
+    /** Creates a new PRThreadsRequest instance. */
+    constructor($$source: Partial<PRThreadsRequest> = {}) {
+        if (!("projectId" in $$source)) {
+            this["projectId"] = "";
+        }
+        if (!("pr" in $$source)) {
+            this["pr"] = (new git$0.PRReference());
+        }
+        if (!("headRefName" in $$source)) {
+            this["headRefName"] = "";
+        }
+        if (!("crossRepository" in $$source)) {
+            this["crossRepository"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRThreadsRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRThreadsRequest {
+        const $$createField1_0 = $$createType52;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("pr" in $$parsedSource) {
+            $$parsedSource["pr"] = $$createField1_0($$parsedSource["pr"]);
+        }
+        return new PRThreadsRequest($$parsedSource as Partial<PRThreadsRequest>);
     }
 }
 
@@ -10939,12 +11109,12 @@ const $$createType48 = LiveStateTodoStep.createFrom;
 const $$createType49 = $Create.Array($$createType48);
 const $$createType50 = provider$0.RateLimitsSnapshot.createFrom;
 const $$createType51 = $Create.Nullable($$createType50);
-const $$createType52 = git$0.MergeOutcome.createFrom;
-const $$createType53 = PRCILogState.createFrom;
-const $$createType54 = $Create.Map($Create.Any, $$createType53);
-const $$createType55 = cilog$0.Section.createFrom;
-const $$createType56 = $Create.Array($$createType55);
-const $$createType57 = git$0.PRReference.createFrom;
+const $$createType52 = git$0.PRReference.createFrom;
+const $$createType53 = git$0.MergeOutcome.createFrom;
+const $$createType54 = PRCILogState.createFrom;
+const $$createType55 = $Create.Map($Create.Any, $$createType54);
+const $$createType56 = cilog$0.Section.createFrom;
+const $$createType57 = $Create.Array($$createType56);
 const $$createType58 = git$0.PRListAuthor.createFrom;
 const $$createType59 = git$0.PRListReview.createFrom;
 const $$createType60 = PRListDetail.createFrom;

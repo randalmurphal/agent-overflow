@@ -277,6 +277,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListThreadRemoteCommands", ID: 1165681857, Scope: "threads:read", Route: "thread"},                                // main.App.ListThreadRemoteCommands
 	{Name: "ListThreadSliceAround", ID: 4176102096, Scope: "threads:read", Route: "thread"},                                   // main.App.ListThreadSliceAround
 	{Name: "ListThreads", ID: 1090132042, Scope: "threads:read", Route: "all"},                                                // main.App.ListThreads
+	{Name: "ListThreadsOnPR", ID: 1924357569, Scope: "git:operate", Route: "selected"},                                        // main.App.ListThreadsOnPR
 	{Name: "ListWSLDistros", ID: 2332614075, Scope: "host", Route: "home"},                                                    // main.App.ListWSLDistros
 	{Name: "ListWorkspaceMcpServers", ID: 2808137798, Scope: "settings:write", Route: "selected"},                             // main.App.ListWorkspaceMcpServers
 	{Name: "MarkDiffReviewCommentsSent", ID: 1673567995, Scope: "threads:operate", Route: "thread"},                           // main.App.MarkDiffReviewCommentsSent
@@ -306,6 +307,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "OpenOwnComputerPairing", ID: 767864574, Scope: "access:admin", Route: "home", StepUp: true, Remote: true},         // main.App.OpenOwnComputerPairing
 	{Name: "OpenPRCommitDiff", ID: 110447601, Scope: "git:operate", Route: "workspace"},                                       // main.App.OpenPRCommitDiff
 	{Name: "OpenPRDiff", ID: 4075510992, Scope: "git:operate", Route: "workspace"},                                            // main.App.OpenPRDiff
+	{Name: "OpenPRThread", ID: 2660387675, Scope: "git:operate", Route: "selected"},                                           // main.App.OpenPRThread
 	{Name: "OpenTerminal", ID: 2247958725, Scope: "terminal:operate", Route: "thread"},                                        // main.App.OpenTerminal
 	{Name: "OpenTurnEditsDiff", ID: 4078889536, Scope: "threads:read", Route: "thread"},                                       // main.App.OpenTurnEditsDiff
 	{Name: "OpenWorkspaceDiff", ID: 3558532873, Scope: "files:read", Route: "workspace"},                                      // main.App.OpenWorkspaceDiff
@@ -442,7 +444,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SubmitAsyncAnswers", ID: 1219107798, Scope: "threads:operate", Route: "thread"},                                   // main.App.SubmitAsyncAnswers
 	{Name: "SubmitPRReview", ID: 2692607191, Scope: "git:operate", Route: "selected"},                                         // main.App.SubmitPRReview
 	{Name: "SubmitProviderLoginCode", ID: 3556446736, Scope: "access:admin", Route: "home"},                                   // main.App.SubmitProviderLoginCode
-	{Name: "SubscribePRList", ID: 2065051829, Scope: "git:operate", Route: "home"},                                            // main.App.SubscribePRList
+	{Name: "SubscribePRList", ID: 2065051829, Scope: "git:operate", Route: "selected"},                                        // main.App.SubscribePRList
 	{Name: "SubscribePRUpdates", ID: 3272491649, Scope: "git:operate", Route: "selected"},                                     // main.App.SubscribePRUpdates
 	{Name: "SubscribePipeline", ID: 2067341173, Scope: "git:operate", Route: "selected"},                                      // main.App.SubscribePipeline
 	{Name: "SwitchProviderAccount", ID: 1249964095, Scope: "access:admin", Route: "home"},                                     // main.App.SwitchProviderAccount
