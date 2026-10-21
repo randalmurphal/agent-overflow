@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-overflow/internal/eventchan"
@@ -35,6 +36,11 @@ import (
 // per-turn cascade. See internal/triage/AGENTS.md "Wire-round vs
 // logical-turn".
 func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
+	// An interrupt sampled from here until the open turn is set waits
+	// for it (InterruptTurnIndex): the row written below is already the
+	// active turn GetActiveTurn-gated callers stop.
+	started := r.beginTurnStart(evt.ThreadID)
+	defer started()
 	turnIndex := r.resolveTurnIndexOnStart(evt)
 	startedAt := eventTimestampMillis(evt)
 
@@ -55,9 +61,17 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 		ProviderTurnID: strings.TrimSpace(evt.TurnID),
 	})
 
+	r.mu.Lock()
+	gate := r.turnRowWrittenGate
+	r.mu.Unlock()
+	if gate != nil {
+		gate(evt.ThreadID)
+	}
+
 	// A failed ownership read is reported once the turn is open: the turn
 	// starts either way.
 	openErr := r.setOpenTurn(evt.ThreadID, turnIndex)
+	started()
 	r.openTurnSpan(evt, turnIndex)
 
 	// Open the first wire round for this logical turn. Frontend
@@ -926,8 +940,7 @@ func (r *Router) openTurnIndex(threadID string) (int, bool) {
 
 // OpenTurnIndex returns the currently-open logical turn for threadID,
 // or -1 when none is in flight. Interrupt paths sample
-// InterruptTurnIndex instead, which also sees a turn whose row is
-// written but whose open turn is not set yet.
+// InterruptTurnIndex instead, which waits out a turn start in progress.
 func (r *Router) OpenTurnIndex(threadID string) int {
 	if turnIndex, ok := r.openTurnIndex(threadID); ok {
 		return turnIndex
@@ -936,16 +949,19 @@ func (r *Router) OpenTurnIndex(threadID string) int {
 }
 
 // InterruptTurnIndex returns the turn an interrupt of threadID cuts: the
-// open turn, or, when none is set, the store's active turn row unless
-// the router already closed that turn, or -1 otherwise.
-// handleTurnStart writes the active row before it sets the open turn,
-// and GetActiveTurn-gated callers (workflow takeover, revert) can
-// interrupt in that gap; the row names the turn they see as running.
-// A turn that completed never reads here: completion settles its row
-// before it clears the open turn. A fatal provider error clears the
-// open turn and leaves the row active until the wire completion; that
-// turn is over, so closedTurn excludes it and a cleanup interrupt
-// records no user stop.
+// open turn, or -1 when none is in flight. While handleTurnStart runs it
+// first waits for the start to finish. That handler writes the active
+// turns row before it sets the open turn, and GetActiveTurn-gated
+// callers (workflow takeover, revert) can interrupt in between; an
+// immediate sample would read -1 and lose the user's stop. A marker
+// written in that gap would not hold either: setOpenTurn resets the
+// turn's error sequence, so the turn's next error row reuses the
+// marker's id.
+//
+// The store's row is never consulted. An active row with no open turn
+// and no start in progress is a turn the router already closed: a fatal
+// provider error awaiting its wire completion, or a settlement whose
+// write failed. Stopping then cuts nothing.
 //
 // Interrupt paths sample this BEFORE awaiting the provider's interrupt
 // ack and pass the value to MarkFlushSendsInterrupted, MarkUserInterrupt
@@ -954,28 +970,50 @@ func (r *Router) OpenTurnIndex(threadID string) int {
 // sample would report -1 for exactly that turn — its echo would then
 // settle it "end_turn" instead of "interrupted" (round-5, R5-4).
 //
-// A failed row read returns -1 with the error: the interrupt still
-// proceeds, and the caller reports that the stop may go unrecorded.
-func (r *Router) InterruptTurnIndex(threadID string) (int, error) {
+// The wait is bounded by the start's own store writes, and nothing it
+// runs takes the app's thread action lock the interrupt paths hold.
+// It must not be called from the event worker.
+func (r *Router) InterruptTurnIndex(threadID string) int {
 	r.mu.Lock()
-	closedTurn, closedTurnSet := 0, false
-	if st := r.threadStateIfPresent(threadID); st != nil {
-		if st.openTurnSet {
-			turnIndex := st.openTurn
-			r.mu.Unlock()
-			return turnIndex, nil
-		}
-		closedTurn, closedTurnSet = st.closedTurn, st.closedTurnSet
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		r.mu.Unlock()
+		return -1
 	}
+	if !st.openTurnSet && st.turnStarting != nil {
+		starting := st.turnStarting
+		r.mu.Unlock()
+		<-starting
+		return r.OpenTurnIndex(threadID)
+	}
+	turnIndex, open := st.openTurn, st.openTurnSet
 	r.mu.Unlock()
-	turn, active, err := r.store.GetActiveTurn(threadID)
-	if err != nil {
-		return -1, fmt.Errorf("triage: interrupt turn index: %w", err)
+	if !open {
+		return -1
 	}
-	if !active || (closedTurnSet && turn.TurnIndex == closedTurn) {
-		return -1, nil
+	return turnIndex
+}
+
+// beginTurnStart marks threadID as starting a turn and returns the
+// function that ends the mark, releasing InterruptTurnIndex waiters.
+// Ending is idempotent: handleTurnStart ends it once the open turn is
+// set and again, as a no-op, when it returns.
+func (r *Router) beginTurnStart(threadID string) func() {
+	starting := make(chan struct{})
+	r.mu.Lock()
+	r.state(threadID).turnStarting = starting
+	r.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.mu.Lock()
+			if st := r.threadStateIfPresent(threadID); st != nil && st.turnStarting == starting {
+				st.turnStarting = nil
+			}
+			r.mu.Unlock()
+			close(starting)
+		})
 	}
-	return turn.TurnIndex, nil
 }
 
 // HasInFlightTurnOrRound reports whether the router still has any
@@ -1440,8 +1478,6 @@ func (r *Router) clearOpenTurn(threadID string, agentScopes map[string]bool) {
 		// the entry would otherwise leak until CleanupThread.
 		clear(st.pendingCommandDiffs)
 		dropTurnRequestsLocked(st, agentScopes)
-		st.closedTurn = st.openTurn
-		st.closedTurnSet = true
 	}
 	st.openTurn = 0
 	st.openTurnSet = false
@@ -1629,10 +1665,10 @@ func (r *Router) MarkUserInterrupt(threadID string, sampledTurnIndex int, tok Fl
 		return "", nil
 	}
 	if sampledTurnIndex < 0 {
-		// No open turn and no unclosed active row at the pre-ack sample
-		// (InterruptTurnIndex): nothing was cut. The turn completed or
-		// failed in the click-to-sample race and the interrupt ack'd an
-		// idle CLI. Resolving a fallback here would relabel
+		// No turn was open at the pre-ack sample, which waits out a
+		// turn start in progress (InterruptTurnIndex): nothing was cut.
+		// The turn completed or failed in the click-to-sample race and
+		// the interrupt ack'd an idle CLI. Resolving a fallback here would relabel
 		// completed history (LastTurnIndex) or a queued echo's freshly
 		// opened turn as "Stopped by user" (round-12, CT12-1).
 		return "", nil
@@ -2009,10 +2045,6 @@ func (r *Router) MarkThreadActive(threadID string) {
 		// session's first error result into persistLateTurnPayload
 		// (see the doc comment above).
 		st.settledTurns = nil
-		// A replacement session after revert reuses turn indexes; the
-		// dead process's closed turn must not hide the new one's start
-		// gap from InterruptTurnIndex.
-		st.closedTurn, st.closedTurnSet = 0, false
 		hadEffectiveModel = st.effectiveModelSet
 		st.effectiveModel, st.effectiveModelSet = "", false
 		// A pending harness wakeup is in-process state of the PREVIOUS

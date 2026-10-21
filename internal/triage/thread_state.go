@@ -34,11 +34,11 @@ type threadState struct {
 	// (the map's comma-ok).
 	openTurn    int
 	openTurnSet bool
-	// closedTurn is the last turn clearOpenTurn closed. A fatal provider
-	// error closes the turn while its row stays active until the wire
-	// completion; InterruptTurnIndex reads that row as over, not cut.
-	closedTurn    int
-	closedTurnSet bool
+	// turnStarting is non-nil while handleTurnStart runs, from before it
+	// writes the turns row until the open turn is set, and is closed
+	// when it returns. InterruptTurnIndex waits on it so an interrupt
+	// never samples the turn between its row and its open turn.
+	turnStarting chan struct{}
 
 	// interruptQueue holds persistence work deferred behind an active
 	// stream (invariant 11), drained once the thread stops streaming.

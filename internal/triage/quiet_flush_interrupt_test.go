@@ -948,10 +948,7 @@ func promoteQuietForTest(router *Router, threadID string) []store.Item {
 // pre-ack open-turn sample + Mark, then the post-ack bookkeeping with
 // that sample and token.
 func markUserInterruptForTest(router *Router, threadID string) (string, error) {
-	open, err := router.InterruptTurnIndex(threadID)
-	if err != nil {
-		return "", err
-	}
+	open := router.InterruptTurnIndex(threadID)
 	tok := router.MarkFlushSendsInterrupted(threadID, open)
 	return router.MarkUserInterrupt(threadID, open, tok)
 }
