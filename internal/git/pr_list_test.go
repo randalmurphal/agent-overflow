@@ -151,25 +151,33 @@ func TestGitLabListProjectPRsParsesTheList(t *testing.T) {
 	}
 }
 
-// A login GitLab will not name reads as no one's: the rows still list,
-// with every viewer flag false.
-func TestGitLabListProjectPRsWithoutAViewer(t *testing.T) {
+// A login GitLab will not name fails the list read: every attention
+// state hangs on the viewer, so rows that read as nobody's would be
+// wrong, not empty. The refusal is cached, so the second read fails
+// without asking again.
+func TestGitLabListProjectPRsWithoutAViewerFails(t *testing.T) {
 	t.Parallel()
 	answer := readTestdata(t, "gitlab-mr-list.json")
-	core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 		if call.Path == "user" {
 			return forgeAPIAnswer{Status: http.StatusForbidden, Body: `{"message":"403 Forbidden"}`}
 		}
 		return forgeAPIAnswer{Body: answer}
 	})
-	rows, err := core.ListProjectPRs(t.Context(), gitlabTestRepo())
-	if err != nil || len(rows) != 3 {
-		t.Fatalf("ListProjectPRs = %d rows, %v", len(rows), err)
-	}
-	for _, row := range rows {
-		if row.ViewerIsAuthor || row.ViewerIsReviewer || row.ReviewRequested {
-			t.Errorf("row %d reads as the unknown viewer's: %+v", row.Ref.Number, row)
+	for i := range 2 {
+		rows, err := core.ListProjectPRs(t.Context(), gitlabTestRepo())
+		if err == nil || len(rows) != 0 {
+			t.Fatalf("read %d: ListProjectPRs = %d rows, %v; want the viewer failure", i, len(rows), err)
 		}
+	}
+	userReads := 0
+	for _, call := range calls.all() {
+		if call.Path == "user" {
+			userReads++
+		}
+	}
+	if userReads != 1 {
+		t.Fatalf("GET user was sent %d times; the refusal should be cached", userReads)
 	}
 }
 

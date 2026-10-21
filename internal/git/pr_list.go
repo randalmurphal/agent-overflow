@@ -328,7 +328,13 @@ func (f *gitlabForge) ListProjectPRs(ctx context.Context, repo RepoReference) ([
 	if err != nil {
 		return nil, err
 	}
-	viewer := f.viewerLogin(ctx, client, repo.Host)
+	// Every attention state hangs on knowing who the viewer is, so an
+	// unknown login fails this project's read for the tick instead of
+	// listing every merge request as somebody else's.
+	viewer, err := f.readViewerLogin(ctx, client, repo.Host)
+	if err != nil {
+		return nil, fmt.Errorf("gitlab: list %s: %w", repo.Project(), err)
+	}
 	rows := make([]PRListRow, 0, len(raw))
 	for _, mr := range raw {
 		rows = append(rows, gitlabPRListRow(repo, mr, viewer))
