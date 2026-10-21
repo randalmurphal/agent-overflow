@@ -87,6 +87,8 @@ canonical home only for the selected account over the same login
 
 Every slot write and removal holds the slot's lock (`lockSlot`); a writer
 that decides from the slot's contents holds it from the read to the write.
+A writer holding bytes it read earlier replaces only what it read
+(`ReplaceAccountCredential`), and rollback removes only what it wrote.
 
 Credential bytes travel as `CredentialSnapshot` or `secret.Bytes`, which
 print as `<redacted>` from any field. A raw `[]byte` credential is a
