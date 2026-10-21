@@ -103,10 +103,11 @@
   $effect(() => {
     const ref = listRef;
     if (!ref) return;
-    return ref.subscribeContentGeometry(() => {
+    // The subscription replays its sample at once, inside this effect.
+    return ref.subscribeContentGeometry(() => untrack(() => {
       if (scrollEl) scrollbarInset = scrollEl.offsetWidth - scrollEl.clientWidth;
       update();
-    });
+    }));
   });
 </script>
 
