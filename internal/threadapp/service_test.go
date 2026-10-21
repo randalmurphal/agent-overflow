@@ -2,6 +2,7 @@ package threadapp
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -504,5 +505,58 @@ func TestDefaultsCarriesItsCallersDeadlineIntoTheStore(t *testing.T) {
 	}
 	if defaults.WorkspacePath != "/repo" {
 		t.Fatalf("WorkspacePath = %q, want /repo", defaults.WorkspacePath)
+	}
+}
+
+// The created row is read back in its insert's transaction, the last
+// step of a creation that can fail. A read that fails leaves no thread,
+// takes back the worktree the creation cut and starts no setup; a
+// terminal's creation leaves no row either.
+func TestCreateUndoesEverythingWhenTheCreatedRowCannotBeRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "store.sqlite")
+	database, err := store.New(path)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if _, err := database.CreateProject(store.Project{ID: "project", Path: "/repo", Name: "repo", CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	setup := &setupRecorder{store: database}
+	workspace := &testWorkspace{createPath: "/repo-worktrees/new", createBranch: "feature/new", createdBranch: true}
+	service := New(Deps{
+		Store: database, Models: &testModels{}, Workspace: workspace, WorktreeSetup: setup,
+		Now: func() time.Time { return time.UnixMilli(1234) }, NewID: func() string { return "thread" },
+	})
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	// A column the read cannot scan makes the row unreadable.
+	if _, err := raw.Exec(`CREATE TRIGGER unreadable_thread AFTER INSERT ON threads BEGIN UPDATE threads SET last_read_at = 'unreadable' WHERE id = NEW.id; END`); err != nil {
+		t.Fatal(err)
+	}
+
+	thread, cut, err := service.CreateWithWorktree(CreateOptions{ProjectID: "project", WorktreeBranch: "feature/new"})
+	if err == nil {
+		t.Fatalf("CreateWithWorktree = %+v, want the read's failure", thread)
+	}
+	if _, getErr := database.GetThread("thread"); !errors.Is(getErr, sql.ErrNoRows) {
+		t.Fatalf("GetThread after the failed create = %v, want no row", getErr)
+	}
+	want := CutWorktree{Path: "/repo-worktrees/new", Branch: "feature/new", CreatedBranch: true}
+	if len(workspace.removed) != 1 || workspace.removed[0] != want {
+		t.Fatalf("removed = %+v, want the cut %+v", workspace.removed, want)
+	}
+	if cut != (CutWorktree{}) || len(setup.started) != 0 {
+		t.Fatalf("cut = %+v, setup = %v; want neither", cut, setup.started)
+	}
+
+	if _, err := service.StartTerminal(TerminalOptions{ProjectID: "project"}); err == nil {
+		t.Fatal("StartTerminal reported a terminal it could not read")
+	}
+	if _, getErr := database.GetThread("thread"); !errors.Is(getErr, sql.ErrNoRows) {
+		t.Fatalf("GetThread after the failed terminal = %v, want no row", getErr)
 	}
 }

@@ -267,6 +267,43 @@ func TestOpenPRThreadRollsBackWhenTheThreadCannotBeWritten(t *testing.T) {
 	}
 }
 
+// A created thread that cannot be read back is no thread: the creation's
+// read shares its insert's transaction, so OpenPRThread leaves no row, no
+// worktree and none of the branches it made, for a fork's pr/N and for the
+// local branch of a head only origin had.
+func TestOpenPRThreadRollsBackWhenTheThreadCannotBeRead(t *testing.T) {
+	t.Parallel()
+	for _, cross := range []bool{true, false} {
+		c := newPRThreadCase(t)
+		head, made := "feature-x", "feature-x"
+		if cross {
+			c.push(t, "refs/pull/5/head")
+			head, made = "fork-work", "pr/5"
+		} else {
+			c.push(t, "refs/heads/feature-x")
+		}
+		execOnStore(t, c.dbPath, `CREATE TRIGGER unreadable_thread AFTER INSERT ON threads BEGIN UPDATE threads SET last_read_at = 'unreadable' WHERE id = NEW.id; END`)
+
+		_, err := c.app.OpenPRThread(context.Background(), c.request(head, cross))
+		if err == nil {
+			t.Fatalf("cross %v: OpenPRThread succeeded on a thread it could not read", cross)
+		}
+		if strings.Contains(err.Error(), "delete branch") || strings.Contains(err.Error(), "undo the worktree") {
+			t.Fatalf("cross %v: the rollback failed: %v", cross, err)
+		}
+		execOnStore(t, c.dbPath, `DROP TRIGGER unreadable_thread`)
+		if threads := c.threads(t); len(threads) != 0 {
+			t.Fatalf("cross %v: threads left = %+v", cross, threads)
+		}
+		if branchExists(c.repo, made) {
+			t.Fatalf("cross %v: %s was left behind", cross, made)
+		}
+		if worktrees, err := c.app.gitCore().ListWorktrees(c.repo); err != nil || len(worktrees) != 1 {
+			t.Fatalf("cross %v: worktrees = %+v (%v), want the main checkout alone", cross, worktrees, err)
+		}
+	}
+}
+
 // A head only origin has is checked out as a local branch the call made,
 // which a later failure deletes with the worktree; a head already local
 // is kept.
