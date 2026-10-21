@@ -21,15 +21,20 @@ var (
 )
 
 // prListFake stands in for the forge behind the list pump: each
-// repository's rows and failure, each PR's detail, and the reads made.
+// repository's rows and failure, each PR's detail, and the reads made with
+// their admission (interactive). With reserve set, a background detail
+// read is refused as the transport refuses one near the rate limit
+// reserve.
 type prListFake struct {
-	mu       sync.Mutex
-	projects []ForgeProject
-	rows     map[string][]gitops.PRListRow
-	listErr  map[string]error
-	details  map[string]gitops.PRDetail
-	lists    map[string]int
-	reads    map[string]int
+	mu          sync.Mutex
+	projects    []ForgeProject
+	rows        map[string][]gitops.PRListRow
+	listErr     map[string]error
+	details     map[string]gitops.PRDetail
+	lists       map[string]int
+	reads       map[string]int
+	interactive map[string][]bool
+	reserve     bool
 }
 
 func newPRListFake(t *testing.T, app *App) *prListFake {
@@ -38,11 +43,12 @@ func newPRListFake(t *testing.T, app *App) *prListFake {
 			{ProjectID: "p-a", Name: "Widgets", Path: "/w", Repo: prListRepoA},
 			{ProjectID: "p-b", Name: "App", Path: "/a", Repo: prListRepoB},
 		},
-		rows:    map[string][]gitops.PRListRow{},
-		listErr: map[string]error{},
-		details: map[string]gitops.PRDetail{},
-		lists:   map[string]int{},
-		reads:   map[string]int{},
+		rows:        map[string][]gitops.PRListRow{},
+		listErr:     map[string]error{},
+		details:     map[string]gitops.PRDetail{},
+		lists:       map[string]int{},
+		reads:       map[string]int{},
+		interactive: map[string][]bool{},
 	}
 	// Registered before any subscription, so it runs after their release.
 	t.Cleanup(app.prUpdates.wg.Wait)
@@ -60,10 +66,15 @@ func newPRListFake(t *testing.T, app *App) *prListFake {
 		}
 		return slices.Clone(f.rows[repo.Key()]), nil
 	}
-	app.prUpdates.listDetailFn = func(_ context.Context, pr gitops.PRReference) (gitops.PRDetail, error) {
+	app.prUpdates.listDetailFn = func(ctx context.Context, pr gitops.PRReference) (gitops.PRDetail, error) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.reads[pr.Key()]++
+		interactive := forgeapi.IsInteractive(ctx)
+		f.interactive[pr.Key()] = append(f.interactive[pr.Key()], interactive)
+		if f.reserve && !interactive {
+			return gitops.PRDetail{}, &forgeapi.RateLimitedError{Host: pr.Host, Pool: "graphql", Until: time.Now().Add(time.Hour), Reserve: true}
+		}
 		return f.details[pr.Key()], nil
 	}
 	return f
@@ -703,6 +714,149 @@ func TestPRListHiddenSubscriberFocusYieldsTheAllowance(t *testing.T) {
 	awaitPRList(t, events, "the hidden rows' detail dropped", func(s PRListSnapshot) bool {
 		return detailed(s, newer) == 0 && detailed(s, older) == 0
 	})
+}
+
+// The allowance a subscriber frees by hiding or leaving is read in the
+// background, so near the rate limit reserve those reads are refused;
+// the user's own focus change and showing the page read as interactive
+// and pass the reserve.
+func TestPRListFreedAllowanceReadsInTheBackground(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	fake := newPRListFake(t, app)
+	var newest, older, oldest []string
+	fake.set(func(f *prListFake) {
+		for i := 1; i <= 3*maxPRListFocus; i++ {
+			row := prListRow(prListRepoA, i, func(r *gitops.PRListRow) {
+				r.UpdatedAt = time.Date(2026, 1, 1, 0, 0, i, 0, time.UTC).Format(time.RFC3339)
+			})
+			f.rows[prListRepoA.Key()] = append(f.rows[prListRepoA.Key()], row)
+			switch {
+			case i <= maxPRListFocus:
+				oldest = append(oldest, row.Ref.Key())
+			case i <= 2*maxPRListFocus:
+				older = append(older, row.Ref.Key())
+			default:
+				newest = append(newest, row.Ref.Key())
+			}
+		}
+	})
+	events := capturePRList(t, app)
+	a := subscribePRList(t, app)
+	b := subscribePRList(t, app)
+	count := func(s PRListSnapshot, keys []string, has func(PRListItem) bool) int {
+		n := 0
+		for _, row := range prListProject(t, s, "p-a").Rows {
+			if slices.Contains(keys, row.Ref.Key()) && has(row) {
+				n++
+			}
+		}
+		return n
+	}
+	detailed := func(row PRListItem) bool { return row.Detail != nil }
+	refused := func(row PRListItem) bool { return row.Detail == nil && row.DetailError != "" }
+	admissions := func(keys []string) (interactive, background int) {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		for _, key := range keys {
+			for _, user := range fake.interactive[key] {
+				if user {
+					interactive++
+				} else {
+					background++
+				}
+			}
+		}
+		return interactive, background
+	}
+
+	// The user's focus reads as interactive. Once b's newer rows hold the
+	// allowance (both visible) no wake is pending: the pass that read them
+	// saw both focuses.
+	if _, err := app.SetPRListFocus(context.Background(), a.ID, older); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.SetPRListFocus(context.Background(), b.ID, newest); err != nil {
+		t.Fatal(err)
+	}
+	awaitPRList(t, events, "the newest rows hold the allowance", func(s PRListSnapshot) bool {
+		return count(s, newest, detailed) == maxPRListFocus && count(s, older, detailed) == 0
+	})
+	if user, background := admissions(newest); user != maxPRListFocus || background != 0 {
+		t.Fatalf("focus reads: %d interactive, %d background", user, background)
+	}
+	fake.set(func(f *prListFake) { f.reserve = true })
+	userBefore, backgroundBefore := admissions(older)
+	if backgroundBefore != 0 {
+		t.Fatalf("%d background reads before the reserve", backgroundBefore)
+	}
+
+	if err := app.SetPRListActive(context.Background(), b.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	awaitPRList(t, events, "the freed rows refused at the reserve once the other hid", func(s PRListSnapshot) bool {
+		return count(s, older, refused) == maxPRListFocus
+	})
+	if user, background := admissions(older); user != userBefore || background != maxPRListFocus {
+		t.Fatalf("reads after a hide: %d interactive, %d background", user-userBefore, background)
+	}
+
+	if err := app.SetPRListActive(context.Background(), b.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	awaitPRList(t, events, "the shown subscriber's rows read past the reserve", func(s PRListSnapshot) bool {
+		return count(s, newest, detailed) == maxPRListFocus && count(s, older, refused) == 0
+	})
+	if user, background := admissions(newest); user != 2*maxPRListFocus || background != 0 {
+		t.Fatalf("reads after a show: %d interactive, %d background", user, background)
+	}
+
+	if err := app.UnsubscribePRList(context.Background(), b.ID); err != nil {
+		t.Fatal(err)
+	}
+	awaitPRList(t, events, "the freed rows refused at the reserve once the other left", func(s PRListSnapshot) bool {
+		return count(s, older, refused) == maxPRListFocus && count(s, newest, detailed) == 0
+	})
+	if user, background := admissions(older); user != userBefore || background != 2*maxPRListFocus {
+		t.Fatalf("reads after a leave: %d interactive, %d background", user-userBefore, background)
+	}
+
+	// The user's own focus change still reads past the reserve.
+	if _, err := app.SetPRListFocus(context.Background(), a.ID, oldest); err != nil {
+		t.Fatal(err)
+	}
+	awaitPRList(t, events, "the user's focus read past the reserve", func(s PRListSnapshot) bool {
+		return count(s, oldest, detailed) == maxPRListFocus
+	})
+	if user, background := admissions(oldest); user != maxPRListFocus || background != 0 {
+		t.Fatalf("reads after a focus change: %d interactive, %d background", user, background)
+	}
+}
+
+// A user wake that arrives while a background one is pending is not
+// downgraded: the merged wake reads as interactive.
+func TestPRListFocusWakeKeepsTheUsersAdmission(t *testing.T) {
+	t.Parallel()
+	for _, order := range [][]bool{{false, true}, {true, false}, {true, true}} {
+		pump := &prListPump{pumpCore: pumpCore{ctx: context.Background()}, focusWake: make(chan struct{}, 1)}
+		for _, interactive := range order {
+			pump.wakeFocus(interactive)
+		}
+		<-pump.focusWake
+		if !forgeapi.IsInteractive(pump.focusContext()) {
+			t.Errorf("wakes %v read as background", order)
+		}
+		if forgeapi.IsInteractive(pump.focusContext()) {
+			t.Errorf("wakes %v: the next wake inherited the user's admission", order)
+		}
+	}
+	pump := &prListPump{pumpCore: pumpCore{ctx: context.Background()}, focusWake: make(chan struct{}, 1)}
+	pump.wakeFocus(false)
+	<-pump.focusWake
+	if forgeapi.IsInteractive(pump.focusContext()) {
+		t.Error("a background wake read as interactive")
+	}
 }
 
 func TestUnsubscribePRListUnbindsItsConnectionTie(t *testing.T) {
