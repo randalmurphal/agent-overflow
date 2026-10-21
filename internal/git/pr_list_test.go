@@ -78,7 +78,9 @@ func TestGitHubListProjectPRsPagesTheSearch(t *testing.T) {
 		}
 		page := 0
 		if after, ok := call.Vars["after"].(string); ok {
-			fmt.Sscanf(after, "c%d", &page)
+			if _, err := fmt.Sscanf(after, "c%d", &page); err != nil {
+				t.Errorf("cursor %q: %v", after, err)
+			}
 		}
 		nodes := make([]string, 0, 100)
 		for i := range 100 {
@@ -191,7 +193,11 @@ func TestGitLabListProjectPRsPagesTheList(t *testing.T) {
 		}
 		query, _ := url.ParseQuery(strings.SplitN(call.Path, "?", 2)[1])
 		page := 1
-		fmt.Sscanf(query.Get("page"), "%d", &page)
+		if raw := query.Get("page"); raw != "" {
+			if _, err := fmt.Sscanf(raw, "%d", &page); err != nil {
+				t.Errorf("page %q: %v", raw, err)
+			}
+		}
 		mrs := make([]string, 100)
 		for i := range mrs {
 			mrs[i] = fmt.Sprintf(`{"iid":%d,"project_id":1,"source_project_id":1,"blocking_discussions_resolved":true}`, (page-1)*100+i+1)

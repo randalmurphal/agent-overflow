@@ -122,7 +122,7 @@ func prAttentionState(row gitops.PRListRow, detail *PRListDetail) string {
 		headMoved := review.SubmittedAt != "" && rfc3339After(row.LastCommitAt, review.SubmittedAt)
 		switch {
 		case row.Ref.Forge == "gitlab":
-			if row.ViewerIsReviewer && !(detail != nil && detail.ViewerApproved) && !changesRequested {
+			if row.ViewerIsReviewer && (detail == nil || !detail.ViewerApproved) && !changesRequested {
 				return PRStateYourTurn
 			}
 		case row.ReviewRequested || headMoved:

@@ -82,8 +82,8 @@ func TestPipelinesThroughTheAppsForgeCode(t *testing.T) {
 		mr.Source != "merge_request_event" || mr.SHA != strings.Repeat("9", 40) || mr.URL != "https://gitlab.com/grp/pipes/-/pipelines/30" {
 		t.Errorf("glab merge request pipeline = %+v", mr)
 	}
-	if tag := pipelines[1]; tag.RefKind != gitops.PipelineRefBranch || tag.Ref != "v2.0.0" {
-		t.Errorf("glab tag pipeline = %+v (GitLab's list does not mark tags)", tag)
+	if tag := pipelines[1]; tag.RefKind != gitops.PipelineRefTag || tag.Ref != "v2.0.0" {
+		t.Errorf("glab tag pipeline = %+v (the tag scope read marks it)", tag)
 	}
 	if nightly := pipelines[2]; nightly.Source != "schedule" || nightly.Status != gitops.CIStatusSuccess {
 		t.Errorf("glab scheduled pipeline = %+v", nightly)
