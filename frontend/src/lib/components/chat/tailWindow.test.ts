@@ -48,6 +48,21 @@ describe('newlineCutOffset', () => {
   it('returns null when the text is shorter than minKeep', () => {
     expect(newlineCutOffset('a\nb', 0, 2048)).toBeNull();
   });
+
+  it('keeps at least minLines newlines after the cut', () => {
+    // Long lines: 2048 characters cover three of them, so the char floor
+    // alone cuts after the fifth line (5005) and leaves three lines for a
+    // slide that may hold eighteen pending.
+    const text = Array.from({ length: 8 }, () => para(1000)).join('\n') + '\n';
+    expect(newlineCutOffset(text, 0, 2048)).toBe(5005);
+    // Five lines kept: the cut lands after the third line.
+    expect(newlineCutOffset(text, 0, 2048, 5)).toBe(3003);
+    // More lines than the text holds past the cut: nowhere to cut.
+    expect(newlineCutOffset(text, 0, 2048, 9)).toBeNull();
+    // Short lines: the char floor is the binding one.
+    const short = Array.from({ length: 3000 }, () => 'a').join('\n');
+    expect(newlineCutOffset(short, 0, 2048, 21)).toBe(newlineCutOffset(short, 0, 2048));
+  });
 });
 
 describe('isMonotonicAppend', () => {

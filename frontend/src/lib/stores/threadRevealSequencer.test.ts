@@ -12,6 +12,7 @@ import {
 } from '../markdown/smoothing/PerItemSmoother';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
+import { revealTickBound } from '../../test/helpers/revealUnits';
 import { FakeSmoothingClock, installThreadPaneTestEnv } from '../../test/helpers/threadPane';
 
 describe('threadRevealGate', () => {
@@ -1103,7 +1104,11 @@ describe('threadRevealGate', () => {
           delta: full,
           updatedAt: 5,
         });
-        clock.tickFrame(100);
+        // A frame accrues at most one gate wait of budget, so the first
+        // word takes a few frames to land.
+        for (let frame = 0; frame < 10 && pane.items[0].summary.length === 0; frame++) {
+          clock.tickFrame(16);
+        }
         const beforeSnapshot = pane.items[0].summary;
         expect(beforeSnapshot.length).toBeGreaterThan(0);
         expect(beforeSnapshot.length).toBeLessThan(full.length);
@@ -1191,7 +1196,7 @@ describe('threadRevealGate', () => {
           // Per-frame WORK bound: no frame ever dumps a chunk, and no
           // frame ever jumps a skipped middle.
           expect(length - previousLength).toBeLessThanOrEqual(
-            MAX_ADVANCE_PER_TICK_CHARS,
+            revealTickBound(text),
           );
           previousLength = length;
         }
@@ -1315,7 +1320,7 @@ describe('threadRevealGate', () => {
           const length = pane.items[0].summary.length;
           expect(length).toBeGreaterThanOrEqual(previousLength);
           expect(length - previousLength).toBeLessThanOrEqual(
-            MAX_ADVANCE_PER_TICK_CHARS,
+            revealTickBound(streamed + finalSuffix),
           );
           previousLength = length;
         }

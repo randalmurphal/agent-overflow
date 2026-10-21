@@ -23,6 +23,8 @@
 // Everything above a cut is guaranteed invisible: the clamp shows the
 // bottom 3 lines and every cut keeps comfortably more than that.
 
+import { SLIDE_MAX_WINDOWS } from './tailSlide';
+
 /**
  * Rendered lines the collapsed clamp shows. The clamp itself is the literal
  * `max-h-[3lh]` class in TailClampedText.svelte — Tailwind only generates
@@ -47,11 +49,16 @@ export const TAIL_WINDOW_CAP_CHARS = 8192;
 export const TAIL_WINDOW_MIN_KEEP_CHARS = 2048;
 
 /**
- * Rendered lines a measured cut keeps. 4× the clamp, so the window
- * survives the pane widening (fewer, longer lines) without dropping
- * below the visible count before the next cut re-anchors.
+ * Rendered lines every cut keeps: the clamp plus the lines the line slide
+ * may hold pending above it (SLIDE_MAX_WINDOWS clamp windows), so a cut
+ * never removes a line the slide has yet to bring into view. A measured
+ * cut keeps this many rendered lines; a newline cut keeps this many
+ * hard-newline lines (rendered lines are at least as many) and
+ * TAIL_WINDOW_MIN_KEEP_CHARS. Seven times the clamp also survives the
+ * pane widening (fewer, longer lines) without dropping below the visible
+ * count before the next cut re-anchors.
  */
-export const TAIL_WINDOW_KEEP_LINES = TAIL_CLAMP_LINES * 4;
+export const TAIL_WINDOW_KEEP_LINES = TAIL_CLAMP_LINES * (1 + SLIDE_MAX_WINDOWS);
 
 /**
  * After a failed measurement (no geometry — e.g. happy-dom, or a
@@ -62,19 +69,26 @@ export const TAIL_WINDOW_MEASURE_RETRY_CHARS = 1024;
 
 /**
  * Wrap-stable cut at a hard newline: the offset just after the last
- * '\n' that still keeps at least `minKeep` characters. Returns an
- * absolute offset strictly greater than `cutOffset`, or null when no
- * newline qualifies (the advanceable region is one giant paragraph).
+ * '\n' that still keeps at least `minKeep` characters and at least
+ * `minLines` newlines after it. Returns an absolute offset strictly
+ * greater than `cutOffset`, or null when no newline qualifies (the
+ * advanceable region is one giant paragraph).
  *
  * Scans backward only down to `cutOffset` — this runs on every reveal
  * tick while the window is over cap, and `String.lastIndexOf` would
  * otherwise walk the entire already-cut prefix on every miss,
  * reintroducing the O(total) per-tick cost the window exists to kill.
+ * A line floor counts the kept tail's newlines on the same pass; without
+ * one the pass starts at the char floor, so a caller scanning for breaks
+ * incrementally never rescans the tail.
  */
-export function newlineCutOffset(text: string, cutOffset: number, minKeep: number): number | null {
+export function newlineCutOffset(text: string, cutOffset: number, minKeep: number, minLines = 0): number | null {
   const limit = text.length - minKeep; // a cut at `limit` keeps exactly minKeep
-  for (let i = limit - 1; i >= cutOffset; i--) {
-    if (text.charCodeAt(i) === 10 /* '\n' */) return i + 1;
+  let newlinesAfter = 0;
+  for (let i = (minLines > 0 ? text.length : limit) - 1; i >= cutOffset; i--) {
+    if (text.charCodeAt(i) !== 10 /* '\n' */) continue;
+    if (i < limit && newlinesAfter >= minLines) return i + 1;
+    newlinesAfter += 1;
   }
   return null;
 }
@@ -113,6 +127,38 @@ export function isMonotonicAppend(
     text.charCodeAt(prevEnd - 1 - textStart) !== prevLastCharCode)) return false;
   return cutOffset === 0 || cutOffset < textStart ||
     text.charCodeAt(cutOffset - textStart) === cutFirstCharCode;
+}
+
+/**
+ * Height, in CSS pixels, of the rendered rows above the row the character
+ * at `index` of `textNode` is on. A newline's own rectangle marks no row,
+ * so the first glyph after a run of newlines stands in for the run, one
+ * row per newline skipped; the text ends in a glyph (the clamp trims it).
+ * Null without layout geometry, when `index` is outside the node, or
+ * when `lineHeightPx` is not a usable pixel value.
+ */
+export function heightAbove(textNode: Text, index: number, lineHeightPx: number): number | null {
+  const len = textNode.length;
+  if (index < 0 || index >= len || !Number.isFinite(lineHeightPx) || lineHeightPx <= 0) return null;
+  const text = textNode.data;
+  const glyphAt = (i: number): number => {
+    let k = i;
+    while (k < len && text.charCodeAt(k) === 10) k += 1;
+    return k;
+  };
+  const first = glyphAt(0);
+  const at = glyphAt(index);
+  if (at >= len) return null;
+  const range = document.createRange();
+  range.setStart(textNode, first);
+  range.setEnd(textNode, first + 1);
+  const firstRect = range.getBoundingClientRect();
+  range.setStart(textNode, at);
+  range.setEnd(textNode, at + 1);
+  const atRect = range.getBoundingClientRect();
+  if (firstRect.height === 0 || atRect.height === 0) return null;
+  const rows = Math.round((atRect.top - firstRect.top) / lineHeightPx) + first - (at - index);
+  return Math.max(0, rows) * lineHeightPx;
 }
 
 /**

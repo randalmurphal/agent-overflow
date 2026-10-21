@@ -28,11 +28,16 @@ class FakeSmoothingClock implements SmoothingClock {
     this.pending.delete(handle);
   }
 
+  // Advances in painted frames: a tick accrues at most one paint period of
+  // reveal budget (MAX_REVEAL_TICK_DT_MS), so `tick(100)` is six frames
+  // of draining, not one frame worth a hundred milliseconds.
   tick(ms: number): void {
-    this.current += ms;
-    const pending = [...this.pending.values()];
-    this.pending.clear();
-    for (const callback of pending) callback();
+    for (let left = ms; left > 0; left -= 16) {
+      this.current += Math.min(16, left);
+      const pending = [...this.pending.values()];
+      this.pending.clear();
+      for (const callback of pending) callback();
+    }
   }
 }
 
@@ -353,7 +358,11 @@ describe('thread streaming reveal cleanup', () => {
     expect(reveal.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
     getItems()[0].status = 'completed';
 
-    expect(() => clock.tick(100)).toThrow(/smoother settle failed/);
+    // The reveal accrues at most one paint period per tick; the settle that runs
+    // the failing cleanup comes on the frame the backlog empties.
+    expect(() => {
+      for (let frame = 0; frame < 20; frame += 1) clock.tick(16);
+    }).toThrow(/smoother settle failed/);
     expect(reveal.smootherCount()).toBe(0);
     expect(reveal.revealBoundary).toBeNull();
   });

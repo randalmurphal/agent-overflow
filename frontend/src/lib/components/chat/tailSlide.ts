@@ -41,11 +41,14 @@
 // A clip advance of a full window or more slides through it (up to
 // SLIDE_MAX_WINDOWS): no previously visible line survives, but a ticker
 // through the new lines still reads as motion where a snap reads as a
-// glitch.
+// glitch. The offset never exceeds the content above the box either: a
+// translate past it would show nothing.
 //
 // Kept pure (no DOM) so the guard matrix and the drain curve are
 // unit-testable in the default vitest project; the component supplies
 // real geometry and applies the styles.
+
+import { MAX_REVEAL_TICK_DT_MS } from '../../markdown/smoothing/PerItemSmoother';
 
 /**
  * Fraction of the pending offset drained per 60Hz frame: an ease-out
@@ -53,21 +56,31 @@
  * feel on a single line (~7px in the first frame of a 19.5px advance)
  * and, at a full-window offset, drains one line per frame — more than
  * the reveal smoother's ceiling (MAX_ADAPTIVE_CHARS_PER_SEC, ~5 chars a
- * frame) can land on any line longer than five characters, so the
- * offset settles below the cap instead of pinning on it.
+ * frame) can land on any line longer than five characters, so under
+ * prose the offset settles within a window. The time to settle is
+ * bounded by the cap, not the intake: from SLIDE_MAX_WINDOWS windows the
+ * drain is under EPS within ln(cap / EPS) / ln(1 / 0.65) frames, sixteen
+ * for a three-line clamp.
  */
 export const SLIDE_DRAIN_PER_FRAME = 0.35;
 
 /**
- * The pending offset is capped at this many clamp windows. Past one
- * window the inversion starts on content that was never visible, but a
- * burst that lands two lines in one frame (a paragraph break plus the
- * next words at catch-up rate) would otherwise pin the offset at the cap
- * and teleport the excess every frame; a second window of catch-up
- * tickers through it instead. Beyond two windows per frame the rate is
- * unreadable regardless and the excess snaps.
+ * The pending offset is capped at this many clamp windows. The cap is
+ * the bound on how far the visible text moves in one 60Hz frame: the
+ * drain takes SLIDE_DRAIN_PER_FRAME of the offset, so at the cap the
+ * ticker runs at 0.35 × 6 windows, about six lines a frame. Past that
+ * rate the text is unreadable regardless, and the excess snaps instead
+ * of compounding into a faster blur. Below it every line that lands
+ * compounds: the reveal smoother lands at most MAX_REVEAL_TICK_DT_MS of
+ * budget per tick (16 chars at the ceiling), and the drain catches up the
+ * same elapsed time (SLIDE_MAX_CATCHUP_FRAMES), so a code block's
+ * one-character lines settle under the cap at any paint cadence down to
+ * 20Hz and after a stall; only a run of blank lines at the ceiling or an
+ * oversized unit landing whole reaches it. The tail window retains the
+ * clamp plus this many windows of lines above it (TAIL_WINDOW_KEEP_LINES),
+ * so a cut never removes a line the offset has yet to show.
  */
-export const SLIDE_MAX_WINDOWS = 2;
+export const SLIDE_MAX_WINDOWS = 6;
 
 /**
  * Minimum drain per 60Hz frame, so the exponential tail lands on zero
@@ -75,19 +88,29 @@ export const SLIDE_MAX_WINDOWS = 2;
  */
 export const SLIDE_MIN_STEP_PX = 1;
 
+const FRAME_MS = 1000 / 60;
+
 /**
  * Most frames of drain one painted frame may apply, however long the
- * gap since the last one. A stalled main thread (a long task, a GC
- * pause, a compositor drop) paints nothing while it lasts; catching up
- * the whole gap on the next paint moved every visible line by most of
- * the pending offset at once, the snap the slide exists to prevent.
- * The ticker resumes where it was instead, at its normal pace, the same
- * rule the scroll spring applies (SPRING_MAX_CATCHUP_STEPS) so text,
- * lines and scroll recover from a stall together.
+ * gap since the last one: the reveal smoother's stall bound
+ * (MAX_REVEAL_TICK_DT_MS), the longest gap it accrues budget for. The
+ * drain mirrors the reveal exactly: a paint drains the elapsed time the
+ * reveal landed text for, so under any pattern of gaps (a 20Hz paint, a
+ * 165Hz panel alternating 6ms and 48ms paints, a dropped frame) the
+ * drain keeps pace with the intake and the offset settles under the cap;
+ * a drain of one frame a paint fell behind at 20Hz on one-character
+ * lines until the offset pinned at its cap and every further line
+ * snapped. A gap past the bound is a stall (a long task, a GC pause, a
+ * compositor drop) that paints nothing while it lasts; the reveal lands
+ * this much budget on the paint after it, and the slide drains this
+ * much of its offset (72% at three frames, 35% at one), so text and
+ * lines recover from a stall together. No estimate of the paint cadence
+ * stands between the two: any rule that drains less than the reveal
+ * accrues on some gap pattern pins under that pattern, and any rule that
+ * tells a slow paint from a stall by recent gaps is wrong for an isolated
+ * slow paint, a mixed cadence or a stale estimate.
  */
-export const SLIDE_MAX_CATCHUP_FRAMES = 1;
-
-const FRAME_MS = 1000 / 60;
+export const SLIDE_MAX_CATCHUP_FRAMES = MAX_REVEAL_TICK_DT_MS / FRAME_MS;
 
 /**
  * Sub-pixel slack for geometry comparisons. Fractional client rects can
@@ -118,31 +141,43 @@ export type SlideDecision =
 const clipOf = (o: SlideObservation): number => Math.max(0, o.innerH - o.outerH);
 
 /**
- * Classify one ResizeObserver delivery. `prev` is the last stored
- * baseline (null = recalibrate), `currentOffset` the offset still
- * pending from earlier advances — a new advance compounds onto it,
- * capped at SLIDE_MAX_WINDOWS clamp windows.
+ * Classify one geometry observation. `prev` is the last stored baseline
+ * (null = recalibrate), `currentOffset` the offset still pending from
+ * earlier advances — a new advance compounds onto it, capped at
+ * SLIDE_MAX_WINDOWS clamp windows and at the content above the box.
+ * `removedPx` is the height the clamp's own cut took from above the box
+ * since `prev`: the cut lands in the same frame as the text that
+ * triggered it, so the observed height change is the lines that landed
+ * less the lines cut, and the slide is for the lines that landed. Content
+ * cut from above the box while an offset past it was pending (a window
+ * cut shorter than the retention contract) brings the offset down to what
+ * remains rather than translating into blank space.
  */
 export function slideDecision(
   prev: SlideObservation | null,
   next: SlideObservation,
   currentOffset: number,
+  removedPx = 0,
 ): SlideDecision {
   if (next.outerH < 1 || next.innerH < 1) return { kind: 'clear', memory: null };
   if (!prev) return { kind: 'none', memory: next };
   if (Math.abs(next.innerW - prev.innerW) > EPS) return { kind: 'clear', memory: next };
-  const delta = clipOf(next) - clipOf(prev);
+  const delta = clipOf(next) + removedPx - clipOf(prev);
   if (Math.abs(next.outerH - prev.outerH) > EPS && (next.outerH < prev.outerH || delta <= EPS)) {
     return { kind: 'clear', memory: next };
   }
-  if (delta <= EPS) return { kind: 'none', memory: next };
-  return { kind: 'slide', memory: next, startPx: Math.min(currentOffset + delta, SLIDE_MAX_WINDOWS * next.outerH) };
+  const clip = clipOf(next);
+  if (delta <= EPS) {
+    if (currentOffset > clip + EPS) return { kind: 'slide', memory: next, startPx: clip };
+    return { kind: 'none', memory: next };
+  }
+  return { kind: 'slide', memory: next, startPx: Math.min(currentOffset + delta, SLIDE_MAX_WINDOWS * next.outerH, clip) };
 }
 
 /**
  * One drain step of the pending offset after `dtMs` of wall time: a
  * sub-frame dt drains its share, anything past SLIDE_MAX_CATCHUP_FRAMES
- * drains one frame's worth.
+ * drains that many frames' worth.
  */
 export function stepSlide(offset: number, dtMs: number): number {
   if (offset <= 0) return 0;
