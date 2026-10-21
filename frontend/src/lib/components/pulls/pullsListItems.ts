@@ -5,7 +5,8 @@ import type { ForgeFailure } from '../../utils/forgeFailure';
 // over its rows. A row names the heading of its group, which the list
 // keeps on screen while the group's rows scroll under it.
 
-/** A project whose list read failed. */
+/** A project whose list read failed, or (`partial`) whose rows listed
+ * while a detail request failed, so their facts read as unknown. */
 export interface PullsListProjectError {
   projectId: string;
   name: string;
@@ -14,6 +15,7 @@ export interface PullsListProjectError {
   forge: string;
   /** The failure behind the message, for Details. */
   cause?: unknown;
+  partial?: boolean;
 }
 
 export interface PullsListHeading {
@@ -42,7 +44,7 @@ export function pullsListItems<R extends { key: string }>(
 ): PullsListItem<R>[] {
   const items: PullsListItem<R>[] = [];
   for (const error of errors) {
-    items.push({ kind: 'error', key: `e:${error.projectId}`, heading: { label: error.name, count: null, testid: errorTestid }, error });
+    items.push({ kind: 'error', key: `e:${error.projectId}`, heading: { label: error.partial ? `${error.name}: facts unavailable` : error.name, count: null, testid: errorTestid }, error });
   }
   for (const group of groups) {
     let heading = -1;

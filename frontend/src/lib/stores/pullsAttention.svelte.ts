@@ -16,6 +16,9 @@ import { hasScope } from '../transport/scopes';
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 
 const counts = new SvelteMap<BackendKey, number>();
+// Bumped on every write per computer: a read that started before a
+// newer write answers too late to apply.
+const revisions = new Map<BackendKey, number>();
 let detachInstalled = false;
 
 function installDetach(): void {
@@ -23,6 +26,7 @@ function installDetach(): void {
   detachInstalled = true;
   onBackendDetached((detached) => {
     counts.delete(detached.backendId);
+    revisions.set(detached.backendId, (revisions.get(detached.backendId) ?? 0) + 1);
   });
 }
 
@@ -33,6 +37,7 @@ export function getPullsNeedsYouCount(): number {
 
 export function setPullsNeedsYouCount(backend: BackendKey, count: number): void {
   installDetach();
+  revisions.set(backend, (revisions.get(backend) ?? 0) + 1);
   counts.set(backend, Number.isInteger(count) && count > 0 ? count : 0);
 }
 
@@ -44,11 +49,14 @@ export function applyPullsBadge(frame: { needsYou?: number } | null | undefined,
 
 /** The connection-edge read: the computer's persisted count. A computer
  * without the list's scope, or one that cannot answer, keeps the count
- * it had. */
+ * it had; an answer that a frame, a snapshot or a detach overtook is
+ * dropped. */
 export async function hydratePullsAttention(backend: BackendKey): Promise<void> {
   if (!hasScope('git:operate', backend)) return;
+  const revision = revisions.get(backend) ?? 0;
   try {
     const count = await withBackendTarget(backend, () => GetPRListNeedsYou());
+    if ((revisions.get(backend) ?? 0) !== revision) return;
     setPullsNeedsYouCount(backend, Number(count));
   } catch (err) {
     if (!isPassiveConnectionFailure(err)) console.warn('pulls: reading the needs-you count failed:', err);
@@ -57,4 +65,5 @@ export async function hydratePullsAttention(backend: BackendKey): Promise<void> 
 
 export function resetPullsAttentionForTest(): void {
   counts.clear();
+  revisions.clear();
 }

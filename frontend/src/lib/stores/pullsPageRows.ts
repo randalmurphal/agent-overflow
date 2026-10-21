@@ -25,6 +25,8 @@ export interface PullsProjectError {
   message: string;
   failure: ForgeFailure | null;
   forge: string;
+  /** The rows listed; a detail request failed and their facts are unknown. */
+  partial: boolean;
   /** The failure behind the message, for Details: the pump's correlation
    * id and the forge's raw error as a failed call would carry them; null
    * when the snapshot sent none. */
@@ -117,7 +119,14 @@ export function compareRows(sort: PullsSort, a: PRListItem, b: PRListItem): numb
   if (order !== 0) return sort.reversed ? -order : order;
   const byUpdate = timeOf(b.updatedAt) - timeOf(a.updatedAt);
   if (byUpdate !== 0) return byUpdate;
-  return b.ref.Number - a.ref.Number;
+  if (a.ref.Number !== b.ref.Number) return b.ref.Number - a.ref.Number;
+  // Two repositories' same number: by the repository, so the order never
+  // depends on which project lists first.
+  return repoOf(a).localeCompare(repoOf(b));
+}
+
+function repoOf(item: PRListItem): string {
+  return `${item.ref.Host}/${item.ref.Namespace}/${item.ref.Repo}`;
 }
 
 /** The rows the filters admit, grouped needs-you first, each group in the
@@ -188,22 +197,27 @@ export function projectChoices(snapshot: PRListSnapshot | null): PullsProjectCho
   return (snapshot?.projects ?? []).map((project) => ({ id: project.projectId, name: project.name }));
 }
 
-/** Every failed project the picker admits, with its kind. */
+/** Every failed project the picker admits, with its kind: a list that
+ * failed, or a detail request that failed beside the rows it lists. */
 export function projectErrors(snapshot: PRListSnapshot | null, projects: readonly string[], backend: BackendKey): PullsProjectError[] {
   const out: PullsProjectError[] = [];
   for (const project of snapshot?.projects ?? []) {
-    if (!project.error) continue;
     if (projects.length > 0 && !projects.includes(project.projectId)) continue;
-    out.push({
-      projectId: project.projectId,
-      name: project.name,
-      message: project.error,
-      failure: forgeFailureFrom(project),
-      forge: project.repo.Forge,
-      cause: project.errorDetails
-        ? new TransportError(`forge_${project.errorKind || 'forge'}`, project.error, { detail: project.errorDetails, backend })
-        : null,
-    });
+    if (project.error) {
+      out.push({
+        projectId: project.projectId,
+        name: project.name,
+        message: project.error,
+        failure: forgeFailureFrom(project),
+        forge: project.repo.Forge,
+        partial: false,
+        cause: project.errorDetails
+          ? new TransportError(`forge_${project.errorKind || 'forge'}`, project.error, { detail: project.errorDetails, backend })
+          : null,
+      });
+    } else if (project.detailError) {
+      out.push({ projectId: project.projectId, name: project.name, message: project.detailError, failure: null, forge: project.repo.Forge, partial: true, cause: null });
+    }
   }
   return out;
 }
