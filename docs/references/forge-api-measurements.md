@@ -148,15 +148,19 @@ rules, so the project's rules summed overcount: `approvalsRequired` was
 the larger of the any-approver rule and the other rules' sum on all 56.
 The viewer's events feed carries `commented on` events with target type
 `Note`, `DiffNote` and `DiscussionNote`, each with `note.noteable_type`
-`MergeRequest` and `noteable_iid`. With `after` 30 days back (2026-10-21,
-an active viewer): the unfiltered feed returned 298 events over 3 pages,
-the last page short, reaching back 5 days (2026-10-16), 159 of them
-pushes; `action=commented` returned 97 comments in one short page,
-reaching back 12 days (2026-10-09), and `action=approved` 81 approvals,
-reaching back 28 days (2026-09-23). The comments feed held comments
-older than the unfiltered feed's oldest event, so GitLab ends a feed
-short of the after date with a short page and no other signal. The
-feed's `after` semantics were not probed.
+`MergeRequest` and `noteable_iid`. GitLab drops the events the reader
+may not see after selecting a page, so pages come back short and still
+name the next. With `after` 30 days back (2026-10-21, an active viewer,
+`per_page=100`): the unfiltered feed's pages held 100, 100, 98, 100, 97,
+91, 100, 100 and 94 events, each but the last naming a next page, and
+reached the after date (2026-09-22). `action=commented` held 97, 89 and
+67 comments over 3 pages, the last naming none, reaching back 28 days
+(2026-09-23); `action=approved` 81 approvals in one page naming none,
+reaching back 28 days (2026-09-23). No comment or approval in the
+unfiltered feed was older than the filtered feeds' oldest, so a feed
+whose last page names no next is complete to the after date. Stopping at
+the first short page read one comments page, reaching back 12 days
+(2026-10-09). The feed's `after` semantics were not probed.
 
 ## Merge readiness and actions
 

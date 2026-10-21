@@ -386,6 +386,36 @@ func TestGitLabUserEventsAreTheViewersCommentsAndApprovals(t *testing.T) {
 	}
 }
 
+// A project's hidden events fill their place in a page and are dropped
+// from it after, so the page comes back short and still names the next,
+// as GitLab's does.
+func TestGitLabUserEventsDropHiddenEventsAfterPaging(t *testing.T) {
+	t.Parallel()
+	e := New(Options{APIToken: testAPIToken})
+	if _, err := seedJSON(e, `{"viewer": "octo", "repos": [
+	  {"forge": "gitlab", "project": "grp/gone", "id": 21, "eventsHidden": true, "pulls": [
+	    {"number": 1, "title": "t", "author": "carol", "comments": [{"author": "octo", "body": "a", "createdAt": "2026-10-09T00:00:00Z"}, {"author": "octo", "body": "b", "createdAt": "2026-10-08T00:00:00Z"}]}]},
+	  {"forge": "gitlab", "project": "grp/a", "id": 22, "pulls": [
+	    {"number": 1, "title": "t", "author": "carol", "comments": [{"author": "octo", "body": "c", "createdAt": "2026-10-07T00:00:00Z"}, {"author": "octo", "body": "d", "createdAt": "2026-10-06T00:00:00Z"}]}]}]}`); err != nil {
+		t.Fatal(err)
+	}
+	srv := testServer(t, e)
+	var first, second []map[string]any
+	answer := glabGET(t, srv, "gitlab.com", "users/1/events?per_page=3&action=commented")
+	decodeBody(t, answer, &first)
+	if len(first) != 1 || first[0]["created_at"] != "2026-10-07T00:00:00Z" || answer.header.Get("X-Next-Page") != "2" {
+		t.Fatalf("first page = %v, next %q; want grp/a's newer comment alone and page 2", first, answer.header.Get("X-Next-Page"))
+	}
+	answer = glabGET(t, srv, "gitlab.com", "users/1/events?per_page=3&page=2&action=commented")
+	decodeBody(t, answer, &second)
+	if len(second) != 1 || second[0]["created_at"] != "2026-10-06T00:00:00Z" || answer.header.Get("X-Next-Page") != "" {
+		t.Fatalf("second page = %v, next %q; want the older comment and no next", second, answer.header.Get("X-Next-Page"))
+	}
+	if _, err := seedJSON(e, `{"viewer": "octo", "repos": [{"forge": "github", "project": "o/r", "eventsHidden": true}]}`); err == nil || !strings.Contains(err.Error(), "eventsHidden") {
+		t.Errorf("eventsHidden on a GitHub repository = %v, want refused", err)
+	}
+}
+
 // PullsSearch answers a pull's first 100 review threads and says when
 // more exist, as GitHub does: with 101, the open last one is past the
 // page.

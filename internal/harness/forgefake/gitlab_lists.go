@@ -176,8 +176,11 @@ const gitlabViewerID = 1
 // its comments on open and closed merge requests of every project on the
 // host ("commented on" with the note's noteable) and its approvals
 // ("approved"), newest first, created after the date; action commented or
-// approved keeps those alone, as GitLab filters the feed. Another user is
-// GitLab's 404; another action is unhandled.
+// approved keeps those alone, as GitLab filters the feed. A page is
+// selected first and a project's eventsHidden events dropped from it
+// after, as GitLab drops events the reader may not see, so X-Next-Page
+// can follow a short page. Another user is GitLab's 404; another action
+// is unhandled.
 func glabUserEvents(e *Engine, c *call, m []string) response {
 	if m[1] != strconv.Itoa(gitlabViewerID) {
 		return glabNotFound("User")
@@ -201,8 +204,9 @@ func glabUserEvents(e *Engine, c *call, m []string) response {
 		}
 	}
 	type event struct {
-		at   string
-		body map[string]any
+		at     string
+		hidden bool
+		body   map[string]any
 	}
 	var events []event
 	for _, r := range e.repos {
@@ -216,14 +220,14 @@ func glabUserEvents(e *Engine, c *call, m []string) response {
 				if comment.targetType == "DiffNote" {
 					note["type"] = "DiffNote"
 				}
-				events = append(events, event{at: comment.at, body: map[string]any{
+				events = append(events, event{at: comment.at, hidden: r.EventsHidden, body: map[string]any{
 					"project_id": r.ID, "action_name": "commented on", "target_type": comment.targetType, "created_at": comment.at,
 					"author_username": e.viewer, "note": note,
 				}})
 			}
 			for _, review := range p.Reviews {
 				if strings.EqualFold(review.Author, e.viewer) {
-					events = append(events, event{at: review.SubmittedAt, body: map[string]any{
+					events = append(events, event{at: review.SubmittedAt, hidden: r.EventsHidden, body: map[string]any{
 						"project_id": r.ID, "action_name": "approved", "target_type": "MergeRequest", "target_iid": p.Number,
 						"created_at": review.SubmittedAt, "author_username": e.viewer,
 					}})
@@ -242,13 +246,12 @@ func glabUserEvents(e *Engine, c *call, m []string) response {
 		}
 		return cmp.Compare(a.body["project_id"].(int64), b.body["project_id"].(int64))
 	})
-	bodies := make([]map[string]any, 0, len(events))
-	for _, ev := range events {
-		bodies = append(bodies, ev.body)
-	}
-	items, next := paginate(bodies, perPage, page)
-	if items == nil {
-		items = []map[string]any{}
+	selected, next := paginate(events, perPage, page)
+	items := make([]map[string]any, 0, len(selected))
+	for _, ev := range selected {
+		if !ev.hidden {
+			items = append(items, ev.body)
+		}
 	}
 	return glabOK(jsonResponse(items), "X-Next-Page: "+next)
 }

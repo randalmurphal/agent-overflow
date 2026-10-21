@@ -150,7 +150,7 @@ func (a *App) pollPRList(ctx context.Context, pump *prListPump) (bool, time.Time
 	}
 	a.prUpdates.mu.Unlock()
 	if projectsErr == nil {
-		a.prunePRListStore(pump.gen, current)
+		a.prunePRListStore(prListWriter{gen: pump.gen, pump: pump}, current)
 	}
 
 	results := make(chan prListRepoRead, len(order))
@@ -226,7 +226,7 @@ func (a *App) landPRListRead(pump *prListPump, read prListRepoRead) {
 	}
 	a.prUpdates.mu.Unlock()
 	if record != nil {
-		a.storePRListRead(pump.gen, store.PRListProject{RepoKey: read.key, ProjectJSON: record, ReadAt: readAt.UnixMilli()})
+		a.storePRListRead(prListWriter{gen: pump.gen, pump: pump}, store.PRListProject{RepoKey: read.key, ProjectJSON: record, ReadAt: readAt.UnixMilli()})
 	}
 	a.publishPRList(pump)
 }

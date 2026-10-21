@@ -372,10 +372,14 @@ project), then concurrently:
   `commented on` (a note, diff note or discussion note on a
   `MergeRequest`) or `approved` event per project and merge request is
   the row's viewer activity. GitLab filters each feed, so pushes and
-  other events do not use up the pages. A feed's floor is its oldest
-  event read, or the day after the after date when it returned none:
-  GitLab can end a feed short of the after date with a short page. The
-  window's floor is the older of the two; a row with no activity in the
+  other events do not use up the pages. GitLab drops the events the
+  reader may not see after selecting a page, so a page can be short and
+  still name a next page: the read follows `X-Next-Page` whatever the page
+  held, and a feed ends at the page that names none. An ended feed's floor
+  is the day after the after date; a feed cut at the cap's is its oldest
+  event read (now when it read none). The window is complete only back to
+  where both feeds are, so its floor is the later of the two; a row with
+  no activity in the
   window carries it as `ViewerActivityFloor`, which attention reads as
   the activity's upper bound. They are read once per host per round
   (`git.WithPRListRound`, one per tick or prefetch): the round's
@@ -479,11 +483,12 @@ forge repository whose stored read is missing or older than the PR
 update interval, storing each landed read, pruning repositories no
 project names, and holding nothing after. It reads nothing while a list
 pump runs. One writer owns the stored copy at a time
-(`commitPRListStore`, keyed by `listGen`, which counts the pumps
-started): the prefetch until a pump starts, then that pump until the
-next. A write or prune of a writer that lost the copy is dropped, so a
-prefetch read that lands after a pump's newer one neither replaces it
-nor undoes a prune. `GetPRListNeedsYou` answers the badge from the
+(`commitPRListStore`, keyed by `listGen`, which counts the writers
+started: each pump and the prefetch, which takes its own generation): the
+latest started, and a pump only while it runs. A write or prune of a
+writer that lost the copy, or of a pump that stopped, is dropped, so a
+read that lands after a newer writer's neither replaces it nor undoes a
+prune. `GetPRListNeedsYou` answers the badge from the
 store, and every change to it (a read stored, a repository pruned)
 emits `pulls:badge` `{needsYou}` counted from what the store committed,
 in commit order, so the badge is right before the page opens and after

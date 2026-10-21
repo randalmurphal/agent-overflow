@@ -157,7 +157,7 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitLab | GraphQL `PullsReviewing`, `PullsAuthored(fullPath, viewer, after)` | project PR list: the open merge requests `viewer` reviews or authored, newest update first in pages of 100, each with its reviewers' `reviewState`, `approvedBy` and `headPipeline.status`; a project not on the host is a null `project` |
 | GitLab | GraphQL `PullsReviewingActivity`, `PullsAuthoredActivity(fullPath, viewer, after)` | project PR list: the same merge requests with resolvable and resolved discussion counts and the head commit's `committedDate` |
 | GitLab | GraphQL `PullsReviewingApprovals`, `PullsAuthoredApprovals(fullPath, viewer, after)` | project PR list: the same merge requests' `approvalState.rules`, one `ANY_APPROVER` rule requiring the pull's `readiness.requiredApprovals` |
-| GitLab | `GET users/ID/events?per_page=N[&page=N][&after=YYYY-MM-DD][&action=commented\|approved]` (`glab api user events`) | project PR list: the viewer's (id 1) `commented on` notes on merge requests (target type `Note` for a conversation comment, `DiffNote` for a thread comment) and `approved` events across the host's projects, newest first, created after the date, `action` keeping one kind as GitLab filters it; another id is a 404, another action unhandled; `X-Next-Page` while more pages exist |
+| GitLab | `GET users/ID/events?per_page=N[&page=N][&after=YYYY-MM-DD][&action=commented\|approved]` (`glab api user events`) | project PR list: the viewer's (id 1) `commented on` notes on merge requests (target type `Note` for a conversation comment, `DiffNote` for a thread comment) and `approved` events across the host's projects, newest first, created after the date, `action` keeping one kind as GitLab filters it; another id is a 404, another action unhandled; `X-Next-Page` while more pages exist, a repository's `eventsHidden` events dropped from a page after it is selected |
 | GitLab | `GET projects/P/merge_requests/N/discussions?per_page=N[&page=N]` (`glab api discussions`) | ReadPR threads and, from the system notes, events; `X-Next-Page` while more pages exist |
 | GitLab | `POST .../approve` with `{sha}`, `POST .../unapprove` (`glab api approve`, `glab api unapprove`) | Approve (409 on a moved head, 401 for a viewer GitLab takes no approval from) and Unapprove (404 with none), each with its system note |
 | GitLab | `PUT .../merge` with `{sha, squash, should_remove_source_branch, auto_merge, merge_when_pipeline_succeeds}` (`glab api merge`) | Merge now (405 while blocked, 401 without the role, 409 on a moved head) and Auto-merge (either key or both: arms a blocked merge request, with its system note) |
@@ -224,6 +224,10 @@ bulk publish, discussion note POST, discussion resolve PUT and
   commented (a thread comment or a note), else `unreviewed`; the
   viewer's comments and approvals are also its events feed. `createdAt`,
   `updatedAt`, `committedAt` and `commits` feed the project list rows.
+  A GitLab repository's `eventsHidden` makes its viewer events ones
+  GitLab no longer shows the viewer: the events feed selects them into a
+  page and drops them after, so a page comes back short and still names
+  the next, as GitLab's does.
 - Generated ids start at 1,000,000 and stay unique across reseeds and
   resets.
 - A job's `log` is served as the forge would serve it, and the app's log

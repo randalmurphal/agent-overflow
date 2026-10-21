@@ -892,9 +892,9 @@ func TestPRListPrefetchLosesTheStoredCopyToAPumpThatStarted(t *testing.T) {
 	if rows := stored[prListRepoA.Key()].Rows; len(rows) != 1 || rows[0].Ref.Number != 2 {
 		t.Fatalf("stored = %+v, want the pump's read", rows)
 	}
-	// The prefetch's generation no longer owns the copy: its prune is
-	// dropped too.
-	app.prunePRListStore(0, map[string]bool{})
+	// The prefetch's generation (the first taken) no longer owns the
+	// copy: its prune is dropped too.
+	app.prunePRListStore(prListWriter{gen: 1}, map[string]bool{})
 	if keys := storedPRListKeys(t, app); !slices.Equal(keys, []string{prListRepoA.Key()}) {
 		t.Fatalf("stored after a superseded prune = %v", keys)
 	}
@@ -912,10 +912,14 @@ func TestPRListBadgeCountsTheCommittedCopyWhenThePumpStopsMidWrite(t *testing.T)
 		f.projects = f.projects[:1]
 		f.rows[prListRepoA.Key()] = []gitops.PRListRow{prListRow(prListRepoA, 1, func(r *gitops.PRListRow) { r.ViewerReviewState = "unreviewed" })}
 	})
-	// The tick's first change is its prune; its second the read's write.
+	// The tick's first change is its prune; its second the read's write,
+	// already found to own the copy when the subscriber leaves.
 	ids := make(chan string, 1)
 	changes := 0
-	app.prUpdates.listStoreHook = func() {
+	app.prUpdates.listStoreHook = func(stage string) {
+		if stage != "owned" {
+			return
+		}
 		if changes++; changes == 2 {
 			app.unsubscribePRList(<-ids)
 		}
@@ -984,5 +988,108 @@ func TestPRListPrefetchReadsOnlyTheStaleOrMissingRepositories(t *testing.T) {
 	}
 	if a, b := fake.listCount(prListRepoA), fake.listCount(prListRepoB); a != 0 || b != 1 {
 		t.Fatalf("reads: fresh %d, missing %d; want 0 and 1", a, b)
+	}
+}
+
+// A pump that prepared its read and lost its last subscriber before
+// storing it is not the copy's writer any more: a boot prefetch that
+// starts then takes its own generation and stores newer rows, and the
+// stopped pump's write, landing after, is dropped.
+func TestPRListStoppedPumpLosesTheCopyToAPrefetch(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	fake := newPRListFake(t, app)
+	fake.set(func(f *prListFake) {
+		f.projects = f.projects[:1]
+		f.rows[prListRepoA.Key()] = []gitops.PRListRow{prListRow(prListRepoA, 1, nil)}
+	})
+	ids := make(chan string, 1)
+	prefetched := make(chan int, 1)
+	changes, inPrefetch := 0, false
+	// Runs on the pump's goroutine: its first change is the prune, its
+	// second the prepared read's write, before it takes the store lock.
+	app.prUpdates.listStoreHook = func(stage string) {
+		if stage != "enter" || inPrefetch {
+			return
+		}
+		if changes++; changes != 2 {
+			return
+		}
+		app.unsubscribePRList(<-ids)
+		fake.set(func(f *prListFake) { f.rows[prListRepoA.Key()] = []gitops.PRListRow{prListRow(prListRepoA, 2, nil)} })
+		inPrefetch = true
+		stored, err := app.prefetchPRList(context.Background())
+		inPrefetch = false
+		if err != nil {
+			t.Errorf("prefetch: %v", err)
+		}
+		prefetched <- stored
+	}
+	sub, err := app.SubscribePRList(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids <- sub.ID
+	select {
+	case stored := <-prefetched:
+		if stored != 1 {
+			t.Fatalf("prefetch stored %d, want its read", stored)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the pump never reached its write")
+	}
+	app.prUpdates.wg.Wait()
+	lists, _, err := app.storedPRLists()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows := lists[prListRepoA.Key()].Rows; len(rows) != 1 || rows[0].Ref.Number != 2 {
+		t.Fatalf("stored = %+v, want the prefetch's read, not the stopped pump's", rows)
+	}
+}
+
+// A pump that lost its last subscriber stores nothing more, though no
+// other writer took the copy: its prepared read is dropped.
+func TestPRListStoppedPumpStoresNothing(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	fake := newPRListFake(t, app)
+	fake.set(func(f *prListFake) {
+		f.projects = f.projects[:1]
+		f.rows[prListRepoA.Key()] = []gitops.PRListRow{prListRow(prListRepoA, 1, nil)}
+	})
+	ids := make(chan string, 1)
+	left := make(chan struct{})
+	changes := 0
+	// The pump's first change is its prune, its second the prepared
+	// read's write, before it takes the store lock.
+	app.prUpdates.listStoreHook = func(stage string) {
+		if stage != "enter" {
+			return
+		}
+		if changes++; changes == 2 {
+			app.unsubscribePRList(<-ids)
+			close(left)
+		}
+	}
+	sub, err := app.SubscribePRList(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids <- sub.ID
+	select {
+	case <-left:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the pump never reached its write")
+	}
+	app.prUpdates.wg.Wait()
+	lists, _, err := app.storedPRLists()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list, ok := lists[prListRepoA.Key()]; ok {
+		t.Fatalf("stored = %+v, want the stopped pump's read dropped", list.Rows)
 	}
 }

@@ -18,9 +18,9 @@ import (
 // before the page is ever opened. Every landed project read replaces its
 // repository's row; a tick or the prefetch deletes the rows of
 // repositories no project names. One writer owns the copy at a time
-// (commitPRListStore): the boot prefetch until a list pump starts, then
-// that pump until the next one starts, so a slower read of a writer that
-// lost the copy never replaces a newer read or undoes a prune.
+// (commitPRListStore): the latest started of the boot prefetch and the
+// list pumps, a pump only while it runs, so a slower read of a writer
+// that lost the copy never replaces a newer read or undoes a prune.
 
 // storedPRLists reads every stored list, by repository key, with when
 // each read landed. A row that does not decode is skipped and logged: it
@@ -90,22 +90,32 @@ func (a *App) GetPRListNeedsYou(ctx context.Context) (int, error) {
 	return snapshot.NeedsYou, nil
 }
 
-// commitPRListStore runs write, a change to the stored copy, if gen
-// (App.prUpdates.listGen when the writer started, a pump's gen) still owns
-// the copy, then emits pulls:badge with the stored count when write
-// changed it. It reports whether write ran; a superseded writer's change
-// is dropped. The store lock orders the writes with the badges they emit.
-func (a *App) commitPRListStore(gen uint64, write func() (bool, error)) (bool, error) {
+// prListWriter is a writer of the stored copy: the generation it took
+// when it started (App.prUpdates.listGen) and, for a pump, the pump.
+type prListWriter struct {
+	gen  uint64
+	pump *prListPump
+}
+
+// commitPRListStore runs write, a change to the stored copy, if w still
+// owns the copy (its generation is the latest, and a pump still runs),
+// then emits pulls:badge with the stored count when write changed it. It
+// reports whether write ran; a superseded or stopped writer's change is
+// dropped. The store lock orders the writes with the badges they emit.
+func (a *App) commitPRListStore(w prListWriter, write func() (bool, error)) (bool, error) {
+	if a.prUpdates.listStoreHook != nil {
+		a.prUpdates.listStoreHook("enter")
+	}
 	a.prUpdates.listStore.Lock()
 	defer a.prUpdates.listStore.Unlock()
 	a.prUpdates.mu.Lock()
-	owner := a.prUpdates.listGen == gen
+	owner := a.prUpdates.listGen == w.gen && (w.pump == nil || a.prUpdates.list == w.pump)
 	a.prUpdates.mu.Unlock()
 	if !owner {
 		return false, nil
 	}
 	if a.prUpdates.listStoreHook != nil {
-		a.prUpdates.listStoreHook()
+		a.prUpdates.listStoreHook("owned")
 	}
 	changed, err := write()
 	if err != nil || !changed {
@@ -126,11 +136,11 @@ func (a *App) commitPRListStore(gen uint64, write func() (bool, error)) (bool, e
 	return true, nil
 }
 
-// storePRListRead stores one repository's landed read for writer gen,
+// storePRListRead stores one repository's landed read for writer w,
 // and reports whether it was stored. A failure is logged: the copy is a
 // cache the next read replaces, and the page shows the read either way.
-func (a *App) storePRListRead(gen uint64, record store.PRListProject) bool {
-	stored, err := a.commitPRListStore(gen, func() (bool, error) {
+func (a *App) storePRListRead(w prListWriter, record store.PRListProject) bool {
+	stored, err := a.commitPRListStore(w, func() (bool, error) {
 		return true, a.store.PutPRListProject(record)
 	})
 	if err != nil {
@@ -139,14 +149,14 @@ func (a *App) storePRListRead(gen uint64, record store.PRListProject) bool {
 	return stored && err == nil
 }
 
-// prunePRListStore deletes, for writer gen, the stored lists of
+// prunePRListStore deletes, for writer w, the stored lists of
 // repositories no project names (current).
-func (a *App) prunePRListStore(gen uint64, current map[string]bool) {
+func (a *App) prunePRListStore(w prListWriter, current map[string]bool) {
 	keep := make([]string, 0, len(current))
 	for key := range current {
 		keep = append(keep, key)
 	}
-	if _, err := a.commitPRListStore(gen, func() (bool, error) {
+	if _, err := a.commitPRListStore(w, func() (bool, error) {
 		deleted, err := a.store.DeletePRListProjectsExcept(keep)
 		return deleted > 0, err
 	}); err != nil {
@@ -172,12 +182,21 @@ func (a *App) startPRListPrefetch() {
 // prefetchPRList reads, with background admission, no pump and no
 // subscriber, every forge repository whose stored read is missing or
 // older than the PR update interval, stores each landed read and holds
-// nothing after. It owns the stored copy until a list pump starts: it
-// reads nothing when one runs, and drops what lands after one started. It
-// reports how many repositories it stored.
+// nothing after. It takes the stored copy from any writer before it and
+// owns it until a list pump starts: it reads nothing when one runs, and
+// drops what lands after one started. It reports how many repositories it
+// stored.
 func (a *App) prefetchPRList(ctx context.Context) (int, error) {
+	// The prefetch takes its own generation: a pump that stopped before
+	// it started loses the copy to it, and one that starts after takes it
+	// back.
 	a.prUpdates.mu.Lock()
-	gen, running := a.prUpdates.listGen, a.prUpdates.list != nil && !a.prUpdates.list.dead
+	running := a.prUpdates.list != nil && !a.prUpdates.list.dead
+	var writer prListWriter
+	if !running {
+		a.prUpdates.listGen++
+		writer.gen = a.prUpdates.listGen
+	}
 	a.prUpdates.mu.Unlock()
 	if running {
 		return 0, nil
@@ -215,7 +234,7 @@ func (a *App) prefetchPRList(ctx context.Context) (int, error) {
 			order = append(order, key)
 		}
 	}
-	a.prunePRListStore(gen, current)
+	a.prunePRListStore(writer, current)
 	if len(order) == 0 {
 		return 0, nil
 	}
@@ -251,7 +270,7 @@ func (a *App) prefetchPRList(ctx context.Context) (int, error) {
 			log.Printf("pr list: encode the prefetch of %s: %v", read.key, err)
 			continue
 		}
-		if a.storePRListRead(gen, store.PRListProject{RepoKey: read.key, ProjectJSON: encoded, ReadAt: now.UnixMilli()}) {
+		if a.storePRListRead(writer, store.PRListProject{RepoKey: read.key, ProjectJSON: encoded, ReadAt: now.UnixMilli()}) {
 			stored++
 		}
 	}

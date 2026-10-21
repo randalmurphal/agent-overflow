@@ -254,9 +254,9 @@ Your activity is the forge's own record: GitHub `viewerLatestReview`,
 GitLab your notes (conversation, diff and discussion notes) and approvals,
 read as two events feeds GitLab filters to comments and to approvals.
 The feeds are a lower bound: each covers the last 30 days or your newest
-300 such events, and its floor is the oldest event it returned (GitLab
-can end a feed early without saying so); the window's floor is the older
-of the two. A reviewer state of reviewed, approved or changes requested
+300 such events. A feed that ends within its pages covers the 30 days; one
+cut at 300 covers back to the oldest event it returned. The window's floor
+is the later of the two. A reviewer state of reviewed, approved or changes requested
 with no activity in the window means your activity is older than the
 floor; a head commit after the floor is then a push since your review,
 an update after it (past the slack) a reply, and neither keeps

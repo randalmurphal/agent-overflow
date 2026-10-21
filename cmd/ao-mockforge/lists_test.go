@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/harness/forgefake"
@@ -177,6 +178,33 @@ func TestGitLabListReadsTheViewersOwnReview(t *testing.T) {
 	}
 	if len(rows) != 5 || rows[2].ViewerActivityAt != "2026-10-07T00:00:00Z" {
 		t.Errorf("rows = %d, !3 activity %q", len(rows), rows[2].ViewerActivityAt)
+	}
+	expectHandled(t, r)
+}
+
+// GitLab's events feed selects a page before dropping the events the
+// viewer may not see: a page of a hidden project's comments comes back
+// empty and names the next, and the list read follows it to the
+// viewer's comment on the project it lists.
+func TestGitLabListFollowsTheEventsPastAHiddenPage(t *testing.T) {
+	now := time.Now().UTC()
+	hidden := make([]forgefake.Comment, 100)
+	for i := range hidden {
+		hidden[i] = forgefake.Comment{Author: "alice", Body: "gone", CreatedAt: now.Add(-time.Duration(i+1) * time.Minute).Format(time.RFC3339)}
+	}
+	seen := now.Add(-48 * time.Hour).Format(time.RFC3339)
+	r := newRig(t, forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{
+		{Forge: "gitlab", Project: "grp/gone", EventsHidden: true, Pulls: []forgefake.Pull{{Number: 1, Title: "Hidden", Author: "carol", Comments: hidden}}},
+		{Forge: "gitlab", Project: "grp/seen", Pulls: []forgefake.Pull{
+			{Number: 1, Title: "Seen", Author: "carol", Reviewers: []string{"alice"}, Comments: []forgefake.Comment{{Author: "alice", Body: "here", CreatedAt: seen}}}}},
+	}})
+	repo := gitops.RepoReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "seen"}
+	rows, err := r.core.ListProjectPRs(t.Context(), repo)
+	if err != nil {
+		t.Fatalf("ListProjectPRs: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ViewerActivityAt != seen {
+		t.Fatalf("rows = %+v, want !1 with the viewer's comment at %s", rows, seen)
 	}
 	expectHandled(t, r)
 }

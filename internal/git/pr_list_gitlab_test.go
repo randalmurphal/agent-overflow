@@ -73,8 +73,8 @@ func gitlabListAnswers(t *testing.T, over func(call forgeAPICall) (forgeAPIAnswe
 // (the reviewing reads and its events cover it) and one the viewer has no
 // part in, which no detail read covers. A GraphQL node the list does not
 // hold is dropped. The comment and approval feeds are read apart; a row
-// with no activity in them carries the window's floor, the older of the
-// feeds' oldest events.
+// with no activity in them carries the window's floor: both feeds end
+// before the page cap, so it is the day after the after date.
 func TestGitLabListProjectPRsParsesTheReads(t *testing.T) {
 	t.Parallel()
 	core, calls := newForgeAPICore(t, gitlabListAnswers(t, nil))
@@ -135,7 +135,7 @@ func TestGitLabListProjectPRsParsesTheReads(t *testing.T) {
 		Comments: 1, ViewerIsAuthor: true, MergeStatus: "draft_status",
 		LastCommitAt: "2026-10-20T22:04:00Z", PipelineStatus: CIStatusRunning, ProjectID: 77,
 		ApprovalsGiven: &zero, ApprovalsRequired: &two, Unresolved: &zero,
-		ViewerActivityFloor: "2026-10-18T08:30:00.000Z",
+		ViewerActivityFloor: "2026-09-22T00:00:00Z",
 	}
 	if fmt.Sprintf("%+v", deref(own)) != fmt.Sprintf("%+v", deref(want)) {
 		t.Errorf("own draft = %+v\nwant       %+v", deref(own), deref(want))
@@ -267,18 +267,21 @@ func TestGitLabViewerEventsAreReadOncePerRound(t *testing.T) {
 	}
 }
 
-// The events feeds are a lower bound. Each feed's floor is its oldest
-// event read: the comments feed, cut at gitlabActivityMaxPages full
-// pages, reaches back 299 minutes; the approvals feed, one event, two
-// days. The window's floor, which a row with no activity in it carries,
-// is the older of the two; a feed with no events reaches back to the
-// after date.
-func TestGitLabViewerActivityFloorIsTheOlderFeedsReach(t *testing.T) {
+// The events feeds are a lower bound. A feed that ends (its last page
+// names no next) reaches back to the after date, whatever its oldest
+// event; one cut at gitlabActivityMaxPages pages only to its oldest event
+// read, or to now when its pages held none. The window is complete only
+// back to where both are, so its floor, which a row with no activity in
+// it carries, is the later of the two: the cut comments feed's 299
+// minutes against the approvals feed that ended two days back, the day
+// after the after date when both end, now when the cut feed showed
+// nothing.
+func TestGitLabViewerActivityFloorIsTheLaterFeedsReach(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
 	var mu sync.Mutex
 	commentPages := 0
-	approvals := true
+	comments := "cut"
 	core, _ := newForgeAPICore(t, gitlabListAnswers(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
 		if !strings.HasPrefix(call.Path, "users/1/events?") {
 			return forgeAPIAnswer{}, false
@@ -287,11 +290,11 @@ func TestGitLabViewerActivityFloorIsTheOlderFeedsReach(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		if query.Get("action") == "approved" {
-			if !approvals {
-				return forgeAPIAnswer{Body: `[]`}, true
-			}
 			at := now.Add(-48 * time.Hour).Format(time.RFC3339)
 			return forgeAPIAnswer{Body: fmt.Sprintf(`[{"project_id":88,"action_name":"approved","target_type":"MergeRequest","target_iid":1,"created_at":%q}]`, at)}, true
+		}
+		if comments == "none" {
+			return forgeAPIAnswer{Body: `[]`}, true
 		}
 		page := 1
 		if raw := query.Get("page"); raw != "" {
@@ -303,6 +306,10 @@ func TestGitLabViewerActivityFloorIsTheOlderFeedsReach(t *testing.T) {
 		// Comments on another project's merge request, one a minute back
 		// from now, with more pages than the read follows.
 		events := make([]string, 100)
+		if comments == "hidden" {
+			// GitLab selected the page and dropped every event in it.
+			events = nil
+		}
 		for i := range events {
 			at := now.Add(-time.Duration((page-1)*100+i) * time.Minute).Format(time.RFC3339)
 			events[i] = fmt.Sprintf(`{"project_id":88,"action_name":"commented on","target_type":"DiffNote","created_at":%q,"note":{"noteable_type":"MergeRequest","noteable_iid":1}}`, at)
@@ -322,15 +329,58 @@ func TestGitLabViewerActivityFloorIsTheOlderFeedsReach(t *testing.T) {
 			}
 		}
 	}
-	check(now.Add(-48 * time.Hour).Format(time.RFC3339))
+	check(now.Add(-299 * time.Minute).Format(time.RFC3339))
 	mu.Lock()
 	read := commentPages
-	approvals = false
+	comments = "none"
 	mu.Unlock()
 	if read != gitlabActivityMaxPages {
 		t.Fatalf("comment pages read = %d, want %d", read, gitlabActivityMaxPages)
 	}
 	check("2026-09-22T00:00:00Z")
+	mu.Lock()
+	comments = "hidden"
+	mu.Unlock()
+	check(now.Format(time.RFC3339))
+}
+
+// GitLab drops events the reader may not see after selecting a page, so a
+// short page can still name a next page: the read follows it, and the
+// viewer's comment on the second page is its activity.
+func TestGitLabViewerEventsFollowANextPageAfterAShortPage(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var pages []string
+	core, _ := newForgeAPICore(t, gitlabListAnswers(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
+		if !strings.HasPrefix(call.Path, "users/1/events?") {
+			return forgeAPIAnswer{}, false
+		}
+		query, _ := url.ParseQuery(strings.SplitN(call.Path, "?", 2)[1])
+		if query.Get("action") != "commented" {
+			return forgeAPIAnswer{Body: `[]`}, true
+		}
+		mu.Lock()
+		pages = append(pages, query.Get("page"))
+		mu.Unlock()
+		if query.Get("page") == "" {
+			return forgeAPIAnswer{Header: http.Header{"X-Next-Page": {"2"}}, Body: `[{"project_id":88,"action_name":"commented on","target_type":"Note","created_at":"2026-10-20T00:00:00Z","note":{"noteable_type":"MergeRequest","noteable_iid":1}}]`}, true
+		}
+		return forgeAPIAnswer{Body: `[{"project_id":77,"action_name":"commented on","target_type":"DiffNote","created_at":"2026-10-19T08:00:00Z","note":{"noteable_type":"MergeRequest","noteable_iid":20}}]`}, true
+	}))
+	core.nowFn = func() time.Time { return time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC) }
+	rows, err := core.ListProjectPRs(t.Context(), gitlabTestRepo())
+	if err != nil {
+		t.Fatalf("ListProjectPRs: %v", err)
+	}
+	mu.Lock()
+	read := slices.Clone(pages)
+	mu.Unlock()
+	if !slices.Equal(read, []string{"", "2"}) {
+		t.Fatalf("comment pages = %q, want the first and the next it named", read)
+	}
+	if fork := rows[1]; fork.ViewerActivityAt != "2026-10-19T08:00:00Z" {
+		t.Fatalf("activity on !20 = %q, want the second page's comment", fork.ViewerActivityAt)
+	}
 }
 
 // A login GitLab will not name fails the list read: every attention
