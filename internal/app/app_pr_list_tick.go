@@ -332,6 +332,7 @@ func (a *App) publishPRList(pump *prListPump) (PRListSnapshot, bool, bool, time.
 			}
 		}
 		list.Error, list.ErrorKind, list.Reserve, list.ResumeAt = state.fail.wire, state.fail.kind, state.fail.reserve, state.fail.resumeAt
+		list.ErrorDetails = state.fail.detail
 		for _, row := range state.rows {
 			item := PRListItem{PRListRow: row}
 			if detail := pump.details[row.Ref.Key()]; detail != nil {

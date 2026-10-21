@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -431,6 +432,62 @@ func TestPRListProjectFailureKeepsRowsAndIsolatesProjects(t *testing.T) {
 	app.prUpdates.mu.Unlock()
 	if kept {
 		t.Fatal("the removed project's rows were kept")
+	}
+}
+
+// A failed project carries the correlation id and the forge's raw text
+// behind its sentence, fixed while the same failure repeats, so a repeat
+// publishes nothing new; recovery clears it.
+func TestPRListProjectFailureCarriesItsDetails(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	fake := newPRListFake(t, app)
+	fake.set(func(f *prListFake) {
+		f.rows[prListRepoB.Key()] = []gitops.PRListRow{prListRow(prListRepoB, 2, nil)}
+	})
+	sub := subscribePRList(t, app)
+
+	refused := &forgeapi.ForbiddenError{
+		Status:  &forgeapi.StatusError{Method: "GET", URL: "https://gitlab.com/api/v4/projects/team%2Fapp/merge_requests", Status: 403, Body: `{"error":"insufficient_scope"}`},
+		Scope:   "api",
+		Message: "insufficient_scope",
+	}
+	fake.set(func(f *prListFake) { f.listErr[prListRepoB.Key()] = refused })
+	if err := app.RefreshPRList(context.Background(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := prListSnapshotNow(app)
+	b := prListProject(t, snapshot, "p-b")
+	if b.ErrorKind != forgeFailureForbidden || b.ErrorDetails == nil {
+		t.Fatalf("failing project = %+v", b)
+	}
+	detail := *b.ErrorDetails
+	if detail.Ref == "" || detail.Method == "" || detail.At == 0 {
+		t.Fatalf("detail = %+v", detail)
+	}
+	if chain := strings.Join(detail.Chain, "\n"); !strings.Contains(chain, "insufficient_scope") || !strings.Contains(chain, "HTTP 403") {
+		t.Fatalf("detail chain lacks the forge's text: %q", detail.Chain)
+	}
+
+	// The same failure again: the detail and the snapshot stay put.
+	if err := app.RefreshPRList(context.Background(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	again := prListSnapshotNow(app)
+	if got := prListProject(t, again, "p-b").ErrorDetails; got == nil || got.Ref != detail.Ref || got.At != detail.At {
+		t.Fatalf("a repeated failure moved its detail: %+v, was %+v", got, detail)
+	}
+	if again.Seq != snapshot.Seq {
+		t.Fatalf("a repeated failure published a new snapshot: seq %d, was %d", again.Seq, snapshot.Seq)
+	}
+
+	fake.set(func(f *prListFake) { delete(f.listErr, prListRepoB.Key()) })
+	if err := app.RefreshPRList(context.Background(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	if b := prListProject(t, prListSnapshotNow(app), "p-b"); b.ErrorDetails != nil {
+		t.Fatalf("recovered project keeps its details: %+v", b.ErrorDetails)
 	}
 }
 

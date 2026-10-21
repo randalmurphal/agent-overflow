@@ -47,6 +47,7 @@ export {
     EditorInfo,
     ErrorLogLines,
     ForgeAttachment,
+    ForgeErrorDetail,
     ForgeProject,
     GeneratedCommitMessage,
     GitStatusSubscriptionResult,

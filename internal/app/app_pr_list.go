@@ -47,7 +47,8 @@ type PRListSnapshot struct {
 // ProjectPRList is one project's rows, sorted (sortPRListItems). A failed
 // read keeps the rows last read beside the failure: Error is the
 // caller-safe sentence and ErrorKind, Reserve and ResumeAt its kind fields
-// (PRUpdatedEvent's), and the other projects are unaffected.
+// (PRUpdatedEvent's), ErrorDetails the correlation id and raw error behind
+// it for "Details", and the other projects are unaffected.
 type ProjectPRList struct {
 	ProjectID string               `json:"projectId"`
 	Name      string               `json:"name"`
@@ -55,8 +56,11 @@ type ProjectPRList struct {
 	Rows      []PRListItem         `json:"rows"`
 	Error     string               `json:"error,omitempty"`
 	ErrorKind string               `json:"errorKind,omitempty"`
-	Reserve   bool                 `json:"reserve,omitempty"`
-	ResumeAt  string               `json:"resumeAt,omitempty"`
+	// ErrorDetails is nil with no Error, and for a project whose origin
+	// could not be read (Error is then that failure's own text).
+	ErrorDetails *ForgeErrorDetail `json:"errorDetails,omitempty"`
+	Reserve      bool              `json:"reserve,omitempty"`
+	ResumeAt     string            `json:"resumeAt,omitempty"`
 }
 
 // PRListItem is one row: the forge's list row, its attention state and
