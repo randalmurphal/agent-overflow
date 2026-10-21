@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"slices"
 	"sort"
 	"strings"
 
@@ -140,6 +141,9 @@ func (a *App) restoreFlushItemsToDraftLocked(threadID string, drained []triage.U
 	// caught still-queued by a LATER death re-enter here through
 	// StaleUserItemID and get the same retry.
 	restorable := make([]triage.UnconfirmedFlushItem, 0, len(drained))
+	// returned[i] are the review comments the cleanup of restorable[i]'s
+	// row returned to drafts, which a requeue of it claims again.
+	returned := make([][]store.DiffReviewReturnedComments, 0, len(drained))
 	var cleanupFailed []triage.UnconfirmedFlushItem
 	for _, item := range drained {
 		staleID := item.StaleUserItemID
@@ -153,9 +157,11 @@ func (a *App) restoreFlushItemsToDraftLocked(threadID string, drained []triage.U
 		}
 		if staleID == "" {
 			restorable = append(restorable, item)
+			returned = append(returned, nil)
 			continue
 		}
-		if err := a.cleanupStaleFlushRow(threadID, staleID); err != nil {
+		comments, err := a.cleanupStaleFlushRow(threadID, staleID)
+		if err != nil {
 			log.Printf("flush queue: cleanup unconfirmed quiet row %s/%s failed — requeueing the message instead of restoring it to the draft: %v", threadID, staleID, err)
 			item.StaleUserItemID = staleID
 			cleanupFailed = append(cleanupFailed, item)
@@ -163,6 +169,7 @@ func (a *App) restoreFlushItemsToDraftLocked(threadID string, drained []triage.U
 		}
 		item.StaleUserItemID = ""
 		restorable = append(restorable, item)
+		returned = append(returned, comments)
 	}
 	requeued := make([]triage.UnconfirmedFlushItem, 0, len(cleanupFailed))
 	if len(cleanupFailed) > 0 {
@@ -203,9 +210,13 @@ func (a *App) restoreFlushItemsToDraftLocked(threadID string, drained []triage.U
 			// the requeued entries carry deferred semantics — the retained
 			// copies supply message and payload; nothing references a
 			// store row (R6-6 stays intact).
-			a.requeueUnconfirmedFlushItems(threadID, restorable)
+			again := make([]triage.UnconfirmedFlushItem, 0, len(restorable))
+			for i, item := range restorable {
+				again = append(again, asRequeued(item, returned[i]))
+			}
+			a.requeueUnconfirmedFlushItems(threadID, again)
 			a.emitQueueStateChanged(threadID)
-			return append(requeued, restorable...)
+			return append(requeued, again...)
 		}
 	}
 	for _, settlement := range settlements {
@@ -227,23 +238,23 @@ func (a *App) restoreFlushItemsToDraftLocked(threadID string, drained []triage.U
 // whose text is being restored or redispatched: it removes the row the
 // message has (a quietly-persisted flush row, a direct send's row) and
 // returns the review drafts the message claimed to drafts, in one
-// transaction (store.RetireUndeliveredUserRow). The FK cascade on
-// message_anchors takes any anchor row with it. A row already gone (an
-// earlier retry finished the job, or a deferred message never had one) is
-// success.
-func (a *App) cleanupStaleFlushRow(threadID, userItemID string) error {
-	sources, err := a.store.RetireUndeliveredUserRow(threadID, userItemID)
+// transaction (store.RetireUndeliveredUserRow), and reports them with the
+// bodies the message carries. The FK cascade on message_anchors takes any
+// anchor row with it. A row already gone (an earlier retry finished the
+// job, or a deferred message never had one) is success.
+func (a *App) cleanupStaleFlushRow(threadID, userItemID string) ([]store.DiffReviewReturnedComments, error) {
+	returned, err := a.store.RetireUndeliveredUserRow(threadID, userItemID)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	for _, source := range sources {
+	for _, source := range returned {
 		// A PR's drafts have no thread to announce on; the page re-reads
 		// them itself.
 		if source.Owner.ThreadID != "" {
 			a.announceDiffCommentsChanged(source.Owner.ThreadID, source.Scope, source.SourceKey)
 		}
 	}
-	return nil
+	return returned, nil
 }
 
 // restoreEagerPersistedFlushesToDraft returns eagerly-persisted
@@ -296,17 +307,21 @@ func (a *App) restoreEagerPersistedFlushesForReason(
 		return
 	}
 	restorable := make([]triage.EagerPersistedFlush, 0, len(persisted))
+	// returned[i] are the review comments restorable[i]'s retire returned.
+	returned := make([][]store.DiffReviewReturnedComments, 0, len(persisted))
 	var cleanupFailed []triage.EagerPersistedFlush
 	for _, p := range persisted {
-		if err := a.cleanupStaleFlushRow(threadID, p.UserItemID); err != nil {
+		comments, err := a.cleanupStaleFlushRow(threadID, p.UserItemID)
+		if err != nil {
 			log.Printf("flush queue: cleanup eager flush row %s/%s failed — requeueing the message instead of restoring it to the draft: %v", threadID, p.UserItemID, err)
 			cleanupFailed = append(cleanupFailed, p)
 			continue
 		}
 		restorable = append(restorable, p)
+		returned = append(returned, comments)
 	}
 	if len(cleanupFailed) > 0 {
-		a.requeueEagerPersistedFlushes(threadID, cleanupFailed)
+		a.requeueEagerPersistedFlushes(threadID, cleanupFailed, nil)
 	}
 	if len(restorable) == 0 {
 		return
@@ -340,7 +355,7 @@ func (a *App) restoreEagerPersistedFlushesForReason(
 				Reason:      reason,
 				UserItemIDs: userItemIDs,
 			})
-			a.requeueEagerPersistedFlushes(threadID, restorable)
+			a.requeueEagerPersistedFlushes(threadID, restorable, returned)
 			return
 		}
 	}
@@ -363,13 +378,15 @@ func (a *App) restoreEagerPersistedFlushesForReason(
 // — and the payload is rebuilt from the row's usermessage meta so
 // attachments and plan/diff provenance survive the round trip. Queue
 // identity (QueueItemID, EnqueuedAt) is preserved so the Zone 1 entry
-// reappears as the same message the user queued.
-func (a *App) requeueEagerPersistedFlushes(threadID string, persisted []triage.EagerPersistedFlush) {
+// reappears as the same message the user queued. returned, when given,
+// holds per item the review comments its row's retire returned
+// (cleanupStaleFlushRow), which the resend claims again.
+func (a *App) requeueEagerPersistedFlushes(threadID string, persisted []triage.EagerPersistedFlush, returned [][]store.DiffReviewReturnedComments) {
 	if a.triage == nil || len(persisted) == 0 {
 		return
 	}
-	for _, p := range persisted {
-		payload, err := flushPayloadFromUserMeta(p.Meta)
+	for i, p := range persisted {
+		payload, err := flushPayloadFromUserMeta(p.Meta, returnedAt(returned, i))
 		if err != nil {
 			// Requeue anyway: the message text survives; only the
 			// attachment/provenance refs on this corrupt meta are lost.
@@ -381,7 +398,7 @@ func (a *App) requeueEagerPersistedFlushes(threadID string, persisted []triage.E
 		}
 		a.triage.RegisterQueueItem(threadID, triage.QueuedFlushItem{
 			ID:              queueID,
-			Message:         rowTextWithoutReviewComments(p.Content, p.Meta),
+			Message:         p.Content,
 			Payload:         payload,
 			EnqueuedAt:      p.EnqueuedAt,
 			StaleUserItemID: p.UserItemID,
@@ -391,8 +408,9 @@ func (a *App) requeueEagerPersistedFlushes(threadID string, persisted []triage.E
 }
 
 // flushPayloadFromUserMeta rebuilds a flush-queue payload from a
-// persisted user row's usermessage meta (requeuePayloadFromMeta).
-func flushPayloadFromUserMeta(meta string) (json.RawMessage, error) {
+// persisted user row's usermessage meta and the review comments its retire
+// returned (requeuePayloadFromMeta).
+func flushPayloadFromUserMeta(meta string, returned []store.DiffReviewReturnedComments) (json.RawMessage, error) {
 	if meta == "" {
 		return nil, nil
 	}
@@ -405,20 +423,25 @@ func flushPayloadFromUserMeta(meta string) (json.RawMessage, error) {
 	if err := json.Unmarshal([]byte(meta), &m); err != nil {
 		return nil, err
 	}
-	return json.Marshal(requeuePayloadFromMeta(m))
+	payload := requeuePayloadFromMeta(m)
+	addReturnedReviewComments(&payload, returned)
+	return json.Marshal(payload)
 }
 
 // requeuePayloadFromMeta is the payload that sends a message again from the
 // row an earlier dispatch of it landed as, the inverse of the
 // resolveUserMessageEnvelope -> Marshal step that dispatch ran; its text is
-// rowTextWithoutReviewComments. The row's summary renders the revision
-// comments the message carried. Plan comments stay sent with that dispatch,
-// so their excerpts stay in the text and their ids drop out: carrying them
-// would append the excerpts a second time (round-14, CT14-4). The diff
-// review comments go back to drafts with the row
-// (store.RetireUndeliveredUserRow) and the text is the one before them, so
-// their ids stay and the resend renders them once from the drafts. The
-// source refs stay so provenance survives on the re-persisted row.
+// the row's summary. The summary renders the revision comments the message
+// carried, with what only that dispatch had (a PR's hunk excerpts, every
+// joined member's comments), so the resend sends it as it is and renders
+// none of them again. Plan comments stay sent with that dispatch, so their
+// ids drop out: carrying them would append the excerpts a second time
+// (round-14, CT14-4). The diff review comments go back to drafts with the
+// row (store.RetireUndeliveredUserRow); the resend claims again the ones the
+// retire returns (addReturnedReviewComments), so a comment edited since
+// stays a draft, and a restore of the requeued message gives the composer
+// the text before them. The source refs and diff comment ids stay so
+// provenance survives on the re-persisted row.
 func requeuePayloadFromMeta(m usermessage.Meta) flushQueuePayload {
 	payload := flushQueuePayload{
 		SourceProposedPlan:         m.SourceProposedPlan,
@@ -432,8 +455,9 @@ func requeuePayloadFromMeta(m usermessage.Meta) flushQueuePayload {
 		// to be in: a requeued message that is dispatched again persists a
 		// fresh row, and that row is the idempotency record from then on.
 		// A joined row answers for several sends, so all of them travel.
-		SendID:        m.SendID,
-		JoinedSendIDs: m.JoinedSendIDs,
+		SendID:                   m.SendID,
+		JoinedSendIDs:            m.JoinedSendIDs,
+		TextBeforeReviewComments: m.TextBeforeReviewComments,
 	}
 	if m.TextBeforeReviewComments != nil {
 		payload.RevisionSourceDiffCommentIDs = m.RevisionSourceDiffCommentIDs
@@ -446,11 +470,51 @@ func requeuePayloadFromMeta(m usermessage.Meta) flushQueuePayload {
 	return payload
 }
 
+// addReturnedReviewComments adds to the payload of a message whose text
+// renders its review comments (flushQueuePayload.TextBeforeReviewComments)
+// the ones a retire of its row returned, for its dispatch to claim again,
+// and reports whether it added any. A payload that renders its comments at
+// dispatch reads them from the drafts itself.
+func addReturnedReviewComments(payload *flushQueuePayload, returned []store.DiffReviewReturnedComments) bool {
+	if payload.TextBeforeReviewComments == nil {
+		return false
+	}
+	added := false
+	for _, source := range returned {
+		ref := store.DiffReviewSourceRef{ThreadID: source.Owner.ThreadID, PRKey: source.Owner.PRKey, Scope: source.Scope, SourceKey: source.SourceKey}
+		index := slices.IndexFunc(payload.RenderedReviewComments, func(r flushqueue.RenderedReviewComments) bool {
+			return r.Source.ThreadID == ref.ThreadID && r.Source.PRKey == ref.PRKey && r.Source.Scope == ref.Scope && r.Source.SourceKey == ref.SourceKey
+		})
+		if index < 0 {
+			index = len(payload.RenderedReviewComments)
+			payload.RenderedReviewComments = append(payload.RenderedReviewComments, flushqueue.RenderedReviewComments{Source: ref})
+		}
+		entry := &payload.RenderedReviewComments[index]
+		for _, comment := range source.Comments {
+			if slices.ContainsFunc(entry.Comments, func(c store.DiffReviewCommentSnapshot) bool { return c.ID == comment.ID }) {
+				continue
+			}
+			entry.Comments = append(entry.Comments, comment)
+			added = true
+		}
+	}
+	return added
+}
+
+// returnedAt is returned[i], or nothing when the caller has no retire
+// results.
+func returnedAt(returned [][]store.DiffReviewReturnedComments, i int) []store.DiffReviewReturnedComments {
+	if i < len(returned) {
+		return returned[i]
+	}
+	return nil
+}
+
 // rowTextWithoutReviewComments is the text of the user row whose summary
 // and meta are given, without the diff review comments rendered into it
-// (usermessage.Meta.TextWithoutReviewComments): what a resend or the
-// composer gets back when the message is taken back undelivered and its
-// comments return to drafts.
+// (usermessage.Meta.TextWithoutReviewComments): what the composer gets back
+// when the message is taken back undelivered and its comments return to
+// drafts.
 func rowTextWithoutReviewComments(summary, meta string) string {
 	decoded, err := usermessage.FromItem(store.Item{Summary: summary, Meta: meta})
 	if err != nil {
@@ -541,7 +605,7 @@ func (a *App) requeueUnconfirmedFlushItems(threadID string, items []triage.Uncon
 		return
 	}
 	for _, item := range items {
-		queued, ok := queuedFlushItemFromUnconfirmed(item)
+		queued, ok := queuedFlushItemFromUnconfirmed(item, nil)
 		if !ok {
 			continue
 		}
@@ -549,18 +613,38 @@ func (a *App) requeueUnconfirmedFlushItems(threadID string, items []triage.Uncon
 	}
 }
 
-func queuedFlushItemFromUnconfirmed(item triage.UnconfirmedFlushItem) (triage.QueuedFlushItem, bool) {
+// asRequeued is item as the queue holds it again once the restore retired
+// its row: the message and payload rebuilt from the row with the review
+// comments the retire returned (queuedFlushItemFromUnconfirmed), and no row,
+// so registering it again, after a teardown wiped the queue, keeps them.
+func asRequeued(item triage.UnconfirmedFlushItem, returned []store.DiffReviewReturnedComments) triage.UnconfirmedFlushItem {
+	queued, ok := queuedFlushItemFromUnconfirmed(item, returned)
+	if !ok {
+		return item
+	}
+	item.QueueItemID, item.Message, item.Payload = queued.ID, queued.Message, queued.Payload
+	item.QuietItem, item.DeferredItem = nil, nil
+	return item
+}
+
+// queuedFlushItemFromUnconfirmed is the queue item that sends a message
+// taken back from the provider again: its row's summary and the payload
+// rebuilt from the row (requeuePayloadFromMeta), or the item's own message
+// and payload when it has no row. returned are the review comments the
+// retire of its row returned.
+func queuedFlushItemFromUnconfirmed(item triage.UnconfirmedFlushItem, returned []store.DiffReviewReturnedComments) (triage.QueuedFlushItem, bool) {
 	queueItemID := strings.TrimSpace(item.QueueItemID)
 	message := strings.TrimSpace(item.Message)
 	payload := append(json.RawMessage(nil), item.Payload...)
 	if item.DeferredItem != nil {
-		message = strings.TrimSpace(rowTextWithoutReviewComments(item.DeferredItem.Summary, item.DeferredItem.Meta))
+		message = strings.TrimSpace(item.DeferredItem.Summary)
 		payload = queuePayloadFromUserItem(*item.DeferredItem, payload)
 	}
 	if item.QuietItem != nil {
-		message = strings.TrimSpace(rowTextWithoutReviewComments(item.QuietItem.Summary, item.QuietItem.Meta))
+		message = strings.TrimSpace(item.QuietItem.Summary)
 		payload = queuePayloadFromUserItem(*item.QuietItem, payload)
 	}
+	payload = withReturnedReviewComments(payload, returned)
 	if queueItemID == "" {
 		queueItemID = flushqueue.NewItemID()
 	}
@@ -575,6 +659,29 @@ func queuedFlushItemFromUnconfirmed(item triage.UnconfirmedFlushItem) (triage.Qu
 		StaleUserItemID: item.StaleUserItemID,
 		Settlement:      item.Settlement,
 	}, true
+}
+
+// withReturnedReviewComments is the encoded payload with the review comments
+// a retire returned added (addReturnedReviewComments). A payload that does
+// not decode is kept as it is: the message survives without them.
+func withReturnedReviewComments(raw json.RawMessage, returned []store.DiffReviewReturnedComments) json.RawMessage {
+	if len(returned) == 0 || len(raw) == 0 {
+		return raw
+	}
+	var payload flushQueuePayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		log.Printf("flush queue: decode requeue payload to add its review comments: %v", err)
+		return raw
+	}
+	if !addReturnedReviewComments(&payload, returned) {
+		return raw
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("flush queue: encode requeue payload with its review comments: %v", err)
+		return raw
+	}
+	return encoded
 }
 
 // queuePayloadFromUserItem is the requeue payload of a row's message
@@ -613,8 +720,14 @@ func (a *App) restoredDraftPartFromQueuedPayload(threadID string, item triage.Un
 			return composerdraft.Part{Content: item.Message}
 		}
 	}
+	content := item.Message
+	if payload.TextBeforeReviewComments != nil {
+		// A requeued message renders its review comments, which the
+		// restore returned to drafts.
+		content = *payload.TextBeforeReviewComments
+	}
 	return composerdraft.Part{
-		Content:            item.Message,
+		Content:            content,
 		AttachmentIDs:      payload.AttachmentIDs,
 		SourceProposedPlan: payload.SourceProposedPlan,
 	}

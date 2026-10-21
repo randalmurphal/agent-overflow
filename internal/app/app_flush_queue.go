@@ -579,8 +579,11 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 	// happens. A joined group is one message: a failure on its third member
 	// must leave all three requeueable with nothing on the wire.
 	members := make([]flushMember, 0, len(group))
+	// memberOf maps a group index to its member, or -1 for an empty item.
+	memberOf := make([]int, len(group))
 	var staleRows []string
-	for _, item := range group {
+	for i, item := range group {
+		memberOf[i] = -1
 		var payload flushQueuePayload
 		if len(item.Payload) > 0 {
 			if err := json.Unmarshal(item.Payload, &payload); err != nil {
@@ -622,10 +625,15 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 			// holds are this message's; the cleanup below returns them
 			// before the claim takes them again.
 			heldBy: staleRowsOf(item),
+			// A message rebuilt from its row renders its review comments
+			// already; it claims them again without rendering them.
+			textBeforeReviewComments: payload.TextBeforeReviewComments,
+			renderedReviewComments:   payload.RenderedReviewComments,
 		})
 		if err != nil {
 			return nil, false, requeue, err
 		}
+		memberOf[i] = len(members)
 		members = append(members, flushMember{item: item, payload: payload, resolved: resolved})
 	}
 	if len(members) == 0 {
@@ -695,11 +703,33 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 		// message twice (round-11, R11-1). The remaining loss windows
 		// (allocation, persist, send) are the same ones a first
 		// dispatch of any message already has.
-		if err := a.cleanupStaleFlushRows(threadID, staleRows); err != nil {
-			return nil, false, requeue, err
-		}
+		//
+		// A message whose text renders its review comments claims again
+		// the ones its stale row returns, which hold the bodies it renders.
+		// Its requeue copy carries them from here on: once the row is gone,
+		// nothing else records them.
 		for i := range requeue {
+			if requeue[i].StaleUserItemID == "" {
+				continue
+			}
+			returned, err := a.cleanupStaleFlushRow(threadID, requeue[i].StaleUserItemID)
+			if err != nil {
+				return nil, false, requeue, fmt.Errorf("cleanup stale flush row %s: %w", requeue[i].StaleUserItemID, err)
+			}
 			requeue[i].StaleUserItemID = ""
+			m := memberOf[i]
+			if m < 0 || !addReturnedReviewComments(&members[m].payload, returned) {
+				continue
+			}
+			encoded, err := json.Marshal(members[m].payload)
+			if err != nil {
+				return nil, false, requeue, fmt.Errorf("encode payload: %w", err)
+			}
+			requeue[i].Payload = encoded
+			members[m].resolved.reviewDeliveries, err = a.renderedReviewDeliveries(threadID, members[m].payload.RenderedReviewComments)
+			if err != nil {
+				return nil, false, requeue, err
+			}
 		}
 	}
 
@@ -778,7 +808,7 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 		if claimErr != nil {
 			return nil, false, requeue, errors.Join(claimErr, claims.release(a))
 		}
-		claims = append(claims, claim)
+		claims = append(claims, claim...)
 	}
 	unclaim := func(err error) error { return errors.Join(err, claims.release(a)) }
 
@@ -920,7 +950,7 @@ func retargetFlushedItems(items []QueueFlushedItem, userItemID string) []QueueFl
 // up all of their rows.
 func (a *App) cleanupStaleFlushRows(threadID string, userItemIDs []string) error {
 	for _, id := range userItemIDs {
-		if err := a.cleanupStaleFlushRow(threadID, id); err != nil {
+		if _, err := a.cleanupStaleFlushRow(threadID, id); err != nil {
 			return fmt.Errorf("cleanup stale flush row %s: %w", id, err)
 		}
 	}

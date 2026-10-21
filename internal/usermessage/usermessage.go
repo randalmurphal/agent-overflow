@@ -86,8 +86,8 @@ type Meta struct {
 	// rendered any; the row's summary is the rendered whole. The comments
 	// belong to the message's claim, not to its text: a message taken back
 	// undelivered returns this text to the composer while its comments
-	// return to drafts (store.RetireUndeliveredUserRow), and a resend
-	// rebuilt from the row renders them once more from those drafts.
+	// return to drafts (store.RetireUndeliveredUserRow). A resend rebuilt
+	// from the row sends the summary and claims the comments again.
 	TextBeforeReviewComments *string `json:"textBeforeReviewComments,omitempty"`
 }
 
