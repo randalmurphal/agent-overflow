@@ -2168,8 +2168,9 @@ export class ForgeErrorDetail {
 /**
  * ForgeProject is one of this backend's projects whose origin names a
  * repository on a supported forge: the Pull requests page lists its PRs
- * and pipelines. Error is set, with Repo zero, when the origin could not
- * be read for a reason other than naming no forge repository.
+ * and pipelines. Error is set, with Repo zero, when git could not read the
+ * origin (not a repository, a git or I/O failure); the PR list keeps the
+ * repository and rows it read before beside it.
  */
 export class ForgeProject {
     "projectId": string;
@@ -3598,8 +3599,9 @@ export class PRCILogState {
  * PRListDetail is what the focus read (git.Core.ReadPRSummary) adds to a
  * row: readiness and its blocker kinds, approvals, unresolved threads, the
  * head checks (ChecksState in the list's success/failure/pending
- * vocabulary, PipelineStatus the normalized CI status) and whether the
- * viewer's approval stands.
+ * vocabulary, PipelineStatus the normalized CI status), whether the
+ * viewer's approval stands and, on GitLab, the viewer's own review state
+ * (git.PRDetail.ViewerReviewState).
  */
 export class PRListDetail {
     "readinessState": string;
@@ -3610,6 +3612,7 @@ export class PRListDetail {
     "checksState": string;
     "pipelineStatus": string;
     "viewerApproved": boolean;
+    "viewerReviewState"?: string;
 
     /** Creates a new PRListDetail instance. */
     constructor($$source: Partial<PRListDetail> = {}) {
@@ -3748,6 +3751,14 @@ export class PRListItem {
     "viewerReview": git$0.PRListReview;
 
     /**
+     * AuthorActivityAt (RFC 3339) is the author's latest conversation
+     * comment or submitted review, a review thread reply included, among
+     * the PR's last githubListActivityDepth of each (GitHub); "" on GitLab
+     * and when none of those is the author's.
+     */
+    "authorActivityAt"?: string;
+
+    /**
      * ReviewDecision is GitHub's reviewDecision (APPROVED,
      * CHANGES_REQUESTED, REVIEW_REQUIRED or ""); GitLab's is
      * REVIEW_REQUIRED for not_approved and CHANGES_REQUESTED for
@@ -3879,9 +3890,9 @@ export class PRListItem {
         const $$createField0_0 = $$createType52;
         const $$createField5_0 = $$createType58;
         const $$createField18_0 = $$createType59;
-        const $$createField26_0 = $$createType61;
-        const $$createField28_0 = $$createType63;
-        const $$createField29_0 = $$createType65;
+        const $$createField27_0 = $$createType61;
+        const $$createField29_0 = $$createType63;
+        const $$createField30_0 = $$createType65;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("ref" in $$parsedSource) {
             $$parsedSource["ref"] = $$createField0_0($$parsedSource["ref"]);
@@ -3893,13 +3904,13 @@ export class PRListItem {
             $$parsedSource["viewerReview"] = $$createField18_0($$parsedSource["viewerReview"]);
         }
         if ("detail" in $$parsedSource) {
-            $$parsedSource["detail"] = $$createField26_0($$parsedSource["detail"]);
+            $$parsedSource["detail"] = $$createField27_0($$parsedSource["detail"]);
         }
         if ("seen" in $$parsedSource) {
-            $$parsedSource["seen"] = $$createField28_0($$parsedSource["seen"]);
+            $$parsedSource["seen"] = $$createField29_0($$parsedSource["seen"]);
         }
         if ("since" in $$parsedSource) {
-            $$parsedSource["since"] = $$createField29_0($$parsedSource["since"]);
+            $$parsedSource["since"] = $$createField30_0($$parsedSource["since"]);
         }
         return new PRListItem($$parsedSource as Partial<PRListItem>);
     }

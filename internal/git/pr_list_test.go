@@ -57,13 +57,18 @@ func TestGitHubListProjectPRsParsesTheSearch(t *testing.T) {
 	if own != want {
 		t.Errorf("own draft = %+v\nwant       %+v", own, want)
 	}
+	// Comments by others (and a deleted account) are not the author's.
 	if !fork.CrossRepository || !fork.ReviewRequested || !fork.ViewerIsReviewer || fork.ViewerIsAuthor ||
 		!fork.Conflicts || fork.MergeStatus != "dirty" || fork.ChecksState != "failure" || fork.ReviewDecision != "" ||
-		fork.Author != (PRListAuthor{Login: "carol"}) || fork.ViewerReview != (PRListReview{}) {
+		fork.Author != (PRListAuthor{Login: "carol"}) || fork.ViewerReview != (PRListReview{}) || fork.AuthorActivityAt != "" {
 		t.Errorf("fork row = %+v", fork)
 	}
+	// The author's latest activity is their review thread reply, later than
+	// their conversation comment; the viewer's later comment and a pending
+	// review are not it.
 	if changes.ReviewRequested || !changes.ViewerIsReviewer || changes.ViewerReview != (PRListReview{State: "CHANGES_REQUESTED", SubmittedAt: "2026-10-01T10:00:00Z"}) ||
-		changes.ChecksState != "" || changes.Conflicts || changes.Commits != 7 || changes.BaseRefName != "release" {
+		changes.ChecksState != "" || changes.Conflicts || changes.Commits != 7 || changes.BaseRefName != "release" ||
+		changes.AuthorActivityAt != "2026-10-01T12:30:00Z" {
 		t.Errorf("changes-requested row = %+v", changes)
 	}
 }

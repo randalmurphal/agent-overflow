@@ -206,7 +206,7 @@ describe('list reads', () => {
 
     setPipelinesFilters(PANE, { projects: ['p2'] });
     await settle();
-    expect(mocks.list).toHaveBeenLastCalledWith('p2', { status: undefined });
+    expect(mocks.list).toHaveBeenLastCalledWith('p2', { status: undefined }, true);
     expect(pipelinesRows(PANE).map((row) => [row.id, row.projectName])).toEqual([['2', 'Project p2'], ['1', 'Project p2']]);
 
     // A failed read of the repository shows on every picked clone, and
@@ -367,6 +367,23 @@ describe('the owning computer', () => {
   });
 });
 
+describe('rate limits', () => {
+  it('keeps a background read refused under the reserve as a reserve pause with its release', async () => {
+    installMocks();
+    setBindingMock('ListProjectPipelines', async (projectId: string) => {
+      if (projectId === 'p2') {
+        throw new TransportError('forge_rate_limited', 'paused', { reserve: true, resumeAt: '2026-10-21T08:30:00Z' });
+      }
+      return { rows: [summary(1)], fetchedAt: '' };
+    });
+    attachPipelinesPage(PANE, HOME_BACKEND);
+    await settle();
+    expect(pipelinesProjectErrors(PANE).map((failed) => failed.failure)).toEqual([
+      { kind: 'rate_limited', reserve: true, resumeAt: '2026-10-21T08:30:00Z' },
+    ]);
+  });
+});
+
 describe('filters', () => {
   it('reads again for a status or projects, filters the ref kind in place, and remembers them', async () => {
     const mocks = installMocks();
@@ -374,10 +391,10 @@ describe('filters', () => {
     await settle();
     setPipelinesFilters(PANE, { status: 'failed' });
     await settle();
-    expect(mocks.list).toHaveBeenLastCalledWith('p2', { status: 'failed' });
+    expect(mocks.list).toHaveBeenLastCalledWith('p2', { status: 'failed' }, true);
     setPipelinesFilters(PANE, { projects: ['p1'] });
     await settle();
-    expect(mocks.list).toHaveBeenLastCalledWith('p1', { status: 'failed' });
+    expect(mocks.list).toHaveBeenLastCalledWith('p1', { status: 'failed' }, true);
     expect(pipelinesRows(PANE).map((row) => row.id)).toEqual(['3', '1']);
     const calls = mocks.list.mock.calls.length;
     setPipelinesFilters(PANE, { refKind: 'tag' });
@@ -477,6 +494,44 @@ describe('stage summaries', () => {
     answer({ 9: { stages: [{ name: 'late', status: 'success', jobs: [] }] } });
     await settle();
     expect(__pipelineStageKeysForTest(PANE)).toEqual([]);
+  });
+});
+
+describe('read intent', () => {
+  it('reads as the user on open, refresh and a filter change, and in the background on the interval and on scroll', async () => {
+    const mocks = installMocks();
+    const lastList = () => mocks.list.mock.calls.at(-1)![2];
+    const lastStages = () => mocks.stages.mock.calls.at(-1)![2];
+    attachPipelinesPage(PANE, HOME_BACKEND);
+    await settle();
+    expect(mocks.list.mock.calls.map((call) => call[2])).toEqual([true, true]);
+    // The first rows on screen after the open are the open's.
+    const keys = pipelinesRows(PANE).map((row) => row.key);
+    setVisiblePipelines(PANE, keys.slice(0, 1));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(mocks.stages).toHaveBeenCalledTimes(1);
+    expect(lastStages()).toBe(true);
+    // Scrolling is not.
+    setVisiblePipelines(PANE, keys);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(mocks.stages).toHaveBeenCalledTimes(3);
+    expect(lastStages()).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(PIPELINES_REFRESH_MS);
+    expect(mocks.list).toHaveBeenCalledTimes(4);
+    expect(lastList()).toBe(false);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(mocks.stages.mock.calls.slice(3).map((call) => call[2])).toEqual([false, false]);
+
+    refreshPipelinesPage(PANE);
+    await settle();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(mocks.list.mock.calls.slice(4).map((call) => call[2])).toEqual([true, true]);
+    expect(mocks.stages.mock.calls.slice(5).map((call) => call[2])).toEqual([true, true]);
+
+    setPipelinesFilters(PANE, { status: 'failed' });
+    await settle();
+    expect(lastList()).toBe(true);
   });
 });
 

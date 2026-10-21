@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // resolveLoopback is pure method lookup for tests that do not exercise the
@@ -650,6 +651,44 @@ func TestDispatcherPublicErrorKeepsCodeAndHidesCauseOnEveryOrigin(t *testing.T) 
 		_, frame := d.Invoke(context.Background(), method, nil)
 		if frame == nil || frame.Code != "remote_capacity" || frame.Message != "All command slots are busy. Wait and retry." {
 			t.Fatalf("origin %v: %+v", local, frame)
+		}
+	}
+}
+
+type rateLimitRefusal struct {
+	public  error
+	reserve bool
+	until   time.Time
+}
+
+func (e *rateLimitRefusal) Error() string                       { return e.public.Error() }
+func (e *rateLimitRefusal) Unwrap() error                       { return e.public }
+func (e *rateLimitRefusal) RateLimitRelease() (bool, time.Time) { return e.reserve, e.until }
+
+// A forge rate limit refusal says whether it kept the reserve and when it
+// lifts, on every origin and only under forge_rate_limited.
+func TestDispatcherForgeRateLimitCarriesItsReleaseOnEveryOrigin(t *testing.T) {
+	until := time.Date(2026, 10, 21, 9, 30, 0, 0, time.FixedZone("x", 3600))
+	cases := []struct {
+		code     string
+		reserve  bool
+		resumeAt string
+	}{
+		{ErrCodeForgeRateLimited, true, "2026-10-21T08:30:00Z"},
+		{"forge_transient", false, ""},
+	}
+	for _, tc := range cases {
+		d := NewDispatcher()
+		refusal := &rateLimitRefusal{public: errorsx.Public(tc.code, "Paused.", nil), reserve: true, until: until}
+		if _, err := d.Register(&publicFailureApp{refusal}, RegisterOptions{Package: "main", TypeName: "App"}); err != nil {
+			t.Fatal(err)
+		}
+		method, _ := resolveLoopback(d, 0, "Fail")
+		for _, local := range []bool{false, true} {
+			_, frame := d.Invoke(context.Background(), method, nil)
+			if frame == nil || frame.Code != tc.code || frame.Reserve != tc.reserve || frame.ResumeAt != tc.resumeAt {
+				t.Fatalf("%s origin %v: %+v", tc.code, local, frame)
+			}
 		}
 	}
 }

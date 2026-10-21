@@ -121,3 +121,29 @@ func TestProjectPRListsThroughTheAppsForgeCode(t *testing.T) {
 		t.Fatalf("routes = %v, want one list read per project", routes)
 	}
 }
+
+// The list row's GitLab summary reads the viewer's own review state from
+// the merge request's reviewers, so another reviewer's change request is
+// not the viewer's.
+func TestGitLabSummaryReadsTheViewersOwnReview(t *testing.T) {
+	r := newRig(t, forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{
+		{Forge: "gitlab", Project: "grp/reviews", Pulls: []forgefake.Pull{
+			{Number: 1, Title: "Bob asked for changes", Author: "carol", Reviewers: []string{"alice", "bob"}, ChangeRequests: []string{"bob"}},
+			{Number: 2, Title: "Alice asked for changes", Author: "carol", Reviewers: []string{"alice"}, ChangeRequests: []string{"alice"}},
+			{Number: 3, Title: "Alice approved", Author: "carol", Reviewers: []string{"alice", "bob"}, ChangeRequests: []string{"bob"},
+				Reviews: []forgefake.Review{{Author: "alice", State: "APPROVED"}}},
+			{Number: 4, Title: "Not asked", Author: "carol", Reviewers: []string{"bob"}},
+		}},
+	}})
+	for number, want := range map[int]string{1: "unreviewed", 2: "requested_changes", 3: "approved", 4: ""} {
+		ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "reviews", Number: number}
+		detail, err := r.core.ReadPRSummary(t.Context(), ref)
+		if err != nil {
+			t.Fatalf("!%d ReadPRSummary: %v", number, err)
+		}
+		if detail.ViewerReviewState != want {
+			t.Errorf("!%d viewer review = %q, want %q", number, detail.ViewerReviewState, want)
+		}
+	}
+	expectHandled(t, r)
+}

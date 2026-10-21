@@ -1088,7 +1088,7 @@ func TestGitHubOriginUnknown(t *testing.T) {
 		},
 	}
 	for name, seed := range cases {
-		cwd := t.TempDir()
+		cwd := initGitRepo(t)
 		seed(cwd)
 		_, err := forge.ListOpenPRs(t.Context(), cwd, "b")
 		var unknown *OriginUnknownError

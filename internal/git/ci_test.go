@@ -38,6 +38,30 @@ func TestNormalizeCIStatus(t *testing.T) {
 	}
 }
 
+// A pipeline is live while its own status or any job's is queued or
+// running: a queued pipeline lists no job yet.
+func TestCIPipelineLive(t *testing.T) {
+	t.Parallel()
+	job := func(status string) CIStage { return CIStage{Jobs: []CIJob{{Status: status}}} }
+	cases := map[string]struct {
+		pipeline CIPipeline
+		want     bool
+	}{
+		"no checks":              {CIPipeline{}, false},
+		"pending without jobs":   {CIPipeline{Status: CIStatusPending}, true},
+		"running without jobs":   {CIPipeline{Status: CIStatusRunning}, true},
+		"a pending job":          {CIPipeline{Status: CIStatusFailed, Stages: []CIStage{job(CIStatusSuccess), job(CIStatusPending)}}, true},
+		"terminal":               {CIPipeline{Status: CIStatusSuccess, Stages: []CIStage{job(CIStatusSuccess)}}, false},
+		"manual without jobs":    {CIPipeline{Status: CIStatusManual}, false},
+		"unknown status, no job": {CIPipeline{Status: "blocked"}, false},
+	}
+	for name, c := range cases {
+		if got := CIPipelineLive(c.pipeline); got != c.want {
+			t.Errorf("%s: CIPipelineLive = %v, want %v", name, got, c.want)
+		}
+	}
+}
+
 func TestAggregateCIStatus(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

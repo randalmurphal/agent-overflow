@@ -174,4 +174,56 @@ func TestSeedRejectsMalformedListFields(t *testing.T) {
 			t.Errorf("%s: seeded", name)
 		}
 	}
+	for name, seed := range map[string]string{
+		"github change request":  `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"t","reviewers":["a"],"changeRequests":["a"]}]}]}`,
+		"not a reviewer":         `{"repos":[{"forge":"gitlab","project":"a/b","pulls":[{"number":1,"title":"t","changeRequests":["a"]}]}]}`,
+		"approved and requested": `{"repos":[{"forge":"gitlab","project":"a/b","pulls":[{"number":1,"title":"t","reviewers":["a"],"changeRequests":["a"],"reviews":[{"author":"a","state":"APPROVED"}]}]}]}`,
+	} {
+		if _, err := seedJSON(New(Options{}), seed); err == nil {
+			t.Errorf("%s: seeded", name)
+		}
+	}
+}
+
+// GitLab's reviewers read carries each reviewer's review state, and an
+// approval replaces the viewer's change request.
+func TestGitLabReviewersCarryEachReviewersState(t *testing.T) {
+	t.Parallel()
+	e := New(Options{APIToken: testAPIToken})
+	if _, err := seedJSON(e, `{"viewer": "octo", "repos": [{"forge": "gitlab", "project": "grp/r", "pulls": [
+	  {"number": 1, "title": "t", "author": "carol", "reviewers": ["octo", "bob", "dave"], "changeRequests": ["octo"],
+	   "reviews": [{"author": "bob", "state": "APPROVED"}]}]}]}`); err != nil {
+		t.Fatal(err)
+	}
+	srv := testServer(t, e)
+	path := "projects/grp%2Fr/merge_requests/1"
+	states := func() string {
+		t.Helper()
+		var got []struct {
+			User struct {
+				Username string `json:"username"`
+			} `json:"user"`
+			State string `json:"state"`
+		}
+		decodeBody(t, glabGET(t, srv, "gitlab.com", path+"/reviewers"), &got)
+		var out []string
+		for _, reviewer := range got {
+			out = append(out, reviewer.User.Username+"="+reviewer.State)
+		}
+		return strings.Join(out, " ")
+	}
+	if got := states(); got != "octo=requested_changes bob=approved dave=unreviewed" {
+		t.Fatalf("reviewers = %s", got)
+	}
+	var mr map[string]any
+	decodeBody(t, glabGET(t, srv, "gitlab.com", path), &mr)
+	if mr["detailed_merge_status"] != "requested_changes" {
+		t.Fatalf("detailed_merge_status = %v", mr["detailed_merge_status"])
+	}
+	if got := glabSend(t, srv, "POST", path+"/approve", `{"sha":"`+mr["sha"].(string)+`"}`); got.status != 201 {
+		t.Fatalf("approve = %d %s", got.status, got.body)
+	}
+	if got := states(); got != "octo=approved bob=approved dave=unreviewed" {
+		t.Fatalf("reviewers after approving = %s", got)
+	}
 }

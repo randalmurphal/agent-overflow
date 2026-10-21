@@ -321,8 +321,12 @@ beside `viewer { login }`. Each node selects its review state
 (`reviewDecision`, `reviewRequests(first: 20)`,
 `latestOpinionatedReviews(first: 100) { viewerDidAuthor }`,
 `viewerLatestReview`, since the login is not known before the answer),
-its merge state, `totalCommentsCount` and `commits(last: 1)` with the
-head commit's time and rollup `state`. GitLab lists
+its merge state, `totalCommentsCount`, `commits(last: 1)` with the
+head commit's time and rollup `state`, and `comments(last: 10)` and
+`reviews(last: 10)` with each author and time, from which the row takes
+the PR author's latest reply (`AuthorActivityAt`; a review thread reply
+is a review of its own). Each of those connections costs one point per
+page of 100 PRs. GitLab lists
 `projects/P/merge_requests?state=opened&order_by=updated_at&sort=desc&per_page=100`,
 whose basic view carries no pipeline; the viewer is the login's cached
 username, as the detail read uses it. Both read at most `prListMaxPages`
@@ -332,8 +336,9 @@ GitLab's list stops at the 1000 most recently updated.
 | Read | GitHub | GitLab |
 |---|---|---|
 | Open PRs of a project | 1 `PullsSearch` per 100 PRs | 1 merge request list page per 100 MRs; + 1 `user` per login and host per 10 minutes |
-| Pipelines of a project (`ListPipelines`, at most 100 rows) | 1 `GET repos/O/R/actions/runs?per_page=N[&branch=][&status=]` | 1 `GET projects/P/pipelines?per_page=N[&ref=][&status=]`; + 1 with `&scope=tags` when no ref is asked |
+| Pipelines of a project (`ListPipelines`, at most 100 rows) | 1 `GET repos/O/R/actions/runs?per_page=N[&branch=][&status=]` | 1 `GET projects/P/pipelines?per_page=N[&ref=][&status=]`; + `GET projects/P/pipelines?per_page=100&scope=tags[&ref=]` pages, at most `gitlabTagScopeMaxPages` (10): 1 for a ref, 1 or 2 without a status filter, none for a merge request ref or an empty list |
 | One pipeline (`ReadPipeline`) | 1 `GET repos/O/R/actions/runs/ID` + 1 jobs page per 100 jobs, at most `githubReadMaxPages` | 1 `GET projects/P/pipelines/ID` + 1 jobs page per 100 jobs, at most `gitlabCIJobsMaxPages` |
+| Stages of 30 unchanged rows (`ReadPipelineStages`) | 30 runs + 30 jobs pages, each a 304 | 30 pipelines + 30 jobs pages, each a 200 with its body |
 
 `PipelineListFilter.Status` is a normalized status each forge filters by
 its own value: success, failed, running, pending (GitHub `queued`),
@@ -342,13 +347,22 @@ before any request. A GitHub run is one row and, read, one stage named
 after its workflow; its jobs list carries every job's steps, so
 `stepsFor` costs no extra request. A row's `RefKind` is `merge_request`
 for a GitLab `refs/merge-requests/N` ref or a GitHub `pull_request`
-event, `tag` for a GitHub `release` event, and `branch` otherwise.
-GitLab's list does not say which pipelines ran on a tag (only the single
-pipeline carries `tag`), so a list of any ref reads the tag scope as
-well and marks those ids, appending a tag pipeline the first list did
-not hold; a list of one ref needs no second read. `CIPipeline` carries the pipeline's `ID`, `Ref` and
-`SHA`; a GitHub PR's head checks span many runs, so `ReadPR` leaves its
-`ID` empty.
+event, `tag` for a GitLab tag pipeline or a GitHub `release` event, and
+`branch` otherwise. GitLab's list does not say which pipelines ran on a
+tag (only the single pipeline carries `tag`), and its `scope=tags`
+answers only the latest pipeline of each tag ref (GitLab's pipelines API
+documentation), so `ListPipelines` reads the tag scope for the ref names
+it holds and marks every listed pipeline on one of those refs, an older
+run of a tag included; a ref is a tag or a branch. The scope is read
+without the status filter, since a tag whose latest run has another
+status is still a tag. It is ordered by id, newest first, and a listed
+pipeline's tag has its latest pipeline no older than it, so the pages
+stop once one reaches past the oldest listed id or comes back short. A
+list of one ref reads that ref's tag scope once; a merge request ref
+reads none. A tag's latest pipeline the list did not hold (past its
+page) is appended when the status filter admits it. `CIPipeline`
+carries the pipeline's `ID`, `Ref` and `SHA`; a GitHub PR's head checks
+span many runs, so `ReadPR` leaves its `ID` empty.
 
 ### The PR list pump
 
@@ -364,7 +378,8 @@ interactive, as a refresh is; later ticks run at the PR update interval.
 
 A tick (`app_pr_list_tick.go`) reads the backend's forge projects
 (`ListForgeProjects`: the non-archived projects whose origin names a
-forge repository), lists each repository once however many projects
+forge repository, and those whose origin git could not read, with that
+failure as their `Error`), lists each repository once however many projects
 clone it, at most `prListReadConcurrency` (4) at a time, then reads the
 summary detail of the rows the subscribers focus, joins the user's
 `pr_views` and emits `pulls:updated` when the snapshot changed. A
@@ -374,16 +389,22 @@ correlation id the server log holds the raw error under with that
 error's chain, fixed while the same failure repeats), a
 first transient failure with rows on screen is held back once, a
 rate-limited repository is skipped by background ticks until its
-release, and a removed project takes its rows along. Each row's
+release, a project whose origin cannot be read keeps the repository and
+rows the last tick read beside that error, and a removed project takes
+its rows along. Each row's
 attention state and group come from `prAttention`
 (`app_pr_attention.go`); `NeedsYou`, the sidebar badge, counts each PR
 once.
 
 `SetPRListFocus` names at most `maxPRListFocus` (60) PR keys per handle:
-the rows on screen. The tick reads the detail of the focused rows and
-then of the user's own and reviewed rows (`ViewerIsAuthor`,
-`ViewerIsReviewer`), whose attention state needs it whether or not a
-filter shows them, at most `maxPRListFocus` in all. A row's detail is
+the rows on screen. The tick reads the detail of the rows a visible
+handle focuses and then of the user's own and reviewed rows
+(`ViewerIsAuthor`, `ViewerIsReviewer`), whose attention state needs it
+whether or not a filter shows them, at most `maxPRListFocus` in all:
+each group newest update time first, then by PR key, so unchanged rows
+keep the same set every tick. A row that falls out of the set loses its
+detail. A focusing handle that hides or shows recomputes the set at
+once (`SetPRListActive`), as does one that leaves. A row's detail is
 `Core.ReadPRSummary`: `ReadPR` with `Detail` and `Unresolved`, which adds
 the approval count and the unresolved thread count to the readiness. It
 is read when the row is first a candidate, when its list row changes
@@ -401,7 +422,7 @@ row's `Seen` and `Since` follow at once.
 | Tick | GitHub | GitLab |
 |---|---|---|
 | Lists | 1 `PullsSearch` per repository per 100 PRs | 1 merge request list page per repository per 100 MRs |
-| A focused row's detail, when due | 1 `PRTick` (detail and checks), + 1 `PRThreadStatesPage` per 100 threads past 100 | 1 merge request + 1 approvals + 1 discussions page per 100 discussions |
+| A focused row's detail, when due | 1 `PRTick` (detail and checks), + 1 `PRThreadStatesPage` per 100 threads past 100 | 1 merge request + 1 approvals + 1 reviewers (the viewer's own review state) + 1 discussions page per 100 discussions |
 
 ### The pipeline pump and stage reads
 
@@ -410,7 +431,8 @@ pipeline of a repository, one pump per (repository, id) however many
 panes show it. It is the PR pump's CI phase without a PR
 (`app_ci_phase.go`): the first subscriber reads the pipeline, a joiner
 takes the pump's state, the pipeline is polled at the live cadence while
-it runs and its followed job logs (`SetPipelineFollows`) at the follow
+it or a job of it is queued or running (`git.CIPipelineLive`: a queued
+pipeline may list no job yet) and its followed job logs (`SetPipelineFollows`) at the follow
 cadence, and frames go out on `ci:pipeline_updated`; a log frame rides
 `pr:ci_log` with the pipeline's key and no PR key. A terminal pipeline
 is read again at the PR update interval while visible, since a job
@@ -419,13 +441,23 @@ are a repository's (`ciLogKey(repo, job)`), whichever PR or pipeline
 showed them, so `GetPRCILogLines`, `SavePRCIJobLog` and
 `SavePRCIJobLogSection` take a `RepoReference`.
 
-`ListProjectPipelines(projectID, filter)` is one `ListPipelines`; the
-Pipelines tab reads each repository once, through the first picked project
-that clones it, so a repository two projects clone lists each pipeline once.
-`ReadPipelineStages(repo, ids)` reads at most `maxPipelineStageReads` (30)
+`ListProjectPipelines(projectID, filter, interactive)` is one
+`ListPipelines`; the Pipelines tab reads each repository once, through the
+first picked project that clones it, so a repository two projects clone
+lists each pipeline once. Both calls carry `interactive`: the Pipelines tab
+passes true for its open, its refresh and a filter change, and for the stage
+read of the first rows on screen after one, and false for its interval
+read and for stages read on scroll, so the page's own polling never
+spends the rate limit reserve.
+`ReadPipelineStages(repo, ids, interactive)` reads at most `maxPipelineStageReads` (30)
 pipelines, 4 at a time, with `ReadPipeline` and answers each stage's name
-and status, or that pipeline's failure; every request is a GET the ETag
-store revalidates, so an unchanged pipeline costs a 304.
+and status, or that pipeline's failure. An unchanged pipeline costs what
+`ReadPipeline` does (the table in "Project lists"): on GitHub the run and
+its jobs list are GETs the ETag store revalidates, a 304 each (the jobs
+list measured free of the limit); on GitLab the jobs list answers 200 to
+`If-None-Match` (measured) and the single pipeline's revalidation is not
+measured, so 30 unchanged rows cost 30 pipeline reads and 30 jobs list
+bodies.
 
 ## Merged PR worktree cleanup
 
@@ -612,7 +644,10 @@ out when the resume time moves and not on every tick. `pr:updated`,
 `rate_limited`, `setup`, `forbidden`, `forge`), `Reserve` and `ResumeAt` (RFC 3339, set
 for `rate_limited` only) beside the caller-safe `Error`, so the pane
 chooses the surface instead of parsing text. `classifyForgeFailure`
-(`internal/app/app_forge_failure.go`) is the one classification.
+(`internal/app/app_forge_failure.go`) is the one classification. A bound
+method's rate-limited failure (`forge_rate_limited`) carries the same
+`reserve` and `resumeAt` on its error frame
+([RPC failures](transport.md#rpc-failures)).
 
 - `transient` while the snapshot poll has a snapshot on screen and shows
   no failure: nothing is sent until the retry (the retry base) also fails,

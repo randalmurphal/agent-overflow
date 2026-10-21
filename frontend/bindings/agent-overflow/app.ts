@@ -2779,7 +2779,7 @@ export function ListDiscussionsForThread(threadID: string): $CancellablePromise<
  * ListForgeProjects lists this backend's projects (the non-archived ones
  * the sidebar shows) whose origin is a known forge repository, in the
  * sidebar's name order. A project with another origin, or none, is
- * omitted.
+ * omitted; one whose origin could not be read is listed with its Error.
  */
 export function ListForgeProjects(): $CancellablePromise<app$0.ForgeProject[]> {
     return $Call.ByID(3779338822).then(($result: any) => {
@@ -2926,11 +2926,11 @@ export function ListPendingInteractiveRequests(threadID: string): $CancellablePr
 
 /**
  * ListProjectPipelines lists the pipelines of projectID's forge repository
- * that filter admits (git.PipelineListFilter). A failure is the forge's,
- * explained for the project.
+ * that filter admits (git.PipelineListFilter), as the user's action when
+ * interactive. A failure is the forge's, explained for the project.
  */
-export function ListProjectPipelines(projectID: string, filter: git$0.PipelineListFilter): $CancellablePromise<app$0.PipelineListResult> {
-    return $Call.ByID(647538989, projectID, filter).then(($result: any) => {
+export function ListProjectPipelines(projectID: string, filter: git$0.PipelineListFilter, interactive: boolean): $CancellablePromise<app$0.PipelineListResult> {
+    return $Call.ByID(647538989, projectID, filter, interactive).then(($result: any) => {
         return $$createType144($result);
     });
 }
@@ -3565,9 +3565,11 @@ export function OpenPRDiff(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: g
  * records the PR for it. A head in this repository is checked out as its
  * branch, fetched from origin when only origin has it; a fork's head is
  * fetched from the forge's head ref into the local branch pr/N, which is
- * refused when pr/N exists at another commit. A failure once the thread
- * exists removes the thread, its worktree and a pr/N this call created,
- * and returns the cause. The frontend seeds the thread's draft.
+ * refused when pr/N exists at another commit. A failure at any step,
+ * creating the thread included, removes the thread, its worktree and a
+ * local branch this call created (pr/N, or the local branch of a head
+ * only origin had), and returns the cause. The frontend seeds the
+ * thread's draft.
  */
 export function OpenPRThread(req: app$0.OpenPRThreadRequest): $CancellablePromise<app$0.OpenPRThreadResult> {
     return $Call.ByID(2660387675, req).then(($result: any) => {
@@ -3902,11 +3904,13 @@ export function PutSoundFile(id: string, wavBase64: string): $CancellablePromise
 /**
  * ReadPipelineStages reads the stages of up to maxPipelineStageReads
  * pipelines of repo, keyed by id: names and statuses only, the jobs
- * dropped. The reads are GETs the transport revalidates with the ETag it
- * holds, so an unchanged pipeline costs a 304.
+ * dropped. Each is a ReadPipeline: an unchanged GitHub run costs 304s,
+ * an unchanged GitLab pipeline its two reads in full, since GitLab's jobs
+ * list answers 200 to If-None-Match (docs/architecture/forge-transport.md).
+ * They are the user's action when interactive.
  */
-export function ReadPipelineStages(repo: git$0.RepoReference, ids: string[]): $CancellablePromise<{ [_ in string]?: app$0.PipelineStages }> {
-    return $Call.ByID(2036690300, repo, ids).then(($result: any) => {
+export function ReadPipelineStages(repo: git$0.RepoReference, ids: string[], interactive: boolean): $CancellablePromise<{ [_ in string]?: app$0.PipelineStages }> {
+    return $Call.ByID(2036690300, repo, ids, interactive).then(($result: any) => {
         return $$createType178($result);
     });
 }
@@ -4994,8 +4998,9 @@ export function SetPRCILogFollows(subscriptionID: string, jobIDs: string[]): $Ca
 
 /**
  * SetPRListActive reports whether one subscriber shows the list; the pump
- * reads nothing while every subscriber is hidden. An unknown id is a
- * no-op.
+ * reads nothing while every subscriber is hidden. Only a visible
+ * subscriber's focus selects detail reads, so a change of a focusing
+ * subscriber recomputes the selection at once. An unknown id is a no-op.
  */
 export function SetPRListActive(subscriptionID: string, active: boolean): $CancellablePromise<void> {
     return $Call.ByID(2324570575, subscriptionID, active);
@@ -5003,10 +5008,10 @@ export function SetPRListActive(subscriptionID: string, active: boolean): $Cance
 
 /**
  * SetPRListFocus replaces the PR keys (git.PRReference.Key) whose detail
- * one subscriber wants read: the rows on its screen and the needs-you set,
- * at most maxPRListFocus. A key the list holds no row for is ignored and
- * reported. A newly focused row's detail is read at once, not at the next
- * tick.
+ * one subscriber wants read while it is visible: the rows on its screen
+ * and the needs-you set, at most maxPRListFocus. A key the list holds no
+ * row for is ignored and reported. A newly focused row's detail is read
+ * at once, not at the next tick.
  */
 export function SetPRListFocus(subscriptionID: string, prKeys: string[]): $CancellablePromise<app$0.PRListFocusResult> {
     return $Call.ByID(910260531, subscriptionID, prKeys).then(($result: any) => {

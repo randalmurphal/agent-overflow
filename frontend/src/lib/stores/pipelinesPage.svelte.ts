@@ -16,6 +16,9 @@
 // disconnect, a revoked grant or the computer's removal, discarding the
 // reads in flight, and the list reads again at once when both hold again.
 // The refresh button reads regardless, so a refusal shows.
+// Opening the tab, its refresh and a filter change are the user's reads,
+// which may spend the forge's rate limit reserve; the interval and
+// scrolling read in the background, which may not.
 
 import { SvelteMap } from 'svelte/reactivity';
 import { untrack } from 'svelte';
@@ -108,7 +111,9 @@ export interface PipelinesSelection {
 
 function failureOf(err: unknown): ForgeFailure | null {
   // A forge refusal reaches the caller as `forge_<kind>`.
-  if (err instanceof TransportError && err.code.startsWith('forge_')) return forgeFailureFrom({ errorKind: err.code.slice('forge_'.length) });
+  if (err instanceof TransportError && err.code.startsWith('forge_')) {
+    return forgeFailureFrom({ errorKind: err.code.slice('forge_'.length), reserve: err.reserve, resumeAt: err.resumeAt });
+  }
   return null;
 }
 
@@ -140,6 +145,13 @@ class PipelinesPageBackend {
   /** The filters the last list read used; another status reads again. */
   readWith: PipelineFilters | null = null;
   readonly stopWatching: () => void;
+  /** A pending list read is the user's action (open, refresh, a filter
+   * change), which may spend the forge's rate limit reserve; the interval
+   * is not, and coalesced requests keep it. The stage read that follows a
+   * list read, or the first one with rows on screen after it, has the
+   * list's intent; scrolling reads in the background. */
+  listInteractive = false;
+  stagesInteractive = false;
 
   readonly rows: readonly PipelineRowView[] = $derived.by(() => {
     const refKind = pipelineFilters(this.backend).refKind;
@@ -229,6 +241,12 @@ class PipelinesPageBackend {
     };
   }
 
+  /** Asks for a list read now, as the user's action when interactive. */
+  requestList(interactive: boolean): void {
+    if (interactive) this.listInteractive = true;
+    this.list.request({ immediate: true });
+  }
+
   async read(token: { isCurrent(): boolean }): Promise<void> {
     const explicit = this.explicit;
     this.explicit = false;
@@ -236,6 +254,8 @@ class PipelinesPageBackend {
     this.clearTimer();
     this.loading = true;
     const filters = pipelineFilters(this.backend);
+    const interactive = this.listInteractive;
+    this.listInteractive = false;
     try {
       let projects: ForgeProject[];
       try {
@@ -269,7 +289,7 @@ class PipelinesPageBackend {
         const lister = clones[0]!;
         try {
           const result = await withBackendTarget(this.backend, () =>
-            ListProjectPipelines(lister.projectId, { status: filters.status || undefined }));
+            ListProjectPipelines(lister.projectId, { status: filters.status || undefined }, interactive));
           return { repoId, repo, clones, rows: result?.rows ?? [], error: null };
         } catch (err) {
           return { repoId, repo, clones, rows: null, error: err };
@@ -307,6 +327,9 @@ class PipelinesPageBackend {
       const keys = new Set(listed.map((pipeline) => pipeline.key));
       for (const key of this.stages.keys()) if (!keys.has(key)) this.stages.delete(key);
       this.stageReads.reset();
+      // They are read as the list's action: the first rows on screen after
+      // the user's read are read as theirs.
+      this.stagesInteractive = interactive;
       this.stageReads.request({ immediate: true });
     } finally {
       if (token.isCurrent()) {
@@ -319,6 +342,7 @@ class PipelinesPageBackend {
 
   async readStages(token: { isCurrent(): boolean }): Promise<void> {
     if (!this.live) return;
+    const interactive = this.stagesInteractive;
     const onScreen = new Set<string>();
     for (const paneId of this.panes) for (const key of paneEntries.get(paneId)?.onScreen ?? []) onScreen.add(key);
     // On-screen rows by repository, at most one call's worth each.
@@ -335,10 +359,11 @@ class PipelinesPageBackend {
       batch.keys.push(pipeline.key);
       batch.ids.push(pipeline.summary.id);
     }
+    if (byRepo.size > 0) this.stagesInteractive = false;
     await Promise.all([...byRepo.values()].map(async (batch) => {
       let answer: Record<string, PipelineStages | undefined>;
       try {
-        answer = (await withBackendTarget(this.backend, () => ReadPipelineStages(repoReferenceWire(batch.repo), batch.ids))) ?? {};
+        answer = (await withBackendTarget(this.backend, () => ReadPipelineStages(repoReferenceWire(batch.repo), batch.ids, interactive))) ?? {};
       } catch (err) {
         // A dropped connection suspends the page, which reads again.
         if (!token.isCurrent() || isPassiveConnectionFailure(err)) return;
@@ -354,14 +379,14 @@ class PipelinesPageBackend {
     }));
   }
 
-  /** The next list read, while the document is visible. */
+  /** The next list read, while the document is visible: background. */
   arm(): void {
     this.clearTimer();
     if (documentHidden() || this.panes.size === 0 || !this.live) return;
     const wait = Math.max(0, this.lastRead + PIPELINES_REFRESH_MS - Date.now());
     this.timer = setTimeout(() => {
       this.timer = null;
-      this.list.request({ immediate: true });
+      this.requestList(false);
     }, wait);
   }
 
@@ -449,7 +474,7 @@ export function attachPipelinesPage(paneId: string, backend: BackendKey): void {
     }
     paneEntries.set(paneId, new PaneEntry(backend));
     page.panes.add(paneId);
-    page.list.request({ immediate: true });
+    page.requestList(true);
   });
 }
 
@@ -483,7 +508,7 @@ export function refreshPipelinesPage(paneId: string): void {
     const page = pageOf(paneId);
     if (!page) return;
     page.explicit = true;
-    page.list.request({ immediate: true });
+    page.requestList(true);
   });
 }
 
@@ -497,7 +522,7 @@ export function setPipelinesFilters(paneId: string, next: Partial<PipelineFilter
     const page = pages.get(entry.backend);
     const now = pipelineFilters(entry.backend);
     const was = page?.readWith;
-    if (page && (!was || was.status !== now.status || was.projects.join('\n') !== now.projects.join('\n'))) page.list.request({ immediate: true });
+    if (page && (!was || was.status !== now.status || was.projects.join('\n') !== now.projects.join('\n'))) page.requestList(true);
   });
 }
 

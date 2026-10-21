@@ -370,7 +370,10 @@ func diffReviewSourceOwner(source *SourceDiffReview) store.DiffReviewOwner {
 	return store.ThreadReviewOwner(source.ThreadID)
 }
 
-func (a *App) appendDiffReviewCommentsToContent(owner store.DiffReviewOwner, content, scope, sourceKey string, commentIDs []string, pr *store.DiffReviewPRContext) (string, []string, error) {
+// appendDiffReviewCommentsToContent appends the prompt of the drafts
+// commentIDs to content and returns them as it read them, which is what
+// the message delivers and what its claim settles (claimDiffReviewDelivery).
+func (a *App) appendDiffReviewCommentsToContent(owner store.DiffReviewOwner, content, scope, sourceKey string, commentIDs []string, pr *store.DiffReviewPRContext) (string, []store.DiffReviewCommentSnapshot, error) {
 	if len(store.UniqueNonEmptyStringsForApp(commentIDs)) > store.MaxDiffReviewCommentIDs {
 		return "", nil, fmt.Errorf("too many diff review comments selected")
 	}
@@ -390,9 +393,12 @@ func (a *App) appendDiffReviewCommentsToContent(owner store.DiffReviewOwner, con
 	if len(prompt) > store.MaxDiffReviewPromptBytes {
 		return "", nil, fmt.Errorf("diff review comments are too large")
 	}
-	ids := diffreview.IDsOf(comments)
-	if strings.TrimSpace(content) == "" {
-		return prompt, ids, nil
+	snapshot := make([]store.DiffReviewCommentSnapshot, 0, len(comments))
+	for _, comment := range comments {
+		snapshot = append(snapshot, store.DiffReviewCommentSnapshot{ID: comment.ID, Body: comment.Body})
 	}
-	return strings.TrimSpace(content) + "\n\n" + prompt, ids, nil
+	if strings.TrimSpace(content) == "" {
+		return prompt, snapshot, nil
+	}
+	return strings.TrimSpace(content) + "\n\n" + prompt, snapshot, nil
 }

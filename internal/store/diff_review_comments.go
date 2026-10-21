@@ -2,6 +2,8 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"path"
 	"strings"
@@ -407,6 +409,136 @@ func (s *Store) MarkDiffReviewCommentsSent(owner DiffReviewOwner, scope, sourceK
 			return nil
 		}
 		return fmt.Errorf("store: marked %d diff review comments sent for %s/%s, want %d draft comments", n, owner, scope, len(ids))
+	}
+	return nil
+}
+
+// DiffReviewCommentSnapshot is a draft as a send read it: its id and the
+// body the message carries.
+type DiffReviewCommentSnapshot struct {
+	ID   string
+	Body string
+}
+
+// ErrDiffReviewCommentsSentElsewhere is a claim naming a draft another
+// message already carried.
+var ErrDiffReviewCommentsSentElsewhere = errors.New("a selected review comment was already sent in another message")
+
+// ClaimDiffReviewCommentsSent marks sent in the turn sentTurnID each of the
+// owner's drafts in snapshot whose body is still the one the message
+// carries, in one transaction, and returns the ids it marked. A draft
+// edited since stays a draft, a deleted one is skipped, and one already
+// sent in sentTurnID is left as it is. A draft sent in another turn, or
+// resolved, fails the whole claim with ErrDiffReviewCommentsSentElsewhere
+// and marks nothing: that text reached another message.
+func (s *Store) ClaimDiffReviewCommentsSent(owner DiffReviewOwner, scope, sourceKey string, snapshot []DiffReviewCommentSnapshot, sentAt int64, sentTurnID string) ([]string, error) {
+	if err := owner.validate(); err != nil {
+		return nil, err
+	}
+	scope, err := NormalizeDiffReviewScope(scope)
+	if err != nil {
+		return nil, err
+	}
+	sourceKey, err = NormalizeDiffReviewSourceKey(sourceKey)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(sentTurnID) == "" {
+		return nil, fmt.Errorf("store: claim diff review comments: the turn is required")
+	}
+	if len(snapshot) > MaxDiffReviewCommentIDs {
+		return nil, fmt.Errorf("store: too many diff review comments selected")
+	}
+	column, value := owner.column()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("store: claim diff review comments for %s/%s: %w", owner, scope, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	claimed := make([]string, 0, len(snapshot))
+	for _, comment := range snapshot {
+		res, err := tx.Exec(
+			`UPDATE diff_review_comments
+			    SET status = 'sent', sent_at = ?, sent_turn_id = ?, updated_at = ?
+			  WHERE `+column+` = ? AND scope = ? AND source_key = ? AND id = ? AND status = 'draft' AND body = ?`,
+			sentAt, sentTurnID, sentAt, value, scope, sourceKey, comment.ID, comment.Body,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("store: claim diff review comment %s of %s: %w", comment.ID, owner, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return nil, fmt.Errorf("store: claim diff review comment %s of %s: %w", comment.ID, owner, err)
+		}
+		if n == 1 {
+			claimed = append(claimed, comment.ID)
+			continue
+		}
+		var status, turn string
+		err = tx.QueryRow(
+			`SELECT status, sent_turn_id FROM diff_review_comments
+			  WHERE `+column+` = ? AND scope = ? AND source_key = ? AND id = ?`,
+			value, scope, sourceKey, comment.ID,
+		).Scan(&status, &turn)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			continue
+		case err != nil:
+			return nil, fmt.Errorf("store: read diff review comment %s of %s: %w", comment.ID, owner, err)
+		case status == "draft", turn == sentTurnID:
+			continue
+		default:
+			return nil, ErrDiffReviewCommentsSentElsewhere
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("store: claim diff review comments for %s/%s: %w", owner, scope, err)
+	}
+	return claimed, nil
+}
+
+// ReleaseDiffReviewCommentsSent returns to drafts the comments ids a claim
+// for sentTurnID marked, when the message that claimed them was not sent.
+// A comment edited or claimed again since is left alone.
+func (s *Store) ReleaseDiffReviewCommentsSent(owner DiffReviewOwner, scope, sourceKey string, ids []string, sentTurnID string) error {
+	return s.moveClaimedDiffReviewComments(owner, scope, sourceKey, ids, sentTurnID, "")
+}
+
+// RetargetDiffReviewCommentsSent moves the comments ids a claim for
+// fromTurnID marked to the turn toTurnID, when the message that claimed
+// them landed in another turn.
+func (s *Store) RetargetDiffReviewCommentsSent(owner DiffReviewOwner, scope, sourceKey string, ids []string, fromTurnID, toTurnID string) error {
+	if strings.TrimSpace(toTurnID) == "" {
+		return fmt.Errorf("store: retarget diff review comments: the turn is required")
+	}
+	return s.moveClaimedDiffReviewComments(owner, scope, sourceKey, ids, fromTurnID, toTurnID)
+}
+
+// moveClaimedDiffReviewComments moves the comments ids sent in fromTurnID
+// to toTurnID, or back to drafts when toTurnID is empty.
+func (s *Store) moveClaimedDiffReviewComments(owner DiffReviewOwner, scope, sourceKey string, ids []string, fromTurnID, toTurnID string) error {
+	if err := owner.validate(); err != nil {
+		return err
+	}
+	ids = uniqueNonEmptyStrings(ids)
+	if len(ids) == 0 {
+		return nil
+	}
+	encoded, err := json.Marshal(ids)
+	if err != nil {
+		return fmt.Errorf("store: encode diff review comment ids: %w", err)
+	}
+	column, value := owner.column()
+	if _, err := s.db.Exec(
+		`UPDATE diff_review_comments
+		    SET status = CASE WHEN ?1 = '' THEN 'draft' ELSE 'sent' END,
+		        sent_at = CASE WHEN ?1 = '' THEN 0 ELSE sent_at END,
+		        sent_turn_id = ?1
+		  WHERE `+column+` = ?2 AND scope = ?3 AND source_key = ?4 AND status = 'sent' AND sent_turn_id = ?5
+		    AND id IN (SELECT value FROM json_each(?6))`,
+		toTurnID, value, scope, sourceKey, fromTurnID, string(encoded),
+	); err != nil {
+		return fmt.Errorf("store: move diff review comments of %s from turn %s: %w", owner, fromTurnID, err)
 	}
 	return nil
 }

@@ -164,7 +164,10 @@ type resolvedUserMessage struct {
 	revisionPlanCommentIDs []string
 	revisionSourceDiff     *SourceDiffReview
 	revisionDiffCommentIDs []string
-	userMessageMeta        string
+	// revisionDiffComments are the drafts as content carries them; the
+	// delivery claims exactly these (claimDiffReviewDelivery).
+	revisionDiffComments []store.DiffReviewCommentSnapshot
+	userMessageMeta      string
 }
 
 // resolveUserMessageEnvelope runs the shared prologue that every
@@ -214,13 +217,18 @@ func (a *App) resolveUserMessageEnvelope(
 		revisionCommentIDs = commentIDs
 	}
 	revisionDiffCommentIDs := inputs.revisionSourceDiffCommentIDs
+	var revisionDiffComments []store.DiffReviewCommentSnapshot
 	if revisionSourceDiff != nil && len(revisionDiffCommentIDs) > 0 {
-		nextContent, commentIDs, err := a.appendDiffReviewCommentsToContent(diffReviewSourceOwner(revisionSourceDiff), content, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, revisionDiffCommentIDs, revisionSourceDiff.PR)
+		nextContent, comments, err := a.appendDiffReviewCommentsToContent(diffReviewSourceOwner(revisionSourceDiff), content, revisionSourceDiff.Scope, revisionSourceDiff.SourceKey, revisionDiffCommentIDs, revisionSourceDiff.PR)
 		if err != nil {
 			return resolvedUserMessage{}, fmt.Errorf("diff review comments: %w", err)
 		}
 		content = nextContent
-		revisionDiffCommentIDs = commentIDs
+		revisionDiffComments = comments
+		revisionDiffCommentIDs = make([]string, 0, len(comments))
+		for _, comment := range comments {
+			revisionDiffCommentIDs = append(revisionDiffCommentIDs, comment.ID)
+		}
 	}
 	if revisionSourceDiff != nil && revisionSourceDiff.PR != nil {
 		// The per-comment hunk excerpts are prompt inputs already baked into
@@ -278,6 +286,7 @@ func (a *App) resolveUserMessageEnvelope(
 		revisionPlanCommentIDs: revisionCommentIDs,
 		revisionSourceDiff:     revisionSourceDiff,
 		revisionDiffCommentIDs: revisionDiffCommentIDs,
+		revisionDiffComments:   revisionDiffComments,
 		userMessageMeta:        userMeta,
 	}, nil
 }
@@ -609,6 +618,20 @@ func (a *App) sendMessageLocked(
 		}
 	}
 
+	// The review drafts this message carries are claimed for its turn
+	// before its row exists, so a draft another message already took
+	// fails the send here, before anything is delivered. A failure before
+	// the row lands hands them back.
+	var claim diffReviewClaim
+	if claim, err = a.claimDiffReviewDelivery(threadID, turnIndex, resolved); err != nil {
+		return store.Item{}, fmt.Errorf("send message: %w", err)
+	}
+	defer func() {
+		if err != nil && !userMsgKept {
+			err = errors.Join(err, claim.release(a))
+		}
+	}()
+
 	now := time.Now().UnixMilli()
 	userItem := store.Item{
 		ID:        userItemID,
@@ -662,6 +685,7 @@ func (a *App) sendMessageLocked(
 	// the failed-send sibling error stays available for retry. See
 	// applyProposedPlanAcceptance.
 	a.applyProposedPlanAcceptance(threadID, userItem, resolved)
+	claim.announce(a)
 
 	// A thread is session-less until the first message is sent — we don't
 	// spawn the provider subprocess at thread creation. Lazy-start only
@@ -1284,12 +1308,106 @@ func (a *App) applyProposedPlanAcceptance(threadID string, userItem store.Item, 
 		}
 	}
 
-	if rd := resolved.revisionSourceDiff; rd != nil && len(resolved.revisionDiffCommentIDs) > 0 {
-		if err := a.store.MarkDiffReviewCommentsSent(diffReviewSourceOwner(rd), rd.Scope, rd.SourceKey, resolved.revisionDiffCommentIDs, now, sentTurnID); err != nil {
-			log.Printf("apply plan acceptance: mark diff review comments sent: %v", err)
-		} else if rd.PRKey == "" {
-			a.announceDiffCommentsChanged(threadID, rd.Scope, rd.SourceKey)
-		}
+	// Diff review drafts are claimed before delivery, not marked here
+	// (claimDiffReviewDelivery).
+}
+
+// diffReviewSentTurnID is the turn id a message's review drafts are marked
+// sent in: the comments sent as one click share it.
+func diffReviewSentTurnID(threadID string, turnIndex int) string {
+	return fmt.Sprintf("%s:%d", threadID, turnIndex)
+}
+
+// diffReviewClaim is the review drafts one message delivers, marked sent in
+// its turn before the message reaches the provider. The zero value claims
+// nothing.
+type diffReviewClaim struct {
+	threadID  string
+	owner     store.DiffReviewOwner
+	scope     string
+	sourceKey string
+	turnID    string
+	ids       []string
+}
+
+// claimDiffReviewDelivery marks sent, in the turn turnIndex of threadID, the
+// drafts resolved carries whose text is still what it read: a draft edited
+// since stays a draft, since its new text was not sent. A draft another
+// message already carried fails the claim
+// (store.ErrDiffReviewCommentsSentElsewhere), and the caller must not
+// deliver.
+func (a *App) claimDiffReviewDelivery(threadID string, turnIndex int, resolved resolvedUserMessage) (diffReviewClaim, error) {
+	rd := resolved.revisionSourceDiff
+	if rd == nil || len(resolved.revisionDiffComments) == 0 {
+		return diffReviewClaim{}, nil
+	}
+	claim := diffReviewClaim{
+		threadID: threadID, owner: diffReviewSourceOwner(rd), scope: rd.Scope, sourceKey: rd.SourceKey,
+		turnID: diffReviewSentTurnID(threadID, turnIndex),
+	}
+	ids, err := a.store.ClaimDiffReviewCommentsSent(claim.owner, claim.scope, claim.sourceKey, resolved.revisionDiffComments, time.Now().UnixMilli(), claim.turnID)
+	if err != nil {
+		return diffReviewClaim{}, fmt.Errorf("diff review comments: %w", err)
+	}
+	claim.ids = ids
+	return claim, nil
+}
+
+// release hands the claimed drafts back when their message was not sent.
+func (c diffReviewClaim) release(a *App) error {
+	if len(c.ids) == 0 {
+		return nil
+	}
+	if err := a.store.ReleaseDiffReviewCommentsSent(c.owner, c.scope, c.sourceKey, c.ids, c.turnID); err != nil {
+		return fmt.Errorf("return the review comments to drafts: %w", err)
+	}
+	c.announce(a)
+	return nil
+}
+
+// retarget moves the claim to the turn its message landed in.
+func (c *diffReviewClaim) retarget(a *App, turnIndex int) error {
+	turnID := diffReviewSentTurnID(c.threadID, turnIndex)
+	if len(c.ids) == 0 || turnID == c.turnID {
+		return nil
+	}
+	if err := a.store.RetargetDiffReviewCommentsSent(c.owner, c.scope, c.sourceKey, c.ids, c.turnID, turnID); err != nil {
+		return fmt.Errorf("move the review comments to turn %d: %w", turnIndex, err)
+	}
+	c.turnID = turnID
+	return nil
+}
+
+// announce tells a thread's review panes its drafts moved. A PR's drafts
+// have no thread to announce on; the page re-reads them itself.
+func (c diffReviewClaim) announce(a *App) {
+	if len(c.ids) > 0 && c.owner.ThreadID != "" {
+		a.announceDiffCommentsChanged(c.owner.ThreadID, c.scope, c.sourceKey)
+	}
+}
+
+// diffReviewClaims are the claims of a joined message's members.
+type diffReviewClaims []diffReviewClaim
+
+func (cs diffReviewClaims) release(a *App) error {
+	var errs []error
+	for _, c := range cs {
+		errs = append(errs, c.release(a))
+	}
+	return errors.Join(errs...)
+}
+
+func (cs diffReviewClaims) retarget(a *App, turnIndex int) error {
+	var errs []error
+	for i := range cs {
+		errs = append(errs, cs[i].retarget(a, turnIndex))
+	}
+	return errors.Join(errs...)
+}
+
+func (cs diffReviewClaims) announce(a *App) {
+	for _, c := range cs {
+		c.announce(a)
 	}
 }
 

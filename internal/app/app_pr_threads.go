@@ -151,9 +151,11 @@ type OpenPRThreadResult struct {
 // records the PR for it. A head in this repository is checked out as its
 // branch, fetched from origin when only origin has it; a fork's head is
 // fetched from the forge's head ref into the local branch pr/N, which is
-// refused when pr/N exists at another commit. A failure once the thread
-// exists removes the thread, its worktree and a pr/N this call created,
-// and returns the cause. The frontend seeds the thread's draft.
+// refused when pr/N exists at another commit. A failure at any step,
+// creating the thread included, removes the thread, its worktree and a
+// local branch this call created (pr/N, or the local branch of a head
+// only origin had), and returns the cause. The frontend seeds the
+// thread's draft.
 //
 //ao:scope git:operate
 //ao:route selected
@@ -200,10 +202,14 @@ func (a *App) OpenPRThread(ctx context.Context, req OpenPRThreadRequest) (OpenPR
 			return OpenPRThreadResult{}, fmt.Errorf("open PR thread: branch %s is not on origin", branch)
 		}
 	}
-	thread, err := a.createThread(ctx, CreateThreadOptions{ProjectID: project.ID, WorktreeBranch: branch}, false)
+	// A failed creation has already taken back the worktree it cut and a
+	// branch the cut made; what is left to undo is the pr/N fetched above.
+	thread, cut, err := a.createThreadWithWorktree(ctx, CreateThreadOptions{ProjectID: project.ID, WorktreeBranch: branch}, false)
 	if err != nil {
 		return OpenPRThreadResult{}, errors.Join(fmt.Errorf("open PR thread: %w", err), a.dropPRBranch(project.Path, branch, createdBranch))
 	}
+	// A head only origin had is checked out as a local branch the cut made.
+	createdBranch = createdBranch || cut.CreatedBranch
 	_, err = a.store.RecordOpenThreadPullRequest(store.ThreadPullRequest{
 		ThreadID: thread.ID, Forge: req.PR.Forge, Host: req.PR.Host, Project: req.PR.Project(), Number: req.PR.Number,
 		URL: strings.TrimSpace(req.URL), NodeID: strings.TrimSpace(req.NodeID), Branch: thread.Branch,
@@ -245,8 +251,9 @@ func validateOpenPRThread(req OpenPRThreadRequest) error {
 }
 
 // rollBackPRThread undoes a thread OpenPRThread created: the thread, then
-// its worktree (its setup cancelled and joined first), then a pr/N branch
-// the call created. Every step runs; their failures are returned together.
+// its worktree (its setup cancelled and joined first), then the local
+// branch the call created. Every step runs; their failures are returned
+// together.
 func (a *App) rollBackPRThread(project store.Project, thread store.Thread, createdBranch bool) error {
 	var errs []error
 	if err := a.DeleteThread(thread.ID); err != nil {
@@ -265,7 +272,7 @@ func (a *App) rollBackPRThread(project store.Project, thread store.Thread, creat
 	return err
 }
 
-// dropPRBranch deletes a pr/N branch this call created; nil otherwise.
+// dropPRBranch deletes a local branch this call created; nil otherwise.
 func (a *App) dropPRBranch(projectPath, branch string, created bool) error {
 	if !created {
 		return nil

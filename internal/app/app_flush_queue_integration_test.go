@@ -405,6 +405,55 @@ func TestDispatchFlush_MarksProposedPlanImplementedAfterDispatch(t *testing.T) {
 	}
 }
 
+// A queued message's review drafts are claimed for the row's turn before
+// dispatch, and a dispatch that requeues the message hands them back.
+func TestDispatchFlush_ClaimsDiffReviewDraftsAndReturnsThemOnFailure(t *testing.T) {
+	t.Parallel()
+	for _, outcome := range []string{"ok", "refused"} {
+		app, rec := newAppForFlushQueueRPC(t)
+		thread := testThread("flush-diff-review-" + outcome)
+		thread.Provider = string(provider.Codex)
+		thread.WorkspacePath = t.TempDir()
+		if err := app.store.CreateThread(thread); err != nil {
+			t.Fatalf("CreateThread: %v", err)
+		}
+		draft, err := app.CreateDiffReviewComment(thread.ID, diffReviewPRInput("Name this better."))
+		if err != nil {
+			t.Fatal(err)
+		}
+		app.sessionManager().put(thread.ID, session{
+			Provider: string(provider.Codex), Token: "flush-diff-review-token", Codex: installSteerTestSession(t, app, thread, outcome),
+		})
+		if err := app.triage.Handle(provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: thread.ID, TurnIndex: 0, Timestamp: time.Now()}); err != nil {
+			t.Fatalf("EventTurnStart: %v", err)
+		}
+		if _, err := app.RegisterQueueItem(context.Background(), thread.ID, "", SendMessageOptions{
+			RevisionSourceDiffReview:     &SourceDiffReview{ThreadID: thread.ID, Scope: draft.Scope, SourceKey: draft.SourceKey},
+			RevisionSourceDiffCommentIDs: []string{draft.ID},
+		}); err != nil {
+			t.Fatalf("%s: RegisterQueueItem: %v", outcome, err)
+		}
+		owner := store.ThreadReviewOwner(thread.ID)
+		if outcome == "ok" {
+			waitForAtLeastQueueFlushed(t, rec, 1)
+			if got, err := app.store.GetDiffReviewComment(owner, draft.ID); err != nil || got.Status != "sent" || got.SentTurnID != thread.ID+":0" {
+				t.Fatalf("ok: draft = %+v (%v), want sent in turn 0", got, err)
+			}
+			continue
+		}
+		// The error row lands just before the requeue hands the drafts back.
+		waitForCondition(t, "the refused dispatch to return the draft", func() bool {
+			items, _ := app.store.ListItems(thread.ID)
+			failed := false
+			for _, item := range items {
+				failed = failed || item.Kind == triage.ItemKindError
+			}
+			got, err := app.store.GetDiffReviewComment(owner, draft.ID)
+			return failed && err == nil && got.Status == "draft" && got.SentTurnID == ""
+		})
+	}
+}
+
 // emittedQueueFlushed returns every QueueFlushedEvent the recorder
 // captured, in emission order. Used to assert "fired exactly once"
 // when the trigger predicate gates the dispatch.

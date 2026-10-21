@@ -79,7 +79,26 @@ type Defaults struct {
 	WorkspacePath   string
 }
 
+// Create creates a thread, cutting its worktree when opts.WorktreeBranch
+// names one. A failure after the cut removes the worktree and a branch the
+// cut made.
 func (s *Service) Create(opts CreateOptions) (store.Thread, error) {
+	return s.create(opts, nil)
+}
+
+// CreateWithWorktree is Create that also reports the worktree it cut (zero
+// when it cut none), for a caller that undoes the thread later and owns
+// removing what the cut made.
+func (s *Service) CreateWithWorktree(opts CreateOptions) (store.Thread, CutWorktree, error) {
+	var cut CutWorktree
+	thread, err := s.create(opts, &cut)
+	if err != nil {
+		return store.Thread{}, CutWorktree{}, err
+	}
+	return thread, cut, nil
+}
+
+func (s *Service) create(opts CreateOptions, cutOut *CutWorktree) (store.Thread, error) {
 	database, err := s.database("create thread")
 	if err != nil {
 		return store.Thread{}, err
@@ -194,6 +213,7 @@ func (s *Service) Create(opts CreateOptions) (store.Thread, error) {
 		workspace = project.Path
 	}
 	var branch, worktreePath string
+	var cut CutWorktree
 	cutWorktree := false
 	inheritWorktree := strings.TrimSpace(opts.WorktreePath)
 	switch {
@@ -220,7 +240,7 @@ func (s *Service) Create(opts CreateOptions) (store.Thread, error) {
 		if s.deps.Workspace == nil {
 			return store.Thread{}, fmt.Errorf("create thread: worktree: workspace resolver unavailable")
 		}
-		path, resolvedBranch, createErr := s.deps.Workspace.CreateWorktree(
+		made, createErr := s.deps.Workspace.CreateWorktree(
 			s.deps.LifeContext(), project.Path, WorktreeCut{
 				Branch:    strings.TrimSpace(opts.WorktreeBranch),
 				Base:      strings.TrimSpace(opts.WorktreeBase),
@@ -230,9 +250,10 @@ func (s *Service) Create(opts CreateOptions) (store.Thread, error) {
 		if createErr != nil {
 			return store.Thread{}, fmt.Errorf("create thread: worktree: %w", createErr)
 		}
-		workspace = path
-		worktreePath = path
-		branch = resolvedBranch
+		cut = made
+		workspace = made.Path
+		worktreePath = made.Path
+		branch = made.Branch
 		cutWorktree = true
 	default:
 		if explicit := strings.TrimSpace(opts.Branch); explicit != "" {
@@ -272,7 +293,16 @@ func (s *Service) Create(opts CreateOptions) (store.Thread, error) {
 		Origin:                     s.observeOrigin(workspace),
 	}
 	if err := database.CreateThread(thread); err != nil {
+		if cutWorktree {
+			// No thread owns the cut, so this call takes back what it made.
+			if undoErr := s.deps.Workspace.RemoveCutWorktree(project.Path, cut); undoErr != nil {
+				err = errors.Join(err, fmt.Errorf("create thread: undo the worktree: %w", undoErr))
+			}
+		}
 		return store.Thread{}, err
+	}
+	if cutOut != nil {
+		*cutOut = cut
 	}
 	if s.deps.RecentWorkspaces != nil {
 		s.deps.RecentWorkspaces.AddRecentWorkspace(opts.SettingsBucket, opts.SettingsClass, workspace)

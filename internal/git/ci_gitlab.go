@@ -116,8 +116,14 @@ func groupGitLabJobsByStage(raw []gitlabCIJobRaw) []CIStage {
 // merge request's head, its merged result or its merge train entry.
 var gitlabMergeRequestRef = regexp.MustCompile(`^refs/merge-requests/(\d+)/(?:head|merge|train)$`)
 
-// ListPipelines lists the project's pipelines, the most recent first, in
-// one request.
+// gitlabTagScopeMaxPages bounds the tag scope pages one ListPipelines
+// reads: the latest pipelines of that many hundred tags, newer than the
+// oldest listed pipeline.
+const gitlabTagScopeMaxPages = 10
+
+// ListPipelines lists the project's pipelines, the most recent first: one
+// list request and the tag scope reads that say which refs are tags
+// (gitlabTagPipelines).
 func (f *gitlabForge) ListPipelines(ctx context.Context, repo RepoReference, filter PipelineListFilter) ([]PipelineSummary, error) {
 	status, err := pipelineStatusFilter("gitlab", filter.Status)
 	if err != nil {
@@ -139,30 +145,24 @@ func (f *gitlabForge) ListPipelines(ctx context.Context, repo RepoReference, fil
 	if _, err := client.JSON(ctx, forgeapi.Request{Path: path, Query: query}, &raw); err != nil {
 		return nil, err
 	}
-	// The list does not say which pipelines ran on a tag (only the single
-	// pipeline carries `tag`), so a list of any ref reads the tag scope as
-	// well, one more request, and marks those ids; a tag pipeline past the
-	// first list's page is appended.
-	tags := map[int64]bool{}
-	if filter.Ref == "" {
-		tagQuery := url.Values{}
-		for key, values := range query {
-			tagQuery[key] = values
+	tags, tagged, err := gitlabTagPipelines(ctx, client, path, filter.Ref, raw)
+	if err != nil {
+		return nil, err
+	}
+	// A tag's latest pipeline the list did not hold (past its page) is
+	// appended when the status filter admits it, at most a list's worth.
+	listed := map[int64]bool{}
+	for _, pipeline := range raw {
+		listed[pipeline.ID] = true
+	}
+	appended := 0
+	for _, pipeline := range tagged {
+		if appended == filter.Limit {
+			break
 		}
-		tagQuery.Set("scope", "tags")
-		var tagged []gitlabPipelineRaw
-		if _, err := client.JSON(ctx, forgeapi.Request{Path: path, Query: tagQuery}, &tagged); err != nil {
-			return nil, err
-		}
-		listed := map[int64]bool{}
-		for _, pipeline := range raw {
-			listed[pipeline.ID] = true
-		}
-		for _, pipeline := range tagged {
-			tags[pipeline.ID] = true
-			if !listed[pipeline.ID] {
-				raw = append(raw, pipeline)
-			}
+		if !listed[pipeline.ID] && (status == "" || pipeline.Status == status) {
+			raw = append(raw, pipeline)
+			appended++
 		}
 	}
 	rows := make([]PipelineSummary, 0, len(raw))
@@ -181,12 +181,58 @@ func (f *gitlabForge) ListPipelines(ctx context.Context, repo RepoReference, fil
 		if m := gitlabMergeRequestRef.FindStringSubmatch(pipeline.Ref); m != nil {
 			row.RefKind = PipelineRefMergeRequest
 			row.MRNumber, _ = strconv.Atoi(m[1])
-		} else if tags[pipeline.ID] {
+		} else if tags[pipeline.Ref] {
 			row.RefKind = PipelineRefTag
 		}
 		rows = append(rows, row)
 	}
 	return rows, nil
+}
+
+// gitlabTagPipelines answers which refs of the listed pipelines are tags,
+// and the tag pipelines read to learn it. GitLab's list does not say
+// (only the single pipeline carries `tag`), and its tag scope answers
+// only the latest pipeline of each tag, so a pipeline is a tag's when its
+// ref is a ref the tag scope names: a ref is a tag or a branch. The scope
+// is read without the status filter, since a tag whose latest pipeline
+// has another status is a tag still. It is ordered by id, newest first,
+// and the latest pipeline of a listed pipeline's tag is no older than
+// that pipeline, so the pages stop at the oldest listed id, a short page,
+// or gitlabTagScopeMaxPages. A list of one ref reads that ref's scope
+// alone (one row at most); a merge request ref, or an empty list, needs
+// no read.
+func gitlabTagPipelines(ctx context.Context, client *forgeapi.Client, path, ref string, listed []gitlabPipelineRaw) (map[string]bool, []gitlabPipelineRaw, error) {
+	if len(listed) == 0 || gitlabMergeRequestRef.MatchString(ref) {
+		return nil, nil, nil
+	}
+	oldest := listed[0].ID
+	for _, pipeline := range listed {
+		oldest = min(oldest, pipeline.ID)
+	}
+	query := url.Values{"per_page": {strconv.Itoa(gitlabPageSize)}, "scope": {"tags"}}
+	if ref != "" {
+		query.Set("ref", ref)
+	}
+	refs := map[string]bool{}
+	var tagged []gitlabPipelineRaw
+	page, pages := 1, 0
+	err := client.Pages(ctx, forgeapi.Request{Path: path, Query: query}, func(resp *forgeapi.Response) (bool, error) {
+		var pagePipelines []gitlabPipelineRaw
+		if err := json.Unmarshal(resp.Body, &pagePipelines); err != nil {
+			return false, fmt.Errorf("GitLab tag pipelines: decode response: %w", err)
+		}
+		for _, pipeline := range pagePipelines {
+			refs[pipeline.Ref] = true
+		}
+		tagged = append(tagged, pagePipelines...)
+		pages++
+		full := len(pagePipelines) == gitlabPageSize
+		return full && pagePipelines[len(pagePipelines)-1].ID >= oldest && pages < gitlabTagScopeMaxPages && advanceGitLabPage(resp, &page), nil
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return refs, tagged, nil
 }
 
 // ReadPipeline reads one pipeline and its jobs, as ReadPR reads a merge

@@ -112,10 +112,16 @@ read:
 GitHub's `PullsSearch` document and the `actions/runs` reads are checked
 against GitHub's GraphQL and REST documentation only, not probed:
 `search(type: ISSUE)` with `... on PullRequest`, `viewerLatestReview`,
-`totalCommentsCount`, `StatusCheckRollup.state`, and the
+`totalCommentsCount`, `StatusCheckRollup.state`, `comments(last:)` and
+`reviews(last:)` with `author { login }` (that a reply in a review
+thread arrives as a review of its own is GitHub's documented review
+comment model, not measured), and the
 `workflow_runs` fields `head_branch`, `event`, `display_title` and
 `pull_requests`. GitLab's pipelines list entity (`PipelineBasic`) has no
-`tag` flag; the single pipeline has one. Neither was probed.
+`tag` flag; the single pipeline has one. GitLab's pipelines API
+documentation says of the list's `scope`: "When `scope` is set to
+`branches` or `tags`, the API returns only the latest pipeline for each
+branch or tag ref." None of this was probed.
 
 ## Merge readiness and actions
 
