@@ -29,6 +29,7 @@ import {
   loadThreadsOnPR,
   newThreadCheckedOutBy,
   openPRThread,
+  openThread,
   prThreadSeed,
   threadsOnPR,
 } from './pullsPageAgent.svelte';
@@ -741,17 +742,62 @@ describe('open with agent', () => {
     const open = setBindingMock('OpenPRThread', async () => ({ threadId: 't9', worktreePath: '/wt', branch: 'feature-1' }));
     setBindingMock('GetThread', async () => ({ id: 't9', projectId: 'p1', title: '', updatedAt: 1 }));
     const panes = await import('./panes.svelte');
-    const mount = vi.spyOn(panes, 'mountThreadInPane').mockImplementation(async () => ({}) as never);
+    const mount = vi.spyOn(panes, 'mountThreadForToolPane').mockImplementation(async () => ({}) as never);
     expect(await openPRThread(PANE)).toBe(true);
-    // In the focused pane's place: no target, so the tool pane's slot goes to it.
-    expect(mount).toHaveBeenCalledWith(expect.objectContaining({ id: 't9' }));
-    expect(mount.mock.calls[0]).toHaveLength(1);
+    // In the page's slot.
+    expect(mount).toHaveBeenCalledWith(expect.objectContaining({ id: 't9' }), PANE);
     expect(open).toHaveBeenCalledWith({
       projectId: 'p1', pr: { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 1 },
       headRefName: 'feature-1', crossRepository: false, url: 'https://github.com/owner/repo/pull/1', nodeId: 'node-1', title: 'PR 1',
       seed: 'Reviewing #1: PR 1\nhttps://github.com/owner/repo/pull/1',
     });
     expect(prThreadSeed(selectedPR(PANE)!)).toBe('Reviewing #1: PR 1\nhttps://github.com/owner/repo/pull/1');
+    mount.mockRestore();
+  });
+
+  it('mounts a late answer in a new pane once the page that asked has gone, even when it reopened', async () => {
+    await selected();
+    let opened!: (value: unknown) => void;
+    setBindingMock('OpenPRThread', () => new Promise((resolve) => {
+      opened = resolve;
+    }));
+    setBindingMock('GetThread', async (id: string) => ({ id, projectId: 'p1', title: '', updatedAt: 1 }));
+    const panes = await import('./panes.svelte');
+    const mount = vi.spyOn(panes, 'mountThreadForToolPane').mockImplementation(async () => ({}) as never);
+    const opening = openPRThread(PANE);
+    await flush();
+    detachPullsPage(PANE);
+    attachPullsPage(PANE, HOME_BACKEND);
+    opened({ threadId: 't9', worktreePath: '/wt', branch: 'feature-1' });
+    expect(await opening).toBe(true);
+    expect(mount).toHaveBeenCalledWith(expect.objectContaining({ id: 't9' }), null);
+
+    // The same for a thread already on the PR read from the backend.
+    let read!: (value: unknown) => void;
+    setBindingMock('GetThread', () => new Promise((resolve) => {
+      read = resolve;
+    }));
+    await flush();
+    const reopening = openThread(PANE, 't4');
+    detachPullsPage(PANE);
+    read({ id: 't4', projectId: 'p1', title: '', updatedAt: 1 });
+    expect(await reopening).toBe(true);
+    expect(mount).toHaveBeenLastCalledWith(expect.objectContaining({ id: 't4' }), null);
+    mount.mockRestore();
+  });
+
+  it('mounts a late answer in the page\'s slot while the page is still there', async () => {
+    await selected();
+    let read!: (value: unknown) => void;
+    setBindingMock('GetThread', () => new Promise((resolve) => {
+      read = resolve;
+    }));
+    const panes = await import('./panes.svelte');
+    const mount = vi.spyOn(panes, 'mountThreadForToolPane').mockImplementation(async () => ({}) as never);
+    const opening = openThread(PANE, 't4');
+    read({ id: 't4', projectId: 'p1', title: '', updatedAt: 1 });
+    expect(await opening).toBe(true);
+    expect(mount).toHaveBeenCalledWith(expect.objectContaining({ id: 't4' }), PANE);
     mount.mockRestore();
   });
 

@@ -8,7 +8,7 @@ import { untrack } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { GetThread, ListThreadsOnPR, OpenPRThread } from './bindings';
 import type { PRThread } from './bindings';
-import { mountThreadInPane, syncThreadReply } from './panes.svelte';
+import { mountThreadForToolPane, syncThreadReply } from './panes.svelte';
 import { onPullsPageDetached, pullsPageAttachment, pullsPageBackend, selectedPR, type PullsSelection } from './pullsPage.svelte';
 import { currentPinnedReviewState, reviewSubjectForPR } from './reviewPane.svelte';
 import { expandProject } from './sidebar.svelte';
@@ -129,6 +129,14 @@ export function prThreadSeed(selection: PullsSelection): string {
   return `Reviewing ${pullNumberLabel(selection.pr.forge, selection.pr.number)}: ${selection.row.title}\n${selection.row.url}`;
 }
 
+// Mounts a thread the page asked for in the page's slot while the page
+// that asked is still attached (`attachment`, taken before the await), else
+// in a new pane: never in a pane that gained focus while the call waited.
+function mountForPage(thread: Thread, paneId: string, attachment: number | null): Promise<unknown> {
+  const pageThere = attachment !== null && pullsPageAttachment(paneId) === attachment;
+  return mountThreadForToolPane(thread, pageThere ? paneId : null);
+}
+
 /**
  * Opens a thread in a linked worktree on the selected PR's head with the
  * PR recorded for it, seeds its draft, and mounts it where the page is
@@ -138,6 +146,7 @@ export function prThreadSeed(selection: PullsSelection): string {
 export async function openPRThread(paneId: string): Promise<boolean> {
   const selection = selectedPR(paneId);
   if (!selection) return false;
+  const attachment = pullsPageAttachment(paneId);
   const { backend, pr, row } = selection;
   const label = pullNumberLabel(pr.forge, pr.number);
   const mark = threadRowFrameMark();
@@ -157,7 +166,7 @@ export async function openPRThread(paneId: string): Promise<boolean> {
     let thread = (await withBackendTarget(backend, () => GetThread(opened.threadId))) as Thread;
     thread = prependThreadReply(thread, mark);
     if (thread.projectId) expandProject(thread.projectId);
-    await mountThreadInPane(thread);
+    await mountForPage(thread, paneId, attachment);
     return true;
   } catch (err) {
     addErrorToast(`Could not open a thread on ${label}: ${errString(err)}`, err);
@@ -168,11 +177,12 @@ export async function openPRThread(paneId: string): Promise<boolean> {
 /** Mounts a thread already on the PR where the page is. */
 export async function openThread(paneId: string, threadId: string): Promise<boolean> {
   const backend = pullsPageBackend(paneId);
+  const attachment = pullsPageAttachment(paneId);
   try {
     const listed = getThreads().find((thread) => thread.id === threadId);
     const thread = listed ?? (backend === null ? null : ((await withBackendTarget(backend, () => GetThread(threadId))) as Thread));
     if (!thread) return false;
-    await mountThreadInPane(thread);
+    await mountForPage(thread, paneId, attachment);
     return true;
   } catch (err) {
     addErrorToast(`Could not open the thread: ${errString(err)}`, err);
