@@ -12,6 +12,18 @@ import (
 const transferDiffCommentColumns = `id,thread_id,scope,source_key,commit_sha,file_path,status,old_line,new_line,side,
 selected_text,body,sent_at,sent_turn_id,created_at,updated_at`
 
+// transferDiffCommentExport reads a comment as a transfer carries it
+// (transferDiffCommentColumns). A comment whose claim is unsettled is a
+// draft: its message never reached the provider, and the copy has no row
+// that carries it. The claim itself does not travel: it names a row of the
+// source, and only a live send of the source settles or retires it.
+const transferDiffCommentExport = `id,thread_id,scope,source_key,commit_sha,file_path,
+CASE WHEN claim_settles <> '' AND status = 'sent' THEN 'draft' ELSE status END,
+old_line,new_line,side,selected_text,body,
+CASE WHEN claim_settles <> '' AND status = 'sent' THEN 0 ELSE sent_at END,
+CASE WHEN claim_settles <> '' AND status = 'sent' THEN '' ELSE sent_turn_id END,
+created_at,updated_at`
+
 func (s *Store) exportTransferAnnotations(ctx context.Context, threadID string, output io.Writer) error {
 	if err := exportTransferRows(ctx, s.reader(), output, "plan", `SELECT `+proposedPlanStateColumns+` FROM proposed_plans WHERE thread_id = ? ORDER BY version`, threadID, scanProposedPlanState); err != nil {
 		return err
@@ -22,7 +34,7 @@ func (s *Store) exportTransferAnnotations(ctx context.Context, threadID string, 
 	if err := exportTransferRows(ctx, s.reader(), output, "async_question", `SELECT `+asyncQuestionColumns+` FROM async_questions WHERE thread_id=? ORDER BY created_at,rowid`, threadID, func(row interface{ Scan(...any) error }) (AsyncQuestion, error) { return scanAsyncQuestion(row) }); err != nil {
 		return err
 	}
-	return exportTransferRows(ctx, s.reader(), output, "diff_comment", `SELECT `+transferDiffCommentColumns+` FROM diff_review_comments WHERE thread_id = ? ORDER BY id`, threadID, scanDiffReviewComment)
+	return exportTransferRows(ctx, s.reader(), output, "diff_comment", `SELECT `+transferDiffCommentExport+` FROM diff_review_comments WHERE thread_id = ? ORDER BY id`, threadID, scanDiffReviewComment)
 }
 
 func importTransferAnnotation(tx *sql.Tx, targetID, sourceID string, record transferHistoryRecord) error {

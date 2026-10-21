@@ -1673,3 +1673,47 @@ func TestHandleUserTextPrestampedDirectConfirmationDoesNotWriteOrEmit(t *testing
 		t.Fatalf("unchanged confirmation emitted %d rows", len(got))
 	}
 }
+
+// A deferred message an interrupt persisted before the provider had it is
+// delivered by its echo, which settles the review drafts it claimed whether
+// the confirmation rewrites the row or finds nothing to write.
+func TestHandleUserText_EagerPersistedDeferredFlush_EchoSettlesItsReviewClaims(t *testing.T) {
+	for _, meta := range []string{"", `{"provider_item_id":"msg_flush_echo"}`} {
+		router, st, _ := newTestRouter(t)
+		createTestThread(t, st, "t1")
+		seedOpenTurn(t, router, st, "t1", 3)
+		owner := store.ThreadReviewOwner("t1")
+		scope, source := string(store.DiffReviewScopeWorkspace), "k"
+		if _, err := st.CreateDiffReviewComment(store.DiffReviewComment{
+			ID: "note", ThreadID: "t1", Scope: scope, SourceKey: source, FilePath: "a.go", NewLine: 1, Side: "new", Body: "note",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now().UnixMilli()
+		flushRow := store.Item{
+			ID: "user:3:flush:0", ThreadID: "t1", TurnIndex: 3, Kind: "user_text", Role: "user", Status: "completed",
+			Summary: "queued follow-up", Meta: meta, CreatedAt: now, UpdatedAt: now,
+		}
+		if _, err := st.ClaimDiffReviewCommentsSent(owner, scope, source, []store.DiffReviewCommentSnapshot{{ID: "note", Body: "note"}}, store.DiffReviewDelivery{
+			SentAt: now, TurnID: "t1:3", ThreadID: "t1", ItemID: flushRow.ID, Queued: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		router.RegisterPendingFlushSendWithExpectation("t1", "queue:m1", flushRow, now, PendingSendExpectation{ProviderItemID: ""})
+		if persisted := eagerPersistForTest(router, "t1", router.OpenTurnIndex("t1")); len(persisted) != 1 {
+			t.Fatalf("meta %q: EagerPersistDeferredFlushSends: got %d rows, want 1", meta, len(persisted))
+		}
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventUserText, ThreadID: "t1", Content: "queued follow-up",
+			Meta: json.RawMessage(`{"provider_item_id":"msg_flush_echo"}`), Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("meta %q: handle wire echo: %v", meta, err)
+		}
+		if released, err := st.ReleaseUnsettledDiffReviewClaims(); err != nil || released != 0 {
+			t.Fatalf("meta %q: ReleaseUnsettledDiffReviewClaims = %d, %v; want the echo to have settled the claim", meta, released, err)
+		}
+		if got, err := st.GetDiffReviewComment(owner, "note"); err != nil || got.Status != "sent" {
+			t.Fatalf("meta %q: note = %+v (%v), want it sent", meta, got, err)
+		}
+	}
+}

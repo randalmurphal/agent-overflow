@@ -623,7 +623,7 @@ func (a *App) sendMessageLocked(
 	// fails the send here, before anything is delivered. A failure before
 	// the row lands hands them back; the row's insert settles the claim.
 	var claim diffReviewClaim
-	if claim, err = a.claimDiffReviewDelivery(threadID, turnIndex, userItemID, resolved); err != nil {
+	if claim, err = a.claimDiffReviewDelivery(threadID, turnIndex, userItemID, resolved, false); err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)
 	}
 	defer func() {
@@ -1336,9 +1336,12 @@ type diffReviewClaim struct {
 // since stays a draft, since its new text was not sent. A draft another
 // message already carried fails the claim
 // (store.ErrDiffReviewCommentsSentElsewhere), and the caller must not
-// deliver. itemID is the user row the message lands as; its insert settles
-// the claim, and a claim no row settled returns to drafts at the next boot.
-func (a *App) claimDiffReviewDelivery(threadID string, turnIndex int, itemID string, resolved resolvedUserMessage) (diffReviewClaim, error) {
+// deliver. itemID is the user row the message lands as. A direct send or
+// steer is delivered by that row, so its insert settles the claim; a queued
+// message's row can land before the provider has it, so its claim settles
+// when the provider confirms it (store.DiffReviewDelivery.Queued). A claim
+// still unsettled returns to drafts at the next boot.
+func (a *App) claimDiffReviewDelivery(threadID string, turnIndex int, itemID string, resolved resolvedUserMessage, queued bool) (diffReviewClaim, error) {
 	rd := resolved.revisionSourceDiff
 	if rd == nil || len(resolved.revisionDiffComments) == 0 {
 		return diffReviewClaim{}, nil
@@ -1348,7 +1351,7 @@ func (a *App) claimDiffReviewDelivery(threadID string, turnIndex int, itemID str
 		turnID: diffReviewSentTurnID(threadID, turnIndex), itemID: itemID,
 	}
 	ids, err := a.store.ClaimDiffReviewCommentsSent(claim.owner, claim.scope, claim.sourceKey, resolved.revisionDiffComments, store.DiffReviewDelivery{
-		SentAt: time.Now().UnixMilli(), TurnID: claim.turnID, ThreadID: threadID, ItemID: itemID,
+		SentAt: time.Now().UnixMilli(), TurnID: claim.turnID, ThreadID: threadID, ItemID: itemID, Queued: queued,
 	})
 	if err != nil {
 		return diffReviewClaim{}, fmt.Errorf("diff review comments: %w", err)

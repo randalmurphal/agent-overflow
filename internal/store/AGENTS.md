@@ -104,9 +104,13 @@ an atomic persistence decision; they must not become a business-logic layer.
 - Item triggers maintain history stamps, the thread row's turn-error
   aggregate, payload garbage collection, imported history integrity,
   background-launch settlement, and the settlement of the review-comment
-  claims a user row carries. Do not duplicate or bypass those invariants
-  in Go. The item triggers do no subagent card work: the cards are kept in
-  Go (`subagent_card.go`).
+  claims of a message its user row delivers (a direct send or steer). A
+  queued message's row can land before the provider has it: its claims
+  settle in the confirmation's placement write
+  (`settleDiffReviewClaimsTx`), and `RetireUndeliveredUserRow` returns
+  them with the row of a message the provider never consumed. Do not
+  duplicate or bypass those invariants in Go. The item triggers do no
+  subagent card work: the cards are kept in Go (`subagent_card.go`).
 - A write to a payload or plan row an item renders calls
   `bumpHistoryRevForItemTx` / `bumpHistoryRevForPayloadTx` so the owning row's
   `rev` moves with the thread stamp; plain `bumpHistoryRevTx` is only for a

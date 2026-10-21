@@ -45,9 +45,10 @@ func (a *App) settlePriorInstance() {
 		a.bootPhaseFailed(err)
 	}
 	endPhase()
-	// A message claims its review drafts before its row lands, and the
-	// row's insert settles the claim. A claim still unsettled belongs to a
-	// message no timeline shows, so its drafts are drafts again.
+	// A message claims its review drafts before it is delivered: a direct
+	// send's row insert settles the claim, a queued message's provider
+	// confirmation does. A claim still unsettled belongs to a message no
+	// provider received, so its drafts are drafts again.
 	endPhase = a.bootPhase("app.release_unsettled_review_claims", "Returning unsent review comments")
 	if released, err := a.store.ReleaseUnsettledDiffReviewClaims(); err != nil {
 		a.bootPhaseFailed(err)

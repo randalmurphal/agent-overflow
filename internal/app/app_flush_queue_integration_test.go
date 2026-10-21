@@ -456,8 +456,8 @@ func TestDispatchFlush_ClaimsDiffReviewDraftsAndReturnsThemOnFailure(t *testing.
 
 // A queued message that lands in a fresh turn after Codex reports no
 // active turn is a new row; its review drafts' claim follows that row
-// before the send, so the row's insert settles it and a boot keeps the
-// drafts sent.
+// before the send, so the provider's confirmation of that row settles it
+// and a boot keeps the drafts sent.
 func TestDispatchFlush_DiffReviewClaimFollowsTheFallbackRow(t *testing.T) {
 	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
@@ -499,10 +499,18 @@ func TestDispatchFlush_DiffReviewClaimFollowsTheFallbackRow(t *testing.T) {
 		}
 		return row.ID != ""
 	})
-	// The provider's echo lands the row the claim now names.
-	row.Kind, row.Role, row.Status, row.Summary, row.CreatedAt, row.UpdatedAt = "user_text", "user", "completed", "x", 1, 1
-	if _, err := app.store.UpsertItem(row, nil); err != nil {
+	// The provider's echo confirms the row the claim now names.
+	echoMeta, err := json.Marshal(map[string]any{"provider_item_id": "wire-echo-" + row.ID, "client_id": row.ID})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventUserText, ThreadID: thread.ID, TurnIndex: 1, ItemID: row.ID, Meta: echoMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("EventUserText: %v", err)
+	}
+	if _, found, err := app.store.GetThreadItem(thread.ID, row.ID); err != nil || !found {
+		t.Fatalf("the echo did not land %s: found=%v err=%v", row.ID, found, err)
 	}
 	if released, err := app.store.ReleaseUnsettledDiffReviewClaims(); err != nil || released != 0 {
 		t.Fatalf("ReleaseUnsettledDiffReviewClaims = %d, %v; want the landed row to have settled the claim", released, err)

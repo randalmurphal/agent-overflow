@@ -576,6 +576,12 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pending
 			return err
 		}
 		if merged == existing.Meta {
+			// Nothing to write, but the provider has the message: the
+			// review drafts it carries are delivered, as a write's
+			// confirmation would settle them.
+			if err := r.store.SettleDiffReviewClaims(threadID, pending.AOItemID); err != nil {
+				return err
+			}
 			r.markWireOnlyUserTextSeen(threadID, providerItemID)
 			return r.store.UpdateMessageAnchorProviderIDs(threadID, pending.AOItemID, providerItemID, pending.EchoParentUUID)
 		}

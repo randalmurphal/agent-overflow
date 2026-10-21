@@ -146,6 +146,11 @@ func (a *App) restoreFlushItemsToDraftLocked(threadID string, drained []triage.U
 		if item.QuietItem != nil {
 			staleID = item.QuietItem.ID
 		}
+		if item.DeferredItem != nil && staleID == "" {
+			// A deferred message has no row, but its review drafts were
+			// claimed for the row it would have landed as.
+			staleID = item.DeferredItem.ID
+		}
 		if staleID == "" {
 			restorable = append(restorable, item)
 			continue
@@ -218,17 +223,27 @@ func (a *App) restoreFlushItemsToDraftLocked(threadID string, drained []triage.U
 	return requeued
 }
 
-// cleanupStaleFlushRow removes a quietly-persisted flush row whose
-// message is being restored or redispatched. The FK cascade on
-// message_anchors takes any anchor row with it. A row already gone
-// (an earlier retry finished the job) is success.
+// cleanupStaleFlushRow takes back a message the provider never consumed,
+// whose text is being restored or redispatched: it removes the row the
+// message has (a quietly-persisted flush row, a direct send's row) and
+// returns the review drafts the message claimed to drafts, in one
+// transaction (store.RetireUndeliveredUserRow). The FK cascade on
+// message_anchors takes any anchor row with it. A row already gone (an
+// earlier retry finished the job, or a deferred message never had one) is
+// success.
 func (a *App) cleanupStaleFlushRow(threadID, userItemID string) error {
-	if _, found, err := a.store.GetThreadItem(threadID, userItemID); err != nil {
-		return fmt.Errorf("lookup stale flush row: %w", err)
-	} else if !found {
-		return nil
+	sources, err := a.store.RetireUndeliveredUserRow(threadID, userItemID)
+	if err != nil {
+		return err
 	}
-	return a.store.DeleteThreadItem(threadID, userItemID)
+	for _, source := range sources {
+		// A PR's drafts have no thread to announce on; the page re-reads
+		// them itself.
+		if source.Owner.ThreadID != "" {
+			a.announceDiffCommentsChanged(source.Owner.ThreadID, source.Scope, source.SourceKey)
+		}
+	}
+	return nil
 }
 
 // restoreEagerPersistedFlushesToDraft returns eagerly-persisted

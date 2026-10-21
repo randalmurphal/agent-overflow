@@ -764,10 +764,13 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 	// The review drafts each member carries are claimed for the row's turn
 	// before anything reaches the provider, so two threads dispatching the
 	// same drafts cannot both deliver them (claimDiffReviewDelivery). Every
-	// path below that requeues the group hands them back (unclaim).
+	// path below that requeues the group hands them back (unclaim). The
+	// claims settle when the provider confirms the message, not when its
+	// quiet row lands, and a session death that takes the message back
+	// returns them with it (cleanupStaleFlushRow).
 	var claims diffReviewClaims
 	for _, member := range members {
-		claim, claimErr := a.claimDiffReviewDelivery(threadID, persistTurnIndex, userItem.ID, member.resolved)
+		claim, claimErr := a.claimDiffReviewDelivery(threadID, persistTurnIndex, userItem.ID, member.resolved, true)
 		if claimErr != nil {
 			return nil, false, requeue, errors.Join(claimErr, claims.release(a))
 		}

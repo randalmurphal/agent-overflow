@@ -817,8 +817,8 @@ interrupt.
 
 The boot sweeps (`App.settlePriorInstance`: crashed turns, Codex
 background runtime, orphaned Claude background launches, running
-worktree setups and review-comment claims whose message row never
-landed) each run in their own boot phase. A sweep that fails
+worktree setups and review-comment claims whose message was never
+delivered) each run in their own boot phase. A sweep that fails
 does not stop the boot: it is reported as a failed boot phase, which
 every client shows ([startup readiness](transport.md#startup-readiness)),
 and the next start runs it again.
@@ -988,7 +988,10 @@ active turn persists the row QUIETLY at the active turn's index, with no
 `provider:item_event`; every other case defers the row until its provider
 echo. Either way the message is visible above the composer, not in the
 timeline, until its confirmation proves consumption
-(`docs/architecture/user-message-ordering.md` § Confirmation).
+(`docs/architecture/user-message-ordering.md` § Confirmation). The review
+comments a queued message carries are delivered by that confirmation, not
+by the quiet row; a restore that takes the message back returns them to
+drafts with its row (`RetireUndeliveredUserRow`).
 
 **The frontend mirror** (`frontend/src/lib/stores/sendQueue.svelte.ts`) has
 two zones, both per-thread and both surviving thread switches:
