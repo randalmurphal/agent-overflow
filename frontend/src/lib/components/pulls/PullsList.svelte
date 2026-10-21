@@ -14,6 +14,8 @@
     projectErrors: readonly PullsListProjectError[];
     selectedKey: string | null;
     filter: PullsFilter;
+    /** The remembered sort, as a key: a change scrolls the list to its top. */
+    orderKey: string;
     /** No project on the computer has a forge origin. */
     noProjects: boolean;
     error: string | null;
@@ -25,7 +27,7 @@
     onRetry: () => void;
   }
 
-  let { groups, projectErrors, selectedKey, filter, noProjects, error, loading, retrying, shown, onOpen, onMenu, onRetry }: Props = $props();
+  let { groups, projectErrors, selectedKey, filter, orderKey, noProjects, error, loading, retrying, shown, onOpen, onMenu, onRetry }: Props = $props();
 
   const items = $derived(
     pullsListItems(
@@ -55,7 +57,7 @@
   });
 </script>
 
-<PullsListBody testid="pulls-list" {items} rowEstimatePx={84} {shown} {onRetry} {retrying}>
+<PullsListBody testid="pulls-list" {items} rowEstimatePx={84} {shown} {orderKey} {onRetry} {retrying}>
   {#snippet row(view: PullRowView)}
     <PullRow row={view} selected={selectedKey === view.key} {onOpen} {onMenu} />
   {/snippet}

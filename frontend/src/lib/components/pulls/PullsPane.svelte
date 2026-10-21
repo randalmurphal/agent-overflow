@@ -334,6 +334,7 @@
           projectErrors={pullsProjectErrors(paneId)}
           selectedKey={selection?.key ?? null}
           filter={filters.filter}
+          orderKey="{filters.sort.key}:{filters.sort.reversed ? 'reversed' : 'forward'}"
           noProjects={pullsProjects(paneId).length === 0}
           error={pullsError(paneId)}
           loading={pullsLoading(paneId)}

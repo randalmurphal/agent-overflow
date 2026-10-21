@@ -78,6 +78,7 @@ function mountPulls() {
     projectErrors: [] as { projectId: string; name: string; message: string; failure: null; forge: string }[],
     selectedKey: null as string | null,
     filter: 'all' as const,
+    orderKey: 'updated:forward',
     noProjects: false,
     error: null as string | null,
     loading: false,
@@ -221,6 +222,31 @@ describe('PullsList', () => {
     await settle(scrollEl);
     expect(scrollEl.scrollTop).toBe(top);
     expect(onScreenKeys(scrollEl, 'data-pr-key')).toEqual(before);
+  });
+
+  it('opens an order the reader chose from the top, and follows the row at the top when a refresh re-sorts', async () => {
+    const { props, scrollEl } = mountPulls();
+    await settle(scrollEl);
+    scrollEl.scrollTop = 40_000;
+    await settle(scrollEl);
+    const mid = onScreenKeys(scrollEl, 'data-pr-key');
+    expect(mid[0]).not.toBe(pullRow(0, 'needs_you').key);
+
+    // A refresh that re-sorts keeps the row that was at the top in view.
+    const [needsYou, waiting] = props.groups;
+    props.groups = [{ group: 'needs_you', rows: [...needsYou!.rows].reverse() }, waiting!];
+    flushSync();
+    await settle(scrollEl);
+    expect(onScreenKeys(scrollEl, 'data-pr-key')[0]).toBe(mid[0]);
+    expect(scrollEl.scrollTop).toBeGreaterThan(0);
+
+    // The reader's own sort opens from the top.
+    props.groups = [{ group: 'needs_you', rows: [...needsYou!.rows].reverse() }, { group: 'waiting', rows: [...waiting!.rows].reverse() }];
+    props.orderKey = 'updated:reversed';
+    flushSync();
+    await settle(scrollEl);
+    expect(scrollEl.scrollTop).toBe(0);
+    expect(onScreenKeys(scrollEl, 'data-pr-key')[0]).toBe(pullRow(NEEDS_YOU - 1, 'needs_you').key);
   });
 
   it('walks rows with Tab past the mounted window', async () => {

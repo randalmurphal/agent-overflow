@@ -11,7 +11,11 @@
   // rows on screen. A list that asks (`onVisible`) is told the rows on
   // screen, the virtualizer's viewport range, by key on every scroll,
   // resize and data change, and none while the list is not shown (the
-  // compact detail covers it) or once it unmounts. The heading of
+  // compact detail covers it) or once it unmounts. The virtualizer keeps
+  // the row at the viewport top in view when the rows move under it (a
+  // refresh re-sorts by update time while the reader reads); an order the
+  // reader chose (`orderKey`) scrolls the list to its top instead. The
+  // heading of
   // the group under the viewport top sticks over the list once its own
   // row has scrolled under the top; the rows' own headings cannot stick,
   // each row being positioned on its own.
@@ -29,6 +33,8 @@
     rowEstimatePx: number;
     /** False while the list is hidden: no row is on screen. */
     shown: boolean;
+    /** The order the reader chose; a change scrolls the list to its top. */
+    orderKey?: string;
     /** The rows on screen, for a list whose store reads detail for them. */
     onVisible?: (keys: string[]) => void;
     onRetry: () => void;
@@ -38,7 +44,7 @@
     after?: Snippet;
   }
 
-  let { testid, items, rowEstimatePx, shown, onVisible, onRetry, retrying, row: renderRow, after }: Props = $props();
+  let { testid, items, rowEstimatePx, shown, orderKey = '', onVisible, onRetry, retrying, row: renderRow, after }: Props = $props();
 
   // Stable identity for the virtualizer's constructor; reads the current items.
   const estimate: RowEstimate = {
@@ -101,6 +107,17 @@
   $effect(() => {
     void items;
     untrack(update);
+  });
+  // The reader picked another order: the list opens it from the top.
+  let shownOrder = untrack(() => orderKey);
+  $effect(() => {
+    const order = orderKey;
+    untrack(() => {
+      if (order === shownOrder) return;
+      shownOrder = order;
+      listRef?.scrollToIndex(0, { align: 'start' });
+      update();
+    });
   });
   $effect(() => {
     const ref = listRef;
