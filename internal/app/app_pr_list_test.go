@@ -903,6 +903,112 @@ func TestPRListFocusRefusedByABackgroundTickIsReadByTheUsersWake(t *testing.T) {
 	}
 }
 
+// A row a background tick refused at the reserve is unread: the user
+// focusing it reads it past the reserve.
+func TestPRListFocusOfARowRefusedAtTheReserveReadsIt(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = 20 * time.Millisecond
+	fake := newPRListFake(t, app)
+	events := capturePRList(t, app)
+	sub := subscribePRList(t, app)
+
+	row := prListRow(prListRepoA, 1, func(r *gitops.PRListRow) { r.ViewerIsAuthor = true })
+	key := row.Ref.Key()
+	fake.set(func(f *prListFake) {
+		f.reserve = true
+		f.rows[prListRepoA.Key()] = []gitops.PRListRow{row}
+	})
+	awaitPRList(t, events, "the background tick's refusal", func(s PRListSnapshot) bool {
+		rows := prListProject(t, s, "p-a").Rows
+		return len(rows) == 1 && rows[0].Detail == nil && rows[0].DetailError != ""
+	})
+	if _, err := app.SetPRListFocus(context.Background(), sub.ID, []string{key}); err != nil {
+		t.Fatal(err)
+	}
+	awaitPRList(t, events, "the focused row read past the reserve", func(s PRListSnapshot) bool {
+		rows := prListProject(t, s, "p-a").Rows
+		return len(rows) == 1 && rows[0].Detail != nil
+	})
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if got := fake.interactive[key]; !slices.Equal(got, []bool{false, true}) {
+		t.Errorf("%s reads (interactive) = %v, want the tick's refused one, then the user's", key, got)
+	}
+}
+
+// A show that lands while the loop holds a focus wake taken during the
+// pause is the user's: the loop reads the pause and takes the admission
+// under the lock the show changes them under, so the focused rows read
+// past the reserve.
+func TestPRListShowDuringAPausedFocusWakeReadsAsTheUsers(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	fake := newPRListFake(t, app)
+	var keys []string
+	fake.set(func(f *prListFake) {
+		for i := 1; i <= 3; i++ {
+			row := prListRow(prListRepoA, i, nil)
+			f.rows[prListRepoA.Key()] = append(f.rows[prListRepoA.Key()], row)
+			keys = append(keys, row.Ref.Key())
+		}
+	})
+	entered, release := make(chan struct{}), make(chan struct{})
+	var hold sync.Mutex
+	armed := false
+	app.prUpdates.listFocusWakeHook = func() {
+		hold.Lock()
+		run := armed
+		armed = false
+		hold.Unlock()
+		if run {
+			close(entered)
+			<-release
+		}
+	}
+	events := capturePRList(t, app)
+	sub := subscribePRList(t, app)
+
+	fake.set(func(f *prListFake) { f.reserve = true })
+	if err := app.SetPRListActive(context.Background(), sub.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	hold.Lock()
+	armed = true
+	hold.Unlock()
+	// A focus while hidden wakes the loop, which the hook holds.
+	if _, err := app.SetPRListFocus(context.Background(), sub.ID, keys); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the focus wake never reached the loop")
+	}
+	if err := app.SetPRListActive(context.Background(), sub.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+
+	awaitPRList(t, events, "the focused rows read past the reserve", func(s PRListSnapshot) bool {
+		n := 0
+		for _, row := range prListProject(t, s, "p-a").Rows {
+			if row.Detail != nil {
+				n++
+			}
+		}
+		return n == len(keys)
+	})
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	for _, key := range keys {
+		if got := fake.interactive[key]; !slices.Equal(got, []bool{true}) {
+			t.Errorf("%s reads (interactive) = %v, want the user's alone", key, got)
+		}
+	}
+}
+
 // A user wake that arrives while a background one is pending is not
 // downgraded: the merged wake reads as interactive.
 func TestPRListFocusWakeKeepsTheUsersAdmission(t *testing.T) {

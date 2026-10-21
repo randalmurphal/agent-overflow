@@ -423,10 +423,13 @@ detail. A focusing handle that hides or shows recomputes the set at
 once (`SetPRListActive`), as does one that leaves. The reads a focus
 change or a show starts are the user's and interactive; those a hide or
 a leave starts are background, since they read rows no user action
-asked for, and a pending user wake keeps its admission: it is recorded
-with the focus change and taken with the selection that reads it. A
-background read refused at the reserve is not a read, so the next
-interactive pass reads that row again. A row's detail is
+asked for. A pending user wake keeps its admission: it is recorded with
+the focus or visibility change, and the loop reads the pause and takes
+the admission in the critical section that selects the rows, so a show
+that lands while the loop holds a wake from the pause still reads as the
+user's. A background read refused at the reserve is not a read: focusing
+that row wakes the loop like an unread one, and the next interactive
+pass reads it again. A row's detail is
 `Core.ReadPRSummary`: `ReadPR` with `Detail` and `Unresolved`, which adds
 the approval count and the unresolved thread count to the readiness. It
 is read when the row is first a candidate, when its list row changes

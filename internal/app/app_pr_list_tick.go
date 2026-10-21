@@ -186,12 +186,19 @@ func (a *App) pollPRList(ctx context.Context, pump *prListPump, forceDetails boo
 // pollPRListFocus recomputes the detail candidates after a focus or
 // visibility change, without reading the lists: it reads the detail of
 // the candidates not read yet and republishes, also when only a detail
-// was dropped. It takes the pending wake's admission in the critical
-// section that selects the candidates, so the focus a user wake came with
-// is read with the user's admission. A background read refused at the
-// rate limit reserve is not a read: a user wake reads that row again.
-func (a *App) pollPRListFocus(pump *prListPump) (PRListSnapshot, bool) {
+// was dropped. It reads the pause and takes the pending wake's admission
+// in the critical section that selects the candidates, the one a resume
+// and its user wake are made in, so the focus a user wake came with is
+// read with the user's admission; paused reports a wake dropped while
+// every subscriber is hidden. A background read refused at the rate
+// limit reserve is not a read: a user wake reads that row again.
+func (a *App) pollPRListFocus(pump *prListPump) (snapshot PRListSnapshot, changed, paused bool) {
 	a.prUpdates.mu.Lock()
+	if pump.paused.Load() {
+		pump.focusAdmissionLocked()
+		a.prUpdates.mu.Unlock()
+		return PRListSnapshot{}, false, true
+	}
 	ctx := pump.focusAdmissionLocked()
 	interactive := forgeapi.IsInteractive(ctx)
 	var fresh []prListFocusRead
@@ -203,11 +210,11 @@ func (a *App) pollPRListFocus(pump *prListPump) (PRListSnapshot, bool) {
 	}
 	a.prUpdates.mu.Unlock()
 	if len(fresh) == 0 && !dropped {
-		return PRListSnapshot{}, false
+		return PRListSnapshot{}, false, false
 	}
 	a.readPRListDetails(ctx, pump, fresh)
-	snapshot, changed, _, _ := a.publishPRList(pump)
-	return snapshot, changed
+	snapshot, changed, _, _ = a.publishPRList(pump)
+	return snapshot, changed, false
 }
 
 type prListFocusRead struct {

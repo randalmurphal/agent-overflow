@@ -263,8 +263,9 @@ func (a *App) SetPRListActive(ctx context.Context, subscriptionID string, active
 // SetPRListFocus replaces the PR keys (git.PRReference.Key) whose detail
 // one subscriber wants read while it is visible: the rows on its screen
 // and the needs-you set, at most maxPRListFocus. A key the list holds no
-// row for is ignored and reported. A newly focused row's detail is read
-// at once, not at the next tick.
+// row for is ignored and reported. A focused row whose detail is unread,
+// or was refused at the rate limit reserve, is read at once as the user's,
+// not at the next tick.
 //
 //ao:scope git:operate
 //ao:route home
@@ -289,7 +290,9 @@ func (a *App) SetPRListFocus(ctx context.Context, subscriptionID string, prKeys 
 			continue
 		}
 		focus[key] = true
-		if pump.details[key] == nil {
+		// A detail a background read had refused at the rate limit reserve
+		// is not read: the user's focus reads it.
+		if last := pump.details[key]; last == nil || last.err.reserve {
 			fresh = true
 		}
 	}
@@ -426,14 +429,15 @@ func (a *App) pumpPRList(pump *prListPump) {
 			tick(forgeapi.WithInteractive(pump.ctx), true)
 			close(req.done)
 		case <-pump.focusWake:
-			if pump.paused.Load() {
-				a.prUpdates.mu.Lock()
-				pump.focusAdmissionLocked()
-				a.prUpdates.mu.Unlock()
+			if hook := a.prUpdates.listFocusWakeHook; hook != nil {
+				hook()
+			}
+			event, changed, paused := a.pollPRListFocus(pump)
+			if paused {
 				missed = true
 				continue
 			}
-			if event, changed := a.pollPRListFocus(pump); changed {
+			if changed {
 				a.emitPumpEvent(&pump.pumpCore, eventchan.PullsUpdated, event)
 			}
 		case <-pump.republish:
