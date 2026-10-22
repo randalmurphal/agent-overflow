@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -36,7 +35,7 @@ func (r refusingTranscription) RoundTrip(req *http.Request) (*http.Response, err
 // refusedDictationManager is newTestManager with a selected Codex ChatGPT
 // sign-in that the transcription endpoint refuses. Its poisoned binary
 // fails the test if the Codex CLI is spawned for a refresh.
-func refusedDictationManager(t *testing.T) (*Manager, *provideraccounts.Credentials, <-chan struct{}) {
+func refusedDictationManager(t *testing.T) (*Manager, *provideraccounts.Store, <-chan struct{}) {
 	t.Helper()
 	manager, store, credentials := newTestManager(t)
 	claims, err := json.Marshal(map[string]any{"https://api.openai.com/auth": map[string]any{"chatgpt_account_id": "ws-1"}})
@@ -67,7 +66,7 @@ func refusedDictationManager(t *testing.T) (*Manager, *provideraccounts.Credenti
 	manager.deps.HTTPClient = func() *http.Client {
 		return &http.Client{Transport: refusingTranscription{refused: refused}}
 	}
-	return manager, credentials, refused
+	return manager, store, refused
 }
 
 func transcribeInBackground(ctx context.Context, manager *Manager) <-chan error {
@@ -98,33 +97,19 @@ func TestAnAbandonedTranscriptionWaitingForTheLockStartsNoRefresh(t *testing.T) 
 	}
 }
 
-// A transcription abandoned while promoting the selected slot waits on that
-// slot's lock (another process holds it) starts no refresh once the lock is
-// free.
-func TestAnAbandonedTranscriptionWaitingForTheSlotStartsNoRefresh(t *testing.T) {
-	manager, credentials, refused := refusedDictationManager(t)
-	releaseSlot, err := credentials.LockSlotForTest(string(provider.Codex), "selected")
-	if err != nil {
-		t.Fatal(err)
-	}
-	lock := manager.reconcileMutex(string(provider.Codex))
-	lock.Lock()
+// A transcription abandoned after the promotion, as late as the refresh's
+// configuration, starts no refresh: every wait before it (the reconcile
+// lock, the slot promotion) is behind the one check.
+func TestATranscriptionAbandonedJustBeforeTheRefreshStartsNone(t *testing.T) {
+	manager, _, _ := refusedDictationManager(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	finished := transcribeInBackground(ctx, manager)
-	<-refused
-	lock.Unlock()
-	// Once the transcription holds the reconcile lock it is past everything
-	// before the promotion, which waits on the slot.
-	for lock.TryLock() {
-		lock.Unlock()
-		runtime.Gosched()
-	}
-	cancel()
-	if err := releaseSlot(); err != nil {
-		t.Fatal(err)
+	resolve := manager.deps.ProviderBinary
+	manager.deps.ProviderBinary = func(providerName string) string {
+		cancel()
+		return resolve(providerName)
 	}
 
-	if err := <-finished; !errors.Is(err, context.Canceled) {
+	if err := <-transcribeInBackground(ctx, manager); !errors.Is(err, context.Canceled) {
 		t.Fatalf("TranscribeWithCodexLogin err = %v, want context.Canceled", err)
 	}
 }

@@ -54,16 +54,3 @@ func (c *Credentials) RecoverRotationForTest(providerName, accountID string, see
 	}
 	return c.writeCredentialAt(providerName, accountDir, false, rotated)
 }
-
-// LockSlotForTest holds an account slot's lock the way another process
-// sharing the provider home does, until the returned release runs.
-func (c *Credentials) LockSlotForTest(providerName, accountID string) (release func() error, err error) {
-	if !testing.Testing() {
-		return nil, errors.New("provideraccounts: LockSlotForTest is only available inside a test binary")
-	}
-	lock, err := c.lockSlot(providerName, accountID)
-	if err != nil {
-		return nil, err
-	}
-	return func() error { return releaseSlot(lock) }, nil
-}
