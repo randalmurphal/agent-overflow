@@ -1917,13 +1917,13 @@ the text as it was at the last start or compaction.
 
 ### What Agent Overflow does
 
-- Registers each hook in a matcher group of its own, timeout 60, with
+- Registers its one hook in a matcher group of its own, timeout 60, with
   the trust hash of its command and matcher under
-  `/<session-flags>/config.toml:session_start:<group>:0`
+  `/<session-flags>/config.toml:session_start:0:0`
   (`sessionStartHookConfig`), on `thread/start` and `thread/resume`, so a
-  resumed thread that compacts runs them too. The matcher is
-  `startup|compact|clear`, and `startup|compact|clear|resume|fork` for a
-  hook whose `Resume` is set on a `thread/resume`. Each
+  resumed thread that compacts runs it too. The matcher is
+  `startup|compact|clear`, and `startup|compact|clear|resume|fork` when
+  the hook's `Resume` is set on a `thread/resume`. The
   command quotes its words in POSIX single quotes, which sh, bash and zsh
   read verbatim. A fish user's hooks run under zsh or bash; only the
   `$SHELL -lc` fallback can reach fish, which reads the quotes the same
@@ -1932,32 +1932,32 @@ the text as it was at the last start or compaction.
   or `cmd.exe`. A shell startup file that prints to stdout for every
   command (zsh's `.zshenv`, or a login profile under the fallback) puts
   its text ahead of the hook's output, which then no longer opens with
-  a heading and is reported as not delivered.
+  its heading and is reported as not delivered.
 - Root `hook/started` and `hook/completed` with `eventName`
   `sessionStart` and `source` `sessionFlags` render no row. A
-  `completed` run's `context` entries count as delivered when they open
-  with one of the hooks' headings.
-- A fresh `thread/start`, a `thread/resume` that registers a hook for
+  `completed` run's `context` entry counts as delivered when it opens
+  with the hook's heading.
+- A fresh `thread/start`, a `thread/resume` that registers the hook for
   `resume`, and a compaction (the `contextCompaction` item, or the
   deprecated `thread/compacted`) expect a delivery. A start or resume
   arms the expectation before it sends the request: the read loop is
   live, and a turn the app-server starts as it answers (a queued
-  message, a running turn) can run the hooks before the answer is read.
+  message, a running turn) can run the hook before the answer is read.
   The delivery is checked when the turn
-  that ran the hooks, or else the next regular turn, completes with
+  that ran the hook, or else the next regular turn, completes with
   status `completed`; an interrupted or failed turn leaves it to the turn
-  after (`observeSessionStartHooks`). The check keeps the context each
+  after (`observeSessionStartHooks`). The check keeps the context the
   hook delivered as the thread's receipt under the root thread id; the
   rollout holds the turn's items by its completion.
-- An in-place `thread/rollback` cuts the turn that ran the hooks with
-  the rest. After the cut the session drops the deliveries it has not
+- An in-place `thread/rollback` cuts the turn that ran the hook with
+  the rest. After the cut the session drops the delivery it has not
   checked, so the open expectation waits for a delivery again, and the
-  app forgets the thread's receipts (`restoreCodexSessionAfterCut`).
-- A rehydrate registers for `resume` the hooks the open expectation
-  still waits for, since the unload dropped what Codex had queued. A
-  start or compaction whose hooks never ran before the thread unloaded
-  leaves no receipt that matches, so the next `thread/resume` registers
-  them for `resume`.
+  app forgets the thread's receipt (`restoreCodexSessionAfterCut`).
+- A rehydrate registers the hook for `resume` while the open
+  expectation still waits for it, since the unload dropped what Codex had
+  queued. A start or compaction whose hook never ran before the thread
+  unloaded leaves no receipt that matches, so the next `thread/resume`
+  registers it for `resume`.
 
 ## Memories and writable roots (verified 0.162.1)
 

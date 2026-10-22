@@ -1,9 +1,6 @@
 package store
 
-import (
-	"maps"
-	"testing"
-)
+import "testing"
 
 func TestSessionStartReceiptsMigrationAddsAnEmptyTable(t *testing.T) {
 	db := migrateThrough(t, sessionStartReceiptsMigrationVersion-1)
@@ -16,13 +13,11 @@ func TestSessionStartReceiptsMigrationAddsAnEmptyTable(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM session_start_receipts`).Scan(&rows); err != nil || rows != 0 {
 		t.Fatalf("rows = %d, %v; want an empty table", rows, err)
 	}
-	mustExec(t, db, `INSERT INTO session_start_receipts(thread_id,hook,session_ref,digest) VALUES ('t','MEMORY.md','s-1','d1')`)
-	mustExec(t, db, `INSERT INTO session_start_receipts(thread_id,hook,session_ref,digest) VALUES ('t','instructions.md','s-1','d2')`)
+	mustExec(t, db, `INSERT INTO session_start_receipts(thread_id,session_ref,digest) VALUES ('t','s-1','d1')`)
 	for _, bad := range []string{
-		`INSERT INTO session_start_receipts(thread_id,hook,session_ref,digest) VALUES ('t','MEMORY.md','s-1','d3')`,
-		`INSERT INTO session_start_receipts(thread_id,hook,session_ref,digest) VALUES ('t','','s-1','d')`,
-		`INSERT INTO session_start_receipts(thread_id,hook,session_ref,digest) VALUES ('t','notes.md','','d')`,
-		`INSERT INTO session_start_receipts(thread_id,hook,session_ref,digest) VALUES ('t','notes.md','s-1','')`,
+		`INSERT INTO session_start_receipts(thread_id,session_ref,digest) VALUES ('t','s-2','d2')`,
+		`INSERT INTO session_start_receipts(thread_id,session_ref,digest) VALUES ('u','','d')`,
+		`INSERT INTO session_start_receipts(thread_id,session_ref,digest) VALUES ('u','s-1','')`,
 	} {
 		if _, err := db.Exec(bad); err == nil {
 			t.Errorf("%s was accepted", bad)
@@ -35,66 +30,66 @@ func TestSessionStartReceiptsMigrationAddsAnEmptyTable(t *testing.T) {
 	}
 }
 
-func TestSessionStartReceiptsArePerHookAndSession(t *testing.T) {
+func TestSessionStartReceiptIsPerSession(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
 	mustCreateThreadWithSessionRef(t, s, "t", "s-1")
-	read := func(sessionRef string) map[string]string {
+	read := func(sessionRef string) string {
 		t.Helper()
-		receipts, err := s.SessionStartReceipts("t", sessionRef)
+		digest, err := s.SessionStartReceipt("t", sessionRef)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return receipts
+		return digest
 	}
-	put := func(sessionRef, hook, digest string) {
+	put := func(sessionRef, digest string) {
 		t.Helper()
-		if err := s.PutSessionStartReceipt("t", sessionRef, hook, digest); err != nil {
+		if err := s.PutSessionStartReceipt("t", sessionRef, digest); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	if got := read("s-1"); len(got) != 0 {
-		t.Fatalf("before any write = %v", got)
+	if got := read("s-1"); got != "" {
+		t.Fatalf("before any write = %q", got)
 	}
-	put("s-1", "instructions.md", "i1")
-	put("s-1", "MEMORY.md", "m1")
-	put("s-1", "MEMORY.md", "m2")
-	if got, want := read("s-1"), map[string]string{"instructions.md": "i1", "MEMORY.md": "m2"}; !maps.Equal(got, want) {
-		t.Fatalf("read = %v, want %v", got, want)
+	put("s-1", "m1")
+	put("s-1", "m2")
+	if got := read("s-1"); got != "m2" {
+		t.Fatalf("read = %q, want the latest", got)
 	}
-	// A rollback repoints the thread: the rows describe the old session and
-	// answer nothing for the new one, until it receives a hook's context.
-	if got := read("s-2"); len(got) != 0 {
-		t.Fatalf("read for another session = %v", got)
+	// A rollback repoints the thread: the row describes the old session and
+	// answers nothing for the new one, until it receives the hook's context,
+	// which replaces it.
+	if got := read("s-2"); got != "" {
+		t.Fatalf("read for another session = %q", got)
 	}
-	put("s-2", "MEMORY.md", "m3")
-	if got, want := read("s-2"), map[string]string{"MEMORY.md": "m3"}; !maps.Equal(got, want) {
-		t.Fatalf("read after the new session's receipt = %v, want %v", got, want)
+	put("s-2", "m3")
+	if got := read("s-2"); got != "m3" {
+		t.Fatalf("read after the new session's receipt = %q", got)
 	}
-	if got, want := read("s-1"), map[string]string{"instructions.md": "i1"}; !maps.Equal(got, want) {
-		t.Fatalf("the old session's rows = %v, want %v", got, want)
+	if got := read("s-1"); got != "" {
+		t.Fatalf("the old session's receipt = %q, want it replaced", got)
 	}
 
-	if err := s.ForgetSessionStartReceipts("t"); err != nil {
+	if err := s.ForgetSessionStartReceipt("t"); err != nil {
 		t.Fatal(err)
 	}
-	if got := read("s-1"); len(got) != 0 {
-		t.Fatalf("read after Forget = %v", got)
+	if got := read("s-2"); got != "" {
+		t.Fatalf("read after Forget = %q", got)
 	}
-	if err := s.ForgetSessionStartReceipts("t"); err != nil {
+	if err := s.ForgetSessionStartReceipt("t"); err != nil {
 		t.Fatalf("forgetting nothing: %v", err)
 	}
 
 	// A thread deleted before the write lands records nothing.
-	if err := s.PutSessionStartReceipt("gone", "s-3", "MEMORY.md", "m"); err != nil {
+	if err := s.PutSessionStartReceipt("gone", "s-3", "m"); err != nil {
 		t.Fatalf("write for a deleted thread: %v", err)
 	}
-	if got, err := s.SessionStartReceipts("gone", "s-3"); err != nil || len(got) != 0 {
-		t.Fatalf("read for a deleted thread = %v, %v", got, err)
+	if got, err := s.SessionStartReceipt("gone", "s-3"); err != nil || got != "" {
+		t.Fatalf("read for a deleted thread = %q, %v", got, err)
 	}
-	for _, args := range [][4]string{{"t", "", "MEMORY.md", "m"}, {"t", "s-1", "", "m"}, {"t", "s-1", "MEMORY.md", ""}} {
-		if err := s.PutSessionStartReceipt(args[0], args[1], args[2], args[3]); err == nil {
+	for _, args := range [][3]string{{"t", "", "m"}, {"t", "s-1", ""}, {"", "s-1", "m"}} {
+		if err := s.PutSessionStartReceipt(args[0], args[1], args[2]); err == nil {
 			t.Errorf("receipt %q was accepted", args)
 		}
 	}

@@ -593,23 +593,23 @@ with the user's own and run beside them:
   transcript, so a resume that runs the hooks adds a second set beside
   the start's until a compaction rebuilds the context.
 
-Agent Overflow registers each hook in a group of its own, timeout 60
-(`claude.SessionStartHookGroups`; claude-tui puts the same groups beside
+Agent Overflow registers its one hook in a group of its own, timeout 60
+(`claude.SessionStartHookGroup`; claude-tui puts the same group beside
 its relay). The matcher is `startup|compact|clear`, and
-`startup|compact|clear|resume|fork` for a hook whose `Resume` is set on a
-launch with `--resume`. Each context carries its delivery time under its
+`startup|compact|clear|resume|fork` when the hook's `Resume` is set on a
+launch with `--resume`. Its context carries its delivery time under its
 heading (`provider.SessionStartHook.Stamp`), so a resume's is never text
 the transcript already holds. The headless parser counts a
-`hook_response` with exit code 0 whose context opens with a hook's
+`hook_response` with exit code 0 whose context opens with the hook's
 heading, and checks a start or a resume at `system/init` and a compaction
-at its `compact_boundary`. It keeps the delivered contexts as the
-thread's receipts under the frame's `session_id` at the turn's `result`,
+at its `compact_boundary`. It keeps the delivered context as the
+thread's receipt under the frame's `session_id` at the turn's `result`,
 once the turn has been recorded (`parse_session_start.go`). claude-tui's
 gateway reads the first main model request after the start, a resume or
-`PostCompact`: in each `SessionStart hook additional context: ` block, a
-hook's context runs from its heading to its ending, and counts only when
-its stamp's time is not before that start or compaction
-(`claudetui/session_start.go`).
+`PostCompact`: in the `SessionStart hook additional context: ` blocks,
+read from the last, the hook's context runs from its heading to its
+ending, and counts only when its stamp's time is not before that start or
+compaction (`claudetui/session_start.go`).
 
 ## Auto memory and additional directories (verified 2.1.283)
 

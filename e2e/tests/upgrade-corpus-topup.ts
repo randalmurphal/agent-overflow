@@ -139,7 +139,7 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     // Two assistants made by New Assistant, one serving every project and
     // told about every tick and one moved to a new thread by New Thread,
     // Same Assistant, which leaves a past thread. Each opening and handoff
-    // message takes a turn, whose session keeps the receipts of its memory
+    // message takes a turn, whose session keeps the receipt of its memory
     // delivery. A new assistant takes the provider of the thread created
     // last, so a Claude thread goes first.
     const remembered = await harness.rpc<{ id: string }>('CreateThread', {
@@ -217,7 +217,7 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
           text: 'Scheduled.',
         }, {
           // The turn compacts first, so the corpus holds a compaction row
-          // and the receipts its hooks keep.
+          // and the receipt its hook keeps.
           steps: [{ emitLines: [compactBoundaryLine('topup-compaction-${TURN}')] }, { call: { tool: 'thread_cancel', args: { label: 'once' } } }],
           text: 'Stopped the one-off watch.',
         }],

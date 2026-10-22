@@ -20,8 +20,8 @@ type sessionMemory struct {
 	// Plan is what the session's hook delivers; nil when the thread
 	// receives no memory or the hook could not be built.
 	Plan *memory.Plan
-	// Hooks hold the one hook that delivers it; none without a Plan.
-	Hooks []provider.SessionStartHook
+	// Hook is the hook that delivers it; nil without a Plan.
+	Hook *provider.SessionStartHook
 	// Receipts keeps what the hook delivered; nil without a hook.
 	Receipts *provider.SessionStartReceipts
 	// Dirs are the folders outside the workspace the session may write:
@@ -121,7 +121,7 @@ func (a *App) readSessionMemory(thread store.Thread, agent *store.StandingAgent,
 		// A compaction in a session with no hook removes the delivery an
 		// earlier one recorded, and nothing records that: a later resume
 		// must not trust the receipt.
-		if err := a.store.ForgetSessionStartReceipts(thread.ID); err != nil {
+		if err := a.store.ForgetSessionStartReceipt(thread.ID); err != nil {
 			out.Problems = append(out.Problems, memoryProblem{memoryUnforgotten, err})
 		}
 		return out, nil
@@ -143,17 +143,17 @@ func (a *App) readSessionMemory(thread store.Thread, agent *store.StandingAgent,
 		return out, nil
 	}
 	if resumeRef != "" {
-		receipts, err := a.store.SessionStartReceipts(thread.ID, resumeRef)
+		received, err := a.store.SessionStartReceipt(thread.ID, resumeRef)
 		if err != nil {
 			return sessionMemory{}, fmt.Errorf("read what the memory hook delivered to %s: %w", thread.ID, err)
 		}
-		resume, problems := resumeDelivers(plan, receipts[memory.Label])
+		resume, problems := resumeDelivers(plan, received)
 		hook.Resume = resume
 		out.Problems = append(out.Problems, readProblems(problems)...)
 		out.built = true
 	}
 	out.Plan = &plan
-	out.Hooks = []provider.SessionStartHook{*hook}
+	out.Hook = hook
 	out.Receipts = a.sessionStartReceipts(thread.ID)
 	return out, nil
 }
@@ -187,14 +187,14 @@ func memoryHook(plan memory.Plan, locate func() (string, error)) (*provider.Sess
 }
 
 // sessionStartReceipts keeps the digest of what threadID's model received
-// from its memory hook (store.SessionStartReceipts).
+// from its memory hook (store.SessionStartReceipt).
 func (a *App) sessionStartReceipts(threadID string) *provider.SessionStartReceipts {
 	return &provider.SessionStartReceipts{
-		Keep: func(sessionRef, label, context string) error {
-			return a.store.PutSessionStartReceipt(threadID, sessionRef, label, memory.Digest(context))
+		Keep: func(sessionRef, context string) error {
+			return a.store.PutSessionStartReceipt(threadID, sessionRef, memory.Digest(context))
 		},
 		Forget: func() error {
-			return a.store.ForgetSessionStartReceipts(threadID)
+			return a.store.ForgetSessionStartReceipt(threadID)
 		},
 	}
 }
@@ -204,8 +204,8 @@ func (a *App) sessionStartReceipts(threadID string) *provider.SessionStartReceip
 // so the next resume delivers it again. The cut has happened, so a failure
 // is a warning on the thread.
 func (a *App) forgetSessionStartReceiptsAfterCut(threadID string) {
-	if err := a.store.ForgetSessionStartReceipts(threadID); err != nil {
-		log.Printf("memory %s: forget the memory receipts after a cut of the history: %v", threadID, err)
+	if err := a.store.ForgetSessionStartReceipt(threadID); err != nil {
+		log.Printf("memory %s: forget the memory receipt after a cut of the history: %v", threadID, err)
 		if err := a.emitNoticeToThread(threadID, noticeKindWarning, "Agent Overflow could not record that this rollback removed memory a resume delivered, so the next resume may not deliver it again: "+err.Error()+"."); err != nil {
 			log.Printf("memory %s: %v", threadID, err)
 		}

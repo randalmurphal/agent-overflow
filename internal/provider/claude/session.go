@@ -227,7 +227,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	if binary == "" {
 		binary = "claude"
 	}
-	sessionStart, err := NewSessionStartDelivery(cfg.SessionStartHooks, cfg.SessionStartReceipts, cfg.Resume)
+	sessionStart, err := NewSessionStartDelivery(cfg.SessionStartHook, cfg.SessionStartReceipts, cfg.Resume)
 	if err != nil {
 		return nil, fmt.Errorf("claude: %w", err)
 	}

@@ -17,8 +17,8 @@ const sessionStartMarker = "SessionStart hook additional context: "
 
 // observeMainRequest settles an expected SessionStart delivery on the first
 // main request after a start, a resume or a compaction, and keeps its
-// receipts: the request carries the hooks' context, under their headings and
-// stamps, when they delivered. The body is searched only while a delivery is
+// receipt: the request carries the hook's context, under its heading and
+// stamp, when it delivered. The body is searched only while a delivery is
 // expected.
 func (s *Session) observeMainRequest(body []byte) {
 	s.sessionStartMu.Lock()
@@ -26,35 +26,34 @@ func (s *Session) observeMainRequest(body []byte) {
 		s.sessionStartMu.Unlock()
 		return
 	}
-	for _, context := range sessionStartContexts(body, s.sessionStartHooks, s.sessionStartSince, s.logf) {
+	if context, ok := sessionStartContext(body, *s.sessionStart.Hook(), s.sessionStartSince, s.logf); ok {
 		s.sessionStart.Deliver(context)
 	}
-	warnings := s.sessionStart.Settle(s.SessionID())
-	warnings = append(warnings, s.sessionStart.Keep()...)
+	warnings := []string{s.sessionStart.Settle(s.SessionID()), s.sessionStart.Keep()}
 	s.sessionStartMu.Unlock()
 	for _, warning := range warnings {
-		s.emitNonFatalError(warning)
+		if warning != "" {
+			s.emitNonFatalError(warning)
+		}
 	}
 }
 
-// sessionStartContexts are the contexts of hooks in a model request body that
-// runs at or after since delivered, the latest of each hook's. A context runs
-// from its hook's heading through its ending, or to the end of its block
-// when the ending is missing, and counts only when the line after the
-// heading is the hook's stamp of a time not before since: an earlier run's
-// block, which a resumed transcript or a compaction keeps, or a summary
-// that quotes a heading, is not this run's delivery. The blocks are read
-// from the last, so the search usually decodes one.
-func sessionStartContexts(body []byte, hooks []provider.SessionStartHook, since time.Time, logf func(string, ...any)) []string {
+// sessionStartContext is the latest context of hook in a model request body
+// that a run at or after since delivered. A context runs from the hook's
+// heading through its ending, or to the end of its block when the ending is
+// missing, and counts only when the line after the heading is the hook's
+// stamp of a time not before since: an earlier run's block, which a resumed
+// transcript or a compaction keeps, or a summary that quotes the heading, is
+// not this run's delivery. The blocks are read from the last, so the search
+// usually decodes one.
+func sessionStartContext(body []byte, hook provider.SessionStartHook, since time.Time, logf func(string, ...any)) (string, bool) {
 	// A stamp has milliseconds and no finer.
 	since = since.Truncate(time.Millisecond)
-	found := make([]string, len(hooks))
-	left := len(hooks)
 	marker := []byte(sessionStartMarker)
-	for end := len(body); left > 0; {
+	for end := len(body); ; {
 		at := bytes.LastIndex(body[:end], marker)
 		if at < 0 {
-			break
+			return "", false
 		}
 		end = at
 		block, ok := sessionStartBlock(body[at+len(marker):])
@@ -62,22 +61,10 @@ func sessionStartContexts(body []byte, hooks []provider.SessionStartHook, since 
 			logf("claudetui: a SessionStart context block in a model request is not a JSON string; its contexts do not count")
 			continue
 		}
-		for i, hook := range hooks {
-			if found[i] == "" {
-				if context, ok := stampedContext(block, hook, since); ok {
-					found[i] = context
-					left--
-				}
-			}
+		if context, ok := stampedContext(block, hook, since); ok {
+			return context, true
 		}
 	}
-	contexts := make([]string, 0, len(hooks))
-	for _, context := range found {
-		if context != "" {
-			contexts = append(contexts, context)
-		}
-	}
-	return contexts
 }
 
 // sessionStartBlock decodes the rest of the JSON string that rest, the bytes

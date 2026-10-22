@@ -9,29 +9,28 @@ import (
 	"unicode/utf8"
 )
 
-// SessionStartHook is a command a session runs at its start, after a
+// SessionStartHook is the command a session runs at its start, after a
 // compaction and after a clear, and at a resume when Resume is set, whose
 // output reaches the model as context (the memory delivery,
-// docs/specs/memory.md "Delivery"). Claude registers it
-// in the session's inline settings and Codex in the thread's config, each
-// hook in a matcher group of its own; each provider reports a warning when a
-// start, a compaction or a resume that ran it ends without its output
-// (SessionStartDelivery).
+// docs/specs/memory.md "Delivery"). Claude registers it in the session's
+// inline settings and Codex in the thread's config; each provider reports a
+// warning when a start, a compaction or a resume that ran it ends without
+// its output (SessionStartDelivery).
 type SessionStartHook struct {
-	// Label names what the hook delivers in a warning and in its receipt,
-	// e.g. the memory package's Label.
+	// Label names what the hook delivers in a warning, e.g. the memory
+	// package's Label.
 	Label string
 	// Command is the shell command line the provider runs.
 	Command string
 	// Heading is the text the hook's context opens with, by which the
-	// provider tells its output from another SessionStart hook's.
+	// provider tells its output from the user's own SessionStart hooks'.
 	Heading string
-	// Ending is the text the hook's context ends with. claude-tui reads
-	// every hook's context from one block that joins them, and the ending
-	// is where this hook's stops.
+	// Ending is the text the hook's context ends with. claude-tui reads the
+	// context from one block that joins it with the user's hooks' contexts,
+	// and the ending is where it stops.
 	Ending string
 	// Stamp opens the line after Heading in each run's context, followed by
-	// the run's time in RFC 3339. claude-tui reads the contexts out of a
+	// the run's time in RFC 3339. claude-tui reads the context out of a
 	// model request that carries earlier runs' as well, and counts one only
 	// when its time is not before the event it expects.
 	Stamp string
@@ -41,7 +40,7 @@ type SessionStartHook struct {
 	Resume bool
 }
 
-// SessionStartHookSources are the SessionStart sources every hook runs for:
+// SessionStartHookSources are the SessionStart sources the hook runs for:
 // each one leaves the model without the hook's earlier output, which a
 // resumed history still carries (docs/specs/memory.md, "Delivery").
 const SessionStartHookSources = "startup|compact|clear"
@@ -51,7 +50,7 @@ const SessionStartHookSources = "startup|compact|clear"
 // session, and Codex's `resume`.
 const SessionStartResumeSources = SessionStartHookSources + "|resume|fork"
 
-// SessionStartMatcher is the matcher of a hook's group: the resume sources
+// SessionStartMatcher is the matcher of the hook's group: the resume sources
 // when it runs at a resume.
 func SessionStartMatcher(resume bool) string {
 	if resume {
@@ -70,100 +69,87 @@ type SessionStartEvent string
 const (
 	SessionStartAfterStart      SessionStartEvent = "start"
 	SessionStartAfterCompaction SessionStartEvent = "compaction"
-	// SessionStartAfterResume expects the hooks a resume runs, those whose
-	// Resume is set.
+	// SessionStartAfterResume expects the hook only when its Resume is set.
 	SessionStartAfterResume SessionStartEvent = "resume"
 )
 
 // SessionStartReceipts keeps, across a thread's sessions, the context its
-// model received from each SessionStart hook, so a resume runs only the
-// hooks whose context the model does not hold (SessionStartHook.Resume). A
-// nil *SessionStartReceipts keeps nothing. A revert that cuts the history a
-// delivery reached forgets the receipts outside the session.
+// model received from the SessionStart hook, so a resume runs the hook only
+// when the model does not hold its context (SessionStartHook.Resume). A nil
+// *SessionStartReceipts keeps nothing. A revert that cuts the history a
+// delivery reached forgets the receipt outside the session.
 type SessionStartReceipts struct {
 	// Keep records that provider session sessionRef received context from
-	// the hook labelled label.
-	Keep func(sessionRef, label, context string) error
-	// Forget records that the thread's model holds no hook's context: a
-	// compaction replaced it.
+	// the hook.
+	Keep func(sessionRef, context string) error
+	// Forget records that the thread's model does not hold the hook's
+	// context: a compaction replaced it.
 	Forget func() error
 }
 
 // sessionStartFailureMaxBytes bounds the failure a warning quotes.
 const sessionStartFailureMaxBytes = 300
 
-// SessionStartDelivery follows whether a session's SessionStartHooks
-// delivered their context after a start, a compaction or a resume, and keeps
-// the receipt of what each delivered. The provider calls Expect when the
+// SessionStartDelivery follows whether a session's SessionStartHook
+// delivered its context after a start, a compaction or a resume, and keeps
+// the receipt of what it delivered. The provider calls Expect when the
 // session starts, resumes or compacts, Deliver for each SessionStart output
-// it sees, Fail for each failed run, Settle at the point by which the hooks
-// must have run, and Keep once the provider's own history holds what they
-// delivered; Settle names the hooks whose output never came and holds the
-// receipts Keep writes. A nil *SessionStartDelivery, which a session without
-// hooks holds, does nothing. Safe for concurrent use.
+// it sees, Fail for each failed run, Settle at the point by which the hook
+// must have run, and Keep once the provider's own history holds what it
+// delivered; Settle warns when the output never came and holds the receipt
+// Keep writes. A nil *SessionStartDelivery, which a session without the hook
+// holds, does nothing. Safe for concurrent use.
 type SessionStartDelivery struct {
 	receipts *SessionStartReceipts
+	hook     SessionStartHook
 
-	mu    sync.Mutex
-	hooks []SessionStartHook
+	mu sync.Mutex
+	// after is the event the open expectation follows, "" when none is
+	// open.
 	after SessionStartEvent
-	// expected marks the hooks the open expectation waits for.
-	expected []bool
-	// delivered marks the hooks whose output was seen since the last
-	// Settle, and contexts holds that output.
-	delivered []bool
-	contexts  []string
+	// delivered is set once the hook's output was seen since the last
+	// Settle, and context holds that output.
+	delivered bool
+	context   string
 	failure   string
-	// held are the receipts Settle holds for Keep, by hook.
-	held []heldReceipt
+	// held is the receipt Settle holds for Keep.
+	held heldReceipt
 }
 
-// heldReceipt is a receipt Settle holds: the context a hook delivered to the
-// provider session sessionRef. A zero heldReceipt holds none.
+// heldReceipt is a receipt Settle holds: the context the hook delivered to
+// the provider session sessionRef. A zero heldReceipt holds none.
 type heldReceipt struct {
 	sessionRef, context string
 }
 
-// NewSessionStartDelivery follows hooks and keeps their receipts in
-// receipts, which may be nil; nil when there are no hooks. It refuses a hook
-// without a label, command, heading, ending or stamp, and two hooks with the
-// same label or heading: a heading is how a delivery is told apart, and a
-// label is what its receipt is kept under.
-func NewSessionStartDelivery(hooks []SessionStartHook, receipts *SessionStartReceipts) (*SessionStartDelivery, error) {
-	if len(hooks) == 0 {
+// NewSessionStartDelivery follows hook and keeps its receipts in receipts,
+// which may be nil; nil when hook is. It refuses a hook without a label,
+// command, heading, ending or stamp.
+func NewSessionStartDelivery(hook *SessionStartHook, receipts *SessionStartReceipts) (*SessionStartDelivery, error) {
+	if hook == nil {
 		return nil, nil
 	}
-	labels := make(map[string]bool, len(hooks))
-	headings := make(map[string]bool, len(hooks))
-	for i, hook := range hooks {
-		if hook.Label == "" || hook.Command == "" || hook.Heading == "" || hook.Ending == "" || hook.Stamp == "" {
-			return nil, fmt.Errorf("SessionStart hook %d: label, command, heading, ending and stamp are all required", i)
-		}
-		if labels[hook.Label] {
-			return nil, fmt.Errorf("SessionStart hook %d: label %q is another hook's", i, hook.Label)
-		}
-		if headings[hook.Heading] {
-			return nil, fmt.Errorf("SessionStart hook %s: heading %q is another hook's", hook.Label, hook.Heading)
-		}
-		labels[hook.Label] = true
-		headings[hook.Heading] = true
+	if hook.Label == "" || hook.Command == "" || hook.Heading == "" || hook.Ending == "" || hook.Stamp == "" {
+		return nil, errors.New("SessionStart hook: label, command, heading, ending and stamp are all required")
 	}
-	return &SessionStartDelivery{
-		receipts:  receipts,
-		hooks:     hooks,
-		expected:  make([]bool, len(hooks)),
-		delivered: make([]bool, len(hooks)),
-		contexts:  make([]string, len(hooks)),
-		held:      make([]heldReceipt, len(hooks)),
-	}, nil
+	return &SessionStartDelivery{receipts: receipts, hook: *hook}, nil
 }
 
-// Expect records that the hooks after runs must deliver before the next
-// Settle: every hook after a start or a compaction, those whose Resume is
-// set after a resume. Deliveries already seen since the last Settle count:
+// Hook is the hook the delivery follows; nil for a nil delivery.
+func (d *SessionStartDelivery) Hook() *SessionStartHook {
+	if d == nil {
+		return nil
+	}
+	hook := d.hook
+	return &hook
+}
+
+// Expect records that the hook must deliver before the next Settle after
+// after: always after a start or a compaction, after a resume when its
+// Resume is set. A delivery already seen since the last Settle counts:
 // Claude Code reports a compaction's hook output before the compaction
-// itself. A compaction forgets every receipt, kept or held, so the receipts
-// name only what the compaction delivers; the warning it returns, "" when
+// itself. A compaction forgets the receipt, kept or held, so the receipt
+// names only what the compaction delivers; the warning it returns, "" when
 // there is none, is for a failure to record that.
 func (d *SessionStartDelivery) Expect(after SessionStartEvent) string {
 	if d == nil {
@@ -175,8 +161,8 @@ func (d *SessionStartDelivery) Expect(after SessionStartEvent) string {
 	return d.forget(after)
 }
 
-// ExpectAfresh is Expect after forgetting the deliveries and failures seen
-// since the last Settle, for a provider that runs a compaction's hooks only
+// ExpectAfresh is Expect after forgetting the delivery and failure seen
+// since the last Settle, for a provider that runs a compaction's hook only
 // after it reports the compaction: what it saw before came from an earlier
 // start.
 func (d *SessionStartDelivery) ExpectAfresh(after SessionStartEvent) string {
@@ -184,9 +170,7 @@ func (d *SessionStartDelivery) ExpectAfresh(after SessionStartEvent) string {
 		return ""
 	}
 	d.mu.Lock()
-	clear(d.delivered)
-	clear(d.contexts)
-	d.failure = ""
+	d.delivered, d.context, d.failure = false, "", ""
 	d.expect(after)
 	d.mu.Unlock()
 	return d.forget(after)
@@ -195,24 +179,21 @@ func (d *SessionStartDelivery) ExpectAfresh(after SessionStartEvent) string {
 // expect opens the expectation after. Called with mu held.
 func (d *SessionStartDelivery) expect(after SessionStartEvent) {
 	if after == SessionStartAfterCompaction {
-		clear(d.held)
+		d.held = heldReceipt{}
 	}
-	d.after = ""
-	for i, hook := range d.hooks {
-		d.expected[i] = after != SessionStartAfterResume || hook.Resume
-		if d.expected[i] {
-			d.after = after
-		}
+	d.after = after
+	if after == SessionStartAfterResume && !d.hook.Resume {
+		d.after = ""
 	}
 }
 
-// forget drops the receipts after a compaction.
+// forget drops the receipt after a compaction.
 func (d *SessionStartDelivery) forget(after SessionStartEvent) string {
 	if after != SessionStartAfterCompaction || d.receipts == nil || d.receipts.Forget == nil {
 		return ""
 	}
 	if err := d.receipts.Forget(); err != nil {
-		return fmt.Sprintf("Agent Overflow could not record that this compaction replaced what the SessionStart hooks delivered, so a later resume may not deliver %s again: %v", d.labels(), err)
+		return fmt.Sprintf("Agent Overflow could not record that this compaction replaced what the SessionStart hook delivered, so a later resume may not deliver %s again: %v", d.hook.Label, err)
 	}
 	return ""
 }
@@ -228,53 +209,38 @@ func (d *SessionStartDelivery) Expecting() SessionStartEvent {
 	return d.after
 }
 
-// Pending reports, per hook, whether the open expectation still waits for
-// it; nil when none is open.
-func (d *SessionStartDelivery) Pending() []bool {
+// Pending reports whether the open expectation still waits for the hook's
+// output.
+func (d *SessionStartDelivery) Pending() bool {
 	if d == nil {
-		return nil
+		return false
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.after == "" {
-		return nil
-	}
-	pending := make([]bool, len(d.hooks))
-	for i := range d.hooks {
-		pending[i] = d.expected[i] && !d.delivered[i]
-	}
-	return pending
+	return d.after != "" && !d.delivered
 }
 
-// Deliver records SessionStart context a provider reported whole: the
-// output of the hook whose heading it opens with, if any.
+// Deliver records SessionStart context a provider reported whole when it
+// opens with the hook's heading; another hook's context is ignored.
 func (d *SessionStartDelivery) Deliver(context string) {
-	if d == nil {
+	if d == nil || !strings.HasPrefix(context, d.hook.Heading) {
 		return
 	}
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	for i, hook := range d.hooks {
-		if strings.HasPrefix(context, hook.Heading) {
-			d.delivered[i] = true
-			d.contexts[i] = context
-			return
-		}
-	}
+	d.delivered, d.context = true, context
+	d.mu.Unlock()
 }
 
-// DropDeliveries forgets what the hooks delivered and failed since the last
-// Settle, and the receipts Settle holds, for a revert that cut them out of
-// the history: the open expectation waits for the hooks again.
+// DropDeliveries forgets what the hook delivered and failed since the last
+// Settle, and the receipt Settle holds, for a revert that cut them out of
+// the history: the open expectation waits for the hook again.
 func (d *SessionStartDelivery) DropDeliveries() {
 	if d == nil {
 		return
 	}
 	d.mu.Lock()
-	clear(d.delivered)
-	clear(d.contexts)
-	clear(d.held)
-	d.failure = ""
+	d.delivered, d.context, d.failure = false, "", ""
+	d.held = heldReceipt{}
 	d.mu.Unlock()
 }
 
@@ -296,85 +262,48 @@ func (d *SessionStartDelivery) Fail(detail string) {
 	d.mu.Unlock()
 }
 
-// Settle ends the expectation, holds a receipt under sessionRef for each
-// hook whose output arrived, and forgets what was delivered and failed. It
-// returns the warning for the hooks whose output did not arrive, if any. A
-// session whose provider session is not known yet ("") holds no receipt, so
-// its next resume delivers again.
-func (d *SessionStartDelivery) Settle(sessionRef string) []string {
+// Settle ends the expectation, holds a receipt under sessionRef when the
+// hook's output arrived, and forgets what was delivered and failed. It
+// returns the warning when the expected output did not arrive, "" when it
+// did or none was expected. A session whose provider session is not known
+// yet ("") holds no receipt, so its next resume delivers again.
+func (d *SessionStartDelivery) Settle(sessionRef string) string {
 	if d == nil {
-		return nil
+		return ""
 	}
 	d.mu.Lock()
-	after, failure := d.after, d.failure
-	d.after, d.failure = "", ""
-	var missing []string
-	for i, hook := range d.hooks {
-		if after != "" && d.expected[i] && !d.delivered[i] {
-			missing = append(missing, hook.Label)
-		}
-		if d.contexts[i] != "" && sessionRef != "" {
-			d.held[i] = heldReceipt{sessionRef: sessionRef, context: d.contexts[i]}
-		}
-		d.expected[i], d.delivered[i], d.contexts[i] = false, false, ""
+	after, failure, delivered := d.after, d.failure, d.delivered
+	if d.context != "" && sessionRef != "" {
+		d.held = heldReceipt{sessionRef: sessionRef, context: d.context}
 	}
+	d.after, d.failure, d.delivered, d.context = "", "", false, ""
 	d.mu.Unlock()
-	if len(missing) == 0 {
-		return nil
+	if after == "" || delivered {
+		return ""
 	}
-	return []string{missingWarning(missing, after, failure)}
-}
-
-// Keep writes the receipts Settle holds, once the provider's history holds
-// what they name, and returns the warning for those it could not write.
-func (d *SessionStartDelivery) Keep() []string {
-	if d == nil {
-		return nil
-	}
-	d.mu.Lock()
-	type receipt struct{ label, sessionRef, context string }
-	var receipts []receipt
-	for i, held := range d.held {
-		if held.context != "" {
-			receipts = append(receipts, receipt{d.hooks[i].Label, held.sessionRef, held.context})
-		}
-	}
-	clear(d.held)
-	d.mu.Unlock()
-	if d.receipts == nil || d.receipts.Keep == nil {
-		return nil
-	}
-	var unkept []string
-	var errs []error
-	for _, r := range receipts {
-		if err := d.receipts.Keep(r.sessionRef, r.label, r.context); err != nil {
-			unkept = append(unkept, r.label)
-			errs = append(errs, err)
-		}
-	}
-	if len(unkept) == 0 {
-		return nil
-	}
-	return []string{fmt.Sprintf("Agent Overflow could not record that %s reached this session, so its next resume delivers %s again: %v", joinLabels(unkept), pronoun(unkept), errors.Join(errs...))}
-}
-
-// missingWarning names the hooks whose output did not arrive after an event,
-// with the failure that explains it when one was reported.
-func missingWarning(missing []string, after SessionStartEvent, failure string) string {
-	subject := joinLabels(missing)
 	if failure != "" {
-		return fmt.Sprintf("%s did not reach this session after its %s: a SessionStart hook failed (%s).", subject, after, failure)
+		return fmt.Sprintf("%s did not reach this session after its %s: a SessionStart hook failed (%s).", d.hook.Label, after, failure)
 	}
-	return fmt.Sprintf("%s did not reach this session after its %s: no SessionStart hook output carried %s. A hook failed, or hooks are turned off in the provider's own settings.", subject, after, pronoun(missing))
+	return fmt.Sprintf("%s did not reach this session after its %s: no SessionStart hook output carried it. A hook failed, or hooks are turned off in the provider's own settings.", d.hook.Label, after)
 }
 
-// labels names every hook.
-func (d *SessionStartDelivery) labels() string {
-	labels := make([]string, len(d.hooks))
-	for i, hook := range d.hooks {
-		labels[i] = hook.Label
+// Keep writes the receipt Settle holds, once the provider's history holds
+// what it names, and returns the warning when it could not, "" otherwise.
+func (d *SessionStartDelivery) Keep() string {
+	if d == nil {
+		return ""
 	}
-	return joinLabels(labels)
+	d.mu.Lock()
+	held := d.held
+	d.held = heldReceipt{}
+	d.mu.Unlock()
+	if held.context == "" || d.receipts == nil || d.receipts.Keep == nil {
+		return ""
+	}
+	if err := d.receipts.Keep(held.sessionRef, held.context); err != nil {
+		return fmt.Sprintf("Agent Overflow could not record that %s reached this session, so its next resume delivers it again: %v", d.hook.Label, err)
+	}
+	return ""
 }
 
 // sessionStartFailureText is detail on one line, without control or format
@@ -392,21 +321,4 @@ func sessionStartFailureText(detail string) string {
 		cut--
 	}
 	return detail[:cut] + "…"
-}
-
-func joinLabels(labels []string) string {
-	switch len(labels) {
-	case 1:
-		return labels[0]
-	case 2:
-		return labels[0] + " and " + labels[1]
-	}
-	return strings.Join(labels[:len(labels)-1], ", ") + " and " + labels[len(labels)-1]
-}
-
-func pronoun(labels []string) string {
-	if len(labels) > 1 {
-		return "them"
-	}
-	return "it"
 }

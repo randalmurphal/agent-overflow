@@ -189,8 +189,8 @@ func hookSettingsJSON(cfg Config) (string, error) {
 	for _, ev := range observeHookEvents {
 		hooks[ev] = observeEntry
 	}
-	if groups := claude.SessionStartHookGroups(cfg.SessionStartHooks); groups != nil {
-		hooks["SessionStart"] = append(append([]any{}, observeEntry...), groups...)
+	if cfg.SessionStartHook != nil {
+		hooks["SessionStart"] = append(append([]any{}, observeEntry...), claude.SessionStartHookGroup(*cfg.SessionStartHook))
 	}
 
 	block := map[string]any{"hooks": hooks}

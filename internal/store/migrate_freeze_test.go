@@ -13,7 +13,7 @@ import (
 // unshipped one may be amended with a deliberate update of its hash
 // (internal/store/AGENTS.md).
 var frozenMigrationSQL = map[int]string{
-	160: "9bd25e404861d31543d79ed769b1d1e516d2d92c902e7c455a1cae002d12127d",
+	160: "d3cc1104c3157cf29b885b446051fe25187b499e04ab2c9d56b8c4fb3897bdf5",
 	159: "16e48c4921c084d357014f76227a5155521e8fa05979ab11d93ad3a38a35d434",
 	158: "3ddddcce89e29cd22ae1e40d43d85611db44aed221a75a545a029240fc447d60",
 	157: "64fd66b5554a94fc583e846443cd5b024dbd7f7f0f81e7a3cd085e792b37af92",

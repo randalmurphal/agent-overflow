@@ -101,9 +101,7 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 		}}
 		// The compaction's SessionStart hooks have run by its boundary.
 		if p != nil {
-			if warning := p.sessionStart.Expect(provider.SessionStartAfterCompaction); warning != "" {
-				events = append(events, sessionStartWarnings(threadID, []string{warning}, now)...)
-			}
+			events = append(events, sessionStartWarnings(threadID, now, p.sessionStart.Expect(provider.SessionStartAfterCompaction))...)
 		}
 		return append(events, p.settleSessionStart(threadID, readRawString(raw["session_id"]), now)...), nil
 

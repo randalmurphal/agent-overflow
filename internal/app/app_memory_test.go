@@ -97,14 +97,14 @@ func TestSharedMemoryFollowsItsSetting(t *testing.T) {
 				t.Fatal("a malformed fact put a warning row on an ordinary thread")
 			}
 
-			if err := app.store.PutSessionStartReceipt(thread.ID, "session-1", memory.Label, memory.Digest(delivered)); err != nil {
+			if err := app.store.PutSessionStartReceipt(thread.ID, "session-1", memory.Digest(delivered)); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := app.settings.Update(map[string]any{"sharedMemoryEnabled": false}); err != nil {
 				t.Fatal(err)
 			}
 			noMemory("off again")
-			if receipts, err := app.store.SessionStartReceipts(thread.ID, "session-1"); err != nil || len(receipts) != 0 {
+			if receipts, err := app.store.SessionStartReceipt(thread.ID, "session-1"); err != nil || receipts != "" {
 				t.Fatalf("a start with no hook kept the receipts: %v, %v", receipts, err)
 			}
 		})
@@ -144,7 +144,7 @@ func TestAnAssistantsHelperReceivesTheUserMemory(t *testing.T) {
 		t.Fatalf("plan = %+v, %v, %v", plan, ok, err)
 	}
 	mem, err := app.readSessionMemory(helper, nil, "", false)
-	if err != nil || len(mem.Hooks) != 1 || !slices.Equal(mem.Dirs, []string{plan.User}) {
+	if err != nil || mem.Hook == nil || !slices.Equal(mem.Dirs, []string{plan.User}) {
 		t.Fatalf("session memory = %+v, %v", mem, err)
 	}
 	delivered, _ := memory.Build(plan, time.Now())

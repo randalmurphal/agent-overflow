@@ -203,7 +203,7 @@ for: a rollback it could not record; a folder or file it could not read
 for a reason other than absence, which its sessions also receive a
 notice about; a scope folder it could not create or will not pass as
 writable; and a hook it could not build, in which case the session
-starts without its memory. Each provider checks once the hooks have had their
+starts without its memory. Each provider checks once the hook has had its
 chance to run
 ([Claude](../references/claude-wire.md#sessionstart-hooks-verified-21283),
 [Codex](../references/codex-wire.md#what-agent-overflow-does)).

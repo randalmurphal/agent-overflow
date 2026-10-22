@@ -52,14 +52,14 @@ type Config struct {
 	// (internal/app/app_agent_guide.go). Stamped at spawn like
 	// AdditionalDirs, so PlanLiveUpdate never sees it.
 	AppendSystemPrompt string
-	// SessionStartHooks run at a fresh start, after a compaction and after
-	// a clear, and those whose Resume is set at this process's resume too,
+	// SessionStartHook runs at a fresh start, after a compaction and after
+	// a clear, and at this process's resume too when its Resume is set,
 	// registered in the inline `--settings` payload
-	// (SessionStartHookGroups). A start, resume or compaction that ends
-	// without their output is reported as a warning (Parser.sessionStart).
-	// Stamped at spawn like AppendSystemPrompt.
-	SessionStartHooks []provider.SessionStartHook
-	// SessionStartReceipts keeps what the hooks delivered; nil keeps
+	// (SessionStartHookGroup). A start, resume or compaction that ends
+	// without its output is reported as a warning (Parser.sessionStart).
+	// Stamped at spawn like AppendSystemPrompt; nil for none.
+	SessionStartHook *provider.SessionStartHook
+	// SessionStartReceipts keeps what the hook delivered; nil keeps
 	// nothing.
 	SessionStartReceipts *provider.SessionStartReceipts
 	// NativeMemoryOff turns Claude Code's auto memory off for the session:

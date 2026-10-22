@@ -65,7 +65,7 @@ type Session struct {
 	recMu sync.Mutex
 	rec   *reconstructor
 
-	// sessionStart follows the delivery of Config.SessionStartHooks
+	// sessionStart follows the delivery of Config.SessionStartHook
 	// (observeMainRequest); nil when the session has none. sessionStartSince
 	// is when its open expectation opened: a context stamped earlier came
 	// from an earlier run. sessionStartMu orders a compaction's Expect
@@ -73,7 +73,6 @@ type Session struct {
 	// and the gateway's goroutines.
 	sessionStartMu    sync.Mutex
 	sessionStart      *provider.SessionStartDelivery
-	sessionStartHooks []provider.SessionStartHook
 	sessionStartSince time.Time
 
 	gateway *gateway
@@ -166,7 +165,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	if onEvent == nil {
 		return nil, fmt.Errorf("claudetui: onEvent callback is required")
 	}
-	sessionStart, err := claude.NewSessionStartDelivery(cfg.SessionStartHooks, cfg.SessionStartReceipts, cfg.Resume)
+	sessionStart, err := claude.NewSessionStartDelivery(cfg.SessionStartHook, cfg.SessionStartReceipts, cfg.Resume)
 	if err != nil {
 		return nil, fmt.Errorf("claudetui: %w", err)
 	}
@@ -188,7 +187,6 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	s.parser.SetAgentLaunchLookup(cfg.AgentLaunchByTask)
 	s.rec = newReconstructor(s.feedEnvelope)
 	s.sessionStart = sessionStart
-	s.sessionStartHooks = cfg.SessionStartHooks
 	s.sessionStartSince = time.Now()
 	// Debug-gated: record per-request routing/reconstruction decisions to the
 	// "decision" event stream only when the logger is live, so a production
@@ -415,7 +413,7 @@ func (s *Session) finalizeCompaction(trigger, summary string) {
 	s.rec.finalizeCompaction(trigger, summary)
 	s.recMu.Unlock()
 	// The compaction's SessionStart hooks run after PostCompact; the next
-	// main request carries their context.
+	// main request carries the context.
 	s.sessionStartMu.Lock()
 	s.sessionStartSince = time.Now()
 	warning := s.sessionStart.Expect(provider.SessionStartAfterCompaction)

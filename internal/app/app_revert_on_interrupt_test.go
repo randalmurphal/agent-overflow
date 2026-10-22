@@ -684,7 +684,7 @@ func TestInterruptAndRevertIfCleanRevertsClaudeTUIWithoutKillingSession(t *testi
 	if err := app.store.UpdateThread(thread); err != nil {
 		t.Fatalf("update thread: %v", err)
 	}
-	if err := app.store.PutSessionStartReceipt(thread.ID, thread.SessionRef, memory.Label, "digest"); err != nil {
+	if err := app.store.PutSessionStartReceipt(thread.ID, thread.SessionRef, "digest"); err != nil {
 		t.Fatalf("put receipt: %v", err)
 	}
 
@@ -714,7 +714,7 @@ func TestInterruptAndRevertIfCleanRevertsClaudeTUIWithoutKillingSession(t *testi
 	if !ok || draft.Content != "the original prompt" {
 		t.Fatalf("draft = (ok=%v, %q), want (true, \"the original prompt\")", ok, draft.Content)
 	}
-	if received, err := app.store.SessionStartReceipts(thread.ID, thread.SessionRef); err != nil || len(received) != 0 {
+	if received, err := app.store.SessionStartReceipt(thread.ID, thread.SessionRef); err != nil || received != "" {
 		t.Fatalf("receipts after the revert = %v, %v; want none", received, err)
 	}
 }
@@ -1024,8 +1024,8 @@ func TestInterruptAndRevertIfCleanCodexDropsTheCutMemoryDelivery(t *testing.T) {
 				Model:          "test-model",
 				WorkDir:        workspace,
 				ResumeThreadID: thread.SessionRef,
-				SessionStartHooks: []provider.SessionStartHook{
-					{Label: memory.Label, Command: "true", Heading: memory.Heading, Ending: memory.Ending, Stamp: memory.StampPrefix, Resume: true},
+				SessionStartHook: &provider.SessionStartHook{
+					Label: memory.Label, Command: "true", Heading: memory.Heading, Ending: memory.Ending, Stamp: memory.StampPrefix, Resume: true,
 				},
 				SessionStartReceipts: app.sessionStartReceipts(thread.ID),
 			}, func(event provider.ProviderEvent) {
@@ -1052,7 +1052,7 @@ func TestInterruptAndRevertIfCleanCodexDropsTheCutMemoryDelivery(t *testing.T) {
 			if err != nil || !result.Reverted {
 				t.Fatalf("interrupt-and-revert: %+v, %v", result, err)
 			}
-			if received, err := app.store.SessionStartReceipts(thread.ID, thread.SessionRef); err != nil || len(received) != 0 {
+			if received, err := app.store.SessionStartReceipt(thread.ID, thread.SessionRef); err != nil || received != "" {
 				t.Fatalf("receipts after the cut = %v, %v; want none", received, err)
 			}
 			if err := sess.Send(context.Background(), "next", provider.SendOptions{}); err != nil {
@@ -1071,7 +1071,7 @@ func TestInterruptAndRevertIfCleanCodexDropsTheCutMemoryDelivery(t *testing.T) {
 			if missing != tc.warns {
 				t.Fatalf("warnings = %q, want the missing-delivery warning %v", warnings, tc.warns)
 			}
-			if received, err := app.store.SessionStartReceipts(thread.ID, thread.SessionRef); err != nil || len(received) != 0 {
+			if received, err := app.store.SessionStartReceipt(thread.ID, thread.SessionRef); err != nil || received != "" {
 				t.Fatalf("receipts after the next turn = %v, %v; want none", received, err)
 			}
 		})

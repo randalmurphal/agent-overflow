@@ -12,26 +12,26 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-// A thread's SessionStart hooks (Config.SessionStartHooks) ride the
+// A thread's SessionStart hook (Config.SessionStartHook) rides the
 // thread/start|resume `config` map, which Codex reads as the thread's
-// session-flags config layer, each hook in a matcher group of its own.
-// Codex runs a hook from a non-managed layer only when the config's
-// `hooks.state` holds its trust hash, so the map carries the hash of each
-// hook it registers: the trust covers exactly these commands and nothing
-// else the user configured (docs/references/codex-wire.md, SessionStart
-// hooks). The runs are followed by observeSessionStartHooks.
+// session-flags config layer, in a matcher group of its own. Codex runs a
+// hook from a non-managed layer only when the config's `hooks.state` holds
+// its trust hash, so the map carries the hook's hash: the trust covers
+// exactly this command and nothing else the user configured
+// (docs/references/codex-wire.md, SessionStart hooks). The runs are
+// followed by observeSessionStartHooks.
 //
-// A resume registers a hook for `resume` too when its Resume is set: the
+// A resume registers the hook for `resume` too when its Resume is set: the
 // thread's model does not hold its current context. Codex keeps the hooks a
-// load queued only in the loaded thread, so a rehydrate registers for
-// `resume` the hooks the open expectation still waits for.
+// load queued only in the loaded thread, so a rehydrate registers the hook
+// for `resume` while the open expectation still waits for it.
 
 // sessionFlagsHookKeySource is the key source Codex gives the session-flags
 // layer's hooks (codex-rs/hooks/src/engine/discovery.rs, 0.153 to 0.162).
 const sessionFlagsHookKeySource = "/<session-flags>/config.toml"
 
-// sessionStartHandler is one hook's command handler: what the thread
-// config registers and what its trust hash covers.
+// sessionStartHandler is the hook's command handler: what the thread config
+// registers and what its trust hash covers.
 type sessionStartHandler struct {
 	command string
 	timeout int
@@ -63,46 +63,31 @@ func (h sessionStartHandler) trustHash(matcher string) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// sessionStartHookConfig is the `hooks` value of the thread config: a
-// SessionStart matcher group per hook, holding its command handler, with the
-// resume sources in the groups resume marks, and the trust state of each
-// handler. nil for no hooks.
-func sessionStartHookConfig(hooks []provider.SessionStartHook, resume []bool) map[string]any {
-	if len(hooks) == 0 {
+// sessionStartHookKey is the key Codex gives the one SessionStart group's
+// one handler in the session-flags layer, which the trust state is kept
+// under.
+const sessionStartHookKey = sessionFlagsHookKeySource + ":session_start:0:0"
+
+// sessionStartHookConfig is the `hooks` value of the thread config: one
+// SessionStart matcher group holding the hook's command handler, with the
+// resume sources when resume is set, and the handler's trust state. nil
+// without a hook.
+func sessionStartHookConfig(hook *provider.SessionStartHook, resume bool) map[string]any {
+	if hook == nil {
 		return nil
 	}
-	groups := make([]any, 0, len(hooks))
-	state := make(map[string]any, len(hooks))
-	for i, hook := range hooks {
-		matcher := provider.SessionStartMatcher(i < len(resume) && resume[i])
-		handler := newSessionStartHandler(hook)
-		groups = append(groups, map[string]any{"matcher": matcher, "hooks": []any{handler.config()}})
-		key := sessionFlagsHookKeySource + ":session_start:" + strconv.Itoa(i) + ":0"
-		state[key] = map[string]any{"trusted_hash": handler.trustHash(matcher)}
-	}
+	matcher := provider.SessionStartMatcher(resume)
+	handler := newSessionStartHandler(*hook)
 	return map[string]any{
-		"SessionStart": groups,
-		"state":        state,
+		"SessionStart": []any{map[string]any{"matcher": matcher, "hooks": []any{handler.config()}}},
+		"state":        map[string]any{sessionStartHookKey: map[string]any{"trusted_hash": handler.trustHash(matcher)}},
 	}
 }
 
-// resumingHooks marks the hooks a load registers for its resume: those whose
-// Resume is set, on a thread/resume.
-func resumingHooks(hooks []provider.SessionStartHook, resuming bool) []bool {
-	if !resuming {
-		return nil
-	}
-	resume := make([]bool, len(hooks))
-	for i, hook := range hooks {
-		resume[i] = hook.Resume
-	}
-	return resume
-}
-
-// withSessionStartHooks is a copy of a thread's params whose `config`
-// registers hooks, for its resume those resume marks.
-func withSessionStartHooks(params map[string]any, hooks []provider.SessionStartHook, resume []bool) map[string]any {
-	if len(hooks) == 0 {
+// withSessionStartHook is a copy of a thread's params whose `config`
+// registers hook, for its resume as well when resume is set.
+func withSessionStartHook(params map[string]any, hook *provider.SessionStartHook, resume bool) map[string]any {
+	if hook == nil {
 		return params
 	}
 	config, _ := params["config"].(map[string]any)
@@ -110,7 +95,7 @@ func withSessionStartHooks(params map[string]any, hooks []provider.SessionStartH
 	if config == nil {
 		config = map[string]any{}
 	}
-	config["hooks"] = sessionStartHookConfig(hooks, resume)
+	config["hooks"] = sessionStartHookConfig(hook, resume)
 	params = maps.Clone(params)
 	params["config"] = config
 	return params
@@ -242,19 +227,20 @@ func (s *Session) observeSessionStartHooks(method string, params json.RawMessage
 		s.mu.Unlock()
 		if due && readNestedString(params, "turn", "status") == "completed" {
 			// The rollout holds the turn's items by its completion.
-			warnings := s.sessionStart.Settle(s.rootThreadID())
-			for _, warning := range append(warnings, s.sessionStart.Keep()...) {
-				s.emitNonFatalError(warning)
+			for _, warning := range []string{s.sessionStart.Settle(s.rootThreadID()), s.sessionStart.Keep()} {
+				if warning != "" {
+					s.emitNonFatalError(warning)
+				}
 			}
 		}
 	}
 	return false
 }
 
-// expectSessionStartAfterCompaction arms the hooks for a compaction. Codex
+// expectSessionStartAfterCompaction arms the hook for a compaction. Codex
 // reports a compaction before it runs the compaction's hooks, so a delivery
-// seen earlier came from before it and no longer counts, and the hooks have
-// not had their chance in this turn yet.
+// seen earlier came from before it and no longer counts, and the hook has
+// not had its chance in this turn yet.
 func (s *Session) expectSessionStartAfterCompaction() {
 	warning := s.sessionStart.ExpectAfresh(provider.SessionStartAfterCompaction)
 	s.setSessionStartDueTurn("")

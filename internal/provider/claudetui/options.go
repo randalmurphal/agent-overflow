@@ -57,14 +57,15 @@ type Config struct {
 	// headless does (spike-verified 2.1.284 via PTY + wire capture). The
 	// app stamps its guide here (internal/app/app_agent_guide.go).
 	AppendSystemPrompt string
-	// SessionStartHooks run at a fresh start, after a compaction and after a
-	// clear, and those whose Resume is set at this process's resume too,
+	// SessionStartHook runs at a fresh start, after a compaction and after a
+	// clear, and at this process's resume too when its Resume is set,
 	// registered beside the relay in the `--settings` payload
-	// (claude.SessionStartHookGroups). The gateway checks the first main
-	// request after a start, a resume or a compaction for their context and
+	// (claude.SessionStartHookGroup). The gateway checks the first main
+	// request after a start, a resume or a compaction for its context and
 	// reports a warning when it is missing (Session.observeMainRequest).
-	SessionStartHooks []provider.SessionStartHook
-	// SessionStartReceipts keeps what the hooks delivered; nil keeps
+	// nil for none.
+	SessionStartHook *provider.SessionStartHook
+	// SessionStartReceipts keeps what the hook delivered; nil keeps
 	// nothing.
 	SessionStartReceipts *provider.SessionStartReceipts
 	// NativeMemoryOff turns Claude Code's auto memory off for the session,

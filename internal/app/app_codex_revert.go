@@ -160,7 +160,7 @@ func (a *App) tryCodexThreadRevert(
 	}
 	// It can remove the memory a resume delivered too, so the next resume
 	// delivers it again.
-	if err := a.store.ForgetSessionStartReceipts(threadID); err != nil {
+	if err := a.store.ForgetSessionStartReceipt(threadID); err != nil {
 		return codexHistoryCut{}, false, err
 	}
 	reverted, err := session.Revert(context.Background(), firstDroppedTurnID)

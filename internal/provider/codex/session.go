@@ -323,11 +323,10 @@ type Session struct {
 	// started with, which RestoreDeveloperInstructions gives back to the
 	// thread after a history cut. Guarded by mu.
 	developerInstructionsComposed composedDeveloperInstructions
-	// sessionStart follows the delivery of sessionStartHooks, nil without
-	// hooks; sessionStartDueTurn is the turn that gave them their chance to
-	// run, guarded by mu (session_start_hooks.go).
+	// sessionStart follows the delivery of Config.SessionStartHook, nil
+	// without one; sessionStartDueTurn is the turn that gave it its chance
+	// to run, guarded by mu (session_start_hooks.go).
 	sessionStart        *provider.SessionStartDelivery
-	sessionStartHooks   []provider.SessionStartHook
 	sessionStartDueTurn string
 	// rehydrateParams holds the thread-scoped params this session loaded
 	// its thread with that turn/start does not repeat (see
@@ -730,14 +729,14 @@ type Config struct {
 	// a user's configured value from being replaced. See
 	// developer_instructions.go.
 	DeveloperInstructions string
-	// SessionStartHooks run at the thread's start, after a compaction and
-	// after a clear, and those whose Resume is set at a thread/resume too,
-	// registered with their trust in the thread/start|resume `config` map
+	// SessionStartHook runs at the thread's start, after a compaction and
+	// after a clear, and at a thread/resume too when its Resume is set,
+	// registered with its trust in the thread/start|resume `config` map
 	// (sessionStartHookConfig). A start, resume or compaction whose next
-	// turn completes without their output is reported as a warning
-	// (session_start_hooks.go).
-	SessionStartHooks []provider.SessionStartHook
-	// SessionStartReceipts keeps what the hooks delivered. Nil for a
+	// turn completes without its output is reported as a warning
+	// (session_start_hooks.go). nil for none.
+	SessionStartHook *provider.SessionStartHook
+	// SessionStartReceipts keeps what the hook delivered. Nil for a
 	// session that never runs a turn.
 	SessionStartReceipts *provider.SessionStartReceipts
 	// NativeMemoryOff turns Codex's own memories off for the thread:
@@ -745,7 +744,7 @@ type Config struct {
 	// thread/start|resume|fork `config` map, and a resumed thread's stored
 	// memory mode set to disabled, so the thread neither uses memories nor
 	// is mined for them. A loaded thread keeps the config it was loaded
-	// with. Stamped at spawn by the app, like SessionStartHooks.
+	// with. Stamped at spawn by the app, like SessionStartHook.
 	NativeMemoryOff bool
 	// WritableRoots are folders outside the workspace a turn may write in
 	// the workspace-write sandbox, sent in every turn's `sandboxPolicy`

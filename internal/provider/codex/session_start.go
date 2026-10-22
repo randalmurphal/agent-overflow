@@ -30,7 +30,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	if binary == "" {
 		binary = "codex"
 	}
-	sessionStart, err := provider.NewSessionStartDelivery(cfg.SessionStartHooks, cfg.SessionStartReceipts)
+	sessionStart, err := provider.NewSessionStartDelivery(cfg.SessionStartHook, cfg.SessionStartReceipts)
 	if err != nil {
 		return nil, fmt.Errorf("codex: %w", err)
 	}
@@ -69,14 +69,13 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 			sandbox:             cfg.Sandbox,
 			approvalsReviewer:   threadApprovalsReviewer(cfg),
 		},
-		writableRoots:     slices.Clone(cfg.WritableRoots),
-		nativeMemoryOff:   cfg.NativeMemoryOff,
-		pending:           make(map[int64]chan json.RawMessage),
-		onEvent:           onEvent,
-		sessionStart:      sessionStart,
-		sessionStartHooks: cfg.SessionStartHooks,
-		cancel:            cancel,
-		readDone:          make(chan struct{}),
+		writableRoots:   slices.Clone(cfg.WritableRoots),
+		nativeMemoryOff: cfg.NativeMemoryOff,
+		pending:         make(map[int64]chan json.RawMessage),
+		onEvent:         onEvent,
+		sessionStart:    sessionStart,
+		cancel:          cancel,
+		readDone:        make(chan struct{}),
 		collab: sessionCollabState{
 			childParentByThread:       make(map[string]string),
 			childParentByAgentPath:    make(map[string]string),

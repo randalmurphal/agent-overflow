@@ -17,9 +17,8 @@ import (
 )
 
 const (
-	// Label names the delivery's hook and its receipts
-	// (store.SessionStartReceipts), and opens the warning a provider shows
-	// when the delivery did not arrive.
+	// Label names the delivery in the warnings a provider shows when it
+	// did not arrive or its receipt could not be recorded.
 	Label = "Agent Overflow memory"
 	// Heading opens every delivery and Ending closes it, so a provider can
 	// tell this hook's output from another SessionStart hook's.

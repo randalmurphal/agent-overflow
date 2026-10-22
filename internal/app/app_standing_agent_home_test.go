@@ -424,12 +424,12 @@ func TestCodexAssistantResumeRunsTheHookWhenItsMemoryChanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	delivered, _ := memory.Build(plan, time.Now())
-	if err := mem.Receipts.Keep("codex-root", memory.Label, memory.Stamp(delivered, time.Now())); err != nil {
+	if err := mem.Receipts.Keep("codex-root", memory.Stamp(delivered, time.Now())); err != nil {
 		t.Fatal(err)
 	}
-	received, err := app.store.SessionStartReceipts(thread.ID, "codex-root")
-	if err != nil || len(received) != 1 || received[memory.Label] != memory.Digest(delivered) {
-		t.Fatalf("receipts = %v, %v", received, err)
+	received, err := app.store.SessionStartReceipt(thread.ID, "codex-root")
+	if err != nil || received != memory.Digest(delivered) {
+		t.Fatalf("receipt = %q, %v", received, err)
 	}
 	restart()
 	if got := codexHookMatchers(t, requestLog, "thread/resume"); len(got) != 2 || got[1] != plain {
@@ -444,12 +444,12 @@ func TestCodexAssistantResumeRunsTheHookWhenItsMemoryChanged(t *testing.T) {
 		t.Fatalf("thread/resume matchers = %q, want the hook registered for the resume after a new fact", got)
 	}
 
-	// A compaction forgets the receipts: what it dropped is no longer held.
+	// A compaction forgets the receipt: what it dropped is no longer held.
 	if err := mem.Receipts.Forget(); err != nil {
 		t.Fatal(err)
 	}
-	if received, err := app.store.SessionStartReceipts(thread.ID, "codex-root"); err != nil || len(received) != 0 {
-		t.Fatalf("receipts after Forget = %v, %v", received, err)
+	if received, err := app.store.SessionStartReceipt(thread.ID, "codex-root"); err != nil || received != "" {
+		t.Fatalf("receipt after Forget = %q, %v", received, err)
 	}
 	if err := app.StopSession(thread.ID); err != nil {
 		t.Fatal(err)

@@ -16,14 +16,19 @@ import (
 	"agent-overflow/internal/testutil/mockexec"
 )
 
-var testSessionStartHooks = []provider.SessionStartHook{
-	{Label: "first hook", Command: `'/opt/ao' deliver 'first' '/h'`, Heading: "## First hook", Ending: "[End of first hook]", Stamp: "[Delivered at "},
-	{Label: "second hook", Command: `'/opt/ao' deliver 'second' '/h'`, Heading: "## Second hook", Ending: "[End of second hook]", Stamp: "[Delivered at "},
+var testSessionStartHook = provider.SessionStartHook{Label: "the memory", Command: `'/opt/ao' deliver '/h'`, Heading: "## Memory", Ending: "(End of memory)", Stamp: "(Delivered at "}
+
+// testHook is a copy of testSessionStartHook that runs at a resume when
+// resume is set.
+func testHook(resume bool) *provider.SessionStartHook {
+	hook := testSessionStartHook
+	hook.Resume = resume
+	return &hook
 }
 
-// The hooks join the relay's SessionStart entry, each as a matcher group of
-// its own, and nothing else in the block changes.
-func TestHookSettingsRegisterTheSessionStartHooks(t *testing.T) {
+// The hook joins the relay's SessionStart entry as a matcher group of its
+// own, and nothing else in the block changes.
+func TestHookSettingsRegisterTheSessionStartHook(t *testing.T) {
 	decode := func(cfg Config) map[string][]any {
 		t.Helper()
 		rendered, err := hookSettingsJSON(cfg)
@@ -39,13 +44,13 @@ func TestHookSettingsRegisterTheSessionStartHooks(t *testing.T) {
 		return block.Hooks
 	}
 	without := decode(Config{HookCmd: "/opt/ao"})
-	hooks := resumingHooks(1)
-	with := decode(Config{HookCmd: "/opt/ao", SessionStartHooks: hooks})
+	hook := testHook(true)
+	with := decode(Config{HookCmd: "/opt/ao", SessionStartHook: hook})
 	if len(without["SessionStart"]) != 1 {
 		t.Fatalf("relay-only SessionStart = %v", without["SessionStart"])
 	}
 	got, _ := json.Marshal(with["SessionStart"])
-	want, _ := json.Marshal(append(append([]any{}, without["SessionStart"]...), claude.SessionStartHookGroups(hooks)...))
+	want, _ := json.Marshal(append(append([]any{}, without["SessionStart"]...), claude.SessionStartHookGroup(*hook)))
 	if string(got) != string(want) {
 		t.Fatalf("SessionStart = %s\nwant           %s", got, want)
 	}
@@ -61,25 +66,16 @@ func TestHookSettingsRegisterTheSessionStartHooks(t *testing.T) {
 	}
 }
 
-// resumingHooks are the test hooks, those at indexes running at a resume.
-func resumingHooks(indexes ...int) []provider.SessionStartHook {
-	hooks := append([]provider.SessionStartHook{}, testSessionStartHooks...)
-	for _, i := range indexes {
-		hooks[i].Resume = true
-	}
-	return hooks
-}
-
-// sessionStartTestSession is newWiredSession with the hooks and without its
+// sessionStartTestSession is newWiredSession with the hook and without its
 // feed loop, so the recorder holds only what the SessionStart check emits.
 func sessionStartTestSession(t *testing.T, resume string) (*Session, *eventRecorder) {
 	t.Helper()
-	return sessionStartTestSessionWith(t, resume, testSessionStartHooks, nil)
+	return sessionStartTestSessionWith(t, resume, testHook(false), nil)
 }
 
-func sessionStartTestSessionWith(t *testing.T, resume string, hooks []provider.SessionStartHook, receipts *provider.SessionStartReceipts) (*Session, *eventRecorder) {
+func sessionStartTestSessionWith(t *testing.T, resume string, hook *provider.SessionStartHook, receipts *provider.SessionStartReceipts) (*Session, *eventRecorder) {
 	t.Helper()
-	delivery, err := claude.NewSessionStartDelivery(hooks, receipts, resume)
+	delivery, err := claude.NewSessionStartDelivery(hook, receipts, resume)
 	if err != nil {
 		t.Fatalf("NewSessionStartDelivery: %v", err)
 	}
@@ -93,7 +89,6 @@ func sessionStartTestSessionWith(t *testing.T, resume string, hooks []provider.S
 		logf:              func(string, ...any) {},
 		onEvent:           rec.record,
 		sessionStart:      delivery,
-		sessionStartHooks: hooks,
 		sessionStartSince: time.Now(),
 	}
 	s.rec = newReconstructor(s.feedEnvelope)
@@ -117,24 +112,19 @@ func hookBlock(contexts ...string) string {
 	return "<system-reminder>\nSessionStart hook additional context: " + strings.Join(contexts, "\n") + "\n</system-reminder>"
 }
 
-const (
-	instructionsContext = "## First hook\n\nRole\n\n[End of first hook]"
-	memoryContext       = "## Second hook\n\n- a\n\n[End of second hook]"
-)
+const memoryContext = "## Memory\n\n- a\n\n(End of memory)"
 
 // stampedAt is context as a run at at delivers it, stamped under its
 // heading.
 func stampedAt(context string, at time.Time) string {
 	heading, rest, _ := strings.Cut(context, "\n")
-	return heading + "\n[Delivered at " + at.UTC().Format("2006-01-02T15:04:05.000Z07:00") + "; it replaces any earlier copy.]\n" + rest
+	return heading + "\n(Delivered at " + at.UTC().Format("2006-01-02T15:04:05.000Z07:00") + "; it replaces any earlier copy.)\n" + rest
 }
 
-// The contexts of a run after the expectation opened, and of one before it.
+// The context of a run after the expectation opened, and of one before it.
 var (
-	instructionsNow = stampedAt(instructionsContext, time.Now().Add(time.Minute))
-	memoryNow       = stampedAt(memoryContext, time.Now().Add(time.Minute))
-	instructionsOld = stampedAt(instructionsContext, time.Now().Add(-time.Hour))
-	memoryOld       = stampedAt(memoryContext, time.Now().Add(-time.Hour))
+	memoryNow = stampedAt(memoryContext, time.Now().Add(time.Minute))
+	memoryOld = stampedAt(memoryContext, time.Now().Add(-time.Hour))
 )
 
 func onlyWarning(t *testing.T, events []provider.ProviderEvent, prefix string) {
@@ -148,24 +138,32 @@ func onlyWarning(t *testing.T, events []provider.ProviderEvent, prefix string) {
 	}
 }
 
-// The first main request after a fresh start carries the hooks' context;
-// each hook whose heading it lacks is reported once.
+// The first main request after a fresh start carries the hook's context; a
+// request without it is reported once.
 func TestTheFirstMainRequestSettlesTheStart(t *testing.T) {
 	s, rec := sessionStartTestSession(t, "")
-	s.observeMainRequest(requestBody(hookBlock("user hook output", instructionsNow, memoryNow)))
+	s.observeMainRequest(requestBody(hookBlock("user hook output", memoryNow)))
 	if events := rec.take(); len(events) > 0 {
-		t.Fatalf("events after both delivered: %+v", events)
+		t.Fatalf("events after the hook delivered: %+v", events)
+	}
+
+	// A later block without the hook's context, here one a prompt quotes,
+	// leaves the earlier block's delivery standing.
+	s, rec = sessionStartTestSession(t, "")
+	s.observeMainRequest(requestBody(hookBlock(memoryNow), hookBlock("user hook output")))
+	if events := rec.take(); len(events) > 0 {
+		t.Fatalf("events after an earlier block delivered: %+v", events)
 	}
 
 	s, rec = sessionStartTestSession(t, "")
-	s.observeMainRequest(requestBody(hookBlock(memoryNow)))
-	onlyWarning(t, rec.take(), "first hook did not reach this session after its start: ")
+	s.observeMainRequest(requestBody(hookBlock("user hook output")))
+	onlyWarning(t, rec.take(), "the memory did not reach this session after its start: ")
 	s.observeMainRequest(requestBody())
 	if events := rec.take(); len(events) > 0 {
 		t.Fatalf("a later request settled again: %+v", events)
 	}
 
-	// A resumed session runs no hook without Resume and expects none.
+	// A resumed session runs a hook without Resume only after a compaction.
 	s, rec = sessionStartTestSession(t, "sess-1")
 	s.observeMainRequest(requestBody())
 	if events := rec.take(); len(events) > 0 {
@@ -173,93 +171,86 @@ func TestTheFirstMainRequestSettlesTheStart(t *testing.T) {
 	}
 }
 
-// A resume runs the hooks whose Resume is set, and only this run's contexts
-// count: the earlier runs' blocks a resumed transcript carries, under the
-// same marker, are stamped before the session launched.
+// A resume runs the hook when its Resume is set, and only this run's
+// context counts: the earlier runs' blocks a resumed transcript carries,
+// under the same marker, are stamped before the session launched.
 func TestTheFirstMainRequestSettlesAResume(t *testing.T) {
-	s, rec := sessionStartTestSessionWith(t, "sess-1", resumingHooks(0, 1), nil)
-	s.observeMainRequest(requestBody(
-		hookBlock(instructionsOld, memoryOld),
-		hookBlock(instructionsOld, memoryOld),
-		hookBlock(memoryNow)))
-	onlyWarning(t, rec.take(), "first hook did not reach this session after its resume: ")
+	s, rec := sessionStartTestSessionWith(t, "sess-1", testHook(true), nil)
+	s.observeMainRequest(requestBody(hookBlock(memoryOld), hookBlock(memoryOld)))
+	onlyWarning(t, rec.take(), "the memory did not reach this session after its resume: ")
 
-	// This run's hook failed: an earlier run's block is not its delivery.
-	s, rec = sessionStartTestSessionWith(t, "sess-1", resumingHooks(1), nil)
-	s.observeMainRequest(requestBody(hookBlock(instructionsOld, memoryOld)))
-	onlyWarning(t, rec.take(), "second hook did not reach this session after its resume: ")
-
-	s, rec = sessionStartTestSessionWith(t, "sess-1", resumingHooks(1), nil)
-	s.observeMainRequest(requestBody(hookBlock(memoryNow), "the user's prompt"))
+	s, rec = sessionStartTestSessionWith(t, "sess-1", testHook(true), nil)
+	s.observeMainRequest(requestBody(hookBlock(memoryOld), hookBlock(memoryNow), "the user's prompt"))
 	if events := rec.take(); len(events) > 0 {
-		t.Fatalf("events after the resuming hook delivered: %+v", events)
+		t.Fatalf("events after the hook delivered: %+v", events)
 	}
 }
 
-// Each hook's exact context, read out of a block that joins it with the
+// The hook's exact context, read out of a block that joins it with the
 // user's own hook output, is kept under the session's id with the request
-// that settles it, the latest of each hook's when two runs qualify.
-func TestTheMainRequestKeepsTheReceipts(t *testing.T) {
+// that settles it, the latest when two runs qualify.
+func TestTheMainRequestKeepsTheReceipt(t *testing.T) {
 	var kept []string
-	s, rec := sessionStartTestSessionWith(t, "", testSessionStartHooks, &provider.SessionStartReceipts{
-		Keep: func(sessionRef, label, context string) error {
-			kept = append(kept, sessionRef+" "+label+" "+context)
+	s, rec := sessionStartTestSessionWith(t, "", testHook(false), &provider.SessionStartReceipts{
+		Keep: func(sessionRef, context string) error {
+			kept = append(kept, sessionRef+" "+context)
 			return nil
 		},
 	})
 	later := stampedAt(strings.Replace(memoryContext, "- a", "- b", 1), time.Now().Add(2*time.Minute))
-	s.observeMainRequest(requestBody(hookBlock(memoryNow), hookBlock("user hook output", instructionsNow, `a "quoted" user line`, later)))
+	s.observeMainRequest(requestBody(hookBlock(memoryNow), hookBlock("user hook output", `a "quoted" user line`, later)))
 	if events := rec.take(); len(events) > 0 {
 		t.Fatalf("events: %+v", events)
 	}
-	if want := []string{"sess-1 first hook " + instructionsNow, "sess-1 second hook " + later}; strings.Join(kept, "\n") != strings.Join(want, "\n") {
+	if want := []string{"sess-1 " + later}; strings.Join(kept, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("kept %q, want %q", kept, want)
 	}
 }
 
 // PostCompact arms the compaction; the next main request settles it, and
-// the start's contexts a compaction kept are not its delivery.
+// the start's context a compaction kept is not its delivery.
 func TestTheMainRequestAfterACompactionSettlesIt(t *testing.T) {
 	s, rec := sessionStartTestSession(t, "sess-1")
 	s.finalizeCompaction("auto", "the summary")
 	if s.sessionStart.Expecting() != provider.SessionStartAfterCompaction {
-		t.Fatal("PostCompact did not arm the hooks")
+		t.Fatal("PostCompact did not arm the hook")
 	}
-	s.observeMainRequest(requestBody("the summary", hookBlock(instructionsNow, memoryNow)))
+	s.observeMainRequest(requestBody("the summary", hookBlock(memoryNow)))
 	if events := rec.take(); len(events) > 0 {
-		t.Fatalf("events after both delivered: %+v", events)
+		t.Fatalf("events after the hook delivered: %+v", events)
 	}
 
 	// The session launched before the start's run; the compaction came after
 	// it.
 	s, rec = sessionStartTestSession(t, "")
 	s.sessionStartSince = time.Now().Add(-2 * time.Hour)
-	s.observeMainRequest(requestBody(hookBlock(instructionsOld, memoryOld)))
+	s.observeMainRequest(requestBody(hookBlock(memoryOld)))
 	if events := rec.take(); len(events) > 0 {
 		t.Fatalf("events after the start delivered: %+v", events)
 	}
 	s.finalizeCompaction("manual", "")
-	s.observeMainRequest(requestBody("an older summary", hookBlock(instructionsOld, memoryOld)))
-	onlyWarning(t, rec.take(), "first hook and second hook did not reach this session after its compaction: ")
+	s.observeMainRequest(requestBody("an older summary", hookBlock(memoryOld)))
+	onlyWarning(t, rec.take(), "the memory did not reach this session after its compaction: ")
 }
 
 // Only a hook block's context stamped after the expectation opened counts:
-// a summary that quotes a context, an earlier run's block, a context without
-// a stamp or with one that does not read as a time, a heading after the
-// block's JSON string ends, or a block whose string does not decode is not a
-// delivery.
+// a summary that quotes the context, an earlier run's block, a context
+// without a stamp or with one that does not read as a time, a heading after
+// the block's JSON string ends, or a block whose string does not decode is
+// not a delivery.
 func TestOnlyAStampedHookBlockDelivers(t *testing.T) {
+	const missing = "the memory did not reach this session after its compaction: "
 	for name, tc := range map[string]struct {
 		texts []string
 		want  string
 	}{
-		"quoted in a summary":      {[]string{"Summary: the agent read " + instructionsNow + " and " + memoryNow}, "first hook and second hook "},
-		"an earlier run's block":   {[]string{hookBlock(instructionsOld, memoryOld)}, "first hook and second hook "},
-		"no stamp":                 {[]string{hookBlock(instructionsContext, memoryNow)}, "first hook did not"},
-		"a stamp that is no time":  {[]string{hookBlock(strings.Replace(instructionsNow, "T", "x", 1), memoryNow)}, "first hook did not"},
-		"after the block's string": {[]string{hookBlock(instructionsNow), memoryNow}, "second hook did not"},
-		"past an escaped quote":    {[]string{hookBlock(`a "quoted" word`, instructionsNow, memoryNow)}, ""},
-		"cut short":                {[]string{hookBlock(instructionsNow, strings.TrimSuffix(memoryNow, "[End of second hook]"))}, ""},
+		"quoted in a summary":      {[]string{"Summary: the agent read " + memoryNow}, missing},
+		"an earlier run's block":   {[]string{hookBlock(memoryOld)}, missing},
+		"no stamp":                 {[]string{hookBlock(memoryContext)}, missing},
+		"a stamp that is no time":  {[]string{hookBlock(strings.Replace(memoryNow, "T", "x", 1))}, missing},
+		"after the block's string": {[]string{hookBlock("user hook output"), memoryNow}, missing},
+		"past an escaped quote":    {[]string{hookBlock(`a "quoted" word`, memoryNow)}, ""},
+		"cut short":                {[]string{hookBlock(strings.TrimSuffix(memoryNow, "(End of memory)"))}, ""},
 	} {
 		s, rec := sessionStartTestSession(t, "sess-1")
 		s.finalizeCompaction("auto", "")
@@ -281,8 +272,8 @@ func TestOnlyAStampedHookBlockDelivers(t *testing.T) {
 	var logged []string
 	s.logf = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
 	s.finalizeCompaction("auto", "")
-	s.observeMainRequest([]byte(`{"messages":[{"role":"user","content":"` + sessionStartMarker + `## Second hook\x"}]}`))
-	onlyWarning(t, rec.take(), "first hook and second hook did not reach")
+	s.observeMainRequest([]byte(`{"messages":[{"role":"user","content":"` + sessionStartMarker + `## Memory\x"}]}`))
+	onlyWarning(t, rec.take(), missing)
 	if !slices.ContainsFunc(logged, func(line string) bool {
 		return strings.Contains(line, "SessionStart context block in a model request is not a JSON string")
 	}) {
@@ -290,23 +281,23 @@ func TestOnlyAStampedHookBlockDelivers(t *testing.T) {
 	}
 }
 
-// NewSession follows every hook from a fresh start and those whose Resume is
-// set from a resume, and refuses hooks the delivery cannot tell apart before
-// it launches anything.
-func TestNewSessionFollowsTheHooks(t *testing.T) {
+// NewSession follows the hook from a fresh start, and from a resume when
+// its Resume is set, and refuses a hook the delivery cannot tell apart
+// before it launches anything.
+func TestNewSessionFollowsTheHook(t *testing.T) {
 	binary := mockexec.Write(t, t.TempDir()+"/claude", "#!/bin/sh\nexec sleep 30\n")
 	for name, tc := range map[string]struct {
 		resume string
-		hooks  []provider.SessionStartHook
+		hook   *provider.SessionStartHook
 		want   provider.SessionStartEvent
 	}{
-		"fresh":            {"", testSessionStartHooks, provider.SessionStartAfterStart},
-		"resume":           {"sess-1", testSessionStartHooks, ""},
-		"resume of a hook": {"sess-1", resumingHooks(1), provider.SessionStartAfterResume},
+		"fresh":            {"", testHook(false), provider.SessionStartAfterStart},
+		"resume":           {"sess-1", testHook(false), ""},
+		"resume of a hook": {"sess-1", testHook(true), provider.SessionStartAfterResume},
 	} {
 		rec := &eventRecorder{}
 		s, err := NewSession(context.Background(), testThread, Config{
-			Binary: binary, WorkDir: t.TempDir(), HookCmd: "/opt/ao", Resume: tc.resume, SessionStartHooks: tc.hooks,
+			Binary: binary, WorkDir: t.TempDir(), HookCmd: "/opt/ao", Resume: tc.resume, SessionStartHook: tc.hook,
 		}, rec.record)
 		if err != nil {
 			t.Fatalf("%s: NewSession: %v", name, err)
@@ -321,7 +312,7 @@ func TestNewSessionFollowsTheHooks(t *testing.T) {
 
 	_, err := NewSession(context.Background(), testThread, Config{
 		Binary: binary, WorkDir: t.TempDir(), HookCmd: "/opt/ao",
-		SessionStartHooks: []provider.SessionStartHook{{Label: "a", Command: "a"}},
+		SessionStartHook: &provider.SessionStartHook{Label: "a", Command: "a"},
 	}, func(provider.ProviderEvent) {})
 	if err == nil || !strings.Contains(err.Error(), "heading, ending and stamp are all required") {
 		t.Fatalf("NewSession with a hook without a heading: %v", err)

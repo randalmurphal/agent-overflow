@@ -1,7 +1,6 @@
 package app
 
 import (
-	"agent-overflow/internal/memory"
 	"agent-overflow/internal/testutil/mockexec"
 	"cmp"
 	"context"
@@ -768,7 +767,7 @@ func TestConversationRollbackCodexRevertsInPlaceWhenSupported(t *testing.T) {
 	if err := app.store.PutCodexDeveloperInstructionsDigest(thread.ID, "provider-inplace-revert", strings.Repeat("d", 64)); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.store.PutSessionStartReceipt(thread.ID, "provider-inplace-revert", memory.Label, strings.Repeat("e", 64)); err != nil {
+	if err := app.store.PutSessionStartReceipt(thread.ID, "provider-inplace-revert", strings.Repeat("e", 64)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -777,7 +776,7 @@ func TestConversationRollbackCodexRevertsInPlaceWhenSupported(t *testing.T) {
 	}
 	// It can drop the memory a resume delivered too, so the next resume
 	// must run the hook.
-	if received, err := app.store.SessionStartReceipts(thread.ID, "provider-inplace-revert"); err != nil || len(received) != 0 {
+	if received, err := app.store.SessionStartReceipt(thread.ID, "provider-inplace-revert"); err != nil || received != "" {
 		t.Fatalf("receipts after an in-place revert = %v, %v; want none", received, err)
 	}
 	// The cut can drop a developer-instructions message injected at an

@@ -320,7 +320,7 @@ func (a *App) startSessionNow(threadID string) error {
 		return fmt.Errorf("start session: %w", err)
 	}
 
-	if len(mem.Hooks) > 0 {
+	if mem.Hook != nil {
 		newSess.MemoryPlan = mem.Plan
 	}
 	a.sessionManager().put(threadID, newSess)
@@ -584,7 +584,7 @@ func (a *App) spawnProviderSession(
 		}
 		cfg.Binary = a.providerBinaryPath(t.Provider)
 		cfg.AppendSystemPrompt = appGuide
-		cfg.SessionStartHooks = mem.Hooks
+		cfg.SessionStartHook = mem.Hook
 		cfg.SessionStartReceipts = mem.Receipts
 		cfg.NativeMemoryOff = appSettings.ClaudeNativeMemoryDisabled
 		cfg.InstalledCLIVersion = a.installedProviderVersion(t.Provider)
@@ -652,7 +652,7 @@ func (a *App) spawnProviderSession(
 		// the next start or resume: a resumed thread whose text changed
 		// gets it injected (codexDeveloperInstructionsDelivery).
 		cfg.DeveloperInstructions = a.codexDeveloperInstructions(threadID, appGuide, mcpServers)
-		cfg.SessionStartHooks = mem.Hooks
+		cfg.SessionStartHook = mem.Hook
 		cfg.SessionStartReceipts = mem.Receipts
 		cfg.WritableRoots = mem.Dirs
 		cfg.NativeMemoryOff = appSettings.CodexNativeMemoryDisabled
@@ -781,7 +781,7 @@ func (a *App) spawnProviderSession(
 		// headless one; there is no separate TUI binary setting.
 		cfg.Binary = a.providerBinaryPath(string(provider.Claude))
 		cfg.AppendSystemPrompt = appGuide
-		cfg.SessionStartHooks = mem.Hooks
+		cfg.SessionStartHook = mem.Hook
 		cfg.SessionStartReceipts = mem.Receipts
 		cfg.NativeMemoryOff = appSettings.ClaudeNativeMemoryDisabled
 		cfg.InstalledCLIVersion = a.installedProviderVersion(string(provider.Claude))
