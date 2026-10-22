@@ -1290,6 +1290,199 @@
           ]
         }
       ]
+    },
+    {
+      "name": "a discard record joins the run of the rows it names",
+      "why": "The abandoned-blocks record lands right after the rows Claude discarded. After discarded thinking or tool rows it has a member before it and joins that run like any notification, and the retry continues the same run; after discarded prose it follows a row that already ended the run and stands alone.",
+      "items": [
+        {
+          "id": "u1",
+          "kind": "user_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "k1",
+          "kind": "thinking",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "r1",
+          "kind": "notification",
+          "toolName": "abandoned_blocks",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{\"kind\":\"abandoned_blocks\",\"item_ids\":[\"k1\"]}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "k2",
+          "kind": "thinking",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "t1",
+          "kind": "tool_call",
+          "toolName": "Bash",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "p1",
+          "kind": "assistant_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "r2",
+          "kind": "notification",
+          "toolName": "abandoned_blocks",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{\"kind\":\"abandoned_blocks\",\"item_ids\":[\"p1\"]}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "t2",
+          "kind": "tool_call",
+          "toolName": "Bash",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "p2",
+          "kind": "assistant_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        }
+      ],
+      "runs": [
+        {
+          "firstItemId": "k1",
+          "lastItemId": "t1",
+          "memberIds": [
+            "k1",
+            "r1",
+            "k2",
+            "t1"
+          ],
+          "stubs": [
+            {
+              "shippedIds": [
+                "k1",
+                "r1",
+                "k2",
+                "t1"
+              ],
+              "memberCount": 4,
+              "loadedFirstItemId": "k1",
+              "loadedLastItemId": "t1",
+              "unshippedBefore": 0,
+              "unshippedAfter": 0,
+              "unshippedGroups": [],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            },
+            {
+              "shippedIds": [
+                "k2",
+                "t1"
+              ],
+              "memberCount": 4,
+              "loadedFirstItemId": "k2",
+              "loadedLastItemId": "t1",
+              "unshippedBefore": 2,
+              "unshippedAfter": 0,
+              "unshippedGroups": [
+                {
+                  "kind": "notification",
+                  "toolName": "abandoned_blocks",
+                  "mcp": "",
+                  "rows": 1
+                },
+                {
+                  "kind": "thinking",
+                  "toolName": "",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            }
+          ]
+        },
+        {
+          "firstItemId": "t2",
+          "lastItemId": "t2",
+          "memberIds": [
+            "t2"
+          ],
+          "stubs": [
+            {
+              "shippedIds": [
+                "t2"
+              ],
+              "memberCount": 1,
+              "loadedFirstItemId": "t2",
+              "loadedLastItemId": "t2",
+              "unshippedBefore": 0,
+              "unshippedAfter": 0,
+              "unshippedGroups": [],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            }
+          ]
+        }
+      ]
     }
   ]
 }

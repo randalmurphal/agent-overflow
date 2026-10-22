@@ -129,6 +129,9 @@ Mechanism in
   (ruling 2026-10-16). The rows are not rewritten: the note is its own row
   naming them, and a read of a row it names serves the row marked
   (`Item.discardedBy`) whether or not the note is in the loaded window.
+  The note joins the activity run of discarded reasoning or tool rows like
+  any notification, and stands alone after discarded prose (ruling
+  2026-10-21).
 
 ## Sidebar, threads, drafts
 
