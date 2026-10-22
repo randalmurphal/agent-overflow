@@ -13,7 +13,24 @@ export function measureDensity<T extends string>(el: HTMLElement, rungs: readonl
   if (availableWidth <= 0) {
     return (rungs as readonly string[]).includes(previous ?? '') ? (previous as T) : rungs[0];
   }
-  const fits = (): boolean => el.scrollWidth <= availableWidth + OVERFLOW_EPSILON_PX;
+  const fits = (): boolean => {
+    if (el.scrollWidth > availableWidth + OVERFLOW_EPSILON_PX) return false;
+    // A row's children can run past its content box into its inline-end
+    // padding without scrollWidth passing clientWidth, so the row read as
+    // fitting while its last control sat on the padding (Send 9px off its
+    // column at a 360px phone width). Measure the children's end against
+    // the content box as well.
+    const box = el.getBoundingClientRect();
+    // No layout (a DOM without one): scrollWidth was the whole read.
+    if (box.width <= 0) return true;
+    const style = getComputedStyle(el);
+    const contentEnd = box.right - parseFloat(style.paddingRight) - parseFloat(style.borderRightWidth);
+    let childrenEnd = box.left;
+    for (const child of el.children) {
+      childrenEnd = Math.max(childrenEnd, child.getBoundingClientRect().right);
+    }
+    return childrenEnd <= contentEnd + OVERFLOW_EPSILON_PX;
+  };
 
   // Restore the attribute afterward; Svelte remains the final owner.
   let result: T = rungs[rungs.length - 1];

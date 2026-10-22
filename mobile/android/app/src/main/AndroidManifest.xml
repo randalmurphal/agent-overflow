@@ -94,4 +94,11 @@
         `navigator.vibrate` a silent no-op.
     -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!--
+        Runtime-prompted. The WebView's getUserMedia asks for both through
+        Capacitor's BridgeWebChromeClient when the composer's mic is pressed,
+        and is refused unless both are declared here.
+    -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 </manifest>

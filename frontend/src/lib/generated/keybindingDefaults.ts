@@ -315,6 +315,13 @@ export const KEYBINDING_DEFAULTS: readonly KeybindingRule[] = [
     "defaultKey": "mod+shift+b"
   },
   {
+    "key": "mod+shift+space",
+    "command": "composer.dictate",
+    "when": "hasActiveThread \u0026\u0026 threadsOperate \u0026\u0026 !anyModalOpen",
+    "defaultId": "composer.dictate",
+    "defaultKey": "mod+shift+space"
+  },
+  {
     "key": "alt+shift+m",
     "command": "sound.toggleMute",
     "defaultId": "sound.toggleMute",

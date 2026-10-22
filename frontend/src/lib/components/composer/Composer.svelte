@@ -37,6 +37,15 @@
     threadMachineUnreachable,
   } from '../../stores/attachedBackends.svelte';
   import { HOME_BACKEND } from '../../transport/backendKey';
+  import { DictationSession } from '../../dictation/dictationSession.svelte';
+  import DictationButton from './DictationButton.svelte';
+  import { browserDictationEnvironment } from '../../dictation/browserDictation';
+  import {
+    dictationAvailable,
+    dictationRemote,
+    refreshDictationSources,
+    registerComposerDictation,
+  } from '../../stores/dictation.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { deriveComposerSendState } from './composerSendState';
   import { dispatchSend } from './composerSend';
@@ -148,6 +157,40 @@
     return !(machine === HOME_BACKEND && hasScope('host'));
   });
   let compactLayout = $derived(isCompactLayout());
+
+  // Dictation records here and transcribes on the computer the thread runs
+  // on. A session belongs to one thread on one computer: switching either
+  // abandons a recording rather than landing its words in another thread.
+  let dictationMachine = $derived(threadMachine(pane.threadId ?? '', pane.thread?.projectId));
+  let dictation = $state<DictationSession | null>(null);
+  $effect(() => {
+    void refreshDictationSources(dictationMachine);
+  });
+  $effect(() => {
+    const backend = dictationMachine;
+    void pane.threadId;
+    const session = new DictationSession(browserDictationEnvironment, dictationRemote(backend), (text) =>
+      surface?.insertText(text) ?? false,
+    );
+    dictation = session;
+    const release = registerComposerDictation(pane.paneId, session, () => showDictation);
+    return () => {
+      release();
+      session.dispose();
+    };
+  });
+  // An engine that cannot record shows no mic rather than one that fails.
+  const engineRecords = browserDictationEnvironment.format() !== null;
+  let showDictation = $derived(
+    engineRecords && !isDisabled && !sendUngranted && !offline && dictationAvailable(dictationMachine),
+  );
+  // Hiding the mic mid-recording (a sign-out, a lost grant) abandons the
+  // recording, so no microphone stays open behind a control that is gone.
+  $effect(() => {
+    const session = dictation;
+    if (!showDictation && session) untrack(() => session.cancel());
+  });
+
   let respondUngranted = $derived(!threadHasScope('approvals:respond', pane.threadId, pane.thread?.projectId));
   // Mid-round signal: a wire round is currently in flight (the model
   // is streaming text/tool work). The composer stays typeable during
@@ -795,6 +838,11 @@
    * component can find it.
    */
   function claimKeydown(e: KeyboardEvent): boolean {
+    if (e.key === 'Escape' && dictation && dictation.phase !== 'idle') {
+      e.preventDefault();
+      dictation.cancel();
+      return true;
+    }
     if (hasUserInputPrompt && e.key === 'ArrowUp' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       const optionButtons = composerRoot?.querySelectorAll<HTMLButtonElement>('[data-user-input-option]');
       const lastOption = optionButtons?.[optionButtons.length - 1];
@@ -1076,7 +1124,16 @@
       {blockAttachment}
       uploadThreadId={threadIdForUpload}
       ensureUploadThreadId={ensureThreadIdForUpload}
-    />
+    >
+      <!-- The phone puts the mic in the input row, in Send's column; the
+           desktop keeps it in the toolbar beside Send (owner ruling,
+           2026-10-21). One session either way. -->
+      {#snippet trailing()}
+        {#if compactLayout && showDictation && dictation}
+          <DictationButton session={dictation} />
+        {/if}
+      {/snippet}
+    </ComposerInputSurface>
 
     {#if !hasInteractivePrompt && preparingWorktree}
       <div
@@ -1102,6 +1159,7 @@
       hasCurrentPlan={Boolean(latestPlanItem)}
       planCommentCount={hasDraftDiffReviewComments ? activeDiffReviewDraftComments.length : latestPlanDraftComments.length}
       hideSendButton={hasInteractivePrompt}
+      dictation={showDictation && !compactLayout ? dictation : null}
       onSend={() => send()}
       onSendWithoutPlanComments={(hasDraftPlanComments || hasDraftDiffReviewComments) && hasDraftContent ? () => send(false) : undefined}
       onSendInNewThread={hasPlanImplementAction ? sendPlanToNewThread : undefined}

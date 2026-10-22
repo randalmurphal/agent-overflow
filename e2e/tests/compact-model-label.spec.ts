@@ -1,15 +1,20 @@
-// Phone toolbar density, current picker summaries, and picker handoff.
+// Phone toolbar density, current picker summaries, and picker handoff, with
+// the dictation mic in the input row on the phone, in Send's column; the
+// 900px step is the desktop layout, where the mic is back in the toolbar.
 import { test, expect } from './fixtures.js';
 import { seedAgentThread } from './agent-visibility-helpers.js';
+import { expectDesktopMicAligned, expectPhoneMicAligned, setUpDictation } from './dictation-helpers.js';
 
 for (const provider of ['claude', 'codex'] as const) {
   test(`${provider} keeps readable model text before rolling up other controls`, async ({ harness, page }) => {
     await seedAgentThread(harness, 'model-label', 'Model label', provider);
+    await setUpDictation(harness);
     await harness.open(page);
     await page.getByTestId('thread-row').click();
     const toolbar = page.getByTestId('composer-toolbar');
     const model = page.getByTestId('composer-model-menu-trigger');
     const label = model.locator(':scope > span.truncate');
+    const input = page.getByLabel('Message Input');
     for (const width of [412, 360, 320, 900, 412]) {
       await page.setViewportSize({ width, height: 850 });
       // At the phone's normal width the model text must fit in full.
@@ -20,6 +25,17 @@ for (const provider of ['claude', 'codex'] as const) {
         await expect.poll(() => label.evaluate((el) => el.clientWidth)).toBeGreaterThan(20);
       }
       await expect.poll(() => toolbar.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+      await expect(page.getByTestId('composer-dictate')).toBeVisible();
+      if (width <= 412) {
+        // The mic shares Send's column and the text line's center, with one
+        // line of text and with four.
+        await expectPhoneMicAligned(page);
+        await input.fill('First line of a longer message that wraps and keeps going\nsecond line\nthird line\nfourth line');
+        await expectPhoneMicAligned(page);
+        await input.fill('');
+      } else {
+        await expectDesktopMicAligned(page);
+      }
       if (width <= 412) {
         await expect(page.getByTestId('composer-pickers-rollup')).toBeVisible();
         await expect(page.getByTestId('composer-effort-trigger')).toBeHidden();

@@ -27,6 +27,8 @@
 		</dict>
 		<key>NSHighResolutionCapable</key>
 		<true/>
+		<key>NSMicrophoneUsageDescription</key>
+		<string>Agent Overflow records from the microphone only while you dictate a message.</string>
 		<key>NSHumanReadableCopyright</key>
 		<string>(c) 2026, Randy Murphy</string>
 	</dict>

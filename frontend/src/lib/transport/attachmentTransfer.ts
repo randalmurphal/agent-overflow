@@ -22,7 +22,7 @@ import { fetchPairedComputer } from './deviceSession';
 // (./homeEndpoint.ts), and the ticket in the query is the admission
 // either way.
 
-import { MintAttachmentDownloadTicket, MintAttachmentUploadTicket } from '../stores/bindings';
+import { MintAttachmentDownloadTicket, MintAttachmentUploadTicket, MintDictationChunkTicket } from '../stores/bindings';
 import { backendCredentials, backendTransferUrl } from './homeEndpoint';
 import { requireEntityBackend, withBackendTarget } from './backends';
 import { resolveThreadBackend } from './entityIndex';
@@ -67,6 +67,24 @@ export async function uploadAttachmentBytes(threadId: string, file: File): Promi
     throw new Error(await transferFailure(response, 'Upload failed'));
   }
   return (await response.json()) as Attachment;
+}
+
+/**
+ * Uploads piece `seq` of an open dictation recording to the computer that
+ * opened it. The ticket fixes the recording, the piece's place and its exact
+ * length; the PUT contributes the bytes. Pieces go in order, one at a time:
+ * the recording refuses one out of order.
+ */
+export async function uploadDictationPiece(backend: BackendKey, recordingId: string, seq: number, piece: Blob): Promise<void> {
+  const url = await withBackendTarget(backend, () => MintDictationChunkTicket(recordingId, seq, piece.size));
+  const response = await fetchPairedComputer(backend, networkFetch, backendTransferUrl(url, backend), {
+    method: 'PUT',
+    body: piece,
+    credentials: backendCredentials(backend),
+  });
+  if (!response.ok) {
+    throw new Error(await transferFailure(response, 'Recording upload failed'));
+  }
 }
 
 /**

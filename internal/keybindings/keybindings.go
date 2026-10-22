@@ -214,6 +214,10 @@ var Defaults = []Keybinding{
 	{Key: "mod+shift+e", Command: "composer.picker.effort", When: "hasActiveThread && !anyModalOpen", DefaultID: "composer.picker.effort"},
 	{Key: "mod+shift+a", Command: "composer.picker.access", When: "hasActiveThread && !anyModalOpen", DefaultID: "composer.picker.access"},
 	{Key: "mod+shift+b", Command: "composer.picker.branch", When: "hasActiveThread && !anyModalOpen", DefaultID: "composer.picker.branch"},
+	// Dictation starts and stops in the focused pane's composer; it never
+	// sends. Space, because every free mod+shift letter is claimed above or
+	// by the shell.
+	{Key: "mod+shift+space", Command: "composer.dictate", When: "hasActiveThread && threadsOperate && !anyModalOpen", DefaultID: "composer.dictate"},
 	// Quick mute for notification sounds on THIS screen
 	// (notificationSoundsEnabled is device tier: notifications still
 	// appear, they just stop making noise here). Un-gated, because the

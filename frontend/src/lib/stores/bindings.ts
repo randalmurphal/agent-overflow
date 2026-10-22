@@ -384,6 +384,14 @@ export {
   // would pay a mint round trip per tile.
   MintAttachmentUploadTicket,
   MintAttachmentDownloadTicket,
+  // Dictation: a recording opened on the composer's computer, its pieces
+  // uploaded over HTTP under single-use tickets, transcribed on finish
+  // (lib/dictation/, lib/transport/dictationTransfer.ts).
+  DictationSources,
+  BeginDictation,
+  MintDictationChunkTicket,
+  FinishDictation,
+  CancelDictation,
   // Writes an image attachment into the owning computer's Downloads folder,
   // for a client that cannot run a browser download (utils/fileSaveAction.ts).
   SaveAttachment,
@@ -730,6 +738,7 @@ export {
 } from '../../../bindings/agent-overflow/internal/network/models.js';
 // One result per launch a Stop All named; read, never constructed.
 export type { BackgroundTaskStop } from '../../../bindings/agent-overflow/internal/app/models.js';
+export type { DictationSources as DictationSourceSet } from '../../../bindings/agent-overflow/internal/app/models.js';
 export type {
   ForgeProject,
   OpenPRThreadRequest,

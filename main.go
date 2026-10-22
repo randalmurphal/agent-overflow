@@ -536,6 +536,8 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// reads its attachment store per call, so the store opening during
 		// ServiceStartup is not a problem this config has to sequence.
 		AttachmentTransfer: appservice.AttachmentTransfer(appService.App),
+		// Dictation recordings, uploaded in pieces while the client records.
+		DictationTransfer: appservice.DictationTransfer(appService.App),
 		// The SPA a paired phone shell downloads from this backend
 		// (internal/bundle, docs/specs/remote-access.md §9). Nil on a
 		// dev-server boot, which leaves the two routes answering 404 and

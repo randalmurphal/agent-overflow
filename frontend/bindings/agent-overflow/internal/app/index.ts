@@ -36,6 +36,7 @@ export {
     ConversationMutationState,
     CreateThreadOptions,
     DeviceRevocationResult,
+    DictationSources,
     DiffContextRequest,
     DiffContextResult,
     Draft,
