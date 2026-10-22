@@ -1271,6 +1271,62 @@ test('a notification tap opens its thread after the lock is answered', async ({
   await expect(tapped.getByTestId('chat-header-title')).toHaveText('Tapped thread');
 });
 
+// Read-aloud on the phone goes through Android's TextToSpeech, because the
+// WebView has no speechSynthesis. This proves both halves on a device: the
+// WebView really has none, and the Speech plugin lists the phone's voices
+// and reads a reply to its end, pausing and resuming at its sentence.
+test('read-aloud reads a reply through the phone’s text-to-speech', async ({ device, harness, page }) => {
+  await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      {
+        name: 'shell-read-aloud',
+        repo: { commits: [{ message: 'init', files: { 'README.md': '# Seeded\n' } }] },
+        threads: [
+          {
+            title: 'Read aloud thread',
+            turns: [{ userText: 'hello', items: [{ kind: 'assistant_text',
+              summary: 'The first sentence is here. The second one follows it.\n\n```sh\necho skipped\n```\n\nThe last sentence ends the reply.',
+            }] }],
+          },
+        ],
+      },
+    ],
+  });
+
+  const invite = await harness.rpc<PairingInvite>('MintDevicePairing', 'phone', 'full');
+  await page.goto(SHELL_ORIGIN + '/' + fragmentOf(invite));
+  expect(await page.evaluate(() => 'speechSynthesis' in window), 'the WebView must still lack speechSynthesis').toBe(false);
+  // Read-aloud is off until turned on; this device's preference lives in
+  // frontend storage.
+  await page.evaluate(() => localStorage.setItem('agent-overflow:frontend:readAloud', JSON.stringify({ enabled: true })));
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Pair this device' })).toBeVisible();
+  await page.getByLabel('Device name').fill('Emulator shell');
+  await page.getByRole('button', { name: 'Pair' }).click();
+  const shown = page.getByLabel('Verification number');
+  await expect(shown).toBeVisible();
+  await confirmOnHost(harness, ((await shown.textContent()) ?? '').trim());
+  const lock = page.getByTestId('app-lock');
+  await expect(lock).toBeVisible({ timeout: PAIRED_MOUNT_MS });
+  await passCredentialPrompt(device, lock);
+
+  await page.getByTestId('thread-row').filter({ hasText: 'Read aloud thread' }).click({ timeout: PAIRED_MOUNT_MS });
+  // The control mounts only once the plugin has listed a voice.
+  const slot = page.getByTestId('assistant-message-read-aloud-slot');
+  const play = page.getByTestId('assistant-message-read-aloud');
+  await expect(play).toBeVisible({ timeout: PAIRED_MOUNT_MS });
+
+  await play.click();
+  await expect(slot).toHaveAttribute('data-phase', 'playing');
+  await play.click();
+  await expect(slot).toHaveAttribute('data-phase', 'paused');
+  await expect(page.getByTestId('assistant-message-read-aloud-restart')).toBeVisible();
+  await play.click();
+  await expect(slot).toHaveAttribute('data-phase', 'playing');
+  // The engine's own end of the last queued sentence returns it to idle.
+  await expect(slot).toHaveAttribute('data-phase', 'idle', { timeout: 60_000 });
+});
+
 // ---------------------------------------------------------------------
 // The last hop: a real message through Google, by hand.
 // ---------------------------------------------------------------------

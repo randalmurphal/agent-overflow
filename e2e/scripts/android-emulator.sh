@@ -55,8 +55,15 @@ rm -f "$ANDROID_AVD_HOME/$avd.avd"/*.lock
 
 docker build -q -t ao-emulator -f "$repo/e2e/android/emulator.Dockerfile" "$repo/e2e/android" >/dev/null
 kvm_gid="$(stat -c %g /dev/kvm)"
+# Rootless Podman (often installed as `docker`) maps --user to a sub-UID,
+# which cannot run the SDK's owner-only binaries; keep-id runs as the
+# developer's own UID instead.
+userns=()
+if docker --version 2>/dev/null | grep -qi podman; then
+  userns=(--userns=keep-id)
+fi
 docker run -d --name "$name" --network host --device /dev/kvm --group-add "$kvm_gid" \
-  --user "$(id -u):$(id -g)" --memory "$memory" --memory-swap "$memory" --cpus 4 \
+  "${userns[@]}" --user "$(id -u):$(id -g)" --memory "$memory" --memory-swap "$memory" --cpus 4 \
   -e HOME="$HOME" -e ANDROID_HOME="$ANDROID_HOME" -e ANDROID_SDK_ROOT="$ANDROID_HOME" \
   -e ANDROID_AVD_HOME="$ANDROID_AVD_HOME" \
   -v "$ANDROID_HOME:$ANDROID_HOME:ro" -v "$HOME/.android:$HOME/.android" \
