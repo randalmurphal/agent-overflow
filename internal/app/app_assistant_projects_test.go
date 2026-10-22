@@ -339,7 +339,7 @@ func TestARefusedAssistantDeleteKeepsWhatLivesUnderIt(t *testing.T) {
 		t.Parallel()
 		f, current, ids := assistant(t, own)
 		if _, err := f.app.store.CreateThreadTransfer(store.ThreadTransfer{
-			ID: entityid.New(), ThreadID: current, PeerBackendID: entityid.New(), Kind: "move", Direction: "outgoing",
+			ID: entityid.New(), ThreadID: current, PeerBackendID: entityid.New(), Kind: "copy", Direction: "outgoing",
 			ActivationHash: strings.Repeat("a", 64), PrivateState: []byte(`{}`),
 		}); err != nil {
 			t.Fatal(err)

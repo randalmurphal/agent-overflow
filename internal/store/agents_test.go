@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
@@ -82,7 +83,7 @@ func TestAnAssistantsThreadLivesInItsHome(t *testing.T) {
 }
 
 // Nothing deletes an assistant's record while threads live under it: a
-// thread delete's mark and a move's commit are refused, naming the counts,
+// thread delete's mark and the store delete are refused, naming the counts,
 // and leave everything in place. With them gone the mark goes through, and
 // from then on no helper is recorded for the assistant.
 func TestAnAssistantIsDeletedOnlyWithNothingUnderIt(t *testing.T) {
@@ -123,14 +124,6 @@ func TestAnAssistantIsDeletedOnlyWithNothingUnderIt(t *testing.T) {
 		t.Fatalf("a refused mark marked %q %v", pending, err)
 	}
 	refused("the store delete", s.DeleteThread("next"))
-	move, err := s.CreateThreadTransfer(transferRequest("next", "move", "outgoing"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	advanceTransfer(t, s, move.ID, "prepared")
-	_, err = s.AdvanceThreadTransfer(move.ID, "committed", strings.Repeat("b", 64))
-	refused("the move's commit", err)
-	advanceTransfer(t, s, move.ID, "canceled")
 
 	for _, id := range []string{"old", "helper"} {
 		if err := s.DeleteThread(id); err != nil {
@@ -153,6 +146,87 @@ func TestAnAssistantIsDeletedOnlyWithNothingUnderIt(t *testing.T) {
 	}
 	if _, found, err := s.GetAgent(agent.ID); err != nil || found {
 		t.Fatalf("the record after the delete = %v %v", found, err)
+	}
+}
+
+// An assistant's current thread does not move: its transfer row is refused,
+// and a move recorded before the thread became the assistant's is refused at
+// its commit, which leaves the record and the transfer to cancel. A copy
+// keeps the record, and a past thread or a helper moves and stops being one.
+func TestAnAssistantsCurrentThreadDoesNotMove(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	homeThread(t, s, "old", "")
+	mustRetitle(t, s, "old", "Ops")
+	agent := StandingAgent{ID: "a-ops", ThreadID: "old", Home: "/h/old", CreatedAt: 1}
+	if err := s.CreateStandingAgent(agent); err != nil {
+		t.Fatal(err)
+	}
+	homeThread(t, s, "next", "")
+	if _, err := s.HandOffAssistant("old", "next", 10); err != nil {
+		t.Fatal(err)
+	}
+	homeThread(t, s, "helper", agent.ID)
+	var deleted []string
+	s.OnAgentRecordDeleted(func(home string) { deleted = append(deleted, home) })
+	isCurrent := func(id string) bool {
+		t.Helper()
+		_, found, err := s.GetStandingAgent(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return found
+	}
+
+	refused := transferRequest("next", "move", "outgoing")
+	if _, err := s.CreateThreadTransfer(refused); !errors.Is(err, ErrAssistantThreadStays) {
+		t.Fatalf("a move of the current thread = %v, want ErrAssistantThreadStays", err)
+	}
+	if _, err := s.GetThreadTransfer(refused.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("the refused move left a row: %v", err)
+	}
+	copied, err := s.CreateThreadTransfer(transferRequest("next", "copy", "outgoing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	advanceTransfer(t, s, copied.ID, "prepared", "committed", "complete")
+	if !isCurrent("next") {
+		t.Fatal("a copy dropped the record")
+	}
+
+	for _, id := range []string{"old", "helper"} {
+		move, err := s.CreateThreadTransfer(transferRequest(id, "move", "outgoing"))
+		if err != nil {
+			t.Fatalf("a move of the %s thread: %v", id, err)
+		}
+		advanceTransfer(t, s, move.ID, "prepared", "committed")
+	}
+	if ids, err := s.AssistantDependentThreadIDs(agent.ID); err != nil || len(ids) != 0 {
+		t.Fatalf("after the moves the threads under the assistant = %q %v, want none", ids, err)
+	}
+
+	homeThread(t, s, "early", "")
+	mustRetitle(t, s, "early", "Early")
+	early, err := s.CreateThreadTransfer(transferRequest("early", "move", "outgoing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateStandingAgent(StandingAgent{ID: "a-early", ThreadID: "early", Home: "/h/early", CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	advanceTransfer(t, s, early.ID, "prepared")
+	if _, err := s.AdvanceThreadTransfer(early.ID, "committed", strings.Repeat("b", 64)); !errors.Is(err, ErrAssistantThreadStays) {
+		t.Fatalf("the commit of a move of a current thread = %v, want ErrAssistantThreadStays", err)
+	}
+	if row, err := s.GetThreadTransfer(early.ID); err != nil || row.Phase != "prepared" {
+		t.Fatalf("the refused commit left the transfer %+v %v, want it prepared", row, err)
+	}
+	if !isCurrent("early") {
+		t.Fatal("the refused commit dropped the record")
+	}
+	advanceTransfer(t, s, early.ID, "canceled")
+	if len(deleted) != 0 {
+		t.Fatalf("a transfer deleted the records of %q", deleted)
 	}
 }
 

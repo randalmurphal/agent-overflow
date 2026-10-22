@@ -195,6 +195,24 @@ func (s *Store) AssistantCurrentThreadOf(threadID string) (string, bool, error) 
 // outside every project, with no group, worktree or branch.
 var ErrAssistantThreadNotInHome = errors.New("store: an assistant's thread lives in its home, outside every project")
 
+// ErrAssistantThreadStays refuses a move of an assistant's current thread to
+// another computer: the assistant, its home, loops and watches stay on this
+// one. A copy is an ordinary conversation there.
+var ErrAssistantThreadStays = errors.New("store: an assistant's current thread stays on its computer")
+
+// refuseAssistantMoveTx returns ErrAssistantThreadStays when threadID is an
+// assistant's current thread.
+func refuseAssistantMoveTx(tx *sql.Tx, threadID string) error {
+	var current bool
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM agents WHERE thread_id = ?)`, threadID).Scan(&current); err != nil {
+		return fmt.Errorf("store: read whether %s is an assistant's current thread: %w", threadID, err)
+	}
+	if current {
+		return ErrAssistantThreadStays
+	}
+	return nil
+}
+
 // CreateStandingAgent records an assistant on its thread, serving
 // projectIDs unless agent.AllProjects is set: the thread must exist, be no
 // assistant's, current, past or helper, and be in agent.Home outside every
@@ -666,8 +684,7 @@ func (s *Store) RetargetThreadReceipt(token, fromThreadID, toThreadID string) (m
 
 // OnAgentRecordDeleted sets the function the store calls, after it
 // commits, with the home of each assistant record a write deleted: a
-// thread delete, which deletes the thread or retires it to a holder, and
-// the commit of a move, which keeps the home on this computer. Every
+// thread delete, which deletes the thread or retires it to a holder. Every
 // writer that drops an agents row goes through deleteAgentRecordTx. fn must
 // not block. nil clears it.
 func (s *Store) OnAgentRecordDeleted(fn func(home string)) {

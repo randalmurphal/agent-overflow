@@ -8,8 +8,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/google/uuid"
-
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
@@ -221,9 +219,9 @@ func TestASpawnedThreadsArchiveMovesItsAgentsRow(t *testing.T) {
 }
 
 // A spawned thread's row says whether its spawner is an assistant's current
-// thread, so every change of that fact re-emits the row: a handoff, a
-// committed move and the assistant's delete (which takes the spawn rows
-// too).
+// thread, so every change of that fact re-emits the row: a handoff and the
+// assistant's delete (which takes the spawn rows too). A move cannot change
+// it: an assistant's current thread does not move.
 func TestASpawnedThreadsBondFollowsItsAgentsRow(t *testing.T) {
 	t.Parallel()
 	f := newOrganizeFixture(t)
@@ -257,26 +255,6 @@ func TestASpawnedThreadsBondFollowsItsAgentsRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	childFrame("handoff", successor.ID, true)
-
-	// A move waits until nothing lives under the assistant.
-	if err := f.app.DeleteThread(agent.ID); err != nil {
-		t.Fatal(err)
-	}
-	transfer, err := f.app.store.CreateThreadTransfer(store.ThreadTransfer{
-		ID: uuid.NewString(), ThreadID: successor.ID, PeerBackendID: uuid.NewString(), Kind: "move", Direction: "outgoing",
-		ActivationHash: strings.Repeat("a", 64), PrivateState: []byte(`{}`),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, phase := range []string{"prepared", "committed"} {
-		if transfer, err = f.app.store.AdvanceThreadTransfer(transfer.ID, phase, strings.Repeat("b", 64)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	f.events.reset()
-	f.app.threadTransferChanged(transfer)
-	childFrame("move committed", successor.ID, false)
 
 	// Deleting an assistant takes its spawn rows: the child is nobody's.
 	other := f.thread(t, "other-agent")

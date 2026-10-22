@@ -18,7 +18,11 @@
   let { request }: { request: TransferRequest } = $props();
   let computers = $derived(getAttachedBackends().filter((entry) => entry.id !== request.source));
   let destination = $state<BackendKey>(untrack(() => request.destination ?? computers.find((entry) => backendReachable(entry.id) && supportsConversationTransfer(entry.id) && hasScope('threads:operate', entry.id))?.id ?? ''));
-  let kind = $state<TransferKind>(untrack(() => request.kind ?? 'move'));
+  // An assistant stays on its computer with its home, so its current
+  // thread is only copied; the source refuses a move as well.
+  let moveRefused = $derived(request.standingAgent ?? Boolean(request.thread.agentId));
+  let chosen = $state<TransferKind>(untrack(() => request.kind ?? 'move'));
+  let kind = $derived<TransferKind>(moveRefused ? 'copy' : chosen);
   // A thread outside every project runs in its assistant's home, which
   // stays on this computer: there is no workspace to carry.
   let hasWorkspace = $derived(Boolean(request.thread.projectId));
@@ -55,9 +59,10 @@
     {:else}
       <fieldset class="grid grid-cols-2 gap-2" disabled={locked}>
         <legend class="sr-only">Transfer type</legend>
-        {#each ['move', 'copy'] as option}
-          <label class={['flex cursor-pointer items-center gap-2 rounded-[var(--radius-field)] border px-3 py-2', kind === option ? 'border-accent bg-accent/10' : 'border-border-subtle', locked ? 'cursor-default' : ''].join(' ')}>
-            <input type="radio" name="transfer-kind" value={option} bind:group={kind} class="accent-accent" />
+        {#each ['move', 'copy'] as const as option}
+          {@const refused = option === 'move' && moveRefused}
+          <label class={['flex cursor-pointer items-center gap-2 rounded-[var(--radius-field)] border px-3 py-2', kind === option ? 'border-accent bg-accent/10' : 'border-border-subtle', locked || refused ? 'cursor-default' : '', refused ? 'text-fg-muted' : ''].join(' ')}>
+            <input type="radio" name="transfer-kind" value={option} checked={kind === option} disabled={refused} onchange={() => { chosen = option; }} class="accent-accent" />
             {option === 'move' ? 'Move' : 'Copy / fork'}
           </label>
         {/each}
@@ -70,13 +75,12 @@
       {:else if request.recurringJobsError}
         <p class="break-words text-xs text-warning">Could not check this conversation’s recurring jobs: {request.recurringJobsError}</p>
       {/if}
-      {#if request.standingAgent}
+      {#if moveRefused}
         <p class="text-xs text-warning" data-testid="transfer-standing-agent">
-          {kind === 'move'
-            ? `This conversation is the assistant "${request.thread.title}". Moving it deletes the assistant: its loops and watches end, its home stays on this computer, and the conversation arrives as an ordinary one.`
-            : `This conversation is the assistant "${request.thread.title}". The assistant, its home, loops and watches stay on this computer with the original, and the copy is an ordinary conversation.`}
+          This conversation is the assistant "{request.thread.title}", which stays on this computer with its home, memory, loops and watches, so it can only be copied. The copy is an ordinary conversation.
         </p>
-      {:else if request.standingAgentError}
+      {/if}
+      {#if request.standingAgentError}
         <p class="break-words text-xs text-warning">Could not check whether this conversation is a standing agent: {request.standingAgentError}</p>
       {/if}
       <label class="flex flex-col gap-1.5 text-xs text-fg-muted">

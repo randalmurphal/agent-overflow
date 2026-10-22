@@ -41,8 +41,8 @@
 // cancelling the job still running and keeping the finished one's result
 // for the unarchive; forgetting a computer naming the results it discards
 // for archived threads and discarding them, and a copy of such a thread
-// refused with the cause; and the transfer dialog naming what a standing
-// agent leaves behind.
+// refused with the cause; and an assistant's conversation offered only a
+// copy, its move refused.
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
@@ -1438,19 +1438,20 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
   });
 }
 
-// A standing agent's home and schedules belong to its computer. The
-// transfer dialog says so for either kind; a copy leaves the original an
-// agent with its loop armed and its watch running; a move ends both, stops
-// the watch's processes and retires the thread here without its agent row.
-// On the destination the conversation is an ordinary thread either way.
-const TRANSFER_NOTE = (name: string) => ({
-  copy: `This conversation is the assistant "${name}". The assistant, its home, loops and watches stay on this computer with the original, and the copy is an ordinary conversation.`,
-  move: `This conversation is the assistant "${name}". Moving it deletes the assistant: its loops and watches end, its home stays on this computer, and the conversation arrives as an ordinary one.`,
-});
+// An assistant stays on its computer with its home, memory, loops and
+// watches. The transfer dialog offers only Copy and says why; the copy
+// leaves the original an assistant with its loop armed and its watch
+// running, and arrives as an ordinary thread. A move is refused by the
+// source itself and changes nothing.
+const TRANSFER_NOTE = (name: string) =>
+  `This conversation is the assistant "${name}", which stays on this computer with its home, memory, loops and watches, so it can only be copied. The copy is an ordinary conversation.`;
+const MOVE_REFUSED =
+  'This conversation is an assistant, which stays on this computer with its home, memory, loops and watches. Copy it instead: the copy is an ordinary conversation.';
 
 interface Transfer {
   id: string;
   threadId: string;
+  peerBackendId: string;
   kind: string;
   phase: string;
   error?: string;
@@ -1468,7 +1469,7 @@ function standingAgentRows(root: string, threadID: string): number {
   }
 }
 
-test.describe('a standing agent copied or moved to another computer', () => {
+test.describe('an assistant copied to another computer', () => {
   let source: HarnessApp;
   let destination: HarnessApp;
   let remoteId = '';
@@ -1519,7 +1520,7 @@ test.describe('a standing agent copied or moved to another computer', () => {
   });
 
   for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
-    test(`${provider}: the dialog says what stays, a copy keeps the agent and a move ends it`, async ({ page }) => {
+    test(`${provider}: the dialog offers only a copy, which keeps the assistant, and a move is refused`, async ({ page }) => {
       test.setTimeout(180_000);
       const errors: string[] = [];
       page.on('pageerror', (error) => errors.push(error.message));
@@ -1588,71 +1589,58 @@ test.describe('a standing agent copied or moved to another computer', () => {
       expect(dbWakes(sourceDir, thread)).toEqual(live);
 
       await source.open(page);
-      const transfer = async (kind: 'copy' | 'move'): Promise<Transfer> => {
-        const name = page.getByTestId('thread-row-title').filter({ hasText: new RegExp(`^${title}$`) });
-        await expect(name).toHaveCount(1);
-        await name.click({ button: 'right' });
-        await page.getByRole('menuitem', { name: 'Move or copy to computer…', exact: true }).click();
-        const dialog = page.getByRole('dialog', { name: 'Move or copy conversation', exact: true });
-        const note = dialog.getByTestId('transfer-standing-agent');
-        await dialog.getByRole('combobox', { name: 'Computer', exact: true }).selectOption(remoteId);
-        await dialog.getByRole('combobox', { name: 'Project on destination', exact: true }).selectOption(target.projects[0].projectId);
-        for (const shown of kind === 'copy' ? (['move', 'copy'] as const) : (['move'] as const)) {
-          await dialog.getByRole('radio', { name: shown === 'copy' ? 'Copy / fork' : 'Move', exact: true }).check();
-          await expect(note).toHaveText(TRANSFER_NOTE(title)[shown]);
-          await shoot(page, `${provider}-transfer-${shown}-standing-agent.png`, note);
-        }
-        await dialog.getByRole('button', { name: kind === 'copy' ? 'Copy conversation' : 'Move conversation', exact: true }).click();
-        await expect(dialog.getByTestId('conversation-transfer-status')).toBeVisible();
-        let result: Transfer | undefined;
-        await expect
-          .poll(
-            async () => {
-              result = (await source.rpc<Transfer[]>('GetThreadTransfers')).find(
-                (row) => row.threadId === thread && row.kind === kind,
-              );
-              if (result?.phase === 'complete') return 'complete';
-              const recipient = (await destination.rpc<Transfer[]>('GetThreadTransfers')).find((row) => row.id === result?.id);
-              return result?.error || recipient?.error || result?.phase;
-            },
-            { timeout: 40_000, intervals: [250] },
-          )
-          .toBe('complete');
-        // The page's own copy of the row completes too, the source's last row
-        // landing after the destination owns the thread. A move follows the
-        // copy, and the menu opens a new form only once that row is
-        // complete; until then it reopens this transfer's status.
-        await expect(dialog.getByTestId('conversation-transfer-status').getByRole('status'))
-          .toHaveText(kind === 'copy' ? /^Copied to / : /^Moved to /);
-        await dialog.getByRole('button', { name: 'Close', exact: true }).click();
-        return result!;
-      };
+      const name = page.getByTestId('thread-row-title').filter({ hasText: new RegExp(`^${title}$`) });
+      await expect(name).toHaveCount(1);
+      await name.click({ button: 'right' });
+      await page.getByRole('menuitem', { name: 'Move or copy to computer…', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: 'Move or copy conversation', exact: true });
+      await dialog.getByRole('combobox', { name: 'Computer', exact: true }).selectOption(remoteId);
+      await dialog.getByRole('combobox', { name: 'Project on destination', exact: true }).selectOption(target.projects[0].projectId);
+      await expect(dialog.getByRole('radio', { name: 'Move', exact: true })).toBeDisabled();
+      await expect(dialog.getByRole('radio', { name: 'Copy / fork', exact: true })).toBeChecked();
+      const note = dialog.getByTestId('transfer-standing-agent');
+      await expect(note).toHaveText(TRANSFER_NOTE(title));
+      await shoot(page, `${provider}-transfer-standing-agent.png`, dialog);
+      await expect(dialog.getByRole('button', { name: 'Move conversation', exact: true })).toHaveCount(0);
+      await dialog.getByRole('button', { name: 'Copy conversation', exact: true }).click();
+      await expect(dialog.getByTestId('conversation-transfer-status')).toBeVisible();
+      let copy: Transfer | undefined;
+      await expect
+        .poll(
+          async () => {
+            copy = (await source.rpc<Transfer[]>('GetThreadTransfers')).find((row) => row.threadId === thread);
+            if (copy?.phase === 'complete') return 'complete';
+            const recipient = (await destination.rpc<Transfer[]>('GetThreadTransfers')).find((row) => row.id === copy?.id);
+            return copy?.error || recipient?.error || copy?.phase;
+          },
+          { timeout: 40_000, intervals: [250] },
+        )
+        .toBe('complete');
+      await expect(dialog.getByTestId('conversation-transfer-status').getByRole('status')).toHaveText(/^Copied to /);
+      await dialog.getByRole('button', { name: 'Close', exact: true }).click();
 
-      // ---- A copy leaves the original an agent, with its loop and watch.
-      const copy = await transfer('copy');
+      // ---- The copy leaves the original an assistant, with its loop and
+      // watch; the copy is an ordinary thread.
+      expect(copy!.kind).toBe('copy');
       expect(await source.rpc('GetStandingAgent', thread)).not.toBeNull();
-      expect(await destination.rpc('GetStandingAgent', copy.targetThreadId)).toBeNull();
-      expect(dbWakes(destination.bootstrap.dataDir, copy.targetThreadId)).toEqual([]);
+      expect(await destination.rpc('GetStandingAgent', copy!.targetThreadId)).toBeNull();
+      expect(dbWakes(destination.bootstrap.dataDir, copy!.targetThreadId)).toEqual([]);
       expect(dbWakes(sourceDir, thread)).toEqual(live);
       for (const pid of runs) expect(alive(pid), `pid ${pid} runs after the copy`).toBe(true);
-      // Named apart so the next menu opens on the original.
-      await destination.rpc('RenameThread', copy.targetThreadId, `Copied agent ${provider}`);
 
-      // ---- A move ends both and stops the watch; the thread arrives
-      // ordinary and its retired row here is no agent.
-      const move = await transfer('move');
-      expect(move.targetThreadId).toBe(thread);
+      // ---- A move is refused by the source, before it stops anything.
+      const refused = await source
+        .rpc<{ operationId: string }>('BeginThreadTransfer', thread, randomUUID(), copy!.peerBackendId, 'move', false)
+        .then((intent) => `admitted ${intent.operationId}`, (error: Error) => error.message);
+      expect(refused).toContain(MOVE_REFUSED);
+      expect((await source.rpc<Transfer[]>('GetThreadTransfers')).filter((row) => row.threadId === thread).map((row) => row.kind)).toEqual(['copy']);
+      expect(standingAgentRows(sourceDir, thread)).toBe(1);
+      expect(dbWakes(sourceDir, thread)).toEqual(live);
+      for (const pid of runs) expect(alive(pid), `pid ${pid} runs after the refused move`).toBe(true);
+
+      // Deleting the assistant stops the watch it keeps running.
+      await source.rpc('DeleteThread', thread);
       await expectGone(runs);
-      const moved = 'cancelled: the thread was moved to another computer';
-      expect(dbWakes(sourceDir, thread)).toEqual([
-        { kind: 'loop', label: 'beat', state: 'cancelled', last_outcome: moved },
-        { kind: 'watch', label: 'hold', state: 'cancelled', last_outcome: moved },
-      ]);
-      expect(standingAgentRows(sourceDir, thread)).toBe(0);
-      expect(await destination.rpc('GetStandingAgent', thread)).toBeNull();
-      expect(dbWakes(destination.bootstrap.dataDir, thread)).toEqual([]);
-      expect(existsSync(home), 'the home stays on this computer').toBe(true);
-      expect(pidsIn(join(home, 'hold.pids'))).toHaveLength(1);
       expect(errors).toEqual([]);
     });
   }

@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"path/filepath"
 	"reflect"
 
@@ -39,6 +38,11 @@ type ThreadTransferIntent struct {
 	OwnershipEpoch       int64  `json:"ownershipEpoch"`
 	ActivationHash       string `json:"activationHash"`
 }
+
+// errAssistantStays refuses a move of an assistant's current thread, before
+// the move stops anything (store.ErrAssistantThreadStays refuses its
+// transfer row as well).
+var errAssistantStays = errors.New("This conversation is an assistant, which stays on this computer with its home, memory, loops and watches. Copy it instead: the copy is an ordinary conversation.")
 
 type transferSourceDetails struct {
 	DraftMCP         *draftMCPPreferences `json:"draftMcp,omitempty"`
@@ -106,23 +110,18 @@ func (a *App) beginThreadTransfer(ctx context.Context, threadID, operationID, de
 			return ThreadTransferIntent{}, errors.New("This conversation has no project workspace to include. Transfer it without workspace changes.")
 		}
 	}
-	// Moving an assistant's current thread deletes the assistant. Its past
-	// threads and helpers live under it, outside every project, so they
-	// would be left with no assistant: the move waits until they are
-	// deleted. The store refuses the record's delete at commit as well.
-	if kind == "move" {
-		dependents, err := a.GetAssistantDependents(threadID)
-		if err != nil {
-			return ThreadTransferIntent{}, err
-		}
-		if dependents.PastThreads > 0 || dependents.Helpers > 0 {
-			return ThreadTransferIntent{}, fmt.Errorf("This assistant has %s, which a move would leave without their assistant. Delete them first, or copy the conversation instead.", dependents.describe())
-		}
-	}
 	// A move takes the conversation away from the computer that owns its
 	// remote commands; stop them before fencing the thread. A copy leaves
 	// the original in place and waits for them like any other pending work.
 	if kind == "move" {
+		// An assistant stays on this computer, so its current thread does
+		// not move. Refused before the stops below change anything; the
+		// store refuses the transfer row as well.
+		if _, found, err := a.store.GetStandingAgent(threadID); err != nil {
+			return ThreadTransferIntent{}, err
+		} else if found {
+			return ThreadTransferIntent{}, errAssistantStays
+		}
 		if err := a.cancelThreadRemoteCommands(ctx, threadID, false); err != nil {
 			return ThreadTransferIntent{}, err
 		}

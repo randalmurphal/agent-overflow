@@ -281,23 +281,6 @@ type AssistantDependents struct {
 	Helpers     int `json:"helpers"`
 }
 
-// describe names the counts for a sentence: "2 past threads and 1 helper".
-func (d AssistantDependents) describe() string {
-	var parts []string
-	for _, count := range []struct {
-		n          int
-		one, other string
-	}{{d.PastThreads, "past thread", "past threads"}, {d.Helpers, "helper", "helpers"}} {
-		switch {
-		case count.n == 1:
-			parts = append(parts, "1 "+count.one)
-		case count.n > 1:
-			parts = append(parts, fmt.Sprintf("%d %s", count.n, count.other))
-		}
-	}
-	return strings.Join(parts, " and ")
-}
-
 // GetAssistantDependents counts the past threads and helpers of the
 // assistant whose current thread this is, for its delete confirmation;
 // zero for any other thread.
@@ -352,8 +335,8 @@ func assistantDependentError(threadID string, err error) error {
 
 // assistantRoles is the role-line cache. Its first use subscribes it to
 // the store's deletion of assistant records, so the home of every
-// assistant deleted, moved away or retired is forgotten whichever writer
-// dropped the record; an entry exists only after that first use.
+// assistant deleted or retired is forgotten whichever writer dropped the
+// record; an entry exists only after that first use.
 func (a *App) assistantRoles() *agenthome.RoleCache {
 	a.agentRolesOnce.Do(func() { a.store.OnAgentRecordDeleted(a.agentRoles.Forget) })
 	return &a.agentRoles
@@ -417,8 +400,8 @@ func (a *App) ListArchivedSpawnedThreads(threadID string) ([]store.Thread, error
 
 // broadcastSpawnedThreadRows re-emits the live threads spawnerID spawned:
 // their rows' spawnedByAgent follows whether the spawner is an assistant's
-// current thread, so creation, a handoff or a move of it changes what their
-// menus and drags allow. A delete passes the ids itself
+// current thread, so creation or a handoff of it changes what their menus
+// and drags allow. A delete passes the ids itself
 // (broadcastThreadRowsByID), since the cascade has already dropped the
 // spawn rows this reads. Log-and-continue, as announceThread.
 func (a *App) broadcastSpawnedThreadRows(spawnerID string) {

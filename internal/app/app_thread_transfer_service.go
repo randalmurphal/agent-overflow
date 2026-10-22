@@ -72,17 +72,11 @@ func (a *App) startThreadTransfers() error {
 	return nil
 }
 
-// threadTransferChanged tells clients a transfer row moved. A committed
-// outgoing move retires the thread here and drops its standing agent row
-// (store.AdvanceThreadTransfer), so the live threads it spawned go out
-// again without their agent bond.
+// threadTransferChanged tells clients a transfer row moved.
 func (a *App) threadTransferChanged(row store.ThreadTransfer) {
 	a.emit(eventchan.ThreadTransfer, row)
 	if err := a.announceTransferredDraft(row); err != nil {
 		log.Printf("app: announce transferred draft: %v", err)
-	}
-	if row.Direction == "outgoing" && row.Kind == "move" && (row.Phase == "committed" || row.Phase == "complete") {
-		a.broadcastSpawnedThreadRows(row.ThreadID)
 	}
 }
 

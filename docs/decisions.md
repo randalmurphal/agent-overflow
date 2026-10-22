@@ -258,10 +258,12 @@ Mechanism in
   Deleting the current thread deletes the assistant and its home, after
   one confirm naming the folder; a home outside
   `<config>/agents/<agent-id>` refuses the delete. Deleting a past thread
-  touches neither. The retention sweep never removes an assistant's
-  current or past threads. A session the provider cleaned up moves the
-  assistant to a new thread on its own, its opening block naming the
-  previous thread (ruling 2026-10-15,
+  touches neither. An assistant stays on its computer: its current
+  thread is copied to another computer, never moved, and the copy is an
+  ordinary thread (ruling 2026-10-21). The retention sweep never removes
+  an assistant's current or past threads. A session the provider cleaned
+  up moves the assistant to a new thread on its own, its opening block
+  naming the previous thread (ruling 2026-10-15,
   [standing agents](specs/standing-agents.md) rulings 22 to 29,
   "Retention" and "Session loss").
 - Multi-agent discussions are removed. A thread nests under another only

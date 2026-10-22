@@ -398,10 +398,10 @@ func TestAThreadOutsideEveryProjectTransfersWithoutAWorkspace(t *testing.T) {
 	}
 }
 
-// Moving an assistant's current thread deletes the assistant, so it waits
-// until nothing lives under it: the begin names the past threads and
-// helpers and leaves no transfer, the record and every thread in place.
-func TestMovingAnAssistantWaitsForWhatLivesUnderIt(t *testing.T) {
+// An assistant stays on this computer, so its current thread does not move:
+// the begin refuses before it cancels the thread's loops, and leaves no
+// transfer. A copy of it, and a move of its past thread or helper, go ahead.
+func TestAnAssistantsCurrentThreadDoesNotMove(t *testing.T) {
 	remotetest.Require(t)
 	source, destination := transferTestBackend(t), transferTestBackend(t)
 	ctx := context.Background()
@@ -422,13 +422,15 @@ func TestMovingAnAssistantWaitsForWhatLivesUnderIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	thread("helper", "Research", "ops")
-	thread("helper-2", "Drafts", "ops")
+	if _, err := source.store.RegisterAgentWake(store.AgentWake{ID: "wake-beat", ThreadID: "current", Kind: store.AgentWakeLoop, Label: "beat",
+		IntervalSeconds: 60, NextAt: time.Now().Add(time.Hour).UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
 	destinationID, _ := destination.backendIdentity()
 
 	refused := uuid.NewString()
-	_, err := source.BeginThreadTransfer(ctx, "current", refused, destinationID, "move", false)
-	if err == nil || !strings.Contains(err.Error(), "This assistant has 1 past thread and 2 helpers, which a move would leave without their assistant. Delete them first") {
-		t.Fatalf("moving an assistant with threads under it = %v, want the refusal naming them", err)
+	if _, err := source.BeginThreadTransfer(ctx, "current", refused, destinationID, "move", false); !errors.Is(err, errAssistantStays) {
+		t.Fatalf("moving an assistant's current thread = %v, want %v", err, errAssistantStays)
 	}
 	if _, err := source.store.GetThreadTransfer(refused); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("the refused move left a transfer: %v", err)
@@ -436,13 +438,16 @@ func TestMovingAnAssistantWaitsForWhatLivesUnderIt(t *testing.T) {
 	if _, found, err := source.store.GetStandingAgent("current"); err != nil || !found {
 		t.Fatalf("the record after the refusal = %v %v", found, err)
 	}
-	for _, id := range []string{"past", "helper", "helper-2"} {
-		if err := source.DeleteThread(id); err != nil {
-			t.Fatal(err)
-		}
+	if wake, found, err := source.store.GetAgentWake("wake-beat"); err != nil || !found || wake.State != store.AgentWakeArmed {
+		t.Fatalf("the loop after the refusal = %+v %v %v, want it armed", wake, found, err)
 	}
-	if _, err := source.BeginThreadTransfer(ctx, "current", uuid.NewString(), destinationID, "move", false); err != nil {
-		t.Fatalf("moving an assistant with nothing under it: %v", err)
+	if _, err := source.BeginThreadTransfer(ctx, "current", uuid.NewString(), destinationID, "copy", false); err != nil {
+		t.Fatalf("copying an assistant's current thread: %v", err)
+	}
+	for _, id := range []string{"past", "helper"} {
+		if _, err := source.BeginThreadTransfer(ctx, id, uuid.NewString(), destinationID, "move", false); err != nil {
+			t.Fatalf("moving the assistant's %s thread: %v", id, err)
+		}
 	}
 }
 

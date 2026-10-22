@@ -340,8 +340,10 @@ store refuses an assistant whose thread is not in its home, a handoff
 to a thread in a project (`ErrAssistantThreadNotInHome`) and a helper in
 a project (`ErrHelperInProject`). A
 thread row reads them as `agentId`, `pastAgentId` and `helperOfAgentId`.
-A fork of such a thread is a helper of the same assistant; a thread
-moved to another computer arrives as no assistant's.
+A fork of such a thread is a helper of the same assistant. The current
+thread does not move to another computer (`ErrAssistantThreadStays`); a
+copy of it, and a past thread or a helper moved there, arrive as no
+assistant's.
 Migration v155 turned each `standing_agents` row into an `agents` row
 whose id is its thread's id, with its home and `promoted_at` as
 `created_at`, serving its thread's project, moved the thread into the
@@ -506,7 +508,7 @@ every path that deletes the thread (the sidebar, a delete the boot
 finishes) removes them: only `<configDir>/agents/<agent-id>` is
 removed (`threadapp.DeletePorts.AssistantHome`), and a record naming
 any other path refuses the delete before anything stops, naming the
-folder, as a transfer of the current thread does. The past threads and
+folder. The past threads and
 helpers are then deleted, each by its own delete
 (`DeletePorts.AssistantDependents`); a transfer of any of them refuses
 before one is deleted. The current thread is marked deleting
@@ -516,16 +518,15 @@ delete back to delete it too. A removal that fails keeps the record and
 the delete pending for the next attempt. Deleting a past thread touches neither the record
 nor the home. Archiving the current thread archives the assistant: it
 cancels the loops and watches and unarchiving re-arms none. An
-unarchived past thread is listed in the fold as a child. A move of the
-current thread is refused while a past thread or helper is under it,
-counting them, since the move would leave them with no assistant: the
-user deletes them or copies the conversation. A move cancels the loops
-and watches when it begins and deletes the record when it commits
-(which the store refuses while one is under it), so the conversation
-arrives as an ordinary thread and the home stays on its computer; a
-copy, a fork and a move of a past thread are ordinary threads. Before the user commits, the
-transfer dialog names the assistant and says that a move deletes it and
-leaves its home on this computer (`GetStandingAgent`).
+unarchived past thread is listed in the fold as a child. The current
+thread does not move to another computer: the assistant, its home,
+memory, loops and watches stay on this one. The move's begin refuses
+it before it stops anything, and the store refuses its transfer row and
+its commit (`ErrAssistantThreadStays`). The transfer dialog offers only
+Copy for it and says why (`GetStandingAgent`, or the row's `agentId`
+until the source answers). A copy, a fork, and a past thread or a
+helper moved to another computer are ordinary threads there; a move
+cancels the moved thread's loops when it begins.
 
 **Projects.** An assistant's projects change from its menu (Projects:
 a checklist of this computer's projects and All projects), through

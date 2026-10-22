@@ -117,6 +117,11 @@ func (s *Store) CreateThreadTransfer(request ThreadTransfer) (ThreadTransfer, er
 			return ThreadTransfer{}, accessErr
 		}
 	}
+	if request.Direction == "outgoing" && request.Kind == "move" {
+		if err := refuseAssistantMoveTx(tx, request.ThreadID); err != nil {
+			return ThreadTransfer{}, err
+		}
+	}
 	if request.Direction == "outgoing" && accessErr == nil {
 		// A conversation whose delete has begun is gone to a transfer too:
 		// with no transfer in the way, a row owned_threads leaves out is one
@@ -274,15 +279,12 @@ func (s *Store) AdvanceThreadTransfer(id, phase, manifestHash string) (ThreadTra
 		}
 	}
 	// A move retires the thread here, and an assistant's home stays on this
-	// computer: the conversation arrives as an ordinary thread, and its
-	// retired row here is no assistant's either. Moving an assistant's
-	// current thread deletes the assistant, which is refused while past
-	// threads or helpers live under it (deleteAgentRecordTx; the move's
-	// begin refuses it first), and a past thread or a helper stops being
-	// one. Its loops and watches were cancelled when the move began.
-	var deletedHome string
+	// computer: an assistant's current thread does not move
+	// (ErrAssistantThreadStays, refused at the begin as well), and a past
+	// thread or a helper arrives as an ordinary thread and stops being one
+	// here. Its loops were cancelled when the move began.
 	if phase == "committed" && row.Kind == "move" {
-		if deletedHome, err = deleteAgentRecordTx(tx, row.ThreadID); err != nil {
+		if err := refuseAssistantMoveTx(tx, row.ThreadID); err != nil {
 			return ThreadTransfer{}, err
 		}
 		if _, err := tx.Exec(`DELETE FROM agent_past_threads WHERE thread_id = ?`, row.ThreadID); err != nil {
@@ -301,7 +303,6 @@ func (s *Store) AdvanceThreadTransfer(id, phase, manifestHash string) (ThreadTra
 	if err := tx.Commit(); err != nil {
 		return ThreadTransfer{}, err
 	}
-	s.noteAgentRecordDeleted(deletedHome)
 	return row, nil
 }
 
