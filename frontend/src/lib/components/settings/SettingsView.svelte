@@ -173,7 +173,7 @@
           {/if}
         </header>
         {#key `${computer}:${activeSection}`}
-          <ComputerSettingsPage backend={computer} {Page} {needsComputer} hasDeviceControls={activeSection === 'performance' || activeSection === 'notifications'} />
+          <ComputerSettingsPage backend={computer} {Page} {needsComputer} hasDeviceControls={activeSection === 'performance' || activeSection === 'notifications' || activeSection === 'voice'} />
         {/key}
       </div>
     </div>
