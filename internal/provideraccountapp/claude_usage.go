@@ -12,15 +12,16 @@ import (
 	"agent-overflow/internal/provideraccounts"
 )
 
-var rateLimitProbeHTTPClient = &http.Client{}
+var defaultProviderHTTPClient = &http.Client{}
 
-func (m *Manager) rateLimitProbeClient() *http.Client {
+// providerHTTPClient makes AO's own requests to provider endpoints.
+func (m *Manager) providerHTTPClient() *http.Client {
 	if m.deps.HTTPClient != nil {
 		if client := m.deps.HTTPClient(); client != nil {
 			return client
 		}
 	}
-	return rateLimitProbeHTTPClient
+	return defaultProviderHTTPClient
 }
 
 // errClaudeUsageStale reports a usage refresh that was declined rather than
@@ -122,7 +123,7 @@ func (m *Manager) probeSelectedClaudeRateLimits(
 	}
 	snapshot, err := claude.ProbeRateLimitsFromCredentialData(
 		ctx,
-		m.rateLimitProbeClient(),
+		m.providerHTTPClient(),
 		credential,
 	)
 	if !errors.Is(err, claude.ErrOAuthUnauthorized) {
@@ -221,7 +222,7 @@ func (m *Manager) probeSelectedClaudeRateLimits(
 	}
 	snapshot, retryErr := claude.ProbeRateLimitsFromCredentialData(
 		ctx,
-		m.rateLimitProbeClient(),
+		m.providerHTTPClient(),
 		refreshed.Bytes(),
 	)
 	if errors.Is(retryErr, claude.ErrOAuthUnauthorized) {
@@ -303,7 +304,7 @@ func (m *Manager) probeInactiveClaudeRateLimits(
 	}
 	snapshot, err := claude.ProbeRateLimitsFromCredentialData(
 		ctx,
-		m.rateLimitProbeClient(),
+		m.providerHTTPClient(),
 		credential,
 	)
 	if errors.Is(err, claude.ErrOAuthUnauthorized) {

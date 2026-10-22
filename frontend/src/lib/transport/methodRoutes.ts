@@ -28,6 +28,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2367642633: 'thread', // AttachThreadWorktree
 	4095667805: 'thread', // AutoResumeThread
 	2098425262: 'thread', // BackgroundClaudeTask
+	3647000619: 'selected', // BeginDictation
 	3256859589: 'thread', // BeginDraftProjectTransfer
 	1189501287: 'home', // BeginPasskeyRegistration
 	3214812657: 'home', // BeginPasskeyStepUp
@@ -43,6 +44,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1485125416: 'home', // BrowserCompanionThreadState
 	2848608143: 'home', // BrowserHostReport
 	2608316491: 'home', // CancelDevicePairing
+	1562772056: 'selected', // CancelDictation
 	472111634: 'selected', // CancelPRAutoMerge
 	341374423: 'home', // CancelProviderLogin
 	73679326: 'home', // CancelRestartToUpdate
@@ -88,6 +90,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1186337974: 'thread', // DeleteThread
 	4104302889: 'home', // DeleteThreadGroup
 	604263015: 'home', // DevicePairingStatus
+	1721991996: 'selected', // DictationSources
 	1061100039: 'selected', // DisallowPreviewPort
 	2309612888: 'selected', // DiscardUnpreparedThreadTransfer
 	4113468152: 'home', // DiscoverComputers
@@ -95,6 +98,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	41472159: 'thread', // DismissThreadWorktreeSetup
 	115027584: 'home', // DownloadUpdate
 	1594348919: 'selected', // FetchForgeAttachment
+	2178028847: 'selected', // FinishDictation
 	1601396603: 'home', // FinishPasskeyRegistration
 	1569276637: 'home', // FinishPasskeyStepUp
 	516065248: 'home', // ForgetAccessDevice
@@ -260,6 +264,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1857144453: 'thread', // MintAttachmentUploadTicket
 	400809065: 'home', // MintDevicePairing
 	355445930: 'home', // MintDevicePairingOnNetwork
+	2050197827: 'selected', // MintDictationChunkTicket
 	310779922: 'selected', // MintFilePreviewURL
 	1417567029: 'home', // MintOwnDeviceIntroduction
 	939299731: 'home', // MintOwnDevicePairing

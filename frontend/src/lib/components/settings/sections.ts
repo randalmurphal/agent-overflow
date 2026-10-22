@@ -84,6 +84,12 @@ export const SETTINGS_SECTIONS = [
     localDescription: 'Desktop alerts for turns that finish or need you, and which threads they cover.',
   },
   {
+    id: 'voice',
+    label: 'Voice',
+    group: 'App',
+    description: 'Dictating messages, and where a recording goes.',
+  },
+  {
     id: 'updates',
     label: 'Updates',
     group: 'App',
@@ -266,5 +272,5 @@ export function providerSettingsSection(provider: ProviderID): 'claude' | 'codex
 export function settingsUsesComputer(section: SettingsSection): boolean {
   return ['performance', 'notifications', 'claude', 'codex', 'commit-messages',
     'browser', 'thread-tools', 'agent-guide', 'discussions', 'projects', 'git', 'editor', 'remote', 'agent-access',
-    'observability', 'storage'].includes(section);
+    'observability', 'storage', 'voice'].includes(section);
 }

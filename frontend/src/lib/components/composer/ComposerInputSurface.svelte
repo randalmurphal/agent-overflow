@@ -17,14 +17,16 @@
   import ComposerSlashPopover from './ComposerSlashPopover.svelte';
   import ComposerTerminalChipRow from './ComposerTerminalChipRow.svelte';
   import { dispatchComposerInputKeydown, focusTextareaAt, focusTextareaAtEnd } from './composerKeyboard';
+  import { replaceTextareaRange, spacedInsertion } from './textareaEdit';
   import { createComposerImagePlaceholders } from './composerImagePlaceholders';
   import { createComposerMentions } from './composerMentions.svelte';
   import { createComposerSlash } from './composerSlash.svelte';
   import { createComposerUploads, type UploadInsertionPoint } from './composerUploads.svelte';
   import { slashCommandMatches } from './slashCommands';
-  import type {
-    ComposerInputSelection,
-    ComposerInputSurfaceProps,
+  import {
+    COMPOSER_TEXT_CLASSES,
+    type ComposerInputSelection,
+    type ComposerInputSurfaceProps,
   } from './composerInputSurface';
 
   let {
@@ -44,6 +46,7 @@
     attachmentCache,
     uploadThreadId,
     ensureUploadThreadId,
+    trailing,
   }: ComposerInputSurfaceProps = $props();
 
   let textarea: HTMLTextAreaElement | undefined = $state(undefined);
@@ -321,6 +324,15 @@
     autosizeTextarea();
   }
 
+  export function insertText(text: string): boolean {
+    if (!textarea) return false;
+    const { selectionStart: start, selectionEnd: end, value } = textarea;
+    const insertion = spacedInsertion(value.slice(0, start), value.slice(end), text);
+    if (insertion === '') return false;
+    replaceTextareaRange(textarea, start, end, insertion);
+    return true;
+  }
+
   export function uploading(): boolean {
     return uploads.uploading;
   }
@@ -376,7 +388,12 @@
   visible={showDraftRows}
 />
 
-<div class="flex items-end gap-1 px-4 pt-3 pb-2">
+<!-- The row's trailing inset is the toolbar's (px-2.5), so a control of
+     Send's size here (the paperclip; on the phone the mic) shares Send's
+     column. The vertical padding gives back what the textarea's own
+     padding took (COMPOSER_TEXT_CLASSES), so the text's top sits where it
+     did. -->
+<div class="flex items-end gap-1 pl-4 pr-2.5 pt-2.5 pb-2 compact:pt-1.5 compact:pb-1">
   <div class="relative min-w-0 flex-1">
     <ComposerMentionPopover backend={threadMachine(pane.threadId ?? '', pane.thread?.projectId)}
       anchor={textarea}
@@ -420,7 +437,7 @@
       aria-label="Message Input"
       rows={1}
       {value}
-      class="field-sizing-content max-h-50 w-full resize-none bg-transparent px-1 py-1 text-[0.8125rem] leading-[1.55] text-fg placeholder:text-fg-hint focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+      class="field-sizing-content max-h-50 w-full resize-none bg-transparent {COMPOSER_TEXT_CLASSES} text-fg placeholder:text-fg-hint focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
     ></textarea>
     {/key}
 
@@ -437,6 +454,7 @@
     <AttachmentPicker {disabled} onChoose={chooseAttachments} />
     <input bind:this={fileInput} type="file" multiple hidden aria-label="Choose attachments" onchange={attachSelectedFiles} />
   {/if}
+  {@render trailing?.()}
 </div>
 
 {#if showDraftRows && slash.commandError}

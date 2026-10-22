@@ -1,17 +1,23 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log"
 	"maps"
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	appbrowser "agent-overflow/internal/browser"
 	"agent-overflow/internal/computerroute"
+	"agent-overflow/internal/dictation"
 	"agent-overflow/internal/network"
+	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/windowgeom"
 )
@@ -112,15 +118,56 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 // to a real service.
 var errIsolatedNetwork = errors.New("isolated boot: outbound provider requests are disabled")
 
-var isolatedHTTPClient = &http.Client{Transport: refusingTransport{}}
+var isolatedHTTPClient = &http.Client{Transport: isolatedProviderTransport{}}
 
-type refusingTransport struct{}
+// isolatedProviderTransport refuses every request except Codex transcription,
+// which it answers in-process so dictation runs end to end through the real
+// client: the transcript names the bytes and type it received, and an
+// access token of "refused" is answered as an expired login.
+type isolatedProviderTransport struct{}
 
-func (refusingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+func (isolatedProviderTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.Body != nil {
-		_ = req.Body.Close()
+		defer req.Body.Close()
+	}
+	if req.Method == http.MethodPost && req.URL.String() == codex.TranscribeURL {
+		return fakeTranscription(req)
 	}
 	return nil, errIsolatedNetwork
+}
+
+func fakeTranscription(req *http.Request) (*http.Response, error) {
+	if req.Header.Get("Authorization") == "Bearer refused" {
+		return fakeTranscriptionResponse(req, http.StatusUnauthorized, `{"detail":"token expired"}`), nil
+	}
+	if err := req.ParseMultipartForm(codexFakeTranscribeMemory); err != nil {
+		return nil, fmt.Errorf("isolated transcription: %w", err)
+	}
+	file, header, err := req.FormFile("file")
+	if err != nil {
+		return nil, fmt.Errorf("isolated transcription: %w", err)
+	}
+	defer file.Close()
+	body, err := json.Marshal(map[string]string{
+		"text": fmt.Sprintf("Heard %d bytes of %s", header.Size, header.Header.Get("Content-Type")),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return fakeTranscriptionResponse(req, http.StatusOK, string(body)), nil
+}
+
+// codexFakeTranscribeMemory holds the largest recording in memory.
+const codexFakeTranscribeMemory = dictation.MaxRecordingBytes + 1<<20
+
+func fakeTranscriptionResponse(req *http.Request, status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Status:     strconv.Itoa(status) + " " + http.StatusText(status),
+		Header:     http.Header{"Content-Type": {"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    req,
+	}
 }
 
 // UseFileKeychain moves provider credentials and the browser companion's

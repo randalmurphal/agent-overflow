@@ -1580,6 +1580,43 @@ export class DeviceRevocationResult {
 }
 
 /**
+ * DictationSources reports what this computer can dictate with.
+ */
+export class DictationSources {
+    /**
+     * Subscription is true when dictation through the Codex sign-in is on
+     * here and Codex is signed in with ChatGPT: the composer offers a mic.
+     */
+    "subscription": boolean;
+
+    /**
+     * ChatGPTSignIn is true when Codex is signed in with ChatGPT here,
+     * whether or not dictation through it is on.
+     */
+    "chatGPTSignIn": boolean;
+
+    /** Creates a new DictationSources instance. */
+    constructor($$source: Partial<DictationSources> = {}) {
+        if (!("subscription" in $$source)) {
+            this["subscription"] = false;
+        }
+        if (!("chatGPTSignIn" in $$source)) {
+            this["chatGPTSignIn"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DictationSources instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DictationSources {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new DictationSources($$parsedSource as Partial<DictationSources>);
+    }
+}
+
+/**
  * DiffContextRequest identifies one hunk-gap slice of a review diff's
  * NEW side (expanded context is unchanged on both sides, so the new
  * side is the only source needed). Scope mirrors the review pane's

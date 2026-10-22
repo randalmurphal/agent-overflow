@@ -6,7 +6,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
-import { tick } from 'svelte';
+import { createRawSnippet, tick, type Snippet } from 'svelte';
 import ComposerInputSurface from './ComposerInputSurface.svelte';
 import type { ComposerInputSurfaceHandle } from './composerInputSurface';
 import {
@@ -76,6 +76,7 @@ interface MountOptions {
   blockAttachment?: (event: Event, notify: boolean) => boolean;
   shouldDeleteAttachmentRecord?: (id: string) => boolean;
   onKeydown?: (event: KeyboardEvent) => boolean;
+  trailing?: Snippet;
 }
 
 function makeClipboardPaste(files: File[]): ClipboardEvent {
@@ -135,6 +136,7 @@ async function mountSurface(options: MountOptions = {}) {
     editsDraft: options.editsDraft,
     blockAttachment: options.blockAttachment,
     shouldDeleteAttachmentRecord: options.shouldDeleteAttachmentRecord,
+    trailing: options.trailing,
   };
 
   const rendered = render(ComposerInputSurface, { props });
@@ -194,6 +196,41 @@ describe('<ComposerInputSurface>', () => {
 
     expect(oninput).toHaveBeenCalledWith('hello', { appliedToDraft: false });
     expect(draft.content).toBe('hello');
+  });
+
+  it('renders host trailing chrome after the textarea in its input row, and none by default', async () => {
+    const bare = await mountSurface();
+    expect(bare.queryByTestId('host-trailing')).toBeNull();
+    bare.unmount();
+
+    const trailing = createRawSnippet(() => ({
+      render: () => '<button type="button" data-testid="host-trailing">mic</button>',
+    }));
+    const { textarea, getByTestId } = await mountSurface({ trailing });
+    const control = getByTestId('host-trailing');
+
+    // A flex sibling of the textarea's box, so the text column ends where
+    // the control begins: nothing typed can run under it.
+    const row = textarea.closest('.flex.items-end');
+    expect(row).not.toBeNull();
+    expect(control.parentElement).toBe(row);
+    expect(textarea.compareDocumentPosition(control) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // After the attachment picker: the mic is the outermost trailing control.
+    expect(getByTestId('composer-attach').compareDocumentPosition(control) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('inserts dictated text at the caret through the ordinary input path', async () => {
+    const { typeInto, oninput, draft, textarea, handle } = await mountSurface();
+    await typeInto('say  please');
+    textarea.setSelectionRange(4, 4);
+
+    expect(handle.insertText('hello')).toBe(true);
+
+    expect(textarea.value).toBe('say hello please');
+    expect(oninput).toHaveBeenLastCalledWith('say hello please', { appliedToDraft: false });
+    expect(draft.content).toBe('say hello please');
+    expect(textarea.selectionStart).toBe(9);
+    expect(handle.insertText('   ')).toBe(false);
   });
 
   it('applies an image-placeholder deletion itself and tells the host not to redo it', async () => {

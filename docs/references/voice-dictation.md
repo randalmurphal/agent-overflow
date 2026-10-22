@@ -1,46 +1,68 @@
-# Voice dictation: researched options
+# Voice dictation
 
-Research from 2026-08-04 for voice-to-text input riding the user's existing
-Claude or ChatGPT subscription, without local models. Nothing here is
-built. Re-verify the binary facts before acting on them.
+Dictation sends a recording to ChatGPT's transcription endpoint under the
+computer's Codex sign-in with ChatGPT. Code: `internal/provider/codex/transcribe.go`
+(the request), `internal/provideraccountapp/dictation.go` (the credential
+and its refresh), `internal/dictation` (pieces held until the transcription
+ends) and `frontend/src/lib/dictation` (recording). Re-verify the facts
+below before changing the request.
 
-## Claude Code voice mode (verified in binary 2.1.219)
+It is off until Settings > Voice turns it on for that computer (host tier
+`dictationSubscriptionEnabled`). With no source on, no composer shows a
+mic and the computer refuses to open or transcribe a recording.
 
-`/voice` push-to-talk dictation, TUI only (not in stream-json or the Agent
-SDK). The backend is pure STT over WebSocket:
-`wss://<BASE_API_URL>/api/ws/speech_to_text/voice_stream` (env override
-`VOICE_STREAM_BASE_URL`), 16kHz linear16 PCM up, interim and final
-transcripts back, Deepgram-style control messages (`KeepAlive`,
-`CloseStream`, `TranscriptEndpoint`). Auth is the Claude.ai OAuth token
-(subscription; "requires a Claude.ai account"), server-gated by the account
-entitlement `allow_voice_mode` / `voice_mode_allowed`. Undocumented and
-internal: using it from AO means borrowing the CLI's OAuth token for a
-non-public API, which can break silently and touches the credential
-rotation class that has bricked logins before.
+## ChatGPT `backend-api/transcribe`
 
-Re-verify: `strings ~/.local/share/claude/versions/<ver> | grep voice_stream`.
+`POST https://chatgpt.com/backend-api/transcribe`, multipart with one `file`
+part, answered `{"text": ...}`. Headers: `Authorization: Bearer <access
+token>`, `ChatGPT-Account-Id`, Codex's `originator` and User-Agent. The
+Codex TUI used it for dictation between 2026-02-23 and 2026-03-29
+(`codex-rs/tui/src/voice.rs`, commits `855e275591`, `bc0a5843df`), with a
+24 kHz mono 16-bit WAV named `audio.wav`.
 
-## Codex app-server `thread/realtime/*` (experimental)
+Spike 2026-10-15 with a Pro-plan Codex login: a 4.4 s WAV returned 200 in
+0.79 s with the exact sentence. The response also carried `asset_pointer:
+sediment://file_...` and `asset_ttl: 30d`: ChatGPT keeps each recording for
+30 days, which Settings → Voice states.
 
-In the protocol since about May 2026 (0.142.5 repo, 0.146.0 CLI):
-start / appendAudio / appendText / appendSpeech / stop / listVoices plus
-transcript delta and done notifications. Transcripts arrive as plain user
-text, so with `client_managed_handoffs: true`, `include_startup_context:
-false`, and a prompt override it is usable as a dictation source routed
-anywhere, Claude included. Caveats: thread-scoped (needs a live Codex
-thread) and runs a full realtime-model session, not cheap STT. Blocked at
-research time: `realtime_api_key()` in `core/src/realtime_conversation.rs`
-rejects ChatGPT sign-in sessions and requires an API key, with a TODO
-calling that temporary. Watch that function on new tags (the local checkout
-lags the installed CLI; check upstream).
+AO uploads what MediaRecorder produces: WebM/Opus in Chromium and Firefox,
+MP4 in WebKit, named `audio.webm` or `audio.mp4`. Check 2026-10-21: the
+same sentence as a 12 KB browser-recorded WebM/Opus clip, sent through
+`codex.Transcribe`, returned the exact text in 0.58 s. MP4 has not been
+sent to the live endpoint.
 
-## If it is ever built
+The access token is read from the canonical Codex `auth.json` for each
+request and never retained. On a 401, AO asks Codex to refresh through
+`account/read {refreshToken: true}` and retries once; AO never refreshes the
+token itself. The refresh holds the Codex reconcile lock and first promotes
+a rotation recovered into the selected account's slot, so it never spends a
+consumed refresh token. A transcription abandoned before it holds the lock
+starts no refresh, and a refresh that started runs to its end: one stopped
+after the server rotated the token, before the CLI saved it, would lose the
+sign-in. A Codex configured to keep credentials in the OS keyring has
+no `auth.json`, and dictation reads as unavailable there.
 
-BYOK streaming STT in Go: mic capture in the webview, PCM over the
-transport, Go forwards to the provider, key in settings behind a
-host-scoped method. Default candidate: Deepgram Nova streaming (its WS
-protocol has the same shape as Anthropic's `voice_stream`, so a later swap
-to an official Claude endpoint is near drop-in). Alternatives: OpenAI
-`gpt-4o(-mini)-transcribe` streaming on the API-key surface; Groq Whisper
-turbo, batch per utterance only. Wispr Flow is not an integration target:
-it is a system-wide app that already types into AO's fields.
+## Platform microphone access
+
+| Surface | Permission |
+|---|---|
+| Linux desktop (WebKitGTK 6.0) | Granted to the app's page by the Wails permission handler; `enable-media-stream` defaults on |
+| Windows desktop (WebView2) | Granted by Wails's global allow |
+| macOS desktop (WKWebView) | `NSMicrophoneUsageDescription` in both plists. Wails sets no media-capture delegate; whether WKWebView then prompts per origin is unverified |
+| Android shell | `RECORD_AUDIO` and `MODIFY_AUDIO_SETTINGS` in the manifest; Capacitor's `BridgeWebChromeClient` requests both at runtime. After two refusals Android stops asking |
+| Connected browser | The browser's own prompt; needs a secure context |
+
+An engine whose MediaRecorder takes neither type shows no mic. Recording on
+macOS WKWebView, iOS Safari and WebKitGTK is untested here: Playwright's
+WebKit needs GStreamer libraries this development host lacks.
+
+## Other options researched (2026-08-04)
+
+- Claude Code `/voice` (binary 2.1.219): TUI-only push-to-talk over
+  `wss://<BASE_API_URL>/api/ws/speech_to_text/voice_stream`, Claude.ai OAuth,
+  entitlement-gated. Internal API borrowing the CLI's rotating token.
+- Codex app-server `thread/realtime/*`: thread-scoped full realtime session;
+  `realtime_api_key()` in `core/src/realtime_conversation.rs` rejected
+  ChatGPT sign-ins at research time.
+- OpenAI API transcription (`gpt-4o-transcribe` family) needs an API key;
+  it is the planned key-file mode.

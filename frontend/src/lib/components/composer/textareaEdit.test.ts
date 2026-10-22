@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { replaceTextareaValue } from './textareaEdit';
+import { replaceTextareaValue, spacedInsertion } from './textareaEdit';
 
 describe('replaceTextareaValue', () => {
   afterEach(() => {
@@ -65,5 +65,20 @@ describe('replaceTextareaValue', () => {
     expect(edit).not.toHaveBeenCalled();
     expect(textarea.selectionStart).toBe(3);
     expect(textarea.selectionEnd).toBe(3);
+  });
+});
+
+describe('spacedInsertion', () => {
+  it('spaces a phrase from the words it touches and nowhere else', () => {
+    expect(spacedInsertion('', '', ' hello ')).toBe('hello');
+    expect(spacedInsertion('say', '', 'hello')).toBe(' hello');
+    expect(spacedInsertion('say ', '', 'hello')).toBe('hello');
+    expect(spacedInsertion('', 'world', 'hello')).toBe('hello ');
+    expect(spacedInsertion('', '\nworld', 'hello')).toBe('hello');
+    expect(spacedInsertion('a', 'b', 'hello')).toBe(' hello ');
+  });
+
+  it('inserts nothing for a blank transcript', () => {
+    expect(spacedInsertion('a', 'b', '  \n ')).toBe('');
   });
 });

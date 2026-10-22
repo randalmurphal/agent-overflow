@@ -18,6 +18,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccounts"
+	"agent-overflow/internal/transport"
 )
 
 func TestSelectedCodexUsageCredentialRotationAdvancesReconnectGeneration(t *testing.T) {
@@ -549,6 +550,23 @@ func TestRecoveredCodexRotationSurvivesEverySelectedPath(t *testing.T) {
 				_, err := app.ProbeCodexAccount()
 				return err
 			}},
+			{"dictation refresh", func(app *App) error {
+				if _, err := app.settings.Update(map[string]any{"dictationSubscriptionEnabled": true}); err != nil {
+					return err
+				}
+				app.rateLimitProbeClientOverride = &http.Client{Transport: refuseConsumedSeed{}}
+				id, err := app.BeginDictation(context.Background(), "audio/webm")
+				if err != nil {
+					return err
+				}
+				if err := DictationTransfer(app).AppendDictationChunk(transport.DictationChunk{
+					RecordingID: id, Size: 6, Body: strings.NewReader("frames"),
+				}); err != nil {
+					return err
+				}
+				_, err = app.FinishDictation(context.Background(), id, 1)
+				return err
+			}},
 		} {
 			t.Run(identity.name+"/"+path.name, func(t *testing.T) {
 				t.Parallel()
@@ -562,6 +580,21 @@ func TestRecoveredCodexRotationSurvivesEverySelectedPath(t *testing.T) {
 			})
 		}
 	}
+}
+
+// refuseConsumedSeed answers a transcription under the consumed seed's
+// access token as an expired sign-in, and any other the way an isolated
+// boot does.
+type refuseConsumedSeed struct{}
+
+func (refuseConsumedSeed) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Header.Get("Authorization") == "Bearer access-rt-10" {
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
+		return fakeTranscriptionResponse(req, http.StatusUnauthorized, `{"detail":"token expired"}`), nil
+	}
+	return isolatedHTTPClient.Transport.RoundTrip(req)
 }
 
 // A switch away saves the outgoing canonical credential into its slot. It

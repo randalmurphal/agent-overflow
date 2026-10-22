@@ -57,7 +57,7 @@ describe('settings section map', () => {
     ]);
     expect(settingsSectionGroups().map((g) => g.sections.map((s) => s.id))).toEqual([
       ['theme', 'typography', 'chat', 'sidebar', 'spinner'],
-      ['threads', 'performance', 'keybindings', 'notifications', 'updates'],
+      ['threads', 'performance', 'keybindings', 'notifications', 'voice', 'updates'],
       ['claude', 'codex', 'commit-messages', 'browser', 'thread-tools', 'agent-guide', 'discussions'],
       ['projects', 'git', 'editor'],
       ['systems', 'remote', 'agent-access'],
@@ -101,6 +101,14 @@ describe('<SettingsView> tabs', () => {
 
     await fireEvent.click(getByRole('tab', { name: 'Git' }));
     expect(getByTestId('settings-page-header')).toHaveTextContent('Git');
+  });
+
+  it('names the computer the Voice page configures', async () => {
+    const { getByTestId, getByRole } = render(SettingsView, { onClose: vi.fn() });
+    await fireEvent.click(getByRole('tab', { name: 'Voice' }));
+    const header = getByTestId('settings-page-header');
+    expect(header).toHaveTextContent('Computer:');
+    expect(header).not.toHaveTextContent('Saved on this device.');
   });
 
   it('switches to the Observability page when clicked', async () => {

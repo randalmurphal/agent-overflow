@@ -113,6 +113,11 @@ type Settings struct {
 	// threads: pairing already says which computers belong to the user, and
 	// a paired computer's agents reach this one whether it is on or off.
 	ThreadToolsEnabled bool `json:"threadToolsEnabled"`
+	// DictationSubscriptionEnabled lets a composer on any client dictate
+	// through this computer's Codex sign-in with ChatGPT, which sends each
+	// recording to OpenAI. Default off. With no dictation source on, no
+	// composer shows a mic.
+	DictationSubscriptionEnabled bool `json:"dictationSubscriptionEnabled,omitempty"`
 	// AgentGuideEnabled appends Agent Overflow's own guide to every
 	// interactive Claude, claude-tui and Codex session's system prompt: what
 	// the chat pane renders and which built-in tool servers are on

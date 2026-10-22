@@ -397,7 +397,10 @@ test('the composer\'s densest rung keeps the model and the meters and rolls the 
   await harness.open(page);
   await page.getByTestId('thread-row').filter({ hasText: 'First task' }).click();
   const toolbar = page.getByTestId('composer-toolbar');
-  await expect(toolbar).toHaveAttribute('data-density', 'minimal');
+  // Tight, not minimal: with three meters beside Send the minimal rung's
+  // content runs 9px into the toolbar's end padding at this width, which
+  // the ladder reads as overflow (Send must end on its column).
+  await expect(toolbar).toHaveAttribute('data-density', 'tight');
   await expect(page.getByTestId('composer-model-menu-trigger')).toBeVisible();
   await expect(page.getByTestId('composer-effort-trigger')).toBeHidden();
   await expect(toolbar.locator('[data-composer-toolbar-meter]').first()).toBeVisible();
