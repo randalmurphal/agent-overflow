@@ -1395,15 +1395,19 @@ test('read-aloud reads a reply through the phone’s text-to-speech', async ({ d
   await watchSpeech(page);
   const last = 5; // Six sentences; the code block is not read.
 
-  // Android reports reaching the second sentence, and is audibly speaking.
+  // Android reports its progress, and the phone is audibly speaking.
+  const reached = (index: number) => async () =>
+    (await speechEvents(page)).some((e) => e.kind === 'progress' && e.index! >= index);
   await play.click();
   await expect(slot).toHaveAttribute('data-phase', 'playing');
-  await expect.poll(async () => (await speechEvents(page)).some((e) => e.kind === 'progress' && e.index! >= 1),
-    { message: 'Android must report progress past the first sentence', timeout: 30_000 }).toBe(true);
+  await expect.poll(reached(1), { message: 'Android must report progress past the first sentence', timeout: 30_000 }).toBe(true);
   await expect.poll(() => speechAudible(device), { message: 'the phone must be playing speech' }).toBe(true);
+  // Callbacks arrive in order and this listener's comes first, so once it
+  // has the third sentence the player has consumed the second.
+  await expect.poll(reached(2), { message: 'Android must report the third sentence', timeout: 30_000 }).toBe(true);
 
   // Pausing stops the native session and silences the phone. The pause
-  // lands by the third sentence, so two long ones are still unread: a
+  // lands in the third sentence, so two long ones are still unread: a
   // phone that kept speaking could not fall silent on its own in time.
   const pausedClick = Date.now();
   const heardAt = await pauseAtSnapshot(page);
