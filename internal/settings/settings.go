@@ -118,6 +118,22 @@ type Settings struct {
 	// recording to OpenAI. Default off. With no dictation source on, no
 	// composer shows a mic.
 	DictationSubscriptionEnabled bool `json:"dictationSubscriptionEnabled,omitempty"`
+	// DictationAPIEnabled lets a composer on any client dictate live through
+	// this computer's OpenAI API key (internal/openaikey), which streams
+	// the recording to OpenAI while it is spoken. Default off. The four
+	// fields after it tune that transcription (voice.go).
+	DictationAPIEnabled bool `json:"dictationAPIEnabled,omitempty"`
+	// DictationAPIDelay is gpt-live-transcribe's latency: lower shows text
+	// sooner, higher is more accurate. Empty leaves OpenAI's default.
+	DictationAPIDelay string `json:"dictationAPIDelay,omitempty"`
+	// DictationAPILanguages are the language codes the speaker uses, such
+	// as "en". Empty lets OpenAI detect them.
+	DictationAPILanguages []string `json:"dictationAPILanguages,omitempty"`
+	// DictationAPIKeywords are terms the transcription should spell as
+	// written: names, jargon, identifiers.
+	DictationAPIKeywords []string `json:"dictationAPIKeywords,omitempty"`
+	// DictationAPIPrompt describes the speaker or setting to the model.
+	DictationAPIPrompt string `json:"dictationAPIPrompt,omitempty"`
 	// AgentGuideEnabled appends Agent Overflow's own guide to every
 	// interactive Claude, claude-tui and Codex session's system prompt: what
 	// the chat pane renders and which built-in tool servers are on
@@ -819,6 +835,8 @@ func (s Settings) AutoCompactPercents(provider string) (standard, extended int) 
 type Service struct {
 	path string
 	mu   sync.RWMutex
+	// revision counts persisted writes that changed something (Revision).
+	revision uint64
 	// cached is the SHARED half of the settings: host tier from the file,
 	// user tier from UserScope, device tier at its defaults. A caller's own
 	// device slice is overlaid per read (Caller.Get), never cached here,

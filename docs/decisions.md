@@ -657,6 +657,12 @@ and anti-changes that live only here:
   > Voice turns it on for that computer, and with no dictation source on
   there is no mic. The endpoint and its 30-day retention are in
   `docs/references/voice-dictation.md`.
+- Live dictation: a second source that streams the microphone to OpenAI
+  with an API key while the user speaks and shows the text heard so far.
+  The key lives only in an owner-only file under the config root, never in
+  settings, the environment or a client. Where both sources are on, live
+  wins; there is no per-device source picker. An engine that cannot
+  stream uses the subscription when it is on and otherwise shows no mic.
 - Read aloud: a play control beside Copy on finished replies, in Copy's
   grid, that pauses while playing and offers a restart while paused. It
   speaks in the device's own voice, one reply at a time across the app;

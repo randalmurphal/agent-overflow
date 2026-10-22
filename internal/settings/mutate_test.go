@@ -132,3 +132,35 @@ func TestObserverMayReadSettingsBack(t *testing.T) {
 		t.Fatalf("observer read fontSize %d, want 19", readBack.FontSize)
 	}
 }
+
+// Every write that changes something takes the next revision and announces
+// it on each of its changes; a write that changes nothing takes none.
+func TestEachChangingWriteTakesTheNextRevision(t *testing.T) {
+	svc, seen := observedService(t)
+	if got := svc.Revision(); got != 0 {
+		t.Fatalf("a fresh service's revision = %d", got)
+	}
+	if _, err := svc.Update(map[string]any{"fontSize": 19, "dictationAPIEnabled": true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := svc.Revision(); got != 1 {
+		t.Fatalf("revision after one write = %d", got)
+	}
+	for _, change := range (*seen)[0] {
+		if change.Revision != 1 {
+			t.Fatalf("change %+v carries revision %d, want 1", change, change.Revision)
+		}
+	}
+	if _, err := svc.Update(map[string]any{"fontSize": 19}); err != nil {
+		t.Fatal(err)
+	}
+	if got := svc.Revision(); got != 1 {
+		t.Fatalf("a write that changed nothing moved the revision to %d", got)
+	}
+	if _, err := svc.Update(map[string]any{"dictationAPIEnabled": false}); err != nil {
+		t.Fatal(err)
+	}
+	if got, last := svc.Revision(), (*seen)[len(*seen)-1][0].Revision; got != 2 || last != 2 {
+		t.Fatalf("revision after a second write = %d, announced %d", got, last)
+	}
+}

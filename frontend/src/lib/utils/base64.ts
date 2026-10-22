@@ -20,3 +20,14 @@ export function base64ToBytes(b64: string): Uint8Array<ArrayBuffer> {
   }
   return bytes;
 }
+
+/** Encode bytes as base64, a block at a time so a large buffer does not
+ * overflow the argument list of String.fromCharCode. */
+export function bytesToBase64(bytes: Uint8Array): string {
+  const BLOCK = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += BLOCK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + BLOCK));
+  }
+  return btoa(binary);
+}

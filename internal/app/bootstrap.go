@@ -17,6 +17,7 @@ import (
 	"agent-overflow/internal/computerroute"
 	"agent-overflow/internal/dictation"
 	"agent-overflow/internal/network"
+	"agent-overflow/internal/openai/openaifake"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/windowgeom"
@@ -106,6 +107,9 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	// probe would send it to the real API: on hosts without network
 	// isolation (macOS, Windows) that is an outbound call from a test run.
 	a.rateLimitProbeClientOverride = isolatedHTTPClient
+	// The user's OpenAI key file lives under the test's own data root, and
+	// what it would send to OpenAI is answered in process.
+	a.openAIClientOverride = isolatedHTTPClient
 	// A sign-in or link opened from a loopback page would otherwise start the
 	// developer's own browser.
 	a.externalURLsIsolated = true
@@ -120,10 +124,11 @@ var errIsolatedNetwork = errors.New("isolated boot: outbound provider requests a
 
 var isolatedHTTPClient = &http.Client{Transport: isolatedProviderTransport{}}
 
-// isolatedProviderTransport refuses every request except Codex transcription,
-// which it answers in-process so dictation runs end to end through the real
-// client: the transcript names the bytes and type it received, and an
-// access token of "refused" is answered as an expired login.
+// isolatedProviderTransport refuses every request except the two
+// transcriptions, which it answers in-process so dictation runs end to end
+// through the real clients. Codex transcription names the bytes and type it
+// received, and an access token of "refused" is answered as an expired
+// login; OpenAI live transcription is openaifake's.
 type isolatedProviderTransport struct{}
 
 func (isolatedProviderTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -132,6 +137,9 @@ func (isolatedProviderTransport) RoundTrip(req *http.Request) (*http.Response, e
 	}
 	if req.Method == http.MethodPost && req.URL.String() == codex.TranscribeURL {
 		return fakeTranscription(req)
+	}
+	if openaifake.IsLiveTranscription(req) {
+		return openaifake.ServeLiveTranscription(req)
 	}
 	return nil, errIsolatedNetwork
 }

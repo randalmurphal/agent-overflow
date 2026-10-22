@@ -71,5 +71,22 @@ func (a *App) registerSettingsBroadcast() {
 		if promptsMoved {
 			a.reconcileStalePromptSessions()
 		}
+		// A live recording admitted while live dictation was on, before
+		// this write switched it, saw it go off: it ends now, not at its
+		// next piece, and a quick off and on again cannot spare it.
+		if revision, ok := liveDictationSwitch(changes); ok {
+			a.liveDictations().RevokeBefore(revision)
+		}
 	})
+}
+
+// liveDictationSwitch is the revision of the write that changed the live
+// dictation switch, if this one did.
+func liveDictationSwitch(changes []settings.TierChange) (uint64, bool) {
+	for _, change := range changes {
+		if slices.Contains(change.Keys, "dictationAPIEnabled") {
+			return change.Revision, true
+		}
+	}
+	return 0, false
 }
