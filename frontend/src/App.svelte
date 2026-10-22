@@ -122,6 +122,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
   import { addErrorToast, addToast } from './lib/stores/toast.svelte';
   import { userFacingError } from './lib/utils/userFacingError';
   import { initUpdates } from './lib/stores/updates.svelte';
+  import { watchReadAloudVoices } from './lib/stores/readAloud.svelte';
   import { initServiceUpdates } from './lib/stores/serviceUpdate.svelte';
   import { initDevServers } from './lib/stores/devServers.svelte';
 
@@ -432,6 +433,9 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     // Passive on-launch update check + updater:* event bridge. No-op on builds
     // without an updater; never downloads or installs without an explicit click.
     const cleanupUpdates = initUpdates();
+    // Which voices this device can read replies aloud in; replies offer
+    // read-aloud only once one is known.
+    watchReadAloudVoices();
     // A build without remote access reaches no other computer, so the
     // machinery that serves only other computers is not started:
     // supervised-host updates, conversation transfers, preview ports,

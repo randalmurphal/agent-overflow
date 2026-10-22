@@ -1271,6 +1271,182 @@ test('a notification tap opens its thread after the lock is answered', async ({
   await expect(tapped.getByTestId('chat-header-title')).toHaveText('Tapped thread');
 });
 
+/** One event the `Speech` plugin sent the page, in arrival order. */
+type SpeechEvent = { kind: 'progress' | 'done'; session: string; index?: number; outcome?: string };
+
+/** One `speak` call the page sent the `Speech` plugin. */
+type SpeakCall = { session: string; from: number };
+
+type SpeechWatch = Window & { __speechEvents?: SpeechEvent[]; __speakCalls?: SpeakCall[] };
+
+/** Every event the `Speech` plugin has sent since `watchSpeech`. */
+async function speechEvents(page: Page): Promise<SpeechEvent[]> {
+  return page.evaluate(() => (window as SpeechWatch).__speechEvents ?? []);
+}
+
+/** Every `speak` call the page has made since `watchSpeech`. */
+async function speakCalls(page: Page): Promise<SpeakCall[]> {
+  return page.evaluate(() => (window as SpeechWatch).__speakCalls ?? []);
+}
+
+/** Records the plugin's own events beside the app's listener, so the case
+ * judges what Android reported rather than the store's optimistic phase,
+ * and the `speak` calls the page sends across the bridge, which every
+ * registered plugin reaches through `Capacitor.nativePromise`. */
+async function watchSpeech(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    type Listen = (event: string, handler: (payload: Record<string, unknown>) => void) => Promise<unknown>;
+    type Bridge = {
+      Plugins?: { Speech?: { addListener: Listen } };
+      nativePromise: (plugin: string, method: string, options?: Record<string, unknown>) => Promise<unknown>;
+    };
+    const cap = (window as Window & { Capacitor?: Bridge }).Capacitor;
+    const speech = cap?.Plugins?.Speech;
+    if (!cap || !speech) throw new Error('the Speech plugin is not registered');
+    const watch = window as SpeechWatch;
+    const events: SpeechEvent[] = (watch.__speechEvents = []);
+    const calls: SpeakCall[] = (watch.__speakCalls = []);
+    for (const kind of ['progress', 'done'] as const) {
+      await speech.addListener(kind, (payload) => events.push({ kind, ...(payload as { session: string }) }));
+    }
+    const send = cap.nativePromise.bind(cap);
+    cap.nativePromise = (plugin, method, options) => {
+      if (plugin === 'Speech' && method === 'speak') {
+        calls.push({ session: String(options?.session), from: Number(options?.from) });
+      }
+      return send(plugin, method, options);
+    };
+  });
+}
+
+/** Presses the read-aloud button in the same task that reads the plugin's
+ * progress. Capacitor calls each listener back separately and this one
+ * first, so the player holds this sentence or an earlier one. */
+async function pauseAtSnapshot(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const progress = ((window as SpeechWatch).__speechEvents ?? []).filter((e) => e.kind === 'progress');
+    (document.querySelector('[data-testid="assistant-message-read-aloud"]') as HTMLElement).click();
+    return progress.at(-1)?.index ?? -1;
+  });
+}
+
+/** Whether the phone is playing synthesized speech right now, from the
+ * audio service's own player list. */
+async function speechAudible(device: AndroidDevice): Promise<boolean> {
+  const audio = (await device.shell('dumpsys audio')).toString();
+  return audio.split('\n').some((line) => line.includes('state:started') && line.includes('CONTENT_TYPE_SPEECH'));
+}
+
+// Read-aloud on the phone goes through Android's TextToSpeech, because the
+// WebView has no speechSynthesis. This proves both halves on a device: the
+// WebView really has none, and the Speech plugin lists the phone's voices
+// and reads a reply to its end. Pausing silences the phone, and resuming
+// restarts the sentence it paused on. Each claim is judged from the
+// plugin's events and the audio service, not from the button's phase,
+// which the page sets before Android answers.
+test('read-aloud reads a reply through the phone’s text-to-speech', async ({ device, harness, page }) => {
+  await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      {
+        name: 'shell-read-aloud',
+        repo: { commits: [{ message: 'init', files: { 'README.md': '# Seeded\n' } }] },
+        threads: [
+          {
+            title: 'Read aloud thread',
+            turns: [{ userText: 'hello', items: [{ kind: 'assistant_text',
+              summary: 'The first sentence is here. The second one follows it. '
+                + 'A third keeps the reading going for a while longer, with enough words that a pause lands inside it. '
+                + 'The fourth sentence is deliberately long so that a reading paused anywhere before it still has a great deal left to say, '
+                + 'which is what lets this case tell a phone that really stopped from one that simply ran out of words.'
+                + '\n\n```sh\necho skipped\n```\n\n'
+                + 'The fifth sentence is just as long for the same reason, and together the two of them keep the phone talking '
+                + 'for far longer than the few seconds this case allows for the silence that a real pause must produce. '
+                + 'The last sentence ends the reply.',
+            }] }],
+          },
+        ],
+      },
+    ],
+  });
+
+  const invite = await harness.rpc<PairingInvite>('MintDevicePairing', 'phone', 'full');
+  await page.goto(SHELL_ORIGIN + '/' + fragmentOf(invite));
+  expect(await page.evaluate(() => 'speechSynthesis' in window), 'the WebView must still lack speechSynthesis').toBe(false);
+  // Read-aloud is off until turned on; this device's preference lives in
+  // frontend storage.
+  await page.evaluate(() => localStorage.setItem('agent-overflow:frontend:readAloud', JSON.stringify({ enabled: true })));
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Pair this device' })).toBeVisible();
+  await page.getByLabel('Device name').fill('Emulator shell');
+  await page.getByRole('button', { name: 'Pair' }).click();
+  const shown = page.getByLabel('Verification number');
+  await expect(shown).toBeVisible();
+  await confirmOnHost(harness, ((await shown.textContent()) ?? '').trim());
+  const lock = page.getByTestId('app-lock');
+  await expect(lock).toBeVisible({ timeout: PAIRED_MOUNT_MS });
+  await passCredentialPrompt(device, lock);
+
+  await page.getByTestId('thread-row').filter({ hasText: 'Read aloud thread' }).click({ timeout: PAIRED_MOUNT_MS });
+  // The control mounts only once the plugin has listed a voice.
+  const slot = page.getByTestId('assistant-message-read-aloud-slot');
+  const play = page.getByTestId('assistant-message-read-aloud');
+  await expect(play).toBeVisible({ timeout: PAIRED_MOUNT_MS });
+
+  await watchSpeech(page);
+  const last = 5; // Six sentences; the code block is not read.
+
+  // Android reports its progress, and the phone is audibly speaking.
+  const reached = (index: number) => async () =>
+    (await speechEvents(page)).some((e) => e.kind === 'progress' && e.index! >= index);
+  await play.click();
+  await expect(slot).toHaveAttribute('data-phase', 'playing');
+  await expect.poll(reached(1), { message: 'Android must report progress past the first sentence', timeout: 30_000 }).toBe(true);
+  await expect.poll(() => speechAudible(device), { message: 'the phone must be playing speech' }).toBe(true);
+  // Callbacks arrive in order and this listener's comes first, so once it
+  // has the third sentence the player has consumed the second.
+  await expect.poll(reached(2), { message: 'Android must report the third sentence', timeout: 30_000 }).toBe(true);
+
+  // Pausing stops the native session and silences the phone. The pause
+  // lands in the third sentence, so two long ones are still unread: a
+  // phone that kept speaking could not fall silent on its own in time.
+  const pausedClick = Date.now();
+  const heardAt = await pauseAtSnapshot(page);
+  expect(heardAt, 'the pause must leave the long sentences unread').toBeLessThanOrEqual(2);
+  await expect(slot).toHaveAttribute('data-phase', 'paused');
+  await expect(page.getByTestId('assistant-message-read-aloud-restart')).toBeVisible();
+  const first = (await speakCalls(page))[0].session;
+  await expect.poll(async () => (await speechEvents(page)).find((e) => e.kind === 'done' && e.session === first)?.outcome,
+    { message: 'pausing must stop the native session' }).toBe('stopped');
+  // Zero would mean no deadline to Playwright, so a spent budget fails.
+  const silenceBudget = pausedClick + 3_000 - Date.now();
+  expect(silenceBudget, 'the pause must be judged within three seconds of the click').toBeGreaterThan(0);
+  await expect.poll(() => speechAudible(device), { message: 'the phone must fall silent on pause', timeout: silenceBudget })
+    .toBe(false);
+  // A gap between two queued sentences is brief; this outlasts it.
+  let samples = 0;
+  for (const held = pausedClick + 6_000; Date.now() < held; samples++) {
+    expect(await speechAudible(device), 'the phone must stay silent while paused').toBe(false);
+  }
+  expect(samples, 'silence must be sampled while paused').toBeGreaterThan(0);
+
+  // Resuming asks Android for a sentence the reading had reached, not the
+  // first (the store tests pin which one); Android starts exactly there in
+  // a new session and reads to an ended last piece.
+  await play.click();
+  await expect(slot).toHaveAttribute('data-phase', 'playing');
+  await expect(slot).toHaveAttribute('data-phase', 'idle', { timeout: 120_000 });
+  const calls = await speakCalls(page);
+  expect(calls.length, 'one speak to start and one to resume').toBe(2);
+  const resumedFrom = calls[1].from;
+  expect(resumedFrom, 'resuming must not restart the reading').toBeGreaterThanOrEqual(1);
+  expect(resumedFrom, 'resuming must not skip past the paused sentence').toBeLessThanOrEqual(heardAt);
+  const resumed = (await speechEvents(page)).filter((e) => e.session === calls[1].session);
+  const progress = resumed.filter((e) => e.kind === 'progress').map((e) => e.index);
+  expect(progress[0], 'Android must start where it was asked').toBe(resumedFrom);
+  expect(progress.at(-1)).toBe(last);
+  expect(resumed.filter((e) => e.kind === 'done').map((e) => e.outcome)).toEqual(['ended']);
+});
+
 // ---------------------------------------------------------------------
 // The last hop: a real message through Google, by hand.
 // ---------------------------------------------------------------------

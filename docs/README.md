@@ -143,7 +143,7 @@ External repos and tools we track, and how to use them. Under
 | [`claude-api-error-upstream-report.md`](references/claude-api-error-upstream-report.md) | Draft upstream bug report for a Claude Code API-error shape, still unfiled. |
 | [`spike-policy.md`](references/spike-policy.md) | When to write an isolated spike test outside the project. |
 | [`forge-api-measurements.md`](references/forge-api-measurements.md) | Measured GitHub and GitLab API behavior behind the forge transport: process cost, token handoff, rate-limit headers, ETag and Range. |
-| [`voice-dictation.md`](references/voice-dictation.md) | Researched voice-to-text options (Claude voice_stream, Codex realtime) and why none is built. |
+| [`voice-dictation.md`](references/voice-dictation.md) | Dictation through ChatGPT's transcribe endpoint, read-aloud in the device's voice, and the other options researched. |
 | [`ao-harness.md`](references/ao-harness.md) | Generated command and output reference for the `ao-harness` shell driver. |
 | [`ao-cli.md`](references/ao-cli.md) | The `ao` scoped-token CLI: command tree and `--json` result shapes. |
 | [`android-emulator.md`](references/android-emulator.md) | Running the Android emulator for the shell smoke under a memory cap, the emulator 37.1 adb-proxy leak behind that rule, and WebView-driving pitfalls. |

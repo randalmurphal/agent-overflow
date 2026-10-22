@@ -43,6 +43,8 @@ export interface DictationFixture {
   tracks: { stop: ReturnType<typeof vi.fn> }[];
   inserted: string[];
   level: { value: number; closed: boolean };
+  /** How many times the session quieted this device's speech. */
+  quieted: { count: number };
   tick: () => void;
   fireCap: () => void;
   timers: () => number;
@@ -59,12 +61,14 @@ export function dictationFixture(options: {
   const tracks: { stop: ReturnType<typeof vi.fn> }[] = [];
   let current: FakeRecorder | null = null;
   const level = { value: 0.5, closed: false };
+  const quieted = { count: 0 };
   const intervals = new Map<number, () => void>();
   const timeouts = new Map<number, () => void>();
   let nextHandle = 1;
   const env: DictationEnvironment = {
     format: () => (options.format === undefined ? WEBM : options.format),
     blockedMessage: () => 'Microphone access is blocked.',
+    quietSpeech: () => { quieted.count += 1; },
     openMicrophone: options.openMicrophone ?? (async () => {
       const track = { stop: vi.fn() };
       tracks.push(track);
@@ -100,6 +104,7 @@ export function dictationFixture(options: {
     tracks,
     inserted,
     level,
+    quieted,
     tick: () => { for (const fn of intervals.values()) fn(); },
     fireCap: () => { for (const fn of [...timeouts.values()]) fn(); },
     timers: () => intervals.size + timeouts.size,

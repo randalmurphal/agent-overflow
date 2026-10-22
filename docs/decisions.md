@@ -657,6 +657,12 @@ and anti-changes that live only here:
   > Voice turns it on for that computer, and with no dictation source on
   there is no mic. The endpoint and its 30-day retention are in
   `docs/references/voice-dictation.md`.
+- Read aloud: a play control beside Copy on finished replies, in Copy's
+  grid, that pauses while playing and offers a restart while paused. It
+  speaks in the device's own voice, one reply at a time across the app;
+  pausing resumes at the start of the sentence. Code, tables and URLs are
+  skipped silently. It is off until this device turns it on in Settings >
+  Voice, and a device with no voice shows no control.
 - Wide blocks pan inside their own box on every layout: markdown tables,
   inline diff bodies and unwrapped fenced code scroll horizontally only
   when they overflow (the `pan-x` rules in `frontend/src/app.css`), with

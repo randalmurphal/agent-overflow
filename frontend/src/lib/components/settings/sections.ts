@@ -87,7 +87,7 @@ export const SETTINGS_SECTIONS = [
     id: 'voice',
     label: 'Voice',
     group: 'App',
-    description: 'Dictating messages, and where a recording goes.',
+    description: 'Dictating messages, where a recording goes, and reading replies aloud.',
   },
   {
     id: 'updates',

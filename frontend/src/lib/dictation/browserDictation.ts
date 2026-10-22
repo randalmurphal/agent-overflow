@@ -2,6 +2,7 @@
 // loudness meter, as the engine provides them.
 
 import { isNativeShell } from '../native/platform';
+import { pauseReadAloud } from '../stores/readAloud.svelte';
 import type { DictationEnvironment, LevelMeter, RecorderLike, RecordingFormat } from './dictationSession.svelte';
 
 /** Speech needs little: 32 kbps Opus is about 2.4 MB for ten minutes. */
@@ -28,6 +29,7 @@ export const browserDictationEnvironment: DictationEnvironment = {
   blockedMessage: () => isNativeShell()
     ? 'Microphone access is blocked. Allow it for Agent Overflow in Android settings.'
     : 'Microphone access is blocked. Allow it in the browser or system settings.',
+  quietSpeech: pauseReadAloud,
   openMicrophone: () => {
     const media = globalThis.navigator?.mediaDevices;
     if (!media?.getUserMedia) {
