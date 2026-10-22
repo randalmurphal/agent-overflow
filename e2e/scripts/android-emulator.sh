@@ -24,12 +24,16 @@
 #
 # prepare and start hold an exclusive lock and the emulator inherits it, so
 # one emulator runs at a time and its runtime files are never replaced under
-# it. android-smoke.sh holds the same lock for its whole run.
+# it. android-smoke.sh holds the same lock for its whole run. The lock lives
+# beside the user manager that owns ao-emulator.scope, so every run of this
+# user contends for it whatever cache it uses.
 #
 #   AO_EMULATOR_AVD      AVD name (default ao)
 #   AO_EMULATOR_MEMORY   memory cap (default 10G; the leak needs 3-4 GB of
 #                        headroom per pairing on top of a ~4 GB idle guest)
 #   AO_EMULATOR_ARGS     extra emulator flags
+#   AO_EMULATOR_LOCK     lock file, for tests that fake the scope (default
+#                        /run/user/$UID/ao-emulator.lock)
 #
 # Linux and WSL2 only: it needs /dev/kvm, bubblewrap, flock, a user systemd
 # with the memory controller delegated, and Docker or Podman for `prepare`.
@@ -45,7 +49,7 @@ adb="$ANDROID_HOME/platform-tools/adb"
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/agent-overflow"
 rootfs="$cache/emulator-rootfs"
 log="$cache/emulator.log"
-lock="$cache/android-emulator.lock"
+lock="${AO_EMULATOR_LOCK:-/run/user/$(id -u)/ao-emulator.lock}"
 
 # Inside the namespace bin/ao-netns built: its helper recorded that
 # namespace's identity in AO_NETISOLATE_NS (netisolate.Inside), and the
@@ -64,10 +68,11 @@ inside() {
 
 # The lock may arrive as fd 9 from android-smoke.sh, which holds it for the
 # whole run; otherwise this command takes it. The emulator inherits fd 9, so
-# a running emulator keeps holding it after start returns.
+# a running emulator keeps holding it after start returns. fd 9 is matched
+# to the lock file by identity, so a path spelled another way still matches.
 hold_lock() {
-  mkdir -p "$cache"
-  if [[ "$(readlink "/proc/$$/fd/9" 2>/dev/null)" != "$lock" ]]; then
+  mkdir -p "$(dirname "$lock")"
+  if [[ ! "/proc/$$/fd/9" -ef "$lock" ]]; then
     exec 9>>"$lock"
   fi
   flock -n 9 || {

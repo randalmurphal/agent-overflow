@@ -74,6 +74,7 @@ if [[ "$*" == *is-active* ]]; then [[ "${AO_TEST_SCOPE_ACTIVE:-}" == 1 ]]; fi
 		"ANDROID_HOME="+dir,
 		"ANDROID_AVD_HOME="+filepath.Join(dir, "avd"),
 		"XDG_CACHE_HOME="+filepath.Join(dir, "cache"),
+		"AO_EMULATOR_LOCK="+filepath.Join(dir, "lock", "ao-emulator.lock"),
 		"AO_TEST_LOG="+f.log,
 	)
 	return f
@@ -232,7 +233,7 @@ func TestAndroidSmokeLeavesAnotherRunsEmulator(t *testing.T) {
 	t.Run("held lock", func(t *testing.T) {
 		f := newSmokeFixture(t)
 		f.fakeEmulator(t)
-		lockPath := filepath.Join(f.dir, "cache", "agent-overflow", "android-emulator.lock")
+		lockPath := filepath.Join(f.dir, "lock", "ao-emulator.lock")
 		if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -319,5 +320,50 @@ while :; do sleep 0.05; done
 			t.Fatalf("want %q after the steps before it, in:\n%s", step, calls)
 		}
 		at = next
+	}
+}
+
+// The lock the host phase holds reaches the device phase as fd 9, and is
+// recognized by the file it is, not by how its path is spelled: a symlinked
+// runtime directory must not make the run refuse its own lock.
+func TestAndroidSmokeRecognizesItsInheritedLock(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the emulator path is Linux-only")
+	}
+	if _, err := exec.LookPath("flock"); err != nil {
+		t.Skip("flock unavailable")
+	}
+	f := newSmokeFixture(t)
+	f.fakeEmulator(t)
+	mockexec.WriteIn(t, filepath.Join(f.dir, "repo", "bin"), "ao-harness-e2e", "#!/bin/sh\nexit 0\n")
+	real := filepath.Join(f.dir, "lock")
+	if err := os.MkdirAll(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(f.dir, "alias")
+	if err := os.Symlink(real, alias); err != nil {
+		t.Fatal(err)
+	}
+	held, err := os.OpenFile(filepath.Join(real, "ao-emulator.lock"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = held.Close() })
+	if err := syscall.Flock(int(held.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	cmd := f.command(
+		"AO_ANDROID_SMOKE_PHASE=device",
+		"AO_TEST_ADB_DEVICES=emulator-5554\tdevice",
+		"AO_EMULATOR_LOCK="+filepath.Join(alias, "ao-emulator.lock"),
+	)
+	// fd 9, as the host phase hands it across exec and bin/ao-netns.
+	cmd.ExtraFiles = []*os.File{nil, nil, nil, nil, nil, nil, held}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the device phase refused the lock it inherited: %v\n%s", err, out)
+	}
+	if calls := f.calls(t); !strings.Contains(calls, "emulator start") || !strings.Contains(calls, "emulator stop") {
+		t.Fatalf("the run did not start and stop its emulator:\n%s", calls)
 	}
 }

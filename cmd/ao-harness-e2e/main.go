@@ -18,10 +18,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"agent-overflow/internal/harness/containment"
@@ -169,6 +171,12 @@ func run(args []string, stdout, stderr *os.File) int {
 			return 1
 		}
 	}
+	// Playwright runs in its own process group, so a signal meant for the
+	// suite reaches only this process. Registered before the start so none
+	// can end the launcher between them and orphan the tree.
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, interruptSignals...)
+	defer signal.Stop(signals)
 	identity, ok := startContained(command, group, stderr)
 	if !ok {
 		return 1
@@ -187,6 +195,15 @@ func run(args []string, stdout, stderr *os.File) int {
 			}
 		})
 	}
+	interrupted := haltOnSignal(ctx, signals, func(sig os.Signal) {
+		stopOnce.Do(func() {
+			// stderr is the only place to report; a failed write has nowhere else to go.
+			_, _ = fmt.Fprintf(stderr, "ao-harness-e2e: stopping contained suite: received %v\n", sig)
+			if err := terminateProcessTreeVerified(command, group, identity); err != nil {
+				_, _ = fmt.Fprintln(stderr, "ao-harness-e2e: terminate contained suite:", err)
+			}
+		})
+	})
 	monitorDone := make(chan error, 1)
 	go func() {
 		err := manager.Monitor(ctx, lease, monitorInterval, nil, func(event governor.Event) {
@@ -203,6 +220,8 @@ func run(args []string, stdout, stderr *os.File) int {
 	runErr := command.Wait()
 	cancel()
 	monitorErr := <-monitorDone
+	// Joins a teardown a signal started; nil when none arrived.
+	sig := <-interrupted
 	if !waitForProcessTree(command, group, 2*time.Second) {
 		fmt.Fprintln(stderr, "ao-harness-e2e: Playwright left descendants running; terminating the owned process tree")
 		if err := terminateProcessTreeVerified(command, group, identity); err != nil {
@@ -223,6 +242,9 @@ func run(args []string, stdout, stderr *os.File) int {
 	if stoppedForSafety && runErr == nil {
 		runErr = errors.New("contained E2E suite stopped by the memory safety monitor")
 	}
+	if sig != nil {
+		return signalExitCode(sig)
+	}
 	if runErr != nil {
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) {
@@ -232,6 +254,32 @@ func run(args []string, stdout, stderr *os.File) int {
 		return 1
 	}
 	return 0
+}
+
+// haltOnSignal calls halt with the first signal to arrive before ctx ends,
+// then delivers that signal on the returned channel. The channel closes
+// once halt has returned or ctx has ended, so receiving from it joins the
+// teardown halt started.
+func haltOnSignal(ctx context.Context, signals <-chan os.Signal, halt func(os.Signal)) <-chan os.Signal {
+	got := make(chan os.Signal, 1)
+	go func() {
+		defer close(got)
+		select {
+		case sig := <-signals:
+			halt(sig)
+			got <- sig
+		case <-ctx.Done():
+		}
+	}()
+	return got
+}
+
+// signalExitCode is the status a shell reports for a process a signal ended.
+func signalExitCode(sig os.Signal) int {
+	if number, ok := sig.(syscall.Signal); ok {
+		return 128 + int(number)
+	}
+	return 1
 }
 
 // startContained starts command inside group and records its identity after

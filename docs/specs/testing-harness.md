@@ -187,6 +187,9 @@ share the same limit. `pnpm test` invokes this launcher through `go run` when
 the standalone binary is not present. The two-worker gate reserves 6 GiB by
 default and accepts `--memory-limit-bytes` for machine-specific runs. Direct
 Windows use of `launchHarness` refuses unless this launcher marker is present.
+The suite runs in a process group of its own, so an interrupt (and on Unix
+`SIGTERM` or `SIGHUP`) reaches only the launcher; it stops the owned tree,
+waits for it, and exits with 128 plus the signal number.
 
 Every `up`, managed `run`, and compare leg installs the platform memory policy
 before starting the backend. `up` defaults to 2 GiB and managed plans may

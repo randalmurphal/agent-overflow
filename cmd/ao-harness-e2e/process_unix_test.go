@@ -3,7 +3,13 @@
 package main
 
 import (
+	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -91,4 +97,60 @@ func TestVerifiedTeardownFollowsARootThatExecsDuringTeardown(t *testing.T) {
 		t.Fatalf("terminate: %v", err)
 	}
 	awaitExit(t, done)
+}
+
+// A signal to the launcher stops the suite's whole tree, a descendant that
+// outlives its parent's death included, and is reported only after that
+// teardown has finished: Playwright runs in its own process group, so
+// nothing else would stop it.
+func TestASignalStopsTheSuiteTreeBeforeItIsReported(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "descendant")
+	cmd, identity, done := startRoot(t, `sleep 300 & echo $! > `+pidFile+`; wait`)
+	var descendant int
+	deadline := time.Now().Add(teardownBudget)
+	for descendant == 0 {
+		if body, err := os.ReadFile(pidFile); err == nil && strings.TrimSpace(string(body)) != "" {
+			descendant, _ = strconv.Atoi(strings.TrimSpace(string(body)))
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the descendant never started")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	signals := make(chan os.Signal, 1)
+	halted := make(chan struct{})
+	got := haltOnSignal(context.Background(), signals, func(os.Signal) {
+		if err := terminateProcessTreeVerified(cmd, nil, identity); err != nil {
+			t.Errorf("terminate: %v", err)
+		}
+		close(halted)
+	})
+	signals <- syscall.SIGTERM
+	sig := <-got
+	select {
+	case <-halted:
+	default:
+		t.Fatal("the signal was reported before its teardown finished")
+	}
+	if sig != syscall.SIGTERM || signalExitCode(sig) != 143 {
+		t.Fatalf("reported %v with exit %d, want SIGTERM and 143", sig, signalExitCode(sig))
+	}
+	awaitExit(t, done)
+	if !waitForProcessTree(cmd, nil, teardownBudget) {
+		t.Fatal("the suite's process group survived the signal")
+	}
+	if err := syscall.Kill(descendant, 0); err == nil {
+		t.Fatalf("descendant %d survived the signal", descendant)
+	}
+}
+
+// Without a signal the watcher stops with the suite and reports nothing.
+func TestNoSignalReportsNothing(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	got := haltOnSignal(ctx, make(chan os.Signal), func(os.Signal) { t.Error("halted without a signal") })
+	cancel()
+	if sig := <-got; sig != nil {
+		t.Fatalf("reported %v without a signal", sig)
+	}
 }

@@ -56,7 +56,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 apk="${AO_ANDROID_RELEASE_APK:-$repo/mobile/android/app/build/outputs/apk/debug/app-debug.apk}"
 emulator="$repo/e2e/scripts/android-emulator.sh"
 human="${AO_ANDROID_HUMAN_LOCK:-}"
-lock="${XDG_CACHE_HOME:-$HOME/.cache}/agent-overflow/android-emulator.lock"
+lock="${AO_EMULATOR_LOCK:-/run/user/$(id -u)/ao-emulator.lock}"
 
 # A device line is "<serial>\t<state>"; only `device` is ready. Anything
 # else (offline, unauthorized, a booting emulator) is not something to run
@@ -70,7 +70,7 @@ ready_devices() { "$adb" devices | tail -n +2 | awk '$2 == "device" { print $1 }
 # start or stop the emulator.
 hold_lock() {
   mkdir -p "$(dirname "$lock")"
-  if [[ "$(readlink "/proc/$$/fd/9" 2>/dev/null)" != "$lock" ]]; then
+  if [[ ! "/proc/$$/fd/9" -ef "$lock" ]]; then
     exec 9>>"$lock"
   fi
   flock -n 9 || {

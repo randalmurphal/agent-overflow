@@ -192,6 +192,14 @@ async function passCredentialPrompt(device: AndroidDevice, lock: Locator): Promi
  */
 async function answerCredentialPrompt(device: AndroidDevice, lock?: Locator): Promise<void> {
   if (HUMAN_LOCK) {
+    // The app holds focus before its boot raises the prompt, so focus on
+    // the app only means "answered" once the prompt has taken it away.
+    await expect
+      .poll(async () => {
+        const focus = await focusedWindow(device);
+        return focus !== '' && !focus.includes(SHELL_PACKAGE);
+      }, { message: 'the credential prompt must take focus off the app', timeout: PAIRED_MOUNT_MS })
+      .toBe(true);
     await expect
       .poll(() => focusedWindow(device), {
         message: 'the owner must answer the credential prompt',
