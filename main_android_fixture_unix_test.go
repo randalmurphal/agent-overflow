@@ -18,8 +18,8 @@ import (
 // The bundle fixture builder stamps frontend/dist and restores it after its
 // build. A copy runs in a temporary repository beside a fake go, so the
 // real dist is never stamped: a build that finishes restores the metadata,
-// and so does one stopped by a signal, after the compiler and what it
-// started are gone.
+// and so does one stopped by a signal, only once the compiler and every
+// step it started are gone.
 func TestAndroidBundleFixtureRestoresDist(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -65,48 +65,77 @@ func TestAndroidBundleFixtureRestoresDist(t *testing.T) {
 			}
 			bin := filepath.Join(dir, "bin")
 			mockexec.WriteIn(t, bin, "unzip", "#!/bin/sh\necho '{\"version\":\"1.3.0\"}'\n")
-			// The fake compiler records its PID and a child's, as go build's
-			// compile steps would be, then holds or finishes.
+			// The fake compiler starts a compile step that, once stopped,
+			// finishes only when the barrier exists, records both PIDs, then
+			// holds or finishes. go itself dies at the first SIGTERM.
 			mockexec.WriteIn(t, bin, "go", `#!/usr/bin/env bash
-sleep 300 &
+bash -c 'trap "until [[ -e \"\$AO_TEST_GO_BARRIER\" ]]; do sleep 0.02; done; exit 0" TERM; while :; do sleep 0.05; done' &
 echo "$$ $!" >"$AO_TEST_GO_PIDS.tmp"
 mv "$AO_TEST_GO_PIDS.tmp" "$AO_TEST_GO_PIDS"
-[[ -n "$AO_TEST_GO_HOLD" ]] || { kill $!; exit 0; }
+[[ -n "$AO_TEST_GO_HOLD" ]] || { kill $!; wait; exit 0; }
 wait
 `)
 			pids := filepath.Join(dir, "go.pids")
+			barrier := filepath.Join(dir, "barrier")
 			hold := ""
 			if signalled {
 				hold = "1"
+			} else if err := os.WriteFile(barrier, nil, 0o600); err != nil {
+				t.Fatal(err)
 			}
 			cmd := exec.Command(node, filepath.Join(repo, "e2e/scripts/build-android-bundle-fixture.ts"), filepath.Join(dir, "app.apk"))
 			cmd.Env = append(os.Environ(),
 				"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 				"AO_TEST_GO_PIDS="+pids,
+				"AO_TEST_GO_BARRIER="+barrier,
 				"AO_TEST_GO_HOLD="+hold,
 			)
 			var out strings.Builder
 			cmd.Stdout, cmd.Stderr = &out, &out
+			// A step that outlived the builder must not hold Wait on the pipe.
+			cmd.WaitDelay = 2 * time.Second
 			if err := cmd.Start(); err != nil {
 				t.Fatal(err)
 			}
-			done := make(chan error, 1)
-			go func() { done <- cmd.Wait() }()
-			var goPID, childPID int
-			deadline := time.Now().Add(30 * time.Second)
-			for {
-				if body, err := os.ReadFile(pids); err == nil {
-					if _, err := fmt.Sscan(string(body), &goPID, &childPID); err != nil {
-						t.Fatal(err)
+			finished := make(chan struct{})
+			var waitErr error
+			go func() {
+				waitErr = cmd.Wait()
+				close(finished)
+			}()
+			var goPID, stepPID int
+			// Whatever an assertion leaves running is stopped and joined: the
+			// builder, then the compiler's group while the step still names it.
+			t.Cleanup(func() {
+				_ = cmd.Process.Kill()
+				<-finished
+				if stepPID > 0 {
+					if group, err := syscall.Getpgid(stepPID); err == nil && group == goPID {
+						_ = syscall.Kill(-goPID, syscall.SIGKILL)
 					}
-					break
 				}
-				if time.Now().After(deadline) {
-					_ = cmd.Process.Kill()
-					t.Fatalf("the compiler never started:\n%s", out.String())
+			})
+			waitUntil := func(what string, done func() bool) {
+				t.Helper()
+				deadline := time.Now().Add(30 * time.Second)
+				for !done() {
+					if time.Now().After(deadline) {
+						t.Fatalf("%s never happened:\n%s", what, out.String())
+					}
+					time.Sleep(20 * time.Millisecond)
 				}
-				time.Sleep(20 * time.Millisecond)
 			}
+			waitUntil("the compiler starting", func() bool {
+				body, err := os.ReadFile(pids)
+				if err != nil {
+					return false
+				}
+				if _, err := fmt.Sscan(string(body), &goPID, &stepPID); err != nil {
+					t.Fatal(err)
+				}
+				return true
+			})
+			alive := func(pid int) bool { return syscall.Kill(pid, 0) == nil }
 			if signalled {
 				stamped, err := os.ReadFile(filepath.Join(dist, "bundle-release.json"))
 				if err != nil || string(stamped) == originals["bundle-release.json"] {
@@ -115,11 +144,25 @@ wait
 				if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 					t.Fatal(err)
 				}
+				waitUntil("go exiting", func() bool { return !alive(goPID) })
+				// go is gone and its step is held: the builder must neither
+				// restore nor exit yet.
+				time.Sleep(500 * time.Millisecond)
+				select {
+				case <-finished:
+					t.Fatalf("the builder exited while a compile step still ran:\n%s", out.String())
+				default:
+				}
+				if body, err := os.ReadFile(filepath.Join(dist, "bundle-release.json")); err != nil || string(body) != string(stamped) {
+					t.Fatalf("dist was restored while a compile step still ran: %q, %v", body, err)
+				}
+				if err := os.WriteFile(barrier, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			select {
-			case err = <-done:
+			case <-finished:
 			case <-time.After(30 * time.Second):
-				_ = cmd.Process.Kill()
 				t.Fatalf("the builder did not finish:\n%s", out.String())
 			}
 			want := 0
@@ -127,7 +170,7 @@ wait
 				want = 143
 			}
 			if code := cmd.ProcessState.ExitCode(); code != want {
-				t.Fatalf("exit %d (%v), want %d:\n%s", code, err, want, out.String())
+				t.Fatalf("exit %d (%v), want %d:\n%s", code, waitErr, want, out.String())
 			}
 			for name, body := range originals {
 				got, err := os.ReadFile(filepath.Join(dist, name))
@@ -135,13 +178,11 @@ wait
 					t.Fatalf("%s = %q, %v after the builder, want it restored to %q", name, got, err, body)
 				}
 			}
-			// The compiler is the builder's child and already reaped; its
-			// child is reparented, so give its reaper a moment.
-			for _, pid := range []int{goPID, childPID} {
+			// The step is reparented once go exits, so give its reaper a moment.
+			for _, pid := range []int{goPID, stepPID} {
 				gone := time.Now().Add(5 * time.Second)
-				for syscall.Kill(pid, 0) == nil {
+				for alive(pid) {
 					if time.Now().After(gone) {
-						_ = syscall.Kill(pid, syscall.SIGKILL)
 						t.Fatalf("process %d from the build outlived the builder", pid)
 					}
 					time.Sleep(20 * time.Millisecond)

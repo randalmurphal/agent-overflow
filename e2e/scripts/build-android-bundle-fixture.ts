@@ -6,10 +6,13 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { constants } from 'node:os';
+import { setTimeout as sleep } from 'node:timers/promises';
 import path from 'node:path';
 import { nextPatchVersion, stampBundle, BUNDLE_ID_FILE, BUNDLE_RELEASE_FILE } from '../../frontend/scripts/bundleId.ts';
 import { compareBundleVersions } from '../../frontend/src/lib/native/bundleVersion.ts';
 
+// How long a stopped build's processes get after SIGTERM, then SIGKILL.
+const STOP_GRACE_MS = 10_000;
 const repo = path.resolve(import.meta.dirname, '../..');
 const apk = process.argv[2];
 if (!apk) throw new Error('The Android fixture requires the APK being tested.');
@@ -39,16 +42,19 @@ try {
       compiler.once('error', reject);
       compiler.once('exit', (code) => resolve(code));
     });
-    stopCompiler = () => {
-      if (compiler.pid === undefined) return;
-      try {
-        process.kill(-compiler.pid, 'SIGTERM');
-      } catch (error) {
-        // ESRCH: the whole group has already exited.
-        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') console.error(`stop go build: ${error}`);
-      }
-    };
+    const group = compiler.pid;
+    if (group !== undefined) {
+      stopCompiler = () => {
+        try {
+          signalGroup(group, 'SIGTERM');
+        } catch (error) {
+          console.error(`stop go build: ${error}`);
+        }
+      };
+    }
     const code = await exited;
+    // A stopped build's compile steps can outlive go itself.
+    if (stopping && group !== undefined) await groupGone(group);
     if (!stopping && code !== 0) throw new Error(`go build exited with ${code}`);
   }
   if (!stopping) console.log(`==> Android adoption fixture release ${version} (APK ${packaged})`);
@@ -56,3 +62,27 @@ try {
   await Promise.all(names.map((name, i) => writeFile(path.join(dist, name), originals[i])));
 }
 if (stopping) process.exit(128 + constants.signals[stopping]);
+
+// signalGroup sends signal to a process group and says whether any member
+// was left to receive it.
+function signalGroup(group: number, signal: NodeJS.Signals | 0): boolean {
+  try {
+    process.kill(-group, signal);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    throw error;
+  }
+}
+
+// groupGone waits for every member of a stopped group to exit, killing what
+// outlives the grace.
+async function groupGone(group: number): Promise<void> {
+  const killAt = Date.now() + STOP_GRACE_MS;
+  while (signalGroup(group, 0)) {
+    const now = Date.now();
+    if (now > killAt + STOP_GRACE_MS) throw new Error(`go build's process group ${group} survived SIGKILL`);
+    if (now > killAt) signalGroup(group, 'SIGKILL');
+    await sleep(50);
+  }
+}
