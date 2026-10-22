@@ -150,6 +150,24 @@ rm -f "$ANDROID_AVD_HOME/$avd.avd"/*.lock
 # the process stays in this namespace. HOME is a tmpfs except the AVD
 # folder, so the emulator writes nothing else of the developer's.
 read -ra extra <<<"${AO_EMULATOR_ARGS:-}"
+# Until the boot is confirmed the launch is this command's to undo. A signal
+# or a failed boot stops the launcher, before or after it made the scope,
+# waits for it so it cannot make one later, then stops the scope. Holding
+# the lock means no other run can have made one.
+launcher=""
+booted=""
+abandon() {
+  [[ -z "$booted" ]] || return 0
+  if [[ -n "$launcher" ]]; then
+    kill -TERM "$launcher" 2>/dev/null || true
+    wait "$launcher" 2>/dev/null || true
+  fi
+  systemctl --user stop "$unit" >/dev/null 2>&1 || true
+}
+trap abandon EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 systemd-run --user --scope --unit="$unit" -q \
   -p MemoryMax="$memory" -p MemorySwapMax=0 -p CPUQuota=400% \
   bwrap --bind "$rootfs" / --dev /dev --dev-bind /dev/kvm /dev/kvm --proc /proc \
@@ -160,6 +178,7 @@ systemd-run --user --scope --unit="$unit" -q \
     "$ANDROID_HOME/emulator/emulator" -avd "$avd" -no-window -no-audio -no-boot-anim \
     -gpu swiftshader_indirect -no-snapshot -memory 3072 -cores 2 "${extra[@]}" \
   >"$log" 2>&1 &
+launcher=$!
 
 echo "==> booting $avd as $unit (memory cap $memory)"
 start=$(date +%s)
@@ -172,4 +191,5 @@ until [[ "$("$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" =
   if (( $(date +%s) - start > 400 )); then echo "boot timed out" >&2; exit 1; fi
   sleep 3
 done
+booted=1
 echo "==> booted in $(( $(date +%s) - start ))s; adb serial $("$adb" devices | awk '/^emulator-/ { print $1; exit }')"

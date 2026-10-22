@@ -180,34 +180,19 @@ async function awaitOwnerUnlock(device: AndroidDevice): Promise<void> {
  * The generous human timeout is prompt-to-fingers latency, not machinery.
  */
 async function passCredentialPrompt(device: AndroidDevice, lock: Locator): Promise<void> {
-  await answerCredentialPrompt(device, lock);
+  // The owner answers in their own time, possibly already: the lock coming
+  // down is the evidence either way.
+  if (!HUMAN_LOCK) await answerCredentialPrompt(device, lock);
   await expect(lock).toBeHidden({ timeout: HUMAN_LOCK ? 120_000 : 30_000 });
 }
 
 /**
- * The native half of `passCredentialPrompt`, which needs no WebView: a case
- * that relaunches a paired app answers the prompt before attaching, because
- * the prompt pauses the activity and an attach that lands behind it may
- * never complete. `lock` only feeds the failure diagnostics.
+ * The emulator's half of `passCredentialPrompt`, which needs no WebView: it
+ * types the PIN the smoke script set into the platform prompt. A real phone
+ * is never typed at (see HUMAN_LOCK). `lock` only feeds the diagnostics.
  */
 async function answerCredentialPrompt(device: AndroidDevice, lock?: Locator): Promise<void> {
-  if (HUMAN_LOCK) {
-    // The app holds focus before its boot raises the prompt, so focus on
-    // the app only means "answered" once the prompt has taken it away.
-    await expect
-      .poll(async () => {
-        const focus = await focusedWindow(device);
-        return focus !== '' && !focus.includes(SHELL_PACKAGE);
-      }, { message: 'the credential prompt must take focus off the app', timeout: PAIRED_MOUNT_MS })
-      .toBe(true);
-    await expect
-      .poll(() => focusedWindow(device), {
-        message: 'the owner must answer the credential prompt',
-        timeout: 120_000,
-      })
-      .toContain(SHELL_PACKAGE);
-    return;
-  }
+  expect(HUMAN_LOCK, "the suite never types at a real phone's prompt").toBe(false);
   // Window focus arrives before the native PIN field is ready on a
   // cold launch. Fill that field through Android's UI selector so no
   // prefix of the PIN is lost during the credential animation.
@@ -1182,9 +1167,10 @@ test('the shell stages a bundle, boots on it, and refuses a damaged one', async 
   await device.shell(`am force-stop ${SHELL_PACKAGE}`);
   await device.shell(`am start -n ${SHELL_ACTIVITY}`);
   // The app is paired, so the relaunch raises the lock's credential prompt
-  // within seconds. It is answered first and the page attached after, on an
-  // activity that is running rather than paused behind the prompt.
-  await answerCredentialPrompt(device);
+  // within seconds. On the emulator it is answered first and the page
+  // attached after, on an activity that is running rather than paused
+  // behind the prompt; a phone's owner answers whenever they do.
+  if (!HUMAN_LOCK) await answerCredentialPrompt(device);
   const relaunched = await shellPage(device);
   await expect(relaunched.getByTestId('app-lock')).toBeHidden({ timeout: HUMAN_LOCK ? 120_000 : PAIRED_MOUNT_MS });
 

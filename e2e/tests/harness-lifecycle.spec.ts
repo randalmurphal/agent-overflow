@@ -1,6 +1,7 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
+import { createInterface } from 'node:readline';
 import { chmod, mkdtemp, readFile, readlink, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -39,6 +40,56 @@ async function processExists(pid: number): Promise<boolean> {
     throw error;
   }
 }
+
+// A backend runs in a process group of its own, so the group teardown that
+// stops a killed worker never reaches it. It must end itself once the worker
+// that launched it is gone, or an interrupted run leaves it serving.
+test('a backend stops itself when the worker that launched it dies', async () => {
+  test.skip(process.platform === 'win32', "Windows teardown uses the launcher's Job Object");
+  const root = await mkdtemp(path.join(tmpdir(), 'ao-harness-orphan-'));
+  const script = path.join(root, 'worker.mts');
+  const harnessModule = new URL('../src/harness.ts', import.meta.url).href;
+  // The worker hands the backend's output pipes to a holder before it dies,
+  // so the backend's next log line cannot end it by SIGPIPE: only its own
+  // watch of its parent can.
+  await writeFile(
+    script,
+    `import { spawn } from 'node:child_process';\n` +
+      `import { launchHarness } from ${JSON.stringify(harnessModule)};\n` +
+      `const harness = await launchHarness();\n` +
+      `const { child } = harness as unknown as { child: import('node:child_process').ChildProcess };\n` +
+      `const holder = spawn('sleep', ['120'], { stdio: ['ignore', child.stdout!, child.stderr!], detached: true });\n` +
+      `console.log(JSON.stringify({ pid: harness.bootstrap.pid, dataRoot: harness.bootstrap.dataRoot, holder: holder.pid }));\n` +
+      `setInterval(() => {}, 1 << 30);\n`,
+    'utf8',
+  );
+  const worker = spawn(process.execPath, ['--experimental-transform-types', script], {
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  let backend = 0;
+  let holder = 0;
+  let dataRoot = '';
+  try {
+    const [line] = (await once(createInterface({ input: worker.stdout! }), 'line')) as [string];
+    ({ pid: backend, dataRoot, holder } = JSON.parse(line) as { pid: number; dataRoot: string; holder: number });
+    expect(await processExists(backend), 'the backend must be serving before its worker dies').toBe(true);
+
+    worker.kill('SIGKILL');
+    await expect
+      .poll(() => processExists(backend), {
+        message: 'the backend must stop once its worker is gone',
+        timeout: 15_000,
+      })
+      .toBe(false);
+  } finally {
+    worker.kill('SIGKILL');
+    if (backend > 0 && (await processExists(backend))) process.kill(backend, 'SIGKILL');
+    if (holder > 0 && (await processExists(holder))) process.kill(holder, 'SIGKILL');
+    await rm(root, { recursive: true, force: true });
+    if (dataRoot !== '') await rm(dataRoot, { recursive: true, force: true });
+  }
+});
 
 test('refuses a launch when the caller tree is not supervised', async () => {
   const contained = process.env.AO_E2E_CONTAINED;

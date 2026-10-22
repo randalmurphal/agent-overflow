@@ -367,3 +367,115 @@ func TestAndroidSmokeRecognizesItsInheritedLock(t *testing.T) {
 		t.Fatalf("the run did not start and stop its emulator:\n%s", calls)
 	}
 }
+
+// A signal during boot undoes the launch whether or not the scope exists
+// yet: the launcher is stopped and joined, so it cannot make the scope after
+// the cleanup, and a scope it already made is stopped. Scope creation is
+// held behind a barrier so each order is deterministic.
+func TestAndroidEmulatorStartUndoesAnInterruptedLaunch(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the emulator path is Linux-only")
+	}
+	if !netisolate.Inside() {
+		t.Skip("start runs only inside the test network namespace (make go-test)")
+	}
+	if _, err := os.Stat("/dev/kvm"); err != nil {
+		t.Skip("start requires /dev/kvm")
+	}
+	if _, err := exec.LookPath("flock"); err != nil {
+		t.Skip("flock unavailable")
+	}
+	for _, tc := range []struct {
+		name         string
+		scopeCreated bool
+	}{
+		{"before the scope exists", false},
+		{"after the scope exists", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSmokeFixture(t)
+			barrier := filepath.Join(f.dir, "barrier")
+			scope := filepath.Join(f.dir, "scope")
+			bin := filepath.Join(f.dir, "bin")
+			mockexec.WriteIn(t, bin, "bwrap", "#!/bin/sh\nexit 0\n")
+			// The launcher makes the scope only once the barrier exists, then
+			// runs as the emulator would.
+			mockexec.WriteIn(t, bin, "systemd-run", `#!/usr/bin/env bash
+echo "launcher started" >>"$AO_TEST_LOG"
+while [[ ! -e "$AO_TEST_BARRIER" ]]; do sleep 0.02; done
+echo "scope created" >>"$AO_TEST_LOG"
+touch "$AO_TEST_SCOPE"
+exec sleep 300
+`)
+			mockexec.WriteIn(t, bin, "systemctl", `#!/usr/bin/env bash
+case "$*" in
+  *is-active*) [[ -e "$AO_TEST_SCOPE" ]] ;;
+  *stop*) echo "scope stopped" >>"$AO_TEST_LOG"; rm -f "$AO_TEST_SCOPE" ;;
+esac
+`)
+			mockexec.WriteIn(t, filepath.Join(f.dir, "emulator"), "emulator", "#!/bin/sh\nexit 0\n")
+			for _, dir := range []string{filepath.Join(f.dir, "avd", "ao.avd"), filepath.Join(f.dir, "cache", "agent-overflow", "emulator-rootfs")} {
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(f.dir, "cache", "agent-overflow", "emulator-rootfs", ".ao-image"), []byte("test\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("bash", filepath.Join(filepath.Dir(f.smoke), "android-emulator.sh"), "start")
+			cmd.Env = append(append([]string{}, f.env...),
+				netisolate.EnvNamespace+"="+os.Getenv(netisolate.EnvNamespace),
+				"AO_TEST_BARRIER="+barrier,
+				"AO_TEST_SCOPE="+scope,
+			)
+			var out strings.Builder
+			cmd.Stdout, cmd.Stderr = &out, &out
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
+			waitFor := func(what string) {
+				t.Helper()
+				deadline := time.Now().Add(30 * time.Second)
+				for !strings.Contains(f.calls(t), what) {
+					if time.Now().After(deadline) {
+						t.Fatalf("never saw %q:\n%s\n%s", what, out.String(), f.calls(t))
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+			}
+			waitFor("launcher started")
+			if tc.scopeCreated {
+				if err := os.WriteFile(barrier, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				waitFor("scope created")
+			}
+			if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- cmd.Wait() }()
+			select {
+			case <-done:
+			case <-time.After(30 * time.Second):
+				t.Fatalf("start did not finish after SIGTERM:\n%s\n%s", out.String(), f.calls(t))
+			}
+			// Release a launcher that was still waiting; a joined one is gone
+			// and creates nothing.
+			if err := os.WriteFile(barrier, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(300 * time.Millisecond)
+			calls := f.calls(t)
+			stopped := strings.LastIndex(calls, "scope stopped")
+			if stopped < 0 || strings.LastIndex(calls, "scope created") > stopped {
+				t.Fatalf("a scope outlived the interrupted start:\n%s", calls)
+			}
+			if _, err := os.Stat(scope); err == nil {
+				t.Fatalf("the scope is still active:\n%s", calls)
+			}
+		})
+	}
+}

@@ -189,7 +189,10 @@ default and accepts `--memory-limit-bytes` for machine-specific runs. Direct
 Windows use of `launchHarness` refuses unless this launcher marker is present.
 The suite runs in a process group of its own, so an interrupt (and on Unix
 `SIGTERM` or `SIGHUP`) reaches only the launcher; it stops the owned tree,
-waits for it, and exits with 128 plus the signal number.
+waits for it, and exits with 128 plus the signal number. Each backend
+`launchHarness` starts has a process group of its own, out of that
+teardown's reach, so on Unix it is passed `--exit-with-parent` with its
+worker's PID and stops itself once that worker is gone.
 
 Every `up`, managed `run`, and compare leg installs the platform memory policy
 before starting the backend. `up` defaults to 2 GiB and managed plans may
