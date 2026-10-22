@@ -284,7 +284,11 @@ GitHub-hosted runners get both settings from `.github/actions/setup`, which
 also loads the `dummy` link module the LAN interface needs.
 
 Started inside such a namespace already, `ao-harness-e2e` runs the suite
-there instead of in a new one. `e2e/scripts/android-smoke.sh` relies on it:
+there instead of in a new one. It judges that by `netisolate.Inside`: the
+namespace's helper records the namespace's identity in `AO_NETISOLATE_NS`,
+and the process must be in that namespace with its interface shape, so a
+host that happens to look alike, or a process that inherited the variable
+elsewhere, gets a namespace of its own. `e2e/scripts/android-smoke.sh` relies on it:
 it boots the emulator and the adb server under `bin/ao-netns` and starts the
 launcher beside them, so nothing the Android smoke runs listens on the host.
 

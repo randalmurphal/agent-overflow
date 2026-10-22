@@ -9,6 +9,7 @@
 #   e2e/scripts/android-emulator.sh prepare   # on the host: runtime files
 #   e2e/scripts/android-emulator.sh start     # in the namespace: boot AVD `ao`
 #   e2e/scripts/android-emulator.sh stop
+#   e2e/scripts/android-emulator.sh inside    # exit 0 inside the namespace
 #
 # The emulator, its console and adb ports, and the adb server all live in
 # the namespace bin/ao-netns makes (loopback plus a private LAN, no route
@@ -21,13 +22,17 @@
 # inside the namespace (rootless Podman rejoins its own user namespace), and
 # the namespace must hold the emulator for adb and the suite to reach it.
 #
+# prepare and start hold an exclusive lock and the emulator inherits it, so
+# one emulator runs at a time and its runtime files are never replaced under
+# it. android-smoke.sh holds the same lock for its whole run.
+#
 #   AO_EMULATOR_AVD      AVD name (default ao)
 #   AO_EMULATOR_MEMORY   memory cap (default 10G; the leak needs 3-4 GB of
 #                        headroom per pairing on top of a ~4 GB idle guest)
 #   AO_EMULATOR_ARGS     extra emulator flags
 #
-# Linux and WSL2 only: it needs /dev/kvm, bubblewrap, a user systemd with
-# the memory controller delegated, and Docker or Podman for `prepare`.
+# Linux and WSL2 only: it needs /dev/kvm, bubblewrap, flock, a user systemd
+# with the memory controller delegated, and Docker or Podman for `prepare`.
 set -euo pipefail
 
 : "${ANDROID_HOME:=$HOME/Android/Sdk}"
@@ -40,28 +45,66 @@ adb="$ANDROID_HOME/platform-tools/adb"
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/agent-overflow"
 rootfs="$cache/emulator-rootfs"
 log="$cache/emulator.log"
+lock="$cache/android-emulator.lock"
 
-# The namespace bin/ao-netns makes has loopback and lan0 and no default
-# route; the host has more. netisolate.Contained judges the same way.
-contained() {
-  [[ "$(ip -o link show | awk -F': ' '{ print $2 }' | sort | tr '\n' ' ')" == "lan0 lo " ]] &&
-    [[ -z "$(ip route show default)" ]]
+# Inside the namespace bin/ao-netns built: its helper recorded that
+# namespace's identity in AO_NETISOLATE_NS (netisolate.Inside), and the
+# interfaces are its loopback and lan0 at 10.203.0.2 with no default route.
+# The identity is what a lookalike host cannot have.
+inside() {
+  [[ -n "${AO_NETISOLATE_NS:-}" && "$(readlink /proc/self/ns/net)" == "$AO_NETISOLATE_NS" ]] || return 1
+  [[ "$(ip -o link show | awk -F': ' '{ print $2 }' | sort | tr '\n' ' ')" == "lan0 lo " ]] || return 1
+  ip -o addr show dev lan0 | awk '
+    $3 == "inet" && $4 == "10.203.0.2/24" { addressed = 1; next }
+    $3 == "inet6" && $4 ~ /^fe80:/ { next }
+    { bad = 1 }
+    END { exit !(addressed && !bad) }' || return 1
+  [[ -z "$(ip route show default)" && -z "$(ip -6 route show default)" ]]
+}
+
+# The lock may arrive as fd 9 from android-smoke.sh, which holds it for the
+# whole run; otherwise this command takes it. The emulator inherits fd 9, so
+# a running emulator keeps holding it after start returns.
+hold_lock() {
+  mkdir -p "$cache"
+  if [[ "$(readlink "/proc/$$/fd/9" 2>/dev/null)" != "$lock" ]]; then
+    exec 9>>"$lock"
+  fi
+  flock -n 9 || {
+    echo "another Android emulator or smoke run holds $lock" >&2
+    exit 1
+  }
 }
 
 case "${1:-}" in
+  inside)
+    inside
+    exit
+    ;;
   prepare)
-    for need in docker bwrap systemd-run; do
+    for need in docker flock; do
       command -v "$need" >/dev/null 2>&1 || { echo "missing $need" >&2; exit 1; }
     done
+    hold_lock
     docker build -q -t ao-emulator -f "$repo/e2e/android/emulator.Dockerfile" "$repo/e2e/android" >/dev/null
     image="$(docker image inspect -f '{{.Id}}' ao-emulator)"
     if [[ "$(cat "$rootfs/.ao-image" 2>/dev/null)" != "$image" ]]; then
-      rm -rf "$rootfs"
-      mkdir -p "$rootfs"
+      if systemctl --user is-active -q "$unit"; then
+        echo "an emulator is running as $unit on the current runtime; stop it first: $0 stop" >&2
+        exit 1
+      fi
+      # Extracted beside the old root and swapped in whole, so a failed
+      # export leaves the previous runtime intact and stamped.
+      fresh="$rootfs.new"
+      rm -rf "$fresh" "$rootfs.old"
+      mkdir -p "$fresh"
       container="$(docker create ao-emulator true)"
       trap 'docker rm "$container" >/dev/null' EXIT
-      docker export "$container" | tar -x -C "$rootfs"
-      echo "$image" >"$rootfs/.ao-image"
+      docker export "$container" | tar -x -C "$fresh"
+      echo "$image" >"$fresh/.ao-image"
+      if [[ -d "$rootfs" ]]; then mv "$rootfs" "$rootfs.old"; fi
+      mv "$fresh" "$rootfs"
+      rm -rf "$rootfs.old"
     fi
     echo "==> emulator runtime ready in $rootfs"
     exit 0
@@ -73,14 +116,14 @@ case "${1:-}" in
     exit 0
     ;;
   start) ;;
-  *) echo "usage: $0 prepare|start|stop" >&2; exit 2 ;;
+  *) echo "usage: $0 prepare|start|stop|inside" >&2; exit 2 ;;
 esac
 
-contained || {
+inside || {
   echo "start the emulator inside the test network namespace (bin/ao-netns), as android-smoke.sh does; outside it, its ports and adb's would listen on the host" >&2
   exit 1
 }
-for need in bwrap systemd-run "$adb" "$ANDROID_HOME/emulator/emulator"; do
+for need in bwrap flock systemd-run "$adb" "$ANDROID_HOME/emulator/emulator"; do
   command -v "$need" >/dev/null 2>&1 || [[ -x "$need" ]] || { echo "missing $need" >&2; exit 1; }
 done
 [[ -e /dev/kvm ]] || { echo "/dev/kvm is required; enable nested virtualization for this VM" >&2; exit 1; }
@@ -89,6 +132,7 @@ done
   echo "no AVD '$avd' under $ANDROID_AVD_HOME; create it with avdmanager first (make e2e-android prints the commands)" >&2
   exit 1
 }
+hold_lock
 if systemctl --user is-active -q "$unit"; then
   echo "an emulator is already running as $unit; stop it first: $0 stop" >&2
   exit 1
@@ -100,7 +144,6 @@ rm -f "$ANDROID_AVD_HOME/$avd.avd"/*.lock
 # The scope caps memory with no swap and four CPUs, as the container did;
 # the process stays in this namespace. HOME is a tmpfs except the AVD
 # folder, so the emulator writes nothing else of the developer's.
-mkdir -p "$cache"
 read -ra extra <<<"${AO_EMULATOR_ARGS:-}"
 systemd-run --user --scope --unit="$unit" -q \
   -p MemoryMax="$memory" -p MemorySwapMax=0 -p CPUQuota=400% \

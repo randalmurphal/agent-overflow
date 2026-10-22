@@ -112,7 +112,7 @@ func run(args []string, stdout, stderr *os.File) int {
 		fmt.Fprintln(stderr, "ao-harness-e2e: run E2E TypeScript check:", err)
 		return 1
 	}
-	isolate := needsIsolation(opts.hostNetwork, netisolate.Contained())
+	isolate := needsIsolation(opts.hostNetwork, netisolate.Inside())
 	if isolate {
 		if err := netisolate.Check(stderr); err != nil {
 			fmt.Fprintln(stderr, "ao-harness-e2e:", err, "(--host-network is only for suites that need host services)")
@@ -354,6 +354,6 @@ func parseArgs(args []string) (launchOptions, error) {
 // needsIsolation is whether the suite needs a namespace of its own: not when
 // it was asked to use the host's, and not when it already runs in one, where
 // a second would cut it off from the processes it shares that one with.
-func needsIsolation(hostNetwork, contained bool) bool {
-	return !hostNetwork && !contained
+func needsIsolation(hostNetwork, inside bool) bool {
+	return !hostNetwork && !inside
 }

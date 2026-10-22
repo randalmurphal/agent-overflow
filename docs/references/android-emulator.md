@@ -61,8 +61,13 @@ itself again under `bin/ao-netns`, where `android-emulator.sh start` boots
 the SDK's emulator on that root with bubblewrap inside the memory scope,
 and the adb server, the harness backends and Playwright run beside it. The
 emulator's console and adb ports and the adb server's listener exist only
-in that namespace; `start` refuses to run outside one. On exit the smoke
-clears the device PIN and stops the emulator, failed runs included.
+in that namespace; `start` refuses to run outside one. One run holds the
+emulator at a time: the smoke takes `android-emulator.sh`'s lock before
+`prepare` and keeps it through the device phase, the emulator inherits it,
+and a run that finds the lock taken or an emulator already running stops
+without touching it. `prepare` swaps a new runtime in whole, so a failed
+export leaves the previous one. On exit, signals included, the smoke waits
+for the suite, then clears the device PIN and stops its emulator.
 
 A container runtime cannot host the emulator for this: rootless Podman
 cannot start inside the namespace, and an emulator outside it would listen
@@ -89,6 +94,10 @@ Findings from `e2e/android/shell-boot.spec.ts` work that are easy to lose:
   second Back navigates the app.
 - A touch that lands during a fling stops the fling instead of tapping.
   Wait for scroll positions to settle before tapping after a swipe.
+- `AndroidWebView.page()` takes no timeout, and an attach to a relaunched
+  paired app can stall once its credential prompt has paused the activity.
+  Attach through the spec's `shellPage`, which bounds it, and where the case
+  allows, answer the prompt natively before attaching.
 - Elements are visible to Playwright while off screen inside the timeline.
   Scroll them into view and assert their box is inside `innerHeight`
   before touching them.

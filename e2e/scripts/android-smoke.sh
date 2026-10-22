@@ -56,12 +56,53 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 apk="${AO_ANDROID_RELEASE_APK:-$repo/mobile/android/app/build/outputs/apk/debug/app-debug.apk}"
 emulator="$repo/e2e/scripts/android-emulator.sh"
 human="${AO_ANDROID_HUMAN_LOCK:-}"
+lock="${XDG_CACHE_HOME:-$HOME/.cache}/agent-overflow/android-emulator.lock"
 
 # A device line is "<serial>\t<state>"; only `device` is ready. Anything
 # else (offline, unauthorized, a booting emulator) is not something to run
 # a suite against, and reading it as one is how a flake gets blamed on the
 # app.
 ready_devices() { "$adb" devices | tail -n +2 | awk '$2 == "device" { print $1 }'; }
+
+# The emulator path holds android-emulator.sh's lock for the whole run, as
+# fd 9: taken by the host phase and inherited across bin/ao-netns, or taken
+# here when the device phase was started directly. Only the holder may
+# start or stop the emulator.
+hold_lock() {
+  mkdir -p "$(dirname "$lock")"
+  if [[ "$(readlink "/proc/$$/fd/9" 2>/dev/null)" != "$lock" ]]; then
+    exec 9>>"$lock"
+  fi
+  flock -n 9 || {
+    echo "another Android emulator or smoke run holds $lock" >&2
+    exit 1
+  }
+}
+
+# Long steps run as supervised children: a signal is passed on to the
+# child and waited out before the exit cleanup runs, so nothing the step
+# started outlives the PIN, the adb server or the emulator it relies on.
+# Background children of a script ignore SIGINT, so TERM carries them all.
+child=""
+supervise() {
+  "$@" &
+  child=$!
+  local status=0
+  wait "$child" || status=$?
+  child=""
+  return "$status"
+}
+on_signal() {
+  trap - "$1"
+  if [[ -n "$child" ]]; then
+    kill -TERM "$child" 2>/dev/null || true
+    wait "$child" 2>/dev/null || true
+  fi
+  exit $((128 + $(kill -l "$1")))
+}
+trap 'on_signal INT' INT
+trap 'on_signal TERM' TERM
+trap 'on_signal HUP' HUP
 
 # What the run acquired, released on every exit path: the PIN before the
 # emulator stops, since it boots from the same AVD next time.
@@ -78,20 +119,36 @@ on_exit() {
 }
 trap on_exit EXIT
 
+# A real phone is named, never chosen: every case clears the app's data.
+human_serial() {
+  local serial="${AO_ANDROID_SERIAL:-}"
+  if [[ -z "$serial" ]] || ! ready_devices | awk -v wanted="$serial" '$0 == wanted { found=1 } END { exit !found }'; then
+    echo "AO_ANDROID_HUMAN_LOCK=1 needs AO_ANDROID_SERIAL naming an attached, ready phone" >&2
+    exit 1
+  fi
+  echo "$serial"
+}
+
 # ---- the device phase: in the namespace, or on the host for a phone ----
 
 device_phase() {
   local serial
   if [[ "$human" == 1 ]]; then
-    serial="${AO_ANDROID_SERIAL:-}"
-    if [[ -z "$serial" ]] || ! ready_devices | awk -v wanted="$serial" '$0 == wanted { found=1 } END { exit !found }'; then
-      echo "AO_ANDROID_HUMAN_LOCK=1 needs AO_ANDROID_SERIAL naming an attached, ready phone" >&2
+    serial="$(human_serial)"
+  else
+    "$emulator" inside || {
+      echo "the emulator phase runs inside the test network namespace; run make e2e-android" >&2
+      exit 1
+    }
+    hold_lock
+    if systemctl --user is-active -q ao-emulator.scope; then
+      echo "an emulator is already running as ao-emulator.scope, outside this run; stop it first: $emulator stop" >&2
       exit 1
     fi
-  else
-    # The emulator and this namespace's adb server are the run's own.
+    # Nothing else can start one while this run holds the lock, so the
+    # emulator and this namespace's adb server are the run's own from here.
     own_emulator=1
-    "$emulator" start
+    supervise "$emulator" start
     serial="$(ready_devices | awk '/^emulator-/ { print; exit }')"
     if [[ -z "$serial" ]]; then
       echo "the emulator booted but adb lists no ready emulator" >&2
@@ -147,7 +204,7 @@ device_phase() {
   if [[ "$human" == 1 ]]; then network=(--host-network); fi
   echo "==> the shell smoke, in the device's WebView"
   cd "$repo"
-  AO_ANDROID_SERIAL="$serial" AO_HARNESS_BIN="$repo/bin/ao-android-harness" \
+  supervise env AO_ANDROID_SERIAL="$serial" AO_HARNESS_BIN="$repo/bin/ao-android-harness" \
     bin/ao-harness-e2e "${network[@]}" --config=playwright.android.config.ts "$@"
 }
 
@@ -187,13 +244,17 @@ skip() {
 }
 
 [[ -x "$adb" ]] || skip "No adb at $adb"
-if [[ "$human" != 1 ]]; then
+if [[ "$human" == 1 ]]; then
+  if [[ -n "${AO_ANDROID_RELEASE_APK:-}" ]]; then
+    echo "The release lifecycle test changes network radios and requires the emulator." >&2
+    exit 1
+  fi
+  phone="$(human_serial)"
+  echo "==> phone $phone"
+else
   [[ -x "$ANDROID_HOME/emulator/emulator" ]] || skip "No emulator in $ANDROID_HOME"
   [[ -d "$ANDROID_AVD_HOME/${AO_EMULATOR_AVD:-ao}.avd" ]] || skip "No AVD '${AO_EMULATOR_AVD:-ao}' under $ANDROID_AVD_HOME"
   [[ -e /dev/kvm ]] || skip "No /dev/kvm on this host"
-elif [[ -n "${AO_ANDROID_RELEASE_APK:-}" ]]; then
-  echo "The release lifecycle test changes network radios and requires the emulator." >&2
-  exit 1
 fi
 
 if [[ ! -f "$apk" ]]; then
@@ -230,7 +291,7 @@ fi
 
 # Only this test runner builds/uses an explicitly newer release fixture.
 # The ordinary harness binary and production dist retain their real versions.
-node "$repo/e2e/scripts/build-android-bundle-fixture.ts" "$apk"
+supervise node "$repo/e2e/scripts/build-android-bundle-fixture.ts" "$apk"
 
 if [[ "$human" == 1 ]]; then
   device_phase "$@"
@@ -239,7 +300,9 @@ fi
 
 # Native input selectors need Playwright's small Android driver, and the
 # emulator its runtime files: both fetched here, since the namespace has no
-# route off the machine. Cached after the first run.
-(cd "$repo/e2e" && pnpm exec playwright install android)
-"$emulator" prepare
-AO_ANDROID_SMOKE_PHASE=device "$repo/bin/ao-netns" "$repo/e2e/scripts/android-smoke.sh" "$@"
+# route off the machine. Cached after the first run. The lock taken here is
+# held through the device phase, which inherits it as fd 9.
+supervise pnpm --dir "$repo/e2e" exec playwright install android
+hold_lock
+supervise "$emulator" prepare
+exec env AO_ANDROID_SMOKE_PHASE=device "$repo/bin/ao-netns" "$repo/e2e/scripts/android-smoke.sh" "$@"
