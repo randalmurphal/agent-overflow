@@ -1,4 +1,5 @@
 import { safeRepositoryMetadata } from '../utils/repositoryCoordinates';
+import { REPLICA_SCHEMA_VERSION } from './envelope';
 // Minimal promise-shaped IndexedDB adapter for the thread replica.
 // Deliberately not a general-purpose
 // wrapper — it knows this database's two object stores and nothing else.
@@ -12,7 +13,27 @@ import { safeRepositoryMetadata } from '../utils/repositoryCoordinates';
 // have HANDED BACK has to be disposed of when it arrives late — see
 // `openReplicaDb`.
 
-export const REPLICA_DB_VERSION = 3;
+/**
+ * The database's object-store layout. Raise it for a structural upgrade
+ * (`onupgradeneeded` below), which keeps the stored windows.
+ */
+const REPLICA_DB_STRUCTURE_VERSION = 3;
+
+/**
+ * The IndexedDB version: it rises with the layout AND with the body schema
+ * (`REPLICA_SCHEMA_VERSION`). A schema bump clears the windows a previous
+ * build stored, but a page still running that build keeps an open
+ * connection and would write its windows back under the new schema. The
+ * version rise makes this build's open deliver `versionchange` to that
+ * connection, which closes it (`onsuccess` below), and refuses the older
+ * build's next open with a VersionError.
+ */
+export const REPLICA_DB_VERSION = replicaDbVersion(REPLICA_SCHEMA_VERSION);
+
+/** The IndexedDB version of a build whose body schema is `schemaVersion`. */
+export function replicaDbVersion(schemaVersion: number): number {
+  return REPLICA_DB_STRUCTURE_VERSION + schemaVersion;
+}
 export const THREADS_STORE = 'threads';
 export const META_STORE = 'meta';
 /** Key of the identity record inside META_STORE. */

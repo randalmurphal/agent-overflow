@@ -36,7 +36,9 @@ export const REPLICA_ENVELOPE_VERSION = 1;
  * Body schema version, stamped into the database's `meta` record.
  * Bump whenever `ReplicaBody`'s field set or the meaning of a field
  * changes — including a change to the wire `Item` DTO, since items ride
- * the envelope verbatim. A mismatch drops the whole database.
+ * the envelope verbatim. A mismatch drops the whole database, and the
+ * bump raises `REPLICA_DB_VERSION` (idb.ts), which shuts out a page still
+ * running the previous build.
  */
 // Schema 4 gave the body `runs`: a window is only paintable with the
 // stubs that describe the activity-run members it does not hold. Schema 5
