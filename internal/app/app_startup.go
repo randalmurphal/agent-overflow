@@ -21,6 +21,7 @@ import (
 	"agent-overflow/internal/logging"
 	obsotel "agent-overflow/internal/observability/otel"
 	"agent-overflow/internal/observability/replay"
+	"agent-overflow/internal/openaikey"
 	"agent-overflow/internal/promptoverride"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/settings"
@@ -536,6 +537,7 @@ func repairStartupOwnedPaths(dbDir string) error {
 		filepath.Join(dbDir, "replay"),
 		filepath.Join(dbDir, uitrace.DirName),
 		filepath.Join(dbDir, uitrace.DirName, uitrace.BookmarkSubdir),
+		filepath.Join(dbDir, openaikey.DirName),
 	} {
 		if err := repairAppOwnedTreeIfExists(dir); err != nil {
 			return fmt.Errorf("failed to repair permissions for %s: %w", dir, err)

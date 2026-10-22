@@ -21,6 +21,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1273975760: 'selected', // AgentRemoteStart
 	1365876070: 'selected', // AgentRemoteStatus
 	4007046465: 'selected', // AllowPreviewPort
+	2562809680: 'selected', // AppendLiveDictation
 	2157691816: 'home', // AppendUIRenderTraceBatch
 	580543372: 'selected', // ApprovePR
 	1352159878: 'project', // ArchiveProject
@@ -30,6 +31,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2098425262: 'thread', // BackgroundClaudeTask
 	3647000619: 'selected', // BeginDictation
 	3256859589: 'thread', // BeginDraftProjectTransfer
+	110177777: 'selected', // BeginLiveDictation
 	1189501287: 'home', // BeginPasskeyRegistration
 	3214812657: 'home', // BeginPasskeyStepUp
 	3037746585: 'thread', // BeginThreadTransfer
@@ -45,6 +47,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2848608143: 'home', // BrowserHostReport
 	2608316491: 'home', // CancelDevicePairing
 	1562772056: 'selected', // CancelDictation
+	3365706830: 'selected', // CancelLiveDictation
 	472111634: 'selected', // CancelPRAutoMerge
 	341374423: 'home', // CancelProviderLogin
 	73679326: 'home', // CancelRestartToUpdate
@@ -97,8 +100,10 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1317713039: 'thread', // DismissSessionBanner
 	41472159: 'thread', // DismissThreadWorktreeSetup
 	115027584: 'home', // DownloadUpdate
+	1579042384: 'selected', // EditOpenAIKeyFile
 	1594348919: 'selected', // FetchForgeAttachment
 	2178028847: 'selected', // FinishDictation
+	3774452621: 'selected', // FinishLiveDictation
 	1601396603: 'home', // FinishPasskeyRegistration
 	1569276637: 'home', // FinishPasskeyStepUp
 	516065248: 'home', // ForgetAccessDevice
@@ -273,6 +278,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	913927214: 'thread', // MoveDraftToThread
 	3013708277: 'thread', // MoveThreadTerminals
 	2831503793: 'home', // NotificationActivated
+	4008977316: 'selected', // OpenAIKeyFile
 	2513613347: 'workspace', // OpenBranchBaseDiff
 	1949392079: 'workspace', // OpenCommitDiff
 	3980787304: 'home', // OpenComputerPairing

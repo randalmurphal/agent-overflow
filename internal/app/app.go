@@ -332,6 +332,10 @@ type App struct {
 	// (app_dictation.go), created on first use.
 	dictationOnce sync.Once
 	dictation     *dictation.Recordings
+	// liveDictation holds clients' live recordings streaming to OpenAI
+	// (app_live_dictation.go), created on first use.
+	liveDictationOnce sync.Once
+	liveDictation     *dictation.Live
 	// transportServer is the Phase C HTTP+WS transport. Set by main.go
 	// via SetTransportServer before app.Run() so Shutdown can drain
 	// in-flight RPCs BEFORE App subsystems (store, telemetry, sessions)
@@ -588,6 +592,10 @@ type App struct {
 	// tests assign a client pointing at a local httptest server. Nil uses
 	// the package-level singleton.
 	rateLimitProbeClientOverride *http.Client
+	// openAIClientOverride replaces the client keyed OpenAI requests use
+	// (app_live_dictation.go). Only an isolated boot sets it, to answer
+	// them in process.
+	openAIClientOverride *http.Client
 	// externalURLsIsolated makes every system-browser open answer
 	// externalurl.ErrNoOpener, as a host with no browser does. Only an
 	// isolated boot sets it: a test run must not open the developer's browser.
