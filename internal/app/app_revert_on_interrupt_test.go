@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -679,14 +678,13 @@ func TestInterruptAndRevertIfCleanRevertsClaudeTUIWithoutKillingSession(t *testi
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread := createAppTestThread(t, app, "revert-tui", "claude-tui", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "the original prompt")
-	// The dropped prompt may have carried what a resume's hooks delivered.
+	// The dropped prompt may have carried what the memory hook delivered.
 	thread.SessionRef = "tui-session"
 	if err := app.store.UpdateThread(thread); err != nil {
 		t.Fatalf("update thread: %v", err)
 	}
-	if err := app.store.PutSessionStartReceipt(thread.ID, thread.SessionRef, "digest"); err != nil {
-		t.Fatalf("put receipt: %v", err)
-	}
+	app.configDir = t.TempDir()
+	seedMemoryRecords(t, app, thread.ID)
 
 	result, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{}, nil)
 	if err != nil {
@@ -714,9 +712,7 @@ func TestInterruptAndRevertIfCleanRevertsClaudeTUIWithoutKillingSession(t *testi
 	if !ok || draft.Content != "the original prompt" {
 		t.Fatalf("draft = (ok=%v, %q), want (true, \"the original prompt\")", ok, draft.Content)
 	}
-	if received, err := app.store.SessionStartReceipt(thread.ID, thread.SessionRef); err != nil || received != "" {
-		t.Fatalf("receipts after the revert = %v, %v; want none", received, err)
-	}
+	requireMemoryRecordsForgotten(t, app, thread.ID, "the revert")
 }
 
 // TestInterruptAndRevertIfCleanRevertsWithSynthesizedAnchor covers
@@ -973,24 +969,21 @@ func TestInterruptAndRevertIfCleanCodexUsesLiveThreadRevert(t *testing.T) {
 	}
 }
 
-// A live in-place cut drops what the cut turn's SessionStart hooks
-// delivered: a delivery an interrupt kept from settling leaves the session,
-// so the next completed turn warns and keeps no receipt, and a receipt the
-// turn kept while the cut ran is forgotten once the cut lands.
+// A live in-place cut drops what the cut turn's memory hooks delivered: the
+// records are forgotten before the cut and again once it lands, so a record
+// a prompt wrote while the cut ran goes too, and the next prompt delivers
+// the memory whole. A fresh start's delivery the cut turn made, settled or
+// not, ends without a warning: the next prompt replaces it.
 func TestInterruptAndRevertIfCleanCodexDropsTheCutMemoryDelivery(t *testing.T) {
 	t.Parallel()
-	for name, tc := range map[string]struct {
-		status string
-		// warns is whether the turn after the cut reports the memory
-		// delivery missing.
-		warns bool
-	}{
-		"settled by the interrupt": {"interrupted", true},
-		"settled during the cut":   {"completed", false},
+	for name, status := range map[string]string{
+		"settled by the interrupt": "interrupted",
+		"settled during the cut":   "completed",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			app := newTestApp(t)
+			app.configDir = t.TempDir()
 			app.triage = triage.NewRouter(app.store, app.emit)
 			workspace := t.TempDir()
 			thread := createAppTestThread(t, app, "codex-live-revert-home", "codex", workspace)
@@ -1006,6 +999,11 @@ func TestInterruptAndRevertIfCleanCodexDropsTheCutMemoryDelivery(t *testing.T) {
 				t.Fatalf("start active turn: %v", err)
 			}
 			insertUserItem(t, app.store, thread.ID, "u:1", 1, "restore me")
+			seedMemoryRecords(t, app, thread.ID)
+			records, err := memory.RecordsDir(app.configDir, thread.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
 			binary := writeCodexForkAtBinary(t, codexForkMock{
 				resumedThreadID:        thread.SessionRef,
 				forkedThreadID:         "unused-fork",
@@ -1013,7 +1011,8 @@ func TestInterruptAndRevertIfCleanCodexDropsTheCutMemoryDelivery(t *testing.T) {
 				historyMode:            "paginated",
 				activeTurnID:           "turn-dropped",
 				sessionStartContext:    memory.Heading + " " + memory.Ending,
-				activeTurnRevertStatus: tc.status,
+				activeTurnRevertStatus: status,
+				revertRecordPath:       filepath.Join(records, "during-the-cut.json"),
 				nextTurnID:             "turn-after",
 			})
 			var mu sync.Mutex
@@ -1025,9 +1024,9 @@ func TestInterruptAndRevertIfCleanCodexDropsTheCutMemoryDelivery(t *testing.T) {
 				WorkDir:        workspace,
 				ResumeThreadID: thread.SessionRef,
 				SessionStartHook: &provider.SessionStartHook{
-					Label: memory.Label, Command: "true", Heading: memory.Heading, Ending: memory.Ending, Stamp: memory.StampPrefix, Resume: true,
+					Label: memory.Label, Command: "true", Heading: memory.Heading, Ending: memory.Ending, Stamp: memory.StampPrefix,
 				},
-				SessionStartReceipts: app.sessionStartReceipts(thread.ID),
+				SessionStartForget: func() error { return app.forgetMemoryRecords(thread.ID) },
 			}, func(event provider.ProviderEvent) {
 				switch {
 				case event.Kind == provider.EventError:
@@ -1052,9 +1051,7 @@ func TestInterruptAndRevertIfCleanCodexDropsTheCutMemoryDelivery(t *testing.T) {
 			if err != nil || !result.Reverted {
 				t.Fatalf("interrupt-and-revert: %+v, %v", result, err)
 			}
-			if received, err := app.store.SessionStartReceipt(thread.ID, thread.SessionRef); err != nil || received != "" {
-				t.Fatalf("receipts after the cut = %v, %v; want none", received, err)
-			}
+			requireMemoryRecordsForgotten(t, app, thread.ID, "the cut")
 			if err := sess.Send(context.Background(), "next", provider.SendOptions{}); err != nil {
 				t.Fatalf("send: %v", err)
 			}
@@ -1065,14 +1062,8 @@ func TestInterruptAndRevertIfCleanCodexDropsTheCutMemoryDelivery(t *testing.T) {
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			missing := slices.ContainsFunc(warnings, func(w string) bool {
-				return strings.HasPrefix(w, memory.Label+" did not reach this session after its resume")
-			})
-			if missing != tc.warns {
-				t.Fatalf("warnings = %q, want the missing-delivery warning %v", warnings, tc.warns)
-			}
-			if received, err := app.store.SessionStartReceipt(thread.ID, thread.SessionRef); err != nil || received != "" {
-				t.Fatalf("receipts after the next turn = %v, %v; want none", received, err)
+			if len(warnings) > 0 {
+				t.Fatalf("warnings = %q, want none", warnings)
 			}
 		})
 	}

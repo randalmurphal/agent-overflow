@@ -44,10 +44,10 @@ func TestMigrationV155AgentRecords(t *testing.T) {
 		t.Fatalf("apply v%d: %v", agentRecordsMigrationVersion, err)
 	}
 
-	if got, err := queryIDs(db, `SELECT id || '|' || thread_id || '|' || home || '|' || notify_on_tick || '|' || creator_agent_id || '|' || created_at
+	if got, err := queryIDs(db, `SELECT id || '|' || thread_id || '|' || home || '|' || creator_agent_id || '|' || created_at
 		FROM agents ORDER BY id`); err != nil {
 		t.Fatal(err)
-	} else if want := []string{"lead|lead|/config/agents/lead|1||10", "quiet|quiet|/config/agents/quiet|0||20"}; !slices.Equal(got, want) {
+	} else if want := []string{"lead|lead|/config/agents/lead||10", "quiet|quiet|/config/agents/quiet||20"}; !slices.Equal(got, want) {
 		t.Errorf("agents = %q, want %q", got, want)
 	}
 	if got, err := queryIDs(db, `SELECT agent_id || '|' || project_id FROM agent_projects ORDER BY agent_id`); err != nil || !slices.Equal(got, []string{"lead|p", "quiet|p"}) {
@@ -83,7 +83,7 @@ func TestMigrationV155AgentRecords(t *testing.T) {
 
 	for _, bad := range []string{
 		`INSERT INTO agents (id, thread_id, home, created_at) VALUES ('dup', 'lead', '/h', 1)`,
-		`INSERT INTO agents (id, thread_id, home, notify_on_tick, created_at) VALUES ('x', 'worker', '/h', 2, 1)`,
+		`INSERT INTO agents (id, thread_id, home, all_projects, created_at) VALUES ('x', 'worker', '/h', 2, 1)`,
 		`INSERT INTO agents (id, thread_id, home, created_at) VALUES ('x', 'missing', '/h', 1)`,
 		`INSERT INTO agent_past_threads (thread_id, agent_id, superseded_at) VALUES ('worker', 'missing', 1)`,
 	} {

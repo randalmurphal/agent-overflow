@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -518,6 +519,11 @@ type Thread struct {
 	// MarkThreadUnread, and auto-refreshed when the user switches into a
 	// thread.
 	LastReadAt *int64 `json:"lastReadAt,omitempty"`
+	// Attention is the flag the thread's agent raised for the user
+	// (SetThreadAttention), nil when it raised none. It is pending while
+	// LastReadAt is before its At, as an unread completion is, so a read
+	// of the thread clears it.
+	Attention *ThreadAttention `json:"attention,omitempty"`
 	// PinnedAt is the Unix-ms timestamp of when the user pinned the
 	// thread. NULL (nil) = unpinned. Pinned threads sort into two manual
 	// attention groups above needs-attention in the sidebar. Set by
@@ -808,4 +814,45 @@ func boolToInt(b bool) int {
 
 func nowMillis() int64 {
 	return time.Now().UnixMilli()
+}
+
+// ThreadAttention is the flag an agent raises on its thread for the user:
+// its kind, the short reason it gave and when it raised it.
+type ThreadAttention struct {
+	Kind   string `json:"kind"`
+	Reason string `json:"reason"`
+	At     int64  `json:"at"`
+}
+
+// The kinds of attention an agent can flag, as threads.attention_kind
+// allows them: a choice that is the user's to make, work ready for the
+// user to look at, and something wrong the agent cannot fix alone.
+const (
+	AttentionDecision = "decision"
+	AttentionReview   = "review"
+	AttentionProblem  = "problem"
+)
+
+// AttentionKinds are the kinds an agent can flag, in the order the
+// thread_attention tool lists them.
+func AttentionKinds() []string {
+	return []string{AttentionDecision, AttentionReview, AttentionProblem}
+}
+
+// AttentionPending reports whether t's attention flag still asks for the
+// user (attentionPending).
+func (t Thread) AttentionPending() bool {
+	return t.Attention != nil && attentionPending(t.Attention.At, t.LastReadAt)
+}
+
+// attentionPending reports whether a flag raised at at still asks for the
+// user: raised after the user last read the thread. A thread never tracked
+// (no read marker) has read nothing since, so its flag asks.
+func attentionPending(at int64, lastReadAt *int64) bool {
+	return lastReadAt == nil || at > *lastReadAt
+}
+
+// ValidAttentionKind reports whether kind is one an agent can flag.
+func ValidAttentionKind(kind string) bool {
+	return slices.Contains(AttentionKinds(), kind)
 }

@@ -1,6 +1,9 @@
 package app
 
 import (
+	"errors"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -18,7 +21,7 @@ import (
 // sessions receive no memory while the setting is off. On, they receive the
 // user and project indexes and may write both folders, with no maintenance
 // warnings; turning it off again removes the hook and the folders, on every
-// provider. A start with no hook forgets the thread's receipts.
+// provider. A start with no hook forgets the thread's records.
 func TestSharedMemoryFollowsItsSetting(t *testing.T) {
 	t.Parallel()
 	for _, providerName := range []string{string(provider.Claude), string(provider.ClaudeTUI), string(provider.Codex)} {
@@ -97,16 +100,12 @@ func TestSharedMemoryFollowsItsSetting(t *testing.T) {
 				t.Fatal("a malformed fact put a warning row on an ordinary thread")
 			}
 
-			if err := app.store.PutSessionStartReceipt(thread.ID, "session-1", memory.Digest(delivered)); err != nil {
-				t.Fatal(err)
-			}
+			seedMemoryRecords(t, app, thread.ID)
 			if _, err := app.settings.Update(map[string]any{"sharedMemoryEnabled": false}); err != nil {
 				t.Fatal(err)
 			}
 			noMemory("off again")
-			if receipts, err := app.store.SessionStartReceipt(thread.ID, "session-1"); err != nil || receipts != "" {
-				t.Fatalf("a start with no hook kept the receipts: %v, %v", receipts, err)
-			}
+			requireMemoryRecordsForgotten(t, app, thread.ID, "a start with no hook")
 		})
 	}
 }
@@ -143,7 +142,7 @@ func TestAnAssistantsHelperReceivesTheUserMemory(t *testing.T) {
 	if err != nil || !ok || plan.Home != "" || len(plan.Projects) != 0 || plan.User != memory.UserDir(app.configDir) {
 		t.Fatalf("plan = %+v, %v, %v", plan, ok, err)
 	}
-	mem, err := app.readSessionMemory(helper, nil, "", false)
+	mem, err := app.readSessionMemory(helper, nil, false, false)
 	if err != nil || mem.Hook == nil || !slices.Equal(mem.Dirs, []string{plan.User}) {
 		t.Fatalf("session memory = %+v, %v", mem, err)
 	}
@@ -176,4 +175,67 @@ func TestNativeMemoryStatusReadsTheSessionsConfiguration(t *testing.T) {
 	if status, err := app.GetNativeMemoryStatus(); err != nil || status.Claude {
 		t.Fatalf("with ~/.claude.json turning it off: %+v, %v", status, err)
 	}
+}
+
+// seedMemoryRecords puts a record in threadID's records folder, as a run of
+// the memory hook would. The app must have a config directory.
+func seedMemoryRecords(t *testing.T, app *App, threadID string) {
+	t.Helper()
+	if app.configDir == "" {
+		t.Fatal("the app has no config directory to keep records in")
+	}
+	dir, err := memory.RecordsDir(app.configDir, threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := memory.PrepareRecords(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "seeded.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// requireMemoryRecordsForgotten fails unless threadID's records folder is
+// gone, after what label names.
+func requireMemoryRecordsForgotten(t *testing.T, app *App, threadID, label string) {
+	t.Helper()
+	dir, err := memory.RecordsDir(app.configDir, threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("%s kept the memory records of %s: %v", label, threadID, err)
+	}
+}
+
+// Deleting a thread deletes the records of what its sessions were shown.
+func TestDeletingAThreadForgetsItsMemoryRecords(t *testing.T) {
+	t.Parallel()
+	app, _ := setupE2EApp(t)
+	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedMemoryRecords(t, app, thread.ID)
+	if err := app.DeleteThread(thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	requireMemoryRecordsForgotten(t, app, thread.ID, "the delete")
+}
+
+// Deleting an empty draft thread deletes the records a session started for
+// it left.
+func TestDeletingAnEmptyDraftForgetsItsMemoryRecords(t *testing.T) {
+	t.Parallel()
+	app, _ := setupE2EApp(t)
+	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedMemoryRecords(t, app, thread.ID)
+	if removed, err := app.DeleteEmptyDraftThread(thread.ID); err != nil || !removed {
+		t.Fatalf("DeleteEmptyDraftThread = %v, %v; want the draft removed", removed, err)
+	}
+	requireMemoryRecordsForgotten(t, app, thread.ID, "the draft's delete")
 }

@@ -16,10 +16,9 @@ import (
 const sessionStartMarker = "SessionStart hook additional context: "
 
 // observeMainRequest settles an expected SessionStart delivery on the first
-// main request after a start, a resume or a compaction, and keeps its
-// receipt: the request carries the hook's context, under its heading and
-// stamp, when it delivered. The body is searched only while a delivery is
-// expected.
+// main request after a start or a compaction: the request carries the hook's
+// context, under its heading and stamp, when it delivered. The body is
+// searched only while a delivery is expected.
 func (s *Session) observeMainRequest(body []byte) {
 	s.sessionStartMu.Lock()
 	if s.sessionStart.Expecting() == "" {
@@ -29,12 +28,10 @@ func (s *Session) observeMainRequest(body []byte) {
 	if context, ok := sessionStartContext(body, *s.sessionStart.Hook(), s.sessionStartSince, s.logf); ok {
 		s.sessionStart.Deliver(context)
 	}
-	warnings := []string{s.sessionStart.Settle(s.SessionID()), s.sessionStart.Keep()}
+	warning := s.sessionStart.Settle()
 	s.sessionStartMu.Unlock()
-	for _, warning := range warnings {
-		if warning != "" {
-			s.emitNonFatalError(warning)
-		}
+	if warning != "" {
+		s.emitNonFatalError(warning)
 	}
 }
 

@@ -383,7 +383,7 @@ against this computer's threads, including local ones):
 |---|---|
 | `token` PK | Same token as the source row. |
 | `owner_device_id` | `"local"` or the authenticated device of the source computer. Authorization principal for every later call about this token. |
-| `source_computer_id`, `source_computer_name`, `source_thread_id`, `source_thread_title` | Display metadata from the call for the footer and the chip. Never trusted for authorization. |
+| `source_computer_id`, `source_computer_name`, `source_thread_id`, `source_thread_title` | Display metadata for the footer and the chip: the ids and title from the call, the computer's name as this computer's pairing gives it (the call's own when it has none). Never trusted for authorization. |
 | `kind` | As above. |
 | `target_thread_id` | The thread that answers. For `ask`, the scratch fork. |
 | `message_item_id`, `turn_id` | The user row the request wrote, and the turn that consumed it, both set when the row is written to the provider. Distinguishes queued from running, and binds settlement to that turn and no other. |

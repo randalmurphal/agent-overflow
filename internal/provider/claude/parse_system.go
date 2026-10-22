@@ -47,7 +47,7 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 			Meta:      meta,
 			Timestamp: now,
 			Raw:       line,
-		}}, p.settleSessionStart(threadID, info.SessionID, now)...), nil
+		}}, p.settleSessionStart(threadID, now)...), nil
 
 	case "commands_changed":
 		// Spontaneous full-list push after mid-session skill discovery or a
@@ -101,9 +101,9 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 		}}
 		// The compaction's SessionStart hooks have run by its boundary.
 		if p != nil {
-			events = append(events, sessionStartWarnings(threadID, now, p.sessionStart.Expect(provider.SessionStartAfterCompaction))...)
+			p.sessionStart.Expect(provider.SessionStartAfterCompaction)
 		}
-		return append(events, p.settleSessionStart(threadID, readRawString(raw["session_id"]), now)...), nil
+		return append(events, p.settleSessionStart(threadID, now)...), nil
 
 	case "api_retry":
 		// Normalize the SDK's `data` payload into a shape both providers
@@ -178,8 +178,7 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 		return p.parseBackgroundTasksChangedEvent(threadID, now), nil
 
 	case "hook_response":
-		p.observeSessionStartHookResponse(raw)
-		return nil, nil
+		return p.observeHookResponse(threadID, raw, now), nil
 
 	// Explicitly skipped subtypes — no action, no error.
 	case "hook_started", "hook_progress",

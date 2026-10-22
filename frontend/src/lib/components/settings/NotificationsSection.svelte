@@ -113,7 +113,7 @@
     {
       field: 'notifications.sound-input-needed',
       label: 'Approval needed cue',
-      hint: 'Plays when the agent is blocked waiting on you.',
+      hint: 'Plays when the agent is blocked waiting on you, or flags a thread for you.',
       enabledKey: 'notifySoundInputNeeded',
       cueKey: 'notifySoundCueInputNeeded',
       testid: 'input-needed',
@@ -423,6 +423,18 @@
           checked={settings.notifyApprovalNeeded}
           ariaLabel="Toggle approval needed notifications"
           onToggle={(value) => updateSetting('notifyApprovalNeeded', value)}
+        />
+      </SettingsField>
+
+      <SettingsField
+        id="notifications.thread-attention"
+        label="Thread needs attention"
+        hint="When a turn ends with its agent asking for you: a decision, something to review or a problem. The only way a loop or watch turn notifies."
+      >
+        <ToggleSwitch
+          checked={settings.notifyThreadAttention}
+          ariaLabel="Toggle thread needs attention notifications"
+          onToggle={(value) => updateSetting('notifyThreadAttention', value)}
         />
       </SettingsField>
 

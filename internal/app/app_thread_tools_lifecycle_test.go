@@ -394,6 +394,52 @@ func TestTheObserverKeepsTheGateOfAnAcceptedReceipt(t *testing.T) {
 	}
 }
 
+// A thread on this computer is named without a computer in the sender line
+// of the message a request writes, so a forwarded request that claims this
+// computer's id is refused rather than read as a local thread's.
+func TestAForwardedRequestCannotClaimThisComputer(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	here := entityid.New()
+	f.app.storeIdentity.Store(&store.Identity{BackendID: here})
+	target := f.busyThread(t, "claimed-target")
+	send := func(computerID string) (string, error) {
+		token := newThreadRequestToken()
+		args, err := json.Marshal(threadtools.SendCall{ThreadID: target.ID, Message: "from somewhere"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = f.app.runThreadPeerRequest(t.Context(), "peer-device", ThreadPeerCall{
+			Tool: "thread_send", Args: args, Token: token,
+			Source: threadtools.Caller{ThreadID: entityid.New(), ComputerID: computerID, ComputerName: "Their Mac"},
+		})
+		return token, err
+	}
+
+	token, err := send(here)
+	if code := publicCode(t, err); code != threadtools.CodeInvalidRequest {
+		t.Fatalf("a source claiming this computer = %q, want it refused", code)
+	}
+	if _, found, err := f.app.store.GetThreadRequestReceipt(token); err != nil || found {
+		t.Fatalf("a receipt was minted for it: found=%v err=%v", found, err)
+	}
+	if rows := durableQueueRows(t, f.app, target.ID); len(rows) != 0 {
+		t.Fatalf("it queued work: %+v", rows)
+	}
+
+	// The same request from another computer is taken, under the name this
+	// computer has for it: none, as it is not paired, so its own.
+	elsewhere := entityid.New()
+	token, err = send(elsewhere)
+	if err != nil {
+		t.Fatalf("a request from another computer: %v", err)
+	}
+	receipt, found, err := f.app.store.GetThreadRequestReceipt(token)
+	if err != nil || !found || receipt.SourceComputerID != elsewhere || receipt.SourceComputerName != "Their Mac" {
+		t.Fatalf("receipt = %+v (found=%v err=%v), want it from %s named %q", receipt, found, err, elsewhere, "Their Mac")
+	}
+}
+
 // TestAPeerCannotReplayAnOutboundToken pins the token's ownership. A request
 // this computer sent elsewhere has a source row here and no receipt, so a
 // forwarded call reusing its token must be refused before anything is

@@ -31,10 +31,10 @@ Rulings of 2026-10-21. Each is binding until the user changes it.
 4. **Only facts that change a future decision.** The write rules ride
    with every delivery a session may write from. Progress, plans, task
    notes and anything temporary are never memory.
-5. **Maintenance is the assistants' job.** Warnings about memory (an
-   index cut to fit, a malformed fact, an expired fact, a context fact
-   with no end) appear only in standing agents' deliveries, never in a
-   worker's or an ordinary thread's.
+5. **Maintenance is the assistants' job.** Warnings about memory (a
+   delivery over the size limit, a malformed fact, an expired fact, a
+   context fact with no end) appear only in standing agents' deliveries,
+   never in a worker's or an ordinary thread's.
 6. **No version control.** The scopes are plain folders. Agents edit
    them with their own file tools; nothing commits.
 7. **Shared memory is a setting.** Ordinary threads receive project and
@@ -43,6 +43,13 @@ Rulings of 2026-10-21. Each is binding until the user changes it.
 8. **Provider memory is the user's.** The app leaves Claude's and
    Codex's own memory as the user configured it, and offers a setting
    per provider to turn it off in the app's sessions.
+9. **Changes reach a live thread at its next prompt.** Each prompt
+   delivers only what changed since the session last received its
+   memory, from that session's own record; nothing when nothing changed.
+   No version control and no state shared between sessions.
+10. **Warn, never cut.** A delivery over what a provider shows the model
+   whole is delivered whole, opening with its size; the agent reads the
+   provider's saved file, and the assistant is warned to shorten it.
 
 ## Scopes
 
@@ -153,98 +160,124 @@ followed, and only a regular file is read: the open does not wait
 
 ## Delivery
 
-One SessionStart hook delivers a session's memory: this app's binary
+One hook delivers a session's memory: this app's binary
 (`memory.HookSubcommand`) run as a command hook with the session's
-delivery plan, the folders and projects below, as its argument. Its
-output opens with `## Agent Overflow memory` and closes with
-`[End of Agent Overflow memory]`. Text inside it that would read as
-that ending or as a delivery's time line is written with parentheses
-in place of its brackets. Claude
+delivery plan, the folders and projects below, as its argument. Claude
 and claude-tui register it in the session's inline `--settings`, Codex
-in the thread's `config` with the trust hash of the command
-([Codex SessionStart hooks](../references/codex-wire.md#sessionstart-hooks-verified-01571)).
-Its matcher is `startup|compact|clear`: a new thread and a compaction
-each get the memory as it is then. A resume runs it only when the
-delivery would read differently from what the thread's model holds: the
-resumed history already carries the last delivery, and both providers
-keep another copy per run until the next compaction. For that, the app
-keeps a receipt per thread (`session_start_receipts`): the SHA-256 of
-the text the hook last delivered without its stamp (`memory.Digest`)
-and the provider session that received it, written once the provider
-has recorded the delivery. At a resume the app builds the delivery as
-the hook would and registers the hook for the resume too
-(`startup|compact|clear|resume|fork`) when there is no receipt for the
-resumed session or its digest differs.
+in the thread's `config` with the trust hash of each command
+([Codex hooks](../references/codex-wire.md#sessionstart-hooks-verified-01571)),
+for two events:
 
-Every delivery carries its time on the line under its heading, which the
-digest leaves out: Claude Code drops a resume's context whose text the
-transcript already holds, so memory changed back to a copy the thread
-had before would otherwise not reach the model, and claude-tui tells by
-the time which run a context in a model request came from. A compaction
-forgets the thread's receipt before it delivers. So does a revert that
-cuts the history in place (Codex's in-place rollback, claude-tui's Esc
-revert), which can remove a resume's delivery; a Claude rollback and a
-fork start another provider session, which holds no receipt. A resume
-whose hook did not deliver keeps no receipt, so the next resume runs it
-again, and a session that starts with no memory hook forgets the
-thread's receipt, since a compaction in it removes the delivery with
-nothing to record that. A session whose delivery did not arrive is told
-by the session block to read its files itself.
+- **SessionStart**, matcher `startup|compact|clear`: the whole memory as
+  it is then, for a new thread, after a compaction and after a clear.
+  Its output opens with `## Agent Overflow memory`, the time of the
+  delivery on the next line, and closes with
+  `[End of Agent Overflow memory]`.
+- **UserPromptSubmit**, at each prompt the provider takes, a queued or
+  steered one included: what changed since the session last received
+  its memory, nothing when nothing did. Its output opens with
+  `## Changes to Agent Overflow memory` and closes with
+  `[End of changes to Agent Overflow memory]`. A section whose text
+  changed is shown whole; an index or a project list shows its new or
+  changed lines and the files it no longer lists, each named on one line
+  and escaped as the lines are; a section that is gone
+  says so. With no record of what the session received, the prompt
+  delivers the whole memory.
 
-When a start, a resume or a compaction ends without the hook's output,
-the provider puts a non-fatal error row on the thread saying
-`Agent Overflow memory did not reach this session` and why: the failed run's cause where the provider
-reports one (Claude its exit code and stderr, Codex its error entries),
-otherwise the likely causes (a hook failed, or hooks are off in the
-provider's own settings). A receipt or a compaction the provider could
-not record is a non-fatal error row too. On any thread that receives
-memory, the app writes a warning row, naming what the failure costs,
-for: a rollback it could not record; a folder or file it could not read
-for a reason other than absence, which its sessions also receive a
-notice about; a scope folder it could not create or will not pass as
-writable; and a hook it could not build, in which case the session
-starts without its memory. Each provider checks once the hook has had its
-chance to run
+Text inside either that would read as an ending or as a delivery's time
+line is written with parentheses in place of its brackets.
+
+A resume runs no SessionStart hook: the resumed history carries what
+earlier runs delivered, and its first prompt delivers what changed
+since. Each run records what it delivered, one file per provider
+session in `<configDir>/memory-records/<thread id>/`, named by a hash of
+the session id; the run prints before it writes, so a record it could
+not write sends the change again rather than losing it. A thread's
+records share no state with another thread's, and no run reads another
+session's record. A record, or a temporary file a failed write left,
+that nothing wrote for 30 days is deleted at the next write; any other
+file in the folder is left alone.
+
+The app deletes a thread's records whenever its model may have lost what
+they say it holds and the hook would not deliver it again first, so the
+next prompt delivers the whole memory:
+
+- a start or a compaction that ended without the SessionStart output;
+- on Codex, a turn that ends with that output still pending: Codex runs a
+  compaction's hook only at the next turn, which a stop of the session
+  or the app can prevent;
+- on claude-tui, a session closed before a model request showed the
+  output;
+- a revert that cuts the history in place (Codex's in-place rollback,
+  claude-tui's Esc revert), before the cut and again once it lands;
+- a session that starts with no memory hook, since a compaction in it
+  removes the memory with nothing to record that;
+- the thread's delete, an empty draft's included.
+
+A Claude rollback and a fork start another provider session, which has
+no record. A session whose delivery did not arrive is told by the
+session block to read its files itself.
+
+When a start or a compaction ends without the SessionStart output, the
+provider puts a non-fatal error row on the thread saying
+`Agent Overflow memory did not reach this session` and why: the failed
+run's cause where the provider reports one (Claude its exit code and
+stderr, Codex its error entries), otherwise the likely causes (a hook
+failed, or hooks are off in the provider's own settings), and that the
+next prompt delivers it whole. A failed UserPromptSubmit run of the hook
+is a non-fatal error row saying the changes may not have reached the
+turn; Claude reports it as the hook's when its stderr opens with
+`__memory-context:`, Codex by its session-flags source. Records the app
+could not delete are a non-fatal error row too. On any thread that
+receives memory, the app writes a warning row, naming what the failure
+costs, for: a rollback it could not record; a folder or file it could
+not read for a reason other than absence, which its sessions also
+receive a notice about; a scope folder it could not create or will not
+pass as writable; the records folder it could not create; a delivery
+over the size limit; and a hook it could not build, in which case the
+session starts without its memory. Each provider checks once the hook
+has had its chance to run
 ([Claude](../references/claude-wire.md#sessionstart-hooks-verified-21283),
 [Codex](../references/codex-wire.md#what-agent-overflow-does)).
 
-What a session receives, in order:
+What a session receives, in order, the most important first:
 
-1. The write rules, unless the session started in read-only mode,
-   which refuses every write. claude-tui leaves approvals to the
-   terminal, so its sessions always get them.
-2. The user index.
+1. The assistant's `instructions.md`, or a notice when it does not
+   exist, is empty or cannot be read.
+2. The assistant's home index.
 3. The project index: the thread's project, or for an assistant
    assigned to one project, that project. An assistant assigned to
    several gets a project list instead: each project's name, path and
    memory folder with its fact count, or why the folder could not be
    read; it reads a project's facts when it needs them.
-4. The assistant's `instructions.md`, or a notice when it does not
-   exist, is empty or cannot be read.
-5. The assistant's home index.
+4. The user index.
+5. The write rules, unless the session started in read-only mode,
+   which refuses every write. claude-tui leaves approvals to the
+   terminal, so its sessions always get them.
 6. Maintenance warnings, for an assistant only.
 
 | Session | 1 | 2 | 3 | 4 | 5 | 6 |
 |---|---|---|---|---|---|---|
 | Assistant | yes | yes | its projects | yes | yes | its home, its projects, user |
-| Thread in a project, shared memory on | yes | yes | its project | no | no | no |
-| Assistant's helper, shared memory on | yes | yes | no | no | no | no |
+| Thread in a project, shared memory on | no | no | its project | yes | yes | no |
+| Assistant's helper, shared memory on | no | no | no | yes | yes | no |
 | Any thread, shared memory off | no hook | | | | | |
 
-**Size.** Both providers cap one hook's output at 10,000 characters;
-Claude replaces a longer one with a preview and a file path. The
-delivery, its time line included, stays under 9,000 characters (UTF-16
-code units, as Claude counts). Over that, the longest index loses lines
-from its end, never its context facts, and ends with
-`[N more facts in <folder>]`, until the delivery fits. An
-`instructions.md` that would not fit even with every index cut to its
-context facts is replaced first, by a line naming its path and size
-that tells the agent to read it. A project list that still does not
-fit loses projects from its end next, and ends with
-`[N more projects; their memory folders are in <folder>]`. Each cut is a
-maintenance warning.
-Nothing is cut mid-line. A delivery that context facts alone keep over
-the budget is delivered whole, with a warning.
+**Size.** Nothing is cut. Both providers save a hook's output past
+10,000 units (Claude counts UTF-16 units, Codex bytes) to a file and
+show the model a preview with the file's path: Claude the first 2,000
+characters, Codex the start and the end
+([Claude](../references/claude-wire.md#sessionstart-hooks-verified-21283),
+[Codex](../references/codex-wire.md#sessionstart-hooks-verified-01571)).
+A delivery, or a delivery of changes, over 10,000 bytes (`memory.Limit`;
+a byte is never fewer than one UTF-16 unit) opens with
+`[This memory is N bytes, …]`, N its own size, telling the agent to read
+the saved file before it acts, so the preview carries it and the order
+above puts the rest of the start to use. An assistant's maintenance
+warnings say its memory is over the limit, and the thread gets a warning
+row at a start and at a compaction. An `instructions.md` over 64 KiB,
+which no delivery carries, is replaced by a line naming its path and
+size that tells the agent to read it, and is a maintenance warning.
 
 **Writable folders.** Every scope a session may write is passed as an
 additional directory: `permissions.additionalDirectories` in the inline
@@ -288,11 +321,15 @@ An assistant's delivery ends with the warnings of the scopes it is
 responsible for: its home, each project assigned to it, and the user
 scope. A warning names the file and what to do:
 
-- an index cut to fit, with how many facts it left out;
+- a memory over the size limit;
+- an `instructions.md` over 64 KiB, named instead of shown;
 - a malformed fact, with the reason;
 - an expired fact;
 - a `context` fact with neither `expires` nor `until`;
 - a project key clash.
+
+Past 20 warnings about single files, the list ends with how many more
+there are.
 
 A project no assistant is assigned to has no one to warn; its facts are
 still indexed for the threads that read them.
@@ -335,14 +372,20 @@ Unit tests (`internal/memory`, `internal/app/app_memory_test.go`,
 `app_standing_agent_home*_test.go`, the provider packages and
 `MemorySettings.test.ts`) cover: the project key and its clash;
 frontmatter parsing, each malformed case and expiry; index order and
-line format; the size cut and its warnings; delivery order per session
-kind; the write rules naming only writable scopes and left out in
-read-only mode; the project list and its cut; warnings for
+line format; nothing cut past the size limit, the size notice and its
+warnings; delivery order per session kind; the changes a prompt
+delivers, nothing when nothing changed, and the whole memory without a
+record; the records and every path that deletes them; the write rules
+naming only writable scopes and left out in read-only mode; the project
+list; warnings for
 assistants only; shared memory on and off, and a helper's user-only
 delivery; the writable folders, refused links and clashes, and the
 native-memory settings on Claude, claude-tui and Codex, including
 the resumed Codex thread's memory mode; the native-memory status, its
 `env` layers and its warning.
-The standing-agent e2e specs cover delivery at start, resume and
-compaction, maintenance warnings and the size cut on both mock
-providers.
+The standing-agent e2e specs cover, on both mock providers, the whole
+delivery at a start and a compaction, a running session receiving only
+another writer's change at its next prompt, a resume's first prompt
+delivering what changed between sessions, maintenance warnings, a
+delivery over the size limit, and the first prompt after a missed
+delivery receiving the whole memory.

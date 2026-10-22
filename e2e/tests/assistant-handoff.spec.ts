@@ -16,6 +16,8 @@ import type { HarnessApp } from '../src/harness.js';
 import { captureAgentMessage, trayRow } from './wake-rows-helpers.js';
 import { methodIdByName } from './offhost-helpers.js';
 import {
+  AO_MESSAGE_CLOSING,
+  aoMessageOpening,
   assistantHome,
   awaitMockInput,
   awaitToolAnswer,
@@ -78,7 +80,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     // The successor opens in the same pane with the handoff block.
     const second = await currentThread(harness, 'Ops', first);
     const input = (await handedOff).report.input ?? '';
-    expect(input).toContain('You are "Ops", a standing agent.');
+    expect(input.startsWith(`${aoMessageOpening()}You are "Ops", a standing agent.`), input).toBe(true);
+    expect(input.endsWith(AO_MESSAGE_CLOSING), input).toBe(true);
     expect(input).toContain('your 1 loop or watch');
     expect(input).toContain(`Read your previous thread with thread_show (thread_id ${first})`);
     await expect(page.locator('section[data-pane-id]')).toHaveCount(1);

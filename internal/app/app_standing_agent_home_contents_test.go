@@ -26,9 +26,10 @@ import (
 // contents") start on Claude, claude-tui and Codex with a static block: who
 // the agent is, the delivery sentence and the base instructions, through the
 // channel the home block uses. Its home files and the rest of its memory
-// reach the model through the one SessionStart hook the session registers
-// (docs/specs/memory.md, "Delivery"): Claude's inline --settings and Codex's
-// thread config, running this binary's hook verb. No mock speaks claude-tui,
+// reach the model through the memory hook the session registers
+// (docs/specs/memory.md, "Delivery"), in Claude's inline --settings and
+// Codex's thread config: this binary's hook verb at SessionStart, whole,
+// and at UserPromptSubmit, what changed. No mock speaks claude-tui,
 // so these tests read what each provider was started with (the append file,
 // --settings and --add-dir of the argv, the thread/start or thread/resume
 // params) and run the registered hook command as the provider would.
@@ -41,7 +42,7 @@ const homeContentsRole = "Release lead for the test project."
 func homeContentsWant(name string, row store.StandingAgent) string {
 	return "You are the standing agent " + strconv.Quote(name) + " (assistant id " + row.ID + "; this thread is " + row.ThreadID + "). Your home is " + row.Home +
 		". You own that directory and keep your durable state there." +
-		" Agent Overflow puts your instructions.md and your memory in your context when this thread starts and after each compaction, and again when the thread resumes after any of it changed; the latest copy is current. When you do not see them, read instructions.md and memory/ from your home before you act." +
+		" Agent Overflow puts your instructions.md and your memory in your context when this thread starts and after each compaction, and with the next prompt after any of it changes, only what changed; the latest copy, with the changes after it, is current. When you do not see them, read instructions.md and memory/ from your home before you act." +
 		"\n\n" + agenthome.BaseInstructions
 }
 
@@ -77,7 +78,8 @@ func writeHomeFile(t *testing.T, home, name, text string) {
 }
 
 // startedSession is what a session was started with beside the app guide:
-// the block, the SessionStart hook commands AO registered, the folders
+// the block, the SessionStart and UserPromptSubmit hook commands AO
+// registered, the folders
 // outside the workspace it may write (Claude's
 // permissions.additionalDirectories, the writable roots of Codex's first
 // turn), Claude's `--add-dir` folders and whether its provider's own memory
@@ -85,6 +87,7 @@ func writeHomeFile(t *testing.T, home, name, text string) {
 type startedSession struct {
 	block     string
 	hooks     []string
+	prompts   []string
 	dirs      []string
 	addDirs   []string
 	memoryOff bool
@@ -94,38 +97,45 @@ type startedSession struct {
 // with.
 type startSession func(t *testing.T) startedSession
 
+// hookGroup is a matcher group of a hooks map as both providers read it.
+type hookGroup struct {
+	Matcher string `json:"matcher"`
+	Hooks   []struct {
+		Type    string `json:"type"`
+		Command string `json:"command"`
+		Timeout int    `json:"timeout"`
+	} `json:"hooks"`
+}
+
 // memoryHookCommands are the commands of AO's SessionStart groups in a hooks
-// map: those whose matcher is provider.SessionStartHookSources, or
-// provider.SessionStartResumeSources for a hook a resume runs.
-func memoryHookCommands(t *testing.T, hooks any) []string {
+// map, those whose matcher is provider.SessionStartHookSources, and of its
+// UserPromptSubmit groups, which have no matcher.
+func memoryHookCommands(t *testing.T, hooks any) (start, prompt []string) {
 	t.Helper()
 	raw, _ := json.Marshal(hooks)
 	var decoded struct {
-		SessionStart []struct {
-			Matcher string `json:"matcher"`
-			Hooks   []struct {
-				Type    string `json:"type"`
-				Command string `json:"command"`
-				Timeout int    `json:"timeout"`
-			} `json:"hooks"`
-		} `json:"SessionStart"`
+		SessionStart     []hookGroup `json:"SessionStart"`
+		UserPromptSubmit []hookGroup `json:"UserPromptSubmit"`
 	}
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		t.Fatalf("hooks %s: %v", raw, err)
 	}
-	var commands []string
-	for _, group := range decoded.SessionStart {
-		if group.Matcher != provider.SessionStartHookSources && group.Matcher != provider.SessionStartResumeSources {
-			continue
-		}
-		for _, hook := range group.Hooks {
-			if hook.Type != "command" || hook.Timeout != provider.SessionStartHookTimeoutSeconds {
-				t.Fatalf("hook %+v", hook)
+	commands := func(groups []hookGroup, matcher string) []string {
+		var out []string
+		for _, group := range groups {
+			if group.Matcher != matcher {
+				continue
 			}
-			commands = append(commands, hook.Command)
+			for _, hook := range group.Hooks {
+				if hook.Type != "command" || hook.Timeout != provider.SessionStartHookTimeoutSeconds {
+					t.Fatalf("hook %+v", hook)
+				}
+				out = append(out, hook.Command)
+			}
 		}
+		return out
 	}
-	return commands
+	return commands(decoded.SessionStart, provider.SessionStartHookSources), commands(decoded.UserPromptSubmit, "")
 }
 
 func claudeStarted(app *App, threadID, argvPath string) startSession {
@@ -169,7 +179,7 @@ func claudeStarted(app *App, threadID, argvPath string) startSession {
 			if err := json.Unmarshal([]byte(settings), &block); err != nil {
 				t.Fatalf("--settings %s: %v", settings, err)
 			}
-			started.hooks = memoryHookCommands(t, block.Hooks)
+			started.hooks, started.prompts = memoryHookCommands(t, block.Hooks)
 			started.memoryOff = block.AutoMemoryEnabled != nil && !*block.AutoMemoryEnabled
 			// The variable outranks the setting, so the off switch states
 			// it beside the setting.
@@ -233,21 +243,21 @@ func codexStarted(app *App, threadID, logPath string) startSession {
 					continue
 				}
 				config := request.Params.Config
-				started = &startedSession{
-					hooks:     memoryHookCommands(t, config.Hooks),
-					memoryOff: config.FeatureMemory != nil && !*config.FeatureMemory && config.GenerateMemory != nil && !*config.GenerateMemory,
-				}
+				started = &startedSession{memoryOff: config.FeatureMemory != nil && !*config.FeatureMemory && config.GenerateMemory != nil && !*config.GenerateMemory}
+				started.hooks, started.prompts = memoryHookCommands(t, config.Hooks)
 				if request.Params.DeveloperInstructions != nil {
 					started.block = *request.Params.DeveloperInstructions
 				}
 				// Each hook is trusted by its own hash, and nothing else.
 				state, _ := request.Params.Config.Hooks["state"].(map[string]any)
-				if len(state) != len(started.hooks) {
-					t.Fatalf("hook trust state %v for %d hooks", state, len(started.hooks))
+				if len(state) != len(started.hooks)+len(started.prompts) {
+					t.Fatalf("hook trust state %v for %d hooks", state, len(started.hooks)+len(started.prompts))
 				}
-				for i := range started.hooks {
-					if _, ok := state["/<session-flags>/config.toml:session_start:"+strconv.Itoa(i)+":0"]; !ok {
-						t.Fatalf("hook %d is not trusted: %v", i, state)
+				for event, commands := range map[string][]string{"session_start": started.hooks, "user_prompt_submit": started.prompts} {
+					for i := range commands {
+						if _, ok := state["/<session-flags>/config.toml:"+event+":"+strconv.Itoa(i)+":0"]; !ok {
+							t.Fatalf("%s hook %d is not trusted: %v", event, i, state)
+						}
 					}
 				}
 			}
@@ -308,25 +318,52 @@ func codexTurnWritableRoots(t *testing.T, logPath string) []string {
 	}
 }
 
-// runMemoryHook runs the one memory hook command as both providers do,
-// through a POSIX shell with the hook input on stdin, and returns what it
-// delivered without its stamp. The command runs this test binary, whose
-// TestMain serves the hook verb.
+// memoryHookSession is the provider session the tests' hook runs record
+// what they delivered for.
+const memoryHookSession = "provider-session-1"
+
+// runMemoryHook runs the one SessionStart memory hook command as both
+// providers do, through a POSIX shell with the hook input on stdin, and
+// returns what it delivered without the stamp under its heading.
 func runMemoryHook(t *testing.T, commands []string) string {
+	t.Helper()
+	context := runHookCommand(t, commands, "SessionStart", `{"hook_event_name":"SessionStart","source":"startup","session_id":"`+memoryHookSession+`"}`)
+	// Each delivery carries its stamp on the line under its heading.
+	heading, rest, _ := strings.Cut(context, "\n")
+	stampLine, body, _ := strings.Cut(rest, "\n")
+	if heading != memory.Heading || !strings.HasPrefix(stampLine, memory.StampPrefix) {
+		t.Fatalf("hook output %q has no stamp under its heading", context)
+	}
+	return heading + "\n" + body
+}
+
+// runPromptHook runs the one UserPromptSubmit memory hook command as both
+// providers do and returns what it delivered, "" for nothing.
+func runPromptHook(t *testing.T, commands []string) string {
+	t.Helper()
+	return runHookCommand(t, commands, "UserPromptSubmit", `{"hook_event_name":"UserPromptSubmit","prompt":"next","session_id":"`+memoryHookSession+`"}`)
+}
+
+// runHookCommand runs the one command of event with input and returns the
+// context its output carries, "" for no output.
+func runHookCommand(t *testing.T, commands []string, event, input string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("the providers run hooks through a POSIX shell")
 	}
 	if len(commands) != 1 {
-		t.Fatalf("hook commands = %q, want the one memory hook", commands)
+		t.Fatalf("%s hook commands = %q, want the one memory hook", event, commands)
 	}
 	cmd := exec.Command("/bin/sh", "-c", commands[0])
-	cmd.Stdin = strings.NewReader(`{"hook_event_name":"SessionStart","source":"startup"}`)
+	cmd.Stdin = strings.NewReader(input)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	stdout, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("hook %s: %v: %s", commands[0], err, stderr.String())
+	}
+	if len(stdout) == 0 {
+		return ""
 	}
 	var output struct {
 		HookSpecificOutput struct {
@@ -334,16 +371,10 @@ func runMemoryHook(t *testing.T, commands []string) string {
 			AdditionalContext string `json:"additionalContext"`
 		} `json:"hookSpecificOutput"`
 	}
-	if err := json.Unmarshal(stdout, &output); err != nil || output.HookSpecificOutput.HookEventName != "SessionStart" {
+	if err := json.Unmarshal(stdout, &output); err != nil || output.HookSpecificOutput.HookEventName != event {
 		t.Fatalf("hook output %q: %v", stdout, err)
 	}
-	// Each delivery carries its stamp on the line under its heading.
-	heading, rest, _ := strings.Cut(output.HookSpecificOutput.AdditionalContext, "\n")
-	stampLine, body, _ := strings.Cut(rest, "\n")
-	if heading != memory.Heading || !strings.HasPrefix(stampLine, memory.StampPrefix) {
-		t.Fatalf("hook output %q has no stamp under its heading", output.HookSpecificOutput.AdditionalContext)
-	}
-	return heading + "\n" + body
+	return output.HookSpecificOutput.AdditionalContext
 }
 
 func TestStandingAgentSessionsCarryTheirHomeFiles(t *testing.T) {
@@ -419,7 +450,7 @@ func TestStandingAgentSessionsCarryTheirHomeFiles(t *testing.T) {
 			if err != nil || !ok {
 				t.Fatalf("memoryPlan = %v, %v", ok, err)
 			}
-			if built, _ := memory.Build(plan, time.Now()); memory.Digest(delivered) != memory.Digest(built) {
+			if built, _ := memory.Build(plan, time.Now()); delivered != built {
 				t.Fatalf("the hook delivered what the app does not build:\n%s\nbuilt:\n%s", delivered, built)
 			}
 			// The session may write every memory folder and the project:
@@ -438,23 +469,40 @@ func TestStandingAgentSessionsCarryTheirHomeFiles(t *testing.T) {
 				t.Error("the provider's own memory was turned off by default")
 			}
 
+			// ---- A prompt after the start delivers nothing while nothing
+			// changed, then only the change, through the records the
+			// start's run wrote.
+			if got := runPromptHook(t, first.prompts); got != "" {
+				t.Fatalf("a prompt with nothing changed delivered:\n%s", got)
+			}
+			writeHomeFile(t, row.Home, "memory/b.md", homeFact("Release notes live in the issue."))
+			changed := runPromptHook(t, first.prompts)
+			if !strings.HasPrefix(changed, memory.ChangesHeading+"\n") || !strings.HasSuffix(changed, memory.ChangesEnding) ||
+				!strings.Contains(changed, "\nNew or changed:\n- ruling: Release notes live in the issue. (b.md)") ||
+				strings.Contains(changed, "Deploys go through CI.") || strings.Contains(changed, homeContentsRole) {
+				t.Fatalf("a prompt after an edit delivered:\n%s", changed)
+			}
+			if got := runPromptHook(t, first.prompts); got != "" {
+				t.Fatalf("the change was delivered twice:\n%s", got)
+			}
+
 			// ---- An edit changes nothing the session starts with, so the
 			// provider's prompt cache holds, and reaches the next delivery.
-			writeHomeFile(t, row.Home, "memory/b.md", homeFact("Release notes live in the issue."))
 			if got := runMemoryHook(t, first.hooks); !strings.Contains(got, "- Release notes live in the issue. (b.md)") {
 				t.Fatalf("after the edit the hook delivered:\n%s", got)
 			}
 			second := start(t)
-			if second.block != first.block || !slices.Equal(second.hooks, first.hooks) {
-				t.Fatalf("a start after the edit differs:\n%q %q\n%q %q", first.block, first.hooks, second.block, second.hooks)
+			if second.block != first.block || !slices.Equal(second.hooks, first.hooks) || !slices.Equal(second.prompts, first.prompts) {
+				t.Fatalf("a start after the edit differs:\n%q %q %q\n%q %q %q", first.block, first.hooks, first.prompts, second.block, second.hooks, second.prompts)
 			}
 
-			// ---- Past the budget, instructions.md gives way to its path.
-			long := homeContentsRole + "\n" + strings.Repeat(strings.Repeat("x", 99)+"\n", 100) + "INSTRUCTIONS TAIL\n"
+			// ---- Past the limit nothing is cut: the delivery opens with
+			// its size, so the start a provider shows carries it.
+			long := homeContentsRole + "\n" + strings.Repeat(strings.Repeat("x", 99)+"\n", 120) + "INSTRUCTIONS TAIL\n"
 			writeHomeFile(t, row.Home, agenthome.InstructionsFile, long)
-			capped := runMemoryHook(t, first.hooks)
-			if strings.Contains(capped, "INSTRUCTIONS TAIL") || !strings.Contains(capped, "[instructions.md is "+strconv.Itoa(len(long))+" bytes, more than fits beside your memory. Read it from "+filepath.Join(row.Home, "instructions.md")+" before you act.]") {
-				t.Fatalf("capped delivery:\n%s", capped)
+			whole := runMemoryHook(t, first.hooks)
+			if !strings.Contains(whole, "INSTRUCTIONS TAIL") || !strings.HasPrefix(whole, memory.Heading+"\n\n[This memory is ") {
+				t.Fatalf("a delivery over the limit:\n%s", whole)
 			}
 			if third := start(t); third.block != first.block {
 				t.Fatalf("the long file changed the block:\n%s", third.block)
@@ -580,10 +628,14 @@ func TestStandingAgentCompactionReportsAnUnreadableHomeFile(t *testing.T) {
 // a problem the start reports.
 func TestMemoryHookRefusesWhatItCannotRun(t *testing.T) {
 	t.Parallel()
-	plan := memory.Plan{User: t.TempDir(), Home: t.TempDir()}
+	plan := memory.Plan{User: t.TempDir(), Home: t.TempDir(), Records: t.TempDir()}
 	exe := filepath.Join(t.TempDir(), "agent-overflow")
+	if hook, err := memoryHook(memory.Plan{User: plan.User, Home: plan.Home}, func() (string, error) { return exe, nil }); hook != nil ||
+		err == nil || err.Error() != "build the UserPromptSubmit hook that delivers changes to memory: a prompt's memory hook needs the records folder" {
+		t.Fatalf("a plan without records: %v, %v", hook, err)
+	}
 	if hook, err := memoryHook(plan, func() (string, error) { return "", errors.New("no /proc") }); hook != nil ||
-		err == nil || err.Error() != "locate this executable for the SessionStart hook that delivers memory: no /proc" {
+		err == nil || err.Error() != "locate this executable for the hook that delivers memory: no /proc" {
 		t.Fatalf("a failed lookup: %v, %v", hook, err)
 	}
 	if hook, err := memoryHook(plan, func() (string, error) { return "agent-overflow", nil }); hook != nil ||
@@ -594,45 +646,13 @@ func TestMemoryHookRefusesWhatItCannotRun(t *testing.T) {
 	if err != nil || hook == nil {
 		t.Fatalf("hook = %+v, %v", hook, err)
 	}
-	want, _ := memory.HookCommand(exe, plan)
-	if *hook != (provider.SessionStartHook{Label: memory.Label, Command: want, Heading: memory.Heading, Ending: memory.Ending, Stamp: memory.StampPrefix}) {
+	start, _ := memory.HookCommand(exe, memory.AtSessionStart, plan)
+	prompt, _ := memory.HookCommand(exe, memory.AtPrompt, plan)
+	if *hook != (provider.SessionStartHook{
+		Label: memory.Label, Command: start, PromptCommand: prompt, Heading: memory.Heading, Ending: memory.Ending,
+		Stamp: memory.StampPrefix, Failure: memory.HookSubcommand + ":",
+	}) {
 		t.Errorf("hook = %+v", *hook)
-	}
-}
-
-// A resume runs the hook when the delivery now differs from the one the
-// thread's model last received, or when there is no receipt.
-func TestMemoryHookResumesWhenTheDeliveryChanged(t *testing.T) {
-	t.Parallel()
-	home := t.TempDir()
-	plan := memory.Plan{User: t.TempDir(), Home: home}
-	writeHomeFile(t, home, agenthome.InstructionsFile, "Release lead\n")
-	built, _ := memory.Build(plan, time.Now())
-	current := memory.Digest(built)
-	resumes := func(received string) bool {
-		t.Helper()
-		resume, problems := resumeDelivers(plan, received)
-		if len(problems) > 0 {
-			t.Fatalf("problems: %v", problems)
-		}
-		return resume
-	}
-	for name, tc := range map[string]struct {
-		received string
-		want     bool
-	}{
-		"no receipt": {"", true},
-		"current":    {current, false},
-		"changed":    {"old", true},
-	} {
-		if got := resumes(tc.received); got != tc.want {
-			t.Errorf("%s: resume = %v, want %v", name, got, tc.want)
-		}
-	}
-	// An edit changes the delivery, and so the decision.
-	writeHomeFile(t, home, agenthome.InstructionsFile, "Release lead, now also on call\n")
-	if !resumes(current) {
-		t.Error("an edit did not run the hook at the resume")
 	}
 }
 
@@ -705,7 +725,7 @@ func homeAtTheRawBound(t *testing.T, home string) {
 // place.
 func TestAHomeFileStoppedByTheRawBoundStartsTheSession(t *testing.T) {
 	t.Parallel()
-	notice := "[instructions.md is 2097152 bytes, more than fits beside your memory. Read it from "
+	notice := "[instructions.md is 2097152 bytes, more than a delivery carries. Read it from "
 
 	app, thread, home, argvPath := unreadableHomeFixture(t)
 	homeAtTheRawBound(t, home)
@@ -738,7 +758,8 @@ func TestAHomeFileStoppedByTheRawBoundStartsTheSession(t *testing.T) {
 	if err := json.Unmarshal([]byte(settings), &block); err != nil {
 		t.Fatalf("--settings %s: %v", settings, err)
 	}
-	if got := runMemoryHook(t, memoryHookCommands(t, block.Hooks)); !strings.Contains(got, notice) {
+	hooks, _ := memoryHookCommands(t, block.Hooks)
+	if got := runMemoryHook(t, hooks); !strings.Contains(got, notice) {
 		t.Fatalf("the notice's start delivered:\n%s", got)
 	}
 	if err := queued.StopSession(thread.ID); err != nil {

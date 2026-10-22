@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/usermessage"
 
 	"github.com/google/uuid"
 )
@@ -104,7 +105,7 @@ func TestHandOffInterruptsAReadRequest(t *testing.T) {
 	if receipt.State != store.ThreadReceiptInterrupted || !strings.Contains(string(receipt.Answer), target.ID) {
 		t.Fatalf("receipt = %s %q, want interrupted naming %s", receipt.State, receipt.Answer, target.ID)
 	}
-	opening := awaitQueuedOrSent(t, f.app, successor.ID, assistantSendID(assistantWakeKindHandOff, target.ID), stdinLog, "replaced your previous thread "+target.ID, 0)
+	opening := awaitQueuedOrSent(t, f.app, successor.ID, assistantSendID(usermessage.OriginWakeKindHandOff, target.ID), stdinLog, "replaced your previous thread "+target.ID, 0)
 	if !strings.Contains(opening, "token "+ack.Token) || !strings.Contains(opening, f.caller.ID) {
 		t.Fatalf("handoff block does not list the interrupted request:\n%s", opening)
 	}
@@ -352,7 +353,7 @@ func TestASendThatFindsTheSessionGoneCarriesItsText(t *testing.T) {
 		t.Fatalf("send = %v, want %s", err, transport.ErrCodeAssistantSessionGone)
 	}
 	successor := awaitCurrentThread(t, f.app, thread.ID)
-	opening := awaitSent(t, stdinLog, func(text string) bool { return strings.HasPrefix(text, `You are "`) })
+	opening := awaitAppMessage(t, stdinLog, func(text string) bool { return strings.HasPrefix(text, `You are "`) })
 	if !strings.Contains(opening, "waits, unsent, in their composer here") || strings.Contains(opening, "may not have reached you") {
 		t.Fatalf("opening block:\n%s", opening)
 	}

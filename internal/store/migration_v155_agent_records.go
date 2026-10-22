@@ -3,10 +3,10 @@ package store
 // Migration v155 makes a standing agent a record of its own rather than a
 // mark on a thread (docs/specs/standing-agents.md, "Standing agent").
 //
-// `agents` is the assistant: its own id, its current thread, its home, its
-// tick setting and the assistant that created it. The unique `thread_id`
-// keeps one current thread per assistant, and it cascades from that thread,
-// so deleting the current thread deletes the assistant. `agent_past_threads`
+// `agents` is the assistant: its own id, its current thread, its home and
+// the assistant that created it. The unique `thread_id` keeps one current
+// thread per assistant, and it cascades from that thread, so deleting the
+// current thread deletes the assistant. `agent_past_threads`
 // lists the threads an assistant had before, with when each was superseded;
 // it cascades from the thread and from the assistant, so deleting a past
 // thread leaves the assistant alone and deleting the assistant leaves its
@@ -14,9 +14,9 @@ package store
 // `moved_draft_attachments` are the text and attachment ids of the composer
 // draft the handoff moved from the past thread to the next one, so a send
 // of that draft from the past thread can be told where it went; empty when
-// none moved. `thread_requests.made_in_thread_id` is
-// the thread that made a request a handoff moved to its assistant's next
-// thread, empty when the caller made it. `remote_watches` gains its twin,
+// none moved. `thread_requests.made_in_thread_id` is the thread that made
+// a request a handoff moved to its assistant's next thread, empty when the
+// caller made it. `remote_watches` gains its twin,
 // `launched_in_thread_id`: the thread that launched the job, which the
 // destination's receipt names, while `thread_id` is the thread that owns
 // the watch and receives the completion; every existing watch was launched
@@ -41,7 +41,6 @@ CREATE TABLE agents (
     id               TEXT PRIMARY KEY,
     thread_id        TEXT NOT NULL UNIQUE REFERENCES threads(id) ON DELETE CASCADE,
     home             TEXT NOT NULL,
-    notify_on_tick   INTEGER NOT NULL DEFAULT 0 CHECK(notify_on_tick IN (0,1)),
     creator_agent_id TEXT NOT NULL DEFAULT '',
     created_at       INTEGER NOT NULL,
     all_projects     INTEGER NOT NULL DEFAULT 0 CHECK(all_projects IN (0,1))
@@ -65,8 +64,8 @@ CREATE TABLE agent_past_threads (
     moved_draft_attachments TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX idx_agent_past_threads_agent ON agent_past_threads(agent_id, superseded_at DESC);
-INSERT INTO agents (id, thread_id, home, notify_on_tick, creator_agent_id, created_at)
-    SELECT thread_id, thread_id, home, notify_on_tick, '', promoted_at FROM standing_agents;
+INSERT INTO agents (id, thread_id, home, creator_agent_id, created_at)
+    SELECT thread_id, thread_id, home, '', promoted_at FROM standing_agents;
 INSERT INTO agent_projects (agent_id, project_id)
     SELECT agents.id, threads.project_id FROM agents JOIN threads ON threads.id = agents.thread_id
      WHERE threads.project_id IS NOT NULL;

@@ -120,7 +120,7 @@ func TestSessionLossCarriesEverySendInOrder(t *testing.T) {
 	if old := draftContent(t, f.app, threadID); old != "" {
 		t.Fatalf("past thread's composer = %q, want it empty", old)
 	}
-	opening := awaitSent(t, stdinLog, func(text string) bool { return strings.HasPrefix(text, `You are "`) })
+	opening := awaitAppMessage(t, stdinLog, func(text string) bool { return strings.HasPrefix(text, `You are "`) })
 	if !strings.Contains(opening, "The 2 messages the user sent when the session was found gone") {
 		t.Fatalf("opening block:\n%s", opening)
 	}

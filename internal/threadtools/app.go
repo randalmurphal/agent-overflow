@@ -113,6 +113,10 @@ type App interface {
 	// Remind arms a clock-settled request that wakes the caller later.
 	Remind(ctx context.Context, caller Caller, call RemindCall) (RequestAck, error)
 
+	// FlagAttention raises or lowers the caller's own attention flag and
+	// returns the flag as it stands.
+	FlagAttention(ctx context.Context, caller Caller, call AttentionCall) (AttentionAck, error)
+
 	// Loop registers or replaces one loop of the caller's own thread and
 	// returns it as thread_status lists it, next fire included.
 	Loop(ctx context.Context, caller Caller, call LoopCall) (WakeState, error)

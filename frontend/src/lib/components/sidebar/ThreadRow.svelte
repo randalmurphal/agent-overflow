@@ -40,6 +40,7 @@
   import AgentStateLine from './AgentStateLine.svelte';
   import ThreadRowActions from './ThreadRowActions.svelte';
   import ThreadRowSublabel from './ThreadRowSublabel.svelte';
+  import ThreadAttentionLine from './ThreadAttentionLine.svelte';
   import ThreadRowForkAffordance from './ThreadRowForkAffordance.svelte';
   import ThreadContextMenu from './ThreadContextMenu.svelte';
   import ThreadRowPinButton from './ThreadRowPinButton.svelte';
@@ -63,8 +64,9 @@
     withTerminalsNote,
   } from '../../stores/worktreeRemoval.svelte';
   import {
-    hasUnread,
     lastKnownThreadStatusPill,
+    owesRead,
+    pendingAttention,
     resolveThreadStatusPill,
   } from '../../utils/threadStatusPill';
   import { isImeComposingEvent } from '../../utils/imeComposition';
@@ -159,7 +161,10 @@
 
   let liveStatus = $derived(getEffectiveThreadStatus(thread));
   let ownPill = $derived(resolveThreadStatusPill(thread, liveStatus, getThreadWaitingOn(thread.id)));
-  let unread = $derived(hasUnread(thread));
+  let attention = $derived(pendingAttention(thread));
+  // A flag its agent raised is unread too: the title is bold until the
+  // user opens the thread.
+  let unread = $derived(owesRead(thread));
 
   let forkParent = $derived.by<Thread | undefined>(() => {
     if (!thread.forkedFromThreadId) return undefined;
@@ -725,20 +730,30 @@
 
   {#if editing && renameError}
     <p role="alert" class="px-2 pb-1 text-[0.625rem] text-error" style="padding-left: {worktreeIndentPx}px" data-testid="thread-row-rename-error">{renameError}</p>
-  {:else if agent !== null}
-    {#if agent.projects != null}
-      <AgentStateLine threadId={thread.id} indentPx={GROUP_GLYPH_LEFT_PX} />
-      <div
-        class="relative -mt-0.5 flex h-3.5 items-center pr-1 text-[0.625rem] leading-none text-fg-hint"
-        style="padding-left: {GROUP_GLYPH_LEFT_PX}px"
-        title={agent.projects}
-        data-testid="thread-row-agent-projects"
-      >
-        <span class="min-w-0 truncate">{agent.projects}</span>
-      </div>
-    {/if}
-  {:else if !editing}
-    <ThreadRowSublabel {thread} indentPx={worktreeIndentPx} />
+  {:else}
+    <!-- The lines under the row: the first tucks under the row's own
+         bottom padding, and each later one under the line above it, so
+         any of them may be absent. -->
+    <div class="[&>*+*]:-mt-0.5 [&>*:first-child]:-mt-1.5" data-testid="thread-row-lines">
+      {#if attention && !editing}
+        <ThreadAttentionLine {attention} indentPx={agent !== null ? GROUP_GLYPH_LEFT_PX : worktreeIndentPx} />
+      {/if}
+      {#if agent !== null}
+        {#if agent.projects != null}
+          <AgentStateLine threadId={thread.id} indentPx={GROUP_GLYPH_LEFT_PX} />
+          <div
+            class="relative flex h-3.5 items-center pr-1 text-[0.625rem] leading-none text-fg-hint"
+            style="padding-left: {GROUP_GLYPH_LEFT_PX}px"
+            title={agent.projects}
+            data-testid="thread-row-agent-projects"
+          >
+            <span class="min-w-0 truncate">{agent.projects}</span>
+          </div>
+        {/if}
+      {:else if !editing}
+        <ThreadRowSublabel {thread} indentPx={worktreeIndentPx} />
+      {/if}
+    </div>
   {/if}
 </div>
 

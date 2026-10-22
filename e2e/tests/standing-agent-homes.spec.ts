@@ -10,10 +10,12 @@
 // developer instructions, with the app guide switched off so the block
 // cannot ride on it; the start's SessionStart hook delivers the agent's
 // memory, here the notice that instructions.md does not exist yet and an
-// empty index, stamped with its delivery time, and a resume runs none; on
+// empty index, stamped with its delivery time, and each prompt's hook, with
+// nothing changed, delivers nothing; a resume runs no SessionStart hook; on
 // Codex, a rewrite of instructions.md between two sessions leaves the
 // resumed thread's developer instructions as they were and injects
-// nothing, and the resume's hook delivers the rewritten file; deleting the assistant's thread is
+// nothing, and the resume's first prompt delivers the rewritten file alone
+// as a change; deleting the assistant's thread is
 // confirmed once, whatever the confirmDelete setting, naming the home
 // folder, and removes the home with the record; and a home that cannot be
 // removed leaves the delete unfinished with a toast saying why and the
@@ -24,7 +26,7 @@ import type { Page } from '@playwright/test';
 
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
-import { blockOf, deliveryOf, unstamped } from './standing-agent-home-contents-helpers.js';
+import { blockOf, changesOf, changesWith, deliveryOf, expectQuietPrompts, promptRunsOf, startRunsOf } from './standing-agent-home-contents-helpers.js';
 import { capture } from './wake-rows-helpers.js';
 import { awaitTurnCompleted, plainScenario, setScenario, type ProviderName } from './thread-tools-helpers.js';
 import type { MockInfo, MockSessionConfig, MockSessionStartRun } from './workflows-helpers.js';
@@ -132,21 +134,24 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(block).toContain(OWNS_SENTENCE);
       if (provider === 'codex') expect(started.resumed ?? false).toBe(false);
       else expect(started.resumeRef).toBe('');
-      const runs = started.sessionStartRuns.map(unstamped);
+      const runs = startRunsOf(started.sessionStartRuns);
       expect(runs.map((run) => run.source)).toEqual(['startup']);
+      expectQuietPrompts(started.sessionStartRuns, 1);
       const delivery = deliveryOf(runs[0]);
       const instructionsHeading = `### Your standing instructions (${join(agent.home, 'instructions.md')})`;
       expect(blockOf(delivery, instructionsHeading)).toBe(`${instructionsHeading}\n[instructions.md does not exist yet.]`);
       expect(blockOf(delivery, '### Your memory (')).toBe(`### Your memory (${join(agent.home, 'memory')}/)\nNo facts yet.`);
 
-      // ---- A resume carries the same block and runs no hook: the
-      // thread's model holds its memory as it reads now.
+      // ---- A resume carries the same block and runs no SessionStart
+      // hook: the thread's model holds its memory as it reads now, and its
+      // prompt delivers nothing.
       await runSession(harness, thread, 'second');
       const resumed = (await configsIn(harness, cwd, 2))[1];
       if (provider === 'codex') expect(resumed.resumed).toBe(true);
       else expect(resumed.resumeRef).not.toBe('');
       expect(appended(provider, resumed)).toBe(block);
-      expect(resumed.sessionStartRuns).toEqual([]);
+      expect(startRunsOf(resumed.sessionStartRuns)).toEqual([]);
+      expectQuietPrompts(resumed.sessionStartRuns, 1);
     } finally {
       await harness.rpc('UpdateSettings', { agentGuideEnabled: true });
     }
@@ -174,7 +179,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 // developer message when the instructions it composes change. The home
 // block is static and instructions.md reaches the thread through the memory
 // hook, so a rewrite of it leaves the developer instructions a resume sends
-// alone, and the resume runs the hook. Each session is its
+// alone, and the resume's first prompt delivers the change. Each session is its
 // own mock process, so a mock's latched injectedItems is that session's
 // alone.
 test("codex: a rewrite of an assistant's instructions.md leaves a resumed thread's instructions alone", async ({ harness }) => {
@@ -200,13 +205,13 @@ test("codex: a rewrite of an assistant's instructions.md leaves a resumed thread
   expect(block).toContain(OWNS_SENTENCE);
   expect(block).not.toContain(BEFORE);
   const instructionsHeading = `### Your standing instructions (${instructions})`;
-  const startRuns = (started.sessionStartRuns ?? []).map(unstamped);
+  const startRuns = startRunsOf(started.sessionStartRuns ?? []);
   expect(startRuns.map((run) => run.source)).toEqual(['startup']);
   expect(blockOf(deliveryOf(startRuns[0]), instructionsHeading)).toBe(`${instructionsHeading}\n${BEFORE}`);
   expect(started.injectedItems ?? []).toEqual([]);
 
   // ---- After the rewrite, the resume sends the same instructions and
-  // injects nothing; its hook delivers the rewritten file.
+  // injects nothing; its first prompt delivers the rewritten file alone.
   const AFTER = 'Carry release notes from draft to publication.';
   writeFileSync(instructions, `${AFTER}\n`);
   await runSession(harness, thread, 'second');
@@ -214,9 +219,10 @@ test("codex: a rewrite of an assistant's instructions.md leaves a resumed thread
   expect(resumed.sessionConfig?.resumed).toBe(true);
   expect(resumed.sessionConfig?.developerInstructions).toBe(block);
   expect(resumed.injectedItems ?? []).toEqual([]);
-  const resumeRuns = (resumed.sessionStartRuns ?? []).map(unstamped);
-  expect(resumeRuns.map((run) => run.source)).toEqual(['resume']);
-  expect(blockOf(deliveryOf(resumeRuns[0]), instructionsHeading)).toBe(`${instructionsHeading}\n${AFTER}`);
+  expect(startRunsOf(resumed.sessionStartRuns ?? [])).toEqual([]);
+  const resumePrompts = promptRunsOf(resumed.sessionStartRuns ?? []);
+  expect(resumePrompts).toHaveLength(1);
+  expect(changesOf(resumePrompts[0])).toBe(changesWith(`${instructionsHeading}\n${AFTER}`));
 });
 
 test('an assistant whose home cannot be removed is not deleted, and the toast says why', async ({ harness, page }) => {

@@ -15,7 +15,7 @@ import (
 // the computer parameters exist at all. No tool is pairing-only, so no
 // tool ever appears or disappears; only the computer parameters do.
 
-// ToolNames is the sixteen tools, in the order Tools returns them.
+// ToolNames is the seventeen tools, in the order Tools returns them.
 var ToolNames = []string{
 	"thread_search",
 	"thread_show",
@@ -30,6 +30,7 @@ var ToolNames = []string{
 	"thread_update",
 	"thread_group",
 	"thread_remind",
+	"thread_attention",
 	"thread_loop",
 	"thread_watch",
 	"thread_new_assistant",
@@ -51,6 +52,7 @@ func (s *Server) Tools(shape Shape) []map[string]any {
 		updateSchema(shape),
 		groupSchema(shape),
 		remindSchema(),
+		attentionSchema(),
 		loopSchema(s.wakeFloor),
 		watchSchema(s.wakeFloor),
 		newAssistantSchema(),

@@ -3,7 +3,8 @@
 // The sidebar shows NO status text (ruling 2026-09-02): a state is told
 // apart by its dot (color, filled or hollow, pulsing or still), by the
 // row glow for a provider blocked on the user, and by a thin row ring for
-// the two "needs your attention" states (Completed, Plan Ready). `label`
+// the "needs your attention" states (Completed, Plan Ready, an agent's
+// attention flag). `label`
 // is the accessible name and tooltip only. The palette picker reads the
 // same record; the pane header line (components/panes/paneHeaderLine.ts)
 // maps the same live statuses to a color of its own.
@@ -12,7 +13,7 @@
 // table-drivable from unit tests.
 
 import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
-import type { Thread } from '../types/models';
+import type { AttentionKind, Thread, ThreadAttention } from '../types/models';
 
 export interface ThreadStatusPill {
   /** Accessible name and tooltip of the dot. Never rendered as text. */
@@ -65,6 +66,61 @@ export function hasUnread(thread: Pick<Thread, 'lastReadAt' | 'latestTurnComplet
 }
 
 /**
+ * pendingAttention is the attention flag the thread's agent raised that the
+ * user has not read since (thread_attention), or null. A read of the thread
+ * clears it the way it clears Completed. Unlike a completion, a flag on a
+ * row never tracked is pending: no legacy row carries one.
+ */
+export function pendingAttention(thread: Pick<Thread, 'lastReadAt' | 'attention'>): ThreadAttention | null {
+  const attention = thread.attention;
+  if (!attention) return null;
+  if (thread.lastReadAt != null && attention.at <= thread.lastReadAt) return null;
+  return attention;
+}
+
+/**
+ * owesRead reports whether the thread holds something its next read
+ * clears: a completion or an attention flag the user has not read.
+ */
+export function owesRead(thread: Pick<Thread, 'lastReadAt' | 'latestTurnCompletedAt' | 'attention'>): boolean {
+  return hasUnread(thread) || pendingAttention(thread) !== null;
+}
+
+/**
+ * Each attention kind as the sidebar and pane header show it. `label` is
+ * the phrase a dot and a pane header say, and the body of the kind's
+ * notification (internal/notify attentionBody), so all three read alike;
+ * `name` is the short word on the row's attention line.
+ */
+export const ATTENTION_KINDS: Record<AttentionKind, {
+  label: string;
+  name: string;
+  textClass: string;
+} & Pick<ThreadStatusPill, 'dotClass' | 'ringClass'>> = {
+  decision: {
+    label: 'Needs your decision', name: 'Decision', textClass: 'text-info',
+    dotClass: 'bg-info', ringClass: 'ring-1 ring-inset ring-info/40',
+  },
+  review: {
+    label: 'Ready for your review', name: 'Review', textClass: 'text-accent',
+    dotClass: 'bg-accent', ringClass: 'ring-1 ring-inset ring-accent/40',
+  },
+  problem: {
+    label: 'Hit a problem that needs you', name: 'Problem', textClass: 'text-warning',
+    dotClass: 'bg-warning', ringClass: 'ring-1 ring-inset ring-warning/40',
+  },
+};
+
+/**
+ * The kind of a flag as this UI knows it. The backend accepts only these
+ * kinds, so another one comes from a newer backend, and it reads as a
+ * decision: the kind that asks the most of the user.
+ */
+export function attentionKindOf(attention: ThreadAttention): AttentionKind {
+  return Object.hasOwn(ATTENTION_KINDS, attention.kind) ? attention.kind : 'decision';
+}
+
+/**
  * Live events win first. When no live event is present, durable Thread-row
  * projections restore boot-time status for a failed worktree setup, failed
  * and interrupted turns, and actionable plans.
@@ -105,17 +161,20 @@ export function resolveEffectiveThreadStatus(
  *   5. setup-failed     → "Setup Failed" (worktree setup recipe did not finish)
  *   6. plan-ready       → "Plan ready" (settled plan awaiting accept/edit/reject)
  *   7. interrupted      → "Interrupted" (prior app closed mid-turn)
- *   8. idle + unread    → "Completed"
- *   9. idle + read      → null (no pill)
+ *   8. idle + flagged   → the attention kind and the agent's reason
+ *   9. idle + unread    → "Completed"
+ *  10. idle + read      → null (no pill)
  *
  * Visual grammar, with no text to lean on: running / completed are
  * success green (pulsing while running); awaiting-input is info blue and
  * pending-approval amber, both pulsing with a row glow; failed is red;
  * setup-failed is a filled amber dot and interrupted a hollow one;
- * plan-ready is the accent. Completed and plan-ready add the row ring.
+ * plan-ready is the accent. An attention flag takes its kind's colour,
+ * info blue for a decision, the accent for a review and amber for a
+ * problem. Completed, plan-ready and a flag add the row ring.
  */
 export function resolveThreadStatusPill(
-  thread: Pick<Thread, 'mode' | 'lastReadAt' | 'latestTurnCompletedAt'>,
+  thread: Pick<Thread, 'mode' | 'lastReadAt' | 'latestTurnCompletedAt' | 'attention'>,
   liveStatus: ThreadLiveStatus,
   waitingOn = '',
 ): ThreadStatusPill | null {
@@ -176,6 +235,11 @@ export function resolveThreadStatusPill(
     };
   }
   // idle
+  const attention = pendingAttention(thread);
+  if (attention) {
+    const { label, dotClass, ringClass } = ATTENTION_KINDS[attentionKindOf(attention)];
+    return { label: `${label}: ${attention.reason}`, dotClass, ringClass, pulse: false };
+  }
   if (hasUnread(thread)) {
     return {
       label: 'Completed',

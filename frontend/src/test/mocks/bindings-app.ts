@@ -148,7 +148,6 @@ export const GetAssistantDependents = dispatch('GetAssistantDependents');
 export const CreateAssistant = dispatch('CreateAssistant');
 export const SetAssistantProjects = dispatch('SetAssistantProjects');
 export const StartNextAssistantThread = dispatch('StartNextAssistantThread');
-export const SetStandingAgentNotifyOnTick = dispatch('SetStandingAgentNotifyOnTick');
 export const ListArchivedSpawnedThreads = dispatch('ListArchivedSpawnedThreads');
 export const SendExternalThreadMessage = dispatch('SendExternalThreadMessage');
 export const BeginThreadTransfer = dispatch('BeginThreadTransfer');

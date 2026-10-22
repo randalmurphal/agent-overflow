@@ -523,13 +523,13 @@ type Settings struct {
 
 	// The OS-notification preferences (docs/specs/remote-access.md §9).
 	// NotificationsEnabled is the master switch: with it off this screen
-	// raises no OS notification at all. The six per-kind toggles below cover
-	// every notify.Kind — the four mapped moments plus the two senders that
+	// raises no OS notification at all. The seven per-kind toggles below cover
+	// every notify.Kind — the five mapped moments plus the two senders that
 	// predate the mapping (a workflow item needing a human, and the WSL
 	// launcher's "update didn't apply" notice), which used to have the
 	// master switch as their only silencer.
 	//
-	// THE MASTER SWITCH AND THE SIX PER-KIND TOGGLES DEFAULT TRUE, and are
+	// THE MASTER SWITCH AND THE SEVEN PER-KIND TOGGLES DEFAULT TRUE, and are
 	// therefore all present in DefaultSettings. That is the KeepAwakeScreen
 	// pattern and it is what makes an absent key read as ON — which matters
 	// more here than anywhere else, because notifications were
@@ -562,6 +562,11 @@ type Settings struct {
 	// "update didn't apply" notice and an unfinished deferred store
 	// migration. Same reasoning as NotifyWorkflowAttention.
 	NotifyAppUpdate bool `json:"notifyAppUpdate"`
+	// NotifyThreadAttention covers notify.KindThreadAttention: a turn that
+	// ended with its agent's attention flag up, a decision, a review or a
+	// problem. It is how a loop or watch turn reaches the user, the one
+	// rest a tick raises.
+	NotifyThreadAttention bool `json:"notifyThreadAttention"`
 	// NotifyHiddenThreads lets a thread the sidebar does not list (a
 	// workflow-owned mode, or a thread with no row) interrupt this screen.
 	// It narrows the per-kind toggles above rather than adding a kind: a
@@ -595,7 +600,7 @@ type Settings struct {
 	// toggle and the "quiet when" reading apply to sounds without being
 	// restated, and a sound can never fire where a banner was suppressed.
 	//
-	// THREE SOUND EVENTS, not six, because the six notify kinds answer three
+	// THREE SOUND EVENTS, not seven, because the seven notify kinds answer three
 	// questions a person reacts to differently: the agent finished, the agent
 	// needs you, something is wrong. The four "wrong or waiting on a system"
 	// kinds (error, provider signed out, workflow attention, app update)
@@ -608,7 +613,8 @@ type Settings struct {
 	NotificationSoundsEnabled bool `json:"notificationSoundsEnabled"`
 	// NotifySoundTurnComplete covers notify.KindTurnComplete.
 	NotifySoundTurnComplete bool `json:"notifySoundTurnComplete"`
-	// NotifySoundInputNeeded covers notify.KindApprovalNeeded.
+	// NotifySoundInputNeeded covers notify.KindApprovalNeeded and
+	// notify.KindThreadAttention: the agent needs you either way.
 	NotifySoundInputNeeded bool `json:"notifySoundInputNeeded"`
 	// NotifySoundAttention covers notify.KindError,
 	// notify.KindProviderSignedOut, notify.KindWorkflowAttention and
@@ -732,6 +738,7 @@ var DefaultSettings = Settings{
 	NotifyProviderSignedOut: true,
 	NotifyWorkflowAttention: true,
 	NotifyAppUpdate:         true,
+	NotifyThreadAttention:   true,
 	// Muting a screen you are already looking at is what a person means by
 	// "notify me": the interruption is worth nothing when the answer is
 	// already in front of them.

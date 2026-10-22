@@ -162,6 +162,11 @@ is read from the rows of the turn that ended, because a dispatch cannot know
 what the provider joined into it. The exception is a Claude turn the CLI
 started for messages queued during the previous turn, which keep their rows
 there: it is a tick when every one of them was a wake (`agentWakeQueued`).
+Triage asks whether a turn that ended cleanly was a tick through
+`SetQuietTurnClassifier` (`agentTurnIsTick`), and keeps such a turn out of
+the thread's activity and read state; the marks it reads are kept by
+`tapAgentWakeTurns`, which runs on the emit funnel before the notification
+tap.
 
 A standing agent's worker prompts are stamped with their route by triage
 (`SetPromptRouter`) and delivered, answered and settled in

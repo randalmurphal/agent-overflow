@@ -1,8 +1,6 @@
 package memory
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -11,27 +9,29 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf16"
 
 	"agent-overflow/internal/agenthome"
 )
 
 const (
 	// Label names the delivery in the warnings a provider shows when it
-	// did not arrive or its receipt could not be recorded.
+	// did not arrive.
 	Label = "Agent Overflow memory"
-	// Heading opens every delivery and Ending closes it, so a provider can
-	// tell this hook's output from another SessionStart hook's.
+	// Heading opens every whole delivery and Ending closes it, so a
+	// provider can tell this hook's output from another SessionStart
+	// hook's.
 	Heading = "## Agent Overflow memory"
 	Ending  = "[End of Agent Overflow memory]"
-	// Budget bounds a delivery, its stamp included, in UTF-16 code units:
-	// Claude counts them for the 10,000 characters of one hook's output it
-	// keeps, and Codex holds hook output to the same 10,000.
-	Budget = 9000
+	// Limit is the most a hook's output can be, in bytes, and reach the
+	// model whole: Codex keeps 2,500 tokens it counts as four bytes each,
+	// Claude 10,000 UTF-16 code units, which a text never has more of than
+	// bytes. Past it each provider saves the output to a file and shows the
+	// model its start with the file's path (docs/specs/memory.md, "Size").
+	Limit = 10000
 	// instructionsKeep bounds the cleaned bytes of instructions.md a
-	// delivery reads. A UTF-16 unit takes at most three bytes of UTF-8, so
-	// more would not fit.
-	instructionsKeep = 3 * Budget
+	// delivery reads; a longer file is named with its path instead, and
+	// the assistant is warned.
+	instructionsKeep = 64 << 10
 	// maxListedProblems bounds the warnings about single files a delivery
 	// lists; the rest are counted.
 	maxListedProblems = 20
@@ -40,12 +40,8 @@ const (
 )
 
 // StampPrefix opens the line under the heading that carries a delivery's
-// time (Stamp). Claude Code leaves out a resumed session's SessionStart
-// context whose text its transcript already holds
-// (docs/references/claude-wire.md, SessionStart hooks), so memory changed
-// back to a copy the session had before would not reach the model; the time
-// makes each delivery its own text, and tells claude-tui which run a context
-// in a model request came from (provider.SessionStartHook.Stamp).
+// time (Stamp). claude-tui tells by the time which run a context in a model
+// request came from (provider.SessionStartHook.Stamp).
 const StampPrefix = "[Delivered at "
 
 // stampLayout is the delivery's time in a stamp: RFC 3339 in UTC, to the
@@ -58,7 +54,7 @@ func stampLine(at time.Time) string {
 }
 
 // stampSize is the size of every stamp line with the line break before it.
-var stampSize = 1 + utf16Len(stampLine(time.Unix(0, 0)))
+var stampSize = 1 + len(stampLine(time.Unix(0, 0)))
 
 // Stamp is a delivery Build made with the stamp of a delivery at at under
 // its heading.
@@ -66,39 +62,24 @@ func Stamp(text string, at time.Time) string {
 	return Heading + "\n" + stampLine(at) + strings.TrimPrefix(text, Heading)
 }
 
-// Digest identifies a delivery: the SHA-256 of its text without its stamp,
-// in hex, so a delivery and a Build of the same files agree.
-func Digest(text string) string {
-	sum := sha256.Sum256([]byte(withoutStamp(text)))
-	return hex.EncodeToString(sum[:])
-}
-
-// withoutStamp is text without the stamp under its heading. Build follows the
-// heading with a blank line, so a second line that opens with StampPrefix is
-// always a stamp.
-func withoutStamp(text string) string {
-	heading, rest, ok := strings.Cut(text, "\n")
-	if !ok || !strings.HasPrefix(rest, StampPrefix) {
-		return text
-	}
-	_, rest, ok = strings.Cut(rest, "\n")
-	if !ok {
-		return text
-	}
-	return heading + "\n" + rest
+// Oversize reports the size of a delivery Build made, stamped, when it is
+// over Limit, so a provider shows the model only its start.
+func Oversize(text string) (size int, over bool) {
+	size = len(text) + stampSize
+	return size, size > Limit
 }
 
 // Build is plan's delivery as of now, without its stamp, and the failures to
 // read it other than absence, which the caller reports. The text depends on
 // the folders' files and the local date alone, so two builds of unchanged
-// folders on one day are the same bytes.
+// folders on one day are the same bytes. Nothing is cut: a delivery over
+// Limit says so at its top, where the start a provider shows carries it.
 func Build(plan Plan, now time.Time) (string, []error) {
 	if err := plan.validate(); err != nil {
 		return "", []error{err}
 	}
 	d := readDelivery(plan, now)
-	d.fit()
-	return d.render(), d.errs
+	return d.render(d.sections()), d.errs
 }
 
 const (
@@ -108,7 +89,7 @@ const (
 	markerReadBytes = 4 << 10
 )
 
-// readDelivery reads every block of plan's delivery, nothing cut.
+// readDelivery reads every block of plan's delivery.
 func readDelivery(plan Plan, now time.Time) *delivery {
 	d := &delivery{assistant: plan.Home != "", today: now.Format(dateLayout)}
 	d.user = d.readIndex("### User memory ("+folderShown(plan.User)+")", plan.User, func() (*os.Root, error) { return openFolder(plan.User) })
@@ -143,12 +124,19 @@ func readDelivery(plan Plan, now time.Time) *delivery {
 	if !plan.ReadOnly {
 		d.rules = writeRules(d.assistant, writesProject)
 	}
-	d.measure()
+	// Over Limit, the delivery gains the size warning, which names no size
+	// and so cannot bring it back under, and the notice states the size of
+	// the stamped delivery it opens with that warning and itself included:
+	// a section joined after the heading. So the size is measured again
+	// once the warning is in.
+	if _, d.over = Oversize(d.text(d.sections())); d.over {
+		size, _ := Oversize(d.text(d.sections()))
+		d.size = noticedSize(size, len("\n\n"))
+	}
 	return d
 }
 
-// delivery is one Build: its blocks, in delivery order, and the cut that
-// holds it to Budget.
+// delivery is one Build: its blocks, read.
 type delivery struct {
 	assistant bool
 	today     string
@@ -163,42 +151,26 @@ type delivery struct {
 	projects     *projectList
 	instructions *instructions
 	home         *index
-	// problems are the maintenance warnings that do not depend on the cut.
+	// problems are the maintenance warnings about the folders' files.
 	problems []string
-	// over is the delivery's size when it is over Budget after every cut.
-	over int
+	// size is the stamped delivery's size without the notice over is set
+	// for, which opens a delivery over Limit; 0 when it is not over.
+	size int
+	over bool
 	errs []error
-	// fixedSize is the size of the frame and the blocks the cut never
-	// changes; problemLines are the problems as the warnings list them,
-	// and problemsSize their size there (measure).
-	fixedSize    int
-	problemLines []string
-	problemsSize int
 }
 
-// index is one scope's index and how much of it the cut keeps.
+// index is one scope's index.
 type index struct {
 	heading string
 	dir     string
 	facts   []fact
 	notes   []string
-	// floor is the number of context facts, which come first and are never
-	// cut; keep is the number of facts shown.
-	floor int
-	keep  int
-	// cum[k] is the size of the lines the first k facts make, type labels
-	// included, each with the line break before it; baseSize is the size of
-	// the heading, the notes and an empty index's line; dirSize is the size
-	// of the folder as moreLine shows it.
-	cum      []int
-	baseSize int
-	dirSize  int
 }
 
 // readIndex reads the scope at dir, which open opens, as an index.
 func (d *delivery) readIndex(heading, dir string, open func() (*os.Root, error)) *index {
 	x := &index{heading: heading, dir: dir}
-	defer x.measure()
 	read, err := readScope(dir, d.today, open)
 	x.facts = read.facts
 	d.problems = append(d.problems, read.problems...)
@@ -230,47 +202,8 @@ func readScope(dir, today string, open func() (*os.Root, error)) (folderRead, er
 	return read, err
 }
 
-// measure fills the sizes the cut reads and keeps every fact.
-func (x *index) measure() {
-	x.cum = make([]int, len(x.facts)+1)
-	last := -1
-	for i, f := range x.facts {
-		size := 1 + utf16Len(factLine(f))
-		if f.kind != last {
-			size += 1 + utf16Len(factTypes[f.kind].label+":")
-			last = f.kind
-		}
-		x.cum[i+1] = x.cum[i] + size
-		if f.kind == contextType {
-			x.floor = i + 1
-		}
-	}
-	x.baseSize = utf16Len(x.heading)
-	for _, note := range x.notes {
-		x.baseSize += 1 + utf16Len(note)
-	}
-	if len(x.facts) == 0 && len(x.notes) == 0 {
-		x.baseSize += 1 + utf16Len(noFacts)
-	}
-	x.dirSize = utf16Len(folderShown(x.dir))
-	x.keep = len(x.facts)
-}
-
-// size is the index block's size with keep facts.
-func (x *index) size(keep int) int {
-	size := x.baseSize + x.cum[keep]
-	if cut := len(x.facts) - keep; cut > 0 {
-		// The line break, then moreLine: `[`, the count, the words, ` in `,
-		// the folder and `]`.
-		words := " more facts"
-		if cut == 1 {
-			words = " more fact"
-		}
-		size += 1 + 1 + len(strconv.Itoa(cut)) + len(words) + len(" in ") + x.dirSize + 1
-	}
-	return size
-}
-
+// render is the index as a whole delivery shows it: its facts under their
+// types' labels, context first.
 func (x *index) render() string {
 	var b strings.Builder
 	b.WriteString(x.heading)
@@ -278,15 +211,12 @@ func (x *index) render() string {
 		b.WriteString("\n" + noFacts)
 	}
 	last := -1
-	for _, f := range x.facts[:x.keep] {
+	for _, f := range x.facts {
 		if f.kind != last {
 			b.WriteString("\n" + factTypes[f.kind].label + ":")
 			last = f.kind
 		}
 		b.WriteString("\n" + factLine(f))
-	}
-	if x.keep < len(x.facts) {
-		b.WriteString("\n" + x.moreLine(x.keep))
 	}
 	for _, note := range x.notes {
 		b.WriteString("\n" + note)
@@ -294,9 +224,14 @@ func (x *index) render() string {
 	return b.String()
 }
 
-// moreLine ends an index the cut left keep facts of.
-func (x *index) moreLine(keep int) string {
-	return fmt.Sprintf("[%s in %s]", plural(len(x.facts)-keep, "more fact", "more facts"), folderShown(x.dir))
+// section is the index as a section of id, its facts keyed by file name and
+// each line naming its type, as a change shows it.
+func (x *index) section(id string) section {
+	s := section{ID: id, Heading: x.heading, Notes: strings.Join(x.notes, "\n"), Keyed: true, text: x.render()}
+	for _, f := range x.facts {
+		s.Entries = append(s.Entries, entry{Key: f.name, Line: "- " + factTypes[f.kind].name + ": " + strings.TrimPrefix(factLine(f), "- ")})
+	}
+	return s
 }
 
 // factLine is a fact's line in an index.
@@ -375,15 +310,14 @@ func recordedPath(dir string) (_ string, err error) {
 }
 
 // projectList is the block that names an assistant's projects, each with its
-// memory folder and how many facts it holds, and how many lines the cut
-// keeps.
+// memory folder and how many facts it holds.
 type projectList struct {
-	lines []string
-	keep  int
-	// cum[k] is the size of the first k lines, each with the line break
-	// before it; moreDir is the folder the cut line names.
-	cum     []int
-	moreDir string
+	lines []projectLine
+}
+
+// projectLine is one project's line, keyed by the project's path.
+type projectLine struct {
+	path, text string
 }
 
 // projectsHeading opens the project list.
@@ -391,57 +325,45 @@ const projectsHeading = "### Your projects\nEach project's facts are in its memo
 
 // listProjects lists an assistant's projects.
 func (d *delivery) listProjects(projects []Project) *projectList {
-	list := &projectList{moreDir: filepath.Dir(projects[0].Dir)}
+	list := &projectList{}
 	for _, project := range projects {
 		line := "- " + projectName(project) + " (" + project.Path + "): "
 		if off := d.clash(project); off != "" {
-			list.lines = append(list.lines, line+off)
+			list.lines = append(list.lines, projectLine{project.Path, line + off})
 			continue
 		}
 		read, err := readScope(project.Dir, d.today, func() (*os.Root, error) { return openFolder(project.Dir) })
 		d.problems = append(d.problems, read.problems...)
 		if err != nil {
 			d.errs = append(d.errs, fmt.Errorf("read the memory folder %s: %w", project.Dir, err))
-			list.lines = append(list.lines, fmt.Sprintf("%s[%s could not be read: %v.]", line, folderShown(project.Dir), err))
+			list.lines = append(list.lines, projectLine{project.Path, fmt.Sprintf("%s[%s could not be read: %v.]", line, folderShown(project.Dir), err)})
 			continue
 		}
 		count := plural(len(read.facts), "fact", "facts")
 		if read.more {
 			count += fmt.Sprintf(" in its first %d entries", maxEntries)
 		}
-		list.lines = append(list.lines, line+folderShown(project.Dir)+", "+count)
+		list.lines = append(list.lines, projectLine{project.Path, line + folderShown(project.Dir) + ", " + count})
 	}
-	list.cum = make([]int, len(list.lines)+1)
-	for i, line := range list.lines {
-		list.cum[i+1] = list.cum[i] + 1 + utf16Len(line)
-	}
-	list.keep = len(list.lines)
 	return list
-}
-
-func (l *projectList) size() int {
-	size := utf16Len(projectsHeading) + l.cum[l.keep]
-	if l.keep < len(l.lines) {
-		size += 1 + utf16Len(l.moreLine())
-	}
-	return size
 }
 
 func (l *projectList) render() string {
 	var b strings.Builder
 	b.WriteString(projectsHeading)
-	for _, line := range l.lines[:l.keep] {
-		b.WriteString("\n" + line)
-	}
-	if l.keep < len(l.lines) {
-		b.WriteString("\n" + l.moreLine())
+	for _, line := range l.lines {
+		b.WriteString("\n" + line.text)
 	}
 	return b.String()
 }
 
-// moreLine ends a project list the cut shortened.
-func (l *projectList) moreLine() string {
-	return "[" + plural(len(l.lines)-l.keep, "more project; its memory folder is", "more projects; their memory folders are") + " in " + folderShown(l.moreDir) + "]"
+// section is the list as a section, its lines keyed by project path.
+func (l *projectList) section() section {
+	s := section{ID: "projects", Heading: projectsHeading, Keyed: true, text: l.render()}
+	for _, line := range l.lines {
+		s.Entries = append(s.Entries, entry{Key: line.path, Line: line.text})
+	}
+	return s
 }
 
 // instructions is the block of an assistant's instructions.md.
@@ -450,11 +372,9 @@ type instructions struct {
 	// body is what the block shows of the file; bytes is the file's size.
 	body  string
 	bytes int64
-	// out replaces the body with a line naming the path, which the cut
-	// sets; size and outSize are the block's size either way.
-	out     bool
-	size    int
-	outSize int
+	// out replaces the body with a line naming the path, for a file over
+	// instructionsKeep.
+	out bool
 }
 
 // readInstructionsBlock reads the home's instructions.md for its block,
@@ -476,8 +396,6 @@ func readInstructionsBlock(home string, errs *[]error) *instructions {
 	default:
 		block.body = strings.TrimRight(text, "\n")
 	}
-	block.size = utf16Len(block.heading()) + 1 + utf16Len(block.body)
-	block.outSize = utf16Len(block.heading()) + 1 + utf16Len(block.outLine())
 	return block
 }
 
@@ -485,24 +403,12 @@ func (b *instructions) heading() string {
 	return "### Your standing instructions (" + b.path + ")"
 }
 
-// outLine replaces the body of a file that does not fit.
-func (b *instructions) outLine() string {
-	return fmt.Sprintf("[%s is %d bytes, more than fits beside your memory. Read it from %s before you act.]",
-		agenthome.InstructionsFile, b.bytes, b.path)
-}
-
 func (b *instructions) render() string {
 	if b.out {
-		return b.heading() + "\n" + b.outLine()
+		return b.heading() + "\n" + fmt.Sprintf("[%s is %d bytes, more than a delivery carries. Read it from %s before you act.]",
+			agenthome.InstructionsFile, b.bytes, b.path)
 	}
 	return b.heading() + "\n" + b.body
-}
-
-func (b *instructions) currentSize() int {
-	if b.out {
-		return b.outSize
-	}
-	return b.size
 }
 
 // errTooLong is instructions.md read to its bound.
@@ -535,136 +441,69 @@ func readInstructions(home string) (_ string, bytes int64, err error) {
 	return text, info.Size(), nil
 }
 
-// indexes are the delivery's indexes in order, the ones it has.
-func (d *delivery) indexes() []*index {
-	var out []*index
-	for _, x := range []*index{d.user, d.project, d.home} {
-		if x != nil {
-			out = append(out, x)
-		}
+// sections are the delivery's sections in order, the most important first,
+// so the start a provider shows of a delivery over Limit carries them: the
+// assistant's instructions.md and memory, the project's, the user's, then
+// the write rules and the maintenance warnings.
+func (d *delivery) sections() []section {
+	var out []section
+	if d.assistant {
+		out = append(out, wholeSection("instructions", d.instructions.render()), d.home.section("home"))
 	}
-	return out
-}
-
-// fit holds the delivery to Budget: when it would not fit with every index
-// cut to its context facts, instructions.md gives way to its path, and then
-// a project list loses projects from its end; then the longest index loses
-// facts from its end, one at a time, until it fits.
-func (d *delivery) fit() {
-	indexes := d.indexes()
-	for _, x := range indexes {
-		x.keep = x.floor
-	}
-	if d.instructions != nil && !d.instructions.out && d.size() > Budget {
-		d.instructions.out = true
-	}
-	if list := d.projects; list != nil {
-		for list.keep > 0 && d.size() > Budget {
-			list.keep--
-		}
-	}
-	for _, x := range indexes {
-		x.keep = len(x.facts)
-	}
-	sizes := make([]int, len(indexes))
-	for i, x := range indexes {
-		sizes[i] = x.size(x.keep)
-	}
-	for d.size() > Budget {
-		longest := -1
-		for i, x := range indexes {
-			if x.keep > x.floor && (longest < 0 || sizes[i] > sizes[longest]) {
-				longest = i
-			}
-		}
-		if longest < 0 {
-			break
-		}
-		x := indexes[longest]
-		x.keep--
-		sizes[longest] = x.size(x.keep)
-	}
-	if size := d.size(); d.assistant && size > Budget {
-		d.over = size
-	}
-}
-
-// measure fills the sizes of what the cut never changes.
-func (d *delivery) measure() {
-	d.fixedSize = utf16Len(Heading) + stampSize + 2 + utf16Len(Ending)
-	for _, block := range []string{d.rules, d.projectOff} {
-		if block != "" {
-			d.fixedSize += 2 + utf16Len(block)
-		}
-	}
-	d.problemLines = d.problems
-	if len(d.problems) > maxListedProblems {
-		d.problemLines = append(d.problems[:maxListedProblems:maxListedProblems], fmt.Sprintf("And %d more like these.", len(d.problems)-maxListedProblems))
-	}
-	d.problemsSize = 0
-	for _, line := range d.problemLines {
-		d.problemsSize += len(warningsBullet) + utf16Len(line)
-	}
-}
-
-// blocks are the delivery's blocks in order, rendered.
-func (d *delivery) blocks() []string {
-	var out []string
-	if d.rules != "" {
-		out = append(out, d.rules)
-	}
-	out = append(out, d.user.render())
 	switch {
 	case d.project != nil:
-		out = append(out, d.project.render())
+		out = append(out, d.project.section("project"))
 	case d.projectOff != "":
-		out = append(out, d.projectOff)
+		out = append(out, wholeSection("project", d.projectOff))
 	case d.projects != nil:
-		out = append(out, d.projects.render())
+		out = append(out, d.projects.section())
 	}
-	if d.assistant {
-		out = append(out, d.instructions.render(), d.home.render())
+	out = append(out, d.user.section("user"))
+	if d.rules != "" {
+		out = append(out, wholeSection("rules", d.rules))
 	}
 	if warnings := d.warnings(); warnings != "" {
-		out = append(out, warnings)
+		out = append(out, wholeSection("warnings", warnings))
+	}
+	for i := range out {
+		out[i] = out[i].escaped()
 	}
 	return out
 }
 
-// size is the stamped delivery's size as the cut stands, without rendering
-// it.
-func (d *delivery) size() int {
-	size := d.fixedSize
-	if d.projects != nil {
-		size += 2 + d.projects.size()
+// render is the delivery's text from its sections: opened by the notice of
+// its size when it is over Limit.
+func (d *delivery) render(sections []section) string {
+	if !d.over {
+		return d.text(sections)
 	}
-	if d.instructions != nil {
-		size += 2 + d.instructions.currentSize()
-	}
-	for _, x := range d.indexes() {
-		size += 2 + x.size(x.keep)
-	}
-	if d.assistant {
-		lines := d.cutLines()
-		if len(lines) > 0 || len(d.problemLines) > 0 {
-			size += 2 + utf16Len(warningsHeading) + d.problemsSize
-			for _, line := range lines {
-				size += len(warningsBullet) + utf16Len(line)
-			}
-		}
-	}
-	return size
+	return d.text(append([]section{{text: overNotice(d.size)}}, sections...))
 }
 
-// render is the delivery's text. Text inside it that would read as its
-// ending, or as the stamp under its heading, is written with parentheses for
-// its brackets, so a provider looking for either finds only the delivery's
-// own; the replacement keeps every size.
-func (d *delivery) render() string {
-	body := strings.Join(d.blocks(), "\n\n")
-	body = strings.ReplaceAll(body, Ending, "("+strings.Trim(Ending, "[]")+")")
-	body = strings.ReplaceAll(body, StampPrefix, "("+strings.TrimPrefix(StampPrefix, "["))
-	return Heading + "\n\n" + body + "\n\n" + Ending
+// noticedSize is the size of a text of size bytes once it carries its
+// overNotice, joined to it by sep more bytes: the notice's digits count.
+func noticedSize(size, sep int) int {
+	total := size
+	// Each pass can add one digit; the digits hold by the third.
+	for range 3 {
+		total = size + sep + len(overNotice(total))
+	}
+	return total
+}
+
+// overNotice opens a delivery of size bytes, over Limit.
+func overNotice(size int) string {
+	return fmt.Sprintf("[This memory is %d bytes, more than the %d a hook's output reaches you whole. If you see only its start, read all of it from the file the provider saved it to before you act.]", size, Limit)
+}
+
+// text is sections as a whole delivery: under its heading, closed by its
+// ending.
+func (d *delivery) text(sections []section) string {
+	blocks := make([]string, len(sections))
+	for i, s := range sections {
+		blocks[i] = s.text
+	}
+	return Heading + "\n\n" + strings.Join(blocks, "\n\n") + "\n\n" + Ending
 }
 
 const (
@@ -674,35 +513,25 @@ const (
 	warningsBullet  = "\n- "
 )
 
-// cutLines are the maintenance warnings the cut makes.
-func (d *delivery) cutLines() []string {
-	var lines []string
-	for _, x := range d.indexes() {
-		if cut := len(x.facts) - x.keep; cut > 0 {
-			lines = append(lines, fmt.Sprintf("The index of %s was cut to fit this delivery: %s not shown. Merge, shorten or delete facts there.",
-				folderShown(x.dir), plural(cut, "fact is", "facts are")))
-		}
-	}
-	if list := d.projects; list != nil && list.keep < len(list.lines) {
-		lines = append(lines, fmt.Sprintf("The list of your projects was cut to fit this delivery: %s not listed.",
-			plural(len(list.lines)-list.keep, "project is", "projects are")))
-	}
-	if b := d.instructions; b != nil && b.out {
-		lines = append(lines, fmt.Sprintf("%s (%d bytes) did not fit in this delivery beside your memory and was left out. Shorten it.", b.path, b.bytes))
-	}
-	if d.over > 0 {
-		lines = append(lines, fmt.Sprintf("This delivery is still about %d characters after every cut, over the %d it is held to. Shorten your context facts and %s.", d.over, Budget, agenthome.InstructionsFile))
-	}
-	return lines
-}
-
 // warnings is the maintenance block of an assistant's delivery, "" for any
-// other or when nothing needs fixing.
+// other or when nothing needs fixing. The warning that the delivery is over
+// Limit names no size, so the block reads the same while it stays over.
 func (d *delivery) warnings() string {
 	if !d.assistant {
 		return ""
 	}
-	lines := append(d.cutLines(), d.problemLines...)
+	var lines []string
+	if d.over {
+		lines = append(lines, fmt.Sprintf("Your memory is more than the %d bytes a hook's output reaches the model whole, so every session sees only its start until it reads the file the provider saved it to. Shorten %s and your context facts, and merge or delete facts.", Limit, agenthome.InstructionsFile))
+	}
+	if b := d.instructions; b != nil && b.out {
+		lines = append(lines, fmt.Sprintf("%s (%d bytes) is more than the %d a delivery carries, so it is named instead of shown. Shorten it.", b.path, b.bytes, instructionsKeep))
+	}
+	problems := d.problems
+	if len(problems) > maxListedProblems {
+		problems = append(problems[:maxListedProblems:maxListedProblems], fmt.Sprintf("And %d more like these.", len(d.problems)-maxListedProblems))
+	}
+	lines = append(lines, problems...)
 	if len(lines) == 0 {
 		return ""
 	}
@@ -752,15 +581,6 @@ until: an end condition in plain words, optional; delete the fact once it is met
 // folderShown is a folder as a delivery names it, with a trailing separator.
 func folderShown(dir string) string {
 	return filepath.Clean(dir) + string(filepath.Separator)
-}
-
-// utf16Len is the length of s in UTF-16 code units.
-func utf16Len(s string) int {
-	n := 0
-	for _, r := range s {
-		n += utf16.RuneLen(r)
-	}
-	return n
 }
 
 func plural(n int, one, many string) string {

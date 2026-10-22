@@ -30,12 +30,6 @@ import (
 // assistant creates one with thread_new_assistant, and New Thread, Same
 // Assistant (StartNextAssistantThread) gives it a new current thread.
 
-// Wake kinds of the app-written messages that start an assistant's threads.
-const (
-	assistantWakeKindOpening = "assistant"
-	assistantWakeKindHandOff = "handoff"
-)
-
 // assistantSendIDRoot names the app-written messages that open an
 // assistant's thread, `assistant:<kind>:<id>`. They are the assistant's
 // orientation: one its session never took in goes back on its queue, held
@@ -82,7 +76,7 @@ func (a *App) CreateAssistant(ctx context.Context, opts CreateAssistantOptions) 
 		return store.Thread{}, refuseTakenAssistantName(err)
 	}
 	body := agenthome.OpeningMessage(thread.Title, agent.Home)
-	if err := a.queueAssistantMessage(thread.ID, assistantSendID(assistantWakeKindOpening, agent.ID), thread.Title, body); err != nil {
+	if err := a.queueAssistantMessage(thread.ID, assistantSendID(usermessage.OriginWakeKindOpening, agent.ID), thread.Title, body); err != nil {
 		return thread, fmt.Errorf("the assistant was created, but its opening message could not be queued: %w", err)
 	}
 	return thread, nil
@@ -449,23 +443,6 @@ func (a *App) broadcastSpawnerRow(child store.Thread) {
 		return
 	}
 	a.announceThread(triage.ThreadActionFull, parent.ID)
-}
-
-// SetStandingAgentNotifyOnTick turns an assistant's tick notifications on or
-// off. Off, the default, a turn only its loops and watches started raises no
-// notification at rest; on, it notifies like any other turn. Refused for a
-// thread that is no assistant's current thread.
-//
-//ao:scope threads:operate
-func (a *App) SetStandingAgentNotifyOnTick(threadID string, on bool) (store.StandingAgent, error) {
-	row, _, found, err := a.store.SetStandingAgentNotifyOnTick(threadID, on)
-	if err != nil {
-		return store.StandingAgent{}, err
-	}
-	if !found {
-		return store.StandingAgent{}, errNotAssistantThread
-	}
-	return row, nil
 }
 
 // SetAssistantProjects sets the projects the assistant whose current

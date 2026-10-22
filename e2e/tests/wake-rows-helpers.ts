@@ -139,6 +139,13 @@ export function dbWake(dataDir: string, thread: string, label: string): DbWake |
   }
 }
 
+/** Fires a thread's loop at once with Wake now, as the tray does. */
+export async function wakeLoopNow(harness: HarnessApp, thread: string, label: string): Promise<void> {
+  const wake = dbWake(harness.bootstrap.dataDir, thread, label);
+  expect(wake, `the ${label} loop is registered`).toBeDefined();
+  await harness.rpc('WakeThreadWakeNow', thread, 'loop', wake!.id);
+}
+
 export interface DbScheduleRow {
   id: string;
   tool: string;

@@ -56,6 +56,22 @@
     "cue": "knock"
   },
   {
+    "name": "thread-attention on",
+    "settings": { "notifyThreadAttention": true },
+    "send": { "kind": "thread-attention", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": null,
+    "cue": "knock"
+  },
+  {
+    "name": "thread-attention off",
+    "settings": { "notifyThreadAttention": false },
+    "send": { "kind": "thread-attention", "target": { "kind": "thread", "threadId": "t1" } },
+    "screen": { "focused": false, "threadVisible": false },
+    "refusal": "suppressed",
+    "cue": "knock"
+  },
+  {
     "name": "error on",
     "settings": { "notifyError": true },
     "send": { "kind": "error", "target": { "kind": "thread", "threadId": "t1" } },

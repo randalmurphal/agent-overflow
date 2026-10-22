@@ -18,7 +18,6 @@ type StandingAgent struct {
 	ID             string `json:"id"`
 	ThreadID       string `json:"threadId"`
 	Home           string `json:"home"`
-	NotifyOnTick   bool   `json:"notifyOnTick"`
 	CreatorAgentID string `json:"creatorAgentId,omitempty"`
 	CreatedAt      int64  `json:"createdAt"`
 	// AllProjects is set for an assistant that serves every project, those
@@ -28,7 +27,7 @@ type StandingAgent struct {
 	AllProjects bool `json:"allProjects"`
 }
 
-const standingAgentColumns = `id, thread_id, home, notify_on_tick, creator_agent_id, created_at, all_projects`
+const standingAgentColumns = `id, thread_id, home, creator_agent_id, created_at, all_projects`
 
 // OwnerAgentID names the assistant whose current thread, past thread or
 // helper this is, "" for any other thread.
@@ -43,11 +42,10 @@ type rowQuerier interface {
 
 func scanStandingAgent(row interface{ Scan(...any) error }) (StandingAgent, error) {
 	var agent StandingAgent
-	var notify, all int
-	if err := row.Scan(&agent.ID, &agent.ThreadID, &agent.Home, &notify, &agent.CreatorAgentID, &agent.CreatedAt, &all); err != nil {
+	var all int
+	if err := row.Scan(&agent.ID, &agent.ThreadID, &agent.Home, &agent.CreatorAgentID, &agent.CreatedAt, &all); err != nil {
 		return StandingAgent{}, err
 	}
-	agent.NotifyOnTick = notify == 1
 	agent.AllProjects = all == 1
 	return agent, nil
 }
@@ -246,12 +244,8 @@ func (s *Store) CreateStandingAgent(agent StandingAgent, projectIDs ...string) (
 	if !inHome {
 		return fmt.Errorf("%s: %w", action, ErrAssistantThreadNotInHome)
 	}
-	notify := 0
-	if agent.NotifyOnTick {
-		notify = 1
-	}
-	if _, err := tx.Exec(`INSERT INTO agents (`+standingAgentColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		agent.ID, agent.ThreadID, agent.Home, notify, agent.CreatorAgentID, agent.CreatedAt, agent.AllProjects); err != nil {
+	if _, err := tx.Exec(`INSERT INTO agents (`+standingAgentColumns+`) VALUES (?, ?, ?, ?, ?, ?)`,
+		agent.ID, agent.ThreadID, agent.Home, agent.CreatorAgentID, agent.CreatedAt, agent.AllProjects); err != nil {
 		return fmt.Errorf("%s: %w", action, err)
 	}
 	if err := setAgentProjectsTx(tx, agent.ID, agent.AllProjects, projectIDs); err != nil {
@@ -280,28 +274,6 @@ func (s *Store) PlaceThreadInHome(threadID, home string) error {
 		return fmt.Errorf("store: place thread %s in %s: %w", threadID, home, err)
 	}
 	return requireRowsAffected(result, fmt.Sprintf("store: place thread %s in %s: no such thread outside every assistant", threadID, home))
-}
-
-// SetStandingAgentNotifyOnTick turns tick notifications on or off for the
-// assistant whose current thread is threadID. Changed is false when the
-// row already said so; found is false when the thread is no assistant's
-// current thread.
-func (s *Store) SetStandingAgentNotifyOnTick(threadID string, on bool) (_ StandingAgent, changed, found bool, _ error) {
-	notify := 0
-	if on {
-		notify = 1
-	}
-	changed, err := s.changeAgentWake(fmt.Sprintf("store: set notify_on_tick of %s", threadID),
-		`UPDATE agents SET notify_on_tick = ? WHERE thread_id = ? AND notify_on_tick IS NOT ?`,
-		notify, threadID, notify)
-	if err != nil {
-		return StandingAgent{}, false, false, err
-	}
-	row, found, err := s.GetStandingAgent(threadID)
-	if err != nil || !found {
-		return StandingAgent{}, false, false, err
-	}
-	return row, changed, true, nil
 }
 
 // StandingAgentSpawnerOf names the assistant thread that spawned a thread on
@@ -339,7 +311,7 @@ type AssistantListing struct {
 // ListAssistants lists this computer's assistants by name.
 func (s *Store) ListAssistants() (_ []AssistantListing, err error) {
 	action := "store: list assistants"
-	rows, err := s.reader().Query(`SELECT agents.id, agents.thread_id, agents.home, agents.notify_on_tick,
+	rows, err := s.reader().Query(`SELECT agents.id, agents.thread_id, agents.home,
 		agents.creator_agent_id, agents.created_at, agents.all_projects, threads.title, threads.archived
 		FROM agents JOIN owned_threads AS threads ON threads.id = agents.thread_id
 		ORDER BY threads.title COLLATE NOCASE, agents.id`)
@@ -350,12 +322,11 @@ func (s *Store) ListAssistants() (_ []AssistantListing, err error) {
 	out := []AssistantListing{}
 	for rows.Next() {
 		var listing AssistantListing
-		var notify, all int
-		if err := rows.Scan(&listing.Agent.ID, &listing.Agent.ThreadID, &listing.Agent.Home, &notify,
+		var all int
+		if err := rows.Scan(&listing.Agent.ID, &listing.Agent.ThreadID, &listing.Agent.Home,
 			&listing.Agent.CreatorAgentID, &listing.Agent.CreatedAt, &all, &listing.Name, &listing.Archived); err != nil {
 			return nil, fmt.Errorf("%s: scan: %w", action, err)
 		}
-		listing.Agent.NotifyOnTick = notify == 1
 		listing.Agent.AllProjects = all == 1
 		out = append(out, listing)
 	}

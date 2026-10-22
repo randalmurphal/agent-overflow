@@ -1,4 +1,5 @@
-import { execFile as execFileCallback, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { execFile as execFileCallback, execFileSync, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { readFile, readdir, readlink } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import * as path from 'node:path';
@@ -197,6 +198,28 @@ async function captureProcessGroupMemberProofForGroup(
     if (executable) return { pid: row.pid, birth: row.birth, executable, groupId: row.groupId };
   }
   return undefined;
+}
+
+/**
+ * Whether a process runs: it exists and is not a zombie. Linux reads its
+ * state from /proc; macOS, which has no /proc, asks ps.
+ */
+export function processRuns(pid: number): boolean {
+  if (process.platform === 'darwin') {
+    try {
+      return !execFileSync('/bin/ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim().startsWith('Z');
+    } catch (err) {
+      // ps exits 1 when no such process exists; anything else is a failure.
+      if ((err as { status?: number }).status === 1) return false;
+      throw err;
+    }
+  }
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] !== 'Z';
+  } catch {
+    return false;
+  }
 }
 
 export type ProcessHoldState = 'held' | 'released' | 'changed';

@@ -112,6 +112,9 @@ const (
 	// MaxReplyAnswers bounds thread_reply's answers, one per question of a
 	// worker's prompt.
 	MaxReplyAnswers = 16
+	// MaxAttentionReasonRunes bounds thread_attention's reason, which the
+	// sidebar shows on the thread's row.
+	MaxAttentionReasonRunes = 120
 )
 
 // dataNotice is the sentence every read tool's description ends with.

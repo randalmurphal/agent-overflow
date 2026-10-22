@@ -303,7 +303,7 @@ func (a *App) startSessionNow(threadID string) error {
 	// without the write rules; claude-tui leaves approvals to the
 	// terminal, so its mode never refuses one.
 	readOnly := opts.RuntimeMode == provider.RuntimeReadOnly && provider.CapabilitiesForProvider(t.Provider).EnforcesRuntimeMode
-	mem, err := a.readSessionMemory(t, agent.Agent, opts.Resume, readOnly)
+	mem, err := a.readSessionMemory(t, agent.Agent, opts.Resume != "", readOnly)
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
@@ -585,7 +585,7 @@ func (a *App) spawnProviderSession(
 		cfg.Binary = a.providerBinaryPath(t.Provider)
 		cfg.AppendSystemPrompt = appGuide
 		cfg.SessionStartHook = mem.Hook
-		cfg.SessionStartReceipts = mem.Receipts
+		cfg.SessionStartForget = mem.Forget
 		cfg.NativeMemoryOff = appSettings.ClaudeNativeMemoryDisabled
 		cfg.InstalledCLIVersion = a.installedProviderVersion(t.Provider)
 		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env, credential)
@@ -653,7 +653,7 @@ func (a *App) spawnProviderSession(
 		// gets it injected (codexDeveloperInstructionsDelivery).
 		cfg.DeveloperInstructions = a.codexDeveloperInstructions(threadID, appGuide, mcpServers)
 		cfg.SessionStartHook = mem.Hook
-		cfg.SessionStartReceipts = mem.Receipts
+		cfg.SessionStartForget = mem.Forget
 		cfg.WritableRoots = mem.Dirs
 		cfg.NativeMemoryOff = appSettings.CodexNativeMemoryDisabled
 		cfg.DeveloperInstructionsDelivery, err = a.codexDeveloperInstructionsDelivery(threadID, cfg.ResumeThreadID)
@@ -782,7 +782,7 @@ func (a *App) spawnProviderSession(
 		cfg.Binary = a.providerBinaryPath(string(provider.Claude))
 		cfg.AppendSystemPrompt = appGuide
 		cfg.SessionStartHook = mem.Hook
-		cfg.SessionStartReceipts = mem.Receipts
+		cfg.SessionStartForget = mem.Forget
 		cfg.NativeMemoryOff = appSettings.ClaudeNativeMemoryDisabled
 		cfg.InstalledCLIVersion = a.installedProviderVersion(string(provider.Claude))
 		cfg.ModelAliases = a.providerDiscoveryService().ClaudeModelAliases()
@@ -1151,12 +1151,24 @@ func (a *App) codexResendAfterInterrupt(
 	thread store.Thread,
 ) {
 	ids := make([]string, len(persisted))
-	contents := make([]string, len(persisted))
 	for i, p := range persisted {
 		ids[i] = p.UserItemID
-		contents[i] = p.Content
 	}
 	a.triage.ClearPendingSendsByItemIDs(threadID, ids)
+
+	// Each row goes back on the wire as its dispatch first sent it: marked
+	// with its sender and with its composer command expanded, neither of
+	// which the stored row holds.
+	contents := make([]string, len(persisted))
+	for i, p := range persisted {
+		content, err := a.rowWireText(threadID, p.Content, p.Meta)
+		if err != nil {
+			log.Printf("app: codex interrupt re-send: rebuild %s/%s: %v", threadID, p.UserItemID, err)
+			a.restoreEagerPersistedFlushesToDraft(threadID, persisted)
+			return
+		}
+		contents[i] = content
+	}
 
 	// The original dispatch delivered the turn's attachments alongside the
 	// steer; this resend is the content's only remaining delivery, so it

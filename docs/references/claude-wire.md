@@ -541,8 +541,8 @@ Auto restores it with a notice of its own.
 
 Spike 2026-10-18, claude 2.1.283 in print mode with Agent Overflow's
 stream-json flags; limits read from the same version's bundle. Agent
-Overflow uses one of these hooks to deliver a session's memory
-([memory](../specs/memory.md#delivery)).
+Overflow uses a SessionStart and a UserPromptSubmit hook to deliver a
+session's memory ([memory](../specs/memory.md#delivery)).
 
 Hooks in the inline `--settings` JSON (the flag settings layer) merge
 with the user's own and run beside them:
@@ -575,8 +575,9 @@ with the user's own and run beside them:
 - Stdout that starts with `{` is read as hook JSON, and
   `hookSpecificOutput.additionalContext` is the context; other stdout
   is plain-text context.
-- A context longer than 10,000 characters (JavaScript string length)
-  is written to disk and replaced by a preview and its path.
+- A context longer than 10,000 characters (JavaScript string length,
+  UTF-16 units) is written to disk and replaced by its first 2,000
+  characters and the file's path (read from the bundle).
 - `disableAllHooks` in the user's settings turns every hook off.
 - An interactive session (claude-tui) writes no `hook_response`. A
   run's contexts reach the next main model request as one
@@ -593,23 +594,38 @@ with the user's own and run beside them:
   transcript, so a resume that runs the hooks adds a second set beside
   the start's until a compaction rebuilds the context.
 
-Agent Overflow registers its one hook in a group of its own, timeout 60
-(`claude.SessionStartHookGroup`; claude-tui puts the same group beside
-its relay). The matcher is `startup|compact|clear`, and
-`startup|compact|clear|resume|fork` when the hook's `Resume` is set on a
-launch with `--resume`. Its context carries its delivery time under its
-heading (`provider.SessionStartHook.Stamp`), so a resume's is never text
-the transcript already holds. The headless parser counts a
+UserPromptSubmit hooks take no matcher and run, from the same layers,
+for each prompt the process takes: a stdin message, a queued one
+included, before it reaches the model; a subagent's prompt runs none.
+The input adds `prompt` to `session_id`, `cwd` and `hook_event_name`. A
+run writes `system/hook_started` and `system/hook_response` with
+`hook_event` `UserPromptSubmit`, and its context reaches the model with
+the prompt; claude-tui's request carries it in a
+`UserPromptSubmit hook additional context: ` block. Exit 2 blocks the
+prompt; any other non-zero exit is a failed run that lets it through
+(read from the bundle).
+
+Agent Overflow registers its memory hook in groups of its own, timeout
+60 (`claude.SessionStartHookGroup`, `claude.UserPromptSubmitHookGroup`;
+claude-tui puts the same groups beside its relay): SessionStart with the
+matcher `startup|compact|clear`, so a resume runs none, and
+UserPromptSubmit with the binary's prompt command, which prints nothing
+when nothing changed and never exits 2. The SessionStart context
+carries its delivery time under its heading
+(`provider.SessionStartHook.Stamp`). The headless parser counts a
 `hook_response` with exit code 0 whose context opens with the hook's
-heading, and checks a start or a resume at `system/init` and a compaction
-at its `compact_boundary`. It keeps the delivered context as the
-thread's receipt under the frame's `session_id` at the turn's `result`,
-once the turn has been recorded (`parse_session_start.go`). claude-tui's
-gateway reads the first main model request after the start, a resume or
-`PostCompact`: in the `SessionStart hook additional context: ` blocks,
-read from the last, the hook's context runs from its heading to its
-ending, and counts only when its stamp's time is not before that start or
-compaction (`claudetui/session_start.go`).
+heading, and checks a fresh start at `system/init` and a compaction at
+its `compact_boundary`; a miss forgets the thread's records of what its
+sessions were shown, so the next prompt delivers the whole memory
+(`parse_session_start.go`). A failed UserPromptSubmit `hook_response` is
+the hook's when its stderr opens with `__memory-context:`, and is a
+non-fatal error row. claude-tui's gateway reads the first main model
+request after the start or `PostCompact`: in the
+`SessionStart hook additional context: ` blocks, read from the last, the
+hook's context runs from its heading to its ending, and counts only when
+its stamp's time is not before that start or compaction
+(`claudetui/session_start.go`). A claude-tui session closed before that
+request forgets the records.
 
 ## Auto memory and additional directories (verified 2.1.283)
 

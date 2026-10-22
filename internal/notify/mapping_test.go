@@ -332,7 +332,15 @@ func TestMomentsThatMustNotNotify(t *testing.T) {
 		{
 			name: "a routine tick starting takes away nothing the user has not read",
 			got: func() (Notification, bool) {
-				return MapThreadResumed(ThreadResumed{ThreadID: threadID, QuietTick: true})
+				return MapThreadResumed(ThreadResumed{ThreadID: threadID, Tick: true})
+			},
+		},
+		{
+			name: "a quiet tick does not say again a flag an earlier turn raised",
+			got: func() (Notification, bool) {
+				flagged := thread()
+				flagged.Attention, flagged.AttentionAt = "review", 1_000
+				return MapTurnRest(TurnRest{Thread: flagged, TopLevel: true, QuietTick: true, StartedAt: 2_000})
 			},
 		},
 		{

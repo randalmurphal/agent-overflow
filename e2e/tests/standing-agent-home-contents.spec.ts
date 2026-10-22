@@ -4,19 +4,24 @@
 //
 // Coverage (standing-agent-home-contents-helpers.ts): a static session block
 // beside the app guide, the same bytes on every session whatever the files
-// hold; instructions.md and the agent's memory delivered by the one
-// SessionStart hook at a first start and at each compaction, and at a
-// resume only when the delivery changed since the thread's model last
-// received it; a fact written while a session runs reaching that session at
-// its next compaction; an expired and a malformed fact named in the
-// maintenance warnings; a worker spawned with home_files whose first
-// message opens with the attached verification file and whose footer names
-// the agent, its role and the route of its questions; the role line on a
-// message from the agent to an ordinary thread and none on one back; an
-// instructions.md past the budget given way to its path and an index cut to
-// fit; no warning row. A provider that runs no hook leaves a warning row
-// for the start, for the compaction and for the resume that runs the hook
-// again. Then the timeline: neither the block nor the delivery shows as a
+// hold; instructions.md and the agent's memory delivered whole by the
+// SessionStart hook at a first start and at each compaction, and by each
+// prompt's UserPromptSubmit hook only as what changed since the session
+// last received it, nothing when nothing did, a resume running no
+// SessionStart hook; a fact written while a session runs reaching that
+// session at its next compaction, and one written while it idles reaching
+// it with its next prompt as that one line; an expired and a malformed fact
+// reaching the next session's first prompt as the maintenance warnings; a
+// worker spawned with home_files whose first message opens with the
+// attached verification file and whose footer names the agent, its role
+// and the route of its questions; the role line on a message from the
+// agent to an ordinary thread and none on one back; a memory past the size
+// limit delivered whole, opening with its size, with the maintenance
+// warning and one warning row. A provider that runs no hook leaves a
+// warning row for the start and for each compaction, and none for a
+// resume; a prompt with no record of what its session was shown, and the
+// first prompt after a compaction whose hook did not deliver, delivers the
+// whole memory. Then the timeline: neither the block nor the delivery shows as a
 // message, the worker's first message is an agent row whose body shows the
 // attached file and whose facts name the agent's role and the route of its
 // questions.
@@ -59,8 +64,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(page.getByText('Noted.', { exact: true })).toBeVisible();
     await expect(page.getByText('Your standing instructions')).toHaveCount(0);
     const opening = page.getByTestId('user-message-bubble').filter({ hasText: 'Set up your home.' });
-    await expect(opening).toHaveCount(1);
     await scrollTimelineToTop(page, opening);
+    await expect(opening).toHaveCount(1);
     await capture(page, `${provider}-agent-session.png`, opening);
     await expect(page.getByText('Agent Overflow memory', { exact: false })).toHaveCount(0);
     await expect(page.getByText(ROLE, { exact: false })).toHaveCount(0);
@@ -95,9 +100,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
     await harness.open(page);
     await openThread(page, 'assistants', 'Hookless lead');
-    await expect(page.getByText('Still here.', { exact: true })).toBeVisible();
-    for (const after of ['start', 'compaction', 'resume'] as const) {
-      await expect(page.getByText(undeliveredWarning(after), { exact: true })).toHaveCount(1);
-    }
+    await expect(page.getByText('Back.', { exact: true })).toBeVisible();
+    await expect(page.getByText(undeliveredWarning('start'), { exact: true })).toHaveCount(1);
+    await expect(page.getByText(undeliveredWarning('compaction'), { exact: true })).toHaveCount(2);
   });
 }

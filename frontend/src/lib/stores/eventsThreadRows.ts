@@ -118,8 +118,13 @@ export function syncThreadRow(updated: Thread): Thread {
 }
 
 export function syncLatestTurnCompleted(evt: TurnCompletedEvent): void {
-  const cachedThread = getThreadById(evt.threadId)
-    ?? ingestPaneShowingThread(evt.threadId)?.thread;
+  const known = getThreadById(evt.threadId);
+  // A row sent with the completion already in it (a quiet tick's) has
+  // nothing to add.
+  if (known && (known.latestTurnCompletedAt ?? Number.NEGATIVE_INFINITY) >= evt.completedAt) {
+    return;
+  }
+  const cachedThread = known ?? ingestPaneShowingThread(evt.threadId)?.thread;
   if (!cachedThread) {
     return;
   }

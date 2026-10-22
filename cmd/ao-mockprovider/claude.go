@@ -211,6 +211,9 @@ type claudeAdapter struct {
 	sessionStart []sessionStartHook
 	startSource  string
 	startHooks   sync.Once
+	// promptHooks are the UserPromptSubmit hooks of the same --settings,
+	// run for each prompt the process takes.
+	promptHooks []sessionStartHook
 }
 
 func newClaudeAdapter(e *engine, w *lineWriter, args []string) *claudeAdapter {
@@ -225,7 +228,7 @@ func newClaudeAdapter(e *engine, w *lineWriter, args []string) *claudeAdapter {
 		startSource:   claudeStartSource(args),
 	}
 	if !e.sc.SessionStartHooksOff {
-		a.sessionStart = claudeSessionStartHooks(args)
+		a.sessionStart, a.promptHooks = claudeSessionStartHooks(args)
 	}
 	w.onLine(a.noteEnvelope)
 	return a
@@ -496,6 +499,7 @@ func (a *claudeAdapter) drainHeldInput(turn int) {
 			Input: claudeUserText(line), Detail: "midLoop",
 		})
 		a.writeCommandLifecycle(claudeEnvelopeUUID(line), "started")
+		a.runPromptHooks(a.e.currentVars(), claudeUserText(line))
 		a.echoDrainedEnvelope(line)
 	}
 }
@@ -530,6 +534,7 @@ func (a *claudeAdapter) pickUpUserEnvelope(line []byte) {
 		Input: input, SessionRef: vars["SESSION_ID"],
 	})
 	a.writeInit(vars)
+	a.runPromptHooks(vars, input)
 	a.recordUserEnvelope(line)
 	// `started` after the init, so the app classifies this delivery as
 	// a new turn (claude-wire.md §command_lifecycle).

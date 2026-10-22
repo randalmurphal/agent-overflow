@@ -207,7 +207,7 @@ func TestStandingAgentsMigration(t *testing.T) {
 	// v155 made each row an assistant whose id is its thread's, keeping
 	// the home as it was.
 	if agent, found, err := s.GetStandingAgent("watcher"); err != nil || !found ||
-		agent != (StandingAgent{ID: "watcher", ThreadID: "watcher", Home: "/h/watcher", NotifyOnTick: true, CreatedAt: 11}) {
+		agent != (StandingAgent{ID: "watcher", ThreadID: "watcher", Home: "/h/watcher", CreatedAt: 11}) {
 		t.Errorf("watcher's agent row = %+v found=%v err=%v", agent, found, err)
 	}
 
@@ -532,21 +532,5 @@ func TestAgentWakeUndeliveredStaysUntilAWakeCarriesIt(t *testing.T) {
 	if again, err := s.RegisterAgentWake(AgentWake{ID: "w2", ThreadID: "t", Kind: AgentWakeWatch, Label: "poll",
 		Command: "false", IntervalSeconds: 60, NextAt: at}); err != nil || again.Undelivered != "" {
 		t.Fatalf("re-register = %+v %v, want undelivered cleared", again, err)
-	}
-}
-
-func TestSetStandingAgentNotifyOnTick(t *testing.T) {
-	t.Parallel()
-	s := newTestStore(t)
-	mustCreateThread(t, s, "t")
-	if _, _, found, err := s.SetStandingAgentNotifyOnTick("t", true); err != nil || found {
-		t.Fatalf("a thread that is not a standing agent: found=%v err=%v", found, err)
-	}
-	mustCreateAssistant(t, s, "t", "/h")
-	for _, step := range []struct{ on, changed bool }{{true, true}, {true, false}, {false, true}, {false, false}} {
-		row, changed, found, err := s.SetStandingAgentNotifyOnTick("t", step.on)
-		if err != nil || !found || changed != step.changed || row.NotifyOnTick != step.on {
-			t.Fatalf("set %v: row=%+v changed=%v found=%v err=%v, want changed=%v", step.on, row, changed, found, err, step.changed)
-		}
 	}
 }

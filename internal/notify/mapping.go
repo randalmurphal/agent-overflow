@@ -71,6 +71,12 @@ const (
 	// left items to retry on the next start. Its own toggle too, same
 	// reasoning as KindWorkflowAttention.
 	KindAppUpdate Kind = "app-update"
+	// KindThreadAttention is a thread whose agent flagged it as needing
+	// the user (thread_attention): a decision to make, work to review or a
+	// problem it cannot fix. It is that thread's rest notification while the flag
+	// is pending, so it shares KindTurnComplete's identifier: a turn that
+	// ends with a flag up is one moment, said once.
+	KindThreadAttention Kind = "thread-attention"
 )
 
 // kinds is every declared Kind. A send naming anything else is refused by
@@ -84,6 +90,7 @@ var kinds = map[Kind]struct{}{
 	KindProviderSignedOut: {},
 	KindWorkflowAttention: {},
 	KindAppUpdate:         {},
+	KindThreadAttention:   {},
 }
 
 // KnownKind reports whether kind is one this build declares.
@@ -113,6 +120,7 @@ var kindPhrases = map[Kind]string{
 	KindProviderSignedOut: "Provider signed out",
 	KindWorkflowAttention: "Workflow needs you",
 	KindAppUpdate:         "Update notice",
+	KindThreadAttention:   "Needs your attention",
 }
 
 // KindPhrase is what a notification says when it may not name its thread.
@@ -169,6 +177,12 @@ type ThreadRef struct {
 	// unless the screen opted in (settings.NotifyHiddenThreads), and the
 	// caller that read the row is the one that knows which it is.
 	Hidden bool
+	// Attention is the kind of the thread's pending attention flag
+	// (store.AttentionDecision and the rest), empty when none is pending.
+	// A fixed value, never the reason the agent gave: that is the thread's
+	// to show. AttentionAt is when the flag was raised.
+	Attention   string
+	AttentionAt int64
 }
 
 // TurnRest is a turn arriving at rest — the `provider:turn_completed`
@@ -190,10 +204,14 @@ type TurnRest struct {
 	// an abort carries no error and a failure is not something anyone asked
 	// for.
 	Aborted bool
-	// QuietTick is a turn only a loop or watch started, on a thread whose
-	// standing agent row does not ask for tick notifications. A routine
-	// tick finishing is not news; one that failed still is.
+	// QuietTick is a turn only a loop or watch started that ended cleanly
+	// (triage.TurnCompletedEvent.Quiet). A routine tick finishing is not
+	// news; one that raised an attention flag still is, and one that
+	// failed is never quiet.
 	QuietTick bool
+	// StartedAt is when the turn started, which tells a flag the turn
+	// raised from one an earlier turn raised and already said.
+	StartedAt int64
 }
 
 // ProviderExit is the provider process dying under a thread — the
@@ -210,10 +228,17 @@ type ProviderExit struct {
 // asks retraction to cover.
 type ThreadResumed struct {
 	ThreadID string
-	// QuietTick is a quiet tick's turn starting (see TurnRest.QuietTick). It
-	// retracts nothing: a routine tick neither raises a notification nor
-	// takes away one the user has not read.
-	QuietTick bool
+	// Tick is a tick's turn starting: one only loop and watch wakes
+	// started. It retracts nothing: a routine tick neither raises a
+	// notification nor takes away one the user has not read.
+	Tick bool
+}
+
+// AttentionLowered is an agent lowering a flag the user had not read, once
+// a turn that ended with it up said it: the flag is the thread's rest
+// notification, so lowering it takes that back.
+type AttentionLowered struct {
+	ThreadID string
 }
 
 // SessionStartFailed is a session the app started on its own, to deliver a
@@ -317,19 +342,55 @@ func providerAuthNotificationID(providerName string) string {
 }
 
 // MapTurnRest maps a settled turn. Reports false when the moment is not the
-// user's to hear about: a subagent's round, or an abort they performed.
+// user's to hear about: a subagent's round, an abort they performed, or a
+// quiet tick that raised no flag. A quiet tick says a pending flag only when
+// it raised it: an older flag was said when the turn that raised it ended,
+// and saying it again at every tick would alert the user on the loop's
+// interval.
 func MapTurnRest(rest TurnRest) (Notification, bool) {
 	if rest.Thread.ID == "" || !rest.TopLevel || rest.Aborted {
 		return Notification{}, false
 	}
-	if rest.QuietTick && !rest.Failed {
+	flagged := rest.Thread.Attention != ""
+	if rest.QuietTick && rest.Thread.AttentionAt < rest.StartedAt {
+		flagged = false
+	}
+	switch {
+	case rest.Failed:
+		return threadNotification(KindError, rest.Thread, "Failed. Open the thread to see why."), true
+	case flagged:
+		return threadNotification(KindThreadAttention, rest.Thread, attentionBody(rest.Thread.Attention)), true
+	case rest.QuietTick:
 		return Notification{}, false
 	}
-	kind, body := KindTurnComplete, "Completed"
-	if rest.Failed {
-		kind, body = KindError, "Failed. Open the thread to see why."
+	return threadNotification(KindTurnComplete, rest.Thread, "Completed"), true
+}
+
+// attentionBody is what a rest with an attention flag says, by the flag's
+// kind: a fixed phrase, never the agent's reason.
+func attentionBody(kind string) string {
+	switch kind {
+	case "decision":
+		return "Needs your decision"
+	case "review":
+		return "Ready for your review"
+	case "problem":
+		return "Hit a problem that needs you"
 	}
-	return threadNotification(kind, rest.Thread, body), true
+	return KindPhrase(KindThreadAttention)
+}
+
+// MapAttentionLowered retracts the rest notification an attention flag
+// raised.
+func MapAttentionLowered(lowered AttentionLowered) (Notification, bool) {
+	if lowered.ThreadID == "" {
+		return Notification{}, false
+	}
+	return Notification{Send: Send{
+		ID:      threadNotificationID(lowered.ThreadID),
+		Kind:    KindThreadAttention,
+		Retract: true,
+	}}, true
 }
 
 // MapProviderExit maps a provider process dying under a thread.
@@ -374,7 +435,7 @@ func MapSessionStarted(started SessionStarted) (Notification, bool) {
 // turn completions has no rest notification of this shape to withdraw, and a
 // user who silenced errors keeps the gate they asked for either way.
 func MapThreadResumed(resumed ThreadResumed) (Notification, bool) {
-	if resumed.ThreadID == "" || resumed.QuietTick {
+	if resumed.ThreadID == "" || resumed.Tick {
 		return Notification{}, false
 	}
 	return Notification{Send: Send{

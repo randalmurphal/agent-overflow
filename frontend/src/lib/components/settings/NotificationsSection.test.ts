@@ -92,6 +92,7 @@ async function renderSection() {
 const perKind: Array<[string, keyof Settings]> = [
   ['Toggle turn complete notifications', 'notifyTurnComplete'],
   ['Toggle approval needed notifications', 'notifyApprovalNeeded'],
+  ['Toggle thread needs attention notifications', 'notifyThreadAttention'],
   ['Toggle error notifications', 'notifyError'],
   ['Toggle provider signed out notifications', 'notifyProviderSignedOut'],
   ['Toggle workflow needs attention notifications', 'notifyWorkflowAttention'],
@@ -193,7 +194,7 @@ describe('<NotificationsSection>', () => {
       .getAttribute('aria-checked')).toBe('true');
   });
 
-  // The third stack. Three EVENTS, not six kinds: the cue answers "finished",
+  // The third stack. Three EVENTS, not seven kinds: the cue answers "finished",
   // "needs you" or "something is wrong", and any built-in cue may be
   // assigned to any of them.
   describe('sounds', () => {

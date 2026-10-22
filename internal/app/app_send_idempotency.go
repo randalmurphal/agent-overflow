@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"agent-overflow/internal/keyedlock"
 
@@ -89,6 +90,28 @@ func (a *App) lockSendAdmission(ctx context.Context, threadID, sendID string) (f
 		return func() {}, nil
 	}
 	return a.sendAdmissionLocks().LockCtx(ctx, sendAdmissionKey(threadID, sendID))
+}
+
+// lockClientSendAdmission is lockSendAdmission for a send id a client
+// chose. The app tells the messages it writes from a person's by their
+// send ids (a turn of loop and watch wakes alone is a tick, and what a
+// session end gives back is chosen by root), so a client id under one of
+// appSendIDRoots is refused: a person's message cannot pass for the app's.
+func (a *App) lockClientSendAdmission(ctx context.Context, threadID, sendID string) (func(), error) {
+	for _, root := range appSendIDRoots {
+		if strings.HasPrefix(sendID, root) {
+			return nil, fmt.Errorf("send id %q is under %q, which the app keeps for its own messages", sendID, root)
+		}
+	}
+	return a.lockSendAdmission(ctx, threadID, sendID)
+}
+
+// appSendIDRoots open the send ids of every message the app writes into a
+// thread. A new kind of app message adds its root here.
+var appSendIDRoots = []string{
+	agentWakeSendIDRoot, agentSendIDRoot, workerPromptSendIDRoot, assistantSendIDRoot,
+	remoteCompletionSendIDRoot, workflowWakeSendIDRoot, threadRequestSendIDPrefix,
+	threadWakeSendID(""), threadWakeLateSendID(""),
 }
 
 func sendAdmissionKey(threadID, sendID string) string {

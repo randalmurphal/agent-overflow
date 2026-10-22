@@ -446,6 +446,10 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// A failed turn-index or payload read still ends the round it took:
 	// the event carries the round's own index, and nothing else would
 	// ever tell a client the round is over.
+	//
+	// quiet is set below when the turn is one nobody needs to read
+	// (turnIsQuiet), and the event says so.
+	quiet := false
 	round, hasRound := r.takeOpenRound(evt.ThreadID)
 	if hasRound {
 		reverted := r.consumeRevertedTurn(evt.ThreadID)
@@ -454,7 +458,9 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 			emitIndex = round.TurnIndex
 		}
 		defer func() {
-			r.emit(eventchan.ProviderTurnCompleted, r.buildRoundCompletedEvent(evt, round.TurnID, emitIndex, now, meta, reverted))
+			event := r.buildRoundCompletedEvent(evt, round.TurnID, emitIndex, now, meta, reverted)
+			event.Quiet = quiet
+			r.emit(eventchan.ProviderTurnCompleted, event)
 		}()
 	}
 
@@ -535,7 +541,16 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 			if hasRound {
 				roundCompletedAt = now
 			}
-			lateErr = errors.Join(lateErr, r.persistLateTurnPayload(evt, turnIndex, meta, roundCompletedAt))
+			foldErr := r.persistLateTurnPayload(evt, turnIndex, meta, roundCompletedAt)
+			lateErr = errors.Join(lateErr, foldErr)
+			// A later round of a quiet turn is as quiet: a read thread
+			// stays read past the completion it advanced to. A turn whose
+			// earlier round failed stays the user's.
+			if foldErr == nil && roundCompletedAt != 0 && r.turnIsQuiet(evt.ThreadID, turnIndex, meta) &&
+				!r.turnFailed(evt.ThreadID, turnIndex) {
+				quiet = true
+				r.keepThreadReadPast(evt.ThreadID, r.persistedTurnID(evt, turnIndex), roundCompletedAt)
+			}
 			r.FlushUsageEmitThrottle(evt.ThreadID)
 			return lateErr
 		}
@@ -620,7 +635,8 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// Anchor recording does NOT happen here. Message anchors are
 	// recorded by app_send.go before provider stdin/RPC dispatch so
 	// the anchor maps directly to "before this user message".
-	persistErr = errors.Join(persistErr, r.settleTurnRow(evt, turnIndex, now, meta, persistErr), scopeErr)
+	quiet = err == nil && persistErr == nil && r.turnIsQuiet(evt.ThreadID, turnIndex, meta)
+	persistErr = errors.Join(persistErr, r.settleTurnRow(evt, turnIndex, now, meta, persistErr, quiet), scopeErr)
 
 	r.clearOpenTurn(evt.ThreadID, agentScopes)
 	r.finishTurnSpan(evt.ThreadID, completedTurnOutcome(meta, persistErr))
@@ -747,8 +763,9 @@ func (r *Router) persistedTurnID(evt provider.ProviderEvent, turnIndex int) stri
 // Store.MarkThreadActivity. Nested/internal turns only update turn state,
 // so subagent completions do not reorder the sidebar. Synthesized
 // session-died / abort flavors flow through this same path when they
-// belong to the top-level turn.
-func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now int64, meta turnCompleteMeta, persistErr error) error {
+// belong to the top-level turn. A quiet turn (turnIsQuiet) bumps nothing
+// and keeps a read thread read past its completion.
+func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now int64, meta turnCompleteMeta, persistErr error, quiet bool) error {
 	fields := decodeTurnCompleteFields(evt, r.persistedTurnID(evt, turnIndex), meta, persistErr)
 
 	usageJSON := ""
@@ -766,11 +783,17 @@ func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now in
 			log.Printf("triage: turn %s/%d settled without a stop reason before its send %s was echoed", evt.ThreadID, turnIndex, head.AOItemID)
 		}
 	}
+	settled := true
 	if err := r.store.UpdateTurnCompleted(fields.logicalTurnID, now, fields.stopReason, fields.assistantMessageID, usageJSON, fields.errorMessage); err != nil {
+		settled = false
 		r.providerWriteFailed(evt.ThreadID, "update turn "+fields.logicalTurnID, err)
 	}
 	usageErr := r.appendUsageLedger(evt, fields.logicalTurnID, meta, now)
-	if turnCountsAsThreadActivity(evt) {
+	if quiet {
+		if settled {
+			r.keepThreadReadPast(evt.ThreadID, fields.logicalTurnID, now)
+		}
+	} else if turnCountsAsThreadActivity(evt) {
 		r.bumpThreadActivity(evt.ThreadID, now, "turn settle")
 	}
 	return usageErr
@@ -778,6 +801,51 @@ func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now in
 
 func turnCountsAsThreadActivity(evt provider.ProviderEvent) bool {
 	return strings.TrimSpace(evt.ParentToolUseID) == ""
+}
+
+// turnIsQuiet reports whether the top-level turn turnIndex of threadID,
+// ending with meta, is one nobody needs to read: the classifier names it
+// (SetQuietTurnClassifier) and it ended cleanly, with no error and no
+// interrupt. A turn that failed is the user's to see whoever started it.
+func (r *Router) turnIsQuiet(threadID string, turnIndex int, meta turnCompleteMeta) bool {
+	if meta.Error != "" || turnCompleteIsTruncated(meta) || canonicalStopReason(meta) == "error" {
+		return false
+	}
+	r.quietTurnMu.Lock()
+	classify := r.quietTurn
+	r.quietTurnMu.Unlock()
+	return classify != nil && classify(threadID, turnIndex)
+}
+
+// turnFailed reports whether threadID's turn turnIndex is recorded as
+// failed, as an earlier round of it leaves it. A failed read answers that it
+// failed, the direction that leaves the turn the user's, and is logged.
+func (r *Router) turnFailed(threadID string, turnIndex int) bool {
+	if r.store == nil {
+		return false
+	}
+	turn, found, err := r.store.GetTurnByThreadIndex(threadID, turnIndex)
+	if err != nil {
+		log.Printf("triage: read turn %s/%d: %v", threadID, turnIndex, err)
+		return true
+	}
+	return found && turn.StopReason == "error"
+}
+
+// keepThreadReadPast keeps threadID read past at, the completion of its
+// quiet turn turnID, when it was read up to the turn
+// (store.KeepThreadReadPast), and announces the row it moved. A failed
+// write leaves the thread owed a read, which is the safe direction, and is
+// logged.
+func (r *Router) keepThreadReadPast(threadID, turnID string, at int64) {
+	if r.store == nil {
+		return
+	}
+	if moved, err := r.store.KeepThreadReadPast(threadID, turnID, at); err != nil {
+		log.Printf("triage: keep %s read past its quiet turn %s: %v", threadID, turnID, err)
+	} else if moved {
+		r.emitThreadRow(threadID)
+	}
 }
 
 // buildRoundCompletedEvent builds the frontend-facing

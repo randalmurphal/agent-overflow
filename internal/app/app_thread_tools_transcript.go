@@ -334,9 +334,9 @@ func agentMessageSender(row store.Item) (from string, ok bool) {
 	}
 	if wake := meta.OriginWake; wake != nil {
 		switch wake.Kind {
-		case agentWakeKindSend:
+		case usermessage.OriginWakeKindSend:
 			return "a script (agent-overflow thread send)", true
-		case workerPromptKindQuestion, workerPromptKindApproval:
+		case usermessage.OriginWakeKindQuestion, usermessage.OriginWakeKindApproval:
 			return fmt.Sprintf("%q (%s), its %s", wake.Label, wake.ThreadID, wake.Kind), true
 		case usermessage.OriginWakeKindCompletion:
 			return fmt.Sprintf("remote job %q on %s", wake.Label, wake.Computer), true

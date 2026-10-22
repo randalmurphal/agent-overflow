@@ -795,6 +795,28 @@ describe('<ThreadRow> worktree metadata', () => {
   });
 });
 
+describe('<ThreadRow> attention flag', () => {
+  beforeEach(resetSidebarForTest);
+  afterEach(resetSidebarForTest);
+
+  it('names the kind and the reason under the row, bolds the title, and goes once read', async () => {
+    const attention = { kind: 'problem' as const, reason: 'CI is red on main', at: 2_000 };
+    const flagged = makeThread({ id: 'flagged', title: 'Ops', lastReadAt: 1_000, latestTurnCompletedAt: 900, attention });
+    const view = render(ThreadRow, { props: { thread: flagged, pane: createThreadPane() } });
+
+    const line = view.getByTestId('thread-row-attention');
+    expect(line.dataset.kind).toBe('problem');
+    expect(line.textContent).toContain('Problem');
+    expect(view.getByTestId('thread-row-attention-reason').textContent?.trim()).toBe('CI is red on main');
+    expect(line.getAttribute('title')).toBe('Hit a problem that needs you: CI is red on main');
+    expect(view.getByText('Ops').classList.contains('font-semibold')).toBe(true);
+
+    await view.rerender({ thread: { ...flagged, lastReadAt: 2_000 }, pane: createThreadPane() });
+    expect(view.queryByTestId('thread-row-attention')).toBeNull();
+    expect(view.getByText('Ops').classList.contains('font-semibold')).toBe(false);
+  });
+});
+
 describe('<ThreadRow> pin affordance placement', () => {
   beforeEach(async () => {
     resetPanesForTest();

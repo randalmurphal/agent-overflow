@@ -516,10 +516,12 @@ export function applyTurnCompleted(evt: TurnCompletedEvent, sequence?: number): 
   // Top-level turn complete (clean, errored, or synthesized for
   // session_died) is a sidebar-bump boundary. The backend marks
   // nested/internal completions with countsAsActivity=false so subagent
-  // turns update live turn state without changing read/sidebar state.
+  // turns update live turn state without changing read/sidebar state. A
+  // quiet tick keeps the thread where it was: its row, sent just before
+  // this event, already read past the completion.
   if (evt.countsAsActivity !== false && Number.isFinite(evt.completedAt)) {
     syncLatestTurnCompleted(evt);
-    syncThreadActivity(evt.threadId, evt.completedAt);
+    if (!evt.quiet) syncThreadActivity(evt.threadId, evt.completedAt);
   }
   // Send-queue drain is owned by the backend. Triage flushes queued
   // messages at safe provider boundaries and the frontend mirrors that

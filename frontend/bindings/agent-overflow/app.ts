@@ -5000,18 +5000,6 @@ export function SetPushSenderCredential(credentialJSON: string): $CancellablePro
 }
 
 /**
- * SetStandingAgentNotifyOnTick turns an assistant's tick notifications on or
- * off. Off, the default, a turn only its loops and watches started raises no
- * notification at rest; on, it notifies like any other turn. Refused for a
- * thread that is no assistant's current thread.
- */
-export function SetStandingAgentNotifyOnTick(threadID: string, on: boolean): $CancellablePromise<store$0.StandingAgent> {
-    return $Call.ByID(2532132305, threadID, on).then(($result: any) => {
-        return $$createType78($result);
-    });
-}
-
-/**
  * SetThreadGroup moves threads into groupID, or out of any group when it
  * is empty. It returns every row the call touched and emits one
  * thread:updated "full" frame per row, because a move rewrites the

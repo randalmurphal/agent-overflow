@@ -571,6 +571,13 @@ export interface TurnCompletedEvent {
   /** False for nested subagent/internal turns that should not reorder the sidebar. */
   countsAsActivity?: boolean;
   /**
+   * True for a tick that ended cleanly: a turn only loop and watch wakes
+   * started, which nobody needs to read. It does not move the thread in
+   * the sidebar, and the thread row the backend sent just before it
+   * carries the read marker it kept.
+   */
+  quiet?: boolean;
+  /**
    * True when this turn ended because the user message was reverted
    * via InterruptAndRevertIfClean (Stop-before-response). The sidebar
    * pill MUST NOT flip to "Interrupted" — nothing happened, so don't

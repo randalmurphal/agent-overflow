@@ -135,6 +135,24 @@ describe('threadReadWrites', () => {
     expect(pendingLocalReadMarker('t0').held).toBe(false);
     expect(pendingLocalReadMarker(`t${MARK_THREADS_READ_LIMIT}`).held).toBe(false);
   });
+  it('counts a pending attention flag as something Mark All Read reads, and claims past it', async () => {
+    replaceAllThreads([
+      { ...mkThread('flagged', 500), latestTurnCompletedAt: 100, attention: { kind: 'review', reason: 'r', at: Date.now() + 60_000 } },
+      { ...mkThread('read', 500), latestTurnCompletedAt: 100, attention: { kind: 'review', reason: 'r', at: 400 } },
+    ]);
+    let claimed: ReturnType<typeof pendingLocalReadMarker> | undefined;
+    const calls: string[][] = [];
+    setBindingMock('MarkThreadsRead', async (ids: string[]) => {
+      calls.push(ids);
+      claimed = pendingLocalReadMarker('flagged');
+      return [];
+    });
+
+    await markThreadsRead([getThreadById('flagged')!, getThreadById('read')!]);
+    expect(calls).toEqual([['flagged']]);
+    expect(claimed?.held).toBe(true);
+    expect(claimed?.lastReadAt).toBe(getThreadById('flagged')!.attention!.at);
+  });
   it('keeps a whole-row frame that landed during Mark All Read over the older reply', async () => {
     replaceAllThreads([
       { ...mkThread('framed', 0), latestTurnCompletedAt: 100 },

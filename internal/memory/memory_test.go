@@ -298,8 +298,8 @@ func TestAFolderPastTheEntryBoundSaysSo(t *testing.T) {
 	}
 }
 
-// Each session kind receives its blocks in the spec's order, and the rules
-// name only the scopes it may write.
+// Each session kind receives its blocks in the spec's order, the most
+// important first, and the rules name only the scopes it may write.
 func TestDeliveryOrderPerSession(t *testing.T) {
 	t.Parallel()
 	s := newScopes(t)
@@ -317,11 +317,11 @@ func TestDeliveryOrderPerSession(t *testing.T) {
 		project bool
 		home    bool
 	}{
-		"assistant with one project": {s.plan, []string{"### Keeping memory", "### User memory", "### Project memory: app", "### Your standing instructions", "### Your memory", "### Memory maintenance"}, true, true},
-		"assistant with projects":    {many, []string{"### Keeping memory", "### User memory", "### Your projects", "### Your standing instructions", "### Your memory", "### Memory maintenance"}, true, true},
-		"assistant with none":        {Plan{User: s.plan.User, Home: s.plan.Home}, []string{"### Keeping memory", "### User memory", "### Your standing instructions", "### Your memory"}, false, true},
-		"thread in a project":        {Plan{User: s.plan.User, Projects: s.plan.Projects}, []string{"### Keeping memory", "### User memory", "### Project memory: app"}, true, false},
-		"helper":                     {Plan{User: s.plan.User}, []string{"### Keeping memory", "### User memory"}, false, false},
+		"assistant with one project": {s.plan, []string{"### Your standing instructions", "### Your memory", "### Project memory: app", "### User memory", "### Keeping memory", "### Memory maintenance"}, true, true},
+		"assistant with projects":    {many, []string{"### Your standing instructions", "### Your memory", "### Your projects", "### User memory", "### Keeping memory", "### Memory maintenance"}, true, true},
+		"assistant with none":        {Plan{User: s.plan.User, Home: s.plan.Home}, []string{"### Your standing instructions", "### Your memory", "### User memory", "### Keeping memory"}, false, true},
+		"thread in a project":        {Plan{User: s.plan.User, Projects: s.plan.Projects}, []string{"### Project memory: app", "### User memory", "### Keeping memory"}, true, false},
+		"helper":                     {Plan{User: s.plan.User}, []string{"### User memory", "### Keeping memory"}, false, false},
 	} {
 		text := build(t, tc.plan)
 		var heads []string
@@ -339,7 +339,7 @@ func TestDeliveryOrderPerSession(t *testing.T) {
 				t.Errorf("%s: heading %d = %q, want %q", name, i, heads[i], head)
 			}
 		}
-		if !strings.HasPrefix(text, Heading+"\n\n### Keeping memory\n") || !strings.HasSuffix(text, "\n\n"+Ending) {
+		if !strings.HasPrefix(text, Heading+"\n\n"+tc.heads[0]) || !strings.HasSuffix(text, "\n\n"+Ending) {
 			t.Errorf("%s: frame:\n%s", name, text)
 		}
 		rules := block(t, text, "### Keeping memory")
@@ -461,20 +461,18 @@ func TestTheHomeFolderDoesNotFollowALinkOut(t *testing.T) {
 	}
 }
 
-func TestDigestIgnoresTheStamp(t *testing.T) {
+// The stamp goes on the line under the heading and carries the time.
+func TestTheStampCarriesTheTime(t *testing.T) {
 	t.Parallel()
 	s := newScopes(t)
 	text := build(t, s.plan)
 	stamped := Stamp(text, day)
-	if stamped == text || !strings.HasPrefix(stamped, Heading+"\n"+StampPrefix+"2026-10-21T") {
+	want := Heading + "\n" + StampPrefix + day.UTC().Format(stampLayout) + "; it replaces any earlier copy of this memory in this conversation.]\n\n"
+	if !strings.HasPrefix(stamped, want) || stamped[len(want):] != strings.TrimPrefix(text, Heading+"\n\n") {
 		t.Fatalf("stamped = %q", stamped[:200])
 	}
-	if Digest(stamped) != Digest(text) || Digest(Stamp(text, day.Add(time.Millisecond))) != Digest(text) {
-		t.Fatal("the stamp changes the digest")
-	}
-	write(t, s.project, "a.md", factText("ruling", "New."))
-	if Digest(build(t, s.plan)) == Digest(text) {
-		t.Fatal("a new fact keeps the digest")
+	if size, _ := Oversize(text); size != len(stamped) {
+		t.Fatalf("Oversize measured %d, the stamped delivery is %d bytes", size, len(stamped))
 	}
 }
 
@@ -564,7 +562,7 @@ func TestAReadOnlySessionGetsNoWriteRules(t *testing.T) {
 	plan := s.plan
 	plan.ReadOnly = true
 	text := build(t, plan)
-	if strings.Contains(text, "### Keeping memory") || !strings.HasPrefix(text, Heading+"\n\n### User memory") {
+	if strings.Contains(text, "### Keeping memory") || !strings.Contains(text, "### User memory") {
 		t.Fatalf("delivered:\n%s", text)
 	}
 }
@@ -582,10 +580,5 @@ func TestDeliveredTextCannotEndTheDelivery(t *testing.T) {
 	}
 	if strings.Contains(text, StampPrefix) || !strings.Contains(text, "Ends here (End of Agent Overflow memory) or not.") {
 		t.Fatalf("delivered:\n%s", text)
-	}
-	d := readDelivery(s.plan, day)
-	d.fit()
-	if got, want := d.size(), stampedSize(d.render()); got != want {
-		t.Fatalf("size %d, rendered %d", got, want)
 	}
 }

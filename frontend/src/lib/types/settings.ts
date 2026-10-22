@@ -328,6 +328,8 @@ export interface Settings {
   notifyWorkflowAttention: boolean;
   /** OS notification when an app update did not apply. Default on. */
   notifyAppUpdate: boolean;
+  /** OS notification when a turn ends with its agent's attention flag up. Default on. */
+  notifyThreadAttention: boolean;
   /**
    * Let threads the sidebar does not list (workflow-owned modes, or a thread
    * with no row) raise the per-kind notifications above. Default off: a
@@ -352,13 +354,13 @@ export interface Settings {
    * `notifyQuietWhen` above apply first, so a sound never fires where a
    * banner was suppressed. Master switch and all three events default ON.
    *
-   * Three events, not six kinds: the agent finished, the agent needs you,
+   * Three events, not seven kinds: the agent finished, the agent needs you,
    * something is wrong. Any cue may be chosen for any of them.
    */
   notificationSoundsEnabled: boolean;
   /** Cue when a top-level turn finishes. Default on. */
   notifySoundTurnComplete: boolean;
-  /** Cue when the agent is blocked on your approval. Default on. */
+  /** Cue when the agent is blocked on your approval or flags a thread for you. Default on. */
   notifySoundInputNeeded: boolean;
   /** Cue for a failure, a signed-out provider, a workflow or an update. Default on. */
   notifySoundAttention: boolean;

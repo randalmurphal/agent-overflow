@@ -21,8 +21,14 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// hookContext decodes the hook output both providers read.
+// hookContext decodes the SessionStart output both providers read.
 func hookContext(t *testing.T, stdout string) string {
+	t.Helper()
+	return eventContext(t, stdout, "SessionStart")
+}
+
+// eventContext decodes the output of a run for event.
+func eventContext(t *testing.T, stdout, event string) string {
 	t.Helper()
 	var output struct {
 		HookSpecificOutput struct {
@@ -33,7 +39,7 @@ func hookContext(t *testing.T, stdout string) string {
 	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
 		t.Fatalf("hook output %q: %v", stdout, err)
 	}
-	if output.HookSpecificOutput.HookEventName != "SessionStart" {
+	if output.HookSpecificOutput.HookEventName != event {
 		t.Fatalf("hook event = %q", output.HookSpecificOutput.HookEventName)
 	}
 	return output.HookSpecificOutput.AdditionalContext
@@ -54,7 +60,7 @@ func TestRunHookDeliversTheBuild(t *testing.T) {
 	s := newScopes(t)
 	write(t, s.project, "a.md", factText("ruling", "Never push to main."))
 	var stdout, stderr strings.Builder
-	if code := runHookAt([]string{encodedPlan(t, s.plan)}, strings.NewReader("{}"), &stdout, &stderr, day); code != 0 || stderr.Len() > 0 {
+	if code := runHookAt([]string{string(AtSessionStart), encodedPlan(t, s.plan)}, strings.NewReader(`{"session_id":"s1"}`), &stdout, &stderr, day); code != 0 || stderr.Len() > 0 {
 		t.Fatalf("exit %d, stderr %q", code, stderr.String())
 	}
 	built, _ := Build(s.plan, day)
@@ -73,7 +79,7 @@ func TestRunHookReportsAnUnreadableFolder(t *testing.T) {
 	}
 	write(t, filepath.Dir(s.plan.User), "user", "a file where the folder goes")
 	var stdout, stderr strings.Builder
-	if code := RunHook([]string{encodedPlan(t, s.plan)}, strings.NewReader("{}"), &stdout, &stderr); code != 0 {
+	if code := RunHook([]string{string(AtSessionStart), encodedPlan(t, s.plan)}, strings.NewReader("{}"), &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
 	if got := hookContext(t, stdout.String()); !strings.Contains(got, "could not be read: open "+s.plan.User+": not a folder.]") ||
@@ -86,12 +92,16 @@ func TestRunHookRefusesBadArguments(t *testing.T) {
 	t.Parallel()
 	abs := t.TempDir()
 	for name, args := range map[string][]string{
-		"none":          nil,
-		"two":           {`{"user":"` + abs + `"}`, "x"},
-		"not JSON":      {"instructions.md"},
-		"unknown field": {`{"user":"` + abs + `","extra":1}`},
-		"relative":      {`{"user":"memory/user"}`},
-		"project name":  {`{"user":"` + abs + `","projects":[{"name":"","path":"` + abs + `","dir":"` + abs + `"}]}`},
+		"none":            nil,
+		"no event":        {`{"user":"` + abs + `"}`},
+		"three":           {"prompt", `{"user":"` + abs + `"}`, "x"},
+		"unknown event":   {"stop", `{"user":"` + abs + `","records":"` + abs + `"}`},
+		"not JSON":        {"session-start", "instructions.md"},
+		"unknown field":   {"session-start", `{"user":"` + abs + `","extra":1}`},
+		"relative":        {"session-start", `{"user":"memory/user"}`},
+		"project name":    {"session-start", `{"user":"` + abs + `","projects":[{"name":"","path":"` + abs + `","dir":"` + abs + `"}]}`},
+		"prompt, no file": {"prompt", `{"user":"` + abs + `"}`},
+		"records":         {"prompt", `{"user":"` + abs + `","records":"records"}`},
 	} {
 		var stdout, stderr strings.Builder
 		if code := RunHook(args, strings.NewReader(""), &stdout, &stderr); code != 1 || stdout.Len() > 0 || stderr.Len() == 0 {
@@ -107,7 +117,7 @@ func TestRunHookDrainsItsInput(t *testing.T) {
 	s := newScopes(t)
 	input := &countingReader{r: strings.NewReader(strings.Repeat("x", 300<<10))}
 	var stdout, stderr strings.Builder
-	if code := RunHook([]string{encodedPlan(t, s.plan)}, input, &stdout, &stderr); code != 0 || input.n != 300<<10 {
+	if code := RunHook([]string{string(AtSessionStart), encodedPlan(t, s.plan)}, input, &stdout, &stderr); code != 0 || input.n != 300<<10 {
 		t.Fatalf("exit %d, drained %d", code, input.n)
 	}
 }
@@ -127,7 +137,7 @@ func TestRunHookReportsAFailedWrite(t *testing.T) {
 	t.Parallel()
 	s := newScopes(t)
 	var stderr strings.Builder
-	if code := RunHook([]string{encodedPlan(t, s.plan)}, strings.NewReader(""), failingWriter{}, &stderr); code != 1 || !strings.Contains(stderr.String(), "output gone") {
+	if code := RunHook([]string{string(AtSessionStart), encodedPlan(t, s.plan)}, strings.NewReader(""), failingWriter{}, &stderr); code != 1 || !strings.Contains(stderr.String(), "output gone") {
 		t.Fatalf("exit %d, stderr %q", code, stderr.String())
 	}
 }
@@ -165,21 +175,31 @@ func TestHookCommandRunsThroughAShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(t, plan.Projects[0].Dir, "a.md", factText("ruling", "Quoted `$(x)` & 'more'."))
-	command, err := HookCommand(link, plan)
-	if err != nil {
-		t.Fatal(err)
+	plan.Records = filepath.Join(config, "memory-records", "thread 1")
+	run := func(event HookEvent) (string, string) {
+		command, err := HookCommand(link, event, plan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command("/bin/sh", "-c", command)
+		cmd.Stdin = strings.NewReader(`{"session_id":"s1","hook_event_name":"SessionStart","source":"compact"}`)
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+		stdout, err := cmd.Output()
+		if err != nil || stderr.Len() > 0 {
+			t.Fatalf("%s: %v: %s", event, err, stderr.String())
+		}
+		return string(stdout), stderr.String()
 	}
-	cmd := exec.Command("/bin/sh", "-c", command)
-	cmd.Stdin = strings.NewReader(`{"hook_event_name":"SessionStart","source":"compact"}`)
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	stdout, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("%v: %s", err, stderr.String())
+	stdout, _ := run(AtSessionStart)
+	got := hookContext(t, stdout)
+	if built, _ := Build(plan, day); !strings.Contains(got, strings.TrimPrefix(built, Heading)) {
+		t.Fatalf("context = %q", got)
 	}
-	got := hookContext(t, string(stdout))
-	if built, _ := Build(plan, day); Digest(got) != Digest(built) {
-		t.Fatalf("context = %q (stderr %q)", got, stderr.String())
+	write(t, plan.Projects[0].Dir, "b.md", factText("ruling", "Added `$(y)`."))
+	stdout, _ = run(AtPrompt)
+	if got := eventContext(t, stdout, "UserPromptSubmit"); !strings.HasPrefix(got, ChangesHeading) || !strings.Contains(got, "\n- ruling: Added `$(y)`. (b.md)\n") || strings.Contains(got, "Quoted") {
+		t.Fatalf("changes = %q", got)
 	}
 }
 
@@ -200,11 +220,17 @@ func TestHookCommandRefusesWhatItCannotCarry(t *testing.T) {
 		"non-UTF-8 home": {abs, Plan{User: abs, Home: abs + "\xfe"}, "is not valid UTF-8"},
 		"project dir":    {abs, Plan{User: abs, Projects: []Project{{Name: "app", Path: abs, Dir: "x"}}}, `the memory folder of app "x" is not an absolute path`},
 	} {
-		if command, err := HookCommand(tc.exe, tc.plan); err == nil || !strings.Contains(err.Error(), tc.want) || command != "" {
+		if command, err := HookCommand(tc.exe, AtSessionStart, tc.plan); err == nil || !strings.Contains(err.Error(), tc.want) || command != "" {
 			t.Errorf("%s: %q, %v; want an error with %q", name, command, err, tc.want)
 		}
 	}
-	if _, err := HookCommand(abs, Plan{User: abs}); err != nil {
+	if _, err := HookCommand(abs, AtSessionStart, Plan{User: abs}); err != nil {
 		t.Fatalf("absolute paths: %v", err)
+	}
+	if _, err := HookCommand(abs, AtPrompt, Plan{User: abs}); err == nil || !strings.Contains(err.Error(), "needs the records folder") {
+		t.Fatalf("a prompt's command without records: %v", err)
+	}
+	if _, err := HookCommand(abs, AtPrompt, Plan{User: abs, Records: "records"}); err == nil || !strings.Contains(err.Error(), `the records folder "records" is not an absolute path`) {
+		t.Fatalf("relative records: %v", err)
 	}
 }

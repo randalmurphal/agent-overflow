@@ -2,8 +2,10 @@
 // (docs/specs/memory.md): the write rules, the user, project and home
 // scopes' indexes, built from their facts' frontmatter at every delivery, an
 // assistant's instructions.md and the maintenance warnings of the scopes it
-// keeps, as the output of one SessionStart hook (RunHook). The app builds the
-// same text (Build) to tell whether a resume must deliver it again (Digest).
+// keeps, as the output of one hook (RunHook): whole at a session's start and
+// after a compaction, and what changed since at each prompt, against each
+// session's record of what it was shown (changes.go). The app builds the
+// same text (Build) to report what its read or size costs the thread.
 //
 // Every read goes through an os.Root opened on the folder it reads, so a
 // link out of it is never followed, and opens only regular files
@@ -49,6 +51,9 @@ type Plan struct {
 	// ReadOnly is set for a session in read-only mode, which refuses every
 	// write: its delivery leaves out the write rules.
 	ReadOnly bool `json:"read_only,omitempty"`
+	// Records is the thread's records folder (RecordsDir), where each of
+	// its provider sessions' runs record what it was shown.
+	Records string `json:"records,omitempty"`
 }
 
 // Project is a project a delivery reads the memory of.
@@ -223,6 +228,15 @@ func recordProjectPath(project Project) (err error) {
 	return nil
 }
 
+// validateFor is validate for a hook run at event: a prompt's run compares
+// with the record, so it needs the records folder.
+func (p Plan) validateFor(event HookEvent) error {
+	if event == AtPrompt && p.Records == "" {
+		return errors.New("a prompt's memory hook needs the records folder")
+	}
+	return p.validate()
+}
+
 // planPath is a path a plan carries, with what it is in an error's words.
 type planPath struct{ what, path string }
 
@@ -231,6 +245,9 @@ type planPath struct{ what, path string }
 // since the plan travels as JSON, and on one line, as a delivery shows it.
 func (p Plan) validate() error {
 	paths := []planPath{{"the user folder", p.User}}
+	if p.Records != "" {
+		paths = append(paths, planPath{"the records folder", p.Records})
+	}
 	if p.Home != "" {
 		paths = append(paths, planPath{"the home", p.Home})
 	}

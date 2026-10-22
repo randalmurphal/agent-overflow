@@ -53,15 +53,18 @@ type Config struct {
 	// AdditionalDirs, so PlanLiveUpdate never sees it.
 	AppendSystemPrompt string
 	// SessionStartHook runs at a fresh start, after a compaction and after
-	// a clear, and at this process's resume too when its Resume is set,
-	// registered in the inline `--settings` payload
-	// (SessionStartHookGroup). A start, resume or compaction that ends
-	// without its output is reported as a warning (Parser.sessionStart).
-	// Stamped at spawn like AppendSystemPrompt; nil for none.
+	// a clear, and its PromptCommand at each prompt, registered in the
+	// inline `--settings` payload (SessionStartHookGroup,
+	// UserPromptSubmitHookGroup). A start or compaction that ends without
+	// its output, and a failed prompt run, is reported as a warning
+	// (Parser.sessionStart). Stamped at spawn like AppendSystemPrompt; nil
+	// for none.
 	SessionStartHook *provider.SessionStartHook
-	// SessionStartReceipts keeps what the hook delivered; nil keeps
+	// SessionStartForget forgets what the thread's records say its model
+	// was shown, so the next prompt delivers the whole memory: it runs when
+	// a start or a compaction ended without the hook's output. nil for
 	// nothing.
-	SessionStartReceipts *provider.SessionStartReceipts
+	SessionStartForget func() error
 	// NativeMemoryOff turns Claude Code's auto memory off for the session:
 	// `autoMemoryEnabled: false` in the inline `--settings`, the
 	// flagSettings layer, which outranks the user's settings files without

@@ -74,10 +74,14 @@ control channel aligned with verified provider behavior.
   before a process's first init, with source `startup`, `resume` or `fork`
   from its launch flags, and before a scenario's `compact_boundary`; Codex
   at the turn start after `thread/start` or `thread/resume` and right after
-  a scenario's compaction, and only hooks whose trust hash matches. Report each run as `session_start_context`
-  before the frames of its outcome (`hook_response`, `hook/completed`), and
-  run none under the scenario's `sessionStartHooksOff`. A scenario writes
-  the turn start and the compaction and never scripts the hook frames.
+  a scenario's compaction, and only hooks whose trust hash matches. Run
+  their UserPromptSubmit hooks for each prompt: Claude after init for each
+  user envelope, a held one included; Codex at each turn start after the
+  SessionStart hooks, and for each steer. Report each run as
+  `session_start_context`, a prompt's with source `prompt`, before the
+  frames of its outcome (`hook_response`, `hook/completed`), and run none
+  under the scenario's `sessionStartHooksOff`. A scenario writes the turn
+  start and the compaction and never scripts the hook frames.
 - Unknown JSON-RPC methods return `-32601`. Implement real minimal responses for
   methods used during ordinary startup; optional unsupported methods stay
   unsupported so fallback paths remain exercised.

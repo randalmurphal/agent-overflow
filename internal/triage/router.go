@@ -16,6 +16,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/stringsx"
+	"agent-overflow/internal/usermessage"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
@@ -66,8 +67,12 @@ type Router struct {
 	// the app (SetPromptRouter); nil until then. Leaf lock.
 	promptRouterMu sync.Mutex
 	promptRouter   func(threadID string) *provider.PromptRoute
-	tracer         trace.Tracer
-	metrics        TurnMetrics
+	// quietTurn names the top-level turns nobody needs to read
+	// (SetQuietTurnClassifier), or is nil. Leaf lock.
+	quietTurnMu sync.Mutex
+	quietTurn   func(threadID string, turnIndex int) bool
+	tracer      trace.Tracer
+	metrics     TurnMetrics
 	// deferredPersistGate is a test-only hook (same-package tests set it
 	// directly) called inside the anchored echo section AFTER the pending
 	// entry is popped and BEFORE its row persists — the window
@@ -329,6 +334,18 @@ func (r *Router) routePrompt(threadID string) *provider.PromptRoute {
 		return nil
 	}
 	return route(threadID)
+}
+
+// SetQuietTurnClassifier installs the test of whether a top-level turn is
+// one nobody asked for and nobody needs to read: the app's ticks. A quiet
+// turn that ends cleanly does not move its thread in the sidebar and keeps
+// a read thread read (turnIsQuiet). It runs on the provider event worker
+// once per round that ends a top-level turn and must not block on anything
+// but a store read.
+func (r *Router) SetQuietTurnClassifier(fn func(threadID string, turnIndex int) bool) {
+	r.quietTurnMu.Lock()
+	r.quietTurn = fn
+	r.quietTurnMu.Unlock()
 }
 
 // NewRouter creates a triage router. Telemetry is off by default; wire a
@@ -1473,14 +1490,16 @@ func userTextCountsAsThreadActivity(item store.Item) bool {
 	if strings.TrimSpace(item.Meta) == "" {
 		return true
 	}
-	var meta map[string]any
+	var meta struct {
+		WireOnly bool `json:"wire_only"`
+		usermessage.Meta
+	}
 	if err := json.Unmarshal([]byte(item.Meta), &meta); err != nil {
 		return true
 	}
-	if wireOnly, ok := meta["wire_only"].(bool); ok && wireOnly {
-		return false
-	}
-	return true
+	// A loop's or watch's wake is not the thread's activity either: a tick
+	// that finds nothing leaves the sidebar as it was (turnIsQuiet).
+	return !meta.WireOnly && !usermessage.IsTick(meta.Meta)
 }
 
 func (r *Router) persistItem(item store.Item, payload *store.Payload) error {

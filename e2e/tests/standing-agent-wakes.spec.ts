@@ -23,9 +23,9 @@
 // stopping loops and watches with the watch's processes gone, New Thread,
 // Same Assistant moving them, and a long-running watch started again at
 // boot; a wake capped at 64 KiB and a watch run stopped at its timeout; a
-// failed tick notifying, and
-// notify_on_tick making a tick notify; wakes and outside sends queued at
-// quit recorded at boot, not put in the composer; a Claude wake flushed
+// failed tick notifying, and a tick that flags attention notifying by its
+// kind; wakes and outside sends queued at quit recorded at boot, not put in
+// the composer; a Claude wake flushed
 // mid-turn counted as a tick only when it runs as its own turn; a wake and
 // an outside send accepted while the Codex session they need is held at its
 // start, the send returning at once with its id, and both arriving after;
@@ -43,7 +43,6 @@
 // for archived threads and discarding them, and a copy of such a thread
 // refused with the cause; and an assistant's conversation offered only a
 // copy, its move refused.
-import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
@@ -55,13 +54,16 @@ import type { Locator, Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import { HARNESS_TIMING, launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
 import { productBinary, spawnProduct } from '../src/product-process.js';
+import { processRuns } from '../src/harness-process.js';
 import { codexTransferScenario } from './conversation-transfer-helpers.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
 import { pairBuildBox } from './build-box-helpers.js';
 import { agentsBody, openAgents } from './agents-tray-helpers.js';
-import { captureAgentMessage, dbWake as dbWakeRow } from './wake-rows-helpers.js';
+import { captureAgentMessage, wakeLoopNow } from './wake-rows-helpers.js';
 import {
+  AO_MESSAGE_CLOSING,
+  aoMessageOpening,
   advanceGate,
   awaitGate,
   awaitToolAnswer,
@@ -474,17 +476,12 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const tailThread = tailP.threadIds[0];
       const plainThread = plainP.threadIds[0];
 
-      // The record makes the home and its README. The loop thread is an
-      // assistant too, so its row's notify_on_tick (off) is what keeps ticks quiet.
+      // The record makes the home and its README.
       const homes: Record<string, string> = {};
       for (const id of [loopThread, watchThread, tailThread]) {
-        const agent = await harness.rpc<{ id: string; threadId: string; home: string; notifyOnTick: boolean }>(
-          'HarnessMakeAssistant',
-          id,
-        );
+        const agent = await harness.rpc<{ id: string; threadId: string; home: string }>('HarnessMakeAssistant', id);
         expect(agent.threadId).toBe(id);
         expect(agent.home).toBe(join(dataDir, 'agents', agent.id));
-        expect(agent.notifyOnTick).toBe(false);
         const readme = await readFile(join(agent.home, 'README.md'), 'utf8');
         expect(readme).toContain(`- First thread: ${id}`);
         expect(readme).toContain('thread_watch');
@@ -625,6 +622,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const retractionsBefore = harness.countEvents<NotificationSend>('notification:send', retraction);
 
       const loopWake = await wakeInput(harness, homes[loopThread], 'Loop "board" fired.');
+      expect(loopWake.report.input?.startsWith(`${aoMessageOpening('your loop "board"')}Loop "board" fired.`), loopWake.report.input).toBe(true);
+      expect(loopWake.report.input?.endsWith(AO_MESSAGE_CLOSING), loopWake.report.input).toBe(true);
       expect(loopWake.report.input).toContain(DATA_NOTICE);
       expect(loopWake.report.input).toContain('note: "check the board for new cards"');
       expect(loopWake.report.input).not.toContain('missed');
@@ -729,6 +728,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(sent.code).toBe(0);
       expect(sent.stdout).toMatch(new RegExp(`^Queued for thread ${tailThread} as agent-send:\\S+\\.\\n$`));
       const outside = await wakeInput(harness, homes[tailThread], 'Message sent from outside Agent Overflow');
+      expect(outside.report.input?.startsWith(aoMessageOpening('a script, through agent-overflow thread send')), outside.report.input).toBe(true);
       expect(outside.report.input).toContain(DATA_NOTICE);
       expect(outside.report.input).toContain('"deploy 7 is done"');
       await awaitTurnCompleted(harness, tailThread);
@@ -1185,8 +1185,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       if (provider === 'claude') {
         const joined = await wakeInput(harness, home, 'my own words');
         console.log(`${provider}: the provider read one message: ${JSON.stringify(joined.report.input)}`);
-        expect(joined.report.input).toContain('Message sent from outside Agent Overflow');
-        expect(joined.report.input).toContain('Watch "tick" reported.');
+        expect(joined.report.input).toContain(`${aoMessageOpening('a script, through agent-overflow thread send')}Message sent from outside Agent Overflow`);
+        expect(joined.report.input).toContain(`${aoMessageOpening('your watch "tick"')}Watch "tick" reported.`);
         mockId = joined.mockId;
       } else {
         // Codex takes the person's message as the turn and the other two
@@ -1294,26 +1294,6 @@ function pidsIn(file: string): number[] {
     .map(Number);
 }
 
-/** Whether a process runs: it exists and is not a zombie. Linux reads its
- * state from /proc; macOS, which has no /proc, asks ps. */
-function alive(pid: number): boolean {
-  if (process.platform === 'darwin') {
-    try {
-      return !execFileSync('/bin/ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim().startsWith('Z');
-    } catch (err) {
-      // ps exits 1 when no such process exists; anything else is a failure.
-      if ((err as { status?: number }).status === 1) return false;
-      throw err;
-    }
-  }
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
-    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] !== 'Z';
-  } catch {
-    return false;
-  }
-}
-
 /** The watch's script and child of run `n` (from 1), once both are running. */
 async function holdRun(home: string, n: number): Promise<number[]> {
   await expect
@@ -1322,12 +1302,12 @@ async function holdRun(home: string, n: number): Promise<number[]> {
     })
     .toBeGreaterThanOrEqual(n);
   const pids = [pidsIn(join(home, 'hold.pids'))[n - 1], pidsIn(join(home, 'hold.children'))[n - 1]];
-  for (const pid of pids) expect(alive(pid), `pid ${pid} runs`).toBe(true);
+  for (const pid of pids) expect(processRuns(pid), `pid ${pid} runs`).toBe(true);
   return pids;
 }
 
 async function expectGone(pids: number[]): Promise<void> {
-  for (const pid of pids) await expect.poll(() => alive(pid), { timeout: 15_000, message: `pid ${pid}` }).toBe(false);
+  for (const pid of pids) await expect.poll(() => processRuns(pid), { timeout: 15_000, message: `pid ${pid}` }).toBe(false);
 }
 
 for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
@@ -1418,7 +1398,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
       // ---- A graceful quit stops the long-running watch; the next boot
       // starts it from scratch.
-      expect(alive(runs.restarted[0])).toBe(true);
+      expect(processRuns(runs.restarted[0])).toBe(true);
       expect(await harness.stop()).toBe(true);
       harness = undefined;
       await expectGone(runs.restarted);
@@ -1626,7 +1606,7 @@ test.describe('an assistant copied to another computer', () => {
       expect(await destination.rpc('GetStandingAgent', copy!.targetThreadId)).toBeNull();
       expect(dbWakes(destination.bootstrap.dataDir, copy!.targetThreadId)).toEqual([]);
       expect(dbWakes(sourceDir, thread)).toEqual(live);
-      for (const pid of runs) expect(alive(pid), `pid ${pid} runs after the copy`).toBe(true);
+      for (const pid of runs) expect(processRuns(pid), `pid ${pid} runs after the copy`).toBe(true);
 
       // ---- A move is refused by the source, before it stops anything.
       const refused = await source
@@ -1636,7 +1616,7 @@ test.describe('an assistant copied to another computer', () => {
       expect((await source.rpc<Transfer[]>('GetThreadTransfers')).filter((row) => row.threadId === thread).map((row) => row.kind)).toEqual(['copy']);
       expect(standingAgentRows(sourceDir, thread)).toBe(1);
       expect(dbWakes(sourceDir, thread)).toEqual(live);
-      for (const pid of runs) expect(alive(pid), `pid ${pid} runs after the refused move`).toBe(true);
+      for (const pid of runs) expect(processRuns(pid), `pid ${pid} runs after the refused move`).toBe(true);
 
       // Deleting the assistant stops the watch it keeps running.
       await source.rpc('DeleteThread', thread);
@@ -1726,11 +1706,13 @@ while [ $i -lt 1000 ]; do printf 'line %064d\\n' $i; i=$((i+1)); done
   });
 }
 
-// A tick stays quiet unless something needs the person: a tick that fails
-// notifies as an error. With notify_on_tick on, a tick notifies like any
-// other turn: its start withdraws the last rest and its end raises one.
+// A tick stays quiet unless something needs the person. A tick that fails
+// notifies as an error. A tick that raises its thread's attention flag is
+// said once, at its end, as the flag's kind and never with the agent's
+// reason, and its start takes back nothing. A tick that does neither
+// notifies nothing.
 for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
-  test(`${provider}: a failed tick notifies, and notify_on_tick makes a tick notify`, async () => {
+  test(`${provider}: a failed tick notifies, and a tick that flags attention notifies by its kind`, async () => {
     test.setTimeout(120_000);
     const harness = await launchHarness();
     try {
@@ -1745,6 +1727,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const ticker = tickerP.threadIds[0];
       const barrier = barrierP.threadIds[0];
       const { home } = await harness.rpc<{ home: string }>('HarnessMakeAssistant', ticker);
+      const reason = 'A card on the board needs moving';
       // Each tick is fired with Wake now on an hourly loop, so no second
       // fire can land before the tick's turn ends.
       await setScenario(
@@ -1761,7 +1744,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
             },
             { fail: 'the board API is down' },
             { text: 'Ticking again.' },
-            { text: 'Tick noted.' },
+            { text: 'Nothing new on the board.' },
+            { steps: [{ call: { tool: 'thread_attention', args: { kind: 'decision', reason } } }], text: 'Flagged.' },
+            { text: 'Still nothing new.' },
           ],
           afterTurns: 'silent',
         }),
@@ -1773,11 +1758,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const count = (predicate: (data: NotificationSend) => boolean) =>
         harness.countEvents<NotificationSend>('notification:send', predicate);
       const ticks = () => countInputs(harness, home, 'Loop "tick" fired.');
-      const tick = async () => {
-        const wake = dbWakeRow(harness.bootstrap.dataDir, ticker, 'tick');
-        expect(wake, 'the tick loop is registered').toBeDefined();
-        await harness.rpc('WakeThreadWakeNow', ticker, 'loop', wake!.id);
-      };
+      const tick = () => wakeLoopNow(harness, ticker, 'tick');
       const settle = async () => {
         const rest = harness.waitForEvent<NotificationSend>(
           'notification:send',
@@ -1790,7 +1771,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await harness.rpc('StartSession', barrier);
       await harness.rpc('StartSession', ticker);
 
-      // ---- Off, the default: the failed tick raises an error and nothing else.
+      // ---- The failed tick raises an error and nothing else.
       const personRest = harness.waitForEvent<NotificationSend>('notification:send', sends('turn-complete'), 60_000);
       await harness.rpc('SendMessage', ticker, 'watch the board', null);
       await personRest;
@@ -1805,27 +1786,45 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(count(sends('error'))).toBe(1);
       expect(count(retractions)).toBe(retractionsBefore);
 
-      // ---- On: the tick's start withdraws and its end notifies.
-      const agent = await harness.rpc<{ notifyOnTick: boolean }>('SetStandingAgentNotifyOnTick', ticker, true);
-      expect(agent.notifyOnTick).toBe(true);
+      // ---- A tick that finds nothing raises and takes back nothing.
       const againRest = harness.waitForEvent<NotificationSend>('notification:send', sends('turn-complete'), 60_000);
       await harness.rpc('SendMessage', ticker, 'and again', null);
       await againRest;
       await settle();
       const restsBefore = count(sends('turn-complete'));
-      const retractionsBeforeTick = count(retractions);
-      const tickRest = harness.waitForEvent<NotificationSend>(
-        'notification:send',
-        (data) => sends('turn-complete')(data) && count(sends('turn-complete')) > restsBefore,
-        60_000,
-      );
+      const retractionsBeforeTicks = count(retractions);
+      const quietEnd = (data: { threadId?: string; quiet?: boolean }) => data.threadId === ticker && data.quiet === true;
       await tick();
       await expect.poll(ticks, { timeout: 30_000 }).toBe(2);
-      await tickRest;
+      await harness.waitForEvent('provider:turn_completed', quietEnd, 60_000);
       await settle();
-      expect(count(sends('turn-complete'))).toBe(restsBefore + 1);
-      expect(count(retractions)).toBe(retractionsBeforeTick + 1);
+      expect(count(sends('turn-complete'))).toBe(restsBefore);
+      expect(count(sends('thread-attention'))).toBe(0);
+      expect(count(retractions)).toBe(retractionsBeforeTicks);
+
+      // ---- A tick that flags a decision is said once, as a decision.
+      const flagged = harness.waitForEvent<NotificationSend>('notification:send', sends('thread-attention'), 60_000);
+      await tick();
+      await expect.poll(ticks, { timeout: 30_000 }).toBe(3);
+      const flag = await flagged;
+      await harness.waitForEvent('provider:turn_completed', quietEnd, 60_000);
+      await settle();
+      expect(flag.id).toBe(`thread:${ticker}`);
+      expect(flag.body).toBe('Needs your decision');
+      expect(`${flag.title} ${flag.body}`).not.toContain(reason);
+      expect(count(sends('thread-attention'))).toBe(1);
+      expect(count(sends('turn-complete'))).toBe(restsBefore);
       expect(count(sends('error'))).toBe(1);
+      expect(count(retractions)).toBe(retractionsBeforeTicks);
+
+      // ---- A later quiet tick does not say again the flag still pending.
+      await tick();
+      await expect.poll(ticks, { timeout: 30_000 }).toBe(4);
+      await harness.waitForEvent('provider:turn_completed', quietEnd, 60_000);
+      await settle();
+      expect(count(sends('thread-attention'))).toBe(1);
+      expect(count(sends('turn-complete'))).toBe(restsBefore);
+      expect(count(retractions)).toBe(retractionsBeforeTicks);
     } finally {
       await harness.close();
     }
@@ -2177,7 +2176,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const deliveries = () => countInputs(relaunched, callerPath, completion);
       await harness.rpc('StartSession', caller);
       const input = await wakeInput(harness, callerPath, completion, 60_000);
-      expect(input.report.input).toContain('Remote job finished on Build box: nightly build');
+      expect(input.report.input).toContain(`${aoMessageOpening('the remote job "nightly build" on "Build box"')}Remote job finished on Build box: nightly build`);
       expect(input.report.input).toContain('build 812 finished: green');
       await awaitTurnCompleted(harness, caller);
       await new Promise((resolve) => setTimeout(resolve, 4_000));

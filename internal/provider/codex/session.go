@@ -730,15 +730,18 @@ type Config struct {
 	// developer_instructions.go.
 	DeveloperInstructions string
 	// SessionStartHook runs at the thread's start, after a compaction and
-	// after a clear, and at a thread/resume too when its Resume is set,
-	// registered with its trust in the thread/start|resume `config` map
-	// (sessionStartHookConfig). A start, resume or compaction whose next
-	// turn completes without its output is reported as a warning
-	// (session_start_hooks.go). nil for none.
+	// after a clear, and its PromptCommand at each turn's input, registered
+	// with their trust in the thread/start|resume `config` map
+	// (sessionStartHookConfig). A start or compaction whose next turn
+	// completes without its output, and a failed prompt run, is reported
+	// as a warning (session_start_hooks.go). nil for none.
 	SessionStartHook *provider.SessionStartHook
-	// SessionStartReceipts keeps what the hook delivered. Nil for a
-	// session that never runs a turn.
-	SessionStartReceipts *provider.SessionStartReceipts
+	// SessionStartForget forgets what the thread's records say its model
+	// was shown, so the next prompt delivers the whole memory: it runs at a
+	// compaction, whose hook Codex runs only at the next turn, perhaps in
+	// another process, and when a start or a compaction ended without the
+	// hook's output. nil for nothing.
+	SessionStartForget func() error
 	// NativeMemoryOff turns Codex's own memories off for the thread:
 	// `features.memories` and `memories.generate_memories` false in the
 	// thread/start|resume|fork `config` map, and a resumed thread's stored

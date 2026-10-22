@@ -142,7 +142,7 @@ describe('the shared gate table', () => {
     const kinds = new Set(cases.map((entry) => entry.send.kind));
     for (const kind of [
       'turn-complete', 'approval-needed', 'error',
-      'provider-signed-out', 'workflow-attention', 'app-update',
+      'provider-signed-out', 'workflow-attention', 'app-update', 'thread-attention',
     ]) expect(kinds, `no case sends ${kind}`).toContain(kind);
 
     const readings = new Set(cases.map((entry) => entry.settings.notifyQuietWhen ?? SETTINGS_DEFAULTS.notifyQuietWhen));

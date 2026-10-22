@@ -37,6 +37,7 @@ function validRow(row: unknown, kind: CatalogKind): boolean {
   return fields(row, ['id', 'title', 'provider', 'workspacePath', 'projectPath', 'model'], ['createdAt', 'updatedAt'], ['archived'])
     && (row.ownershipEpoch === undefined || validOwnershipEpoch(row.ownershipEpoch))
     && (row.provider === 'claude' || row.provider === 'codex')
+    && (row.attention == null || (object(row.attention) && fields(row.attention, ['kind', 'reason'], ['at'])))
     && optional(row, ['sessionRef', 'pendingForkRef', 'projectId', 'worktreePath', 'branch', 'prRef', 'mode',
       'reasoningEffort', 'runtimeMode', 'forkedFromThreadId', 'lastTokenUsage',
       'worktreeSetupState', 'importSource', 'groupId'],

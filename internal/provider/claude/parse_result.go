@@ -135,7 +135,6 @@ func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, no
 	// EventTurnComplete reaches triage, whose orphan guard must remain strict for
 	// real tools whose result was lost.
 	events := p.settleMirroredCommandAtTurnResult(threadID, aborted || stopReason == "error", now)
-	events = append(events, p.keepSessionStart(threadID, now)...)
 	events = append(events, provider.ProviderEvent{
 		Kind:             provider.EventTurnComplete,
 		ThreadID:         threadID,

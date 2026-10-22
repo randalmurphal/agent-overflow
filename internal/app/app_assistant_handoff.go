@@ -538,7 +538,7 @@ func (a *App) nextAssistantThread(ctx context.Context, threadID string, sessionL
 		SessionLost:      sessionLost,
 		Carried:          carried,
 	})
-	if err := a.queueAssistantMessage(successor.ID, assistantSendID(assistantWakeKindHandOff, threadID), successor.Title, body); err != nil {
+	if err := a.queueAssistantMessage(successor.ID, assistantSendID(usermessage.OriginWakeKindHandOff, threadID), successor.Title, body); err != nil {
 		return successor, fmt.Errorf("the assistant moved to its new thread, but its opening block could not be queued: %w", err)
 	}
 	log.Printf("assistants: %s moved from thread %s to %s", agent.ID, threadID, successor.ID)
@@ -761,7 +761,7 @@ func (a *App) redeliverOutsideSend(threadID, body string) {
 		threadID:   threadID,
 		sendID:     agentSendIDRoot + newAgentWakeID(),
 		origin:     usermessage.OriginAgentWake,
-		originWake: &usermessage.OriginWake{Kind: agentWakeKindSend},
+		originWake: &usermessage.OriginWake{Kind: usermessage.OriginWakeKindSend},
 		prepare:    func() (string, bool, error) { return body, true, nil },
 		startFailed: func(err error) string {
 			return "A message sent with agent-overflow thread send is queued, but the agent could not start: " + err.Error()

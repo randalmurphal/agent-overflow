@@ -3,6 +3,7 @@ package claudetui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,18 +17,20 @@ import (
 	"agent-overflow/internal/testutil/mockexec"
 )
 
-var testSessionStartHook = provider.SessionStartHook{Label: "the memory", Command: `'/opt/ao' deliver '/h'`, Heading: "## Memory", Ending: "(End of memory)", Stamp: "(Delivered at "}
+var testSessionStartHook = provider.SessionStartHook{
+	Label: "the memory", Command: `'/opt/ao' deliver '/h'`, PromptCommand: `'/opt/ao' changes '/h'`,
+	Heading: "## Memory", Ending: "(End of memory)", Stamp: "(Delivered at ",
+}
 
-// testHook is a copy of testSessionStartHook that runs at a resume when
-// resume is set.
-func testHook(resume bool) *provider.SessionStartHook {
+// testHook is a copy of testSessionStartHook.
+func testHook() *provider.SessionStartHook {
 	hook := testSessionStartHook
-	hook.Resume = resume
 	return &hook
 }
 
 // The hook joins the relay's SessionStart entry as a matcher group of its
-// own, and nothing else in the block changes.
+// own, its PromptCommand is the one UserPromptSubmit group, and nothing else
+// in the block changes.
 func TestHookSettingsRegisterTheSessionStartHook(t *testing.T) {
 	decode := func(cfg Config) map[string][]any {
 		t.Helper()
@@ -44,7 +47,7 @@ func TestHookSettingsRegisterTheSessionStartHook(t *testing.T) {
 		return block.Hooks
 	}
 	without := decode(Config{HookCmd: "/opt/ao"})
-	hook := testHook(true)
+	hook := testHook()
 	with := decode(Config{HookCmd: "/opt/ao", SessionStartHook: hook})
 	if len(without["SessionStart"]) != 1 {
 		t.Fatalf("relay-only SessionStart = %v", without["SessionStart"])
@@ -53,6 +56,14 @@ func TestHookSettingsRegisterTheSessionStartHook(t *testing.T) {
 	want, _ := json.Marshal(append(append([]any{}, without["SessionStart"]...), claude.SessionStartHookGroup(*hook)))
 	if string(got) != string(want) {
 		t.Fatalf("SessionStart = %s\nwant           %s", got, want)
+	}
+	if _, ok := without["UserPromptSubmit"]; ok {
+		t.Fatalf("the relay registers UserPromptSubmit: %v", without)
+	}
+	got, _ = json.Marshal(with["UserPromptSubmit"])
+	want, _ = json.Marshal([]any{claude.UserPromptSubmitHookGroup(*hook)})
+	if string(got) != string(want) {
+		t.Fatalf("UserPromptSubmit = %s\nwant               %s", got, want)
 	}
 	for event, entries := range without {
 		if event == "SessionStart" {
@@ -70,12 +81,12 @@ func TestHookSettingsRegisterTheSessionStartHook(t *testing.T) {
 // feed loop, so the recorder holds only what the SessionStart check emits.
 func sessionStartTestSession(t *testing.T, resume string) (*Session, *eventRecorder) {
 	t.Helper()
-	return sessionStartTestSessionWith(t, resume, testHook(false), nil)
+	return sessionStartTestSessionWith(t, resume, testHook(), nil)
 }
 
-func sessionStartTestSessionWith(t *testing.T, resume string, hook *provider.SessionStartHook, receipts *provider.SessionStartReceipts) (*Session, *eventRecorder) {
+func sessionStartTestSessionWith(t *testing.T, resume string, hook *provider.SessionStartHook, missed func() error) (*Session, *eventRecorder) {
 	t.Helper()
-	delivery, err := claude.NewSessionStartDelivery(hook, receipts, resume)
+	delivery, err := claude.NewSessionStartDelivery(hook, missed, resume)
 	if err != nil {
 		t.Fatalf("NewSessionStartDelivery: %v", err)
 	}
@@ -163,7 +174,7 @@ func TestTheFirstMainRequestSettlesTheStart(t *testing.T) {
 		t.Fatalf("a later request settled again: %+v", events)
 	}
 
-	// A resumed session runs a hook without Resume only after a compaction.
+	// A resumed session runs the hook only after a compaction.
 	s, rec = sessionStartTestSession(t, "sess-1")
 	s.observeMainRequest(requestBody())
 	if events := rec.take(); len(events) > 0 {
@@ -171,40 +182,43 @@ func TestTheFirstMainRequestSettlesTheStart(t *testing.T) {
 	}
 }
 
-// A resume runs the hook when its Resume is set, and only this run's
-// context counts: the earlier runs' blocks a resumed transcript carries,
-// under the same marker, are stamped before the session launched.
-func TestTheFirstMainRequestSettlesAResume(t *testing.T) {
-	s, rec := sessionStartTestSessionWith(t, "sess-1", testHook(true), nil)
-	s.observeMainRequest(requestBody(hookBlock(memoryOld), hookBlock(memoryOld)))
-	onlyWarning(t, rec.take(), "the memory did not reach this session after its resume: ")
-
-	s, rec = sessionStartTestSessionWith(t, "sess-1", testHook(true), nil)
-	s.observeMainRequest(requestBody(hookBlock(memoryOld), hookBlock(memoryNow), "the user's prompt"))
-	if events := rec.take(); len(events) > 0 {
-		t.Fatalf("events after the hook delivered: %+v", events)
+// A start whose request carries no delivery of the hook forgets the
+// thread's records, so the next prompt delivers the memory whole.
+func TestAMissedDeliveryForgetsTheRecords(t *testing.T) {
+	missed := 0
+	s, rec := sessionStartTestSessionWith(t, "", testHook(), func() error { missed++; return nil })
+	s.observeMainRequest(requestBody(hookBlock(memoryNow)))
+	if events := rec.take(); len(events) > 0 || missed != 0 {
+		t.Fatalf("events %+v, forgot %d times", events, missed)
+	}
+	s, rec = sessionStartTestSessionWith(t, "", testHook(), func() error { missed++; return nil })
+	s.observeMainRequest(requestBody(hookBlock(memoryOld)))
+	onlyWarning(t, rec.take(), "the memory did not reach this session after its start: ")
+	if missed != 1 {
+		t.Fatalf("forgot %d times", missed)
 	}
 }
 
-// The hook's exact context, read out of a block that joins it with the
-// user's own hook output, is kept under the session's id with the request
-// that settles it, the latest when two runs qualify.
-func TestTheMainRequestKeepsTheReceipt(t *testing.T) {
-	var kept []string
-	s, rec := sessionStartTestSessionWith(t, "", testHook(false), &provider.SessionStartReceipts{
-		Keep: func(sessionRef, context string) error {
-			kept = append(kept, sessionRef+" "+context)
-			return nil
-		},
-	})
-	later := stampedAt(strings.Replace(memoryContext, "- a", "- b", 1), time.Now().Add(2*time.Minute))
-	s.observeMainRequest(requestBody(hookBlock(memoryNow), hookBlock("user hook output", `a "quoted" user line`, later)))
-	if events := rec.take(); len(events) > 0 {
-		t.Fatalf("events: %+v", events)
+// A session closed before a model request settled its delivery forgets the
+// thread's records: the next session resumes without the hook, so its
+// prompts must deliver the whole memory. A settled one forgets nothing, and
+// a failure to forget is a warning.
+func TestASessionClosedUnsettledForgetsTheRecords(t *testing.T) {
+	forgot := 0
+	var forgetErr error
+	s, rec := sessionStartTestSessionWith(t, "sess-1", testHook(), func() error { forgot++; return forgetErr })
+	s.finalizeCompaction("auto", "the summary")
+	s.observeMainRequest(requestBody("the summary", hookBlock(memoryNow)))
+	if err := s.Close(); err != nil || forgot != 0 || len(rec.take()) > 0 {
+		t.Fatalf("a settled session's close: %v, forgot %d times", err, forgot)
 	}
-	if want := []string{"sess-1 " + later}; strings.Join(kept, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("kept %q, want %q", kept, want)
+	forgetErr = errors.New("disk full")
+	s, rec = sessionStartTestSessionWith(t, "sess-1", testHook(), func() error { forgot++; return forgetErr })
+	s.finalizeCompaction("auto", "the summary")
+	if err := s.Close(); err != nil || forgot != 1 {
+		t.Fatalf("an unsettled session's close: %v, forgot %d times", err, forgot)
 	}
+	onlyWarning(t, rec.take(), "Agent Overflow could not record that the memory has not reached this session since its compaction, so a later prompt may deliver only what changed: disk full")
 }
 
 // PostCompact arms the compaction; the next main request settles it, and
@@ -281,9 +295,8 @@ func TestOnlyAStampedHookBlockDelivers(t *testing.T) {
 	}
 }
 
-// NewSession follows the hook from a fresh start, and from a resume when
-// its Resume is set, and refuses a hook the delivery cannot tell apart
-// before it launches anything.
+// NewSession follows the hook from a fresh start, not from a resume, and
+// refuses a hook the delivery cannot tell apart before it launches anything.
 func TestNewSessionFollowsTheHook(t *testing.T) {
 	binary := mockexec.Write(t, t.TempDir()+"/claude", "#!/bin/sh\nexec sleep 30\n")
 	for name, tc := range map[string]struct {
@@ -291,9 +304,8 @@ func TestNewSessionFollowsTheHook(t *testing.T) {
 		hook   *provider.SessionStartHook
 		want   provider.SessionStartEvent
 	}{
-		"fresh":            {"", testHook(false), provider.SessionStartAfterStart},
-		"resume":           {"sess-1", testHook(false), ""},
-		"resume of a hook": {"sess-1", testHook(true), provider.SessionStartAfterResume},
+		"fresh":  {"", testHook(), provider.SessionStartAfterStart},
+		"resume": {"sess-1", testHook(), ""},
 	} {
 		rec := &eventRecorder{}
 		s, err := NewSession(context.Background(), testThread, Config{

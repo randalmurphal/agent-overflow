@@ -158,9 +158,9 @@ func (a *App) tryCodexThreadRevert(
 	if err := a.store.DeleteCodexDeveloperInstructionsDigest(threadID); err != nil {
 		return codexHistoryCut{}, false, err
 	}
-	// It can remove the memory a resume delivered too, so the next resume
-	// delivers it again.
-	if err := a.store.ForgetSessionStartReceipt(threadID); err != nil {
+	// It can remove memory a turn delivered too, so the next prompt
+	// delivers it whole.
+	if err := a.forgetMemoryRecords(threadID); err != nil {
 		return codexHistoryCut{}, false, err
 	}
 	reverted, err := session.Revert(context.Background(), firstDroppedTurnID)
@@ -198,12 +198,12 @@ func (a *App) tryCodexThreadRevert(
 // what the cut took: the thread's own developer instructions, and the home
 // files a dropped turn delivered. The cut accepts a turn in flight, which is
 // always among the dropped ones, so the session drops a delivery that turn
-// had not settled, and the receipts are forgotten again for one it settled
+// had not settled, and the records are forgotten again for a prompt that ran
 // during the cut.
 func (a *App) restoreCodexSessionAfterCut(session *codex.Session, threadID string) {
 	session.RestoreDeveloperInstructions(context.Background())
 	session.DropSessionStartDeliveries()
-	a.forgetSessionStartReceiptsAfterCut(threadID)
+	a.forgetMemoryRecordsAfterCut(threadID)
 }
 
 // forkCodexThreadHistory performs only the identity-changing fallback. It is

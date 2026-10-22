@@ -14,74 +14,91 @@ import (
 
 // A thread's SessionStart hook (Config.SessionStartHook) rides the
 // thread/start|resume `config` map, which Codex reads as the thread's
-// session-flags config layer, in a matcher group of its own. Codex runs a
-// hook from a non-managed layer only when the config's `hooks.state` holds
-// its trust hash, so the map carries the hook's hash: the trust covers
-// exactly this command and nothing else the user configured
+// session-flags config layer, in a matcher group of its own, and its
+// PromptCommand in a UserPromptSubmit group. Codex runs a hook from a
+// non-managed layer only when the config's `hooks.state` holds its trust
+// hash, so the map carries each handler's hash: the trust covers exactly
+// these commands and nothing else the user configured
 // (docs/references/codex-wire.md, SessionStart hooks). The runs are
 // followed by observeSessionStartHooks.
 //
-// A resume registers the hook for `resume` too when its Resume is set: the
-// thread's model does not hold its current context. Codex keeps the hooks a
-// load queued only in the loaded thread, so a rehydrate registers the hook
-// for `resume` while the open expectation still waits for it.
+// Codex keeps the hooks a load queued only in the loaded thread, so a
+// rehydrate registers the hook for `resume` too while the open expectation
+// still waits for it.
 
 // sessionFlagsHookKeySource is the key source Codex gives the session-flags
 // layer's hooks (codex-rs/hooks/src/engine/discovery.rs, 0.153 to 0.162).
 const sessionFlagsHookKeySource = "/<session-flags>/config.toml"
 
-// sessionStartHandler is the hook's command handler: what the thread config
-// registers and what its trust hash covers.
+// sessionStartHandler is a command handler of the hook: what the thread
+// config registers and what its trust hash covers.
 type sessionStartHandler struct {
 	command string
 	timeout int
 }
 
-func newSessionStartHandler(hook provider.SessionStartHook) sessionStartHandler {
-	return sessionStartHandler{command: hook.Command, timeout: provider.SessionStartHookTimeoutSeconds}
+func newSessionStartHandler(command string) sessionStartHandler {
+	return sessionStartHandler{command: command, timeout: provider.SessionStartHookTimeoutSeconds}
 }
 
 func (h sessionStartHandler) config() map[string]any {
 	return map[string]any{"type": "command", "command": h.command, "timeout": h.timeout}
 }
 
-// trustHash is the hash Codex trusts the handler by in a group of matcher:
+// trustHash is the hash Codex trusts the handler by in a group of event,
+// the event's key label, with matcher, "" for an event that reads none:
 // sha256 of the canonical JSON of the handler's normalized identity, keys
 // sorted and strings escaped as serde_json escapes them (hook_hash in
 // codex-rs/hooks/src/engine/discovery.rs and version_for_toml in
-// codex-rs/config/src/fingerprint.rs).
-func (h sessionStartHandler) trustHash(matcher string) string {
+// codex-rs/config/src/fingerprint.rs). Codex drops the matcher of an event
+// that reads none (matcher_pattern_for_event), and its TOML form leaves the
+// key out.
+func (h sessionStartHandler) trustHash(event, matcher string) string {
 	var identity strings.Builder
-	identity.WriteString(`{"event_name":"session_start","hooks":[{"async":false,"command":`)
+	identity.WriteString(`{"event_name":`)
+	writeSerdeJSONString(&identity, event)
+	identity.WriteString(`,"hooks":[{"async":false,"command":`)
 	writeSerdeJSONString(&identity, h.command)
 	identity.WriteString(`,"timeout":`)
 	identity.WriteString(strconv.Itoa(h.timeout))
-	identity.WriteString(`,"type":"command"}],"matcher":`)
-	writeSerdeJSONString(&identity, matcher)
+	identity.WriteString(`,"type":"command"}]`)
+	if matcher != "" {
+		identity.WriteString(`,"matcher":`)
+		writeSerdeJSONString(&identity, matcher)
+	}
 	identity.WriteString(`}`)
 	sum := sha256.Sum256([]byte(identity.String()))
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// sessionStartHookKey is the key Codex gives the one SessionStart group's
-// one handler in the session-flags layer, which the trust state is kept
-// under.
-const sessionStartHookKey = sessionFlagsHookKeySource + ":session_start:0:0"
+// The keys Codex gives the one handler of each of the hook's groups in the
+// session-flags layer, which the trust state is kept under.
+const (
+	sessionStartHookKey     = sessionFlagsHookKeySource + ":session_start:0:0"
+	userPromptSubmitHookKey = sessionFlagsHookKeySource + ":user_prompt_submit:0:0"
+)
 
 // sessionStartHookConfig is the `hooks` value of the thread config: one
 // SessionStart matcher group holding the hook's command handler, with the
-// resume sources when resume is set, and the handler's trust state. nil
-// without a hook.
+// resume sources when resume is set, one UserPromptSubmit group holding its
+// PromptCommand, and the handlers' trust state. nil without a hook.
 func sessionStartHookConfig(hook *provider.SessionStartHook, resume bool) map[string]any {
 	if hook == nil {
 		return nil
 	}
 	matcher := provider.SessionStartMatcher(resume)
-	handler := newSessionStartHandler(*hook)
-	return map[string]any{
+	handler := newSessionStartHandler(hook.Command)
+	config := map[string]any{
 		"SessionStart": []any{map[string]any{"matcher": matcher, "hooks": []any{handler.config()}}},
-		"state":        map[string]any{sessionStartHookKey: map[string]any{"trusted_hash": handler.trustHash(matcher)}},
 	}
+	state := map[string]any{sessionStartHookKey: map[string]any{"trusted_hash": handler.trustHash("session_start", matcher)}}
+	if hook.PromptCommand != "" {
+		prompt := newSessionStartHandler(hook.PromptCommand)
+		config["UserPromptSubmit"] = []any{map[string]any{"hooks": []any{prompt.config()}}}
+		state[userPromptSubmitHookKey] = map[string]any{"trusted_hash": prompt.trustHash("user_prompt_submit", "")}
+	}
+	config["state"] = state
+	return config
 }
 
 // withSessionStartHook is a copy of a thread's params whose `config`
@@ -153,13 +170,18 @@ func writeSerdeJSONString(b *strings.Builder, text string) {
 // after it, completes; the warning for hooks that did not deliver is
 // emitted then, before the turn's own events. An interrupted or failed turn
 // may have stopped before the hooks ran, and Codex keeps them queued, so
-// the expectation waits for the next turn.
+// the expectation waits for the next turn; a turn that ends with the
+// expectation still pending forgets the thread's records
+// (SessionStartDelivery.ForgetWhilePending).
 func (s *Session) observeSessionStartHooks(method string, params json.RawMessage) bool {
 	if s.sessionStart == nil {
 		return false
 	}
 	switch method {
 	case "hook/started", "hook/completed":
+		if bytes.Contains(params, []byte(`"userPromptSubmit"`)) {
+			return s.observePromptHook(method, params)
+		}
 		// Every hook event reports here; only a SessionStart run is decoded.
 		if !bytes.Contains(params, []byte(`"sessionStart"`)) {
 			return false
@@ -226,12 +248,18 @@ func (s *Session) observeSessionStartHooks(method string, params json.RawMessage
 		}
 		s.mu.Unlock()
 		if due && readNestedString(params, "turn", "status") == "completed" {
-			// The rollout holds the turn's items by its completion.
-			for _, warning := range []string{s.sessionStart.Settle(s.rootThreadID()), s.sessionStart.Keep()} {
-				if warning != "" {
-					s.emitNonFatalError(warning)
-				}
+			if warning := s.sessionStart.Settle(); warning != "" {
+				s.emitNonFatalError(warning)
 			}
+		}
+		// Still pending, the hooks are queued for a later turn: a
+		// compaction requested on its own, or a turn that stopped before
+		// they ran. A session or app stop before then would resume
+		// without them, so the records go now. A record the hook wrote
+		// since goes too only when Codex started the next turn first,
+		// which costs the next prompt a whole delivery.
+		if warning := s.sessionStart.ForgetWhilePending(); warning != "" {
+			s.emitNonFatalError(warning)
 		}
 	}
 	return false
@@ -242,20 +270,50 @@ func (s *Session) observeSessionStartHooks(method string, params json.RawMessage
 // seen earlier came from before it and no longer counts, and the hook has
 // not had its chance in this turn yet.
 func (s *Session) expectSessionStartAfterCompaction() {
-	warning := s.sessionStart.ExpectAfresh(provider.SessionStartAfterCompaction)
+	s.sessionStart.ExpectAfresh(provider.SessionStartAfterCompaction)
 	s.setSessionStartDueTurn("")
-	if warning != "" {
-		s.emitNonFatalError(warning)
-	}
 }
 
-// DropSessionStartDeliveries forgets what the SessionStart hooks delivered
-// since the last settled turn, after a revert cut the thread's history in
-// place: a delivery in a cut turn, which an interrupt kept from settling,
-// is no longer the model's, and the open expectation waits for the hooks
-// again. The caller forgets the thread's receipts.
+// observePromptHook takes a run of the hook's PromptCommand, which renders
+// no row, and warns when one failed; a UserPromptSubmit run from another
+// layer, the user's own hook, is not one and renders as every hook run does.
+func (s *Session) observePromptHook(method string, params json.RawMessage) bool {
+	var wire struct {
+		Run struct {
+			EventName string `json:"eventName"`
+			Source    string `json:"source"`
+			Status    string `json:"status"`
+			Entries   []struct {
+				Kind string `json:"kind"`
+				Text string `json:"text"`
+			} `json:"entries"`
+		} `json:"run"`
+	}
+	if err := json.Unmarshal(params, &wire); err != nil || wire.Run.EventName != "userPromptSubmit" || wire.Run.Source != "sessionFlags" {
+		return false
+	}
+	if method == "hook/completed" && wire.Run.Status != "completed" {
+		failures := []string{}
+		for _, entry := range wire.Run.Entries {
+			if entry.Kind == "error" {
+				failures = append(failures, entry.Text)
+			}
+		}
+		if len(failures) == 0 {
+			failures = append(failures, "status "+wire.Run.Status)
+		}
+		s.emitNonFatalError(provider.PromptHookFailure(*s.sessionStart.Hook(), strings.Join(failures, "; ")))
+	}
+	return true
+}
+
+// DropSessionStartDeliveries ends the open SessionStart expectation without
+// a warning, after a revert cut the thread's history in place: a delivery
+// in a cut turn is no longer the model's, Codex does not run the hook
+// again, and the caller forgets the thread's records, so the next prompt
+// delivers the whole memory.
 func (s *Session) DropSessionStartDeliveries() {
-	s.sessionStart.DropDeliveries()
+	s.sessionStart.Drop()
 }
 
 // setSessionStartDueTurn records the turn that gives the hooks of the

@@ -118,6 +118,7 @@ func (a *App) newTriageRouter(st *store.Store) *triage.Router {
 	r.SetCodeSpanEnricher(a.buildPersistedCodeSpans)
 	r.SetGeneratedImageImporter(a.importCodexGeneratedImage)
 	r.SetPromptRouter(a.routeWorkerPrompt)
+	r.SetQuietTurnClassifier(a.agentTurnIsTick)
 	return r
 }
 
@@ -658,6 +659,7 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 			origin:       payload.Origin,
 			originThread: payload.OriginThread,
 			originWake:   payload.OriginWake,
+			joinedParts:  payload.JoinedParts,
 		})
 		if err != nil {
 			return nil, false, requeue, err
@@ -1062,7 +1064,7 @@ func (a *App) RegisterQueueItem(ctx context.Context, threadID string, message st
 	if err := a.requireAutonomyForThread(ctx, threadID, opts.RuntimeMode); err != nil {
 		return RegisteredQueueItem{}, err
 	}
-	unlockAdmission, err := a.lockSendAdmission(ctx, threadID, opts.SendID)
+	unlockAdmission, err := a.lockClientSendAdmission(ctx, threadID, opts.SendID)
 	if err != nil {
 		return RegisteredQueueItem{}, err
 	}

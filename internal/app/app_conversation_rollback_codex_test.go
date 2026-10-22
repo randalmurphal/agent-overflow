@@ -538,6 +538,10 @@ type codexForkMock struct {
 	// activeTurnRevertStatus replaces "interrupted" as the status the
 	// active turn settles with while handling thread/revert.
 	activeTurnRevertStatus string
+	// revertRecordPath is a file the mock writes while it handles
+	// thread/revert, as a prompt's memory hook that ran during the cut
+	// writes its record.
+	revertRecordPath string
 	// nextTurnID makes `turn/start` answer with this turn, then start and
 	// complete it.
 	nextTurnID string
@@ -561,6 +565,10 @@ func writeCodexForkAtBinary(t *testing.T, mock codexForkMock) string {
 	logRevertRequest := ":"
 	if mock.revertLogPath != "" {
 		logRevertRequest = fmt.Sprintf(`/bin/echo "$line" >> '%s'`, mock.revertLogPath)
+	}
+	if mock.revertRecordPath != "" {
+		logRevertRequest += fmt.Sprintf(`
+        /bin/mkdir -p '%s' && /bin/echo '{}' > '%s'`, filepath.Dir(mock.revertRecordPath), mock.revertRecordPath)
 	}
 	logResumeRequest := ":"
 	if mock.resumeLogPath != "" {
@@ -767,18 +775,15 @@ func TestConversationRollbackCodexRevertsInPlaceWhenSupported(t *testing.T) {
 	if err := app.store.PutCodexDeveloperInstructionsDigest(thread.ID, "provider-inplace-revert", strings.Repeat("d", 64)); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.store.PutSessionStartReceipt(thread.ID, "provider-inplace-revert", strings.Repeat("e", 64)); err != nil {
-		t.Fatal(err)
-	}
+	app.configDir = t.TempDir()
+	seedMemoryRecords(t, app, thread.ID)
 
 	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
 		t.Fatalf("revert: %v", err)
 	}
-	// It can drop the memory a resume delivered too, so the next resume
-	// must run the hook.
-	if received, err := app.store.SessionStartReceipt(thread.ID, "provider-inplace-revert"); err != nil || received != "" {
-		t.Fatalf("receipts after an in-place revert = %v, %v; want none", received, err)
-	}
+	// It can drop memory a turn delivered too, so the next prompt delivers
+	// it whole.
+	requireMemoryRecordsForgotten(t, app, thread.ID, "an in-place revert")
 	// The cut can drop a developer-instructions message injected at an
 	// earlier resume, so the thread's next start must send the text again.
 	if _, ok, err := app.store.CodexDeveloperInstructionsDigest(thread.ID, "provider-inplace-revert"); err != nil || ok {

@@ -6,18 +6,16 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 
 	"agent-overflow/internal/harness/scenario"
 )
 
-// claudeSessionStartHooks reads the SessionStart hooks of every --settings
-// value, inline JSON or the path of a JSON file, in argv order. A value that
-// does not read is logged and adds none.
-func claudeSessionStartHooks(args []string) []sessionStartHook {
-	var hooks []sessionStartHook
+// claudeSessionStartHooks reads the SessionStart and the UserPromptSubmit
+// hooks of every --settings value, inline JSON or the path of a JSON file, in
+// argv order. A value that does not read is logged and adds none.
+func claudeSessionStartHooks(args []string) (hooks, prompt []sessionStartHook) {
 	for _, value := range flagValues(args, "--settings") {
 		data := []byte(value)
 		if !strings.HasPrefix(strings.TrimSpace(value), "{") {
@@ -30,27 +28,18 @@ func claudeSessionStartHooks(args []string) []sessionStartHook {
 		}
 		var settings struct {
 			Hooks struct {
-				SessionStart sessionStartHookGroups `json:"SessionStart"`
+				SessionStart     sessionStartHookGroups `json:"SessionStart"`
+				UserPromptSubmit sessionStartHookGroups `json:"UserPromptSubmit"`
 			} `json:"hooks"`
 		}
 		if err := json.Unmarshal(data, &settings); err != nil {
 			log.Printf("claude: decode --settings: %v (its hooks are ignored)", err)
 			continue
 		}
-		for _, group := range settings.Hooks.SessionStart {
-			for _, handler := range group.Hooks {
-				if handler.Type != "command" {
-					continue
-				}
-				timeout := defaultSessionStartHookTimeout
-				if handler.Timeout != nil {
-					timeout = time.Duration(max(*handler.Timeout, 1)) * time.Second
-				}
-				hooks = append(hooks, sessionStartHook{matcher: group.Matcher, command: handler.Command, timeout: timeout})
-			}
-		}
+		hooks = append(hooks, commandHooks(settings.Hooks.SessionStart, "SessionStart")...)
+		prompt = append(prompt, commandHooks(settings.Hooks.UserPromptSubmit, "UserPromptSubmit")...)
 	}
-	return hooks
+	return hooks, prompt
 }
 
 // claudeStartSource is the SessionStart source of a process's start:
@@ -77,32 +66,56 @@ func (a *claudeAdapter) runSessionStartHooks(vars scenario.Vars, source string) 
 		return
 	}
 	sessionID := vars["SESSION_ID"]
-	name := "SessionStart:" + source
-	ids := make([]string, len(hooks))
-	for i := range hooks {
+	runs := make([]sessionStartRun, len(hooks))
+	a.writeHookRuns("SessionStart", "SessionStart:"+source, sessionID, runs, func() {
+		for i, hook := range hooks {
+			runs[i] = runSessionStartHook(hook, sessionID, a.e.cwd, source)
+		}
+		a.e.reportSessionStartRuns(sessionID, source, runs)
+	})
+}
+
+// runPromptHooks runs the UserPromptSubmit hooks for prompt, as Claude Code
+// does for every prompt it takes, a queued one included, before the model
+// sees it, with the same frames.
+func (a *claudeAdapter) runPromptHooks(vars scenario.Vars, prompt string) {
+	if len(a.promptHooks) == 0 {
+		return
+	}
+	sessionID := vars["SESSION_ID"]
+	runs := make([]sessionStartRun, len(a.promptHooks))
+	a.writeHookRuns("UserPromptSubmit", "UserPromptSubmit", sessionID, runs, func() {
+		for i, hook := range a.promptHooks {
+			runs[i] = runPromptHook(hook, sessionID, a.e.cwd, prompt)
+		}
+		a.e.reportSessionStartRuns(sessionID, promptSource, runs)
+	})
+}
+
+// writeHookRuns writes a hook_started frame per run, runs them (run fills
+// runs), then writes each run's hook_response.
+func (a *claudeAdapter) writeHookRuns(event, name, sessionID string, runs []sessionStartRun, run func()) {
+	ids := make([]string, len(runs))
+	for i := range runs {
 		ids[i] = uuid.NewString()
 		a.w.writeLine(mustJSON(map[string]any{
 			"type":       "system",
 			"subtype":    "hook_started",
 			"hook_id":    ids[i],
 			"hook_name":  name,
-			"hook_event": "SessionStart",
+			"hook_event": event,
 			"uuid":       uuid.NewString(),
 			"session_id": sessionID,
 		}), 0, 0)
 	}
-	runs := make([]sessionStartRun, len(hooks))
-	for i, hook := range hooks {
-		runs[i] = runSessionStartHook(hook, sessionID, a.e.cwd, source)
-	}
-	a.e.reportSessionStartRuns(sessionID, source, runs)
+	run()
 	for i, run := range runs {
 		frame := map[string]any{
 			"type":       "system",
 			"subtype":    "hook_response",
 			"hook_id":    ids[i],
 			"hook_name":  name,
-			"hook_event": "SessionStart",
+			"hook_event": event,
 			"output":     run.stdout + run.stderr,
 			"stdout":     run.stdout,
 			"stderr":     run.stderr,

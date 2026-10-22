@@ -219,6 +219,11 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 			errs = append(errs, fmt.Errorf("cleanup replay log: %w", err))
 		}
 	}
+	// A session started for the draft ran the memory hook, which recorded
+	// what it showed.
+	if err := a.forgetMemoryRecords(threadID); err != nil {
+		errs = append(errs, fmt.Errorf("cleanup memory records: %w", err))
+	}
 	if len(errs) > 0 {
 		return false, fmt.Errorf("delete empty draft thread %s: %w", threadID, errors.Join(errs...))
 	}

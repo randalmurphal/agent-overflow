@@ -759,6 +759,15 @@ const STATIC_FIELDS = [
     conditional: true,
   },
   {
+    id: 'notifications.thread-attention',
+    section: 'notifications',
+    heading: 'Notifications',
+    label: 'Thread needs attention',
+    hint: 'When a turn ends with its agent asking for you: a decision, something to review or a problem. The only way a loop or watch turn notifies.',
+    keywords: ['attention', 'flag', 'decision', 'review', 'problem', 'assistant', 'loop', 'watch', 'wake'],
+    conditional: true,
+  },
+  {
     id: 'notifications.errors',
     section: 'notifications',
     heading: 'Notifications',
@@ -836,8 +845,8 @@ const STATIC_FIELDS = [
     section: 'notifications',
     heading: 'Sounds',
     label: 'Approval needed cue',
-    hint: 'Plays when the agent is blocked waiting on you.',
-    keywords: ['sound', 'cue', 'permission', 'approval', 'input', 'blocked'],
+    hint: 'Plays when the agent is blocked waiting on you, or flags a thread for you.',
+    keywords: ['sound', 'cue', 'permission', 'approval', 'input', 'blocked', 'attention', 'flag', 'review', 'decision'],
     conditional: true,
   },
   {

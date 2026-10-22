@@ -414,6 +414,12 @@ func (a *App) runThreadPeerRequest(ctx context.Context, owner string, call Threa
 		return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest,
 			"A forwarded request must name the thread and computer it came from.", nil)
 	}
+	// A thread on this computer is named without one, so a source that
+	// claims this computer's id would pass for a local thread.
+	if here, _ := a.backendIdentity(); source.ComputerID == here {
+		return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest,
+			"A forwarded request must come from another computer.", nil)
+	}
 	source.Title = threadPeerTitle(source.Title)
 	origin := threadRequestOrigin{
 		caller:      source,
@@ -422,6 +428,9 @@ func (a *App) runThreadPeerRequest(ctx context.Context, owner string, call Threa
 		userMessage: call.UserMessage,
 		inherit:     call.Inherit,
 	}
+	// What this computer calls the sender, kept on the receipt and the
+	// message's attribution, not what the sender calls itself.
+	origin.caller.ComputerName = a.threadTools().senderComputerName(origin)
 	if call.SourceAgent != nil {
 		// The role is the other computer's text going into this computer's
 		// footer: bounded to one cleaned line here, whatever was sent.

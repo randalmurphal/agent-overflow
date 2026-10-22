@@ -58,16 +58,18 @@ type Config struct {
 	// app stamps its guide here (internal/app/app_agent_guide.go).
 	AppendSystemPrompt string
 	// SessionStartHook runs at a fresh start, after a compaction and after a
-	// clear, and at this process's resume too when its Resume is set,
-	// registered beside the relay in the `--settings` payload
-	// (claude.SessionStartHookGroup). The gateway checks the first main
-	// request after a start, a resume or a compaction for its context and
-	// reports a warning when it is missing (Session.observeMainRequest).
-	// nil for none.
+	// clear, and its PromptCommand at each prompt, registered beside the
+	// relay in the `--settings` payload (claude.SessionStartHookGroup,
+	// claude.UserPromptSubmitHookGroup). The gateway checks the first main
+	// request after a start or a compaction for its context and reports a
+	// warning when it is missing (Session.observeMainRequest). nil for
+	// none.
 	SessionStartHook *provider.SessionStartHook
-	// SessionStartReceipts keeps what the hook delivered; nil keeps
+	// SessionStartForget forgets what the thread's records say its model
+	// was shown, so the next prompt delivers the whole memory: it runs when
+	// a start or a compaction ended without the hook's output. nil for
 	// nothing.
-	SessionStartReceipts *provider.SessionStartReceipts
+	SessionStartForget func() error
 	// NativeMemoryOff turns Claude Code's auto memory off for the session,
 	// as claude.Config.NativeMemoryOff does: `autoMemoryEnabled: false` in
 	// the session's `--settings` block (hookSettingsJSON), with

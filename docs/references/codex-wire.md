@@ -139,7 +139,7 @@ Authoritative method list from
 | `rawResponseItem/completed` | Raw response items: `spawn_agent` / `wait_agent` / `write_stdin` enrichment and the live mailbox carrier. Only available on a fresh `thread/start` with `experimentalRawEvents`. See §`<subagent_notification>`. |
 | `item/mcpToolCall/progress`, `item/autoApprovalReview/started`, `item/autoApprovalReview/completed` | Recognised and dropped (consumed, so never opted out). |
 | `autoApprovalReview/strictReviewRequired` | 0.149. Reachable only in the `auto` runtime mode: strict review replaced the cheap in-line assessment, so tool calls slow down. One warning row; the payload carries no reason. |
-| `hook/started`, `hook/completed` | Hook lifecycle; one notification row each, except the runs of the thread's own SessionStart hooks (`source` `sessionFlags`), which render none. See §SessionStart hooks. |
+| `hook/started`, `hook/completed` | Hook lifecycle; one notification row each, except the runs of the thread's own SessionStart and UserPromptSubmit hooks (`source` `sessionFlags`), which render none. See §SessionStart hooks. |
 | `thread/started` | Session-level. First notification on a new thread; emits `EventSessionInit`. |
 | `thread/status/changed` | Session-level. Thread status transitions; emits `EventSessionStatus`. |
 | `thread/archived`, `thread/unarchived`, `thread/closed` | Recognised, no event. |
@@ -1787,9 +1787,10 @@ that a later independent batch cannot settle.
 
 Spikes 2026-10-18, codex-cli 0.157.1 against a mock Responses server;
 source read at `rust-v0.143.0`, `rust-v0.153.4` and `rust-v0.162.1`, which
-agree on everything below. Agent Overflow uses one of these hooks to
-deliver a session's memory ([memory](../specs/memory.md#delivery));
-the mechanism is `internal/provider/codex/session_start_hooks.go`.
+agree on everything below unless a bullet names a tag. Agent Overflow
+uses a SessionStart and a UserPromptSubmit hook to deliver a session's
+memory ([memory](../specs/memory.md#delivery)); the mechanism is
+`internal/provider/codex/session_start_hooks.go`.
 
 ### Registration in the thread config
 
@@ -1825,9 +1826,14 @@ which Codex reads as the thread's session-flags config layer:
   ("hook exited with code N"), and so does a JSON object that is not
   SessionStart output ("hook returned invalid session start JSON
   output").
-- In the tags read, `rust-v0.153.4` is the first with a context limit: a
-  context over `additionalContextLimit` tokens (2,500 when unset, counted
-  at 4 bytes a token) is written to disk and replaced by a preview. Agent Overflow's largest delivery stays under 10,000 bytes.
+- A context over 2,500 tokens, counted at 4 bytes a token so over
+  10,000 bytes, is written to `hook_outputs/` and replaced by its head
+  and tail with `Full hook output saved to: <path>`
+  (`hooks/src/output_spill.rs`). When the file cannot be written, the
+  context is cut to the same head and tail with no path. From
+  `rust-v0.153.4` a command handler's `additionalContextLimit` sets the
+  threshold, `0` turning the spill off; `rust-v0.143.0` has the fixed
+  limit and no key.
 - The `hooks` feature (stable, on by default) turns all hooks off when a
   user sets `features.hooks = false`.
 
@@ -1863,6 +1869,24 @@ A hash in the thread's own config trusts exactly that command, matcher
 and timeout in that layer. Hooks of the user's or a project's config
 keep their own trust state.
 
+A UserPromptSubmit group takes no matcher: Codex ignores one
+(`matcher_pattern_for_event`), and the identity leaves the key out, as
+TOML has no null (`/<session-flags>/config.toml:user_prompt_submit:0:0`):
+
+```json
+{"event_name":"user_prompt_submit","hooks":[{"async":false,"command":"<command>","timeout":60,"type":"command"}]}
+```
+
+On codex-cli 0.157.1 a thread config holding such a group and the
+hash of this identity ran the hook on `turn/start`: `hook/started` and
+`hook/completed` with `eventName` `userPromptSubmit`, `source`
+`sessionFlags` and run id
+`user-prompt-submit:0:/<session-flags>/config.toml`, the input naming the
+thread as `session_id` and the turn as `turn_id`, and the output's
+`additionalContext` reported as a `context` entry. The same group under
+another hash did not run: no `hook/started`. `hooks/list` for the
+thread's cwd lists none of the thread config's hooks.
+
 ### When the hooks run
 
 - A start, a cold resume, a compaction or a clear queues the hooks
@@ -1897,6 +1921,25 @@ keep their own trust state.
   thread's other initial context, and is written to the rollout as a
   `response_item`.
 
+### UserPromptSubmit
+
+Source read at `rust-v0.143.0` and `rust-v0.162.1`; AO's minimum Codex,
+0.143.0, has it.
+
+- Each user input a turn takes runs the hooks before it is recorded: the
+  turn's own prompt, after the SessionStart hooks the turn runs, and each
+  input steered into a running turn (`inspect_pending_input`,
+  `core/src/hook_runtime.rs`). Another agent's message and a tool result
+  run none.
+- The input is `session_id` (the thread id), `turn_id`, `transcript_path`,
+  `cwd`, `hook_event_name` `UserPromptSubmit`, `model`, `permission_mode`
+  and `prompt`; a thread a turn spawned adds `agent_id` and `agent_type`.
+- The output is read as SessionStart's: exit 0 with
+  `hookSpecificOutput.additionalContext` (or plain text) is context for
+  the model beside the prompt; exit 2, or `decision` `block`, stops the
+  prompt. Each run reports `hook/started` and `hook/completed` with
+  `eventName` `userPromptSubmit` and `scope` `turn`.
+
 ### Copies across resumes and compactions
 
 Spike, one thread, a matcher that takes every source:
@@ -1917,13 +1960,12 @@ the text as it was at the last start or compaction.
 
 ### What Agent Overflow does
 
-- Registers its one hook in a matcher group of its own, timeout 60, with
-  the trust hash of its command and matcher under
-  `/<session-flags>/config.toml:session_start:0:0`
-  (`sessionStartHookConfig`), on `thread/start` and `thread/resume`, so a
-  resumed thread that compacts runs it too. The matcher is
-  `startup|compact|clear`, and `startup|compact|clear|resume|fork` when
-  the hook's `Resume` is set on a `thread/resume`. The
+- Registers its memory hook, timeout 60, on `thread/start` and
+  `thread/resume`, so a resumed thread that compacts runs it too: a
+  SessionStart group of its own with the matcher `startup|compact|clear`,
+  or `startup|compact|clear|resume|fork` for a rehydrate below, and a
+  UserPromptSubmit group with the same binary's prompt command, each
+  under its trust hash (`sessionStartHookConfig`). The
   command quotes its words in POSIX single quotes, which sh, bash and zsh
   read verbatim. A fish user's hooks run under zsh or bash; only the
   `$SHELL -lc` fallback can reach fish, which reads the quotes the same
@@ -1933,31 +1975,34 @@ the text as it was at the last start or compaction.
   command (zsh's `.zshenv`, or a login profile under the fallback) puts
   its text ahead of the hook's output, which then no longer opens with
   its heading and is reported as not delivered.
-- Root `hook/started` and `hook/completed` with `eventName`
-  `sessionStart` and `source` `sessionFlags` render no row. A
-  `completed` run's `context` entry counts as delivered when it opens
-  with the hook's heading.
-- A fresh `thread/start`, a `thread/resume` that registers the hook for
+- Root `hook/started` and `hook/completed` of either event with `source`
+  `sessionFlags` render no row. A `completed` SessionStart run's
+  `context` entry counts as delivered when it opens with the hook's
+  heading. A failed UserPromptSubmit run is a non-fatal error row.
+- The prompt command exits 0 with no output when nothing changed, and
+  never exits 2, so it cannot block a prompt. A subagent's run, whose
+  input names `agent_id`, delivers nothing.
+- A fresh `thread/start`, a rehydrate that registers the hook for
   `resume`, and a compaction (the `contextCompaction` item, or the
-  deprecated `thread/compacted`) expect a delivery. A start or resume
-  arms the expectation before it sends the request: the read loop is
-  live, and a turn the app-server starts as it answers (a queued
-  message, a running turn) can run the hook before the answer is read.
-  The delivery is checked when the turn
-  that ran the hook, or else the next regular turn, completes with
-  status `completed`; an interrupted or failed turn leaves it to the turn
-  after (`observeSessionStartHooks`). The check keeps the context the
-  hook delivered as the thread's receipt under the root thread id; the
-  rollout holds the turn's items by its completion.
+  deprecated `thread/compacted`) expect a delivery. A start arms the
+  expectation before it sends the request: the read loop is live, and a
+  turn the app-server starts as it answers (a queued message, a running
+  turn) can run the hook before the answer is read. The delivery is
+  checked when the turn that ran the hook, or else the next regular
+  turn, completes with status `completed`; an interrupted or failed turn
+  leaves it to the turn after (`observeSessionStartHooks`). A turn that
+  ends with the delivery still pending forgets the thread's records of
+  what its sessions were shown, since the hook runs only at a later turn
+  and a stop before then loses it; a delivery that does not arrive
+  forgets them too.
 - An in-place `thread/rollback` cuts the turn that ran the hook with
-  the rest. After the cut the session drops the delivery it has not
-  checked, so the open expectation waits for a delivery again, and the
-  app forgets the thread's receipt (`restoreCodexSessionAfterCut`).
+  the rest. The app forgets the records before the cut and again once it
+  lands, and the session ends the open expectation without a warning
+  (`restoreCodexSessionAfterCut`): the next prompt delivers the whole
+  memory.
 - A rehydrate registers the hook for `resume` while the open
   expectation still waits for it, since the unload dropped what Codex had
-  queued. A start or compaction whose hook never ran before the thread
-  unloaded leaves no receipt that matches, so the next `thread/resume`
-  registers it for `resume`.
+  queued.
 
 ## Memories and writable roots (verified 0.162.1)
 

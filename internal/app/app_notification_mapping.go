@@ -86,26 +86,18 @@ func (a *App) tapNotification(name eventchan.Channel, data any) {
 		// error message is what distinguishes a turn that failed from one
 		// that finished; the two are one moment with two outcomes, so the
 		// mapping picks the kind rather than this tap sending both.
+		// A tick that ended cleanly is quiet (triage's turnIsQuiet, from the
+		// turn's rows): it raises nothing unless it raised an attention flag.
 		rest := notify.TurnRest{
-			Thread:   notify.ThreadRef{ID: event.ThreadID},
-			TopLevel: event.CountsAsActivity,
-			Failed:   event.ErrorMessage != "",
-			Aborted:  event.Aborted,
-		}
-		// The tick mark ends with the turn, here on the emitting goroutine so
-		// the next dispatch's mark is not the one cleared; whether this turn
-		// was a tick is read from its rows in the job, or, for a turn that
-		// holds none, from whether it took up Claude's queued wakes.
-		pickupTick := false
-		if event.CountsAsActivity {
-			pickupTick = a.endAgentWakeTickTurn(event.ThreadID, event.TurnIndex)
+			Thread:    notify.ThreadRef{ID: event.ThreadID},
+			TopLevel:  event.CountsAsActivity,
+			Failed:    event.ErrorMessage != "",
+			Aborted:   event.Aborted,
+			QuietTick: event.Quiet,
+			StartedAt: event.StartedAt,
 		}
 		a.queueNotification(func() (notify.Notification, bool) {
 			rest.Thread = a.notificationThreadRef(rest.Thread.ID)
-			if rest.TopLevel {
-				tick, empty := a.agentWakeTurnMessages(rest.Thread.ID, event.TurnIndex)
-				rest.QuietTick = (tick || empty && pickupTick) && a.agentTicksAreQuiet(rest.Thread.ID)
-			}
 			return notify.MapTurnRest(rest)
 		})
 
@@ -117,10 +109,8 @@ func (a *App) tapNotification(name eventchan.Channel, data any) {
 		// The thread going back to work is the "handled elsewhere" that
 		// retracts its rest notification. No title read: a retraction says
 		// nothing.
-		resumed := notify.ThreadResumed{ThreadID: event.ThreadID}
-		tick := a.agentWakeTickTurn(event.ThreadID, event.TurnIndex)
+		resumed := notify.ThreadResumed{ThreadID: event.ThreadID, Tick: a.agentWakeTickStarted(event.ThreadID)}
 		a.queueNotification(func() (notify.Notification, bool) {
-			resumed.QuietTick = tick && a.agentTicksAreQuiet(resumed.ThreadID)
 			return notify.MapThreadResumed(resumed)
 		})
 
@@ -344,6 +334,7 @@ func (a *App) notificationThreadRef(threadID string) notify.ThreadRef {
 	}
 	ref.Title = facts.Title
 	ref.Hidden = !facts.Exists || threadmode.IsHidden(facts.Mode)
+	ref.Attention, ref.AttentionAt = facts.Attention, facts.AttentionAt
 	return ref
 }
 

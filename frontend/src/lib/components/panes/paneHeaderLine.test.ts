@@ -30,6 +30,14 @@ describe('resolvePaneHeaderLine', () => {
     expect(resolvePaneHeaderLine(unfocused({ paneCount: 1, thread: UNREAD }))).toBeNull();
   });
 
+  it('shows an unfocused pane its pending attention flag by kind, a review as a finished turn', () => {
+    const flagged = (kind: 'decision' | 'review' | 'problem') => ({ ...READ, attention: { kind, reason: 'r', at: 3 } });
+    expect(resolvePaneHeaderLine(unfocused({ thread: flagged('decision') }))).toEqual({ color: 'info', label: 'Needs your decision' });
+    expect(resolvePaneHeaderLine(unfocused({ thread: flagged('review') }))).toEqual({ color: 'success', label: 'Ready for your review' });
+    expect(resolvePaneHeaderLine(unfocused({ thread: flagged('problem') }))).toEqual({ color: 'warning', label: 'Hit a problem that needs you' });
+    expect(resolvePaneHeaderLine(unfocused({ thread: { ...flagged('problem'), lastReadAt: 3 } }))).toBeNull();
+  });
+
   it('marks the focused pane accent regardless of its thread', () => {
     for (const status of ['idle', 'running', 'pending-approval', 'error'] as const) {
       expect(resolvePaneHeaderLine(unfocused({ focused: true, status }))).toEqual({

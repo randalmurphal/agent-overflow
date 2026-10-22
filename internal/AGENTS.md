@@ -26,7 +26,7 @@ All non-main Go packages live under `internal/`. Root `main*.go` and
 | Agent thread tools and `/side-chat` | [threadtools/](threadtools/AGENTS.md), `app/app_thread_tools*.go`; contract in [agent-thread-tools.md](../docs/specs/agent-thread-tools.md) |
 | Agent workflow tools (`ao-workflow-tools`) | `workflowtools/` (package comment), `app/app_workflow_tools_mcp.go`; contract in [agent-workflow-tools.md](../docs/specs/agent-workflow-tools.md) |
 | A standing agent's session block, role line and `home_files` | `agenthome/` (package comment); contract in [standing-agents.md](../docs/specs/standing-agents.md#agent-home-contents) |
-| Memory scopes, fact files, the delivery and its SessionStart hook | `memory/` (package comment), `app/app_memory*.go`; contract in [memory.md](../docs/specs/memory.md) |
+| Memory scopes, fact files, the delivery and its hooks | `memory/` (package comment), `app/app_memory*.go`; contract in [memory.md](../docs/specs/memory.md) |
 | Loopback MCP transport for built-in tool servers | [threadmcp/](threadmcp/AGENTS.md), `mcpargs/` |
 | Settings ownership and persistence | [settings/](settings/AGENTS.md) |
 | Test fixtures and provider isolation | [kerneltest/](kerneltest/AGENTS.md), [testutil/](testutil/AGENTS.md) |

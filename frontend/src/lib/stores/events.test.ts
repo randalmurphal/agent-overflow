@@ -13,6 +13,7 @@ import {
 import { resetForTest as resetSendQueue, markItemsFlushed, getFlushedForThread, registerQueueItem } from './sendQueue.svelte';
 import { resetLiveUsageSnapshotsForTest } from './threadContextWindow';
 import { getThreads, getThreadLiveActivityAt, refreshThreads } from './threads.svelte';
+import { hasUnread } from '../utils/threadStatusPill';
 import { claimLocalReadMarker, resetLocalReadMarkersForTest } from './threadReadWrites';
 import { withEmptyDraftCleanup } from './emptyDraftCleanup';
 import { getToasts } from './toast.svelte';
@@ -2445,6 +2446,41 @@ describe('setupEventListeners', () => {
     expect(liveThreadActivity('thread-stale')).toBe(100);
     expect(getThreads().find((thread) => thread.id === 'thread-stale')?.latestTurnCompletedAt).toBe(100);
     expect(liveProjectActivity('project-stale')).toBe(100);
+  });
+
+  it('keeps a quiet tick from moving the thread, and its row from lighting Completed', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-tick', projectId: 'project-tick', updatedAt: 100, lastReadAt: 150, latestTurnCompletedAt: 100 }),
+    ]);
+    setBindingMock('ListProjects', async () => [
+      projectWithCounts('project-tick', 100),
+    ]);
+    await refreshThreads();
+    await refreshProjects();
+
+    // The row triage sent before the event: the read marker it kept past
+    // the tick's completion.
+    emitWailsEvent('thread:updated', {
+      action: 'full',
+      thread: makeThread({ id: 'thread-tick', projectId: 'project-tick', updatedAt: 100, lastReadAt: 12_000, latestTurnCompletedAt: 12_000 }),
+    });
+    emitWailsEvent('provider:turn_completed', {
+      threadId: 'thread-tick',
+      turnId: 'turn-2',
+      turnIndex: 1,
+      startedAt: 11_000,
+      completedAt: 12_000,
+      stopReason: 'end_turn',
+      countsAsActivity: true,
+      quiet: true,
+    });
+    await nextFrame();
+
+    expect(liveThreadActivity('thread-tick')).toBe(100);
+    expect(liveProjectActivity('project-tick')).toBe(100);
+    const row = getThreads().find((thread) => thread.id === 'thread-tick');
+    expect(row?.latestTurnCompletedAt).toBe(12_000);
+    expect(hasUnread(row!)).toBe(false);
   });
 
   it('bumps cached project activity on provider:approval request', async () => {

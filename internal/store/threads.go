@@ -136,7 +136,8 @@ var threadColumns = `id, COALESCE(project_id, ''),
       SELECT caller_thread_id FROM thread_requests
        WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = threads.id
        ORDER BY created_at DESC LIMIT 1
-    ))`
+    )),
+    attention_kind, attention_reason, attention_at`
 
 // threadAgentColumn is the record column threadColumns reads for an
 // assistant's current thread.
@@ -274,7 +275,8 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
 	var archived, fastMode, hasActionableProposedPlan, hasIncompleteTurn, hasFailedTurn, isDraft, spawnedByAgent int
 	var agentRecord sql.NullString
-	var latestTurnCompletedAt, lastReadAt, pinnedAt, pinGroup, agentSupersededAt sql.NullInt64
+	var latestTurnCompletedAt, lastReadAt, pinnedAt, pinGroup, agentSupersededAt, attentionAt sql.NullInt64
+	var attentionKind, attentionReason string
 	if err := scanner.Scan(
 		&t.ID, &t.ProjectID, &t.ProjectPath, &t.Title, &t.Provider, &t.Model,
 		&t.WorkspacePath, &t.WorktreePath, &t.Branch,
@@ -289,6 +291,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.CreatedByDevice, &t.Origin.Branch, &t.Origin.HeadCommit,
 		&hasActionableProposedPlan, &hasIncompleteTurn, &hasFailedTurn, &isDraft, &t.OwnershipEpoch,
 		&agentRecord, &t.PastAgentID, &agentSupersededAt, &t.HelperOfAgentID, &t.SpawnedByThreadID, &spawnedByAgent,
+		&attentionKind, &attentionReason, &attentionAt,
 	); err != nil {
 		return Thread{}, err
 	}
@@ -318,6 +321,9 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	if agentSupersededAt.Valid {
 		v := agentSupersededAt.Int64
 		t.AgentSupersededAt = &v
+	}
+	if attentionAt.Valid && attentionKind != "" {
+		t.Attention = &ThreadAttention{Kind: attentionKind, Reason: attentionReason, At: attentionAt.Int64}
 	}
 	if agentRecord.Valid {
 		var agent threadAgentColumn
@@ -534,15 +540,21 @@ func (s *Store) GetThreadProviderWorkspace(id string) (provider, workspacePath s
 // thread: its label, and whether the sidebar lists it (Mode, judged by
 // threadmode.IsHidden). Exists is false for a thread that is gone.
 type ThreadNotificationFacts struct {
-	Title  string
-	Mode   string
-	Exists bool
+	Title string
+	Mode  string
+	// Attention is the kind of the thread's attention flag while it is
+	// pending (Thread.AttentionPending), empty otherwise: one of a few
+	// fixed values, never the agent's reason. AttentionAt is when that
+	// flag was raised.
+	Attention   string
+	AttentionAt int64
+	Exists      bool
 }
 
-// GetThreadNotificationFacts reads only the title and mode columns. It is
-// the narrow read for the OS-notification mapping, which is allowed to say a
-// thread's title and to know whether the thread is on the sidebar, and
-// nothing more about it — and it exists for the same reason
+// GetThreadNotificationFacts reads only the title, mode and pending
+// attention flag. It is the narrow read for the OS-notification mapping,
+// which is allowed to say a thread's title and to know whether the thread
+// is on the sidebar, and nothing more about it — and it exists for the same reason
 // GetThreadProviderWorkspace does: GetThread's projection computes four
 // derived sidebar-state subqueries per call that such a caller would compute
 // and throw away.
@@ -552,13 +564,26 @@ type ThreadNotificationFacts struct {
 // a deleted thread is not a failure to report — it is a thread the sidebar
 // cannot show, which the notification gate treats like any other hidden one.
 func (s *Store) GetThreadNotificationFacts(id string) (ThreadNotificationFacts, error) {
-	var facts ThreadNotificationFacts
-	err := s.reader().QueryRow(`SELECT title, mode FROM threads WHERE id = ?`, id).Scan(&facts.Title, &facts.Mode)
+	var (
+		facts       ThreadNotificationFacts
+		kind        string
+		attentionAt sql.NullInt64
+		lastReadAt  sql.NullInt64
+	)
+	err := s.reader().QueryRow(`SELECT title, mode, attention_kind, attention_at, last_read_at
+	  FROM threads WHERE id = ?`, id).Scan(&facts.Title, &facts.Mode, &kind, &attentionAt, &lastReadAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ThreadNotificationFacts{}, nil
 	}
 	if err != nil {
 		return ThreadNotificationFacts{}, fmt.Errorf("store: get thread notification facts %s: %w", id, err)
+	}
+	var marker *int64
+	if lastReadAt.Valid {
+		marker = &lastReadAt.Int64
+	}
+	if attentionAt.Valid && attentionPending(attentionAt.Int64, marker) {
+		facts.Attention, facts.AttentionAt = kind, attentionAt.Int64
 	}
 	facts.Exists = true
 	return facts, nil
@@ -1031,11 +1056,12 @@ func (s *Store) MarkThreadActivity(threadID string, at int64) error {
 	return nil
 }
 
-// threadReadTargetColumns are the three timestamps a read stamp clamps to,
+// threadReadTargetColumns are the four timestamps a read stamp clamps to,
 // over a `threads` row: the newest completed turn, an interrupted newest
-// turn's start, and the newest turn error that lights the Failed pill. The
-// error stamp is the column hasFailedTurn compares, so the pill and the
-// read that clears it cannot disagree.
+// turn's start, the newest turn error that lights the Failed pill, and the
+// attention flag its agent raised. The error stamp is the column
+// hasFailedTurn compares and the flag shows while the marker is before its
+// time, so a pill and the read that clears it cannot disagree.
 const threadReadTargetColumns = `
     (SELECT MAX(completed_at) FROM turns
       WHERE thread_id = threads.id AND completed_at IS NOT NULL),
@@ -1044,7 +1070,8 @@ const threadReadTargetColumns = `
       WHERE thread_id = threads.id
       ORDER BY turns.turn_index DESC
       LIMIT 1),
-    newest_turn_error_at`
+    newest_turn_error_at,
+    attention_at`
 
 // threadReadStateQuery is the per-row read markThreadsReadSQL makes, as a
 // single-row probe the plan and page-count guards measure.
@@ -1075,12 +1102,12 @@ const MarkThreadsReadLimit = 500
 // passes but for the provider session's native transfer, which governs
 // execution, not read state.
 var markThreadsReadSQL = `UPDATE threads SET last_read_at = MAX(?2, marks.target)
-  FROM (WITH targets(id, marker, completed, started, errored) AS (
+  FROM (WITH targets(id, marker, completed, started, errored, flagged) AS (
           SELECT id, last_read_at,` + threadReadTargetColumns + `
             FROM threads
            WHERE id IN (SELECT value FROM json_each(?1)) AND ` + threadReadMutableSQL + `
         )
-        SELECT id, marker, MAX(COALESCE(completed, -1), COALESCE(started, -1), COALESCE(errored, -1)) AS target
+        SELECT id, marker, MAX(COALESCE(completed, -1), COALESCE(started, -1), COALESCE(errored, -1), COALESCE(flagged, -1)) AS target
           FROM targets) AS marks
  WHERE threads.id = marks.id
    AND (marks.marker IS NULL OR (marks.target >= 0 AND marks.marker < marks.target) OR (marks.target < 0 AND marks.marker < ?2))
@@ -1191,10 +1218,12 @@ func (s *Store) MarkThreadsReadNow(ctx context.Context, ids []string) (changed [
 // MarkThreadReadNow it reads nothing later than at, so a turn the user
 // caused after the one that answered still shows as unread. A pinned
 // thread keeps its dot, so a pin that lands after the caller decided to
-// mark still wins. A row whose marker already covers at (NULL, "never
-// tracked", included: that reads as read), that is pinned or that is gone
-// changes nothing and hands back (zero row, false, nil). The context bounds the wait for the writer connection, as
-// MarkThreadReadNow's does.
+// mark still wins, and so does a pending attention flag: the thread's
+// agent asked for the user, which the answer reaching its spawner does not
+// settle. A row whose marker already covers at (NULL, "never tracked",
+// included: that reads as read), that is pinned, flagged or gone changes
+// nothing and hands back (zero row, false, nil). The context bounds the
+// wait for the writer connection, as MarkThreadReadNow's does.
 func (s *Store) MarkThreadReadThrough(ctx context.Context, id string, at int64) (Thread, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1202,7 +1231,8 @@ func (s *Store) MarkThreadReadThrough(ctx context.Context, id string, at int64) 
 	}
 	defer func() { _ = tx.Rollback() }()
 	result, err := tx.ExecContext(ctx,
-		`UPDATE threads SET last_read_at = ? WHERE id = ? AND last_read_at IS NOT NULL AND last_read_at < ? AND pinned_at IS NULL`, at, id, at)
+		`UPDATE threads SET last_read_at = ? WHERE id = ? AND last_read_at IS NOT NULL AND last_read_at < ? AND pinned_at IS NULL
+		   AND (attention_at IS NULL OR attention_at <= last_read_at)`, at, id, at)
 	if err != nil {
 		return Thread{}, false, fmt.Errorf("store: mark thread read through %s: %w", id, err)
 	}

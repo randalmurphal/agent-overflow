@@ -54,6 +54,7 @@ const TOOL_NAMES = [
   'thread_update',
   'thread_group',
   'thread_remind',
+  'thread_attention',
   'thread_loop',
   'thread_watch',
   'thread_new_assistant',
@@ -67,7 +68,7 @@ interface McpRow {
   disabled: boolean;
 }
 
-test('both providers get the sixteen tools and the guide, in every runtime mode', async ({
+test('both providers get the seventeen tools and the guide, in every runtime mode', async ({
   harness,
 }) => {
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {

@@ -311,16 +311,17 @@ func TestAnAssistantRecordDeletedForgetsItsCachedRole(t *testing.T) {
 	}
 }
 
-// codexHookMatchers returns, for every logged request for method, the
-// matchers of its SessionStart groups joined by ";", "" for a request that
-// registers no hooks.
-func codexHookMatchers(t *testing.T, requestLog, method string) []string {
+// codexHookGroups returns, for every logged request for method, the
+// matchers of its SessionStart groups joined by ";", then "+prompt" when it
+// registers a UserPromptSubmit group: "" for a request that registers no
+// hooks.
+func codexHookGroups(t *testing.T, requestLog, method string) []string {
 	t.Helper()
 	data, err := os.ReadFile(requestLog)
 	if err != nil {
 		t.Fatalf("read request log: %v", err)
 	}
-	var matchers []string
+	var registered []string
 	for _, line := range strings.Split(string(data), "\n") {
 		var req struct {
 			Method string `json:"method"`
@@ -330,6 +331,7 @@ func codexHookMatchers(t *testing.T, requestLog, method string) []string {
 						SessionStart []struct {
 							Matcher string `json:"matcher"`
 						} `json:"SessionStart"`
+						UserPromptSubmit []json.RawMessage `json:"UserPromptSubmit"`
 					} `json:"hooks"`
 				} `json:"config"`
 			} `json:"params"`
@@ -341,17 +343,21 @@ func codexHookMatchers(t *testing.T, requestLog, method string) []string {
 		for _, group := range req.Params.Config.Hooks.SessionStart {
 			groups = append(groups, group.Matcher)
 		}
-		matchers = append(matchers, strings.Join(groups, ";"))
+		hooks := strings.Join(groups, ";")
+		if len(req.Params.Config.Hooks.UserPromptSubmit) > 0 {
+			hooks += "+prompt"
+		}
+		registered = append(registered, hooks)
 	}
-	return matchers
+	return registered
 }
 
-// A Codex assistant's resume registers the memory hook for the resume when
-// the thread's model did not receive the delivery as it reads now: with no
-// receipt, then only after a change since its receipt. The receipt the
-// session keeps is the digest of what arrived, under the provider session.
-// An ordinary thread, with shared memory off, registers no hook.
-func TestCodexAssistantResumeRunsTheHookWhenItsMemoryChanged(t *testing.T) {
+// A Codex assistant's start and each resume register the memory hook for a
+// start, a compaction and a clear, never a resume, and its prompt hook: the
+// resumed history holds what was delivered, and each prompt delivers what
+// changed since. The session's Forget forgets the thread's records. An
+// ordinary thread, with shared memory off, registers no hook.
+func TestCodexAssistantRegistersTheMemoryHooks(t *testing.T) {
 	t.Parallel()
 	app, bus := setupE2EApp(t)
 	requestLog := filepath.Join(t.TempDir(), "requests.jsonl")
@@ -363,8 +369,7 @@ func TestCodexAssistantResumeRunsTheHookWhenItsMemoryChanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	row := testAssistant(t, app, thread.ID)
-	plain := provider.SessionStartHookSources
-	resume := provider.SessionStartResumeSources
+	want := provider.SessionStartHookSources + "+prompt"
 	restart := func() {
 		t.Helper()
 		if err := app.StopSession(thread.ID); err != nil {
@@ -375,56 +380,31 @@ func TestCodexAssistantResumeRunsTheHookWhenItsMemoryChanged(t *testing.T) {
 
 	startCodexSessionAndWait(t, app, bus, thread.ID)
 	awaitSessionRef(t, app, thread.ID, "codex-root")
-	if got := codexHookMatchers(t, requestLog, "thread/start"); strings.Join(got, ",") != plain {
-		t.Fatalf("thread/start matchers = %q", got)
-	}
-	// No turn delivered the start, so the resume runs the hook.
-	restart()
-	if got := codexHookMatchers(t, requestLog, "thread/resume"); strings.Join(got, ",") != resume {
-		t.Fatalf("thread/resume matchers = %q, want the hook registered for the resume", got)
-	}
-
-	// What the session keeps is the digest of what arrived.
-	thread, err = app.store.GetThread(thread.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mem, err := app.readSessionMemory(thread, &row, "codex-root", false)
-	if err != nil || mem.Receipts == nil || len(mem.Problems) > 0 {
-		t.Fatalf("readSessionMemory = %+v, %v", mem, err)
-	}
-	plan, _, err := app.memoryPlan(thread, &row)
-	if err != nil {
-		t.Fatal(err)
-	}
-	delivered, _ := memory.Build(plan, time.Now())
-	if err := mem.Receipts.Keep("codex-root", memory.Stamp(delivered, time.Now())); err != nil {
-		t.Fatal(err)
-	}
-	received, err := app.store.SessionStartReceipt(thread.ID, "codex-root")
-	if err != nil || received != memory.Digest(delivered) {
-		t.Fatalf("receipt = %q, %v", received, err)
+	if got := codexHookGroups(t, requestLog, "thread/start"); strings.Join(got, ",") != want {
+		t.Fatalf("thread/start hooks = %q, want %q", got, want)
 	}
 	restart()
-	if got := codexHookMatchers(t, requestLog, "thread/resume"); len(got) != 2 || got[1] != plain {
-		t.Fatalf("thread/resume matchers = %q, want the hook not registered for unchanged memory", got)
-	}
-
 	if err := os.WriteFile(filepath.Join(memory.HomeDir(row.Home), "a.md"), []byte("---\ndescription: a new fact\ntype: ruling\nsource: user\nconfirmed: 2026-10-20\n---\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	restart()
-	if got := codexHookMatchers(t, requestLog, "thread/resume"); len(got) != 3 || got[2] != resume {
-		t.Fatalf("thread/resume matchers = %q, want the hook registered for the resume after a new fact", got)
+	if got := codexHookGroups(t, requestLog, "thread/resume"); strings.Join(got, ",") != want+","+want {
+		t.Fatalf("thread/resume hooks = %q, want %q at each resume", got, want)
 	}
 
-	// A compaction forgets the receipt: what it dropped is no longer held.
-	if err := mem.Receipts.Forget(); err != nil {
+	thread, err = app.store.GetThread(thread.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if received, err := app.store.SessionStartReceipt(thread.ID, "codex-root"); err != nil || received != "" {
-		t.Fatalf("receipt after Forget = %q, %v", received, err)
+	mem, err := app.readSessionMemory(thread, &row, true, false)
+	if err != nil || mem.Forget == nil || len(mem.Problems) > 0 {
+		t.Fatalf("readSessionMemory = %+v, %v", mem, err)
 	}
+	seedMemoryRecords(t, app, thread.ID)
+	if err := mem.Forget(); err != nil {
+		t.Fatal(err)
+	}
+	requireMemoryRecordsForgotten(t, app, thread.ID, "the session's Forget")
 	if err := app.StopSession(thread.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -434,7 +414,7 @@ func TestCodexAssistantResumeRunsTheHookWhenItsMemoryChanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	startCodexSessionAndWait(t, app, bus, other.ID)
-	if got := codexHookMatchers(t, requestLog, "thread/start"); len(got) != 2 || got[1] != "" {
+	if got := codexHookGroups(t, requestLog, "thread/start"); len(got) != 2 || got[1] != "" {
 		t.Errorf("an ordinary thread registered hooks: %q", got)
 	}
 	if err := app.StopSession(other.ID); err != nil {

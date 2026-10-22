@@ -43,6 +43,7 @@ import {
   SHOW_CURSOR_PATTERN,
   TOOL_ROW_ID_PATTERN,
   advanceGate,
+  aoMessageOpening,
   awaitGate,
   awaitToolAnswer,
   awaitTurnCompleted,
@@ -310,6 +311,9 @@ test('a spawn on the other computer runs there and its answer wakes the caller',
     }),
   );
 
+  // The sender line names the caller's computer as the remote's own pairing
+  // does, not as the caller's computer calls itself.
+  await remote.rpc('RenameBackend', homeID, 'Laptop computer');
   await home.rpc('StartSession', caller.threadIds[0]);
   await home.rpc('SendMessage', caller.threadIds[0], 'have the GPU computer build the kernel', null);
 
@@ -342,6 +346,11 @@ test('a spawn on the other computer runs there and its answer wakes the caller',
   expect(delivered.report.input).toContain('Build the kernel and report what broke.');
   expect(delivered.report.input).toContain('Remote spawn caller');
   expect(delivered.report.input).toContain(spawned.token);
+  // Its sender line names the calling thread's computer, since it is not
+  // the one the message reached.
+  expect((delivered.report.input ?? '').split('\n')[0] + '\n').toBe(
+    aoMessageOpening(`the agent in thread "Remote spawn caller" (${caller.threadIds[0]}) on "Laptop computer"`),
+  );
 
   // The thread lives there, not here.
   const remoteRows = await threadRows(remote);
@@ -362,6 +371,9 @@ test('a spawn on the other computer runs there and its answer wakes the caller',
   );
   expect(wake.report.input).toContain('The kernel build finished clean.');
   expect(wake.report.input).toContain('GPU computer');
+  expect(wake.report.input).toContain(
+    aoMessageOpening(`the request you made to thread "Kernel build" (${spawned.thread_id}) on "GPU computer"`),
+  );
 });
 
 test('a standing agent on the other computer is named on its wake as a local one is', async ({ page }) => {

@@ -381,16 +381,20 @@ Mechanism in
   another computer behaves as a local one does.
 - An assistant's session block depends on its record alone, so a home
   file edit keeps the provider's prompt cache. Memory reaches the model
-  through one SessionStart hook at a start and at each compaction, and
-  at a resume only when the delivery reads otherwise than what the
-  thread's model last received, judged by the digest of what was
-  delivered: a resume that ran it every time would stack another copy
-  per resume (rulings 2026-10-18 and 2026-10-19); an edit reaches the
-  next new thread, compaction or resume. The app builds each memory
-  index from the facts' frontmatter, so no agent keeps one (ruling
-  2026-10-21). On Codex the thread's config trusts only the hook command
-  it registers. A delivery that did not arrive is a non-fatal error row,
-  not a failed turn ([memory](specs/memory.md#delivery)).
+  whole through a SessionStart hook at a start and at each compaction,
+  never at a resume, which would stack another copy per resume (ruling
+  2026-10-18), and an edit reaches a running thread with its next
+  prompt: a UserPromptSubmit hook delivers only what changed since that
+  session last received its memory, from the session's own record,
+  nothing when nothing did, with no version control and no state shared
+  between sessions. Nothing is cut: a delivery past what a provider
+  shows the model whole opens with its size, the agent reads the file
+  the provider saved, and the assistant is warned (rulings 2026-10-21).
+  The app builds each memory index from the facts' frontmatter, so no
+  agent keeps one (ruling 2026-10-21). On Codex the thread's config
+  trusts only the hook commands it registers. A delivery that did not
+  arrive is a non-fatal error row, not a failed turn
+  ([memory](specs/memory.md#delivery)).
 - Assistants live above projects: an assistant serves projects it is
   assigned, runs in its home, keeps helpers to its own work under it
   and puts project work in the project; deleting it deletes what lives
@@ -413,8 +417,18 @@ Mechanism in
   agent's message back to its owner; a request is owed again and its
   sender is told nothing. A person's Stop on a turn a request started
   reaches the sender as the person's Stop, never as a restart (ruling
-  2026-10-14). Mechanism:
+  2026-10-14). On the wire every such message opens with a line naming
+  its sender and closes with an end mark, and the person's own messages
+  are the only turns without them (ruling 2026-10-21). Mechanism:
   [how agent messages appear](specs/agent-thread-tools.md#how-agent-messages-appear).
+- A loop or watch turn that ends cleanly leaves its thread read and in
+  place and notifies nothing; there is no per-assistant switch to make
+  ticks notify. An agent reaches the user from such a turn only with
+  `thread_attention`: its kind and one-line reason show on the row until
+  the user reads the thread, and the turn's notification says the kind,
+  never the agent's reason. Any thread may flag itself (ruling
+  2026-10-22, [standing agents](specs/standing-agents.md) rulings 9 and
+  41, [attention](specs/standing-agents.md#attention)).
 - In an assistant's thread, Stop is two actions: Interrupt (stop the
   turn, keep the session) and End Session (end the process and its
   background items); a workflow run's Pause keeps its members' sessions

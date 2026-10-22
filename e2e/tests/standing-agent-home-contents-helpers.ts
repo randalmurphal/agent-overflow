@@ -8,12 +8,15 @@
 // session, so the agent's scenario is set again before every start.
 //
 // A session's block is static. The agent's instructions.md and memory reach
-// the model through the one SessionStart hook the mock runs as the CLI does
-// (docs/specs/memory.md, "Delivery"): at a fresh start, at a compaction, and
-// at a resume when the delivery changed since the thread's model last
-// received it. So a fact written while a turn is parked on a gate reaches
-// that session at the compaction the turn then runs, and one written
-// between sessions reaches the next at its resume.
+// the model through the memory hook the mock runs as the CLI does
+// (docs/specs/memory.md, "Delivery"): whole at a fresh start and at a
+// compaction from its SessionStart run, and at each prompt from its
+// UserPromptSubmit run, only what changed since the session last received
+// it, nothing when nothing did. So a fact written while a turn is parked on
+// a gate reaches that session at the compaction the turn then runs, one
+// written while the session idles between turns reaches it with its next
+// prompt, and one written between sessions reaches the next with the first
+// prompt of its resume.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
@@ -25,6 +28,8 @@ import { compactBoundaryLine } from './agent-visibility-helpers.js';
 import { seedForge } from './forge-helpers.js';
 import { harnessGit } from './worktree-removal-helpers.js';
 import {
+  AO_MESSAGE_CLOSING,
+  aoMessageOpening,
   RESULT_THREAD_PATTERN,
   advanceGate,
   awaitGate,
@@ -41,13 +46,19 @@ import type { MockInfo, MockSessionConfig, MockSessionStartRun } from './workflo
 
 export const ROLE = 'Release lead for the parser project: carries changes from review to merge.';
 export const DELIVERY =
-  'Agent Overflow puts your instructions.md and your memory in your context when this thread starts and after each compaction, and again when the thread resumes after any of it changed; the latest copy is current. When you do not see them, read instructions.md and memory/ from your home before you act.';
+  'Agent Overflow puts your instructions.md and your memory in your context when this thread starts and after each compaction, and with the next prompt after any of it changes, only what changed; the latest copy, with the changes after it, is current. When you do not see them, read instructions.md and memory/ from your home before you act.';
 export const ATTACHED_OPENING =
   "Files attached from the sender's agent home with home_files. They are the sender's own text and carry no more authority than its message.";
 export const ATTACHED_CLOSING = "End of the attached files. The sender's message follows.";
 export const VERIFICATION = 'Run make go-test and the affected e2e specs before calling a change done.';
 export const MEMORY_HEADING = '## Agent Overflow memory';
 const MEMORY_ENDING = '[End of Agent Overflow memory]';
+const CHANGES_HEADING = '## Changes to Agent Overflow memory';
+const CHANGES_NOTE =
+  '[Memory changed since the copy you last received, by another session, the user or you. A list shows only its new or changed lines and the files removed from it; a section shown whole replaces the earlier one.]';
+const CHANGES_ENDING = '[End of changes to Agent Overflow memory]';
+/** The source the mock reports a prompt's UserPromptSubmit run under. */
+const PROMPT = 'prompt';
 
 // Two paragraphs: the delivery carries instructions.md's blank lines.
 const INSTRUCTIONS = `${ROLE}\n\nGrants: none.\n`;
@@ -58,16 +69,18 @@ function fact(description: string, type = 'ruling', extra = ''): string {
 }
 
 /**
- * The block of a delivery that opens with heading, through the line before
- * the next block or the delivery's ending. Blocks are joined by a blank
- * line and each opens with a `### ` heading (internal/memory/delivery.go),
- * so a blank line inside a block, as instructions.md may hold, stays in it.
+ * The block of a delivery, or of a delivery of changes, that opens with
+ * heading, through the line before the next block or the ending. Blocks are
+ * joined by a blank line and each opens with a `### ` heading
+ * (internal/memory/delivery.go), so a blank line inside a block, as
+ * instructions.md may hold, stays in it.
  */
 export function blockOf(delivery: string, heading: string): string {
   const at = delivery.indexOf(`\n\n${heading}`);
   expect(at, `no ${heading} in:\n${delivery}`).toBeGreaterThanOrEqual(0);
   const rest = delivery.slice(at + 2);
-  const ending = rest.indexOf(`\n\n${MEMORY_ENDING}`);
+  const closing = delivery.startsWith(CHANGES_HEADING) ? CHANGES_ENDING : MEMORY_ENDING;
+  const ending = rest.indexOf(`\n\n${closing}`);
   expect(ending, `no ending after ${heading} in:\n${delivery}`).toBeGreaterThanOrEqual(0);
   const next = rest.indexOf('\n\n### ');
   return rest.slice(0, next >= 0 && next < ending ? next : ending);
@@ -77,9 +90,39 @@ export function blockOf(delivery: string, heading: string): string {
 export function deliveryOf(run: MockSessionStartRun): string {
   expect(run.contexts).toHaveLength(1);
   const [delivery] = run.contexts;
-  expect(delivery.startsWith(`${MEMORY_HEADING}\n\n### Keeping memory\n`), delivery).toBe(true);
+  expect(delivery.startsWith(`${MEMORY_HEADING}\n\n`), delivery).toBe(true);
   expect(delivery.endsWith(`\n\n${MEMORY_ENDING}`), delivery).toBe(true);
   return delivery;
+}
+
+/** The one delivery of changes of a prompt's run, checked for its frame. */
+export function changesOf(run: MockSessionStartRun): string {
+  expect(run.source).toBe(PROMPT);
+  expect(run.contexts).toHaveLength(1);
+  const [changes] = run.contexts;
+  expect(changes.startsWith(`${CHANGES_HEADING}\n${CHANGES_NOTE}\n`), changes).toBe(true);
+  expect(changes.endsWith(`\n\n${CHANGES_ENDING}`), changes).toBe(true);
+  return changes;
+}
+
+/** A delivery of changes holding blocks, as the hook writes one under the size limit. */
+export function changesWith(...blocks: string[]): string {
+  return `${CHANGES_HEADING}\n${CHANGES_NOTE}\n\n${blocks.join('\n\n')}\n\n${CHANGES_ENDING}`;
+}
+
+/** A session's runs of its SessionStart hooks, unstamped, leaving out its prompts' runs. */
+export function startRunsOf(runs: MockSessionStartRun[]): MockSessionStartRun[] {
+  return runs.filter((run) => run.source !== PROMPT).map(unstamped);
+}
+
+/** A session's runs of its prompts' UserPromptSubmit hooks. */
+export function promptRunsOf(runs: MockSessionStartRun[]): MockSessionStartRun[] {
+  return runs.filter((run) => run.source === PROMPT);
+}
+
+/** Checks that each of a session's `count` prompts ran the hook, and that none delivered anything. */
+export function expectQuietPrompts(runs: MockSessionStartRun[], count: number): void {
+  expect(promptRunsOf(runs)).toEqual(Array.from({ length: count }, () => ({ source: PROMPT, contexts: [] })));
 }
 export interface HomeContentsRun {
   agent: string;
@@ -94,7 +137,7 @@ export function homeBlockOpening(name: string, agentId: string, thread: string, 
   return (
     `You are the standing agent ${JSON.stringify(name)} (assistant id ${agentId}; this thread is ${thread}). Your home is ${home}. ` +
     `You own that directory and keep your durable state there. ${DELIVERY}` +
-    `\n\n## How you work\n\n- Orchestrate and delegate; never implement.`
+    `\n\n## How you work\n\n- Serve the role in your instructions.md.`
   );
 }
 
@@ -157,17 +200,19 @@ function agentScenario(provider: ProviderName, name: string, turns: ScriptedTurn
 
 /**
  * Runs the whole flow and asserts every step: on a first start the static
- * block and the hook's delivery of instructions.md and the agent's facts; a
- * resume of unchanged memory that delivers nothing and keeps the same block;
- * a fact written while a session runs reaching it at the compaction the turn
- * then runs, the block unchanged; an expired and a malformed fact written
- * between sessions reaching the next at its resume as maintenance warnings,
- * and the resume after it delivering nothing; a worker spawned with
- * home_files; the footer's role line both ways between the agent and an
- * ordinary thread; an instructions.md past the budget given way to its path
- * and an index cut to fit, both delivered again at the resume after they
- * changed and at the compaction; and no warning that the delivery did not
- * reach the agent.
+ * block and the start's delivery of instructions.md and the agent's facts,
+ * and a first prompt that delivers nothing; a resume of unchanged memory
+ * that runs no SessionStart hook, keeps the same block and whose prompt
+ * delivers nothing; a fact written while a turn runs reaching the session
+ * at the compaction the turn then runs; a fact written while the session
+ * idles reaching it with its next prompt as that one line, and the prompt
+ * after it delivering nothing; an expired and a malformed fact written
+ * between sessions reaching the next with its first prompt as the
+ * maintenance warnings alone; a worker spawned with home_files; the
+ * footer's role line both ways between the agent and an ordinary thread;
+ * and a memory past the size limit delivered whole, cut nowhere, opening
+ * with its size and the maintenance warning, at the prompt after it grew
+ * and at the compaction, with one warning row for its size and no other.
  */
 export async function runHomeContents(harness: HarnessApp, provider: ProviderName, tag: string): Promise<HomeContentsRun> {
   const names = [`${tag}-lead-${provider}`, `${tag}-workers-${provider}`, `${tag}-ordinary-${provider}`];
@@ -208,6 +253,7 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   // ---- First start: the block, and from the start's hook the
   // instructions, the agent's facts and the list of the projects it
   // serves, each with its memory folder under <configDir>/memory/projects.
+  // The first prompt finds the start's record and delivers nothing.
   await setScenario(harness, home, agentScenario(provider, `${tag}-setup-${provider}`, [{ text: 'Home set up.' }]));
   await harness.rpc('SendMessage', agent, 'Set up your home.', null);
   await awaitTurnCompleted(harness, agent);
@@ -216,9 +262,11 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   expect(block).toContain(opening);
   expect(block).not.toContain(MEMORY_HEADING);
   expect(block).not.toContain('### Your standing instructions');
-  const firstRuns = first.runs.map(unstamped);
+  const firstRuns = startRunsOf(first.runs);
   expect(firstRuns.map((run) => run.source)).toEqual(['startup']);
+  expectQuietPrompts(first.runs, 1);
   const started = deliveryOf(firstRuns[0]);
+  expect(started.startsWith(`${MEMORY_HEADING}\n\n${instructionsHeading}\n`), started).toBe(true);
   expect(blockOf(started, instructionsHeading)).toBe(`${instructionsHeading}\n${INSTRUCTIONS.trimEnd()}`);
   expect(blockOf(started, homeHeading)).toBe(`${homeHeading}\nRulings:\n- Never use em dashes in anything committed. (no-em-dashes.md)`);
   const projectsMemory = join(dirname(dirname(home)), 'memory', 'projects');
@@ -230,45 +278,61 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   }
   expect(started).not.toContain('### Project memory');
   expect(started).not.toContain('### Memory maintenance');
+  expect(started).not.toContain('[This memory is');
   await harness.rpc('StopSession', agent);
 
   // ---- A resume of unchanged memory carries the same block and runs no
-  // hook: the resumed history already holds the delivery as it reads now.
+  // SessionStart hook: the resumed history already holds the delivery, and
+  // its prompt delivers nothing.
   await setScenario(harness, home, agentScenario(provider, `${tag}-again-${provider}`, [{ text: 'Ready.' }]));
   await harness.rpc('SendMessage', agent, 'Are you ready?', null);
   await awaitTurnCompleted(harness, agent);
   const second = await sessionIn(harness, home, 1);
   expect(appended(provider, second.config)).toBe(block);
-  expect(second.runs).toEqual([]);
+  expect(startRunsOf(second.runs)).toEqual([]);
+  expectQuietPrompts(second.runs, 1);
   await harness.rpc('StopSession', agent);
 
   // ---- The agent writes a fact while its session runs. The session keeps
-  // its block, and its next compaction delivers the new fact.
+  // its block, and its next compaction delivers the new fact. Another
+  // session writes one while this one idles: the next prompt delivers that
+  // line alone, and the prompt after it nothing.
   await setScenario(
     harness,
     home,
     agentScenario(provider, `${tag}-remember-${provider}`, [
       { steps: [{ gate: 'remember' }, { emitLines: compactionLines(provider) }], text: 'Noted.' },
+      { text: 'Seen it.' },
+      { text: 'Nothing new.' },
     ]),
   );
   await harness.rpc('SendMessage', agent, 'Screenshots go to a secret gist from now on.', null);
   const gate = await awaitGate(harness, 'remember', home);
-  expect((await sessionIn(harness, home, 2)).runs).toEqual([]);
+  expectQuietPrompts((await sessionIn(harness, home, 2)).runs, 1);
   writeFileSync(join(memoryDir, 'evidence-in-gists.md'), fact('Screenshots go to a secret gist.'));
   await advanceGate(harness, gate.mockId, 'remember');
   await awaitTurnCompleted(harness, agent);
   const rewritten = await sessionIn(harness, home, 2);
   expect(appended(provider, rewritten.config)).toBe(block);
-  const rewrittenRuns = rewritten.runs.map(unstamped);
+  const rewrittenRuns = startRunsOf(rewritten.runs);
   expect(rewrittenRuns.map((run) => run.source)).toEqual(['compact']);
   expect(blockOf(deliveryOf(rewrittenRuns[0]), homeHeading)).toBe(
     `${homeHeading}\nRulings:\n- Screenshots go to a secret gist. (evidence-in-gists.md)\n- Never use em dashes in anything committed. (no-em-dashes.md)`,
   );
+  writeFileSync(join(memoryDir, 'release-branch.md'), fact('Release branches are cut on Mondays.'));
+  await harness.rpc('SendMessage', agent, 'Anything new?', null);
+  await awaitTurnCompleted(harness, agent);
+  await harness.rpc('SendMessage', agent, 'And now?', null);
+  await awaitTurnCompleted(harness, agent);
+  const live = promptRunsOf((await sessionIn(harness, home, 2)).runs);
+  expect(live).toHaveLength(3);
+  expect(changesOf(live[1])).toBe(changesWith(`${homeHeading}\nNew or changed:\n- ruling: Release branches are cut on Mondays. (release-branch.md)`));
+  expect(live[2].contexts).toEqual([]);
   await harness.rpc('StopSession', agent);
 
-  // ---- An expired and a malformed fact land between sessions: the next
-  // resume delivers neither in the index and warns about both, and the
-  // block holds.
+  // ---- An expired and a malformed fact land between sessions: the first
+  // prompt of the resume delivers the maintenance warnings alone, neither
+  // fact in the index, and the block holds.
   writeFileSync(join(memoryDir, 'release-dates.md'), fact('The train leaves on Tuesdays.', 'context', 'expires: 2026-01-01\n'));
   writeFileSync(join(memoryDir, 'broken.md'), 'Remember the release train.\n');
   await setScenario(harness, home, agentScenario(provider, `${tag}-maintain-${provider}`, [{ text: 'Cleaning up next.' }]));
@@ -276,14 +340,15 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   await awaitTurnCompleted(harness, agent);
   const maintained = await sessionIn(harness, home, 3);
   expect(appended(provider, maintained.config)).toBe(block);
-  const maintainedRuns = maintained.runs.map(unstamped);
-  expect(maintainedRuns.map((run) => run.source)).toEqual(['resume']);
-  const maintenance = deliveryOf(maintainedRuns[0]);
-  expect(maintenance).not.toContain('The train leaves on Tuesdays.');
-  expect(blockOf(maintenance, '### Memory maintenance')).toBe(
-    '### Memory maintenance\nKeeping these folders sound is your job. Fix these:\n' +
-      `- ${join(memoryDir, 'broken.md')}: it does not open with a --- frontmatter line. Fix its frontmatter or delete it.\n` +
-      `- ${join(memoryDir, 'release-dates.md')} expired on 2026-01-01. Delete it, or move expires if it still holds.`,
+  expect(startRunsOf(maintained.runs)).toEqual([]);
+  const maintainedPrompts = promptRunsOf(maintained.runs);
+  expect(maintainedPrompts).toHaveLength(1);
+  expect(changesOf(maintainedPrompts[0])).toBe(
+    changesWith(
+      '### Memory maintenance\nKeeping these folders sound is your job. Fix these:\n' +
+        `- ${join(memoryDir, 'broken.md')}: it does not open with a --- frontmatter line. Fix its frontmatter or delete it.\n` +
+        `- ${join(memoryDir, 'release-dates.md')} expired on 2026-01-01. Delete it, or move expires if it still holds.`,
+    ),
   );
   await harness.rpc('StopSession', agent);
 
@@ -351,19 +416,21 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   expect(spawned.isError, spawned.text).toBe(false);
   const worker = spawned.value!.thread_id;
   const workerFirstMessage = (await workerInput).report.input ?? '';
-  expect(workerFirstMessage.startsWith(`${ATTACHED_OPENING}\n\n### verification.md\n\n${VERIFICATION}\n\n${ATTACHED_CLOSING}\n\nReview the parser change on this branch.\n\n---\n`), workerFirstMessage).toBe(true);
+  expect(workerFirstMessage.startsWith(`${aoMessageOpening(`the agent in thread "Release lead" (${agent})`)}${ATTACHED_OPENING}\n\n### verification.md\n\n${VERIFICATION}\n\n${ATTACHED_CLOSING}\n\nReview the parser change on this branch.\n\n---\n`), workerFirstMessage).toBe(true);
+  expect(workerFirstMessage.endsWith(AO_MESSAGE_CLOSING), workerFirstMessage).toBe(true);
   expect(workerFirstMessage).toContain(
     `The sender is a standing agent. Its role, in its own words: "${ROLE}" It spawned this thread, so your questions and approval requests go to it, not to the user.`,
   );
   await awaitTurnCompleted(harness, agent);
   const work = await sessionIn(harness, home, 4);
   expect(appended(provider, work.config)).toBe(block);
-  expect(work.runs).toEqual([]);
+  expect(startRunsOf(work.runs)).toEqual([]);
 
   // Agent to ordinary thread: the role line, and no route.
   const toOrdinary = awaitMockInput(harness, { cwd: plain.path, includes: 'Please confirm the release notes.' });
   await harness.rpc('SendMessage', agent, 'Ask the other thread about the release notes.', null);
   const ordinaryInput = (await toOrdinary).report.input ?? '';
+  expect(ordinaryInput.startsWith(aoMessageOpening(`the agent in thread "Release lead" (${agent})`)), ordinaryInput).toBe(true);
   expect(ordinaryInput).toContain(`Agent request from thread "Release lead" (${agent}).`);
   expect(ordinaryInput).toContain(`Its role, in its own words: "${ROLE}"`);
   expect(ordinaryInput).not.toContain('It spawned this thread');
@@ -374,14 +441,19 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   const toAgent = awaitMockInput(harness, { cwd: home, includes: 'The release notes are ready for your review.' });
   await harness.rpc('SendMessage', ordinary, 'Tell the lead the notes are ready.', null);
   const agentInput = (await toAgent).report.input ?? '';
+  expect(agentInput.startsWith(aoMessageOpening(`the agent in thread "Ordinary" (${ordinary})`)), agentInput).toBe(true);
   expect(agentInput).toContain(`Agent request from thread "Ordinary" (${ordinary}).`);
   expect(agentInput).not.toContain('standing agent');
   await awaitTurnCompleted(harness, agent);
+  // Nothing changed, so none of the session's prompts delivered anything.
+  expect(promptRunsOf((await sessionIn(harness, home, 4)).runs).every((run) => run.contexts.length === 0)).toBe(true);
   await harness.rpc('StopSession', agent);
 
-  // ---- Past the budget: instructions.md gives way to its path and the
-  // agent's index is cut from its end. Both changed, so the resume delivers
-  // them, and so does the compaction. The block does not change.
+  // ---- Past the size limit nothing is cut: the first prompt after the
+  // memory grew delivers what changed, whole, and the compaction the whole
+  // memory, each opening with its size so the start a provider shows
+  // carries it. The maintenance warning names the size, the thread gets one
+  // warning row for it, and the block does not change.
   const line = `${'x'.repeat(99)}\n`;
   const longInstructions = `${ROLE}\n${line.repeat(100)}INSTRUCTIONS TAIL\n`;
   writeFileSync(join(home, 'instructions.md'), longInstructions);
@@ -391,54 +463,63 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   await setScenario(
     harness,
     home,
-    agentScenario(provider, `${tag}-capped-${provider}`, [{ steps: [{ emitLines: compactionLines(provider) }], text: 'Read the rest myself.' }]),
+    agentScenario(provider, `${tag}-large-${provider}`, [{ steps: [{ emitLines: compactionLines(provider) }], text: 'Read the rest myself.' }]),
   );
   await harness.rpc('SendMessage', agent, 'Your memory grew.', null);
   await awaitTurnCompleted(harness, agent);
-  const capped = await sessionIn(harness, home, 5);
-  expect(appended(provider, capped.config)).toBe(block);
-  const cappedRuns = capped.runs.map(unstamped);
-  expect(cappedRuns.map((run) => run.source)).toEqual(['resume', 'compact']);
-  expect(cappedRuns[0].contexts).toEqual(cappedRuns[1].contexts);
-  const cut = deliveryOf(cappedRuns[1]);
-  const bytes = Buffer.byteLength(longInstructions);
-  expect(blockOf(cut, instructionsHeading)).toBe(
-    `${instructionsHeading}\n[instructions.md is ${bytes} bytes, more than fits beside your memory. Read it from ${join(home, 'instructions.md')} before you act.]`,
-  );
-  expect(cut).not.toContain('INSTRUCTIONS TAIL');
-  const index = blockOf(cut, homeHeading);
-  const shown = (index.match(/^- Bulk fact /gm) ?? []).length;
-  expect(shown).toBeGreaterThan(0);
-  expect(index.endsWith(`\n[${120 - shown} more facts in ${memoryDir}/]`), index).toBe(true);
-  // The delivery, its stamp included, fits in the 9,000 UTF-16 units a
-  // hook's output is held to.
-  expect(capped.runs[1].contexts[0].length).toBeLessThanOrEqual(9000);
-  const warned = blockOf(cut, '### Memory maintenance');
-  expect(warned).toContain(`- ${join(home, 'instructions.md')} (${bytes} bytes) did not fit in this delivery beside your memory and was left out. Shorten it.`);
-  expect(warned).toContain(`- The index of ${memoryDir}/ was cut to fit this delivery: ${120 - shown} facts are not shown. Merge, shorten or delete facts there.`);
+  const large = await sessionIn(harness, home, 5);
+  expect(appended(provider, large.config)).toBe(block);
+  const sizeNotice = /\[This memory is (\d+) bytes, more than the 10000 a hook's output reaches you whole\. If you see only its start, read all of it from the file the provider saved it to before you act\.\]/;
+  const oversizeWarning =
+    '- Your memory is more than the 10000 bytes a hook\'s output reaches the model whole, so every session sees only its start until it reads the file the provider saved it to. Shorten instructions.md and your context facts, and merge or delete facts.';
+  const [grown] = promptRunsOf(large.runs);
+  const changes = changesOf(grown);
+  expect(changes.split('\n')[2]).toMatch(new RegExp(`^${sizeNotice.source}$`));
+  expect(blockOf(changes, instructionsHeading)).toBe(`${instructionsHeading}\n${longInstructions.trimEnd()}`);
+  expect((blockOf(changes, homeHeading).match(/^- reference: Bulk fact /gm) ?? []).length).toBe(120);
+  expect(blockOf(changes, '### Memory maintenance')).toContain(oversizeWarning);
+  const largeRuns = startRunsOf(large.runs);
+  expect(largeRuns.map((run) => run.source)).toEqual(['compact']);
+  const whole = deliveryOf(largeRuns[0]);
+  const size = whole.split('\n')[2].match(sizeNotice);
+  expect(size, whole.slice(0, 400)).not.toBeNull();
+  expect(Number(size![1])).toBe(Buffer.byteLength(large.runs.find((run) => run.source === 'compact')!.contexts[0]));
+  expect(blockOf(whole, instructionsHeading)).toBe(`${instructionsHeading}\n${longInstructions.trimEnd()}`);
+  expect((blockOf(whole, homeHeading).match(/^- Bulk fact /gm) ?? []).length).toBe(120);
+  expect(blockOf(whole, '### Memory maintenance')).toContain(oversizeWarning);
   await harness.rpc('StopSession', agent);
 
-  // Every start, resume and compaction delivered what it ran: no warning
-  // row.
-  const warnings = (await harness.rpc<Array<{ kind: string; summary: string }>>('ListItems', agent, true)).filter(
-    (item) => item.kind === 'error',
-  );
-  expect(warnings).toEqual([]);
+  // Every start, resume and compaction delivered what it ran: no error row,
+  // and the one warning row is the size's, which the compaction reports off
+  // its event.
+  const rows = async (kind: string) =>
+    (await harness.rpc<Array<{ kind: string; summary: string }>>('ListItems', agent, true))
+      .filter((item) => item.kind === kind)
+      .map((item) => item.summary);
+  await expect
+    .poll(() => rows('notification'), { timeout: 15_000 })
+    .toEqual([
+      `This conversation's memory is longer than a provider shows the model whole, so its sessions see its start and the path of a file holding all of it: ${size![1]} bytes, over the 10000 a hook's output reaches the model whole.`,
+    ]);
+  expect(await rows('error')).toEqual([]);
 
   return { agent, home, worker, ordinary, workerFirstMessage };
 }
 
-/** The warning row of a start, a resume or a compaction whose hook did not deliver. */
-export function undeliveredWarning(after: 'start' | 'resume' | 'compaction'): string {
-  return `Agent Overflow memory did not reach this session after its ${after}: no SessionStart hook output carried it. A hook failed, or hooks are turned off in the provider's own settings.`;
+/** The warning row of a start or a compaction whose hook did not deliver. */
+export function undeliveredWarning(after: 'start' | 'compaction'): string {
+  return `Agent Overflow memory did not reach this session after its ${after}: no SessionStart hook output carried it. A hook failed, or hooks are turned off in the provider's own settings. The next prompt delivers it whole.`;
 }
 
 /**
- * Runs a standing agent whose provider runs no SessionStart hook: its start
- * and its compaction each leave one warning row, and the turns complete.
- * Codex checks a compaction inside a turn when the next turn completes, so
- * a third turn follows the compaction. Nothing reached the thread's model,
- * so its resume runs the hook again, and leaves a third row.
+ * Runs a standing agent whose provider runs no hook, then runs them, then
+ * not again. A start and a compaction whose hook did not deliver each leave
+ * one warning row, and the turns complete; Codex checks a compaction inside
+ * a turn when the next turn completes, so a turn follows each compaction. A
+ * resume expects no delivery and leaves no row. With no record of what the
+ * session was shown, a prompt delivers the whole memory; a compaction whose
+ * hook did not deliver forgets the record its prompt wrote, so the first
+ * prompt after it delivers the whole memory again.
  */
 export async function runHomeHooksOff(harness: HarnessApp, provider: ProviderName, tag: string): Promise<{ agent: string }> {
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
@@ -447,22 +528,29 @@ export async function runHomeHooksOff(harness: HarnessApp, provider: ProviderNam
   const project = seed.projects[0];
   const agent = project.threadIds[0];
   const record = await harness.rpc<{ home: string }>('HarnessMakeAssistant', agent);
+  const instructionsHeading = `### Your standing instructions (${join(record.home, 'instructions.md')})`;
   writeFileSync(join(record.home, 'instructions.md'), INSTRUCTIONS);
-  await setScenario(harness, record.home, {
-    ...agentScenario(provider, `${tag}-${provider}`, [
-      { text: 'Started.' },
-      { steps: [{ emitLines: compactionLines(provider) }], text: 'Compacted.' },
-      { text: 'Still here.' },
-    ]),
-    sessionStartHooksOff: true,
-  });
+  const session = async (name: string, hooksOff: boolean, turns: ScriptedTurn[], messages: string[]) => {
+    await setScenario(harness, record.home, { ...agentScenario(provider, `${tag}-${name}-${provider}`, turns), sessionStartHooksOff: hooksOff });
+    for (const message of messages) {
+      await harness.rpc('SendMessage', agent, message, null);
+      await awaitTurnCompleted(harness, agent);
+    }
+  };
+  const compacting: ScriptedTurn[] = [{ steps: [{ emitLines: compactionLines(provider) }], text: 'Compacted.' }, { text: 'Still here.' }];
   const errors = async () =>
     (await harness.rpc<Array<{ kind: string; summary: string }>>('ListItems', agent, true))
       .filter((item) => item.kind === 'error')
       .map((item) => item.summary);
+  /** The one whole delivery the first prompt of session `index` made. */
+  const wholeAtPrompt = async (index: number) => {
+    const runs = (await sessionIn(harness, record.home, index)).runs;
+    expect(startRunsOf(runs)).toEqual([]);
+    const [prompt] = promptRunsOf(runs);
+    expect(blockOf(deliveryOf(unstamped(prompt)), instructionsHeading)).toBe(`${instructionsHeading}\n${INSTRUCTIONS.trimEnd()}`);
+  };
 
-  await harness.rpc('SendMessage', agent, 'Start up.', null);
-  await awaitTurnCompleted(harness, agent);
+  await session('off', true, [{ text: 'Started.' }, ...compacting], ['Start up.']);
   expect(await errors()).toEqual([undeliveredWarning('start')]);
   for (const message of ['Compact now.', 'Carry on.']) {
     await harness.rpc('SendMessage', agent, message, null);
@@ -472,18 +560,23 @@ export async function runHomeHooksOff(harness: HarnessApp, provider: ProviderNam
   expect((await sessionIn(harness, record.home, 0)).runs).toEqual([]);
   await harness.rpc('StopSession', agent);
 
-  await setScenario(harness, record.home, {
-    ...agentScenario(provider, `${tag}-resumed-${provider}`, [{ text: 'Resumed.' }]),
-    sessionStartHooksOff: true,
-  });
-  await harness.rpc('SendMessage', agent, 'Resume.', null);
-  await awaitTurnCompleted(harness, agent);
-  expect(await errors()).toEqual([undeliveredWarning('start'), undeliveredWarning('compaction'), undeliveredWarning('resume')]);
+  // Hooks on: the resume expects nothing, and its prompt, with no record,
+  // delivers the whole memory.
+  await session('on', false, [{ text: 'Resumed.' }], ['Resume.']);
   const resumed = (await mocksIn(harness, record.home, 2))[1];
   if (provider === 'codex') expect(resumed.sessionConfig?.resumed).toBe(true);
   else expect(resumed.registration.resumeRef ?? '').not.toBe('');
-  expect(resumed.sessionStartRuns ?? []).toEqual([]);
+  await wholeAtPrompt(1);
   await harness.rpc('StopSession', agent);
+
+  // Hooks off again: the compaction's miss forgets the record the prompt
+  // wrote, so the next session's first prompt delivers the whole memory.
+  await session('off-again', true, compacting, ['Compact again.', 'Carry on again.']);
+  await harness.rpc('StopSession', agent);
+  await session('on-again', false, [{ text: 'Back.' }], ['Back again.']);
+  await wholeAtPrompt(3);
+  await harness.rpc('StopSession', agent);
+  expect(await errors()).toEqual([undeliveredWarning('start'), undeliveredWarning('compaction'), undeliveredWarning('compaction')]);
   return { agent };
 }
 

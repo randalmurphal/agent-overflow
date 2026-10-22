@@ -168,7 +168,7 @@ it('reports a failed recurring-job check and stays quiet for a source without th
 it('asks the source whether the conversation is a standing agent when the dialog opens', async () => {
   const get = setBindingMock('GetStandingAgent', async (threadId: string) => {
     expect(takePinnedBackend()).toBe('tower');
-    return threadId === thread.id ? { threadId, home: '/agents/conversation', notifyOnTick: false, promotedAt: 1 } : null;
+    return threadId === thread.id ? { threadId, home: '/agents/conversation', promotedAt: 1 } : null;
   });
   openConversationTransfer(thread);
   await tick();

@@ -124,6 +124,9 @@ type userMessageInputs struct {
 	origin       string
 	originThread *usermessage.OriginThread
 	originWake   *usermessage.OriginWake
+	// joinedParts are a requeued joined row's members, which the wire text
+	// marks one by one.
+	joinedParts []usermessage.JoinedPart
 }
 
 var errEmptyUserMessage = errors.New("enter a message or attach a file before sending")
@@ -246,13 +249,16 @@ func (a *App) resolveUserMessageEnvelope(
 	// persisted the user row, so the composer restores the draft and shows
 	// the error rather than silently sending the message without the
 	// context it asked for.
-	providerContent := content
-	command := ""
-	if inputs.expandComposerCommands {
-		providerContent, command, err = a.expandComposerCommand(threadID, content)
-		if err != nil {
-			return resolvedUserMessage{}, fmt.Errorf("composer command: %w", err)
-		}
+	//
+	providerContent, command, err := a.wireText(threadID, content, usermessage.Meta{
+		ExpandComposerCommands: inputs.expandComposerCommands,
+		Origin:                 inputs.origin,
+		OriginThread:           inputs.originThread,
+		OriginWake:             inputs.originWake,
+		JoinedParts:            inputs.joinedParts,
+	})
+	if err != nil {
+		return resolvedUserMessage{}, err
 	}
 	providerContent = appendFileAttachmentLines(providerContent, attachments.fileLines)
 
@@ -287,6 +293,35 @@ func (a *App) resolveUserMessageEnvelope(
 		revisionDiffCommentIDs: revisionDiffCommentIDs,
 		userMessageMeta:        userMeta,
 	}, nil
+}
+
+// rowWireText is a stored user row's text as its dispatch put it on the
+// wire, without file attachment lines.
+func (a *App) rowWireText(threadID, content, metaJSON string) (string, error) {
+	meta, err := usermessage.FromItem(store.Item{Meta: metaJSON})
+	if err != nil {
+		return "", err
+	}
+	text, _, err := a.wireText(threadID, content, meta)
+	return text, err
+}
+
+// wireText is content with meta as the model receives it, before file
+// attachment lines, and the composer command it expanded. A message the
+// app or an agent wrote opens with its sender and ends with the end line,
+// member by member when it is joined (usermessage.WireText); the stored
+// row stays as written. A person's composer command expands after that.
+func (a *App) wireText(threadID, content string, meta usermessage.Meta) (text, command string, err error) {
+	here, _ := a.backendIdentity()
+	text = usermessage.WireText(content, meta, here)
+	if !meta.ExpandComposerCommands {
+		return text, "", nil
+	}
+	text, command, err = a.expandComposerCommand(threadID, text)
+	if err != nil {
+		return "", "", fmt.Errorf("composer command: %w", err)
+	}
+	return text, command, nil
 }
 
 func (a *App) sendMessage(threadID string, content string, attachmentIDs []string) error {

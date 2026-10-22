@@ -53,7 +53,7 @@ const (
 // the prefix to tell a tick's turn from any other.
 func agentWakeSendIDPrefix(wakeID string) string { return agentWakeSendIDRoot + wakeID + ":" }
 
-const agentWakeSendIDRoot = "agent-wake:"
+const agentWakeSendIDRoot = usermessage.TickSendIDRoot
 
 func agentWakeSendID(wakeID string, fireAt int64) string {
 	return agentWakeSendIDPrefix(wakeID) + strconv.FormatInt(fireAt, 10)
@@ -1362,7 +1362,7 @@ func (a *App) SendExternalThreadMessage(threadID, text string) (string, error) {
 		threadID:   threadID,
 		sendID:     sendID,
 		origin:     usermessage.OriginAgentWake,
-		originWake: &usermessage.OriginWake{Kind: agentWakeKindSend},
+		originWake: &usermessage.OriginWake{Kind: usermessage.OriginWakeKindSend},
 		prepare:    func() (string, bool, error) { return body, true, nil },
 		startFailed: func(err error) string {
 			return "A message sent with agent-overflow thread send is queued, but the agent could not start: " + err.Error()
@@ -1376,6 +1376,3 @@ func (a *App) SendExternalThreadMessage(threadID, text string) (string, error) {
 	}
 	return sendID, nil
 }
-
-// agentWakeKindSend is the badge kind of an outside send.
-const agentWakeKindSend = "send"

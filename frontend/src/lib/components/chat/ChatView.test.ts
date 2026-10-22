@@ -8,6 +8,7 @@
 import { describe, expect, it, beforeAll, beforeEach, vi } from 'vitest';
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
+import { pendingAttention } from '../../utils/threadStatusPill';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ChatView from './ChatView.svelte';
@@ -851,6 +852,27 @@ describe('<ChatView>', () => {
       expect(getThreads()[0]?.lastReadAt).toBe(1_000);
       expect(getThreads()[0]?.hasFailedTurn).toBe(false);
       expect(pane.thread?.hasFailedTurn).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reads an attention flag raised after the last read when the thread is opened', async () => {
+    vi.useFakeTimers();
+    try {
+      const thread = { ...seedThread(), lastReadAt: 500, latestTurnCompletedAt: 400, attention: { kind: 'decision' as const, reason: 'r', at: 2_000 } };
+      setBindingMock('ListThreads', async () => [thread]);
+      await refreshThreads();
+      const pane = await buildPane(thread);
+      const markRead = setBindingMock('MarkThreadRead', async () => {});
+
+      vi.setSystemTime(1_000);
+      render(ChatView, { props: { pane } });
+      await tick();
+
+      expect(markRead).toHaveBeenCalledTimes(1);
+      expect(getThreads()[0]?.lastReadAt).toBe(2_000);
+      expect(pendingAttention(getThreads()[0]!)).toBeNull();
     } finally {
       vi.useRealTimers();
     }

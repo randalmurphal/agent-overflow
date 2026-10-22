@@ -6,7 +6,7 @@ import { computerCatalog, readComputerRows, retainUnavailableComputerRows, type 
 import { currentThreadRow, noteThread, onThreadOwnershipChanged, threadBackend, threadGroupBackend } from '../transport/entityIndex';
 import type { Thread } from '../types/models';
 import { clearPayloadCacheForThread } from '../utils/payloadDataCache';
-import { hasUnread } from '../utils/threadStatusPill';
+import { owesRead } from '../utils/threadStatusPill';
 import { clearThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
 import { clearThreadSizePriors } from '../utils/virtual/priors';
 import { evictDiffSpansForThread } from '../utils/diffSpanCache.svelte';
@@ -376,10 +376,12 @@ export const MARK_THREADS_READ_LIMIT = 500;
  * have run.
  */
 export async function markThreadsRead(threads: readonly Thread[]): Promise<void> {
-  const owed = threads.filter((thread) => hasUnread(thread) || thread.hasFailedTurn || thread.hasIncompleteTurn);
+  const owed = threads.filter((thread) =>
+    owesRead(thread) || thread.hasFailedTurn || thread.hasIncompleteTurn);
   if (owed.length === 0) return;
   const now = Date.now();
-  const releases = owed.map((thread) => claimLocalReadMarker(thread.id, Math.max(now, thread.latestTurnCompletedAt ?? 0)));
+  const releases = owed.map((thread) =>
+    claimLocalReadMarker(thread.id, Math.max(now, thread.latestTurnCompletedAt ?? 0, thread.attention?.at ?? 0)));
   try {
     const mark = threadRowFrameMark();
     const backend = threadBackend(owed[0].id) ?? HOME_BACKEND;

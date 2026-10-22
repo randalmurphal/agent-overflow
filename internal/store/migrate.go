@@ -1752,7 +1752,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: wakeItemsMigrationVersion, Name: "wake_items", SQL: wakeItemsV157SQL, Fix: recordConfirmedWakeItems},
 	{Version: agentTreeMarksMigrationVersion, Name: "agent_tree_marks", SQL: agentTreeMarksV158SQL, Fix: fillAgentTreeMarks, Check: refusePreSyncColumn("thread_requests", "open_below_0")},
 	{Version: spawnPlacementMigrationVersion, Name: "spawn_placement", SQL: spawnPlacementV159SQL},
-	{Version: sessionStartReceiptsMigrationVersion, Name: "session_start_receipts", SQL: sessionStartReceiptsV160SQL},
+	{Version: threadAttentionMigrationVersion, Name: "thread_attention", SQL: threadAttentionV160SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

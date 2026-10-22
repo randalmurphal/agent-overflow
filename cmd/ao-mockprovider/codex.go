@@ -89,6 +89,10 @@ type codexAdapter struct {
 	// opportunity (codex_session_start.go). Guarded by mu.
 	sessionStart        []sessionStartHook
 	pendingSessionStart string
+	// promptHooks are the trusted UserPromptSubmit hooks of the same
+	// config, run for each turn's input and each drained steer. Guarded by
+	// mu.
+	promptHooks []sessionStartHook
 
 	// login is the account sign-in this connection is serving, if any. It
 	// carries its own lock rather than sharing mu: its completion arrives on
@@ -301,6 +305,7 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 			Kind: control.ReportUserInput, Turn: turn,
 			Input: codexInputText(params), SessionRef: vars["THREAD_ID"],
 		})
+		a.runPromptHooks(vars, codexInputText(params))
 	case "thread/inject_items":
 		a.injectItems(id, params)
 	case "thread/fork":

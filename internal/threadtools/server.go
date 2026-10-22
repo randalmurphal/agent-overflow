@@ -100,6 +100,8 @@ func (s *Server) call(ctx context.Context, caller Caller, name string, args json
 		return call.group(ctx, args)
 	case "thread_remind":
 		return call.remind(ctx, args)
+	case "thread_attention":
+		return call.attention(ctx, args)
 	case "thread_loop":
 		return call.loop(ctx, args)
 	case "thread_watch":

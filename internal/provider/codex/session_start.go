@@ -30,7 +30,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	if binary == "" {
 		binary = "codex"
 	}
-	sessionStart, err := provider.NewSessionStartDelivery(cfg.SessionStartHook, cfg.SessionStartReceipts)
+	sessionStart, err := provider.NewSessionStartDelivery(cfg.SessionStartHook, cfg.SessionStartForget)
 	if err != nil {
 		return nil, fmt.Errorf("codex: %w", err)
 	}
@@ -229,13 +229,10 @@ func (s *Session) startOrResumeThread(ctx context.Context, cfg Config) error {
 	// Armed before the request: the read loop is live, and a turn the
 	// app-server starts right after its answer (a queued message, a resumed
 	// running turn) runs the hooks before this goroutine reads the answer.
-	// A resumed thread carries the hooks' earlier output in its history, so
-	// the resume runs only the hooks whose Resume is set; a new thread runs
-	// every hook in its first turn. Only a compaction's expectation writes
-	// and can warn.
-	if method == "thread/resume" {
-		s.sessionStart.Expect(provider.SessionStartAfterResume)
-	} else {
+	// A resumed thread carries the hooks' earlier output in its history and
+	// runs none at its resume; a new thread runs every hook in its first
+	// turn.
+	if method != "thread/resume" {
 		s.sessionStart.Expect(provider.SessionStartAfterStart)
 	}
 

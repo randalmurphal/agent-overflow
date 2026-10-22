@@ -127,7 +127,7 @@ func (a *App) RevertConversationAndResendMessage(
 		return result, errors.New("revert and resend: edited message content is required")
 	}
 
-	releaseAdmission, admissionErr := a.lockSendAdmission(context.WithoutCancel(ctx), threadID, opts.SendID)
+	releaseAdmission, admissionErr := a.lockClientSendAdmission(context.WithoutCancel(ctx), threadID, opts.SendID)
 	if admissionErr != nil {
 		return result, admissionErr
 	}

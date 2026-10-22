@@ -93,6 +93,18 @@ describe('offline computer catalogs', () => {
     expect(readCatalogRecord({ ...record, rows: [malformed] }, 'g1', 'projects', 'stamp')).toBeNull();
   });
 
+  it('keeps a saved thread row with an attention flag and refuses a malformed one', () => {
+    const thread = { id: 't', title: 'Ops', provider: 'claude', workspacePath: '/w', projectPath: '/w', model: 'm',
+      createdAt: 0, updatedAt: 0, archived: false } as unknown as CatalogRows['threads'];
+    const flagged = { ...thread, attention: { kind: 'review', reason: 'Ready', at: 5 } } as CatalogRows['threads'];
+    expect(readCatalogRecord(makeCatalogRecord('g1', 'threads', [flagged], 's'), 'g1', 'threads', 's')).toEqual([flagged]);
+    expect(readCatalogRecord(makeCatalogRecord('g1', 'threads', [{ ...thread, attention: null }], 's'), 'g1', 'threads', 's')).toHaveLength(1);
+    for (const attention of ['review', { kind: 'review', reason: 'Ready' }, { kind: 1, reason: 'Ready', at: 5 }]) {
+      const record = makeCatalogRecord('g1', 'threads', [thread], 's');
+      expect(readCatalogRecord({ ...record, rows: [{ ...thread, attention }] }, 'g1', 'threads', 's'), JSON.stringify(attention)).toBeNull();
+    }
+  });
+
   it('rejects malformed, oversized and obsolete metadata', async () => {
     const record = makeCatalogRecord('g1', 'projects', [project], 'stamp');
     expect(readCatalogRecord(record, 'g2', 'projects', 'stamp')).toBeNull();

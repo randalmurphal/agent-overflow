@@ -1377,7 +1377,6 @@ export class StandingAgent {
     "id": string;
     "threadId": string;
     "home": string;
-    "notifyOnTick": boolean;
     "creatorAgentId"?: string;
     "createdAt": number;
 
@@ -1399,9 +1398,6 @@ export class StandingAgent {
         }
         if (!("home" in $$source)) {
             this["home"] = "";
-        }
-        if (!("notifyOnTick" in $$source)) {
-            this["notifyOnTick"] = false;
         }
         if (!("createdAt" in $$source)) {
             this["createdAt"] = 0;
@@ -1503,6 +1499,14 @@ export class Thread {
      * thread.
      */
     "lastReadAt"?: number | null;
+
+    /**
+     * Attention is the flag the thread's agent raised for the user
+     * (SetThreadAttention), nil when it raised none. It is pending while
+     * LastReadAt is before its At, as an unread completion is, so a read
+     * of the thread clears it.
+     */
+    "attention"?: ThreadAttention | null;
 
     /**
      * PinnedAt is the Unix-ms timestamp of when the user pinned the
@@ -1765,20 +1769,57 @@ export class Thread {
      * Creates a new Thread instance from a string or object.
      */
     static createFrom($$source: any = {}): Thread {
-        const $$createField35_0 = $$createType18;
-        const $$createField41_0 = $$createType5;
-        const $$createField44_0 = $$createType19;
+        const $$createField28_0 = $$createType19;
+        const $$createField36_0 = $$createType20;
+        const $$createField42_0 = $$createType5;
+        const $$createField45_0 = $$createType21;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("attention" in $$parsedSource) {
+            $$parsedSource["attention"] = $$createField28_0($$parsedSource["attention"]);
+        }
         if ("origin" in $$parsedSource) {
-            $$parsedSource["origin"] = $$createField35_0($$parsedSource["origin"]);
+            $$parsedSource["origin"] = $$createField36_0($$parsedSource["origin"]);
         }
         if ("agentProjectIds" in $$parsedSource) {
-            $$parsedSource["agentProjectIds"] = $$createField41_0($$parsedSource["agentProjectIds"]);
+            $$parsedSource["agentProjectIds"] = $$createField42_0($$parsedSource["agentProjectIds"]);
         }
         if ("archivedChildCounts" in $$parsedSource) {
-            $$parsedSource["archivedChildCounts"] = $$createField44_0($$parsedSource["archivedChildCounts"]);
+            $$parsedSource["archivedChildCounts"] = $$createField45_0($$parsedSource["archivedChildCounts"]);
         }
         return new Thread($$parsedSource as Partial<Thread>);
+    }
+}
+
+/**
+ * ThreadAttention is the flag an agent raises on its thread for the user:
+ * its kind, the short reason it gave and when it raised it.
+ */
+export class ThreadAttention {
+    "kind": string;
+    "reason": string;
+    "at": number;
+
+    /** Creates a new ThreadAttention instance. */
+    constructor($$source: Partial<ThreadAttention> = {}) {
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("reason" in $$source)) {
+            this["reason"] = "";
+        }
+        if (!("at" in $$source)) {
+            this["at"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ThreadAttention instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ThreadAttention {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ThreadAttention($$parsedSource as Partial<ThreadAttention>);
     }
 }
 
@@ -2061,8 +2102,8 @@ export class TimelineDigestContext {
      * Creates a new TimelineDigestContext instance from a string or object.
      */
     static createFrom($$source: any = {}): TimelineDigestContext {
-        const $$createField0_0 = $$createType20;
-        const $$createField1_0 = $$createType20;
+        const $$createField0_0 = $$createType22;
+        const $$createField1_0 = $$createType22;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("after" in $$parsedSource) {
             $$parsedSource["after"] = $$createField0_0($$parsedSource["after"]);
@@ -2104,7 +2145,7 @@ export class TimelineScopeContext {
         const $$createField0_0 = $$createType0;
         const $$createField1_0 = $$createType0;
         const $$createField2_0 = $$createType12;
-        const $$createField3_0 = $$createType22;
+        const $$createField3_0 = $$createType24;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("root" in $$parsedSource) {
             $$parsedSource["root"] = $$createField0_0($$parsedSource["root"]);
@@ -2670,8 +2711,10 @@ const $$createType14 = $Create.Nullable($$createType13);
 const $$createType15 = $Create.Array($$createType2);
 const $$createType16 = TimelineCursor.createFrom;
 const $$createType17 = Project.createFrom;
-const $$createType18 = ThreadOrigin.createFrom;
-const $$createType19 = $Create.Map($Create.Any, $Create.Any);
-const $$createType20 = $Create.Nullable($$createType16);
-const $$createType21 = TimelineDigestContext.createFrom;
-const $$createType22 = $Create.Nullable($$createType21);
+const $$createType18 = ThreadAttention.createFrom;
+const $$createType19 = $Create.Nullable($$createType18);
+const $$createType20 = ThreadOrigin.createFrom;
+const $$createType21 = $Create.Map($Create.Any, $Create.Any);
+const $$createType22 = $Create.Nullable($$createType16);
+const $$createType23 = TimelineDigestContext.createFrom;
+const $$createType24 = $Create.Nullable($$createType23);

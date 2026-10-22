@@ -44,11 +44,13 @@ func TestSessionStartMatcherTakes(t *testing.T) {
 func TestCodexHookHashMatchesUpstream(t *testing.T) {
 	command := `'/opt/ao/bin/agent overflow' __agent-home-context 'MEMORY.md' '/home/a&b/<it>/"q"\\é'`
 	const want = "sha256:cc5fb41f21244abd1137a7526fef1383cea100fe9d56b1c7d1bd6bfddd3f4611"
-	if got := codexHookHash("startup|compact|clear", command, 60); got != want {
+	if got := codexHookHash("session_start", "startup|compact|clear", command, 60); got != want {
 		t.Fatalf("hash = %s, want %s", got, want)
 	}
-	if codexHookHash("startup|compact", command, 60) == want || codexHookHash("startup|compact|clear", command, 600) == want {
-		t.Fatal("the matcher and the timeout must be part of the identity")
+	if codexHookHash("session_start", "startup|compact", command, 60) == want ||
+		codexHookHash("session_start", "startup|compact|clear", command, 600) == want ||
+		codexHookHash("user_prompt_submit", "startup|compact|clear", command, 60) == want {
+		t.Fatal("the event, the matcher and the timeout must be part of the identity")
 	}
 }
 
@@ -302,9 +304,9 @@ func TestCodexRunsTrustedSessionStartHooksAtTheTurnStartAndAfterACompaction(t *t
 	config := mustJSON(map[string]any{"hooks": map[string]any{
 		"SessionStart": []any{hookGroup("startup|compact|clear", instructions, memory, untrusted)},
 		"state": map[string]any{
-			codexSessionFlagsSource + ":session_start:0:0": map[string]any{"trusted_hash": codexHookHash("startup|compact|clear", instructions, 60)},
-			codexSessionFlagsSource + ":session_start:0:1": map[string]any{"trusted_hash": codexHookHash("startup|compact|clear", memory, 60)},
-			codexSessionFlagsSource + ":session_start:0:2": map[string]any{"trusted_hash": codexHookHash("startup|compact|clear", "echo other", 60)},
+			codexSessionFlagsSource + ":session_start:0:0": map[string]any{"trusted_hash": codexHookHash("session_start", "startup|compact|clear", instructions, 60)},
+			codexSessionFlagsSource + ":session_start:0:1": map[string]any{"trusted_hash": codexHookHash("session_start", "startup|compact|clear", memory, 60)},
+			codexSessionFlagsSource + ":session_start:0:2": map[string]any{"trusted_hash": codexHookHash("session_start", "startup|compact|clear", "echo other", 60)},
 		},
 	}})
 	sc := codexScenario()
@@ -402,7 +404,7 @@ func TestCodexResumeAndFailedRuns(t *testing.T) {
 	trusted := func(matcher string, commands ...string) string {
 		state := map[string]any{}
 		for i, command := range commands {
-			state[codexSessionFlagsSource+":session_start:0:"+string(rune('0'+i))] = map[string]any{"trusted_hash": codexHookHash(matcher, command, 60)}
+			state[codexSessionFlagsSource+":session_start:0:"+string(rune('0'+i))] = map[string]any{"trusted_hash": codexHookHash("session_start", matcher, command, 60)}
 		}
 		return mustJSON(map[string]any{"threadId": "th-unit", "config": map[string]any{"hooks": map[string]any{
 			"SessionStart": []any{hookGroup(matcher, commands...)},

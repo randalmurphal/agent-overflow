@@ -149,12 +149,19 @@ var observeHookEvents = []string{
 	"PostCompact",
 }
 
+// observedHooks is a copy of the hook groups hooks holds for event.
+func observedHooks(hooks map[string]any, event string) []any {
+	groups, _ := hooks[event].([]any)
+	return append([]any{}, groups...)
+}
+
 // hookSettingsJSON renders the --settings flag payload, the flagSettings
 // layer, which merges with (does not clobber) the user's own settings and
 // hooks. It registers the AO relay subcommand for every captured event, and
 // mirrors the parts of the headless block the app owns on every Claude
 // surface: the cross-session inbound policy, the native-memory switch, the
-// memory SessionStart hook and the additional directories
+// memory SessionStart and UserPromptSubmit hooks and the additional
+// directories
 // (docs/specs/memory.md).
 //
 // crossSessionInbound is here for the reason the headless block states it
@@ -189,8 +196,12 @@ func hookSettingsJSON(cfg Config) (string, error) {
 	for _, ev := range observeHookEvents {
 		hooks[ev] = observeEntry
 	}
-	if cfg.SessionStartHook != nil {
-		hooks["SessionStart"] = append(append([]any{}, observeEntry...), claude.SessionStartHookGroup(*cfg.SessionStartHook))
+	// The memory hook joins whatever observes the same event.
+	if hook := cfg.SessionStartHook; hook != nil {
+		hooks["SessionStart"] = append(observedHooks(hooks, "SessionStart"), claude.SessionStartHookGroup(*hook))
+		if hook.PromptCommand != "" {
+			hooks["UserPromptSubmit"] = append(observedHooks(hooks, "UserPromptSubmit"), claude.UserPromptSubmitHookGroup(*hook))
+		}
 	}
 
 	block := map[string]any{"hooks": hooks}

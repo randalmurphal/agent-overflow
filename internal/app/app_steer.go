@@ -61,7 +61,7 @@ func (a *App) SteerMessageWithOptions(ctx context.Context, threadID string, cont
 	if err := a.requireAutonomyForThread(ctx, threadID, opts.RuntimeMode); err != nil {
 		return store.Thread{}, err
 	}
-	unlockAdmission, err := a.lockSendAdmission(ctx, threadID, opts.SendID)
+	unlockAdmission, err := a.lockClientSendAdmission(ctx, threadID, opts.SendID)
 	if err != nil {
 		return store.Thread{}, err
 	}

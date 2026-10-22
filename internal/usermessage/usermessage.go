@@ -168,6 +168,29 @@ func IsAgentMessage(meta Meta) bool {
 	return meta.Origin == OriginAgentThread || meta.Origin == OriginAgentWake
 }
 
+// TickSendIDRoot opens the send id of every loop or watch wake, the
+// messages a tick is made of.
+const TickSendIDRoot = "agent-wake:"
+
+// IsTickSendID reports whether id is a loop's or a watch's wake.
+func IsTickSendID(id string) bool { return strings.HasPrefix(id, TickSendIDRoot) }
+
+// IsTick reports whether every message a user row holds is a loop or watch
+// wake: its send id, or each one Claude joined into it. Such a row is not
+// the thread's activity, and a turn of only such rows is a tick.
+func IsTick(meta Meta) bool {
+	ids := meta.JoinedSendIDs
+	if len(ids) == 0 {
+		ids = []string{meta.SendID}
+	}
+	for _, id := range ids {
+		if !IsTickSendID(id) {
+			return false
+		}
+	}
+	return true
+}
+
 // Input is the per-entry-point projection Marshal encodes. A struct
 // rather than a positional list because every field is optional and
 // several are the same type — a caller that swapped two of the

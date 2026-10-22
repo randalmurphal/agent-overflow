@@ -688,27 +688,45 @@ func inlineSettingsForCLI(cfg Config) (string, bool) {
 }
 
 // SessionStartHookGroup is the SessionStart matcher group that registers
-// hook in a settings block, with its matcher (provider.SessionStartMatcher).
+// hook in a settings block, for its sources (provider.SessionStartHookSources).
 // Claude Code runs it beside the user's own SessionStart hooks. Shared with
 // claude-tui, which drives the same binary.
 func SessionStartHookGroup(hook provider.SessionStartHook) map[string]any {
 	return map[string]any{
-		"matcher": provider.SessionStartMatcher(hook.Resume),
-		"hooks": []any{map[string]any{
-			"type":    "command",
-			"command": hook.Command,
-			"timeout": provider.SessionStartHookTimeoutSeconds,
-		}},
+		"matcher": provider.SessionStartHookSources,
+		"hooks":   []any{commandHandler(hook.Command)},
+	}
+}
+
+// UserPromptSubmitHookGroup is the UserPromptSubmit group that registers
+// hook's PromptCommand, which Claude Code runs beside the user's own
+// UserPromptSubmit hooks, at every prompt, a queued one included. Shared
+// with claude-tui.
+func UserPromptSubmitHookGroup(hook provider.SessionStartHook) map[string]any {
+	return map[string]any{"hooks": []any{commandHandler(hook.PromptCommand)}}
+}
+
+// commandHandler is a command hook handler running command.
+func commandHandler(command string) map[string]any {
+	return map[string]any{
+		"type":    "command",
+		"command": command,
+		"timeout": provider.SessionStartHookTimeoutSeconds,
 	}
 }
 
 // inlineSettingsHooksForCLI is the block's `hooks` value; nil without a
 // hook.
 func inlineSettingsHooksForCLI(cfg Config) map[string]any {
-	if cfg.SessionStartHook == nil {
+	hook := cfg.SessionStartHook
+	if hook == nil {
 		return nil
 	}
-	return map[string]any{"SessionStart": []any{SessionStartHookGroup(*cfg.SessionStartHook)}}
+	hooks := map[string]any{"SessionStart": []any{SessionStartHookGroup(*hook)}}
+	if hook.PromptCommand != "" {
+		hooks["UserPromptSubmit"] = []any{UserPromptSubmitHookGroup(*hook)}
+	}
+	return hooks
 }
 
 // inlineSettingsEnvForCLI builds the `env` half of the block. Returns nil

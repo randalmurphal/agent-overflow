@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { SRC_ROOT } from '../../../test/sourceScan';
 import { BROWSER_TOOLS_SERVER } from '../../utils/browserTools';
 import {
   AO_TOOL_SERVERS,
@@ -105,6 +108,18 @@ describe('AO tool presentation', () => {
   describe('thread tools', () => {
     const tid = '7f2c9a41-aaaa-bbbb-cccc-dddddddddddd';
 
+    it('presents every tool the thread tools server lists in its own words', () => {
+      const schemas = readFileSync(join(SRC_ROOT, '..', '..', 'internal', 'threadtools', 'schemas.go'), 'utf8');
+      const list = /var ToolNames = \[\]string\{([^}]*)\}/.exec(schemas)?.[1] ?? '';
+      const tools = [...list.matchAll(/"(thread_[a-z_]+)"/g)].map((match) => match[1]);
+      expect(tools.length).toBeGreaterThan(10);
+      for (const tool of tools) {
+        // A tool the table does not know lists its inputs as key=value.
+        const p = aoToolPresentation(meta(THREAD_TOOLS_SERVER, tool, { unlisted: 'x' }), names)!;
+        expect(p.fullWhat, tool).not.toContain('unlisted=');
+      }
+    });
+
     it.each([
       ['thread_search', { query: 'flaky test' }, 'search', '"flaky test"'],
       ['thread_search', {}, 'search', 'recent threads'],
@@ -147,6 +162,9 @@ describe('AO tool presentation', () => {
       ['thread_watch', { label: 'mrs', command: './poll', every_seconds: 90 }, 'watch', 'mrs · every 90s'],
       ['thread_watch', { label: 'tail', command: './tail', long_running: true }, 'watch', 'tail · long-running'],
       ['thread_cancel', { label: 'board' }, 'cancel', 'board'],
+      ['thread_attention', { kind: 'review', reason: 'Notes ready\nsee the doc' }, 'flag', 'review · Notes ready'],
+      ['thread_attention', { kind: 'none' }, 'flag', 'lowered'],
+      ['thread_new_assistant', { name: 'Ops', role: 'Watch the deploys.' }, 'create', 'Ops'],
     ])('%s', (tool, input, label, what) => {
       const p = aoToolPresentation(meta(THREAD_TOOLS_SERVER, tool, input), names)!;
       expect(p).toMatchObject({ icon: 'speech-bubble', label, what, headerLabel: `Thread ${label}` });

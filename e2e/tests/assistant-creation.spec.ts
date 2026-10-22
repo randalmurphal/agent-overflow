@@ -19,7 +19,7 @@ import type { Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import { captureAgentMessage } from './wake-rows-helpers.js';
 import { assistantsSection, cardShell, projectRow } from './sidebar-sections-helpers.js';
-import { awaitMockInput, plainScenario, setScenario, threadRows, type ProviderName } from './thread-tools-helpers.js';
+import { AO_MESSAGE_CLOSING, aoMessageOpening, awaitMockInput, plainScenario, setScenario, threadRows, type ProviderName } from './thread-tools-helpers.js';
 
 const MODEL: Record<ProviderName, string> = { claude: 'claude-opus-4-7', codex: 'gpt-5.2-codex' };
 
@@ -93,6 +93,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const input = report.input ?? '';
     expect(cwd).toBe(agent.home);
     expect(input).toContain(`Your home is ${agent.home}, empty but for a README.`);
+    // The app wrote it, and the model reads that from its marks.
+    expect(input.startsWith(`${aoMessageOpening()}You are "Ops"`), input).toBe(true);
+    expect(input.endsWith(AO_MESSAGE_CLOSING), input).toBe(true);
     const openingRow = page.locator('[data-testid="agent-message-row"][data-agent-message-kind="opening"]');
     await expect(openingRow).toHaveCount(1);
     await expect(openingRow.getByTestId('agent-message-sender')).toHaveText('Agent Overflow');

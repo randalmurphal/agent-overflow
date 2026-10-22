@@ -10,49 +10,61 @@ import (
 )
 
 // A session's SessionStart hook (Config.SessionStartHook) runs at its spawn
-// when it starts fresh, at its spawn when it resumes and the hook's Resume
-// is set, and inside a compaction, each run reporting a
+// when it starts fresh and inside a compaction, each run reporting a
 // `system/hook_response` frame (docs/references/claude-wire.md, SessionStart
 // hooks). The parser counts the hook delivered when a successful response's
 // context opens with the hook's heading. Print mode awaits a spawn's hooks
 // before the first `system/init`, and a compaction's hooks run before its
-// `system/compact_boundary`, so a start or a resume settles at init and a
-// compaction at its own boundary: a context that did not arrive becomes a
-// non-fatal error row, so the user learns the session runs without it. The
-// context that did arrive is kept as the session's receipt
-// (Config.SessionStartReceipts) at the turn's `result`: print mode emits
-// its first init before it reads any input, and writes a resume's hook
-// context to the transcript only with the first turn.
+// `system/compact_boundary`, so a start settles at init and a compaction at
+// its own boundary: a context that did not arrive becomes a non-fatal error
+// row, so the user learns the session runs without it. A resumed session
+// runs no SessionStart hook: its history holds what earlier runs delivered,
+// and its prompts' runs of the hook's PromptCommand deliver what changed.
 
 // NewSessionStartDelivery follows hook for a session launched with resume,
 // nil without one. A fresh session runs the hook at its spawn, so it expects
-// its output from the start; a resumed or forked one runs it when its
-// Resume is set. Shared with claude-tui, which launches the same binary.
-func NewSessionStartDelivery(hook *provider.SessionStartHook, receipts *provider.SessionStartReceipts, resume string) (*provider.SessionStartDelivery, error) {
-	delivery, err := provider.NewSessionStartDelivery(hook, receipts)
+// its output from the start; a resumed or forked one expects it only after a
+// compaction. forget runs when an expected output did not arrive. Shared
+// with claude-tui, which launches the same binary.
+func NewSessionStartDelivery(hook *provider.SessionStartHook, forget func() error, resume string) (*provider.SessionStartDelivery, error) {
+	delivery, err := provider.NewSessionStartDelivery(hook, forget)
 	if err != nil {
 		return nil, err
 	}
-	// Only a compaction's expectation writes, and warns when it cannot.
 	if resume == "" {
 		delivery.Expect(provider.SessionStartAfterStart)
-	} else {
-		delivery.Expect(provider.SessionStartAfterResume)
 	}
 	return delivery, nil
 }
 
-// observeSessionStartHookResponse records the context a SessionStart hook
-// delivered, or why a run failed. A failed run names no command, so the
-// failure is quoted only when the session's own hook did not deliver.
-func (p *Parser) observeSessionStartHookResponse(raw map[string]json.RawMessage) {
-	if p == nil || p.sessionStart == nil || readRawString(raw["hook_event"]) != "SessionStart" {
-		return
+// observeHookResponse records the context the SessionStart hook delivered,
+// or why a run failed, and returns the warning for a failed run of the
+// hook's PromptCommand. A failed SessionStart run names no command, so the
+// failure is quoted only when the session's own hook did not deliver; a
+// failed UserPromptSubmit run is the hook's when its error output opens with
+// the hook's Failure prefix.
+func (p *Parser) observeHookResponse(threadID string, raw map[string]json.RawMessage, now time.Time) []provider.ProviderEvent {
+	if p == nil || p.sessionStart == nil {
+		return nil
 	}
 	var exitCode int
-	if err := json.Unmarshal(raw["exit_code"], &exitCode); err != nil || exitCode != 0 {
-		p.sessionStart.Fail(hookResponseFailure(raw, err == nil, exitCode))
-		return
+	hasExitCode := json.Unmarshal(raw["exit_code"], &exitCode) == nil
+	failed := !hasExitCode || exitCode != 0
+	switch readRawString(raw["hook_event"]) {
+	case "SessionStart":
+	case "UserPromptSubmit":
+		hook := p.sessionStart.Hook()
+		stderr := strings.TrimSpace(readRawString(raw["stderr"]))
+		if !failed || hook.Failure == "" || !strings.HasPrefix(stderr, hook.Failure) {
+			return nil
+		}
+		return sessionStartWarnings(threadID, now, provider.PromptHookFailure(*hook, hookResponseFailure(raw, hasExitCode, exitCode)))
+	default:
+		return nil
+	}
+	if failed {
+		p.sessionStart.Fail(hookResponseFailure(raw, hasExitCode, exitCode))
+		return nil
 	}
 	stdout := strings.TrimSpace(readRawString(raw["stdout"]))
 	context := stdout
@@ -63,11 +75,12 @@ func (p *Parser) observeSessionStartHookResponse(raw map[string]json.RawMessage)
 			} `json:"hookSpecificOutput"`
 		}
 		if err := json.Unmarshal([]byte(stdout), &output); err != nil {
-			return
+			return nil
 		}
 		context = output.HookSpecificOutput.AdditionalContext
 	}
 	p.sessionStart.Deliver(context)
+	return nil
 }
 
 // hookResponseFailure describes a failed run: its exit code, or its outcome
@@ -85,23 +98,13 @@ func hookResponseFailure(raw map[string]json.RawMessage, hasExitCode bool, exitC
 	return detail
 }
 
-// settleSessionStart settles the delivery after a start's or a resume's
-// EventInit or a compaction's EventCompactBoundary, holding its receipt
-// under sessionRef, the session the frame names, for keepSessionStart.
-func (p *Parser) settleSessionStart(threadID, sessionRef string, now time.Time) []provider.ProviderEvent {
+// settleSessionStart settles the delivery after a start's EventInit or a
+// compaction's EventCompactBoundary.
+func (p *Parser) settleSessionStart(threadID string, now time.Time) []provider.ProviderEvent {
 	if p == nil {
 		return nil
 	}
-	return sessionStartWarnings(threadID, now, p.sessionStart.Settle(sessionRef))
-}
-
-// keepSessionStart keeps the receipt the delivery holds, at a turn's
-// result, by which the transcript holds what it names.
-func (p *Parser) keepSessionStart(threadID string, now time.Time) []provider.ProviderEvent {
-	if p == nil {
-		return nil
-	}
-	return sessionStartWarnings(threadID, now, p.sessionStart.Keep())
+	return sessionStartWarnings(threadID, now, p.sessionStart.Settle())
 }
 
 // sessionStartWarnings are non-fatal error rows for the warnings that are

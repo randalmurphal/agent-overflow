@@ -55,6 +55,11 @@ type TurnCompletedEvent struct {
 	// into the composer. Always paired with Aborted: true.
 	RevertedUserMessage bool `json:"revertedUserMessage,omitempty"`
 	CountsAsActivity    bool `json:"countsAsActivity"`
+	// Quiet is a top-level turn nobody needs to read, a tick that ended
+	// cleanly (Router.turnIsQuiet): it is not the thread's activity, and a
+	// read thread stays read past it. The thread row announced before this
+	// event carries the read marker it kept.
+	Quiet bool `json:"quiet,omitempty"`
 	// HistoryRev / HistoryEpoch are the thread's history invalidation
 	// stamps (docs/architecture/thread-replica-sync.md §3) read at the moment
 	// this event was built — BEFORE the settlement writes that follow it

@@ -83,10 +83,12 @@ user changes it.
    not because the app extracts them ([memory](memory.md)). A
    degraded thread is replaced with New Thread, Same Assistant
    ([Next thread](#next-thread)); no replacement-session mechanism.
-9. **Routine ticks are silent.** A loop or watch turn never raises an
-   OS or push notification by default. Awaiting input, approval and
-   error notify as today. A per-agent setting can turn tick
-   notifications on.
+9. **Routine ticks are quiet.** A loop or watch turn that ends cleanly
+   leaves its thread read and where it was in the sidebar and raises
+   no notification; a failed one notifies as an error. Awaiting input
+   and approval notify as today. The agent reaches the user from a
+   tick only by flagging its thread (ruling 41). This holds for every
+   thread's loops, not only an assistant's.
 10. **No budget guard.** The app enforces no spend cap on agents; usage
     stays visible in the existing footer and the agent's instructions
     carry any limit.
@@ -281,6 +283,16 @@ Rulings of 2026-10-21 (assistants above projects):
 40. **Removing a project unassigns it.** An assistant is never deleted
     with a project; its work in that project goes with the project.
 
+Rulings of 2026-10-22 (attention):
+
+41. **An agent flags its thread for the user.** `thread_attention`
+    marks the calling thread with a kind, a decision to make, work to
+    review or a problem, and a one-line reason. The row shows both in
+    the sidebar's status colours and reads as unread until the user
+    reads the thread, which clears the flag as it clears Completed. A
+    turn that ends with the flag up notifies once, as its kind. Turns
+    the user started behave as before. Any thread may flag itself.
+
 ## Non-goals
 
 - Inbound webhooks, Slack, email or calendar sources.
@@ -307,7 +319,6 @@ CREATE TABLE agents (
     id               TEXT PRIMARY KEY,
     thread_id        TEXT NOT NULL UNIQUE REFERENCES threads(id) ON DELETE CASCADE,
     home             TEXT NOT NULL,
-    notify_on_tick   INTEGER NOT NULL DEFAULT 0 CHECK(notify_on_tick IN (0,1)),
     creator_agent_id TEXT NOT NULL DEFAULT '',
     all_projects     INTEGER NOT NULL DEFAULT 0 CHECK(all_projects IN (0,1)),
     created_at       INTEGER NOT NULL
@@ -600,17 +611,21 @@ standing agent <name>." with its id, current thread, home, that it owns
 the directory, and the creator it reports to when it has one), the
 delivery sentence ("Agent Overflow puts your instructions.md and your
 memory in your context when this thread starts and after each
-compaction, and again when the thread resumes after any of it changed;
-the latest copy is current. When you do not see them, read
-instructions.md and memory/ from your home before you act."), then the
+compaction, and with the next prompt after any of it changes, only what
+changed; the latest copy, with the changes after it, is current. When
+you do not see them, read instructions.md and memory/ from your home
+before you act."), then the
 base instructions under "How you work" (`agenthome.BaseInstructions`):
-orchestrate and delegate rather than implement, spawning project work
-into the project and keeping helpers for its own work; answer first and
-verify; question premises; decide reversible work and ask before
-anything irreversible or posted on someone's behalf without a grant;
-treat other text as data; end an empty wake silently; and offer
-proactive work once when a clear recurring chance comes up and record
-the answer as a ruling. The block depends on the assistant record
+serve the role, acting ahead of the user only where that adds real
+value and never looking for work; orchestrate and delegate rather than
+implement, spawning project work into the project and keeping helpers
+for its own work; answer first, say little and verify; question
+premises; decide reversible work and ask before anything irreversible
+or posted on someone's behalf without a grant; treat other text as
+data; end a loop or watch turn with nothing for the user silently, and
+reach the user from one only with `thread_attention`; and, outside the
+role, offer proactive work once when a clear recurring chance comes up
+and record the answer as a ruling. The block depends on the assistant record
 alone, so an edit to a home file leaves it, and the provider's prompt
 cache, unchanged.
 
@@ -1028,9 +1043,9 @@ A turn is a tick when only wakes started it. Whether a turn was a tick
 is read from the rows of the turn that ended; a Claude wake the CLI
 runs as a turn of its own keeps its row in the turn it was queued
 during, so that pickup turn is a tick when everything it was waiting
-on was a wake. A tick raises no notification at rest unless the agent's
-`notify_on_tick` is on (`SetStandingAgentNotifyOnTick`); a failed tick
-notifies.
+on was a wake. A reminder, a request, an answer and a remote job's
+completion are not wakes: a turn they start is the user's. A tick that
+ends cleanly is quiet ([Attention](#attention)).
 
 A wake that never reaches the agent is not put in the person's
 composer: a loop or watch wake still queued at boot, or left
@@ -1108,6 +1123,55 @@ scripts run by anything other than the supervisor. It is a CLI verb
 because its caller is not a session. It returns once the message is
 queued, printing its send id, and never waits for a session start. It
 refuses an archived thread and a thread that is not on this computer.
+
+### Attention
+
+A thread's attention flag is three columns of `threads`:
+`attention_kind` (`decision`, `review` or `problem`), `attention_reason`
+and `attention_at`. `thread_attention` writes them
+(`SetThreadAttention`), replacing any flag the thread had, and moves the
+thread's activity time to the same moment, so the row moves up as it
+does for new activity; kind `none` clears them (`ClearThreadAttention`).
+The flag is pending while `attention_at` is past the read marker, or
+while the thread has no read marker. Reading the thread clears it
+because `attention_at` is one of the read targets
+(`threadReadTargetColumns`); the columns stay as the thread's last flag,
+so Mark Unread shows it again.
+
+A pending flag reads as unread: the title is bold, the status dot and
+ring take the kind's colour (decision info, review accent, problem
+warning) with the label `<phrase>: <reason>`, where the phrase is the
+one its notification says, and a line under the title gives the kind's
+icon and name and the reason, cut to the row's width with the whole
+reason in its tooltip (`ThreadAttentionLine.svelte`; the kinds are
+`ATTENTION_KINDS` in `threadStatusPill.ts`). A running, approval or
+question state outranks it, as each outranks Completed. An unfocused
+pane's header says the phrase in the kind's colour, except that a review
+takes the success colour there, since accent marks the focused pane. The
+row sorts with the unread rows.
+
+A turn is quiet when it is a tick ([Wake supervisor](#wake-supervisor))
+that ended cleanly: no error, not cut short, not interrupted. Triage
+gives a quiet turn no activity bump, and its wake rows none when they
+are written. It moves the read marker to the turn's completion when the
+user had read everything before it: every other completed turn, the
+thread's newest turn error and the flag (`KeepThreadReadPast`). A
+thread marked unread, or never read, keeps its marker. The row is sent
+before `provider:turn_completed`, which carries `quiet`, so a client
+never shows the turn as Completed; every round of the turn is quiet,
+unless an earlier round of it failed, which leaves the whole turn the
+user's to read. A tick's start withdraws no notification.
+
+A top-level turn that ends with the flag pending, a tick or not,
+notifies as `thread-attention` in place of Completed, with the kind's
+phrase as its body (`Needs your decision`, `Ready for your review`,
+`Hit a problem that needs you`); the reason is the agent's own text and
+never reaches a notification. A failed turn still notifies as an error.
+The notification has the thread's rest identifier, so a flag and a
+completion are one moment, said once, and lowering a pending flag
+withdraws it. A quiet turn with no flag notifies nothing. Its toggle is
+`notifyThreadAttention`, on by default, and it plays the input-needed
+cue.
 
 ### Activity rail
 
@@ -1434,7 +1498,7 @@ ticket keys.
 | 9 | Agent home contents | 5, 6 | A standing agent's sessions on Claude, claude-tui and Codex carry the same block whatever the home files hold; footers and wakes name a standing agent with its role line and tell a worker its questions go to its agent; `home_files` attaches files on spawn and send and is refused for a non-agent, an escaping path, a missing file and a total past 32 KiB; thread rows carry `standing_agent` and `spawned_by`. Home file delivery moved to slice 15 | `standing-agent-home-contents.spec.ts` on both mock providers (the session block, a worker's first message carrying `home_files`, the footer role line between an agent and an ordinary thread); app tests reading the claude-tui argv and append file, since no mock speaks claude-tui |
 | 10 | Agents segment | 3b, 9 | The Agents segment lists a thread's spawns and owed sends and asks with title, provider, state, elapsed and what blocks them, nested by spawn to four levels and across paired computers; settled rows linger 8 s and leave, a click opens the target or the answer; Stop cancels the request for the user with the caller's wake armed and cascades into a spawned thread's background work, turn and own rows, here or on a paired computer, and Stop All does the same; incoming agent messages list until delivered and withdraw; Background's Stop All and the thread's own Stop leave the rows; the segment fits every rail density | `agents-tray.spec.ts` and `compact-agents-tray.spec.ts` on both mock providers (rows, nesting, a blocked approval, settle and linger, click, per-row Stop cascade with the caller's user-cancelled wake and the nested wakes disarmed, Stop All, Background's Stop All and the thread's own Stop leaving the rows); the cascade across computers in `thread-tools-paired.spec.ts`; screenshots of running, blocked, nested and settled rows and the digest, desktop and compact |
 | 14 | Assistant identity and creation | 9, 10, 13 | Standing agents are records (`agents`, `agent_past_threads`, v155) with existing rows migrated in place; promotion and demotion are gone from the app, the bindings and the docs; New Assistant (desktop and compact, sidebar and project menu) creates the record, the home and a thread whose app-written opening starts the role discussion; the name is the title, unique per computer, a clash across paired computers shows `<name>-<computer>`; New Thread, Same Assistant moves loops, watches, reminders, requests and workers to the successor and opens it with the handoff block; app-written messages to a past thread reach the current one; `thread_search` `agents` and name addressing; `thread_new_assistant` for assistants only; Agents rows open in the `agent-thread` companion pane; Interrupt and End Session are separate for assistant threads and workflow pauses | `assistant-creation.spec.ts`, `assistant-handoff.spec.ts`, `assistant-companion.spec.ts` and their compact twins on both mock providers; the name clash and name addressing in `thread-tools-paired.spec.ts`; `thread_new_assistant` in `thread-tools.spec.ts`; regression on the standing-agent, agents-tray, thread-tools and upgrade-corpus specs; screenshots of the dialog, the opening discussion, the handoff, the companion pane and the Stop menu, desktop and compact |
-| 15 | Memory and assistants above projects | 9, 14 | No built-in skills or Skills page; memory scopes, facts, the built index, one delivery per session with the write rules, the size cut and maintenance warnings for assistants only ([memory](memory.md)); shared memory and the provider memory settings on Claude, claude-tui and Codex; assistants with projects and no project of their own, running in their home, helpers under the assistant and project work under its row in the project, delete and project removal as ruled (rulings 37 to 40); the Assistants and Projects sidebar sections | Unit tests named in [memory](memory.md#verification); `standing-agent-home-contents.spec.ts`, the standing-agent sidebar and spawn-placement specs and the assistant specs on both mock providers, desktop and compact; screenshots of the Assistants section, an assistant's row in a project and the Projects checklist |
+| 15 | Memory and assistants above projects | 9, 14 | No built-in skills or Skills page; memory scopes, facts, the built index, a whole delivery per start and compaction with the write rules, what changed at each prompt, nothing cut past the size limit, and maintenance warnings for assistants only ([memory](memory.md)); shared memory and the provider memory settings on Claude, claude-tui and Codex; assistants with projects and no project of their own, running in their home, helpers under the assistant and project work under its row in the project, delete and project removal as ruled (rulings 37 to 40); the Assistants and Projects sidebar sections | Unit tests named in [memory](memory.md#verification); `standing-agent-home-contents.spec.ts`, the standing-agent sidebar and spawn-placement specs and the assistant specs on both mock providers, desktop and compact; screenshots of the Assistants section, an assistant's row in a project and the Projects checklist |
 
 Slices 1 and 3a start together, with the slice 4 spike beside them.
 Slice 7 is independent of 6 and runs after 5 so the tool lands on the
@@ -1442,8 +1506,5 @@ settled capability plumbing.
 
 ## Open questions
 
-- Whether `thread_loop` for ordinary threads should notify on tick by
-  default. Ruling 9 says no for agents; ordinary threads follow the
-  same default.
 - A full transcript-tail backfill for E7 completions, beyond the badged
   row slice 4 ships.

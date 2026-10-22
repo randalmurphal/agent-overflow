@@ -29,6 +29,7 @@ export {
     RemoteJob,
     StandingAgent,
     Thread,
+    ThreadAttention,
     ThreadGroup,
     ThreadMessageHit,
     ThreadOrigin,

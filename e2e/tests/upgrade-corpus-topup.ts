@@ -137,11 +137,10 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     await harness.rpc('RenameThread', scenarioThreads['usage-limit-claude'], `Top-up v${version}: renamed after its usage limit`);
     await harness.rpc('SetChatBarFavorite', { kind: 'model', provider: 'claude', value: MODEL.claude, label: 'Opus' }, true);
     // Two assistants made by New Assistant, one serving every project and
-    // told about every tick and one moved to a new thread by New Thread,
-    // Same Assistant, which leaves a past thread. Each opening and handoff
-    // message takes a turn, whose session keeps the receipt of its memory
-    // delivery. A new assistant takes the provider of the thread created
-    // last, so a Claude thread goes first.
+    // one moved to a new thread by New Thread, Same Assistant, which leaves
+    // a past thread. Each opening and handoff message takes a turn. A new
+    // assistant takes the provider of the thread created last, so a Claude
+    // thread goes first.
     const remembered = await harness.rpc<{ id: string }>('CreateThread', {
       projectId,
       title: `Top-up v${version}: the profile New Assistant takes`,
@@ -159,8 +158,7 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
       threadIds.push(created.id);
       return created.id;
     };
-    const told = await assistant(`Top-up v${version} ${nonce}: told every tick`, true);
-    await harness.rpc('SetStandingAgentNotifyOnTick', told, true);
+    await assistant(`Top-up v${version} ${nonce}: every project`, true);
     const moved = await assistant(`Top-up v${version} ${nonce}: moved on`);
     // Unsent text with an attachment, which the handoff moves to the new
     // thread and records on the past thread's row.
@@ -216,9 +214,14 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
           ],
           text: 'Scheduled.',
         }, {
-          // The turn compacts first, so the corpus holds a compaction row
-          // and the receipt its hook keeps.
-          steps: [{ emitLines: [compactBoundaryLine('topup-compaction-${TURN}')] }, { call: { tool: 'thread_cancel', args: { label: 'once' } } }],
+          // The turn compacts first, so the corpus holds a compaction row.
+          // It then flags the thread for the user (attention_kind and the
+          // rest).
+          steps: [
+            { emitLines: [compactBoundaryLine('topup-compaction-${TURN}')] },
+            { call: { tool: 'thread_cancel', args: { label: 'once' } } },
+            { call: { tool: 'thread_attention', args: { kind: 'review', reason: 'The inbox has a note for you' } } },
+          ],
           text: 'Stopped the one-off watch.',
         }],
         afterTurns: 'silent',
@@ -240,6 +243,8 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     // wake starts cancels the watch.
     const cancelled = await awaitToolAnswer(harness, { tool: 'thread_cancel', timeoutMs: TURN_TIMEOUT_MS });
     if (cancelled.isError) throw new Error(`top-up thread_cancel was refused: ${cancelled.text}`);
+    const flagged = await awaitToolAnswer(harness, { tool: 'thread_attention', timeoutMs: TURN_TIMEOUT_MS });
+    if (flagged.isError) throw new Error(`top-up thread_attention was refused: ${flagged.text}`);
     await awaitTurnCompleted(harness, agent.id, TURN_TIMEOUT_MS);
     // A cancel keeps nothing the row carried, so the hourly watch, run once
     // now, is the row that keeps a stderr tail. It stays armed an hour out.

@@ -366,6 +366,7 @@ func TestNotificationPreferencesDefaultOnExceptTheHiddenThreadOptIn(t *testing.T
 		// they were unconditional before the keys existed.
 		"notifyWorkflowAttention": DefaultSettings.NotifyWorkflowAttention,
 		"notifyAppUpdate":         DefaultSettings.NotifyAppUpdate,
+		"notifyThreadAttention":   DefaultSettings.NotifyThreadAttention,
 	} {
 		if !on {
 			t.Errorf("%s defaults off", key)

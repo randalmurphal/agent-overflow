@@ -24,7 +24,7 @@ func (a *App) SubmitAsyncAnswers(ctx context.Context, threadID, sendID string, a
 	if err := a.requireAutonomyForThread(ctx, threadID, ""); err != nil {
 		return err
 	}
-	unlock, err := a.lockSendAdmission(ctx, threadID, sendID)
+	unlock, err := a.lockClientSendAdmission(ctx, threadID, sendID)
 	if err != nil {
 		return err
 	}

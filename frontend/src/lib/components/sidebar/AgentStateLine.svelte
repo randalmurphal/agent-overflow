@@ -27,7 +27,7 @@
 
 {#if line}
   <div
-    class="relative -mt-1.5 flex h-3.5 items-center pr-1 text-[0.625rem] leading-none text-fg-subtle"
+    class="relative flex h-3.5 items-center pr-1 text-[0.625rem] leading-none text-fg-subtle"
     style="padding-left: {indentPx}px"
     title={line.title}
     data-testid="thread-row-agent-state"

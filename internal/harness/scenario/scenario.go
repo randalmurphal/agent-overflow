@@ -97,9 +97,10 @@ type Scenario struct {
 	// template still wins — the template is the more specific statement.
 	ProviderVersion string `json:"providerVersion,omitempty"`
 
-	// SessionStartHooksOff runs none of the SessionStart hooks the app
-	// registers, as a CLI whose user turned hooks off does (Claude's
-	// `disableAllHooks`, Codex's `features.hooks = false`).
+	// SessionStartHooksOff runs none of the SessionStart and
+	// UserPromptSubmit hooks the app registers, as a CLI whose user turned
+	// hooks off does (Claude's `disableAllHooks`, Codex's
+	// `features.hooks = false`).
 	SessionStartHooksOff bool `json:"sessionStartHooksOff,omitempty"`
 
 	// Codex maps JSON-RPC request methods to response templates for the

@@ -522,8 +522,15 @@ const THREAD_TOOLS: Record<string, AoToolSpec> = {
     },
   },
   thread_remind: { label: 'remind', what: (input) => firstLine(input, 'note') },
+  thread_attention: {
+    label: 'flag',
+    what: (input) => (str(input, 'kind') === 'none'
+      ? 'lowered'
+      : [str(input, 'kind'), firstLine(input, 'reason')].filter(Boolean).join(' · ')),
+  },
   thread_loop: { label: 'loop', what: (input) => wakeWhat(input) },
   thread_watch: { label: 'watch', what: (input) => wakeWhat(input) },
+  thread_new_assistant: { label: 'create', what: (input) => str(input, 'name') },
 };
 
 /** A loop or watch registration: its label and cadence, or the label it stops. */
@@ -831,6 +838,8 @@ const ALREADY_SHOWN: Record<string, ReadonlySet<string>> = {
   thread_loop: new Set(['label', 'every_seconds', 'stop']),
   thread_watch: new Set(['label', 'every_seconds', 'long_running', 'stop']),
   thread_remind: new Set(['note', 'after_seconds', 'at']),
+  thread_attention: new Set(['kind', 'reason']),
+  thread_new_assistant: new Set(['name']),
   run_start: new Set(['workflow_id', 'goal']),
   browser_open: new Set(['url']),
   browser_open_file: new Set(['path']),

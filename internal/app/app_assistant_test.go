@@ -84,6 +84,26 @@ func awaitSent(t *testing.T, stdinLog string, match func(string) bool) string {
 	return ""
 }
 
+// appMessageMarks are the marks the provider receives around a message the
+// app writes itself (usermessage.WireText).
+const (
+	appMessageOpening = "[Agent Overflow message. The user did not write it.]\n"
+	appMessageClosing = "\n[End of Agent Overflow message]"
+)
+
+// awaitAppMessage waits until the provider was written a message the app
+// wrote itself, between its marks, whose body matches match, and returns
+// the body.
+func awaitAppMessage(t *testing.T, stdinLog string, match func(string) bool) string {
+	t.Helper()
+	text := awaitSent(t, stdinLog, func(text string) bool {
+		body, ok := strings.CutPrefix(text, appMessageOpening)
+		body, closed := strings.CutSuffix(body, appMessageClosing)
+		return ok && closed && match(body)
+	})
+	return strings.TrimSuffix(strings.TrimPrefix(text, appMessageOpening), appMessageClosing)
+}
+
 // awaitFirstUserText waits for threadID's first user message and returns it.
 func awaitFirstUserText(t *testing.T, a *App, threadID string) string {
 	t.Helper()
@@ -146,7 +166,7 @@ func TestCreateAssistantMakesTheRecordHomeAndOpening(t *testing.T) {
 		t.Fatalf("home README: %v", err)
 	}
 	opening := agenthome.OpeningMessage("Ops", agent.Home)
-	awaitSent(t, sent, func(text string) bool { return text == opening })
+	awaitAppMessage(t, sent, func(text string) bool { return text == opening })
 
 	before, err := f.app.store.ListThreads()
 	if err != nil {
@@ -320,7 +340,7 @@ func TestStartNextAssistantThreadCarriesItsWork(t *testing.T) {
 	if worker, err := f.app.store.GetThread(ack.ThreadID); err != nil || worker.SpawnedByThreadID != successor.ID || !worker.SpawnedByAgent {
 		t.Fatalf("worker = %+v %v", worker, err)
 	}
-	first := awaitSent(t, sent, func(text string) bool {
+	first := awaitAppMessage(t, sent, func(text string) bool {
 		return strings.HasPrefix(text, `You are "`+f.caller.Title+`", a standing agent. The user replaced your previous thread `+f.caller.ID+` with this one`)
 	})
 	if !strings.Contains(first, "1 loop or watch") {
@@ -354,7 +374,7 @@ func TestASessionTheProviderCleanedUpMovesTheAssistant(t *testing.T) {
 	if successor := awaitCurrentThread(t, f.app, thread.ID); successor == thread.ID {
 		t.Fatal("the assistant stayed on the thread whose session is gone")
 	}
-	first := awaitSent(t, sent, func(text string) bool { return strings.HasPrefix(text, `You are "`) })
+	first := awaitAppMessage(t, sent, func(text string) bool { return strings.HasPrefix(text, `You are "`) })
 	if !strings.Contains(first, "The provider cleaned up the session of your previous thread "+thread.ID+", so it could not resume") ||
 		!strings.Contains(first, "Agent Overflow's history of the previous thread is intact.") {
 		t.Fatalf("opening block:\n%s", first)

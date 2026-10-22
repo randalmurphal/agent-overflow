@@ -3,8 +3,11 @@ import threadStates from '../../../../internal/threadtools/testdata/thread_state
 import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
 import type { Thread } from '../types/models';
 import {
+  attentionKindOf,
   hasUnread,
   lastKnownThreadStatusPill,
+  owesRead,
+  pendingAttention,
   resolveEffectiveThreadStatus,
   resolveThreadStatusPill,
 } from './threadStatusPill';
@@ -14,6 +17,7 @@ type MinimalThread = Pick<
   | 'mode'
   | 'lastReadAt'
   | 'latestTurnCompletedAt'
+  | 'attention'
   | 'hasIncompleteTurn'
   | 'hasFailedTurn'
   | 'hasActionableProposedPlan'
@@ -317,6 +321,61 @@ describe('resolveEffectiveThreadStatus against the shared Go fixture', () => {
       expect(resolveEffectiveThreadStatus(t(testCase.thread), testCase.liveStatus)).toBe(testCase.want);
     });
   }
+});
+
+describe('attention flag', () => {
+  const flag = (kind: 'decision' | 'review' | 'problem', at = 2_000) => ({ kind, reason: 'Pick the release date', at });
+
+  it('is pending until a read covers the time it was raised', () => {
+    expect(pendingAttention(t({ lastReadAt: 1_000, attention: flag('decision') }))).toEqual(flag('decision'));
+    expect(pendingAttention(t({ lastReadAt: 0, attention: flag('decision') }))).not.toBeNull();
+    expect(pendingAttention(t({ lastReadAt: 2_000, attention: flag('decision') }))).toBeNull();
+    expect(pendingAttention(t({ lastReadAt: 3_000, attention: flag('decision') }))).toBeNull();
+    expect(pendingAttention(t({ lastReadAt: 1_000, attention: null }))).toBeNull();
+  });
+
+  it('owes a read for a pending flag as for an unread completion', () => {
+    expect(owesRead(t({ lastReadAt: 1_000, latestTurnCompletedAt: 900, attention: flag('review') }))).toBe(true);
+    expect(owesRead(t({ lastReadAt: 1_000, latestTurnCompletedAt: 1_500, attention: null }))).toBe(true);
+    expect(owesRead(t({ lastReadAt: 2_000, latestTurnCompletedAt: 1_500, attention: flag('review') }))).toBe(false);
+  });
+
+  it('reads a kind it does not know as a decision', () => {
+    expect(attentionKindOf({ kind: 'urgent' as 'decision', reason: 'r', at: 1 })).toBe('decision');
+    expect(attentionKindOf({ kind: 'toString' as 'decision', reason: 'r', at: 1 })).toBe('decision');
+    expect(attentionKindOf({ kind: 'problem', reason: 'r', at: 1 })).toBe('problem');
+  });
+
+  it('is pending on a row never tracked, unlike a completion', () => {
+    expect(pendingAttention(t({ lastReadAt: undefined, attention: flag('review') }))).not.toBeNull();
+  });
+
+  it('shows each kind in its colour with the reason, ringed and still', () => {
+    const want = {
+      decision: ['bg-info', 'ring-info/40', 'Needs your decision: Pick the release date'],
+      review: ['bg-accent', 'ring-accent/40', 'Ready for your review: Pick the release date'],
+      problem: ['bg-warning', 'ring-warning/40', 'Hit a problem that needs you: Pick the release date'],
+    } as const;
+    for (const [kind, [dot, ring, label]] of Object.entries(want)) {
+      const pill = resolveThreadStatusPill(t({ lastReadAt: 1_000, latestTurnCompletedAt: 900, attention: flag(kind as 'decision') }), 'idle');
+      expect(pill?.dotClass, kind).toBe(dot);
+      expect(pill?.ringClass, kind).toContain(ring);
+      expect(pill?.label, kind).toBe(label);
+      expect(pill?.pulse, kind).toBe(false);
+    }
+  });
+
+  it('takes the place of Completed on an unread rest, and a read clears both', () => {
+    const unread = t({ lastReadAt: 1_000, latestTurnCompletedAt: 2_500, attention: flag('problem') });
+    expect(resolveThreadStatusPill(unread, 'idle')?.label).toBe('Hit a problem that needs you: Pick the release date');
+    expect(resolveThreadStatusPill({ ...unread, lastReadAt: 2_500 }, 'idle')).toBeNull();
+  });
+
+  it('yields to a live state', () => {
+    const flagged = t({ lastReadAt: 1_000, attention: flag('decision') });
+    expect(resolveThreadStatusPill(flagged, 'running')?.label).toBe('Working');
+    expect(resolveThreadStatusPill(flagged, 'error')?.label).toBe('Failed');
+  });
 });
 
 describe('lastKnownThreadStatusPill', () => {

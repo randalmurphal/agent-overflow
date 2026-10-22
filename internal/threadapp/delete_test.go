@@ -26,6 +26,7 @@ func TestDeleteThreadPreservesResourceOrder(t *testing.T) {
 		ClearAutoReconnect:      func(id string) { calls = append(calls, "reconnect") },
 		CleanupAttachments:      func(id string) error { calls = append(calls, "attachments"); return nil },
 		CleanupReplayLog:        func(id string) error { calls = append(calls, "replay"); return nil },
+		CleanupMemoryRecords:    func(id string) error { calls = append(calls, "records"); return nil },
 		Forget:                  func(id string) { calls = append(calls, "forget") },
 	}
 	if err := service.DeleteThread(thread.ID, ports); err != nil {
@@ -33,7 +34,7 @@ func TestDeleteThreadPreservesResourceOrder(t *testing.T) {
 	}
 	want := []string{
 		"background", "session", "setup", "terminal", "browser", "reconnect",
-		"attachments", "replay", "terminal", "browser", "forget",
+		"attachments", "replay", "records", "terminal", "browser", "forget",
 	}
 	if !slices.Equal(calls, want) {
 		t.Fatalf("cleanup order = %v, want %v", calls, want)
@@ -52,6 +53,7 @@ func TestDeleteThreadContinuesCleanupButPreservesRowOnFailure(t *testing.T) {
 	var calls []string
 	cleanupErr := errors.New("disk busy")
 	browserErr := errors.New("profile busy")
+	recordsErr := errors.New("records busy")
 	err = service.DeleteThread(thread.ID, DeletePorts{
 		StopSession:       func(string) error { calls = append(calls, "session"); return nil },
 		CloseBrowserPages: func(string) error { calls = append(calls, "browser"); return browserErr },
@@ -60,12 +62,16 @@ func TestDeleteThreadContinuesCleanupButPreservesRowOnFailure(t *testing.T) {
 			return cleanupErr
 		},
 		CleanupReplayLog: func(string) error { calls = append(calls, "replay"); return nil },
-		Forget:           func(string) { calls = append(calls, "forget") },
+		CleanupMemoryRecords: func(string) error {
+			calls = append(calls, "records")
+			return recordsErr
+		},
+		Forget: func(string) { calls = append(calls, "forget") },
 	})
-	if !errors.Is(err, cleanupErr) || !errors.Is(err, browserErr) {
-		t.Fatalf("DeleteThread error = %v, want disk and browser errors", err)
+	if !errors.Is(err, cleanupErr) || !errors.Is(err, browserErr) || !errors.Is(err, recordsErr) {
+		t.Fatalf("DeleteThread error = %v, want disk, browser and records errors", err)
 	}
-	if !slices.Equal(calls, []string{"session", "browser", "attachments", "replay"}) {
+	if !slices.Equal(calls, []string{"session", "browser", "attachments", "replay", "records"}) {
 		t.Fatalf("cleanup calls = %v", calls)
 	}
 	if _, err := database.GetThread(thread.ID); err != nil {

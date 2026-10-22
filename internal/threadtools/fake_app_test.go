@@ -56,6 +56,7 @@ type fakeApp struct {
 	lists      []ListCall
 	cancels    []CancelCall
 	rem        []RemindCall
+	attention  []AttentionCall
 	loops      []LoopCall
 	watches    []WatchCall
 	wakes      []WakeState
@@ -378,6 +379,14 @@ func (f *fakeApp) Cancel(_ context.Context, _ Caller, call CancelCall) (CancelRe
 func (f *fakeApp) Remind(_ context.Context, _ Caller, call RemindCall) (RequestAck, error) {
 	f.rem = append(f.rem, call)
 	return f.ack, nil
+}
+
+func (f *fakeApp) FlagAttention(_ context.Context, _ Caller, call AttentionCall) (AttentionAck, error) {
+	f.attention = append(f.attention, call)
+	if call.Kind == AttentionNone {
+		return AttentionAck{}, nil
+	}
+	return AttentionAck(call), nil
 }
 
 func (f *fakeApp) Loop(_ context.Context, _ Caller, call LoopCall) (WakeState, error) {

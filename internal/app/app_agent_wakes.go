@@ -5,14 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 	"time"
 
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 )
 
@@ -269,8 +270,9 @@ func (a *App) cancelAgentWakesForThread(threadID, outcome string) {
 
 // noteAgentWakeDispatch records whether the turn a flush dispatch starts is a
 // tick: one only loop and watch wakes started. It decides only whether that
-// turn's start retracts a notification; whether its end raises one is read
-// from its rows (agentWakeTurnMessages). A dispatch into a running turn
+// turn's start retracts a notification; whether its end is quiet is read
+// from its rows when triage asks (agentTurnIsTick, through
+// SetQuietTurnClassifier). A dispatch into a running turn
 // starts nothing, but a person's message joining a tick makes the turn
 // theirs. A new turn also ends any wait for a pickup: its own row says who
 // it is for.
@@ -332,11 +334,38 @@ func (a *App) agentWakeQueuedConfirmed(threadID, rowID string) {
 	}
 }
 
-// agentWakeTickTurn reports, at a turn's start, whether it is a tick. A
-// turn that starts after the one Claude's queued rows joined is the one
-// that takes them up: a tick when only wakes are in them. A new round of
-// the turn they joined took them in itself, and its rows decide.
-func (a *App) agentWakeTickTurn(threadID string, turnIndex int) bool {
+// tapAgentWakeTurns keeps the marks that say which of a thread's turns are
+// ticks, from the turn starts and ends on the emit funnel. It runs before
+// the notification tap, which reads a start's mark (agentWakeTickStarted);
+// triage's quiet classifier reads the pickup a start leaves
+// (agentTurnIsTick).
+func (a *App) tapAgentWakeTurns(name eventchan.Channel, data any) {
+	switch name {
+	case eventchan.ProviderTurnStarted:
+		if event, ok := data.(triage.TurnStartedEvent); ok {
+			a.noteAgentWakeTurnStart(event.ThreadID, event.TurnIndex)
+		}
+	case eventchan.ProviderTurnCompleted:
+		// CountsAsActivity is a top-level turn's end, not a subagent's.
+		if event, ok := data.(triage.TurnCompletedEvent); ok && event.CountsAsActivity {
+			a.endAgentWakeTickTurn(event.ThreadID, event.TurnIndex)
+		}
+	}
+}
+
+// agentWakeTickStarted reports whether the turn threadID started last is a
+// tick, by the mark its start left (noteAgentWakeTurnStart).
+func (a *App) agentWakeTickStarted(threadID string) bool {
+	a.agentWakes.mu.Lock()
+	defer a.agentWakes.mu.Unlock()
+	return a.agentWakes.ticks[threadID]
+}
+
+// noteAgentWakeTurnStart marks a turn that starts after the one Claude's
+// queued rows joined as the one that takes them up: a tick when only wakes
+// are in them. A new round of the turn they joined took them in itself, and
+// its rows decide.
+func (a *App) noteAgentWakeTurnStart(threadID string, turnIndex int) {
 	a.agentWakes.mu.Lock()
 	defer a.agentWakes.mu.Unlock()
 	if q := a.agentWakes.queued[threadID]; q != nil && q.ended && turnIndex >= q.turn {
@@ -356,14 +385,15 @@ func (a *App) agentWakeTickTurn(threadID string, turnIndex int) bool {
 			a.agentWakes.pickups[threadID] = agentWakePickup{turn: turnIndex, tick: true}
 		}
 	}
-	return a.agentWakes.ticks[threadID]
 }
 
 // endAgentWakeTickTurn runs when a top-level turn ends. It forgets the
 // thread's tick mark, so a turn the provider starts on its own is not one;
 // leaves rows Claude has not confirmed waiting for the turn after this one;
-// and reports whether this turn took up queued rows that were only wakes.
-func (a *App) endAgentWakeTickTurn(threadID string, turnIndex int) (pickupTick bool) {
+// and forgets a pickup of an earlier turn. The pickup of this turn stays
+// for a later round of it (agentTurnIsTick), until a later turn ends or
+// starts for a dispatch.
+func (a *App) endAgentWakeTickTurn(threadID string, turnIndex int) {
 	a.agentWakes.mu.Lock()
 	defer a.agentWakes.mu.Unlock()
 	delete(a.agentWakes.ticks, threadID)
@@ -374,11 +404,24 @@ func (a *App) endAgentWakeTickTurn(threadID string, turnIndex int) (pickupTick b
 			q.ended = true
 		}
 	}
-	if p, ok := a.agentWakes.pickups[threadID]; ok && p.turn <= turnIndex {
+	if p, ok := a.agentWakes.pickups[threadID]; ok && p.turn < turnIndex {
 		delete(a.agentWakes.pickups, threadID)
-		return p.turn == turnIndex && p.tick
 	}
-	return false
+}
+
+// agentTurnIsTick reports whether a top-level turn is a tick, which nobody
+// needs to read when it ends cleanly (triage.SetQuietTurnClassifier): every
+// message it holds is a loop or watch wake, or it holds none and is the
+// turn Claude took up queued rows that were only wakes in.
+func (a *App) agentTurnIsTick(threadID string, turnIndex int) bool {
+	tick, empty := a.agentWakeTurnMessages(threadID, turnIndex)
+	if tick || !empty {
+		return tick
+	}
+	a.agentWakes.mu.Lock()
+	defer a.agentWakes.mu.Unlock()
+	p, ok := a.agentWakes.pickups[threadID]
+	return ok && p.turn == turnIndex && p.tick
 }
 
 // forgetAgentWakeTurns drops a thread's turn marks when its session ends:
@@ -416,36 +459,18 @@ func (a *App) agentWakeTurnMessages(threadID string, turnIndex int) (tick, empty
 			log.Printf("agent wakes: read the meta of %s: %v", row.ID, err)
 			return false, false
 		}
-		ids := meta.JoinedSendIDs
-		if len(ids) == 0 {
-			ids = []string{meta.SendID}
-		}
-		for _, id := range ids {
-			if !strings.HasPrefix(id, agentWakeSendIDRoot) {
-				return false, false
-			}
+		if !usermessage.IsTick(meta) {
+			return false, false
 		}
 	}
 	return !empty, empty
-}
-
-// agentTicksAreQuiet reports whether a thread's ticks stay silent: always,
-// unless its standing agent row turns tick notifications on. A read error
-// keeps the default, which is quiet.
-func (a *App) agentTicksAreQuiet(threadID string) bool {
-	agent, standing, err := a.store.GetStandingAgent(threadID)
-	if err != nil {
-		log.Printf("agent wakes: read the standing agent row of %s: %v", threadID, err)
-		return true
-	}
-	return !standing || !agent.NotifyOnTick
 }
 
 // flushGroupIsAgentWakes reports whether every message of a dispatch is a
 // loop or watch wake.
 func flushGroupIsAgentWakes(members []flushMember) bool {
 	for _, member := range members {
-		if !strings.HasPrefix(member.payload.SendID, agentWakeSendIDRoot) {
+		if !usermessage.IsTickSendID(member.payload.SendID) {
 			return false
 		}
 	}

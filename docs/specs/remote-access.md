@@ -2262,7 +2262,7 @@ Prerequisite sweep, valuable standalone:
   fire where a banner was suppressed. It is independent of whether the
   OS presentation SUCCEEDS: on a machine whose notification permission
   was denied, the cue is the only channel left. `notify.SoundEventFor`
-  folds the six kinds onto three events (turn complete, input needed,
+  folds the seven kinds onto three events (turn complete, input needed,
   attention) because that is the distinction a person makes by ear;
   `TestSoundEventCoversEveryKind` keeps it total. Preferences are
   device tier on the backend machine's own screen: a master

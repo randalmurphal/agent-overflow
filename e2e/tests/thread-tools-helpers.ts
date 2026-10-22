@@ -301,6 +301,20 @@ export async function awaitToolAnswer<T = Record<string, unknown>>(
  * the mock in `cwd` when one is named. `input` on the report is the text
  * the provider received for the turn.
  */
+/**
+ * The line a message Agent Overflow writes into a thread reaches the model
+ * under, naming its sender, or the app itself with no sender
+ * (usermessage.WireText).
+ */
+export function aoMessageOpening(sender?: string): string {
+  return sender === undefined
+    ? '[Agent Overflow message. The user did not write it.]\n'
+    : `[Agent Overflow message from ${sender}. The user did not write it.]\n`;
+}
+
+/** The line that closes such a message. */
+export const AO_MESSAGE_CLOSING = '\n[End of Agent Overflow message]';
+
 export async function awaitMockInput(
   harness: HarnessApp,
   filter: { includes: string | readonly string[]; cwd?: string; timeoutMs?: number },

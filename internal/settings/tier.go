@@ -197,6 +197,7 @@ var tierByKey = map[string]Tier{
 	"notifyProviderSignedOut": TierDevice,
 	"notifyWorkflowAttention": TierDevice,
 	"notifyAppUpdate":         TierDevice,
+	"notifyThreadAttention":   TierDevice,
 	"notifyHiddenThreads":     TierDevice,
 	// The "quiet when" key is the same tier for the same reason, one step
 	// further in: it does not ask which moments matter, it asks whether

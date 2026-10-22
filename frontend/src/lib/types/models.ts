@@ -17,6 +17,18 @@ export type RuntimeMode =
 /** Where the sidebar shows a thread (`Thread.placement`). */
 export type ThreadPlacement = 'nested' | 'grouped' | 'standalone';
 
+/** The kinds of attention an agent can flag (store.AttentionDecision and the rest). */
+export type AttentionKind = 'decision' | 'review' | 'problem';
+
+/** The flag a thread's agent raised for the user (`Thread.attention`). */
+export interface ThreadAttention {
+  kind: AttentionKind;
+  /** The one-line reason the agent gave. */
+  reason: string;
+  /** Unix-ms when it was raised. */
+  at: number;
+}
+
 export interface Thread {
   /** Monotonic move ownership; absent on older hosts means zero. */
   ownershipEpoch?: number;
@@ -133,6 +145,12 @@ export interface Thread {
    * persists 0.
    */
   lastReadAt?: number;
+  /**
+   * The attention flag the thread's agent raised (thread_attention), or
+   * absent. Pending while lastReadAt is before its `at`, as an unread
+   * completion is, so a read of the thread clears it.
+   */
+  attention?: ThreadAttention | null;
   /**
    * Unix-ms timestamp of when the user pinned the thread. Undefined /
    * null means unpinned. Pinned threads sort into front/back blocks above

@@ -84,6 +84,31 @@ func sessionStartMatcherTakes(matcher, source string) bool {
 	return err == nil && re.MatchString(source)
 }
 
+// commandHooks are the command handlers of groups, a hooks map's value for
+// one event, with timeout for a handler that names none. A
+// UserPromptSubmit group's matcher is ignored by both CLIs, and reads as
+// taking every prompt.
+func commandHooks(groups sessionStartHookGroups, event string) []sessionStartHook {
+	var hooks []sessionStartHook
+	for _, group := range groups {
+		for _, handler := range group.Hooks {
+			if handler.Type != "command" {
+				continue
+			}
+			timeout := defaultSessionStartHookTimeout
+			if handler.Timeout != nil {
+				timeout = time.Duration(max(*handler.Timeout, 1)) * time.Second
+			}
+			matcher := group.Matcher
+			if event == "UserPromptSubmit" {
+				matcher = ""
+			}
+			hooks = append(hooks, sessionStartHook{matcher: matcher, command: handler.Command, timeout: timeout})
+		}
+	}
+	return hooks
+}
+
 // sessionStartHooksFor lists the hooks whose matcher takes source.
 func sessionStartHooksFor(hooks []sessionStartHook, source string) []sessionStartHook {
 	var out []sessionStartHook
@@ -107,15 +132,34 @@ type sessionStartRun struct {
 	duration  time.Duration
 }
 
+// promptSource is the source a spec reads on the run of a session's
+// UserPromptSubmit hooks (control.SessionStartRun).
+const promptSource = "prompt"
+
 // runSessionStartHook runs hook in cwd for source.
 func runSessionStartHook(hook sessionStartHook, sessionRef, cwd, source string) sessionStartRun {
-	run := sessionStartRun{hook: hook, startedAt: time.Now(), exitCode: -1}
-	input, err := json.Marshal(map[string]string{
+	return runHook(hook, cwd, map[string]string{
 		"session_id":      sessionRef,
 		"cwd":             cwd,
 		"hook_event_name": "SessionStart",
 		"source":          source,
 	})
+}
+
+// runPromptHook runs a UserPromptSubmit hook in cwd for prompt.
+func runPromptHook(hook sessionStartHook, sessionRef, cwd, prompt string) sessionStartRun {
+	return runHook(hook, cwd, map[string]string{
+		"session_id":      sessionRef,
+		"cwd":             cwd,
+		"hook_event_name": "UserPromptSubmit",
+		"prompt":          prompt,
+	})
+}
+
+// runHook runs hook in cwd with fields as its input.
+func runHook(hook sessionStartHook, cwd string, fields map[string]string) sessionStartRun {
+	run := sessionStartRun{hook: hook, startedAt: time.Now(), exitCode: -1}
+	input, err := json.Marshal(fields)
 	if err != nil {
 		run.err = err
 		return run
@@ -171,7 +215,8 @@ func (r sessionStartRun) context() (text string, ok bool) {
 }
 
 // reportSessionStartRuns posts the contexts runs delivered for source,
-// before the adapter writes the frames of their outcome.
+// promptSource for a prompt's UserPromptSubmit runs, before the adapter
+// writes the frames of their outcome.
 func (e *engine) reportSessionStartRuns(sessionRef, source string, runs []sessionStartRun) {
 	contexts := []string{}
 	for _, run := range runs {

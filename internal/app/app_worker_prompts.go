@@ -41,12 +41,6 @@ const workerPromptSendIDRoot = "agent-ask:"
 // a late or repeated thread_reply is told what happened to it.
 const workerPromptRetention = 24 * time.Hour
 
-// Badge kinds of a worker's prompt wake.
-const (
-	workerPromptKindQuestion = "question"
-	workerPromptKindApproval = "approval"
-)
-
 type workerPromptState int
 
 const (
@@ -158,9 +152,9 @@ func (a *App) deliverWorkerPrompt(route provider.PromptRoute, workerID, requestI
 		a.handBackWorkerPrompt(prompt)
 		return
 	}
-	kind := workerPromptKindQuestion
+	kind := usermessage.OriginWakeKindQuestion
 	if approval != nil {
-		kind = workerPromptKindApproval
+		kind = usermessage.OriginWakeKindApproval
 	}
 	body := renderWorkerPromptWake(worker.Title, workerID, prompt)
 	// The user may have answered before the prompt is queued and again

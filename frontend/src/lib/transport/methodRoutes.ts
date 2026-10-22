@@ -376,7 +376,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	322092470: 'project', // SetProjectWorktreeSetup
 	2118904465: 'home', // SetProviderCustomEnvVar
 	719170063: 'home', // SetPushSenderCredential
-	2532132305: 'thread', // SetStandingAgentNotifyOnTick
 	2514763466: 'home', // SetThreadGroup
 	1041195811: 'thread', // SetThreadMcpServerEnabled
 	3112222989: 'thread', // SetThreadPinGroup

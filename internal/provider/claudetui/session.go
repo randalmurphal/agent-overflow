@@ -165,7 +165,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	if onEvent == nil {
 		return nil, fmt.Errorf("claudetui: onEvent callback is required")
 	}
-	sessionStart, err := claude.NewSessionStartDelivery(cfg.SessionStartHook, cfg.SessionStartReceipts, cfg.Resume)
+	sessionStart, err := claude.NewSessionStartDelivery(cfg.SessionStartHook, cfg.SessionStartForget, cfg.Resume)
 	if err != nil {
 		return nil, fmt.Errorf("claudetui: %w", err)
 	}
@@ -416,11 +416,8 @@ func (s *Session) finalizeCompaction(trigger, summary string) {
 	// main request carries the context.
 	s.sessionStartMu.Lock()
 	s.sessionStartSince = time.Now()
-	warning := s.sessionStart.Expect(provider.SessionStartAfterCompaction)
+	s.sessionStart.Expect(provider.SessionStartAfterCompaction)
 	s.sessionStartMu.Unlock()
-	if warning != "" {
-		s.emitNonFatalError(warning)
-	}
 }
 
 // queueUserEcho records an AO Send on the reconstructor's pending-echo FIFO so
@@ -501,13 +498,22 @@ func (s *Session) Close() error {
 		return nil
 	}
 	s.closing = true
-	if after := s.sessionStart.Expecting(); after != "" {
-		s.logf("claudetui: session closed before a model request showed whether its SessionStart hooks delivered after its %s", after)
-	}
 	terminalID := s.terminalID
 	systemPromptPath := s.systemPromptPath
 	appendSystemPromptPath := s.appendSystemPromptPath
 	s.mu.Unlock()
+
+	// A delivery no model request settled may not have arrived, and the
+	// next session resumes without the hook: its prompts must deliver the
+	// whole memory.
+	s.sessionStartMu.Lock()
+	if after := s.sessionStart.Expecting(); after != "" {
+		s.logf("claudetui: session closed before a model request showed whether its SessionStart hooks delivered after its %s", after)
+		if warning := s.sessionStart.ForgetWhilePending(); warning != "" {
+			s.emitNonFatalError(warning)
+		}
+	}
+	s.sessionStartMu.Unlock()
 
 	// Stop the parser loop and release any producer parked on feed before
 	// shutting the proxy/relay down, so their handler goroutines don't deadlock

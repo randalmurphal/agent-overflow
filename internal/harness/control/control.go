@@ -266,19 +266,21 @@ const (
 	// injects into a resumed thread, which no turn input carries.
 	ReportInjectedItems = "injected_items"
 	// ReportSessionStartContext carries one run of the SessionStart hooks
-	// a mock's session configuration declares: SessionRef is the session,
-	// SessionStartRun the source the hooks ran for and the context each
-	// delivered. Posted after the run's start frames and before the frames
-	// of its outcome (Claude's hook_response, Codex's hook/completed). It
-	// is how a spec sees what a standing agent's home hooks gave the model,
-	// which no turn input or launch argument carries.
+	// a mock's session configuration declares, or of its UserPromptSubmit
+	// hooks for one prompt: SessionRef is the session, SessionStartRun the
+	// source the hooks ran for and the context each delivered. Posted
+	// after the run's start frames and before the frames of its outcome
+	// (Claude's hook_response, Codex's hook/completed). It is how a spec
+	// sees what a standing agent's home hooks gave the model, which no
+	// turn input or launch argument carries.
 	ReportSessionStartContext = "session_start_context"
 )
 
-// SessionStartRun is one run of a session's SessionStart hooks: the source
-// they ran for ("startup", "compact", ...) and, in configuration order, the
-// context each hook that succeeded delivered to the model. Contexts is empty,
-// never nil, when no hook delivered.
+// SessionStartRun is one run of a session's SessionStart hooks, or of its
+// UserPromptSubmit hooks for one prompt: the source they ran for
+// ("startup", "compact", ..., "prompt" for a prompt) and, in configuration
+// order, the context each hook that succeeded delivered to the model.
+// Contexts is empty, never nil, when no hook delivered.
 type SessionStartRun struct {
 	Source   string   `json:"source"`
 	Contexts []string `json:"contexts"`
