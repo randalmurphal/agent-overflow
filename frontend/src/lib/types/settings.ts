@@ -287,6 +287,20 @@ export interface Settings {
    */
   dictationSubscriptionEnabled: boolean;
   /**
+   * Let composers dictate live through this computer's OpenAI API key file,
+   * which streams the recording to OpenAI while it is spoken. Off by
+   * default. The four settings after it tune that transcription.
+   */
+  dictationAPIEnabled: boolean;
+  /** gpt-live-transcribe's latency; empty leaves OpenAI's default. */
+  dictationAPIDelay: string;
+  /** Language codes the speaker uses, such as "en"; empty detects them. */
+  dictationAPILanguages: string[];
+  /** Terms the transcription should spell as written. */
+  dictationAPIKeywords: string[];
+  /** Describes the speaker or setting to the model. */
+  dictationAPIPrompt: string;
+  /**
    * Append Agent Overflow's guide to every interactive Claude, claude-tui
    * and Codex session's system prompt: what the chat pane renders and which
    * built-in tool servers are on. Read at spawn, so a change applies to

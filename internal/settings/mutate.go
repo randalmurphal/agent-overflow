@@ -24,6 +24,11 @@ import "slices"
 type TierChange struct {
 	Tier Tier     `json:"tier"`
 	Keys []string `json:"keys"`
+	// Revision is the write's place among persisted writes (Revision), the
+	// same for every change of one write; zero for a change no write made.
+	// Observers run outside the lock and can see writes out of order; this
+	// orders them.
+	Revision uint64 `json:"-"`
 }
 
 // ChangeObserver is notified after a persisted settings write that actually
@@ -40,6 +45,15 @@ func (s *Service) SetChangeObserver(observe ChangeObserver) {
 	s.observerMu.Lock()
 	defer s.observerMu.Unlock()
 	s.observer = observe
+}
+
+// Revision counts the persisted writes that changed something. A reader
+// that takes it before reading a value knows every later change carries a
+// higher one.
+func (s *Service) Revision() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.revision
 }
 
 func (s *Service) changeObserver() ChangeObserver {
@@ -193,6 +207,12 @@ func (s *Service) mutate(bucket string, class DeviceClass, apply func(current Se
 		}
 
 		changes = groupByTier(moved)
+		if len(changes) > 0 {
+			s.revision++
+			for i := range changes {
+				changes[i].Revision = s.revision
+			}
+		}
 		return next, nil
 	}()
 	if err != nil {
