@@ -1274,23 +1274,59 @@ test('a notification tap opens its thread after the lock is answered', async ({
 /** One event the `Speech` plugin sent the page, in arrival order. */
 type SpeechEvent = { kind: 'progress' | 'done'; session: string; index?: number; outcome?: string };
 
+/** One `speak` call the page sent the `Speech` plugin. */
+type SpeakCall = { session: string; from: number };
+
+type SpeechWatch = Window & { __speechEvents?: SpeechEvent[]; __speakCalls?: SpeakCall[] };
+
 /** Every event the `Speech` plugin has sent since `watchSpeech`. */
 async function speechEvents(page: Page): Promise<SpeechEvent[]> {
-  return page.evaluate(() => (window as Window & { __speechEvents?: SpeechEvent[] }).__speechEvents ?? []);
+  return page.evaluate(() => (window as SpeechWatch).__speechEvents ?? []);
+}
+
+/** Every `speak` call the page has made since `watchSpeech`. */
+async function speakCalls(page: Page): Promise<SpeakCall[]> {
+  return page.evaluate(() => (window as SpeechWatch).__speakCalls ?? []);
 }
 
 /** Records the plugin's own events beside the app's listener, so the case
- * judges what Android reported rather than the store's optimistic phase. */
+ * judges what Android reported rather than the store's optimistic phase,
+ * and the `speak` calls the page sends across the bridge, which every
+ * registered plugin reaches through `Capacitor.nativePromise`. */
 async function watchSpeech(page: Page): Promise<void> {
   await page.evaluate(async () => {
     type Listen = (event: string, handler: (payload: Record<string, unknown>) => void) => Promise<unknown>;
-    const speech = (window as Window & { Capacitor?: { Plugins?: { Speech?: { addListener: Listen } } } }).Capacitor?.Plugins?.Speech;
-    if (!speech) throw new Error('the Speech plugin is not registered');
-    const events: SpeechEvent[] = [];
-    (window as Window & { __speechEvents?: SpeechEvent[] }).__speechEvents = events;
+    type Bridge = {
+      Plugins?: { Speech?: { addListener: Listen } };
+      nativePromise: (plugin: string, method: string, options?: Record<string, unknown>) => Promise<unknown>;
+    };
+    const cap = (window as Window & { Capacitor?: Bridge }).Capacitor;
+    const speech = cap?.Plugins?.Speech;
+    if (!cap || !speech) throw new Error('the Speech plugin is not registered');
+    const watch = window as SpeechWatch;
+    const events: SpeechEvent[] = (watch.__speechEvents = []);
+    const calls: SpeakCall[] = (watch.__speakCalls = []);
     for (const kind of ['progress', 'done'] as const) {
       await speech.addListener(kind, (payload) => events.push({ kind, ...(payload as { session: string }) }));
     }
+    const send = cap.nativePromise.bind(cap);
+    cap.nativePromise = (plugin, method, options) => {
+      if (plugin === 'Speech' && method === 'speak') {
+        calls.push({ session: String(options?.session), from: Number(options?.from) });
+      }
+      return send(plugin, method, options);
+    };
+  });
+}
+
+/** Presses the read-aloud button in the same task that reads the plugin's
+ * progress, so no event can land between the two: the result is the
+ * sentence the player held when it paused. */
+async function pauseAtSnapshot(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const progress = ((window as SpeechWatch).__speechEvents ?? []).filter((e) => e.kind === 'progress');
+    (document.querySelector('[data-testid="assistant-message-read-aloud"]') as HTMLElement).click();
+    return progress.at(-1)?.index ?? -1;
   });
 }
 
@@ -1318,7 +1354,14 @@ test('read-aloud reads a reply through the phone’s text-to-speech', async ({ d
           {
             title: 'Read aloud thread',
             turns: [{ userText: 'hello', items: [{ kind: 'assistant_text',
-              summary: 'The first sentence is here. The second one follows it. A third keeps the reading going. The fourth is longer, so the reading is still under way when it pauses.\n\n```sh\necho skipped\n```\n\nThe fifth comes after the skipped code. The last sentence ends the reply.',
+              summary: 'The first sentence is here. The second one follows it. '
+                + 'A third keeps the reading going for a while longer, with enough words that a pause lands inside it. '
+                + 'The fourth sentence is deliberately long so that a reading paused anywhere before it still has a great deal left to say, '
+                + 'which is what lets this case tell a phone that really stopped from one that simply ran out of words.'
+                + '\n\n```sh\necho skipped\n```\n\n'
+                + 'The fifth sentence is just as long for the same reason, and together the two of them keep the phone talking '
+                + 'for far longer than the few seconds this case allows for the silence that a real pause must produce. '
+                + 'The last sentence ends the reply.',
             }] }],
           },
         ],
@@ -1359,31 +1402,37 @@ test('read-aloud reads a reply through the phone’s text-to-speech', async ({ d
     { message: 'Android must report progress past the first sentence', timeout: 30_000 }).toBe(true);
   await expect.poll(() => speechAudible(device), { message: 'the phone must be playing speech' }).toBe(true);
 
-  // Pausing stops the native session and silences the phone.
-  await play.click();
+  // Pausing stops the native session and silences the phone. The pause
+  // lands by the third sentence, so two long ones are still unread: a
+  // phone that kept speaking could not fall silent on its own in time.
+  const pausedClick = Date.now();
+  const pausedAt = await pauseAtSnapshot(page);
+  expect(pausedAt, 'the pause must leave the long sentences unread').toBeGreaterThanOrEqual(1);
+  expect(pausedAt, 'the pause must leave the long sentences unread').toBeLessThanOrEqual(2);
   await expect(slot).toHaveAttribute('data-phase', 'paused');
   await expect(page.getByTestId('assistant-message-read-aloud-restart')).toBeVisible();
-  const first = (await speechEvents(page))[0].session;
+  const first = (await speakCalls(page))[0].session;
   await expect.poll(async () => (await speechEvents(page)).find((e) => e.kind === 'done' && e.session === first)?.outcome,
     { message: 'pausing must stop the native session' }).toBe('stopped');
-  const pausedAt = Math.max(...(await speechEvents(page)).filter((e) => e.kind === 'progress' && e.session === first).map((e) => e.index!));
-  expect(pausedAt).toBeLessThan(last);
-  // Promptly, and for good: the unread sentences take far longer than this
-  // to finish on their own, and a gap between two queued ones is brief.
-  await expect.poll(() => speechAudible(device), { message: 'the phone must fall silent on pause', timeout: 3_000 }).toBe(false);
-  for (const held = Date.now() + 2_000; Date.now() < held;) {
+  await expect.poll(() => speechAudible(device), {
+    message: 'the phone must fall silent on pause',
+    timeout: Math.max(0, pausedClick + 3_000 - Date.now()),
+  }).toBe(false);
+  // A gap between two queued sentences is brief; this outlasts it.
+  for (const held = pausedClick + 6_000; Date.now() < held;) {
     expect(await speechAudible(device), 'the phone must stay silent while paused').toBe(false);
   }
 
-  // Resuming restarts the paused sentence in a new session and reads to
-  // the end, which Android reports as ended after the last piece.
+  // Resuming asks Android for the sentence the player paused on, in a new
+  // session; Android starts there and reads to an ended last piece.
   await play.click();
   await expect(slot).toHaveAttribute('data-phase', 'playing');
-  await expect(slot).toHaveAttribute('data-phase', 'idle', { timeout: 60_000 });
-  const resumed = (await speechEvents(page)).filter((e) => e.session !== first);
-  expect(resumed.length, 'resuming must start a new native session').toBeGreaterThan(0);
+  await expect(slot).toHaveAttribute('data-phase', 'idle', { timeout: 120_000 });
+  const calls = await speakCalls(page);
+  expect(calls.map((c) => c.from), 'resuming must ask for the paused sentence').toEqual([0, pausedAt]);
+  const resumed = (await speechEvents(page)).filter((e) => e.session === calls[1].session);
   const progress = resumed.filter((e) => e.kind === 'progress').map((e) => e.index);
-  expect(progress[0], 'resuming must restart the paused sentence').toBe(pausedAt);
+  expect(progress[0], 'Android must start where it was asked').toBe(pausedAt);
   expect(progress.at(-1)).toBe(last);
   expect(resumed.filter((e) => e.kind === 'done').map((e) => e.outcome)).toEqual(['ended']);
 });
