@@ -83,20 +83,21 @@ hold_lock() {
 # child and waited out before the exit cleanup runs, so nothing the step
 # started outlives the PIN, the adb server or the emulator it relies on.
 # Background children of a script ignore SIGINT, so TERM carries them all.
-child=""
+# The child is found with `jobs -p`, not `$!`: a trap can run after the fork
+# and before `$!` is read.
 supervise() {
   "$@" &
-  child=$!
   local status=0
-  wait "$child" || status=$?
-  child=""
+  wait "$!" || status=$?
   return "$status"
 }
 on_signal() {
   trap - "$1"
-  if [[ -n "$child" ]]; then
-    kill -TERM "$child" 2>/dev/null || true
-    wait "$child" 2>/dev/null || true
+  local running
+  running="$(jobs -p)"
+  if [[ -n "$running" ]]; then
+    kill -TERM $running 2>/dev/null || true
+    wait $running 2>/dev/null || true
   fi
   exit $((128 + $(kill -l "$1")))
 }

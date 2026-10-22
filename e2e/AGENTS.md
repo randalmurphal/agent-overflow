@@ -134,8 +134,9 @@ and fails if unavailable. Preserve this distinction in assertions and reports.
 
 Bundle-adoption tests build a second harness with a strictly newer fixture
 release and temporarily stamp generated dist metadata inside a `finally`
-restore. Do not run that fixture builder concurrently with another frontend or
-mobile build. Compare trimmed bundle IDs.
+restore; a signal stops and waits for the compiler before that restore. Do
+not run that fixture builder concurrently with another frontend or mobile
+build. Compare trimmed bundle IDs.
 
 LAN renewal cases must prove the old route is gone. Stop the app before removing
 `adb reverse`, cold-launch it, wait for session renewal rather than cached UI,

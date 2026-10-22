@@ -153,14 +153,16 @@ read -ra extra <<<"${AO_EMULATOR_ARGS:-}"
 # Until the boot is confirmed the launch is this command's to undo. A signal
 # or a failed boot stops the launcher, before or after it made the scope,
 # waits for it so it cannot make one later, then stops the scope. Holding
-# the lock means no other run can have made one.
-launcher=""
+# the lock means no other run can have made one. The launcher is found with
+# `jobs -p`, not `$!`: a trap can run after the fork and before `$!` is read.
 booted=""
 abandon() {
   [[ -z "$booted" ]] || return 0
-  if [[ -n "$launcher" ]]; then
-    kill -TERM "$launcher" 2>/dev/null || true
-    wait "$launcher" 2>/dev/null || true
+  local launched
+  launched="$(jobs -p)"
+  if [[ -n "$launched" ]]; then
+    kill -TERM $launched 2>/dev/null || true
+    wait $launched 2>/dev/null || true
   fi
   systemctl --user stop "$unit" >/dev/null 2>&1 || true
 }
@@ -178,7 +180,6 @@ systemd-run --user --scope --unit="$unit" -q \
     "$ANDROID_HOME/emulator/emulator" -avd "$avd" -no-window -no-audio -no-boot-anim \
     -gpu swiftshader_indirect -no-snapshot -memory 3072 -cores 2 "${extra[@]}" \
   >"$log" 2>&1 &
-launcher=$!
 
 echo "==> booting $avd as $unit (memory cap $memory)"
 start=$(date +%s)

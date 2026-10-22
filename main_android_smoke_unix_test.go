@@ -89,6 +89,30 @@ echo "emulator $1" >>"$AO_TEST_LOG"
 `)
 }
 
+// signalAfterFork arms the named script to send itself SIGTERM at the first
+// command after it forks one matching the glob fork while its positional
+// arguments match the glob args: the moment between a fork and reading `$!`,
+// which no signal from outside can be timed to hit. It returns the BASH_ENV
+// entry that arms it.
+func (f smokeFixture) signalAfterFork(t *testing.T, script, fork, args string) string {
+	t.Helper()
+	path := filepath.Join(f.dir, "signal-after-fork.bash")
+	body := `[[ $0 == */` + script + ` ]] || return 0
+ao_fork=` + shellQuote(fork) + `
+ao_args=` + shellQuote(args) + `
+set -o functrace
+trap 'if [[ -n ${ao_forked:-} ]]; then trap - DEBUG; kill -TERM $$; fi; [[ $BASH_COMMAND == $ao_fork && $* == $ao_args ]] && ao_forked=1' DEBUG
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return "BASH_ENV=" + path
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 func (f smokeFixture) command(env ...string) *exec.Cmd {
 	cmd := exec.Command("bash", f.smoke)
 	cmd.Env = append(append([]string{}, f.env...), env...)
@@ -264,62 +288,89 @@ func TestAndroidSmokeCleansUpAfterTheSuiteOnSignal(t *testing.T) {
 	if _, err := exec.LookPath("flock"); err != nil {
 		t.Skip("flock unavailable")
 	}
-	f := newSmokeFixture(t)
-	f.fakeEmulator(t)
-	mockexec.WriteIn(t, filepath.Join(f.dir, "repo", "bin"), "ao-harness-e2e", `#!/usr/bin/env bash
+	// A signal while the suite runs, and one that lands right after the
+	// suite is forked, before the smoke could read its PID.
+	for _, afterFork := range []bool{false, true} {
+		name := "while the suite runs"
+		if afterFork {
+			name = "right after the suite is forked"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newSmokeFixture(t)
+			f.fakeEmulator(t)
+			mockexec.WriteIn(t, filepath.Join(f.dir, "repo", "bin"), "ao-harness-e2e", `#!/usr/bin/env bash
 trap 'echo "launcher TERM" >>"$AO_TEST_LOG"; exit 143' TERM
 echo "launcher started" >>"$AO_TEST_LOG"
 while :; do sleep 0.05; done
 `)
-	cmd := f.command("AO_ANDROID_SMOKE_PHASE=device", "AO_TEST_ADB_DEVICES=emulator-5554\tdevice")
-	var out strings.Builder
-	cmd.Stdout, cmd.Stderr = &out, &out
-	// Its own process group, so a failed case can kill the fake suite too.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
-	deadline := time.Now().Add(30 * time.Second)
-	for !strings.Contains(f.calls(t), "launcher started") {
-		if time.Now().After(deadline) {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			_ = cmd.Wait()
-			t.Fatalf("the suite never started:\n%s\n%s", out.String(), f.calls(t))
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	var err error
-	select {
-	case err = <-done:
-	case <-time.After(30 * time.Second):
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		<-done
-		t.Fatalf("the smoke did not finish after SIGTERM:\n%s\n%s", out.String(), f.calls(t))
-	}
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 143 {
-		t.Fatalf("want exit 143 after SIGTERM, got %v:\n%s", err, out.String())
-	}
-	calls := f.calls(t)
-	order := []string{
-		"launcher TERM",
-		"adb -s emulator-5554 shell locksettings clear --old 1234",
-		"adb kill-server",
-		"emulator stop",
-	}
-	at := -1
-	for _, step := range order {
-		next := strings.Index(calls, step)
-		if next <= at {
-			t.Fatalf("want %q after the steps before it, in:\n%s", step, calls)
-		}
-		at = next
+			env := []string{"AO_ANDROID_SMOKE_PHASE=device", "AO_TEST_ADB_DEVICES=emulator-5554\tdevice"}
+			if afterFork {
+				env = append(env, f.signalAfterFork(t, "android-smoke.sh", `"$@"`, "*ao-harness-e2e*"))
+			}
+			cmd := f.command(env...)
+			var out strings.Builder
+			cmd.Stdout, cmd.Stderr = &out, &out
+			// Its own process group, so a failed case can kill the fake suite too.
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
+			if !afterFork {
+				deadline := time.Now().Add(30 * time.Second)
+				for !strings.Contains(f.calls(t), "launcher started") {
+					if time.Now().After(deadline) {
+						_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+						_ = cmd.Wait()
+						t.Fatalf("the suite never started:\n%s\n%s", out.String(), f.calls(t))
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+				if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+					t.Fatal(err)
+				}
+			}
+			done := make(chan error, 1)
+			go func() { done <- cmd.Wait() }()
+			var err error
+			select {
+			case err = <-done:
+			case <-time.After(30 * time.Second):
+				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+				<-done
+				t.Fatalf("the smoke did not finish after SIGTERM:\n%s\n%s", out.String(), f.calls(t))
+			}
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 143 {
+				t.Fatalf("want exit 143 after SIGTERM, got %v:\n%s", err, out.String())
+			}
+			// A suite the smoke failed to stop would go on logging after the
+			// cleanup; give one that survived time to show itself.
+			time.Sleep(time.Second)
+			calls := f.calls(t)
+			const cleared = "adb -s emulator-5554 shell locksettings clear --old 1234"
+			order := []string{
+				cleared,
+				"adb kill-server",
+				"emulator stop",
+			}
+			if !afterFork {
+				// Stopped while running, the suite sees the TERM itself; just
+				// after the fork it may die before its trap exists.
+				order = append([]string{"launcher TERM"}, order...)
+			}
+			at := -1
+			for _, step := range order {
+				next := strings.Index(calls, step)
+				if next <= at {
+					t.Fatalf("want %q after the steps before it, in:\n%s", step, calls)
+				}
+				at = next
+			}
+			if last := strings.LastIndex(calls, "launcher "); last > strings.Index(calls, cleared) {
+				t.Fatalf("the suite outlived the cleanup:\n%s", calls)
+			}
+		})
 	}
 }
 
@@ -388,9 +439,12 @@ func TestAndroidEmulatorStartUndoesAnInterruptedLaunch(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		scopeCreated bool
+		afterFork    bool
 	}{
-		{"before the scope exists", false},
-		{"after the scope exists", true},
+		{"before the scope exists", false, false},
+		{"after the scope exists", true, false},
+		// Before start could read the launcher's PID.
+		{"right after the launcher is forked", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newSmokeFixture(t)
@@ -428,6 +482,9 @@ esac
 				"AO_TEST_BARRIER="+barrier,
 				"AO_TEST_SCOPE="+scope,
 			)
+			if tc.afterFork {
+				cmd.Env = append(cmd.Env, f.signalAfterFork(t, "android-emulator.sh", "systemd-run *", "*"))
+			}
 			var out strings.Builder
 			cmd.Stdout, cmd.Stderr = &out, &out
 			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -445,15 +502,17 @@ esac
 					time.Sleep(20 * time.Millisecond)
 				}
 			}
-			waitFor("launcher started")
-			if tc.scopeCreated {
-				if err := os.WriteFile(barrier, nil, 0o600); err != nil {
+			if !tc.afterFork {
+				waitFor("launcher started")
+				if tc.scopeCreated {
+					if err := os.WriteFile(barrier, nil, 0o600); err != nil {
+						t.Fatal(err)
+					}
+					waitFor("scope created")
+				}
+				if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 					t.Fatal(err)
 				}
-				waitFor("scope created")
-			}
-			if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
-				t.Fatal(err)
 			}
 			done := make(chan error, 1)
 			go func() { done <- cmd.Wait() }()
@@ -467,7 +526,7 @@ esac
 			if err := os.WriteFile(barrier, nil, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			time.Sleep(300 * time.Millisecond)
+			time.Sleep(time.Second)
 			calls := f.calls(t)
 			stopped := strings.LastIndex(calls, "scope stopped")
 			if stopped < 0 || strings.LastIndex(calls, "scope created") > stopped {

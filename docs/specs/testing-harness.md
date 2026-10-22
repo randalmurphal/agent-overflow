@@ -192,7 +192,9 @@ The suite runs in a process group of its own, so an interrupt (and on Unix
 waits for it, and exits with 128 plus the signal number. Each backend
 `launchHarness` starts has a process group of its own, out of that
 teardown's reach, so on Unix it is passed `--exit-with-parent` with its
-worker's PID and stops itself once that worker is gone.
+worker's PID and stops itself once that worker is gone. That stop does
+not wait on logging, since nobody may read its output any more, and exits
+outright if the ordered shutdown has not finished within its bound.
 
 Every `up`, managed `run`, and compare leg installs the platform memory policy
 before starting the backend. `up` defaults to 2 GiB and managed plans may
