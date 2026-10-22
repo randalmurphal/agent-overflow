@@ -1320,8 +1320,8 @@ async function watchSpeech(page: Page): Promise<void> {
 }
 
 /** Presses the read-aloud button in the same task that reads the plugin's
- * progress, so no event can land between the two: the result is the
- * sentence the player held when it paused. */
+ * progress. Capacitor calls each listener back separately and this one
+ * first, so the player holds this sentence or an earlier one. */
 async function pauseAtSnapshot(page: Page): Promise<number> {
   return page.evaluate(() => {
     const progress = ((window as SpeechWatch).__speechEvents ?? []).filter((e) => e.kind === 'progress');
@@ -1406,33 +1406,39 @@ test('read-aloud reads a reply through the phone’s text-to-speech', async ({ d
   // lands by the third sentence, so two long ones are still unread: a
   // phone that kept speaking could not fall silent on its own in time.
   const pausedClick = Date.now();
-  const pausedAt = await pauseAtSnapshot(page);
-  expect(pausedAt, 'the pause must leave the long sentences unread').toBeGreaterThanOrEqual(1);
-  expect(pausedAt, 'the pause must leave the long sentences unread').toBeLessThanOrEqual(2);
+  const heardAt = await pauseAtSnapshot(page);
+  expect(heardAt, 'the pause must leave the long sentences unread').toBeLessThanOrEqual(2);
   await expect(slot).toHaveAttribute('data-phase', 'paused');
   await expect(page.getByTestId('assistant-message-read-aloud-restart')).toBeVisible();
   const first = (await speakCalls(page))[0].session;
   await expect.poll(async () => (await speechEvents(page)).find((e) => e.kind === 'done' && e.session === first)?.outcome,
     { message: 'pausing must stop the native session' }).toBe('stopped');
-  await expect.poll(() => speechAudible(device), {
-    message: 'the phone must fall silent on pause',
-    timeout: Math.max(0, pausedClick + 3_000 - Date.now()),
-  }).toBe(false);
+  // Zero would mean no deadline to Playwright, so a spent budget fails.
+  const silenceBudget = pausedClick + 3_000 - Date.now();
+  expect(silenceBudget, 'the pause must be judged within three seconds of the click').toBeGreaterThan(0);
+  await expect.poll(() => speechAudible(device), { message: 'the phone must fall silent on pause', timeout: silenceBudget })
+    .toBe(false);
   // A gap between two queued sentences is brief; this outlasts it.
-  for (const held = pausedClick + 6_000; Date.now() < held;) {
+  let samples = 0;
+  for (const held = pausedClick + 6_000; Date.now() < held; samples++) {
     expect(await speechAudible(device), 'the phone must stay silent while paused').toBe(false);
   }
+  expect(samples, 'silence must be sampled while paused').toBeGreaterThan(0);
 
-  // Resuming asks Android for the sentence the player paused on, in a new
-  // session; Android starts there and reads to an ended last piece.
+  // Resuming asks Android for a sentence the reading had reached, not the
+  // first (the store tests pin which one); Android starts exactly there in
+  // a new session and reads to an ended last piece.
   await play.click();
   await expect(slot).toHaveAttribute('data-phase', 'playing');
   await expect(slot).toHaveAttribute('data-phase', 'idle', { timeout: 120_000 });
   const calls = await speakCalls(page);
-  expect(calls.map((c) => c.from), 'resuming must ask for the paused sentence').toEqual([0, pausedAt]);
+  expect(calls.length, 'one speak to start and one to resume').toBe(2);
+  const resumedFrom = calls[1].from;
+  expect(resumedFrom, 'resuming must not restart the reading').toBeGreaterThanOrEqual(1);
+  expect(resumedFrom, 'resuming must not skip past the paused sentence').toBeLessThanOrEqual(heardAt);
   const resumed = (await speechEvents(page)).filter((e) => e.session === calls[1].session);
   const progress = resumed.filter((e) => e.kind === 'progress').map((e) => e.index);
-  expect(progress[0], 'Android must start where it was asked').toBe(pausedAt);
+  expect(progress[0], 'Android must start where it was asked').toBe(resumedFrom);
   expect(progress.at(-1)).toBe(last);
   expect(resumed.filter((e) => e.kind === 'done').map((e) => e.outcome)).toEqual(['ended']);
 });
