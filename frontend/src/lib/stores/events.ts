@@ -389,9 +389,11 @@ export function setupEventListeners(): () => void {
       // the re-read this triggers is a second RPC and every other settings
       // write would otherwise pay for it.
       if (payload?.keys?.includes('editor')) void resyncEditorPreference(backendKeyForOrigin(origin.backendId));
-      // Dictation availability folds this switch in on the computer, so it
-      // is re-read the same way.
-      if (payload?.keys?.includes('dictationSubscriptionEnabled')) applyDictationSourcesChanged(backendKeyForOrigin(origin.backendId));
+      // Dictation availability folds these switches in on the computer, so
+      // it is re-read the same way.
+      if (payload?.keys?.some((key) => key === 'dictationSubscriptionEnabled' || key === 'dictationAPIEnabled')) {
+        applyDictationSourcesChanged(backendKeyForOrigin(origin.backendId));
+      }
     },
   );
   // keybindings:updated — the user keybindings file was rewritten or reset,

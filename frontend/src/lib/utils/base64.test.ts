@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { base64ToBytes } from './base64';
+import { base64ToBytes, bytesToBase64 } from './base64';
 
 describe('base64ToBytes', () => {
   it('decodes ASCII base64 to its bytes', () => {
@@ -17,5 +17,19 @@ describe('base64ToBytes', () => {
 
   it('returns an empty array for empty input', () => {
     expect(base64ToBytes('')).toEqual(new Uint8Array(0));
+  });
+});
+
+describe('bytesToBase64', () => {
+  it('round-trips every byte value across block boundaries', () => {
+    const bytes = new Uint8Array(0x8000 * 2 + 3);
+    for (let i = 0; i < bytes.length; i += 1) bytes[i] = (i * 7) & 0xff;
+    const encoded = bytesToBase64(bytes);
+    expect(encoded).toBe(btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join('')));
+    expect(base64ToBytes(encoded)).toEqual(bytes);
+  });
+
+  it('encodes nothing as the empty string', () => {
+    expect(bytesToBase64(new Uint8Array(0))).toBe('');
   });
 });

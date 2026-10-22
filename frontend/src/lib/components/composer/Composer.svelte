@@ -39,10 +39,11 @@
   import { HOME_BACKEND } from '../../transport/backendKey';
   import { DictationSession } from '../../dictation/dictationSession.svelte';
   import DictationButton from './DictationButton.svelte';
+  import ComposerDictationCaption from './ComposerDictationCaption.svelte';
   import { browserDictationEnvironment } from '../../dictation/browserDictation';
   import {
-    dictationAvailable,
     dictationRemote,
+    dictationSource,
     refreshDictationSources,
     registerComposerDictation,
   } from '../../stores/dictation.svelte';
@@ -163,32 +164,42 @@
   // abandons a recording rather than landing its words in another thread.
   let dictationMachine = $derived(threadMachine(pane.threadId ?? '', pane.thread?.projectId));
   let dictation = $state<DictationSession | null>(null);
+  // What this engine can capture, fixed for the page's life.
+  const dictationEngine = {
+    records: browserDictationEnvironment.format() !== null,
+    streamsPcm: browserDictationEnvironment.streamsPcm(),
+  };
   $effect(() => {
     void refreshDictationSources(dictationMachine);
   });
   $effect(() => {
     const backend = dictationMachine;
     void pane.threadId;
-    const session = new DictationSession(browserDictationEnvironment, dictationRemote(backend), (text) =>
+    const session = new DictationSession(browserDictationEnvironment, dictationRemote(backend, dictationEngine), (text) =>
       surface?.insertText(text) ?? false,
     );
     dictation = session;
-    const release = registerComposerDictation(pane.paneId, session, () => showDictation);
+    const release = registerComposerDictation(pane.paneId, backend, session, () => showDictation);
     return () => {
       release();
       session.dispose();
     };
   });
-  // An engine that cannot record shows no mic rather than one that fails.
-  const engineRecords = browserDictationEnvironment.format() !== null;
+  // An engine that cannot capture for any source the computer has on shows
+  // no mic rather than one that fails.
   let showDictation = $derived(
-    engineRecords && !isDisabled && !sendUngranted && !offline && dictationAvailable(dictationMachine),
+    !isDisabled && !sendUngranted && !offline && dictationSource(dictationMachine, dictationEngine) !== null,
   );
   // Hiding the mic mid-recording (a sign-out, a lost grant) abandons the
   // recording, so no microphone stays open behind a control that is gone.
+  // So does losing the source the recording started with, even when the
+  // other source is still on: switching live off stops the stream.
   $effect(() => {
     const session = dictation;
-    if (!showDictation && session) untrack(() => session.cancel());
+    if (!session) return;
+    const source = showDictation ? dictationSource(dictationMachine, dictationEngine) : null;
+    const active = session.activeSource;
+    if (active !== null && active !== source) untrack(() => session.cancel());
   });
 
   let respondUngranted = $derived(!threadHasScope('approvals:respond', pane.threadId, pane.thread?.projectId));
@@ -1046,11 +1057,18 @@
       </div>
     </div>
   {/if}
+  <!-- The caption floats above the card from this box, which carries the
+       card's width so the two share their edges; the card itself clips
+       (overflow-hidden) and could not host it. -->
+  <div class="pointer-events-none relative mx-auto w-full max-w-[68rem]">
+  {#if showDictation && dictation}
+    <ComposerDictationCaption session={dictation} />
+  {/if}
   <div
     bind:this={composerRoot}
     inert={draft.moving}
     aria-busy={draft.moving}
-    class="pointer-events-auto mx-auto w-full max-w-[68rem] rounded-[var(--radius-composer)] border border-border-subtle bg-card shadow-sheet overflow-hidden
+    class="pointer-events-auto w-full rounded-[var(--radius-composer)] border border-border-subtle bg-card shadow-sheet overflow-hidden
            focus-within:border-border focus-within:shadow-menu transition-[border-color,box-shadow] duration-200"
     role="region"
     aria-label="Message Composer"
@@ -1166,5 +1184,6 @@
       onInterrupt={interrupt}
     />
     <ComposerWorkspaceStrip {pane} />
+  </div>
   </div>
 </div>
