@@ -322,6 +322,12 @@ export const KEYBINDING_DEFAULTS: readonly KeybindingRule[] = [
     "defaultKey": "mod+shift+space"
   },
   {
+    "key": "mod+shift+.",
+    "command": "readAloud.toggle",
+    "defaultId": "readAloud.toggle",
+    "defaultKey": "mod+shift+."
+  },
+  {
     "key": "alt+shift+m",
     "command": "sound.toggleMute",
     "defaultId": "sound.toggleMute",

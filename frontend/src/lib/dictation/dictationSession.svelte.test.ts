@@ -29,6 +29,18 @@ describe('DictationSession', () => {
     expect(f.timers()).toBe(0);
   });
 
+  it('quiets this device’s speech before it opens the microphone', async () => {
+    let quietedBeforeOpening = false;
+    const f = fixture({
+      openMicrophone: async () => {
+        quietedBeforeOpening = f.quieted.count === 1;
+        return { getTracks: () => [] } as unknown as MediaStream;
+      },
+    });
+    await f.session.start();
+    expect(quietedBeforeOpening).toBe(true);
+  });
+
   it('never uploads a later piece after one fails, and reports the failure', async () => {
     const f = fixture();
     f.remote.upload.mockRejectedValueOnce(new Error('ticket refused'));

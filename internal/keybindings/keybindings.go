@@ -218,6 +218,11 @@ var Defaults = []Keybinding{
 	// sends. Space, because every free mod+shift letter is claimed above or
 	// by the shell.
 	{Key: "mod+shift+space", Command: "composer.dictate", When: "hasActiveThread && threadsOperate && !anyModalOpen", DefaultID: "composer.dictate"},
+	// Pauses or resumes whatever reply is being read aloud, wherever it
+	// is: the reply may have scrolled away or be in another pane.
+	// Un-gated, like the sound mute below: it only touches this screen's
+	// audio.
+	{Key: "mod+shift+.", Command: "readAloud.toggle", DefaultID: "readAloud.toggle"},
 	// Quick mute for notification sounds on THIS screen
 	// (notificationSoundsEnabled is device tier: notifications still
 	// appear, they just stop making noise here). Un-gated, because the
