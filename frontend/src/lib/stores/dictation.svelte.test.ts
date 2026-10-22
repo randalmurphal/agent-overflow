@@ -93,6 +93,19 @@ describe('dictation availability', () => {
     applyDictationSourcesChanged('laptop');
     await vi.waitFor(() => expect(dictationAvailable('laptop')).toBe(true));
   });
+
+  it('re-reads after a change that lands before the first answer', async () => {
+    attachLaptop();
+    const answers = heldAnswers();
+    const first = refreshDictationSources('laptop');
+    await vi.waitFor(() => expect(answers).toHaveLength(1));
+    applyDictationSourcesChanged('laptop');
+    await vi.waitFor(() => expect(answers).toHaveLength(2));
+    answers[1](false);
+    answers[0](true);
+    await first;
+    expect(dictationAvailable('laptop')).toBe(false);
+  });
 });
 
 describe('composer dictation registry', () => {

@@ -68,9 +68,8 @@ type recording struct {
 	// holding a piece then releases its own reservation and stops.
 	dropped bool
 	idle    *time.Timer
-	// onExpire runs, outside the lock, when the idle timer drops the
-	// recording.
-	onExpire func()
+	// onRelease runs, outside the lock, when the recording leaves the set.
+	onRelease func()
 	// cancelJob is set while the recording is being transcribed.
 	cancelJob context.CancelFunc
 }
@@ -105,14 +104,15 @@ func (r *Recordings) Begin(mimeType string) (string, error) {
 	return id, nil
 }
 
-// OnExpire sets what runs when the idle timer drops the recording, such as
-// releasing its connection's cleanup. False when the recording is gone.
-func (r *Recordings) OnExpire(id string, f func()) bool {
+// OnRelease sets what runs once the recording leaves the set, however it
+// does (finished and done, cancelled, refused at finish or expired), such
+// as releasing its connection's cleanup. False when it is already gone.
+func (r *Recordings) OnRelease(id string, f func()) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	rec, ok := r.open[id]
 	if ok {
-		rec.onExpire = f
+		rec.onRelease = f
 	}
 	return ok
 }
@@ -146,9 +146,10 @@ func (r *Recordings) admitsLocked(rec *recording, seq int, size int64) error {
 		return fmt.Errorf("dictation: piece %d out of order, expected %d", seq, rec.next)
 	case size <= 0:
 		return errors.New("dictation: empty piece")
-	case int64(len(rec.data))+size > MaxRecordingBytes:
+	// Compared against the room left, so no size can overflow a sum.
+	case size > MaxRecordingBytes-int64(len(rec.data)):
 		return errors.New("dictation: recording is too long")
-	case r.held+size > MaxHeldBytes:
+	case size > MaxHeldBytes-r.held:
 		return errors.New("dictation: this computer is holding too much audio; try again shortly")
 	}
 	return nil
@@ -223,27 +224,39 @@ type Job struct {
 func (j *Job) Done() { j.done() }
 
 // Finish closes a recording the client sent pieces pieces of to new pieces
-// and returns its transcription job. A recording that cannot be finished
-// is dropped.
+// and returns its transcription job. A recording missing pieces or empty
+// is dropped; one already transcribing or still uploading a piece is left
+// as it was.
 func (r *Recordings) Finish(ctx context.Context, id string, pieces int) (*Job, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	rec, ok := r.open[id]
 	if !ok {
+		r.mu.Unlock()
 		return nil, ErrUnknownRecording
 	}
+	var refusal error
 	switch {
 	case rec.cancelJob != nil:
-		return nil, errors.New("dictation: recording is already finished")
+		refusal = errors.New("dictation: recording is already finished")
 	case rec.reading > 0:
-		return nil, errors.New("dictation: a piece of this recording is still being uploaded")
+		refusal = errors.New("dictation: a piece of this recording is still being uploaded")
 	case pieces != rec.next:
-		r.dropLocked(id, rec)
-		return nil, fmt.Errorf("dictation: recording has %d of %d pieces", rec.next, pieces)
+		refusal = fmt.Errorf("dictation: recording has %d of %d pieces", rec.next, pieces)
 	case len(rec.data) == 0:
-		r.dropLocked(id, rec)
-		return nil, errors.New("dictation: recording is empty")
+		refusal = errors.New("dictation: recording is empty")
 	}
+	if refusal != nil {
+		// A recording still transcribing or uploading stays its owner's; one
+		// that cannot be completed is dropped.
+		var release func()
+		if rec.cancelJob == nil && rec.reading == 0 {
+			release = r.dropLocked(id, rec)
+		}
+		r.mu.Unlock()
+		runRelease(release)
+		return nil, refusal
+	}
+	defer r.mu.Unlock()
 	rec.idle.Stop()
 	jobCtx, cancel := context.WithCancel(ctx)
 	rec.cancelJob = cancel
@@ -256,10 +269,12 @@ func (r *Recordings) Finish(ctx context.Context, id string, pieces int) (*Job, e
 			once.Do(func() {
 				cancel()
 				r.mu.Lock()
-				defer r.mu.Unlock()
+				var release func()
 				if r.open[id] == rec {
-					r.dropLocked(id, rec)
+					release = r.dropLocked(id, rec)
 				}
+				r.mu.Unlock()
+				runRelease(release)
 			})
 		},
 	}, nil
@@ -269,16 +284,19 @@ func (r *Recordings) Finish(ctx context.Context, id string, pieces int) (*Job, e
 // Done then drops it. Cancelling one that is gone does nothing.
 func (r *Recordings) Cancel(id string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	rec, ok := r.open[id]
 	if !ok {
+		r.mu.Unlock()
 		return
 	}
 	if rec.cancelJob != nil {
 		rec.cancelJob()
+		r.mu.Unlock()
 		return
 	}
-	r.dropLocked(id, rec)
+	release := r.dropLocked(id, rec)
+	r.mu.Unlock()
+	runRelease(release)
 }
 
 // Open reports how many recordings are open or transcribing.
@@ -308,20 +326,25 @@ func (r *Recordings) expire(id string, rec *recording) {
 		r.mu.Unlock()
 		return
 	}
-	r.dropLocked(id, rec)
-	onExpire := rec.onExpire
+	release := r.dropLocked(id, rec)
 	r.mu.Unlock()
-	if onExpire != nil {
-		onExpire()
-	}
+	runRelease(release)
 }
 
 // dropLocked removes rec and releases its stored bytes. A piece still
-// being read keeps its reservation until its reader releases it.
-func (r *Recordings) dropLocked(id string, rec *recording) {
+// being read keeps its reservation until its reader releases it. The
+// caller runs the returned release hook once it has unlocked.
+func (r *Recordings) dropLocked(id string, rec *recording) func() {
 	delete(r.open, id)
 	rec.idle.Stop()
 	rec.dropped = true
 	r.held -= int64(len(rec.data))
 	rec.data = nil
+	return rec.onRelease
+}
+
+func runRelease(release func()) {
+	if release != nil {
+		release()
+	}
 }

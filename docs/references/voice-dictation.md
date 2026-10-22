@@ -34,9 +34,12 @@ sent to the live endpoint.
 The access token is read from the canonical Codex `auth.json` for each
 request and never retained. On a 401, AO asks Codex to refresh through
 `account/read {refreshToken: true}` and retries once; AO never refreshes the
-token itself. An abandoned transcription starts no refresh, and a refresh
-that started runs to its end: one stopped after the server rotated the
-token, before the CLI saved it, would lose the sign-in. A Codex configured to keep credentials in the OS keyring has
+token itself. The refresh holds the Codex reconcile lock and first promotes
+a rotation recovered into the selected account's slot, so it never spends a
+consumed refresh token. A transcription abandoned before it holds the lock
+starts no refresh, and a refresh that started runs to its end: one stopped
+after the server rotated the token, before the CLI saved it, would lose the
+sign-in. A Codex configured to keep credentials in the OS keyring has
 no `auth.json`, and dictation reads as unavailable there.
 
 ## Platform microphone access

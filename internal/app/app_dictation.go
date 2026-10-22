@@ -69,7 +69,12 @@ func (a *App) BeginDictation(ctx context.Context, mimeType string) (string, erro
 			a.dictationRecordings().Cancel(id)
 			return "", errors.New("dictation: connection closing")
 		}
-		a.dictationRecordings().OnExpire(id, func() { state.UnbindCleanup(key) })
+		// The connection owns the recording until the recording is released,
+		// however that happens.
+		if !a.dictationRecordings().OnRelease(id, func() { state.UnbindCleanup(key) }) {
+			state.UnbindCleanup(key)
+			return "", dictation.ErrUnknownRecording
+		}
 	}
 	return id, nil
 }
@@ -104,7 +109,6 @@ func (a *App) FinishDictation(ctx context.Context, recordingID string, pieces in
 	if err := ownsDictation(ctx, recordingID); err != nil {
 		return "", err
 	}
-	defer transport.ConnStateFromContext(ctx).UnbindCleanup(dictationCleanupKey(recordingID))
 	job, err := a.dictationRecordings().Finish(ctx, recordingID, pieces)
 	if err != nil {
 		return "", err
@@ -135,7 +139,6 @@ func (a *App) CancelDictation(ctx context.Context, recordingID string) error {
 	if err := ownsDictation(ctx, recordingID); err != nil {
 		return err
 	}
-	transport.ConnStateFromContext(ctx).UnbindCleanup(dictationCleanupKey(recordingID))
 	a.dictationRecordings().Cancel(recordingID)
 	return nil
 }

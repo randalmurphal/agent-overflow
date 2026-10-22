@@ -53,9 +53,10 @@ export async function refreshDictationSources(backend: BackendKey): Promise<void
 }
 
 /** A sign-in, switch, sign-out or Settings > Voice change on `backend` can
- * change what it dictates with; re-read a computer someone has asked about. */
+ * change what it dictates with; re-read a computer someone has asked about,
+ * including one whose first answer has not arrived. */
 export function applyDictationSourcesChanged(backend: BackendKey): void {
-  if (sources.has(backend)) void refreshDictationSources(backend);
+  if (generations.has(backend)) void refreshDictationSources(backend);
 }
 
 onBackendDetached(({ backendId }) => {

@@ -57,15 +57,8 @@ func (m *Manager) TranscribeWithCodexLogin(ctx context.Context, request CodexTra
 	if !errors.Is(err, codex.ErrTranscribeUnauthorized) {
 		return text, err
 	}
-	// An abandoned transcription starts no refresh. One that started runs
-	// to the end whatever happens to the caller: a refresh stopped after
-	// the server rotated the token, before the CLI saved it, would lose the
-	// sign-in.
-	if err := ctx.Err(); err != nil {
+	if err := m.refreshCanonicalCodexToken(ctx); err != nil {
 		return "", err
-	}
-	if err := m.refreshCanonicalCodexToken(context.WithoutCancel(ctx)); err != nil {
-		return "", fmt.Errorf("refresh the Codex sign-in for dictation: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -102,10 +95,27 @@ func (m *Manager) transcribeOnce(ctx context.Context, request CodexTranscription
 // It holds the Codex reconcile lock so no switch replaces the canonical
 // credential while the CLI rotates it. The rotation reaches the selected
 // account's slot the way any CLI rotation of the canonical credential does.
+//
+// A transcription abandoned before the lock is held starts no refresh. One
+// that started runs to the end whatever happens to the caller: a refresh
+// stopped after the server rotated the token, before the CLI saved it,
+// would lose the sign-in.
 func (m *Manager) refreshCanonicalCodexToken(ctx context.Context) error {
 	mu := m.reconcileMutex(string(provider.Codex))
 	mu.Lock()
 	defer mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Another store's boot sweep can leave the canonical credential on a
+	// seed whose rotation it recovered into the selected slot; refreshing
+	// that seed would spend a consumed token.
+	if err := m.promoteActiveSlot(string(provider.Codex)); err != nil {
+		return fmt.Errorf("refresh the Codex sign-in for dictation: %w", err)
+	}
 	cfg := m.codexProbeConfig(m.providerBinaryPath(string(provider.Codex)), nil)
-	return codex.RefreshAccountToken(ctx, cfg)
+	if err := codex.RefreshAccountToken(context.WithoutCancel(ctx), cfg); err != nil {
+		return fmt.Errorf("refresh the Codex sign-in for dictation: %w", err)
+	}
+	return nil
 }

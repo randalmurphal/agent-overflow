@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -101,6 +102,104 @@ type blockedBody struct {
 func (b *blockedBody) Read(p []byte) (int, error) {
 	<-b.release
 	return b.data.Read(p)
+}
+
+// No declared size, however large, wraps a cap's sum into admission.
+func TestNoPieceSizeOverflowsTheCaps(t *testing.T) {
+	recordings := New(0)
+	id, _ := recordings.Begin("audio/webm")
+	if err := recordings.Append(id, 0, 1, strings.NewReader("a")); err != nil {
+		t.Fatal(err)
+	}
+	for _, size := range []int64{math.MaxInt64, math.MaxInt64 - 1, MaxHeldBytes} {
+		if err := recordings.Admits(id, 1, size); err == nil {
+			t.Fatalf("a piece of %d bytes was admitted", size)
+		}
+		if err := recordings.Append(id, 1, size, strings.NewReader("b")); err == nil {
+			t.Fatalf("a piece of %d bytes was accepted", size)
+		}
+	}
+	if held := recordings.Held(); held != 1 {
+		t.Fatalf("bytes held = %d, want the one stored byte", held)
+	}
+}
+
+// A recording's release hook runs once when it leaves the set, however it
+// leaves, and not while a refused finish leaves it with its owner.
+func TestARecordingSaysWhenItIsReleased(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(t *testing.T, r *Recordings, id string)
+	}{
+		{"done", func(t *testing.T, r *Recordings, id string) {
+			job, err := r.Finish(context.Background(), id, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			job.Done()
+		}},
+		{"cancelled", func(_ *testing.T, r *Recordings, id string) { r.Cancel(id) }},
+		{"finished short of its pieces", func(_ *testing.T, r *Recordings, id string) { _, _ = r.Finish(context.Background(), id, 2) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recordings := New(0)
+			id, _ := recordings.Begin("audio/webm")
+			if err := recordings.Append(id, 0, 3, strings.NewReader("abc")); err != nil {
+				t.Fatal(err)
+			}
+			released := 0
+			recordings.OnRelease(id, func() { released++ })
+			tc.run(t, recordings, id)
+			if released != 1 || recordings.Open() != 0 {
+				t.Fatalf("released %d times, %d open; want once and none", released, recordings.Open())
+			}
+		})
+	}
+
+	t.Run("finished again while transcribing", func(t *testing.T) {
+		recordings := New(0)
+		id, _ := recordings.Begin("audio/webm")
+		if err := recordings.Append(id, 0, 3, strings.NewReader("abc")); err != nil {
+			t.Fatal(err)
+		}
+		released := 0
+		recordings.OnRelease(id, func() { released++ })
+		job, err := recordings.Finish(context.Background(), id, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := recordings.Finish(context.Background(), id, 1); err == nil {
+			t.Fatal("a transcribing recording was finished again")
+		}
+		if released != 0 || recordings.Open() != 1 {
+			t.Fatalf("a refused finish released the transcribing recording (released %d, open %d)", released, recordings.Open())
+		}
+		job.Done()
+		if released != 1 {
+			t.Fatalf("released %d times after Done, want once", released)
+		}
+	})
+
+	t.Run("finished while a piece is read", func(t *testing.T) {
+		recordings := New(0)
+		id, _ := recordings.Begin("audio/webm")
+		released := 0
+		recordings.OnRelease(id, func() { released++ })
+		body := &blockedBody{release: make(chan struct{}), data: strings.NewReader("abcd")}
+		done := make(chan error, 1)
+		go func() { done <- recordings.Append(id, 0, 4, body) }()
+		waitFor(t, func() bool { return recordings.Held() == 4 })
+		if _, err := recordings.Finish(context.Background(), id, 1); err == nil {
+			t.Fatal("a recording was finished while a piece was being read")
+		}
+		if released != 0 || recordings.Open() != 1 {
+			t.Fatalf("a refused finish released the uploading recording (released %d, open %d)", released, recordings.Open())
+		}
+		close(body.release)
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 // A piece's bytes are reserved before it is read, so uploads in flight at
@@ -219,8 +318,8 @@ func TestAnIdleRecordingExpiresOnItsOwn(t *testing.T) {
 		t.Fatal(err)
 	}
 	expired := make(chan struct{})
-	if !recordings.OnExpire(id, func() { close(expired) }) {
-		t.Fatal("OnExpire found no recording")
+	if !recordings.OnRelease(id, func() { close(expired) }) {
+		t.Fatal("OnRelease found no recording")
 	}
 	select {
 	case <-expired:

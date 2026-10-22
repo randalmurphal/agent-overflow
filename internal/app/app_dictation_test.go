@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -318,6 +319,78 @@ func TestDictationCancelStopsATranscriptionInFlight(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A Finish the recording refuses leaves it with its connection: the owner
+// can still cancel a transcription in flight, and a connection's end still
+// drops a recording whose piece was uploading.
+func TestARefusedFinishKeepsTheRecordingWithItsConnection(t *testing.T) {
+	t.Parallel()
+	t.Run("finished again while transcribing", func(t *testing.T) {
+		t.Parallel()
+		app := newDictationTestApp(t, "fresh")
+		started := make(chan struct{})
+		app.rateLimitProbeClientOverride = &http.Client{Transport: blockingTranscription{started: started}}
+		ctx, _ := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
+		id, err := app.BeginDictation(ctx, "audio/webm")
+		if err != nil {
+			t.Fatal(err)
+		}
+		uploadDictation(t, app, id, "frames")
+		finished := make(chan error, 1)
+		go func() {
+			_, err := app.FinishDictation(ctx, id, 1)
+			finished <- err
+		}()
+		<-started
+		if _, err := app.FinishDictation(ctx, id, 1); err == nil {
+			t.Fatal("a transcribing recording was finished again")
+		}
+		if err := app.CancelDictation(ctx, id); err != nil {
+			t.Fatalf("CancelDictation after a refused finish = %v", err)
+		}
+		if err := <-finished; !errors.Is(err, context.Canceled) {
+			t.Fatalf("FinishDictation err = %v, want context.Canceled", err)
+		}
+	})
+	t.Run("finished while a piece uploads", func(t *testing.T) {
+		t.Parallel()
+		app := newDictationTestApp(t, "fresh")
+		ctx, state := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
+		id, err := app.BeginDictation(ctx, "audio/webm")
+		if err != nil {
+			t.Fatal(err)
+		}
+		release := make(chan struct{})
+		uploaded := make(chan error, 1)
+		go func() {
+			uploaded <- DictationTransfer(app).AppendDictationChunk(transport.DictationChunk{
+				RecordingID: id, Seq: 0, Size: 6, Body: io.MultiReader(gate(release), strings.NewReader("frames")),
+			})
+		}()
+		for app.dictationRecordings().Held() != 6 {
+			runtime.Gosched()
+		}
+		if _, err := app.FinishDictation(ctx, id, 1); err == nil {
+			t.Fatal("a recording was finished while a piece was uploading")
+		}
+		close(release)
+		if err := <-uploaded; err != nil {
+			t.Fatal(err)
+		}
+		state.RunCleanups()
+		if open := app.dictationRecordings().Open(); open != 0 {
+			t.Fatalf("open recordings after the connection ended = %d", open)
+		}
+	})
+}
+
+// gate is a reader that yields nothing until release closes.
+type gate chan struct{}
+
+func (g gate) Read([]byte) (int, error) {
+	<-g
+	return 0, io.EOF
 }
 
 // cancelThenRefuse stops the recording's transcription and answers its
