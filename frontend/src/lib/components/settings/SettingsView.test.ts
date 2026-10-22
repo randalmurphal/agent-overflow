@@ -103,6 +103,14 @@ describe('<SettingsView> tabs', () => {
     expect(getByTestId('settings-page-header')).toHaveTextContent('Git');
   });
 
+  it('names the computer the Voice page configures', async () => {
+    const { getByTestId, getByRole } = render(SettingsView, { onClose: vi.fn() });
+    await fireEvent.click(getByRole('tab', { name: 'Voice' }));
+    const header = getByTestId('settings-page-header');
+    expect(header).toHaveTextContent('Computer:');
+    expect(header).not.toHaveTextContent('Saved on this device.');
+  });
+
   it('switches to the Observability page when clicked', async () => {
     const { getByRole, findByLabelText } = render(SettingsView, { onClose: vi.fn() });
     await fireEvent.click(getByRole('tab', { name: 'Observability' }));

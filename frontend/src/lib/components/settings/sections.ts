@@ -272,5 +272,5 @@ export function providerSettingsSection(provider: ProviderID): 'claude' | 'codex
 export function settingsUsesComputer(section: SettingsSection): boolean {
   return ['performance', 'notifications', 'claude', 'codex', 'commit-messages',
     'browser', 'thread-tools', 'agent-guide', 'discussions', 'projects', 'git', 'editor', 'remote', 'agent-access',
-    'observability', 'storage'].includes(section);
+    'observability', 'storage', 'voice'].includes(section);
 }
