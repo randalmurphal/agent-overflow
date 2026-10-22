@@ -30,6 +30,16 @@ public class VoiceChoiceTest {
     }
 
     @Test
+    public void passesOverAnEngineDefaultWhoseDataIsNotOnThePhone() {
+        assertEquals("en-gb-x-1", VoiceChoice.choose(INSTALLED, ""::equals, "fr-fr-x-not-installed"));
+    }
+
+    @Test
+    public void usesAnInstalledEngineDefaultBeforeTheFirstVoice() {
+        assertEquals("en-us-x-2", VoiceChoice.choose(INSTALLED, ""::equals, "en-us-x-2"));
+    }
+
+    @Test
     public void choosesNothingWhenNoVoiceIsInstalled() {
         assertNull(VoiceChoice.choose(Collections.<String>emptyList(), ""::equals, null));
         assertNull(VoiceChoice.choose(null, ""::equals, null));
