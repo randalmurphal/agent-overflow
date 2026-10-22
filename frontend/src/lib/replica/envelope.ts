@@ -45,7 +45,11 @@ export const REPLICA_ENVELOPE_VERSION = 1;
 // Schema 6 carries completion launch context independently of loaded rows.
 // Schema 7 holds no subagent child rows and no child aggregates: a
 // collapsed card reads its launch row's backend decoration.
-export const REPLICA_SCHEMA_VERSION = 7;
+// Schema 8: the abandoned-blocks record joins the run it follows, so a
+// stored stub that ends a run at the record describes runs that no longer
+// exist, and a window holding only one side of the old split would never
+// be corrected.
+export const REPLICA_SCHEMA_VERSION = 8;
 
 /**
  * Per-envelope caps, deliberately the same numbers `threadItemCache`
