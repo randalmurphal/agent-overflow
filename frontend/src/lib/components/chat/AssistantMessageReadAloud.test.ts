@@ -3,12 +3,12 @@
 // resume-plus-restart with the store's phase for that reply.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { fireEvent, render, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
 import AssistantMessage from './AssistantMessage.svelte';
 import { makeItem } from '../../../test/helpers/chat';
 import { fakeSpeechEngine } from '../../../test/helpers/speech';
-import { readAloudPhase, resetReadAloudForTest, watchReadAloudVoices } from '../../stores/readAloud.svelte';
+import { readAloudPhase, replyReadingKey, resetReadAloudForTest, watchReadAloudVoices } from '../../stores/readAloud.svelte';
 import { reloadReadAloudPreferencesForTest, setReadAloudPreference } from '../../stores/readAloudPreferences.svelte';
 
 async function settle(): Promise<void> {
@@ -71,14 +71,14 @@ describe('<AssistantMessage> read aloud', () => {
     expect(queryByTestId('assistant-message-read-aloud-restart')).toBeNull();
 
     await fireEvent.click(button);
-    expect(readAloudPhase('reply-1')).toBe('playing');
+    expect(readAloudPhase(replyReadingKey('thread-1', 'reply-1'))).toBe('playing');
     expect(fake.playbacks[0].pieces).toEqual(['First sentence.', 'Second sentence.', 'Third sentence.']);
     await waitFor(() => expect(button.getAttribute('aria-label')).toMatch(/^Pause reading/));
 
     fake.playbacks[0].onPiece(1);
     await fireEvent.click(button);
     await settle();
-    expect(readAloudPhase('reply-1')).toBe('paused');
+    expect(readAloudPhase(replyReadingKey('thread-1', 'reply-1'))).toBe('paused');
     await waitFor(() => expect(button.getAttribute('aria-label')).toMatch(/^Resume reading/));
     const restart = getByTestId('assistant-message-read-aloud-restart');
     expect(restart.getAttribute('aria-label')).toBe('Read from the start');
@@ -91,7 +91,7 @@ describe('<AssistantMessage> read aloud', () => {
     await settle();
     await fireEvent.click(getByTestId('assistant-message-read-aloud-restart'));
     expect(fake.playbacks[2].from).toBe(0);
-    expect(readAloudPhase('reply-1')).toBe('playing');
+    expect(readAloudPhase(replyReadingKey('thread-1', 'reply-1'))).toBe('playing');
   });
 
   it('stays visible while its reply is being read, and hides with the hover chrome otherwise', async () => {
@@ -107,7 +107,7 @@ describe('<AssistantMessage> read aloud', () => {
 
     await fireEvent.click(button);
     await settle();
-    expect(readAloudPhase('reply-2')).toBe('paused');
+    expect(readAloudPhase(replyReadingKey('thread-1', 'reply-2'))).toBe('paused');
     await waitFor(() => expect(reveal().classList.contains('opacity-100')).toBe(true));
 
     // Reading another reply returns this one to the hover chrome.
@@ -116,5 +116,31 @@ describe('<AssistantMessage> read aloud', () => {
     fake.playbacks.at(-1)!.finish('ended');
     await settle();
     await waitFor(() => expect(reveal().classList.contains('opacity-0')).toBe(true));
+  });
+
+  it('tells apart replies with the same item id in different threads', async () => {
+    const a = within(render(AssistantMessage, { props: { item: makeItem({ id: 'text:0:1', threadId: 'thread-a', summary: 'From A.' }) } }).container);
+    const b = within(render(AssistantMessage, { props: { item: makeItem({ id: 'text:0:1', threadId: 'thread-b', summary: 'From B.' }) } }).container);
+    const buttonA = await waitFor(() => a.getByTestId('assistant-message-read-aloud'));
+    const buttonB = await waitFor(() => b.getByTestId('assistant-message-read-aloud'));
+
+    await fireEvent.click(buttonA);
+    await settle();
+    expect(b.getByTestId('assistant-message-read-aloud-slot').getAttribute('data-phase')).toBe('idle');
+
+    await fireEvent.click(buttonB);
+    await settle();
+    expect(fake.playbacks.at(-1)!.pieces).toEqual(['From B.']);
+    expect(a.getByTestId('assistant-message-read-aloud-slot').getAttribute('data-phase')).toBe('idle');
+    expect(buttonA.getAttribute('aria-label')).toBe('Read aloud');
+  });
+
+  it('returns to idle when speech is cancelled from outside', async () => {
+    const { getByTestId } = render(AssistantMessage, { props: { item: makeItem({ id: 'reply-3', summary: 'A sentence.' }) } });
+    const button = await waitFor(() => getByTestId('assistant-message-read-aloud'));
+    await fireEvent.click(button);
+    fake.playbacks[0].finish('stopped');
+    await settle();
+    await waitFor(() => expect(button.getAttribute('aria-label')).toBe('Read aloud'));
   });
 });

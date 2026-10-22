@@ -11,7 +11,7 @@
   import ChatMarkdown from './ChatMarkdown.svelte';
   import CopyButton from '../primitives/CopyButton.svelte';
   import ReadAloudButton from './ReadAloudButton.svelte';
-  import { readAloudAvailable, readAloudPhase } from '../../stores/readAloud.svelte';
+  import { readAloudAvailable, readAloudPhase, replyReadingKey } from '../../stores/readAloud.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { EMPTY_PATH_REFS, getPathRefsFromMeta } from '../../utils/pathLinkify';
   import { formatTimeOfDay } from '../../utils/format';
@@ -102,7 +102,8 @@
   // It hides with the hover chrome, except while its reply is being read:
   // the control that pauses it must stay where it was found.
   const canReadAloud = $derived(canCopy && readAloudAvailable());
-  const readingThis = $derived(readAloudPhase(item.id) !== 'idle');
+  const readingKey = $derived(replyReadingKey(item.threadId, item.id));
+  const readingThis = $derived(readAloudPhase(readingKey) !== 'idle');
 
   // The timestamp/copy row is a completion artifact — it must not float
   // above an EMPTY body. With live updates disabled the body is withheld
@@ -372,7 +373,7 @@
       </span>
       {#if canReadAloud}
         <span class="flex shrink-0 items-center transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100 compact:opacity-100 {readingThis ? 'opacity-100' : 'opacity-0'}">
-          <ReadAloudButton itemId={item.id} markdown={item.summary} />
+          <ReadAloudButton {readingKey} markdown={item.summary} />
         </span>
       {/if}
     </div>

@@ -13,13 +13,24 @@ export interface FakePlayback {
   fail: (err: Error) => void;
 }
 
-export function fakeSpeechEngine(voiceCount = 1): { engine: SpeechEngine; playbacks: FakePlayback[] } {
+export function fakeSpeechEngine(voiceCount = 1): {
+  engine: SpeechEngine;
+  playbacks: FakePlayback[];
+  /** Change how many voices the device has and announce it, as
+   * `voiceschanged` does. */
+  setVoiceCount: (count: number) => void;
+} {
   const playbacks: FakePlayback[] = [];
+  const changed = new Set<() => void>();
+  let count = voiceCount;
   const engine: SpeechEngine = {
-    voices: async () => Array.from({ length: voiceCount }, (_, i) => ({
+    voices: async () => Array.from({ length: count }, (_, i) => ({
       id: `v${i}`, name: `Voice ${i}`, lang: 'en-US', isDefault: i === 0,
     })),
-    onVoicesChanged: () => () => undefined,
+    onVoicesChanged: (listener) => {
+      changed.add(listener);
+      return () => changed.delete(listener);
+    },
     speak: (pieces, from, options, onPiece) => {
       let finish!: (outcome: SpeechOutcome) => void;
       let fail!: (err: Error) => void;
@@ -39,5 +50,12 @@ export function fakeSpeechEngine(voiceCount = 1): { engine: SpeechEngine; playba
       };
     },
   };
-  return { engine, playbacks };
+  return {
+    engine,
+    playbacks,
+    setVoiceCount: (next) => {
+      count = next;
+      for (const listener of changed) listener();
+    },
+  };
 }

@@ -19,9 +19,9 @@
     resumeReadAloud,
   } from '../../stores/readAloud.svelte';
 
-  let { itemId, markdown }: { itemId: string; markdown: string } = $props();
+  let { readingKey, markdown }: { readingKey: string; markdown: string } = $props();
 
-  let phase = $derived(readAloudPhase(itemId));
+  let phase = $derived(readAloudPhase(readingKey));
   let label = $derived(
     phase === 'playing'
       ? `Pause reading${chordHintSuffix('readAloud.toggle')}`
@@ -33,7 +33,7 @@
   function toggle(): void {
     if (phase === 'playing') pauseReadAloud();
     else if (phase === 'paused') resumeReadAloud();
-    else readAloud(itemId, markdown);
+    else readAloud(readingKey, markdown);
   }
 </script>
 

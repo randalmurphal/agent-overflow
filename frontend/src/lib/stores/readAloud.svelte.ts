@@ -49,6 +49,12 @@ export function readAloudAvailable(): boolean {
   return readAloudPreferences().enabled && voices.list.length > 0;
 }
 
+/** The reading key of a reply. Item ids are thread-local, so the thread
+ * is part of it. */
+export function replyReadingKey(threadId: string, itemId: string): string {
+  return `reply:${threadId}:${itemId}`;
+}
+
 /** `key`'s phase: idle unless it is the reply being read. */
 export function readAloudPhase(key: string): ReadAloudPhase {
   return player.key === key ? player.phase : 'idle';
@@ -116,10 +122,13 @@ function speakFrom(index: number): void {
   });
   playback = current;
   current.done.then(
-    (outcome) => {
+    () => {
+      // Pausing and stopping drop the handle before they stop the voice,
+      // so a current playback that ends, finished or stopped from outside
+      // (another page cancelling speech), is over.
       if (playback !== current) return;
       playback = null;
-      if (outcome === 'ended') reset();
+      reset();
     },
     (err: unknown) => {
       if (playback !== current) return;
@@ -143,10 +152,11 @@ function reset(): void {
   pieces = [];
 }
 
-// Turning read-aloud off stops a reading in progress.
+// Turning read-aloud off, or the device losing its voices, stops a reading
+// in progress and forgets its place.
 $effect.root(() => {
   $effect(() => {
-    if (!readAloudPreferences().enabled) untrack(stopReadAloud);
+    if (!readAloudAvailable()) untrack(stopReadAloud);
   });
 });
 

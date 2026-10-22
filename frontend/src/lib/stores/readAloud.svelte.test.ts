@@ -14,6 +14,7 @@ import {
 } from './readAloud.svelte';
 import { reloadReadAloudPreferencesForTest, setReadAloudPreference } from './readAloudPreferences.svelte';
 import * as toast from './toast.svelte';
+import { fakeSpeechEngine } from '../../test/helpers/speech';
 
 interface FakePlayback {
   pieces: string[];
@@ -190,6 +191,36 @@ describe('read-aloud', () => {
     expect(readAloudAvailable()).toBe(false);
     readAloud('a', REPLY);
     expect(silent.playbacks).toHaveLength(0);
+  });
+
+  it('returns to idle when speech is stopped from outside', async () => {
+    readAloud('a', REPLY);
+    fake.playbacks[0].finish('stopped');
+    await settle();
+    expect(readAloudPhase('a')).toBe('idle');
+  });
+
+  it('forgets a reading when the device loses its voices, and does not bring it back', async () => {
+    resetReadAloudForTest();
+    const device = fakeSpeechEngine();
+    watchReadAloudVoices(device.engine);
+    await settle();
+    for (const pausedFirst of [false, true]) {
+      readAloud('a', REPLY);
+      if (pausedFirst) {
+        pauseReadAloud();
+        await settle();
+      }
+      const playback = device.playbacks.at(-1)!;
+      device.setVoiceCount(0);
+      await settle();
+      expect(readAloudPhase('a')).toBe('idle');
+      if (!pausedFirst) expect(playback.stopped).toBe(true);
+      device.setVoiceCount(1);
+      await settle();
+      expect(readAloudPhase('a')).toBe('idle');
+      expect(toggleReadAloud()).toBe(false);
+    }
   });
 
   it('starts nothing for a reply with nothing to read', () => {
