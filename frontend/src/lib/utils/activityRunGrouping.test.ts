@@ -218,21 +218,26 @@ describe('run boundaries', () => {
       expect(run(nodes, 0).live).toBe(true);
     });
 
-    // The abandoned-blocks record describes the prose (or reasoning) before
-    // it, so it is never swallowed into a collapsible run where its note
-    // would hide; it breaks the run like prose, mirroring the store's rule.
-    it('the abandoned-blocks record breaks a run instead of joining it', () => {
-      const record = () => leaf({ id: 'rec', kind: 'notification', toolName: 'abandoned_blocks' });
-      const nodes = project([
+    // The abandoned-blocks record lands right after the rows Claude
+    // discarded. After discarded thinking it joins that run like any bell
+    // and the retry continues it; after discarded prose it stands alone.
+    it('the abandoned-blocks record joins the run of the rows it follows', () => {
+      const record = (id: string) => leaf({ id, kind: 'notification', toolName: 'abandoned_blocks' });
+      const afterThinking = project([
         leaf({ id: 'k1', kind: 'thinking' }),
-        record(),
+        record('rec'),
         tool('t1', 'Bash'),
       ]);
-      expect(nodes.map((n) => n.kind)).toEqual(['activity_run', 'leaf', 'activity_run']);
-      expect(run(nodes, 0).memberItemIds).toEqual(['k1']);
+      expect(afterThinking.map((n) => n.kind)).toEqual(['activity_run']);
+      expect(run(afterThinking, 0).memberItemIds).toEqual(['k1', 'rec', 't1']);
 
-      const withheld = project([tool('t1', 'Bash')], { withheld: [record()] });
-      expect(run(withheld, 0).live).toBe(false);
+      const afterProse = project([
+        leaf({ id: 'k1', kind: 'thinking' }),
+        leaf({ id: 'p1', kind: 'assistant_text' }),
+        record('rec'),
+        tool('t1', 'Bash'),
+      ]);
+      expect(afterProse.map((n) => n.kind)).toEqual(['activity_run', 'leaf', 'leaf', 'activity_run']);
     });
   });
 

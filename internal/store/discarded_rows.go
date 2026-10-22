@@ -22,10 +22,8 @@ import (
 
 // AbandonedBlocksNotificationKind is the tool_name and `meta.kind` of the
 // notification row recording that Claude discarded the streamed rows before
-// it after a stalled response. It is about the prose it follows, not about
-// activity, so a run never absorbs it: it breaks the run like the prose it
-// describes would, on both sides of the paging contract
-// (activityRunGrouping.ts mirrors this).
+// it after a stalled response. Runs treat it as any notification
+// (activityScanRow.isBell).
 const AbandonedBlocksNotificationKind = "abandoned_blocks"
 
 // AbandonedBlocksRecordID is the id of the notification row recording that
