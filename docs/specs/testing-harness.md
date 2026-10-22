@@ -283,11 +283,16 @@ refuse them through AppArmor while
 GitHub-hosted runners get both settings from `.github/actions/setup`, which
 also loads the `dummy` link module the LAN interface needs.
 
-`--host-network` skips isolation for suites that need host services:
-`e2e/scripts/android-smoke.sh` uses it because Playwright reaches the device
-through the host's adb server, and real SSH mode needs it to reach its sshd
-on host loopback. The provider smoke targets also stay on the host network
-because they reach the real provider APIs. macOS and Windows run on the host
+Started inside such a namespace already, `ao-harness-e2e` runs the suite
+there instead of in a new one. `e2e/scripts/android-smoke.sh` relies on it:
+it boots the emulator and the adb server under `bin/ao-netns` and starts the
+launcher beside them, so nothing the Android smoke runs listens on the host.
+
+`--host-network` skips isolation for suites that need host services: the
+Android smoke on a real phone (`AO_ANDROID_HUMAN_LOCK=1`), which needs the
+host's adb server, and real SSH mode, which reaches its sshd on host
+loopback. The provider smoke targets also stay on the host network because
+they reach the real provider APIs. macOS and Windows run on the host
 network.
 
 An isolated boot (`ConfigureIsolation`) uses its LAN as a LAN only inside

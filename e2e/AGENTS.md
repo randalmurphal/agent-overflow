@@ -97,13 +97,16 @@ the developer's normal SSH configuration or install a service from a test.
 
 `make e2e-android` drives the installed shell's own WebView through
 Playwright's Android API. It is separate from desktop/compact browser projects.
-A zero exit with no attached device is a skip and provides no emulator evidence.
+A zero exit on a host without the SDK, AVD or KVM is a skip and provides no
+emulator evidence.
 
-Start the emulator with `e2e/scripts/android-emulator.sh start`, never bare.
-Emulator 37.1 leaks gigabytes of host memory from its adb proxy on every
-Playwright session and has OOM-killed a whole WSL VM; the script contains it
-under a memory cap. Restart the emulator between test batches. The diagnosis,
-the cap rationale and WebView-driving pitfalls are in
+The smoke boots its own emulator through `e2e/scripts/android-emulator.sh`
+inside the test network namespace, with the adb server and the suite beside
+it, and stops it on exit; never start the emulator bare or on the host
+network. Emulator 37.1 leaks gigabytes of host memory from its adb proxy on
+every Playwright session and has OOM-killed a whole WSL VM; the script
+contains it under a memory cap. The diagnosis, the cap rationale, the
+namespace layout and WebView-driving pitfalls are in
 [android-emulator.md](../docs/references/android-emulator.md).
 
 The ordinary smoke may run on a real phone only when the operator explicitly
@@ -116,8 +119,9 @@ network radios.
 
 The runner and spec divide ownership deliberately:
 
-- `scripts/android-smoke.sh` selects the device, installs the APK, configures the
-  temporary device PIN, and clears the PIN on every exit path.
+- `scripts/android-smoke.sh` boots and stops the emulator (or checks the named
+  phone), installs the APK, configures the temporary device PIN, and clears the
+  PIN on every exit path.
 - The page fixture clears only the target package, re-grants required test
   permissions, launches its activity, and attaches to that package's WebView.
 - Each case owns its harness process, data root, `adb reverse` mapping, pairing,

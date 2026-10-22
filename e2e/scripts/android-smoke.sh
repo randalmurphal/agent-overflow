@@ -11,13 +11,24 @@
 #
 # WHY IT IS NOT A BLOCKING GATE. A laptop with no emulator cannot answer
 # those questions, and a check that fails for a reason nobody can fix on
-# the spot is a check people learn to skip. So a missing emulator prints
-# how to start one and exits 0. What the run costs when it IS available is
-# a few minutes, which is why it is its own target rather than part of
-# `make e2e`.
+# the spot is a check people learn to skip. So a host without the SDK, the
+# AVD or KVM prints how to set one up and exits 0. What the run costs when
+# it IS available is a few minutes, which is why it is its own target
+# rather than part of `make e2e`.
+#
+# WHERE IT RUNS. The emulator, the adb server, the harness backends and
+# Playwright share one test network namespace (bin/ao-netns: loopback plus
+# a private LAN, no route off it), so nothing the run starts listens on the
+# host. The script does its host work first (checks, the release fixture,
+# the emulator's runtime files), then runs itself again inside the
+# namespace for everything that talks to the device. A real phone
+# (AO_ANDROID_HUMAN_LOCK=1) needs the host's adb and so runs on the host
+# network: the one exception, and opt-in.
 #
 # WHAT THIS SCRIPT OWNS, and why each step is here rather than in the spec:
 #
+#   - The emulator's lifetime: started for the run and stopped after it,
+#     including on failure.
 #   - The APK install.
 #   - The device PIN. The emulator has no biometric, and `native/lock.ts`
 #     passes `allowDeviceCredential: true` so the platform falls back to
@@ -37,75 +48,154 @@
 set -euo pipefail
 
 : "${ANDROID_HOME:=$HOME/Android/Sdk}"
-export ANDROID_HOME
+: "${ANDROID_AVD_HOME:=$HOME/.android/avd}"
+export ANDROID_HOME ANDROID_AVD_HOME
 adb="$ANDROID_HOME/platform-tools/adb"
 pin="1234"
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+apk="${AO_ANDROID_RELEASE_APK:-$repo/mobile/android/app/build/outputs/apk/debug/app-debug.apk}"
+emulator="$repo/e2e/scripts/android-emulator.sh"
+human="${AO_ANDROID_HUMAN_LOCK:-}"
 
-if [[ ! -x "$adb" ]]; then
-  echo "no adb at $adb — install platform-tools, then: make e2e-android"
-  if [[ -n "${AO_ANDROID_RELEASE_APK:-}" ]]; then exit 1; fi
+# A device line is "<serial>\t<state>"; only `device` is ready. Anything
+# else (offline, unauthorized, a booting emulator) is not something to run
+# a suite against, and reading it as one is how a flake gets blamed on the
+# app.
+ready_devices() { "$adb" devices | tail -n +2 | awk '$2 == "device" { print $1 }'; }
+
+# What the run acquired, released on every exit path: the PIN before the
+# emulator stops, since it boots from the same AVD next time.
+pinned=""
+own_emulator=""
+on_exit() {
+  if [[ -n "$pinned" ]]; then
+    "$adb" -s "$pinned" shell locksettings clear --old "$pin" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$own_emulator" ]]; then
+    "$adb" kill-server >/dev/null 2>&1 || true
+    "$emulator" stop >/dev/null || true
+  fi
+}
+trap on_exit EXIT
+
+# ---- the device phase: in the namespace, or on the host for a phone ----
+
+device_phase() {
+  local serial
+  if [[ "$human" == 1 ]]; then
+    serial="${AO_ANDROID_SERIAL:-}"
+    if [[ -z "$serial" ]] || ! ready_devices | awk -v wanted="$serial" '$0 == wanted { found=1 } END { exit !found }'; then
+      echo "AO_ANDROID_HUMAN_LOCK=1 needs AO_ANDROID_SERIAL naming an attached, ready phone" >&2
+      exit 1
+    fi
+  else
+    # The emulator and this namespace's adb server are the run's own.
+    own_emulator=1
+    "$emulator" start
+    serial="$(ready_devices | awk '/^emulator-/ { print; exit }')"
+    if [[ -z "$serial" ]]; then
+      echo "the emulator booted but adb lists no ready emulator" >&2
+      exit 1
+    fi
+  fi
+  echo "==> device $serial"
+
+  echo "==> installing"
+  if ! install_output="$("$adb" -s "$serial" install -r "$apk" 2>&1)"; then
+    # Release and debug signatures differ. Only the disposable emulator may
+    # replace that installation; every case clears its app data anyway.
+    if [[ "$install_output" != *INSTALL_FAILED_UPDATE_INCOMPATIBLE* || "$("$adb" -s "$serial" shell getprop ro.kernel.qemu | tr -d '\r')" != 1 ]]; then
+      echo "$install_output" >&2
+      exit 1
+    fi
+    "$adb" -s "$serial" uninstall dev.agentoverflow.app
+    "$adb" -s "$serial" install "$apk"
+  fi
+
+  # The app's data, the notification permission and the launch itself are
+  # the spec's `page` fixture's to do, before EVERY case: a phone that has
+  # never paired is each case's starting point, not the run's.
+
+  # The credential the app lock falls back to, cleared on every exit path.
+  #
+  # Unless the device is a REAL phone: it already has its owner's own
+  # credential, `locksettings set-pin` over one is refused without the old
+  # credential, and typing `1234` at the owner's real prompt would be
+  # wrong-PIN attempts Android escalates into a lockout. Under
+  # AO_ANDROID_HUMAN_LOCK=1 provisioning is skipped and the spec waits for
+  # the owner to answer each prompt themselves.
+  if [[ "$human" == 1 ]]; then
+    echo "==> AO_ANDROID_HUMAN_LOCK=1 — the owner answers the lock prompts"
+  else
+    echo "==> setting the device PIN"
+    pinned="$serial"
+    "$adb" -s "$serial" shell locksettings set-pin "$pin"
+  fi
+
+  # The launcher rather than a bare `pnpm exec playwright test`, for two
+  # reasons that are the same two every other suite here has: it typechecks
+  # the whole e2e tree first (Playwright only STRIPS types, so a typo'd
+  # property in this spec would pass an assertion vacuously), and it runs
+  # the suite under one owned process tree and memory boundary. Its extra
+  # arguments are forwarded verbatim, so the command it actually runs is
+  # `pnpm exec playwright test --config=playwright.android.config.ts` with
+  # `e2e/` as its working directory. It is also what lets the spec call
+  # `launchHarness`, which refuses to spawn a backend outside it. Started
+  # in the namespace, the launcher runs the suite there, beside the
+  # emulator and adb; a phone's run needs the host's adb.
+  local network=()
+  if [[ "$human" == 1 ]]; then network=(--host-network); fi
+  echo "==> the shell smoke, in the device's WebView"
+  cd "$repo"
+  AO_ANDROID_SERIAL="$serial" AO_HARNESS_BIN="$repo/bin/ao-android-harness" \
+    bin/ao-harness-e2e "${network[@]}" --config=playwright.android.config.ts "$@"
+}
+
+if [[ "${AO_ANDROID_SMOKE_PHASE:-}" == device ]]; then
+  device_phase "$@"
   exit 0
 fi
 
-# A device line is "<serial>\t<state>"; only `device` is ready. Anything
-# else (offline, unauthorized, a booting emulator) is not something to
-# run a suite against, and reading it as one is how a flake gets blamed
-# on the app.
-devices="$("$adb" devices | tail -n +2 | awk '$2 == "device" { print $1 }')"
-if [[ -z "$devices" ]]; then
-  if [[ -n "${AO_ANDROID_RELEASE_APK:-}" ]]; then
-    echo "Explicit release validation requires an attached emulator." >&2
-    exit 1
-  fi
+# ---- the host phase ----
+
+setup_hint() {
   # The system image must match the host: the emulator runs an arm64
   # guest on Apple Silicon and an x86_64 one everywhere else, and the
   # other one either fails to install or boots at a crawl.
-  case "$(uname -m)" in
-    arm64 | aarch64) abi=arm64-v8a ;;
-    *) abi=x86_64 ;;
-  esac
+  local abi=x86_64
+  case "$(uname -m)" in arm64 | aarch64) abi=arm64-v8a ;; esac
   cat <<MSG
-No Android device or emulator is attached, so the shell smoke is skipped.
+$1, so the shell smoke is skipped.
 
 To run it:
   $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "system-images;android-36;google_apis;$abi"
   $ANDROID_HOME/cmdline-tools/latest/bin/avdmanager create avd -n ao -k "system-images;android-36;google_apis;$abi"
-  e2e/scripts/android-emulator.sh start
   make apk && make e2e-android
 
-Start the emulator through the script, not bare: emulator 37.1 leaks host
-memory per adb session and the script caps it (docs/references/android-emulator.md).
+The run starts and stops the emulator itself, inside the test network
+namespace and under a memory cap (docs/references/android-emulator.md).
 MSG
+}
+
+skip() {
+  if [[ -n "${AO_ANDROID_RELEASE_APK:-}" ]]; then
+    echo "$1; explicit release validation requires the emulator." >&2
+    exit 1
+  fi
+  setup_hint "$1"
   exit 0
-fi
+}
 
-serial="${AO_ANDROID_SERIAL:-}"
-if [[ -n "$serial" ]]; then
-  if ! echo "$devices" | awk -v wanted="$serial" '$0 == wanted { found=1 } END { exit !found }'; then
-    echo "AO_ANDROID_SERIAL does not name an attached, ready device" >&2
-    exit 1
-  fi
-else
-  # Never select a personal phone implicitly: each case clears app data.
-  emulators="$(echo "$devices" | awk '/^emulator-/')"
-  if [[ -z "$emulators" || "$(echo "$emulators" | wc -l | tr -d ' ')" != 1 ]]; then
-    echo "Select one test device with AO_ANDROID_SERIAL; real phones also require AO_ANDROID_HUMAN_LOCK=1. The smoke clears Agent Overflow app data." >&2
-    exit 1
-  fi
-  serial="$emulators"
-fi
-if [[ "$("$adb" -s "$serial" shell getprop ro.kernel.qemu | tr -d '\r')" != 1 && "${AO_ANDROID_HUMAN_LOCK:-}" != 1 ]]; then
-  echo "A real phone requires AO_ANDROID_HUMAN_LOCK=1; the smoke clears Agent Overflow app data and waits for you to unlock it." >&2
+[[ -x "$adb" ]] || skip "No adb at $adb"
+if [[ "$human" != 1 ]]; then
+  [[ -x "$ANDROID_HOME/emulator/emulator" ]] || skip "No emulator in $ANDROID_HOME"
+  [[ -d "$ANDROID_AVD_HOME/${AO_EMULATOR_AVD:-ao}.avd" ]] || skip "No AVD '${AO_EMULATOR_AVD:-ao}' under $ANDROID_AVD_HOME"
+  [[ -e /dev/kvm ]] || skip "No /dev/kvm on this host"
+elif [[ -n "${AO_ANDROID_RELEASE_APK:-}" ]]; then
+  echo "The release lifecycle test changes network radios and requires the emulator." >&2
   exit 1
 fi
-if [[ -n "${AO_ANDROID_RELEASE_APK:-}" && "$("$adb" -s "$serial" shell getprop ro.kernel.qemu | tr -d '\r')" != 1 ]]; then
-  echo "The release lifecycle test changes network radios and requires an emulator." >&2
-  exit 1
-fi
-echo "==> device $serial"
 
-repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-apk="${AO_ANDROID_RELEASE_APK:-$repo/mobile/android/app/build/outputs/apk/debug/app-debug.apk}"
 if [[ ! -f "$apk" ]]; then
   echo "no APK at $apk — build the requested APK first" >&2
   exit 1
@@ -141,56 +231,15 @@ fi
 # Only this test runner builds/uses an explicitly newer release fixture.
 # The ordinary harness binary and production dist retain their real versions.
 node "$repo/e2e/scripts/build-android-bundle-fixture.ts" "$apk"
-export AO_HARNESS_BIN="$repo/bin/ao-android-harness"
 
-echo "==> installing"
-if ! install_output="$("$adb" -s "$serial" install -r "$apk" 2>&1)"; then
-  # Release and debug signatures differ. Only the disposable emulator may
-  # replace that installation; every case clears its app data anyway.
-  if [[ "$install_output" != *INSTALL_FAILED_UPDATE_INCOMPATIBLE* || "$("$adb" -s "$serial" shell getprop ro.kernel.qemu | tr -d '\r')" != 1 ]]; then
-    echo "$install_output" >&2
-    exit 1
-  fi
-  "$adb" -s "$serial" uninstall dev.agentoverflow.app
-  "$adb" -s "$serial" install "$apk"
+if [[ "$human" == 1 ]]; then
+  device_phase "$@"
+  exit 0
 fi
 
-# The app's data, the notification permission and the launch itself are
-# the spec's `page` fixture's to do, before EVERY case: a phone that has
-# never paired is each case's starting point, not the run's.
-
-# The credential the app lock falls back to. Cleared on every exit path,
-# including a failed run, so the emulator is left as it was found.
-#
-# Unless the device is a REAL phone: it already has its owner's own
-# credential, `locksettings set-pin` over one is refused without the old
-# credential, and typing `1234` at the owner's real prompt would be
-# wrong-PIN attempts Android escalates into a lockout. Under
-# AO_ANDROID_HUMAN_LOCK=1 provisioning is skipped and the spec waits for
-# the owner to answer each prompt themselves.
-if [[ "${AO_ANDROID_HUMAN_LOCK:-}" == "1" ]]; then
-  echo "==> AO_ANDROID_HUMAN_LOCK=1 — the owner answers the lock prompts"
-else
-  # Native input selectors need Playwright's small Android driver. Cached
-  # after the first install; no download on hosts where the suite skips.
-  (cd "$repo/e2e" && pnpm exec playwright install android)
-  echo "==> setting the device PIN"
-  "$adb" -s "$serial" shell locksettings set-pin "$pin"
-  trap '"$adb" -s "$serial" shell locksettings clear --old "$pin" >/dev/null 2>&1 || true' EXIT
-fi
-
-# The launcher rather than a bare `pnpm exec playwright test`, for two
-# reasons that are the same two every other suite here has: it typechecks
-# the whole e2e tree first (Playwright only STRIPS types, so a typo'd
-# property in this spec would pass an assertion vacuously), and it runs
-# the suite under one owned process tree and memory boundary. Its extra
-# arguments are forwarded verbatim, so the command it actually runs is
-# `pnpm exec playwright test --config=playwright.android.config.ts` with
-# `e2e/` as its working directory. It is also what lets the spec call
-# `launchHarness`, which refuses to spawn a backend outside it.
-# --host-network: Playwright reaches the device through the host's adb
-# server, and `adb reverse` targets host loopback, so this suite cannot
-# run inside the launcher's isolated network namespace.
-echo "==> the shell smoke, in the emulator's WebView"
-cd "$repo"
-AO_ANDROID_SERIAL="$serial" bin/ao-harness-e2e --host-network --config=playwright.android.config.ts "$@"
+# Native input selectors need Playwright's small Android driver, and the
+# emulator its runtime files: both fetched here, since the namespace has no
+# route off the machine. Cached after the first run.
+(cd "$repo/e2e" && pnpm exec playwright install android)
+"$emulator" prepare
+AO_ANDROID_SMOKE_PHASE=device "$repo/bin/ao-netns" "$repo/e2e/scripts/android-smoke.sh" "$@"

@@ -1,9 +1,10 @@
 # Android emulator
 
-How to run the Android Emulator for `make e2e-android` without losing the
-host, and what was established about the emulator's behavior on the way.
-Launch through `e2e/scripts/android-emulator.sh`; do not start the emulator
-bare on a shared machine.
+How `make e2e-android` runs the Android Emulator without losing the host
+or listening on it, and what was established about the emulator's behavior
+on the way. The smoke starts and stops the emulator itself through
+`e2e/scripts/android-emulator.sh`; do not start the emulator bare on a
+shared machine.
 
 ## The adb proxy leak
 
@@ -30,31 +31,45 @@ What does not help, all verified:
 
 What contains it: a hard cgroup memory cap around the emulator and a
 restart between test batches. `e2e/scripts/android-emulator.sh` runs the
-emulator inside a Docker container with `--memory` set (10 GB by default;
-the idle guest plus renderer sits near 4 GB and each pairing can add
-3 to 4 GB). The worst case is then the container dying with OOM, which
-the smoke reports as a closed device, not the host. Keep `earlyoom` or an
+emulator in a user systemd scope with `MemoryMax` set and swap off (10 GB by
+default; the idle guest plus renderer sits near 4 GB and each pairing can
+add 3 to 4 GB), and the smoke starts a fresh emulator for each run. The
+worst case is then the scope dying with OOM, which the smoke reports as a
+closed device, not the host. Keep `earlyoom` or an
 equivalent host-level guard as the second line; it is not a substitute
 for the cap.
 
 ## Running it
 
-Prerequisites on Linux or WSL2: Docker usable by the developer, `/dev/kvm`
-present, the SDK under `$ANDROID_HOME` with `emulator`, `platform-tools`,
-`platforms;android-36`, `build-tools;36.0.0` and the system image, and an
-AVD created with `avdmanager` (the smoke's no-device message prints the
-commands). No `sudo` is needed: the launcher adds the container to the
-`kvm` group by gid and mounts the SDK read-only.
+Prerequisites on Linux or WSL2: `/dev/kvm` usable by the developer,
+bubblewrap, a user systemd with the memory controller delegated, Docker or
+Podman for the one-time runtime export, the SDK under `$ANDROID_HOME` with
+`emulator`, `platform-tools`, `platforms;android-36`, `build-tools;36.0.0`
+and the system image, and an AVD created with `avdmanager` (the smoke's
+skip message prints the commands). No `sudo` is needed.
 
 ```
-e2e/scripts/android-emulator.sh start
 make apk && make e2e-android
-e2e/scripts/android-emulator.sh stop
 ```
 
-Boot takes about 50 s. `stop` also removes the AVD lock files a killed
-emulator leaves behind; a launch that fails immediately after a crash is
-usually those locks.
+The smoke runs in two phases. On the host it checks the prerequisites,
+builds the bundle fixture, installs Playwright's Android driver and runs
+`android-emulator.sh prepare`, which exports the libraries the emulator
+needs from `e2e/android/emulator.Dockerfile` into
+`~/.cache/agent-overflow/emulator-rootfs` (once per image). It then runs
+itself again under `bin/ao-netns`, where `android-emulator.sh start` boots
+the SDK's emulator on that root with bubblewrap inside the memory scope,
+and the adb server, the harness backends and Playwright run beside it. The
+emulator's console and adb ports and the adb server's listener exist only
+in that namespace; `start` refuses to run outside one. On exit the smoke
+clears the device PIN and stops the emulator, failed runs included.
+
+A container runtime cannot host the emulator for this: rootless Podman
+cannot start inside the namespace, and an emulator outside it would listen
+on the host. Boot takes about 50 s. `stop` also removes the AVD lock files
+a killed emulator leaves behind; a launch that fails immediately after a
+crash is usually those locks. The emulator's output is in
+`~/.cache/agent-overflow/emulator.log`.
 
 Other platforms have no container recipe here. Run the emulator under the
 memory limit the platform offers, watch its resident size across a run,

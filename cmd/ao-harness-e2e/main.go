@@ -6,7 +6,9 @@
 // On Linux the suite also runs in its own network namespace: loopback plus
 // one private LAN interface and no route off the machine, so LAN-bind specs
 // exercise a real non-loopback listener without reaching a real network.
-// --host-network opts out for suites that need host services (adb).
+// Started inside such a namespace already (ao-netns, as the Android smoke
+// does so the emulator and adb share it), it runs there rather than in a
+// new one. --host-network opts out for suites that need host services.
 package main
 
 import (
@@ -110,7 +112,8 @@ func run(args []string, stdout, stderr *os.File) int {
 		fmt.Fprintln(stderr, "ao-harness-e2e: run E2E TypeScript check:", err)
 		return 1
 	}
-	if !opts.hostNetwork {
+	isolate := needsIsolation(opts.hostNetwork, netisolate.Contained())
+	if isolate {
 		if err := netisolate.Check(stderr); err != nil {
 			fmt.Fprintln(stderr, "ao-harness-e2e:", err, "(--host-network is only for suites that need host services)")
 			return 1
@@ -160,7 +163,7 @@ func run(args []string, stdout, stderr *os.File) int {
 	command.Stdout = stdout
 	command.Stderr = stderr
 	configureProcessGroup(command)
-	if !opts.hostNetwork {
+	if isolate {
 		if err := netisolate.Command(command); err != nil {
 			fmt.Fprintln(stderr, "ao-harness-e2e: isolate network:", err)
 			return 1
@@ -346,4 +349,11 @@ func parseArgs(args []string) (launchOptions, error) {
 		return launchOptions{}, fmt.Errorf("--memory-limit-bytes must be positive")
 	}
 	return opts, nil
+}
+
+// needsIsolation is whether the suite needs a namespace of its own: not when
+// it was asked to use the host's, and not when it already runs in one, where
+// a second would cut it off from the processes it shares that one with.
+func needsIsolation(hostNetwork, contained bool) bool {
+	return !hostNetwork && !contained
 }

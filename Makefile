@@ -691,7 +691,7 @@ apk apk-release:
 # The runner builds a dedicated newer-release bundle fixture for adoption;
 # UI trace also makes its renderer inspectable without changing the APK.
 e2e-android: UI_TRACE=1
-e2e-android: harness-build
+e2e-android: harness-build netns-tool
 	cd e2e && pnpm install --frozen-lockfile
 	e2e/scripts/android-smoke.sh
 
