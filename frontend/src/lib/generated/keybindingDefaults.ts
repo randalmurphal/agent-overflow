@@ -263,10 +263,10 @@ export const KEYBINDING_DEFAULTS: readonly KeybindingRule[] = [
     "defaultKey": "mod+9"
   },
   {
-    "key": "mod+shift+/",
+    "key": "mod+shift+?",
     "command": "help.keybindings",
     "defaultId": "help.keybindings",
-    "defaultKey": "mod+shift+/"
+    "defaultKey": "mod+shift+?"
   },
   {
     "key": "mod+shift+f",
@@ -322,10 +322,10 @@ export const KEYBINDING_DEFAULTS: readonly KeybindingRule[] = [
     "defaultKey": "mod+shift+space"
   },
   {
-    "key": "mod+shift+.",
+    "key": "mod+shift+\u003e",
     "command": "readAloud.toggle",
     "defaultId": "readAloud.toggle",
-    "defaultKey": "mod+shift+."
+    "defaultKey": "mod+shift+\u003e"
   },
   {
     "key": "alt+shift+m",

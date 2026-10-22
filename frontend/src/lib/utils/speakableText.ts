@@ -67,7 +67,10 @@ const BLOCK_TYPES = new Set([
 
 function isBlock(token: MdToken): boolean {
   if (token.type === 'math') return token.isInline === false;
-  return BLOCK_TYPES.has(token.type);
+  // A container this list does not name (an MDX element, a future
+  // extension) is a block when it holds blocks, so its code and tables
+  // stay silent too.
+  return BLOCK_TYPES.has(token.type) || (token.tokens?.some(isBlock) ?? false);
 }
 
 function inlineText(tokens: MdToken[]): string {

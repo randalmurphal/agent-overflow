@@ -61,7 +61,7 @@ func TestGetReturnsDefaultsWhenNoFile(t *testing.T) {
 // discover these features by muscle memory.
 func TestDefaultsIncludeNewHelpSearchAndInterruptBindings(t *testing.T) {
 	want := map[string]string{
-		"help.keybindings":       "mod+shift+/",
+		"help.keybindings":       "mod+shift+?",
 		"search.messages":        "mod+shift+f",
 		"search.in-thread":       "mod+f",
 		"thread.search":          "mod+p",

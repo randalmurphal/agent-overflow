@@ -85,7 +85,7 @@ var Defaults = []Keybinding{
 	// sidebar visual selector (no DOM focus change). Terminal
 	// toggle moves to mod+` (matches VS Code: open+focus when closed,
 	// close when open), the sidebar search input moves to mod+/, and
-	// the cheat sheet moves to mod+shift+/. The sidebar.focus-search
+	// the cheat sheet moves to mod+shift+? (Shift+/). The sidebar.focus-search
 	// binding fires globally
 	// (empty `when`) so it works from the composer, the review pane,
 	// the terminal, etc.
@@ -198,7 +198,7 @@ var Defaults = []Keybinding{
 	// Help + global message search — both open dialogs that trap
 	// focus and close with Esc, so they don't need separate
 	// `!terminalFocus` guards the way thread.new does.
-	{Key: "mod+shift+/", Command: "help.keybindings", DefaultID: "help.keybindings"},
+	{Key: "mod+shift+?", Command: "help.keybindings", DefaultID: "help.keybindings"},
 	{Key: "mod+shift+f", Command: "search.messages", DefaultID: "search.messages"},
 	// mod+p opens the unified thread picker — fuzzy-jump across
 	// every project's threads. Like mod+shift+f this traps focus +
@@ -222,7 +222,7 @@ var Defaults = []Keybinding{
 	// is: the reply may have scrolled away or be in another pane.
 	// Un-gated, like the sound mute below: it only touches this screen's
 	// audio.
-	{Key: "mod+shift+.", Command: "readAloud.toggle", DefaultID: "readAloud.toggle"},
+	{Key: "mod+shift+>", Command: "readAloud.toggle", DefaultID: "readAloud.toggle"},
 	// Quick mute for notification sounds on THIS screen
 	// (notificationSoundsEnabled is device tier: notifications still
 	// appear, they just stop making noise here). Un-gated, because the

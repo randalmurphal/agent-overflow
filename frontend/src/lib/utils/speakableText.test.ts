@@ -62,6 +62,11 @@ describe('speakablePieces', () => {
     expect(speakablePieces('> Quoted line.\n\n> [!NOTE]\n> Heads up.')).toEqual(['Quoted line.', 'Heads up.']);
   });
 
+  it('keeps code and math silent inside an MDX container', () => {
+    const markdown = '<Aside>\nInside the aside.\n\n```sh\nrm -rf build\n```\n\n$$\nx^2\n$$\n\nStill inside.\n</Aside>\n\nAfter it.';
+    expect(speakablePieces(markdown)).toEqual(['Inside the aside.', 'Still inside.', 'After it.']);
+  });
+
   it('reads nothing from a message that is only code', () => {
     expect(speakablePieces('```\nls -la\n```')).toEqual([]);
     expect(speakablePieces('   ')).toEqual([]);

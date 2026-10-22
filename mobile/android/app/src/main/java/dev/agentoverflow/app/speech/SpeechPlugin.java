@@ -29,6 +29,12 @@ import java.util.Set;
  *
  * <p>The engine starts asynchronously; calls that arrive before it is ready
  * wait for it, and fail with the reason when it cannot start.
+ *
+ * <p>Queueing a reading, stopping it and failing it all hold {@code
+ * sessions}, so a failure never lands between a reading's pieces being
+ * queued, and a failed reading's remaining pieces are flushed before the
+ * page hears of it: once the page drops a reading it has nothing left to
+ * stop.
  */
 @CapacitorPlugin(name = "Speech")
 public class SpeechPlugin extends Plugin {
@@ -66,14 +72,25 @@ public class SpeechPlugin extends Plugin {
             @Override
             @SuppressWarnings("deprecation")
             public void onError(String utteranceId) {
-                send(sessions.failed(utteranceId, "the speech engine failed"));
+                fail(utteranceId, "the speech engine failed");
             }
 
             @Override
             public void onError(String utteranceId, int errorCode) {
-                send(sessions.failed(utteranceId, "the speech engine failed (" + errorCode + ")"));
+                fail(utteranceId, "the speech engine failed (" + errorCode + ")");
             }
         });
+    }
+
+    private void fail(String utteranceId, String message) {
+        SpeechSessions.Event failed;
+        synchronized (sessions) {
+            failed = sessions.failed(utteranceId, message);
+            if (failed != null) {
+                tts.stop();
+            }
+        }
+        send(failed);
     }
 
     @Override
@@ -103,20 +120,14 @@ public class SpeechPlugin extends Plugin {
     public void voices(PluginCall call) {
         whenReady(call, () -> {
             JSArray list = new JSArray();
-            Set<Voice> voices = tts.getVoices();
             Voice fallback = tts.getDefaultVoice();
-            if (voices != null) {
-                for (Voice voice : voices) {
-                    if (voice.getFeatures().contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED)) {
-                        continue;
-                    }
-                    JSObject entry = new JSObject();
-                    entry.put("id", voice.getName());
-                    entry.put("name", voice.getLocale().getDisplayName(Locale.getDefault()) + " (" + voice.getName() + ")");
-                    entry.put("lang", voice.getLocale().toLanguageTag());
-                    entry.put("isDefault", voice.equals(fallback));
-                    list.put(entry);
-                }
+            for (Voice voice : installedVoices()) {
+                JSObject entry = new JSObject();
+                entry.put("id", voice.getName());
+                entry.put("name", voice.getLocale().getDisplayName(Locale.getDefault()) + " (" + voice.getName() + ")");
+                entry.put("lang", voice.getLocale().toLanguageTag());
+                entry.put("isDefault", voice.equals(fallback));
+                list.put(entry);
             }
             JSObject result = new JSObject();
             result.put("voices", list);
@@ -148,20 +159,26 @@ public class SpeechPlugin extends Plugin {
                 call.reject("speak starts past its last piece");
                 return;
             }
-            tts.stop();
-            sessions.begin(session, text.size() - 1);
-            tts.setVoice(voiceNamed(voiceId));
-            tts.setSpeechRate(rate);
-            Bundle params = new Bundle();
-            params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume);
-            for (int i = from; i < text.size(); i++) {
-                int queued = tts.speak(text.get(i), i == from ? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD,
-                        params, SpeechSessions.utteranceId(session, i));
-                if (queued != TextToSpeech.SUCCESS) {
-                    tts.stop();
-                    sessions.stop(session);
-                    call.reject("this phone's text-to-speech engine refused the reading");
+            Voice voice = VoiceChoice.choose(installedVoices(), v -> v.getName().equals(voiceId), tts.getDefaultVoice());
+            synchronized (sessions) {
+                tts.stop();
+                if (voice == null || tts.setVoice(voice) != TextToSpeech.SUCCESS) {
+                    call.reject("this phone has no text-to-speech voice to read with");
                     return;
+                }
+                tts.setSpeechRate(rate);
+                sessions.begin(session, text.size() - 1);
+                Bundle params = new Bundle();
+                params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume);
+                for (int i = from; i < text.size(); i++) {
+                    int queued = tts.speak(text.get(i), i == from ? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD,
+                            params, SpeechSessions.utteranceId(session, i));
+                    if (queued != TextToSpeech.SUCCESS) {
+                        tts.stop();
+                        sessions.stop(session);
+                        call.reject("this phone's text-to-speech engine refused the reading");
+                        return;
+                    }
                 }
             }
             call.resolve();
@@ -171,28 +188,30 @@ public class SpeechPlugin extends Plugin {
     @PluginMethod
     public void stop(PluginCall call) {
         String session = call.getString("session", "");
-        SpeechSessions.Event stopped = sessions.stop(session);
-        if (stopped != null && tts != null) {
-            tts.stop();
+        SpeechSessions.Event stopped;
+        synchronized (sessions) {
+            stopped = sessions.stop(session);
+            if (stopped != null && tts != null) {
+                tts.stop();
+            }
         }
         send(stopped);
         call.resolve();
     }
 
-    private Voice voiceNamed(String id) {
-        Voice fallback = tts.getDefaultVoice();
-        if (id == null || id.isEmpty()) {
-            return fallback;
-        }
+    /** The voices whose data is on the phone; a voice still to download
+     * cannot read. */
+    private List<Voice> installedVoices() {
+        List<Voice> installed = new ArrayList<>();
         Set<Voice> voices = tts.getVoices();
         if (voices != null) {
             for (Voice voice : voices) {
-                if (voice.getName().equals(id)) {
-                    return voice;
+                if (!voice.getFeatures().contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED)) {
+                    installed.add(voice);
                 }
             }
         }
-        return fallback;
+        return installed;
     }
 
     private void send(SpeechSessions.Event event) {
