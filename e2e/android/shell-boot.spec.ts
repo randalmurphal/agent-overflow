@@ -1271,10 +1271,43 @@ test('a notification tap opens its thread after the lock is answered', async ({
   await expect(tapped.getByTestId('chat-header-title')).toHaveText('Tapped thread');
 });
 
+/** One event the `Speech` plugin sent the page, in arrival order. */
+type SpeechEvent = { kind: 'progress' | 'done'; session: string; index?: number; outcome?: string };
+
+/** Every event the `Speech` plugin has sent since `watchSpeech`. */
+async function speechEvents(page: Page): Promise<SpeechEvent[]> {
+  return page.evaluate(() => (window as Window & { __speechEvents?: SpeechEvent[] }).__speechEvents ?? []);
+}
+
+/** Records the plugin's own events beside the app's listener, so the case
+ * judges what Android reported rather than the store's optimistic phase. */
+async function watchSpeech(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    type Listen = (event: string, handler: (payload: Record<string, unknown>) => void) => Promise<unknown>;
+    const speech = (window as Window & { Capacitor?: { Plugins?: { Speech?: { addListener: Listen } } } }).Capacitor?.Plugins?.Speech;
+    if (!speech) throw new Error('the Speech plugin is not registered');
+    const events: SpeechEvent[] = [];
+    (window as Window & { __speechEvents?: SpeechEvent[] }).__speechEvents = events;
+    for (const kind of ['progress', 'done'] as const) {
+      await speech.addListener(kind, (payload) => events.push({ kind, ...(payload as { session: string }) }));
+    }
+  });
+}
+
+/** Whether the phone is playing synthesized speech right now, from the
+ * audio service's own player list. */
+async function speechAudible(device: AndroidDevice): Promise<boolean> {
+  const audio = (await device.shell('dumpsys audio')).toString();
+  return audio.split('\n').some((line) => line.includes('state:started') && line.includes('CONTENT_TYPE_SPEECH'));
+}
+
 // Read-aloud on the phone goes through Android's TextToSpeech, because the
 // WebView has no speechSynthesis. This proves both halves on a device: the
 // WebView really has none, and the Speech plugin lists the phone's voices
-// and reads a reply to its end, pausing and resuming at its sentence.
+// and reads a reply to its end. Pausing silences the phone, and resuming
+// restarts the sentence it paused on. Each claim is judged from the
+// plugin's events and the audio service, not from the button's phase,
+// which the page sets before Android answers.
 test('read-aloud reads a reply through the phone’s text-to-speech', async ({ device, harness, page }) => {
   await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [
@@ -1285,7 +1318,7 @@ test('read-aloud reads a reply through the phone’s text-to-speech', async ({ d
           {
             title: 'Read aloud thread',
             turns: [{ userText: 'hello', items: [{ kind: 'assistant_text',
-              summary: 'The first sentence is here. The second one follows it.\n\n```sh\necho skipped\n```\n\nThe last sentence ends the reply.',
+              summary: 'The first sentence is here. The second one follows it. A third keeps the reading going. The fourth is longer, so the reading is still under way when it pauses.\n\n```sh\necho skipped\n```\n\nThe fifth comes after the skipped code. The last sentence ends the reply.',
             }] }],
           },
         ],
@@ -1316,15 +1349,43 @@ test('read-aloud reads a reply through the phone’s text-to-speech', async ({ d
   const play = page.getByTestId('assistant-message-read-aloud');
   await expect(play).toBeVisible({ timeout: PAIRED_MOUNT_MS });
 
+  await watchSpeech(page);
+  const last = 5; // Six sentences; the code block is not read.
+
+  // Android reports reaching the second sentence, and is audibly speaking.
   await play.click();
   await expect(slot).toHaveAttribute('data-phase', 'playing');
+  await expect.poll(async () => (await speechEvents(page)).some((e) => e.kind === 'progress' && e.index! >= 1),
+    { message: 'Android must report progress past the first sentence', timeout: 30_000 }).toBe(true);
+  await expect.poll(() => speechAudible(device), { message: 'the phone must be playing speech' }).toBe(true);
+
+  // Pausing stops the native session and silences the phone.
   await play.click();
   await expect(slot).toHaveAttribute('data-phase', 'paused');
   await expect(page.getByTestId('assistant-message-read-aloud-restart')).toBeVisible();
+  const first = (await speechEvents(page))[0].session;
+  await expect.poll(async () => (await speechEvents(page)).find((e) => e.kind === 'done' && e.session === first)?.outcome,
+    { message: 'pausing must stop the native session' }).toBe('stopped');
+  const pausedAt = Math.max(...(await speechEvents(page)).filter((e) => e.kind === 'progress' && e.session === first).map((e) => e.index!));
+  expect(pausedAt).toBeLessThan(last);
+  // Promptly, and for good: the unread sentences take far longer than this
+  // to finish on their own, and a gap between two queued ones is brief.
+  await expect.poll(() => speechAudible(device), { message: 'the phone must fall silent on pause', timeout: 3_000 }).toBe(false);
+  for (const held = Date.now() + 2_000; Date.now() < held;) {
+    expect(await speechAudible(device), 'the phone must stay silent while paused').toBe(false);
+  }
+
+  // Resuming restarts the paused sentence in a new session and reads to
+  // the end, which Android reports as ended after the last piece.
   await play.click();
   await expect(slot).toHaveAttribute('data-phase', 'playing');
-  // The engine's own end of the last queued sentence returns it to idle.
   await expect(slot).toHaveAttribute('data-phase', 'idle', { timeout: 60_000 });
+  const resumed = (await speechEvents(page)).filter((e) => e.session !== first);
+  expect(resumed.length, 'resuming must start a new native session').toBeGreaterThan(0);
+  const progress = resumed.filter((e) => e.kind === 'progress').map((e) => e.index);
+  expect(progress[0], 'resuming must restart the paused sentence').toBe(pausedAt);
+  expect(progress.at(-1)).toBe(last);
+  expect(resumed.filter((e) => e.kind === 'done').map((e) => e.outcome)).toEqual(['ended']);
 });
 
 // ---------------------------------------------------------------------
