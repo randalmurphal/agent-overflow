@@ -48,6 +48,10 @@ describe('speakablePieces', () => {
     ]);
   });
 
+  it('drops a URL written as inline code', () => {
+    expect(speakablePieces('Open `https://example.com/docs` to read more.')).toEqual(['Open to read more.']);
+  });
+
   it('reads headings and each list item as their own pieces', () => {
     expect(speakablePieces('## Summary\n\n- first item\n- second item\n\n1. step one\n2. step two')).toEqual([
       'Summary',

@@ -140,8 +140,16 @@ describe('read-aloud', () => {
     await settle();
     expect(readAloudPhase('b')).toBe('playing');
     pauseReadAloud();
+    expect(fake.playbacks[1].stopped).toBe(true);
     resumeReadAloud();
     expect(fake.playbacks[2].from).toBe(0);
+  });
+
+  it('refuses a speed or volume out of range', () => {
+    setReadAloudPreference('rate', 5);
+    setReadAloudPreference('volume', -1);
+    readAloud('a', REPLY);
+    expect(fake.playbacks[0].options).toMatchObject({ rate: 1, volume: 1 });
   });
 
   it('says so and stops when the voice fails', async () => {

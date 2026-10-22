@@ -80,6 +80,14 @@ describe('webSpeechEngine', () => {
     expect(synth.spoken).toHaveLength(1);
   });
 
+  it('reads a cancel from outside, such as another page, as stopped', async () => {
+    const synth = new FakeSynth();
+    const engine = webSpeechEngine(synth as unknown as SpeechSynthesis);
+    const playback = engine.speak(['a', 'b'], 0, OPTIONS, () => undefined);
+    synth.cancel();
+    expect(await playback.done).toBe('stopped');
+  });
+
   it('rejects when the voice fails', async () => {
     const synth = new FakeSynth();
     const engine = webSpeechEngine(synth as unknown as SpeechSynthesis);
