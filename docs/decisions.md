@@ -22,6 +22,8 @@ alone does not establish intent.
 - Codex second-opinion reviews are for large changes only (feature waves,
   subsystem reworks, wide refactors); routine fix waves get Claude-owned
   review.
+- Never publish or offer a Claude Artifact (a hosted claude.ai page). A
+  page for the owner to view is a local `.html` file.
 
 ## Performance and memory
 
@@ -735,7 +737,6 @@ and anti-changes that live only here:
   thread lifecycle, `iterations[-1]` context usage, prompt stash, claude.ai
   connectors, app-hosted MCP, classifier-row usage labeling, MCP toggle
   fan-out and per-thread pinning.
-- Artifacts are never offered unprompted.
 
 ## Decisions still required
 
