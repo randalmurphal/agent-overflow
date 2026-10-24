@@ -318,6 +318,15 @@ Mechanism in
   way. Agent thread requests, their cancels and workflow takeovers are
   not gated. Wire facts:
   [claude-wire.md §Background task ownership](references/claude-wire.md#background-task-ownership).
+- Work the Claude CLI starts on its own (a background-task wake, a
+  scheduled wakeup, a peer session's message) is a turn of its own, with
+  its own timer and Stop and no user row; the completion notice that woke
+  it stays above it. `/effort`, `/fast` and `/rename` open no turn. A
+  turn ends when the model's message ends, so a thread waiting on a
+  running `local_agent` is idle; it runs again only if the model
+  continues that turn (ruling 2026-10-24).
+  Mechanism:
+  [turn-lifecycle.md §Rounds and turns](architecture/turn-lifecycle.md#rounds-and-turns).
 - A forked skill is an awaited agent with a different label. Its card has
   no Stop and no background action; its agent pane's Stop ends the fork
   alone (the main turn goes on after a fork the model launched, and a

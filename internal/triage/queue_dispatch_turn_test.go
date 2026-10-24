@@ -324,22 +324,17 @@ func TestHandleTurnStart_PendingSendTurnIndex_MultiEntryFIFO_HeadWins(t *testing
 	}
 }
 
-// TestDeferredFlushEcho_MidLoopConsumption_OpensLogicalTurn pins the
-// moving-RESPONSE-pill fix (2026-07-12): a queued user message that
-// Claude consumes MID-LOOP — folded into the running wire round as a
-// `queued_command` attachment — echoes back with no system.init and no
-// EventTurnStart. The deferred user_text persists at the
-// dispatcher-stamped index N+1, and without openQueuedEchoTurn the
-// logical turn never opens: no turns row (0s settled duration), no
-// `provider:turn_started` carrying N+1 (the frontend's active-turn
-// registry keeps the cascade round's index N, so its response-pill
-// active-turn exclusion misses every new assistant text), and the
-// revert flow's GetActiveTurn guard reads idle mid-stream.
+// TestDeferredFlushEcho_MidLoopConsumption_OpensLogicalTurn pins a queued
+// user message that Claude consumes MID-LOOP of a turn the CLI started on
+// its own (a background-task notification woke it). The wake opens turn
+// N+1 as a provider-started turn; the queued message, stamped N+1 by a
+// dispatcher that saw no active turn, moves to N+2 when it registers, and
+// its echo (no system.init, no EventTurnStart) opens N+2 and settles N+1.
+// Each turn's rows stay in it: the wake-up work in N+1, the response in N+2.
 //
-// Wire shape reproduced from thread b3cf8e63 turn 23: turn N settles,
-// a task-notification cascade re-opens a wire round on index N
-// (maybeEmitReRoundOnInit), the flush dispatches mid-round at a tool
-// boundary, and the echo arrives while that round is still open.
+// Wire shape from thread b3cf8e63 turn 23 and thread 774f2b92 turn 278:
+// turn N settles, the CLI self-wakes, a message is dispatched mid-wake
+// and drained into the running loop.
 func TestDeferredFlushEcho_MidLoopConsumption_OpensLogicalTurn(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -367,63 +362,70 @@ func TestDeferredFlushEcho_MidLoopConsumption_OpensLogicalTurn(t *testing.T) {
 		t.Fatalf("turn 0 complete: %v", err)
 	}
 
-	// Task-notification cascade: a fresh system.init with NO pending
-	// send re-opens a wire round on the settled turn's index
-	// (maybeEmitReRoundOnInit) and the wake-up work streams under it.
+	// Self-wake: a fresh system.init with NO pending send opens turn 1.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventInit, ThreadID: "t1", Timestamp: time.Now(),
 	}); err != nil {
-		t.Fatalf("cascade re-round init: %v", err)
+		t.Fatalf("self-wake init: %v", err)
 	}
-	reRound, ok := router.ActiveTurnSnapshot("t1")
-	if !ok || reRound.TurnIndex != 0 {
-		t.Fatalf("expected cascade round on turn 0, got %+v ok=%v", reRound, ok)
+	wake, ok := router.ActiveTurnSnapshot("t1")
+	if !ok || wake.TurnIndex != 1 {
+		t.Fatalf("expected the self-wake round on turn 1, got %+v ok=%v", wake, ok)
 	}
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTextDelta, ThreadID: "t1",
-		Content: "cascade wake-up work", Timestamp: time.Now(),
+		Content: "wake-up work", Timestamp: time.Now(),
 	}); err != nil {
-		t.Fatalf("cascade text: %v", err)
-	}
-	if err := router.settleStreamingScope("t1", ""); err != nil {
-		t.Fatalf("cascade settle text: %v", err)
+		t.Fatalf("wake text: %v", err)
 	}
 
-	// Queue dispatch mid-round: deferred registration stamped at turn 1
-	// (resolveFlushTurnPlacement found no NULL-completed turns row).
+	// Queue dispatch mid-wake, stamped at turn 1 by a dispatcher whose
+	// placement read ran before the wake's turns row existed.
 	router.RegisterPendingFlushSendWithExpectation("t1", "queue:q1", store.Item{
 		ID: "user:1:flush:1", ThreadID: "t1", TurnIndex: 1,
 		Kind: "user_text", Role: "user", Status: "completed",
-		Summary: "queued mid-cascade",
+		Summary: "queued mid-wake",
 	}, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
 
-	// Mid-loop consumption: the echo arrives with the round still open —
-	// no system.init, no EventTurnStart.
+	// The wake-up text is still streaming when the message is drained:
+	// the echo settles turn 1 around it.
 	emissions.reset()
 	echoAt := time.Now()
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventUserText, ThreadID: "t1",
-		Content:   "queued mid-cascade",
+		Content:   "queued mid-wake",
 		Meta:      json.RawMessage(`{"provider_item_id":"ao-uuid-1"}`),
 		Timestamp: echoAt,
 	}); err != nil {
 		t.Fatalf("deferred echo: %v", err)
 	}
 
-	// The echo must open logical turn 1: open-turn state, turns row,
-	// and a provider:turn_started carrying the new index.
-	if openTurn, ok := router.openTurnIndex("t1"); !ok || openTurn != 1 {
-		t.Fatalf("openTurnIndex = %d ok=%v, want 1 (echo must open the queued turn)", openTurn, ok)
+	if openTurn, ok := router.openTurnIndex("t1"); !ok || openTurn != 2 {
+		t.Fatalf("openTurnIndex = %d ok=%v, want 2 (the message's turn follows the wake)", openTurn, ok)
 	}
-	turnRow, found, err := st.GetTurn("t1:1")
+	wakeRow, found, err := st.GetTurn("t1:1")
+	if err != nil || !found || wakeRow.CompletedAt == nil {
+		t.Fatalf("wake turn t1:1 not settled by the echo: found=%v row=%+v err=%v", found, wakeRow, err)
+	}
+	if wakeRow.StopReason != "end_turn" {
+		t.Errorf("wake turn stop_reason = %q, want end_turn", wakeRow.StopReason)
+	}
+	wakeText, found, err := st.GetThreadItem("t1", "text:1:0")
 	if err != nil || !found {
-		t.Fatalf("turns row t1:1 missing after deferred echo: found=%v err=%v", found, err)
+		t.Fatalf("wake text row text:1:0 missing: found=%v err=%v", found, err)
+	}
+	if wakeText.Status != statusCompleted {
+		t.Errorf("wake text status = %q, want completed (settled with its turn)", wakeText.Status)
+	}
+	turnRow, found, err := st.GetTurn("t1:2")
+	if err != nil || !found {
+		t.Fatalf("turns row t1:2 missing after deferred echo: found=%v err=%v", found, err)
 	}
 	if turnRow.StartedAt != echoAt.UnixMilli() {
 		t.Errorf("turns row started_at = %d, want echo time %d", turnRow.StartedAt, echoAt.UnixMilli())
 	}
 	if turnRow.CompletedAt != nil {
-		t.Errorf("turns row t1:1 already completed at open")
+		t.Errorf("turns row t1:2 already completed at open")
 	}
 	var started []TurnStartedEvent
 	for _, e := range emissions.snapshot() {
@@ -439,18 +441,21 @@ func TestDeferredFlushEcho_MidLoopConsumption_OpensLogicalTurn(t *testing.T) {
 	if len(started) != 1 {
 		t.Fatalf("turn_started emissions after echo = %d, want exactly 1", len(started))
 	}
-	if started[0].TurnIndex != 1 {
-		t.Fatalf("turn_started TurnIndex = %d, want 1", started[0].TurnIndex)
+	if started[0].TurnIndex != 2 {
+		t.Fatalf("turn_started TurnIndex = %d, want 2", started[0].TurnIndex)
 	}
-	if started[0].TurnID == reRound.TurnID {
+	if started[0].TurnID == wake.TurnID {
 		t.Fatal("turn_started must re-mint the round id — frontend replaces its active-turn entry on the fresh TurnID")
 	}
-	if _, found, err := st.GetThreadItem("t1", "user:1:flush:1"); err != nil || !found {
+	userRow, found, err := st.GetThreadItem("t1", "user:1:flush:1")
+	if err != nil || !found {
 		t.Fatalf("deferred user row missing after echo: found=%v err=%v", found, err)
 	}
+	if userRow.TurnIndex != 2 {
+		t.Errorf("deferred user row turn = %d, want 2", userRow.TurnIndex)
+	}
 
-	// The response streams under the queued turn with a seeded counter:
-	// text:1:0, not the missing-key text:1:1 the bug produced.
+	// The response streams under the message's turn.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTextDelta, ThreadID: "t1",
 		Content: "response to the queued message", Timestamp: time.Now(),
@@ -460,12 +465,12 @@ func TestDeferredFlushEcho_MidLoopConsumption_OpensLogicalTurn(t *testing.T) {
 	if err := router.settleStreamingScope("t1", ""); err != nil {
 		t.Fatalf("response settle text: %v", err)
 	}
-	if _, found, err := st.GetThreadItem("t1", "text:1:0"); err != nil || !found {
-		t.Fatalf("response text row text:1:0 missing (counter must seed at -1): found=%v err=%v", found, err)
+	if _, found, err := st.GetThreadItem("t1", "text:2:0"); err != nil || !found {
+		t.Fatalf("response text row text:2:0 missing: found=%v err=%v", found, err)
 	}
 
-	// The wire round-complete settles the queued turn: same round id the
-	// echo minted, index 1, and a real (non-zero) duration on the row.
+	// The CLI turn's single result settles the message's turn under the
+	// round id the echo minted.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
 		TurnComplete: normalTurnCompleteMeta(), Timestamp: echoAt.Add(5 * time.Second),
@@ -489,16 +494,17 @@ func TestDeferredFlushEcho_MidLoopConsumption_OpensLogicalTurn(t *testing.T) {
 	if completed[0].TurnID != started[0].TurnID {
 		t.Fatalf("turn_completed TurnID %q != minted round id %q — frontend would never clear its active-turn entry", completed[0].TurnID, started[0].TurnID)
 	}
-	if completed[0].TurnIndex != 1 {
-		t.Fatalf("turn_completed TurnIndex = %d, want 1", completed[0].TurnIndex)
+	if completed[0].TurnIndex != 2 {
+		t.Fatalf("turn_completed TurnIndex = %d, want 2", completed[0].TurnIndex)
 	}
-	settled, found, err := st.GetTurn("t1:1")
+	settled, found, err := st.GetTurn("t1:2")
 	if err != nil || !found || settled.CompletedAt == nil {
-		t.Fatalf("turns row t1:1 not settled: found=%v completedAt=%v err=%v", found, settled.CompletedAt, err)
+		t.Fatalf("turns row t1:2 not settled: found=%v completedAt=%v err=%v", found, settled.CompletedAt, err)
 	}
 	if *settled.CompletedAt-settled.StartedAt <= 0 {
 		t.Errorf("settled duration = %d ms, want > 0 (started_at must anchor at the echo)", *settled.CompletedAt-settled.StartedAt)
 	}
+	assertNoStreamingRows(t, st, "t1")
 }
 
 // TestDeferredFlushEcho_SecondEchoSettlesPredecessorTurn pins the
@@ -519,19 +525,8 @@ func TestDeferredFlushEcho_SecondEchoSettlesPredecessorTurn(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("turn 0 start: %v", err)
 	}
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		TurnComplete: normalTurnCompleteMeta(), Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("turn 0 complete: %v", err)
-	}
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventInit, ThreadID: "t1", Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("cascade re-round init: %v", err)
-	}
 
-	// First queued message consumed mid-loop.
+	// Turn 0 is still running. First queued message consumed mid-loop.
 	router.RegisterPendingFlushSendWithExpectation("t1", "queue:q1", store.Item{
 		ID: "user:1:flush:1", ThreadID: "t1", TurnIndex: 1,
 		Kind: "user_text", Role: "user", Status: "completed", Summary: "first queued",

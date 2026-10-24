@@ -366,9 +366,9 @@ func TestLifecycleBracketAfterConfirmationIsInert(t *testing.T) {
 }
 
 // A direct send the CLI drains into a turn it started itself (a background
-// re-round) gets no system/init of its own. Its confirmation opens its turn,
-// as a deferred send's does, so the turn has a row to settle and later
-// output lands under it.
+// completion woke it) gets no system/init of its own. The wake is a turn of
+// its own, the send takes the turn after it, and its confirmation opens
+// that turn and settles the wake's, so each turn's output stays in it.
 func TestDirectSendDrainedIntoProviderTurnOpensItsTurn(t *testing.T) {
 	h := newUnechoedSendHarness(t)
 	h.directSend(0, "u-0", "start the background work")
@@ -376,16 +376,17 @@ func TestDirectSendDrainedIntoProviderTurnOpensItsTurn(t *testing.T) {
 	h.echo("u-0")
 	h.answer("started it")
 
-	// The CLI wakes on a background completion: a turn this app did not ask
-	// for, re-rounded under turn 0.
+	// The CLI wakes on a background completion: a turn this app did not
+	// ask for opens turn 1.
 	h.handle(provider.ProviderEvent{Kind: provider.EventInit})
 	h.handle(provider.ProviderEvent{Kind: provider.EventTextDelta, Content: "background done"})
 	h.handle(provider.ProviderEvent{Kind: provider.EventContentBlockStop})
-	h.directSend(1, "u-1", "one more thing")
-	h.echo("u-1")
+	h.directSend(2, "u-2", "one more thing")
+	h.echo("u-2")
 	h.answer("handled the addition")
 
-	h.wantTurn(0, "user:0=start the background work", "text:0:0=started it", "text:0:1=background done")
-	h.wantTurn(1, "user:1=one more thing", "text:1:0=handled the addition")
+	h.wantTurn(0, "user:0=start the background work", "text:0:0=started it")
+	h.wantTurn(1, "text:1:0=background done")
+	h.wantTurn(2, "user:2=one more thing", "text:2:0=handled the addition")
 	h.wantIdle()
 }

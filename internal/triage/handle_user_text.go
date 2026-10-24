@@ -564,9 +564,9 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pending
 		log.Printf("triage: Claude did not honour the supplied uuid %q; echo carries %q", oldID, providerItemID)
 	}
 	// A direct send owns a fresh turn that a provider turn start normally
-	// opens. Drained into a turn the provider started itself (a background
-	// re-round), it gets no start of its own, so its consumption opens it,
-	// exactly as a deferred row's does. A no-op when its turn is open.
+	// opens. Drained mid-loop into a running turn, it gets no start of its
+	// own, so its consumption opens it, exactly as a deferred row's does.
+	// A no-op when its turn is open.
 	if pending.Shape == sendShapeDirect && !pending.OpenedTurn {
 		r.openQueuedEchoTurn(threadID, pending.TurnIndex, eventTimestampMillis(evt), pending.InterruptedTurnIndex)
 	}

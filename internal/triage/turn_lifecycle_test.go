@@ -259,13 +259,13 @@ func TestHandleEventTurnStart_InsertsTurnRow(t *testing.T) {
 	}
 
 	// Emission shape. The frontend payload's TurnID is a per-round
-	// uuid (allocated by setOpenRound at the top of handleTurnStart) —
+	// uuid (allocated where handleTurnStart opens the round) —
 	// distinct from the persisted logical-turn id (`expectedTurnID =
 	// "t1:5"`) on purpose. Frontend idempotency keys on TurnID and
-	// each wire round (re-round, retry) needs its own visible
-	// identifier; persistence uses the logical id so all rounds of
-	// one logical turn share a single `turns` row. See
-	// internal/triage/AGENTS.md "Wire-round vs logical-turn".
+	// each round (a continuation after a soft close, a retry) needs its
+	// own visible identifier; persistence uses the logical id so all
+	// rounds of one logical turn share a single `turns` row. See
+	// docs/architecture/turn-lifecycle.md §Rounds and turns.
 	started := filterEmissions(emissions.snapshot(), "provider:turn_started")
 	if len(started) != 1 {
 		t.Fatalf("expected 1 provider:turn_started emission, got %d", len(started))
@@ -365,7 +365,7 @@ func TestHandleEventTurnComplete_UpdatesTurnRow(t *testing.T) {
 	// Emission shape. The completed payload's TurnID is the per-round
 	// uuid that turn_started allocated — same round, same id —
 	// distinct from the persisted logical id ("t1:3"). See
-	// internal/triage/AGENTS.md "Wire-round vs logical-turn".
+	// docs/architecture/turn-lifecycle.md §Rounds and turns.
 	started := filterEmissions(emissions.snapshot(), "provider:turn_started")
 	if len(started) != 1 {
 		t.Fatalf("expected 1 provider:turn_started emission, got %d", len(started))
@@ -765,11 +765,11 @@ func TestMarkUserInterrupt_ExemptsBackgroundedLaunches(t *testing.T) {
 //     that row rather than creating or touching a sibling.
 //   - The frontend payload (TurnStartedEvent / TurnCompletedEvent)
 //     carries a per-round uuid as TurnID — frontend idempotency keys
-//     on TurnID, so each wire round (re-round in the multi-result-
-//     per-turn pattern, retried turn/started in Codex, etc.) gets a
-//     fresh frontend-visible identifier even when the persisted row
-//     keeps the same logical id. See internal/triage/AGENTS.md
-//     "Wire-round vs logical-turn" for the cadence rules.
+//     on TurnID, so each round (a Claude continuation after a soft
+//     close, a retried turn/started in Codex, etc.) gets a fresh
+//     frontend-visible identifier even when the persisted row keeps
+//     the same logical id. See docs/architecture/turn-lifecycle.md
+//     §Rounds and turns for the cadence rules.
 //
 // Regression-guard rationale: the durable id and the provider RPC anchor are
 // intentionally different. Losing either the thread scope or the verbatim
@@ -1224,9 +1224,9 @@ func TestTurnCompleteErrorWithOpenRoundUnchanged(t *testing.T) {
 }
 
 // TestAnyInFlightTurnOrRound pins the whole-router predicate the webview
-// trim gate consults: true while any thread has an open wire round OR a
-// logical turn surviving a wire-round boundary, false once both clear,
-// and false on a nil router (the App's lazy-triage paths).
+// trim gate consults: true while any thread has an open round OR an open
+// logical turn, false once both clear, and false on a nil router (the
+// App's lazy-triage paths).
 func TestAnyInFlightTurnOrRound(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -1260,13 +1260,13 @@ func TestAnyInFlightTurnOrRound(t *testing.T) {
 		t.Fatal("settled round still reported in flight")
 	}
 
-	// The round-2+ re-round shape: currentRoundOpen set without
-	// setOpenTurn (maybeEmitReRoundOnInit). The predicate must see it.
+	// A round whose turn state is already cleared: currentRoundOpen set
+	// without openTurnSet. The predicate's round arm must see it.
 	router.mu.Lock()
 	router.state("t1").currentRoundOpen = true
 	router.mu.Unlock()
 	if !router.AnyInFlightTurnOrRound() {
-		t.Fatal("re-round (currentRoundOpen without openTurnSet) not reported")
+		t.Fatal("round without an open turn (currentRoundOpen without openTurnSet) not reported")
 	}
 
 	var nilRouter *Router

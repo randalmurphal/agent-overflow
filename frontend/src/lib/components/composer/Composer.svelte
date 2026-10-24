@@ -155,14 +155,12 @@
   // queue (RegisterQueueItem), and the backend dispatch worker delivers
   // each queued message via Send/Steer as soon as possible.
   //
-  // BETWEEN rounds — Claude's multi-result-per-turn cascade emits the
-  // first `result` envelope, then the model is idle while a backgrounded
-  // task hasn't yet produced its notification — `getActiveTurn` returns
-  // null and `isTurnActive` is false, so the composer dispatches
-  // directly. The next round (provoked by the bg task notification or
-  // the user's new prompt) re-flips this on. This matches Claude Code's
-  // actual behaviour and is the canonical wire-round emission contract
-  // documented in internal/triage/AGENTS.md "Wire-round vs logical-turn".
+  // BETWEEN rounds (the model's message ended while a local_agent still
+  // runs and the CLI withholds its result) `getActiveTurn` returns null
+  // and `isTurnActive` is false, so the composer dispatches directly.
+  // The next round (a wake, a continuation or the user's new prompt)
+  // re-flips this on. See docs/architecture/turn-lifecycle.md § Rounds
+  // and turns.
   let isTurnActive = $derived(getActiveTurn(pane.threadId) !== null);
   // Send routes through the queue on the wire signal above and on one
   // presentation signal: the pane's reveal frontier is still up (a

@@ -168,9 +168,9 @@ func TestReadLoopEmitsErrorOnOversizedLine(t *testing.T) {
 // exited cleanly (exit code 0) or because the 100ms wait timed out
 // before the OS reaped the child. Without the "error" event, triage's
 // handleSessionDied never ran, so the FE working indicator stayed
-// stranded until the user manually clicked Reconnect (which then
-// also failed to clean up in the round-2+ case — see
-// TestCleanupThreadSynthesizesAfterRound2PlusReRound).
+// stranded until the user manually clicked Reconnect. The triage side
+// (handleSessionDied's truncated complete for an open turn) is pinned by
+// TestSessionStatusErrorSynthesizesAfterSelfWake.
 //
 // After the fix, !s.closing is the only gate: any time the read loop
 // exits without the host asking us to close, "error" fires.

@@ -69,9 +69,12 @@ subagent completes. The wire-typed parent-ended signal is therefore
 `parent_tool_use_id == null`). See
 [§stream_event soft-round-close](#stream_event-streaming-deltas)
 below. We treat that signal as authoritative for the round-end UI
-(working indicator, Stop button, composer block) and absorb the late
-`result` envelope as a token-usage / cost / `assistant_message_id`
-fold-in. Backed by fixtures
+(working indicator, Stop button, composer block) and turn settlement,
+and absorb the late `result` envelope as a token-usage / cost /
+`assistant_message_id` fold-in; an input the CLI acts on meanwhile
+(each announced by `system/init`) starts a turn of its own
+([turn-lifecycle.md §Rounds and turns](../architecture/turn-lifecycle.md#rounds-and-turns)).
+Backed by fixtures
 [`local_agent_outlives.ndjson`](fixtures/claude/local_agent_outlives.ndjson)
 and
 [`local_agent_user_input_during_wait.ndjson`](fixtures/claude/local_agent_user_input_during_wait.ndjson).
@@ -401,7 +404,12 @@ a convenience string only.
 
 ## `system/init`
 
-**Fires**: once at session start, and again on model switch.
+**Fires**: before each model invocation the CLI starts on new input: a
+turn for a stdin message or command, a wake on a background-task
+notification, and each new input it acts on while it withholds `result`
+behind a running `local_agent` (§`result`). A continuation of the same
+invocation after a parent `end_turn` (a ToolSearch or ExitPlanMode
+resume) has none. Also on model switch.
 
 ```json
 {"type": "system", "subtype": "init",
@@ -420,7 +428,9 @@ a convenience string only.
  "capabilities": ["interrupt_receipt_v1", "msg_lifecycle_v1"]}
 ```
 
-Emits `EventInit`. Parser extracts model id for usage pricing, and the
+Emits `EventInit`; what it opens in AO is
+[turn-lifecycle.md §Turns the provider starts](../architecture/turn-lifecycle.md#turns-the-provider-starts).
+Parser extracts model id for usage pricing, and the
 optional fast-mode pair (same shape and same version caveat as on
 `result`, described in
 [§fast_mode_state](#fast_mode_state--fast_mode_disabled_reason-verified-21219)).

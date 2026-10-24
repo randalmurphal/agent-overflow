@@ -17,7 +17,6 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/stringsx"
 
-	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
@@ -780,37 +779,29 @@ func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
 }
 
 // handleInit reacts to a wire `system/init` envelope (Claude only — Codex
-// has no equivalent). Three cases share this entry point:
+// has no equivalent). The init announces the CLI acting on new input: a
+// CLI turn's start, or, after the model's message ended while the CLI
+// withholds its `result` behind a running local_agent, a new invocation in
+// the same CLI turn. Each is a logical turn of its own
+// (docs/architecture/turn-lifecycle.md §Turns the provider starts):
 //
-//  1. **Fresh AO send** — the send path registered a pending-send marker
-//     before writing to stdin, and the provider has just acknowledged the
-//     session by emitting `system/init`. We route through handleTurnStart
-//     to open round 1 of the logical turn, fire plan/comment acceptance,
-//     and emit `provider:turn_started`. This is the wire-driven
-//     replacement for the synthetic EventTurnStart that app_send.go used
-//     to emit after a successful stdin write. Only a pending send that
-//     has not opened a turn yet qualifies; the start claims it
-//     (OpenedTurn) without consuming it, and its confirmation pops it.
+//  1. **AO send** — a pending send that has not opened a turn yet is the
+//     message this turn was started for. handleTurnStart opens it at the
+//     send's dispatcher-stamped index and claims the entry (OpenedTurn)
+//     without consuming it; its confirmation pops it. A self-wake that
+//     races a send already on stdin takes the send's turn (§Stdin race).
 //
-//  2. **Cascade re-round** — Claude's CLI synthesizes a `type:"user"`
-//     envelope from a task_notification and follows it with a fresh
-//     `system/init` before the next `result`. The current logical turn
-//     is already settled, so maybeEmitReRoundOnInit opens a new wire
-//     round (setOpenRound only — never setOpenTurn, see invariant
-//     "setOpenTurn does NOT fire from handleInit").
+//  2. **Provider-started turn** — no AO message started it: the CLI woke
+//     itself (a background-task notification, a scheduled wakeup) or a
+//     peer session's message started it. openProviderStartedTurn opens a
+//     new logical turn.
 //
-//  3. **Idle session attach** — the app reattaches to a thread on
-//     startup or session resume with no AO send in flight. Both the
-//     pending-send check and the settled-turn check fail, so this
-//     handler is a no-op beyond the session_ref update.
-//
-// Pending-send takes precedence over the settled-turn check because an
-// AO send launched during a cascade settle window is round 1 of a NEW
-// logical turn (handleTurnStart territory), not round 2+ of the
-// previous logical turn (re-round territory).
+//  3. **No turn** — an init while a round is open (a repeated init), an
+//     AO internal command (`/effort`, `/fast`, `/rename`), or an idle
+//     session attaching. Nothing opens.
 func (r *Router) handleInit(evt provider.ProviderEvent) error {
+	var info provider.SessionInfo
 	if evt.Meta != nil {
-		var info provider.SessionInfo
 		if json.Unmarshal(evt.Meta, &info) == nil {
 			if info.SessionID != "" {
 				changed, err := r.store.UpdateSessionRef(evt.ThreadID, info.SessionID)
@@ -840,105 +831,102 @@ func (r *Router) handleInit(evt provider.ProviderEvent) error {
 	if _, ok := r.turnOpeningPendingSend(evt.ThreadID); ok {
 		return r.handleTurnStart(evt)
 	}
-
-	r.maybeEmitReRoundOnInit(evt)
-	return nil
-}
-
-// maybeEmitReRoundOnInit is the `system.init` re-round entry point: it
-// re-lights the working indicator when an EventInit arrives for a
-// thread whose current logical turn is already settled (the
-// multi-result cascade — see maybeReopenSettledRound for the full
-// mechanism and the second, parent-content-resume entry point). Named
-// so call sites and the area guides have a system.init-specific hook.
-func (r *Router) maybeEmitReRoundOnInit(evt provider.ProviderEvent) {
-	r.maybeReopenSettledRound(evt)
-}
-
-// maybeReopenSettledRound opens a fresh wire round (emitting
-// `provider:turn_started`) when the current logical turn is already
-// settled and no round is currently open. It is the shared mechanism
-// behind both re-round entry points:
-//
-//   - system.init re-round (maybeEmitReRoundOnInit) — Claude's CLI
-//     synthesizes a `type:"user"` envelope from a task_notification and
-//     follows it with a fresh `system.init` before the next `result`.
-//   - parent-content resume (handleContentBlockStart, parent-only) —
-//     Claude 2.1.154+ splits one logical turn into multiple wire
-//     messages, closing each segment with a parent `message_delta`
-//     stop_reason (the soft round-close, parse_stream.go) and then
-//     resuming the SAME turn with a fresh parent `message_start` and no
-//     intervening `result`/`system.init`. The soft-close already fired
-//     `provider:turn_completed` (clearing the working indicator + Stop
-//     button); without this re-arm the indicator stays dead for the
-//     rest of the turn even though the agent is actively streaming.
-//     See invariants.md §27.
-//
-// Critically, this path does NOT call setOpenTurn — id-allocating
-// counters (segmentIndexByScope, blockIndexByScope, errorSeqByScope,
-// terminalInteractionSeq) MUST survive across the multi-result/segment
-// boundary, otherwise text/think/error ids collide with rows already
-// persisted under the same logical turn (see multi_result_test.go).
-//
-// Two guards keep this from over-firing:
-//
-//   - settled — handleTurnComplete has fired at least once for this
-//     logical turn. This disambiguates re-round from "fresh session
-//     attaching to a thread that has no in-flight logical turn" (a real
-//     session start yields no emission) AND from ordinary mid-round
-//     content (round 1 is not settled until its first complete).
-//   - no open round — once re-opened, subsequent content blocks in the
-//     same wire round are no-ops. Only the FIRST parent content after a
-//     soft-close re-arms; everything until the next close rides the
-//     open round. This is what stops the indicator from blinking on
-//     every content block of a resumed segment.
-//
-// The no-open-round guard is also why this is safe against the
-// legitimate local_agent-outlives soft-close (invariant 27): there the
-// parent has genuinely stopped and only the SUBAGENT streams until the
-// trailing `result`. handleContentBlockStart gates this call on
-// parent_tool_use_id == "" so subagent content never re-arms the
-// parent's round — the indicator correctly stays cleared through the
-// subagent wait.
-func (r *Router) maybeReopenSettledRound(evt provider.ProviderEvent) {
-	// Already-open round: nothing to re-arm. Cheap check first so the
-	// common in-round content_block_start path returns immediately
-	// without touching settledTurns or the store.
 	if r.openRoundID(evt.ThreadID) != "" {
-		return
+		return nil
 	}
+	switch info.TurnOpener {
+	case provider.TurnOpenerInternalCommand:
+		return nil
+	case provider.TurnOpenerCommand:
+		return r.openProviderStartedTurn(evt)
+	}
+	// No message opened it. Background work does not survive a CLI
+	// restart, so a self-wake follows a turn this session settled.
+	// Otherwise the session is attaching.
+	if !r.sessionSettledATurn(evt.ThreadID) {
+		return nil
+	}
+	return r.openProviderStartedTurn(evt)
+}
 
-	// Resolve the logical-turn index: prefer the in-memory open turn
-	// (round 1 of the same logical turn opened by handleTurnStart but
-	// since closed by clearOpenTurn at handleTurnComplete will leave
-	// this empty); fall back to LastTurnIndex so a settled-turn check
-	// against the persisted row id can still run.
-	turnIndex, ok := r.openTurnIndex(evt.ThreadID)
-	if !ok {
-		last, err := r.store.LastTurnIndex(evt.ThreadID)
+// handleParentContentResume keeps a turn and a round under every parent
+// message. After a soft round close, before the CLI turn's result, the
+// model is continuing its turn (a ToolSearch or ExitPlanMode
+// continuation): the turn reopens (reopenSoftClosedTurn). Parent content
+// after a result with no init, which the CLI does not send, opens the
+// turn of a pending send waiting for one, as an init would, or else a
+// turn of its own, rather than writing into a settled one. Subagent content never reaches
+// here (handleContentBlockStart gates on the parent scope), so a subagent
+// that outlives its parent's soft close streams without re-arming the
+// parent's round.
+func (r *Router) handleParentContentResume(evt provider.ProviderEvent) error {
+	if _, open := r.openTurnIndex(evt.ThreadID); open {
+		return nil
+	}
+	if reopened, err := r.reopenSoftClosedTurn(evt); reopened || err != nil {
+		return err
+	}
+	if _, ok := r.turnOpeningPendingSend(evt.ThreadID); ok {
+		return r.handleTurnStart(evt)
+	}
+	if !r.sessionSettledATurn(evt.ThreadID) {
+		return nil
+	}
+	return r.openProviderStartedTurn(evt)
+}
+
+// openProviderStartedTurn opens a logical turn for a CLI turn no pending AO
+// send started. It takes the next index past every persisted turn and row,
+// and moves each pending send that has not opened its turn and was stamped
+// at or past that index one turn later (deferPendingSendsPast): the message
+// is still waiting, so whether the CLI drains it into this turn or starts a
+// turn for it afterwards, its turn follows this one. Opening is
+// handleTurnStart's: a turns row, the open-turn state with fresh counters,
+// the turn span, a round and `provider:turn_started`. No-op while a round
+// is open.
+func (r *Router) openProviderStartedTurn(evt provider.ProviderEvent) error {
+	if r.openRoundID(evt.ThreadID) != "" {
+		return nil
+	}
+	return r.startTurn(evt, true, func() (int, error) {
+		turnIndex, err := r.store.NextTurnIndex(evt.ThreadID)
 		if err != nil {
-			return
+			return 0, fmt.Errorf("provider-started turn index: %w", err)
 		}
-		turnIndex = last
-	}
+		r.deferPendingSendsPast(evt.ThreadID, turnIndex)
+		return turnIndex, nil
+	})
+}
 
+// deferPendingSendsPast moves every pending send whose turn a provider-
+// started turn at turnIndex now occupies, or would precede, one turn later.
+// Only sends that have not opened a turn qualify; a direct send's row is
+// already persisted, so NextTurnIndex never reaches its stamp. A deferred
+// row is not in SQLite yet and moves with its entry.
+func (r *Router) deferPendingSendsPast(threadID string, turnIndex int) {
 	r.mu.Lock()
-	settledState := r.threadStateIfPresent(evt.ThreadID)
-	settled := settledState != nil && settledState.settledTurns[turnIndex]
-	r.mu.Unlock()
-	if !settled {
-		return
+	defer r.mu.Unlock()
+	pending := r.pendingSendsLocked(threadID)
+	for i := range pending {
+		if !pending[i].canOpenTurn() || pending[i].TurnIndex < turnIndex {
+			continue
+		}
+		pending[i].TurnIndex++
+		if pending[i].DeferredItem != nil {
+			moved := *pending[i].DeferredItem
+			moved.TurnIndex = pending[i].TurnIndex
+			pending[i].DeferredItem = &moved
+		}
 	}
+}
 
-	startedAt := eventTimestampMillis(evt)
-	snapshot := ActiveTurnSnapshot{
-		ThreadID:  evt.ThreadID,
-		TurnID:    uuid.NewString(),
-		TurnIndex: turnIndex,
-		StartedAt: startedAt,
-	}
-	r.setOpenRoundSnapshot(snapshot)
-	r.emit(eventchan.ProviderTurnStarted, TurnStartedEvent(snapshot))
+// sessionSettledATurn reports whether the live session has settled a turn.
+// MarkThreadActive clears the settlement state for a new session.
+func (r *Router) sessionSettledATurn(threadID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.threadStateIfPresent(threadID)
+	return st != nil && len(st.settledTurns) > 0
 }
 
 func (r *Router) handleThreadModelUpdate(evt provider.ProviderEvent) error {
