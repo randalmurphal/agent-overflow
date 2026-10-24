@@ -750,8 +750,10 @@ under the thread's turn allocation lock (`Router.LockTurnAllocation`):
 steps 2 to 5 and the init-less content decision on the router, and on
 the App a send's placement through its registration. A direct send
 places again under the lock and registers with its row's persist when a
-session is live; a cold session registers after it starts, since no
-turn of its own can come first. A queued message's dispatch holds the
+session is live, and again before its provider write if a session
+teardown cleared the registry since (a Codex account switch reconnects
+there); a cold session registers after it starts, since no turn of its
+own can come first. A queued message's dispatch holds the
 lock from placement through registration. A send placed while a
 provider-started turn opens therefore takes the next index, and a wake
 decided while a send is being placed or sent finds the registered send

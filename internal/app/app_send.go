@@ -719,12 +719,10 @@ func (a *App) sendMessageLocked(
 	// the same lock, makes that turn find the message and take its turn
 	// rather than open one past it. A cold session registers below, after
 	// it starts: no turn of its own can come first.
-	registeredEarly := false
 	if !isCodexReview {
 		if live, ok := a.sessionManager().get(threadID); ok {
 			_, earlyExpect := providerSendIdentity(live, userItem.ID, sendUUID)
 			a.triage.RegisterPendingSendWithExpectation(threadID, userItem.ID, turnIndex, earlyExpect)
-			registeredEarly = true
 		}
 	}
 	releaseAllocation()
@@ -788,9 +786,7 @@ func (a *App) sendMessageLocked(
 	sess, unlockAccount, accountErr := a.lockProviderAccountForSendLocked(thread)
 	if accountErr != nil {
 		err = accountErr
-		if registeredEarly {
-			a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
-		}
+		a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
 		a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
 		return store.Item{}, fmt.Errorf("send message: %w", err)
 	}
@@ -842,8 +838,11 @@ func (a *App) sendMessageLocked(
 	// envelope arrives, or cleared on send failure below. The identity the
 	// echo matches by — and the wire stamp it rides in on — come from
 	// providerSendIdentity, one derivation for every send entry point.
+	// A send registered with its row is registered again when the session
+	// it was registered against was torn down since (an account switch
+	// reconnects Codex here), since teardown clears the registry.
 	clientUserMessageID, sendExpect := providerSendIdentity(sess, userItem.ID, sendUUID)
-	if !registeredEarly {
+	if !a.triage.HasPendingSend(threadID, userItem.ID) {
 		a.triage.RegisterPendingSendWithExpectation(threadID, userItem.ID, turnIndex, sendExpect)
 	}
 

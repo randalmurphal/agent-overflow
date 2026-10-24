@@ -87,6 +87,40 @@ func TestWakeAfterDirectSendPersistTakesItsTurn(t *testing.T) {
 	_ = app.StopSession(thread.ID)
 }
 
+// A session torn down and replaced after a send registered with its row
+// (an account switch reconnects Codex before dispatch) cleared the
+// registry. The send registers again before its provider write, so the
+// replacement session's turn start still finds it.
+func TestSendRegistersAgainAfterSessionReplacedBeforeDispatch(t *testing.T) {
+	t.Parallel()
+	app, bus, thread := startTwoTurnClaudeThread(t)
+	if err := app.SendMessage(thread.ID, "first", nil); err != nil {
+		t.Fatalf("SendMessage 1: %v", err)
+	}
+	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
+
+	app.sendStageFn = func(threadID, stage string) {
+		if stage != "persisted" {
+			return
+		}
+		app.sendStageFn = nil
+		app.triage.CleanupThread(threadID)
+		app.triage.MarkThreadActive(threadID)
+	}
+	if err := app.SendMessage(thread.ID, "second", nil); err != nil {
+		t.Fatalf("SendMessage 2: %v", err)
+	}
+	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
+	turn, found, err := app.store.GetTurnByThreadIndex(thread.ID, 1)
+	if err != nil || !found {
+		t.Fatalf("turn 1 row: found=%v err=%v, want the send's turn", found, err)
+	}
+	if turn.CompletedAt == nil {
+		t.Fatal("the send's turn 1 never completed")
+	}
+	_ = app.StopSession(thread.ID)
+}
+
 // startTwoTurnClaudeThread starts a Claude session whose mock answers two
 // sends, one turn each.
 func startTwoTurnClaudeThread(t *testing.T) (*App, *capturedEventBus, store.Thread) {

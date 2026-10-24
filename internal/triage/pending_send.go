@@ -348,6 +348,14 @@ func (r *Router) HasPendingSendForThread(threadID string) bool {
 	return len(r.pendingSendsLocked(threadID)) > 0
 }
 
+// HasPendingSend reports whether aoItemID's send is registered on threadID.
+// A session teardown clears the registry, so a send registered against a
+// session that was replaced before its provider write registers again.
+func (r *Router) HasPendingSend(threadID, aoItemID string) bool {
+	_, ok := r.peekPendingSendByItemID(threadID, aoItemID)
+	return ok
+}
+
 // peekPendingSendHead returns the FIFO head for threadID without
 // popping it. Used by resolveTurnIndexOnStart to recover the
 // dispatcher-stamped TurnIndex when the wire init carries no turn
