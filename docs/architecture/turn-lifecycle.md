@@ -679,14 +679,14 @@ Until it does the router remembers the soft-closed turn
 |---|---|---|
 | Parent `content_block_start`, no `system/init` | The model continues its turn (a ToolSearch or ExitPlanMode continuation) | `reopenSoftClosedTurn`: the `turns` row is in flight again (`ReopenTurn`), so `GetActiveTurn`-gated callers see the work, and the open-turn state returns with the turn's id-allocating counters, so later rows cannot collide with earlier ones; a new round |
 | `system/init` | The CLI acts on new input: an AO message or a wake | A new turn (§Turns the provider starts) |
-| `result` | The CLI turn ends | Folds its usage and payload onto the soft-closed turn (`persistLateTurnPayload`) |
+| `result` | The CLI turn ends | Folds its usage and payload onto the soft-closed turn (`completionTurnIndex`, `persistLateTurnPayload`) |
 
 While the turn is settled the thread is idle everywhere: no working
 indicator or Stop, the composer sends directly, and revert or transfer
-see no active turn. Anything the CLI writes before its `result` is
-attributed to the soft-closed turn (`currentTurnIndex`), never to a sent
-message whose row already holds a later index. Subagent content never
-reopens the parent's turn. A second completion for a settled turn (a
+see no active turn. A completion with no turn open settles the
+soft-closed turn, else the newest turn that started, never a sent
+message's turn that has not started (`completionTurnIndex`). Subagent
+content never reopens the parent's turn. A second completion for a settled turn (a
 synthetic truncated complete from `handleError`, then the real result)
 finds no round to emit and folds its late payload only.
 
@@ -718,15 +718,15 @@ Shapes pinned by tests:
 
 `handleInit` decides what a `system/init` opens:
 
-1. A pending send that has not opened a turn: `handleTurnStart` at its
+1. An AO internal command (`/effort`, `/fast`, `/rename`;
+   `SessionInfo.TurnOpener`, stamped while a `command_lifecycle`
+   `started` frame is open) opens nothing and claims no waiting message.
+2. A pending send that has not opened a turn: `handleTurnStart` at its
    dispatcher-stamped index. A wake that races a send already on stdin
    takes the send's turn (§Stdin race).
-2. An init while a round is open opens nothing.
-3. A command (`SessionInfo.TurnOpener`, stamped while a
-   `command_lifecycle` `started` frame is open): an AO internal command
-   (`/effort`, `/fast`, `/rename`) opens nothing; any other command opens
-   a provider-started turn.
-4. No opener, so the CLI woke itself (a background-task notification, a
+3. An init while a round is open opens nothing.
+4. Any other command opens a provider-started turn.
+5. No opener, so the CLI woke itself (a background-task notification, a
    scheduled wakeup) or a peer session's message started it: a
    provider-started turn when the session has settled a turn. Otherwise
    the session is attaching and nothing opens; background work does not
@@ -738,12 +738,19 @@ provider-started turn, rather than writing into the settled one.
 
 A provider-started turn (`openProviderStartedTurn`) takes
 `store.NextTurnIndex` and has no user row; the completion notice that
-woke it stays above it. It has its own round, timer and Stop. Pending
-sends that have not opened a turn and are stamped at or past its index
-move one turn later (`deferPendingSendsPast`), and a deferred send
-registered while it is open is stamped past it (`registerPendingSend`).
-A message sent while it runs is queued and drained into it as into any
-running turn. Session import applies the same rule: a top-level
+woke it stays above it. It has its own round, timer and Stop. A message
+sent while it runs is queued and drained into it as into any running
+turn.
+
+The router and the App choose turn indexes independently, so both do it
+under the thread's turn allocation lock (`Router.LockTurnAllocation`):
+steps 2 to 5 and the init-less content decision on the router, and on
+the App a send's placement through its row's persist (a direct send,
+which places again under the lock) or its registration (a queued
+message's dispatch). A send placed while a provider-started turn opens
+therefore takes the next index, and a wake decided while a send is being
+placed finds the registered send and takes its turn. The App holds the
+lock only across store writes and router calls. Session import applies the same rule: a top-level
 `task-notification` user row starts a turn with no user row.
 
 ### Required contract

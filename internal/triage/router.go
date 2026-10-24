@@ -828,16 +828,20 @@ func (r *Router) handleInit(evt provider.ProviderEvent) error {
 		}
 	}
 
+	// An AO internal command's turn is AO's bookkeeping: it opens no turn
+	// and claims no message waiting for one.
+	if info.TurnOpener == provider.TurnOpenerInternalCommand {
+		return nil
+	}
+	unlock := r.LockTurnAllocation(evt.ThreadID)
+	defer unlock()
 	if _, ok := r.turnOpeningPendingSend(evt.ThreadID); ok {
 		return r.handleTurnStart(evt)
 	}
 	if r.openRoundID(evt.ThreadID) != "" {
 		return nil
 	}
-	switch info.TurnOpener {
-	case provider.TurnOpenerInternalCommand:
-		return nil
-	case provider.TurnOpenerCommand:
+	if info.TurnOpener == provider.TurnOpenerCommand {
 		return r.openProviderStartedTurn(evt)
 	}
 	// No message opened it. Background work does not survive a CLI
@@ -863,6 +867,8 @@ func (r *Router) handleParentContentResume(evt provider.ProviderEvent) error {
 	if _, open := r.openTurnIndex(evt.ThreadID); open {
 		return nil
 	}
+	unlock := r.LockTurnAllocation(evt.ThreadID)
+	defer unlock()
 	if reopened, err := r.reopenSoftClosedTurn(evt); reopened || err != nil {
 		return err
 	}
@@ -876,48 +882,38 @@ func (r *Router) handleParentContentResume(evt provider.ProviderEvent) error {
 }
 
 // openProviderStartedTurn opens a logical turn for a CLI turn no pending AO
-// send started. It takes the next index past every persisted turn and row,
-// and moves each pending send that has not opened its turn and was stamped
-// at or past that index one turn later (deferPendingSendsPast): the message
-// is still waiting, so whether the CLI drains it into this turn or starts a
-// turn for it afterwards, its turn follows this one. Opening is
-// handleTurnStart's: a turns row, the open-turn state with fresh counters,
-// the turn span, a round and `provider:turn_started`. No-op while a round
-// is open.
+// send started. It takes the next index past every persisted turn and row.
+// Opening is handleTurnStart's: a turns row, the open-turn state with fresh
+// counters, the turn span, a round and `provider:turn_started`. No-op while
+// a round is open. The caller holds the turn allocation lock and found no
+// pending send waiting for a turn, so no send holds or is choosing the
+// index.
 func (r *Router) openProviderStartedTurn(evt provider.ProviderEvent) error {
 	if r.openRoundID(evt.ThreadID) != "" {
 		return nil
 	}
-	return r.startTurn(evt, true, func() (int, error) {
+	return r.startTurn(evt, func() (int, error) {
 		turnIndex, err := r.store.NextTurnIndex(evt.ThreadID)
 		if err != nil {
 			return 0, fmt.Errorf("provider-started turn index: %w", err)
 		}
-		r.deferPendingSendsPast(evt.ThreadID, turnIndex)
 		return turnIndex, nil
 	})
 }
 
-// deferPendingSendsPast moves every pending send whose turn a provider-
-// started turn at turnIndex now occupies, or would precede, one turn later.
-// Only sends that have not opened a turn qualify; a direct send's row is
-// already persisted, so NextTurnIndex never reaches its stamp. A deferred
-// row is not in SQLite yet and moves with its entry.
-func (r *Router) deferPendingSendsPast(threadID string, turnIndex int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	pending := r.pendingSendsLocked(threadID)
-	for i := range pending {
-		if !pending[i].canOpenTurn() || pending[i].TurnIndex < turnIndex {
-			continue
-		}
-		pending[i].TurnIndex++
-		if pending[i].DeferredItem != nil {
-			moved := *pending[i].DeferredItem
-			moved.TurnIndex = pending[i].TurnIndex
-			pending[i].DeferredItem = &moved
-		}
-	}
+// LockTurnAllocation holds threadID's turn allocation lock and returns its
+// release. Choosing a new turn's index and making it visible to the next
+// chooser (a turns row, a persisted user row, a registered pending send)
+// happen under it: on the App's send paths, and here when a system/init
+// or parent content decides what turn opens. So a send never takes an
+// index a provider-started turn already took, and a provider-started turn
+// never starts while a send that will claim it is being placed. Hold it
+// only across store writes and router calls, never across anything that
+// waits for the thread's provider event worker.
+func (r *Router) LockTurnAllocation(threadID string) func() {
+	mu := &r.identity(threadID).allocLock
+	mu.Lock()
+	return mu.Unlock
 }
 
 // sessionSettledATurn reports whether the live session has settled a turn.

@@ -34,17 +34,12 @@ type threadState struct {
 	// (the map's comma-ok).
 	openTurn    int
 	openTurnSet bool
-	// openTurnProviderStarted marks an open turn the provider started
-	// with no AO send (openProviderStartedTurn): no pending send owns it,
-	// so a send stamped at its index belongs to a later turn.
-	openTurnProviderStarted bool
 	// softClosedTurn is the turn a soft round close settled while its CLI
 	// turn's `result` is still to come (softClosedTurnSet).
 	// Parent content before the result continues it
 	// (reopenSoftClosedTurn); the result and every turn start clear it.
-	softClosedTurn                int
-	softClosedTurnSet             bool
-	softClosedTurnProviderStarted bool
+	softClosedTurn    int
+	softClosedTurnSet bool
 	// turnStarting is non-nil while handleTurnStart runs, from before it
 	// writes the turns row until the open turn is set, and is closed
 	// when it returns. InterruptTurnIndex waits on it so an interrupt
@@ -423,6 +418,9 @@ type threadIdentity struct {
 	// while a waiter still holds the old one, silently splitting the
 	// serialization domain.
 	anchorLock sync.Mutex
+	// allocLock is the thread's turn allocation lock (LockTurnAllocation).
+	// On the never-deleted identity for the same reason as anchorLock.
+	allocLock sync.Mutex
 	// drainLock serializes, PER THREAD, an interrupt-queue drain's full
 	// pop + persist span. r.mu alone covers only the map pop: a
 	// settle-goroutine drain releases it before persisting the handed-off

@@ -259,34 +259,6 @@ func TestTurnStartSettlesOpenPredecessor(t *testing.T) {
 	}
 }
 
-// TestProviderStartedTurnMovesUnopenedPendingSend: a message dispatched
-// when no turn was active carries the next index; a provider-started turn
-// that opens there first moves it one turn later, so its echo opens a turn
-// of its own after the wake instead of landing inside it.
-func TestProviderStartedTurnMovesUnopenedPendingSend(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	settleTurnZero(t, router)
-
-	router.RegisterPendingFlushSendWithExpectation("t1", "queue:q1", store.Item{
-		ID: "user:flush:q1", ThreadID: "t1", TurnIndex: 1,
-		Kind: "user_text", Role: "user", Status: "completed", Summary: "queued before the wake",
-	}, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: "ao-q1"})
-
-	if err := router.openProviderStartedTurn(provider.ProviderEvent{ThreadID: "t1", Timestamp: time.Now()}); err != nil {
-		t.Fatalf("open provider-started turn: %v", err)
-	}
-	if got := router.OpenTurnIndex("t1"); got != 1 {
-		t.Fatalf("OpenTurnIndex = %d, want the wake on 1", got)
-	}
-	router.mu.Lock()
-	moved := router.state("t1").pendingSends[0]
-	router.mu.Unlock()
-	if moved.TurnIndex != 2 || moved.DeferredItem == nil || moved.DeferredItem.TurnIndex != 2 {
-		t.Fatalf("pending send = turn %d, deferred row %+v; want both on turn 2", moved.TurnIndex, moved.DeferredItem)
-	}
-}
-
 // Parent content with no init after a settled turn, while a sent message
 // waits for its turn, opens that message's turn as its init would.
 func TestParentContentWithoutInitOpensPendingSendTurn(t *testing.T) {
@@ -308,5 +280,121 @@ func TestParentContentWithoutInitOpensPendingSendTurn(t *testing.T) {
 	pending, ok := router.turnOpeningPendingSend("t1")
 	if ok {
 		t.Fatalf("pending send %s at turn %d still waits for a turn", pending.AOItemID, pending.TurnIndex)
+	}
+}
+
+func openerInit(t *testing.T, opener provider.TurnOpener) provider.ProviderEvent {
+	t.Helper()
+	meta, err := json.Marshal(provider.SessionInfo{TurnOpener: opener})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return provider.ProviderEvent{Kind: provider.EventInit, ThreadID: "t1", Meta: meta, Timestamp: time.Now()}
+}
+
+func persistSendRow(t *testing.T, router *Router, id string, turnIndex int) {
+	t.Helper()
+	now := time.Now().UnixMilli()
+	if err := router.PersistItem(store.Item{
+		ID: id, ThreadID: "t1", TurnIndex: turnIndex, Kind: "user_text", Role: "user",
+		Status: "completed", Summary: "sent", CreatedAt: now, UpdatedAt: now,
+	}, nil); err != nil {
+		t.Fatalf("persist send row: %v", err)
+	}
+	router.RegisterPendingSendWithExpectation("t1", id, turnIndex, PendingSendExpectation{})
+}
+
+// A wake that arrives while a send is being placed waits for the turn
+// allocation lock, then finds the registered send and takes its turn
+// instead of opening a provider-started turn at the index the send chose.
+func TestWakeDuringSendPlacementTakesTheSendsTurn(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	settleTurnZero(t, router)
+
+	unlock := router.LockTurnAllocation("t1")
+	done := make(chan error, 1)
+	go func() {
+		done <- router.Handle(provider.ProviderEvent{Kind: provider.EventInit, ThreadID: "t1", Timestamp: time.Now()})
+	}()
+	select {
+	case err := <-done:
+		unlock()
+		t.Fatalf("wake init finished while a send held the allocation lock (err %v)", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	persistSendRow(t, router, "user:1", 1)
+	unlock()
+	if err := <-done; err != nil {
+		t.Fatalf("wake init: %v", err)
+	}
+
+	if open, ok := router.openTurnIndex("t1"); !ok || open != 1 {
+		t.Fatalf("open turn = %d/%v, want the send's turn 1", open, ok)
+	}
+	if pending, ok := router.turnOpeningPendingSend("t1"); ok {
+		t.Fatalf("send %s at turn %d still waits for a turn: the wake opened another", pending.AOItemID, pending.TurnIndex)
+	}
+}
+
+// An AO internal command's init opens no turn and leaves a message
+// waiting for its turn unclaimed; the command's result settles no turn
+// that has not started; the message's own init opens its turn.
+func TestInternalCommandInitLeavesPendingSendUnclaimed(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	settleTurnZero(t, router)
+	persistSendRow(t, router, "user:1", 1)
+
+	if err := router.Handle(openerInit(t, provider.TurnOpenerInternalCommand)); err != nil {
+		t.Fatalf("internal command init: %v", err)
+	}
+	if open, ok := router.openTurnIndex("t1"); ok {
+		t.Fatalf("internal command opened turn %d", open)
+	}
+	if _, ok := router.turnOpeningPendingSend("t1"); !ok {
+		t.Fatal("internal command init claimed the waiting send")
+	}
+	if err := router.Handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: "t1", TurnComplete: normalTurnCompleteMeta(), Timestamp: time.Now()}); err != nil {
+		t.Fatalf("internal command result: %v", err)
+	}
+	if router.isTurnSettled("t1", 1) {
+		t.Fatal("internal command result settled the send's turn before it started")
+	}
+
+	if err := router.Handle(openerInit(t, provider.TurnOpenerCommand)); err != nil {
+		t.Fatalf("send init: %v", err)
+	}
+	if open, ok := router.openTurnIndex("t1"); !ok || open != 1 {
+		t.Fatalf("open turn = %d/%v, want the send's turn 1", open, ok)
+	}
+}
+
+// A native command sent while the previous turn's result is withheld
+// writes its launch row before its init. The row belongs to the command's
+// turn, not to the soft-closed one.
+func TestCommandLaunchAfterSoftCloseLandsInItsTurn(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	if err := router.Handle(provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0, Timestamp: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := router.Handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: "t1", TurnComplete: &provider.SoftRoundCloseMeta{StopReason: "end_turn"}, Timestamp: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	persistSendRow(t, router, "user:1", 1)
+
+	meta, _ := json.Marshal(map[string]any{"toolName": "Command", "input": map[string]any{"command": "/context"}})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "claude-command:c1", ItemType: "Command", Meta: meta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("command launch: %v", err)
+	}
+	row, found, err := st.GetThreadItem("t1", "claude-command:c1")
+	if err != nil || !found {
+		t.Fatalf("command launch row: found=%v err=%v", found, err)
+	}
+	if row.TurnIndex != 1 {
+		t.Fatalf("command launch on turn %d, want its own turn 1", row.TurnIndex)
 	}
 }

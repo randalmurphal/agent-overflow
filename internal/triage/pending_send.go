@@ -313,16 +313,6 @@ func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, q
 	}
 	r.mu.Lock()
 	st := r.state(threadID)
-	// A deferred row's index was decided with no turn active. A provider-
-	// started turn that opened since holds that index or passed it; the
-	// message's turn follows it (deferPendingSendsPast covers the sends
-	// already registered when it opened).
-	if deferredItem != nil && st.openTurnSet && st.openTurnProviderStarted && turnIndex <= st.openTurn {
-		turnIndex = st.openTurn + 1
-		moved := *deferredItem
-		moved.TurnIndex = turnIndex
-		deferredItem = &moved
-	}
 	st.pendingSends = append(st.pendingSends, pendingSend{
 		AOItemID:                   aoItemID,
 		QueueItemID:                queueItemID,

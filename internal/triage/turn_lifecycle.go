@@ -30,15 +30,15 @@ import (
 // (reopenSoftClosedTurn), keeping its id-allocating counters.
 // See docs/architecture/turn-lifecycle.md §Rounds and turns.
 func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
-	return r.startTurn(evt, false, func() (int, error) {
+	return r.startTurn(evt, func() (int, error) {
 		return r.resolveTurnIndexOnStart(evt), nil
 	})
 }
 
 // startTurn opens the logical turn resolve names. Every turn opens here:
 // an AO send's (handleTurnStart) and one the provider started
-// (openProviderStartedTurn, providerStarted).
-func (r *Router) startTurn(evt provider.ProviderEvent, providerStarted bool, resolve func() (int, error)) error {
+// (openProviderStartedTurn).
+func (r *Router) startTurn(evt provider.ProviderEvent, resolve func() (int, error)) error {
 	// An interrupt sampled from here until the open turn is set waits
 	// for it (InterruptTurnIndex): the row written below is already the
 	// active turn GetActiveTurn-gated callers stop.
@@ -82,7 +82,7 @@ func (r *Router) startTurn(evt provider.ProviderEvent, providerStarted bool, res
 
 	// A failed ownership read is reported once the turn is open: the turn
 	// starts either way.
-	openErr := r.openTurnState(evt.ThreadID, turnIndex, providerStarted)
+	openErr := r.setOpenTurn(evt.ThreadID, turnIndex)
 	started()
 	r.openTurnSpan(evt, turnIndex)
 
@@ -411,7 +411,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	r.emitFastModeState(evt.ThreadID, fastModeStatusFromTurnComplete(evt))
 
 	countsAsActivity := turnCountsAsThreadActivity(evt)
-	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
+	turnIndex, err := r.completionTurnIndex(evt.ThreadID)
 	meta, metaErr := turnCompleteMetaFromEvent(evt)
 	if metaErr != nil {
 		log.Printf("triage: %v", metaErr)
@@ -526,7 +526,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 			}
 			lateErr = errors.Join(lateErr, r.persistLateTurnPayload(evt, turnIndex, meta, roundCompletedAt))
 			r.FlushUsageEmitThrottle(evt.ThreadID)
-			r.noteTurnSettled(evt.ThreadID, turnIndex, evt, false)
+			r.noteTurnSettled(evt.ThreadID, turnIndex, evt)
 			return lateErr
 		}
 	}
@@ -612,11 +612,10 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// the anchor maps directly to "before this user message".
 	persistErr = errors.Join(persistErr, r.settleTurnRow(evt, turnIndex, now, meta, persistErr), scopeErr)
 
-	providerStarted := r.openTurnIsProviderStarted(evt.ThreadID)
 	r.clearOpenTurn(evt.ThreadID, agentScopes)
 	r.finishTurnSpan(evt.ThreadID, completedTurnOutcome(meta, persistErr))
 	r.FlushUsageEmitThrottle(evt.ThreadID)
-	r.noteTurnSettled(evt.ThreadID, turnIndex, evt, providerStarted)
+	r.noteTurnSettled(evt.ThreadID, turnIndex, evt)
 
 	return persistErr
 }
@@ -627,7 +626,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 // the CLI turn's `result` is still to come, and the model can resume
 // first (a ToolSearch or ExitPlanMode continuation): reopenSoftClosedTurn
 // continues it then. The result ends that possibility.
-func (r *Router) noteTurnSettled(threadID string, turnIndex int, evt provider.ProviderEvent, providerStarted bool) {
+func (r *Router) noteTurnSettled(threadID string, turnIndex int, evt provider.ProviderEvent) {
 	_, soft := evt.TurnComplete.(*provider.SoftRoundCloseMeta)
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -640,14 +639,6 @@ func (r *Router) noteTurnSettled(threadID string, turnIndex int, evt provider.Pr
 		return
 	}
 	st.softClosedTurn, st.softClosedTurnSet = turnIndex, true
-	st.softClosedTurnProviderStarted = providerStarted
-}
-
-func (r *Router) openTurnIsProviderStarted(threadID string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	st := r.threadStateIfPresent(threadID)
-	return st != nil && st.openTurnSet && st.openTurnProviderStarted
 }
 
 // reopenSoftClosedTurn continues the turn a soft round close settled when
@@ -668,7 +659,6 @@ func (r *Router) reopenSoftClosedTurn(evt provider.ProviderEvent) (bool, error) 
 	turnIndex := st.softClosedTurn
 	st.softClosedTurnSet = false
 	st.openTurn, st.openTurnSet = turnIndex, true
-	st.openTurnProviderStarted = st.softClosedTurnProviderStarted
 	delete(st.settledTurns, turnIndex)
 	r.mu.Unlock()
 
@@ -963,15 +953,35 @@ func (r *Router) currentTurnIndex(threadID string) (int, error) {
 		turnIndex := st.openTurn
 		r.mu.Unlock()
 		return turnIndex, nil
-	} else if st != nil && st.softClosedTurnSet {
-		// The CLI turn behind it has not ended: its trailing result and
-		// anything else it writes belong to it, not to a sent message
-		// whose row already holds a later index.
-		turnIndex := st.softClosedTurn
+	}
+	r.mu.Unlock()
+	return r.store.LastTurnIndex(threadID)
+}
+
+// completionTurnIndex is the turn a turn-complete settles: the open turn,
+// else the soft-closed turn whose CLI turn the trailing result ends, else
+// the newest turn that started. A completion with no turn open (a trailing
+// or duplicate result, an AO internal command's) never settles a turn that
+// has not started, as currentTurnIndex's newest-row fallback would when a
+// sent message's row already holds the next index.
+func (r *Router) completionTurnIndex(threadID string) (int, error) {
+	r.mu.Lock()
+	if st := r.threadStateIfPresent(threadID); st != nil && (st.openTurnSet || st.softClosedTurnSet) {
+		turnIndex := st.openTurn
+		if !st.openTurnSet {
+			turnIndex = st.softClosedTurn
+		}
 		r.mu.Unlock()
 		return turnIndex, nil
 	}
 	r.mu.Unlock()
+	turns, err := r.store.ListRecentTurns(threadID, 1)
+	if err != nil {
+		return 0, err
+	}
+	if len(turns) == 1 {
+		return turns[0].TurnIndex, nil
+	}
 	return r.store.LastTurnIndex(threadID)
 }
 
@@ -1123,16 +1133,11 @@ func (r *Router) AnyInFlightTurnOrRound() bool {
 // streams are the agent's and stay. A failed ownership read forgets them
 // too, as before agents outlived turns, and is returned.
 func (r *Router) setOpenTurn(threadID string, turnIndex int) error {
-	return r.openTurnState(threadID, turnIndex, false)
-}
-
-func (r *Router) openTurnState(threadID string, turnIndex int, providerStarted bool) error {
 	agentScopes, scopeErr := r.agentOwnedOpenScopes(threadID)
 	r.mu.Lock()
 	st := r.state(threadID)
 	st.openTurn = turnIndex
 	st.openTurnSet = true
-	st.openTurnProviderStarted = providerStarted
 	st.softClosedTurnSet = false
 	key := scopeCounterKey(turnIndex, "")
 	if st.segmentIndexByScope == nil {
@@ -1226,7 +1231,6 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 	}
 	st.openTurn = turnIndex
 	st.openTurnSet = true
-	st.openTurnProviderStarted = false
 	st.softClosedTurnSet = false
 	key := scopeCounterKey(turnIndex, "")
 	if st.segmentIndexByScope == nil {
@@ -1547,7 +1551,6 @@ func (r *Router) clearOpenTurn(threadID string, agentScopes map[string]bool) {
 	}
 	st.openTurn = 0
 	st.openTurnSet = false
-	st.openTurnProviderStarted = false
 	// openAPIRetryRows tracks "thread has a running api_retry row that
 	// still needs flipping". By turn-end the row was either flipped
 	// already or the turn closed without forward progress; either way
