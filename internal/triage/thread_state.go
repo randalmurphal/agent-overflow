@@ -34,6 +34,12 @@ type threadState struct {
 	// (the map's comma-ok).
 	openTurn    int
 	openTurnSet bool
+	// softClosedTurn is the turn a soft round close settled while its CLI
+	// turn's `result` is still to come (softClosedTurnSet).
+	// Parent content before the result continues it
+	// (reopenSoftClosedTurn); the result and every turn start clear it.
+	softClosedTurn    int
+	softClosedTurnSet bool
 	// turnStarting is non-nil while handleTurnStart runs, from before it
 	// writes the turns row until the open turn is set, and is closed
 	// when it returns. InterruptTurnIndex waits on it so an interrupt
@@ -124,38 +130,31 @@ type threadState struct {
 	// can't leak its last-seen state into the next turn.
 	streamingPathRefsLast map[string]*streamingPathRefsState
 
-	// settledTurns marks turns whose handleTurnComplete has already run
-	// to completion (turns row UPDATE-d, streaming items settled). A
-	// second EventTurnComplete for a settled turn is the
-	// multi-result-per-turn wire pattern (Claude CLI synthesizes a
-	// `type:"user"` envelope from a task_notification → second `result`
-	// envelope) or the synthetic-truncate-then-real race; in either
-	// case the second handler invocation is a persistence no-op so
+	// settledTurns marks turns whose settlement has run (turns row
+	// UPDATE-d, streaming items settled): handleTurnComplete's, or the
+	// predecessor settle when the next turn starts. A later
+	// EventTurnComplete for a settled turn (the synthetic-truncate-then-
+	// real race) is a persistence no-op apart from its late payload, so
 	// the turns row isn't re-stamped. Cleared by setOpenTurn (so a
 	// re-init can re-settle the same turn) and by MarkThreadActive.
-	// Key = turnIndex.
+	// Key = turnIndex. The session has settled a turn when it is
+	// non-empty (sessionSettledATurn).
 	//
-	// Note: this gate operates at LOGICAL-TURN granularity. The
-	// frontend-facing `provider:turn_completed` emission is gated
-	// independently per WIRE ROUND via currentRound/takeOpenRound below —
-	// so a multi-result-per-turn cascade emits one turn_completed per
-	// `result` envelope while persistence stays at one settle per
-	// logical turn.
+	// This gate operates at LOGICAL-TURN granularity; the frontend-facing
+	// `provider:turn_completed` emission is gated per ROUND via
+	// currentRound/takeOpenRound below.
 	settledTurns map[int]bool
 
-	// currentRound names the active wire-round for the thread.
-	// Frontend `provider:turn_started` / `provider:turn_completed`
-	// emissions are gated per round via this slot — handleTurnStart and
-	// the re-round branch of handleInit allocate a fresh round id;
-	// handleTurnComplete reads-and-clears it via takeOpenRound. A wire
-	// round corresponds to one Claude `result` envelope (or one Codex
-	// `turn/completed`); a logical agent-overflow turn can span multiple
-	// rounds when Claude's CLI synthesizes a `type:"user"` envelope from
-	// a task_notification and the model issues another response. The
-	// per-round cadence is what drives the working indicator, Stop
-	// button, and composer-block state — all of which want "model is
-	// engaged right now" semantics rather than "user-typed prompt is in
-	// flight." Cleared by takeOpenRound (every wire complete).
+	// currentRound names the active round for the thread. Frontend
+	// `provider:turn_started` / `provider:turn_completed` emissions are
+	// gated per round via this slot: every turn start and reopenSoftClosedTurn
+	// allocate a fresh round id; handleTurnComplete reads-and-clears it
+	// via takeOpenRound. A round ends at a Claude soft close or `result`
+	// (or a Codex `turn/completed`), so a turn spans several when the
+	// model continues after a soft close. The per-round cadence drives
+	// the working indicator, Stop button, and composer-block state, all
+	// of which want "model is engaged right now" semantics rather than
+	// "user-typed prompt is in flight."
 	currentRound     ActiveTurnSnapshot
 	currentRoundOpen bool
 
@@ -419,6 +418,9 @@ type threadIdentity struct {
 	// while a waiter still holds the old one, silently splitting the
 	// serialization domain.
 	anchorLock sync.Mutex
+	// allocLock is the thread's turn allocation lock (LockTurnAllocation).
+	// On the never-deleted identity for the same reason as anchorLock.
+	allocLock sync.Mutex
 	// drainLock serializes, PER THREAD, an interrupt-queue drain's full
 	// pop + persist span. r.mu alone covers only the map pop: a
 	// settle-goroutine drain releases it before persisting the handed-off

@@ -10,22 +10,19 @@ func (r *Router) handleContentBlockStart(evt provider.ProviderEvent) error {
 	if handled, err := r.handleAsyncQuestions(evt); handled || err != nil {
 		return err
 	}
-	// Parent-content resume re-round (Claude 2.1.154+): a parent
-	// content block starting while the logical turn is already settled
-	// and no round is open means the model emitted a soft round-close
-	// (parent message_delta stop_reason) and is now resuming the SAME
-	// turn with a fresh message — no intervening result/system.init. The
-	// soft-close already cleared the working indicator; re-open the wire
-	// round so it lights back up. Gated on parent_tool_use_id == "" so
-	// subagent content during a legitimate local_agent-outlives wait
-	// (invariant 27) never re-arms the parent's round. The settled +
-	// no-open-round guards inside maybeReopenSettledRound make this a
-	// no-op for ordinary mid-round block starts. eventParentID trims so
-	// a whitespace-only parent id still reads as a parent resume — the
-	// same canonical parent-scoping the sibling handleContentBlockStop
-	// and turnCountsAsThreadActivity use.
+	// A parent message starting after a soft round close, before the
+	// result, continues and reopens that turn; after a result with no
+	// init it opens a turn of its own (handleParentContentResume). Gated on the
+	// parent scope so subagent content during a local_agent-outlives wait
+	// never does either; an open round makes this a no-op for ordinary
+	// mid-turn block starts. eventParentID trims so a
+	// whitespace-only parent id still reads as the parent, the same
+	// canonical parent scoping handleContentBlockStop and
+	// turnCountsAsThreadActivity use.
 	if eventParentID(evt) == "" {
-		r.maybeReopenSettledRound(evt)
+		if err := r.handleParentContentResume(evt); err != nil {
+			return err
+		}
 	}
 	// Park the block's response id and index for the row the first delta
 	// creates (abandoned_blocks.go). Block starts are otherwise preserved

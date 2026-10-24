@@ -500,6 +500,9 @@ func (a *App) sendMessageLocked(
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: placement: %w", err)
 	}
+	if a.afterSendPlacementFn != nil && !placement.queue {
+		a.afterSendPlacementFn(threadID)
+	}
 	if placement.queue {
 		_, err := a.registerQueueItem(threadID, content, SendMessageOptions{
 			ConsumeDraft:                 opts.ConsumeDraft,
@@ -636,21 +639,41 @@ func (a *App) sendMessageLocked(
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: check prior items: %w", err)
 	}
-	turnIndex := placement.displayTurn
-	userItemID, err := a.userMessageItemID(threadID, opts.SendID, turnIndex, intent)
-	if err != nil {
-		return store.Item{}, fmt.Errorf("send message: allocate item id: %w", err)
-	}
-	if !isCodexReview {
-		a.maybeRenameTemporaryWorktreeBranch(threadID, content)
-	}
-
 	if opts.onUserMessageReady != nil {
 		if _, live := a.sessionManager().get(threadID); !live {
 			if err := a.startSession(ctx, threadID); err != nil {
 				return store.Item{}, fmt.Errorf("send message: start session: %w", err)
 			}
 		}
+	}
+
+	if !isCodexReview {
+		a.maybeRenameTemporaryWorktreeBranch(threadID, content)
+	}
+
+	// The index is final once the row lands. Until then a turn the
+	// provider starts on its own can take the one placement chose, so it
+	// is chosen again and the row persisted under the turn allocation
+	// lock. Nothing here waits for the provider event worker.
+	unlockAllocation := a.triage.LockTurnAllocation(threadID)
+	allocationHeld := true
+	releaseAllocation := func() {
+		if allocationHeld {
+			allocationHeld = false
+			unlockAllocation()
+		}
+	}
+	defer releaseAllocation()
+	turnIndex := placement.displayTurn
+	if next, nextErr := a.nextSendTurnIndex(threadID); nextErr != nil {
+		err = nextErr
+		return store.Item{}, fmt.Errorf("send message: resolve turn index: %w", err)
+	} else if next > turnIndex {
+		turnIndex = next
+	}
+	userItemID, err := a.userMessageItemID(threadID, opts.SendID, turnIndex, intent)
+	if err != nil {
+		return store.Item{}, fmt.Errorf("send message: allocate item id: %w", err)
 	}
 
 	// The review drafts this message carries are claimed for its turn
@@ -691,6 +714,7 @@ func (a *App) sendMessageLocked(
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: persist user message: %w", err)
 	}
+	releaseAllocation()
 	userMsgKept = true
 	if opts.onUserMessageReady != nil {
 		opts.onUserMessageReady(userItem)

@@ -184,8 +184,8 @@ behavior. These back parser replay tests and the reference docs in
   proving local_agent and local_bash background tasks behave
   differently at the wire level.
 - `local_agent_user_input_during_wait.ndjson`: same scenario, but
-  the host injects a new user message via stdin during the gap. CLI
-  re-rounds within 32ms and processes the injection cleanly with the
+  the host injects a new user message via stdin during the gap. The
+  CLI writes `system/init` within 32ms and processes the injection with the
   original subagent still running. Backs the safety argument for
   unblocking the composer on parent end_turn.
 - `local_agent_plus_bg_bash.ndjson`: bg Bash + bg local_agent

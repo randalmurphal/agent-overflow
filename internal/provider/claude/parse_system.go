@@ -34,6 +34,7 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 		// price anyway, so skip the assignment.
 		if p != nil {
 			p.model = strings.TrimSpace(info.Model)
+			info.TurnOpener = p.turnOpener()
 		}
 		meta, _ := json.Marshal(info)
 		// init's `permissionMode` is not a change report: it restates the

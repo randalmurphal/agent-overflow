@@ -173,6 +173,23 @@ func (p *Parser) provisionalMirroredCommandEvent(threadID, commandUUID string, n
 	}}
 }
 
+// turnOpener reports what opened the CLI turn a `system/init` announces.
+// The started window (activeCommandUUID) opens at a message's
+// `command_lifecycle started` and closes at the turn's result, so a window
+// open at init names the message the turn was started for. A mid-loop
+// message's `started` arrives after its turn's init and cannot be read here.
+func (p *Parser) turnOpener() provider.TurnOpener {
+	if p.activeCommandUUID == "" {
+		return ""
+	}
+	if p.peerTurns != nil {
+		if command, ok := p.peerTurns.directSlashCommand(p.activeCommandUUID); ok && command.Internal {
+			return provider.TurnOpenerInternalCommand
+		}
+	}
+	return provider.TurnOpenerCommand
+}
+
 // settleMirroredCommandAtTurnResult closes a direct command on Claude's
 // authoritative turn result. The wire emits result before the command's
 // terminal command_lifecycle frame, while triage force-closes every unresolved
