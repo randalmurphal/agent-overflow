@@ -684,8 +684,11 @@ Until it does the router remembers the soft-closed turn
 While the turn is settled the thread is idle everywhere: no working
 indicator or Stop, the composer sends directly, and revert or transfer
 see no active turn. A completion with no turn open settles the
-soft-closed turn, else the newest turn that started, never a sent
-message's turn that has not started (`completionTurnIndex`). Subagent
+soft-closed turn, else the newest turn that started when this session
+settled it (a duplicate result); otherwise no turn of the session owns
+it and it settles nothing, so it never rewrites a sent message's turn
+that has not started or a turn a previous session finished
+(`completionTurnIndex`). Subagent
 content never reopens the parent's turn. A second completion for a settled turn (a
 synthetic truncated complete from `handleError`, then the real result)
 finds no round to emit and folds its late payload only.
@@ -745,11 +748,14 @@ turn.
 The router and the App choose turn indexes independently, so both do it
 under the thread's turn allocation lock (`Router.LockTurnAllocation`):
 steps 2 to 5 and the init-less content decision on the router, and on
-the App a send's placement through its row's persist (a direct send,
-which places again under the lock) or its registration (a queued
-message's dispatch). A send placed while a provider-started turn opens
-therefore takes the next index, and a wake decided while a send is being
-placed finds the registered send and takes its turn. The App holds the
+the App a send's placement through its registration. A direct send
+places again under the lock and registers with its row's persist when a
+session is live; a cold session registers after it starts, since no
+turn of its own can come first. A queued message's dispatch holds the
+lock from placement through registration. A send placed while a
+provider-started turn opens therefore takes the next index, and a wake
+decided while a send is being placed or sent finds the registered send
+and takes its turn. The App holds the
 lock only across store writes and router calls. Session import applies the same rule: a top-level
 `task-notification` user row starts a turn with no user row.
 

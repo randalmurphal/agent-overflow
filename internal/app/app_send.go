@@ -500,8 +500,8 @@ func (a *App) sendMessageLocked(
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: placement: %w", err)
 	}
-	if a.afterSendPlacementFn != nil && !placement.queue {
-		a.afterSendPlacementFn(threadID)
+	if a.sendStageFn != nil && !placement.queue {
+		a.sendStageFn(threadID, "placed")
 	}
 	if placement.queue {
 		_, err := a.registerQueueItem(threadID, content, SendMessageOptions{
@@ -714,7 +714,23 @@ func (a *App) sendMessageLocked(
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: persist user message: %w", err)
 	}
+	// A live session can start a turn of its own before this send reaches
+	// its provider write. Registering the pending send with the row, under
+	// the same lock, makes that turn find the message and take its turn
+	// rather than open one past it. A cold session registers below, after
+	// it starts: no turn of its own can come first.
+	registeredEarly := false
+	if !isCodexReview {
+		if live, ok := a.sessionManager().get(threadID); ok {
+			_, earlyExpect := providerSendIdentity(live, userItem.ID, sendUUID)
+			a.triage.RegisterPendingSendWithExpectation(threadID, userItem.ID, turnIndex, earlyExpect)
+			registeredEarly = true
+		}
+	}
 	releaseAllocation()
+	if a.sendStageFn != nil {
+		a.sendStageFn(threadID, "persisted")
+	}
 	userMsgKept = true
 	if opts.onUserMessageReady != nil {
 		opts.onUserMessageReady(userItem)
@@ -772,6 +788,9 @@ func (a *App) sendMessageLocked(
 	sess, unlockAccount, accountErr := a.lockProviderAccountForSendLocked(thread)
 	if accountErr != nil {
 		err = accountErr
+		if registeredEarly {
+			a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
+		}
 		a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
 		return store.Item{}, fmt.Errorf("send message: %w", err)
 	}
@@ -824,7 +843,9 @@ func (a *App) sendMessageLocked(
 	// echo matches by — and the wire stamp it rides in on — come from
 	// providerSendIdentity, one derivation for every send entry point.
 	clientUserMessageID, sendExpect := providerSendIdentity(sess, userItem.ID, sendUUID)
-	a.triage.RegisterPendingSendWithExpectation(threadID, userItem.ID, turnIndex, sendExpect)
+	if !registeredEarly {
+		a.triage.RegisterPendingSendWithExpectation(threadID, userItem.ID, turnIndex, sendExpect)
+	}
 
 	if err := sendToProvider(sess, threadID, providerContent, provider.SendOptions{
 		InteractionMode:         provider.NormalizeInteractionMode(thread.Mode),

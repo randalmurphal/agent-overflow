@@ -514,9 +514,11 @@ type App struct {
 	startSessionFn func(string) error
 	stopSessionFn  func(string) error
 	sendMessageFn  func(string, string, []string) error
-	// afterSendPlacementFn runs between a direct send's placement and its
-	// row's persist, where a turn the provider starts on its own can land.
-	afterSendPlacementFn func(threadID string)
+	// sendStageFn runs at two points of a direct send where a turn the
+	// provider starts on its own can land: "placed" (between placement and
+	// the row's persist) and "persisted" (after the allocation lock is
+	// released).
+	sendStageFn          func(threadID, stage string)
 	generateBranchNameFn func(store.Thread, string) (string, error)
 	// threadTitleGenerator is the test seam over the one provider-capable
 	// dependency injected into threadtitleapp. Production leaves it nil.

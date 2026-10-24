@@ -398,3 +398,58 @@ func TestCommandLaunchAfterSoftCloseLandsInItsTurn(t *testing.T) {
 		t.Fatalf("command launch on turn %d, want its own turn 1", row.TurnIndex)
 	}
 }
+
+// After a resume, a completion that matches no turn of the new session (an
+// AO internal command's result while a sent message waits for its turn)
+// rewrites neither the previous session's finished turn nor the waiting
+// message's.
+func TestCompletionAfterResumeLeavesPreviousSessionTurn(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	settleTurnZero(t, router)
+	before, found, err := st.GetTurnByThreadIndex("t1", 0)
+	if err != nil || !found || before.CompletedAt == nil {
+		t.Fatalf("turn 0: found=%v err=%v %+v", found, err, before)
+	}
+
+	router.MarkThreadActive("t1")
+	persistSendRow(t, router, "user:1", 1)
+	if err := router.Handle(openerInit(t, provider.TurnOpenerInternalCommand)); err != nil {
+		t.Fatalf("internal command init: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1", Timestamp: time.Now().Add(time.Minute),
+		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn", AssistantMessageID: "msg-internal"},
+	}); err != nil {
+		t.Fatalf("internal command result: %v", err)
+	}
+
+	after, _, err := st.GetTurnByThreadIndex("t1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *after.CompletedAt != *before.CompletedAt || after.AssistantMessageID != before.AssistantMessageID || after.StopReason != before.StopReason {
+		t.Fatalf("previous session's turn 0 rewritten: before %+v after %+v", before, after)
+	}
+	if router.isTurnSettled("t1", 1) {
+		t.Fatal("the completion settled the waiting message's turn")
+	}
+}
+
+// On a thread's first send, a completion that arrives before the message's
+// turn starts (an AO internal command's result) does not settle the turn
+// the message is waiting for.
+func TestCompletionBeforeFirstTurnLeavesWaitingSend(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	persistSendRow(t, router, "user:0", 0)
+	if err := router.Handle(openerInit(t, provider.TurnOpenerInternalCommand)); err != nil {
+		t.Fatalf("internal command init: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: "t1", TurnComplete: normalTurnCompleteMeta(), Timestamp: time.Now()}); err != nil {
+		t.Fatalf("internal command result: %v", err)
+	}
+	if router.isTurnSettled("t1", 0) {
+		t.Fatal("the completion settled the waiting message's turn 0")
+	}
+}

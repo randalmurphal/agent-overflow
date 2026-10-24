@@ -411,7 +411,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	r.emitFastModeState(evt.ThreadID, fastModeStatusFromTurnComplete(evt))
 
 	countsAsActivity := turnCountsAsThreadActivity(evt)
-	turnIndex, err := r.completionTurnIndex(evt.ThreadID)
+	turnIndex, owned, err := r.completionTurnIndex(evt.ThreadID)
 	meta, metaErr := turnCompleteMetaFromEvent(evt)
 	if metaErr != nil {
 		log.Printf("triage: %v", metaErr)
@@ -484,6 +484,12 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	}
 
 	if err == nil && !countsAsActivity {
+		return nil
+	}
+	// The fallback turn is a waiting message's or a previous session's
+	// finished turn: nothing here owns the completion.
+	if err == nil && !owned {
+		log.Printf("triage: turn complete for %s matches no turn of this session; nothing to settle", evt.ThreadID)
 		return nil
 	}
 
@@ -960,11 +966,14 @@ func (r *Router) currentTurnIndex(threadID string) (int, error) {
 
 // completionTurnIndex is the turn a turn-complete settles: the open turn,
 // else the soft-closed turn whose CLI turn the trailing result ends, else
-// the newest turn that started. A completion with no turn open (a trailing
-// or duplicate result, an AO internal command's) never settles a turn that
-// has not started, as currentTurnIndex's newest-row fallback would when a
-// sent message's row already holds the next index.
-func (r *Router) completionTurnIndex(threadID string) (int, error) {
+// the newest turn that started (the newest row when none has a turns row).
+// owned reports whether the completion may settle that fallback: not when
+// it is a sent message's turn that has not started, as currentTurnIndex's
+// newest-row fallback would pick once the message's row holds the next
+// index, and not when a previous session finished it (an AO internal
+// command's result after a resume). Unfinished work and a turn this
+// session settled (a duplicate result) are owned.
+func (r *Router) completionTurnIndex(threadID string) (turnIndex int, owned bool, err error) {
 	r.mu.Lock()
 	if st := r.threadStateIfPresent(threadID); st != nil && (st.openTurnSet || st.softClosedTurnSet) {
 		turnIndex := st.openTurn
@@ -972,17 +981,23 @@ func (r *Router) completionTurnIndex(threadID string) (int, error) {
 			turnIndex = st.softClosedTurn
 		}
 		r.mu.Unlock()
-		return turnIndex, nil
+		return turnIndex, true, nil
 	}
 	r.mu.Unlock()
 	turns, err := r.store.ListRecentTurns(threadID, 1)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
+	finished := false
 	if len(turns) == 1 {
-		return turns[0].TurnIndex, nil
+		turnIndex, finished = turns[0].TurnIndex, turns[0].CompletedAt != nil
+	} else if turnIndex, err = r.store.LastTurnIndex(threadID); err != nil {
+		return 0, false, err
 	}
-	return r.store.LastTurnIndex(threadID)
+	if pending, ok := r.turnOpeningPendingSend(threadID); ok && pending.TurnIndex == turnIndex {
+		return turnIndex, false, nil
+	}
+	return turnIndex, !finished || r.isTurnSettled(threadID, turnIndex), nil
 }
 
 // openTurnIndex returns the router's currently-open turn for threadID,
