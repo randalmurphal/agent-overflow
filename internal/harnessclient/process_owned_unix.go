@@ -37,8 +37,14 @@ func captureUnverifiedProof(pid int) (ownedGroupProof, error) {
 
 func emptyOwnedGroupProof(pid int) ownedGroupProof { return ownedGroupProof{pgid: pid} }
 
-// recordExitCustody captures pgid's members for exitCustody.
+// recordExitCustody waits for the launch's leader to exit and captures its
+// group for exitCustody before the caller reaps it. Until that reap the
+// zombie leader holds its PID, so no other group can take the id and
+// every member then is one this launch created.
 func recordExitCustody(pgid int) (ownedGroupProof, error) {
+	if err := awaitExitUnreaped(pgid); err != nil {
+		return ownedGroupProof{}, err
+	}
 	members, err := snapshotProcessGroup(pgid)
 	if err != nil {
 		return ownedGroupProof{}, fmt.Errorf("record process group %d at its leader's exit: %w", pgid, err)

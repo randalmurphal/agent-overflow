@@ -29,8 +29,8 @@ var processAlive = instanceinfo.ProcessAlive
 var verifyProcessIdentity = instanceinfo.VerifyProcessIdentity
 
 // exitCustody reports the members of a launch's process group that its
-// launcher recorded when it reaped the launch's root, once it has
-// (Launched.custody). A process the root started after a group signal never
+// launcher recorded when the launch's root exited, before reaping it, once
+// it has (Launched.custody). A process the root started after a group signal never
 // received it and is missing from the proof captured before the signal, and
 // once the root is gone it carries nothing else that ties it to the launch.
 type exitCustody func() (proof ownedGroupProof, recorded bool, err error)

@@ -102,8 +102,9 @@ type Launched struct {
 	// on every post-start failure, including identity capture failure, so a
 	// caller never has to call cmd.Wait itself or wait without a bound.
 	waitDone chan struct{}
-	// exitProof is the backend's process group as the waiter found it right
-	// after reaping the backend, and exitProofErr the capture's failure.
+	// exitProof is the backend's process group as the waiter found it when
+	// the backend exited, before reaping it, and exitProofErr the capture's
+	// failure.
 	// Both are written before waitDone closes (custody).
 	exitProof    ownedGroupProof
 	exitProofErr error
@@ -379,17 +380,14 @@ func (l *Launched) startWaiter() chan struct{} {
 	}
 	l.waitDone = make(chan struct{})
 	go func() {
-		_ = l.cmd.Wait()
-		// The backend's PID stayed allocated until this reap, and a process
-		// group keeps the number while any member remains, so the members
-		// present now are the group the backend created.
 		l.exitProof, l.exitProofErr = recordExitCustody(l.PID)
+		_ = l.cmd.Wait()
 		close(l.waitDone)
 	}()
 	return l.waitDone
 }
 
-// custody is the backend's exitCustody: its group as recorded at its reap.
+// custody is the backend's exitCustody: its group as recorded at its exit.
 func (l *Launched) custody() (ownedGroupProof, bool, error) {
 	select {
 	case <-l.waitDone:
