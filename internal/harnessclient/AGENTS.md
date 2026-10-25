@@ -43,7 +43,11 @@ when the file rotates.
 Process termination is successful only after verified exit. Send the graceful
 signal, escalate after the grace period, recheck identity before escalation,
 and report a process that survives the confirmation window. Never treat a
-successful signal call as proof that the process stopped.
+successful signal call as proof that the process stopped. A member the
+leader started after the signal never received it: once the leader exits,
+the group recorded at its exit, before the reap, proves the member ours
+and it is signaled. On Windows, a tree that looks gone is captured again
+by parent links before termination reports success.
 
 Type RPC results only when a mistyped field would be silently dangerous.
 `HarnessInfo` qualifies; print-through results should remain `json.RawMessage`.

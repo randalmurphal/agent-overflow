@@ -43,7 +43,12 @@ func captureUnverifiedProof(pid int) (ownedGroupProof, error) {
 
 func emptyOwnedGroupProof(int) ownedGroupProof { return ownedGroupProof{} }
 
-func terminateOwnedProcess(ctx context.Context, pid int, expected instanceinfo.ProcessIdentity, grace time.Duration) error {
+// recordExitCustody records nothing. A tree member keeps its parent's PID
+// after the root exits, so capturing the tree again (terminateOwnedProcess,
+// killOwnedProcess) finds a child the root started after the stop request.
+func recordExitCustody(int) (ownedGroupProof, error) { return ownedGroupProof{}, nil }
+
+func terminateOwnedProcess(ctx context.Context, pid int, expected instanceinfo.ProcessIdentity, grace time.Duration, _ exitCustody) error {
 	proof, err := captureOwnedTreeProof(pid, expected)
 	if err != nil {
 		return err
@@ -66,7 +71,24 @@ func terminateOwnedProcess(ctx context.Context, pid int, expected instanceinfo.P
 	deadline := time.Now().Add(grace)
 	for time.Now().Before(deadline) {
 		if !ownedTreeAlive(proof) {
-			return nil
+			// A child the root started after the stop request is missing
+			// from the capture before it and never received the request.
+			fresh, err := captureOwnedTreeProof(pid, expected)
+			if err != nil {
+				return err
+			}
+			if !ownedTreeAlive(fresh) {
+				return nil
+			}
+			if err := verifyOwnedTree(fresh); err != nil {
+				return fmt.Errorf("terminate process tree %d: %w", pid, err)
+			}
+			proof = fresh
+			for _, member := range proof.members {
+				if member.pid != pid && processAlive(member.pid) {
+					_ = requestStopProcessTree(member.pid)
+				}
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -74,7 +96,7 @@ func terminateOwnedProcess(ctx context.Context, pid int, expected instanceinfo.P
 		case <-time.After(pollInterval):
 		}
 	}
-	proof, err = killOwnedProcess(pid, expected)
+	proof, err = killOwnedProcess(pid, expected, nil)
 	if err != nil {
 		return err
 	}
@@ -115,7 +137,7 @@ func treeMembersContainPID(members []ownedTreeMember, pid int) bool {
 	return false
 }
 
-func killOwnedProcess(pid int, expected instanceinfo.ProcessIdentity) (ownedGroupProof, error) {
+func killOwnedProcess(pid int, expected instanceinfo.ProcessIdentity, _ exitCustody) (ownedGroupProof, error) {
 	proof, err := captureOwnedTreeProof(pid, expected)
 	if err != nil {
 		return proof, err

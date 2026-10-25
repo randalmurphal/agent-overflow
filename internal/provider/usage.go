@@ -52,6 +52,14 @@ func (s FastModeStatus) IsZero() bool {
 	return s.State == "" && s.DisabledReason == ""
 }
 
+// TurnOpener names what opened a provider turn; see SessionInfo.TurnOpener.
+type TurnOpener string
+
+const (
+	TurnOpenerCommand         TurnOpener = "command"
+	TurnOpenerInternalCommand TurnOpener = "internal-command"
+)
+
 // SessionInfo contains metadata from the provider init/handshake.
 type SessionInfo struct {
 	SessionID  string      `json:"sessionId"`
@@ -84,6 +92,14 @@ type SessionInfo struct {
 	// value, not an absence: the echo exists so a settings-source style AO
 	// never sent can still be seen. No other provider has the concept.
 	OutputStyle string `json:"outputStyle,omitempty"`
+	// TurnOpener is what opened the Claude CLI turn this init announces:
+	// TurnOpenerCommand when a stdin message's `command_lifecycle started`
+	// preceded the init, TurnOpenerInternalCommand when that message is a
+	// command AO issued on its own (`SendOptions.InternalCommand`). Empty
+	// means no message opened it: the CLI started the turn itself (a
+	// background-task wake, a scheduled wakeup), the session is attaching,
+	// or the CLI predates `command_lifecycle`.
+	TurnOpener TurnOpener `json:"turnOpener,omitempty"`
 	// MCPServerErrors reports servers the provider REFUSED at startup.
 	// Claude emits it as `system/init.mcp_server_errors` (2.1.237). The
 	// affected names are ABSENT from MCPServers — that is the whole point

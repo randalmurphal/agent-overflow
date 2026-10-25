@@ -3222,10 +3222,10 @@ func TestTurnCompleteWithoutAccumulatedText(t *testing.T) {
 		t.Errorf("expected 0 item upserts for empty turn, got %d: %+v", len(upserts), upserts)
 	}
 	// A bare EventTurnComplete arriving without a preceding
-	// EventTurnStart has no open wire round (currentRoundByThread is empty
-	// because setOpenRound was never called for this thread). Under
-	// the per-round emission cadence (see internal/triage/AGENTS.md
-	// "Wire-round vs logical-turn") the frontend therefore sees
+	// EventTurnStart has no open round (currentRoundByThread is empty
+	// because no round was ever opened for this thread). Under the
+	// per-round emission cadence (see docs/architecture/turn-lifecycle.md
+	// §Rounds and turns) the frontend therefore sees
 	// nothing — there was no turn_started to pair with, so there's
 	// nothing to clear. Persistence still ran (no items to settle, no
 	// turns row to update because turn_start never fired). The

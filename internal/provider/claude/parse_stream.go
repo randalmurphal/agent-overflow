@@ -142,7 +142,8 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 		// context meter) AND a soft EventTurnComplete from the inner
 		// `delta.stop_reason` (drives the working indicator off when
 		// the parent stops emitting, without waiting for the wire
-		// `result` — see invariants.md §27). The two gates are
+		// `result` — docs/architecture/turn-lifecycle.md §Rounds and
+		// turns). The two gates are
 		// independent; a malformed envelope missing one field
 		// must still let the other fire.
 		//

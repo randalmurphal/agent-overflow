@@ -129,10 +129,12 @@ func TestTurnCompletedIsAnnouncedAfterSettlement(t *testing.T) {
 	}
 }
 
-// A later round on an already-settled logical turn (Claude answering a
-// background task notification) settles its own streaming rows on the
-// late-fold path; its announcement must follow that settlement too.
-func TestReRoundTurnCompletedIsAnnouncedAfterSettlement(t *testing.T) {
+// A completion for an already-settled logical turn (handleError's
+// synthetic complete, then the real result) takes the late-fold path,
+// which settles streaming rows left on the turn. When that completion
+// ends a round (set directly here), its announcement must follow that
+// settlement too.
+func TestLateFoldTurnCompletedIsAnnouncedAfterSettlement(t *testing.T) {
 	router, probe := newAnnouncementRouter(t, "t1")
 	handleOrFatal(t, router, provider.ProviderEvent{
 		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0, Timestamp: time.Now(),
@@ -156,6 +158,6 @@ func TestReRoundTurnCompletedIsAnnouncedAfterSettlement(t *testing.T) {
 		t.Fatalf("turn_completed announcements = %d, want one per round", len(got))
 	}
 	if len(got[1].streamingItems) != 0 {
-		t.Fatalf("re-round turn_completed announced with streaming items %v", got[1].streamingItems)
+		t.Fatalf("late-fold turn_completed announced with streaming items %v", got[1].streamingItems)
 	}
 }

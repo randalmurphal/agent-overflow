@@ -536,10 +536,7 @@ export interface TurnCompletedEvent {
   stopReason: string;
   /**
    * Provider message id (Claude `msg_…`, Codex equivalent) of the
-   * FINAL assistant message of this turn. For multi-round logical
-   * turns (Claude task_notification cascades, stdin-during-wait
-   * re-rounds) each round's settle overwrites the persisted column
-   * so the value always points to the last message — matching the
+   * FINAL assistant message of this turn, matching the
    * `SettledTurn.assistantMessageId` contract. Empty string when
    * the provider didn't report one (e.g. session-died synthesis
    * before any assistant envelope).

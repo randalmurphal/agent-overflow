@@ -166,9 +166,9 @@ const approvalThreadByID = new Map<string, string>();
 // missing-key fan-out the registry exists for; this was the first
 // structure to adopt the per-thread box pattern.
 //
-// Under the per-wire-round emission cadence (see
-// internal/triage/AGENTS.md "Wire-round vs logical-turn"), each entry
-// represents the CURRENT wire round — not the user-typed logical
+// Under the per-round emission cadence (see
+// docs/architecture/turn-lifecycle.md § Rounds and turns), each entry
+// represents the CURRENT round — not the user-typed logical
 // turn. The two are decoupled on the backend; the frontend only
 // observes one signal stream and treats each round as its own active
 // turn. This is what flips the working indicator off between rounds
@@ -643,7 +643,7 @@ export function projectTurnStarted(
   }
   errorThreads.delete(threadId);
   interruptedThreads.delete(threadId);
-  // Idempotent on (threadId, turnId): under the per-wire-round
+  // Idempotent on (threadId, turnId): under the per-round
   // emission cadence each round generates a fresh `turnId`, so a
   // duplicate event for the SAME round (Codex retry-induced
   // turn/started replay, defensive double-emit) still no-ops here

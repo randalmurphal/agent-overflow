@@ -390,11 +390,10 @@ describe('threadStatuses store', () => {
     });
 
     it('flips off between wire rounds and re-flips on round 2', () => {
-      // Pins the per-wire-round emission cadence (see
-      // internal/triage/AGENTS.md "Wire-round vs logical-turn"). The
+      // Pins the per-round emission cadence (see
+      // docs/architecture/turn-lifecycle.md § Rounds and turns). The
       // backend emits one provider:turn_started/turn_completed pair per
-      // wire `result` envelope; in Claude's multi-result-per-turn
-      // cascade two pairs flow per logical turn. Each round generates
+      // round; a turn the model continues after a soft close carries two. Each round generates
       // a distinct turnId — round 1 ends, getActiveTurn returns null
       // (composer enabled, indicator off), round 2 starts with a new
       // id and re-flips the indicator on.

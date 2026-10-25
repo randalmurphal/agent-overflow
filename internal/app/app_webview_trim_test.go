@@ -160,7 +160,7 @@ func TestRequestWebviewMemoryTrim(t *testing.T) {
 		// The 2026-08-27 live defect: Claude sessions never emit
 		// EventTurnStart, so the activeTurns counter is permanently zero
 		// for them and the old gate let every idle trim land mid-turn as
-		// a 60-130ms GC stall. The router's wire-round state is the
+		// a 60-130ms GC stall. The router's turn and round state is the
 		// provider-agnostic arm that must catch it.
 		app, emitted := newApp(t)
 		app.ensureTriageRouter()

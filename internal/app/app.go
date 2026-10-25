@@ -511,9 +511,14 @@ type App struct {
 	threadTitleAppOnce sync.Once
 	threadTitleApp     *threadtitleapp.Service
 	// Test-only injection points for binding helpers that need to observe start/stop.
-	startSessionFn       func(string) error
-	stopSessionFn        func(string) error
-	sendMessageFn        func(string, string, []string) error
+	startSessionFn func(string) error
+	stopSessionFn  func(string) error
+	sendMessageFn  func(string, string, []string) error
+	// sendStageFn runs at two points of a direct send where a turn the
+	// provider starts on its own can land: "placed" (between placement and
+	// the row's persist) and "persisted" (after the allocation lock is
+	// released).
+	sendStageFn          func(threadID, stage string)
 	generateBranchNameFn func(store.Thread, string) (string, error)
 	// threadTitleGenerator is the test seam over the one provider-capable
 	// dependency injected into threadtitleapp. Production leaves it nil.
