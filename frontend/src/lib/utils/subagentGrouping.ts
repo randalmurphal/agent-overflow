@@ -1083,11 +1083,7 @@ export function groupItemsBySubagent(
     }
   }
   if (!hasGroupingSignals && alreadySorted) {
-    const leaves: TimelineNode[] = new Array(items.length);
-    for (let i = 0; i < items.length; i++) {
-      leaves[i] = leafNode(items[i]);
-    }
-    return leaves;
+    return items.map((item) => leafNode(item));
   }
 
   // Work on a shallow copy sorted in canonical order so callers may pass

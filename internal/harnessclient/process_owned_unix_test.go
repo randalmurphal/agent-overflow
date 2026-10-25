@@ -49,7 +49,7 @@ func TestOwnedGroupKillsRecordedSurvivorAfterLeaderExit(t *testing.T) {
 	signalOwnedGroupProbe = func(int, bool) error { gracefulSignals++; return nil }
 	killProcessGroupProbe = func(int) error { forceSignals++; groupAlive = false; return nil }
 
-	err := terminateOwnedProcess(context.Background(), root, expected, 0)
+	err := terminateOwnedProcess(context.Background(), root, expected, 0, nil)
 	if err != nil {
 		t.Fatalf("terminate owned survivor: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestOwnedGroupRefusesRecordedSurvivorAfterPIDReuse(t *testing.T) {
 	signals := 0
 	signalOwnedGroupProbe = func(int, bool) error { signals++; return nil }
 
-	err := terminateOwnedProcess(context.Background(), root, expected, 0)
+	err := terminateOwnedProcess(context.Background(), root, expected, 0, nil)
 	if err == nil || !strings.Contains(err.Error(), "identity") {
 		t.Fatalf("terminate after PID reuse = %v, want identity refusal", err)
 	}

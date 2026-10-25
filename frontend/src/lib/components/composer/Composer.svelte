@@ -271,13 +271,13 @@
   let placeholder = $derived(inputState.placeholder);
 
   $effect(() => {
-    activeUserInput?.requestId;
+    void activeUserInput?.requestId;
     userInputCustomAnswer = '';
   });
 
   $effect(() => {
-    pane.threadId;
-    pane.hasDraftPlaceholder;
+    void pane.threadId;
+    void pane.hasDraftPlaceholder;
     locallyImplementedPlanIds = new Set();
   });
 
@@ -446,7 +446,7 @@
 
   $effect(() => {
     const source = latestPlanSource;
-    latestPlanCommentRefreshKey;
+    void latestPlanCommentRefreshKey;
     if (!source?.threadId || !source.itemId) return;
     untrack(() => { void refreshPlanComments(source.threadId, source.itemId); });
   });
@@ -489,9 +489,9 @@
   }
 
   $effect(() => {
-    pane.threadId;
-    pane.draftPlaceholder?.id;
-    draft.threadId;
+    void pane.threadId;
+    void pane.draftPlaceholder?.id;
+    void draft.threadId;
     cancelStaleSend?.();
   });
 

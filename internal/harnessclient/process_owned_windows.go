@@ -43,7 +43,12 @@ func captureUnverifiedProof(pid int) (ownedGroupProof, error) {
 
 func emptyOwnedGroupProof(int) ownedGroupProof { return ownedGroupProof{} }
 
-func terminateOwnedProcess(ctx context.Context, pid int, expected instanceinfo.ProcessIdentity, grace time.Duration) error {
+// recordExitCustody records nothing. A tree member keeps its parent's PID
+// after the root exits, so the capture at kill time (killOwnedProcess)
+// already finds a child the root started after the stop request.
+func recordExitCustody(int) (ownedGroupProof, error) { return ownedGroupProof{}, nil }
+
+func terminateOwnedProcess(ctx context.Context, pid int, expected instanceinfo.ProcessIdentity, grace time.Duration, _ exitCustody) error {
 	proof, err := captureOwnedTreeProof(pid, expected)
 	if err != nil {
 		return err
@@ -74,7 +79,7 @@ func terminateOwnedProcess(ctx context.Context, pid int, expected instanceinfo.P
 		case <-time.After(pollInterval):
 		}
 	}
-	proof, err = killOwnedProcess(pid, expected)
+	proof, err = killOwnedProcess(pid, expected, nil)
 	if err != nil {
 		return err
 	}
@@ -115,7 +120,7 @@ func treeMembersContainPID(members []ownedTreeMember, pid int) bool {
 	return false
 }
 
-func killOwnedProcess(pid int, expected instanceinfo.ProcessIdentity) (ownedGroupProof, error) {
+func killOwnedProcess(pid int, expected instanceinfo.ProcessIdentity, _ exitCustody) (ownedGroupProof, error) {
 	proof, err := captureOwnedTreeProof(pid, expected)
 	if err != nil {
 		return proof, err
