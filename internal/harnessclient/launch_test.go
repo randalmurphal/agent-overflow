@@ -86,6 +86,14 @@ func fakeBackendMain(mode string) {
 	if mode == "startup-error" {
 		payload["startupError"] = "open database: disk is full"
 	}
+	// Subscribed before the bootstrap line: the launcher may signal as soon
+	// as it reads the line, and an unhandled SIGTERM would end this process
+	// before it starts its child.
+	var terms chan os.Signal
+	if mode == "fork-on-term" {
+		terms = make(chan os.Signal, 1)
+		signal.Notify(terms, syscall.SIGTERM)
+	}
 	line, _ := json.Marshal(payload)
 	fmt.Printf("\n%s %s\n", BootstrapPrefix, line)
 
@@ -95,8 +103,6 @@ func fakeBackendMain(mode string) {
 		// after it, as a shell's command does when the signal lands while
 		// the shell blocks TERM across its fork. The child never receives
 		// the signal, and this process exits without waiting for it.
-		terms := make(chan os.Signal, 1)
-		signal.Notify(terms, syscall.SIGTERM)
 		<-terms
 		child := exec.Command(os.Args[0])
 		child.Env = append(os.Environ(), fakeBackendEnv+"=child-only")
