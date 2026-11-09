@@ -46,8 +46,9 @@ and report a process that survives the confirmation window. Never treat a
 successful signal call as proof that the process stopped. A member the
 leader started after the signal never received it: once the leader exits,
 the group recorded at its exit, before the reap, proves the member ours
-and it is signaled. On Windows, a tree that looks gone is captured again
-by parent links before termination reports success.
+and it is signaled. On Windows that member belongs to the launch's Job
+Object, which the kernel ends after the root exits; parent links prove no
+ownership once the root is gone.
 
 Type RPC results only when a mistyped field would be silently dangerous.
 `HarnessInfo` qualifies; print-through results should remain `json.RawMessage`.

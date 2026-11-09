@@ -43,9 +43,11 @@ func captureUnverifiedProof(pid int) (ownedGroupProof, error) {
 
 func emptyOwnedGroupProof(int) ownedGroupProof { return ownedGroupProof{} }
 
-// recordExitCustody records nothing. A tree member keeps its parent's PID
-// after the root exits, so capturing the tree again (terminateOwnedProcess,
-// killOwnedProcess) finds a child the root started after the stop request.
+// recordExitCustody records nothing. Parent links do not survive PID reuse,
+// so a tree captured after the root exited proves no ownership. A child the
+// root started after the stop request belongs to the launch's Job Object
+// (containment), which the kernel ends once the root has exited and the
+// launcher closes its handle.
 func recordExitCustody(int) (ownedGroupProof, error) { return ownedGroupProof{}, nil }
 
 func terminateOwnedProcess(ctx context.Context, pid int, expected instanceinfo.ProcessIdentity, grace time.Duration, _ exitCustody) error {
@@ -71,24 +73,7 @@ func terminateOwnedProcess(ctx context.Context, pid int, expected instanceinfo.P
 	deadline := time.Now().Add(grace)
 	for time.Now().Before(deadline) {
 		if !ownedTreeAlive(proof) {
-			// A child the root started after the stop request is missing
-			// from the capture before it and never received the request.
-			fresh, err := captureOwnedTreeProof(pid, expected)
-			if err != nil {
-				return err
-			}
-			if !ownedTreeAlive(fresh) {
-				return nil
-			}
-			if err := verifyOwnedTree(fresh); err != nil {
-				return fmt.Errorf("terminate process tree %d: %w", pid, err)
-			}
-			proof = fresh
-			for _, member := range proof.members {
-				if member.pid != pid && processAlive(member.pid) {
-					_ = requestStopProcessTree(member.pid)
-				}
-			}
+			return nil
 		}
 		select {
 		case <-ctx.Done():
