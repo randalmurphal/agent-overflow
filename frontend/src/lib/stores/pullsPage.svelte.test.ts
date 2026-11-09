@@ -473,7 +473,8 @@ describe('filters', () => {
 describe('row projection', () => {
   it('names the viewer "you", the author by display name, words the state with its reason, and carries the facts', async () => {
     installListMocks(snapshot(1, [project('p1', [
-      item(1, { viewerIsAuthor: true, state: 'pipeline_failed', group: 'needs_you', ci: 'failed', approvals: { given: 0, required: 0 } }),
+      // Age is worded against the present, so the time is relative to it.
+      item(1, { viewerIsAuthor: true, state: 'pipeline_failed', group: 'needs_you', ci: 'failed', approvals: { given: 0, required: 0 }, updatedAt: new Date(Date.now() - 3 * 86_400_000).toISOString() }),
       item(2, { author: { login: 'bob', name: '' }, ci: 'running', approvals: { given: 1, required: 2 }, unresolved: 3 }),
       item(3, { state: 'your_turn', group: 'needs_you', reason: { kind: 'pushed', commits: 2, replies: 0 }, updatedAt: '2026-10-11T00:00:00Z' }),
       item(4, { state: 'your_turn', group: 'needs_you', reason: { kind: 'replied', commits: 0, replies: 1 }, updatedAt: '2026-10-12T00:00:00Z' }),
