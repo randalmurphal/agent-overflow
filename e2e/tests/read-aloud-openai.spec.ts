@@ -131,9 +131,11 @@ test('Preview reads a voice through the computer without changing the saved voic
   const previews = page.getByTestId('read-aloud-openai-preview');
   const cedar = previews.and(page.locator('[data-voice="cedar"]'));
   await cedar.click();
-  await expect(cedar).toHaveText('Stop');
+  await expect(cedar).toHaveAttribute('aria-pressed', 'true');
+  await expect(cedar).toHaveAccessibleName('Stop the Cedar preview');
   // The sample plays to its end and the control returns.
-  await expect(cedar).toHaveText('Preview', { timeout: 20_000 });
+  await expect(cedar).toHaveAttribute('aria-pressed', 'false', { timeout: 20_000 });
+  await expect(cedar).toHaveAccessibleName('Preview Cedar');
   expect(speech.minted).toEqual([{ text: 'This is how replies will sound when they are read aloud.', voice: 'cedar' }]);
   expect(speech.fetches()).toBe(1);
   await expect(select).toHaveValue('');

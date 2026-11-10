@@ -16,7 +16,8 @@ import (
 )
 
 // Speech: the fake checks the session.update and response.create the
-// client sends against the shapes openai.Speak uses, refusing anything else
+// client sends against the shapes openai.DialSpeech and SpeechSession.Speak
+// use, refusing anything else
 // with an error event, and reads the envelope's response_text back: the
 // transcript is the text, and the audio is SpeechAudio(transcript), sent in
 // several deltas.
@@ -265,7 +266,7 @@ func (s *speechSession) respond(ctx context.Context, text string) {
 }
 
 // checkSpeechSession returns the voice of a session.update shaped as
-// openai.Speak sends it, or what OpenAI would refuse.
+// openai.DialSpeech sends it, or what OpenAI would refuse.
 func checkSpeechSession(raw json.RawMessage) (string, string) {
 	var session struct {
 		Type             string   `json:"type"`
@@ -315,7 +316,7 @@ func checkSpeechSession(raw json.RawMessage) (string, string) {
 }
 
 // checkSpeechResponse returns the response_text of a response.create
-// shaped as openai.Speak sends it, or what the fake refuses.
+// shaped as SpeechSession.Speak sends it, or what the fake refuses.
 func checkSpeechResponse(raw json.RawMessage) (string, string) {
 	var response struct {
 		Conversation string `json:"conversation"`

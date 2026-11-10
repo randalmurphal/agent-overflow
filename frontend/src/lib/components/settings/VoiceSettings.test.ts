@@ -504,18 +504,20 @@ describe('<VoiceSettings> OpenAI voices', () => {
     await findByTestId('read-aloud-openai-previews');
     const [marin, cedar] = await findAllByTestId('read-aloud-openai-preview');
     expect(marin.getAttribute('aria-label')).toBe('Preview Marin');
+    expect(marin.textContent?.trim()).toBe('Marin');
+    expect(marin.getAttribute('aria-pressed')).toBe('false');
 
     await fireEvent.click(marin);
     expect(clips).toEqual([{ backend: HOME_BACKEND, voice: 'marin', stopped: false }]);
     expect(readAloudPreferences().voiceId).toBe('v0');
-    await expect.poll(() => marin.textContent?.trim()).toBe('Stop');
+    await expect.poll(() => marin.getAttribute('aria-pressed')).toBe('true');
     expect(marin.getAttribute('aria-label')).toBe('Stop the Marin preview');
 
     await fireEvent.click(cedar);
     expect(clips[0].stopped).toBe(true);
     expect(clips[1]).toMatchObject({ voice: 'cedar', stopped: false });
-    await expect.poll(() => marin.textContent?.trim()).toBe('Preview');
-    await expect.poll(() => cedar.textContent?.trim()).toBe('Stop');
+    await expect.poll(() => marin.getAttribute('aria-pressed')).toBe('false');
+    await expect.poll(() => cedar.getAttribute('aria-pressed')).toBe('true');
 
     await fireEvent.click(cedar);
     expect(clips[1].stopped).toBe(true);

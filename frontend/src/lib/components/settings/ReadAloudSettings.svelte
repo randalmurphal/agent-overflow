@@ -14,6 +14,9 @@
   import { HOST_TIER_REASON, settingsComputer } from './settingsComputer';
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
+  import Play from '@lucide/svelte/icons/play';
+  import Square from '@lucide/svelte/icons/square';
+  import Icon from '../primitives/Icon.svelte';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import { SECONDARY_BUTTON_CLASS, SECTION_PROSE_CLASS, SELECT_CLASS } from './styles';
   import { chordHintSuffix } from '../../stores/keybindings.svelte';
@@ -181,26 +184,31 @@
     </p>
   {/if}
   {#if apiVoices.length > 0}
-    <ul data-testid="read-aloud-openai-previews" class="flex flex-col gap-1 py-1">
-      {#each apiVoices as voice (voice.id)}
-        {@const previewing = readAloudPhase(`${PREVIEW_KEY}${voice.id}`) !== 'idle'}
-        <li class="flex items-center justify-between gap-3 text-[0.75rem] text-fg">
-          <span class="min-w-0 truncate">{voice.name}</span>
-          <button
-            type="button"
-            class={SECONDARY_BUTTON_CLASS}
-            disabled={!controlsOn}
-            aria-pressed={previewing}
-            aria-label={previewing ? `Stop the ${voice.name} preview` : `Preview ${voice.name}`}
-            data-testid="read-aloud-openai-preview"
-            data-voice={voice.id}
-            onclick={() => preview(voice.id)}
-          >
-            {previewing ? 'Stop' : 'Preview'}
-          </button>
-        </li>
-      {/each}
-    </ul>
+    <div class="flex flex-col gap-1 py-1">
+      <p class="text-[0.71875rem] leading-snug text-fg-muted">
+        Preview an OpenAI voice. The saved voice does not change.
+      </p>
+      <ul data-testid="read-aloud-openai-previews" class="flex flex-wrap gap-1.5">
+        {#each apiVoices as voice (voice.id)}
+          {@const previewing = readAloudPhase(`${PREVIEW_KEY}${voice.id}`) !== 'idle'}
+          <li>
+            <button
+              type="button"
+              class="{SECONDARY_BUTTON_CLASS} inline-flex items-center gap-1.5"
+              disabled={!controlsOn}
+              aria-pressed={previewing}
+              aria-label={previewing ? `Stop the ${voice.name} preview` : `Preview ${voice.name}`}
+              data-testid="read-aloud-openai-preview"
+              data-voice={voice.id}
+              onclick={() => preview(voice.id)}
+            >
+              <Icon icon={previewing ? Square : Play} size={11} />
+              {voice.name}
+            </button>
+          </li>
+        {/each}
+      </ul>
+    </div>
   {/if}
   <SettingsField id="voice.read-aloud-rate" label="Speed" htmlFor="read-aloud-rate" stacked>
     <div class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
