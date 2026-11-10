@@ -93,6 +93,29 @@ describe('forkThreadAction', () => {
     expect(toast?.type).toBe('info');
   });
 
+  // The backend announces the fork as preparing while the call runs and as
+  // ready when it ends, and the answer can arrive before the ready frame. A
+  // preparing row cannot be mounted, so the answer has to win.
+  it('opens the fork when its answer arrives before the ready frame', async () => {
+    const forked = { ...makeCtx({}).thread, id: 'fork-2', title: 'Source thread (fork)', createdAt: 1, updatedAt: 1 };
+    setBindingMock('ForkThread', vi.fn(async () => {
+      applyThreadUpdated({ action: 'listed', thread: { ...forked, forkPreparing: true, sessionRef: '' } });
+      return forked;
+    }));
+    setBindingMock('PinThread', vi.fn(async () => ({ ...forked, pinnedAt: 2, pinGroup: 0 })));
+    const ctx = makeCtx({});
+    prependThread(ctx.thread);
+
+    await forkThreadAction(ctx);
+
+    expect(ctx.reportError).not.toHaveBeenCalled();
+    const opened = (ctx.switchPane as ReturnType<typeof vi.fn>).mock.calls[0][0] as Thread;
+    expect(opened.forkPreparing ?? false).toBe(false);
+    expect(opened.sessionRef).toBe('session-1');
+    expect(getThreadById('fork-2')?.forkPreparing ?? false).toBe(false);
+    expect(getToasts().some((t) => t.message.includes('Forked'))).toBe(true);
+  });
+
   it('reports the user-facing error on fork failure', async () => {
     const failure = new Error('source thread is missing a session reference');
     setBindingMock('ForkThread', vi.fn(async () => {

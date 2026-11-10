@@ -30,6 +30,29 @@ describe('threadReplyRow', () => {
     expect(threadReplyRow(row('t-row'), mark, row('t-row', { title: 'frame' }))).toBeNull();
   });
 
+  it('applies an answer that says a fork is ready over the preparing row a frame set', () => {
+    const mark = threadRowFrameMark();
+    noteThreadRowFrame('t-fork');
+    noteThreadPatchFrame('t-fork', { title: 'patched' });
+    const held = row('t-fork', { forkPreparing: true, title: 'patched', model: 'held-model' });
+    // The ready frame has not arrived: the answer overtook it.
+    expect(threadReplyRow(row('t-fork'), mark, held)).toEqual(row('t-fork', { title: 'patched' }));
+    expect(threadReplyRow(row('t-fork', { forkPreparing: false }), mark, held)).toEqual(
+      row('t-fork', { forkPreparing: false, title: 'patched' }),
+    );
+  });
+
+  it('keeps the frame over an answer that is no more ready than the held row', () => {
+    const mark = threadRowFrameMark();
+    noteThreadRowFrame('t-fork-same');
+    const preparing = row('t-fork-same', { forkPreparing: true });
+    expect(threadReplyRow(row('t-fork-same', { forkPreparing: true }), mark, preparing)).toBeNull();
+    // The ready frame arrived first: it is the newer row.
+    expect(threadReplyRow(row('t-fork-same'), mark, row('t-fork-same', { title: 'frame' }))).toBeNull();
+    expect(threadReplyRow(row('t-fork-same', { forkPreparing: true }), mark, row('t-fork-same'))).toBeNull();
+    expect(threadReplyRow(row('t-fork-same'), mark, undefined)).toBeNull();
+  });
+
   it('keeps the held value of each field a later patch named', () => {
     const mark = threadRowFrameMark();
     noteThreadPatchFrame('t-patch', { title: 'patched' });
