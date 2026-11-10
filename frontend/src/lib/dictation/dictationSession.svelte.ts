@@ -41,6 +41,8 @@ export interface DictationEnvironment {
   format(): RecordingFormat | null;
   /** What to say when the microphone is refused: where to allow it here. */
   blockedMessage(): string;
+  /** Quiet this device's own speech so the microphone does not hear it. */
+  quietSpeech(): void;
   openMicrophone(): Promise<MediaStream>;
   createRecorder(stream: MediaStream, format: RecordingFormat): RecorderLike;
   createLevelMeter(stream: MediaStream): LevelMeter | null;
@@ -108,6 +110,7 @@ export class DictationSession {
     const attempt = new Attempt(this.env, this.remote);
     this.current = attempt;
     this.phase = 'starting';
+    this.env.quietSpeech();
     try {
       attempt.stream = await this.env.openMicrophone();
       if (this.current !== attempt) {

@@ -586,6 +586,35 @@ const STATIC_FIELDS = [
     label: 'Dictate with ChatGPT',
     keywords: ['microphone', 'mic', 'speech', 'transcribe', 'voice', 'dictation', 'codex', 'whisper'],
   },
+  {
+    id: 'voice.read-aloud',
+    section: 'voice',
+    heading: 'Read aloud',
+    label: 'Read replies aloud',
+    keywords: ['read aloud', 'speak', 'speech', 'text to speech', 'tts', 'listen', 'voice', 'narrate'],
+  },
+  {
+    id: 'voice.read-aloud-voice',
+    section: 'voice',
+    heading: 'Read aloud',
+    label: 'Voice',
+    hint: "One of this device's voices.",
+    keywords: ['read aloud', 'speech', 'text to speech', 'language', 'accent'],
+  },
+  {
+    id: 'voice.read-aloud-rate',
+    section: 'voice',
+    heading: 'Read aloud',
+    label: 'Speed',
+    keywords: ['read aloud', 'rate', 'speech', 'faster', 'slower'],
+  },
+  {
+    id: 'voice.read-aloud-volume',
+    section: 'voice',
+    heading: 'Read aloud',
+    label: 'Volume',
+    keywords: ['read aloud', 'speech', 'loudness', 'quiet', 'loud'],
+  },
 
   // --- Editor -------------------------------------------------------------
   {

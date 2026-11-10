@@ -87,6 +87,7 @@ import {
   type ComposerPickerId,
 } from './composerPickerRegistry.svelte';
 import { toggleComposerDictation } from './dictation.svelte';
+import { toggleReadAloud } from './readAloud.svelte';
 import { reportNonBenignInterruptError } from './interruptErrors';
 import { PICKER_TOGGLE_INPUT_EVENT, type GitDialogKind } from './eventNames';
 import { startPaneTitleRename } from './paneTitleRename';
@@ -665,6 +666,17 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     editableReachable: true,
     run: (ctx) => {
       toggleComposerDictation(ctx.paneId);
+    },
+  });
+
+  registerCommand({
+    id: 'readAloud.toggle',
+    label: 'Read Aloud: Pause or Resume',
+    description: 'Pause the reply being read aloud, or resume it from the start of its sentence.',
+    icon: '▶',
+    editableReachable: true,
+    run: () => {
+      toggleReadAloud();
     },
   });
 

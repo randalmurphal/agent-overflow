@@ -1,4 +1,4 @@
-# Voice dictation
+# Voice: dictation and read-aloud
 
 Dictation sends a recording to ChatGPT's transcription endpoint under the
 computer's Codex sign-in with ChatGPT. Code: `internal/provider/codex/transcribe.go`
@@ -55,6 +55,32 @@ no `auth.json`, and dictation reads as unavailable there.
 An engine whose MediaRecorder takes neither type shows no mic. Recording on
 macOS WKWebView, iOS Safari and WebKitGTK is untested here: Playwright's
 WebKit needs GStreamer libraries this development host lacks.
+
+## Read aloud
+
+Read-aloud speaks a finished reply in this device's own voice; nothing
+leaves the device. Code: `frontend/src/lib/utils/speakableText.ts` (what is
+read), `frontend/src/lib/native/speech.ts` (the engines),
+`frontend/src/lib/stores/readAloud.svelte.ts` (one reading at a time) and
+`mobile/android/app/src/main/java/dev/agentoverflow/app/speech/`.
+
+- The reply is read from its parsed markdown as sentences. Code blocks,
+  display math, tables, raw HTML, images, bare URLs, footnote markers and
+  emoji are skipped silently, as Open WebUI does; link text and inline code
+  are read as words.
+- Each sentence is one utterance, capped at 280 characters (cut at clause
+  punctuation, then whitespace), so no engine stalls on a long one.
+- Pause stops the voice and keeps the sentence; resume starts that
+  sentence again. Mid-sentence resume is unreliable across OS voices.
+- Browsers and the desktop webviews speak through `speechSynthesis`.
+  Android System WebView has none (reports through WebView 138), so the
+  shell speaks through Android's TextToSpeech, queueing every sentence at
+  once so a reading continues in the background. Package visibility needs
+  the `TTS_SERVICE` query in the manifest.
+- A device with no voices (Arch's WebKitGTK is built without speech) shows
+  no control. The switch, voice, speed and volume are this device's,
+  kept in frontend storage, and read-aloud is off until turned on.
+- `Mod+Shift+>` pauses or resumes; starting dictation pauses a reading.
 
 ## Other options researched (2026-08-04)
 

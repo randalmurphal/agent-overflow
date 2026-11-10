@@ -56,6 +56,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(BundlePlugin.class);
         registerPlugin(dev.agentoverflow.app.network.NetworkPlugin.class);
         registerPlugin(dev.agentoverflow.app.push.PushPlugin.class);
+        registerPlugin(dev.agentoverflow.app.speech.SpeechPlugin.class);
 
         bundles = new BundleStore(BundlePlugin.rootFor(getFilesDir()), BundlePlugin.packagedVersion(this));
         File serving = bundles.onBoot(BundlePlugin.versionCode(this));

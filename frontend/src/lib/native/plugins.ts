@@ -256,6 +256,53 @@ export async function pushPlugin(): Promise<PushNotificationPlugin | null> {
  * the enum is a plain number the plugin forwards to the native side and a
  * missing import must not turn into `undefined` on the wire.
  */
+/**
+ * Android's TextToSpeech, through the shell's `Speech` plugin
+ * (`SpeechPlugin.java`). One playback is a session: `speak` queues every
+ * piece from `from` and returns once they are queued; `progress` names the
+ * piece starting and `done` how the session ended.
+ */
+export interface SpeechPlugin {
+  voices(): Promise<{ voices: Array<{ id: string; name: string; lang: string; isDefault: boolean }> }>;
+  speak(options: {
+    session: string;
+    pieces: string[];
+    from: number;
+    voiceId: string;
+    rate: number;
+    volume: number;
+  }): Promise<void>;
+  stop(options: { session: string }): Promise<void>;
+  addListener(
+    event: 'progress',
+    handler: (event: { session: string; index: number }) => void,
+  ): Promise<{ remove: () => Promise<void> }>;
+  addListener(
+    event: 'done',
+    handler: (event: { session: string; outcome: 'ended' | 'stopped' | 'error'; message?: string }) => void,
+  ): Promise<{ remove: () => Promise<void> }>;
+}
+
+/**
+ * The speech plugin, or null off the shell. Registered rather than
+ * imported, like `pushPlugin`: an APK built before it existed answers a
+ * proxy whose calls reject, which reads as a phone with no voices.
+ */
+export async function speechPlugin(): Promise<SpeechPlugin | null> {
+  const mod = await loadModule(() => import('@capacitor/core'));
+  const register = mod?.registerPlugin as
+    | ((name: string) => SpeechPlugin)
+    | null
+    | undefined;
+  if (typeof register !== 'function') return null;
+  try {
+    return unthenable(register('Speech'));
+  } catch (err) {
+    console.warn('native: the speech plugin did not register', err);
+    return null;
+  }
+}
+
 export async function qrCodeHint(): Promise<number> {
   const mod = await loadModule(() => import('@capacitor/barcode-scanner'));
   const hint = (mod?.CapacitorBarcodeScannerTypeHint as { QR_CODE?: number } | null)?.QR_CODE;

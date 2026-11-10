@@ -2438,7 +2438,9 @@ dictation key types into it. The composer's mic is the same on the phone
 as on the desktop: the WebView records and the thread's computer
 transcribes (`docs/references/voice-dictation.md`). The shell declares
 `RECORD_AUDIO` and `MODIFY_AUDIO_SETTINGS`, which Capacitor's WebView
-client asks for on the first press.
+client asks for on the first press. Read-aloud speaks through Android's
+TextToSpeech in the shell's `Speech` plugin, since the WebView has no
+`speechSynthesis`.
 
 **Opening the app.** The app lock is the platform's biometric or
 credential prompt, run on cold start and on a resume past a
