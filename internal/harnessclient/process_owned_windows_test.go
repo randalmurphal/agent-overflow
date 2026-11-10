@@ -40,7 +40,7 @@ func TestOwnedTreeKillsProviderAfterLeaderExit(t *testing.T) {
 		return nil
 	}
 
-	if err := terminateOwnedProcess(context.Background(), root, rootID, 0); err != nil {
+	if err := terminateOwnedProcess(context.Background(), root, rootID, 0, nil); err != nil {
 		t.Fatalf("terminate owned tree: %v", err)
 	}
 	if kills != 1 {
@@ -64,7 +64,7 @@ func TestOwnedTreeRefusesPIDReuseBeforeTaskkill(t *testing.T) {
 	kills := 0
 	runTaskkillProbe = func(...string) error { kills++; return nil }
 
-	err := terminateOwnedProcess(context.Background(), root, rootID, 0)
+	err := terminateOwnedProcess(context.Background(), root, rootID, 0, nil)
 	if err == nil || !strings.Contains(err.Error(), "identity") {
 		t.Fatalf("terminate after PID reuse = %v, want identity refusal", err)
 	}

@@ -818,7 +818,8 @@ func TestParseStreamEventEmptyDeltaText(t *testing.T) {
 // CLI withholds the `result` envelope until the subagent completes.
 // The wire-typed signal that the parent has stopped emitting for the
 // round is `stream_event.message_delta.delta.stop_reason` (gated on
-// parent_tool_use_id == ""). See invariants.md §27.
+// parent_tool_use_id == ""). See docs/architecture/turn-lifecycle.md
+// §Rounds and turns.
 
 func TestParseStreamEventMessageDeltaEndTurnEmitsSoftTurnComplete(t *testing.T) {
 	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":6,"output_tokens":34}}}`)

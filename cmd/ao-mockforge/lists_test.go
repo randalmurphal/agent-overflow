@@ -11,6 +11,11 @@ import (
 	"agent-overflow/internal/harness/forgefake"
 )
 
+// viewerActivityAt is when the GitLab fixtures' viewer acted. The list
+// reads the viewer's events of the last 30 days from the present, so the
+// time is relative to it.
+var viewerActivityAt = time.Now().UTC().AddDate(0, 0, -3).Truncate(24 * time.Hour).Format(time.RFC3339)
+
 // expectHandled fails on any invocation the fake did not implement and
 // returns the routes the rig's Core sent.
 func expectHandled(t *testing.T, r *rig) []string {
@@ -49,7 +54,7 @@ func listsFixture() forgefake.Fixture {
 			{Number: 8, Title: "Fork", Author: "carol", HeadRepo: "carol/lists", Reviewers: []string{"dave", "alice"}, Mergeable: "conflicts",
 				Readiness: &forgefake.Readiness{RequiredApprovals: 1}, Reviews: []forgefake.Review{{Author: "dave", State: "APPROVED"}},
 				Threads: []forgefake.Thread{
-					{Path: "a.go", Line: intPtr(1), Comments: []forgefake.Comment{{Author: "alice", Body: "fix", CreatedAt: "2026-10-06T00:00:00Z"}}},
+					{Path: "a.go", Line: intPtr(1), Comments: []forgefake.Comment{{Author: "alice", Body: "fix", CreatedAt: viewerActivityAt}}},
 					{Path: "b.go", Line: intPtr(2), Resolved: true, Comments: []forgefake.Comment{{Author: "dave", Body: "ok"}}},
 				}},
 			{Number: 9, Title: "Approval wanted", Author: "carol", Readiness: &forgefake.Readiness{RequiredApprovals: 1}},
@@ -120,7 +125,7 @@ func TestProjectPRListsThroughTheAppsForgeCode(t *testing.T) {
 	// The viewer commented in a thread: its reviewer state is reviewed and
 	// the comment is its activity; one of two threads is open.
 	if !mrFork.CrossRepository || !mrFork.ViewerIsReviewer || !mrFork.ReviewRequested || !mrFork.Conflicts || !mrFork.UnresolvedBlocking || mrFork.Comments != 2 ||
-		mrFork.ViewerReviewState != "reviewed" || mrFork.ViewerActivityAt != "2026-10-06T00:00:00Z" ||
+		mrFork.ViewerReviewState != "reviewed" || mrFork.ViewerActivityAt != viewerActivityAt ||
 		*mrFork.ApprovalsGiven != 1 || *mrFork.ApprovalsRequired != 1 || *mrFork.Unresolved != 1 {
 		t.Errorf("glab fork = %+v", mrFork)
 	}
@@ -160,7 +165,7 @@ func TestGitLabListReadsTheViewersOwnReview(t *testing.T) {
 			{Number: 1, Title: "Bob asked for changes", Author: "carol", Reviewers: []string{"alice", "bob"}, ChangeRequests: []string{"bob"}},
 			{Number: 2, Title: "Alice asked for changes", Author: "carol", Reviewers: []string{"alice"}, ChangeRequests: []string{"alice"}},
 			{Number: 3, Title: "Alice approved", Author: "carol", Reviewers: []string{"alice", "bob"}, ChangeRequests: []string{"bob"},
-				Reviews: []forgefake.Review{{Author: "alice", State: "APPROVED", SubmittedAt: "2026-10-07T00:00:00Z"}}},
+				Reviews: []forgefake.Review{{Author: "alice", State: "APPROVED", SubmittedAt: viewerActivityAt}}},
 			{Number: 4, Title: "Not asked", Author: "carol", Reviewers: []string{"bob"}},
 			{Number: 5, Title: "Alice asked for changes, 101st", Author: "carol", Reviewers: append(otherReviewers(100), "alice"), ChangeRequests: []string{"alice"}},
 		}},
@@ -176,7 +181,7 @@ func TestGitLabListReadsTheViewersOwnReview(t *testing.T) {
 			t.Errorf("!%d viewer review = %q, want %q", row.Ref.Number, row.ViewerReviewState, want[row.Ref.Number])
 		}
 	}
-	if len(rows) != 5 || rows[2].ViewerActivityAt != "2026-10-07T00:00:00Z" {
+	if len(rows) != 5 || rows[2].ViewerActivityAt != viewerActivityAt {
 		t.Errorf("rows = %d, !3 activity %q", len(rows), rows[2].ViewerActivityAt)
 	}
 	expectHandled(t, r)

@@ -761,7 +761,7 @@ func itoa(n int) string {
 //
 // Without this behavior the working indicator stays on for the entire
 // subagent runtime even though the parent is idle. See
-// invariants.md §27 for the full rule.
+// docs/architecture/turn-lifecycle.md §Rounds and turns for the full rule.
 func TestReplay_LocalAgentOutlives(t *testing.T) {
 	events := replayFixture(t, fixtureLocalAgentOutlives)
 
@@ -798,9 +798,10 @@ func TestReplay_LocalAgentOutlives(t *testing.T) {
 		}
 	}
 
-	// The fixture has a two-round cascade: parent end_turn → wait for
-	// subagent → re-round init → parent end_turn → result envelope.
-	// That's two soft completes + one result-driven complete.
+	// The fixture has two parent messages: parent end_turn → wait for
+	// subagent → its notification wakes the parent with a system/init →
+	// parent end_turn → result envelope. That's two soft completes + one
+	// result-driven complete.
 	if len(softs) != 2 {
 		t.Errorf("expected exactly 2 soft EventTurnComplete (one per parent end_turn round), got %d", len(softs))
 	}
@@ -876,8 +877,8 @@ func TestReplay_LocalAgentUserInputDuringWait(t *testing.T) {
 // on `local_agent` specifically: a parent that launches both a bg
 // Bash AND a bg local_agent has only ONE wire `result` envelope at
 // the end of the entire cascade (subagent dominates), while emitting
-// a soft EventTurnComplete for each parent end_turn across the
-// re-round cascade triggered by the bash's earlier completion.
+// a soft EventTurnComplete for each parent end_turn, including the
+// ones after the bash's and the subagent's completions wake the parent.
 func TestReplay_LocalAgentPlusBgBash(t *testing.T) {
 	events := replayFixture(t, fixtureLocalAgentPlusBgBash)
 
@@ -895,10 +896,10 @@ func TestReplay_LocalAgentPlusBgBash(t *testing.T) {
 			t.Fatalf("turn-complete meta type = %T", evt.TurnComplete)
 		}
 	}
-	// Three soft completes (one per round across the cascade:
-	// initial parent end_turn, post-bash-completion re-round end_turn,
-	// post-subagent-completion re-round end_turn) and exactly one
-	// result-driven complete at cascade end.
+	// Three soft completes (one per parent end_turn: the initial one,
+	// the one after the bash completion's wake, the one after the
+	// subagent completion's wake) and exactly one result-driven complete
+	// at the end.
 	if softCount != 3 {
 		t.Errorf("expected exactly 3 soft EventTurnComplete, got %d", softCount)
 	}

@@ -12,6 +12,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/triage"
 )
 
 // The settling half: how a request stops being open, and how the answer
@@ -94,15 +95,11 @@ func (a *App) settleReceiptOnTurnEnd(threadID, token string) error {
 		a.forgetReceiptRunning(threadID, token)
 		return nil
 	}
-	index, ok := threadRequestTurnIndex(threadID, receipt.TurnID)
-	if !ok {
-		return fmt.Errorf("receipt names turn %q, which is not a turn of this thread", receipt.TurnID)
-	}
-	turn, found, err := a.store.GetTurnByThreadIndex(threadID, index)
+	turn, ended, err := a.receiptEndedTurn(threadID, token, receipt.MessageItemID)
 	if err != nil {
 		return err
 	}
-	if !found || turn.CompletedAt == nil {
+	if !ended {
 		// The request's own turn is still running. Some other turn ended.
 		return nil
 	}
@@ -111,6 +108,69 @@ func (a *App) settleReceiptOnTurnEnd(threadID, token string) error {
 		return err
 	}
 	return a.settleThreadReceipt(token, []string{store.ThreadReceiptRunning}, settlement)
+}
+
+// receiptEndedTurn returns the ended turn that answers a running receipt,
+// or false while that answer is still to come.
+//
+// The receipt names the turn its message's row sits in until the provider
+// consumes the message, and from then the turn that consumption named
+// (recordRequestAnswerTurn). A message queued behind a running turn is not
+// answered by that turn ending: while the provider holds it unconsumed the
+// receipt waits, and once a turn start takes it, that turn answers.
+//
+// The pending state is read before the receipt. A send reported consumed has
+// had its answer turn written, so the receipt read after it is current.
+func (a *App) receiptEndedTurn(threadID, token, messageItemID string) (store.Turn, bool, error) {
+	claimed, state := a.triage.PendingSendTurn(threadID, messageItemID)
+	if state == triage.PendingSendWaiting {
+		return store.Turn{}, false, nil
+	}
+	turnKey := ""
+	if state == triage.PendingSendClaimed {
+		turnKey = threadRequestTurnKey(threadID, claimed)
+		if _, err := a.store.SetThreadReceiptAnswerTurn(token, threadID, turnKey); err != nil {
+			return store.Turn{}, false, err
+		}
+	} else {
+		receipt, found, err := a.store.GetThreadRequestReceipt(token)
+		if err != nil || !found {
+			return store.Turn{}, false, err
+		}
+		turnKey = receipt.TurnID
+	}
+	index, ok := threadRequestTurnIndex(threadID, turnKey)
+	if !ok {
+		return store.Turn{}, false, fmt.Errorf("receipt names turn %q, which is not a turn of this thread", turnKey)
+	}
+	if a.triage.OpenTurnIndex(threadID) == index {
+		// The turn is running. A row that still carries an earlier
+		// completion (a soft-closed turn the model continued, a re-sent
+		// turn start) is not this turn's end.
+		return store.Turn{}, false, nil
+	}
+	turn, found, err := a.store.GetTurnByThreadIndex(threadID, index)
+	if err != nil || !found || turn.CompletedAt == nil {
+		return store.Turn{}, false, err
+	}
+	return turn, true, nil
+}
+
+// recordRequestAnswerTurn is the consumed hook: the provider consumed a
+// message, and answerTurn is the turn that answers it. Each request whose
+// message the row carries has that turn written to its receipt. It runs
+// inside triage's confirmation transaction, so it writes and returns.
+func (a *App) recordRequestAnswerTurn(threadID string, sendIDs []string, answerTurn int) {
+	turnKey := threadRequestTurnKey(threadID, answerTurn)
+	for _, sendID := range sendIDs {
+		token, ok := strings.CutPrefix(sendID, threadRequestSendIDPrefix)
+		if !ok {
+			continue
+		}
+		if _, err := a.store.SetThreadReceiptAnswerTurn(token, threadID, turnKey); err != nil {
+			log.Printf("thread tools: record answer turn %d of %s for request %s: %v", answerTurn, threadID, token, err)
+		}
+	}
 }
 
 // turnSettlement maps one ended turn onto the answer its requester reads.
