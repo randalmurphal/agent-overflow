@@ -91,14 +91,26 @@ supervise() {
   wait "$!" || status=$?
   return "$status"
 }
+# Stops this script's background jobs and waits for them. A job is first
+# let become its command: while it is still this shell's fork it holds this
+# script's signal handlers, and a signal sent then is lost.
+stop_jobs() {
+  local jobs_running self job tries
+  jobs_running="$(jobs -p)"
+  [[ -n "$jobs_running" ]] || return 0
+  self="$(ps -o args= -p $$)"
+  for job in $jobs_running; do
+    tries=0
+    while [[ "$(ps -o args= -p "$job" 2>/dev/null)" == "$self" ]] && (( tries++ < 100 )); do
+      sleep 0.02
+    done
+    kill -TERM "$job" 2>/dev/null || true
+  done
+  wait $jobs_running 2>/dev/null || true
+}
 on_signal() {
   trap - "$1"
-  local running
-  running="$(jobs -p)"
-  if [[ -n "$running" ]]; then
-    kill -TERM $running 2>/dev/null || true
-    wait $running 2>/dev/null || true
-  fi
+  stop_jobs
   exit $((128 + $(kill -l "$1")))
 }
 trap 'on_signal INT' INT

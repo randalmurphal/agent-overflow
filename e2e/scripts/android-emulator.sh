@@ -155,6 +155,24 @@ rm -f "$ANDROID_AVD_HOME/$avd.avd"/*.lock
 # the process stays in this namespace. HOME is a tmpfs except the AVD
 # folder, so the emulator writes nothing else of the developer's.
 read -ra extra <<<"${AO_EMULATOR_ARGS:-}"
+# Stops this script's background jobs and waits for them. A job is first
+# let become its command: while it is still this shell's fork it holds this
+# script's signal handlers, and a signal sent then is lost.
+stop_jobs() {
+  local jobs_running self job tries
+  jobs_running="$(jobs -p)"
+  [[ -n "$jobs_running" ]] || return 0
+  self="$(ps -o args= -p $$)"
+  for job in $jobs_running; do
+    tries=0
+    while [[ "$(ps -o args= -p "$job" 2>/dev/null)" == "$self" ]] && (( tries++ < 100 )); do
+      sleep 0.02
+    done
+    kill -TERM "$job" 2>/dev/null || true
+  done
+  wait $jobs_running 2>/dev/null || true
+}
+
 # Until the boot is confirmed the launch is this command's to undo. A signal
 # or a failed boot stops the launcher, before or after it made the scope,
 # waits for it so it cannot make one later, then stops the scope. Holding
@@ -163,12 +181,7 @@ read -ra extra <<<"${AO_EMULATOR_ARGS:-}"
 booted=""
 abandon() {
   [[ -z "$booted" ]] || return 0
-  local launched
-  launched="$(jobs -p)"
-  if [[ -n "$launched" ]]; then
-    kill -TERM $launched 2>/dev/null || true
-    wait $launched 2>/dev/null || true
-  fi
+  stop_jobs
   systemctl --user stop "$unit" >/dev/null 2>&1 || true
 }
 trap abandon EXIT
