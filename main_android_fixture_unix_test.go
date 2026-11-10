@@ -67,9 +67,12 @@ func TestAndroidBundleFixtureRestoresDist(t *testing.T) {
 			mockexec.WriteIn(t, bin, "unzip", "#!/bin/sh\necho '{\"version\":\"1.3.0\"}'\n")
 			// The fake compiler starts a compile step that, once stopped,
 			// finishes only when the barrier exists, records both PIDs, then
-			// holds or finishes. go itself dies at the first SIGTERM.
+			// holds or finishes. go itself dies at the first SIGTERM. The PIDs
+			// are recorded only once the step can take that signal: stopped
+			// before its handler is in place it would die and hold nothing.
 			mockexec.WriteIn(t, bin, "go", `#!/usr/bin/env bash
-bash -c 'trap "until [[ -e \"\$AO_TEST_GO_BARRIER\" ]]; do sleep 0.02; done; exit 0" TERM; while :; do sleep 0.05; done' &
+bash -c 'trap "until [[ -e \"\$AO_TEST_GO_BARRIER\" ]]; do sleep 0.02; done; exit 0" TERM; : >"$AO_TEST_GO_PIDS.ready"; while :; do sleep 0.05; done' &
+until [[ -e "$AO_TEST_GO_PIDS.ready" ]]; do sleep 0.02; done
 echo "$$ $!" >"$AO_TEST_GO_PIDS.tmp"
 mv "$AO_TEST_GO_PIDS.tmp" "$AO_TEST_GO_PIDS"
 [[ -n "$AO_TEST_GO_HOLD" ]] || { kill $!; wait; exit 0; }
