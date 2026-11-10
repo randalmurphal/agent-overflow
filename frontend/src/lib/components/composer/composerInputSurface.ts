@@ -94,6 +94,13 @@ export interface ComposerInputSurfaceProps {
    */
   blockAttachment?: (event: Event, notify: boolean) => boolean;
   /**
+   * True while the host refuses attachments only for now (a prompt is
+   * waiting for its answer). A picker selection that returns meanwhile is
+   * kept and attached once this clears, where a `blockAttachment` refusal
+   * is final.
+   */
+  attachmentsDeferred?: boolean;
+  /**
    * Whether removing an attachment also deletes its backing record.
    * Default true. A surface editing a message it did not upload for must
    * answer false for those ids — the record still belongs to the message.

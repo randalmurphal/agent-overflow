@@ -40,6 +40,7 @@
     editsDraft = true,
     showDraftRows = true,
     blockAttachment,
+    attachmentsDeferred = false,
     shouldDeleteAttachmentRecord,
     attachmentCache,
     uploadThreadId,
@@ -51,6 +52,8 @@
   let pickerGeneration = -1;
   let pickerInsertion: UploadInsertionPoint | null = null;
   let heldPick: { files: File[]; insertion: UploadInsertionPoint | null; generation: number } | null = $state.raw(null);
+  // Attachments are refused for now, not for good.
+  const attachmentsOnHold = $derived(disabled || attachmentsDeferred);
   let lastAutosizedTextarea: HTMLTextAreaElement | undefined;
   let lastAutosizedValue = '';
   // Bumped by recreateInput() to swap the <textarea> element itself (the
@@ -218,20 +221,24 @@
   function attachSelectedFiles(event: Event): void {
     const files = Array.from(fileInput?.files ?? []);
     if (fileInput) fileInput.value = '';
-    if (files.length === 0 || pickerGeneration !== pane.switchGeneration || refuseAttachment(event)) return;
-    // The picker opened while the surface was usable. A selection that
-    // comes back while it is not (a connection that dropped under the
-    // camera, a prompt that arrived) is kept until it is usable again.
-    if (disabled) {
+    if (files.length === 0 || pickerGeneration !== pane.switchGeneration) return;
+    // The picker opened while the surface took attachments. A selection
+    // that comes back while it does not (a connection that dropped under
+    // the camera, a prompt that arrived) is kept until it does again. The
+    // host's veto is asked only then: while a prompt waits it refuses
+    // everything, and that refusal is not about this selection.
+    if (attachmentsOnHold) {
       heldPick = { files, insertion: pickerInsertion, generation: pickerGeneration };
       return;
     }
+    if (refuseAttachment(event)) return;
     void uploads.uploadFiles(files, pickerInsertion);
   }
 
-  // The held selection uploads once the surface is usable again, and is
-  // let go when the pane moved to another thread first. The picker cannot
-  // open while the surface is disabled, so one selection is the most held.
+  // The held selection uploads once the surface takes attachments again,
+  // and is let go when the pane moved to another thread first. The picker
+  // cannot open while attachments are on hold, so one selection is the
+  // most held.
   $effect(() => {
     const held = heldPick;
     if (!held) return;
@@ -239,7 +246,7 @@
       heldPick = null;
       return;
     }
-    if (disabled) return;
+    if (attachmentsOnHold) return;
     heldPick = null;
     untrack(() => {
       if (refuseAttachment(new Event('pick'))) return;
@@ -465,8 +472,13 @@
       {textarea}
     />
   </div>
-  {#if showDraftRows && editsDraft && threadHasScope('attachments:write', pane.threadId, pane.thread?.projectId) && providerSupports(pane.thread?.provider, 'attachments')}
-    <AttachmentPicker {disabled} onChoose={chooseAttachments} />
+  {#if threadHasScope('attachments:write', pane.threadId, pane.thread?.projectId) && providerSupports(pane.thread?.provider, 'attachments')}
+    {#if showDraftRows && editsDraft}
+      <AttachmentPicker {disabled} onChoose={chooseAttachments} />
+    {/if}
+    <!-- Outlives the picker button: a prompt that hides the draft rows
+         while the platform picker is open must not take away the element
+         its selection returns to. -->
     <input bind:this={fileInput} type="file" multiple hidden aria-label="Choose attachments" onchange={attachSelectedFiles} />
   {/if}
 </div>

@@ -3139,6 +3139,35 @@ describe('<Composer>', () => {
     ]);
   });
 
+  // A prompt can arrive while the picker is open. It refuses new
+  // attachments until it is answered, and the selection already made waits
+  // for that answer.
+  it('attaches a picker selection made before a prompt once the prompt is answered', async () => {
+    const upload = mockAttachmentUpload(async () => makeAttachment('att-before-prompt'));
+    const pane = await buildPane();
+    const draft = await buildDraft();
+    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+    await fireEvent.click(getByTestId('composer-attach'));
+    const input = getByLabelText('Choose attachments') as HTMLInputElement;
+
+    pane.addUserInput({
+      requestId: 'req-input',
+      threadId: 'thread-1',
+      toolName: 'AskUserQuestion',
+      title: 'Input requested',
+      questions: [{ id: 'name', header: 'Name', question: 'Name?' }],
+    });
+    await tick();
+    Object.defineProperty(input, 'files', { value: [new File(['x'], 'camera.jpg', { type: 'image/jpeg' })] });
+    await fireEvent.change(input);
+    await tick();
+    expect(upload).not.toHaveBeenCalled();
+
+    pane.removeUserInput('req-input');
+    await waitFor(() => expect(draft.attachments.map((a) => a.id)).toEqual(['att-before-prompt']));
+    expect(upload).toHaveBeenCalledOnce();
+  });
+
   it('keeps composer toolbar chrome visible and hides send during pending user input', async () => {
     const pane = await buildPane();
     const draft = await buildDraft();
