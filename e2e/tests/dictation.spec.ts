@@ -8,8 +8,9 @@
 // Also covered: the mic and Settings → Voice follow the off-by-default
 // switch and whether Codex is signed in with ChatGPT, the chord starts it
 // and Escape abandons it, a recording left running when the pane switches
-// threads is dropped rather than landing in the next thread, and the mic
-// sits in Send's grid.
+// threads is dropped rather than landing in the next thread, a recording
+// with no sound in it is not transcribed while one whose sound the level
+// meter missed is, and the mic sits in Send's grid.
 
 import { rm } from 'node:fs/promises';
 
@@ -19,7 +20,9 @@ import type { HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
 import { codexAuthPath, expectDesktopMicAligned, setUpDictation, signInCodexWithChatGPT } from './dictation-helpers.js';
 
-// The fake device plays a tone, loud enough to pass the silence check.
+// The fake device beeps for 64 ms in every 500. The level meter can miss
+// every beep; the recording itself is then measured and passes the silence
+// check.
 test.use({
   launchOptions: { args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] },
   permissions: ['microphone'],
@@ -88,6 +91,55 @@ test('dictation inserts the transcript at the caret and never sends', async ({ h
   expect(Number(/Heard (\d+) bytes/.exec(value)![1])).toBeGreaterThan(4000);
   // Still in the composer: dictation never sends.
   await expect(input(page)).toBeFocused();
+});
+
+// The meter hears nothing, so the recording itself is decoded and measured.
+// A recording that could not be measured would be sent, and the isolated
+// boot's transcription would land in the message.
+test('a recording with no sound in it is not transcribed', async ({ harness, page }) => {
+  // A real stream that carries silence, in place of the fake device's tone.
+  await page.addInitScript(() => {
+    navigator.mediaDevices.getUserMedia = async () => {
+      const context = new AudioContext();
+      const output = context.createMediaStreamDestination();
+      const silence = new ConstantSourceNode(context, { offset: 0 });
+      silence.connect(output);
+      silence.start();
+      return output.stream;
+    };
+  });
+  await seedThreads(harness, ['Dictate here']);
+  await setUpDictation(harness);
+  await openThread(harness, page, 'Dictate here');
+
+  const uploaded = countPieces(page);
+  await input(page).fill('Please');
+  await dictate(page, uploaded);
+
+  await expect(mic(page)).toHaveAttribute('title', 'No speech heard.');
+  await expect(mic(page)).toHaveAttribute('data-phase', 'idle');
+  await expect(input(page)).toHaveValue('Please');
+});
+
+// The meter reads the microphone a moment at a time and can miss a sound
+// on every read. Here it misses all of them; the recording still holds the
+// fake device's beeps and is transcribed.
+test('a sound the level meter missed is still transcribed', async ({ harness, page }) => {
+  await page.addInitScript(() => {
+    AnalyserNode.prototype.getFloatTimeDomainData = function (samples: Float32Array) {
+      samples.fill(0);
+    };
+  });
+  await seedThreads(harness, ['Dictate here']);
+  await setUpDictation(harness);
+  await openThread(harness, page, 'Dictate here');
+
+  const uploaded = countPieces(page);
+  await input(page).fill('Please');
+  await dictate(page, uploaded);
+
+  await expect(input(page)).toHaveValue(TRANSCRIPT);
+  await expect(mic(page)).not.toHaveAttribute('data-error', 'true');
 });
 
 test('the chord starts dictation and Escape abandons it', async ({ harness, page }) => {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MAX_LIVE_APPEND_BYTES, MAX_RECORDING_MS } from './dictationSession.svelte';
-import { FakePcm, SWITCHED_OFF, dictationFixture as fixture } from '../../test/helpers/dictation';
+import { MAX_LIVE_APPEND_BYTES, MAX_MEASURED_MS, MAX_RECORDING_MS } from './dictationSession.svelte';
+import { FakePcm, METER_STRETCH_SECONDS, SWITCHED_OFF, dictationFixture as fixture } from '../../test/helpers/dictation';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -76,7 +76,7 @@ describe('DictationSession', () => {
     expect(f.inserted).toEqual([]);
   });
 
-  it('skips transcription when nothing louder than silence was heard', async () => {
+  it('skips transcription when the meter and the recording itself hold no sound', async () => {
     const f = fixture();
     f.level.value = 0.001;
     await f.session.start();
@@ -86,6 +86,130 @@ describe('DictationSession', () => {
     expect(f.remote.finish).not.toHaveBeenCalled();
     expect(f.remote.cancel).toHaveBeenCalledWith('rec-1');
     expect(f.session.error).toBe('No speech heard.');
+    // The whole recording was measured, in order, as the type it is, over
+    // stretches as long as the meter's.
+    expect(f.recorded.stretches).toEqual([METER_STRETCH_SECONDS]);
+    expect(f.recorded.measured).toHaveLength(1);
+    expect(f.recorded.measured[0].type).toBe('audio/webm');
+    expect(await f.recorded.measured[0].text()).toBe('atail');
+  });
+
+  it('transcribes a sound the meter missed between its reads', async () => {
+    const f = fixture();
+    f.level.value = 0.001;
+    f.recorded.loudness = 0.3;
+    await f.session.start();
+    f.tick();
+    await f.session.stop();
+    expect(f.remote.finish).toHaveBeenCalledWith('rec-1', 1);
+    expect(f.inserted).toEqual(['hello world']);
+    expect(f.session.error).toBeNull();
+  });
+
+  it('lets the computer decide, and says so, when the recording cannot be measured', async () => {
+    const undecodable = new Error('cannot decode');
+    const f = fixture();
+    f.level.value = 0.001;
+    f.recorded.fails = undecodable;
+    await f.session.start();
+    f.tick();
+    await f.session.stop();
+    expect(f.remote.finish).toHaveBeenCalledWith('rec-1', 1);
+    expect(f.inserted).toEqual(['hello world']);
+    expect(f.recorded.unjudged).toEqual([undecodable]);
+  });
+
+  it('does not keep or measure a recording once the meter heard sound', async () => {
+    const f = fixture();
+    await f.session.start();
+    f.recorder().emit('a');
+    f.tick();
+    // Quiet from here on: what was heard stands.
+    f.level.value = 0;
+    f.recorder().emit('b');
+    f.tick();
+    await f.session.stop();
+    expect(f.recorded.measured).toEqual([]);
+    expect(f.inserted).toEqual(['hello world']);
+  });
+
+  it('measures nothing for a recording abandoned while it stops', async () => {
+    const f = fixture();
+    f.level.value = 0.001;
+    await f.session.start();
+    f.tick();
+    const stopping = f.session.stop();
+    f.session.cancel();
+    await stopping;
+    expect(f.recorded.measured).toEqual([]);
+    expect(f.recorded.unjudged).toEqual([]);
+    expect(f.session.phase).toBe('idle');
+  });
+
+  it('measures a recording as long as the longest it measures', async () => {
+    const f = fixture();
+    f.level.value = 0.001;
+    f.recorded.loudness = 0.3;
+    await f.session.start();
+    f.recorder().emit('a');
+    f.clock.now += MAX_MEASURED_MS;
+    f.tick();
+    await f.session.stop();
+    expect(await f.recorded.measured[0].text()).toBe('atail');
+    expect(f.inserted).toEqual(['hello world']);
+  });
+
+  it('counts a recording as long as it ran, however late its last piece arrives', async () => {
+    const f = fixture();
+    f.level.value = 0.001;
+    f.recorded.loudness = 0.3;
+    await f.session.start();
+    f.clock.now += MAX_MEASURED_MS - 100;
+    f.tick();
+    // The recorder takes a while to hand over what it still holds.
+    const recorder = f.recorder();
+    const stop = recorder.stop.bind(recorder);
+    recorder.stop = () => {
+      f.clock.now += 5000;
+      stop();
+    };
+    await f.session.stop();
+    expect(await f.recorded.measured[0].text()).toBe('tail');
+    expect(f.inserted).toEqual(['hello world']);
+  });
+
+  it('leaves a longer recording to the meter and keeps none of it', async () => {
+    const f = fixture();
+    f.level.value = 0.001;
+    f.recorded.loudness = 0.3;
+    await f.session.start();
+    f.recorder().emit('a');
+    f.clock.now += MAX_MEASURED_MS + 1;
+    f.recorder().emit('b');
+    f.tick();
+    await f.session.stop();
+    expect(f.recorded.measured).toEqual([]);
+    expect(f.recorded.unjudged).toEqual([]);
+    expect(f.remote.finish).not.toHaveBeenCalled();
+    expect(f.session.error).toBe('No speech heard.');
+  });
+
+  it('reports nothing for a recording abandoned while it is measured', async () => {
+    const f = fixture();
+    f.level.value = 0.001;
+    f.recorded.fails = new Error('cannot decode');
+    let release!: () => void;
+    f.recorded.hold = new Promise((resolve) => { release = resolve; });
+    await f.session.start();
+    f.tick();
+    const stopping = f.session.stop();
+    await vi.waitFor(() => expect(f.recorded.measured).toHaveLength(1));
+    f.session.cancel();
+    release();
+    await stopping;
+    expect(f.recorded.unjudged).toEqual([]);
+    expect(f.remote.finish).not.toHaveBeenCalled();
+    expect(f.session.error).toBeNull();
   });
 
   it('transcribes without a level meter rather than guessing silence', async () => {

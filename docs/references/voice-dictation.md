@@ -37,6 +37,17 @@ same sentence as a 12 KB browser-recorded WebM/Opus clip, sent through
 `codex.Transcribe`, returned the exact text in 0.58 s. MP4 has not been
 sent to the live endpoint.
 
+The level meter reads about 21 ms of the microphone every 100 ms, so a
+short sound can fall between its reads. When the meter heard nothing, the
+recording itself is decoded at 48 kHz and measured over stretches as
+long as the meter's, starting at every sample (`recordingMeasurer` in
+`browserDictation.ts`), and only one that
+holds no sound is dropped as "No speech heard." A recording the engine
+cannot decode within five seconds is sent, and the computer decides. One
+recording is decoded at a time. A recording over a minute is not decoded,
+since decoding holds it as samples several times over; the meter's verdict
+stands for it.
+
 The access token is read from the canonical Codex `auth.json` for each
 request and never retained. On a 401, AO asks Codex to refresh through
 `account/read {refreshToken: true}` and retries once; AO never refreshes the
