@@ -56,7 +56,8 @@ The smoke runs in two phases. On the host it checks the prerequisites,
 builds the bundle fixture, installs Playwright's Android driver and runs
 `android-emulator.sh prepare`, which exports the libraries the emulator
 needs from `e2e/android/emulator.Dockerfile` into
-`~/.cache/agent-overflow/emulator-rootfs` (once per image). It then runs
+`~/.cache/agent-overflow/emulator-rootfs`, once for each version of that
+file; it needs a container runtime only then. It then runs
 itself again under `bin/ao-netns`, where `android-emulator.sh start` boots
 the SDK's emulator on that root with bubblewrap inside the memory scope,
 and the adb server, the harness backends and Playwright run beside it. The

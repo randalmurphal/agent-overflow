@@ -17,7 +17,8 @@
 # stop there; start refuses anywhere else.
 #
 # The SDK's emulator needs libraries a host may lack, so `prepare` builds
-# e2e/android/emulator.Dockerfile and exports its files once; start runs
+# e2e/android/emulator.Dockerfile and exports its files, once for each
+# version of that file; start runs
 # the SDK's binary on them with bubblewrap. A container runtime cannot run
 # inside the namespace (rootless Podman rejoins its own user namespace), and
 # the namespace must hold the emulator for adb and the suite to reach it.
@@ -36,7 +37,8 @@
 #                        /run/user/$UID/ao-emulator.lock)
 #
 # Linux and WSL2 only: it needs /dev/kvm, bubblewrap, flock, a user systemd
-# with the memory controller delegated, and Docker or Podman for `prepare`.
+# with the memory controller delegated, and Docker or Podman when `prepare`
+# has to build the runtime.
 set -euo pipefail
 
 : "${ANDROID_HOME:=$HOME/Android/Sdk}"
@@ -87,17 +89,20 @@ case "${1:-}" in
     exit
     ;;
   prepare)
-    for need in docker flock; do
-      command -v "$need" >/dev/null 2>&1 || { echo "missing $need" >&2; exit 1; }
-    done
+    command -v flock >/dev/null 2>&1 || { echo "missing flock" >&2; exit 1; }
     hold_lock
-    docker build -q -t ao-emulator -f "$repo/e2e/android/emulator.Dockerfile" "$repo/e2e/android" >/dev/null
-    image="$(docker image inspect -f '{{.Id}}' ao-emulator)"
-    if [[ "$(cat "$rootfs/.ao-image" 2>/dev/null)" != "$image" ]]; then
+    # The runtime is what the Dockerfile builds, so the Dockerfile's hash
+    # names it. Files exported from an unchanged Dockerfile are reused
+    # without the image, which a container prune may have removed.
+    dockerfile="$repo/e2e/android/emulator.Dockerfile"
+    runtime="$(sha256sum "$dockerfile" | cut -d' ' -f1)"
+    if [[ "$(cat "$rootfs/.ao-runtime" 2>/dev/null)" != "$runtime" ]]; then
+      command -v docker >/dev/null 2>&1 || { echo "missing docker" >&2; exit 1; }
       if systemctl --user is-active -q "$unit"; then
         echo "an emulator is running as $unit on the current runtime; stop it first: $0 stop" >&2
         exit 1
       fi
+      docker build -q -t ao-emulator -f "$dockerfile" "$repo/e2e/android" >/dev/null
       # Extracted beside the old root and swapped in whole, so a failed
       # export leaves the previous runtime intact and stamped.
       fresh="$rootfs.new"
@@ -106,7 +111,7 @@ case "${1:-}" in
       container="$(docker create ao-emulator true)"
       trap 'docker rm "$container" >/dev/null' EXIT
       docker export "$container" | tar -x -C "$fresh"
-      echo "$image" >"$fresh/.ao-image"
+      echo "$runtime" >"$fresh/.ao-runtime"
       if [[ -d "$rootfs" ]]; then mv "$rootfs" "$rootfs.old"; fi
       mv "$fresh" "$rootfs"
       rm -rf "$rootfs.old"
@@ -132,7 +137,7 @@ for need in bwrap flock systemd-run "$adb" "$ANDROID_HOME/emulator/emulator"; do
   command -v "$need" >/dev/null 2>&1 || [[ -x "$need" ]] || { echo "missing $need" >&2; exit 1; }
 done
 [[ -e /dev/kvm ]] || { echo "/dev/kvm is required; enable nested virtualization for this VM" >&2; exit 1; }
-[[ -f "$rootfs/.ao-image" ]] || { echo "no emulator runtime in $rootfs; run: $0 prepare" >&2; exit 1; }
+[[ -f "$rootfs/.ao-runtime" ]] || { echo "no emulator runtime in $rootfs; run: $0 prepare" >&2; exit 1; }
 [[ -d "$ANDROID_AVD_HOME/$avd.avd" ]] || {
   echo "no AVD '$avd' under $ANDROID_AVD_HOME; create it with avdmanager first (make e2e-android prints the commands)" >&2
   exit 1
@@ -150,27 +155,50 @@ rm -f "$ANDROID_AVD_HOME/$avd.avd"/*.lock
 # the process stays in this namespace. HOME is a tmpfs except the AVD
 # folder, so the emulator writes nothing else of the developer's.
 read -ra extra <<<"${AO_EMULATOR_ARGS:-}"
+# A background job starts as this shell's fork. Until it runs its command
+# it holds this script's signal handlers, and a signal sent to it then is
+# lost: the command runs anyway. So each job is started through
+# START_MARKED, which marks it in $started once it is a process of its own,
+# and stop_jobs signals a job only when it is marked or gone. From the mark
+# on, TERM either ends the job before its command starts or reaches the
+# command.
+START_MARKED='touch "$0/$$" && exec "$@"'
+
+# Stops this script's background jobs and waits for them.
+stop_jobs() {
+  local running job
+  running="$(jobs -p)"
+  [[ -n "$running" ]] || return 0
+  for job in $running; do
+    while kill -0 "$job" 2>/dev/null && [[ ! -e "$started/$job" ]]; do
+      sleep 0.02
+    done
+    kill -TERM "$job" 2>/dev/null || true
+  done
+  wait $running 2>/dev/null || true
+}
+
 # Until the boot is confirmed the launch is this command's to undo. A signal
 # or a failed boot stops the launcher, before or after it made the scope,
 # waits for it so it cannot make one later, then stops the scope. Holding
 # the lock means no other run can have made one. The launcher is found with
 # `jobs -p`, not `$!`: a trap can run after the fork and before `$!` is read.
 booted=""
+started="$(mktemp -d)"
 abandon() {
-  [[ -z "$booted" ]] || return 0
-  local launched
-  launched="$(jobs -p)"
-  if [[ -n "$launched" ]]; then
-    kill -TERM $launched 2>/dev/null || true
-    wait $launched 2>/dev/null || true
+  # A second signal must not cut the undoing short.
+  trap '' INT TERM HUP
+  if [[ -z "$booted" ]]; then
+    stop_jobs
+    systemctl --user stop "$unit" >/dev/null 2>&1 || true
   fi
-  systemctl --user stop "$unit" >/dev/null 2>&1 || true
+  rm -rf "$started"
 }
 trap abandon EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
-systemd-run --user --scope --unit="$unit" -q \
+"$BASH" -c "$START_MARKED" "$started" systemd-run --user --scope --unit="$unit" -q \
   -p MemoryMax="$memory" -p MemorySwapMax=0 -p CPUQuota=400% \
   bwrap --bind "$rootfs" / --dev /dev --dev-bind /dev/kvm /dev/kvm --proc /proc \
     --ro-bind /sys /sys --tmpfs /tmp --tmpfs "$HOME" \
