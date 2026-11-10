@@ -63,6 +63,17 @@ describe('<AssistantMessage> read aloud', () => {
     expect(blank.queryByTestId('assistant-message-read-aloud')).toBeNull();
   });
 
+  // A narration row is prose the reader sees with a Copy control, so it is
+  // read on request like any reply; nothing reads a row unasked.
+  it('offers a summarized narration row and reads its text', async () => {
+    const item = makeItem({ id: 'note-1', summary: 'Checked the config. Running the tests next.', meta: '{"narration":true}' });
+    const { getByTestId } = render(AssistantMessage, { props: { item } });
+    await waitFor(() => expect(getByTestId('assistant-message-summarized')).toBeTruthy());
+    await fireEvent.click(getByTestId('assistant-message-read-aloud'));
+    expect(readAloudPhase(replyReadingKey('thread-1', 'note-1'))).toBe('playing');
+    expect(fake.playbacks[0].pieces).toEqual(['Checked the config.', 'Running the tests next.']);
+  });
+
   it('reads the reply, pauses, resumes from its sentence and restarts from the first', async () => {
     const item = makeItem({ id: 'reply-1', summary: 'First sentence. Second sentence.\n\n```js\nskipped();\n```\n\nThird sentence.' });
     const { getByTestId, queryByTestId } = render(AssistantMessage, { props: { item } });
