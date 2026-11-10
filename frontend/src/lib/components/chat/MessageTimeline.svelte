@@ -347,7 +347,7 @@
   });
 
   $effect(() => {
-    pane.threadId;
+    void pane.threadId;
     return installTimelineReconnect({ pane, stick, getList: () => listRef });
   });
 
@@ -445,7 +445,7 @@
   // an anchor. Persist that intent even when no further movement follows.
   $effect(() => {
     const atBottom = stick.isAtBottom;
-    pane.scrollStateKey;
+    void pane.scrollStateKey;
     if (atBottom) untrack(() => restore.saveScrollSnapshot());
   });
 
@@ -828,9 +828,9 @@
   // trigger; until then held state is only over-retained, never
   // prematurely dropped.
   $effect(() => {
-    pane.threadId;
-    pane.timelineRevision;
-    pane.revealBoundary;
+    void pane.threadId;
+    void pane.timelineRevision;
+    void pane.revealBoundary;
     // A run's mount window decides which of its children are retained, and it
     // moves without touching any of the above: relocating a window mounts a
     // different set of rows at the same node count and the same item list.
@@ -841,18 +841,18 @@
     // runs further from the tail, and an auto-collapse release bumps this
     // same revision — the follow-up pass then finds no held runs and costs
     // one Map scan.)
-    pane.activityRuns.revision;
+    void pane.activityRuns.revision;
     // A turn settling with no drain behind it (tool-only turns) flips the
     // deferred-prune flag with no structural change or scroll write in
     // tow — the flag itself must be a trigger or the prune waits for the
     // next turn's churn.
-    pane.hasDeferredRecentWindowPrune;
+    void pane.hasDeferredRecentWindowPrune;
     quietWork.schedule();
   });
 
   $effect(() => {
-    listRef;
-    scrollEl;
+    void listRef;
+    void scrollEl;
     quietWork.schedule();
   });
 
