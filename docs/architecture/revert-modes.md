@@ -37,6 +37,15 @@ Claude answering a background task notification after an earlier Stop. Headless
 Claude checks the turn again after its session stops and before the history is
 cut, because rows can land between the first check and the stop.
 
+A client can be asked to un-send before the message's row reaches it: the row
+waits in the item queue while its turn start is applied at once. The client
+then offers the un-send from its record of the dispatched send, on the turn
+the composer predicted. A running turn must be that turn, the row must not
+already sit on another turn, and no row may sit on a later one. Otherwise Stop
+is an ordinary interrupt. The backend's check that the latest message carries
+the expected send ID stays authoritative, and a row that arrives while the
+un-send is pending stays out of the timeline.
+
 Older-message replacement keeps the editor loading until preparation completes.
 The client transfers follow intent before applying the cut and replacement in
 one render transaction, using the normal structural scroll spring. RPC results

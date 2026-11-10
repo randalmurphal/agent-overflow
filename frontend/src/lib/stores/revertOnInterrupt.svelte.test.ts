@@ -5,7 +5,10 @@ import { createComposerDraftStore } from './composerDraft.svelte';
 // is pure (in-memory state only); the helper drives the bindings
 // mock to assert dispatch + rollback behavior.
 
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { applyItemStreamEvent, flushItemEventQueue, resetItemEventQueue } from './eventsItemStream';
+import { resetPanesForTest } from './panes.svelte';
+import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
 import { createThreadPane } from './thread.svelte';
 import {
   canRevertEarlyInterrupt,
@@ -277,10 +280,35 @@ describe('canRevertEarlyInterrupt before the send’s row arrives', () => {
     expect(canRevertEarlyInterrupt(pane, EMPTY_DRAFT)).toEqual({ canRevert: false, reason: 'no pending user message' });
   });
 
-  it('rejects an active turn that holds no user row', () => {
+  it('allows it when the send’s turn started before its row arrived', () => {
     const pane = readyPane();
     beginUndoableSend('thread-1', 'send', SNAPSHOT, 1);
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 1, startedAt: 1 });
+
+    expect(canRevertEarlyInterrupt(pane, EMPTY_DRAFT)).toEqual({ canRevert: true, turnIndex: 1 });
+  });
+
+  it('rejects a running turn that is not the one the send predicted', () => {
+    const pane = readyPane();
+    beginUndoableSend('thread-1', 'send', SNAPSHOT, 1);
+    pane.setActiveTurn({ turnId: 'turn-2', turnIndex: 2, startedAt: 1 });
+
+    expect(canRevertEarlyInterrupt(pane, EMPTY_DRAFT)).toEqual({ canRevert: false, reason: 'no user_text item' });
+  });
+
+  it('rejects a running turn without the row when the row sits on another turn', () => {
+    const pane = readyPane();
+    pane.upsertItem({ ...userItem('u:1', 1), meta: JSON.stringify({ sendId: 'send' }) });
+    beginUndoableSend('thread-1', 'send', SNAPSHOT, 2);
+    pane.setActiveTurn({ turnId: 'turn-2', turnIndex: 2, startedAt: 1 });
+
+    expect(canRevertEarlyInterrupt(pane, EMPTY_DRAFT)).toEqual({ canRevert: false, reason: 'no user_text item' });
+  });
+
+  it('rejects when a row already sits on a turn after the predicted one', () => {
+    const pane = readyPane();
+    pane.upsertItem(thinkingItem('think:2', 2));
+    beginUndoableSend('thread-1', 'send', SNAPSHOT, 1);
 
     expect(canRevertEarlyInterrupt(pane, EMPTY_DRAFT)).toEqual({ canRevert: false, reason: 'no user_text item' });
   });
@@ -841,6 +869,44 @@ describe('runInterruptOrRevert', () => {
     expect(revert).not.toHaveBeenCalled();
     expect(draft.cleared).toBeNull();
     retireUndoableSend('thread-1');
+  });
+
+  it('un-sends a send whose turn started before its row arrived, and keeps the late row out', async () => {
+    // Its own thread: earlier cases leave item-stream fences on thread-1.
+    const threadId = 'thread-late';
+    // A registered pane whose load has settled, so the item stream reaches it.
+    const pane = await buildPane(makeThread({ id: threadId }), [], 'late-row');
+    setBindingMock('CountRunningBackgroundTasks', async () => 0);
+    const wireRow = (id: string, turnIndex: number, meta = '') =>
+      makeItem({ id, threadId, turnIndex, kind: 'user_text', role: 'user', status: 'completed', meta });
+    applyItemStreamEvent({ action: 'upsert', threadId, item: wireRow('u:0', 0) }, 4);
+    flushItemEventQueue();
+    expect(pane.items.map((item) => item.id)).toEqual(['u:0']);
+    const snapshot = { content: 'sent', attachments: [], terminalChips: [], sourceProposedPlan: null };
+    const pending = beginUndoableSend(threadId, 'send', snapshot, 1);
+    // The turn start is applied at once; the row is still in the item queue.
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 1, startedAt: 1 });
+    const draft = optimisticDraftProbe();
+    const interrupt = setBindingMock('InterruptTurn', async () => {});
+    let answerRevert!: (result: ReturnType<typeof successfulRevert>) => void;
+    const revert = setBindingMock('InterruptAndRevertIfClean',
+      () => new Promise<ReturnType<typeof successfulRevert>>((resolve) => { answerRevert = resolve; }));
+
+    expect(runInterruptOrRevert(pane, draft)).toBe(true);
+    expect(draft.applied).toEqual(snapshot);
+    applyItemStreamEvent({ action: 'upsert', threadId, item: wireRow('u:1', 1, JSON.stringify({ sendId: 'send' })) }, 5);
+    flushItemEventQueue();
+    expect(pane.items.map((item) => item.id)).toEqual(['u:0']);
+
+    pending.finish('accepted');
+    await vi.waitFor(() => expect(revert).toHaveBeenCalledTimes(1));
+    expect(revert).toHaveBeenCalledWith(threadId, expect.objectContaining({ expectedSendId: 'send' }), []);
+    expect(interrupt).not.toHaveBeenCalled();
+    answerRevert(successfulRevert('u:1', 1));
+    await vi.waitFor(() => expect(isThreadInterruptPending(threadId)).toBe(false));
+    expect(pane.items.map((item) => item.id)).toEqual(['u:0']);
+    resetItemEventQueue();
+    resetPanesForTest();
   });
 
   it('cannot restore removed rows into a pane switched during preflight', async () => {

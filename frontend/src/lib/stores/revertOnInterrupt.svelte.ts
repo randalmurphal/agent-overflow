@@ -68,7 +68,10 @@ const UNSEND_TURN_COMPANION_KINDS: ReadonlySet<string> = new Set<string>([
  *     message undoable again.
  *   - The turn holds exactly one reader-authored user_text and otherwise
  *     only UNSEND_TURN_COMPANION_KINDS rows. A dispatched send whose row
- *     has not arrived holds none yet.
+ *     has not arrived holds none yet: its turn is the one the composer
+ *     predicted, which a running turn must match (a turn start is applied
+ *     ahead of the rows buffered with it), and no row may sit on a later
+ *     turn.
  *
  * Mirrors the backend's evaluateInterruptRevertPredicate, which stays
  * authoritative; this copy only decides the optimistic presentation.
@@ -134,8 +137,10 @@ export function canRevertEarlyInterrupt(
 
   // A send the backend has not confirmed has no row yet; its turn is the
   // one the composer predicted for it.
-  const turnIndex = active?.turnIndex ?? pane.items.find((item) =>
-    parseUserMessageMeta(item.meta).sendId === pending?.sendId)?.turnIndex ?? pending?.turnIndex;
+  const sentRow = pending
+    ? pane.items.find((item) => parseUserMessageMeta(item.meta).sendId === pending.sendId)
+    : undefined;
+  const turnIndex = active?.turnIndex ?? sentRow?.turnIndex ?? pending?.turnIndex;
   if (turnIndex === undefined) return { canRevert: false, reason: 'no pending user message' };
   const settled = pane.latestSettledTurn;
   if (settled && settled.turnIndex >= turnIndex) {
@@ -143,7 +148,9 @@ export function canRevertEarlyInterrupt(
   }
   let userItem: Item | undefined;
   let userCount = 0;
+  let laterTurn = false;
   for (const item of pane.items) {
+    if (item.turnIndex > turnIndex) laterTurn = true;
     if (item.turnIndex !== turnIndex) continue;
     if (isReaderAuthoredUserText(item) && item.role === 'user') {
       userItem = item;
@@ -155,7 +162,7 @@ export function canRevertEarlyInterrupt(
     }
   }
   if (userCount === 0 || !userItem) {
-    if (!active && pending && turnIndex === pending.turnIndex) return { canRevert: true, turnIndex };
+    if (pending && !sentRow && turnIndex === pending.turnIndex && !laterTurn) return { canRevert: true, turnIndex };
     return { canRevert: false, reason: 'no user_text item' };
   }
   // Multiple user_text rows on one turn means the user steered mid-
