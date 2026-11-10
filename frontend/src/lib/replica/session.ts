@@ -797,7 +797,7 @@ export function __resetReplicaForTest(): void {
     held.blocked = false;
     held.offline = false;
   }
-  for (const [backend, held] of [...sessions]) {
+  for (const [backend, held] of sessions) {
     if (backend === HOME_BACKEND) continue;
     sessions.delete(backend);
     sessionByToken.delete(held.token);
