@@ -147,8 +147,9 @@ export const chatMarkdownTheme: Theme = {
     // table-auto (not fixed): app.css `.markdown-body … table` already forces
     // table-layout:auto via higher specificity, so `table-fixed` here was a
     // silently-overridden no-op. Keep them in agreement — columns size to
-    // content (see the table block + overflow-wrap note in app.css).
-    table: 'w-full table-auto border-collapse min-w-0',
+    // content (see the table block + overflow-wrap note in app.css). No
+    // `w-full` for the same reason: the table takes its content width.
+    table: 'table-auto border-collapse min-w-0',
   },
   thead: { base: 'bg-surface-1 text-fg-muted' },
   tbody: { base: '' },
