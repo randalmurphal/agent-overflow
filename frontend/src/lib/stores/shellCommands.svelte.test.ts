@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ShellCommandEvent } from '../types/events';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { DisconnectedError } from '../transport/wsClient';
 import {
   OUTPUT_TAIL_CHARS,
   applyShellCommandEvent,
@@ -79,10 +80,10 @@ describe('event projection', () => {
   it('keeps a failed run as an error until it is dismissed', () => {
     applyShellCommandEvent(started());
     applyShellCommandEvent(output(1, 'partial'));
-    applyShellCommandEvent(finished('failed', 'run-1', 'The command finished, but its output could not be sent: boom'));
+    applyShellCommandEvent(finished('failed', 'run-1', 'The command finished, but its output was not sent: boom'));
     expect(getShellRun(THREAD)).toMatchObject({
       state: 'failed', command: 'make test', output: '',
-      error: 'The command finished, but its output could not be sent: boom',
+      error: 'The command finished, but its output was not sent: boom',
     });
     expect(isShellRunActive(THREAD)).toBe(false);
     dismissShellRun(THREAD);
@@ -231,11 +232,14 @@ describe('live state', () => {
 
   it('re-reads only running commands after a transport gap', async () => {
     applyShellCommandEvent(started());
+    // A failure notice has nothing on the backend to re-read.
+    applyShellCommandEvent({ ...finished('failed', 'run-7', 'boom'), threadId: 't2' });
     GetThreadShellCommands.mockResolvedValue([]);
-    resyncShellRuns([THREAD, 't2']);
+    resyncShellRuns();
     expect(GetThreadShellCommands).toHaveBeenCalledTimes(1);
     expect(GetThreadShellCommands).toHaveBeenCalledWith(THREAD);
     await vi.waitFor(() => expect(getShellRun(THREAD)).toBeNull());
+    expect(getShellRun('t2')?.state).toBe('failed');
   });
 });
 
@@ -277,6 +281,96 @@ describe('running and stopping', () => {
     expect(getShellRun(THREAD)).toBeNull();
   });
 
+  it('keeps a failure the stream reported when the reply names a settled run', async () => {
+    const pending = deferred<{ state: string }>();
+    RunThreadShellCommand.mockReturnValue(pending.promise);
+    const run = runShellCommand(THREAD, 'make test');
+    const runId = getShellRun(THREAD)!.runId;
+    applyShellCommandEvent(finished('failed', runId, 'no shell'));
+    pending.resolve({ state: 'failed' });
+    await run;
+    expect(getShellRun(THREAD)).toMatchObject({ state: 'failed', error: 'no shell' });
+  });
+
+  it('asks about the same run when the reply to a start was lost', async () => {
+    RunThreadShellCommand.mockRejectedValueOnce(new DisconnectedError());
+    await expect(runShellCommand(THREAD, 'make test')).rejects.toBeInstanceOf(DisconnectedError);
+    expect(getShellRun(THREAD)).toBeNull();
+    const lost = RunThreadShellCommand.mock.calls[0][1].runId;
+
+    // The same command again names the run that may already be running.
+    RunThreadShellCommand.mockResolvedValue({ state: 'running' });
+    await runShellCommand(THREAD, 'make test');
+    expect(RunThreadShellCommand.mock.calls[1][1]).toEqual({ runId: lost, command: 'make test' });
+    expect(getShellRun(THREAD)?.runId).toBe(lost);
+
+    // The reply settled it: the next run is a new one.
+    applyShellCommandEvent(finished('sent', lost));
+    await runShellCommand(THREAD, 'make test');
+    expect(RunThreadShellCommand.mock.calls[2][1].runId).not.toBe(lost);
+  });
+
+  it('starts a new run after a lost reply when the command differs or was refused', async () => {
+    RunThreadShellCommand.mockRejectedValueOnce(new DisconnectedError());
+    await expect(runShellCommand(THREAD, 'make test')).rejects.toThrow();
+    const lost = RunThreadShellCommand.mock.calls[0][1].runId;
+    RunThreadShellCommand.mockResolvedValue({ state: 'running' });
+    await runShellCommand(THREAD, 'make lint');
+    expect(RunThreadShellCommand.mock.calls[1][1].runId).not.toBe(lost);
+    // A different command forgot the lost run for good.
+    applyShellCommandEvent(finished('sent', RunThreadShellCommand.mock.calls[1][1].runId));
+    await runShellCommand(THREAD, 'make test');
+    expect(RunThreadShellCommand.mock.calls[2][1].runId).not.toBe(lost);
+
+    resetShellRunsForTest();
+    RunThreadShellCommand.mockReset();
+    RunThreadShellCommand.mockRejectedValueOnce(new Error('a command is already running'));
+    await expect(runShellCommand(THREAD, 'make test')).rejects.toThrow();
+    RunThreadShellCommand.mockResolvedValue({ state: 'running' });
+    await runShellCommand(THREAD, 'make test');
+    expect(RunThreadShellCommand.mock.calls[1][1].runId).not.toBe(RunThreadShellCommand.mock.calls[0][1].runId);
+  });
+
+  it('forgets a lost start once a frame of that run arrives', async () => {
+    RunThreadShellCommand.mockRejectedValueOnce(new DisconnectedError());
+    await expect(runShellCommand(THREAD, 'make test')).rejects.toThrow();
+    const lost = RunThreadShellCommand.mock.calls[0][1].runId;
+    // The run did start, and this client watched it end.
+    applyShellCommandEvent(started(lost));
+    applyShellCommandEvent(finished('sent', lost));
+    RunThreadShellCommand.mockResolvedValue({ state: 'running' });
+    await runShellCommand(THREAD, 'make test');
+    expect(RunThreadShellCommand.mock.calls[1][1].runId).not.toBe(lost);
+  });
+
+  it('stops a run only after the backend has answered its start', async () => {
+    const start = deferred<{ state: string }>();
+    RunThreadShellCommand.mockReturnValue(start.promise);
+    StopThreadShellCommand.mockResolvedValue(undefined);
+    const run = runShellCommand(THREAD, 'make test');
+    const runId = getShellRun(THREAD)!.runId;
+    const stop = stopShellCommand(THREAD);
+    await Promise.resolve();
+    expect(getShellRun(THREAD)?.stopping).toBe(true);
+    expect(StopThreadShellCommand).not.toHaveBeenCalled();
+    start.resolve({ state: 'running' });
+    await run;
+    await stop;
+    expect(StopThreadShellCommand).toHaveBeenCalledWith(THREAD, runId);
+  });
+
+  it('does not ask to stop a run whose start was refused', async () => {
+    const start = deferred<never>();
+    RunThreadShellCommand.mockReturnValue(start.promise);
+    const run = runShellCommand(THREAD, 'make test');
+    const stop = stopShellCommand(THREAD);
+    start.reject(new Error('refused'));
+    await expect(run).rejects.toThrow('refused');
+    await stop;
+    expect(StopThreadShellCommand).not.toHaveBeenCalled();
+    expect(getShellRun(THREAD)).toBeNull();
+  });
+
   it('marks a stop in flight, asks once, and undoes the mark when the stop fails', async () => {
     applyShellCommandEvent(started());
     const pending = deferred<void>();
@@ -286,9 +380,20 @@ describe('running and stopping', () => {
     await stopShellCommand(THREAD);
     expect(StopThreadShellCommand).toHaveBeenCalledTimes(1);
     expect(StopThreadShellCommand).toHaveBeenCalledWith(THREAD, 'run-1');
+    GetThreadShellCommands.mockResolvedValue(snapshot('run-1', '', 0));
     pending.reject(new Error('gone'));
     await expect(stop).rejects.toThrow('gone');
     expect(getShellRun(THREAD)?.stopping).toBe(false);
+    await vi.waitFor(() => expect(GetThreadShellCommands).toHaveBeenCalledWith(THREAD));
+    expect(isShellRunActive(THREAD)).toBe(true);
+  });
+
+  it('drops a run that ended unseen when its stop is refused', async () => {
+    applyShellCommandEvent(started());
+    StopThreadShellCommand.mockRejectedValue(new Error('no command is running'));
+    GetThreadShellCommands.mockResolvedValue([]);
+    await expect(stopShellCommand(THREAD)).rejects.toThrow('no command is running');
+    await vi.waitFor(() => expect(getShellRun(THREAD)).toBeNull());
   });
 
   it('does nothing when there is no running command to stop', async () => {

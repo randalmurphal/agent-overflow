@@ -25,8 +25,11 @@ This package owns four utilities:
   so output from grandchildren is captured. Cancellation sends SIGTERM,
   then SIGKILL after `TerminateGrace`. After the leader exits it kills
   whatever is still in the group and reports those processes as
-  `Leftovers`. It returns an error only when the command could not start;
-  the caller distinguishes that from a signal death by `*exec.ExitError`.
+  `Leftovers`. Its error is the start failure, `Wait`'s `*exec.ExitError`
+  for a non-zero exit or a signal death, or `ErrGroupSurvived` when the
+  leader ignored SIGKILL (it runs as another user) and was abandoned.
+  `Output` should not return an error; one is reported as `PipeErr` and
+  the rest of the output is discarded.
 
 Call `ConfigureGroup` before starting the command and pass the same command to
 `KillConfiguredGroup`. These APIs do not verify process identity or establish

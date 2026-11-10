@@ -85,6 +85,7 @@ function keywordText(container: HTMLElement): string[] {
 }
 
 import { resetShellRunsForTest } from '../../stores/shellCommands.svelte';
+import { OBSERVE_SCOPES, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
 
 describe('<ChatMarkdown> code-block spans', () => {
@@ -557,6 +558,27 @@ describe('<ChatMarkdown> code-block spans', () => {
       await fireEvent.click(await settledRunButton(container));
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(run).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['terminal:operate'],
+      ['threads:operate'],
+    ])('refuses a session granted only %s', async (scope) => {
+      setBindingMock('HighlightCode', async () => keywordSpans());
+      const run = setBindingMock('RunThreadShellCommand', async () => ({ state: 'running' }));
+      await pairWithScopes([...OBSERVE_SCOPES, scope]);
+      try {
+        const target = chatSurface('thread-9');
+        const { container } = render(ChatMarkdown, { target, props: { source: FENCES, pathRefs: [] } });
+        await fireEvent.click(await settledRunButton(container));
+        await waitFor(() => {
+          expect(getToasts().map((toast) => toast.message)).toContain('This session cannot run commands');
+        });
+        expect(run).not.toHaveBeenCalled();
+      } finally {
+        resetToLocalPage();
+        resetToastsForTest();
+      }
     });
 
     it('reports a refused run', async () => {

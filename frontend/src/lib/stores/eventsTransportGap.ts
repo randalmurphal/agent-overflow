@@ -509,7 +509,7 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       // A lost `finished` frame would leave a command running forever here.
       // The store re-reads the runs it holds; a run it never saw start
       // announces itself with its next output frame.
-      resyncShellRuns(getThreads().map((thread) => thread.id));
+      resyncShellRuns();
       return;
     }
     case 'session-import:progress': {

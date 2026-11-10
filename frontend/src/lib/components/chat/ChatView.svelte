@@ -91,6 +91,12 @@
     providerSupports(pane.thread?.provider, 'fork')
       && threadHasScope('threads:operate', pane.threadId, pane.thread?.projectId),
   );
+  // Run on a shell code block runs a command here and sends its output to the
+  // thread, so it is offered only to a session granted both.
+  const canRunShell = $derived(
+    threadHasScope('terminal:operate', pane.threadId, pane.thread?.projectId)
+      && threadHasScope('threads:operate', pane.threadId, pane.thread?.projectId),
+  );
   // On a phone the edit happens in the composer's slot, where the keyboard
   // already fits: the timeline row would sit behind it. The composer stays
   // mounted underneath, hidden, so its draft and prompts survive the edit.
@@ -547,7 +553,7 @@
   {/await}
 {:else if pane.thread}
   <!-- Standard chat surface. Companion panes mount through PaneHost. -->
-  <div bind:this={chatRoot} data-ui-surface="chat" data-thread-id={pane.thread.id} class="relative flex h-full min-h-0 overflow-hidden">
+  <div bind:this={chatRoot} data-ui-surface="chat" data-thread-id={pane.thread.id} data-shell-runnable={canRunShell ? '' : undefined} class="relative flex h-full min-h-0 overflow-hidden">
     {@render chatColumnBody()}
     <ConfirmDialog
       open={editResend.confirmOpen}

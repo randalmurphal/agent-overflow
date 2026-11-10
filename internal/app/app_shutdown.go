@@ -319,9 +319,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	a.stopThreadWorktreeSetups()
 	record("stop worktree setups", nil)
 
-	// A composer shell command that settles sends a message, so the runs are
-	// stopped and joined while the send path is still whole. A stopped run
-	// sends nothing.
+	// A composer shell command that settles saves its output and writes a
+	// message row, so the runs are stopped and joined before the stores
+	// close. A stopped run sends nothing.
 	a.stopShellCommands()
 	record("stop composer shell commands", nil)
 

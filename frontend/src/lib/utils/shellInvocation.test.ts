@@ -4,6 +4,7 @@ import {
   formatShellDuration,
   isShellInput,
   shellCommandFromInput,
+  shellDisplayText,
   shellInvocation,
   shellOutcomeLabel,
   shellOutputTail,
@@ -63,6 +64,16 @@ describe('textWithoutShellInvocations', () => {
     expect(textWithoutShellInvocations('!ls', [])).toBe('!ls');
   });
 
+  it('drops a command that holds the join rule as one piece', () => {
+    const heredoc = `cat <<EOF${sep}body${sep}EOF`;
+    expect(textWithoutShellInvocations(`!${heredoc}`, [shell(heredoc)])).toBe('');
+    expect(textWithoutShellInvocations(`before${sep}!${heredoc}${sep}after`, [shell(heredoc)])).toBe(`before${sep}after`);
+    // Its pieces are not claimed one at a time by another command.
+    expect(textWithoutShellInvocations(`!${heredoc}${sep}!ls`, [shell('ls'), shell(heredoc)])).toBe('');
+    // A different command that only starts the same way is left as typed.
+    expect(textWithoutShellInvocations(`!cat <<EOF${sep}other`, [shell(heredoc)])).toBe(`!cat <<EOF${sep}other`);
+  });
+
   it('matches a bounded command by its start', () => {
     const long = 'x'.repeat(600);
     const bounded = shell(long.slice(0, 512), { commandTruncated: true });
@@ -90,6 +101,24 @@ describe('formatting', () => {
     expect(shellOutcomeLabel({ exitCode: 2 })).toBe('exit 2');
     expect(shellOutcomeLabel({ exitCode: -1 })).toBe('killed');
     expect(shellOutcomeLabel({ exitCode: 124, timedOut: true })).toBe('timed out');
+  });
+});
+
+describe('shellDisplayText', () => {
+  it('returns plain output untouched', () => {
+    const plain = 'a\nb\n';
+    expect(shellDisplayText(plain)).toBe(plain);
+  });
+
+  it('drops cursor control and keeps color for the renderer', () => {
+    expect(shellDisplayText('\x1b[2K\x1b[1Gdone\x1b[K\n')).toBe('done\n');
+    expect(shellDisplayText('\x1b[?25l\x1b[31mred\x1b[0m\x1b[?25h')).toBe('\x1b[31mred\x1b[0m');
+    expect(shellDisplayText('\x1b(B\x1b=ok\x1b>')).toBe('ok');
+  });
+
+  it('shows a redrawn line as its latest frame, on every line', () => {
+    expect(shellDisplayText('10%\r50%\r100%\nnext\r\n')).toBe('100%\nnext\n');
+    expect(shellDisplayText('a\rb\r')).toBe('b');
   });
 });
 

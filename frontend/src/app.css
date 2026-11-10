@@ -622,12 +622,13 @@ pre, code, kbd, samp, .ansi-body {
   animation-timeline: scroll(self x);
 }
 
-/* Run on a shell code block needs a thread to run in, so it shows only
-   inside a chat surface (components/chat/markdown/codeRun.ts). */
+/* Run on a shell code block needs a thread to run in and a session that may
+   run commands there, so it shows only inside a chat surface that says so
+   (components/chat/markdown/codeRun.ts, ChatView). */
 .code-run-action {
   display: none;
 }
-[data-ui-surface="chat"] .code-run-action {
+[data-ui-surface="chat"][data-shell-runnable] .code-run-action {
   display: inline-flex;
 }
 

@@ -6379,12 +6379,6 @@ export class ShellCommandRequest {
     "runId": string;
     "command": string;
 
-    /**
-     * RuntimeMode is the composer's staged runtime mode, applied when the
-     * result is sent, exactly as SendMessageWithOptions applies it.
-     */
-    "runtimeMode"?: string;
-
     /** Creates a new ShellCommandRequest instance. */
     constructor($$source: Partial<ShellCommandRequest> = {}) {
         if (!("runId" in $$source)) {

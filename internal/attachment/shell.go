@@ -197,19 +197,12 @@ func (s *Store) ReadShellOutput(threadID, attachmentID string, offset int64, lim
 	}, nil
 }
 
-// wholeRunePrefix is the length of b without a trailing rune that has begun
-// and not finished. A chunk that is nothing but such a rune is kept whole so
-// a read always advances.
+// wholeRunePrefix is b without a trailing rune that has begun and not
+// finished. A chunk that is nothing but such a rune is kept whole so a read
+// always advances.
 func wholeRunePrefix(b []byte) int {
-	for back := 1; back < utf8.UTFMax && back <= len(b); back++ {
-		start := len(b) - back
-		if !utf8.RuneStart(b[start]) {
-			continue
-		}
-		if !utf8.FullRune(b[start:]) && start > 0 {
-			return start
-		}
-		break
+	if n := stringsx.CompleteRunePrefix(b); n > 0 {
+		return n
 	}
 	return len(b)
 }

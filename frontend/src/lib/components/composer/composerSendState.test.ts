@@ -121,7 +121,7 @@ describe('deriveComposerSendState', () => {
   // A draft that is a shell command: Send means Run, whatever else the
   // composer holds, and only a command that can run enables it.
   it('turns Send into Run for a shell command and enables it only when ready', () => {
-    const run = { action: 'send', label: 'Run', hasPlanImplementAction: false };
+    const run = { action: 'run', label: 'Run', hasPlanImplementAction: false };
     expect(deriveComposerSendState(input({ shell: 'ready', hasDraftContent: true }))).toEqual({ ...run, canSend: true });
     expect(deriveComposerSendState(input({ shell: 'empty', hasDraftContent: true }))).toEqual({ ...run, canSend: false });
     expect(deriveComposerSendState(input({ shell: 'blocked', hasDraftContent: true }))).toEqual({ ...run, canSend: false });

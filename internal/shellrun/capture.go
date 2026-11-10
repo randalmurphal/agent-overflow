@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"agent-overflow/internal/stringsx"
 )
 
 // capture is a run's single output sink: the bounded file the result is built
@@ -71,8 +74,11 @@ func (c *capture) Write(chunk []byte) (int, error) {
 		return len(chunk), nil
 	}
 	// Output that never emits a newline (a progress bar redrawing on \r)
-	// still has to reach the client, so a partial buffer is time-bounded.
-	c.armLocked()
+	// still has to reach the client, so a partial buffer is time-bounded:
+	// the timer runs from the first buffered byte, not the latest.
+	if !c.armed {
+		c.armLocked()
+	}
 	return len(chunk), nil
 }
 
@@ -126,7 +132,7 @@ func (c *capture) flushLocked(final bool) {
 	c.armed = false
 	cut := len(c.pending)
 	if !final {
-		cut = completePrefix(c.pending)
+		cut = stringsx.CompleteRunePrefix(c.pending)
 	}
 	if cut == 0 {
 		return
@@ -140,22 +146,6 @@ func (c *capture) flushLocked(final bool) {
 	})
 }
 
-// completePrefix is the length of b without a trailing rune that has begun
-// and not finished.
-func completePrefix(b []byte) int {
-	for back := 1; back <= utf8.UTFMax-1 && back <= len(b); back++ {
-		start := len(b) - back
-		if !utf8.RuneStart(b[start]) {
-			continue
-		}
-		if !utf8.FullRune(b[start:]) {
-			return start
-		}
-		break
-	}
-	return len(b)
-}
-
 // emitted is the retained output up to the last frame, with that frame's
 // sequence. Bytes buffered for the next frame are left out: the tail holds
 // them already, and a snapshot that included them would deliver them twice.
@@ -165,6 +155,14 @@ func (c *capture) emitted() (seq uint64, output string, truncated bool) {
 	output = c.run.tail.String()
 	output = output[:max(0, len(output)-len(c.pending))]
 	return c.run.seq.Load(), output, c.run.tail.Truncated()
+}
+
+// note appends a line of the app's own to the output, on a line of its own.
+func (c *capture) note(line string) {
+	if tail := c.run.tail.String(); tail != "" && !strings.HasSuffix(tail, "\n") {
+		line = "\n" + line
+	}
+	_, _ = c.Write([]byte(line))
 }
 
 func (c *capture) truncated() bool {

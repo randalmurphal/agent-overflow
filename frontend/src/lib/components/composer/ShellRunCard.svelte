@@ -13,6 +13,7 @@
   import { getSettings } from '../../stores/settings.svelte';
   import { shellOutputTail } from '../../utils/shellInvocation';
   import { errString } from '../../utils/errors';
+  import { focusPaneComposer } from '../panes/paneComposerFocus';
   import AnsiText from '../chat/AnsiText.svelte';
   import { createRunningElapsed } from '../chat/useRunningElapsed.svelte';
   import Button from '../primitives/Button.svelte';
@@ -32,21 +33,30 @@
   const tail = $derived(run && running ? shellOutputTail(run.output, TAIL_LINES) : '');
   const elapsed = createRunningElapsed(() => running, () => run?.startedAt ?? 0, 1_000);
 
+  // The card's buttons go away with the card. Focus moves to the composer
+  // first, so it never falls to the document.
   async function stop(): Promise<void> {
     const threadId = pane.threadId;
     if (!threadId) return;
+    focusPaneComposer(pane.paneId);
     try {
       await stopShellCommand(threadId);
     } catch (err) {
       pane.setGeneralError(`Failed to stop the command: ${errString(err)}`, err);
     }
   }
+
+  function dismiss(): void {
+    if (!pane.threadId) return;
+    focusPaneComposer(pane.paneId);
+    dismissShellRun(pane.threadId);
+  }
 </script>
 
 {#if run && pane.threadId}
   <div
     class="mb-2 overflow-hidden rounded-lg border bg-card shadow-sheet {running ? 'border-border' : 'border-error/40'}"
-    role="status"
+    role="group"
     aria-label={running ? 'Running command' : 'Command failed'}
     data-testid="shell-run-card"
     data-state={run.state}
@@ -63,7 +73,7 @@
           {run.stopping ? 'Stopping…' : 'Stop'}
         </Button>
       {:else}
-        <Button variant="ghost" size="xs" onclick={() => dismissShellRun(pane.threadId!)} testId="shell-run-dismiss">
+        <Button variant="ghost" size="xs" onclick={dismiss} testId="shell-run-dismiss">
           Dismiss
         </Button>
       {/if}

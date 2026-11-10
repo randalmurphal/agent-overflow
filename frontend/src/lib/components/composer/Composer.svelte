@@ -96,8 +96,9 @@
   import { implementProposedPlan, implementProposedPlanInNewThread } from '../../utils/proposedPlanImplementation';
   import { sourceFromProposedPlanItem } from '../../utils/proposedPlan';
   import { isShellInput, shellCommandFromInput } from '../../utils/shellInvocation';
-  import { isShellRunActive, runShellCommand } from '../../stores/shellCommands.svelte';
-  import { workspaceLabel } from './shellRunLabel';
+  import { getShellRun, isShellRunActive, runShellCommand } from '../../stores/shellCommands.svelte';
+  import { isTransportClassError } from '../../stores/transportStatus.svelte';
+  import { pathBasename } from '../../utils/pathDisplay';
   import type { DiffReviewComment, Item, ProposedPlanComment, SourceDiffReview, SourceProposedPlan } from '../../types/models';
 
   interface Props {
@@ -388,7 +389,11 @@
       Boolean(pane.thread?.worktreePath) ||
       // Applying a staged branch/worktree intent materializes an item-less
       // draft row first; deleting it mid-RPC fails the apply on the backend.
-      isWorktreeIntentApplying(pane.threadId)
+      isWorktreeIntentApplying(pane.threadId) ||
+      // Running a command clears the composer while the thread is still
+      // empty. Its output becomes the first message, and a failure notice
+      // has to stay readable.
+      getShellRun(pane.threadId) !== null
     );
   }
 
@@ -621,6 +626,9 @@
     // must not materialize a thread, open a queue slot, or leave a persisted
     // draft behind. The composed message is what the backend would have seen,
     // so the classification matches what a send would actually have sent.
+    // The command Enter was pressed on. The steps below await, and the text
+    // can change under them; only this command may run.
+    const commandAtSubmit = shellCommand;
     if (!hasUserInputPrompt && (surface?.consumeInterceptedSend(draft.composeOutgoingMessage()) ?? false)) {
       // Consume the TEXT only. Attachments and terminal chips are the user's
       // uploads, not part of the command, so they stay in the draft.
@@ -650,13 +658,12 @@
     if (hasStagedWorktreeIntent(pane.thread)) {
       if (!(await prepareWorktreeForSend(pane, isCurrent)) || !isCurrent() || !sendState.canSend) return;
     }
-    // Read after the awaits above: the workspace the command runs in is the
-    // one they just settled, and the text is what is in the box now.
-    const commandToRun = shellCommand;
-    if (shellMode) {
+    if (shellMode || commandAtSubmit !== null) {
+      // After the awaits above, so the command runs in the workspace they
+      // settled. Text edited meanwhile is left alone, unsent and not run.
       const shellThreadId = pane.threadId;
-      if (commandToRun === null || !shellThreadId) return;
-      await runShellFromComposer(pane, draft, shellThreadId, commandToRun);
+      if (commandAtSubmit === null || shellCommand !== commandAtSubmit || !shellThreadId) return;
+      await runShellFromComposer(pane, draft, shellThreadId, commandAtSubmit);
       return;
     }
     const planSourceForImplement = latestPlanSource;
@@ -859,10 +866,20 @@
     try {
       await runShellCommand(threadId, command);
     } catch (err) {
-      // Refused before it ran. Give the text back unless the person has
-      // already typed something else into the same draft.
-      if (draft.threadId === threadId && draft.content === '') draft.setContent(typed);
-      pane.setGeneralError(`Failed to run the command: ${errString(err)}`, err);
+      // A lost reply is not a refusal. The store keeps the run's identity,
+      // so running the restored text again cannot start it twice.
+      const message = isTransportClassError(err)
+        ? 'The connection dropped while the command was starting. Run it again: a command that already started is not run twice.'
+        : `Failed to run the command: ${errString(err)}`;
+      pane.setGeneralError(message, err);
+      // The text goes back ahead of anything typed since, on the thread it
+      // was typed in even when the pane has moved on.
+      try {
+        await draft.restoreUnsentDraftFor(threadId, { content: typed, attachments: [], terminalChips: [] });
+      } catch (restoreErr) {
+        console.error('Failed to restore the command text:', restoreErr);
+        pane.setGeneralError(`${message} The command text could not be restored.`, err);
+      }
     }
   }
 
@@ -1229,7 +1246,11 @@
           <span class="truncate text-warning">{shellBlockedReason}</span>
         {:else}
           <span class="truncate">
-            Runs in <span class="font-mono text-fg-muted">{workspaceLabel(paneWorkspacePath(pane))}</span>
+            {#if hasStagedWorktreeIntent(pane.thread)}
+              Runs in the new worktree
+            {:else}
+              Runs in <span class="font-mono text-fg-muted">{pathBasename(paneWorkspacePath(pane) ?? '') || 'the workspace'}</span>
+            {/if}
             · the output is sent to the agent
           </span>
         {/if}

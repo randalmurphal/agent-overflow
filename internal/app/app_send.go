@@ -170,7 +170,10 @@ type resolvedUserMessage struct {
 	// command is the composer command that expanded, without its slash
 	// ("workflow"), or "" when the message invoked none. Recorded in the
 	// stored item's meta.
-	command                string
+	command string
+	// shellCommand reports that content is the typed invocation of a shell
+	// output attachment and nothing else.
+	shellCommand           bool
 	providerAttachments    []provider.ImageAttachment
 	persistedAttachments   []store.Attachment
 	sourcePlan             *SourceProposedPlan
@@ -290,7 +293,7 @@ func (a *App) resolveUserMessageEnvelope(
 			return resolvedUserMessage{}, fmt.Errorf("composer command: %w", err)
 		}
 	}
-	providerContent = attachments.promptText(strings.Split(providerContent, usermessage.JoinSeparator), usermessage.JoinSeparator)
+	providerContent = attachments.promptText([]string{providerContent}, "")
 
 	userMeta, err := usermessage.Marshal(usermessage.Input{
 		Attachments:            attachments.records,
@@ -315,6 +318,7 @@ func (a *App) resolveUserMessageEnvelope(
 		content:                content,
 		providerContent:        providerContent,
 		command:                command,
+		shellCommand:           attachments.isInvocation(content),
 		providerAttachments:    attachments.images,
 		persistedAttachments:   attachments.records,
 		sourcePlan:             sourcePlan,
@@ -650,7 +654,9 @@ func (a *App) sendMessageLocked(
 		}
 	}
 
-	if !isCodexReview {
+	// A command says what was run, not what the work is: the first prompt
+	// names the branch.
+	if !isCodexReview && !resolved.shellCommand {
 		a.maybeRenameTemporaryWorktreeBranch(threadID, content)
 	}
 
@@ -1067,33 +1073,70 @@ func (t turnAttachments) isInvocation(content string) bool {
 	return typed != "" && slices.Contains(t.invocations, typed)
 }
 
-// promptText is a message's provider text: its parts joined by separator,
-// with what the file attachments add. A part that is exactly the invocation
-// of a shell output file is replaced by that file's command block, so the
-// model reads the command where the person ran it and the typed `!command`
-// stays a transcript fact, like a composer command's word. Every other file
-// line is appended after a blank line.
-func (t turnAttachments) promptText(parts []string, separator string) string {
-	parts = slices.Clone(parts)
+// promptText is the provider text of one or more messages, joined by
+// separator, with what the file attachments add. The typed invocation of a
+// shell output file is replaced by that file's command block, so the model
+// reads the command where the person ran it and the typed `!command` stays a
+// transcript fact, like a composer command's word. An invocation is matched
+// between the join rules of a message (usermessage.JoinSeparator), and can
+// span several of them: a command may hold that rule itself, as a heredoc
+// does. Every other file line is appended after a blank line.
+func (t turnAttachments) promptText(messages []string, separator string) string {
+	// parts are the messages' joined parts in order. gaps[i] follows parts[i].
+	var parts, gaps []string
+	for i, message := range messages {
+		split := strings.Split(message, usermessage.JoinSeparator)
+		for j, part := range split {
+			gap := usermessage.JoinSeparator
+			if j == len(split)-1 {
+				gap = separator
+				if i == len(messages)-1 {
+					gap = ""
+				}
+			}
+			parts, gaps = append(parts, part), append(gaps, gap)
+		}
+	}
 	claimed := make([]bool, len(parts))
 	lines := make([]string, 0, len(t.fileLines))
 	for i, line := range t.fileLines {
-		at := -1
+		at, span := -1, 0
 		if invocation := t.invocations[i]; invocation != "" {
-			for j, part := range parts {
-				if !claimed[j] && strings.TrimSpace(part) == invocation {
-					at = j
-					break
-				}
-			}
+			span = strings.Count(invocation, usermessage.JoinSeparator) + 1
+			at = findInvocation(parts, gaps, claimed, invocation, span)
 		}
 		if at < 0 {
 			lines = append(lines, line)
 			continue
 		}
-		parts[at], claimed[at] = line, true
+		parts[at], gaps[at], claimed[at] = line, gaps[at+span-1], true
+		for k := at + 1; k < at+span; k++ {
+			parts[k], gaps[k], claimed[k] = "", "", true
+		}
 	}
-	return appendFileAttachmentLines(strings.Join(parts, separator), lines)
+	var text strings.Builder
+	for i, part := range parts {
+		text.WriteString(part)
+		text.WriteString(gaps[i])
+	}
+	return appendFileAttachmentLines(text.String(), lines)
+}
+
+// findInvocation returns the first run of span unclaimed parts of one message
+// that is exactly invocation, or -1.
+func findInvocation(parts, gaps []string, claimed []bool, invocation string, span int) int {
+candidates:
+	for at := 0; at+span <= len(parts); at++ {
+		for k := at; k < at+span; k++ {
+			if claimed[k] || (k < at+span-1 && gaps[k] != usermessage.JoinSeparator) {
+				continue candidates
+			}
+		}
+		if strings.TrimSpace(strings.Join(parts[at:at+span], usermessage.JoinSeparator)) == invocation {
+			return at
+		}
+	}
+	return -1
 }
 
 // resolveSendMessageAttachments validates the requested attachment IDs,

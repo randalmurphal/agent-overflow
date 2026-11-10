@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude/sessionfork"
 )
 
 var userShellOutputEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
@@ -22,14 +23,15 @@ func FormatUserShellCommand(command provider.UserShellCommand) string {
 	out.Grow(len(command.Command) + len(output) + 96)
 	out.WriteString("<bash-input>")
 	out.WriteString(command.Command)
-	out.WriteString("</bash-input>\n")
+	// One message holds both tags, which is how the fork-point walk tells
+	// this record from the two entries the CLI's own `!` mode writes.
+	out.WriteString(sessionfork.HostShellRecordJoint)
 	if command.ExitCode == 0 && !command.TimedOut {
-		out.WriteString("<bash-stdout>")
 		out.WriteString(strings.TrimRight(output, "\n"))
 		out.WriteString("</bash-stdout><bash-stderr></bash-stderr>")
 		return out.String()
 	}
-	out.WriteString("<bash-stdout></bash-stdout><bash-stderr>")
+	out.WriteString("</bash-stdout><bash-stderr>")
 	out.WriteString(output)
 	if output != "" && !strings.HasSuffix(output, "\n") {
 		out.WriteByte('\n')

@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import type { ThreadPane } from '../../stores/thread.svelte';
+import { createThreadMessageUiState } from '../../stores/threadMessageUiState.svelte';
 import type { ShellOutputMeta } from '../../utils/shellInvocation';
 import ShellCommandBlock from './ShellCommandBlock.svelte';
 
 function props(shell: Partial<ShellOutputMeta> = {}, size = 12) {
   return {
+    itemId: 'item-1',
     threadId: 'thread-1',
     attachmentId: 'att-1',
     size,
@@ -124,5 +127,51 @@ describe('<ShellCommandBlock>', () => {
     expect(getByTestId('shell-command-line').textContent).toBe('echo the wh…');
     await fireEvent.click(getByTestId('shell-command-toggle'));
     await waitFor(() => expect(getByTestId('shell-command-line').textContent).toBe('echo the whole command'));
+  });
+
+  it('shows a whole short command when there is nothing to open', () => {
+    const command = 'for f in a b c\ndo\n  echo $f\ndone\necho finished';
+    const whole = render(ShellCommandBlock, { props: props({ command }) });
+    // No toggle exists, so a clamp would hide lines for good.
+    expect(whole.queryByTestId('shell-command-toggle')).toBeNull();
+    expect(whole.getByTestId('shell-command-line').className).not.toContain('line-clamp-3');
+    whole.unmount();
+
+    const openable = render(ShellCommandBlock, { props: props({ command, more: true }, 30) });
+    expect(openable.getByTestId('shell-command-line').className).toContain('line-clamp-3');
+  });
+
+  it('shows output as a terminal would leave it', () => {
+    const preview = 'Building\rBuilding 50%\rBuilding 100%\x1b[K\n\x1b[2Kdone\x1b[0m\n';
+    const { getByTestId } = render(ShellCommandBlock, { props: props({ preview }) });
+    expect(getByTestId('shell-command-output').querySelector('pre')?.textContent).toBe('Building 100%\ndone\n');
+  });
+
+  it('is still open, and reads its output again, when it returns to the timeline', async () => {
+    const read = setBindingMock('ReadShellAttachmentOutput', async () => ({
+      command: 'git status', data: 'On branch main\nline 2\n', offset: 0, size: 22, next: 22,
+    }));
+    const ui = createThreadMessageUiState({ getItemById: () => undefined, loadedItems: () => [] });
+    const pane = {
+      isUserMessageExpanded: ui.isExpanded,
+      setUserMessageExpanded: ui.setExpanded,
+    } as unknown as ThreadPane;
+    const first = render(ShellCommandBlock, { props: { ...props({ more: true }, 22), pane } });
+    await fireEvent.click(first.getByTestId('shell-command-toggle'));
+    await waitFor(() => expect(first.getByTestId('shell-command-output').textContent).toContain('line 2'));
+    expect(ui.isExpanded('item-1', 'att-1')).toBe(true);
+    // The message's own text is separate state.
+    expect(ui.isExpanded('item-1')).toBe(false);
+    first.unmount();
+
+    // The virtual window dropped the row and mounted it again.
+    const again = render(ShellCommandBlock, { props: { ...props({ more: true }, 22), pane } });
+    expect(again.getByTestId('shell-command-toggle').getAttribute('aria-expanded')).toBe('true');
+    await waitFor(() => expect(again.getByTestId('shell-command-output').textContent).toContain('line 2'));
+    expect(read).toHaveBeenCalledTimes(2);
+
+    await fireEvent.click(again.getByTestId('shell-command-toggle'));
+    expect(ui.isExpanded('item-1', 'att-1')).toBe(false);
+    expect(again.getByTestId('shell-command-output').querySelector('pre')?.textContent).toBe('On branch main\n');
   });
 });

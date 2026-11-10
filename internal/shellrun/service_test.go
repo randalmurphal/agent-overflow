@@ -3,7 +3,6 @@
 package shellrun
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -218,7 +217,7 @@ func TestFinishFailureAndStartFailureReachTheTerminalFrame(t *testing.T) {
 	if _, err := service.Start(shellRequest(t, "run-1", "echo hi")); err != nil {
 		t.Fatal(err)
 	}
-	if final := rec.terminal(t); final.State != StateFailed || final.Error != "send refused" {
+	if final := rec.terminal(t); final.State != StateFailed || !strings.HasSuffix(final.Error, "was not sent: send refused") {
 		t.Fatalf("finish failure frame: %+v", final)
 	}
 
@@ -345,30 +344,6 @@ func TestCaptureCapKeepsHeadMarkerAndTail(t *testing.T) {
 	}
 }
 
-func TestCompletePrefix(t *testing.T) {
-	t.Parallel()
-	euro := []byte("€") // three bytes
-	for name, tc := range map[string]struct {
-		in   []byte
-		want int
-	}{
-		"empty":            {nil, 0},
-		"ascii":            {[]byte("abc"), 3},
-		"whole rune":       {append([]byte("a"), euro...), 4},
-		"one byte of rune": {append([]byte("a"), euro[:1]...), 1},
-		"two bytes":        {append([]byte("a"), euro[:2]...), 1},
-		"only partial":     {euro[:2], 0},
-		"invalid tail":     {[]byte{'a', 0xff}, 2},
-	} {
-		if got := completePrefix(tc.in); got != tc.want {
-			t.Errorf("%s: completePrefix(%q) = %d, want %d", name, tc.in, got, tc.want)
-		}
-	}
-	if !bytes.Equal(euro, []byte("€")) {
-		t.Fatal("input mutated")
-	}
-}
-
 func TestNewClearsStaleCaptures(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "captures")
@@ -386,5 +361,172 @@ func TestNewClearsStaleCaptures(t *testing.T) {
 	defer service.Stop()
 	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("stale capture survived: %v", err)
+	}
+}
+
+// A start that arrives again after its run settled is answered with how it
+// settled, whether or not anything was delivered.
+func TestARepeatedStartOfASettledRunIsAnsweredNotRun(t *testing.T) {
+	t.Parallel()
+	rec := &recorder{}
+	service := newService(t, rec, nil)
+	marker := filepath.Join(t.TempDir(), "ran")
+	sent := shellRequest(t, "run-sent", "echo once >> "+marker)
+	if _, err := service.Start(sent); err != nil {
+		t.Fatal(err)
+	}
+	rec.terminal(t)
+	if again, err := service.Start(sent); err != nil || again.State != StateSent {
+		t.Fatalf("repeat of a sent run: %+v %v", again, err)
+	}
+
+	stopped := shellRequest(t, "run-stopped", "echo once >> "+marker+"; echo started; sleep 60")
+	if _, err := service.Start(stopped); err != nil {
+		t.Fatal(err)
+	}
+	waitActiveOutput(t, service, "started")
+	if err := service.StopRun("thread-1", "run-stopped"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for service.HasActive() {
+		if time.Now().After(deadline) {
+			t.Fatal("the stopped run never settled")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if again, err := service.Start(stopped); err != nil || again.State != StateStopped {
+		t.Fatalf("repeat of a stopped run: %+v %v", again, err)
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "once\nonce\n" {
+		t.Fatalf("each command ran once, marker holds %q %v", data, err)
+	}
+}
+
+// Stop answers for what it did: once the outcome is decided and the result is
+// on its way, there is nothing left to stop.
+func TestStopAfterTheOutcomeIsDecidedReportsNotRunning(t *testing.T) {
+	t.Parallel()
+	inFinish, release := make(chan struct{}), make(chan struct{})
+	rec := &recorder{finish: func(Result) error {
+		close(inFinish)
+		<-release
+		return nil
+	}}
+	service := newService(t, rec, nil)
+	if _, err := service.Start(shellRequest(t, "run-1", "echo done")); err != nil {
+		t.Fatal(err)
+	}
+	<-inFinish
+	if err := service.StopRun("thread-1", "run-1"); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("stop during delivery: %v", err)
+	}
+	close(release)
+	if final := rec.terminal(t); final.State != StateSent {
+		t.Fatalf("terminal frame: %+v", final)
+	}
+}
+
+// Background processes are stopped with the command, and the output says so.
+func TestLeftoverProcessesAreNamedInTheOutput(t *testing.T) {
+	t.Parallel()
+	rec := &recorder{}
+	service := newService(t, rec, nil)
+	if _, err := service.Start(shellRequest(t, "run-1", "sleep 60 & echo started")); err != nil {
+		t.Fatal(err)
+	}
+	if final := rec.terminal(t); final.State != StateSent {
+		t.Fatalf("terminal frame: %+v", final)
+	}
+	_, _, outputs := rec.snapshot()
+	if len(outputs) != 1 || outputs[0] != "started\n"+leftoversNotice {
+		t.Fatalf("output: %q", outputs)
+	}
+}
+
+// Removing a directory stops the commands running inside it, whichever
+// thread they belong to, and no others.
+func TestCancelDirStopsOnlyCommandsInsideTheDirectory(t *testing.T) {
+	t.Parallel()
+	rec := &recorder{}
+	service := newService(t, rec, nil)
+	root := t.TempDir()
+	inside, sibling := filepath.Join(root, "tree", "sub"), filepath.Join(root, "tree-other")
+	for _, dir := range []string{inside, sibling} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := func(threadID, runID, dir string) {
+		request := shellRequest(t, runID, "sleep 60")
+		request.ThreadID, request.Dir = threadID, dir
+		if _, err := service.Start(request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start("thread-inside", "run-inside", inside)
+	start("thread-sibling", "run-sibling", sibling)
+	service.CancelDir(filepath.Join(root, "tree"))
+	// CancelDir returns when the process group is gone. The run leaves the
+	// registry when it settles, which the terminal frame follows.
+	if final := rec.terminal(t); final.RunID != "run-inside" || final.State != StateStopped {
+		t.Fatalf("terminal frame: %+v", final)
+	}
+	if service.ActiveRunID("thread-inside") != "" {
+		t.Fatal("the command inside the directory is still registered as running")
+	}
+	if service.ActiveRunID("thread-sibling") != "run-sibling" {
+		t.Fatal("a command in a sibling directory was stopped")
+	}
+}
+
+// A command the kill could not end is reported as still running, even to the
+// person who pressed Stop.
+func TestACommandThatSurvivesTheKillIsReported(t *testing.T) {
+	t.Parallel()
+	rec := &recorder{}
+	service := newService(t, rec, func(config *Config) {
+		config.Run = func(ctx context.Context, _ procutil.GroupCommand) (procutil.GroupOutcome, error) {
+			<-ctx.Done()
+			return procutil.GroupOutcome{ExitCode: -1}, procutil.ErrGroupSurvived
+		}
+	})
+	if _, err := service.Start(shellRequest(t, "run-1", "sudo tail -f /dev/null")); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.StopRun("thread-1", "run-1"); err != nil {
+		t.Fatal(err)
+	}
+	if final := rec.terminal(t); final.State != StateFailed || !strings.Contains(final.Error, "still running") {
+		t.Fatalf("terminal frame: %+v", final)
+	}
+}
+
+// Two runs with one id cannot share a capture: the second fails, and the
+// first keeps its output.
+func TestAFailedRunDoesNotRemoveAnotherRunsCapture(t *testing.T) {
+	t.Parallel()
+	rec := &recorder{}
+	service := newService(t, rec, nil)
+	first := shellRequest(t, "run-shared", "echo first; sleep 1; echo done")
+	if _, err := service.Start(first); err != nil {
+		t.Fatal(err)
+	}
+	waitActiveOutput(t, service, "first")
+	second := shellRequest(t, "run-shared", "echo second")
+	second.ThreadID = "thread-2"
+	if _, err := service.Start(second); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for service.HasActive() {
+		if time.Now().After(deadline) {
+			t.Fatal("the runs never settled")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_, results, outputs := rec.snapshot()
+	if len(results) != 1 || results[0].ThreadID != "thread-1" || outputs[0] != "first\ndone\n" {
+		t.Fatalf("delivered: %+v %q", results, outputs)
 	}
 }

@@ -33,6 +33,11 @@ const (
 
 	flushInterval = 100 * time.Millisecond
 	flushBytes    = 8 << 10
+
+	// leftoversNotice ends the output of a command that left processes
+	// running in its group. They are stopped with the command, and neither
+	// the person nor the model could tell that from the output alone.
+	leftoversNotice = "[Background processes this command left running were stopped.]\n"
 )
 
 const (
@@ -57,7 +62,8 @@ var ErrBusy = errors.New("a shell command is already running in this thread")
 var ErrNotRunning = errors.New("shell command is not running")
 
 // Request starts one command. RunID is the caller's idempotency identity: a
-// repeated Start with the id of the running command returns that run.
+// repeated Start with the id of the running command returns that run, and
+// with the id of a command that settled returns how it settled.
 type Request struct {
 	ThreadID string
 	RunID    string
@@ -67,8 +73,6 @@ type Request struct {
 	Env      []string
 	// Timeout bounds the run. Zero means DefaultTimeout.
 	Timeout time.Duration
-	// Payload is opaque to the service and handed back on the Result.
-	Payload any
 }
 
 // Result is a settled command the person did not stop.
@@ -87,11 +91,6 @@ type Result struct {
 	// head, an omission marker and the retained tail.
 	Truncated bool
 	TimedOut  bool
-	// Leftovers reports background processes the command left in its group;
-	// they were stopped.
-	Leftovers bool
-	// Payload is the request's.
-	Payload any
 }
 
 // RunState is the snapshot of a running command.
@@ -136,8 +135,6 @@ type Config struct {
 	Finish func(context.Context, Result) error
 	// Context is the host lifetime; its cancellation stops every run.
 	Context func() context.Context
-	// BeginWork takes the host's restart lease for the life of a run.
-	BeginWork func(context.Context) (func(), error)
 	// ShutdownError is returned by Start once Stop has begun.
 	ShutdownError error
 	Run           Runner
@@ -151,8 +148,34 @@ type Service struct {
 
 	mu      sync.Mutex
 	runs    map[string]*run // by thread id
+	settled settledRuns
 	stopped bool
 	wg      sync.WaitGroup
+}
+
+// settledRunsKept bounds the memory of settled runs. A repeated start arrives
+// within a reconnect of the first, so the newest few are the ones asked about.
+const settledRunsKept = 256
+
+// settledRuns remembers how recent runs ended, so a start repeated after its
+// command settled is answered instead of running the command again.
+type settledRuns struct {
+	states map[string]string // run id to terminal state
+	order  []string          // oldest first
+}
+
+func (r *settledRuns) record(runID, state string) {
+	if r.states == nil {
+		r.states = make(map[string]string)
+	}
+	if _, known := r.states[runID]; !known {
+		if len(r.order) == settledRunsKept {
+			delete(r.states, r.order[0])
+			r.order = r.order[1:]
+		}
+		r.order = append(r.order, runID)
+	}
+	r.states[runID] = state
 }
 
 type run struct {
@@ -166,14 +189,13 @@ type run struct {
 	capture atomic.Pointer[capture]
 	// exited closes once the process group is gone, before any Finish work.
 	exited chan struct{}
-	// stopReason is set under Service.mu by whoever cancels the run.
-	stopReason string
+	// stopped is set under Service.mu by whoever cancels the run: its result
+	// is discarded.
+	stopped bool
+	// settling is set under Service.mu once the outcome is decided. A stop
+	// that arrives later did not stop anything.
+	settling bool
 }
-
-const (
-	stopByPerson   = "person"
-	stopByTeardown = "teardown"
-)
 
 // New prepares the capture directory and returns a service with no runs.
 func New(config Config) (*Service, error) {
@@ -188,9 +210,6 @@ func New(config Config) (*Service, error) {
 	}
 	if config.Context == nil {
 		config.Context = context.Background
-	}
-	if config.BeginWork == nil {
-		config.BeginWork = func(ctx context.Context) (func(), error) { return func() {}, ctx.Err() }
 	}
 	if config.ShutdownError == nil {
 		config.ShutdownError = errors.New("shell command service stopped")
@@ -235,20 +254,18 @@ func (s *Service) Start(request Request) (RunState, error) {
 	if request.Timeout <= 0 {
 		request.Timeout = DefaultTimeout
 	}
-	endWork, err := s.config.BeginWork(s.config.Context())
-	if err != nil {
-		return RunState{}, err
-	}
 
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
-		endWork()
 		return RunState{}, s.config.ShutdownError
+	}
+	if state, settled := s.settled.states[request.RunID]; settled {
+		s.mu.Unlock()
+		return RunState{ThreadID: request.ThreadID, RunID: request.RunID, Command: request.Command, State: state}, nil
 	}
 	if existing := s.runs[request.ThreadID]; existing != nil {
 		s.mu.Unlock()
-		endWork()
 		if existing.request.RunID == request.RunID {
 			return existing.snapshot(), nil
 		}
@@ -266,7 +283,6 @@ func (s *Service) Start(request Request) (RunState, error) {
 
 	go func() {
 		defer s.wg.Done()
-		defer endWork()
 		defer cancel()
 		s.execute(ctx, current)
 	}()
@@ -282,6 +298,13 @@ func (s *Service) Active(threadID string) []RunState {
 		return nil
 	}
 	return []RunState{current.snapshot()}
+}
+
+// HasActive reports whether any command is running or being sent.
+func (s *Service) HasActive() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.runs) != 0
 }
 
 // ActiveRunID is the id of the thread's running command, or empty. It is the
@@ -300,13 +323,11 @@ func (s *Service) ActiveRunID(threadID string) string {
 func (s *Service) StopRun(threadID, runID string) error {
 	s.mu.Lock()
 	current := s.runs[threadID]
-	if current == nil || current.request.RunID != runID {
+	if current == nil || current.request.RunID != runID || current.settling {
 		s.mu.Unlock()
 		return ErrNotRunning
 	}
-	if current.stopReason == "" {
-		current.stopReason = stopByPerson
-	}
+	current.stopped = true
 	s.mu.Unlock()
 	current.cancel()
 	return nil
@@ -318,12 +339,36 @@ func (s *Service) StopRun(threadID, runID string) error {
 func (s *Service) CancelThread(threadID string) {
 	s.mu.Lock()
 	current := s.runs[threadID]
-	if current != nil && current.stopReason == "" {
-		current.stopReason = stopByTeardown
+	if current != nil {
+		current.stopped = true
 	}
 	s.mu.Unlock()
 	if current != nil {
 		current.cancel()
+		<-current.exited
+	}
+}
+
+// CancelDir stops every command running in dir or below it, for a teardown
+// that removes the directory, and returns once their process groups are gone.
+// A thread can have moved to another workspace since its command started, so
+// the directory is the authority, not the thread.
+func (s *Service) CancelDir(dir string) {
+	dir = filepath.Clean(dir)
+	s.mu.Lock()
+	var inside []*run
+	for _, current := range s.runs {
+		rel, err := filepath.Rel(dir, filepath.Clean(current.request.Dir))
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			current.stopped = true
+			inside = append(inside, current)
+		}
+	}
+	s.mu.Unlock()
+	for _, current := range inside {
+		current.cancel()
+	}
+	for _, current := range inside {
 		<-current.exited
 	}
 }
@@ -335,9 +380,7 @@ func (s *Service) Stop() {
 	s.stopped = true
 	cancels := make([]context.CancelFunc, 0, len(s.runs))
 	for _, current := range s.runs {
-		if current.stopReason == "" {
-			current.stopReason = stopByTeardown
-		}
+		current.stopped = true
 		cancels = append(cancels, current.cancel)
 	}
 	s.mu.Unlock()
@@ -369,15 +412,10 @@ func (s *Service) execute(ctx context.Context, current *run) {
 	})
 
 	capturePath := filepath.Join(s.config.Dir, request.RunID+".log")
-	defer func() {
-		if err := os.Remove(capturePath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			// The directory is emptied at the next start, so the leak is bounded.
-			log.Printf("shellrun: remove capture %s: %v", capturePath, err)
-		}
-	}()
 	settle := func(state, message string, exitCode int) {
 		s.mu.Lock()
 		delete(s.runs, request.ThreadID)
+		s.settled.record(request.RunID, state)
 		s.mu.Unlock()
 		s.config.Emit(Event{
 			Phase: PhaseFinished, ThreadID: request.ThreadID, RunID: request.RunID,
@@ -392,25 +430,41 @@ func (s *Service) execute(ctx context.Context, current *run) {
 		settle(StateFailed, "Could not capture the command's output: "+err.Error(), -1)
 		return
 	}
+	// Registered only now: a capture this run did not create is another
+	// run's file.
+	defer func() {
+		if err := os.Remove(capturePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			// The directory is emptied at the next start, so the leak is bounded.
+			log.Printf("shellrun: remove capture %s: %v", capturePath, err)
+		}
+	}()
 	current.capture.Store(capture)
 	outcome, runErr := s.config.Run(ctx, procutil.GroupCommand{
 		Dir: request.Dir, Env: request.Env,
 		Argv: []string{request.Shell, "-c", request.Command}, Output: capture,
 	})
 	close(current.exited)
+	if outcome.Leftovers {
+		capture.note(leftoversNotice)
+	}
 	closeErr := errors.Join(capture.close(), outcome.PipeErr)
 	duration := s.config.Now().Sub(current.startedAt)
 
 	s.mu.Lock()
-	stopReason := current.stopReason
+	stopped := current.stopped
+	current.settling = true
 	s.mu.Unlock()
-	timedOut := stopReason == "" && errors.Is(ctx.Err(), context.DeadlineExceeded)
+	timedOut := !stopped && errors.Is(ctx.Err(), context.DeadlineExceeded)
 	// A command that died to a signal reports -1 through an ExitError; any
 	// other error with -1 means the process never ran.
 	var exitErr *exec.ExitError
 	started := runErr == nil || errors.As(runErr, &exitErr)
 	switch {
-	case stopReason != "", ctx.Err() != nil && !timedOut:
+	case errors.Is(runErr, procutil.ErrGroupSurvived):
+		// Said even to the person who pressed Stop: the command is not gone.
+		settle(StateFailed, "The command could not be stopped and is still running. It runs as another user, so end it from a terminal.", -1)
+		return
+	case stopped, ctx.Err() != nil && !timedOut:
 		settle(StateStopped, "", outcome.ExitCode)
 		return
 	case !started:
@@ -426,11 +480,10 @@ func (s *Service) execute(ctx context.Context, current *run) {
 	finishErr := s.config.Finish(context.WithoutCancel(ctx), Result{
 		ThreadID: request.ThreadID, RunID: request.RunID, Command: request.Command,
 		ExitCode: outcome.ExitCode, Duration: duration, OutputPath: capturePath,
-		Truncated: capture.truncated(), TimedOut: timedOut, Leftovers: outcome.Leftovers,
-		Payload: request.Payload,
+		Truncated: capture.truncated(), TimedOut: timedOut,
 	})
 	if finishErr != nil {
-		settle(StateFailed, finishErr.Error(), outcome.ExitCode)
+		settle(StateFailed, "The command finished, but its output was not sent: "+finishErr.Error(), outcome.ExitCode)
 		return
 	}
 	settle(StateSent, "", outcome.ExitCode)

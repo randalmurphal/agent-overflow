@@ -37,7 +37,9 @@ A draft whose first character is `!`, and that holds no command output, is
 a shell command: Send runs it through `stores/shellCommands.svelte.ts`
 instead of sending it, and only the text is consumed. The composer decides
 the mode and passes `shellPrefix` to the surface, which accents the `!`,
-sets the text in monospace and keeps slash completion closed. A draft that
+sets the text in monospace and keeps slash and mention completion closed.
+Send runs the command that was in the box when it was pressed: capture it
+before the send path's first await. A draft that
 holds a command's output (a message taken back) is a message again, so it
 is resent and never rerun. `ShellRunCard.svelte` shows the running command
 above the composer. Keyboard submit and the button share

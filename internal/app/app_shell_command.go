@@ -36,9 +36,6 @@ type ShellCommandRequest struct {
 	// the command twice nor sends its output twice.
 	RunID   string `json:"runId"`
 	Command string `json:"command"`
-	// RuntimeMode is the composer's staged runtime mode, applied when the
-	// result is sent, exactly as SendMessageWithOptions applies it.
-	RuntimeMode string `json:"runtimeMode,omitempty"`
 }
 
 // ShellCommandRun is a running command: the answer to a start and the
@@ -84,18 +81,12 @@ type ShellOutputPage struct {
 	Next    int64  `json:"next"`
 }
 
-// shellRunPayload is what a run carries from its start to its send.
-type shellRunPayload struct {
-	runtimeMode string
-}
-
 func (a *App) initShellCommands(dataDir string) error {
 	service, err := shellrun.New(shellrun.Config{
 		Dir:           filepath.Join(dataDir, "shell-runs"),
 		Emit:          a.emitShellCommandEvent,
 		Finish:        a.finishShellCommand,
 		Context:       a.lifeCtx,
-		BeginWork:     a.workAdmission.begin,
 		ShutdownError: ErrShuttingDown,
 	})
 	if err != nil {
@@ -139,18 +130,27 @@ func (a *App) RunThreadShellCommand(ctx context.Context, threadID string, reques
 	if err := a.requireScope(ctx, transport.ScopeThreadsOperate, "RunThreadShellCommand sends the command's output to the thread"); err != nil {
 		return ShellCommandRun{}, err
 	}
-	if err := a.requireAutonomyForThread(ctx, threadID, request.RuntimeMode); err != nil {
+	if err := a.requireAutonomyForThread(ctx, threadID, ""); err != nil {
 		return ShellCommandRun{}, err
 	}
 	if a.shellCommands == nil || a.attachments == nil {
 		return ShellCommandRun{}, errors.New("shell commands are not available")
 	}
-	if _, _, err := threadmode.ParseOptionalRuntime(request.RuntimeMode); err != nil {
-		return ShellCommandRun{}, fmt.Errorf("run shell command: %w", err)
-	}
-	if err := a.store.CheckThreadTransferAccess(threadID); err != nil {
+	// Held only while the run is registered. A running command is named by
+	// updateWorkReason, so an update waits for it without this lease.
+	endAdmission, err := a.workAdmission.begin(ctx)
+	if err != nil {
 		return ShellCommandRun{}, err
 	}
+	defer endAdmission()
+	// A thread delete drops the row under this lock and stops whatever the
+	// thread is running first, so a command registered here is either
+	// stopped by that delete or refused because the thread is gone.
+	unlockMutation, err := a.threadApplication().LockMutable(ctx, threadID)
+	if err != nil {
+		return ShellCommandRun{}, err
+	}
+	defer unlockMutation()
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		return ShellCommandRun{}, fmt.Errorf("run shell command: load thread: %w", err)
@@ -178,7 +178,6 @@ func (a *App) RunThreadShellCommand(ctx context.Context, threadID string, reques
 	state, err := a.shellCommands.Start(shellrun.Request{
 		ThreadID: threadID, RunID: request.RunID, Command: request.Command,
 		Dir: thread.WorkspacePath, Shell: userShell(), Env: userShellEnvironment(),
-		Payload: shellRunPayload{runtimeMode: request.RuntimeMode},
 	})
 	if err != nil {
 		return ShellCommandRun{}, err
@@ -240,6 +239,14 @@ func (a *App) cancelThreadShellCommand(threadID string) {
 	}
 }
 
+// cancelShellCommandsInDir stops every composer shell command running in a
+// directory that is about to be removed.
+func (a *App) cancelShellCommandsInDir(dir string) {
+	if a.shellCommands != nil {
+		a.shellCommands.CancelDir(dir)
+	}
+}
+
 func (a *App) stopShellCommands() {
 	if a.shellCommands != nil {
 		a.shellCommands.Stop()
@@ -248,35 +255,39 @@ func (a *App) stopShellCommands() {
 
 // finishShellCommand turns a settled command into the thread's next user
 // message: its output becomes a shell attachment, and the attachment is sent
-// alone. A failure after the attachment exists removes it, so a result the
-// agent never received leaves nothing behind.
+// alone. The output is removed again only when no message came to hold it:
+// a send can fail after its row is written (a session that would not start),
+// and that row still shows the output and can be sent again.
 func (a *App) finishShellCommand(ctx context.Context, result shellrun.Result) error {
-	payload, _ := result.Payload.(shellRunPayload)
 	record, err := a.saveShellOutput(ctx, result)
 	if err != nil {
-		return fmt.Errorf("the command finished, but its output could not be saved: %w", err)
+		return fmt.Errorf("save the output: %w", err)
 	}
 	unlockAdmission, err := a.lockSendAdmission(ctx, result.ThreadID, result.RunID)
 	if err == nil {
-		defer unlockAdmission()
 		_, err = a.sendMessageWithOptions(ctx, result.ThreadID, shellInvocation(result.Command), sendMessageOptions{
 			AttachmentIDs:     []string{record.ID},
-			RuntimeMode:       payload.runtimeMode,
 			SendID:            result.RunID,
 			ReconcileBySendID: true,
 			QueueIfActive:     true,
 			// The command did not come from the draft the composer holds now.
 			PreserveDraft: true,
 		})
+		unlockAdmission()
 	}
-	if err != nil {
-		sendErr := fmt.Errorf("the command finished, but its output could not be sent: %w", err)
-		if deleteErr := a.attachments.Delete(result.ThreadID, record.ID); deleteErr != nil {
-			return errors.Join(sendErr, fmt.Errorf("remove the unsent output: %w", deleteErr))
-		}
-		return sendErr
+	if err == nil {
+		return nil
 	}
-	return nil
+	_, recorded, findErr := a.findRecordedSend(result.ThreadID, result.RunID)
+	if findErr != nil || recorded {
+		// Unknown counts as recorded: a row without its output is worse
+		// than an output file nothing shows.
+		return errors.Join(err, findErr)
+	}
+	if deleteErr := a.attachments.Delete(result.ThreadID, record.ID); deleteErr != nil {
+		return errors.Join(err, fmt.Errorf("remove the unsent output: %w", deleteErr))
+	}
+	return err
 }
 
 func (a *App) saveShellOutput(ctx context.Context, result shellrun.Result) (store.Attachment, error) {

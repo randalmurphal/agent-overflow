@@ -49,10 +49,12 @@ export function shellInvocation(command: string): string {
 
 /**
  * A message's text without the invocations its shell attachments stand for.
- * Each attachment claims the first unclaimed part (between join separators)
- * that is exactly its invocation; the row shows a command block for the
- * attachment, so showing the typed line too would say it twice. Text that is
- * not exactly an invocation is the person's own and stays.
+ * Each attachment claims the first unclaimed run of parts (between join
+ * separators) that is exactly its invocation; the row shows a command block
+ * for the attachment, so showing the typed line too would say it twice. A
+ * command can hold the separator itself (a heredoc), so its invocation can
+ * span several parts, as `turnAttachments.promptText` matches it. Text that
+ * is not exactly an invocation is the person's own and stays.
  */
 export function textWithoutShellInvocations(text: string, shells: readonly ShellOutputMeta[]): string {
   if (shells.length === 0 || !text.includes(SHELL_PREFIX)) return text;
@@ -60,13 +62,18 @@ export function textWithoutShellInvocations(text: string, shells: readonly Shell
   const claimed = new Set<number>();
   for (const shell of shells) {
     const invocation = shellInvocation(shell.command);
-    const at = parts.findIndex((part, index) => {
-      if (claimed.has(index)) return false;
-      const typed = part.trim();
-      // A row's metadata bounds the command; the part still holds all of it.
-      return shell.commandTruncated ? typed.startsWith(invocation) : typed === invocation;
-    });
-    if (at >= 0) claimed.add(at);
+    // A row's metadata bounds the command, so a truncated one is matched by
+    // its start, in the part that begins it.
+    const span = shell.commandTruncated ? 1 : invocation.split(MESSAGE_JOIN_SEPARATOR).length;
+    for (let at = 0; at + span <= parts.length; at++) {
+      let free = true;
+      for (let k = at; k < at + span; k++) free &&= !claimed.has(k);
+      if (!free) continue;
+      const typed = parts.slice(at, at + span).join(MESSAGE_JOIN_SEPARATOR).trim();
+      if (shell.commandTruncated ? !typed.startsWith(invocation) : typed !== invocation) continue;
+      for (let k = at; k < at + span; k++) claimed.add(k);
+      break;
+    }
   }
   if (claimed.size === 0) return text;
   return parts.filter((_, index) => !claimed.has(index)).join(MESSAGE_JOIN_SEPARATOR);
@@ -92,22 +99,34 @@ export function shellOutcomeLabel(shell: Pick<ShellOutputMeta, 'exitCode' | 'tim
   return `exit ${shell.exitCode}`;
 }
 
+// Terminal control that is not color: cursor movement and erasure (CSI with
+// any final byte but `m`), character-set selection and keypad modes. Color
+// (SGR) and OSC are left for AnsiText, which renders one and drops the other.
+const NON_COLOR_CONTROL = /\x1b\[[0-?]*[ -/]*[@-ln-~]|\x1b[()][0-9A-Za-z]|\x1b[=>]/g;
+
 /**
- * The last `maxLines` lines of a live output stream as a terminal would show
- * them: a carriage return restarts its line, so a progress bar reads as its
- * latest frame instead of every frame it drew.
+ * Command output as a terminal would leave it on screen: cursor control is
+ * dropped and a carriage return restarts its line, so a progress bar reads
+ * as its latest frame instead of every frame it drew.
  */
-export function shellOutputTail(output: string, maxLines: number): string {
-  if (output === '' || maxLines <= 0) return '';
-  // A trailing newline ends the last line; it does not start an empty one.
-  const text = output.endsWith('\n') ? output.slice(0, -1) : output;
-  const lines = text.split('\n');
-  const kept = lines.slice(Math.max(0, lines.length - maxLines));
-  return kept
+export function shellDisplayText(output: string): string {
+  if (!output.includes('\x1b') && !output.includes('\r')) return output;
+  return output
+    .replace(NON_COLOR_CONTROL, '')
+    .split('\n')
     .map((line) => {
       const body = line.endsWith('\r') ? line.slice(0, -1) : line;
       const redraw = body.lastIndexOf('\r');
       return redraw >= 0 ? body.slice(redraw + 1) : body;
     })
     .join('\n');
+}
+
+/** The last `maxLines` lines of a live output stream, as shellDisplayText shows them. */
+export function shellOutputTail(output: string, maxLines: number): string {
+  if (output === '' || maxLines <= 0) return '';
+  // A trailing newline ends the last line; it does not start an empty one.
+  const text = output.endsWith('\n') ? output.slice(0, -1) : output;
+  const lines = text.split('\n');
+  return shellDisplayText(lines.slice(Math.max(0, lines.length - maxLines)).join('\n'));
 }

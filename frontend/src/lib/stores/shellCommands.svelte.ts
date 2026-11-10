@@ -13,6 +13,7 @@
 import type { ShellCommandEvent } from '../types/events';
 import { threadHasScope } from '../transport/entityScopes';
 import { randomId } from '../utils/randomId';
+import { isTransportClassError } from './transportStatus.svelte';
 import {
   GetThreadShellCommands,
   RunThreadShellCommand,
@@ -43,8 +44,17 @@ export const OUTPUT_TAIL_CHARS = 16 * 1024;
 
 const views = createKeyedSignalRegistry<ShellRunView | null>(null);
 // Bumped on every applied frame, so a live-state read that started before a
-// frame cannot overrule it (reconcileShellRun).
+// frame cannot overrule it (reconcileShellRun). Held only while the thread
+// has a view.
 const revisions = new Map<string, number>();
+// The start request in flight per thread, so Stop waits until the backend
+// knows the run it is asked to stop.
+const starting = new Map<string, Promise<unknown>>();
+// A start whose reply was lost keeps its run id. Running the same command
+// again asks the backend about that run instead of starting a second one
+// (RunThreadShellCommand answers a repeated id), until a frame or a reply
+// says what became of it.
+const uncertainStarts = new Map<string, { command: string; runId: string }>();
 const hydrationBuffers = new Map<string, ShellCommandEvent[]>();
 const hydrationTokens = new Map<string, number>();
 let nextHydrationToken = 1;
@@ -78,11 +88,13 @@ function tail(output: string): string {
 
 /**
  * Runs `command` in the thread's workspace. The view appears at once and the
- * backend's `started` frame confirms it; a refused start removes it and
+ * backend's `started` frame confirms it; a start that fails removes it and
  * rejects, so the caller can put the text back.
  */
 export async function runShellCommand(threadId: string, command: string): Promise<void> {
-  const runId = randomId();
+  const uncertain = uncertainStarts.get(threadId);
+  uncertainStarts.delete(threadId);
+  const runId = uncertain?.command === command ? uncertain.runId : randomId();
   views.set(threadId, {
     runId,
     command,
@@ -94,14 +106,26 @@ export async function runShellCommand(threadId: string, command: string): Promis
     stopping: false,
   });
   bump(threadId);
+  const request = RunThreadShellCommand(threadId, { runId, command });
+  starting.set(threadId, request);
   try {
-    const run = await RunThreadShellCommand(threadId, { runId, command });
-    // The retained frame was retried after the command had already settled.
-    if (run.state !== 'running' && views.get(threadId)?.runId === runId) drop(threadId);
+    const run = await request;
+    // The backend answered a repeated start for a run that had already
+    // settled. A failure it reported on the stream stays to be read.
+    if (run.state !== 'running' && isRunning(threadId, runId)) drop(threadId);
   } catch (err) {
-    if (views.get(threadId)?.runId === runId) drop(threadId);
+    if (isRunning(threadId, runId)) drop(threadId);
+    // The reply was lost, not refused: the command may be running.
+    if (isTransportClassError(err)) uncertainStarts.set(threadId, { command, runId });
     throw err;
+  } finally {
+    if (starting.get(threadId) === request) starting.delete(threadId);
   }
+}
+
+function isRunning(threadId: string, runId: string): boolean {
+  const view = views.get(threadId);
+  return view?.runId === runId && view.state === 'running';
 }
 
 /** Stops the thread's running command. Its output is discarded. */
@@ -110,12 +134,17 @@ export async function stopShellCommand(threadId: string): Promise<void> {
   if (!view || view.state !== 'running' || view.stopping) return;
   views.set(threadId, { ...view, stopping: true });
   try {
+    // A run the backend has not registered yet cannot be stopped.
+    await starting.get(threadId)?.catch(() => undefined);
+    if (!isRunning(threadId, view.runId)) return;
     await StopThreadShellCommand(threadId, view.runId);
   } catch (err) {
     const current = views.get(threadId);
     if (current?.runId === view.runId && current.stopping) {
       views.set(threadId, { ...current, stopping: false });
     }
+    // The run may have ended on a frame this client never received.
+    void hydrateShellRun(threadId);
     throw err;
   }
 }
@@ -127,7 +156,8 @@ export function dismissShellRun(threadId: string): void {
 
 function drop(threadId: string): void {
   views.drop(threadId);
-  bump(threadId);
+  // No entry reads as zero, which differs from every revision a view had.
+  revisions.delete(threadId);
 }
 
 /**
@@ -199,8 +229,8 @@ export function reconcileShellRun(threadId: string, runId: string, revisionAtReq
 }
 
 /** Transport-gap recovery: the gap carries no range, so re-read every run held. */
-export function resyncShellRuns(threadIds: Iterable<string>): void {
-  for (const threadId of threadIds) {
+export function resyncShellRuns(): void {
+  for (const threadId of views.keys()) {
     if (views.get(threadId)?.state === 'running') void hydrateShellRun(threadId);
   }
 }
@@ -219,6 +249,8 @@ export function applyShellCommandEvent(evt: ShellCommandEvent): void {
 
 function applyEvent(threadId: string, evt: ShellCommandEvent, replaying: boolean): void {
   const view = views.get(threadId);
+  // Any frame of the run settles what became of an uncertain start.
+  if (uncertainStarts.get(threadId)?.runId === evt.runId) uncertainStarts.delete(threadId);
   switch (evt.phase) {
     case 'started': {
       // The view this client made when it asked for the run keeps its
@@ -285,6 +317,8 @@ function applyEvent(threadId: string, evt: ShellCommandEvent, replaying: boolean
 export function resetShellRunsForTest(): void {
   views.reset();
   revisions.clear();
+  starting.clear();
+  uncertainStarts.clear();
   hydrationBuffers.clear();
   hydrationTokens.clear();
 }

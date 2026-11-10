@@ -256,12 +256,153 @@ func TestRunThreadShellCommandRemovesTheOutputWhenTheSendFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	final := waitShellFinished(t, rec, runID)
-	if final.State != shellrun.StateFailed || !strings.Contains(final.Error, "could not be sent") ||
+	if final.State != shellrun.StateFailed || !strings.Contains(final.Error, "was not sent") ||
 		!strings.Contains(final.Error, "provider refused") {
 		t.Fatalf("terminal frame: %+v", final)
 	}
 	if attachments, err := app.attachments.List(thread.ID); err != nil || len(attachments) != 0 {
 		t.Fatalf("unsent output kept: %+v %v", attachments, err)
+	}
+}
+
+// A send can fail after its row is written: the session would not start. The
+// row shows the command's output, so the output stays.
+func TestRunThreadShellCommandKeepsTheOutputOfAMessageThatWasRecorded(t *testing.T) {
+	app, rec := newShellCommandApp(t)
+	thread := newClaudeThreadForProviderCommandTest(t, app, "thread-shell-row-kept")
+	app.startSessionFn = func(string) error { return errors.New("no provider today") }
+	runID := uuid.NewString()
+	if _, err := app.RunThreadShellCommand(context.Background(), thread.ID, ShellCommandRequest{
+		RunID: runID, Command: "echo kept",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	final := waitShellFinished(t, rec, runID)
+	if final.State != shellrun.StateFailed || !strings.Contains(final.Error, "no provider today") {
+		t.Fatalf("terminal frame: %+v", final)
+	}
+	rows := userItems(t, app, thread.ID)
+	if len(rows) != 1 || rows[0].Summary != "!echo kept" {
+		t.Fatalf("rows: %+v", rows)
+	}
+	attachments, err := app.attachments.List(thread.ID)
+	if err != nil || len(attachments) != 1 {
+		t.Fatalf("the row's output: %+v %v", attachments, err)
+	}
+	page, err := app.ReadShellAttachmentOutput(thread.ID, attachments[0].ID, 0, 0)
+	if err != nil || page.Data != "kept\n" {
+		t.Fatalf("the row's output reads: %+v %v", page, err)
+	}
+}
+
+// An empty draft thread is deleted when its composer is cleared, and running
+// a command clears the composer. The thread stays while the command runs.
+func TestAnEmptyDraftThreadIsKeptWhileItsCommandRuns(t *testing.T) {
+	app, rec := newShellCommandApp(t)
+	thread := newClaudeThreadForProviderCommandTest(t, app, "thread-shell-empty-draft")
+	app.startSessionFn = func(string) error { return errors.New("no provider today") }
+	runID := uuid.NewString()
+	if _, err := app.RunThreadShellCommand(context.Background(), thread.ID, ShellCommandRequest{
+		RunID: runID, Command: "sleep 60",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if deleted, err := app.DeleteEmptyDraftThread(thread.ID); err != nil || deleted {
+		t.Fatalf("delete while the command runs: %v %v", deleted, err)
+	}
+	if err := app.StopThreadShellCommand(thread.ID, runID); err != nil {
+		t.Fatal(err)
+	}
+	waitShellFinished(t, rec, runID)
+	if deleted, err := app.DeleteEmptyDraftThread(thread.ID); err != nil || !deleted {
+		t.Fatalf("delete after the command stopped: %v %v", deleted, err)
+	}
+}
+
+// A start repeated after its run settled is answered from how it settled.
+func TestARepeatedStartDoesNotRunASettledCommandAgain(t *testing.T) {
+	app, rec := newShellCommandApp(t)
+	thread, _ := newMixedTurnThread(t, app, "thread-shell-repeat")
+	marker := filepath.Join(t.TempDir(), "ran")
+	request := ShellCommandRequest{RunID: uuid.NewString(), Command: "echo once >> " + marker}
+	if _, err := app.RunThreadShellCommand(context.Background(), thread.ID, request); err != nil {
+		t.Fatal(err)
+	}
+	if final := waitShellFinished(t, rec, request.RunID); final.State != shellrun.StateSent {
+		t.Fatalf("terminal frame: %+v", final)
+	}
+	again, err := app.RunThreadShellCommand(context.Background(), thread.ID, request)
+	if err != nil || again.State != shellrun.StateSent {
+		t.Fatalf("repeated start: %+v %v", again, err)
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "once\n" {
+		t.Fatalf("the command ran %q %v", data, err)
+	}
+}
+
+// An update waits for a running command and says what it is waiting for.
+func TestAnUpdateNamesARunningShellCommand(t *testing.T) {
+	app, rec := newShellCommandApp(t)
+	thread, _ := newMixedTurnThread(t, app, "thread-shell-update")
+	runID := uuid.NewString()
+	if _, err := app.RunThreadShellCommand(context.Background(), thread.ID, ShellCommandRequest{
+		RunID: runID, Command: "sleep 60",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if reason, err := app.updateWorkReason(); err != nil || !strings.Contains(reason, "shell commands") {
+		t.Fatalf("reason while a command runs: %q %v", reason, err)
+	}
+	if err := app.StopThreadShellCommand(thread.ID, runID); err != nil {
+		t.Fatal(err)
+	}
+	waitShellFinished(t, rec, runID)
+	if reason, err := app.updateWorkReason(); err != nil || strings.Contains(reason, "shell commands") {
+		t.Fatalf("reason after it stopped: %q %v", reason, err)
+	}
+}
+
+// The first prompt names a temporary worktree branch. A command says what
+// was run, not what the work is, so it leaves the name to the prompt.
+func TestACommandDoesNotNameTheWorktreeBranch(t *testing.T) {
+	app, rec := newShellCommandApp(t)
+	var named []string
+	app.generateBranchNameFn = func(_ store.Thread, message string) (string, error) {
+		named = append(named, message)
+		return "", nil
+	}
+	temporaryWorktreeThread := func(id string) store.Thread {
+		thread := testThread(id)
+		thread.Provider = string(provider.Claude)
+		thread.WorkspacePath = t.TempDir()
+		thread.WorktreePath = thread.WorkspacePath
+		thread.Branch = app.worktreeBranchPrefix() + "1a2b3c4d"
+		if err := app.store.CreateThread(thread); err != nil {
+			t.Fatal(err)
+		}
+		installCapturingClaudeSession(t, app, thread, filepath.Join(t.TempDir(), "stdin.ndjson"))
+		return thread
+	}
+	commanded := temporaryWorktreeThread("thread-shell-branch")
+	runID := uuid.NewString()
+	if _, err := app.RunThreadShellCommand(context.Background(), commanded.ID, ShellCommandRequest{
+		RunID: runID, Command: "npm install",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if final := waitShellFinished(t, rec, runID); final.State != shellrun.StateSent {
+		t.Fatalf("terminal frame: %+v", final)
+	}
+	if len(named) != 0 {
+		t.Fatalf("a command named the branch from %q", named)
+	}
+	// The same thread shape names its branch from a prompt.
+	prompted := temporaryWorktreeThread("thread-prompt-branch")
+	if err := app.SendMessage(prompted.ID, "add the settings page", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(named) != 1 || named[0] != "add the settings page" {
+		t.Fatalf("a prompt did not name the branch: %q", named)
 	}
 }
 
@@ -271,7 +412,6 @@ func TestRunThreadShellCommandRefusesBadRequests(t *testing.T) {
 	for name, request := range map[string]ShellCommandRequest{
 		"empty command": {RunID: uuid.NewString(), Command: "   "},
 		"no run id":     {Command: "echo hi"},
-		"bad mode":      {RunID: uuid.NewString(), Command: "echo hi", RuntimeMode: "root"},
 	} {
 		if _, err := app.RunThreadShellCommand(context.Background(), thread.ID, request); err == nil {
 			t.Errorf("%s was accepted", name)
@@ -338,9 +478,28 @@ func TestPromptTextPutsACommandBlockWhereItWasTyped(t *testing.T) {
 		},
 		"no text": {"", "[file a]\n<make>\n<make again>\n<ls>"},
 	} {
-		if got := attachments.promptText(strings.Split(tc.text, separator), separator); got != tc.want {
+		if got := attachments.promptText([]string{tc.text}, ""); got != tc.want {
 			t.Errorf("%s:\n got %q\nwant %q", name, got, tc.want)
 		}
+	}
+	// A command can hold the join rule itself, as a heredoc of YAML does.
+	heredoc := "cat <<EOF\na: 1" + separator + "b: 2\nEOF"
+	spanning := turnAttachments{fileLines: []string{"<heredoc>"}, invocations: []string{"!" + heredoc}}
+	for name, tc := range map[string]struct{ text, want string }{
+		"alone":            {"!" + heredoc, "<heredoc>"},
+		"joined with text": {"first" + separator + "!" + heredoc + separator + "last", "first" + separator + "<heredoc>" + separator + "last"},
+		"only its start":   {"!cat <<EOF\na: 1", "!cat <<EOF\na: 1\n\n<heredoc>"},
+	} {
+		if got := spanning.promptText([]string{tc.text}, ""); got != tc.want {
+			t.Errorf("spanning, %s:\n got %q\nwant %q", name, got, tc.want)
+		}
+	}
+	if !spanning.isInvocation("!" + heredoc) {
+		t.Error("a command holding the join rule is not recognized as the invocation")
+	}
+	// Two messages sent together never combine into one invocation.
+	if got := spanning.promptText([]string{"!cat <<EOF\na: 1", "b: 2\nEOF"}, "\n\n"); strings.HasPrefix(got, "<heredoc>") {
+		t.Errorf("two messages were read as one command: %q", got)
 	}
 	// A restored command is sent as a message again; a `/word` in it is a
 	// path, so it is the invocation and not prose with a composer command.

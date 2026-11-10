@@ -512,3 +512,34 @@ func TestMergedQueuedBatchIsOneUserPrompt(t *testing.T) {
 		}
 	}
 }
+
+// A shell command a host sends is one entry holding the command and its
+// output, and it opens a turn the person started. The CLI's own `!` mode
+// writes two entries, neither of which is a prompt.
+func TestIsRealUserPrompt_CountsAHostShellRecordAndNotTheClisOwn(t *testing.T) {
+	entry := func(content any) map[string]any {
+		return map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": content}}
+	}
+	hostRecord := "<bash-input>ls</bash-input>\n<bash-stdout>README.md</bash-stdout><bash-stderr></bash-stderr>"
+	if !strings.Contains(hostRecord, HostShellRecordJoint) {
+		t.Fatalf("fixture does not hold the joint %q", HostShellRecordJoint)
+	}
+	for name, content := range map[string]any{
+		"alone":            hostRecord,
+		"after other text": "first\n\n---\n\n" + hostRecord,
+		"array form":       []any{map[string]any{"type": "text", "text": hostRecord}},
+	} {
+		if !isRealUserPrompt(entry(content)) {
+			t.Errorf("a host shell record (%s) must count as a real prompt", name)
+		}
+	}
+	for name, content := range map[string]any{
+		"the CLI's command entry": "<bash-input>ls</bash-input>",
+		"the CLI's output entry":  "<bash-stdout>README.md</bash-stdout><bash-stderr></bash-stderr>",
+		"another wrapper":         "<system-reminder>context</system-reminder>",
+	} {
+		if isRealUserPrompt(entry(content)) {
+			t.Errorf("%s must not count as a real prompt", name)
+		}
+	}
+}

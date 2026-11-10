@@ -38,7 +38,7 @@ test('a phone runs a command with the Run button and the card and block fit the 
   await expect(page.getByTestId('shell-run-card')).toHaveCount(0);
   await input.fill(`!${command}`);
 
-  const run = page.getByRole('button', { name: 'Send message', exact: true });
+  const run = page.getByRole('button', { name: 'Run command', exact: true });
   await expect(run).toHaveText('Run');
   await run.tap();
 

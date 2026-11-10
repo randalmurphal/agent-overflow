@@ -1242,6 +1242,11 @@ Overflow's composer shell commands send this shape
 The CLI's internal `bash_command` stdin frame runs a command the model
 never sees and is not used.
 
+The TUI's two records are not prompts, so the fork-point walk
+(`sessionfork.isRealUserPrompt`) skips them. The host's single record is
+one: the walk recognizes it by `</bash-input>` followed directly by
+`<bash-stdout>`, which the TUI never writes into one message.
+
 Spike 2026-10-11 (haiku, AO's flag set), each case with its
 `command_lifecycle` bracket:
 

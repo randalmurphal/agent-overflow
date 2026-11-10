@@ -29,6 +29,16 @@ describe('<SendButton>', () => {
     expect(mouse.defaultPrevented).toBe(false);
   });
 
+  it('names the action it will take', () => {
+    const base = { canSend: true, isTurnActive: false, onSend: vi.fn(), onInterrupt: vi.fn() };
+    const send = render(SendButton, { props: base });
+    expect(send.getByTestId('composer-send').getAttribute('aria-label')).toBe('Send message');
+    send.unmount();
+    const run = render(SendButton, { props: { ...base, action: 'run' as const, label: 'Run' } });
+    expect(run.getByTestId('composer-send').getAttribute('aria-label')).toBe('Run command');
+    expect(run.getByTestId('composer-send').textContent).toContain('Run');
+  });
+
   it('is disabled when idle and canSend is false', () => {
     const { getByTestId } = render(SendButton, {
       props: {

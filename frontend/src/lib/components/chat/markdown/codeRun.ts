@@ -10,7 +10,8 @@ export const CODE_RUN_LABEL = 'Run and send the output to the agent';
 
 /**
  * Class of the Run control. It is hidden by default and shown inside a chat
- * surface (app.css), the one place a block has a thread to run in.
+ * surface marked `data-shell-runnable` (app.css, ChatView): the one place a
+ * block has a thread to run in, for a session that may run commands there.
  */
 export const CODE_RUN_CLASS = 'code-run-action';
 
@@ -31,7 +32,9 @@ export async function runCodeBlock(origin: Element, text: string): Promise<void>
   const threadId = threadOf(origin);
   const command = text.trim();
   if (!threadId || !command) return;
-  if (!threadHasScope('terminal:operate', threadId)) {
+  // Both grants the backend asks for: running a command here, and sending
+  // its output to the thread.
+  if (!threadHasScope('terminal:operate', threadId) || !threadHasScope('threads:operate', threadId)) {
     addToast('warning', 'This session cannot run commands');
     return;
   }

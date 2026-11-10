@@ -108,3 +108,27 @@ func TestClipAndTailRunesNeverTearRunes(t *testing.T) {
 		}
 	}
 }
+
+func TestCompleteRunePrefix(t *testing.T) {
+	t.Parallel()
+	euro := []byte("€") // three bytes
+	for name, tc := range map[string]struct {
+		in   []byte
+		want int
+	}{
+		"empty":            {nil, 0},
+		"ascii":            {[]byte("abc"), 3},
+		"whole rune":       {append([]byte("a"), euro...), 4},
+		"one byte of rune": {append([]byte("a"), euro[:1]...), 1},
+		"two bytes":        {append([]byte("a"), euro[:2]...), 1},
+		"only partial":     {euro[:2], 0},
+		"invalid tail":     {[]byte{'a', 0xff}, 2},
+	} {
+		if got := CompleteRunePrefix(tc.in); got != tc.want {
+			t.Errorf("%s: CompleteRunePrefix(%q) = %d, want %d", name, tc.in, got, tc.want)
+		}
+		if got := CompleteRunePrefix(string(tc.in)); got != tc.want {
+			t.Errorf("%s: CompleteRunePrefix(string %q) = %d, want %d", name, tc.in, got, tc.want)
+		}
+	}
+}

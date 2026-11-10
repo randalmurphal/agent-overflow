@@ -29,6 +29,9 @@ type GroupCommand struct {
 	// TerminateGrace is how long the group gets between SIGTERM and SIGKILL on
 	// cancellation and on the leftover sweep. Zero means DefaultTerminateGrace.
 	TerminateGrace time.Duration
+	// kill replaces KillConfiguredGroup in a test that needs a group no
+	// signal ends.
+	kill func(*exec.Cmd) error
 }
 
 // GroupOutcome is what RunGroup learned from one command. Leftovers reports
@@ -38,10 +41,16 @@ type GroupCommand struct {
 type GroupOutcome struct {
 	ExitCode  int
 	Leftovers bool
-	// PipeErr is a failure closing the output pipe. The command still ran;
-	// its captured output may be incomplete.
+	// PipeErr is a failure of the output path: Output refused a write, or the
+	// pipe did not close. The command still ran; what Output holds may be
+	// incomplete.
 	PipeErr error
 }
+
+// ErrGroupSurvived is returned when cancellation could not end the command:
+// its leader ignored SIGKILL, which means it runs as another user (sudo).
+// The command is abandoned still running, with its output pipe closed.
+var ErrGroupSurvived = errors.New("procutil: the command could not be stopped and is still running")
 
 // RunGroup runs a command as the leader of its own process group and returns
 // once the whole group is gone and its output has settled.
@@ -50,7 +59,8 @@ type GroupOutcome struct {
 // command left behind keeps writing into Output until the sweep stops it, and
 // the run does not report finished while such a child still holds the pipe.
 // Cancelling ctx stops the group with SIGTERM, then SIGKILL after the grace.
-// The returned error is the start failure or what Wait reported.
+// The returned error is the start failure, what Wait reported, or
+// ErrGroupSurvived when the kill had no effect.
 func RunGroup(ctx context.Context, command GroupCommand) (GroupOutcome, error) {
 	if len(command.Argv) == 0 {
 		return GroupOutcome{ExitCode: -1}, errors.New("procutil: run group: empty argv")
@@ -58,6 +68,10 @@ func RunGroup(ctx context.Context, command GroupCommand) (GroupOutcome, error) {
 	grace := command.TerminateGrace
 	if grace <= 0 {
 		grace = DefaultTerminateGrace
+	}
+	kill := command.kill
+	if kill == nil {
+		kill = KillConfiguredGroup
 	}
 	cmd := exec.Command(command.Argv[0], command.Argv[1:]...)
 	cmd.Dir = command.Dir
@@ -78,47 +92,56 @@ func RunGroup(ctx context.Context, command GroupCommand) (GroupOutcome, error) {
 	// open until the grace below.
 	pipeErr := writer.Close()
 	drained := make(chan struct{})
+	var copyErr error
 	go func() {
 		defer close(drained)
-		_, _ = io.Copy(command.Output, reader)
-	}()
-	exited := make(chan struct{})
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		select {
-		case <-ctx.Done():
-			stopGroup(cmd, grace)
-		case <-exited:
+		if _, err := io.Copy(command.Output, reader); err != nil && !errors.Is(err, os.ErrClosed) {
+			copyErr = err
+			// Keep reading: a full pipe would stall the command on its next
+			// write.
+			_, _ = io.Copy(io.Discard, reader)
 		}
 	}()
-	waitErr := cmd.Wait()
-	close(exited)
-	<-stopped
+	// settle closes the read end, which also ends a drain that a process
+	// outside the group still feeds, and reports the output path's failures.
+	settle := func() error {
+		err := errors.Join(pipeErr, reader.Close())
+		<-drained
+		return errors.Join(err, copyErr)
+	}
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+	var waitErr error
+	select {
+	case waitErr = <-waited:
+	case <-ctx.Done():
+		stopGroup(cmd, grace, kill)
+		select {
+		case waitErr = <-waited:
+		case <-time.After(grace):
+			return GroupOutcome{ExitCode: -1, PipeErr: settle()}, ErrGroupSurvived
+		}
+	}
 	leftovers := ConfiguredGroupAlive(cmd)
 	if leftovers {
-		stopGroup(cmd, grace)
+		stopGroup(cmd, grace, kill)
 	}
 	select {
 	case <-drained:
 	case <-time.After(groupDrainGrace):
 	}
-	// Closing the read end also ends a drain that a process outside the
-	// group still feeds.
-	pipeErr = errors.Join(pipeErr, reader.Close())
-	<-drained
 	code := -1
 	if cmd.ProcessState != nil {
 		code = cmd.ProcessState.ExitCode()
 	}
-	return GroupOutcome{ExitCode: code, Leftovers: leftovers, PipeErr: pipeErr}, waitErr
+	return GroupOutcome{ExitCode: code, Leftovers: leftovers, PipeErr: settle()}, waitErr
 }
 
 // stopGroup terminates the group politely, then kills whatever ignored it.
 // The grace runs on group emptiness, not on the leader: a shell wrapper
 // exits at once on SIGTERM while the server it started still needs its
 // moment to shut down.
-func stopGroup(cmd *exec.Cmd, grace time.Duration) {
+func stopGroup(cmd *exec.Cmd, grace time.Duration, kill func(*exec.Cmd) error) {
 	if err := TerminateConfiguredGroup(cmd); errors.Is(err, os.ErrProcessDone) {
 		return
 	}
@@ -129,7 +152,9 @@ func stopGroup(cmd *exec.Cmd, grace time.Duration) {
 	for {
 		select {
 		case <-deadline.C:
-			_ = KillConfiguredGroup(cmd)
+			// A refused kill shows as a group that is still alive, which
+			// every caller checks next.
+			_ = kill(cmd)
 			return
 		case <-poll.C:
 			if !ConfiguredGroupAlive(cmd) {

@@ -83,13 +83,45 @@ describe('<ShellRunCard>', () => {
     expect(getShellRun('thread-1')?.stopping).toBe(false);
   });
 
-  it('stays as an error when the output could not be sent, until dismissed', async () => {
+  it('is a named group, and hands focus to the composer when its button goes away', async () => {
+    const host = document.createElement('div');
+    host.setAttribute('data-pane-id', 'pane-1');
+    const composer = document.createElement('textarea');
+    composer.setAttribute('aria-label', 'Message Input');
+    host.appendChild(composer);
+    document.body.appendChild(host);
+    try {
+      const pane = { threadId: 'thread-1', paneId: 'pane-1', setGeneralError: vi.fn() } as unknown as ThreadPane;
+      setBindingMock('StopThreadShellCommand', async () => undefined);
+      const { getByTestId } = render(ShellRunCard, { target: host, props: { pane } });
+      start();
+      await tick();
+      // A live region would announce every output line; a group is read once.
+      expect(getByTestId('shell-run-card').getAttribute('role')).toBe('group');
+      expect(getByTestId('shell-run-card').getAttribute('aria-label')).toBe('Running command');
+
+      getByTestId('shell-run-stop').focus();
+      await fireEvent.click(getByTestId('shell-run-stop'));
+      expect(document.activeElement).toBe(composer);
+
+      applyShellCommandEvent({ phase: 'finished', threadId: 'thread-1', runId: 'run-1', state: 'failed', error: 'boom' });
+      await tick();
+      expect(getByTestId('shell-run-card').getAttribute('aria-label')).toBe('Command failed');
+      getByTestId('shell-run-dismiss').focus();
+      await fireEvent.click(getByTestId('shell-run-dismiss'));
+      expect(document.activeElement).toBe(composer);
+    } finally {
+      host.remove();
+    }
+  });
+
+  it('stays as an error when the output was not sent, until dismissed', async () => {
     const { pane } = makePane();
     const { getByTestId, queryByTestId } = render(ShellRunCard, { props: { pane } });
     start();
     applyShellCommandEvent({
       phase: 'finished', threadId: 'thread-1', runId: 'run-1', state: 'failed',
-      error: 'The command finished, but its output could not be sent: provider is gone',
+      error: 'The command finished, but its output was not sent: provider is gone',
     });
     await tick();
     expect(getByTestId('shell-run-card').getAttribute('data-state')).toBe('failed');

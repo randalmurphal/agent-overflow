@@ -56,8 +56,8 @@ export function deriveComposerSendState(input: ComposerSendStateInput): Composer
         && !input.sendSuspended
         && !input.hasBlockingPrompt
         && !input.hasUserInputPrompt,
-      action: 'send',
-      label: 'Run',
+      action: 'run',
+      label: sendLabel('run'),
       hasPlanImplementAction: false,
     };
   }
@@ -92,6 +92,7 @@ function sendLabel(action: SendButtonAction): string | undefined {
   if (action === 'send-comments') return 'Send comments';
   if (action === 'implement') return 'Implement';
   if (action === 'refine') return 'Refine';
+  if (action === 'run') return 'Run';
   return undefined;
 }
 

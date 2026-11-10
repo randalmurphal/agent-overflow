@@ -5,7 +5,9 @@ package procutil
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -144,5 +146,77 @@ func TestRunGroupKillsWhatIgnoresTerminate(t *testing.T) {
 		}
 	case <-time.After(grace + 10*time.Second):
 		t.Fatal("stubborn command outlived the kill")
+	}
+}
+
+// A leader that runs as another user ignores this user's SIGKILL. RunGroup
+// gives up on it after one more grace and says the command is still running.
+func TestRunGroupAbandonsALeaderTheKillDoesNotEnd(t *testing.T) {
+	t.Parallel()
+	const grace = 200 * time.Millisecond
+	var output syncBuffer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	command := shellCommand(t, `trap '' TERM; echo immune-started; sleep 60`, &output)
+	command.TerminateGrace = grace
+	var leader *exec.Cmd
+	command.kill = func(cmd *exec.Cmd) error {
+		leader = cmd
+		return nil
+	}
+	type result struct {
+		outcome GroupOutcome
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		outcome, err := RunGroup(ctx, command)
+		done <- result{outcome, err}
+	}()
+	waitForOutput(t, &output, "immune-started")
+	cancel()
+	select {
+	case got := <-done:
+		if !errors.Is(got.err, ErrGroupSurvived) || got.outcome.ExitCode != -1 {
+			t.Fatalf("outcome %+v, error %v", got.outcome, got.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("RunGroup waited on a command it could not stop")
+	}
+	if err := KillConfiguredGroup(leader); err != nil {
+		t.Fatalf("end the abandoned command: %v", err)
+	}
+}
+
+type refusingWriter struct{ err error }
+
+func (w refusingWriter) Write([]byte) (int, error) { return 0, w.err }
+
+// A sink that refuses a write must not stall the command on a full pipe.
+func TestRunGroupKeepsDrainingWhenTheSinkRefusesAWrite(t *testing.T) {
+	t.Parallel()
+	refused := errors.New("sink is full")
+	command := GroupCommand{
+		Dir:    t.TempDir(),
+		Env:    []string{"PATH=" + os.Getenv("PATH")},
+		Argv:   []string{"/bin/sh", "-c", `head -c 1000000 /dev/zero | tr '\0' x; exit 3`},
+		Output: refusingWriter{refused},
+	}
+	type result struct {
+		outcome GroupOutcome
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		outcome, err := RunGroup(context.Background(), command)
+		done <- result{outcome, err}
+	}()
+	select {
+	case got := <-done:
+		if got.outcome.ExitCode != 3 || !errors.Is(got.outcome.PipeErr, refused) {
+			t.Fatalf("outcome %+v, error %v", got.outcome, got.err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the command stalled writing to a pipe nobody read")
 	}
 }

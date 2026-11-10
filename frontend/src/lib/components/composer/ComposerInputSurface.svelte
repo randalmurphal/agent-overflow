@@ -23,6 +23,7 @@
   import { createComposerSlash } from './composerSlash.svelte';
   import { createComposerUploads, type UploadInsertionPoint } from './composerUploads.svelte';
   import { slashCommandMatches } from './slashCommands';
+  import { isShellInput } from '../../utils/shellInvocation';
   import {
     COMPOSER_TEXT_CLASSES,
     type ComposerInputSelection,
@@ -86,15 +87,21 @@
     CSS.supports('field-sizing', 'content') &&
     !CSS.supports('field-sizing', 'not-a-field-sizing-value');
 
+  // A shell command is not a message: no `/word` or `@file` in it opens a
+  // completion. Read from the textarea, which holds the keystroke being
+  // handled before the host's mode follows it.
+  const typingShellCommand = () => shellPrefix && isShellInput(textarea?.value ?? '');
+
   const mentions = createComposerMentions({
     getTextarea: () => textarea,
     getWorkspace: () => pane.workspace,
+    isShellInput: typingShellCommand,
   });
 
   const slash = createComposerSlash({
     getTextarea: () => textarea,
     getPane: () => pane,
-    isShellInput: () => shellPrefix && (textarea?.value.startsWith('!') ?? false),
+    isShellInput: typingShellCommand,
   });
 
   const uploads = createComposerUploads({
@@ -137,7 +144,7 @@
   let commandRanges = $derived.by(() => {
     if (!editsDraft || disabled || composingText || !selectionCollapsed) return [];
     // A shell command is not a message, so no slash word in it is live.
-    if (shellPrefix && value.startsWith('!')) return [{ name: '!', start: 0, end: 1 }];
+    if (shellPrefix) return [{ name: '!', start: 0, end: 1 }];
     return [...slash.interceptedRanges(value), ...slashCommandMatches(value)];
   });
 
@@ -442,7 +449,7 @@
 <div class="flex items-end gap-1 pl-4 pr-2.5 pt-2.5 pb-2 compact:pt-1.5 compact:pb-1">
   <!-- A shell command is set in the monospace face, on the wrapper so the
        textarea and its highlight twin inherit the same metrics. -->
-  <div class={['relative min-w-0 flex-1', shellPrefix && value.startsWith('!') && 'font-mono']} data-shell-input={shellPrefix && value.startsWith('!') ? '' : undefined}>
+  <div class={['relative min-w-0 flex-1', shellPrefix && 'font-mono']} data-shell-input={shellPrefix ? '' : undefined}>
     <ComposerMentionPopover backend={threadMachine(pane.threadId ?? '', pane.thread?.projectId)}
       anchor={textarea}
       open={mentions.mentionTrigger !== null}

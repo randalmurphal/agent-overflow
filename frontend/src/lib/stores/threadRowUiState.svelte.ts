@@ -71,13 +71,14 @@ export interface ThreadRowUiState {
   ): void;
   isSubagentGroupExpanded(groupKey: string): boolean;
   toggleSubagentGroupExpanded(groupKey: string): boolean;
-  /** Whether the reader expanded this user message's clamped text. */
-  isUserMessageExpanded(itemId: string): boolean;
+  /** Whether the reader expanded this user message's clamped text, or the
+   *  named part of the message (a shell output block's attachment id). */
+  isUserMessageExpanded(itemId: string, part?: string): boolean;
   /** Record the state the reader put the message's text in. Every user
    *  message defaults to collapsed and no setting moves that default, so
    *  the registry stores the deviation only — an expanded id — and
    *  collapsing forgets it rather than storing `false`. */
-  setUserMessageExpanded(itemId: string, expanded: boolean): void;
+  setUserMessageExpanded(itemId: string, expanded: boolean, part?: string): void;
   /** The card's deviation from the current `collapseDiffPreviews` default,
    *  or undefined when it follows it. See `liveDiffOverride`. */
   diffCardExpandedOverride(itemId: string, filePath: string): boolean | undefined;

@@ -1,3 +1,5 @@
+//go:build !windows
+
 package shellrun
 
 import (
@@ -5,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/procutil"
 )
@@ -90,4 +93,22 @@ func TestSnapshotMatchesItsFramesWhileOutputArrives(t *testing.T) {
 		}
 	}
 	writer.Wait()
+}
+
+// Output that never ends a line is shown within the flush interval of its
+// first byte, however steadily more of it arrives.
+func TestSteadyOutputWithoutNewlinesIsFlushedOnTime(t *testing.T) {
+	t.Parallel()
+	rec := &recorder{}
+	_, sink := newTestCapture(t, rec)
+	deadline := time.Now().Add(6 * flushInterval)
+	for time.Now().Before(deadline) {
+		if _, err := sink.Write([]byte(".")); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(flushInterval / 5)
+	}
+	if frames := framesThrough(rec, ^uint64(0)); frames == "" {
+		t.Fatal("no frame was emitted while output kept arriving")
+	}
 }

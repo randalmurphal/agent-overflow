@@ -281,6 +281,7 @@
   {/if}
   {#each shellOutputs as attachment (attachment.id)}
     <ShellCommandBlock
+      itemId={item.id}
       threadId={attachment.threadId}
       attachmentId={attachment.id}
       shell={attachment.shell!}

@@ -221,6 +221,11 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 	if empty, err := a.store.IsEmptyDraftThread(threadID); err != nil || !empty {
 		return false, err
 	}
+	// A command run from an empty composer leaves the draft empty while it
+	// runs; its output is about to become the thread's first message.
+	if a.shellCommands != nil && a.shellCommands.ActiveRunID(threadID) != "" {
+		return false, nil
+	}
 	if err := a.cleanupThreadAttachmentFiles(threadID); err != nil {
 		errs = append(errs, fmt.Errorf("cleanup attachments: %w", err))
 	}

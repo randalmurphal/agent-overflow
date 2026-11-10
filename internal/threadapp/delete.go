@@ -139,6 +139,11 @@ func (s *Service) DeleteTree(threadID string, subtreeLocksHeld bool, ports Delet
 	// and final deletion, after provider/process cleanup has finished.
 	unlockMutation := s.mutations.Lock(threadID)
 	defer unlockMutation()
+	// A command is registered under this lock, so one that started during
+	// the cleanup above is stopped here and none starts after.
+	if ports.CancelShellCommand != nil {
+		ports.CancelShellCommand(threadID)
+	}
 	if ports.StopRemoteWork != nil {
 		if err := ports.StopRemoteWork(threadID); err != nil {
 			return err

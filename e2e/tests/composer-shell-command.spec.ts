@@ -7,10 +7,12 @@
 // the command runs in the seeded workspace, the provider receives the output
 // in its own `!` record, the live card hands over to the timeline row, a
 // reload during a run finds it again, Stop sends nothing, a command run
-// mid-turn waits in the send queue, and Run appears on shell fences only.
+// mid-turn waits in the send queue, a command is the first message of a new
+// thread, and Run appears on shell fences only, inside a surface that may
+// run them.
 import type { Page, TestInfo } from '@playwright/test';
 import type { HarnessApp, HarnessMockEventData } from '../src/harness-app.js';
-import { expect, test } from './fixtures.js';
+import { expect, test, type SeedResult } from './fixtures.js';
 import {
   RESULT_LINE,
   advance,
@@ -74,11 +76,11 @@ test('a !command runs in the workspace, shows its output while it runs, and is s
   await expect(hint).toHaveCount(0);
   await input.fill('!');
   await expect(hint).toContainText('the output is sent to the agent');
-  await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Run command', exact: true })).toBeDisabled();
 
   const command = 'for i in 1 2 3; do echo "step $i"; sleep 0.6; done; ls';
   await input.fill(`!${command}`);
-  await expect(page.getByRole('button', { name: 'Send message', exact: true })).toHaveText('Run');
+  await expect(page.getByRole('button', { name: 'Run command', exact: true })).toHaveText('Run');
   await shoot(page, testInfo, 'composer');
 
   const delivered = nextUserInput(harness, '<bash-input>');
@@ -181,7 +183,7 @@ test('Stop ends the command and sends nothing', async ({ harness, page }) => {
   // A second command waits for the first: the composer says why.
   await input.fill('!echo second');
   await expect(page.getByTestId('composer-shell-hint')).toContainText('A command is already running');
-  await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Run command', exact: true })).toBeDisabled();
 
   await card.getByTestId('shell-run-stop').click();
   expect(((await finished) as { state: string }).state).toBe('stopped');
@@ -190,7 +192,7 @@ test('Stop ends the command and sends nothing', async ({ harness, page }) => {
   expect((await listItems(harness, threadId)).length).toBe(before);
   // The text typed meanwhile is still the person's, and can run now.
   await expect(input).toHaveValue('!echo second');
-  await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Run command', exact: true })).toBeEnabled();
 });
 
 test('a reload during a run finds the command again and still shows its result', async ({
@@ -270,6 +272,36 @@ test('a command run mid-turn waits in the send queue and lands as its own row', 
   await expect(page.getByTestId('shell-command-block').getByTestId('shell-command-output')).toContainText('queued-output');
 });
 
+test('a command is the first message of a new thread', async ({ harness, page }) => {
+  test.setTimeout(90_000);
+  await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [{ name: 'shell-command-draft', repo: { commits: [{ message: 'init', files: { 'README.md': '# fixture\n' } }] } }],
+  });
+  await harness.open(page);
+  await page.getByTestId('project-item-new-thread').first().click();
+
+  // Running the command empties the composer of a thread that has no
+  // message yet. The thread has to outlive that until the output arrives.
+  const input = page.getByLabel('Message Input');
+  const delivered = nextUserInput(harness, '<bash-input>');
+  await input.fill('!echo before; sleep 2; ls');
+  await input.press('Enter');
+  const card = page.getByTestId('shell-run-card');
+  await expect(card.getByTestId('shell-run-output')).toContainText('before');
+  await expect(input).toHaveValue('');
+
+  expect((await delivered).report.input).toBe(
+    '<bash-input>echo before; sleep 2; ls</bash-input>\n<bash-stdout>before\nREADME.md</bash-stdout><bash-stderr></bash-stderr>',
+  );
+  const block = page.getByTestId('shell-command-block');
+  await expect(block.getByTestId('shell-command-output')).toContainText('README.md');
+  await expect(card).toHaveCount(0);
+  // The default scenario answers the thread's first message.
+  await expect(page.getByTestId('assistant-message-body')).toContainText(
+    'This reply is streaming from the mock provider',
+  );
+});
+
 test('Run on a shell code block runs the block and sends its output', async ({ harness, page }, testInfo) => {
   test.setTimeout(90_000);
   const reply = [
@@ -307,6 +339,15 @@ test('Run on a shell code block runs the block and sends its output', async ({ h
   await fence.hover();
   await expect(run).toBeVisible();
   await shoot(page, testInfo, 'code-block');
+
+  // The control is shown by the surface's mark, which a session without
+  // both grants does not get.
+  const surface = page.locator('[data-ui-surface="chat"]');
+  await surface.evaluate((el) => el.removeAttribute('data-shell-runnable'));
+  await expect(run).toBeHidden();
+  await surface.evaluate((el) => el.setAttribute('data-shell-runnable', ''));
+  await fence.hover();
+  await expect(run).toBeVisible();
 
   const delivered = nextUserInput(harness, '<bash-input>');
   await run.click();

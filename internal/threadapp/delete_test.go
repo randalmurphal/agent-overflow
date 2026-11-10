@@ -46,7 +46,8 @@ func TestDeleteTreeRunsChildrenFirstAndPreservesResourceOrder(t *testing.T) {
 	wantChild := []string{
 		"child:background", "child:session", "child:setup", "child:shell", "child:terminal",
 		"child:browser", "child:prompt", "child:discussion", "child:reconnect",
-		"child:attachments", "child:replay", "child:terminal", "child:browser", "child:forget",
+		// The second stop is under the mutation lock a command registers with.
+		"child:shell", "child:attachments", "child:replay", "child:terminal", "child:browser", "child:forget",
 	}
 	if !slices.Equal(calls[:len(wantChild)], wantChild) {
 		t.Fatalf("child cleanup order = %v, want %v", calls[:len(wantChild)], wantChild)

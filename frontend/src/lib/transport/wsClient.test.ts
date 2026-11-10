@@ -782,21 +782,23 @@ describe('WSClient', () => {
     vi.useRealTimers();
   });
 
-  it('ships exactly the two idempotent sends in the retry-on-transient-close allowlist', () => {
+  it('ships exactly the idempotent calls in the retry-on-transient-close allowlist', () => {
     // A tripwire, not a formality. The allowlist is the one place an RPC
     // can be re-sent without its caller knowing, and every entry trades a
     // lost answer for a possibly-duplicated action. THE RULE: a call is
-    // admissible only when the backend is idempotent for it. Both entries
-    // here are, because both carry a client-minted `sendId` the backend
-    // answers a repeat from. Growing this must be a reviewed decision that
+    // admissible only when the backend is idempotent for it. Every entry
+    // here is, because each carries a client-minted id (`sendId`, or a
+    // shell command's `runId`) the backend answers a repeat from. Growing
+    // this must be a reviewed decision that
     // also updates this expectation and the entry's `why`, never a quiet
     // append.
     expect(RETRY_ON_TRANSIENT_CLOSE.map((entry) => entry.methodId)).toEqual([
       3632185196, // SendMessageWithOptions
       1034543696, // RegisterQueueItem
+      651196145, // RunThreadShellCommand
     ]);
     for (const entry of RETRY_ON_TRANSIENT_CLOSE) {
-      expect(entry.why).toContain('sendId');
+      expect(entry.why).toMatch(/sendId|runId/);
     }
   });
 
