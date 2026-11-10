@@ -138,9 +138,25 @@ export function parseUserMessageMeta(meta: string | undefined): UserMessageMeta 
   }
 }
 
+// The two predicates below run over every user row of a pane on each queue
+// and reveal pass. Their answers are remembered per row object for as long
+// as the row carries the same meta string, so a pass parses only the rows
+// that changed.
+interface RowFlags { meta: string | undefined; pendingFlush: boolean; wireOnly: boolean }
+const rowFlags = new WeakMap<Item, RowFlags>();
+function flagsOf(item: Item): RowFlags {
+  let flags = rowFlags.get(item);
+  if (flags === undefined || flags.meta !== item.meta) {
+    const meta = parseUserMessageMeta(item.meta);
+    flags = { meta: item.meta, pendingFlush: meta.pendingFlush === true, wireOnly: meta.wire_only === true };
+    rowFlags.set(item, flags);
+  }
+  return flags;
+}
+
 /** A quiet stored copy, before provider consumption or interrupt promotion. */
 export function isPendingFlushRow(item: Item): boolean {
-  return item.kind === 'user_text' && parseUserMessageMeta(item.meta).pendingFlush === true;
+  return item.kind === 'user_text' && flagsOf(item).pendingFlush;
 }
 
 /**
@@ -155,7 +171,7 @@ export function isPendingFlushRow(item: Item): boolean {
 export function isReaderAuthoredUserText(item: Item): boolean {
   if (item.kind !== 'user_text') return false;
   if ((item.parentId ?? '') !== '') return false;
-  return parseUserMessageMeta(item.meta).wire_only !== true;
+  return !flagsOf(item).wireOnly;
 }
 
 /**
