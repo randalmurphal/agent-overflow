@@ -8,7 +8,16 @@ import { loadSettings } from '../../stores/settings.svelte';
 import type { Settings } from '../../types/settings';
 import { flushSync } from 'svelte';
 import { fakeSpeechEngine } from '../../../test/helpers/speech';
-import { readAloudPhase, resetReadAloudForTest, watchReadAloudVoices } from '../../stores/readAloud.svelte';
+import {
+  readAloudPhase,
+  resetReadAloudForTest,
+  useOpenAIEngineForTest,
+  watchReadAloudVoices,
+} from '../../stores/readAloud.svelte';
+import { refreshReadAloudSource, resetReadAloudSourcesForTest } from '../../stores/readAloudSource.svelte';
+import { HOME_BACKEND } from '../../transport/backendKey';
+import { HOST_TIER_REASON } from './settingsComputer';
+import type { SpeechEngine } from '../../native/speech';
 import {
   readAloudPreferences,
   reloadReadAloudPreferencesForTest,
@@ -332,5 +341,197 @@ describe('<VoiceSettings> live dictation', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     flushSync();
     expect((await findByTestId('voice-dictation-live-key-line')).textContent?.trim()).toBe('No key file yet.');
+  });
+});
+
+describe('<VoiceSettings> OpenAI voices', () => {
+  const VOICES = [{ id: 'marin', name: 'Marin' }, { id: 'cedar', name: 'Cedar' }];
+  const keyFile = (state: string) => ({ path: '/data/credentials/openai-api-key', state });
+  let available: boolean;
+  let device: ReturnType<typeof fakeSpeechEngine>;
+  let clips: Array<{ backend: string; voice: string; stopped: boolean }>;
+
+  function fakeClipEngine(backend: string): SpeechEngine {
+    return {
+      voices: async () => [],
+      onVoicesChanged: () => () => undefined,
+      speak: (_pieces, _from, options) => {
+        const record = { backend, voice: options.voiceId, stopped: false };
+        clips.push(record);
+        let finish!: () => void;
+        const done = new Promise<'stopped'>((resolve) => { finish = () => resolve('stopped'); });
+        return { done, stop: () => { record.stopped = true; finish(); } };
+      },
+    };
+  }
+
+  async function boot(deviceVoices: number): Promise<void> {
+    resetReadAloudForTest();
+    device = fakeSpeechEngine(deviceVoices);
+    watchReadAloudVoices(device.engine);
+    useOpenAIEngineForTest(fakeClipEngine);
+    await settleSpeech();
+  }
+
+  beforeEach(async () => {
+    resetBindingMocks();
+    resetToLocalPage();
+    resetReadAloudSourcesForTest();
+    localStorage.clear();
+    reloadReadAloudPreferencesForTest();
+    available = false;
+    clips = [];
+    await boot(1);
+    setBindingMock('DictationSources', async () => ({ subscription: false, live: false, chatGPTSignIn: false }));
+    setBindingMock('OpenAIKeyFile', async () => keyFile('present'));
+    setBindingMock('ReadAloudSource', async () => ({ available, voices: VOICES }));
+  });
+  afterEach(() => {
+    resetReadAloudForTest();
+    resetReadAloudSourcesForTest();
+    localStorage.clear();
+    reloadReadAloudPreferencesForTest();
+    resetToLocalPage();
+  });
+
+  const status = async (find: (id: string) => Promise<HTMLElement>) => (await find('voice-read-aloud-api-status')).textContent?.trim();
+
+  it('is off by default, says so, and its switch sends only itself both ways', async () => {
+    await seed({});
+    const { findByRole, findByTestId } = render(VoiceSettings);
+    const toggle = (await findByRole('switch', { name: 'Toggle reading aloud with OpenAI voices' })) as HTMLButtonElement;
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    expect(toggle.disabled).toBe(false);
+    await expect.poll(() => status(findByTestId)).toBe('Off');
+    const disclosure = (await findByTestId('voice-read-aloud-api-disclosure')).textContent ?? '';
+    expect(disclosure).toMatch(/billed to that key/);
+    expect(disclosure).toMatch(/up to 30 days/);
+    expect(disclosure).toMatch(/AI-generated/);
+
+    const update = getBindingMock('UpdateSettings')!;
+    await fireEvent.click(toggle);
+    expect(update.mock.calls.at(-1)![0]).toEqual({ readAloudAPIEnabled: true });
+    await expect.poll(() => toggle.getAttribute('aria-checked')).toBe('true');
+    await fireEvent.click(toggle);
+    expect(update.mock.calls.at(-1)![0]).toEqual({ readAloudAPIEnabled: false });
+  });
+
+  it('cannot be switched where the host tier is not writable', async () => {
+    await seed({});
+    await pairWithScopes([...OBSERVE_SCOPES, 'threads:operate']);
+    const { findByRole } = render(VoiceSettings);
+    const toggle = (await findByRole('switch', { name: 'Toggle reading aloud with OpenAI voices' })) as HTMLButtonElement;
+    expect(toggle.disabled).toBe(true);
+    expect(toggle.title).toBe(HOST_TIER_REASON);
+  });
+
+  it('reads Ready when available, the key file’s problem when it is not, and Checking meanwhile', async () => {
+    await seed({ readAloudAPIEnabled: true });
+    available = true;
+    const ready = render(VoiceSettings);
+    await expect.poll(() => status(ready.findByTestId)).toBe('Ready');
+    ready.unmount();
+
+    available = false;
+    setBindingMock('OpenAIKeyFile', async () => keyFile('missing'));
+    const missing = render(VoiceSettings);
+    await expect.poll(() => status(missing.findByTestId)).toBe('No key file yet.');
+    missing.unmount();
+
+    setBindingMock('OpenAIKeyFile', () => new Promise(() => undefined));
+    const checking = render(VoiceSettings);
+    await expect.poll(() => status(checking.findByTestId)).toBe('Checking…');
+  });
+
+  it('asks nothing of a computer this connection may not operate threads on', async () => {
+    await seed({ readAloudAPIEnabled: true });
+    await pairViewOnly();
+    const read = getBindingMock('ReadAloudSource')!;
+    const { queryByTestId, findByRole } = render(VoiceSettings);
+    await findByRole('switch', { name: 'Toggle reading aloud with OpenAI voices' });
+    await settleSpeech();
+    expect(read).not.toHaveBeenCalled();
+    expect(queryByTestId('voice-read-aloud-api-status')).toBeNull();
+  });
+
+  it('lists the computer’s OpenAI voices in their own group while it offers them', async () => {
+    await seed({ readAloudAPIEnabled: true });
+    setReadAloudPreference('enabled', true);
+    const { findByTestId, queryByTestId } = render(VoiceSettings);
+    const select = (await findByTestId('read-aloud-voice-select')) as HTMLSelectElement;
+    await settleSpeech();
+    expect(queryByTestId('read-aloud-openai-voices')).toBeNull();
+    expect(queryByTestId('read-aloud-openai-previews')).toBeNull();
+
+    available = true;
+    await refreshReadAloudSource(HOME_BACKEND);
+    const group = await findByTestId('read-aloud-openai-voices');
+    expect(group.getAttribute('label')).toBe('OpenAI voices on this computer');
+    expect([...select.options].map((o) => o.value)).toEqual(['', 'v0', 'openai:marin', 'openai:cedar']);
+    await fireEvent.change(select, { target: { value: 'openai:cedar' } });
+    expect(readAloudPreferences().voiceId).toBe('openai:cedar');
+    expect(queryByTestId('read-aloud-voice-unoffered')).toBeNull();
+
+    available = false;
+    await refreshReadAloudSource(HOME_BACKEND);
+    await expect.poll(() => queryByTestId('read-aloud-openai-voices')).toBeNull();
+    // The saved voice stays selected, with what a reply is read in instead.
+    expect(select.value).toBe('openai:cedar');
+    expect([...select.options].map((o) => o.textContent?.trim())).toContain('Cedar (OpenAI)');
+    expect((await findByTestId('read-aloud-voice-unoffered')).textContent)
+      .toMatch(/does not offer Cedar; replies from a computer without it are read in this\s+device’s voice/);
+  });
+
+  it('turns on read-aloud on a device with no voices when the computer offers OpenAI voices', async () => {
+    await boot(0);
+    await seed({ readAloudAPIEnabled: true });
+    const { findByLabelText, getByText } = render(VoiceSettings);
+    const toggle = (await findByLabelText('Toggle reading replies aloud')) as HTMLButtonElement;
+    expect(toggle.disabled).toBe(true);
+    expect(getByText('This device has no voices to read with.')).toBeTruthy();
+
+    available = true;
+    await refreshReadAloudSource(HOME_BACKEND);
+    await expect.poll(() => toggle.disabled).toBe(false);
+  });
+
+  it('previews each OpenAI voice without changing the saved voice, switching and stopping', async () => {
+    await seed({ readAloudAPIEnabled: true });
+    available = true;
+    setReadAloudPreference('enabled', true);
+    setReadAloudPreference('voiceId', 'v0');
+    const { findAllByTestId, findByTestId, unmount } = render(VoiceSettings);
+    await findByTestId('read-aloud-openai-previews');
+    const [marin, cedar] = await findAllByTestId('read-aloud-openai-preview');
+    expect(marin.getAttribute('aria-label')).toBe('Preview Marin');
+
+    await fireEvent.click(marin);
+    expect(clips).toEqual([{ backend: HOME_BACKEND, voice: 'marin', stopped: false }]);
+    expect(readAloudPreferences().voiceId).toBe('v0');
+    await expect.poll(() => marin.textContent?.trim()).toBe('Stop');
+    expect(marin.getAttribute('aria-label')).toBe('Stop the Marin preview');
+
+    await fireEvent.click(cedar);
+    expect(clips[0].stopped).toBe(true);
+    expect(clips[1]).toMatchObject({ voice: 'cedar', stopped: false });
+    await expect.poll(() => marin.textContent?.trim()).toBe('Preview');
+    await expect.poll(() => cedar.textContent?.trim()).toBe('Stop');
+
+    await fireEvent.click(cedar);
+    expect(clips[1].stopped).toBe(true);
+    expect(readAloudPhase('settings-preview:cedar')).toBe('idle');
+
+    // Try it reads the saved voice, on the device.
+    await fireEvent.click(await findByTestId('read-aloud-try'));
+    expect(device.playbacks.at(-1)!.options.voiceId).toBe('v0');
+    await fireEvent.click(await findByTestId('read-aloud-try'));
+
+    // Leaving the page stops a preview.
+    await fireEvent.click(marin);
+    expect(clips[2]).toMatchObject({ voice: 'marin', stopped: false });
+    unmount();
+    expect(clips[2].stopped).toBe(true);
+    expect(readAloudPhase('settings-preview:marin')).toBe('idle');
+    expect(readAloudPreferences().voiceId).toBe('v0');
   });
 });

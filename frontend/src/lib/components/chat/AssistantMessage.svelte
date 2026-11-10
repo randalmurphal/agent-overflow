@@ -101,7 +101,10 @@
   // Read-aloud takes the same gate as Copy, where this device offers it.
   // It hides with the hover chrome, except while its reply is being read:
   // the control that pauses it must stay where it was found.
-  const canReadAloud = $derived(canCopy && readAloudAvailable());
+  // It reads through this device's voice or the thread's computer's OpenAI
+  // voice, so the computer is part of whether it is offered.
+  const readAloudMachine = $derived(threadMachine(item.threadId, null));
+  const canReadAloud = $derived(canCopy && readAloudAvailable(readAloudMachine));
   const readingKey = $derived(replyReadingKey(item.threadId, item.id));
   const readingThis = $derived(readAloudPhase(readingKey) !== 'idle');
 
@@ -388,7 +391,7 @@
       </span>
       {#if canReadAloud}
         <span class="flex shrink-0 items-center transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100 compact:opacity-100 {readingThis ? 'opacity-100' : 'opacity-0'}">
-          <ReadAloudButton {readingKey} markdown={item.summary} />
+          <ReadAloudButton {readingKey} markdown={item.summary} backend={readAloudMachine} />
         </span>
       {/if}
     </div>

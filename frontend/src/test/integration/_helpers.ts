@@ -152,6 +152,9 @@ export function installAppDefaults(): void {
   // than that under a loaded full run reaches this binding from a timer,
   // not from any assertion. Answer as a backend with nothing to trim.
   setBindingMock('RequestWebviewMemoryTrim', async () => 'skipped-recent');
+  // Settings > Voice and, while read-aloud is on here, every thread timeline
+  // ask the computer whether it reads aloud in OpenAI voices.
+  setBindingMock('ReadAloudSource', async () => ({ available: false, voices: [] }));
 }
 
 /**

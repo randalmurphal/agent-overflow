@@ -2,26 +2,32 @@
   // A finished reply's read-aloud control, in the meta row beside Copy and
   // in its grid (the same IconButton size). Idle reads the reply; playing
   // pauses; paused resumes from the start of its sentence, with a restart
-  // beside it. The store (`stores/readAloud.svelte.ts`) owns the voice and
-  // the one reading at a time.
+  // beside it. While an OpenAI voice is fetching the first sentence the
+  // control shows a spinner instead of pause. The store
+  // (`stores/readAloud.svelte.ts`) owns the voice and the one reading at a
+  // time; `backend` is the computer the reply belongs to.
 
   import Pause from '@lucide/svelte/icons/pause';
   import Play from '@lucide/svelte/icons/play';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
+  import SteppedSpinner from '../primitives/SteppedSpinner.svelte';
+  import type { BackendKey } from '../../transport/backendKey';
   import { chordHintSuffix } from '../../stores/keybindings.svelte';
   import {
     pauseReadAloud,
     readAloud,
     readAloudPhase,
+    readAloudWaiting,
     restartReadAloud,
     resumeReadAloud,
   } from '../../stores/readAloud.svelte';
 
-  let { readingKey, markdown }: { readingKey: string; markdown: string } = $props();
+  let { readingKey, markdown, backend }: { readingKey: string; markdown: string; backend: BackendKey } = $props();
 
   let phase = $derived(readAloudPhase(readingKey));
+  let waiting = $derived(readAloudWaiting(readingKey));
   let label = $derived(
     phase === 'playing'
       ? `Pause reading${chordHintSuffix('readAloud.toggle')}`
@@ -33,13 +39,14 @@
   function toggle(): void {
     if (phase === 'playing') pauseReadAloud();
     else if (phase === 'paused') resumeReadAloud();
-    else readAloud(readingKey, markdown);
+    else readAloud(readingKey, markdown, backend);
   }
 </script>
 
 <span
   data-testid="assistant-message-read-aloud-slot"
   data-phase={phase}
+  data-waiting={waiting}
   class="flex shrink-0 items-center"
 >
   <IconButton
@@ -49,7 +56,11 @@
     onClick={toggle}
   >
     {#snippet children()}
-      <Icon icon={phase === 'playing' ? Pause : Play} size={13} />
+      {#if waiting}
+        <SteppedSpinner size={13} />
+      {:else}
+        <Icon icon={phase === 'playing' ? Pause : Play} size={13} />
+      {/if}
     {/snippet}
   </IconButton>
   {#if phase === 'paused'}

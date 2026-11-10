@@ -1,6 +1,7 @@
 import { refreshAsyncQuestions } from './asyncQuestions.svelte';
 import { invalidateClaudeProbeCommands } from './providerCommands.svelte';
 import { applyDictationSourcesChanged } from './dictation.svelte';
+import { applyReadAloudSourceChanged } from './readAloudSource.svelte';
 import { installComputerHydration } from './computerHydration';
 // Composition root for backend event wiring. `setupEventListeners()` is the
 // single place that subscribes to every Wails channel and fans events out
@@ -396,6 +397,7 @@ export function setupEventListeners(): () => void {
       if (payload?.keys?.some((key) => key === 'dictationSubscriptionEnabled' || key === 'dictationAPIEnabled')) {
         applyDictationSourcesChanged(backendKeyForOrigin(origin.backendId));
       }
+      if (payload?.keys?.includes('readAloudAPIEnabled')) applyReadAloudSourceChanged(backendKeyForOrigin(origin.backendId));
     },
   );
   // keybindings:updated — the user keybindings file was rewritten or reset,

@@ -8,7 +8,16 @@ import { flushSync } from 'svelte';
 import AssistantMessage from './AssistantMessage.svelte';
 import { makeItem } from '../../../test/helpers/chat';
 import { fakeSpeechEngine } from '../../../test/helpers/speech';
-import { readAloudPhase, replyReadingKey, resetReadAloudForTest, watchReadAloudVoices } from '../../stores/readAloud.svelte';
+import {
+  readAloudPhase,
+  replyReadingKey,
+  resetReadAloudForTest,
+  useOpenAIEngineForTest,
+  watchReadAloudVoices,
+} from '../../stores/readAloud.svelte';
+import { refreshReadAloudSource, resetReadAloudSourcesForTest } from '../../stores/readAloudSource.svelte';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { HOME_BACKEND } from '../../transport/backendKey';
 import { reloadReadAloudPreferencesForTest, setReadAloudPreference } from '../../stores/readAloudPreferences.svelte';
 
 async function settle(): Promise<void> {
@@ -31,6 +40,7 @@ describe('<AssistantMessage> read aloud', () => {
 
   afterEach(() => {
     resetReadAloudForTest();
+    resetReadAloudSourcesForTest();
     localStorage.clear();
     reloadReadAloudPreferencesForTest();
   });
@@ -144,6 +154,40 @@ describe('<AssistantMessage> read aloud', () => {
     expect(fake.playbacks.at(-1)!.pieces).toEqual(['From B.']);
     expect(a.getByTestId('assistant-message-read-aloud-slot').getAttribute('data-phase')).toBe('idle');
     expect(buttonA.getAttribute('aria-label')).toBe('Read aloud');
+  });
+
+  it('offers the control through the computer’s OpenAI voice on a device with none, and waits for its first sentence', async () => {
+    resetReadAloudForTest();
+    watchReadAloudVoices(fakeSpeechEngine(0).engine);
+    const clips: Array<{ voice: string; onPiece: (index: number) => void }> = [];
+    useOpenAIEngineForTest(() => ({
+      voices: async () => [],
+      onVoicesChanged: () => () => undefined,
+      speak: (_pieces, _from, options, onPiece) => {
+        clips.push({ voice: options.voiceId, onPiece });
+        return { done: new Promise(() => undefined), stop: () => undefined };
+      },
+    }));
+    await settle();
+    const item = makeItem({ id: 'reply-4', summary: 'A sentence.' });
+    const mute = render(AssistantMessage, { props: { item } });
+    await waitFor(() => expect(mute.getByTestId('assistant-message-copy-slot')).toBeTruthy());
+    expect(mute.queryByTestId('assistant-message-read-aloud')).toBeNull();
+    mute.unmount();
+
+    setBindingMock('ReadAloudSource', async () => ({ available: true, voices: [{ id: 'marin', name: 'Marin' }] }));
+    await refreshReadAloudSource(HOME_BACKEND);
+    const { getByTestId } = render(AssistantMessage, { props: { item } });
+    const button = await waitFor(() => getByTestId('assistant-message-read-aloud'));
+    await fireEvent.click(button);
+    expect(clips.map((c) => c.voice)).toEqual(['marin']);
+    const slot = getByTestId('assistant-message-read-aloud-slot');
+    await waitFor(() => expect(slot.getAttribute('data-waiting')).toBe('true'));
+    expect(slot.getAttribute('data-phase')).toBe('playing');
+    expect(button.querySelector('svg')?.getAttribute('viewBox')).toBe('0 0 24 24');
+    clips[0].onPiece(0);
+    await waitFor(() => expect(slot.getAttribute('data-waiting')).toBe('false'));
+    expect(button.getAttribute('aria-label')).toMatch(/^Pause reading/);
   });
 
   it('returns to idle when speech is cancelled from outside', async () => {
