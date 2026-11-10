@@ -61,9 +61,18 @@ export function readCatalogRecord<K extends CatalogKind>(raw: unknown, generatio
  * The encoded form of rows that are values, or null for a row the catalog
  * leaves out. A row object that is never written into encodes the same way
  * every time, so a writer of such rows keeps one cache and each write
- * encodes only the rows that changed since the last.
+ * encodes only the rows that changed since the last. A remembered row is
+ * shared by every record built from it, so it is frozen.
  */
 export type CatalogRowCache = WeakMap<object, { plain: unknown; chars: number } | null>;
+
+function frozen<T>(value: T): T {
+  if (value !== null && typeof value === 'object') {
+    for (const child of Object.values(value)) frozen(child);
+    Object.freeze(value);
+  }
+  return value;
+}
 
 export function makeCatalogRecord<K extends CatalogKind>(
   generation: string, kind: K, rows: readonly CatalogRows[K][], stamp: string, cache?: CatalogRowCache,
@@ -76,7 +85,10 @@ export function makeCatalogRecord<K extends CatalogKind>(
       // Flatten Svelte proxies per row; never allocate a catalog-sized string.
       const encoded = JSON.stringify(safeRepositoryMetadata(row));
       entry = encoded.length > MAX_ROW_CHARS || !validRow(row, kind) ? null : { plain: JSON.parse(encoded), chars: encoded.length };
-      cache?.set(row, entry);
+      if (cache) {
+        if (entry !== null) frozen(entry.plain);
+        cache.set(row, entry);
+      }
     }
     if (entry === null) continue;
     if (kept.length === MAX_CATALOG_ROWS || chars + entry.chars > MAX_CATALOG_CHARS) break;

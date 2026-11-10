@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { MAX_CATALOG_ROWS, makeCatalogRecord, type CatalogRowCache } from './catalog';
+import { MAX_CATALOG_ROWS, makeCatalogRecord, readCatalogRecord, type CatalogRowCache } from './catalog';
 import type { Thread } from '../types/models';
 
 const thread = (id: string, title = `title-${id}`): Thread => ({
@@ -44,6 +44,26 @@ it('remembers a row the catalog leaves out', () => {
   const readsAfterFirst = oversized.reads();
   expect(makeCatalogRecord('g', 'threads', [oversized.row, invalid, thread('ok')], 's', cache).rows).toEqual([thread('ok')]);
   expect(oversized.reads()).toBe(readsAfterFirst);
+});
+
+it('does not let a record change what a later write encodes', () => {
+  const cache: CatalogRowCache = new WeakMap();
+  const row = thread('kept');
+  const nested = { ...thread('nested'), extra: { list: [{ deep: 1 }] } } as unknown as Thread;
+  const record = makeCatalogRecord('g', 'threads', [row, nested], 's', cache);
+  const decoded = readCatalogRecord(record, 'g', 'threads', 's')!;
+  expect(decoded).toEqual([row, nested]);
+
+  // Through the record and through what a read of it returns, at any depth.
+  expect(() => { (record.rows[0] as Thread).title = 'x'.repeat(70_000); }).toThrow(TypeError);
+  expect(() => { decoded[0].title = 'changed'; }).toThrow(TypeError);
+  expect(() => { (decoded[1] as unknown as { extra: { list: { deep: number }[] } }).extra.list[0].deep = 2; }).toThrow(TypeError);
+  expect(makeCatalogRecord('g', 'threads', [row, nested], 's', cache).rows).toEqual([row, nested]);
+
+  // A record built without a cache shares nothing and stays writable.
+  const loose = makeCatalogRecord('g', 'threads', [row], 's');
+  (loose.rows[0] as Thread).title = 'changed';
+  expect(makeCatalogRecord('g', 'threads', [row], 's').rows).toEqual([row]);
 });
 
 it('holds remembered rows to the row and size limits', () => {
