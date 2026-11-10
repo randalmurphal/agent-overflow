@@ -181,10 +181,17 @@ type pendingSend struct {
 	// confirmation that arrives after that turn closed.
 	StartedTurn    int
 	StartedTurnSet bool
-	// AnswerReported: the consumed hook has been told, or the send waits
-	// in boundarySends to be told, which turn answers. A retried
-	// confirmation keeps that answer.
-	AnswerReported bool
+	// StartedAtClaim records whether `started` had arrived when a turn
+	// start took this send: the provider opened that turn for it. A turn
+	// that took it without one (a provider-started wake, or a provider with
+	// no lifecycle frames) is weaker evidence of where it is answered.
+	StartedAtClaim bool
+	// AnswerTurn is the turn the consumed hook was told answers this send.
+	// A retried confirmation reports it again, with whatever send ids the
+	// row carries by then. Unset while the send is held in boundarySends
+	// for the turn that opens next.
+	AnswerTurn    int
+	AnswerTurnSet bool
 
 	Confirmation *userMessageConfirmation
 }
@@ -393,6 +400,7 @@ func (r *Router) claimTurnOpeningPendingSend(threadID string) (int, bool) {
 	for i := range queue {
 		if queue[i].canOpenTurn() {
 			queue[i].OpenedTurn = true
+			queue[i].StartedAtClaim = queue[i].Started
 			return queue[i].TurnIndex, true
 		}
 	}

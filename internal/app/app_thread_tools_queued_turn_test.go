@@ -298,6 +298,31 @@ func TestALateConfirmationSettlesTheRequestOnTheTurnThatTookIt(t *testing.T) {
 	second.wantRunning(t, "second, still waiting for its own turn")
 }
 
+// A turn triage still has open has not ended, whatever completion its row
+// carries: a soft-closed turn the model continued keeps the completion the
+// soft close wrote until the row is reopened.
+func TestARequestIsNotSettledOnATurnThatIsStillOpen(t *testing.T) {
+	t.Parallel()
+	q := newQueuedRequests(t)
+	r := q.queue(t, 1, 1)
+	r.bind(t)
+	r.consumed(t)
+	turn, found, err := q.f.app.store.GetTurnByThreadIndex(q.target.ID, 0)
+	if err != nil || !found {
+		t.Fatalf("turn 0 row: found=%v err=%v", found, err)
+	}
+	if err := q.f.app.store.UpdateTurnCompleted(turn.TurnID, time.Now().UnixMilli(), "end_turn", "", "", ""); err != nil {
+		t.Fatalf("UpdateTurnCompleted: %v", err)
+	}
+
+	r.observeTurnEnd(t)
+	r.wantRunning(t, "while triage has turn 0 open")
+
+	q.endTurn(t)
+	r.observeTurnEnd(t)
+	r.wantFinishedWith(t, "turn zero's own last words")
+}
+
 // The binding can land after turn 0 ended, and after the provider consumed
 // the message. It never settles on the turn that did not read the message.
 func TestALateBindingOfAQueuedRequestSkipsTheTurnThatDidNotReadIt(t *testing.T) {

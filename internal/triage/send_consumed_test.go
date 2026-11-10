@@ -228,16 +228,75 @@ func TestLateConfirmationNamesTheTurnThatTookTheSend(t *testing.T) {
 	startTurnZero(t, router)
 	first := queueDuringTurnZero(t, router, 1, "send-1", "echo-1", 1)
 	endOpenTurn(t, router)
+	// The CLI's order for a turn it opens for a message: started, init.
+	router.markPendingSendStarted("t1", "echo-1")
 	if err := router.Handle(openerInit(t, provider.TurnOpenerCommand)); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	queueDuringTurn(t, router, 1, 1, "send-2", "echo-2", 2)
+	second := queueDuringTurn(t, router, 1, 1, "send-2", "echo-2", 2)
 	endOpenTurn(t, router)
 
-	if err := router.Handle(echoOf(first, "echo-1")); err != nil {
-		t.Fatalf("late echo: %v", err)
+	t.Run("nothing open", func(t *testing.T) {
+		*reports = nil
+		consumed := pendingSendFor(t, router, first.ID)
+		router.reportSendConsumed("t1", &consumed)
+		wantConsumed(t, reports, consumedReport{sendIDs: []string{"send-1"}, turn: 1})
+	})
+	t.Run("the waiting send's turn is open", func(t *testing.T) {
+		*reports = nil
+		router.markPendingSendStarted("t1", "echo-2")
+		if err := router.Handle(openerInit(t, provider.TurnOpenerCommand)); err != nil {
+			t.Fatalf("second init: %v", err)
+		}
+		wantPendingSend(t, router, second.ID, "the waiting send", 2, PendingSendClaimed)
+		if err := router.Handle(echoOf(first, "echo-1")); err != nil {
+			t.Fatalf("late echo: %v", err)
+		}
+		wantConsumed(t, reports, consumedReport{sendIDs: []string{"send-1"}, turn: 1})
+	})
+}
+
+// pendingSendFor copies the registered entry for itemID.
+func pendingSendFor(t *testing.T, router *Router, itemID string) pendingSend {
+	t.Helper()
+	router.mu.Lock()
+	defer router.mu.Unlock()
+	for _, entry := range router.pendingSendsLocked("t1") {
+		if entry.AOItemID == itemID {
+			return entry
+		}
 	}
-	wantConsumed(t, reports, consumedReport{sendIDs: []string{"send-1"}, turn: 1})
+	t.Fatalf("no pending send for %s", itemID)
+	return pendingSend{}
+}
+
+// A turn that took a send the provider had not started (a turn the provider
+// opened on its own) is not where the send is answered when its echo then
+// arrives in a later turn.
+func TestSendTakenByAProviderStartedTurnIsAnsweredWhereItIsConsumed(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	reports := recordConsumed(router)
+	startTurnZero(t, router)
+	row := queueDuringTurnZero(t, router, 1, "send-1", "echo-1", 1)
+	endOpenTurn(t, router)
+	if err := router.Handle(provider.ProviderEvent{Kind: provider.EventInit, ThreadID: "t1", Timestamp: time.Now()}); err != nil {
+		t.Fatalf("provider-started init: %v", err)
+	}
+	wantPendingSend(t, router, row.ID, "taken by the provider's turn", 1, PendingSendClaimed)
+	endOpenTurn(t, router)
+
+	if err := router.Handle(openerInit(t, provider.TurnOpenerCommand)); err != nil {
+		t.Fatalf("the message's own init: %v", err)
+	}
+	open, ok := router.openTurnIndex("t1")
+	if !ok || open == 1 {
+		t.Fatalf("open turn = %d/%v, want a turn after the provider's turn 1", open, ok)
+	}
+	if err := router.Handle(echoOf(row, "echo-1")); err != nil {
+		t.Fatalf("echo: %v", err)
+	}
+	wantConsumed(t, reports, consumedReport{sendIDs: []string{"send-1"}, turn: open})
 }
 
 // A send the model started reading inside a turn is answered by that turn
@@ -285,8 +344,10 @@ func TestDirectSendDrainedMidTurnIsAnsweredByItsOwnTurn(t *testing.T) {
 	wantConsumed(t, reports, consumedReport{sendIDs: []string{"send-direct"}, turn: 1})
 }
 
-// A confirmation that is retried keeps the answer its first attempt named.
-func TestRetriedConfirmationKeepsItsFirstAnswer(t *testing.T) {
+// A confirmation that is retried keeps the turn its first attempt named,
+// and reports the send ids the row carries by then: a fold that succeeds
+// only on the retry has widened it.
+func TestRetriedConfirmationKeepsItsTurnAndReportsWidenedSendIDs(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	reports := recordConsumed(router)
@@ -299,8 +360,63 @@ func TestRetriedConfirmationKeepsItsFirstAnswer(t *testing.T) {
 	if err := router.Handle(openerInit(t, provider.TurnOpenerCommand)); err != nil {
 		t.Fatalf("init: %v", err)
 	}
+	widened := row
+	widened.Meta = `{"sendId":"send-0","joinedSendIds":["send-0","send-1"]}`
+	if _, err := st.UpsertItem(widened, nil); err != nil {
+		t.Fatalf("widen the row: %v", err)
+	}
 	router.reportSendConsumed("t1", &consumed)
-	wantConsumed(t, reports, consumedReport{sendIDs: []string{"send-1"}, turn: 0})
+	wantConsumed(t, reports,
+		consumedReport{sendIDs: []string{"send-1"}, turn: 0},
+		consumedReport{sendIDs: []string{"send-0", "send-1"}, turn: 0})
+}
+
+// A boundary send whose confirmation is retried before its turn opens is
+// reported once, at the turn start, with the send ids of the retry; and a
+// retry after the turn start reports that same turn.
+func TestRetriedBoundaryConfirmationIsReportedAtTheTurnStart(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	reports := recordConsumed(router)
+	startTurnZero(t, router)
+	row := queueDuringTurnZero(t, router, 1, "send-1", "echo-1", 1)
+	endOpenTurn(t, router)
+	consumed := pendingSendFor(t, router, row.ID)
+	consumed.EchoConsumed = true
+
+	router.reportSendConsumed("t1", &consumed)
+	widened := row
+	widened.Meta = `{"sendId":"send-0","joinedSendIds":["send-0","send-1"]}`
+	if _, err := st.UpsertItem(widened, nil); err != nil {
+		t.Fatalf("widen the row: %v", err)
+	}
+	router.reportSendConsumed("t1", &consumed)
+	wantConsumed(t, reports)
+
+	// The failed confirmation put the entry back for its retry.
+	router.mu.Lock()
+	queue := router.pendingSendsLocked("t1")
+	for i := range queue {
+		if queue[i].AOItemID == row.ID {
+			queue[i] = consumed
+		}
+	}
+	router.mu.Unlock()
+	if err := router.Handle(provider.ProviderEvent{Kind: provider.EventInit, ThreadID: "t1", Timestamp: time.Now()}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	open, ok := router.openTurnIndex("t1")
+	if !ok {
+		t.Fatal("the init opened no turn")
+	}
+	wantConsumed(t, reports, consumedReport{sendIDs: []string{"send-0", "send-1"}, turn: open})
+
+	retried := pendingSendFor(t, router, row.ID)
+	endOpenTurn(t, router)
+	router.reportSendConsumed("t1", &retried)
+	wantConsumed(t, reports,
+		consumedReport{sendIDs: []string{"send-0", "send-1"}, turn: open},
+		consumedReport{sendIDs: []string{"send-0", "send-1"}, turn: open})
 }
 
 // A send consumed at a boundary reads as waiting until the hook has been

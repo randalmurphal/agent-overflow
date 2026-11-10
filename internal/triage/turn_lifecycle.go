@@ -667,11 +667,14 @@ func (r *Router) reopenSoftClosedTurn(evt provider.ProviderEvent) (bool, error) 
 	st.openTurn, st.openTurnSet = turnIndex, true
 	delete(st.settledTurns, turnIndex)
 	r.mu.Unlock()
-	r.reportBoundarySends(evt.ThreadID, turnIndex)
 
 	err := r.store.ReopenTurn(r.persistedTurnID(evt, turnIndex))
 	if err != nil {
 		err = fmt.Errorf("reopen soft-closed turn %s/%d: %w", evt.ThreadID, turnIndex, err)
+	} else {
+		// After the row is open again: a reader told this turn answers a
+		// send must not find the completion the soft close wrote.
+		r.reportBoundarySends(evt.ThreadID, turnIndex)
 	}
 	r.openTurnSpan(evt, turnIndex)
 	snapshot := ActiveTurnSnapshot{
@@ -1273,7 +1276,6 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 	// a replacement session's reused turn indexes (revert paths) never
 	// meet a dead session's marks (round-11, CT11-2).
 	r.mu.Unlock()
-	r.reportBoundarySends(threadID, turnIndex)
 
 	if hasOpen {
 		r.settleQueuedEchoPredecessor(threadID, open, startedAt, r.predecessorStopReason(threadID, open, interruptedTurnIndex))
@@ -1302,6 +1304,7 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 		log.Printf("triage: queued echo turn %s/%d was placed at %d — open-turn state still names %d",
 			threadID, turnIndex, placedIndex, turnIndex)
 	}
+	r.reportBoundarySends(threadID, turnIndex)
 	r.openTurnSpan(provider.ProviderEvent{ThreadID: threadID}, turnIndex)
 
 	// Re-mint the wire round under the new logical turn. The frontend

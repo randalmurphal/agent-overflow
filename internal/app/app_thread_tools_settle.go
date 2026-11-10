@@ -143,6 +143,12 @@ func (a *App) receiptEndedTurn(threadID, token, messageItemID string) (store.Tur
 	if !ok {
 		return store.Turn{}, false, fmt.Errorf("receipt names turn %q, which is not a turn of this thread", turnKey)
 	}
+	if a.triage.OpenTurnIndex(threadID) == index {
+		// The turn is running. A row that still carries an earlier
+		// completion (a soft-closed turn the model continued, a re-sent
+		// turn start) is not this turn's end.
+		return store.Turn{}, false, nil
+	}
 	turn, found, err := a.store.GetTurnByThreadIndex(threadID, index)
 	if err != nil || !found || turn.CompletedAt == nil {
 		return store.Turn{}, false, err

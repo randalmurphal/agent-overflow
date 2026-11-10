@@ -40,12 +40,12 @@ func (r *Router) SetSendConsumedHook(fn func(threadID string, sendIDs []string, 
 
 // reportSendConsumed tells the hook which turn answers consumed, or leaves
 // the send for the next turn that opens. Caller holds the thread's flush
-// anchor lock and has run the confirmation handlers. A retried confirmation
-// is not reported again: the first one's answer stands.
+// anchor lock and has run the confirmation handlers.
+//
+// A retried confirmation keeps the turn its first attempt named and reports
+// it again with the row's current send ids: a fold that succeeds only on
+// the retry has widened the row with sends the first report did not carry.
 func (r *Router) reportSendConsumed(threadID string, consumed *pendingSend) {
-	if consumed.AnswerReported {
-		return
-	}
 	r.mu.Lock()
 	hook := r.sendConsumed
 	r.mu.Unlock()
@@ -60,32 +60,48 @@ func (r *Router) reportSendConsumed(threadID string, consumed *pendingSend) {
 	if len(sendIDs) == 0 {
 		return
 	}
-	consumed.AnswerReported = true
 	r.mu.Lock()
-	turn, known := r.answeringTurnLocked(threadID, consumed)
-	if !known {
+	if !consumed.AnswerTurnSet {
 		st := r.state(threadID)
-		st.boundarySends = append(st.boundarySends, boundarySend{aoItemID: consumed.AOItemID, sendIDs: sendIDs})
+		if listed := st.boundarySendIndex(consumed.AOItemID); listed >= 0 {
+			// Still waiting for its turn: the turn start reports the
+			// ids the row carries now.
+			st.boundarySends[listed].sendIDs = sendIDs
+			r.mu.Unlock()
+			return
+		}
+		turn, known := r.answeringTurnLocked(threadID, consumed)
+		if !known {
+			st.boundarySends = append(st.boundarySends, boundarySend{aoItemID: consumed.AOItemID, sendIDs: sendIDs})
+			r.mu.Unlock()
+			return
+		}
+		consumed.AnswerTurn, consumed.AnswerTurnSet = turn, true
 	}
+	turn := consumed.AnswerTurn
 	r.mu.Unlock()
-	if known {
-		hook(threadID, sendIDs, turn)
-	}
+	hook(threadID, sendIDs, turn)
+}
+
+func (st *threadState) boundarySendIndex(aoItemID string) int {
+	return slices.IndexFunc(st.boundarySends, func(send boundarySend) bool { return send.aoItemID == aoItemID })
 }
 
 // answeringTurnLocked is the turn that answers a send confirmed now, in the
 // order the evidence is worth:
 //
-//   - a turn start took the send: that turn, however late the confirmation;
+//   - the provider opened a turn for the send (a turn start took it after
+//     its `started`): that turn, however late the confirmation;
 //   - its own turn is open: the consumption opened it;
 //   - `started` arrived inside a turn: the model read it there;
 //   - a turn is open: it consumed the send;
+//   - a turn start took the send and nothing is open: that turn;
 //   - none of these: the provider took it at a turn boundary, and the turn
 //     that opens next answers (reportBoundarySends).
 //
 // Caller holds r.mu.
 func (r *Router) answeringTurnLocked(threadID string, consumed *pendingSend) (int, bool) {
-	if consumed.OpenedTurn {
+	if consumed.OpenedTurn && consumed.StartedAtClaim {
 		return consumed.TurnIndex, true
 	}
 	st := r.threadStateIfPresent(threadID)
@@ -100,14 +116,18 @@ func (r *Router) answeringTurnLocked(threadID string, consumed *pendingSend) (in
 		return consumed.StartedTurn, true
 	case isOpen:
 		return open, true
+	case consumed.OpenedTurn:
+		return consumed.TurnIndex, true
 	}
 	return 0, false
 }
 
-// reportBoundarySends tells the hook that turnIndex, which has just opened,
-// answers every send consumed at the boundary before it. A send leaves
-// boundarySends only after the hook returned for it, so PendingSendTurn
-// never reports it consumed with its turn unwritten.
+// reportBoundarySends tells the hook that turnIndex, which has just opened
+// and whose row is open in the store, answers every send consumed at the
+// boundary before it. A send leaves boundarySends only after the hook
+// returned for it, so PendingSendTurn never reports it consumed with its
+// turn unwritten. An entry still registered (a failed write put it back for
+// a retry) is told the turn, so the retry reports the same one.
 func (r *Router) reportBoundarySends(threadID string, turnIndex int) {
 	r.mu.Lock()
 	st := r.threadStateIfPresent(threadID)
@@ -130,6 +150,11 @@ func (r *Router) reportBoundarySends(threadID string, turnIndex int) {
 		st.boundarySends = slices.Delete(st.boundarySends, 0, min(len(sends), len(st.boundarySends)))
 		if len(st.boundarySends) == 0 {
 			st.boundarySends = nil
+		}
+		for i := range st.pendingSends {
+			if slices.ContainsFunc(sends, func(send boundarySend) bool { return send.aoItemID == st.pendingSends[i].AOItemID }) {
+				st.pendingSends[i].AnswerTurn, st.pendingSends[i].AnswerTurnSet = turnIndex, true
+			}
 		}
 	}
 	r.mu.Unlock()
