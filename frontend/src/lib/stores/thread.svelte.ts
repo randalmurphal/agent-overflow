@@ -313,6 +313,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     appendLivePayloadDeltaForItem: rowUiState.appendLivePayloadDeltaForItem,
     // Declared below; called only once events flow.
     onStreamGap: () => switchLoad.requestStreamRecovery(),
+    commitPromotedRow: (row) => { itemStream.upsertItemsBatch([row]); },
   });
   const timelineWindow = createThreadTimelineWindow({
     getItems,
@@ -1390,6 +1391,17 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     assistantMarkdownSourceAppend(itemId: string, parserSource: string) {
       return streamingReveal.assistantSourceAppend(itemId, parserSource);
     },
+
+    /**
+     * Held rows a mounted timeline is presenting: a reasoning row the
+     * provider reclassified as prose keeps its place until the timeline
+     * has shown the change (threadRowPromotions.svelte.ts).
+     */
+    get presentingRowPromotions() {
+      return streamingReveal.presentingRowPromotions;
+    },
+    registerRowPromotionPresenter: streamingReveal.registerRowPromotionPresenter,
+    completeRowPromotion: streamingReveal.completeRowPromotion,
 
     // Snap every behind smoother straight to its full received text on
     // visibilitychange → visible or completed reconnect recovery. See threadStreamingReveal.svelte.ts

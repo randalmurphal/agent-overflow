@@ -99,6 +99,7 @@ function makeReveal(initialItems: Item[], onArm: () => void = () => {}) {
     stampLiveContent: () => {},
     armStructuralSpring: onArm,
     appendLivePayloadDeltaForItem: () => {},
+    commitPromotedRow: () => { throw new Error('test held no row to promote'); },
   });
   return {
     reveal,

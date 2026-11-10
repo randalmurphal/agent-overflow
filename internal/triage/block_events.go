@@ -48,13 +48,13 @@ func (r *Router) handleContentBlockStop(evt provider.ProviderEvent) error {
 	// the next provider event flow immediately; the turn's end, an error
 	// flip and a snapshot block's lookup wait for the thread's settles in
 	// flight (waitThreadSettles) before they read its rows.
-	// ONE decode of the stop envelope for both readers below it: the block
-	// type and the delivery marker are two top-level strings on the same
-	// object, and this is the freeze hot path.
+	// ONE decode of the stop envelope for the readers below it: the block
+	// type, the delivery marker and the narration marker are top-level
+	// fields of the same object, and this is the freeze hot path.
 	stop := decodeBlockStopMeta(evt.Meta)
 	switch r.blockTypeForStop(evt.ThreadID, turnIndex, scope, evt.ItemID, stop.BlockType) {
 	case "thinking":
-		r.settleStreamingThinkingAsync(evt.ThreadID, turnIndex, scope, evt.ItemID, statusCompleted, evt.Content, evt.ContentPresent, evt.Timestamp)
+		r.settleStreamingThinkingAsync(evt.ThreadID, turnIndex, scope, evt.ItemID, statusCompleted, evt.Content, evt.ContentPresent, stop.Narration, evt.Timestamp)
 		return nil
 	case "text":
 		r.settleStreamingTextAsync(evt.ThreadID, turnIndex, scope, evt.ItemID, statusCompleted, evt.Content, evt.ContentPresent, blockDeliveryMeta(stop.Delivery), evt.Timestamp)
@@ -64,13 +64,17 @@ func (r *Router) handleContentBlockStop(evt provider.ProviderEvent) error {
 	}
 }
 
-// blockStopMeta is the content_block_stop envelope's two routing fields.
+// blockStopMeta is the content_block_stop envelope's routing fields.
 type blockStopMeta struct {
 	// BlockType is the wire's own `blockType`, empty on Claude (which omits
 	// it) — blockTypeForStop then falls back to the active-block maps.
 	BlockType string `json:"blockType"`
 	// Delivery is Codex's `delivery` marker; see blockDeliveryMeta.
 	Delivery string `json:"delivery"`
+	// Narration is provider.MetaNarrationKey: the provider marked this
+	// thinking block as prose for the user, and it settles as assistant
+	// text (narration.go).
+	Narration bool `json:"narration"`
 }
 
 func decodeBlockStopMeta(raw json.RawMessage) blockStopMeta {
