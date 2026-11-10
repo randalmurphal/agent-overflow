@@ -1,0 +1,30 @@
+[
+  {
+    "id": 9004, "project_id": 77, "action_name": "commented on", "target_id": 7004, "target_iid": 7004, "target_type": "DiscussionNote",
+    "target_title": "Fix the parser", "created_at": "2026-10-19T08:00:00.000Z", "author_username": "alice",
+    "note": { "id": 7004, "type": "DiscussionNote", "body": "Agreed.", "noteable_type": "MergeRequest", "noteable_id": 400, "noteable_iid": 20 }
+  },
+  {
+    "id": 9003, "project_id": 77, "action_name": "commented on", "target_id": 7003, "target_iid": 7003, "target_type": "DiffNote",
+    "target_title": "Fix the parser", "created_at": "2026-10-19T07:00:00.000Z", "author_username": "alice",
+    "note": { "id": 7003, "type": "DiffNote", "body": "Nit.", "noteable_type": "MergeRequest", "noteable_id": 400, "noteable_iid": 20 }
+  },
+  {
+    "id": 9002, "project_id": 77, "action_name": "approved", "target_id": 400, "target_iid": 20, "target_type": "MergeRequest",
+    "target_title": "Fix the parser", "created_at": "2026-10-18T08:30:00.000Z", "author_username": "alice"
+  },
+  {
+    "id": 9001, "project_id": 77, "action_name": "commented on", "target_id": 7001, "target_iid": 7001, "target_type": "Note",
+    "target_title": "An issue", "created_at": "2026-10-19T10:00:00.000Z", "author_username": "alice",
+    "note": { "id": 7001, "type": null, "body": "On an issue.", "noteable_type": "Issue", "noteable_id": 5, "noteable_iid": 19 }
+  },
+  {
+    "id": 9000, "project_id": 88, "action_name": "commented on", "target_id": 7000, "target_iid": 7000, "target_type": "Note",
+    "target_title": "Another project", "created_at": "2026-10-19T11:00:00.000Z", "author_username": "alice",
+    "note": { "id": 7000, "type": null, "body": "Elsewhere.", "noteable_type": "MergeRequest", "noteable_id": 6, "noteable_iid": 19 }
+  },
+  {
+    "id": 8999, "project_id": 77, "action_name": "pushed to", "target_id": null, "target_iid": null, "target_type": null,
+    "created_at": "2026-10-19T12:00:00.000Z", "author_username": "alice", "push_data": { "ref": "rename" }
+  }
+]

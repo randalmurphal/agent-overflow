@@ -129,6 +129,9 @@ Mechanism in
   (ruling 2026-10-16). The rows are not rewritten: the note is its own row
   naming them, and a read of a row it names serves the row marked
   (`Item.discardedBy`) whether or not the note is in the loaded window.
+  The note joins the activity run of discarded reasoning or tool rows like
+  any notification, and stands alone after discarded prose (ruling
+  2026-10-21).
 
 ## Sidebar, threads, drafts
 
@@ -315,6 +318,15 @@ Mechanism in
   way. Agent thread requests, their cancels and workflow takeovers are
   not gated. Wire facts:
   [claude-wire.md §Background task ownership](references/claude-wire.md#background-task-ownership).
+- Work the Claude CLI starts on its own (a background-task wake, a
+  scheduled wakeup, a peer session's message) is a turn of its own, with
+  its own timer and Stop and no user row; the completion notice that woke
+  it stays above it. `/effort`, `/fast` and `/rename` open no turn. A
+  turn ends when the model's message ends, so a thread waiting on a
+  running `local_agent` is idle; it runs again only if the model
+  continues that turn (ruling 2026-10-24).
+  Mechanism:
+  [turn-lifecycle.md §Rounds and turns](architecture/turn-lifecycle.md#rounds-and-turns).
 - A forked skill is an awaited agent with a different label. Its card has
   no Stop and no background action; its agent pane's Stop ends the fork
   alone (the main turn goes on after a fork the model launched, and a
@@ -564,6 +576,13 @@ and anti-changes that live only here:
   pane, so two tools sit side by side with no special case. Workflows
   loses its modal. The row's label follows the focused pane when it is a
   tool, else the tool used last (ruling 2026-10-20).
+- The Pull requests page never records which PRs the user opened. A row's
+  attention comes from the forge's own record of the viewer's activity
+  (GitHub's latest review, GitLab's reviewer state and the viewer's notes
+  and approvals in its events feed), so it reads the same on every
+  computer and in the forge's own UI. The list opens on its stored copy
+  and never reads one PR on its own (ruling 2026-10-21,
+  `docs/specs/pull-requests.md`).
 - PR comments live in the overview: Description (collapsed by default)
   and Conversation (also collapsed by default, and capped short enough
   that the diff stays visible under it), two collapsible sections that head

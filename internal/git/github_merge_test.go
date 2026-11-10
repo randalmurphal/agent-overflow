@@ -1000,11 +1000,10 @@ func TestGitHubPRStateMutations(t *testing.T) {
 	})
 }
 
-// The PR list's summary read counts every unresolved thread: past the
-// detail's first 100 thread states it reads the next pages, which a plain
-// detail read without the requirement does not, and leaves the count
-// unknown.
-func TestGitHubReadPRSummaryCountsEveryUnresolvedThread(t *testing.T) {
+// A detail read whose base does not require resolved threads reads no
+// thread states past the first 100 and leaves the unresolved count
+// unknown, rather than counting part of them.
+func TestGitHubDetailReadLeavesUnresolvedUnknownPastTheFirstPage(t *testing.T) {
 	t.Parallel()
 	states := make([]any, 100)
 	for i := range states {
@@ -1029,19 +1028,6 @@ func TestGitHubReadPRSummaryCountsEveryUnresolvedThread(t *testing.T) {
 		return forgeUnexpected(t, call)
 	}
 	core, calls := newForgeAPICore(t, answer)
-	got, err := core.ReadPRSummary(t.Context(), githubTestRef(7))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ops := calls.ops(); fmt.Sprint(ops) != "[PRTick PRThreadStatesPage]" {
-		t.Fatalf("requests = %v", ops)
-	}
-	r := got.Readiness
-	if r.Unresolved == nil || *r.Unresolved != 51 || r.Approvals != (ApprovalCount{Given: 1, Required: 2}) {
-		t.Fatalf("unresolved = %v approvals = %+v", r.Unresolved, r.Approvals)
-	}
-
-	core, calls = newForgeAPICore(t, answer)
 	plain, err := core.ReadPR(t.Context(), githubTestRef(7), PRReadParts{Detail: true}, nil, nil)
 	if err != nil {
 		t.Fatal(err)

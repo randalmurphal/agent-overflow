@@ -187,7 +187,7 @@ import {
   type DiscussionStateEvent,
 } from './eventsDiscussion';
 import { applyPRReviewCILog, applyPRReviewCIUpdated, applyPRReviewUpdated } from './eventsPRReview';
-import { applyPipelineUpdated, applyPullsUpdated } from './eventsPulls';
+import { applyPipelineUpdated, applyPullsBadgeEvent, applyPullsUpdated } from './eventsPulls';
 import { setupSessionImportEvents } from './eventsSessionImport';
 import {
   applyHighlightDiffSeed,
@@ -780,6 +780,7 @@ export function setupEventListeners(): () => void {
   // The Pull requests page: the list pump's snapshot and the pipeline
   // pumps' frames (a pipeline's logs ride pr:ci_log above).
   const cancelPullsUpdated = wailsEventOn('pulls:updated', applyPullsUpdated);
+  const cancelPullsBadge = wailsEventOn('pulls:badge', applyPullsBadgeEvent);
   const cancelPipelineUpdated = wailsEventOn('ci:pipeline_updated', applyPipelineUpdated);
   // workflow:* — the typed run-record channel. Item/phase transitions keep
   // the overlay's run cache live (and the sidebar's needs-attention badge
@@ -892,6 +893,7 @@ export function setupEventListeners(): () => void {
     cancelPRCIUpdated();
     cancelPRCILog();
     cancelPullsUpdated();
+    cancelPullsBadge();
     cancelPipelineUpdated();
     cancelWorkflowError();
     cancelWorkflowItemState();

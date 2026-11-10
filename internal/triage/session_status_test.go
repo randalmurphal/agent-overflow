@@ -292,27 +292,17 @@ func TestCleanupThreadWithoutOpenTurnIsNoop(t *testing.T) {
 	}
 }
 
-// TestCleanupThreadSynthesizesAfterRound2PlusReRound pins the
-// regression that left the FE working indicator stranded when a Claude
-// session died mid-round-2+: handleInit's re-round branch sets
-// currentRoundByThread WITHOUT calling setOpenTurn (id-allocating
-// counters must survive the multi-result boundary — see
-// multi_result_test.go for the rationale). Before the fix,
-// CleanupThread's guard checked openTurnIndex only, missed the live
-// round, and skipped synthesize; afterwards delete(currentRoundByThread)
-// ran anyway, leaving the FE with a stuck activeTurnByThread entry
-// and no path to a wire turn_completed.
+// TestCleanupThreadSynthesizesAfterSelfWake pins a Claude
+// session dying mid self-wake: the wake's turn is open, so CleanupThread
+// synthesizes the truncated complete that clears every client's working
+// indicator and settles the turn. The wire sequence:
 //
-// The fix gates synthesize on HasInFlightTurnOrRound (openTurns OR
-// currentRoundByThread). This test models the wire sequence:
-//
-//	EventTurnStart    (round 1 begins; openTurns + currentRoundByThread set)
-//	EventTurnComplete (round 1 ends; both cleared)
-//	EventInit         (round 2 begins via maybeEmitReRoundOnInit;
-//	                   currentRoundByThread set, openTurns stays empty)
+//	EventTurnStart    (turn 0 begins)
+//	EventTurnComplete (turn 0 ends)
+//	EventInit         (the CLI wakes itself: turn 1 opens)
 //	<session dies>
-//	CleanupThread     (must synthesize because round 2 is open)
-func TestCleanupThreadSynthesizesAfterRound2PlusReRound(t *testing.T) {
+//	CleanupThread     (must synthesize because turn 1 is open)
+func TestCleanupThreadSynthesizesAfterSelfWake(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
@@ -340,20 +330,17 @@ func TestCleanupThreadSynthesizesAfterRound2PlusReRound(t *testing.T) {
 		t.Fatalf("re-init: %v", err)
 	}
 
-	// Sanity-check the precondition: openTurns is empty (clearOpenTurn
-	// cleared it at the round-1 complete) but currentRoundByThread is
-	// set (maybeEmitReRoundOnInit just opened round 2). This is the
-	// state the bug fix targets — if either side drifts, the regression
-	// guard would silently pass on a different code path.
-	if _, ok := router.openTurnIndex("t1"); ok {
-		t.Fatal("precondition: openTurns must be empty after round-1 complete")
-	}
-	if !router.HasInFlightTurnOrRound("t1") {
-		t.Fatal("precondition: round 2 must be live in currentRoundByThread")
+	// The self-wake opened turn 1 of its own.
+	if open, ok := router.openTurnIndex("t1"); !ok || open != 1 {
+		t.Fatalf("precondition: open turn = %d ok=%v, want the self-wake's turn 1", open, ok)
 	}
 	emissions.reset()
 
 	router.CleanupThread("t1")
+	router.WaitForPendingSettles()
+	if turn, found, err := st.GetTurn("t1:1"); err != nil || !found || turn.CompletedAt == nil {
+		t.Fatalf("self-wake turn not settled at cleanup: found=%v err=%v %+v", found, err, turn)
+	}
 
 	completed := filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completed) != 1 {
@@ -368,11 +355,11 @@ func TestCleanupThreadSynthesizesAfterRound2PlusReRound(t *testing.T) {
 	}
 }
 
-// TestSessionStatusErrorSynthesizesAfterRound2PlusReRound is the
-// session-died (rather than CleanupThread) variant of the same gate
-// regression. handleSessionDied shared the openTurnIndex-only guard
-// with CleanupThread; the same HasInFlightTurnOrRound fix covers it.
-func TestSessionStatusErrorSynthesizesAfterRound2PlusReRound(t *testing.T) {
+// TestSessionStatusErrorSynthesizesAfterSelfWake is the session-died
+// (rather than CleanupThread) variant: handleSessionDied uses the same
+// HasInFlightTurnOrRound gate, so the self-wake's open turn gets its
+// truncated provider:turn_completed.
+func TestSessionStatusErrorSynthesizesAfterSelfWake(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 

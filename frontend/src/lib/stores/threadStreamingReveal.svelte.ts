@@ -8,16 +8,18 @@
 // each wholesale-commit path free to rediscover the rewind bugs of 2026-08
 // one at a time.
 //
-// The three collaborators it composes, each with its own header:
+// The collaborators it composes, each with its own header:
 //   - threadRevealSmoothers.ts — the smoother map, retained reasoning tails,
 //     assistant sink registry (the RESOURCES).
 //   - threadRevealGate.svelte.ts — `revealBoundary`, the sequencer, and the
 //     mutate-then-re-derive transaction (the QUEUE/GATE).
 //   - threadRevealRouting.ts — per-delta direct-vs-authoritative routing and
 //     the patch decision tree (the ROW WRITES).
+//   - threadRowPromotions.svelte.ts — rows held back while the row they
+//     replace finishes on screen (the HELD REPLACEMENTS).
 //
-// Also owns the pane-wide sweeps that cross all three: visibility-resume
-// snap, thread-switch disposal, and the test flush.
+// Also owns the pane-wide sweeps that cross them: visibility-resume snap,
+// thread-switch disposal, and the test flush.
 
 import type { Item } from '../types/models';
 import type { ItemPatchEvent } from '../types/events';
@@ -39,6 +41,12 @@ import {
   isSnapStatus,
   throwCollectedErrors,
 } from './threadRevealSmoothers';
+import {
+  createThreadRowPromotions,
+  type PresentingRowPromotion,
+  type RowPromotionPatch,
+  type RowPromotionPresenter,
+} from './threadRowPromotions.svelte';
 
 /**
  * THE REVEAL INVARIANT (see `stores/AGENTS.md` § The reveal invariant).
@@ -135,6 +143,12 @@ export interface ThreadStreamingRevealOptions {
    * owner re-reads its window.
    */
   onStreamGap?(itemId: string): void;
+  /**
+   * Install a row this module held back, through the pane's upsert path
+   * so the window, its indexes and the timeline revision follow the row's
+   * new kind. The hold is already released when this runs.
+   */
+  commitPromotedRow(row: Item): void;
 }
 
 export interface ThreadStreamingReveal {
@@ -212,9 +226,9 @@ export interface ThreadStreamingReveal {
   /** Row-UI prune hook: drop retained settled tails not in the retention set. */
   pruneSettledThinkingTails(retainedItemIds: ReadonlySet<string>): void;
   /**
-   * How many per-item smoothers are live right now — i.e. how many rows the
-   * reveal queue is still draining. The cheap half of `debugStats()`: one
-   * map size, no walk over the retained thinking tails, so a poll loop (the
+   * How many rows the reveal queue is still draining: live per-item
+   * smoothers, plus held rows whose smoother has settled. The cheap half of
+   * `debugStats()`: no walk over the retained thinking tails, so a poll loop (the
    * harness's reveal-drain probe) can ask it every few hundred milliseconds
    * without becoming part of the load it is measuring.
    */
@@ -224,7 +238,25 @@ export interface ThreadStreamingReveal {
     liveThinkingTails: number;
     liveThinkingTailChars: number;
   };
-  /** Test-only: snap + dispose every smoother (body of pane's __flushItemSmoothersForTest). */
+  /**
+   * Reactive. Held rows a timeline is presenting
+   * (threadRowPromotions.svelte.ts): the pane still holds the row each
+   * replaces, and installs the held row when the presenter completes it.
+   */
+  readonly presentingRowPromotions: readonly PresentingRowPromotion[];
+  /** Offer a mounted timeline the presentation of held rows. */
+  registerRowPromotionPresenter(presenter: RowPromotionPresenter): () => void;
+  /** The presenter finished the hold for `itemId`: install its row. */
+  completeRowPromotion(itemId: string): void;
+  /**
+   * Fold changed fields into the row held for `itemId`. False when none is
+   * held, and the caller writes the pane's row.
+   */
+  patchHeldRow(itemId: string, fields: RowPromotionPatch): boolean;
+  /**
+   * Test-only: snap + dispose every smoother (body of pane's
+   * __flushItemSmoothersForTest) and install every held row.
+   */
   __flushForTest(): void;
   /** Test-only: live smoother count. */
   __smootherCountForTest(): number;
@@ -249,13 +281,18 @@ export function createThreadStreamingReveal(
   });
   const itemSmoothers = registry.smoothers;
   const assistantReveal = registry.assistantReveal;
+  const promotions = createThreadRowPromotions({ commit: installHeldRow });
   const gate = createRevealGate({
     get scopeRootId() { return options.scopeRootId; },
     registry,
     getItemById: options.getItemById,
     getItems: options.getItems,
     armStructuralSpring: options.armStructuralSpring,
-    onRevealSettled: options.onRevealSettled,
+    heldItemIds: () => promotions.ids(),
+    onRevealSettled: () => {
+      queuePromotionSettle();
+      options.onRevealSettled?.();
+    },
   });
   const routing = createRevealRouting({
     registry,
@@ -271,6 +308,7 @@ export function createThreadStreamingReveal(
   });
 
   function disposeAll(): void {
+    promotions.clear();
     // Boundary last and unconditionally: a smoother that failed to dispose
     // must not leave a frontier naming it behind, and the registry's own
     // AggregateError is still what reaches the caller.
@@ -279,6 +317,153 @@ export function createThreadStreamingReveal(
     } finally {
       gate.clearBoundary();
     }
+  }
+
+  /**
+   * A reasoning row whose settled read is prose under the same id: the
+   * provider reclassified the block when it closed (a Claude narration
+   * block, docs/references/claude-wire.md). Taking that read as it arrives
+   * would cut the reveal at its cursor and move the row out of its activity
+   * run in the same frame.
+   */
+  function isPromotion(current: Item, incoming: Item): boolean {
+    return current.kind === 'thinking' && incoming.kind === 'assistant_text'
+      && incoming.status !== 'streaming' && !isSnapStatus(incoming.status);
+  }
+
+  /**
+   * Hold `incoming` back when it promotes the pane's row, or when a hold
+   * already keeps a row for the id. Returns the row to publish in its
+   * place (the pane's own), or null when `incoming` is not held.
+   */
+  function holdReplacement(incoming: Item, current: Item | undefined): Item | null {
+    if (current === undefined || incoming === current) return null;
+    if (promotions.has(incoming.id)) {
+      // A read of the shape the pane still shows reconciles as usual.
+      if (incoming.kind === current.kind) return null;
+      promotions.hold(incoming);
+      return current;
+    }
+    // With no smoother there is no reveal to finish: the read installs.
+    if (!itemSmoothers.has(incoming.id) || !isPromotion(current, incoming)) return null;
+    // The held row carries the whole text, so nothing is owed a re-read.
+    registry.clearStale(incoming.id);
+    registry.dropHeldDeltas(incoming.id);
+    promotions.hold(incoming);
+    return current;
+  }
+
+  function holdNeedsSettle(itemId: string): boolean {
+    if (promotions.phase(itemId) !== 'draining') return false;
+    if (options.getItemById(itemId) === undefined) return true;
+    const entry = itemSmoothers.get(itemId);
+    return entry === undefined || entry.smoother.isCaughtUp();
+  }
+
+  let promotionSettleQueued = false;
+
+  /**
+   * Runs at the end of every gate pass. A drained hold settles in a
+   * microtask, not in the pass: one event flush applies its upserts before
+   * its deltas, so the upsert that starts a hold can be followed in the
+   * same task by the last of the row's text, and installing a row from
+   * inside a pass would nest one window commit in another.
+   */
+  function queuePromotionSettle(): void {
+    if (promotionSettleQueued || promotions.size === 0) return;
+    let needed = false;
+    for (const itemId of promotions.ids()) {
+      if (!holdNeedsSettle(itemId)) continue;
+      needed = true;
+      break;
+    }
+    if (!needed) return;
+    promotionSettleQueued = true;
+    queueMicrotask(() => {
+      promotionSettleQueued = false;
+      settleDrainedPromotions();
+    });
+  }
+
+  /**
+   * Move every hold whose reveal has shown its last word to a presenter,
+   * or install it when none takes it. A hold whose row left the window
+   * ends the same way, and its install replaces nothing.
+   */
+  function settleDrainedPromotions(): void {
+    const drained: string[] = [];
+    for (const itemId of promotions.ids()) {
+      if (holdNeedsSettle(itemId)) drained.push(itemId);
+    }
+    if (drained.length === 0) return;
+    try {
+      gate.mutateSmoothersAndRecompute('row promotion drain', () => {
+        const errors: unknown[] = [];
+        for (const itemId of drained) {
+          promotions.markDrained(itemId);
+          try {
+            // The row keeps rendering the tail it revealed while a
+            // presenter runs; the smoother has no text left to give.
+            registry.settleSmootherRetainingTail(itemId);
+          } catch (error) {
+            errors.push(error);
+          }
+        }
+        throwCollectedErrors(errors, 'row promotion drain failed');
+      });
+    } finally {
+      // Unconditional: a drained hold nobody presents would gate forever.
+      promotions.presentDrained();
+    }
+  }
+
+  /** The commit of a hold: the pane's row gives way to the held one. */
+  function installHeldRow(row: Item): void {
+    gate.mutateSmoothersAndRecompute(`row promotion commit for ${row.id}`, () => {
+      // The row left the window while it was held: there is nothing to
+      // replace, and an upsert would put a row back that the window dropped.
+      const replaces = options.getItemById(row.id) !== undefined;
+      const errors: unknown[] = [];
+      try {
+        // Nothing of the replaced row's reveal carries over to the new kind.
+        registry.disposeRemovedItem(row.id);
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        if (replaces) options.commitPromotedRow(row);
+      } catch (error) {
+        errors.push(error);
+      }
+      throwCollectedErrors(errors, `row promotion commit failed for ${row.id}`);
+    });
+  }
+
+  /** Rows the reveal queue still owes the reader: smoothers plus bare holds. */
+  function revealingRowCount(): number {
+    let count = registry.smootherCount();
+    for (const itemId of promotions.ids()) {
+      if (!itemSmoothers.has(itemId)) count += 1;
+    }
+    return count;
+  }
+
+  function applyPatch(itemId: string, patch: ItemPatchEvent['patch']): Item | null {
+    // The pane's row is on its way out; the patch describes the held one.
+    if (promotions.patch(itemId, patch)) return null;
+    return routing.applyPatch(itemId, patch);
+  }
+
+  function disposeSmootherFor(itemId: string): void {
+    promotions.drop(itemId);
+    gate.disposeSmootherFor(itemId);
+  }
+
+  function disposeSmoothersForItems(items: readonly { id: string }[]): void {
+    if (promotions.size > 0) {
+      for (const item of items) promotions.drop(item.id);
+    }
+    gate.disposeSmoothersForItems(items);
   }
 
   function isSmoothing(itemId: string): boolean {
@@ -334,13 +519,18 @@ export function createThreadStreamingReveal(
     if (!guardedEntry) return prepareItemReplacementRaw(incoming);
     const cursor = guardedEntry.smoother.getRevealed();
     const prepared = prepareItemReplacementRaw(incoming);
+    // A held promotion publishes the pane's reasoning row in place of the
+    // prose, and that row's summary is a trimmed view like any other.
+    if (isReasoningTailKind(prepared.kind)) return prepared;
     assertRevealCursorNotRewound(incoming.id, cursor, prepared.summary);
     return prepared;
   }
 
   function prepareItemReplacementRaw(incoming: Item): Item {
-    const entry = itemSmoothers.get(incoming.id);
     const current = options.getItemById(incoming.id);
+    const held = holdReplacement(incoming, current);
+    if (held !== null) return held;
+    const entry = itemSmoothers.get(incoming.id);
     if (registry.staleIds.has(incoming.id) && incoming.status !== 'streaming' && incoming !== current) {
       // A settled read of a row whose text this pane knows is incomplete
       // wins the row outright, over the smoother's received text too.
@@ -450,7 +640,10 @@ export function createThreadStreamingReveal(
     const errors: unknown[] = [];
     for (let index = 0; index < incoming.length; index++) {
       const item = incoming[index];
-      if (item.streamEnd === undefined && !itemSmoothers.has(item.id) && !staleIds.has(item.id)) continue;
+      if (
+        item.streamEnd === undefined && !itemSmoothers.has(item.id) &&
+        !staleIds.has(item.id) && !promotions.has(item.id)
+      ) continue;
       try {
         const next = prepareItemReplacement(item);
         if (next !== item) {
@@ -481,7 +674,9 @@ export function createThreadStreamingReveal(
   }
 
   /**
-   * Snap every behind smoother straight to its full received text.
+   * Snap every behind smoother straight to its full received text, and
+   * install every held row without presenting it: after this the pane
+   * shows everything it received.
    *
    * Wired to `visibilitychange → visible` (App.svelte). `requestAnimationFrame`
    * is suspended while the tab is hidden, but the WebSocket keeps delivering
@@ -504,6 +699,15 @@ export function createThreadStreamingReveal(
    * is safe to call unconditionally and costs nothing when nothing is behind.
    */
   function snapAllToReceived(): void {
+    if (itemSmoothers.size === 0 && promotions.size === 0) return;
+    try {
+      snapSmoothersToReceived();
+    } finally {
+      promotions.completeAll();
+    }
+  }
+
+  function snapSmoothersToReceived(): void {
     if (itemSmoothers.size === 0) return;
     gate.mutateSmoothersAndRecompute('streaming reveal visibility snap', () => {
       const errors: unknown[] = [];
@@ -548,10 +752,18 @@ export function createThreadStreamingReveal(
    * retained with its settle summary recorded — so tests that flush to
    * a settled state observe the same retention the app ships. Used by
    * tests that assert summary content right after applying deltas
-   * without waiting for the smoother's rAF schedule. Not part of the
-   * production surface.
+   * without waiting for the smoother's rAF schedule. Held rows install
+   * with it, unpresented. Not part of the production surface.
    */
   function __flushForTest(): void {
+    try {
+      flushSmoothersForTest();
+    } finally {
+      promotions.completeAll();
+    }
+  }
+
+  function flushSmoothersForTest(): void {
     gate.mutateSmoothersAndRecompute('streaming reveal test flush', () => {
       const errors: unknown[] = [];
       // snap() → onReveal can settle+delete entries (terminal rows), so
@@ -579,7 +791,7 @@ export function createThreadStreamingReveal(
       return gate.revealBoundary;
     },
     appendStreamingDelta: routing.appendStreamingDelta,
-    applyPatch: routing.applyPatch,
+    applyPatch,
     isSmoothing,
     staleRowIds: () => registry.staleIds,
     hasStreamGaps: () => registry.hasHeldDeltas() || registry.staleIds.size > 0,
@@ -591,15 +803,21 @@ export function createThreadStreamingReveal(
     assistantSourceAppend,
     reconcileItemWrite,
     withReconciledItems,
-    disposeSmootherFor: gate.disposeSmootherFor,
-    disposeSmoothersForItems: gate.disposeSmoothersForItems,
+    disposeSmootherFor,
+    disposeSmoothersForItems,
     disposeAll,
     snapAllToReceived,
     liveThinkingTailFor: registry.liveThinkingTailFor,
     liveThinkingWindowFor: registry.liveThinkingWindowFor,
     pruneSettledThinkingTails: registry.pruneSettledThinkingTails,
-    smootherCount: registry.smootherCount,
+    smootherCount: revealingRowCount,
     debugStats: registry.debugStats,
+    get presentingRowPromotions() {
+      return promotions.presenting;
+    },
+    registerRowPromotionPresenter: promotions.registerPresenter,
+    completeRowPromotion: promotions.complete,
+    patchHeldRow: promotions.patch,
     __flushForTest,
     __smootherCountForTest: registry.smootherCount,
   };

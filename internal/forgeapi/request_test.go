@@ -20,6 +20,8 @@ func TestIsolatedRequestsReachTheFakeBase(t *testing.T) {
 		switch r.URL.Path {
 		case "/github/graphql":
 			_, _ = fmt.Fprint(w, `{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","message":"Could not resolve"}]}`)
+		case "/gitlab/api/graphql":
+			_, _ = fmt.Fprint(w, `{"data":{"project":{"id":"gid://gitlab/Project/1"}}}`)
 		default:
 			_, _ = fmt.Fprint(w, `{"ok":true}`)
 		}
@@ -68,6 +70,15 @@ func TestIsolatedRequestsReachTheFakeBase(t *testing.T) {
 	}
 	if req.Method != http.MethodPost || req.URL.Path != "/github/graphql" || req.Host != "github.com" {
 		t.Fatalf("GraphQL request = %s %s Host %s", req.Method, req.URL.Path, req.Host)
+	}
+
+	var project struct{ Project *struct{} }
+	if _, err := s.GitLab("gitlab.example:8443").GraphQL(t.Context(), "Project", "query Project($fullPath: ID!) { project(fullPath: $fullPath) { id } }", map[string]any{"fullPath": "g/r"}, &project); err != nil {
+		t.Fatalf("GitLab GraphQL err = %v", err)
+	}
+	req, _ = got.last()
+	if req.Method != http.MethodPost || req.URL.Path != "/gitlab/api/graphql" || req.Host != "gitlab.example:8443" || req.Header.Get("Private-Token") != testSecret {
+		t.Fatalf("GitLab GraphQL request = %s %s Host %s headers %v", req.Method, req.URL.Path, req.Host, req.Header)
 	}
 
 	if _, err := s.GitHub("github.com").Do(t.Context(), Request{Path: "https://github.com/user-attachments/assets/abc?jwt=signed", Attachment: true}); err != nil {

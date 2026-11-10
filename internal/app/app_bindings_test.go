@@ -1185,6 +1185,7 @@ func newTestAppAtStorePath(t *testing.T, dbPath string) *App {
 	// install their own fakes over the top.
 	isolateE2EProviderSpawns(t, app)
 	t.Cleanup(app.appCancel)
+	joinThreadRequestWorkAtCleanup(t, app)
 	ensureDefaultTestProject(t, app)
 	return app
 }

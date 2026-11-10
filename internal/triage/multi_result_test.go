@@ -10,39 +10,20 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// The tests in this file pin the architectural fix for the
-// multi-result-per-turn class of data-loss bugs.
+// The tests in this file pin round and turn cadence
+// (docs/architecture/turn-lifecycle.md §Rounds and turns) and the
+// id-allocating counters a turn's rows share.
 //
-// Background: Claude Code emits two `result` envelopes within one
-// logical agent-overflow turn when its CLI synthesizes a `type:"user"`
-// envelope from a background-task notification — the assistant's first
-// `end_turn` lands as a `result`, the synthesized user prompt provokes
-// another model call, and the second response lands as a second
-// `result`. Both belong to the same agent-overflow turn from the user's
-// perspective (one user-typed prompt, one cascade of work).
-//
-// The original bug: clearOpenTurn (called from handleTurnComplete) was
-// prefix-sweeping id-allocating counters (segmentIndexByScope,
-// blockIndexByScope, errorSeqByScope, terminalInteractionSeq) on every
-// turn-complete. After the first close, the surviving second-half
-// events found the counters wiped, restarted from zero, and computed
-// ids that collided with rows already persisted under this same turn.
-// UpsertItem's INSERT-OR-UPDATE silently overwrote the prior content
-// while preserving item_index — so the persisted row ended up with the
-// LATER text/thinking/error/waited content but the EARLIER row's
-// position. Verified in real user data.
-//
-// The fix: counters are id-allocators with item-row lifetime, not
-// per-turn flow-control. They survive turn boundaries (cleared only at
-// CleanupThread); the LastTurnIndex fallback in currentTurnIndex
-// re-attaches post-clearOpenTurn events to the same turn so the
-// surviving counter advances correctly. handleTurnComplete is now
-// idempotent — a second turn-complete on an already-closed turn
-// returns early.
-//
-// Each test below exercises one variant of the bug shape and asserts
-// the architectural fix preserves distinct rows where the original
-// would silently overwrite.
+// The counters (segmentIndexByScope, blockIndexByScope, errorSeqByScope,
+// terminalInteractionSeq) are id allocators with item-row lifetime, not
+// per-turn flow control: clearOpenTurn does not sweep them, opening a
+// turn seeds only its own index, and CleanupThread clears them. A row
+// that lands on a turn after it completes (through the LastTurnIndex
+// fallback in currentTurnIndex) or in a continuation after a soft close
+// (reopenSoftClosedTurn reopens the turn) takes the next id
+// instead of restarting from zero. A restarted counter would compute an
+// id already persisted under the turn, and UpsertItem would overwrite
+// that row's content in place.
 
 // TestMultipleResultsPerTurn_TextSegmentsDoNotCollide is the canonical
 // repro: stream three text segments before the first turn-complete,
@@ -79,12 +60,9 @@ func TestMultipleResultsPerTurn_TextSegmentsDoNotCollide(t *testing.T) {
 		}
 	}
 
-	// First turn-complete — the wire-level "first end_turn".
-	// In the multi-result wire pattern, NO EventTurnStart re-fires
-	// between the two results: agent-overflow only fires EventTurnStart
-	// once per user-typed send (synthesized in app_send.go), not on
-	// Claude's system.init. So clearOpenTurn fires here, the surviving
-	// segment counter is what protects subsequent rows from collision.
+	// First turn-complete settles turn 0 and runs clearOpenTurn. No
+	// EventTurnStart or system.init follows, so the surviving segment
+	// counter is what protects subsequent rows from collision.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
 		TurnComplete: normalTurnCompleteMeta(),
@@ -278,27 +256,24 @@ func TestMultipleResultsPerTurn_ErrorRowsDoNotCollide(t *testing.T) {
 }
 
 // TestRoundEmissionPerWireResult pins the per-round emission cadence
-// for the multi-result-per-turn cascade. Each wire `result` envelope
-// (Claude) emits its own `provider:turn_started` / `provider:turn_completed`
-// pair so the frontend's working indicator, Stop button, and composer
-// block correctly track "model is engaged right now" — flipping off
-// between rounds and back on for the second model call provoked by
-// the CLI-synthesized `type:"user"` envelope.
+// when the CLI wakes itself after a settled turn. Each `result` ends a
+// round with its own `provider:turn_started` / `provider:turn_completed`
+// pair, so the frontend's working indicator, Stop button, and composer
+// block flip off between rounds and back on for the wake.
 //
-// Persistence stays at LOGICAL-TURN granularity: the `turns` row is
-// UPDATE-d once (claimTurnSettlement gate), checkpoints capture once,
-// streaming items settle once. Late token usage from the second
-// `result` folds onto the existing turns row via persistLateTurnPayload.
+// The wake's system.init with no pending send opens a provider-started
+// turn (openProviderStartedTurn): turn 1 gets its own `turns` row, round
+// and fresh counters, and the first result settled turn 0.
 //
 // Wire shape modeled here (matches the Claude
 // interactive_outlives_taskoutput_monitor.ndjson fixture):
 //
-//	user-send → EventTurnStart (round 1 begins)
+//	user-send → EventTurnStart (turn 0, round 1 begins)
 //	... text/tool ...
-//	EventTurnComplete (round 1 ends; result envelope #1)
-//	EventInit (Claude system.init re-emit; round 2 begins)
+//	EventTurnComplete (result #1: round 1 ends, turn 0 settles)
+//	EventInit (self-wake: turn 1, round 2 begins)
 //	... text/tool ...
-//	EventTurnComplete (round 2 ends; result envelope #2)
+//	EventTurnComplete (result #2: round 2 ends, turn 1 settles)
 func TestRoundEmissionPerWireResult(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -318,11 +293,8 @@ func TestRoundEmissionPerWireResult(t *testing.T) {
 		t.Fatalf("first turn complete: %v", err)
 	}
 
-	// Round 2 begins via Claude system.init replay (EventInit). Under
-	// the per-round cadence this synthesizes a fresh provider:turn_started
-	// with a new round id, opens a new round slot, and DOES NOT call
-	// setOpenTurn (id-allocating counters survive — see
-	// TestMultipleResultsPerTurn_TextSegmentsDoNotCollide).
+	// Round 2 begins with the self-wake's system.init (EventInit): a
+	// provider-started turn 1 with a fresh round id.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventInit, ThreadID: "t1",
 		Timestamp: time.Now(),
@@ -337,14 +309,14 @@ func TestRoundEmissionPerWireResult(t *testing.T) {
 		t.Fatalf("second turn complete: %v", err)
 	}
 
-	// Two starts, two completes — one per wire round.
+	// Two starts, two completes: one per round.
 	starts := filterEmissions(emissions.snapshot(), "provider:turn_started")
 	if len(starts) != 2 {
-		t.Fatalf("expected 2 provider:turn_started emissions (one per wire round), got %d: %+v", len(starts), starts)
+		t.Fatalf("expected 2 provider:turn_started emissions (one per round), got %d: %+v", len(starts), starts)
 	}
 	completes := filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completes) != 2 {
-		t.Fatalf("expected 2 provider:turn_completed emissions (one per wire round), got %d: %+v", len(completes), completes)
+		t.Fatalf("expected 2 provider:turn_completed emissions (one per round), got %d: %+v", len(completes), completes)
 	}
 
 	// Round ids are distinct across rounds, and each completed pairs
@@ -357,7 +329,7 @@ func TestRoundEmissionPerWireResult(t *testing.T) {
 		t.Fatalf("round ids must be non-empty: r1=%q r2=%q", r1Start, r2Start)
 	}
 	if r1Start == r2Start {
-		t.Errorf("round 1 and round 2 share the same id %q — each wire round must allocate a fresh uuid", r1Start)
+		t.Errorf("round 1 and round 2 share the same id %q — each round must allocate a fresh uuid", r1Start)
 	}
 	if r1Complete != r1Start {
 		t.Errorf("round 1 complete TurnID = %q, want matching start id %q", r1Complete, r1Start)
@@ -366,10 +338,7 @@ func TestRoundEmissionPerWireResult(t *testing.T) {
 		t.Errorf("round 2 complete TurnID = %q, want matching start id %q", r2Complete, r2Start)
 	}
 
-	// Persistence stays at logical-turn granularity: one turns row,
-	// stamped completed_at exactly once. A second UPDATE would have
-	// re-stamped completed_at on the second wire complete; the
-	// claimTurnSettlement gate guarantees it doesn't.
+	// The first result settled turn 0's row.
 	turn, found, err := st.GetTurn("t1:0")
 	if err != nil || !found {
 		t.Fatalf("get turns row: found=%v err=%v", found, err)
@@ -379,13 +348,12 @@ func TestRoundEmissionPerWireResult(t *testing.T) {
 	}
 }
 
-// TestRoundStartedAfterSystemInit pins the re-round path in
-// handleInit: when an EventInit arrives for a thread whose current
-// logical turn is already settled (provider:turn_completed has fired
-// at least once), a fresh provider:turn_started is emitted with a
-// per-round uuid as TurnID. This is what flips the frontend's
-// working indicator back on for the second model call in the
-// multi-result-per-turn pattern.
+// TestRoundStartedAfterSystemInit pins handleInit's provider-started
+// turn: an EventInit with no pending send, after the session settled a
+// turn, opens the next logical turn and emits provider:turn_started with
+// a per-round uuid as TurnID and the new turn's index. This is what
+// flips the frontend's working indicator back on when the CLI wakes
+// itself.
 func TestRoundStartedAfterSystemInit(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -418,13 +386,13 @@ func TestRoundStartedAfterSystemInit(t *testing.T) {
 	}
 	payload := starts[0].data.(TurnStartedEvent)
 	if payload.TurnID == "" {
-		t.Errorf("re-round payload.TurnID is empty — handleInit must allocate a fresh round uuid")
+		t.Errorf("provider-started turn payload.TurnID is empty — handleInit must allocate a fresh round uuid")
 	}
-	if payload.TurnIndex != 0 {
-		t.Errorf("re-round payload.TurnIndex = %d, want 0 (same logical turn)", payload.TurnIndex)
+	if payload.TurnIndex != 1 {
+		t.Errorf("provider-started turn payload.TurnIndex = %d, want 1 (a turn of its own)", payload.TurnIndex)
 	}
 	if payload.ThreadID != "t1" {
-		t.Errorf("re-round payload.ThreadID = %q, want t1", payload.ThreadID)
+		t.Errorf("provider-started turn payload.ThreadID = %q, want t1", payload.ThreadID)
 	}
 }
 
@@ -433,12 +401,12 @@ func TestRoundStartedAfterSystemInit(t *testing.T) {
 // reattaches to a thread, fires EventInit (no settled marker —
 // CleanupThread wiped state on prior shutdown), and a real wire
 // EventTurnComplete eventually arrives without any preceding
-// EventTurnStart in this process. Per the wire-round emission
-// contract:
+// EventTurnStart in this process. Per the round emission contract:
 //
-//   - EventInit yields no provider:turn_started (no settled marker).
+//   - EventInit opens no turn and yields no provider:turn_started (no
+//     open turn, no settled marker: the session is attaching).
 //   - EventTurnComplete finds an empty currentRoundByThread slot
-//     (takeOpenRound returns "") and skips the wire-round emission.
+//     (takeOpenRound returns "") and skips the round emission.
 //   - claimTurnSettlement gates persistence; the orphan complete folds
 //     late token usage onto whatever turns row exists (or is a
 //     no-op if no row exists).
@@ -613,13 +581,12 @@ func TestRoundEmission_CrossThreadIsolation(t *testing.T) {
 }
 
 // TestNoRoundEmissionOnRealSessionInit pins the negative case: an
-// EventInit for a thread with NO settled-turn marker (real session
-// start, not a re-round) MUST NOT emit provider:turn_started. The
-// settled-turn marker is the wire-typed signal that distinguishes
-// "Claude is starting a follow-up round of an in-flight logical
-// turn" from "fresh session attaching to a thread that has no
-// in-flight logical turn." Emitting from the latter case would lie
-// to the frontend about the model being engaged.
+// EventInit with no pending send and no opener, for a session with no
+// open turn and no settled turn (a real session start), MUST NOT emit
+// provider:turn_started. Without an open or settled turn the init cannot
+// be a self-wake, because background work does not survive a CLI
+// restart; it is a session attaching. Emitting here would lie to the
+// frontend about the model being engaged.
 func TestNoRoundEmissionOnRealSessionInit(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -637,7 +604,7 @@ func TestNoRoundEmissionOnRealSessionInit(t *testing.T) {
 
 	starts := filterEmissions(emissions.snapshot(), "provider:turn_started")
 	if len(starts) != 0 {
-		t.Errorf("expected 0 provider:turn_started for real session init, got %d: %+v (handleInit must only re-light when a prior round of THIS logical turn already settled)", len(starts), starts)
+		t.Errorf("expected 0 provider:turn_started for real session init, got %d: %+v (handleInit opens a provider-started turn only when the session has an open or settled turn)", len(starts), starts)
 	}
 }
 
@@ -887,7 +854,7 @@ func TestCounterMapsBoundedByCleanupThread(t *testing.T) {
 	defer router.mu.Unlock()
 	// Every one of these — the id-allocating counters, the logical-turn
 	// settlement ledger that survives turn boundaries by design, and the
-	// per-wire-round id slot — lives on the thread's state entry, so the
+	// per-round id slot — lives on the thread's state entry, so the
 	// one assertion that the entry is gone covers all of them and every
 	// field added beside them later.
 	for _, threadID := range threadIDs {
@@ -1422,103 +1389,116 @@ func TestSoftThenRealTurnComplete_SoftMissingAmidFoldsIn(t *testing.T) {
 	}
 }
 
-// TestSoftThenInitThenSoftThenReal_ReRoundCascade pins the
-// stdin-during-wait pattern from local_agent_user_input_during_wait
-// fixture: parent end_turn → re-round init → another parent end_turn
-// → trailing wire `result`. The frontend's working indicator must
-// cycle correctly per round (off/on/off), and the persisted turn row
-// must end up with the FINAL round's assistant_message_id (so
-// SettledTurn.assistantMessageId points to the last assistant
-// message of the turn — its documented contract).
-func TestSoftThenInitThenSoftThenReal_ReRoundCascade(t *testing.T) {
+// TestInitDuringWithheldResultOpensNextTurn pins the shape of
+// local_agent_user_input_during_wait and local_agent_plus_bg_bash: the
+// parent's message ends while a local_agent runs, so the CLI withholds
+// `result`, and each new input it acts on in the meantime announces itself
+// with system.init. Each soft close settles its turn with the model's stop
+// and message id; each init opens a turn of its own; the one trailing
+// result folds its usage onto the newest turn.
+func TestInitDuringWithheldResultOpensNextTurn(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
-
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("turn start: %v", err)
+	base := time.UnixMilli(1_700_000_000_000)
+	handle := func(evt provider.ProviderEvent, at time.Duration) {
+		t.Helper()
+		evt.ThreadID = "t1"
+		evt.Timestamp = base.Add(at)
+		if err := router.Handle(evt); err != nil {
+			t.Fatalf("%s: %v", evt.Kind, err)
+		}
+	}
+	soft := func(amid string, at time.Duration) {
+		t.Helper()
+		handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: &provider.SoftRoundCloseMeta{StopReason: "end_turn", AssistantMessageID: amid}}, at)
 	}
 
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		TurnComplete: &provider.SoftRoundCloseMeta{
-			StopReason:         "end_turn",
-			AssistantMessageID: "msg_round1",
-		},
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("soft #1: %v", err)
+	handle(provider.ProviderEvent{Kind: provider.EventTurnStart}, 0)
+	soft("msg_user", time.Second)
+	// A background Bash's notification wakes the parent.
+	handle(provider.ProviderEvent{Kind: provider.EventInit}, 2*time.Second)
+	soft("msg_wake1", 3*time.Second)
+	// The local_agent's notification wakes it again; then the result.
+	handle(provider.ProviderEvent{Kind: provider.EventInit}, 4*time.Second)
+	soft("msg_wake2", 5*time.Second)
+	handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: &provider.WireTurnCompleteMeta{
+		StopReason: "end_turn", AssistantMessageID: "msg_wake2",
+		Usage: &provider.TokenUsage{InputTokens: 8, OutputTokens: 50},
+	}}, 6*time.Second)
+
+	open, completed := roundEnds(t, emissions.snapshot())
+	if len(open) != 0 || len(completed) != 3 {
+		t.Fatalf("rounds: open=%v completed=%d, want 3 closed", open, len(completed))
+	}
+	for i, round := range completed {
+		if round.TurnIndex != i {
+			t.Fatalf("round %d on turn %d, want its own turn", i, round.TurnIndex)
+		}
+	}
+	for i, want := range []struct {
+		amid        string
+		completedAt time.Duration
+		usage       bool
+	}{
+		{"msg_user", 1 * time.Second, false},
+		{"msg_wake1", 3 * time.Second, false},
+		{"msg_wake2", 5 * time.Second, true},
+	} {
+		turn, found, err := st.GetTurnByThreadIndex("t1", i)
+		if err != nil || !found || turn.CompletedAt == nil {
+			t.Fatalf("turn %d: found=%v err=%v %+v, want settled", i, found, err, turn)
+		}
+		if turn.StopReason != "end_turn" || turn.AssistantMessageID != want.amid || *turn.CompletedAt != base.Add(want.completedAt).UnixMilli() {
+			t.Fatalf("turn %d = stop %q amid %q completed %d, want end_turn %q at %d",
+				i, turn.StopReason, turn.AssistantMessageID, *turn.CompletedAt, want.amid, base.Add(want.completedAt).UnixMilli())
+		}
+		if got := strings.Contains(turn.TokenUsageJSON, `"inputTokens":8`); got != want.usage {
+			t.Fatalf("turn %d usage %q, want the result's usage only on the last turn", i, turn.TokenUsageJSON)
+		}
+	}
+}
+
+// A message the user sends while the result is withheld finds the thread
+// idle and is sent directly, stamped for the next turn. The init the CLI
+// writes when it takes the message opens that turn; the soft-closed turn
+// keeps the settlement its soft close gave it.
+func TestMessageDuringWithheldResultOpensItsTurn(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	base := time.UnixMilli(1_700_000_000_000)
+	handle := func(evt provider.ProviderEvent, at time.Duration) {
+		t.Helper()
+		evt.ThreadID = "t1"
+		evt.Timestamp = base.Add(at)
+		if err := router.Handle(evt); err != nil {
+			t.Fatalf("%s: %v", evt.Kind, err)
+		}
+	}
+	handle(provider.ProviderEvent{Kind: provider.EventTurnStart}, 0)
+	handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: &provider.SoftRoundCloseMeta{StopReason: "end_turn", AssistantMessageID: "msg_user"}}, time.Second)
+	if active, found, err := st.GetActiveTurn("t1"); err != nil || found {
+		t.Fatalf("GetActiveTurn during the wait = (%+v, %v, %v), want idle", active, found, err)
 	}
 
-	// Re-round triggered by Claude system.init (after task_notification
-	// or stdin injection during wait window).
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventInit, ThreadID: "t1",
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("re-round init: %v", err)
+	now := base.Add(2 * time.Second).UnixMilli()
+	if err := router.PersistItem(store.Item{ID: "user:1", ThreadID: "t1", TurnIndex: 1, Kind: "user_text", Role: "user", Status: "completed", Summary: "during the wait", CreatedAt: now, UpdatedAt: now}, nil); err != nil {
+		t.Fatal(err)
 	}
+	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{})
+	handle(provider.ProviderEvent{Kind: provider.EventInit}, 3*time.Second)
 
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		TurnComplete: &provider.SoftRoundCloseMeta{
-			StopReason:         "end_turn",
-			AssistantMessageID: "msg_round2",
-		},
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("soft #2: %v", err)
+	if open, ok := router.openTurnIndex("t1"); !ok || open != 1 {
+		t.Fatalf("open turn = %d/%v, want the message's turn 1", open, ok)
 	}
-
-	// Trailing wire `result` for round 2 — `takeOpenRound` was taken
-	// by soft #2, so this emits no third turn_completed.
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		TurnComplete: &provider.WireTurnCompleteMeta{
-			StopReason:         "end_turn",
-			AssistantMessageID: "msg_round2",
-			Usage:              &provider.TokenUsage{InputTokens: 8, OutputTokens: 50},
-		},
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("real result: %v", err)
-	}
-
-	// Per-round emissions: 2 starts (handleTurnStart + re-round init)
-	// and 2 completes (soft #1 + soft #2). The trailing real result
-	// emitted nothing because soft #2 already consumed round 2's slot.
-	starts := filterEmissions(emissions.snapshot(), "provider:turn_started")
-	if len(starts) != 2 {
-		t.Errorf("expected 2 provider:turn_started, got %d", len(starts))
-	}
-	completes := filterEmissions(emissions.snapshot(), "provider:turn_completed")
-	if len(completes) != 2 {
-		t.Errorf("expected 2 provider:turn_completed, got %d", len(completes))
-	}
-
-	// Persistence:
-	//   - amid = round 2 (the FINAL round's last assistant message);
-	//     each subsequent settle overwrites so the column reflects
-	//     the latest message of the turn, matching the
-	//     SettledTurn.assistantMessageId contract.
-	//   - token_usage_json = trailing result's usage (first non-empty
-	//     wins; soft events don't carry usage so the trailing real
-	//     `result` populates it).
-	turn, _, _ := st.GetTurn("t1:0")
-	if turn.AssistantMessageID != "msg_round2" {
-		t.Errorf("expected final-round amid 'msg_round2', got %q (last-write-wins for amid)",
-			turn.AssistantMessageID)
-	}
-	if !strings.Contains(turn.TokenUsageJSON, `"inputTokens":8`) {
-		t.Errorf("expected usage folded from trailing result, got %q", turn.TokenUsageJSON)
+	turn, found, err := st.GetTurnByThreadIndex("t1", 0)
+	if err != nil || !found || turn.CompletedAt == nil || *turn.CompletedAt != base.Add(time.Second).UnixMilli() || turn.AssistantMessageID != "msg_user" {
+		t.Fatalf("turn 0 = found %v err %v %+v, want settled at the soft close with msg_user", found, err, turn)
 	}
 }
 
 // parentContentBlockStart drives a parent (parent_tool_use_id == "")
-// content_block_start, the wire event that re-arms a settled round in
-// the parent-content-resume path.
+// content_block_start, the wire event that reopens a soft-closed turn
+// (handleParentContentResume → reopenSoftClosedTurn).
 func parentContentBlockStart(threadID, blockType string) provider.ProviderEvent {
 	return provider.ProviderEvent{
 		Kind:      provider.EventContentBlockStart,
@@ -1534,8 +1514,9 @@ func parentContentBlockStart(threadID, blockType string) provider.ProviderEvent 
 // soft round-close) and resuming the SAME turn with a fresh parent
 // message — no intervening `result` or `system.init`. The soft-close
 // fires provider:turn_completed (clearing the working indicator + Stop
-// button); the first parent content block of the resumed segment must
-// re-emit provider:turn_started so the indicator lights back up.
+// button) and settles the turn; the first parent content block of the
+// resumed segment reopens the same turn (reopenSoftClosedTurn) and
+// re-emits provider:turn_started so the indicator lights back up.
 //
 // Models the real captured sequence (provider-events-2026-05-28.ndjson.2,
 // thread a20f339e / 501fa978): two soft-close→resume cycles in one
@@ -1591,24 +1572,22 @@ func TestParentContentResumeReArmsAfterSoftClose(t *testing.T) {
 }
 
 // TestParentContentResumeDoesNotCollideRowIDs is the row-integrity
-// guard for the parent-content-resume re-arm path — the analogue of
-// TestMultipleResultsPerTurn_TextSegmentsDoNotCollide for the
-// soft-close→content_block_start re-round (rather than the
-// system.init re-round). It pins that re-arming via
-// maybeReopenSettledRound does NOT call setOpenTurn: the id-allocating
-// segment counter must survive the segment boundary so post-resume
-// text rows get fresh ids instead of overwriting earlier rows.
+// guard for the parent-content-resume path: the analogue of
+// TestMultipleResultsPerTurn_TextSegmentsDoNotCollide for a
+// soft-close→content_block_start continuation. It pins that
+// reopenSoftClosedTurn reopens the turn without resetting its counters: the
+// id-allocating segment counter must survive the segment boundary so
+// post-resume text rows get fresh ids instead of overwriting earlier
+// rows.
 //
-// Without the emission-only tests this is uncovered: a regression
-// making maybeReopenSettledRound reset counters (e.g. calling
-// setOpenTurn) would still emit the right turn_started events and pass
-// all four emission tests, while silently reintroducing the
-// multi-result id-collision data-loss bug. This test fails in that
-// case because the resumed segment would collide with text:0:0.
+// The emission-only tests cannot catch this: a reopen that reset
+// counters (e.g. by calling setOpenTurn) would still emit the right
+// turn_started events while the resumed segment collided with
+// text:0:0.
 //
-// It also asserts the wire-round cadence directly: exactly one
-// provider:turn_completed per soft-close (proving each re-armed round
-// is properly closed — no stuck-open round).
+// It also asserts the round cadence directly: exactly one
+// provider:turn_completed per soft-close plus one for the result
+// (each re-opened round is closed, no stuck-open round).
 func TestParentContentResumeDoesNotCollideRowIDs(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -1683,8 +1662,8 @@ func TestParentContentResumeDoesNotCollideRowIDs(t *testing.T) {
 		t.Errorf("text:0:1 = %q, want segment-2 content at a fresh id", textItems["text:0:1"])
 	}
 
-	// Wire-round cadence: one turn_completed per soft-close + one for the
-	// final result = the round re-armed by the resume was properly closed.
+	// Round cadence: one turn_completed per soft-close + one for the
+	// final result = the round re-opened by the resume was properly closed.
 	completes := filterEmissions(emissions.snapshot(), "provider:turn_completed")
 	if len(completes) != 2 {
 		t.Fatalf("expected exactly 2 provider:turn_completed (soft close + final result), got %d: %+v",
@@ -1692,13 +1671,14 @@ func TestParentContentResumeDoesNotCollideRowIDs(t *testing.T) {
 	}
 }
 
-// TestSubagentContentDoesNotReArmDuringSoftClose pins invariant 27: in
-// the local_agent-outlives case the parent legitimately ends (soft
-// end_turn) while a Task subagent keeps running until the trailing
-// `result`. The indicator SHOULD stay cleared through that wait, so
-// subagent content (parent_tool_use_id != "") must NOT re-arm the
-// parent's round. Without the parent-only gate in handleContentBlockStart
-// this would wrongly light the indicator during the subagent wait.
+// TestSubagentContentDoesNotReArmDuringSoftClose pins the rule in
+// docs/architecture/turn-lifecycle.md §Rounds and turns: in the
+// local_agent-outlives case the parent's message ends (soft end_turn)
+// while a Task subagent keeps running until the trailing `result`. The
+// indicator SHOULD stay cleared through that wait, so subagent content
+// (parent_tool_use_id != "") must NOT re-open the parent's round.
+// Without the parent-only gate in handleContentBlockStart this would
+// wrongly light the indicator during the subagent wait.
 func TestSubagentContentDoesNotReArmDuringSoftClose(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -1727,7 +1707,7 @@ func TestSubagentContentDoesNotReArmDuringSoftClose(t *testing.T) {
 
 	starts := filterEmissions(emissions.snapshot(), "provider:turn_started")
 	if len(starts) != 0 {
-		t.Fatalf("subagent content must NOT re-arm the parent round (invariant 27), got %d turn_started: %+v",
+		t.Fatalf("subagent content must NOT re-open the parent round, got %d turn_started: %+v",
 			len(starts), starts)
 	}
 }
@@ -1735,10 +1715,8 @@ func TestSubagentContentDoesNotReArmDuringSoftClose(t *testing.T) {
 // TestParentContentDoesNotReArmMidRound guards against over-firing: a
 // parent content block while the round is still OPEN (ordinary
 // streaming, no soft-close yet) must not emit a spurious
-// provider:turn_started. Round 1 is not settled until its first
-// complete, so the settled guard alone covers this — but the
-// no-open-round guard is the belt-and-suspenders that keeps every
-// in-round block start a no-op.
+// provider:turn_started. handleParentContentResume returns early on an
+// open turn, so every in-round block start is a no-op.
 func TestParentContentDoesNotReArmMidRound(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -1761,10 +1739,11 @@ func TestParentContentDoesNotReArmMidRound(t *testing.T) {
 }
 
 // TestParentContentDoesNotReArmFreshSession guards the fresh-attach
-// case: a session attaches to a thread (no prior turn settled in this
-// process) and the model streams. A parent content block must not
-// synthesize a turn_started out of nothing — only a thread with a
-// settled logical turn (a real prior complete) is eligible for re-round.
+// case: a session attaches to a thread (no opener, no turn open or
+// settled in this process, so the init opens nothing) and the model
+// streams. A parent content block must not synthesize a turn_started out
+// of nothing: with no soft-closed turn nothing reopens, and with no
+// settled turn handleParentContentResume opens no provider-started turn.
 func TestParentContentDoesNotReArmFreshSession(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -1786,25 +1765,19 @@ func TestParentContentDoesNotReArmFreshSession(t *testing.T) {
 	}
 }
 
-// TestLateFoldSettlesOrphanStreamingItem is the Bug 2 regression test for
-// thread fc24607e — the permanent "thinking spinner". A logical turn
-// settles once (soft round-close), the CLI re-rounds the SAME turn (a
-// task_notification continuation), and the re-round opens a streaming
-// thinking block that STALLS — no content_block_stop ever arrives. When
-// the trailing wire `result` lands it is a late-fold (the turn was
-// already settled), and handleTurnComplete returns early without calling
-// settleTurnStreaming. The orphaned thinking item is therefore left at
-// status=streaming forever, which the frontend renders as a thinking
-// block that never resolves.
-//
-// FAILS before Fix B: the orphan stays status=streaming after the final
-// result. PASSES after: the late-fold path settles orphan streams too.
-func TestLateFoldSettlesOrphanStreamingItem(t *testing.T) {
+// TestResultAfterSoftCloseSettlesOrphanStreamingItem guards the permanent
+// "thinking spinner". The parent soft-closes, which settles the turn; the
+// model continues the SAME turn, which reopens it (reopenSoftClosedTurn),
+// and opens a streaming thinking block that STALLS: no content_block_stop
+// ever arrives. The trailing wire `result` settles the turn, and that
+// settlement must settle the orphan too. Left at status=streaming, the
+// frontend renders it as a thinking block that never resolves.
+func TestResultAfterSoftCloseSettlesOrphanStreamingItem(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
 	// Turn 0 starts, streams a thinking block that closes cleanly, and the
-	// parent soft-closes — the FIRST settlement of the logical turn.
+	// parent soft-closes, which settles the turn.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0, Timestamp: time.Now(),
 	}); err != nil {
@@ -1827,15 +1800,16 @@ func TestLateFoldSettlesOrphanStreamingItem(t *testing.T) {
 	}
 	router.WaitForPendingSettles()
 
-	// The CLI re-rounds the SAME logical turn: content_block_start re-arms,
-	// then attempt-1 thinking streams... and STALLS. No content_block_stop
-	// is ever emitted for it — it is orphaned at status=streaming.
+	// The model continues the SAME logical turn: content_block_start
+	// re-opens the round, then thinking streams... and STALLS. No
+	// content_block_stop is ever emitted for it — it is orphaned at
+	// status=streaming.
 	if err := router.Handle(parentContentBlockStart("t1", "thinking")); err != nil {
-		t.Fatalf("re-round re-arm: %v", err)
+		t.Fatalf("continuation re-arm: %v", err)
 	}
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventThinking, ThreadID: "t1",
-		Content: "Re-round reasoning that never gets a content_block_stop.", Timestamp: time.Now(),
+		Content: "Continuation reasoning that never gets a content_block_stop.", Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("orphan thinking: %v", err)
 	}
@@ -1855,8 +1829,7 @@ func TestLateFoldSettlesOrphanStreamingItem(t *testing.T) {
 		t.Fatalf("setup: expected an orphan thinking item at status=streaming")
 	}
 
-	// The trailing wire `result` settles the logical turn — a late-fold,
-	// since the soft close already claimed settlement.
+	// The trailing wire `result` settles the logical turn.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
 		TurnComplete: normalTurnCompleteMeta(), Timestamp: time.Now(),
@@ -1873,22 +1846,19 @@ func TestLateFoldSettlesOrphanStreamingItem(t *testing.T) {
 		t.Fatalf("orphan thinking item vanished")
 	}
 	if settled.Status == statusStreaming {
-		t.Fatalf("Bug 2: orphan thinking item stuck at status=streaming after turn complete — the permanent thinking spinner")
+		t.Fatalf("orphan thinking item stuck at status=streaming after turn complete — the permanent thinking spinner")
 	}
 	if settled.Status != statusCompleted {
 		t.Errorf("orphan thinking settled to %q, want %q", settled.Status, statusCompleted)
 	}
 }
 
-// TestLateFoldForceClosesOrphanToolCall covers the tool-call sibling of
-// the late-fold settlement gap (invariant 23). A foreground tool_call
-// opened on a re-round whose tool_result the provider dropped is left at
-// status=running; if the trailing wire `result` is a late-fold it skips
-// forceCloseOrphanToolCalls and the tool card hangs "running" forever.
-//
-// FAILS before Fix B: the tool_call stays status=running. PASSES after:
-// the late-fold path force-closes orphan foreground tool_calls too.
-func TestLateFoldForceClosesOrphanToolCall(t *testing.T) {
+// TestResultAfterSoftCloseForceClosesOrphanToolCall covers the tool-call
+// sibling (invariant 23). A foreground tool_call opened after a soft
+// close, whose tool_result the provider dropped, is left at
+// status=running; the trailing wire `result` that settles the turn must
+// force-close it, or the tool card hangs "running" forever.
+func TestResultAfterSoftCloseForceClosesOrphanToolCall(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
@@ -1897,7 +1867,7 @@ func TestLateFoldForceClosesOrphanToolCall(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("turn start: %v", err)
 	}
-	// First settlement of the logical turn.
+	// The soft close settles the turn.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
 		TurnComplete: &provider.SoftRoundCloseMeta{StopReason: "end_turn"}, Timestamp: time.Now(),
@@ -1905,11 +1875,12 @@ func TestLateFoldForceClosesOrphanToolCall(t *testing.T) {
 		t.Fatalf("soft close: %v", err)
 	}
 
-	// A re-round opens a foreground tool_call whose tool_result never
-	// arrives. It is orphaned at status=running on the same logical turn.
+	// The continuation opens a foreground tool_call whose tool_result
+	// never arrives. It is orphaned at status=running on the same logical
+	// turn.
 	insertToolCallItem(t, st, "t1", "tool-orphan", "Bash: long task", "Bash", statusRunning)
 
-	// Trailing wire result late-folds the already-settled turn.
+	// Trailing wire result settles the turn.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
 		TurnComplete: normalTurnCompleteMeta(), Timestamp: time.Now(),
@@ -1926,20 +1897,48 @@ func TestLateFoldForceClosesOrphanToolCall(t *testing.T) {
 		t.Fatalf("tool_call vanished")
 	}
 	if settled.Status == statusRunning {
-		t.Fatalf("Bug 2 (tool variant): orphan foreground tool_call stuck at status=running after turn complete")
+		t.Fatalf("orphan foreground tool_call stuck at status=running after turn complete")
 	}
 	if settled.Status != statusErrored {
 		t.Errorf("orphan tool_call settled to %q, want %q", settled.Status, statusErrored)
 	}
 }
 
-// TestLateFoldOrphanSettlesErroredWhenTruncated pins the errored branch of
-// the late-fold orphan settle: when the trailing wire complete is
-// truncated/aborted (not a clean end_turn), the orphan streaming item must
-// settle to errored, not completed — mirroring the full path's
-// settledTurnStatus choice. Without exercising this, the truncated branch
-// of the late-fold settle is unguarded.
-func TestLateFoldOrphanSettlesErroredWhenTruncated(t *testing.T) {
+// A synthetic truncated complete settles the turn while the subprocess
+// keeps writing; the real result then takes the late-fold path, which
+// must still force-close a foreground tool_call nothing closed.
+func TestLateFoldForceClosesOrphanToolCall(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	handle := func(evt provider.ProviderEvent) {
+		t.Helper()
+		evt.ThreadID = "t1"
+		evt.Timestamp = time.Now()
+		if err := router.Handle(evt); err != nil {
+			t.Fatalf("%s: %v", evt.Kind, err)
+		}
+	}
+	handle(provider.ProviderEvent{Kind: provider.EventTurnStart})
+	handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: &provider.TruncatedTurnCompleteMeta{Synthetic: true}})
+	insertToolCallItem(t, st, "t1", "tool-late", "Bash: still writing", "Bash", statusRunning)
+	handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: normalTurnCompleteMeta()})
+	router.WaitForPendingSettles()
+
+	settled, found, err := st.GetThreadItem("t1", "tool-late")
+	if err != nil || !found {
+		t.Fatalf("get tool_call: found=%v err=%v", found, err)
+	}
+	if settled.Status != statusErrored {
+		t.Fatalf("late-fold orphan tool_call status %q, want %q", settled.Status, statusErrored)
+	}
+}
+
+// TestResultAfterSoftCloseSettlesOrphanErroredWhenTruncated pins the
+// errored branch of the orphan settle: when the trailing wire complete
+// that settles a soft-closed turn is truncated/aborted (not a clean
+// end_turn), the orphan streaming item must settle to errored, not
+// completed (settledTurnStatus).
+func TestResultAfterSoftCloseSettlesOrphanErroredWhenTruncated(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
@@ -1948,7 +1947,7 @@ func TestLateFoldOrphanSettlesErroredWhenTruncated(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("turn start: %v", err)
 	}
-	// First settlement of the logical turn (soft close).
+	// The soft close settles the turn.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
 		TurnComplete: &provider.SoftRoundCloseMeta{StopReason: "end_turn"}, Timestamp: time.Now(),
@@ -1956,9 +1955,9 @@ func TestLateFoldOrphanSettlesErroredWhenTruncated(t *testing.T) {
 		t.Fatalf("soft close: %v", err)
 	}
 
-	// Re-round opens an orphan thinking item that never closes.
+	// The continuation opens an orphan thinking item that never closes.
 	if err := router.Handle(parentContentBlockStart("t1", "thinking")); err != nil {
-		t.Fatalf("re-round re-arm: %v", err)
+		t.Fatalf("continuation re-arm: %v", err)
 	}
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventThinking, ThreadID: "t1",
@@ -1976,7 +1975,7 @@ func TestLateFoldOrphanSettlesErroredWhenTruncated(t *testing.T) {
 		t.Fatalf("setup: expected an orphan thinking item at status=streaming")
 	}
 
-	// Trailing wire complete is aborted — a truncated late-fold.
+	// Trailing wire complete is aborted: a truncated settlement.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
 		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "interrupted", Aborted: true},
@@ -1997,30 +1996,27 @@ func TestLateFoldOrphanSettlesErroredWhenTruncated(t *testing.T) {
 		t.Fatalf("orphan thinking stuck at status=streaming after truncated turn complete")
 	}
 	if settled.Status != statusErrored {
-		t.Errorf("orphan thinking settled to %q, want %q (truncated late-fold)", settled.Status, statusErrored)
+		t.Errorf("orphan thinking settled to %q, want %q (truncated settlement)", settled.Status, statusErrored)
 	}
 }
 
-// TestCLIRetrySnapshotRecoversContentAndSettlesOrphan is the end-to-end
-// capstone for thread fc24607e, exercising the triage side of BOTH fixes
-// composing on the exact failure scenario:
+// TestCLIRetrySnapshotRecoversContentAndSettlesOrphan exercises a CLI
+// internal retry inside a turn continued after a soft close:
 //
-//  1. Turn 0 settles once (message X, soft close).
-//  2. A task_notification re-rounds the SAME turn; attempt-1 thinking
-//     streams and STALLS (orphan, never closed) — Bug 2.
+//  1. Turn 0 streams message X and soft-closes, which settles it.
+//  2. The model continues the SAME turn, which reopens it
+//     (reopenSoftClosedTurn); attempt-1 thinking
+//     streams and STALLS (orphan, never closed).
 //  3. The CLI internally retries and delivers attempt 2 as a coalesced
-//     snapshot with a fresh message id and no stream lifecycle. Fix A
-//     surfaces those never-streamed blocks as content-bearing
+//     snapshot with a fresh message id and no stream lifecycle. The
+//     parser surfaces those never-streamed blocks as content-bearing
 //     EventContentBlockStop events (fed here as the parser would emit
 //     them); triage's !active+finalContentPresent path persists them as
-//     completed rows — Bug 1 recovery.
-//  4. The trailing wire `result` late-folds; Fix B settles the orphan.
+//     completed rows.
+//  4. The trailing wire `result` settles the turn and the orphan.
 //
 // End state: attempt-1 partial thinking settled, attempt-2 thinking and
 // the recovered synthesis text both completed, and NO row left streaming.
-// Before the fixes the orphan stays streaming (the user's stuck spinner)
-// even though the recovered content lands — exactly the fc24607e DB state
-// plus the recovery the fixes add.
 func TestCLIRetrySnapshotRecoversContentAndSettlesOrphan(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -2030,7 +2026,7 @@ func TestCLIRetrySnapshotRecoversContentAndSettlesOrphan(t *testing.T) {
 		synthesisText = "Both sources are in. Synthesis: the finding->vendor edge is non-canonical."
 	)
 
-	// 1. Turn 0: message X streams and the parent soft-closes (first settle).
+	// 1. Turn 0: message X streams and the parent soft-closes.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0, Timestamp: time.Now(),
 	}); err != nil {
@@ -2053,10 +2049,10 @@ func TestCLIRetrySnapshotRecoversContentAndSettlesOrphan(t *testing.T) {
 	}
 	router.WaitForPendingSettles()
 
-	// 2. Re-round (task_notification continuation): attempt-1 thinking
-	// streams and stalls — no content_block_stop. Orphan at streaming.
+	// 2. Continuation of the same turn: attempt-1 thinking streams and
+	// stalls — no content_block_stop. Orphan at streaming.
 	if err := router.Handle(parentContentBlockStart("t1", "thinking")); err != nil {
-		t.Fatalf("re-round re-arm: %v", err)
+		t.Fatalf("continuation re-arm: %v", err)
 	}
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventThinking, ThreadID: "t1",
@@ -2066,7 +2062,7 @@ func TestCLIRetrySnapshotRecoversContentAndSettlesOrphan(t *testing.T) {
 	}
 
 	// 3. Attempt 2 arrives as a coalesced snapshot (fresh id, no stream
-	// lifecycle). Fix A emits these as content-bearing EventContentBlockStop
+	// lifecycle). The parser emits these as content-bearing EventContentBlockStop
 	// events keyed on `message.id#ordinal`; feed them exactly as the parser
 	// would (separate single-block envelopes → recovery ordinals 0, 1). The
 	// explicit blockType + per-block ItemID makes triage persist each as a
@@ -2089,7 +2085,7 @@ func TestCLIRetrySnapshotRecoversContentAndSettlesOrphan(t *testing.T) {
 	}
 	router.WaitForPendingSettles()
 
-	// 4. Trailing wire result late-folds; Fix B settles the orphan stream.
+	// 4. Trailing wire result settles the turn and the orphan stream.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
 		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn", AssistantMessageID: "msg_attempt2"},
@@ -2107,12 +2103,12 @@ func TestCLIRetrySnapshotRecoversContentAndSettlesOrphan(t *testing.T) {
 	}
 	for _, it := range allItems {
 		if it.Status == statusStreaming {
-			t.Fatalf("Bug 2: item %s (%s) left at status=streaming after recovery+late-fold", it.ID, it.Kind)
+			t.Fatalf("item %s (%s) left at status=streaming after recovery+settlement", it.ID, it.Kind)
 		}
 	}
 
 	// The synthesis text was recovered as a completed assistant_text row
-	// with the exact content (Bug 1 recovery — the lost agent response).
+	// with the exact content (the response the retry would otherwise lose).
 	var recoveredText *store.Item
 	texts := findItemsByKind(t, st, "t1", itemKindAssistantText)
 	for i := range texts {
@@ -2121,7 +2117,7 @@ func TestCLIRetrySnapshotRecoversContentAndSettlesOrphan(t *testing.T) {
 		}
 	}
 	if recoveredText == nil {
-		t.Fatalf("Bug 1: synthesis text never recovered as an assistant_text item")
+		t.Fatalf("synthesis text never recovered as an assistant_text item")
 	}
 	if recoveredText.Status != statusCompleted {
 		t.Errorf("recovered synthesis text status = %q, want %q", recoveredText.Status, statusCompleted)

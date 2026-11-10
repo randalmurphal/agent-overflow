@@ -1,8 +1,8 @@
 // What one row of the Pull requests list shows. The page store projects
-// the backend's list item (its state, detail and seen record) into this
-// so the row component renders text and tones only.
+// the backend's list item (its state, reason and facts) into this so the
+// row component renders text and tones only.
 
-import type { PullSince } from '../../utils/pullsAttention';
+import type { ReadinessTone } from '../../utils/reviewReadiness';
 
 export interface PullRowView {
   /** The computer-qualified PR key the page selects by. */
@@ -13,22 +13,22 @@ export interface PullRowView {
   url: string;
   state: string;
   group: string;
-  since: PullSince | null;
-  /** The app has opened this PR before (a seen record exists). */
-  seen: boolean;
+  /** The state label, worded with its reason (`pullStateText`). */
+  label: string;
+  tone: ReadinessTone;
   projectName: string;
   /** The author's display name, or "you". */
   author: string;
-  /** The row's age ("2h ago"), from the forge's updated time. */
+  viewerIsAuthor: boolean;
+  /** The row's age ("2h"), from the forge's updated time. */
   age: string;
   draft: boolean;
   crossRepository: boolean;
-  /** Normalized CI status ('' when the forge has not said yet). */
+  /** Normalized CI status of the head ('' when the forge has not said). */
   ci: string;
-  /** Approvals given and required; null until the detail read lands or
-   * when the project requires none. */
+  /** Approvals given and required; null when unknown or none required. */
   approvals: { given: number; required: number } | null;
-  /** Unresolved review threads; null until the detail read lands. */
+  /** Unresolved review threads; null when unknown. */
   unresolved: number | null;
 }
 

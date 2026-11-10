@@ -5,6 +5,7 @@ import ToolsRow from './ToolsRow.svelte';
 import { hydrateWorkflowAttention, resetWorkflowRunsForTest } from '../../stores/workflowRuns.svelte';
 import { resetWorkflowsOverlayForTest } from '../../stores/workflowsOverlay.svelte';
 import { resetPullsAttentionForTest, setPullsNeedsYouCount } from '../../stores/pullsAttention.svelte';
+import { HOME_BACKEND } from '../../transport/backendKey';
 import {
   isToolOpen,
   noteToolUsed,
@@ -107,14 +108,14 @@ describe('ToolsRow', () => {
 
   it('shows the pulls count in accent, and hides it again at zero', async () => {
     await hydrate([]);
-    setPullsNeedsYouCount(1);
+    setPullsNeedsYouCount(HOME_BACKEND, 1);
     const view = render(ToolsRow);
     const badge = view.getByTestId('sidebar-tool-pulls-badge');
     expect(badge).toHaveTextContent('1');
     expect(badge.className).toContain('text-accent');
     expect(view.getByTestId('sidebar-tool-pulls')).toHaveAttribute('title', 'Pull requests · 1 needs you');
 
-    setPullsNeedsYouCount(0);
+    setPullsNeedsYouCount(HOME_BACKEND, 0);
     await Promise.resolve();
     expect(view.queryByTestId('sidebar-tool-pulls-badge')).not.toBeInTheDocument();
   });

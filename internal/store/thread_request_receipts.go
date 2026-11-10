@@ -237,8 +237,9 @@ func (s *Store) ClearThreadRequestReceipts() error {
 }
 
 // MarkThreadReceiptRunning records the user row the request wrote and the
-// turn that consumed it, and moves the receipt out of `accepted`. Until it
+// turn its row sits in, and moves the receipt out of `accepted`. Until it
 // applies, the request's message is still queued and no turn can settle it.
+// A turn SetThreadReceiptAnswerTurn already recorded is kept.
 func (s *Store) MarkThreadReceiptRunning(token, messageItemID, turnID string) (bool, error) {
 	action := fmt.Sprintf("store: mark thread receipt %s running", token)
 	if turnID == "" {
@@ -246,9 +247,33 @@ func (s *Store) MarkThreadReceiptRunning(token, messageItemID, turnID string) (b
 	}
 	result, err := s.db.Exec(
 		`UPDATE thread_request_receipts
-		    SET state = 'running', message_item_id = ?, turn_id = ?, updated_at = ?
+		    SET state = 'running', message_item_id = ?,
+		        turn_id = CASE WHEN turn_id = '' THEN ? ELSE turn_id END, updated_at = ?
 		  WHERE token = ? AND state = 'accepted'`,
 		messageItemID, turnID, nowMillis(), token,
+	)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", action, err)
+	}
+	return rowsChanged(result, action)
+}
+
+// SetThreadReceiptAnswerTurn records the turn that answers an open
+// receipt's message, once the provider consumed the message and that turn is
+// known. The receipt may still be `accepted`: the provider can consume a
+// message before its dispatch has marked the receipt running, and
+// MarkThreadReceiptRunning keeps a turn recorded here. It reports whether
+// the turn changed; a settled receipt keeps the turn that answered it.
+func (s *Store) SetThreadReceiptAnswerTurn(token, targetThreadID, turnID string) (bool, error) {
+	action := fmt.Sprintf("store: set thread receipt %s answer turn", token)
+	if turnID == "" {
+		return false, fmt.Errorf("%s: turn id is required", action)
+	}
+	result, err := s.db.Exec(
+		`UPDATE thread_request_receipts SET turn_id = ?, updated_at = ?
+		  WHERE token = ? AND target_thread_id = ?
+		    AND state IN ('accepted', 'running') AND turn_id IS NOT ?`,
+		turnID, nowMillis(), token, targetThreadID, turnID,
 	)
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)

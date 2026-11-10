@@ -71,11 +71,15 @@
   // 2026-08-23 on the WebView2 build: the JS path cost every keystroke two
   // forced layouts (height:auto → scrollHeight, then the frame's own), and
   // an inline `height` would override the CSS sizing, so the two paths are
-  // exclusive. Detected off the style object rather than `CSS.supports`,
-  // which happy-dom answers true for every query; the unit suite runs the
-  // fallback, the browser suite runs the native path.
+  // exclusive. Detected with a two-sided `CSS.supports` probe: happy-dom
+  // answers true for every query and lists every known property on a style
+  // object, so a one-sided check reads as support where nothing lays out.
+  // The unit suite runs the fallback, the browser suite runs the native path.
   const nativeAutosize =
-    typeof document !== 'undefined' && 'fieldSizing' in document.createElement('textarea').style;
+    typeof CSS !== 'undefined' &&
+    typeof CSS.supports === 'function' &&
+    CSS.supports('field-sizing', 'content') &&
+    !CSS.supports('field-sizing', 'not-a-field-sizing-value');
 
   const mentions = createComposerMentions({
     getTextarea: () => textarea,

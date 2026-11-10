@@ -16,10 +16,9 @@ export interface TimelineRowDecorationSets {
 
 /**
  * Every turn a node covers. All but one node covers exactly one; an
- * activity run can span several, because providers emit per wire round and
- * a round that produces only tool calls is not separated from the next by
- * any prose row (see internal/triage/CLAUDE.md § Wire-round vs
- * logical-turn). Recording only the run's root turn would leave the later
+ * activity run can span several, because a turn that produces only tool
+ * calls is not separated from the next by any prose row (see
+ * docs/architecture/turn-lifecycle.md § Rounds and turns). Recording only the run's root turn would leave the later
  * turns with no `tool` role on record, and the assistant message closing
  * one of them would lose its response divider.
  */

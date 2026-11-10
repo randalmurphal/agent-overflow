@@ -91,6 +91,7 @@ func (a *App) configureTriageQueueCallbacks() {
 	a.triage.SetFlushUserTextConfirmedHook(func(threadID string, item store.Item) {
 		a.recordMessageAnchor(item)
 	})
+	a.triage.SetSendConsumedHook(a.recordRequestAnswerTurn)
 	a.triage.SetSendsPendingObserver(a.markSendsPendingDirty)
 	a.triage.SetSendUndeliveredHook(func(threadID string) {
 		// Off the provider event worker: the restore takes the thread
@@ -655,6 +656,18 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 	}
 	defer unlockAccount()
 
+	// Placement through registration runs under the turn allocation lock,
+	// so a turn the provider starts on its own can neither take the index
+	// chosen here nor miss the registered send (LockTurnAllocation).
+	unlockAllocation := a.triage.LockTurnAllocation(threadID)
+	allocationHeld := true
+	releaseAllocation := func() {
+		if allocationHeld {
+			allocationHeld = false
+			unlockAllocation()
+		}
+	}
+	defer releaseAllocation()
 	placement, err := a.resolveUserMessagePlacement(thread, messageFlush)
 	if err != nil {
 		return nil, false, requeue, fmt.Errorf("resolve placement: %w", err)
@@ -830,6 +843,7 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 		// Deferred: row persists at echo time via persistDeferredUserText.
 		a.triage.RegisterPendingFlushSendWithExpectation(threadID, leadQueueItemID, userItem, leadEnqueuedAt, sendExpect)
 	}
+	releaseAllocation()
 
 	sendOpts := provider.SendOptions{
 		InteractionMode: provider.NormalizeInteractionMode(thread.Mode),

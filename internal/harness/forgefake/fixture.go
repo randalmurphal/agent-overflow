@@ -57,6 +57,11 @@ type Repo struct {
 	// (GitHub's branch delete after a merge); a branch exists while a
 	// pull names it as its head or base and it is not listed here.
 	DeletedBranches []string `json:"deletedBranches,omitempty"`
+	// EventsHidden makes the viewer's events on this GitLab project ones
+	// GitLab no longer shows the viewer: the events feed selects them
+	// into a page and drops them from it after, so a page comes back
+	// short and still names its next page, as GitLab's does.
+	EventsHidden bool `json:"eventsHidden,omitempty"`
 }
 
 // RepoMerge is a project's merge settings (GitHub repository settings,
@@ -490,6 +495,9 @@ func (r *Repo) normalize(ids *idSource) error {
 		}
 	default:
 		return fmt.Errorf("forge %q is not github or gitlab", r.Forge)
+	}
+	if r.EventsHidden && r.Forge != "gitlab" {
+		return errors.New("eventsHidden is a GitLab project's")
 	}
 	for _, part := range strings.Split(r.Project, "/") {
 		if part == "" || strings.TrimSpace(part) != part {

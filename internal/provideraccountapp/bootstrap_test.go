@@ -77,7 +77,9 @@ func TestCrashedCodexProbeHelper(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home.Path, "auth.json"), rotated, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	os.Stdout.WriteString("home=" + home.Path + "\n")
+	if _, err := os.Stdout.WriteString("home=" + home.Path + "\n"); err != nil {
+		t.Fatal(err)
+	}
 	os.Exit(0)
 }
 
