@@ -44,8 +44,9 @@ test('a tracked PR survives a restart and its merge still removes the worktree',
     await expectHandled(harness, threadId, 'removed');
     // The new backend learned of the merge from the row it inherited: its
     // first forge call is the state read, and the only open-PR lookup is the
-    // check, before removing, that the branch has no new open PR.
-    const calls = (await forgeInvocations(harness)).filter((call) => call.via === 'http' && call.forge === 'github' && call.path === 'graphql');
+    // check, before removing, that the branch has no new open PR. The boot
+    // prefetch of the Pull requests list (PullsSearch) is not the cleanup's.
+    const calls = (await forgeInvocations(harness)).filter(cleanupGraphQL);
     expect(calls.map((call) => (call.via === 'http' ? call.operation : ''))).toEqual(['PRStates', 'OpenPRsByHead']);
     expect(await stateReads(harness)).toBe(1);
 
@@ -110,9 +111,9 @@ test('with background fetch off, a merge a previous run left waiting is acted on
     await completed;
     await expectHandled(harness, threadId, 'removed');
     expect(existsSync(fixture.worktreePath)).toBe(false);
-    // No state read: the only forge request is the check, before removing,
-    // that the branch has no new open PR.
-    const calls = (await forgeInvocations(harness)).filter((call) => call.via === 'http' && call.forge === 'github' && call.path === 'graphql');
+    // No state read: the only cleanup request is the check, before
+    // removing, that the branch has no new open PR.
+    const calls = (await forgeInvocations(harness)).filter(cleanupGraphQL);
     expect(calls.map((call) => (call.via === 'http' ? call.operation : ''))).toEqual(['OpenPRsByHead']);
     expect(await stateReads(harness)).toBe(0);
 
@@ -128,3 +129,7 @@ test('with background fetch off, a merge a previous run left waiting is acted on
     }
   }
 });
+
+/** The cleanup's GitHub GraphQL reads: every one but the list prefetch's. */
+const cleanupGraphQL = (call: Awaited<ReturnType<typeof forgeInvocations>>[number]) =>
+  call.via === 'http' && call.forge === 'github' && call.path === 'graphql' && call.operation !== 'PullsSearch';

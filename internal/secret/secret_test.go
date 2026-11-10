@@ -48,7 +48,7 @@ func TestNoFormatterRevealsTheSecret(t *testing.T) {
 	outputs = append(outputs, logged.String())
 
 	hexRaw := fmt.Sprintf("%x", []byte(raw))
-	decimalRaw := fmt.Sprint([]byte(raw))
+	decimalRaw := fmt.Sprintf("%d", []byte(raw))
 	for _, out := range outputs {
 		for _, leak := range []string{raw, hexRaw, strings.ToUpper(hexRaw), strings.Trim(decimalRaw, "[]")} {
 			if strings.Contains(out, leak) {

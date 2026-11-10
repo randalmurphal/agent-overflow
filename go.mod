@@ -23,7 +23,7 @@ require (
 	github.com/hashicorp/mdns v1.0.7
 	github.com/jchv/go-webview2 v0.0.0-20260205173254-56598839c808
 	github.com/jsimonetti/rtnetlink v1.4.2
-	github.com/klauspost/compress v1.20.1
+	github.com/klauspost/compress v1.20.2
 	github.com/miekg/dns v1.1.73
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 	github.com/rjeczalik/notify v0.9.3

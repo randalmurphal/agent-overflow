@@ -21,6 +21,10 @@ function normalizeStyle(value: string): string {
     .split(';')
     .map((declaration) => declaration.trim())
     .filter(Boolean)
+    // `-webkit-mask-image` is an alias of `mask-image`: a style written
+    // through the style object keeps one declaration, a style attribute
+    // parsed from markup keeps the text of both.
+    .filter((declaration) => !declaration.startsWith('-webkit-mask-image'))
     .map((declaration) => {
       const separator = declaration.indexOf(':');
       if (separator < 0) return declaration;

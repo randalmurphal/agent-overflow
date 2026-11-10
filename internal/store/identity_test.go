@@ -496,7 +496,9 @@ func TestSigningKeysAndTheirCascade(t *testing.T) {
 	if string(byID.Secret.Reveal()) != "old" {
 		t.Fatalf("secret did not round-trip: %q", byID.Secret.Reveal())
 	}
-	if printed := fmt.Sprintf("%s %+v", any(byID), byID); strings.Contains(strings.ReplaceAll(printed, "key-old", ""), "old") {
+	// %s is the verb that would print a byte-slice field as its text.
+	printed := fmt.Sprintf("%s %+v", any(byID), byID) //nolint:staticcheck // SA5009: %s on the struct is the case under test.
+	if strings.Contains(strings.ReplaceAll(printed, "key-old", ""), "old") {
 		t.Fatalf("a read signing key printed its secret: %s", printed)
 	}
 	if _, err := s.SigningKeyByID("key-missing"); !errors.Is(err, sql.ErrNoRows) {

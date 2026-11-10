@@ -11,8 +11,11 @@ Conversation history has stable, thread-local identity and ordering:
 - An item keeps the same `id` from its first streaming update through
   completion.
 - `item_index` is assigned by the store and is immutable after insertion.
-- New `turn_index` values are allocated under the thread action lock. Background
-  child work remains attached to the turn that launched it.
+- New `turn_index` values for sends are allocated under the thread action
+  lock. A Claude CLI turn the provider starts on its own also takes one, so
+  both sides choose under the thread's turn allocation lock
+  (`Router.LockTurnAllocation`). Background child work remains attached to
+  the turn that launched it.
 - `parent_id` names a `tool_call`. A `tool_completion` names one background
   `tool_call` through `completion_of`, with at most one ending completion per
   launch. A background agent's run that pauses adds a `parked` completion of

@@ -327,6 +327,8 @@ export function createThreadItemStreamApply(
     if (!evt.itemId) return;
     const thread = options.getThread();
     if (thread && evt.threadId !== thread.id) return;
+    // A row held back for this id is the one the meta describes.
+    if (streamingReveal.patchHeldRow(evt.itemId, { meta: evt.meta })) return;
     const index = itemIndexById.get(evt.itemId);
     if (index === undefined) return;
     const current = options.getItems()[index];

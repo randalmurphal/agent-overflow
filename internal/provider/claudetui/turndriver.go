@@ -228,8 +228,8 @@ type agentRequest struct {
 //
 //   - system:init when the loop is settled (turnSettled) — a new user turn or a
 //     backgrounded-task resume. It carries the request's model/tools plus any
-//     hook session info, and drives triage's handleInit (open a turn when a
-//     pending send waits, else re-arm the settled round).
+//     hook session info, and drives triage's handleInit (open the pending
+//     send's turn when one waits, else a turn of the CLI's own).
 //   - the user{isReplay} echo when an AO Send awaits confirmation (userEchoes),
 //     consuming triage's pending-send FIFO and stamping provider_item_id.
 //

@@ -1,8 +1,9 @@
 // Real-Chromium suite for the page's virtualized lists: a list of
 // thousands of merge requests or pipelines mounts the rows near the
-// viewport only, reports the rows on screen by key as it scrolls (none
-// while hidden or once unmounted), keeps the group under the viewport top named, and keeps
-// Tab walking the rows past the mounted window.
+// viewport only, keeps the group under the viewport top named, keeps Tab
+// walking the rows past the mounted window, and (the Pipelines list,
+// whose store reads stages for the rows on screen) reports the rows on
+// screen by key as it scrolls, none while hidden or once unmounted.
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { userEvent } from 'vitest/browser';
@@ -40,11 +41,12 @@ function pullRow(index: number, group: string): PullRowView {
     url: `https://gitlab.com/ao/widgets/-/merge_requests/${index}`,
     state: group === 'needs_you' ? 'your_turn' : 'open',
     group,
-    since: null,
-    seen: false,
+    label: group === 'needs_you' ? 'Review requested' : 'Open',
+    tone: group === 'needs_you' ? 'accent' : 'muted',
     projectName: 'widgets',
     author: 'alice',
-    age: '2h ago',
+    viewerIsAuthor: false,
+    age: '2h',
     draft: false,
     crossRepository: false,
     ci: 'success',
@@ -71,12 +73,12 @@ function makeHost(): HTMLElement {
 
 function mountPulls() {
   const host = makeHost();
-  const reports: string[][] = [];
   const props = rawProps({
     groups: pullGroups(),
     projectErrors: [] as { projectId: string; name: string; message: string; failure: null; forge: string }[],
     selectedKey: null as string | null,
     filter: 'all' as const,
+    orderKey: 'updated:forward',
     noProjects: false,
     error: null as string | null,
     loading: false,
@@ -85,13 +87,33 @@ function mountPulls() {
     onOpen: () => {},
     onMenu: () => {},
     onRetry: () => {},
-    onVisible: (keys: string[]) => {
-      reports.push(keys);
-    },
   });
   const app = mount(PullsList, { target: host, props });
   mounted.push({ app, host });
   const scrollEl = host.querySelector<HTMLElement>('[data-testid="pulls-list"]')!;
+  return { host, props, scrollEl };
+}
+
+function mountPipelines(rows: PipelineRowView[], projectErrors: { projectId: string; name: string; message: string; failure: null; forge: string }[] = []) {
+  const host = makeHost();
+  const reports: string[][] = [];
+  const props = rawProps({
+    rows,
+    projectErrors,
+    selectedKey: null as string | null,
+    error: null as string | null,
+    loading: false,
+    retrying: false,
+    shown: true,
+    onOpen: () => {},
+    onRetry: () => {},
+    onVisible: (keys: string[]) => {
+      reports.push(keys);
+    },
+  });
+  const app = mount(PipelinesList, { target: host, props });
+  mounted.push({ app, host });
+  const scrollEl = host.querySelector<HTMLElement>('[data-testid="pipelines-list"]')!;
   return { host, props, reports, scrollEl };
 }
 
@@ -132,26 +154,23 @@ function stuckHeading(host: HTMLElement): string | null {
 }
 
 describe('PullsList', () => {
-  it('mounts the rows near the viewport of thousands and reports the rows on screen', async () => {
-    const { reports, scrollEl } = mountPulls();
+  it('mounts the rows near the viewport of thousands, from the top', async () => {
+    const { scrollEl } = mountPulls();
     await settle(scrollEl);
-    await waitFor(() => lastReport(reports).length > 0, 'a visible report');
+    await waitFor(() => onScreenKeys(scrollEl, 'data-pr-key').length > 0, 'rows on screen');
 
     const keys = mountedKeys(scrollEl, 'data-pr-key');
     expect(keys.length).toBeGreaterThan(0);
     expect(keys.length).toBeLessThan(MOUNTED_BOUND);
-    expect(new Set(lastReport(reports))).toEqual(new Set(onScreenKeys(scrollEl, 'data-pr-key')));
-    expect(lastReport(reports)[0]).toBe(pullRow(0, 'needs_you').key);
+    expect(onScreenKeys(scrollEl, 'data-pr-key')[0]).toBe(pullRow(0, 'needs_you').key);
 
-    // Scrolling to the end renders the last row and reports it on screen.
+    // Scrolling to the end renders the last row.
     scrollEl.scrollTop = scrollEl.scrollHeight;
     await settle(scrollEl);
     const lastKey = pullRow(NEEDS_YOU + WAITING - 1, 'waiting').key;
-    await waitFor(() => lastReport(reports).includes(lastKey), 'the last row reported');
-    expect(mountedKeys(scrollEl, 'data-pr-key')).toContain(lastKey);
+    await waitFor(() => onScreenKeys(scrollEl, 'data-pr-key').includes(lastKey), 'the last row on screen');
     expect(mountedKeys(scrollEl, 'data-pr-key').length).toBeLessThan(MOUNTED_BOUND);
-    expect(new Set(lastReport(reports))).toEqual(new Set(onScreenKeys(scrollEl, 'data-pr-key')));
-    expect(lastReport(reports)).not.toContain(pullRow(0, 'needs_you').key);
+    expect(onScreenKeys(scrollEl, 'data-pr-key')).not.toContain(pullRow(0, 'needs_you').key);
   });
 
   it('names the group under the viewport top once its heading scrolls under it', async () => {
@@ -183,13 +202,13 @@ describe('PullsList', () => {
     await waitFor(() => stuckHeading(host) === null, 'no stuck heading at the top');
   });
 
-  it('reports no row while hidden, and the rows on screen again once shown', async () => {
-    const { host, props, reports, scrollEl } = mountPulls();
+  it('keeps its scroll position across being hidden and shown again', async () => {
+    const { host, props, scrollEl } = mountPulls();
     await settle(scrollEl);
     scrollEl.scrollTop = 40_000;
     await settle(scrollEl);
-    await waitFor(() => lastReport(reports).length > 0 && !lastReport(reports).includes(pullRow(0, 'needs_you').key), 'mid-list rows reported');
-    const before = lastReport(reports);
+    const before = onScreenKeys(scrollEl, 'data-pr-key');
+    expect(before).not.toContain(pullRow(0, 'needs_you').key);
     const top = scrollEl.scrollTop;
 
     // The compact detail hides the list column with display: none.
@@ -197,52 +216,37 @@ describe('PullsList', () => {
     props.shown = false;
     flushSync();
     await raf();
-    expect(lastReport(reports)).toEqual([]);
-
     host.style.display = 'flex';
     props.shown = true;
     flushSync();
     await settle(scrollEl);
-    await waitFor(() => lastReport(reports).length > 0, 'rows reported again');
     expect(scrollEl.scrollTop).toBe(top);
-    expect(lastReport(reports)).toEqual(before);
-    expect(new Set(lastReport(reports))).toEqual(new Set(onScreenKeys(scrollEl, 'data-pr-key')));
+    expect(onScreenKeys(scrollEl, 'data-pr-key')).toEqual(before);
   });
 
-  it('reports no row once unmounted (the tab switches), and the rows on screen when mounted again', async () => {
-    const first = mountPulls();
-    await settle(first.scrollEl);
-    await waitFor(() => lastReport(first.reports).length > 0, 'a visible report');
-    const entry = mounted.splice(mounted.findIndex((candidate) => candidate.host === first.host), 1)[0]!;
-    unmount(entry.app);
-    entry.host.remove();
-    expect(lastReport(first.reports)).toEqual([]);
+  it('opens an order the reader chose from the top, and follows the row at the top when a refresh re-sorts', async () => {
+    const { props, scrollEl } = mountPulls();
+    await settle(scrollEl);
+    scrollEl.scrollTop = 40_000;
+    await settle(scrollEl);
+    const mid = onScreenKeys(scrollEl, 'data-pr-key');
+    expect(mid[0]).not.toBe(pullRow(0, 'needs_you').key);
 
-    const again = mountPulls();
-    await settle(again.scrollEl);
-    await waitFor(() => lastReport(again.reports).length > 0, 'rows reported after the remount');
-    expect(new Set(lastReport(again.reports))).toEqual(new Set(onScreenKeys(again.scrollEl, 'data-pr-key')));
-  });
-
-  it('reports the rows on screen when the rows change under a still viewport', async () => {
-    const { props, reports, scrollEl } = mountPulls();
-    props.groups = [{ group: 'needs_you', rows: Array.from({ length: 20 }, (_, index) => pullRow(index, 'needs_you')) }];
+    // A refresh that re-sorts keeps the row that was at the top in view.
+    const [needsYou, waiting] = props.groups;
+    props.groups = [{ group: 'needs_you', rows: [...needsYou!.rows].reverse() }, waiting!];
     flushSync();
     await settle(scrollEl);
-    await waitFor(() => lastReport(reports)[0] === pullRow(0, 'needs_you').key, 'the first rows reported');
+    expect(onScreenKeys(scrollEl, 'data-pr-key')[0]).toBe(mid[0]);
+    expect(scrollEl.scrollTop).toBeGreaterThan(0);
 
-    // The same rows re-sorted: every height is measured and unchanged, so
-    // nothing but the data says the rows on screen are others now.
-    props.groups = [{ group: 'needs_you', rows: [...props.groups[0].rows].reverse() }];
+    // The reader's own sort opens from the top.
+    props.groups = [{ group: 'needs_you', rows: [...needsYou!.rows].reverse() }, { group: 'waiting', rows: [...waiting!.rows].reverse() }];
+    props.orderKey = 'updated:reversed';
     flushSync();
     await settle(scrollEl);
-    expect(lastReport(reports)[0]).toBe(pullRow(19, 'needs_you').key);
-    expect(new Set(lastReport(reports))).toEqual(new Set(onScreenKeys(scrollEl, 'data-pr-key')));
-
-    props.groups = [];
-    flushSync();
-    await settle(scrollEl);
-    expect(lastReport(reports)).toEqual([]);
+    expect(scrollEl.scrollTop).toBe(0);
+    expect(onScreenKeys(scrollEl, 'data-pr-key')[0]).toBe(pullRow(NEEDS_YOU - 1, 'needs_you').key);
   });
 
   it('walks rows with Tab past the mounted window', async () => {
@@ -283,28 +287,10 @@ function pipelineRow(index: number): PipelineRowView {
 
 describe('PipelinesList', () => {
   it('mounts the rows near the viewport of thousands and reports the last row once scrolled to', async () => {
-    const host = makeHost();
-    const reports: string[][] = [];
-    const rows = Array.from({ length: 5_000 }, (_, index) => pipelineRow(index));
-    const app = mount(PipelinesList, {
-      target: host,
-      props: {
-        rows,
-        projectErrors: [{ projectId: 'p1', name: 'gadgets', message: 'The forge refused the list.', failure: null, forge: 'github' }],
-        selectedKey: null,
-        error: null,
-        loading: false,
-        retrying: false,
-        shown: true,
-        onOpen: () => {},
-        onRetry: () => {},
-        onVisible: (keys: string[]) => {
-          reports.push(keys);
-        },
-      },
-    });
-    mounted.push({ app, host });
-    const scrollEl = host.querySelector<HTMLElement>('[data-testid="pipelines-list"]')!;
+    const { host, reports, scrollEl } = mountPipelines(
+      Array.from({ length: 5_000 }, (_, index) => pipelineRow(index)),
+      [{ projectId: 'p1', name: 'gadgets', message: 'The forge refused the list.', failure: null, forge: 'github' }],
+    );
     await settle(scrollEl);
     await waitFor(() => lastReport(reports).length > 0, 'a visible report');
     expect(scrollEl.querySelector('[data-testid="pipelines-project-group"]')).not.toBeNull();
@@ -319,5 +305,83 @@ describe('PipelinesList', () => {
     expect(new Set(lastReport(reports))).toEqual(new Set(onScreenKeys(scrollEl, 'data-pipeline-key')));
     // Below the failed project's section, no heading is drawn over the rows.
     expect(host.querySelector('[data-testid="pulls-list-stuck-heading"]')).toBeNull();
+  });
+
+  it('reports no row while hidden, and the rows on screen again once shown', async () => {
+    const { host, props, reports, scrollEl } = mountPipelines(Array.from({ length: 5_000 }, (_, index) => pipelineRow(index)));
+    await settle(scrollEl);
+    scrollEl.scrollTop = 40_000;
+    await settle(scrollEl);
+    await waitFor(() => lastReport(reports).length > 0 && !lastReport(reports).includes(pipelineRow(0).key), 'mid-list rows reported');
+    const before = lastReport(reports);
+    const top = scrollEl.scrollTop;
+
+    // The compact detail hides the list column with display: none.
+    host.style.display = 'none';
+    props.shown = false;
+    flushSync();
+    await raf();
+    expect(lastReport(reports)).toEqual([]);
+
+    host.style.display = 'flex';
+    props.shown = true;
+    flushSync();
+    await settle(scrollEl);
+    await waitFor(() => lastReport(reports).length > 0, 'rows reported again');
+    expect(scrollEl.scrollTop).toBe(top);
+    expect(lastReport(reports)).toEqual(before);
+    expect(new Set(lastReport(reports))).toEqual(new Set(onScreenKeys(scrollEl, 'data-pipeline-key')));
+  });
+
+  it('reports no row once unmounted (the tab switches), and the rows on screen when mounted again', async () => {
+    const rows = Array.from({ length: 5_000 }, (_, index) => pipelineRow(index));
+    const first = mountPipelines(rows);
+    await settle(first.scrollEl);
+    await waitFor(() => lastReport(first.reports).length > 0, 'a visible report');
+    const entry = mounted.splice(mounted.findIndex((candidate) => candidate.host === first.host), 1)[0]!;
+    unmount(entry.app);
+    entry.host.remove();
+    expect(lastReport(first.reports)).toEqual([]);
+
+    const again = mountPipelines(rows);
+    await settle(again.scrollEl);
+    await waitFor(() => lastReport(again.reports).length > 0, 'rows reported after the remount');
+    expect(new Set(lastReport(again.reports))).toEqual(new Set(onScreenKeys(again.scrollEl, 'data-pipeline-key')));
+  });
+
+  it('stays at its top when the rows move under it there', async () => {
+    const { props, reports, scrollEl } = mountPipelines(Array.from({ length: 5_000 }, (_, index) => pipelineRow(index)));
+    await settle(scrollEl);
+    await waitFor(() => lastReport(reports)[0] === pipelineRow(0).key, 'the first rows reported');
+    expect(scrollEl.scrollTop).toBe(0);
+
+    // The row at the top moves to the end; the list does not follow it.
+    props.rows = [...props.rows.slice(1), props.rows[0]!];
+    flushSync();
+    await settle(scrollEl);
+    expect(scrollEl.scrollTop).toBe(0);
+    expect(lastReport(reports)[0]).toBe(pipelineRow(1).key);
+    expect(new Set(lastReport(reports))).toEqual(new Set(onScreenKeys(scrollEl, 'data-pipeline-key')));
+  });
+
+  it('reports the rows on screen when the rows change under a still viewport', async () => {
+    const { props, reports, scrollEl } = mountPipelines(Array.from({ length: 5_000 }, (_, index) => pipelineRow(index)));
+    props.rows = Array.from({ length: 20 }, (_, index) => pipelineRow(index));
+    flushSync();
+    await settle(scrollEl);
+    await waitFor(() => lastReport(reports)[0] === pipelineRow(0).key, 'the first rows reported');
+
+    // The same rows re-sorted: every height is measured and unchanged, so
+    // nothing but the data says which rows are on screen now.
+    props.rows = [...props.rows].reverse();
+    flushSync();
+    await settle(scrollEl);
+    expect(lastReport(reports)[0]).toBe(pipelineRow(19).key);
+    expect(new Set(lastReport(reports))).toEqual(new Set(onScreenKeys(scrollEl, 'data-pipeline-key')));
+
+    props.rows = [];
+    flushSync();
+    await settle(scrollEl);
+    expect(lastReport(reports)).toEqual([]);
   });
 });

@@ -128,16 +128,17 @@ func TestUnsendPredicateRequiresAnUnsettledTurn(t *testing.T) {
 	}
 }
 
-// The reported sequence: a background command outlives turn 0, the user
-// sends turn 1 and presses Stop (a plain interrupt, because the command is
-// still running), the command finishes, and Claude answers the task
-// notification inside turn 1 with only thinking so far. A second Stop must
-// interrupt, not un-send the message and delete the command's completion.
-func TestStopAfterBackgroundCompletionReRoundKeepsMessage(t *testing.T) {
+// A background command outlives turn 0, the user sends turn 1 and
+// presses Stop (a plain interrupt, because the command is still running),
+// and the command finishes. Turn 1 is settled as interrupted and holds,
+// after the message, thinking plus the command's completion and task
+// notification. A second Stop must interrupt, not un-send the message and
+// delete the command's completion.
+func TestStopAfterBackgroundCompletionKeepsMessage(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
-	thread := createAppTestThread(t, app, "unsend-reround", "claude", t.TempDir())
+	thread := createAppTestThread(t, app, "unsend-bg-completion", "claude", t.TempDir())
 	thread.SessionRef = "live-session"
 	if err := app.store.UpdateThread(thread); err != nil {
 		t.Fatalf("update thread: %v", err)

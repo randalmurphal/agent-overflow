@@ -184,8 +184,8 @@ behavior. These back parser replay tests and the reference docs in
   proving local_agent and local_bash background tasks behave
   differently at the wire level.
 - `local_agent_user_input_during_wait.ndjson`: same scenario, but
-  the host injects a new user message via stdin during the gap. CLI
-  re-rounds within 32ms and processes the injection cleanly with the
+  the host injects a new user message via stdin during the gap. The
+  CLI writes `system/init` within 32ms and processes the injection with the
   original subagent still running. Backs the safety argument for
   unblocking the composer on parent end_turn.
 - `local_agent_plus_bg_bash.ndjson`: bg Bash + bg local_agent
@@ -199,7 +199,10 @@ behavior. These back parser replay tests and the reference docs in
   summary of the reasoning via `thinking_delta` events. See
   [`opus47_thinking_summary.json`](opus47_thinking_summary.json) for
   the per-fixture stats and `claude-wire.md` §thinking-display for the
-  wire-level explanation.
+  wire-level explanation. Their signatures predate the signature tag
+  (`claude-wire.md` §The signature tag) and read as untagged. No tagged
+  signature is committed: a signature is session data, so the tag tests
+  build theirs by hand.
 - `session_api_error_offbranch.jsonl`: session **JSONL** (not wire
   NDJSON): sanitized replica of the 2026-06-10 incident topology.
   Deferred `system/api_error` rows written at the next user send with

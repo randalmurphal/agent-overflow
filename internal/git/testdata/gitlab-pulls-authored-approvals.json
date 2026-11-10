@@ -1,0 +1,15 @@
+{
+  "data": {
+    "project": {
+      "mergeRequests": {
+        "pageInfo": { "hasNextPage": false, "endCursor": null },
+        "nodes": [
+          { "iid": "21", "approvalState": { "rules": [
+            { "type": "ANY_APPROVER", "approvalsRequired": 2 },
+            { "type": "CODE_OWNER", "approvalsRequired": 0 }
+          ] } }
+        ]
+      }
+    }
+  }
+}

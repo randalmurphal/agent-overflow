@@ -948,6 +948,49 @@ position the reader did not ask to leave, and a jump is one they did ask for.
 Non-overlapping windows produce no shared row to hold, and that answer is
 `null`, not zero. A zero would drag the reader to the top of the run.
 
+### A narration block leaves the run on the spring
+
+Claude tags some thinking blocks as narration when the block closes
+([claude-wire.md](../references/claude-wire.md)). The block streams as a
+`thinking` row inside the tail run and its settled row is `assistant_text`
+under the same id, so the row has to leave the run after it was shown there.
+Installing the settled row on arrival would cut the reveal at its cursor,
+drop the row out of the run, and mount a divider and a prose row in one frame.
+
+The pane holds the settled row instead (`stores/threadRowPromotions.svelte.ts`)
+and the change runs in this order:
+
+1. The thinking row keeps revealing to its last word. The pane's row is still
+   the streaming `thinking` row, so run membership, the header and every
+   decoration are unchanged, and the reveal gate stays on it.
+2. The store offers the hold to the mounted timeline. `MessageTimeline` takes
+   it only when the row is the mounted last row of an open run at the end of
+   the revealed rows, the page is visible and motion is allowed. Anything
+   else installs at once.
+3. `rowPromotionPlan.ts` runs `timelineRowDecorations` over the rows as they
+   will be, which decides the installed row's boundary gap, divider and pill.
+   `RowPromotionStage.svelte` renders the held row with those inside the run's
+   own timeline row, below the run.
+4. `rowPromotionMotion.ts` closes the departing box and opens the stage, one
+   `SpringValue` each (`utils/scroll/motion.ts`, the scroll spring's velocity
+   law). The departing box is the row's `data-run-key` wrapper, or the whole
+   run when it holds no other row; in that case the row wrapper's boundary
+   margin moves to the value the prose row will carry. Opacity follows the box
+   heights. A capped run scrolls down natively as its last row closes, and the
+   pane's bottom follow chases the net height change like any other growth.
+5. When both springs land the stage reports completion, the pane installs the
+   row through its upsert path, the run loses the row (or its timeline row is
+   replaced by the prose row), and the rows queued behind the gate reveal.
+
+The stage is the same height as the box the installed row occupies, so the
+install moves nothing. The hold also ends when the timeline or the row
+unmounts, on `snapAllToReceived` (thread switch, visibility resume, reconnect),
+and at `PROMOTION_PRESENT_CEILING_MS` if no frame reports.
+
+The motion is frame-driven because CSS transitions are silenced inside the
+timeline, and a transition would move the scroll height on a curve the follow
+cannot read.
+
 ### Jumps resolve inside the run
 
 A search hit, review jump, target flash, or restore anchor whose item lives
@@ -1102,6 +1145,18 @@ real trigger cascade; a visible run refused and released only after the
 reader leaves; the end state measuring the same as a run that was never
 open). The motion claims are the ones happy-dom cannot see at all. It lays
 nothing out, so the unit suites assert state, never displacement.
+
+Narration promotion: `threadRowPromotions.test.ts` (hold phases, the gate
+held through a presentation, text landing in the same flush as the settled
+read, patches folding into the held row, snap, disposal, removal),
+`rowPromotionPlan.test.ts` (decorations of the installed row, every
+decline), `springValue.test.ts`, and `rowPromotion.browser.test.ts`
+(per-frame sampling through the real timeline: the last word painted before
+anything moves, every step inside the spring cap, no CSS transition, the
+installed row landing where the stage showed it, for a run that keeps its
+rows, a run of one with and without a divider, and a capped run; no stage
+under reduced motion, on a hidden page, or for an unmounted row; the hold
+ending when the row or the timeline unmounts).
 
 **The scrollbar-width invariant cannot be asserted geometrically.** Headless
 Chromium reserves no width for a scrollbar. Measured: a 300px box holding
@@ -1263,6 +1318,8 @@ becomes load-bearing.
 | Engagement peek | `stores/threadRowUiState.svelte.ts` `hasUserExpansionWithin` |
 | Engagement scope (rendered items) | `utils/subagentGrouping.ts` `renderedItemIdsWithin` |
 | Header, boundaries | `components/chat/ActivityRun{Header,Boundary}.svelte` |
+| Narration promotion: held row, phases | `stores/threadRowPromotions.svelte.ts` |
+| Narration promotion: plan, stage, motion | `components/chat/rowPromotionPlan.ts`, `RowPromotionStage.svelte`, `rowPromotionMotion.ts` |
 | Overlay scrollbar | `utils/scroll/overlayScrollbar.ts`, `components/shared/OverlayScrollbar.svelte` |
 | Wheel attribution | `utils/scroll/wheelAttribution.ts` |
 | Settings UI | `components/settings/ActivityRunSection.svelte` |

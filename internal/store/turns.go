@@ -129,6 +129,23 @@ func (s *Store) UpdateTurnCompleted(
 	}, func() error { return fmt.Errorf("%s: %w", label, sql.ErrNoRows) })
 }
 
+// ReopenTurn marks a settled turn in flight again (completed_at NULL): the
+// provider continued it after the signal that settled it. Its next
+// settlement overwrites the completion columns.
+func (s *Store) ReopenTurn(turnID string) error {
+	if turnID == "" {
+		return fmt.Errorf("store: reopen turn: turn id is required")
+	}
+	label := fmt.Sprintf("store: reopen turn %s", turnID)
+	return s.writeTurn(turnID, label, func(tx *sql.Tx) error {
+		result, err := tx.Exec(`UPDATE turns SET completed_at = NULL WHERE turn_id = ?`, turnID)
+		if err != nil {
+			return fmt.Errorf("%s: %w", label, err)
+		}
+		return requireRowsAffected(result, label)
+	}, func() error { return fmt.Errorf("%s: %w", label, sql.ErrNoRows) })
+}
+
 // writeTurn runs write on the turn row turnID in one transaction, after
 // the forks that show the row got their copy (requireMutableTurnTx). With
 // no turn of that id it returns missing's result instead.

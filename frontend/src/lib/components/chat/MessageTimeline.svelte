@@ -47,6 +47,12 @@
   import { createTimelinePaging } from './timelinePaging';
   import { createTimelineWindowAnchor } from './timelineWindowAnchor.svelte';
   import { createTimelineRowProjection } from './timelineRowProjection.svelte';
+  import ResponseDivider from './ResponseDivider.svelte';
+  import { motionReduced } from '../../utils/reducedMotion';
+  import type { Item } from '../../types/models';
+  import RowPromotionStage from './RowPromotionStage.svelte';
+  import { planRowPromotion, type RowPromotionPlan } from './rowPromotionPlan';
+  import { findRowPromotionElements } from './rowPromotionMotion';
   import { responsePillLabel } from './timelineRows';
   import { createTimelineDiagnostics } from './timelineDiagnostics';
   import { createTimelineQuietWork } from './timelineQuietWork';
@@ -282,6 +288,48 @@
     );
   }
 
+  // Row promotions. The pane holds back a prose row that replaces the
+  // reasoning row at the end of the tail activity run
+  // (stores/threadRowPromotions.svelte.ts) and offers this timeline its
+  // presentation once the reveal has shown the last word. The presenter
+  // takes it only when the row is on screen and motion is allowed; anything
+  // else installs at once. The plan is decided here, once, so the stage
+  // opens the box the installed row will occupy.
+  const promotionPlans = new Map<string, RowPromotionPlan>();
+  $effect(() => {
+    const presentingPane = pane;
+    return presentingPane.registerRowPromotionPresenter((itemId, row) => {
+      if (motionReduced() || document.visibilityState !== 'visible' || !scrollEl) return false;
+      const turns = presentingPane.timelineTurns;
+      const plan = planRowPromotion({
+        itemId,
+        row,
+        revealed: rows.revealedNodes,
+        structure: rows.groupedNodes,
+        decorations: rows.rowDecorations,
+        activeTurnKey: turns.activeKey,
+        turnKeyOf: turns.keyOf,
+      });
+      if (plan === null || findRowPromotionElements(scrollEl, plan) === null) return false;
+      promotionPlans.set(itemId, plan);
+      return true;
+    });
+  });
+  let promotionStages = $derived.by(() => {
+    const stages: Array<{ plan: RowPromotionPlan; row: Item }> = [];
+    for (const { itemId, row } of pane.presentingRowPromotions) {
+      const plan = promotionPlans.get(itemId);
+      if (plan) stages.push({ plan, row });
+    }
+    return stages;
+  });
+  $effect(() => {
+    const presenting = pane.presentingRowPromotions;
+    for (const itemId of promotionPlans.keys()) {
+      if (!presenting.some((entry) => entry.itemId === itemId)) promotionPlans.delete(itemId);
+    }
+  });
+
   const stick = createUseStickToBottomController({
     liveContentActive: liveContentActiveNow,
     quietContextSignal: () => anyMarkdownSettledSinceArm || mountedMarkdownCount === 0,
@@ -299,7 +347,7 @@
   });
 
   $effect(() => {
-    pane.threadId;
+    void pane.threadId;
     return installTimelineReconnect({ pane, stick, getList: () => listRef });
   });
 
@@ -397,7 +445,7 @@
   // an anchor. Persist that intent even when no further movement follows.
   $effect(() => {
     const atBottom = stick.isAtBottom;
-    pane.scrollStateKey;
+    void pane.scrollStateKey;
     if (atBottom) untrack(() => restore.saveScrollSnapshot());
   });
 
@@ -780,9 +828,9 @@
   // trigger; until then held state is only over-retained, never
   // prematurely dropped.
   $effect(() => {
-    pane.threadId;
-    pane.timelineRevision;
-    pane.revealBoundary;
+    void pane.threadId;
+    void pane.timelineRevision;
+    void pane.revealBoundary;
     // A run's mount window decides which of its children are retained, and it
     // moves without touching any of the above: relocating a window mounts a
     // different set of rows at the same node count and the same item list.
@@ -793,18 +841,18 @@
     // runs further from the tail, and an auto-collapse release bumps this
     // same revision — the follow-up pass then finds no held runs and costs
     // one Map scan.)
-    pane.activityRuns.revision;
+    void pane.activityRuns.revision;
     // A turn settling with no drain behind it (tool-only turns) flips the
     // deferred-prune flag with no structural change or scroll write in
     // tow — the flag itself must be a trigger or the prune waits for the
     // next turn's churn.
-    pane.hasDeferredRecentWindowPrune;
+    void pane.hasDeferredRecentWindowPrune;
     quietWork.schedule();
   });
 
   $effect(() => {
-    listRef;
-    scrollEl;
+    void listRef;
+    void scrollEl;
     quietWork.schedule();
   });
 
@@ -1083,36 +1131,11 @@
                      contract shared by every row-aligned surface. -->
                 <div class={ROW_SHELL_CLASSES} style={rowShellStyle}>
                   {#if rows.rowDecorations.responseDividerIndexes.has(index)}
-                    {@const showResponsePill = rows.rowDecorations.responsePillIndexes.has(index)}
-                    {@const responseDuration = rows.responsePillDuration(node)}
-                    <!-- Two visual modes share a fixed wrapper height
-                         (`h-[1.625rem]` = 26px = pill chrome: text-[0.625rem]
-                         × leading-tight ≈ 12px + py-1 8px + 2× 1px border).
-                         Labeled mode renders `line | gap | pill | gap | line`,
-                         unlabeled mode renders one continuous full-width line.
-                         The pill's `leading-tight` keeps its content inside
-                         the fixed wrapper across font-loading variance.
-                         Fixed `h-` (not the codebase's usual `min-h-` slot
-                         convention) is deliberate: both branches MUST be the
-                         exact same height so promoting an intermediate
-                         divider to "final" on turn settle never shifts row
-                         geometry — satisfies the "no late transcript
-                         adornments on completion" rule in
-                         `frontend/AGENTS.md`. Re-derive 1.625rem if the pill
-                         classes above change. -->
-                    <div data-testid="response-divider" data-final-response={showResponsePill ? 'true' : 'false'}>
-                      <div class="my-3 flex h-[1.625rem] items-center gap-3">
-                        <span class="timeline-hairline flex-1" aria-hidden="true"></span>
-                        {#if showResponsePill}
-                          <span
-                            class="rounded-full border border-border bg-surface-1 px-2.5 py-1 text-[0.625rem] uppercase leading-tight tracking-[0.14em] text-text-secondary"
-                          >
-                            {responsePillLabel(node)}{#if responseDuration}{' '}<span class="normal-case tabular-nums tracking-normal">{responseDuration}</span>{/if}
-                          </span>
-                          <span class="timeline-hairline flex-1" aria-hidden="true"></span>
-                        {/if}
-                      </div>
-                    </div>
+                    <ResponseDivider
+                      final={rows.rowDecorations.responsePillIndexes.has(index)}
+                      label={responsePillLabel(node)}
+                      duration={rows.responsePillDuration(node)}
+                    />
                   {/if}
                 <div data-testid="message-timeline-node">
                   <TimelineNodeView
@@ -1123,6 +1146,21 @@
                     codexSubagentReceiverLabels={rows.codexReceiverLabels}
                   />
                 </div>
+                <!-- A promoted row arrives below the run it leaves, inside
+                     this row, until the pane installs it as its own row. -->
+                {#if promotionStages.length > 0 && node.kind === 'activity_run'}
+                  {#each promotionStages as stage (stage.plan.itemId)}
+                    {#if stage.plan.runId === node.runId}
+                      <RowPromotionStage
+                        {pane}
+                        plan={stage.plan}
+                        row={stage.row}
+                        pillLabel={responsePillLabel(stage.plan.node)}
+                        pillDuration={rows.responsePillDuration(stage.plan.node)}
+                      />
+                    {/if}
+                  {/each}
+                {/if}
               </div>
             </div>
             </div>

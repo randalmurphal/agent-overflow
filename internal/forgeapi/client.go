@@ -120,12 +120,9 @@ func (c *Client) JSON(ctx context.Context, r Request, out any) (*Response, error
 // forge (and the isolated boot's fake, which dispatches on it) runs that
 // one. Errors in the envelope are a *GraphQLError, returned with the
 // Response and with any data beside them decoded into out, so the caller
-// decides what partial data it accepts. GitLab hosts serve no GraphQL
-// here.
+// decides what partial data it accepts. Both forges serve it; a GitLab
+// request draws on the same quota pool as its REST calls (pool).
 func (c *Client) GraphQL(ctx context.Context, operation, query string, vars map[string]any, out any) (*Response, error) {
-	if c.forge != ForgeGitHub {
-		return nil, fmt.Errorf("forgeapi: %s serves no GraphQL through this transport", c.forge)
-	}
 	if operation == "" {
 		return nil, errors.New("forgeapi: a GraphQL request names its operation")
 	}
