@@ -18,7 +18,7 @@ const panelSelector = '[role="tabpanel"][id^="settings-panel-"]';
  * dot or underscore is a legitimate wrap point; paths and words longer than
  * the column may break anywhere.
  */
-async function layoutFaults(page: Page, section: string): Promise<LayoutFault[]> {
+export async function layoutFaults(page: Page, section: string): Promise<LayoutFault[]> {
   const found = await page.locator(panelSelector).evaluate((root) => {
     const faults: { kind: LayoutFault['kind']; text: string }[] = [];
     if (root.scrollWidth > root.clientWidth + 1) {
