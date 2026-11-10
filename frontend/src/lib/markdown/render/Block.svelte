@@ -32,6 +32,7 @@
 
 <script lang="ts">
 	import { parseIncompleteMarkdown } from '../parser/incompleteMarkdown';
+	import { codespanClass } from './codespan';
 	import Element from './elements/Element.svelte';
 	import {
 		createIncrementalLexCache,
@@ -143,7 +144,10 @@
 					{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 				</blockquote>
 			{:else if token.type === 'codespan' && !streamdown.snippets.codespan}
-				<code data-streamdown-codespan={id} class={streamdown.theme.codespan.base}>
+				<code
+					data-streamdown-codespan={id}
+					class={codespanClass(streamdown.theme.codespan.base, token.text)}
+				>
 					{token.text}
 				</code>
 			{:else if token.type === 'list' && (

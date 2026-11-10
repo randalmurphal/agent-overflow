@@ -708,6 +708,9 @@ and anti-changes that live only here:
   nothing changes for a block that fits. Fenced code wraps by default; the
   block overlay toggles unwrap per block, recorded by content identity so
   it survives retirement and remounts.
+- Markdown tables take their content width: one that fits does not stretch
+  across the pane. In a cell, inline code of 32 characters or fewer stays on
+  one line and longer code wraps; a table whose short code cannot fit pans.
 - Rejected from the t3-code survey, do not re-propose: hard steer, codex
   shadow homes, workspace file browser, changed-files card, global word
   wrap (per-block opt-in only), top-edge fade, favicon fetching, settled

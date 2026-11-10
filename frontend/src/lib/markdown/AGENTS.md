@@ -74,6 +74,8 @@ backed tokens such as Mermaid, including when highlight caches are warm.
 - `data-streamdown-last-block` publishes the stable prefix's final token type.
 - `sd-trim-first-block`, `sd-trim-last-block`, `sd-first-block`, task-item
   classes, and paragraph-adjacency markers replace broad structural selectors.
+- `sd-codespan-short` marks inline code short enough to stay on one line.
+  Every emitter of an inline `<code>` calls `render/codespan.ts#codespanClass`.
 - `data-footnote-label` publishes labels only. Chat owns the definition registry
   and popup and pays the whole-document definition lex when opening it.
 - Mermaid and math elements publish parser-owned source values. Code source

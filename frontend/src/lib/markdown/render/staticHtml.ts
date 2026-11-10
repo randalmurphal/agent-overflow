@@ -1,6 +1,7 @@
 import type { StreamdownContext } from './context.svelte';
 import type { StreamdownToken } from '../parser/index';
 import type { Tokens } from '../parser/engine';
+import { codespanClass } from './codespan';
 import { classifyLinkHref } from './elements/url';
 import {
 	PREVIEW_ALLOW_CLASS,
@@ -115,7 +116,7 @@ export function renderStaticTokenHtml(
 				case 'codespan':
 					if (streamdown.snippets.codespan) return false;
 					output.push(
-						`<code data-streamdown-codespan="${dataId}"${attribute('class', streamdown.theme.codespan.base)}>` +
+						`<code data-streamdown-codespan="${dataId}"${attribute('class', codespanClass(streamdown.theme.codespan.base, token.text))}>` +
 						escapeHtml(token.text) +
 						'</code>',
 					);
