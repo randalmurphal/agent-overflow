@@ -327,7 +327,7 @@ describe.runIf(gc)('closed pane after the rate-limit popover was re-hovered post
     setProviderAccount('claude', { email: 'ring@example.test', subscriptionType: 'max' }, 'acct-ring');
 
     async function hoverRingOnceAndLeave(root: Element, expectEmail: boolean): Promise<void> {
-      const ring = root.querySelector('[data-testid="composer-rate-limit-5h"] button');
+      const ring = root.querySelector('[data-testid="composer-rate-limit-7d"] button');
       expect(ring, 'probe precondition: rate-limit ring mounted (pane locked + provider)').not.toBeNull();
       ring!.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
       flushSync();

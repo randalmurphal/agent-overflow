@@ -63,6 +63,22 @@
         "cacheWrite": 20
       }
     ],
+    "claude-fable-5-2": [
+      {
+        "input": 8,
+        "output": 40,
+        "cacheRead": 0.2,
+        "cacheWrite": 16
+      }
+    ],
+    "claude-mythos-5-2": [
+      {
+        "input": 8,
+        "output": 40,
+        "cacheRead": 0.2,
+        "cacheWrite": 16
+      }
+    ],
     "claude-opus-5-5": [
       {
         "input": 4,

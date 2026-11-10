@@ -397,6 +397,25 @@ test('the composer\'s densest rung keeps the model and the meters and rolls the 
   await harness.open(page);
   await page.getByTestId('thread-row').filter({ hasText: 'First task' }).click();
   const toolbar = page.getByTestId('composer-toolbar');
+  // A usage meter mounts per duration the account reports; give this one a
+  // 5h and a weekly reading so the row carries all three meters, its widest
+  // form.
+  const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+  for (const [provider, limitId] of [['claude', 'session'], ['codex', 'codex']]) {
+    await harness.rpc('HarnessEmit', 'provider:usage', {
+      action: 'rate_limits',
+      threadId: '',
+      rateLimits: {
+        provider,
+        limits: [
+          { limitId, limitName: '', usedPercent: 20, windowMins: 300, resetsAt },
+          { limitId: provider === 'claude' ? 'weekly_all' : limitId, limitName: '', usedPercent: 30, windowMins: 10080, resetsAt },
+        ],
+        updatedAt: Date.now(),
+      },
+    });
+  }
+  await expect(toolbar.locator('[data-composer-toolbar-meter]')).toHaveCount(3);
   // Tight, not minimal: with three meters beside Send the minimal rung's
   // content runs 9px into the toolbar's end padding at this width, which
   // the ladder reads as overflow (Send must end on its column).
