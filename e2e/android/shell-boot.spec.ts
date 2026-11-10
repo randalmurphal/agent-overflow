@@ -720,6 +720,10 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
       const screenshot = test.info().outputPath('camera-confirmation-failure.png');
       await device.screenshot({ path: screenshot });
       await test.info().attach('camera-confirmation-failure', { path: screenshot, contentType: 'image/png' });
+      // The stock camera can stall in a capture; its own log says where.
+      const cameraLog = test.info().outputPath('camera-confirmation-logcat.txt');
+      fs.writeFileSync(cameraLog, await device.shell(`logcat -d -v time -t 2000 --pid=$(pidof ${camera})`).catch((logError) => `logcat failed: ${logError}`));
+      await test.info().attach('camera-confirmation-logcat', { path: cameraLog, contentType: 'text/plain' });
       throw error;
     }
     const captured = page.getByRole('button', { name: /^Remove JPEG_.*\.jpg$/ });
