@@ -987,6 +987,20 @@ func TestEventBus_EmitWireBytesByteIdentical(t *testing.T) {
 	}
 }
 
+// TestEventBus_AppendEventWireAllocatesOnce pins the cost the envelope
+// encoding runs under the bus mutex: one allocation.
+func TestEventBus_AppendEventWireAllocatesOnce(t *testing.T) {
+	r := newRing("provider:item_event", 10, 0)
+	data := []byte(`{"title":"hello","n":7}`)
+	var wire []byte
+	if allocs := testing.AllocsPerRun(200, func() { wire = r.appendEventWire(18446744073709551615, data) }); allocs != 1 {
+		t.Fatalf("appendEventWire allocated %v times, want 1", allocs)
+	}
+	if want := `{"type":"event","channel":"provider:item_event","seq":18446744073709551615,"data":{"title":"hello","n":7}}`; string(wire) != want {
+		t.Fatalf("wire = %s, want %s", wire, want)
+	}
+}
+
 // TestEventBus_LiveEventDataAliasesWireBytes pins the single-copy
 // contract for live fanout: Data is a subslice of WireBytes (payload
 // bytes inside the envelope), so a queued event retains one payload
