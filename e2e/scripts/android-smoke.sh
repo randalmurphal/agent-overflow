@@ -131,6 +131,8 @@ trap 'on_signal HUP' HUP
 pinned=""
 own_emulator=""
 on_exit() {
+  # A second signal must not cut the cleanup short.
+  trap '' INT TERM HUP
   if [[ -n "$pinned" ]]; then
     "$adb" -s "$pinned" shell locksettings clear --old "$pin" >/dev/null 2>&1 || true
   fi
@@ -328,4 +330,7 @@ fi
 supervise pnpm --dir "$repo/e2e" exec playwright install android
 hold_lock
 supervise "$emulator" prepare
+# The device phase is another process with marks of its own, and exec runs
+# no exit cleanup.
+rm -rf "$started"
 exec env AO_ANDROID_SMOKE_PHASE=device "$repo/bin/ao-netns" "$repo/e2e/scripts/android-smoke.sh" "$@"

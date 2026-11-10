@@ -448,6 +448,8 @@ func TestAndroidEmulatorStartUndoesAnInterruptedLaunch(t *testing.T) {
 		held bool
 		// died kills the held launcher while the signal waits on it.
 		died bool
+		// again sends a second signal while start waits for the mark.
+		again bool
 	}{
 		{name: "before the scope exists"},
 		{name: "after the scope exists", scopeCreated: true},
@@ -455,6 +457,7 @@ func TestAndroidEmulatorStartUndoesAnInterruptedLaunch(t *testing.T) {
 		{name: "right after the launcher is forked", afterFork: true},
 		{name: "before the launcher has marked itself started", held: true},
 		{name: "when the launcher dies before it has marked itself started", held: true, died: true},
+		{name: "when a second signal arrives while it waits for the mark", held: true, again: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newSmokeFixture(t)
@@ -570,6 +573,16 @@ esac
 				if calls := f.calls(t); strings.Contains(calls, "scope stopped") || strings.Contains(calls, "launcher started") {
 					t.Fatalf("start acted on a launcher that had not started:\n%s", calls)
 				}
+				if tc.again {
+					if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
+						t.Fatal(err)
+					}
+					select {
+					case err := <-done:
+						t.Fatalf("a second signal cut the undoing short: %v\n%s\n%s", err, printed(), f.calls(t))
+					case <-time.After(time.Second):
+					}
+				}
 				if err := os.Remove(hold); err != nil {
 					t.Fatal(err)
 				}
@@ -585,10 +598,15 @@ esac
 					t.Fatal(err)
 				}
 			}
+			var waitErr error
 			select {
-			case <-done:
+			case waitErr = <-done:
 			case <-time.After(30 * time.Second):
 				t.Fatalf("start did not finish after SIGTERM:\n%s\n%s", printed(), f.calls(t))
+			}
+			var exitErr *exec.ExitError
+			if !errors.As(waitErr, &exitErr) || exitErr.ExitCode() != 143 {
+				t.Fatalf("want exit 143 after SIGTERM, got %v:\n%s", waitErr, printed())
 			}
 			// Release a launcher that was still waiting; a joined one is gone
 			// and creates nothing.
@@ -1005,5 +1023,144 @@ func TestAndroidSmokeDoesNotWaitOnAJobThatDiedUnmarked(t *testing.T) {
 	}
 	if calls := f.calls(t); !strings.Contains(calls, "emulator stop") {
 		t.Fatalf("the cleanup did not run:\n%s", calls)
+	}
+}
+
+// A second signal that arrives during the exit cleanup does not cut it
+// short: the emulator is stopped, the first signal's status is kept and no
+// mark directory is left.
+func TestAndroidSmokeFinishesItsCleanupWhenSignalledAgain(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the emulator path is Linux-only")
+	}
+	if _, err := exec.LookPath("flock"); err != nil {
+		t.Skip("flock unavailable")
+	}
+	f := newSmokeFixture(t)
+	// The emulator's stop is held until the barrier exists.
+	barrier := filepath.Join(f.dir, "stop-barrier")
+	mockexec.Write(t, filepath.Join(filepath.Dir(f.smoke), "android-emulator.sh"), `#!/usr/bin/env bash
+echo "emulator $1" >>"$AO_TEST_LOG"
+if [[ "$1" == stop ]]; then
+  while [[ ! -e `+shellQuote(barrier)+` ]]; do sleep 0.02; done
+  echo "emulator stopped" >>"$AO_TEST_LOG"
+fi
+`)
+	mockexec.WriteIn(t, filepath.Join(f.dir, "repo", "bin"), "ao-harness-e2e", `#!/usr/bin/env bash
+trap 'exit 143' TERM
+echo "launcher started" >>"$AO_TEST_LOG"
+while :; do sleep 0.05; done
+`)
+	marks := filepath.Join(f.dir, "marks")
+	if err := os.MkdirAll(marks, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := f.command("AO_ANDROID_SMOKE_PHASE=device", "AO_TEST_ADB_DEVICES=emulator-5554\tdevice", "TMPDIR="+marks)
+	output, err := os.Create(filepath.Join(f.dir, "smoke.out"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = output.Close() })
+	printed := func() string {
+		body, _ := os.ReadFile(output.Name())
+		return string(body)
+	}
+	cmd.Stdout, cmd.Stderr = output, output
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	waitFor := func(what string) {
+		t.Helper()
+		deadline := time.Now().Add(30 * time.Second)
+		for !strings.Contains(f.calls(t), what) {
+			if time.Now().After(deadline) {
+				t.Fatalf("never saw %q:\n%s\n%s", what, printed(), f.calls(t))
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	waitFor("launcher started")
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	waitFor("emulator stop")
+	if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("the smoke finished while its emulator was still stopping: %v\n%s\n%s", err, printed(), f.calls(t))
+	case <-time.After(time.Second):
+	}
+	if err := os.WriteFile(barrier, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err = <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the smoke did not finish:\n%s\n%s", printed(), f.calls(t))
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 143 {
+		t.Fatalf("want the first signal's exit 143, got %v:\n%s", err, printed())
+	}
+	if calls := f.calls(t); !strings.Contains(calls, "emulator stopped") {
+		t.Fatalf("the emulator was not stopped:\n%s", calls)
+	}
+	if left, _ := filepath.Glob(filepath.Join(marks, "*")); len(left) > 0 {
+		t.Fatalf("the smoke left its start marks behind: %v", left)
+	}
+}
+
+// The host phase hands over to the device phase with exec, which runs no
+// exit cleanup: its mark directory is gone before that.
+func TestAndroidSmokeHostPhaseLeavesNoMarks(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the emulator path is Linux-only")
+	}
+	if _, err := exec.LookPath("flock"); err != nil {
+		t.Skip("flock unavailable")
+	}
+	if _, err := os.Stat("/dev/kvm"); err != nil {
+		t.Skip("the host phase requires /dev/kvm")
+	}
+	f := newSmokeFixture(t)
+	f.fakeEmulator(t)
+	bin := filepath.Join(f.dir, "bin")
+	for _, tool := range []string{"node", "pnpm"} {
+		mockexec.WriteIn(t, bin, tool, "#!/usr/bin/env bash\necho \""+tool+" $*\" >>\"$AO_TEST_LOG\"\n")
+	}
+	mockexec.WriteIn(t, filepath.Join(f.dir, "emulator"), "emulator", "#!/bin/sh\nexit 0\n")
+	// The device phase is not run: its launcher only records the handover.
+	mockexec.WriteIn(t, filepath.Join(f.dir, "repo", "bin"), "ao-netns", "#!/usr/bin/env bash\necho \"netns $AO_ANDROID_SMOKE_PHASE\" >>\"$AO_TEST_LOG\"\n")
+	apk := filepath.Join(f.dir, "repo", "mobile", "android", "app", "build", "outputs", "apk", "debug", "app-debug.apk")
+	for _, dir := range []string{filepath.Join(f.dir, "avd", "ao.avd"), filepath.Dir(apk)} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(apk, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	marks := filepath.Join(f.dir, "marks")
+	if err := os.MkdirAll(marks, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	out, err := f.command("TMPDIR=" + marks).CombinedOutput()
+	if err != nil {
+		t.Fatalf("the host phase failed: %v\n%s\n%s", err, out, f.calls(t))
+	}
+	calls := f.calls(t)
+	for _, step := range []string{"node ", "pnpm ", "emulator prepare", "netns device"} {
+		if !strings.Contains(calls, step) {
+			t.Fatalf("the host phase did not reach %q:\n%s\n%s", step, calls, out)
+		}
+	}
+	if left, _ := filepath.Glob(filepath.Join(marks, "*")); len(left) > 0 {
+		t.Fatalf("the host phase left its start marks behind: %v", left)
 	}
 }

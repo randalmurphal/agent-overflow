@@ -186,6 +186,8 @@ stop_jobs() {
 booted=""
 started="$(mktemp -d)"
 abandon() {
+  # A second signal must not cut the undoing short.
+  trap '' INT TERM HUP
   if [[ -z "$booted" ]]; then
     stop_jobs
     systemctl --user stop "$unit" >/dev/null 2>&1 || true
