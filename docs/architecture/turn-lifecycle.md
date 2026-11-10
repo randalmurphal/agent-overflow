@@ -1035,10 +1035,13 @@ message in the preview until it loads that far. A thread with no mounted
 pane has no timeline for the row to be in; its item-stream handler confirms
 on arrival, which is also what lets the sidebar's working indicator settle.
 A thread this client does not watch is sent no rows, so its entries are
-released when the backend reports that none of the thread's sends waits on
-an echo: a `provider:sends_pending` frame, a queue RPC's answer or a
-live-activity snapshot row (`onSendsSettled`). A mounted pane's entries are
-never released that way.
+released when the backend states that none of the thread's sends waits on
+an echo (`onSendsSettled`). A `provider:sends_pending` frame states it for
+every entry the client holds: the backend reads and emits the answer under
+the lock it emits `provider:queue_flushed` under. A live-activity snapshot
+row states it unless a flush for the thread arrived during the read. A
+queue RPC's answer and a backend without `sends-pending.v1` never do. A
+mounted pane's entries are never released that way.
 
 **The preview is bounded.** `SendQueuePreview` renders the newest four
 pending messages and a count of the earlier ones. Its height is part of the

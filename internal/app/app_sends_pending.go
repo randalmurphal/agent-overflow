@@ -103,14 +103,12 @@ func (a *App) runSendsPendingWorker() {
 	}
 }
 
-// readSendsPending answers for threadID across the whole handoff chain:
+// readSendsPendingLocked answers for threadID across the whole handoff chain:
 // triage's queue and claim, the dispatcher's batches, and the pending sends
 // awaiting their echo. Dispatch bookkeeping is held across the triage read,
 // as in queueSnapshotForThread, so a message moving between the two is
-// seen on one side.
-func (a *App) readSendsPending(threadID string) bool {
-	a.flushDispatch.mu.Lock()
-	defer a.flushDispatch.mu.Unlock()
+// seen on one side. The caller holds flushDispatch.mu.
+func (a *App) readSendsPendingLocked(threadID string) bool {
 	if len(a.pendingFlushDispatchItemsLocked(threadID)) > 0 {
 		return true
 	}
@@ -122,12 +120,18 @@ func (a *App) readSendsPending(threadID string) bool {
 // channel. The read happens under publishMu so two publishers cannot emit
 // their answers in the opposite order to the one they read them in, and
 // the sequence is read there too, after the emit, so it names this answer.
+// Dispatch bookkeeping stays held from the read through the emit:
+// queue_flushed is emitted under it, so a frame saying nothing is pending
+// never follows the queue_flushed of a message its read did not see, and a
+// client can drop its flushed entries for the thread on that frame.
 // Lock order: publishMu -> flushDispatch.mu -> triage.
 func (a *App) publishSendsPending(threadID string) SendsPendingAnswer {
 	s := &a.sendsPending
 	s.publishMu.Lock()
 	defer s.publishMu.Unlock()
-	pending := a.readSendsPending(threadID)
+	a.flushDispatch.mu.Lock()
+	defer a.flushDispatch.mu.Unlock()
+	pending := a.readSendsPendingLocked(threadID)
 	if _, was := s.pending[threadID]; was != pending {
 		if pending {
 			if s.pending == nil {

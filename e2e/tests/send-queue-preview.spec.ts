@@ -11,6 +11,7 @@
 // viewport, the restyle scope is the computed value of an inherited custom
 // property, and the stale rows live for the frames between a pane's mount
 // and its live-state read.
+import type { HarnessApp } from '../src/harness.js';
 import { expect, test } from './fixtures.js';
 import {
   RESULT_LINE,
@@ -40,6 +41,28 @@ function heldTurnScenario(name: string): unknown {
     ]) as object),
     claude: { holdQueuedInput: true },
   };
+}
+
+// The mock holds every message the backend has sent the thread: each
+// flushed row has the provider's `queued` ack. Released earlier, the gate's
+// drain would miss a message still on its way to the provider.
+async function mockHoldsEveryFlushedMessage(harness: HarnessApp, threadId: string, count: number): Promise<void> {
+  await expect
+    .poll(async () => {
+      const live = await harness.rpc<{ queueItems: unknown[]; flushedItems: Array<{ userItemId: string }> }>(
+        'GetThreadLiveState',
+        threadId,
+      );
+      if (live.queueItems.length > 0 || live.flushedItems.length !== count) return false;
+      return live.flushedItems.every(
+        (item) =>
+          harness.countEvents(
+            'provider:command_lifecycle',
+            (ev: any) => ev.threadId === threadId && ev.state === 'queued' && ev.userItemId === item.userItemId,
+          ) > 0,
+      );
+    })
+    .toBe(true);
 }
 
 const message = (n: number) =>
@@ -105,6 +128,7 @@ test('a pile of pending messages shows the newest four and leaves the timeline i
   ).toBe('0px');
 
   // The turn consumes all twelve.
+  await mockHoldsEveryFlushedMessage(harness, threadId, 12);
   await advance(harness, mockId, 'hold');
   await harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === threadId);
   await expect(rows).toHaveCount(0);
@@ -132,17 +156,18 @@ test('a thread whose queued messages were delivered while it had no pane shows n
   await waitForGate(harness, 'hold');
   await harness.rpc('RegisterQueueItem', workerId, 'Queued for the worker 1', {});
   await harness.rpc('RegisterQueueItem', workerId, 'Queued for the worker 2', {});
-  await harness.waitForEvent(
-    'provider:queue_flushed',
-    (ev: any) => ev.threadId === workerId && ev.items?.some((item: any) => item.message === 'Queued for the worker 2'),
-  );
+  await mockHoldsEveryFlushedMessage(harness, workerId, 2);
+  // The page shows the worker running off its pending sends and its turn.
+  const workerRow = page.getByTestId('thread-row').filter({ hasText: 'Queue worker' }).first();
+  const running = workerRow.locator('[data-testid="thread-row-status-dot"][data-status="running"]');
+  await expect(running).toHaveCount(1);
   await advance(harness, mockId, 'hold');
   await harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === workerId);
   await expect
     .poll(async () => (await harness.rpc<{ flushedItems: unknown[] }>('GetThreadLiveState', workerId)).flushedItems.length)
     .toBe(0);
-  // The page has applied the worker's settled status.
-  await expect(page.getByTestId('thread-row-title').getByText('Queue worker', { exact: true })).toBeVisible();
+  // The page has applied the settled answer: the row no longer reads running.
+  await expect(running).toHaveCount(0);
 
   // Count preview rows on every frame across the open.
   await page.evaluate(() => {
@@ -159,14 +184,19 @@ test('a thread whose queued messages were delivered while it had no pane shows n
     };
     requestAnimationFrame(tick);
   });
-  await page.getByText('Queue worker', { exact: true }).click();
+  const sampledFrames = () =>
+    page.evaluate(() => (window as unknown as { __aoPreviewRows: number[] }).__aoPreviewRows.length);
+  await expect.poll(sampledFrames).toBeGreaterThan(0);
+  await workerRow.click();
   await expect(page.getByTestId('user-message-bubble').filter({ hasText: 'Queued for the worker 2' })).toBeVisible();
   await expect(page.getByText('Done.', { exact: true })).toBeVisible();
+  // Keep sampling past the pane's live-state read.
+  const framesAtOpen = await sampledFrames();
+  await expect.poll(sampledFrames).toBeGreaterThan(framesAtOpen + 30);
   const samples = await page.evaluate(() => {
     const w = window as unknown as { __aoPreviewRows: number[]; __aoPreviewStop: () => void };
     w.__aoPreviewStop();
     return w.__aoPreviewRows;
   });
-  expect(samples.length).toBeGreaterThan(5);
   expect(Math.max(...samples), 'delivered messages showed in the preview on open').toBe(0);
 });

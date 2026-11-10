@@ -423,13 +423,22 @@ export function isThreadWorking(threadId: string | null | undefined): boolean {
 function showsThreadRunning(threadId: string): boolean {
   if (isThreadInterruptRestored(threadId)) return false;
   if (activeTurns.get(threadId) !== null || pendingSendThreads.get(threadId)) return true;
-  const hello = getTransportHelloFor(threadBackend(threadId) ?? HOME_BACKEND);
-  if (!hello?.capabilities.includes('sends-pending.v1')) return hasQueueItems(threadId);
+  if (!backendPublishesSendsPending(threadId)) return hasQueueItems(threadId);
   return sendsPendingThreads.get(threadId) || isRegisteringQueueItem(threadId);
 }
 
-// Told each time a thread's answer is "nothing pending": a frame, a queue
-// RPC's answer or a snapshot row. The send-queue mirror listens.
+function backendPublishesSendsPending(threadId: string): boolean {
+  const hello = getTransportHelloFor(threadBackend(threadId) ?? HOME_BACKEND);
+  return hello?.capabilities?.includes('sends-pending.v1') === true;
+}
+
+// Told when the backend states that none of a thread's sends waits on an
+// echo, in an answer that every `provider:queue_flushed` frame this client
+// holds for the thread precedes. The backend emits both under one lock, so
+// a frame qualifies. A snapshot row qualifies unless a flush arrived during
+// its read. A queue RPC's answer does not: its reply is ordered against
+// this channel's frames only. A backend that does not publish the answer
+// never states it. The send-queue mirror listens.
 type SendsSettledListener = (threadId: string) => void;
 const sendsSettledListeners = new Set<SendsSettledListener>();
 export function onSendsSettled(listener: SendsSettledListener): () => void {
@@ -437,17 +446,18 @@ export function onSendsSettled(listener: SendsSettledListener): () => void {
   return () => sendsSettledListeners.delete(listener);
 }
 
-function setSendsPending(threadId: string, pending: boolean): void {
+function setSendsPending(threadId: string, pending: boolean, confirmsFlushed: boolean): void {
   if (pending) sendsPendingThreads.set(threadId, true);
   else sendsPendingThreads.drop(threadId);
   recalculateThreadStatus(threadId);
-  if (!pending) for (const listener of sendsSettledListeners) listener(threadId);
+  if (pending || !confirmsFlushed || !backendPublishesSendsPending(threadId)) return;
+  for (const listener of sendsSettledListeners) listener(threadId);
 }
 
 /** Record a change of answer that outranks every snapshot read in flight. */
-function settleSendsPending(threadId: string, pending: boolean): void {
+function settleSendsPending(threadId: string, pending: boolean, confirmsFlushed: boolean): void {
   for (const changed of sendsPendingReads) changed.add(threadId);
-  setSendsPending(threadId, pending);
+  setSendsPending(threadId, pending, confirmsFlushed);
 }
 
 // The stream of `backend`'s current launch. A new launch numbers its frames
@@ -493,7 +503,7 @@ export function applySendsPendingFrame(
     if (ahead?.backend === backend && sequence <= ahead.sequence) return;
   }
   if (!frame?.threadId || !currentThreadEvent(frame.threadId, backend)) return;
-  settleSendsPending(frame.threadId, frame.pending);
+  settleSendsPending(frame.threadId, frame.pending, true);
 }
 
 // RegisterQueueItem's answer, as of its sequence on `backend`'s stream. A
@@ -507,7 +517,7 @@ onRegistrationSendsPending((threadId, answer: SendsPendingAnswer, backend) => {
   const ahead = sendsPendingAhead.get(threadId);
   if (ahead?.backend === backend && answer.sequence <= ahead.sequence) return;
   sendsPendingAhead.set(threadId, { backend, sequence: answer.sequence });
-  settleSendsPending(threadId, answer.pending);
+  settleSendsPending(threadId, answer.pending, false);
 });
 
 onBackendDetached(({ backendId }) => {
@@ -528,7 +538,17 @@ export function __sendsPendingOrderForTest(): { streams: number; ahead: number }
 export function beginSendsPendingRead(): ReadonlySet<string> {
   const changed = new Set<string>();
   sendsPendingReads.add(changed);
+  flushedDuringRead.set(changed, new Set());
   return changed;
+}
+
+// Threads a `provider:queue_flushed` frame named while a snapshot read was
+// out. The read may have sampled the thread before that flush.
+const flushedDuringRead = new WeakMap<ReadonlySet<string>, Set<string>>();
+
+/** A `provider:queue_flushed` frame for the thread arrived. */
+export function noteQueueFlushedFrame(threadId: string): void {
+  for (const read of sendsPendingReads) flushedDuringRead.get(read)?.add(threadId);
 }
 
 export function endSendsPendingRead(read: ReadonlySet<string>): void {
@@ -538,7 +558,7 @@ export function endSendsPendingRead(read: ReadonlySet<string>): void {
 /** Apply a snapshot's answer unless the thread's answer changed during the read. */
 export function hydrateSendsPending(threadId: string, pending: boolean, read: ReadonlySet<string>): void {
   if (!threadId || read.has(threadId)) return;
-  setSendsPending(threadId, pending);
+  setSendsPending(threadId, pending, !flushedDuringRead.get(read)?.has(threadId));
 }
 
 // A moved thread's answer belongs to its former computer. Moves happen when
@@ -547,7 +567,7 @@ export function hydrateSendsPending(threadId: string, pending: boolean, read: Re
 onThreadOwnershipChanged((threadId, previousBackend) => {
   if (threadBackend(threadId) === previousBackend) return;
   sendsPendingAhead.delete(threadId);
-  settleSendsPending(threadId, false);
+  settleSendsPending(threadId, false, true);
 });
 
 export function isSendInFlight(threadId: string | null | undefined, paneSendInFlight: boolean): boolean {

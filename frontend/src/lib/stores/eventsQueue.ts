@@ -15,7 +15,7 @@ import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overf
 import { iterPanes } from './panes.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import type { ThreadPaneIngest } from './threadPaneRoles';
-import { applySendsPendingFrame, onSendsSettled } from './threadStatuses.svelte';
+import { applySendsPendingFrame, noteQueueFlushedFrame, onSendsSettled } from './threadStatuses.svelte';
 import type { BackendKey } from '../transport/backendKey';
 
 // The registry hands out whole ThreadPanes; this module narrows them to
@@ -29,8 +29,9 @@ function ingestPanes(): Iterable<ThreadPaneIngest> {
 // it, or by the row's arrival for a watched thread with no pane. A thread
 // this client does not watch is sent no rows, so nothing would ever confirm
 // its entries. The backend's own answer that none of the thread's sends
-// still waits on an echo confirms them all. A mounted pane keeps its
-// entries: the preview holds each until the timeline row renders.
+// still waits on an echo confirms every entry this client holds for it
+// (`onSendsSettled` states when). A mounted pane keeps its entries: the
+// preview holds each until the timeline row renders.
 onSendsSettled((threadId) => {
   for (const pane of ingestPanes()) {
     if (pane.threadId === threadId) return;
@@ -99,6 +100,7 @@ export function applyQueueStateChanged(evt: QueueStateChangedPayload | undefined
 
 export function applyQueueFlushed(evt: QueueFlushedPayload | undefined): void {
   if (!evt || !evt.threadId || !evt.items || evt.items.length === 0) return;
+  noteQueueFlushedFrame(evt.threadId);
   markItemsFlushed(evt.threadId, evt.items);
   for (const pane of ingestPanes()) {
     if (pane.threadId !== evt.threadId) continue;
