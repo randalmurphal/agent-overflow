@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/store"
 )
 
 // LiveStateSnapshot is triage's in-memory live projection for one thread.
@@ -16,23 +15,9 @@ import (
 // does NOT live here: it is durable thread state (threads.live_todo,
 // migration v65) that GetThreadLiveState reads straight from the store.
 type LiveStateSnapshot struct {
-	ActiveTurn   *ActiveTurnSnapshot
-	QueueItems   []QueuedFlushItem
-	FlushedItems []PendingFlushItemSnapshot
-	// DeferredItems are the timeline rows of NON-FLUSH pending sends whose
-	// row is NOT in SQLite yet (a pending send persists on its wire
-	// echo — see AGENTS.md § Pending sends). A frontend reconciling
-	// against a SQLite slice merges these in, because the slice is
-	// structurally blind to them: without this, a transport-gap refresh
-	// mid-send drops the user's own message from the timeline until the
-	// echo lands (incident 2026-08-29). FIFO order.
-	//
-	// A flush-shaped send is never here: it is published in FlushedItems
-	// and drawn above the composer instead, and one pending send appears
-	// in exactly one of the two lists. Merging it into the timeline as
-	// well put the same message on screen twice for every refresh taken
-	// while a queued send awaited its echo.
-	DeferredItems          []store.Item
+	ActiveTurn             *ActiveTurnSnapshot
+	QueueItems             []QueuedFlushItem
+	FlushedItems           []PendingFlushItemSnapshot
 	Interactive            provider.PendingInteractiveRequests
 	EffectiveModel         string
 	EffectiveModelRevision uint64
@@ -93,8 +78,11 @@ func (r *Router) LiveStateSnapshotForThread(threadID string) LiveStateSnapshot {
 		copy(snapshot.QueueItems, queue)
 	}
 
-	// One pending send, one list. The split is the row's user-visible
-	// home, not its storage:
+	// FlushedItems are the pending sends drawn above the composer. Only a
+	// flush-shaped send can be one: a direct or steer send's row is
+	// persisted and emitted before it is registered, so the timeline
+	// already holds it. Among flush shapes the row's user-visible home
+	// decides, not its storage:
 	//
 	//   - Deferred (DeferredItem): no SQLite row until the echo, so the
 	//     message exists only as the composer's pending marker.
@@ -103,9 +91,9 @@ func (r *Router) LiveStateSnapshotForThread(threadID string) LiveStateSnapshot {
 	//     is revealed on consumption — so it is still the composer's
 	//     marker, not a timeline row, until the echo lands.
 	//   - Anchored at an interrupt: the row is persisted AND emitted, so
-	//     the user is already reading it in the timeline. No marker, and
-	//     no deferred merge either. The claim is only ever set after the
-	//     store write succeeds — EagerPersistDeferredFlushSends persists
+	//     the user is already reading it in the timeline. No marker. The
+	//     claim is only ever set after the store write succeeds:
+	//     EagerPersistDeferredFlushSends persists
 	//     with an emit and drops DeferredItem in the same locked step,
 	//     PromoteQuietFlushSends bumps an already-persisted quiet row and
 	//     emits it, and both restore paths clear the claim when their
@@ -115,33 +103,26 @@ func (r *Router) LiveStateSnapshotForThread(threadID string) LiveStateSnapshot {
 	//   - A flush resend carries neither copy: its row was persisted and
 	//     emitted by the interrupt that produced it. No marker.
 	for _, pending := range st.pendingSends {
-		if pending.Shape == sendShapeFlush {
-			if pending.AnchoredAtInterrupt {
-				continue
-			}
-			row := pending.DeferredItem
-			if row == nil {
-				row = pending.QuietItem
-			}
-			if row == nil {
-				continue
-			}
-			queueItemID := pending.QueueItemID
-			if queueItemID == "" {
-				queueItemID = pending.AOItemID
-			}
-			snapshot.FlushedItems = append(snapshot.FlushedItems, PendingFlushItemSnapshot{
-				QueueItemID: queueItemID,
-				UserItemID:  pending.AOItemID,
-				Message:     row.Summary,
-				UserMeta:    row.Meta,
-			})
+		if pending.Shape != sendShapeFlush || pending.AnchoredAtInterrupt {
 			continue
 		}
-		if pending.DeferredItem == nil {
+		row := pending.DeferredItem
+		if row == nil {
+			row = pending.QuietItem
+		}
+		if row == nil {
 			continue
 		}
-		snapshot.DeferredItems = append(snapshot.DeferredItems, *pending.DeferredItem)
+		queueItemID := pending.QueueItemID
+		if queueItemID == "" {
+			queueItemID = pending.AOItemID
+		}
+		snapshot.FlushedItems = append(snapshot.FlushedItems, PendingFlushItemSnapshot{
+			QueueItemID: queueItemID,
+			UserItemID:  pending.AOItemID,
+			Message:     row.Summary,
+			UserMeta:    row.Meta,
+		})
 	}
 
 	for _, requestID := range st.pendingApprovalOrder {

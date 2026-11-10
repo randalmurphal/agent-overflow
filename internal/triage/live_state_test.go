@@ -11,22 +11,20 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// TestLiveStateSnapshot_PendingSendAppearsInExactlyOneList: a pending send
-// is either a timeline row the SQLite slice is blind to (DeferredItems) or
-// a composer marker (FlushedItems), never both. A refresh taken mid-send
-// merges the first into the window and draws the second above the composer,
-// so an entry in both lists put the same message on screen twice.
+// TestLiveStateSnapshot_FlushedItemsAreComposerMarkersOnly: FlushedItems
+// names the pending sends drawn above the composer and no send whose row
+// the timeline already shows.
 //
-// Flush shapes route by where their row already is: deferred (no row yet)
-// and quiet (row persisted without an item event, revealed on consumption)
-// are markers; a row anchored at an interrupt was emitted at its final
-// position, so it is only a timeline row — the claim outranks any copy
-// still retained on the entry.
-func TestLiveStateSnapshot_PendingSendAppearsInExactlyOneList(t *testing.T) {
+// A direct send's row is persisted and emitted before it is registered, so
+// it is never a marker. Flush shapes route by where their row already is:
+// deferred (no row yet) and quiet (row persisted without an item event,
+// revealed on consumption) are markers; a row anchored at an interrupt was
+// emitted at its final position, so it is only a timeline row, and the
+// claim outranks any copy still retained on the entry.
+func TestLiveStateSnapshot_FlushedItemsAreComposerMarkersOnly(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	direct := store.Item{ID: "user:1", ThreadID: "t1", Kind: "user_text", Summary: "direct send"}
 	deferred := store.Item{ID: "user:2:flush:1", ThreadID: "t1", Kind: "user_text", Summary: "queued send"}
 	quiet := store.Item{ID: "user:2:flush:2", ThreadID: "t1", Kind: "user_text", Summary: "quiet send"}
 	anchored := store.Item{ID: "user:2:flush:3", ThreadID: "t1", Kind: "user_text", Summary: "anchored send"}
@@ -42,7 +40,7 @@ func TestLiveStateSnapshot_PendingSendAppearsInExactlyOneList(t *testing.T) {
 	router.mu.Lock()
 	state := router.state("t1")
 	state.pendingSends = append(state.pendingSends,
-		pendingSend{AOItemID: direct.ID, Shape: sendShapeDirect, DeferredItem: &direct},
+		pendingSend{AOItemID: "user:1", Shape: sendShapeDirect},
 		pendingSend{AOItemID: deferred.ID, QueueItemID: "queue:1", Shape: sendShapeFlush, DeferredItem: &deferred},
 		pendingSend{AOItemID: quiet.ID, QueueItemID: "queue:2", Shape: sendShapeFlush, QuietItem: &quiet},
 		pendingSend{AOItemID: anchored.ID, QueueItemID: "queue:3", Shape: sendShapeFlush, QuietItem: &anchored, AnchoredAtInterrupt: true},
@@ -59,30 +57,15 @@ func TestLiveStateSnapshot_PendingSendAppearsInExactlyOneList(t *testing.T) {
 
 	snap := router.LiveStateSnapshotForThread("t1")
 
-	gotDeferred := make([]string, 0, len(snap.DeferredItems))
-	for _, item := range snap.DeferredItems {
-		gotDeferred = append(gotDeferred, item.ID)
-	}
-	if len(gotDeferred) != 1 || gotDeferred[0] != direct.ID {
-		t.Fatalf("DeferredItems ids = %v, want [%s] — an anchored entry's row is already in SQLite", gotDeferred, direct.ID)
-	}
-
 	gotFlushed := make([]string, 0, len(snap.FlushedItems))
 	for _, item := range snap.FlushedItems {
 		gotFlushed = append(gotFlushed, item.UserItemID)
 	}
 	if len(gotFlushed) != 2 || gotFlushed[0] != deferred.ID || gotFlushed[1] != quiet.ID {
-		t.Fatalf("FlushedItems ids = %v, want [%s %s]", gotFlushed, deferred.ID, quiet.ID)
+		t.Fatalf("FlushedItems ids = %v, want [%s %s]: a direct or anchored send's row is already in the timeline", gotFlushed, deferred.ID, quiet.ID)
 	}
 	if snap.FlushedItems[1].QueueItemID != "queue:2" || snap.FlushedItems[1].Message != quiet.Summary {
 		t.Fatalf("quiet FlushedItem = %+v, want queue:2 carrying the persisted row's text", snap.FlushedItems[1])
-	}
-	for _, item := range snap.DeferredItems {
-		for _, flushed := range snap.FlushedItems {
-			if item.ID == flushed.UserItemID {
-				t.Fatalf("%s is in both DeferredItems and FlushedItems", item.ID)
-			}
-		}
 	}
 }
 

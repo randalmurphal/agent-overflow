@@ -832,7 +832,7 @@ type SendMessageOptions struct {
 	// app-internal injector leaves it unset, as does any client bundle
 	// older than the field.
 	SendID string `json:"sendId,omitempty"`
-	// ReconcileBySendID declares that the caller retires provisional rows by
+	// ReconcileBySendID declares that the caller finds its message's row by
 	// SendID, rather than predicting user:<turn>. Older callers still send
 	// SendID for idempotency, so its presence alone cannot negotiate this.
 	ReconcileBySendID bool `json:"reconcileBySendId,omitempty"`
