@@ -13,6 +13,9 @@ import {
 
 const WEBM: RecordingFormat = { container: 'audio/webm', recorderType: 'audio/webm;codecs=opus', timeslice: 1000 };
 
+/** How long a stretch the fake level meter says one read measures. */
+export const METER_STRETCH_SECONDS = 0.0125;
+
 /** The fake computer's refusal of a recording that switching live off
  * ended; endedBySwitch recognizes it. */
 export const SWITCHED_OFF = 'Live dictation was switched off, so this recording ended.';
@@ -82,8 +85,9 @@ export interface DictationFixture {
   level: { value: number; closed: boolean };
   /** The recording itself, as the environment measures it: its loudness,
    * the error measuring fails with when set, a promise measuring waits on
-   * first, and each recording measured. */
-  recorded: { loudness: number; fails: unknown; hold: Promise<void> | null; measured: Blob[]; unjudged: unknown[] };
+   * first, and each recording measured with the stretch it was measured
+   * over. */
+  recorded: { loudness: number; fails: unknown; hold: Promise<void> | null; measured: Blob[]; stretches: number[]; unjudged: unknown[] };
   /** The environment's clock, in milliseconds. */
   clock: { now: number };
   /** How many times the session quieted this device's speech. */
@@ -109,7 +113,7 @@ export function dictationFixture(options: {
   let current: FakeRecorder | null = null;
   let currentPcm: FakePcm | null = null;
   const level = { value: 0.5, closed: false };
-  const recorded: DictationFixture['recorded'] = { loudness: 0, fails: null, hold: null, measured: [], unjudged: [] };
+  const recorded: DictationFixture['recorded'] = { loudness: 0, fails: null, hold: null, measured: [], stretches: [], unjudged: [] };
   // Not zero: a recording's length is counted from when it started.
   const clock = { now: 7_200_000 };
   const quieted = { count: 0 };
@@ -128,8 +132,9 @@ export function dictationFixture(options: {
     createRecorder: () => (current = options.createRecorder?.() ?? new FakeRecorder()),
     streamsPcm: () => options.streamsPcm ?? true,
     openPcm: async () => (currentPcm = options.openPcm ? await options.openPcm() : new FakePcm()),
-    recordingLoudness: async (recording) => {
+    recordingLoudness: async (recording, stretchSeconds) => {
       recorded.measured.push(recording);
+      recorded.stretches.push(stretchSeconds);
       await recorded.hold;
       if (recorded.fails !== null) throw recorded.fails;
       return recorded.loudness;
@@ -137,6 +142,7 @@ export function dictationFixture(options: {
     silenceUnjudged: (err) => { recorded.unjudged.push(err); },
     createLevelMeter: () => options.meter === false ? null : {
       read: () => level.value,
+      stretchSeconds: METER_STRETCH_SECONDS,
       close: () => { level.closed = true; },
     },
     now: () => clock.now,

@@ -44,6 +44,8 @@ export interface PcmStream {
 export interface LevelMeter {
   /** Current loudness, 0 to 1. */
   read(): number;
+  /** How long a stretch of sound one read measures, in seconds. */
+  readonly stretchSeconds: number;
   close(): void;
 }
 
@@ -59,10 +61,10 @@ export interface DictationEnvironment {
   /** Whether this engine can stream PCM for live dictation. */
   streamsPcm(): boolean;
   openPcm(stream: MediaStream): Promise<PcmStream>;
-  /** The loudest moment of a finished recording, 0 to 1, measured as the
-   * level meter measures loudness. Rejects when the engine cannot decode
-   * the recording in time. */
-  recordingLoudness(recording: Blob): Promise<number>;
+  /** The loudest stretch of a finished recording, 0 to 1, each
+   * `stretchSeconds` long as a level meter's read is. Rejects when the
+   * engine cannot decode the recording in time. */
+  recordingLoudness(recording: Blob, stretchSeconds: number): Promise<number>;
   /** A recording the meter heard nothing in could not be checked; it is
    * sent and the computer decides what it holds. */
   silenceUnjudged(err: unknown): void;
@@ -388,7 +390,9 @@ class Attempt implements Recording {
    * the recording is too long to measure. */
   private unheard: Blob[] | null = null;
   private container = '';
+  private stretchSeconds = 0;
   private startedAt = 0;
+  private stoppedAt: number | null = null;
   /** The check of the meter's silence failed, so there is no verdict. */
   private unjudged = false;
   private uploadError: unknown = null;
@@ -408,7 +412,7 @@ class Attempt implements Recording {
     this.recorder = recorder;
     recorder.ondataavailable = ({ data }) => {
       if (this.abandoned || data.size === 0) return;
-      if (this.env.now() - this.startedAt > MAX_MEASURED_MS) this.unheard = null;
+      if (this.tooLongToMeasure()) this.unheard = null;
       this.unheard?.push(data);
       const seq = this.pieces++;
       // One at a time and in order: the computer refuses a piece out of
@@ -430,6 +434,7 @@ class Attempt implements Recording {
     };
     this.meter = this.env.createLevelMeter(stream);
     this.metered = this.meter !== null;
+    this.stretchSeconds = this.meter?.stretchSeconds ?? 0;
     this.container = format.container;
     this.unheard = this.metered ? [] : null;
     this.startedAt = this.env.now();
@@ -443,6 +448,12 @@ class Attempt implements Recording {
     if (value > this.peak) this.peak = value;
     if (this.peak >= SILENCE_PEAK) this.unheard = null;
     return value;
+  }
+
+  /** The recording's length is from its start to its stop: a last piece
+   * the recorder hands over late does not lengthen it. */
+  private tooLongToMeasure(): boolean {
+    return (this.stoppedAt ?? this.env.now()) - this.startedAt > MAX_MEASURED_MS;
   }
 
   delivered(): Promise<void> {
@@ -459,6 +470,7 @@ class Attempt implements Recording {
    * holds no sound. */
   async stopRecording(): Promise<void> {
     this.stopTimers();
+    this.stoppedAt ??= this.env.now();
     const recorder = this.recorder;
     if (recorder && recorder.state !== 'inactive') recorder.stop();
     await this.stopped;
@@ -468,7 +480,7 @@ class Attempt implements Recording {
     // Abandoning the attempt empties what was kept.
     if (unheard === null || unheard.length === 0) return;
     try {
-      const loudness = await this.env.recordingLoudness(new Blob(unheard, { type: this.container }));
+      const loudness = await this.env.recordingLoudness(new Blob(unheard, { type: this.container }), this.stretchSeconds);
       if (loudness > this.peak) this.peak = loudness;
     } catch (err) {
       if (this.abandoned) return;

@@ -7,6 +7,9 @@ import { userEvent } from 'vitest/browser';
 import { recordingFormat, recordingMeasurer } from './browserDictation';
 import { SILENCE_PEAK } from './dictationSession.svelte';
 
+/** The stretch a level meter measures at 48 kHz. */
+const STRETCH = 1024 / 48_000;
+
 /** Records `stream` in 100 ms pieces until `context`'s clock passes
  * `until` seconds, and answers the pieces joined. */
 async function record(context: AudioContext, stream: MediaStream, until: number): Promise<Blob> {
@@ -40,7 +43,7 @@ async function measured(bursts: Array<{ at: number; seconds: number }>, length: 
       gate.gain.setValueAtTime(0.5, start + at);
       gate.gain.setValueAtTime(0, start + at + seconds);
     }
-    return await recordingMeasurer()(await record(context, output.stream, start + length));
+    return await recordingMeasurer()(await record(context, output.stream, start + length), STRETCH);
   } finally {
     await context.close();
   }
@@ -59,5 +62,5 @@ it('hears a short sound pitched above what a narrow decode keeps', async () => {
 });
 
 it('rejects what is not a recording', async () => {
-  await expect(recordingMeasurer()(new Blob(['not audio'], { type: 'audio/webm' }))).rejects.toThrow();
+  await expect(recordingMeasurer()(new Blob(['not audio'], { type: 'audio/webm' }), STRETCH)).rejects.toThrow();
 });

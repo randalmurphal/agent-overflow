@@ -39,8 +39,9 @@ sent to the live endpoint.
 
 The level meter reads about 21 ms of the microphone every 100 ms, so a
 short sound can fall between its reads. When the meter heard nothing, the
-recording itself is decoded at 48 kHz and measured at every sample
-offset (`recordingMeasurer` in `browserDictation.ts`), and only one that
+recording itself is decoded at 48 kHz and measured over stretches as
+long as the meter's, starting at every sample (`recordingMeasurer` in
+`browserDictation.ts`), and only one that
 holds no sound is dropped as "No speech heard." A recording the engine
 cannot decode within five seconds is sent, and the computer decides. One
 recording is decoded at a time. A recording over a minute is not decoded,

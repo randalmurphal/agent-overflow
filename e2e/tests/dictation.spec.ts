@@ -9,7 +9,8 @@
 // switch and whether Codex is signed in with ChatGPT, the chord starts it
 // and Escape abandons it, a recording left running when the pane switches
 // threads is dropped rather than landing in the next thread, a recording
-// with no sound in it is not transcribed, and the mic sits in Send's grid.
+// with no sound in it is not transcribed while one whose sound the level
+// meter missed is, and the mic sits in Send's grid.
 
 import { rm } from 'node:fs/promises';
 
@@ -118,6 +119,27 @@ test('a recording with no sound in it is not transcribed', async ({ harness, pag
   await expect(mic(page)).toHaveAttribute('title', 'No speech heard.');
   await expect(mic(page)).toHaveAttribute('data-phase', 'idle');
   await expect(input(page)).toHaveValue('Please');
+});
+
+// The meter reads the microphone a moment at a time and can miss a sound
+// on every read. Here it misses all of them; the recording still holds the
+// fake device's beeps and is transcribed.
+test('a sound the level meter missed is still transcribed', async ({ harness, page }) => {
+  await page.addInitScript(() => {
+    AnalyserNode.prototype.getFloatTimeDomainData = function (samples: Float32Array) {
+      samples.fill(0);
+    };
+  });
+  await seedThreads(harness, ['Dictate here']);
+  await setUpDictation(harness);
+  await openThread(harness, page, 'Dictate here');
+
+  const uploaded = countPieces(page);
+  await input(page).fill('Please');
+  await dictate(page, uploaded);
+
+  await expect(input(page)).toHaveValue(TRANSCRIPT);
+  await expect(mic(page)).not.toHaveAttribute('data-error', 'true');
 });
 
 test('the chord starts dictation and Escape abandons it', async ({ harness, page }) => {
