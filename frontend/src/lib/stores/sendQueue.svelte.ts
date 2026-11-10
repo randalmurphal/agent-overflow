@@ -500,15 +500,6 @@ export function removeRestoredQueueItems(
   }
 }
 
-/** Drop a thread's Zone 2 entries: the backend reports that none of its
- * sends still waits on an echo, and no pane holds the thread to confirm
- * them row by row. */
-export function clearFlushedForThread(threadId: string): void {
-  if (!threadId || flushedByThread.get(threadId).length === 0) return;
-  bumpQueueRevision(threadId);
-  flushedByThread.drop(threadId);
-}
-
 /** Drop every entry in both zones for a thread. Called from
  * `clearThreadStatus` on thread archive/delete; also from the
  * thread-switch path so a previously-loaded thread's queue doesn't

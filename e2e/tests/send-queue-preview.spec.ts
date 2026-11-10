@@ -3,14 +3,12 @@
 //
 // The preview sits in the composer overlay, and the overlay's height is the
 // clearance the timeline pads its last row with. So the preview is bounded
-// (the newest four messages and a count of the rest), a resize of it does
-// not restyle the mounted timeline rows, and a thread opened after its
-// queued messages were delivered shows none of them.
+// (the newest four messages and a count of the rest) and a resize of it
+// does not restyle the mounted timeline rows.
 //
 // Only a browser can show these: the bound is a rendered height against the
-// viewport, the restyle scope is the computed value of an inherited custom
-// property, and the stale rows live for the frames between a pane's mount
-// and its live-state read.
+// viewport, and the restyle scope is the computed value of an inherited
+// custom property.
 import type { HarnessApp } from '../src/harness.js';
 import { expect, test } from './fixtures.js';
 import {
@@ -134,69 +132,4 @@ test('a pile of pending messages shows the newest four and leaves the timeline i
   await expect(rows).toHaveCount(0);
   await expect(earlier).toHaveCount(0);
   await expect(page.getByTestId('user-message-bubble').filter({ hasText: 'Agent answer 12:' })).toHaveCount(1);
-});
-
-test('a thread whose queued messages were delivered while it had no pane shows none on open', async ({
-  harness,
-  page,
-}) => {
-  test.setTimeout(90_000);
-
-  await harness.rpc('HarnessSetScenario', { scenario: heldTurnScenario('queue-delivered-unwatched') });
-  const workerId = await seedAgentThread(harness, 'queue-delivered-unwatched', 'Queue worker');
-  await seedAgentThread(harness, 'queue-delivered-lead', 'Queue lead');
-  await harness.open(page);
-  await page.getByText('Queue lead', { exact: true }).click();
-  await expect(page.getByLabel('Message Input')).toBeVisible();
-
-  // The worker runs, takes two queued messages and finishes, all with no
-  // pane on it. This page sees its queue frames and none of its rows.
-  const mockId = await startMock(harness, workerId);
-  await harness.rpc('SendMessage', workerId, 'Start the work.', null);
-  await waitForGate(harness, 'hold');
-  await harness.rpc('RegisterQueueItem', workerId, 'Queued for the worker 1', {});
-  await harness.rpc('RegisterQueueItem', workerId, 'Queued for the worker 2', {});
-  await mockHoldsEveryFlushedMessage(harness, workerId, 2);
-  // The page shows the worker running off its pending sends and its turn.
-  const workerRow = page.getByTestId('thread-row').filter({ hasText: 'Queue worker' }).first();
-  const running = workerRow.locator('[data-testid="thread-row-status-dot"][data-status="running"]');
-  await expect(running).toHaveCount(1);
-  await advance(harness, mockId, 'hold');
-  await harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === workerId);
-  await expect
-    .poll(async () => (await harness.rpc<{ flushedItems: unknown[] }>('GetThreadLiveState', workerId)).flushedItems.length)
-    .toBe(0);
-  // The page has applied the settled answer: the row no longer reads running.
-  await expect(running).toHaveCount(0);
-
-  // Count preview rows on every frame across the open.
-  await page.evaluate(() => {
-    const w = window as unknown as { __aoPreviewRows: number[]; __aoPreviewStop: () => void };
-    w.__aoPreviewRows = [];
-    let running = true;
-    const tick = () => {
-      if (!running) return;
-      w.__aoPreviewRows.push(document.querySelectorAll('[data-testid="send-queue-preview-row"]').length);
-      requestAnimationFrame(tick);
-    };
-    w.__aoPreviewStop = () => {
-      running = false;
-    };
-    requestAnimationFrame(tick);
-  });
-  const sampledFrames = () =>
-    page.evaluate(() => (window as unknown as { __aoPreviewRows: number[] }).__aoPreviewRows.length);
-  await expect.poll(sampledFrames).toBeGreaterThan(0);
-  await workerRow.click();
-  await expect(page.getByTestId('user-message-bubble').filter({ hasText: 'Queued for the worker 2' })).toBeVisible();
-  await expect(page.getByText('Done.', { exact: true })).toBeVisible();
-  // Keep sampling past the pane's live-state read.
-  const framesAtOpen = await sampledFrames();
-  await expect.poll(sampledFrames).toBeGreaterThan(framesAtOpen + 30);
-  const samples = await page.evaluate(() => {
-    const w = window as unknown as { __aoPreviewRows: number[]; __aoPreviewStop: () => void };
-    w.__aoPreviewStop();
-    return w.__aoPreviewRows;
-  });
-  expect(Math.max(...samples), 'delivered messages showed in the preview on open').toBe(0);
 });

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -73,35 +72,6 @@ func TestSendsPendingPublishesChangesOnly(t *testing.T) {
 	assertSendsPendingFrames(t, app, rec, threadID, "queue emptied", true, false)
 	if _, listed := app.sendsPendingThreads()[threadID]; listed {
 		t.Fatal("snapshot set still names the thread")
-	}
-}
-
-// Every frame is emitted with dispatch bookkeeping still held, the lock
-// queue_flushed is emitted under, so no flush can fall between a frame's
-// read and its emit.
-func TestSendsPendingEmitsUnderDispatchBookkeeping(t *testing.T) {
-	t.Parallel()
-	app, rec := newAppForFlushQueueRPC(t)
-	const threadID = "sends-pending-ordered"
-	var unheld atomic.Int32
-	app.testEmitHook = func(channel string, data any) {
-		if channel == string(eventchan.ProviderSendsPending) {
-			if app.flushDispatch.mu.TryLock() {
-				app.flushDispatch.mu.Unlock()
-				unheld.Add(1)
-			}
-		}
-		rec.capture(channel, data)
-	}
-
-	app.triage.RegisterQueueItem(threadID, triage.QueuedFlushItem{ID: "q1", Message: "first"})
-	assertSendsPendingFrames(t, app, rec, threadID, "queued", true)
-	if _, ok := app.triage.RemoveQueuedFlushItem(threadID, "q1"); !ok {
-		t.Fatal("q1 not removed")
-	}
-	assertSendsPendingFrames(t, app, rec, threadID, "emptied", true, false)
-	if n := unheld.Load(); n != 0 {
-		t.Fatalf("%d sends_pending frames were emitted without dispatch bookkeeping held", n)
 	}
 }
 

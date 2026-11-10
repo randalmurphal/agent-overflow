@@ -4,7 +4,6 @@
 // setupEventListeners.
 import {
   applyFlushedLifecycle,
-  clearFlushedForThread,
   markItemsFlushed,
   queueItemFromWire,
   removeRestoredQueueItems,
@@ -15,7 +14,7 @@ import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overf
 import { iterPanes } from './panes.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import type { ThreadPaneIngest } from './threadPaneRoles';
-import { applySendsPendingFrame, noteQueueFlushedFrame, onSendsSettled } from './threadStatuses.svelte';
+import { applySendsPendingFrame } from './threadStatuses.svelte';
 import type { BackendKey } from '../transport/backendKey';
 
 // The registry hands out whole ThreadPanes; this module narrows them to
@@ -24,20 +23,6 @@ import type { BackendKey } from '../transport/backendKey';
 function ingestPanes(): Iterable<ThreadPaneIngest> {
   return iterPanes();
 }
-
-// A Zone 2 entry leaves when its row is confirmed: by the pane that renders
-// it, or by the row's arrival for a watched thread with no pane. A thread
-// this client does not watch is sent no rows, so nothing would ever confirm
-// its entries. The backend's own answer that none of the thread's sends
-// still waits on an echo confirms every entry this client holds for it
-// (`onSendsSettled` states when). A mounted pane keeps its entries: the
-// preview holds each until the timeline row renders.
-onSendsSettled((threadId) => {
-  for (const pane of ingestPanes()) {
-    if (pane.threadId === threadId) return;
-  }
-  clearFlushedForThread(threadId);
-});
 
 export interface QueueStateChangedPayload {
   threadId: string;
@@ -100,7 +85,6 @@ export function applyQueueStateChanged(evt: QueueStateChangedPayload | undefined
 
 export function applyQueueFlushed(evt: QueueFlushedPayload | undefined): void {
   if (!evt || !evt.threadId || !evt.items || evt.items.length === 0) return;
-  noteQueueFlushedFrame(evt.threadId);
   markItemsFlushed(evt.threadId, evt.items);
   for (const pane of ingestPanes()) {
     if (pane.threadId !== evt.threadId) continue;
