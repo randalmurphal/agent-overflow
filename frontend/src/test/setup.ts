@@ -51,15 +51,17 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
   globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
 }
 
-// Web Animations API stub. happy-dom does not implement element.animate,
-// so Svelte 5's built-in fade/scale/slide transitions throw when a
-// component that opts into them mounts under test. The stub returns an
-// Animation-shaped object whose `finished` promise is already resolved,
-// and which synchronously fires `finish` via onfinish so Svelte's
-// transition machinery completes on the next microtask (matching the
-// behavior tests expected back when transitions were effectively no-ops
-// because happy-dom silently swallowed the missing method).
-if (typeof Element !== 'undefined' && typeof Element.prototype.animate !== 'function') {
+// Web Animations API stub. Svelte 5's built-in fade/scale/slide transitions
+// call element.animate when a component that opts into them mounts. The stub
+// returns an Animation-shaped object whose `finished` promise is already
+// resolved, and which fires `finish` on the next microtask so Svelte's
+// transition machinery completes without waiting on a clock.
+//
+// It replaces happy-dom's own implementation (added in 20.12): that one runs
+// on timers, and its Animation.cancel() rejects `finished` with nothing
+// handling it, which fails every transition torn down mid-animation
+// (capricorn86/happy-dom#2339).
+if (typeof Element !== 'undefined') {
   (Element.prototype as unknown as { animate: (...args: unknown[]) => Animation }).animate =
     function stubAnimate(): Animation {
       const handlers: { finish: Array<(e: Event) => void>; cancel: Array<(e: Event) => void> } = {
@@ -109,10 +111,9 @@ if (typeof Element !== 'undefined' && typeof Element.prototype.animate !== 'func
 
 // Companion to the animate stub: svelte's transition runner probes
 // `element.getAnimations()` before dismantling an out-transitioning node
-// (transitions.js `dispatch_event` path), and happy-dom lacks it too.
-// Nothing in the stub ever registers a live animation, so the honest
-// answer is always "none".
-if (typeof Element !== 'undefined' && typeof Element.prototype.getAnimations !== 'function') {
+// (transitions.js `dispatch_event` path). Nothing in the stub ever registers
+// a live animation, so the answer is always "none".
+if (typeof Element !== 'undefined') {
   (Element.prototype as unknown as { getAnimations: () => Animation[] }).getAnimations =
     function stubGetAnimations(): Animation[] {
       return [];
