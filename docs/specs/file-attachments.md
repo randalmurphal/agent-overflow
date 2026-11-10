@@ -101,6 +101,10 @@ to the attachments root and referenced by path in the prompt.
   `providerContent`. The count cap applies to the union.
 - `usermessage.AttachmentMeta` gains `kind`. Old rows without it are
   images.
+- A `file` whose row carries `store.AttachmentShell` is the output of a
+  composer shell command. Its prompt text is the provider's command block
+  instead of a path line, and it replaces the typed `!command` in the
+  text. See [composer shell commands](composer-shell-commands.md).
 - `provider.ImageAttachment` is unchanged; only images are built into
   it. `SplitContentByImageMarkers(content, imageCount)` keeps its
   contract because the frontend numbers markers over images only.

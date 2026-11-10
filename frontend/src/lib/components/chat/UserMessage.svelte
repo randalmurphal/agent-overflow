@@ -14,6 +14,8 @@
   import { openImageLightbox } from '../../stores/imageLightbox.svelte';
   import CopyButton from '../primitives/CopyButton.svelte';
   import UserMessageBody from './UserMessageBody.svelte';
+  import ShellCommandBlock from './ShellCommandBlock.svelte';
+  import { textWithoutShellInvocations } from '../../utils/shellInvocation';
   import UserMessageEditor from './UserMessageEditor.svelte';
   import { preservePaneScrollAnchorAt } from './preserveScrollAnchor';
   import Icon from '../primitives/Icon.svelte';
@@ -145,7 +147,10 @@
   // `#2` names the same thing the message text's `[Image #2]` does; a file is
   // an inert chip, because its bytes are never served back to a client.
   const images = $derived(imageAttachments(attachments));
-  const files = $derived(attachments.filter((attachment) => attachment.kind === 'file'));
+  // A file that is the output of a composer shell command is a command block,
+  // the one file whose content the row shows; every other file is a chip.
+  const shellOutputs = $derived(attachments.filter((attachment) => attachment.kind === 'file' && attachment.shell));
+  const files = $derived(attachments.filter((attachment) => attachment.kind === 'file' && !attachment.shell));
   // Pane-owned blob cache: blob URLs survive the window's overscan eviction,
   // so back-scrolling to a previously-mounted UserMessage doesn't refetch
   // attachments from Go or re-allocate object URLs. The IntersectionObserver
@@ -158,7 +163,16 @@
     () => attachments,
     { cache },
   );
-  const visibleSummary = $derived(stripAttachmentImages(item.summary).trimEnd());
+  // The typed `!command` a shell output stands for is shown by its block.
+  const visibleSummary = $derived(textWithoutShellInvocations(
+    stripAttachmentImages(item.summary).trimEnd(),
+    shellOutputs.map((attachment) => attachment.shell!),
+  ));
+  // A message that is nothing but commands is drawn as the blocks themselves,
+  // without the message bubble around them.
+  const commandsOnly = $derived(
+    shellOutputs.length > 0 && images.length === 0 && files.length === 0 && !visibleSummary && !originBadge,
+  );
   // A composer command that expanded at send time (D31) keeps its words in the
   // transcript — the block it added is never stored — and every occurrence
   // renders in the accent colour, exactly as the composer showed them while
@@ -265,6 +279,17 @@
       {/each}
     </div>
   {/if}
+  {#each shellOutputs as attachment (attachment.id)}
+    <ShellCommandBlock
+      itemId={item.id}
+      threadId={attachment.threadId}
+      attachmentId={attachment.id}
+      shell={attachment.shell!}
+      size={attachment.size}
+      {pane}
+      standalone={commandsOnly}
+    />
+  {/each}
   {#if files.length > 0}
     <div class="mb-2 flex flex-wrap gap-2" data-testid="user-message-file-attachments">
       {#each files as attachment (attachment.id)}
@@ -295,8 +320,9 @@
     <div
       bind:this={bubbleEl}
       class={[
-        'rounded-[18px] rounded-br-[8px] border border-accent/20 bg-accent/15',
-        'px-4 py-2.5 text-[0.8125rem] leading-[1.55] text-fg shadow-sheet',
+        commandsOnly && !editsInline
+          ? 'flex min-w-[min(18rem,100%)] max-w-full flex-col gap-1.5 text-[0.8125rem] leading-[1.55] text-fg'
+          : 'rounded-[18px] rounded-br-[8px] border border-accent/20 bg-accent/15 px-4 py-2.5 text-[0.8125rem] leading-[1.55] text-fg shadow-sheet',
         editsInline && 'w-[46rem] max-w-full',
         editsElsewhere && 'ring-2 ring-accent/50',
       ]}

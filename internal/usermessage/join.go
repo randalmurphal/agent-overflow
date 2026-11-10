@@ -96,6 +96,7 @@ func (in Input) Projection() Meta {
 			MimeType: attachment.MimeType,
 			Size:     attachment.Size,
 			Kind:     attachment.Kind,
+			Shell:    shellMeta(attachment),
 		})
 	}
 	return Meta{

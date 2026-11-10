@@ -18,6 +18,15 @@ not fields of typed `Meta`. Modify an existing blob with
 unknown fields and correlation IDs survive. Re-marshalling a decoded `Meta`
 silently drops them.
 
+An attachment's `Shell` (`ShellMeta`) is set when the file is the output of
+a composer shell command. Every string in it is bounded
+(`ShellCommandMetaBytes`, the attachment's preview) so the item wire never
+elides one; the attachment record keeps the whole command, and the row's
+text keeps the typed `!command`. `JoinSeparator` is mirrored by
+`MESSAGE_JOIN_SEPARATOR` in the frontend's `utils/shellInvocation.ts`,
+which matches invocations between joined parts the way
+`turnAttachments.promptText` does.
+
 An empty attachment `kind` means image for rows written before the kind field
 existed; MIME type cannot replace that compatibility rule. `SendID` belongs
 on the message row and remains stable through retry and queue promotion.

@@ -167,6 +167,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1848576136: 'thread', // GetThreadItemProjectionSource
 	70226550: 'thread', // GetThreadLiveState
 	2573491630: 'thread', // GetThreadRuntimeMode
+	1598034249: 'thread', // GetThreadShellCommands
 	183380121: 'selected', // GetThreadTransferDestinationProject
 	704384690: 'thread', // GetThreadTransferIntent
 	316516814: 'thread', // GetThreadTransferStatus
@@ -312,6 +313,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2418838611: 'home', // PutSoundFile
 	2036690300: 'selected', // ReadPipelineStages
 	2473150982: 'home', // ReadReviewDiff
+	3285994337: 'thread', // ReadShellAttachmentOutput
 	2424974671: 'thread', // ReadThreadRemoteLog
 	2274850917: 'home', // RecheckClaudeAccount
 	227978482: 'home', // RecheckCodexAccount
@@ -369,6 +371,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2059566413: 'thread', // RevertConversationAndResendMessage
 	2945903583: 'home', // RevokeAccessDevice
 	2284519219: 'home', // RevokeAccessSession
+	651196145: 'thread', // RunThreadShellCommand
 	2886446326: 'thread', // RunningBackgroundAgents
 	2182723789: 'thread', // SaveAttachment
 	3025273299: 'thread', // SaveDraft
@@ -423,6 +426,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	4232843083: 'thread', // StopCodexSubagent
 	3838500111: 'thread', // StopSession
 	2155771620: 'thread', // StopThreadBackgroundWork
+	212331826: 'thread', // StopThreadShellCommand
 	1219107798: 'thread', // SubmitAsyncAnswers
 	2692607191: 'selected', // SubmitPRReview
 	3556446736: 'home', // SubmitProviderLoginCode

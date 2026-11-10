@@ -422,12 +422,13 @@ export interface RetryOnTransientCloseEntry {
   why: string;
 }
 
-// The production allowlist. Two entries, and the rule that admitted them
+// The production allowlist. Three entries, and the rule that admitted them
 // is the one stated above: a call is admissible only when it is IDEMPOTENT
-// ON THE BACKEND. These two are, and not by luck — each carries a
+// ON THE BACKEND. These are, and not by luck — each send carries a
 // client-minted `sendId` and the backend answers a repeated id from the
 // record the first arrival left behind, without sending anything
-// (internal/app/app_send_idempotency.go). The retry re-sends the RETAINED
+// (internal/app/app_send_idempotency.go); a composer shell command carries
+// a `runId` the backend answers the same way (internal/shellrun). The retry re-sends the RETAINED
 // frame, so the id is the same one; a retry that rebuilt its options would
 // mint a second id and defeat the whole mechanism.
 //
@@ -448,6 +449,10 @@ export const RETRY_ON_TRANSIENT_CLOSE: readonly RetryOnTransientCloseEntry[] = O
   {
     methodId: 1034543696,
     why: 'RegisterQueueItem carries the same sendId and is answered from the durable queue row the first arrival wrote',
+  },
+  {
+    methodId: 651196145,
+    why: 'RunThreadShellCommand carries a client-minted runId; a repeated arrival is answered from the running command, the message it became, or how the run settled',
   },
 ]);
 

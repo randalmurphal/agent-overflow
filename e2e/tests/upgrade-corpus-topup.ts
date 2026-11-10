@@ -6,7 +6,7 @@
 // per library scenario in topUpScenarios, driven through the mock provider
 // the way a user's turn runs, then the sidebar and workflow operations.
 import { execFileSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import { expect } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
@@ -125,6 +125,16 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     const resent = harness.waitForEvent<{ threadId?: string }>('provider:turn_completed', (ev) => ev.threadId === reverted, TURN_TIMEOUT_MS);
     await harness.rpc('RevertConversationAndResendMessage', reverted, target.id, { content: 'Second top-up question, rephrased.' });
     await resent;
+
+    // A composer shell command: its output is stored as a file attachment
+    // that records the command, and sent as one more message of the thread.
+    const shellSent = harness.waitForEvent<{ threadId?: string; phase?: string; state?: string; error?: string }>(
+      'shell:command', (ev) => ev.threadId === reverted && ev.phase === 'finished', TURN_TIMEOUT_MS);
+    const shellAnswered = harness.waitForEvent<{ threadId?: string }>('provider:turn_completed', (ev) => ev.threadId === reverted, TURN_TIMEOUT_MS);
+    await harness.rpc('RunThreadShellCommand', reverted, { runId: randomUUID(), command: `echo "top-up v${version}"` });
+    const shellResult = await shellSent;
+    if (shellResult.state !== 'sent') throw new Error(`codex-revert-paginated: the shell command ended ${shellResult.state}: ${shellResult.error ?? ''}`);
+    await shellAnswered;
 
     await harness.rpc('PinThread', scenarioThreads['tool-call']);
     await harness.rpc('PinThread', scenarioThreads['file-edit']);

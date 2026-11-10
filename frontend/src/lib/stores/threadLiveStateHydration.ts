@@ -45,6 +45,7 @@ import {
 import type { ThreadPendingInteractiveState } from './threadPendingInteractiveState.svelte';
 import type { LiveTodoState } from './liveTodoState.svelte';
 import { compactingRevision, hydrateCompactingState } from './compactingState.svelte';
+import { reconcileShellRun, shellRunRevision } from './shellCommands.svelte';
 
 export interface ThreadLiveStateHydrationOptions {
   getThread(): Thread | null;
@@ -242,6 +243,9 @@ export function createThreadLiveStateHydration(
     // window has no upcoming frame to learn it from — the snapshot is the
     // only source. 0 clears a flag the window's close outran.
     hydrateCompactingState(threadID, snapshot.compactingSinceUnixMs ?? 0, guard.compactingRevisionAtRequest);
+    // A composer shell command outlives the client that started it, and its
+    // `finished` frame is the only push that ends it here.
+    reconcileShellRun(threadID, snapshot.shellCommandRunId ?? '', guard.shellRunRevisionAtRequest);
     options.hydrateBinaryStaleBanner(
       snapshot.sessionCliVersion ?? '',
       snapshot.installedCliVersion ?? '',
@@ -264,6 +268,7 @@ export function createThreadLiveStateHydration(
     };
     const guard: LiveStateHydrationGuard = {
       compactingRevisionAtRequest: compactingRevision(threadID),
+      shellRunRevisionAtRequest: shellRunRevision(threadID),
       codexAgentRevisionAtRequest: codexAgentRevision(threadID),
       subagentProgressRevisionAtRequest: subagentProgressRevision(threadID),
       activeTurnAtRequest: getActiveTurn(threadID),

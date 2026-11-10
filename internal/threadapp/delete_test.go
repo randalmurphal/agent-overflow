@@ -30,6 +30,7 @@ func TestDeleteTreeRunsChildrenFirstAndPreservesResourceOrder(t *testing.T) {
 		CleanProviderBackground: func(thread store.Thread) error { calls = append(calls, thread.ID+":background"); return nil },
 		StopSession:             func(id string) error { calls = append(calls, id+":session"); return nil },
 		CancelWorktreeSetup:     func(id string) { calls = append(calls, id+":setup") },
+		CancelShellCommand:      func(id string) { calls = append(calls, id+":shell") },
 		CloseTerminals:          func(id string) error { calls = append(calls, id+":terminal"); return nil },
 		CloseBrowserPages:       func(id string) error { calls = append(calls, id+":browser"); return nil },
 		ClearSystemPrompt:       func(id string) { calls = append(calls, id+":prompt") },
@@ -43,9 +44,10 @@ func TestDeleteTreeRunsChildrenFirstAndPreservesResourceOrder(t *testing.T) {
 		t.Fatalf("DeleteTree: %v", err)
 	}
 	wantChild := []string{
-		"child:background", "child:session", "child:setup", "child:terminal",
+		"child:background", "child:session", "child:setup", "child:shell", "child:terminal",
 		"child:browser", "child:prompt", "child:discussion", "child:reconnect",
-		"child:attachments", "child:replay", "child:terminal", "child:browser", "child:forget",
+		// The second stop is under the mutation lock a command registers with.
+		"child:shell", "child:attachments", "child:replay", "child:terminal", "child:browser", "child:forget",
 	}
 	if !slices.Equal(calls[:len(wantChild)], wantChild) {
 		t.Fatalf("child cleanup order = %v, want %v", calls[:len(wantChild)], wantChild)

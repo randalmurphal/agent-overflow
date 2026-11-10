@@ -7,6 +7,7 @@
   import MessageTimeline from './MessageTimeline.svelte';
   import Composer from '../composer/Composer.svelte';
   import SendQueuePreview from '../composer/SendQueuePreview.svelte';
+  import ShellRunCard from '../composer/ShellRunCard.svelte';
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
   import ThreadTerminalPlacement from '../terminal/ThreadTerminalPlacement.svelte';
   import ChatHeader from './ChatHeader.svelte';
@@ -88,6 +89,12 @@
   // offered neither: the gate lands here, on the same single point.
   const supportsMessageAnchorActions = $derived(
     providerSupports(pane.thread?.provider, 'fork')
+      && threadHasScope('threads:operate', pane.threadId, pane.thread?.projectId),
+  );
+  // Run on a shell code block runs a command here and sends its output to the
+  // thread, so it is offered only to a session granted both.
+  const canRunShell = $derived(
+    threadHasScope('terminal:operate', pane.threadId, pane.thread?.projectId)
       && threadHasScope('threads:operate', pane.threadId, pane.thread?.projectId),
   );
   // On a phone the edit happens in the composer's slot, where the keyboard
@@ -481,6 +488,7 @@
       >
         <div class="pointer-events-auto mx-auto w-full max-w-[62rem] px-6">
           <SendQueuePreview {pane} />
+          <ShellRunCard {pane} />
         </div>
         {#if showWorktreeSetup && worktreeSetupPanelModule && setupKey}
           {#await worktreeSetupPanelModule then { default: WorktreeSetupPanel }}
@@ -545,7 +553,7 @@
   {/await}
 {:else if pane.thread}
   <!-- Standard chat surface. Companion panes mount through PaneHost. -->
-  <div bind:this={chatRoot} data-ui-surface="chat" data-thread-id={pane.thread.id} class="relative flex h-full min-h-0 overflow-hidden">
+  <div bind:this={chatRoot} data-ui-surface="chat" data-thread-id={pane.thread.id} data-shell-runnable={canRunShell ? '' : undefined} class="relative flex h-full min-h-0 overflow-hidden">
     {@render chatColumnBody()}
     <ConfirmDialog
       open={editResend.confirmOpen}

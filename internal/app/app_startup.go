@@ -752,6 +752,13 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 		)
 	}
 	a.attachments = attachmentStore
+	if err := a.initShellCommands(dbDir); err != nil {
+		closeErr := st.Close()
+		return errors.Join(
+			fmt.Errorf("failed to initialise composer shell commands: %w", err),
+			errorsx.WrapLifecycle("close store after shell command init failure", closeErr),
+		)
+	}
 	a.workspaceFiles = workspacefiles.NewSearcher(workspacefiles.Config{})
 	a.configDir = dbDir
 	endPhase = a.bootPhase("app.sweep_review_diffs", "Removing review diff snapshots from the last run")

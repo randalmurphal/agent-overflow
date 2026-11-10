@@ -450,6 +450,9 @@ func (a *App) removeProjectWorktree(projectID, project, worktreePath string, pol
 	// A run can belong to a thread that has since moved away, so the attached
 	// thread list is not an authoritative set of processes to stop.
 	a.cancelWorktreeSetupsForPath(worktreePath)
+	// A composer shell command running in the directory would race the
+	// removal the same way.
+	a.cancelShellCommandsInDir(worktreePath)
 	// Then clear the durable state of every thread that pointed here — a "Setup
 	// failed" pill for a worktree that no longer exists has nothing to offer.
 	// Their runs are already gone, so this is the column and nothing else.

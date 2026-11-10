@@ -42,6 +42,40 @@ describe('message presentation lifetime', () => {
     revoke.mockRestore();
   });
 
+  it('keeps an open part of a message with the message, apart from its text', () => {
+    const { provisional, confirmed, ui, confirm } = fixture();
+    ui.setExpanded(provisional.id, true, 'attachment-1');
+    expect(ui.isExpanded(provisional.id, 'attachment-1')).toBe(true);
+    // The message's own text and its other parts are separate state.
+    expect(ui.isExpanded(provisional.id)).toBe(false);
+    expect(ui.isExpanded(provisional.id, 'attachment-2')).toBe(false);
+    expect(ui.expansionSignature()).not.toBe('');
+    // The part follows the message through confirmation and retention.
+    confirm();
+    ui.prune(new Set([confirmed.id]));
+    expect(ui.isExpanded(confirmed.id, 'attachment-1')).toBe(true);
+    ui.setExpanded(confirmed.id, true);
+    ui.setExpanded(confirmed.id, false, 'attachment-1');
+    expect(ui.isExpanded(confirmed.id, 'attachment-1')).toBe(false);
+    expect(ui.isExpanded(confirmed.id)).toBe(true);
+    // It is released with the message, by pruning and by disposal.
+    ui.setExpanded(confirmed.id, true, 'attachment-1');
+    ui.prune(new Set());
+    expect(ui.isExpanded(confirmed.id, 'attachment-1')).toBe(false);
+    expect(ui.stats().expandedUserMessages).toBe(0);
+  });
+
+  it('releases the open parts of a disposed message', () => {
+    const { confirmed, items, ui } = fixture();
+    items.clear();
+    const plain = { ...confirmed, id: 'plain', meta: '' };
+    items.set(plain.id, plain);
+    ui.setExpanded(plain.id, true, 'attachment-1');
+    items.delete(plain.id);
+    ui.disposeItems([plain]);
+    expect(ui.stats().expandedUserMessages).toBe(0);
+  });
+
   it('collapses and expands through either representation without carrying state to another thread', () => {
     const { provisional, confirmed, ui, confirm, items } = fixture();
     ui.setExpanded(provisional.id, true);

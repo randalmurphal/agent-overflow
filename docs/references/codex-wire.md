@@ -543,6 +543,31 @@ dropped: there is no UI signal for the in-flight envelope.
 Mirrors the Claude side's `isReplay:true` promotion in
 `internal/provider/claude/parse_user.go`.
 
+### `thread/shellCommand` and the user shell record (verified 0.163.0)
+
+`thread/shellCommand` runs a command for the person and records it in the
+rollout, but never starts a model reply. The record's text is:
+
+```
+<user_shell_command>
+<command>
+{command}
+</command>
+<result>
+Exit code: {n}
+Duration: {seconds:.4f} seconds
+Output:
+{output}
+</result>
+</user_shell_command>
+```
+
+The same text sent as an ordinary `turn/start` or `turn/steer` input is
+read by the model the same way and gets a reply; it is stored as a plain
+`userMessage`. Agent Overflow's composer shell commands run the command
+themselves and send this text (`internal/provider/codex/user_shell.go`), so
+both providers answer a command. A timeout is exit code 124.
+
 ### `status` values (per ItemType)
 
 Each ItemType has its own status enum:

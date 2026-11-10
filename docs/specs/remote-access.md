@@ -4066,7 +4066,8 @@ backend answers a repeat from the record the first arrival left, the
 before any side effect. No id table: the message is the record, matched
 through sparse indexes over retained history
 (`store.FindUserTextItemBySendID`, migration v89). `RETRY_ON_TRANSIENT_CLOSE` holds
-exactly those two methods, and a send whose retry ALSO failed asks
+those two methods and `RunThreadShellCommand`, whose `runId` is the same
+kind of id, and a send whose retry ALSO failed asks
 before restoring ("This message may have reached the agent. Put it back
 in the composer?"; "Leave it" discards and reports nothing further) while
 a definite failure restores silently as before. (8) A reconnect ladder

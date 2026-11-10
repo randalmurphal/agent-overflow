@@ -392,5 +392,10 @@ const (
 	WorktreeSetup   Channel = "worktree:setup"
 )
 
+// ShellCommand carries a composer shell command's lifecycle and output: the
+// command a person ran with `!` in a thread, from start to the frame that says
+// its output was sent. Local command output, gated like terminal:output.
+const ShellCommand Channel = "shell:command"
+
 // ComputerRoutesChanged invalidates the authenticated bootstrap route snapshot.
 const ComputerRoutesChanged Channel = "computer-routes:changed"

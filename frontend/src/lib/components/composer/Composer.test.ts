@@ -53,6 +53,13 @@ import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { UsageBucket } from '../../stores/bindings';
 import { resetThreadInterruptStateForTest } from '../../stores/threadInterruptState.svelte';
 import { resetResendRevertMarkersForTest } from '../../stores/eventsMessageRevert';
+import {
+  applyShellCommandEvent,
+  dismissShellRun,
+  getShellRun,
+  resetShellRunsForTest,
+} from '../../stores/shellCommands.svelte';
+import { DisconnectedError } from '../../transport/wsClient';
 
 /**
  * Send options as they reach the wire. Every send carries a freshly minted
@@ -3734,6 +3741,315 @@ describe('<Composer>', () => {
 
       expect(textarea.disabled).toBe(true);
       expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(true);
+    });
+  });
+
+  // `!command`: the composer runs it instead of sending it. The run and its
+  // card belong to stores/shellCommands; what is decided here is when a
+  // draft is a command, what Enter does with it, and what stays behind.
+  describe('shell mode', () => {
+    beforeEach(() => {
+      resetShellRunsForTest();
+    });
+
+    it('runs a leading-! draft as a command and consumes only its text', async () => {
+      const pane = await buildPane();
+      const draft = await buildDraft();
+      draft.addAttachment(makeAttachment('kept', 'notes.txt', 'text/plain'));
+      const run = setBindingMock('RunThreadShellCommand', async () => ({ state: 'running' }));
+      const send = setBindingMock('SendMessageWithOptions', async () => makeTestThread());
+
+      const { getByLabelText, getByTestId, queryByTestId } = render(Composer, { props: { pane, draft } });
+      const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+      const sendButton = getByTestId('composer-send') as HTMLButtonElement;
+      expect(queryByTestId('composer-shell-hint')).toBeNull();
+
+      // The prefix alone is the mode with nothing to run yet.
+      await fireEvent.input(textarea, { target: { value: '!' } });
+      expect(getByTestId('composer-shell-hint').textContent).toContain('the output is sent to the agent');
+      expect(sendButton.disabled).toBe(true);
+      expect(sendButton.textContent).toContain('Run');
+
+      await fireEvent.input(textarea, { target: { value: '!  git status  ' } });
+      expect(sendButton.disabled).toBe(false);
+      await fireEvent.keyDown(getByLabelText('Message Input'), { key: 'Enter' });
+
+      await waitFor(() => {
+        expect(run).toHaveBeenCalledWith('thread-1', { runId: expect.any(String), command: 'git status' });
+      });
+      expect(send).not.toHaveBeenCalled();
+      expect(draft.content).toBe('');
+      expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['kept']);
+      expect(getShellRun('thread-1')).toMatchObject({ command: 'git status', state: 'running' });
+      expect(queryByTestId('composer-shell-hint')).toBeNull();
+    });
+
+    it('treats a ! that is not the first character as a message', async () => {
+      const pane = await buildPane();
+      const draft = await buildDraft();
+      const run = setBindingMock('RunThreadShellCommand', async () => ({ state: 'running' }));
+      const send = setBindingMock('SendMessageWithOptions', async () => makeTestThread());
+
+      const { getByLabelText, getByTestId, queryByTestId } = render(Composer, { props: { pane, draft } });
+      await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'look at !this' } });
+      expect(queryByTestId('composer-shell-hint')).toBeNull();
+      await fireEvent.click(getByTestId('composer-send'));
+
+      await waitFor(() => expect(send).toHaveBeenCalledWith('thread-1', 'look at !this', sentWith({ attachmentIds: [] })));
+      expect(run).not.toHaveBeenCalled();
+    });
+
+    it('gives the text back and reports the error when the run is refused', async () => {
+      const pane = await buildPane();
+      const draft = await buildDraft();
+      setBindingMock('RunThreadShellCommand', async () => {
+        throw new Error('the workspace is not a directory');
+      });
+
+      const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+      await fireEvent.input(getByLabelText('Message Input'), { target: { value: '!ls' } });
+      await fireEvent.click(getByTestId('composer-send'));
+
+      await waitFor(() => expect(pane.generalError ?? '').toContain('Failed to run the command: the workspace is not a directory'));
+      expect(draft.content).toBe('!ls');
+      expect(getShellRun('thread-1')).toBeNull();
+    });
+
+    it('runs the command while a turn is active instead of queueing the text', async () => {
+      const pane = await buildPane();
+      const draft = await buildDraft();
+      projectSendStarted('thread-1');
+      const run = setBindingMock('RunThreadShellCommand', async () => ({ state: 'running' }));
+      const queue = setBindingMock('RegisterQueueItem', async () => ({}));
+
+      const { getByLabelText } = render(Composer, { props: { pane, draft } });
+      await fireEvent.input(getByLabelText('Message Input'), { target: { value: '!make test' } });
+      await fireEvent.keyDown(getByLabelText('Message Input'), { key: 'Enter' });
+
+      await waitFor(() => expect(run).toHaveBeenCalledWith('thread-1', { runId: expect.any(String), command: 'make test' }));
+      expect(queue).not.toHaveBeenCalled();
+    });
+
+    it('refuses a second command while one is running, and says why', async () => {
+      const pane = await buildPane();
+      const draft = await buildDraft();
+      const run = setBindingMock('RunThreadShellCommand', async () => ({ state: 'running' }));
+      applyShellCommandEvent({ phase: 'started', threadId: 'thread-1', runId: 'run-1', command: 'sleep 60', startedAt: 1 });
+
+      const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+      await fireEvent.input(getByLabelText('Message Input'), { target: { value: '!ls' } });
+      expect(getByTestId('composer-shell-hint').textContent).toContain('A command is already running');
+      expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(true);
+      await fireEvent.keyDown(getByLabelText('Message Input'), { key: 'Enter' });
+      await tick();
+      expect(run).not.toHaveBeenCalled();
+      expect(draft.content).toBe('!ls');
+
+      // The first one ending frees the composer without retyping.
+      applyShellCommandEvent({ phase: 'finished', threadId: 'thread-1', runId: 'run-1', state: 'sent' });
+      await tick();
+      expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it('sends a draft that already holds a command output as a message, without running it again', async () => {
+      const pane = await buildPane();
+      const draft = await buildDraft();
+      draft.addAttachment({
+        ...makeAttachment('out', 'output.txt', 'text/plain'),
+        shell: { command: 'ls', exitCode: 0, durationMs: 5 },
+      });
+      const run = setBindingMock('RunThreadShellCommand', async () => ({ state: 'running' }));
+      const send = setBindingMock('SendMessageWithOptions', async () => makeTestThread());
+
+      const { getByLabelText, getByTestId, queryByTestId } = render(Composer, { props: { pane, draft } });
+      await fireEvent.input(getByLabelText('Message Input'), { target: { value: '!ls' } });
+      expect(queryByTestId('composer-shell-hint')).toBeNull();
+      expect(getByTestId('attachment-shell-chip').textContent).toContain('ls');
+      await fireEvent.click(getByTestId('composer-send'));
+
+      await waitFor(() => expect(send).toHaveBeenCalledWith('thread-1', '!ls', sentWith({ attachmentIds: ['out'] })));
+      expect(run).not.toHaveBeenCalled();
+    });
+
+    it('does not open the command menu over a path in a command', async () => {
+      const pane = await buildPane();
+      const draft = await buildDraft();
+      const { getByLabelText, queryByTestId } = render(Composer, { props: { pane, draft } });
+      const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+      // Without the prefix the same slash opens the menu.
+      await fireEvent.input(textarea, { target: { value: 'ls /' } });
+      textarea.setSelectionRange(4, 4);
+      await fireEvent.keyUp(textarea, { key: '/' });
+      await waitFor(() => expect(queryByTestId('slash-popover')).not.toBeNull());
+
+      await fireEvent.input(textarea, { target: { value: '!ls /' } });
+      textarea.setSelectionRange(5, 5);
+      await fireEvent.keyUp(textarea, { key: '/' });
+      await tick();
+      expect(queryByTestId('slash-popover')).toBeNull();
+    });
+
+    it('names the workspace the command runs in', async () => {
+      const pane = await buildPane(makeTestThread({ branch: 'main', projectId: 'project-1', workspacePath: '/repos/widget' }));
+      const draft = await buildDraft();
+      const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+      await fireEvent.input(getByLabelText('Message Input'), { target: { value: '!ls' } });
+      expect(getByTestId('composer-shell-hint').textContent).toContain('Runs in widget');
+
+      // A worktree chosen and not yet made is where the command will run.
+      setThreadEnvMode(pane.thread!, 'new-worktree');
+      await tick();
+      expect(getByTestId('composer-shell-hint').textContent).toContain('Runs in the new worktree');
+      expect(getByTestId('composer-shell-hint').textContent).not.toContain('widget');
+    });
+
+    it.each([
+      { edited: null, ran: true },
+      { edited: '!rm -rf build', ran: false },
+      { edited: 'explain this', ran: false },
+    ])('runs only the command Enter was pressed on (text became $edited)', async ({ edited, ran }) => {
+      const pane = await buildPane(makeTestThread({ branch: 'main', projectId: 'project-1' }));
+      const draft = await buildDraft();
+      setThreadEnvMode(pane.thread!, 'new-worktree');
+      enterCreateBranchMode(pane.thread!, { workspaceDirty: false, currentBranch: 'main' });
+      setNewBranchBase(pane.thread!, 'release');
+      setNewBranchName(pane.thread!, 'feature/custom');
+      const prepared = deferred<ReturnType<typeof makeTestThread>>();
+      const prepare = setBindingMock('PrepareThreadWorktree', async () => prepared.promise);
+      const run = setBindingMock('RunThreadShellCommand', async () => ({ state: 'running' }));
+      const send = setBindingMock('SendMessageWithOptions', async () => makeTestThread());
+
+      const { getByLabelText } = render(Composer, { props: { pane, draft } });
+      await fireEvent.input(getByLabelText('Message Input'), { target: { value: '!ls' } });
+      await fireEvent.keyDown(getByLabelText('Message Input'), { key: 'Enter' });
+      await waitFor(() => expect(prepare).toHaveBeenCalled());
+      // The text changes while the worktree is being made.
+      if (edited !== null) draft.setContent(edited);
+      await tick();
+      prepared.resolve(makeTestThread({
+        projectId: 'project-1', branch: 'feature/custom', workspacePath: '/tmp/wt-feature', worktreePath: '/tmp/wt-feature',
+      }));
+
+      if (ran) {
+        await waitFor(() => expect(run).toHaveBeenCalledWith('thread-1', { runId: expect.any(String), command: 'ls' }));
+        expect(draft.content).toBe('');
+      } else {
+        await waitFor(() => expect(pane.thread?.worktreePath).toBe('/tmp/wt-feature'));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(run).not.toHaveBeenCalled();
+        expect(draft.content).toBe(edited);
+      }
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it('puts a refused command back ahead of what was typed since', async () => {
+      const pane = await buildPane();
+      const draft = await buildDraft();
+      const start = deferred<{ state: string }>();
+      const run = setBindingMock('RunThreadShellCommand', async () => start.promise);
+
+      const { getByLabelText } = render(Composer, { props: { pane, draft } });
+      await fireEvent.input(getByLabelText('Message Input'), { target: { value: '!ls' } });
+      await fireEvent.keyDown(getByLabelText('Message Input'), { key: 'Enter' });
+      await waitFor(() => expect(run).toHaveBeenCalled());
+      expect(draft.content).toBe('');
+      await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'next thought' } });
+      start.reject(new Error('refused'));
+
+      await waitFor(() => expect(pane.generalError ?? '').toContain('Failed to run the command: refused'));
+      await waitFor(() => expect(draft.content.startsWith('!ls')).toBe(true));
+      expect(draft.content).toContain('next thought');
+    });
+
+    it('says a lost reply is not a refusal, and asks about the same run when run again', async () => {
+      const pane = await buildPane();
+      const draft = await buildDraft();
+      let lost = true;
+      const run = setBindingMock('RunThreadShellCommand', async () => {
+        if (lost) throw new DisconnectedError();
+        return { state: 'running' };
+      });
+
+      const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+      await fireEvent.input(getByLabelText('Message Input'), { target: { value: '!make test' } });
+      await fireEvent.keyDown(getByLabelText('Message Input'), { key: 'Enter' });
+      await waitFor(() => expect(pane.generalError ?? '').toContain('The connection dropped while the command was starting'));
+      expect(pane.generalError ?? '').not.toContain('Failed to run');
+      await waitFor(() => expect(draft.content).toBe('!make test'));
+
+      lost = false;
+      // The first attempt holds the send until its text is back.
+      await waitFor(() => expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(false));
+      await fireEvent.keyDown(getByLabelText('Message Input'), { key: 'Enter' });
+      await waitFor(() => expect(run).toHaveBeenCalledTimes(2));
+      const [first, second] = run.mock.calls.map((call) => (call as unknown[])[1] as { runId: string });
+      expect(second.runId).toBe(first.runId);
+    });
+
+    it('keeps an empty draft thread while its command runs or its failure is unread', async () => {
+      const row = makeTestThread({ id: 'shell-draft', isDraft: true, projectId: 'project-1', projectPath: '/repo', workspacePath: '/repo' });
+      const pane = await buildPane(row);
+      const draft = await buildDraft(row.id);
+      const remove = setBindingMock('DeleteEmptyDraftThread', async () => true);
+      const run = setBindingMock('RunThreadShellCommand', async () => ({ state: 'running' }));
+
+      const { getByLabelText } = render(Composer, { props: { pane, draft } });
+      await fireEvent.input(getByLabelText('Message Input'), { target: { value: '!ls' } });
+      await fireEvent.keyDown(getByLabelText('Message Input'), { key: 'Enter' });
+      await waitFor(() => expect(run).toHaveBeenCalled());
+      // Running the command emptied the composer of a thread with no messages.
+      expect(draft.content).toBe('');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(remove).not.toHaveBeenCalled();
+
+      const runId = getShellRun(row.id)!.runId;
+      applyShellCommandEvent({ phase: 'finished', threadId: row.id, runId, state: 'failed', error: 'no shell' });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(remove).not.toHaveBeenCalled();
+
+      // Nothing was sent and the notice was read: the draft is empty again.
+      dismissShellRun(row.id);
+      await waitFor(() => expect(remove).toHaveBeenCalledWith(row.id));
+    });
+
+    it('does not open file mentions over an @ in a command', async () => {
+      const pane = await buildPane();
+      const draft = await buildDraft();
+      const search = setBindingMock('SearchWorkspaceFiles', async () => ({
+        files: [{ path: 'src/main.ts', kind: 'file', parentPath: 'src' }],
+        truncated: false,
+        root: '/tmp/workspace',
+      }));
+      const { getByLabelText, queryByTestId } = render(Composer, { props: { pane, draft } });
+      const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+      // Without the prefix the same text opens the picker.
+      await fireEvent.input(textarea, { target: { value: 'git show @src' } });
+      textarea.setSelectionRange(13, 13);
+      await fireEvent.keyUp(textarea, { key: 'c' });
+      await waitFor(() => expect(queryByTestId('mention-popover')).not.toBeNull());
+      const searches = search.mock.calls.length;
+
+      await fireEvent.input(textarea, { target: { value: '!git show @src' } });
+      textarea.setSelectionRange(14, 14);
+      await fireEvent.keyUp(textarea, { key: 'c' });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(queryByTestId('mention-popover')).toBeNull();
+      expect(search.mock.calls.length).toBe(searches);
+    });
+
+    it('is off for a session that cannot run commands', async () => {
+      const pane = await buildPane();
+      const draft = await buildDraft();
+      const run = setBindingMock('RunThreadShellCommand', async () => ({ state: 'running' }));
+      await pairViewOnly();
+      const { getByTestId } = render(Composer, { props: { pane, draft } });
+      draft.setContent('!ls');
+      await tick();
+      expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(true);
+      await fireEvent.click(getByTestId('composer-send'));
+      expect(run).not.toHaveBeenCalled();
     });
   });
 });

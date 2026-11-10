@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
 	"github.com/google/uuid"
@@ -31,11 +32,11 @@ func manager(t *testing.T, run Run) (*Manager, *store.Store) {
 }
 
 // settled waits for the receipt to leave running and the slot to free. Its
-// bound covers a leftover sweep, which may wait out terminateGrace before the
-// kill and drainGrace for the pipe, plus scheduling margin.
+// bound covers a leftover sweep, which may wait out the terminate grace
+// before the kill and the pipe drain, plus scheduling margin.
 func settled(t *testing.T, m *Manager, id string) store.RemoteJob {
 	t.Helper()
-	deadline := time.Now().Add(terminateGrace + drainGrace + 5*time.Second)
+	deadline := time.Now().Add(procutil.DefaultTerminateGrace + 6*time.Second)
 	for time.Now().Before(deadline) {
 		r, err := m.Get("owner", id)
 		if err != nil {
