@@ -35,7 +35,8 @@
 // reason as internal/worktreesetup. It runs unattended, in its own
 // process group, bounded by a timeout, with stdout and stderr captured
 // into the error when it fails — a hook that failed silently would look
-// like the CA refusing to validate.
+// like the CA refusing to validate. A process the hook leaves running is
+// stopped when the hook returns.
 //
 // # The escape hatch is elsewhere
 //
