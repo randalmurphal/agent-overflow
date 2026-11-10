@@ -21,7 +21,11 @@ func TestCredentialPolicyIsProviderSpecific(t *testing.T) {
 		t.Fatalf("Claude chain position = (%d, %v)", got, ok)
 	}
 	if _, ok := CredentialChainPosition("codex", husk); ok {
-		t.Fatal("Codex unexpectedly reported a single-use chain position")
+		t.Fatal("a Claude credential shape gave Codex a chain position")
+	}
+	codexAuth := []byte(`{"tokens":{"access_token":"a"},"last_refresh":"2026-10-15T02:48:19.5Z"}`)
+	if got, ok := CredentialChainPosition("codex", codexAuth); !ok || got != 1792032499500 {
+		t.Fatalf("Codex chain position = (%d, %v), want last_refresh in epoch ms", got, ok)
 	}
 }
 

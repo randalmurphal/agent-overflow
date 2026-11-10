@@ -152,7 +152,7 @@ func TestTokenLifetime(t *testing.T) {
 
 	t.Run("Close zeroes the token and refuses requests", func(t *testing.T) {
 		gh.credMu.RLock()
-		backing := gh.token.b
+		backing := gh.token.secret.Reveal()
 		gh.credMu.RUnlock()
 		s.Close()
 		for _, c := range backing {

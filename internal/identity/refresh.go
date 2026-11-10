@@ -404,7 +404,7 @@ func (s *Sessions) accessTokensFor(session store.Session, device store.Device, n
 		SessionID: session.ID,
 		IssuedAt:  now,
 		ExpiresAt: session.ExpiresAt,
-	}, key.Secret, s.backendID)
+	}, key.Secret.Reveal(), s.backendID)
 	if err != nil {
 		return TokenSet{}, err
 	}
@@ -420,11 +420,11 @@ func (s *Sessions) accessTokensFor(session store.Session, device store.Device, n
 // signingKeyByID resolves a key row through the same cache Verify uses,
 // rather than re-reading it per issuance.
 func (s *Sessions) signingKeyByID(keyID string) (store.SigningKey, error) {
-	secret, err := s.signingSecret(keyID)
+	keySecret, err := s.signingSecret(keyID)
 	if err != nil {
 		return store.SigningKey{}, fmt.Errorf("identity: read signing key %s: %w", keyID, err)
 	}
-	return store.SigningKey{ID: keyID, Secret: secret}, nil
+	return store.SigningKey{ID: keyID, Secret: keySecret}, nil
 }
 
 // generationNow snapshots the revocation generation. Capture it BEFORE

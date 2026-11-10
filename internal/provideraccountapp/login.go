@@ -101,7 +101,7 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 	// (org uuid + name) into the home's own .claude.json. Read it before
 	// the home is cleaned up. The email-paired acceptance rule applies as
 	// everywhere: a record describing a different email is discarded.
-	info = EnrichCodexIdentity(providerName, info, loginCredential.Data)
+	info = EnrichCodexIdentity(providerName, info, loginCredential.Bytes())
 	if providerName == string(provider.Claude) {
 		info = EnrichClaudeIdentity(
 			info,
@@ -159,7 +159,7 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 			targetID,
 			found,
 			info,
-			loginCredential.Data,
+			loginCredential.Bytes(),
 		)
 		if err != nil {
 			return ManagedAccount{}, err
@@ -187,12 +187,12 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 	if err := m.credentials.WriteAccountCredential(
 		providerName,
 		targetID,
-		loginCredential.Data,
+		loginCredential.Bytes(),
 	); err != nil {
 		return ManagedAccount{}, fmt.Errorf("save %s login credentials: %w", providerName, err)
 	}
 	restoreTarget := func() error {
-		return m.credentials.RestoreAccountCredential(savedTarget)
+		return m.credentials.RestoreAccountCredential(savedTarget, loginCredential.Bytes())
 	}
 
 	preserveID, currentCredential, err := m.reconciledActiveCredentialLocked(
@@ -228,7 +228,7 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 	}
 	if err := m.verifyCanonicalProviderCredentialLocked(
 		providerName,
-		loginCredential.Data,
+		loginCredential.Bytes(),
 	); err != nil {
 		if restoreErr := restoreTarget(); restoreErr != nil {
 			return ManagedAccount{}, errors.Join(err, restoreErr)
@@ -259,8 +259,8 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 
 	// A fresh sign-in is where the provider sets the session deadline this
 	// account will live by, so it is the first place worth reading it.
-	account = m.withRecordedLoginExpiry(account, loginCredential.Data)
-	m.rememberProviderCredentialFingerprintLocked(providerName, loginCredential.Data)
+	account = m.withRecordedLoginExpiry(account, loginCredential.Bytes())
+	m.rememberProviderCredentialFingerprintLocked(providerName, loginCredential.Bytes())
 	generation := m.store.Generation(providerName)
 	m.mu.Unlock()
 	accountLocked = false
@@ -309,7 +309,7 @@ func (m *Manager) saveLoginBesideActiveLocked(
 		account, err = m.store.Add(metadata)
 	}
 	if err != nil {
-		if restoreErr := m.credentials.RestoreAccountCredential(previous); restoreErr != nil {
+		if restoreErr := m.credentials.RestoreAccountCredential(previous, credential); restoreErr != nil {
 			return provideraccounts.Account{}, fmt.Errorf(
 				"%w (saved credential rollback also failed: %v)",
 				err,
