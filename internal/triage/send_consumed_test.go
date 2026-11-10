@@ -2,6 +2,7 @@ package triage
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -52,13 +53,18 @@ func endOpenTurn(t *testing.T, router *Router) {
 // sits in turn 0 and it reserved responseTurn for a pickup after turn 0.
 func queueDuringTurnZero(t *testing.T, router *Router, n int, sendID, echoID string, responseTurn int) store.Item {
 	t.Helper()
+	return queueDuringTurn(t, router, 0, n, sendID, echoID, responseTurn)
+}
+
+func queueDuringTurn(t *testing.T, router *Router, rowTurn, n int, sendID, echoID string, responseTurn int) store.Item {
+	t.Helper()
 	now := time.Now().UnixMilli()
 	meta, err := json.Marshal(map[string]string{"sendId": sendID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	row := store.Item{
-		ID: "user:0:flush:" + string(rune('0'+n)), ThreadID: "t1", TurnIndex: 0, Kind: "user_text", Role: "user",
+		ID: fmt.Sprintf("user:%d:flush:%d", rowTurn, n), ThreadID: "t1", TurnIndex: rowTurn, Kind: "user_text", Role: "user",
 		Status: "completed", Summary: "queued " + sendID, Meta: string(meta), CreatedAt: now, UpdatedAt: now,
 	}
 	if err := router.PersistAndRegisterPendingQuietFlushSendWithExpectation("t1", "queue-"+sendID, row, responseTurn, now, PendingSendExpectation{ProviderItemID: echoID}); err != nil {
@@ -124,11 +130,11 @@ func TestSendDrainedIntoTheRunningTurnIsAnsweredThere(t *testing.T) {
 	wantConsumed(t, reports, consumedReport{sendIDs: []string{"send-1"}, turn: 0})
 }
 
-// A message the provider takes at a turn boundary, before the turn that
-// answers it has started, is answered by the turn the next waiting send
-// opens, and by its own reservation when nothing else waits.
-func TestSendConsumedAtABoundaryIsAnsweredByTheNextTurn(t *testing.T) {
-	t.Run("another send waits", func(t *testing.T) {
+// A message the provider takes at a turn boundary is answered by the turn
+// that opens next, and is reported when that turn opens: until then it is
+// still waiting, and no reserved turn is named for it.
+func TestSendConsumedAtABoundaryIsAnsweredByTheTurnThatOpensNext(t *testing.T) {
+	t.Run("another send opens the turn", func(t *testing.T) {
 		router, st, _ := newTestRouter(t)
 		createTestThread(t, st, "t1")
 		reports := recordConsumed(router)
@@ -140,14 +146,15 @@ func TestSendConsumedAtABoundaryIsAnsweredByTheNextTurn(t *testing.T) {
 		if err := router.Handle(echoOf(first, "echo-1")); err != nil {
 			t.Fatalf("first echo: %v", err)
 		}
-		wantConsumed(t, reports, consumedReport{sendIDs: []string{"send-1"}, turn: 2})
+		wantConsumed(t, reports)
+		wantPendingSend(t, router, first.ID, "consumed at the boundary", 0, PendingSendWaiting)
 
 		if err := router.Handle(openerInit(t, provider.TurnOpenerCommand)); err != nil {
 			t.Fatalf("init: %v", err)
 		}
-		if open, ok := router.openTurnIndex("t1"); !ok || open != 2 {
-			t.Fatalf("open turn = %d/%v, want turn 2, the one the report named", open, ok)
-		}
+		wantConsumed(t, reports, consumedReport{sendIDs: []string{"send-1"}, turn: 2})
+		wantPendingSend(t, router, first.ID, "after the turn opened", 0, PendingSendNone)
+
 		if err := router.Handle(echoOf(second, "echo-2")); err != nil {
 			t.Fatalf("second echo: %v", err)
 		}
@@ -155,7 +162,7 @@ func TestSendConsumedAtABoundaryIsAnsweredByTheNextTurn(t *testing.T) {
 			consumedReport{sendIDs: []string{"send-1"}, turn: 2},
 			consumedReport{sendIDs: []string{"send-2"}, turn: 2})
 	})
-	t.Run("nothing else waits", func(t *testing.T) {
+	t.Run("the provider opens the turn", func(t *testing.T) {
 		router, st, _ := newTestRouter(t)
 		createTestThread(t, st, "t1")
 		reports := recordConsumed(router)
@@ -166,8 +173,166 @@ func TestSendConsumedAtABoundaryIsAnsweredByTheNextTurn(t *testing.T) {
 		if err := router.Handle(echoOf(row, "echo-1")); err != nil {
 			t.Fatalf("echo: %v", err)
 		}
-		wantConsumed(t, reports, consumedReport{sendIDs: []string{"send-1"}, turn: 1})
+		wantConsumed(t, reports)
+		if err := router.Handle(openerInit(t, provider.TurnOpenerCommand)); err != nil {
+			t.Fatalf("init: %v", err)
+		}
+		open, ok := router.openTurnIndex("t1")
+		if !ok {
+			t.Fatal("the init opened no turn")
+		}
+		wantConsumed(t, reports, consumedReport{sendIDs: []string{"send-1"}, turn: open})
 	})
+	// More sends than the merge ledger remembers: the fold declines, and
+	// every member is still answered by the one turn that ran.
+	t.Run("more sends than a fold can prove", func(t *testing.T) {
+		router, st, _ := newTestRouter(t)
+		createTestThread(t, st, "t1")
+		reports := recordConsumed(router)
+		startTurnZero(t, router)
+		const sends = flushSendDigestHistory + 1
+		rows := make([]store.Item, 0, sends)
+		for n := 1; n <= sends; n++ {
+			rows = append(rows, queueDuringTurnZero(t, router, n, fmt.Sprintf("send-%d", n), fmt.Sprintf("echo-%d", n), n))
+		}
+		endOpenTurn(t, router)
+		for n := 1; n < sends; n++ {
+			if err := router.Handle(echoOf(rows[n-1], fmt.Sprintf("echo-%d", n))); err != nil {
+				t.Fatalf("echo %d: %v", n, err)
+			}
+		}
+		wantConsumed(t, reports)
+		if err := router.Handle(openerInit(t, provider.TurnOpenerCommand)); err != nil {
+			t.Fatalf("init: %v", err)
+		}
+		if err := router.Handle(echoOf(rows[sends-1], fmt.Sprintf("echo-%d", sends))); err != nil {
+			t.Fatalf("last echo: %v", err)
+		}
+		if len(*reports) != sends {
+			t.Fatalf("%d reports, want one per send (%d): %+v", len(*reports), sends, *reports)
+		}
+		for i, report := range *reports {
+			if report.turn != sends || !slices.Equal(report.sendIDs, []string{fmt.Sprintf("send-%d", i+1)}) {
+				t.Fatalf("report %d = %+v, want send-%d answered by turn %d, the one that ran", i, report, i+1, sends)
+			}
+		}
+	})
+}
+
+// A confirmation that arrives after its turn closed names the turn that
+// took the send, not the turn a later waiting send reserved.
+func TestLateConfirmationNamesTheTurnThatTookTheSend(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	reports := recordConsumed(router)
+	startTurnZero(t, router)
+	first := queueDuringTurnZero(t, router, 1, "send-1", "echo-1", 1)
+	endOpenTurn(t, router)
+	if err := router.Handle(openerInit(t, provider.TurnOpenerCommand)); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	queueDuringTurn(t, router, 1, 1, "send-2", "echo-2", 2)
+	endOpenTurn(t, router)
+
+	if err := router.Handle(echoOf(first, "echo-1")); err != nil {
+		t.Fatalf("late echo: %v", err)
+	}
+	wantConsumed(t, reports, consumedReport{sendIDs: []string{"send-1"}, turn: 1})
+}
+
+// A send the model started reading inside a turn is answered by that turn
+// when its confirmation arrives after the turn closed.
+func TestLateConfirmationNamesTheTurnTheSendStartedIn(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	reports := recordConsumed(router)
+	startTurnZero(t, router)
+	first := queueDuringTurnZero(t, router, 1, "send-1", "echo-1", 1)
+	queueDuringTurnZero(t, router, 2, "send-2", "echo-2", 2)
+	router.markPendingSendStarted("t1", "echo-1")
+	endOpenTurn(t, router)
+
+	if err := router.Handle(echoOf(first, "echo-1")); err != nil {
+		t.Fatalf("late echo: %v", err)
+	}
+	wantConsumed(t, reports, consumedReport{sendIDs: []string{"send-1"}, turn: 0})
+}
+
+// A direct send drained into a running turn opens its own turn when it is
+// consumed, and the rest of the loop runs there: that turn answers, not the
+// one the model started reading it in.
+func TestDirectSendDrainedMidTurnIsAnsweredByItsOwnTurn(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	reports := recordConsumed(router)
+	startTurnZero(t, router)
+	now := time.Now().UnixMilli()
+	if err := router.PersistItem(store.Item{
+		ID: "user:1", ThreadID: "t1", TurnIndex: 1, Kind: "user_text", Role: "user", Status: "completed",
+		Summary: "sent", Meta: `{"sendId":"send-direct"}`, CreatedAt: now, UpdatedAt: now,
+	}, nil); err != nil {
+		t.Fatalf("persist send row: %v", err)
+	}
+	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{ProviderItemID: "echo-direct"})
+	router.markPendingSendStarted("t1", "echo-direct")
+
+	if err := router.Handle(provider.ProviderEvent{Kind: provider.EventUserText, ThreadID: "t1", Content: "sent", Meta: json.RawMessage(`{"provider_item_id":"echo-direct"}`), Timestamp: time.Now()}); err != nil {
+		t.Fatalf("echo: %v", err)
+	}
+	if open, ok := router.openTurnIndex("t1"); !ok || open != 1 {
+		t.Fatalf("open turn = %d/%v, want the send's own turn 1", open, ok)
+	}
+	wantConsumed(t, reports, consumedReport{sendIDs: []string{"send-direct"}, turn: 1})
+}
+
+// A confirmation that is retried keeps the answer its first attempt named.
+func TestRetriedConfirmationKeepsItsFirstAnswer(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	reports := recordConsumed(router)
+	startTurnZero(t, router)
+	row := queueDuringTurnZero(t, router, 1, "send-1", "echo-1", 1)
+	consumed := pendingSend{AOItemID: row.ID, TurnIndex: 1, QuietItem: &row}
+
+	router.reportSendConsumed("t1", &consumed)
+	endOpenTurn(t, router)
+	if err := router.Handle(openerInit(t, provider.TurnOpenerCommand)); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	router.reportSendConsumed("t1", &consumed)
+	wantConsumed(t, reports, consumedReport{sendIDs: []string{"send-1"}, turn: 0})
+}
+
+// A send consumed at a boundary reads as waiting until the hook has been
+// told its turn: a reader never finds it consumed with its turn unwritten.
+func TestBoundarySendWaitsUntilItsTurnIsReported(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	startTurnZero(t, router)
+	row := queueDuringTurnZero(t, router, 1, "send-1", "echo-1", 1)
+	endOpenTurn(t, router)
+
+	inHook, release := make(chan struct{}), make(chan struct{})
+	router.SetSendConsumedHook(func(string, []string, int) {
+		close(inHook)
+		<-release
+	})
+	if err := router.Handle(echoOf(row, "echo-1")); err != nil {
+		t.Fatalf("echo: %v", err)
+	}
+	opened := make(chan error, 1)
+	go func() { opened <- router.Handle(openerInit(t, provider.TurnOpenerCommand)) }()
+	select {
+	case <-inHook:
+	case err := <-opened:
+		t.Fatalf("the turn opened (err %v) without the hook being told about the boundary send", err)
+	}
+	wantPendingSend(t, router, row.ID, "while the hook is being told", 0, PendingSendWaiting)
+	close(release)
+	if err := <-opened; err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	wantPendingSend(t, router, row.ID, "after the hook returned", 0, PendingSendNone)
 }
 
 // A queue-boundary merge answers every member in the survivor's turn: the

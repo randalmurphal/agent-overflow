@@ -226,6 +226,11 @@ type threadState struct {
 	// DrainUnconfirmedFlushItems; swept at cleanup, so a Stop drops them
 	// with the rest of the queue.
 	undeliveredSends []UnconfirmedFlushItem
+	// boundarySends are sends the provider consumed with no turn open and
+	// none it had started in: the turn that opens next answers them
+	// (send_consumed.go). One entry per consumed pending send; emptied when
+	// a turn opens and by MarkThreadActive.
+	boundarySends []boundarySend
 	// recentFlushDigests is the bounded, ordered history of this thread's
 	// flush sends and the content-block fingerprints they put on the wire.
 	// It outlives the pendingSends entry because the evidence for a provider

@@ -667,6 +667,7 @@ func (r *Router) reopenSoftClosedTurn(evt provider.ProviderEvent) (bool, error) 
 	st.openTurn, st.openTurnSet = turnIndex, true
 	delete(st.settledTurns, turnIndex)
 	r.mu.Unlock()
+	r.reportBoundarySends(evt.ThreadID, turnIndex)
 
 	err := r.store.ReopenTurn(r.persistedTurnID(evt, turnIndex))
 	if err != nil {
@@ -1172,6 +1173,7 @@ func (r *Router) setOpenTurn(threadID string, turnIndex int) error {
 	// the second complete takes the late-fold path.
 	delete(st.settledTurns, turnIndex)
 	r.mu.Unlock()
+	r.reportBoundarySends(threadID, turnIndex)
 	return scopeErr
 }
 
@@ -1271,6 +1273,7 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 	// a replacement session's reused turn indexes (revert paths) never
 	// meet a dead session's marks (round-11, CT11-2).
 	r.mu.Unlock()
+	r.reportBoundarySends(threadID, turnIndex)
 
 	if hasOpen {
 		r.settleQueuedEchoPredecessor(threadID, open, startedAt, r.predecessorStopReason(threadID, open, interruptedTurnIndex))
@@ -2131,6 +2134,9 @@ func (r *Router) MarkThreadActive(threadID string) {
 		// (see the doc comment above).
 		st.settledTurns = nil
 		st.softClosedTurnSet = false
+		// The previous session consumed these and started no turn for
+		// them; a turn of this session does not answer them.
+		st.boundarySends = nil
 		hadEffectiveModel = st.effectiveModelSet
 		st.effectiveModel, st.effectiveModelSet = "", false
 		// A pending harness wakeup is in-process state of the PREVIOUS

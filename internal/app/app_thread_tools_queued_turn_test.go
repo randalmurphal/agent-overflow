@@ -47,6 +47,12 @@ func newQueuedRequests(t *testing.T) *queuedRequests {
 // queue adds the n-th request queued during turn 0, reserving responseTurn.
 func (q *queuedRequests) queue(t *testing.T, n, responseTurn int) *queuedRequest {
 	t.Helper()
+	return q.queueDuring(t, 0, n, responseTurn)
+}
+
+// queueDuring adds the n-th request queued while rowTurn runs.
+func (q *queuedRequests) queueDuring(t *testing.T, rowTurn, n, responseTurn int) *queuedRequest {
+	t.Helper()
 	r := &queuedRequest{q: q, token: newThreadRequestToken(), echo: "echo-" + strconv.Itoa(n)}
 	meta, err := json.Marshal(map[string]string{"sendId": threadRequestSendID(r.token)})
 	if err != nil {
@@ -54,7 +60,7 @@ func (q *queuedRequests) queue(t *testing.T, n, responseTurn int) *queuedRequest
 	}
 	now := time.Now().UnixMilli()
 	r.row = store.Item{
-		ID: "user:0:flush:" + strconv.Itoa(n), ThreadID: q.target.ID, TurnIndex: 0, Kind: "user_text", Role: "user",
+		ID: "user:" + strconv.Itoa(rowTurn) + ":flush:" + strconv.Itoa(n), ThreadID: q.target.ID, TurnIndex: rowTurn, Kind: "user_text", Role: "user",
 		Status: "completed", Summary: "question " + strconv.Itoa(n), Meta: string(meta), CreatedAt: now, UpdatedAt: now,
 	}
 	if err := q.f.app.triage.PersistAndRegisterPendingQuietFlushSendWithExpectation(
@@ -257,9 +263,10 @@ func TestRequestsBatchedAtTheBoundarySettleOnTheTurnThatRan(t *testing.T) {
 
 	first.consumed(t)
 	first.observeTurnEnd(t)
-	first.wantRunningIn(t, "first, taken at the boundary", 2)
+	first.wantRunning(t, "first, taken at the boundary")
 
 	q.startPickupTurn(t)
+	first.wantRunningIn(t, "first, once the turn that answers opened", 2)
 	second.consumed(t)
 	q.say(t, 2, "both answers, in one turn")
 	q.endTurn(t)
@@ -267,6 +274,28 @@ func TestRequestsBatchedAtTheBoundarySettleOnTheTurnThatRan(t *testing.T) {
 	second.observeTurnEnd(t)
 	first.wantFinishedWith(t, "both answers")
 	second.wantFinishedWith(t, "both answers")
+}
+
+// A confirmation can arrive after its turn closed, with another request
+// waiting behind it. The request settles on the turn that took its message,
+// not on the turn the waiting request reserved.
+func TestALateConfirmationSettlesTheRequestOnTheTurnThatTookIt(t *testing.T) {
+	t.Parallel()
+	q := newQueuedRequests(t)
+	first := q.queue(t, 1, 1)
+	first.bind(t)
+	q.endTurn(t)
+	q.startPickupTurn(t)
+	second := q.queueDuring(t, 1, 1, 2)
+	second.bind(t)
+	q.say(t, 1, "the answer to the first question")
+	q.endTurn(t)
+
+	first.consumed(t)
+	first.observeTurnEnd(t)
+	second.observeTurnEnd(t)
+	first.wantFinishedWith(t, "the answer to the first question")
+	second.wantRunning(t, "second, still waiting for its own turn")
 }
 
 // The binding can land after turn 0 ended, and after the provider consumed

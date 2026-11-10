@@ -176,6 +176,15 @@ type pendingSend struct {
 	// the message reached the model. It decides what the send's terminal
 	// lifecycle state means (handleCommandLifecycle).
 	Started bool
+	// StartedTurn is the turn that was open when `started` arrived, when
+	// one was: the turn the model read the message in. It answers for a
+	// confirmation that arrives after that turn closed.
+	StartedTurn    int
+	StartedTurnSet bool
+	// AnswerReported: the consumed hook has been told, or the send waits
+	// in boundarySends to be told, which turn answers. A retried
+	// confirmation keeps that answer.
+	AnswerReported bool
 
 	Confirmation *userMessageConfirmation
 }
@@ -399,16 +408,18 @@ const (
 	// (the consumed hook has run) or the entry was dropped.
 	PendingSendNone PendingSendState = iota
 	// PendingSendWaiting: the provider has the send and no turn has taken
-	// it. A turn that ends now did not read it.
+	// it, or consumed it at a turn boundary and the turn that answers has
+	// not opened. A turn that ends now did not read it.
 	PendingSendWaiting
 	// PendingSendClaimed: a turn start took the send as the returned turn.
 	PendingSendClaimed
 )
 
-// PendingSendTurn reports where the unconsumed send whose row is aoItemID
-// stands, and for a claimed one the turn that took it. It waits out a
-// confirmation in progress, so PendingSendNone after a consumption is
-// reported only once the consumed hook has run.
+// PendingSendTurn reports where the send whose row is aoItemID stands, and
+// for a claimed one the turn that took it. It waits out a confirmation in
+// progress, and a send consumed at a turn boundary stays waiting until the
+// consumed hook has been told its turn, so PendingSendNone after a
+// consumption is reported only once the hook has run.
 func (r *Router) PendingSendTurn(threadID, aoItemID string) (int, PendingSendState) {
 	anchor := r.flushAnchor(threadID)
 	anchor.Lock()
@@ -423,6 +434,13 @@ func (r *Router) PendingSendTurn(threadID, aoItemID string) (int, PendingSendSta
 			return entry.TurnIndex, PendingSendClaimed
 		}
 		return 0, PendingSendWaiting
+	}
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		for _, send := range st.boundarySends {
+			if send.aoItemID == aoItemID {
+				return 0, PendingSendWaiting
+			}
+		}
 	}
 	return 0, PendingSendNone
 }
@@ -459,6 +477,9 @@ func (r *Router) markPendingSendStarted(threadID, providerItemID string) {
 	for i := range queue {
 		if queue[i].ExpectedProviderItemID == providerItemID {
 			queue[i].Started = true
+			if st := r.threadStateIfPresent(threadID); st != nil && st.openTurnSet && !queue[i].StartedTurnSet {
+				queue[i].StartedTurn, queue[i].StartedTurnSet = st.openTurn, true
+			}
 			return
 		}
 	}

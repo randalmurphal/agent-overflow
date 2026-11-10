@@ -2,35 +2,50 @@ package triage
 
 import (
 	"log"
+	"slices"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/usermessage"
 )
 
-// send_consumed.go names the turn that answers a send at the moment the
-// provider consumes it.
+// send_consumed.go names the turn that answers a send once the provider has
+// consumed it.
 //
 // A send's row does not say where its answer runs. A message queued while a
 // turn runs keeps its row in that turn, and the provider either drains it
-// into that turn, picks it up afterwards as a turn of its own, or batches it
-// at the boundary with a later message and answers both in that one's turn
+// into that turn, picks it up afterwards as a turn of its own, or takes it
+// at the boundary with later messages and answers them all in one turn
 // (claude_merge_fold.go). The confirmation is where the difference is
 // visible, so that is where it is reported, once, to an owner that keeps it.
+// Nothing here predicts a turn: a send whose turn has not opened waits for
+// the turn start that names it.
+
+// boundarySend is a send consumed with no turn to name yet.
+type boundarySend struct {
+	aoItemID string
+	sendIDs  []string
+}
 
 // SetSendConsumedHook registers the callback told which turn answers each
-// send the provider consumes. It runs under the thread's flush anchor lock,
-// inside the confirmation transaction: PendingSendTurn reports a send
-// consumed only after the callback returned. The callback must not call back
-// into the Router and must not block; store work is fine.
+// send the provider consumes. PendingSendTurn reports a send consumed only
+// after the callback returned for it. A call made at a confirmation runs
+// under the thread's flush anchor lock; a call made when a turn opens does
+// not. The callback must not call back into the Router and must not block;
+// store work is fine.
 func (r *Router) SetSendConsumedHook(fn func(threadID string, sendIDs []string, answerTurn int)) {
 	r.mu.Lock()
 	r.sendConsumed = fn
 	r.mu.Unlock()
 }
 
-// reportSendConsumed tells the hook which turn answers consumed. Caller holds
-// the thread's flush anchor lock and has run the confirmation handlers.
+// reportSendConsumed tells the hook which turn answers consumed, or leaves
+// the send for the next turn that opens. Caller holds the thread's flush
+// anchor lock and has run the confirmation handlers. A retried confirmation
+// is not reported again: the first one's answer stands.
 func (r *Router) reportSendConsumed(threadID string, consumed *pendingSend) {
+	if consumed.AnswerReported {
+		return
+	}
 	r.mu.Lock()
 	hook := r.sendConsumed
 	r.mu.Unlock()
@@ -45,21 +60,79 @@ func (r *Router) reportSendConsumed(threadID string, consumed *pendingSend) {
 	if len(sendIDs) == 0 {
 		return
 	}
-	hook(threadID, sendIDs, r.answeringTurn(threadID, consumed))
+	consumed.AnswerReported = true
+	r.mu.Lock()
+	turn, known := r.answeringTurnLocked(threadID, consumed)
+	if !known {
+		st := r.state(threadID)
+		st.boundarySends = append(st.boundarySends, boundarySend{aoItemID: consumed.AOItemID, sendIDs: sendIDs})
+	}
+	r.mu.Unlock()
+	if known {
+		hook(threadID, sendIDs, turn)
+	}
 }
 
-// answeringTurn is the turn that answers a send consumed now: the open turn,
-// which consumed it. With no turn open the provider took it at a turn
-// boundary, and the turn that opens next answers it: the one the next
-// waiting send reserved, or its own reservation when it is the last.
-func (r *Router) answeringTurn(threadID string, consumed *pendingSend) int {
-	if open, ok := r.openTurnIndex(threadID); ok {
-		return open
+// answeringTurnLocked is the turn that answers a send confirmed now, in the
+// order the evidence is worth:
+//
+//   - a turn start took the send: that turn, however late the confirmation;
+//   - its own turn is open: the consumption opened it;
+//   - `started` arrived inside a turn: the model read it there;
+//   - a turn is open: it consumed the send;
+//   - none of these: the provider took it at a turn boundary, and the turn
+//     that opens next answers (reportBoundarySends).
+//
+// Caller holds r.mu.
+func (r *Router) answeringTurnLocked(threadID string, consumed *pendingSend) (int, bool) {
+	if consumed.OpenedTurn {
+		return consumed.TurnIndex, true
 	}
-	if next, ok := r.turnOpeningPendingSend(threadID); ok {
-		return next.TurnIndex
+	st := r.threadStateIfPresent(threadID)
+	open, isOpen := 0, false
+	if st != nil && st.openTurnSet {
+		open, isOpen = st.openTurn, true
 	}
-	return consumed.TurnIndex
+	switch {
+	case isOpen && open == consumed.TurnIndex:
+		return open, true
+	case consumed.StartedTurnSet:
+		return consumed.StartedTurn, true
+	case isOpen:
+		return open, true
+	}
+	return 0, false
+}
+
+// reportBoundarySends tells the hook that turnIndex, which has just opened,
+// answers every send consumed at the boundary before it. A send leaves
+// boundarySends only after the hook returned for it, so PendingSendTurn
+// never reports it consumed with its turn unwritten.
+func (r *Router) reportBoundarySends(threadID string, turnIndex int) {
+	r.mu.Lock()
+	st := r.threadStateIfPresent(threadID)
+	if st == nil || len(st.boundarySends) == 0 {
+		r.mu.Unlock()
+		return
+	}
+	hook := r.sendConsumed
+	sends := slices.Clone(st.boundarySends)
+	r.mu.Unlock()
+	if hook != nil {
+		for _, send := range sends {
+			hook(threadID, send.sendIDs, turnIndex)
+		}
+	}
+	r.mu.Lock()
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		// Appends happen only on the provider event worker, which is
+		// where this runs, so the reported sends are still the head.
+		st.boundarySends = slices.Delete(st.boundarySends, 0, min(len(sends), len(st.boundarySends)))
+		if len(st.boundarySends) == 0 {
+			st.boundarySends = nil
+		}
+	}
+	r.mu.Unlock()
 }
 
 // consumedSendIDs reads the send ids of the consumed send's row. The stored
