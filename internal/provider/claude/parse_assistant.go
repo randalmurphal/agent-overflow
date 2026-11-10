@@ -188,20 +188,20 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 			// the error copy, owned by the EventError path below — see the
 			// errorEnum comment above.
 			if errorEnum == "" && !p.hasStreamedMessageID(msg.ID) {
-				events = p.appendRecoveredBlockEvent(events, threadID, parentToolUseID, msg.ID, "text", block.Text, now)
+				events = p.appendRecoveredBlockEvent(events, threadID, parentToolUseID, msg.ID, "text", block.Text, false, now)
 			}
 		case "tool_use":
 			events = p.appendAdvisorCallsNotRun(events, threadID, parentToolUseID, msg.ID, now)
 			events = p.appendToolUseEvent(events, threadID, parentToolUseID, msg.ID, now, block)
 		case "thinking":
 			// Same contract as text, including the error-envelope skip. The
-			// thinking signature is not recovered: on the wire it rides
-			// `signature_delta`, which we deliberately don't handle
-			// (claude-wire.md §Delta types) — the CLI's session jsonl is
-			// authoritative for resume/fork replay, so AO never needs the
-			// signature. See the streamedMessageIDs field doc.
+			// signature itself is not kept: the CLI's session jsonl is
+			// authoritative for resume/fork replay. Only its tag is read,
+			// so a block the model wrote as prose for the user is recovered
+			// as one (provider.MetaNarrationKey). See the streamedMessageIDs
+			// field doc and claude-wire.md §The signature tag.
 			if errorEnum == "" && !p.hasStreamedMessageID(msg.ID) {
-				events = p.appendRecoveredBlockEvent(events, threadID, parentToolUseID, msg.ID, "thinking", block.Thinking, now)
+				events = p.appendRecoveredBlockEvent(events, threadID, parentToolUseID, msg.ID, "thinking", block.Thinking, sessionimport.ThinkingIsNarration(block.Signature), now)
 			}
 		case "server_tool_use":
 			// Claude's server-side tool call (today: `advisor`). The
@@ -301,6 +301,7 @@ func (p *Parser) appendRecoveredBlockEvent(
 	events []provider.ProviderEvent,
 	threadID, parentToolUseID, messageID string,
 	blockType, content string,
+	narration bool,
 	now time.Time,
 ) []provider.ProviderEvent {
 	if content == "" {
@@ -313,7 +314,7 @@ func (p *Parser) appendRecoveredBlockEvent(
 		ItemID:          recoveredBlockItemID(messageID, index),
 		Content:         content,
 		ContentPresent:  true,
-		Meta:            blockMeta(index, blockType, messageID),
+		Meta:            settledBlockMeta(index, blockType, messageID, narration),
 		ParentToolUseID: parentToolUseID,
 		Timestamp:       now,
 	})

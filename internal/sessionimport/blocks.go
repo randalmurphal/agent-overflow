@@ -27,7 +27,7 @@ func (b *builder) extendStreamBlock(evt importir.Event, itemID, kind string, now
 	if !ok {
 		return fmt.Errorf("%s block %s vanished from the batch", kind, itemID)
 	}
-	return b.setStreamBlockContent(evt, r, kind, now, string(r.payload.Data)+evt.Content)
+	return b.setStreamBlockContent(evt, r, now, string(r.payload.Data)+evt.Content)
 }
 
 // resolveStreamBlock looks up an open block's row by id.
@@ -42,11 +42,13 @@ func (b *builder) resolveStreamBlock(itemID, kind string) (*row, error) {
 // setStreamBlockContent rewrites one open block's content. Its two callers
 // differ only in what "full" is: a delta APPENDS to what streamed, a
 // settle REPLACES it — the same split doSettleStreamingText makes when the
-// stop carries final content.
-func (b *builder) setStreamBlockContent(evt importir.Event, r *row, kind string, now int64, full string) error {
+// stop carries final content. The row's own kind decides its summary and
+// payload shape: a thinking block the provider marked as prose is an
+// assistant text row in a thinking slot (streamBlock).
+func (b *builder) setStreamBlockContent(evt importir.Event, r *row, now int64, full string) error {
 	r.payload.Data = []byte(full)
-	r.payload.Meta = triage.BuildPayloadMeta(kind, provider.ProviderEvent{Content: full})
-	if kind == kindThinking {
+	r.payload.Meta = triage.BuildPayloadMeta(r.item.Kind, provider.ProviderEvent{Content: full})
+	if r.item.Kind == kindThinking {
 		r.item.Summary = triage.ThinkingSummaryPreview(full)
 	} else {
 		r.item.Summary = full
@@ -81,6 +83,12 @@ func (b *builder) thinking(evt importir.Event) error {
 // live session accumulates these from deltas and settles them completed;
 // an import receives whole blocks, so the row is born completed with the
 // same id, payload id, summary rule and meta the settled live row has.
+//
+// A thinking block carrying provider.MetaNarrationKey is one the provider
+// marked as prose for the user. Live, its row settles as assistant text
+// and keeps its thinking identity (triage narration.go), so here it takes
+// a thinking slot, id and payload id, and is otherwise an assistant text
+// row; the key stays in its meta.
 func (b *builder) streamBlock(evt importir.Event, kind string) error {
 	if evt.Content == "" {
 		return nil
@@ -118,8 +126,12 @@ func (b *builder) streamBlock(evt importir.Event, kind string) error {
 		payloadID = triage.AssistantTextPayloadID(itemID)
 	}
 
+	rowKind := kind
+	if kind == kindThinking && metaBool(evt.Meta, provider.MetaNarrationKey) {
+		rowKind = kindAssistantText
+	}
 	summary := evt.Content
-	if kind == kindThinking {
+	if rowKind == kindThinking {
 		summary = triage.ThinkingSummaryPreview(evt.Content)
 	}
 	metaObject := b.providerMetaObject(evt)
@@ -127,13 +139,13 @@ func (b *builder) streamBlock(evt importir.Event, kind string) error {
 		"provider_item_id": strings.TrimSpace(evt.ItemID),
 	}))
 	payloadMeta := "{}"
-	if kind == kindThinking {
+	if rowKind == kindThinking {
 		payloadMeta = triage.BuildThinkingPayloadMeta(evt.Content, metaStringObject(metaObject, "signature"))
 	}
 	if _, err := b.appendRow(evt, store.Item{
 		ID:        itemID,
 		TurnIndex: turnIndex,
-		Kind:      kind,
+		Kind:      rowKind,
 		Role:      "assistant",
 		Status:    statusCompleted,
 		Summary:   summary,
@@ -143,7 +155,7 @@ func (b *builder) streamBlock(evt importir.Event, kind string) error {
 		UpdatedAt: now,
 	}, &store.Payload{
 		ID:        payloadID,
-		Kind:      kind,
+		Kind:      rowKind,
 		Meta:      payloadMeta,
 		Data:      []byte(evt.Content),
 		CreatedAt: now,
@@ -219,7 +231,7 @@ func (b *builder) contentBlockStop(evt importir.Event) error {
 			return err
 		}
 		delete(active, key)
-		return b.setStreamBlockContent(evt, r, kind, now, evt.Content)
+		return b.setStreamBlockContent(evt, r, now, evt.Content)
 	}
 	if err := b.streamBlock(evt, kind); err != nil {
 		return err
