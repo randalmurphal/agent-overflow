@@ -60,11 +60,14 @@ jobs:
               - scripts/perfprobe
               - frontend/src/test
               - "**/*.test.ts"
-              - cmd/ao-harness
-              - cmd/ao-mockprovider
+      # paths-ignore does not reach a traced Go build: the extractor takes
+      # the packages the build compiles. The harness and the mock provider
+      # are test tooling like the paths above, so they are not built here.
       - name: Build for the Go extractor
         if: matrix.language == 'go'
-        run: go build ./...
+        run: |
+          go build $(go list -f '{{if or .GoFiles .CgoFiles}}{{.ImportPath}}{{end}}' ./... \
+            | grep -v -e '^$' -e '/cmd/ao-harness$' -e '/cmd/ao-mockprovider$')
       - uses: github/codeql-action/analyze@d208ec71e39ae46397cbf6569bef8439b9aab974 # codeql-bundle-v2.27.2
         with:
           category: /language:${{ matrix.language }}
