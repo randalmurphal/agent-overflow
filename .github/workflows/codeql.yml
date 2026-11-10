@@ -65,7 +65,9 @@ jobs:
       # are test tooling like the paths above, so they are not built here.
       - name: Build for the Go extractor
         if: matrix.language == 'go'
-        run: go build $(go list ./... | grep -v -e '/cmd/ao-harness$' -e '/cmd/ao-mockprovider$')
+        run: |
+          go build $(go list -f '{{if or .GoFiles .CgoFiles}}{{.ImportPath}}{{end}}' ./... \
+            | grep -v -e '^$' -e '/cmd/ao-harness$' -e '/cmd/ao-mockprovider$')
       - uses: github/codeql-action/analyze@d208ec71e39ae46397cbf6569bef8439b9aab974 # codeql-bundle-v2.27.2
         with:
           category: /language:${{ matrix.language }}
