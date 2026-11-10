@@ -67,7 +67,7 @@ describe('<SendButton>', () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
-  it('shows the stop variant during the optimistic sendInFlight window', async () => {
+  it('shows the stop variant during the sendInFlight window', async () => {
     const onSend = vi.fn();
     const onInterrupt = vi.fn();
     // sendInFlight=true with isTurnActive=false simulates the dispatch
@@ -82,6 +82,112 @@ describe('<SendButton>', () => {
     await fireEvent.click(btn);
     expect(onInterrupt).toHaveBeenCalledOnce();
     expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('reads as sending, with no action, while a sent message awaits its confirmation', async () => {
+    const onSend = vi.fn();
+    const onInterrupt = vi.fn();
+    // The dispatch window and an active turn both offer Stop on their
+    // own; a pending send outranks them.
+    const { getByTestId, queryByTestId } = render(SendButton, {
+      props: { canSend: false, isTurnActive: true, sendInFlight: true, sendPending: true, onSend, onInterrupt },
+    });
+    expect(queryByTestId('composer-interrupt')).toBeNull();
+    const btn = getByTestId('composer-send') as HTMLButtonElement;
+    expect(btn.hasAttribute('data-pending')).toBe(true);
+    expect(btn.getAttribute('aria-busy')).toBe('true');
+    expect(btn.getAttribute('aria-label')).toBe('Sending message');
+    expect(btn.title).toBe('Sending message');
+    expect(btn.disabled).toBe(true);
+    expect(btn.querySelector('[data-testid="stepped-spinner"]')).not.toBeNull();
+    await fireEvent.click(btn);
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onInterrupt).not.toHaveBeenCalled();
+  });
+
+  it('is not marked pending when no send awaits confirmation', () => {
+    const { getByTestId } = render(SendButton, {
+      props: { canSend: false, isTurnActive: false, onSend: vi.fn(), onInterrupt: vi.fn() },
+    });
+    const btn = getByTestId('composer-send') as HTMLButtonElement;
+    expect(btn.hasAttribute('data-pending')).toBe(false);
+    expect(btn.getAttribute('aria-busy')).toBe('false');
+    expect(btn.getAttribute('aria-label')).toBe('Send message');
+    expect(btn.querySelector('[data-testid="stepped-spinner"]')).toBeNull();
+  });
+
+  it('yields the pending state to Send once there is a new draft to send', async () => {
+    const onSend = vi.fn();
+    const { getByTestId } = render(SendButton, {
+      props: { canSend: true, isTurnActive: false, sendPending: true, onSend, onInterrupt: vi.fn() },
+    });
+    const btn = getByTestId('composer-send') as HTMLButtonElement;
+    expect(btn.hasAttribute('data-pending')).toBe(false);
+    expect(btn.getAttribute('aria-busy')).toBe('false');
+    expect(btn.getAttribute('aria-label')).toBe('Send message');
+    expect(btn.disabled).toBe(false);
+    await fireEvent.click(btn);
+    expect(onSend).toHaveBeenCalledOnce();
+  });
+
+  it('keeps a labeled button\'s content in flow, unseen, under the spinner', async () => {
+    const props = {
+      canSend: false, isTurnActive: false, action: 'refine' as const, label: 'Refine',
+      onSend: vi.fn(), onInterrupt: vi.fn(),
+    };
+    const { getByTestId, queryByTestId, rerender } = render(SendButton, { props: { ...props, sendPending: true } });
+    const content = getByTestId('composer-send-content');
+    expect(content.textContent?.trim()).toBe('Refine');
+    expect(content.classList.contains('invisible')).toBe(true);
+    expect(getByTestId('composer-send-spinner').querySelector('[data-testid="stepped-spinner"]')).not.toBeNull();
+
+    await rerender({ ...props, sendPending: false });
+    expect(getByTestId('composer-send-content').classList.contains('invisible')).toBe(false);
+    expect(queryByTestId('composer-send-spinner')).toBeNull();
+  });
+
+  it.each([
+    {
+      name: 'implement',
+      props: { action: 'implement' as const, label: 'Implement', onSendInNewThread: vi.fn() },
+      idleLabel: 'Implement proposed plan',
+    },
+    {
+      name: 'send-comments',
+      props: { action: 'send-comments' as const, label: 'Send comments', planCommentCount: 2, onSendWithoutPlanComments: vi.fn() },
+      idleLabel: 'Send plan comments',
+    },
+  ])('reads as sending on the $name split button, with neither half offering an action', async ({ props, idleLabel }) => {
+    const onSend = vi.fn();
+    const base = { canSend: false, isTurnActive: false, onSend, onInterrupt: vi.fn(), ...props };
+    const { getByTestId, queryByTestId, queryByRole, rerender } = render(SendButton, { props: { ...base, sendPending: true } });
+    const btn = getByTestId('composer-send') as HTMLButtonElement;
+    const menu = getByTestId('composer-send-menu') as HTMLButtonElement;
+    expect(btn.hasAttribute('data-pending')).toBe(true);
+    expect(btn.getAttribute('aria-busy')).toBe('true');
+    expect(btn.getAttribute('aria-label')).toBe('Sending message');
+    expect(btn.title).toBe('Sending message');
+    expect(btn.disabled).toBe(true);
+    expect(menu.disabled).toBe(true);
+    expect(btn.className).not.toContain('disabled:opacity-30');
+    expect(menu.className).not.toContain('disabled:opacity-30');
+    expect(getByTestId('composer-send-spinner').querySelector('[data-testid="stepped-spinner"]')).not.toBeNull();
+    const content = getByTestId('composer-send-content');
+    expect(content.textContent).toContain(props.label);
+    expect(content.classList.contains('invisible')).toBe(true);
+    await fireEvent.click(btn);
+    await fireEvent.click(menu);
+    expect(onSend).not.toHaveBeenCalled();
+    expect(queryByRole('menu')).toBeNull();
+
+    await rerender({ ...base, sendPending: false });
+    const idle = getByTestId('composer-send') as HTMLButtonElement;
+    expect(idle.hasAttribute('data-pending')).toBe(false);
+    expect(idle.getAttribute('aria-busy')).toBe('false');
+    expect(idle.getAttribute('aria-label')).toBe(idleLabel);
+    expect(idle.className).toContain('disabled:opacity-30');
+    expect(getByTestId('composer-send-content').classList.contains('invisible')).toBe(false);
+    expect(queryByTestId('composer-send-spinner')).toBeNull();
   });
 
   it('stays a disabled Send with an explanation while a revert is committing', async () => {

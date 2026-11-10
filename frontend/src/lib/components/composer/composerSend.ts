@@ -31,7 +31,7 @@ export interface SendOptions {
   message: string;
   /** Captured draft persistence must succeed before any send is issued. */
   draftReady?: Promise<void>;
-  /** Built once before the optimistic row; the same sendId reaches the wire. */
+  /** Built once per send; a retry reaches the wire with the same sendId. */
   options: OutgoingSendOptions;
   /** Draft snapshot used to restore the composer on send failure. */
   snapshot: {
@@ -64,10 +64,10 @@ export async function dispatchSend(opts: SendOptions): Promise<boolean> {
     if (undo.undoRequested) { outcome = 'cancelled'; return false; }
     undo.dispatched = true;
     const autoPinAfterSend = shouldAutoPinFirstSend(getThreadById(opts.threadId));
-    // Optimistically flip the sidebar pill to Working the moment the
-    // user clicks Send. Provider sessions for brand-new threads take
-    // seconds to cold-start before the backend emits `turn_started`;
-    // without this, the row would sit idle for that whole window while
+    // Flip the sidebar pill to Working the moment the user clicks Send.
+    // Provider sessions for brand-new threads take seconds to cold-start
+    // before the backend emits `turn_started`; without this, the row
+    // would sit idle for that whole window while
     // the agent is clearly "working" from the user's POV. Cleared by
     // applyTurnStarted (takeover on real backend signal) or by the
     // catch branch below if SendMessage itself rejects.

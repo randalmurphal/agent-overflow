@@ -37,6 +37,27 @@ Claude answering a background task notification after an earlier Stop. Headless
 Claude checks the turn again after its session stops and before the history is
 cut, because rows can land between the first check and the stop.
 
+A client can be asked to un-send before the message's row reaches it: the row
+waits in the item queue while its turn start is applied at once. The client
+then offers the un-send from its record of the dispatched send, on the turn
+the composer predicted. A running turn must be that turn, the row must not
+already sit on another turn, and no row may sit on a later one. Otherwise Stop
+is an ordinary interrupt. The backend's check that the latest message carries
+the expected send ID stays authoritative.
+
+While the un-send is pending, the timeline presents no row on the cut turn or
+later, and not the user row of the send being taken back on any turn: the
+backend can place it below the turn the client predicted. One predicate
+(`hiddenByInterruptCut`) is applied in two places. The row projection leaves
+such a row out of what it renders, whichever path put it in the pane's window,
+and reads the cut reactively. A history read in that window therefore installs
+whole, so cursors, caches and the recovery from a lost reply keep the backend's
+state, and none of it is painted beside the restored draft. The item stream
+also refuses such a pushed row, so a row nobody sees starts no reveal, follow
+or run state. A refusal clears the cut, which shows the rows the window holds,
+and re-reads the window when a pushed row was refused. A committed un-send
+removes the rows before the cut clears.
+
 Older-message replacement keeps the editor loading until preparation completes.
 The client transfers follow intent before applying the cut and replacement in
 one render transaction, using the normal structural scroll spring. RPC results

@@ -12,6 +12,12 @@ import {
   projectTurnStarted,
 } from '../../stores/threadStatuses.svelte';
 import { getToasts } from '../../stores/toast.svelte';
+import {
+  beginThreadInterrupt,
+  finishThreadInterrupt,
+  presentThreadInterruptAsRestored,
+  resetThreadInterruptStateForTest,
+} from '../../stores/threadInterruptState.svelte';
 import { clearThreadScrollSnapshotsForTest } from '../../utils/threadScrollSnapshots';
 import MessageTimeline from './MessageTimeline.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
@@ -45,6 +51,7 @@ describe('<MessageTimeline>', () => {
     resetBindingMocks();
     resetProjectsForTest();
     clearThreadScrollSnapshotsForTest();
+    resetThreadInterruptStateForTest();
     setBindingMock('GetSettings', async () => null);
     await loadSettings();
   });
@@ -73,6 +80,36 @@ describe('<MessageTimeline>', () => {
     pane.upsertItem(makeItem());
     await tick();
     expect(queryByTestId('empty-thread-greeting')).toBeNull();
+  });
+
+  it('does not paint a row an early Stop took off the screen, and paints it when the cut clears', async () => {
+    // The un-sent message's row, as a history read installs it while the
+    // un-send is still settling: the window holds it, the timeline does not.
+    const sent = makeItem({ id: 'user:send', kind: 'user_text', role: 'user', summary: 'Taken back',
+      meta: JSON.stringify({ sendId: 'send' }) });
+    const pane = await buildPane(undefined, [sent]);
+    const threadId = pane.threadId!;
+    const { getByTestId, queryByTestId, queryByText } = render(MessageTimeline, { props: { pane } });
+    expect(queryByText('Taken back')).not.toBeNull();
+
+    const token = beginThreadInterrupt(threadId)!;
+    presentThreadInterruptAsRestored(threadId, token, 1, 'send');
+    await tick();
+    expect(pane.items.map((item) => item.id)).toEqual(['user:send']);
+    expect(queryByText('Taken back')).toBeNull();
+    expect(getByTestId('empty-thread-greeting')).toBeInTheDocument();
+
+    // An earlier message is still presented, so the thread is not empty.
+    pane.upsertItems([makeItem({ id: 'user:other', kind: 'user_text', role: 'user', summary: 'Earlier',
+      meta: JSON.stringify({ sendId: 'other' }) }), { ...sent, itemIndex: 1 }]);
+    await tick();
+    expect(queryByText('Earlier')).not.toBeNull();
+    expect(queryByText('Taken back')).toBeNull();
+    expect(queryByTestId('empty-thread-greeting')).toBeNull();
+
+    finishThreadInterrupt(threadId, token);
+    await tick();
+    expect(queryByText('Taken back')).not.toBeNull();
   });
 
   it('keeps active-turn status out of the virtualized history', async () => {

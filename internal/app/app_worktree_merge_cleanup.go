@@ -1141,7 +1141,7 @@ func (a *App) mergedPRWorktreeBusy(path string, threadIDs []string) error {
 		switch {
 		case live.ActiveTurn != nil:
 			return fmt.Errorf("thread %s is responding", id)
-		case len(live.QueueItems)+len(live.FlushedItems)+len(live.DeferredItems) > 0:
+		case len(live.QueueItems)+len(live.FlushedItems) > 0:
 			return fmt.Errorf("thread %s has queued messages", id)
 		case len(live.Interactive.Approvals)+len(live.Interactive.UserInputs) > 0:
 			return fmt.Errorf("thread %s is waiting for an answer", id)

@@ -13,6 +13,7 @@
   import Play from '@lucide/svelte/icons/play';
   import Square from '@lucide/svelte/icons/square';
   import Icon from '../../primitives/Icon.svelte';
+  import SteppedSpinner from '../../primitives/SteppedSpinner.svelte';
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
@@ -22,13 +23,20 @@
     canSend: boolean;
     isTurnActive: boolean;
     /**
-     * Optimistic stop-button gate. True between the moment the user
-     * clicks Send and the moment SendMessage resolves (i.e. before
-     * `provider:turn_started` arrives). Treated as equivalent to
-     * `isTurnActive` for rendering the stop variant so Esc / click
-     * shows the stop affordance immediately on Enter.
+     * Stop-button gate. True between the moment the user clicks Send and
+     * the moment SendMessage resolves (i.e. before `provider:turn_started`
+     * arrives). Treated as equivalent to `isTurnActive` for rendering the
+     * stop variant.
      */
     sendInFlight?: boolean;
+    /**
+     * The message was dispatched and the backend has shown no evidence of
+     * it yet. It is nowhere on screen, so the button says it is on its
+     * way and offers no action until the row or the queue entry arrives.
+     * The spinner is drawn over the button's own content, which stays in
+     * flow unseen, so the button keeps its width.
+     */
+    sendPending?: boolean;
     action?: SendButtonAction;
     label?: string;
     /** Hover explanation when a thread operation temporarily blocks Send. */
@@ -50,6 +58,7 @@
     canSend,
     isTurnActive,
     sendInFlight = false,
+    sendPending = false,
     action = 'send',
     label,
     disabledReason,
@@ -63,7 +72,9 @@
   let menuTriggerEl: HTMLButtonElement | undefined = $state(undefined);
   let menuOpen = $state(false);
 
-  // Treat the optimistic dispatch window the same as a wire-active turn
+  const PENDING_LABEL = 'Sending message';
+
+  // Treat the dispatch window the same as a wire-active turn
   // for the Stop affordance, but only when there's nothing meaningful
   // to send. With a non-empty draft mid-round, the button stays in Send
   // mode so the user can queue the message — `Composer.send()` picks
@@ -71,7 +82,8 @@
   // Interrupt is still reachable through the working-indicator's stop
   // button, which is dedicated to interrupt regardless of draft state.
   let operationBlocked = $derived(Boolean(disabledReason));
-  let showStop = $derived(!operationBlocked && (isTurnActive || sendInFlight) && !canSend);
+  let showPending = $derived(sendPending && !canSend);
+  let showStop = $derived(!operationBlocked && !showPending && (isTurnActive || sendInFlight) && !canSend);
 
   // A touch tap must not blur the textarea. The blur closes the keyboard,
   // the layout viewport grows (`interactive-widget=resizes-content`) and
@@ -93,7 +105,12 @@
 
   // The button is disabled when there is no available action, or while a
   // thread operation must settle before another Send can reuse its turn.
-  let disabled = $derived(operationBlocked || (!showStop && !canSend));
+  let disabled = $derived(operationBlocked || showPending || (!showStop && !canSend));
+  // A pending button is disabled but not dimmed: it reports progress, not
+  // an unavailable action.
+  let disabledClass = $derived(showPending
+    ? 'disabled:cursor-default disabled:hover:scale-100'
+    : 'disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:scale-100');
   let idleLabel = $derived(action === 'implement'
     ? 'Implement proposed plan'
     : action === 'refine'
@@ -122,6 +139,14 @@
   }
 </script>
 
+{#snippet pendingSpinner()}
+  {#if showPending}
+    <span class="absolute inset-0 inline-flex items-center justify-center" data-testid="composer-send-spinner">
+      <SteppedSpinner size={16} class="opacity-100" />
+    </span>
+  {/if}
+{/snippet}
+
 {#if showImplementMenu || showCommentsMenu}
   <div class="flex">
     <button
@@ -130,26 +155,31 @@
       onpointerdown={keepInputFocus}
       {disabled}
       data-testid="composer-send"
-      aria-label={idleLabel}
-      title={disabledReason ?? idleLabel}
+      data-pending={showPending || null}
+      aria-busy={showPending}
+      aria-label={showPending ? PENDING_LABEL : idleLabel}
+      title={showPending ? PENDING_LABEL : (disabledReason ?? idleLabel)}
       class={[
-        'inline-flex h-8 items-center justify-center gap-1.5 rounded-l-full shrink-0 px-3 text-xs font-medium',
+        'relative inline-flex h-8 items-center justify-center rounded-l-full shrink-0 px-3 text-xs font-medium',
         'transition-[background-color,transform,opacity] duration-150 cursor-pointer',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:ring-accent/50',
         'hover:scale-105 active:scale-95',
         'bg-accent text-surface-0 hover:bg-accent/85',
-        'disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:scale-100',
+        disabledClass,
       ].join(' ')}
     >
-      {#if showImplementMenu}
-        <Icon icon={Play} size={13} strokeWidth={2.5} class="opacity-100" />
-      {/if}
-      <span>{label}</span>
-      {#if showCommentCount}
-        <span class="inline-flex min-w-4 items-center justify-center rounded-full bg-surface-0/20 px-1 text-[0.625rem] font-semibold leading-4 text-surface-0">
-          {planCommentCount}
-        </span>
-      {/if}
+      {@render pendingSpinner()}
+      <span class={['inline-flex items-center gap-1.5', showPending ? 'invisible' : ''].join(' ')} data-testid="composer-send-content">
+        {#if showImplementMenu}
+          <Icon icon={Play} size={13} strokeWidth={2.5} class="opacity-100" />
+        {/if}
+        <span>{label}</span>
+        {#if showCommentCount}
+          <span class="inline-flex min-w-4 items-center justify-center rounded-full bg-surface-0/20 px-1 text-[0.625rem] font-semibold leading-4 text-surface-0">
+            {planCommentCount}
+          </span>
+        {/if}
+      </span>
     </button>
     <button
       bind:this={menuTriggerEl}
@@ -164,7 +194,7 @@
         'inline-flex h-8 w-7 compact:h-10 compact:w-9 items-center justify-center rounded-r-full border-l border-surface-0/20',
         'bg-accent text-surface-0 hover:bg-accent/85 transition-colors cursor-pointer',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:ring-accent/50',
-        'disabled:opacity-30 disabled:cursor-not-allowed',
+        showPending ? 'disabled:cursor-default' : 'disabled:opacity-30 disabled:cursor-not-allowed',
       ].join(' ')}
       data-testid="composer-send-menu"
     >
@@ -196,34 +226,41 @@
     onpointerdown={keepInputFocus}
     {disabled}
     data-testid={showStop ? 'composer-interrupt' : 'composer-send'}
-    aria-label={showStop ? interruptLabel : idleLabel}
-    title={showStop ? interruptLabel : (disabledReason ?? idleLabel)}
+    data-pending={showPending || null}
+    aria-busy={showPending}
+    aria-label={showPending ? PENDING_LABEL : showStop ? interruptLabel : idleLabel}
+    title={showPending ? PENDING_LABEL : showStop ? interruptLabel : (disabledReason ?? idleLabel)}
     class={[
-      'inline-flex h-8 compact:h-10 items-center justify-center rounded-full shrink-0',
-      label && !showStop ? 'gap-1.5 px-3 text-xs font-medium' : 'w-8 compact:w-10',
+      'relative inline-flex h-8 compact:h-10 items-center justify-center rounded-full shrink-0',
+      label && !showStop ? 'px-3 text-xs font-medium' : 'w-8 compact:w-10',
       'transition-[background-color,transform,opacity] duration-150 cursor-pointer',
       'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:ring-accent/50',
       'hover:scale-105 active:scale-95',
       showStop
         ? 'bg-error text-surface-0 hover:bg-error/85'
         : 'bg-accent text-surface-0 hover:bg-accent/85',
-      'disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:scale-100',
+      disabledClass,
     ].join(' ')}
   >
     {#if showStop}
       <Icon icon={Square} size={12} strokeWidth={2.5} class="opacity-100" />
-    {:else if action === 'implement'}
-      <Icon icon={Play} size={13} strokeWidth={2.5} class="opacity-100" />
-      <span>{label}</span>
-    {:else if label}
-      <span>{label}</span>
-      {#if showCommentCount}
-        <span class="inline-flex min-w-4 items-center justify-center rounded-full bg-surface-0/20 px-1 text-[0.625rem] font-semibold leading-4 text-surface-0">
-          {planCommentCount}
-        </span>
-      {/if}
     {:else}
-      <Icon icon={ArrowUp} size={16} strokeWidth={2.5} class="opacity-100" />
+      {@render pendingSpinner()}
+      <span class={['inline-flex items-center gap-1.5', showPending ? 'invisible' : ''].join(' ')} data-testid="composer-send-content">
+        {#if action === 'implement'}
+          <Icon icon={Play} size={13} strokeWidth={2.5} class="opacity-100" />
+          <span>{label}</span>
+        {:else if label}
+          <span>{label}</span>
+          {#if showCommentCount}
+            <span class="inline-flex min-w-4 items-center justify-center rounded-full bg-surface-0/20 px-1 text-[0.625rem] font-semibold leading-4 text-surface-0">
+              {planCommentCount}
+            </span>
+          {/if}
+        {:else}
+          <Icon icon={ArrowUp} size={16} strokeWidth={2.5} class="opacity-100" />
+        {/if}
+      </span>
     {/if}
   </button>
 {/if}

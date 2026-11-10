@@ -331,8 +331,8 @@
 
   export function recreateInput(): void {
     // Deferred to an idle slot rather than run inside the caller's task: a
-    // send's Enter keydown already carries the optimistic message mount, the
-    // sidebar tier-move FLIP, and the dispatch RPC (8-19ms measured
+    // send's Enter keydown already carries the sidebar tier-move FLIP and
+    // the dispatch RPC (8-19ms measured
     // 2026-08-27), and the swap adds ~2-3ms of teardown + refocus plus the
     // style recalc those force. The old element stays mounted and focused
     // until the swap task runs, so no frame ever renders without a textarea

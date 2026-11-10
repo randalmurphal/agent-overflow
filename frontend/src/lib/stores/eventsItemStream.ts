@@ -1,5 +1,5 @@
 import { applyTimelineMutation } from './timelineSurfaces';
-import { optimisticInterruptCut, noteHiddenInterruptItem } from './threadInterruptState.svelte';
+import { hiddenByInterruptCut, optimisticInterruptCut, noteHiddenInterruptItem } from './threadInterruptState.svelte';
 import { getTransportHelloFor } from './transportStatus.svelte';
 import { threadBackend, HOME_BACKEND } from '../transport/entityIndex';
 import { getUndoableSend, retireUndoableSend } from './composerSendUndo';
@@ -684,8 +684,8 @@ export function flushItemEventQueue(): void {
     for (const entry of events) {
       if (!survivesCut(entry)) continue;
       const { evt, rowKey: itemKey } = entry;
-      const hiddenFrom = optimisticInterruptCut(evt.threadId);
-      if (hiddenFrom !== null && evt.action === 'upsert' && evt.item.turnIndex >= hiddenFrom) {
+      const hidden = optimisticInterruptCut(evt.threadId);
+      if (hidden !== null && evt.action === 'upsert' && hiddenByInterruptCut(evt.item, hidden)) {
         noteHiddenInterruptItem(evt.threadId);
         continue;
       }

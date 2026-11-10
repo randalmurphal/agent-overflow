@@ -82,8 +82,8 @@ export interface ComposerHistoryRecallDeps {
   flushDraft(): Promise<void>;
   /** Backend baseline, newest first. */
   fetchHistory(threadId: string): Promise<readonly RecallHistoryRow[]>;
-  /** The pane's loaded window — covers optimistic just-sent rows the
-   * backend read can still miss. */
+  /** The pane's loaded window: covers just-sent rows a backend read
+   * sampled earlier can still miss. */
   paneItems(): readonly Item[];
   /** Mid-turn sends not yet echoed as items (flushed + queued),
    * oldest first. Newer than every item. */
@@ -113,9 +113,9 @@ interface RecallSession {
  * Merge the three sources of "messages the reader sent" into the walk
  * list, newest first: pending mid-turn sends, then the loaded window's
  * reader-authored rows overlaid on the backend baseline by position
- * (window wins — it holds optimistic rows and any content the wire is
- * fresher on). Attachment-image blocks are stripped (recall is text
- * only; attachments stay whatever the draft holds), blank entries are
+ * (window wins: it holds any content the wire is fresher on).
+ * Attachment-image blocks are stripped (recall is text only; attachments
+ * stay whatever the draft holds), blank entries are
  * dropped, consecutive duplicates collapse, and an entry identical to
  * the stash never leads — the first ArrowUp must visibly change
  * something.

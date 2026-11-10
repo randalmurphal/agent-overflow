@@ -38,15 +38,7 @@ type ThreadLiveState struct {
 	FlushedItems           []QueueFlushedItem             `json:"flushedItems"`
 	// FlushedThrough is the newest provider:queue_flushed sequence when
 	// FlushedItems was read: every item in it was flushed at or before it.
-	FlushedThrough uint64 `json:"flushedThrough"`
-	// DeferredItems are NON-FLUSH pending-send timeline rows not yet
-	// persisted to SQLite (they persist on their wire echo), in FIFO send
-	// order. A refresh reconciling against a ListThreadSliceAround page
-	// merges these in so the user's own just-sent message survives the
-	// install. A queued (flush-shaped) send is published in FlushedItems
-	// instead and stays above the composer until the client renders its
-	// row — never in both lists (internal/triage/live_state.go).
-	DeferredItems   []store.Item                        `json:"deferredItems"`
+	FlushedThrough  uint64                              `json:"flushedThrough"`
 	Interactive     provider.PendingInteractiveRequests `json:"interactive"`
 	Todo            *LiveStateTodo                      `json:"todo,omitempty"`
 	ProviderAccount *ProviderSessionAccountEvent        `json:"providerAccount,omitempty"`
@@ -112,7 +104,6 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 		ThreadID:         threadID,
 		QueueItems:       []QueuedItem{},
 		FlushedItems:     []QueueFlushedItem{},
-		DeferredItems:    []store.Item{},
 		SubagentProgress: []triage.SubagentProgressEvent{},
 		Interactive: provider.PendingInteractiveRequests{
 			Approvals:  []provider.ApprovalRequest{},
@@ -156,13 +147,6 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 		}
 	}
 	state.Interactive = live.Interactive
-	// Deferred rows are merged straight into the same window the slice
-	// RPCs filled, so they take the same projection. A page whose rows
-	// came from two paths that shaped them differently is one window
-	// holding mixed rows, which reads as a bug wherever the difference
-	// shows. These are un-echoed user sends with no diff previews to
-	// weigh, so previews stay on and only the meta budget applies.
-	state.DeferredItems = append(state.DeferredItems, itemwire.ProjectItems(live.DeferredItems, true)...)
 	state.QueueItems = append(state.QueueItems, queued...)
 	queuedIDs := make(map[string]bool, len(queued))
 	for _, item := range queued {

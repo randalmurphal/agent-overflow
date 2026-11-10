@@ -2,7 +2,6 @@ import type { Item } from '../types/models';
 import { rowUiRetentionChanged } from '../utils/rowUiRetention';
 import { activityRunSummaryFieldsChanged } from '../utils/activityRunGrouping';
 import { itemTimelineStructureChanged } from '../utils/timelineStructure';
-import { userMessageIdentity } from '../utils/userMessageIdentity';
 import { adoptRevIfEqual, compareItemsByTimelinePosition, compareItemToCursor, cursorsAfterItemUpserts, isItemStatusRegression, type TimelineCursorLike } from './threadItems';
 import type { RunRefusal } from './activityRunStubs';
 
@@ -10,7 +9,6 @@ export interface ApplyItemUpsertsToWindowOptions {
   current: readonly Item[];
   incoming: readonly Item[];
   itemIndexById: ReadonlyMap<string, number>;
-  optimisticItemIds?: ReadonlySet<string>;
   currentThreadId: string | null;
   scopeRootId?: string;
   oldestLoadedCursor?: TimelineCursorLike | null;
@@ -53,14 +51,12 @@ export interface ApplyItemUpsertsToWindowResult {
   /**
    * The window after the merge. `current` itself when the batch only
    * rewrote rows in their places: the commit applies `rowWrites` in place
-   * and the window keeps its identity. A batch that admits a row, moves
-   * one or confirms a provisional send yields a new array.
+   * and the window keeps its identity. A batch that admits a row or moves
+   * one yields a new array.
    */
   items: Item[];
   appendedItems: readonly Item[];
   changedItems: readonly Item[];
-  /** Provisional records replaced by the same send's authoritative record. */
-  replacedItems: readonly Item[];
   /** One entry per held row the batch wrote, with its last value. */
   rowWrites: readonly ItemRowWrite[];
   /**
@@ -158,7 +154,6 @@ export function applyItemUpsertsToWindow({
   current,
   incoming,
   itemIndexById,
-  optimisticItemIds,
   currentThreadId,
   scopeRootId,
   oldestLoadedCursor,
@@ -178,21 +173,8 @@ export function applyItemUpsertsToWindow({
   const admitted: Item[] = [];
   const batchIndexById = new Map<string, number>();
   const changedItems: Item[] = [];
-  const replacedItems: Item[] = [];
-  const optimisticIndexByIdentity = new Map<string, number>();
-  for (const id of optimisticItemIds ?? []) {
-    const index = itemIndexById.get(id);
-    if (index === undefined) continue;
-    const item = current[index];
-    if (!item || (currentThreadId !== null && item.threadId !== currentThreadId)) continue;
-    const identity = userMessageIdentity(item);
-    if (identity === null) continue;
-    if (optimisticIndexByIdentity.has(identity)) throw new Error(`Duplicate optimistic send: ${identity}`);
-    optimisticIndexByIdentity.set(identity, index);
-  }
   let changed = false;
   let heldRowMoved = false;
-  let firstConfirmedIndex = current.length;
   let structureChanged = false;
   let droppedNewerItems = false;
   let droppedOlderItems = false;
@@ -229,9 +211,7 @@ export function applyItemUpsertsToWindow({
     // subagent children elsewhere before calling.
     if ((item.parentId ?? '') !== (scopeRootId ?? '')) continue;
 
-    const identity = optimisticIndexByIdentity.size > 0 ? userMessageIdentity(item) : null;
-    const existingIndex = batchIndexById.get(item.id) ?? itemIndexById.get(item.id)
-      ?? (identity === null ? undefined : optimisticIndexByIdentity.get(identity));
+    const existingIndex = batchIndexById.get(item.id) ?? itemIndexById.get(item.id);
     if (existingIndex !== undefined) {
       const previous = rowAt(existingIndex);
       if (!previous || isItemStatusRegression(previous, item)) continue;
@@ -245,14 +225,6 @@ export function applyItemUpsertsToWindow({
       // incoming one: "identical content" means identical to a reader,
       // and the revision has no reader.
       if (adoptRevIfEqual(previous, item)) continue;
-      if (previous.id !== item.id) {
-        if (!optimisticItemIds?.has(previous.id) || userMessageIdentity(previous) !== identity) {
-          throw new Error(`Conflicting confirmation ids for send: ${identity}`);
-        }
-        replacedItems.push(previous);
-        batchIndexById.set(item.id, existingIndex);
-        firstConfirmedIndex = Math.min(firstConfirmedIndex, existingIndex);
-      }
       if (existingIndex < current.length) {
         writes.set(existingIndex, item);
         if (compareItemsByTimelinePosition(previous, item) !== 0) heldRowMoved = true;
@@ -328,10 +300,9 @@ export function applyItemUpsertsToWindow({
   // writes them in place.
   let items = current as Item[];
   let reindexFrom = current.length;
-  if (admitted.length > 0 || heldRowMoved || replacedItems.length > 0) {
+  if (admitted.length > 0 || heldRowMoved) {
     items = current.slice();
     for (const [index, item] of writes) items[index] = item;
-    reindexFrom = firstConfirmedIndex;
     if (heldRowMoved) {
       // A held row changed position, which only corrections do: re-sort
       // the whole window rather than track the move.
@@ -346,7 +317,6 @@ export function applyItemUpsertsToWindow({
     items,
     appendedItems: admitted.length > 0 ? admitted : NO_ITEMS,
     changedItems,
-    replacedItems,
     rowWrites: rowWrites.length > 0 ? rowWrites : NO_ROW_WRITES,
     reindexFrom,
     structureChanged,

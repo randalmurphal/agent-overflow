@@ -87,7 +87,6 @@
   import { buildSendOptions } from '../../utils/sendOptions';
   import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
   import { getThreadById, prependThread } from '../../stores/threads.svelte';
-  import { UNSTAMPED_ITEM_REV } from '../../stores/threadWindowDigest';
   import { getActiveTurn, isSendInFlight } from '../../stores/threadStatuses.svelte';
   import { isThreadInterruptPending } from '../../stores/threadInterruptState.svelte';
   import { getFocusedPaneId } from '../../stores/panes.svelte';
@@ -99,7 +98,7 @@
   import { getShellRun, isShellRunActive, runShellCommand } from '../../stores/shellCommands.svelte';
   import { isTransportClassError } from '../../stores/transportStatus.svelte';
   import { pathBasename } from '../../utils/pathDisplay';
-  import type { DiffReviewComment, Item, ProposedPlanComment, SourceDiffReview, SourceProposedPlan } from '../../types/models';
+  import type { DiffReviewComment, ProposedPlanComment, SourceDiffReview, SourceProposedPlan } from '../../types/models';
 
   interface Props {
     pane: ThreadPane;
@@ -222,10 +221,10 @@
   let isTurnActive = $derived(getActiveTurn(pane.threadId) !== null);
   // Send routes through the queue on the wire signal above and on one
   // presentation signal: the pane's reveal frontier is still up (a
-  // completed turn's text is still draining). A direct send appends an
-  // optimistic row after that frontier, and `sliceRevealedNodes` withholds
-  // it with everything else past the frontier, so the person's own message
-  // would leave the composer and appear nowhere until the drain ended. The
+  // completed turn's text is still draining). A direct send's row lands
+  // after that frontier, and `sliceRevealedNodes` withholds it with
+  // everything else past the frontier, so the person's own message would
+  // leave the composer and appear nowhere until the drain ended. The
   // queue path's preview is the home for a message accepted but not yet
   // renderable, and the hand-off lands the row when the gate releases it.
   // The backend dispatches an accepted message at once when nothing is
@@ -782,59 +781,31 @@
 
     const lastItem = pane.items.length > 0 ? pane.items[pane.items.length - 1] : null;
     const nextTurn = lastItem ? lastItem.turnIndex + 1 : 0;
-    const optimisticId = `optimistic:${sendOptions.sendId}`;
-    const now = Date.now();
-    const optimisticItem: Item = {
-      id: optimisticId,
-      threadId: threadId!,
-      turnIndex: nextTurn,
-      itemIndex: 0,
-      kind: 'user_text',
-      role: 'user',
-      status: 'completed',
-      summary: message,
-      meta: JSON.stringify({ sendId: sendOptions.sendId }),
-      createdAt: now,
-      updatedAt: now,
-      // A locally minted row is not a copy of any stored row.
-      rev: UNSTAMPED_ITEM_REV,
-    };
     // The pane this send belongs to, captured alongside `threadId`: the
-    // rollback below runs after an await, and both the pane binding and
-    // what the pane is showing can have moved by then.
+    // settle below runs after an await, and the pane binding can have
+    // moved by then.
     const sendPane = pane;
-    sendPane.trackOptimisticItem(optimisticId);
-    // Arm the one-shot structural spring window before the upsert so the
-    // just-sent message glides in instead of sync-pinning (the arm must
-    // precede the flush that mounts the row; see armStructuralSpring).
-    sendPane.armStructuralSpring();
-    sendPane.upsertItems([optimisticItem]);
+    // No row is drawn for the message here. The Send button reads as
+    // pending until the backend's row or queue entry for it arrives.
+    sendPane.awaitSendConfirmation(sendOptions.sendId);
 
     try {
-      const sent = await dispatchSend({
-        draftReady,
-        turnIndex: nextTurn,
-        threadId,
-        message,
-        options: sendOptions,
-        snapshot,
-        restoreDraft: (tid, snap) => draft.restoreUnsentDraftFor(tid, snap),
-        draftThreadId: () => draft.threadId,
-        reportError: (msg, err) => sendPane.setGeneralError(msg, err),
-      });
-      // `dispatchSend` awaits, and the user can switch this pane to
-      // another thread while it does. The optimistic row belongs to
-      // `threadId`, so the rollback is gated on the pane still
-      // holding that thread. Without the gate the removal (and the
-      // cached-window drop that rides it) would land on whatever
-      // conversation is mounted now.
-      if (
-        !sent &&
-        sendPane.threadId === threadId &&
-        sendPane.isOptimisticItem(optimisticId)
-      ) {
-        sendPane.removeItemById(optimisticId, threadId);
-        sendPane.untrackOptimisticItem(optimisticId);
+      try {
+        await dispatchSend({
+          draftReady,
+          turnIndex: nextTurn,
+          threadId,
+          message,
+          options: sendOptions,
+          snapshot,
+          restoreDraft: (tid, snap) => draft.restoreUnsentDraftFor(tid, snap),
+          draftThreadId: () => draft.threadId,
+          reportError: (msg, err) => sendPane.setGeneralError(msg, err),
+        });
+      } finally {
+        // The reply settles the wait whatever it said: an accepted send
+        // has its row or queue entry, a refused one has its draft back.
+        sendPane.confirmSend(threadId, sendOptions.sendId);
       }
       if (diffReviewSourceForSend) {
         await refreshDiffReviewComments(threadId, diffReviewSourceForSend.scope, diffReviewSourceForSend.sourceKey);
@@ -1270,6 +1241,7 @@
       {canSend}
       {isTurnActive}
       sendInFlight={isSendInFlight(pane.threadId, pane.sendInFlight)}
+      sendPending={pane.sendAwaitingConfirmation}
       {sendAction}
       {sendLabel}
       sendDisabledReason={preparingSend

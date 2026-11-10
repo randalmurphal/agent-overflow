@@ -55,25 +55,30 @@ const UNSEND_TURN_COMPANION_KINDS: ReadonlySet<string> = new Set<string>([
 ] satisfies ItemKind[]);
 
 /**
- * Result of the frontend revert-eligibility predicate. Discriminated
- * on `canRevert` so callers don't have to defensively re-check
- * `userItem`: when the predicate says yes, the user row is guaranteed.
+ * Result of the frontend revert-eligibility predicate, discriminated on
+ * `canRevert`.
  *
  * `canRevert` is true only when ALL of the following hold:
- *   - The thread has an active turn.
+ *   - The thread has an active turn, or a send this client dispatched
+ *     that is still undoable.
  *   - The composer is empty (user hasn't started typing again).
  *   - The send queue is empty (no queued follow-up to drain).
  *   - The turn has never settled. A later round on a settled turn (the
  *     CLI answering a background task notification) does not make its
  *     message undoable again.
  *   - The turn holds exactly one reader-authored user_text and otherwise
- *     only UNSEND_TURN_COMPANION_KINDS rows.
+ *     only UNSEND_TURN_COMPANION_KINDS rows. A dispatched send whose row
+ *     has not arrived holds none yet: its turn is the one the composer
+ *     predicted, which a running turn must match (a turn start is applied
+ *     ahead of the rows buffered with it), and no row may sit on a later
+ *     turn.
  *
  * Mirrors the backend's evaluateInterruptRevertPredicate, which stays
  * authoritative; this copy only decides the optimistic presentation.
  */
 export type RevertEligibility =
-  | { canRevert: true; userItem: Item }
+  /** `userItem` is absent while the send's row has not arrived yet. */
+  | { canRevert: true; turnIndex: number; userItem?: Item }
   | { canRevert: false; reason: string };
 
 /**
@@ -130,8 +135,12 @@ export function canRevertEarlyInterrupt(
     return { canRevert: false, reason: 'queue has pending items' };
   }
 
-  const turnIndex = active?.turnIndex ?? pane.items.find((item) =>
-    parseUserMessageMeta(item.meta).sendId === pending?.sendId)?.turnIndex;
+  // A send the backend has not confirmed has no row yet; its turn is the
+  // one the composer predicted for it.
+  const sentRow = pending
+    ? pane.items.find((item) => parseUserMessageMeta(item.meta).sendId === pending.sendId)
+    : undefined;
+  const turnIndex = active?.turnIndex ?? sentRow?.turnIndex ?? pending?.turnIndex;
   if (turnIndex === undefined) return { canRevert: false, reason: 'no pending user message' };
   const settled = pane.latestSettledTurn;
   if (settled && settled.turnIndex >= turnIndex) {
@@ -139,7 +148,9 @@ export function canRevertEarlyInterrupt(
   }
   let userItem: Item | undefined;
   let userCount = 0;
+  let laterTurn = false;
   for (const item of pane.items) {
+    if (item.turnIndex > turnIndex) laterTurn = true;
     if (item.turnIndex !== turnIndex) continue;
     if (isReaderAuthoredUserText(item) && item.role === 'user') {
       userItem = item;
@@ -150,12 +161,15 @@ export function canRevertEarlyInterrupt(
       return { canRevert: false, reason: `turn holds ${item.kind}` };
     }
   }
-  if (userCount === 0 || !userItem) return { canRevert: false, reason: 'no user_text item' };
+  if (userCount === 0 || !userItem) {
+    if (pending && !sentRow && turnIndex === pending.turnIndex && !laterTurn) return { canRevert: true, turnIndex };
+    return { canRevert: false, reason: 'no user_text item' };
+  }
   // Multiple user_text rows on one turn means the user steered mid-
   // round; reverting one would break ordering. Defer to plain interrupt.
   if (userCount > 1) return { canRevert: false, reason: 'turn has steered user messages' };
 
-  return { canRevert: true, userItem };
+  return { canRevert: true, turnIndex: userItem.turnIndex, userItem };
 }
 
 /** Returns true when the early un-send owns the local status projection. */
@@ -179,6 +193,7 @@ export function runInterruptOrRevert(
     pane,
     draft,
     threadId,
+    eligibility.turnIndex,
     eligibility.userItem,
     interruptToken,
   );
@@ -313,7 +328,8 @@ async function runEarlyInterrupt(
   pane: InterruptPane,
   draft: DraftSnapshotInputs,
   threadId: string,
-  userItem: Item,
+  turnIndex: number,
+  userItem: Item | undefined,
   interruptToken: number,
 ): Promise<void> {
   // Match the backend truncate: remove EVERY item on the active turn,
@@ -321,23 +337,28 @@ async function runEarlyInterrupt(
   // are the visible symptom of doing this piecewise. The rollback path
   // restores the full set via `upsertItems` when the backend refuses
   // the revert (predicate raced).
-  const removedItems = pane.removeItemsFromTurn(userItem.turnIndex, threadId);
+  const removedItems = pane.removeItemsFromTurn(turnIndex, threadId);
   const shouldRestoreDraft = Boolean(
     draft.applyOptimisticRestoredDraft || draft.clearOptimisticRestoredDraft,
   );
   const undo = getUndoableSend(threadId);
-  const matchesSend = undo && parseUserMessageMeta(userItem.meta).sendId === undo.sendId;
+  // With no row yet, the un-send is of the undoable send by construction.
+  const matchesSend = undo && (!userItem || parseUserMessageMeta(userItem.meta).sendId === undo.sendId);
   if (matchesSend) undo.undoRequested = true;
-  const restoredDraft = shouldRestoreDraft
-    ? (matchesSend ? undo.snapshot : restoredDraftSnapshotFromUserItem(userItem))
-    : null;
+  const restoredDraft = !shouldRestoreDraft ? null
+    : matchesSend ? undo.snapshot
+    : userItem ? restoredDraftSnapshotFromUserItem(userItem) : null;
   if (restoredDraft) {
     draft.applyOptimisticRestoredDraft?.(threadId, restoredDraft);
   }
 
-  presentThreadInterruptAsRestored(threadId, interruptToken, userItem.turnIndex);
+  // The row can still arrive, or arrive again, on a turn below the cut:
+  // the turn is this pane's prediction when the row had not arrived.
+  const rowSendId = userItem ? parseUserMessageMeta(userItem.meta).sendId : undefined;
+  const interruptedSendId = matchesSend ? undo.sendId : typeof rowSendId === 'string' ? rowSendId : '';
+  presentThreadInterruptAsRestored(threadId, interruptToken, turnIndex, interruptedSendId);
   const current = () => isThreadInterruptCurrent(threadId, interruptToken);
-  const reconcile = conversationMutationReconciler(pane, threadId, userItem.id, matchesSend ? undo.sendId : '');
+  const reconcile = conversationMutationReconciler(pane, threadId, userItem?.id ?? '', matchesSend ? undo.sendId : '');
   const restore = () => {
     if (pane.threadId === threadId && removedItems.length > 0) pane.upsertItems(removedItems);
     if (restoredDraft) draft.clearOptimisticRestoredDraft?.(threadId, restoredDraft);
@@ -446,9 +467,9 @@ async function runEarlyInterrupt(
   // Send closed because restoring or re-enabling here could race a cut that
   // has committed but has not reached this client.
   if (!result.userItemId
-    || (!matchesSend && result.userItemId !== userItem.id)
+    || (!matchesSend && result.userItemId !== userItem?.id)
     || typeof result.turnIndex !== 'number'
-    || (!matchesSend && result.turnIndex !== userItem.turnIndex)
+    || (!matchesSend && result.turnIndex !== turnIndex)
     || typeof result.historyEpoch !== 'number'
     || typeof result.historyRev !== 'number'
     || !Number.isFinite(result.historyEpoch)

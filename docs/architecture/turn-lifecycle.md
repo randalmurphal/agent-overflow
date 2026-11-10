@@ -1161,7 +1161,7 @@ working indicator clears and the user gets actionable copy:
    sends to the composer draft, so the next send lazy-starts fresh;
    recovery is a manual retry: the failure mode is deterministic, so
    auto-retry would loop silently. The error-item upsert is the single
-   frontend surface (it clears the optimistic pending-send indicator);
+   frontend surface (it clears the pending-send working indicator);
    no `session_died` banner fires for a session that never lived. Subsequent
    events are covered by the stopped-thread gate in
    [`triage-routing.md`](triage-routing.md#pre-dispatch-rewrites).

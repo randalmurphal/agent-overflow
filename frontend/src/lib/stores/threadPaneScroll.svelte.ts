@@ -144,9 +144,9 @@ export function createThreadPaneScroll(
    * pane data layer is the sole owner of this decision; the call sites
    * are `armLiveContentAppendSpring` below (wire appends to the loaded
    * tail via `applyProviderItemUpserts`, and `recomputeRevealPass`
-   * releasing withheld rows) plus the composer's optimistic user-send,
-   * which arms WITHOUT the live-content stamp (the send stays a
-   * one-shot; see `lastLiveContentAt`). Scroll writes still belong to
+   * releasing withheld rows) plus the replacement row of an
+   * edit-and-resend, which arms WITHOUT the live-content stamp (the
+   * replacement stays a one-shot; see `lastLiveContentAt`). Scroll writes still belong to
    * the controller — the pane only talks to the registered
    * `PaneScrollController` surface, the same seam the
    * `scrollToItemRequest` intent publishes through when a scroll needs

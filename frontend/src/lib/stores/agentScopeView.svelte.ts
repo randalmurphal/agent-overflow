@@ -212,6 +212,7 @@ export function createAgentScopeView(
     get generalErrorKind() { return sourcePane.generalErrorKind; },
     get paneErrorList() { return sourcePane.paneErrorList; },
     get sendInFlight() { return sourcePane.sendInFlight; },
+    get sendAwaitingConfirmation() { return sourcePane.sendAwaitingConfirmation; },
     get showTerminal() { return sourcePane.showTerminal; },
     get gitStatus() { return sourcePane.gitStatus; },
     get canAdoptOpenedTerminal() { return sourcePane.canAdoptOpenedTerminal; },
@@ -260,15 +261,13 @@ export function createAgentScopeView(
     get clearGeneralError() { return sourcePane.clearGeneralError; },
     get clearSessionError() { return sourcePane.clearSessionError; },
     get setSendInFlight() { return sourcePane.setSendInFlight; },
-    get confirmOptimisticSend() { return sourcePane.confirmOptimisticSend; },
+    get awaitSendConfirmation() { return sourcePane.awaitSendConfirmation; },
+    get confirmSend() { return sourcePane.confirmSend; },
     // Forwarded, not overridden: a flushed user row is a TOP-LEVEL row of
     // the main transcript, so the source pane's window and reveal boundary
     // are the ones that decide whether it is rendered. This scope's
     // boundary describes scoped child rows only.
     get syncRenderedFlushRows() { return sourcePane.syncRenderedFlushRows; },
-    get trackOptimisticItem() { return sourcePane.trackOptimisticItem; },
-    get isOptimisticItem() { return sourcePane.isOptimisticItem; },
-    get untrackOptimisticItem() { return sourcePane.untrackOptimisticItem; },
     get setContextWindow() { return sourcePane.setContextWindow; },
     get clearContextWindow() { return sourcePane.clearContextWindow; },
     get setProviderBanner() { return sourcePane.setProviderBanner; },

@@ -45,7 +45,6 @@ import {
   compareCursors,
   itemsAreEqual,
   itemsForThread,
-  mergeMissingItemsById,
   reconcileSnapshotPage,
   type TimelineCursorLike,
 } from './threadItems';
@@ -171,8 +170,8 @@ export interface ThreadSwitchLoadOptions {
   setShowTerminal(value: boolean): void;
   /** Session-scoped effective model; `''` on every reset. */
   setEffectiveModel(model: string): void;
-  /** The pane's optimistic-row ledger, read for the stamped-tier filters and cleared on switch. */
-  optimisticItemIds: Set<string>;
+  /** Ends the pane's wait for a send's confirmation; a switch abandons it. */
+  clearAwaitedSend(): void;
   /** Placeholder terminal ids this pane has already torn down or migrated. */
   invalidatedDraftTerminalIds: Set<string>;
   timelineWindow: ThreadTimelineWindow;
@@ -517,47 +516,6 @@ export function createThreadSwitchLoad(
   }
 
   /**
-   * The pane's live window minus the rows that exist only in this pane's
-   * hope, plus whether anything was dropped.
-   *
-   * An optimistic row is a bet on a send: until the wire echoes it,
-   * nothing on the backend corresponds to it, so a window containing one
-   * is not a window any rev ever had. Both stamped tiers refuse it, and
-   * the refusal is the UNDERSTATE side of §3.4 in both directions — the
-   * marker itself can be wrong (a row whose echo arrived under a
-   * different id stays marked), so "filter and keep the stamp" could
-   * just as easily pair a stamp with a window missing a REAL row.
-   * Dropping the stamp costs one window fetch and cannot lie either way.
-   *
-   * The cursors travel with the rows: one naming a dropped row would
-   * anchor the next page fetch at an id the backend has never seen;
-   * nulling it lets the restore re-derive from the rows that survived.
-   */
-  function optimisticFreeWindow(): {
-    rows: Item[];
-    dropped: boolean;
-    oldestCursor: TimelineCursorLike | null;
-    newestCursor: TimelineCursorLike | null;
-  } {
-    const items = options.getItems();
-    const optimisticItemIds = options.optimisticItemIds;
-    const oldestCursor = options.timelineWindow.oldestLoadedCursor ?? null;
-    const newestCursor = options.timelineWindow.newestLoadedCursor ?? null;
-    if (optimisticItemIds.size === 0) {
-      return { rows: items, dropped: false, oldestCursor, newestCursor };
-    }
-    const rows = items.filter((item) => !optimisticItemIds.has(item.id));
-    const isOptimisticCursor = (cursor: TimelineCursorLike | null): boolean =>
-      Boolean(cursor?.itemId && optimisticItemIds.has(cursor.itemId));
-    return {
-      rows,
-      dropped: rows.length !== items.length,
-      oldestCursor: isOptimisticCursor(oldestCursor) ? null : oldestCursor,
-      newestCursor: isOptimisticCursor(newestCursor) ? null : newestCursor,
-    };
-  }
-
-  /**
    * Persist the pane's live window under the attestation that describes
    * IT (see `windowAttestation`). No attestation, no write: an
    * event-carried stamp can name a rev whose content never reached this
@@ -577,13 +535,7 @@ export function createThreadSwitchLoad(
     // the backend no longer has.
     const backend = threadBackend(threadId) ?? HOME_BACKEND;
     if (attestation.backend !== backend || attestation.generation !== getBackendIdentity(backend).generation) return;
-    // Unlike L1, the replica cannot hold rows without a stamp — the
-    // envelope IS the pairing. A window with an unconfirmed row in it
-    // has nothing to pair, so it simply is not written; the previous
-    // envelope stays valid under its own stamp until the next settled
-    // sync writes over it.
-    const { rows, dropped } = optimisticFreeWindow();
-    if (dropped) return;
+    const rows = options.getItems();
     if (rows.length === 0) return;
     // A window whose activity runs cannot be described is not written:
     // restoring it would paint runs that claim to be whole
@@ -641,8 +593,8 @@ export function createThreadSwitchLoad(
    * The shared caching core behind the two "pane is leaving this
    * thread" edges — thread switch (`snapshotOutgoingPane`) and pane
    * close (`snapshotPaneForClose`). Captures size priors, retires the
-   * write-back timer, strips optimistic rows, and (when the window is
-   * worth keeping) writes the L1 snapshot + durable replica. Pass
+   * write-back timer, and (when the window is worth keeping) writes the
+   * L1 snapshot + durable replica. Pass
    * `cacheableThreadId: null` to run only the capture/reset legs (the
    * same-thread reswitch, which must not cache its own stale shape).
    */
@@ -667,13 +619,7 @@ export function createThreadSwitchLoad(
     // snapshot below writes the same window synchronously with the
     // stamp it is paired with, so the timer has nothing left to do.
     cancelReplicaWriteBack();
-    // L1 is a stamped tier too: `resetIncomingPaneState` clears the
-    // optimistic-id ledger, so an optimistic row cached here comes back
-    // on a warm re-entry as an untracked phantom — one the next attested
-    // answer would re-bless and the write-back would then persist
-    // durably. It is dropped from the rows AND costs the snapshot its
-    // stamp (see optimisticFreeWindow).
-    const l1 = optimisticFreeWindow();
+    const rows = options.getItems();
     const outgoingThreadId = cacheableThreadId;
     // Null means a run the pane cannot describe right now (a record
     // awaiting its stub refresh). A window cached without its stubs would
@@ -684,8 +630,8 @@ export function createThreadSwitchLoad(
       outgoingThreadId &&
       runStubs !== null &&
       !options.getLoading() &&
-      l1.rows.length > 0 &&
-      l1.rows.length <= MAX_CACHED_SNAPSHOT_ITEMS
+      rows.length > 0 &&
+      rows.length <= MAX_CACHED_SNAPSHOT_ITEMS
     ) {
       // Row-size priors are not stored HERE: they live in MessageTimeline
       // (`utils/virtual/priors.ts`), keyed by the scroll-pane width +
@@ -696,9 +642,9 @@ export function createThreadSwitchLoad(
       // replay is what lets a re-entry skip the estimate→measure cascade
       // safely; here we cache only the items.
       threadItemCache.set(outgoingThreadId, {
-        items: l1.rows,
-        oldestLoadedCursor: l1.oldestCursor,
-        newestLoadedCursor: l1.newestCursor,
+        items: rows,
+        oldestLoadedCursor: options.timelineWindow.oldestLoadedCursor ?? null,
+        newestLoadedCursor: options.timelineWindow.newestLoadedCursor ?? null,
         oldestLoadedTurnIndex: options.timelineWindow.oldestLoadedTurnIndex,
         newestLoadedTurnIndex: options.timelineWindow.newestLoadedTurnIndex,
         hasMoreHistory: options.timelineWindow.hasMoreHistory,
@@ -710,10 +656,8 @@ export function createThreadSwitchLoad(
         runs: runStubs,
         // Paired, not looked up on the next open: the stamp is only
         // usable as `haveEpoch`/`haveRev` for the rows it described when
-        // it was read. See ThreadItemSnapshot#historyStamp. Dropping a
-        // row drops the pairing with it — these rows are no longer the
-        // window any stamp described.
-        historyStamp: l1.dropped || !windowAttestation || options.streamingReveal.smootherCount() > 0
+        // it was read. See ThreadItemSnapshot#historyStamp.
+        historyStamp: !windowAttestation || options.streamingReveal.smootherCount() > 0
           ? null : { epoch: windowAttestation.epoch, rev: windowAttestation.rev, attested: true },
       });
       persistReplicaWindow(outgoingThreadId);
@@ -792,7 +736,7 @@ export function createThreadSwitchLoad(
       () => options.setProviderSessionAccount(null),
       () => options.clearPaneError(),
       () => options.setSendInFlight(false),
-      () => options.optimisticItemIds.clear(),
+      () => options.clearAwaitedSend(),
       () => options.channelState.clear(),
       // Bottom-drawer state is pane-scoped: opening the terminal on thread
       // A should not spill into thread B.
@@ -977,11 +921,6 @@ export function createThreadSwitchLoad(
    * makes the write-back safe (every persisted row descends from an
    * attested page). `gone` drops every cached copy and empties the pane.
    *
-   * `deferredItems` (pending sends whose SQLite row lands on the wire
-   * echo) are folded into every non-`gone` answer and tracked as
-   * optimistic bets, because neither a page nor any stamped tier can
-   * carry them.
-   *
    * `rearmWarmup` is the caller's decision, not this function's: an open
    * over an empty paint (or any lineage change) is a first content mount
    * and re-closes the warm gate; a page landing on a window the reader is
@@ -993,7 +932,6 @@ export function createThreadSwitchLoad(
     rearmWarmup: boolean,
     sentStamp: ThreadHistoryStamp | null,
     sentWindow: HeldWindow | null,
-    deferredItems: readonly Item[],
     pageAttested: boolean,
   ): void {
     const threadId = newThread.id;
@@ -1018,21 +956,15 @@ export function createThreadSwitchLoad(
     const page = response.page;
     if (page) {
       const incoming = itemsForThread((page.items ?? []) as Item[], threadId);
-      // Rows the page is structurally blind to: pending sends the
-      // backend holds deferred (no SQLite row until the wire echo).
-      // Same merge the gap-refresh path does; tracked as bets so the
-      // stamped tiers keep stripping them.
-      trackDeferredBets(deferredItems, options.getItems());
-      const pageItems = mergeMissingItemsById(deferredItems, incoming);
       const { items: next, refusals } = options.activityRuns.admitCarriedRows(
         reconcileSnapshotPage(
-          pageItems,
+          incoming,
           options.getItems(),
           liveTouchedDuringSync ?? EMPTY_ID_SET,
           liveRemovedDuringSync ?? EMPTY_ID_SET,
           options.streamingReveal.staleRowIds(),
         ),
-        pageItems,
+        incoming,
         page.runs,
       );
       options.installTimelineItems(next, {
@@ -1040,7 +972,6 @@ export function createThreadSwitchLoad(
         afterCommit: () => {
           runWindowCommitEffects('synced thread window metadata', [
             () => {
-              for (const item of incoming) options.optimisticItemIds.delete(item.id);
               options.timelineWindow.applyWindowMetadataFromPaged(page);
               options.activityRuns.noteRefusals(refusals);
             },
@@ -1059,18 +990,6 @@ export function createThreadSwitchLoad(
           ]);
         },
       });
-    } else if (deferredItems.length > 0) {
-      // A page-less answer keeps the painted rows as-is — but the
-      // stamped tiers strip optimistic rows, so a pending send is never
-      // in the paint a `fresh` answer attests. Fold the missing ones in
-      // (no-op install when none are missing); window metadata is
-      // untouched because deferred rows sit past the attested tail.
-      const current = options.getItems();
-      const merged = mergeMissingItemsById(deferredItems, current);
-      if (merged !== current) {
-        trackDeferredBets(deferredItems, current);
-        options.installTimelineItems(merged);
-      }
     }
     // Attested last: the stamp describes the rows now installed, so it
     // must not be recorded before they are. A page is a full attestation
@@ -1142,13 +1061,10 @@ export function createThreadSwitchLoad(
      * (docs/architecture/thread-replica-sync.md §3.4).
      *
      * Only over a held window: with no rows there is nothing to
-     * describe, and an un-echoed optimistic row makes the window one no
-     * rev ever had, so the pane does not claim it. Rows the live-state
-     * leg appends later are not persisted rows either; they simply fail
-     * verification and earn a page, which needs no special case.
+     * describe.
      */
     const heldWindow = (): HeldWindow | null => {
-      if (paintSource === 'none' || options.optimisticItemIds.size > 0) return null;
+      if (paintSource === 'none') return null;
       return heldWindowOf(
         options.activityRuns.loadedItems(options.getItems()),
         options.timelineWindow.hasMoreHistory,
@@ -1253,11 +1169,9 @@ export function createThreadSwitchLoad(
         pageAttested = retainedPage === response.page;
         response = { ...response, page: retainedPage };
       }
-      // Runs in parallel with the sync ask; never rejects (a failed
-      // fetch resolves with empty deferredItems). The retry path passes
-      // null — its pane self-heals through the next refresh or echo.
+      // Runs in parallel with the sync ask; never rejects. The retry path
+      // passes null — its pane self-heals through the next refresh or echo.
       const liveState = liveStateFetch ? await liveStateFetch : null;
-      const deferredItems = liveState?.deferredItems ?? [];
       if (gen !== options.getSwitchGeneration()) return;
       coldLoadSyncStatus(paneId, response.status);
       if (response.status !== 'gone' && !windowUnchanged()) {
@@ -1281,7 +1195,6 @@ export function createThreadSwitchLoad(
         rearmWarmup,
         sentStamp,
         sentWindow,
-        deferredItems,
         pageAttested,
       );
       liveState?.apply(() => refreshScheduler.request({ immediate: true }));
@@ -1384,10 +1297,7 @@ export function createThreadSwitchLoad(
     if (grantsPending) runGatedLegsOnGrants(newThread, gen, backend);
     const operatePromise = grantsPending ? Promise.resolve() : runOperateLegs(newThread, gen, backend);
 
-    // One live-state fetch, two consumers: the apply leg below (the
-    // registries half of hydration) and the item leg, which merges the
-    // fetch's deferred pending-send rows into the sync page — the same
-    // blindness the gap-refresh path closes (see runBackendRefresh).
+    // One live-state fetch, applied with the sync page it was read beside.
     const liveStateFetch = options.liveStateHydration.startLiveStateFetch(
       newThread.id,
       gen,
@@ -1521,7 +1431,7 @@ export function createThreadSwitchLoad(
       if (!pending || pending.gen !== options.getSwitchGeneration()) return;
       void runOperateLegs(pending.thread, pending.gen, pending.backend);
       // The live-state leg skipped its snapshot too (startLiveStateFetch).
-      // A refresh re-reads it beside the window its deferred rows merge into.
+      // A refresh re-reads it.
       const { id, projectId } = pending.thread;
       if (threadHasScope('threads:operate', id, projectId) || threadHasScope('approvals:respond', id, projectId)) {
         refreshScheduler.request({ immediate: true });
@@ -1768,8 +1678,8 @@ export function createThreadSwitchLoad(
         );
         return { superseded: false, error: err };
       }
-      // Never rejects: fetch failures resolve with empty deferredItems
-      // and an apply() that falls back to the interactive-only leg.
+      // Never rejects: a fetch failure resolves with an apply() that falls
+      // back to the interactive-only leg.
       const liveState = await liveStatePromise;
       if (!readIsCurrent()) return stopped();
       if (liveState.error && !isPassiveConnectionFailure(liveState.error)) {
@@ -1780,22 +1690,18 @@ export function createThreadSwitchLoad(
         (paged.items ?? []) as Item[],
         currentThread.id,
       );
-      // Pending sends can lack a persisted row until their wire echo.
-      // the backend holds deferred (no SQLite row until the wire echo).
-      const merged = mergeMissingItemsById(liveState.deferredItems, snapshot);
       const currentItems = options.getItems();
-      trackDeferredBets(liveState.deferredItems, currentItems);
       const changedDuringFetch =
         refreshMutations.ids.size > 0 || refreshMutations.removedIds.size > 0;
       const { items: next, refusals } = options.activityRuns.admitCarriedRows(
         reconcileSnapshotPage(
-          merged,
+          snapshot,
           currentItems,
           refreshMutations.ids,
           refreshMutations.removedIds,
           options.streamingReveal.staleRowIds(),
         ),
-        merged,
+        snapshot,
         paged.runs,
       );
       options.installTimelineItems(next, {
@@ -1803,7 +1709,6 @@ export function createThreadSwitchLoad(
         afterCommit: () => {
           runWindowCommitEffects('refreshed thread window metadata', [
             () => {
-              for (const item of snapshot) options.optimisticItemIds.delete(item.id);
               options.timelineWindow.applyWindowMetadataFromPaged(paged);
               options.activityRuns.noteRefusals(refusals);
             },
@@ -1852,32 +1757,6 @@ export function createThreadSwitchLoad(
           liveStateHydrationToken,
         );
       }
-    }
-  }
-
-  /**
-   * A deferred row is a bet exactly like the composer's optimistic
-   * send: no SQLite row exists until the wire echo. A row this pane
-   * learned from `GetThreadLiveState` (rather than its own composer)
-   * must join the same optimistic-id ledger, or the stamped tiers —
-   * which strip optimistic rows precisely because a bet can be dropped
-   * without a rev bump (`optimisticFreeWindow`) — would persist it
-   * under an attested stamp, a phantom a later `fresh` answer would
-   * re-bless. Rows already present in the window are skipped: they are
-   * either composer-tracked bets or echoed persisted rows, and
-   * re-tracking an echoed row would exile it from the stamped tiers
-   * until the next switch clears the ledger. The wire echo untracks
-   * these exactly like composer bets (`threadItemStreamApply`).
-   */
-  function trackDeferredBets(
-    deferred: readonly Item[],
-    present: readonly Item[],
-  ): void {
-    if (deferred.length === 0) return;
-    const presentIds = new Set<string>();
-    for (const item of present) presentIds.add(item.id);
-    for (const row of deferred) {
-      if (!presentIds.has(row.id)) options.optimisticItemIds.add(row.id);
     }
   }
 

@@ -211,8 +211,7 @@ describe('applyUserMessageReverted', () => {
     finishThreadInterrupt('thread-a', token);
     expect(isThreadInterruptPending('thread-a')).toBe(false);
 
-    // A new optimistic send legitimately reuses the reverted identity.
-    pane.trackOptimisticItem('u:1');
+    // The resent message's row legitimately reuses the reverted identity.
     pane.upsertItem(makeItem({
       id: 'u:1',
       threadId: 'thread-a',

@@ -157,7 +157,7 @@
   // gate has been dropped — the virtualizer's buffer already bounds which
   // rows are mounted to "near the visible viewport"; loading on mount
   // costs at most a small read-ahead and the cache de-dupes across remounts.
-  // The message-owned cache survives its provisional item ID being confirmed.
+  // The cache is keyed by the message's send identity, not its item id.
   const cache = untrack(() => (pane ? pane.attachmentCacheFor(item.id) : undefined));
   const attachmentPreviews = createAttachmentPreviews(
     () => attachments,

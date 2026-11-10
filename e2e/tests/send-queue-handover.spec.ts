@@ -273,7 +273,7 @@ test('a queued message the pane already holds hands over when Claude picks it up
 
 // A message sent after the turn completed on the wire but while its text is
 // still revealing. The backend is idle, so nothing queues there; the pane's
-// reveal frontier is still up, so a directly sent optimistic row would be
+// reveal frontier is still up, so a directly sent message's row would be
 // withheld behind the draining prose with everything else past the frontier,
 // and the person's own message would leave the composer and appear nowhere
 // until the drain ended. The composer routes the send through the queue
@@ -311,7 +311,7 @@ test('a message sent while the previous turn is still revealing stays in the pre
   await startZoneSampler(page, QUEUED);
 
   // The send is accepted into the queue (and dispatched at once by the
-  // idle backend) rather than appended as an optimistic row.
+  // idle backend) rather than sent directly.
   const flushed = harness.waitForEvent('provider:queue_flushed', (ev: any) => ev.threadId === threadId);
   await input.fill(QUEUED);
   await input.press('Enter');
@@ -483,7 +483,10 @@ test('a message queued after an early Stop took the previous one back shows in t
   await startZoneSampler(page, QUEUED_AFTER_STOP);
   await input.fill(QUEUED_AFTER_STOP);
   await input.press('Enter');
-  await harness.waitForEvent('provider:queue_flushed', (ev: any) => ev.threadId === threadId);
+  // This message's own flush: a send made while the previous turn's text
+  // was still revealing is queued too, and its flush frame is older.
+  await harness.waitForEvent('provider:queue_flushed', (ev: any) =>
+    ev.threadId === threadId && ev.items.some((item: any) => item.message === QUEUED_AFTER_STOP));
   const live = await harness.rpc<{ flushedItems: Array<{ message: string }> }>('GetThreadLiveState', threadId);
   expect(live.flushedItems.map((item) => item.message)).toEqual([QUEUED_AFTER_STOP]);
   await expect(previewRows.filter({ hasText: QUEUED_AFTER_STOP })).toBeVisible();

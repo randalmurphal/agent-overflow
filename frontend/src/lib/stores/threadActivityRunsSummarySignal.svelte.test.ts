@@ -41,8 +41,7 @@ describe('membershipEpoch', () => {
   });
 
   it('moves when a member is REPLACED at the same count', () => {
-    // The count-only stamp this replaced could not see a swap. It happens:
-    // a row's id changes when an optimistic row is laundered, and the run
+    // The count-only stamp this replaced could not see a swap. The run
     // keeps its identity because the surrounding members still match.
     const runs = registry();
     const before = pass(runs, [['a', 'b', 'c']])[0];

@@ -1,6 +1,7 @@
-// A phone can miss activity without losing its RPC connection. The real
-// composer must reconcile its provisional send with the backend's active-turn
-// placement, then keep that single message before the answer through reload.
+// A phone can miss activity without losing its RPC connection. Its composer
+// sends as if the thread were idle; the backend places the message in the
+// active turn, and the phone shows that one row before the answer through
+// reload.
 import { expect, test, type WebSocketRoute } from '@playwright/test';
 import { launchHarness } from '../src/harness.js';
 import { advance, seedAgentThread, startMock, waitForGate } from './agent-visibility-helpers.js';
@@ -58,6 +59,7 @@ test('a stale idle phone sends into the running Codex turn exactly once', async 
     await page.getByRole('button', { name: 'Send message', exact: true }).click();
     const bubbles = page.getByTestId('user-message-bubble');
     await expect(bubbles.filter({ hasText: prompt })).toHaveCount(1);
+    await expect(page.locator('[data-testid="composer-send"][data-pending]')).toHaveCount(0);
     await expect.poll(async () => {
       const rows = await harness.rpc<Item[]>('ListItems', thread, true);
       return rows.filter(row => row.kind === 'user_text' && row.summary === prompt).length;
