@@ -112,13 +112,15 @@ func dictationAPIList(field string, entries []string, limit int, problem func(st
 
 func sanitizeDictationAPIList(field string, entries []string, limit int, problem func(string) string) []string {
 	var kept []string
-	for _, entry := range entries {
+	for i, entry := range entries {
 		entry = strings.TrimSpace(entry)
 		if entry == "" || slices.Contains(kept, entry) {
 			continue
 		}
 		if why := problem(entry); why != "" {
-			log.Printf("settings: dropping %s entry %q: it %s", field, entry, why)
+			// The entry is named by its place: it is text the user typed,
+			// and the log must not hold what was pasted there by mistake.
+			log.Printf("settings: dropping %s entry %d: it %s", field, i+1, why)
 			continue
 		}
 		if len(kept) == limit {

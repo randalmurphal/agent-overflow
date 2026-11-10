@@ -83,3 +83,24 @@ func TestAHandEditedDictationAPIFileLoadsWithTheRefusableEntriesDropped(t *testi
 		t.Fatalf("loaded %+v", got)
 	}
 }
+
+// A dropped entry is logged by its place. The entry is text the user typed,
+// so a secret pasted into the wrong field must not reach the log.
+func TestADroppedDictationAPIEntryIsLoggedWithoutItsText(t *testing.T) {
+	dir := t.TempDir()
+	file := `{"dictationAPIKeywords":["ok","<sk-pasted-secret>","fine"]}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(file), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var got Settings
+	logged := captureLog(t, func() { got = NewService(dir).Get() })
+	if !slices.Equal(got.DictationAPIKeywords, []string{"ok", "fine"}) {
+		t.Fatalf("keywords = %v", got.DictationAPIKeywords)
+	}
+	if !strings.Contains(logged, "dropping dictationAPIKeywords entry 2:") {
+		t.Fatalf("the drop was not logged by field and place:\n%s", logged)
+	}
+	if strings.Contains(logged, "pasted-secret") {
+		t.Fatalf("the log holds the dropped entry's text:\n%s", logged)
+	}
+}
