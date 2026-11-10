@@ -127,6 +127,11 @@ export interface FlushedItem {
    * the flush is at or before. Absent when the position is unknown; such
    * an entry is never released by a settle. */
   flushMark?: FlushMark;
+  /** The backend settled this flush while a pane held the thread. The pane
+   * still owns the entry until it renders the row; an entry it never
+   * rendered leaves when it leaves the thread. Belongs to the flush the
+   * mark names, so a new mark clears it. */
+  settledWhileHeld?: true;
 }
 
 const EMPTY_QUEUE: readonly QueueItem[] = Object.freeze([]);
@@ -393,16 +398,22 @@ export function replaceFlushedForThread(
 ): void {
   if (!threadId) return;
   const removedQueuedItems = removeDispatchedQueueItems(threadId, items);
-  const held = new Map(flushedByThread.get(threadId).map((entry) => [entry.userItemId, entry.flushMark]));
-  const marked = items.map((item) => {
-    const own = item.flushMark ?? held.get(item.userItemId);
+  const held = new Map(flushedByThread.get(threadId).map((entry) => [entry.userItemId, entry]));
+  const marked = items.map((item): FlushedItem => {
+    const prior = held.get(item.userItemId);
+    const own = item.flushMark ?? prior?.flushMark;
     const flushMark = own && readAt && !(sameFlushStream(own, readAt) && own.sequence <= readAt.sequence)
       ? readAt
       : own ?? readAt;
-    return flushMark === item.flushMark ? item : { ...item, flushMark };
+    return { ...item, ...(flushMark ? { flushMark } : {}) };
   });
   const replacedFlushedItems = replaceZoneItems(flushedByThread, threadId, marked, EMPTY_FLUSHED);
   if (removedQueuedItems || replacedFlushedItems) bumpQueueRevision(threadId);
+  tagFromHeldAnswers(threadId);
+}
+
+function sameFlush(a: FlushMark | undefined, b: FlushMark | undefined): boolean {
+  return a !== undefined && b !== undefined && sameFlushStream(a, b) && a.sequence === b.sequence;
 }
 
 /** Move a batch of items to Zone 2. Called by the
@@ -453,6 +464,7 @@ export function markItemsFlushed(
   if (removedQueuedItems || markedFlushedItems || appendedFlushedItems) {
     bumpQueueRevision(threadId);
   }
+  tagFromHeldAnswers(threadId);
 }
 
 // An entry this frame names can already be held: a canonical echo that beat
@@ -468,9 +480,10 @@ function markHeldEntries(
   let changed = false;
   const next = flushedByThread.get(threadId).map((entry) => {
     if (!named.has(entry.userItemId)) return entry;
-    if (entry.flushMark && sameFlushStream(entry.flushMark, mark) && entry.flushMark.sequence === mark.sequence) return entry;
+    if (sameFlush(entry.flushMark, mark)) return entry;
     changed = true;
-    return { ...entry, flushMark: mark };
+    const { settledWhileHeld: _, ...rest } = entry;
+    return { ...rest, flushMark: mark };
   });
   if (changed) flushedByThread.set(threadId, next);
   return changed;
@@ -515,57 +528,73 @@ export function confirmFlushedByUserItemId(
  * the stream position at which that backend read that none of the thread's
  * sends is pending, so every message it flushed up to there was echoed or
  * taken back. The answer speaks for that backend only: an entry another
- * backend flushed, or one with no mark, is not covered.
+ * backend flushed, or one with no mark, is not covered. It also covers the
+ * entries of the backend's earlier launches, which it no longer tracks.
  *
- * A thread with no mounted pane releases the entries the answer covers,
- * and those of an earlier launch of the backend, which it no longer
- * tracks. A mounted pane holds each entry until it renders the row, which
- * the answer can precede, so `paneHolds` keeps the answer for
- * `releaseFlushedLeftByPane`. It is kept whether or not an entry exists
- * yet: a live-state read sampled before the answer can still install one. */
+ * A thread with no mounted pane releases the covered entries. A mounted
+ * pane holds each entry until it renders the row, which the answer can
+ * precede, so `paneHolds` tags them for `releaseFlushedLeftByPane`. The
+ * answer is also kept while the pane is mounted: a live-state read sampled
+ * before it, or a replayed flush frame, can still install an entry it
+ * covers. */
 export function settleFlushed(threadId: string, settled: FlushMark, paneHolds: boolean): void {
   if (!threadId) return;
   if (!paneHolds) {
     releaseSettled(threadId, settled, true);
     return;
   }
-  const held = heldAnswers(threadId);
+  tagSettled(threadId, (entry) => covered(entry, settled, true));
+  let held = answersWhileHeld.get(threadId);
+  if (!held) answersWhileHeld.set(threadId, held = new Map());
   const prior = held.get(settled.backend);
-  if (prior && prior !== DETACHED && sameFlushStream(prior, settled) && prior.sequence >= settled.sequence) return;
+  if (prior && sameFlushStream(prior, settled) && prior.sequence >= settled.sequence) return;
   held.set(settled.backend, settled);
 }
 
 /** `backend` detached, so nothing can settle the entries it flushed any
  * more. A thread with no mounted pane releases them. A mounted pane keeps
- * them, as it does on an answer, until `releaseFlushedLeftByPane`. */
+ * them, tagged as on an answer. */
 export function releaseFlushedOn(threadId: string, backend: BackendKey, paneHolds: boolean): void {
-  if (paneHolds) heldAnswers(threadId).set(backend, DETACHED);
-  else releaseFlushedBy(threadId, backend);
+  const flushedThere = (entry: FlushedItem): boolean => entry.flushMark?.backend === backend;
+  if (paneHolds) {
+    tagSettled(threadId, flushedThere);
+    return;
+  }
+  const changed = filterZoneItems(flushedByThread, threadId, EMPTY_FLUSHED, (entry) => !flushedThere(entry));
+  if (changed) bumpQueueRevision(threadId);
 }
 
-/** The pane that held the thread left it. Entries it never rendered leave
- * under what each backend said while it was mounted. An answer kept from
- * then is no longer current, so it covers its own launch only. */
+/** The pane that held the thread left it. The entries a backend settled
+ * while it was mounted, and that it never rendered, leave with it. */
 export function releaseFlushedLeftByPane(threadId: string): void {
-  const held = answersWhileHeld.get(threadId);
-  if (!held) return;
   answersWhileHeld.delete(threadId);
-  for (const [backend, answer] of held) {
-    if (answer === DETACHED) releaseFlushedBy(threadId, backend);
-    else releaseSettled(threadId, answer, false);
-  }
+  const changed = filterZoneItems(flushedByThread, threadId, EMPTY_FLUSHED, (entry) => !entry.settledWhileHeld);
+  if (changed) bumpQueueRevision(threadId);
 }
 
 // Per thread with a mounted pane and per backend: the newest answer that
-// arrived while the pane held the thread, or that the backend detached.
-// One slot per backend, since each answer speaks for its own entries.
-const DETACHED = 'detached';
-const answersWhileHeld = new Map<string, Map<BackendKey, FlushMark | typeof DETACHED>>();
+// arrived while the pane held the thread. Only for entries installed after
+// it; an entry present when an answer arrives carries its own tag.
+const answersWhileHeld = new Map<string, Map<BackendKey, FlushMark>>();
 
-function heldAnswers(threadId: string): Map<BackendKey, FlushMark | typeof DETACHED> {
-  let held = answersWhileHeld.get(threadId);
-  if (!held) answersWhileHeld.set(threadId, held = new Map());
-  return held;
+// An entry installed while a pane holds the thread can be one an earlier
+// answer covers. That answer is no longer current, so it covers its own
+// launch only.
+function tagFromHeldAnswers(threadId: string): void {
+  const held = answersWhileHeld.get(threadId);
+  if (!held) return;
+  for (const answer of held.values()) tagSettled(threadId, (entry) => covered(entry, answer, false));
+}
+
+// Not a change of the queue's content, so the revision stays.
+function tagSettled(threadId: string, settles: (entry: FlushedItem) => boolean): void {
+  let changed = false;
+  const next = flushedByThread.get(threadId).map((entry): FlushedItem => {
+    if (entry.settledWhileHeld || !settles(entry)) return entry;
+    changed = true;
+    return { ...entry, settledWhileHeld: true };
+  });
+  if (changed) flushedByThread.set(threadId, next);
 }
 
 function covered(entry: FlushedItem, settled: FlushMark, current: boolean): boolean {
@@ -573,11 +602,6 @@ function covered(entry: FlushedItem, settled: FlushMark, current: boolean): bool
   if (!mark || mark.backend !== settled.backend) return false;
   if (mark.launchId !== settled.launchId) return current;
   return mark.sequence <= settled.sequence;
-}
-
-function releaseFlushedBy(threadId: string, backend: BackendKey): void {
-  const changed = filterZoneItems(flushedByThread, threadId, EMPTY_FLUSHED, (entry) => entry.flushMark?.backend !== backend);
-  if (changed) bumpQueueRevision(threadId);
 }
 
 function releaseSettled(threadId: string, settled: FlushMark, current: boolean): void {
@@ -694,6 +718,10 @@ export function queueItemFromWire(item: WireQueuedItem): QueueItem {
  * `clearForThread`; tests use this for fresh-fixture isolation.
  * Named to match the `resetForTest` convention in every other store
  * in this directory (threadStatuses.svelte.ts, threads.svelte.ts). */
+export function __heldAnswerThreadsForTest(): number {
+  return answersWhileHeld.size;
+}
+
 export function resetForTest(): void {
   queueByThread.reset();
   flushedByThread.reset();

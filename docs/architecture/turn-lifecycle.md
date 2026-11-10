@@ -1062,10 +1062,12 @@ live-state read added, and releases the entries an answer covers
 backend: sequences compare within one launch of it, a current answer also
 releases the entries of its earlier launches, and an entry another backend
 flushed, or one with no mark, is not covered. A mounted pane keeps its
-entries until it renders the rows; each backend's newest answer that arrived
-meanwhile is applied to what it never rendered when it leaves the thread. A
-detached backend's entries leave with it, for a mounted thread when its pane
-leaves.
+entries until it renders the rows. An answer that arrives meanwhile tags the
+entries it covers, and the tagged entries the pane never rendered leave when
+it leaves the thread; a later flush of the same message clears the tag. Each
+backend's newest answer is kept while the pane is mounted, for an entry
+installed after it. A backend's detach releases the entries it flushed, and
+tags them for a mounted thread.
 
 A send an interrupt places in the timeline stops reading as pending only
 once the store write behind that claim lands (`anchoredInTimeline`), so a

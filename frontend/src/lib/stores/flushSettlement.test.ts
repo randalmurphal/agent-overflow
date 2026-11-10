@@ -12,6 +12,7 @@ import { buildPane, makeThread } from '../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { probeReactivity } from '../../test/helpers/reactivity.svelte';
 import {
+  __heldAnswerThreadsForTest,
   flushMarkAt,
   getFlushedForThread,
   getQueueRevisionForThread,
@@ -246,7 +247,14 @@ describe('a thread with a mounted pane', () => {
     applyQueueFlushed({ threadId, items: [entry(2)] }, 'laptop', 4);
     settled(4, 100, threadId, 'laptop');
     settled(3, 101, threadId);
+    await pane.switchThread(makeThread({ id: 'elsewhere' }));
+    expect(held(threadId)).toEqual([]);
 
+    // gpu's answer still covers a gpu entry installed after laptop answered.
+    await pane.switchThread(makeThread({ id: threadId }));
+    settled(5, 102, threadId);
+    settled(2, 103, threadId, 'laptop');
+    flushed(3, 4, threadId);
     await pane.switchThread(makeThread({ id: 'elsewhere' }));
     expect(held(threadId)).toEqual([]);
   });
@@ -255,13 +263,79 @@ describe('a thread with a mounted pane', () => {
     const pane = await buildPane();
     const threadId = pane.threadId!;
     noteThread(threadId, 'gpu', 1);
-    flushed(1, 3, threadId);
-    flushed(2, 5, threadId);
     settled(5, 100, threadId);
     settled(3, 101, threadId);
+    // A replay handed the flush frames over after the answers that cover them.
+    flushed(1, 3, threadId);
+    flushed(2, 5, threadId);
 
     await pane.switchThread(makeThread({ id: 'elsewhere' }));
     expect(held(threadId)).toEqual([]);
+  });
+
+  it("releases an earlier launch's entry that only the new launch settled", async () => {
+    const pane = await buildPane();
+    const threadId = pane.threadId!;
+    noteThread(threadId, 'gpu', 1);
+    flushed(1, 30, threadId);
+    __setTransportHelloForTest(hello('launch-2'), 'gpu');
+    settled(1, 1, threadId);
+
+    await pane.switchThread(makeThread({ id: 'elsewhere' }));
+    expect(held(threadId)).toEqual([]);
+  });
+
+  it('forgets the answers it kept when the pane leaves', async () => {
+    const pane = await buildPane();
+    const threadId = pane.threadId!;
+    noteThread(threadId, 'gpu', 1);
+    settled(5, 100, threadId);
+    expect(__heldAnswerThreadsForTest()).toBe(1);
+
+    await pane.switchThread(makeThread({ id: 'elsewhere' }));
+    expect(__heldAnswerThreadsForTest()).toBe(0);
+  });
+
+  it("releases an earlier launch's settled entry after the backend restarts and answers again", async () => {
+    const pane = await buildPane();
+    const threadId = pane.threadId!;
+    noteThread(threadId, 'gpu', 1);
+    flushed(1, 30, threadId);
+    settled(30, 100, threadId);
+    __setTransportHelloForTest(hello('launch-2'), 'gpu');
+    // The new launch flushed and settled a message of its own; a replay
+    // handed its flush frame over after the answer.
+    settled(1, 1, threadId);
+    flushed(2, 1, threadId);
+
+    await pane.switchThread(makeThread({ id: 'elsewhere' }));
+    expect(held(threadId)).toEqual([]);
+  });
+
+  it('keeps a settled entry that is flushed again under the same id', async () => {
+    const pane = await buildPane();
+    const threadId = pane.threadId!;
+    noteThread(threadId, 'gpu', 1);
+    flushed(1, 3, threadId);
+    settled(3, 100, threadId);
+    flushed(1, 7, threadId);
+
+    await pane.switchThread(makeThread({ id: 'elsewhere' }));
+    expect(held(threadId)).toEqual(['message 1']);
+  });
+
+  it('releases a settled entry that a live-state read restated', async () => {
+    const pane = await buildPane();
+    const threadId = pane.threadId!;
+    noteThread(threadId, 'gpu', 1);
+    flushed(1, 3, threadId);
+    flushed(2, 4, threadId);
+    settled(3, 100, threadId);
+    // Sampled before the settle: both still listed.
+    replaceFlushedForThread(threadId, [1, 2].map((n) => ({ ...entry(n), flushedAt: 0 })), flushMarkAt('gpu', 4));
+
+    await pane.switchThread(makeThread({ id: 'elsewhere' }));
+    expect(held(threadId)).toEqual(['message 2']);
   });
 
   it('keeps entries marked under a later launch when it leaves', async () => {
@@ -422,9 +496,11 @@ describe("the computer's settlement answer", () => {
 
     expect(__flushSettlementFloorsForTest()).toBe(0);
     expect(held('unattributed')).toEqual(['message 2']);
-    // The mounted thread's pane keeps its entry until it leaves.
+    // The mounted thread's pane keeps its entry until it leaves. One the
+    // computer flushes after it attaches again is not the detach's to take.
     expect(held(mounted)).toEqual(['message 3']);
+    flushed(4, 10, mounted);
     await pane.switchThread(makeThread({ id: 'elsewhere' }));
-    expect(held(mounted)).toEqual([]);
+    expect(held(mounted)).toEqual(['message 4']);
   });
 });
