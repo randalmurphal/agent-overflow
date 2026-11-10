@@ -196,6 +196,13 @@ func (a *App) Shutdown(ctx context.Context) error {
 		a.closeWorktreeWatch()
 		record("close worktree registry watcher", nil)
 	}
+	// A tool command is stopped with SIGTERM first, so its reaper is joined
+	// here: before the engine it reports to closes, and so the process does
+	// not outlive the app inside the grace.
+	if runner := a.workflowApplication().Runner(); runner != nil {
+		runner.StopTools()
+		record("stop workflow tool commands", nil)
+	}
 	if a.workflowApplication().Engine() != nil {
 		engineErr := a.workflowApplication().CloseEngine()
 		// No new lifecycle events can arrive after the engine closes. Let the

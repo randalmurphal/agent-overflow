@@ -8,7 +8,7 @@ session, scheduler, queue, or frontend-lifetime service.
 
 - Accept exact argv or a bounded script plus caller-selected interpreter for a
   registered workspace. Use the destination-owned environment and
-  `procutil.ConfigureGroup`. Never interpolate scripts into another shell
+  `procutil.RunGroup`. Never interpolate scripts into another shell
   command or detach processes implicitly.
 - Persist the immutable request identity, owner, source conversation,
   destination workspace, and digest before spawning. An identical retry returns
