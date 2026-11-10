@@ -458,26 +458,27 @@ func TestThreadRequestReceiptAcceptanceIsIdempotent(t *testing.T) {
 	}
 }
 
-// Only a running receipt moves to another turn, and only when the turn
-// differs: an accepted one has no turn yet and a settled one keeps the turn
-// that answered it.
-func TestRebindThreadReceiptTurnMovesOnlyARunningReceipt(t *testing.T) {
+// An open receipt takes the turn that answers its message, before or after
+// it is marked running, and the running mark keeps a turn recorded first. A
+// settled receipt keeps the turn that answered it.
+func TestSetThreadReceiptAnswerTurnAppliesToOpenReceipts(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t-target")
+	mustCreateThread(t, s, "t-other")
 	if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{
 		Token: "tok-r", OwnerDeviceID: "device-1", Kind: ThreadRequestSend,
 		TargetThreadID: "t-target", CreatedAt: 100, UpdatedAt: 100,
 	}); err != nil {
 		t.Fatalf("accept: %v", err)
 	}
-	rebind := func(when, turnID string, want bool) {
+	set := func(when, threadID, turnID string, want bool) {
 		t.Helper()
-		moved, err := s.RebindThreadReceiptTurn("tok-r", turnID)
+		changed, err := s.SetThreadReceiptAnswerTurn("tok-r", threadID, turnID)
 		if err != nil {
 			t.Fatalf("%s: %v", when, err)
 		}
-		if moved != want {
-			t.Fatalf("%s: moved = %v, want %v", when, moved, want)
+		if changed != want {
+			t.Fatalf("%s: changed = %v, want %v", when, changed, want)
 		}
 	}
 	wantTurn := func(when, want string) {
@@ -491,24 +492,27 @@ func TestRebindThreadReceiptTurnMovesOnlyARunningReceipt(t *testing.T) {
 		}
 	}
 
-	rebind("accepted", "turn-2", false)
-	wantTurn("accepted", "")
+	set("another thread's receipt", "t-other", "turn-9", false)
+	wantTurn("another thread's receipt", "")
+	set("accepted", "t-target", "turn-2", true)
+	wantTurn("accepted", "turn-2")
 	if running, err := s.MarkThreadReceiptRunning("tok-r", "item-1", "turn-1"); err != nil || !running {
 		t.Fatalf("mark running: running=%v err=%v", running, err)
 	}
-	rebind("running", "turn-2", true)
-	wantTurn("running", "turn-2")
-	rebind("already there", "turn-2", false)
-	if _, err := s.RebindThreadReceiptTurn("tok-r", ""); err == nil {
-		t.Error("a receipt cannot be bound to no turn")
+	wantTurn("marked running after its answer turn was recorded", "turn-2")
+	set("already there", "t-target", "turn-2", false)
+	set("running", "t-target", "turn-3", true)
+	wantTurn("running", "turn-3")
+	if _, err := s.SetThreadReceiptAnswerTurn("tok-r", "t-target", ""); err == nil {
+		t.Error("a receipt cannot be answered by no turn")
 	}
 	if settled, err := s.SettleThreadRequestReceipt("tok-r", []string{ThreadReceiptRunning}, ThreadRequestSettlement{
 		State: ThreadReceiptFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal, SettledAt: 500,
 	}); err != nil || !settled {
 		t.Fatalf("settle: settled=%v err=%v", settled, err)
 	}
-	rebind("settled", "turn-3", false)
-	wantTurn("settled", "turn-2")
+	set("settled", "t-target", "turn-4", false)
+	wantTurn("settled", "turn-3")
 }
 
 // An answer nobody collected is dropped once its hold runs out; a collected

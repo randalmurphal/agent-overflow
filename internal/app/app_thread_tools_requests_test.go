@@ -2786,7 +2786,7 @@ func TestTwoQueuedRequestsSettleOnTheOneTurnThatConsumedThem(t *testing.T) {
 	}
 
 	// The turn the messages waited out ends without reading them, so it
-	// answers neither. Both move to the turn the merged message opens.
+	// answers neither.
 	if err := f.app.store.UpdateTurnCompleted("merge-turn", time.Now().UnixMilli(), "end_turn", "", "", ""); err != nil {
 		t.Fatalf("UpdateTurnCompleted: %v", err)
 	}
@@ -2795,10 +2795,9 @@ func TestTwoQueuedRequestsSettleOnTheOneTurnThatConsumedThem(t *testing.T) {
 	if firstReceipt.State != store.ThreadReceiptRunning || secondReceipt.State != store.ThreadReceiptRunning {
 		t.Fatalf("receipts = %q / %q, want both still running: the ended turn never read the message", firstReceipt.State, secondReceipt.State)
 	}
-	if want := threadRequestTurnKey(target.ID, 1); firstReceipt.TurnID != want || secondReceipt.TurnID != want {
-		t.Fatalf("turns = %q / %q, want both on %q, the turn the message opens", firstReceipt.TurnID, secondReceipt.TurnID, want)
-	}
 
+	// The provider picks the merged message up as a turn of its own, and
+	// that turn's end answers both.
 	meta, err := json.Marshal(provider.SessionInfo{TurnOpener: provider.TurnOpenerCommand})
 	if err != nil {
 		t.Fatal(err)

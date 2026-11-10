@@ -12,6 +12,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/triage"
 )
 
 // The settling half: how a request stops being open, and how the answer
@@ -94,11 +95,7 @@ func (a *App) settleReceiptOnTurnEnd(threadID, token string) error {
 		a.forgetReceiptRunning(threadID, token)
 		return nil
 	}
-	index, ok := threadRequestTurnIndex(threadID, receipt.TurnID)
-	if !ok {
-		return fmt.Errorf("receipt names turn %q, which is not a turn of this thread", receipt.TurnID)
-	}
-	turn, ended, err := a.receiptEndedTurn(threadID, token, receipt.MessageItemID, index)
+	turn, ended, err := a.receiptEndedTurn(threadID, token, receipt.MessageItemID)
 	if err != nil {
 		return err
 	}
@@ -113,31 +110,60 @@ func (a *App) settleReceiptOnTurnEnd(threadID, token string) error {
 	return a.settleThreadReceipt(token, []string{store.ThreadReceiptRunning}, settlement)
 }
 
-// receiptEndedTurn returns the ended turn that answers a running receipt
-// bound to turn index, or false while that answer is still to come.
+// receiptEndedTurn returns the ended turn that answers a running receipt,
+// or false while that answer is still to come.
 //
-// A message queued while a turn runs keeps its row in that turn, and the
-// receipt is bound there when the message is written. The provider either
-// drains it into that turn or picks it up after it as a turn of its own
-// (triage.Router.QueuedSendTurn). A bound turn that ended without consuming
-// the message did not answer it: the receipt moves to the turn the message
-// opens, and that turn's end settles it.
-func (a *App) receiptEndedTurn(threadID, token, messageItemID string, index int) (store.Turn, bool, error) {
-	for {
-		// The turn's end is read before the send's state: a send still
-		// waiting after its bound turn ended was not consumed by it.
-		turn, found, err := a.store.GetTurnByThreadIndex(threadID, index)
-		if err != nil || !found || turn.CompletedAt == nil {
+// The receipt names the turn its message's row sits in until the provider
+// consumes the message, and from then the turn that consumption named
+// (recordRequestAnswerTurn). A message queued behind a running turn is not
+// answered by that turn ending: while the provider holds it unconsumed the
+// receipt waits, and once a turn start takes it, that turn answers.
+//
+// The pending state is read before the receipt. A send reported consumed has
+// had its answer turn written, so the receipt read after it is current.
+func (a *App) receiptEndedTurn(threadID, token, messageItemID string) (store.Turn, bool, error) {
+	claimed, state := a.triage.PendingSendTurn(threadID, messageItemID)
+	if state == triage.PendingSendWaiting {
+		return store.Turn{}, false, nil
+	}
+	turnKey := ""
+	if state == triage.PendingSendClaimed {
+		turnKey = threadRequestTurnKey(threadID, claimed)
+		if _, err := a.store.SetThreadReceiptAnswerTurn(token, threadID, turnKey); err != nil {
 			return store.Turn{}, false, err
 		}
-		next, opened, waiting := a.triage.QueuedSendTurn(threadID, messageItemID)
-		if (!opened && !waiting) || next == index {
-			return turn, true, nil
-		}
-		if _, err := a.store.RebindThreadReceiptTurn(token, threadRequestTurnKey(threadID, next)); err != nil {
+	} else {
+		receipt, found, err := a.store.GetThreadRequestReceipt(token)
+		if err != nil || !found {
 			return store.Turn{}, false, err
 		}
-		index = next
+		turnKey = receipt.TurnID
+	}
+	index, ok := threadRequestTurnIndex(threadID, turnKey)
+	if !ok {
+		return store.Turn{}, false, fmt.Errorf("receipt names turn %q, which is not a turn of this thread", turnKey)
+	}
+	turn, found, err := a.store.GetTurnByThreadIndex(threadID, index)
+	if err != nil || !found || turn.CompletedAt == nil {
+		return store.Turn{}, false, err
+	}
+	return turn, true, nil
+}
+
+// recordRequestAnswerTurn is the consumed hook: the provider consumed a
+// message, and answerTurn is the turn that answers it. Each request whose
+// message the row carries has that turn written to its receipt. It runs
+// inside triage's confirmation transaction, so it writes and returns.
+func (a *App) recordRequestAnswerTurn(threadID string, sendIDs []string, answerTurn int) {
+	turnKey := threadRequestTurnKey(threadID, answerTurn)
+	for _, sendID := range sendIDs {
+		token, ok := strings.CutPrefix(sendID, threadRequestSendIDPrefix)
+		if !ok {
+			continue
+		}
+		if _, err := a.store.SetThreadReceiptAnswerTurn(token, threadID, turnKey); err != nil {
+			log.Printf("thread tools: record answer turn %d of %s for request %s: %v", answerTurn, threadID, token, err)
+		}
 	}
 }
 

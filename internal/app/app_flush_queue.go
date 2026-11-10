@@ -91,6 +91,7 @@ func (a *App) configureTriageQueueCallbacks() {
 	a.triage.SetFlushUserTextConfirmedHook(func(threadID string, item store.Item) {
 		a.recordMessageAnchor(item)
 	})
+	a.triage.SetSendConsumedHook(a.recordRequestAnswerTurn)
 	a.triage.SetSendsPendingObserver(a.markSendsPendingDirty)
 	a.triage.SetSendUndeliveredHook(func(threadID string) {
 		// Off the provider event worker: the restore takes the thread

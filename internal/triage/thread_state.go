@@ -226,13 +226,6 @@ type threadState struct {
 	// DrainUnconfirmedFlushItems; swept at cleanup, so a Stop drops them
 	// with the rest of the queue.
 	undeliveredSends []UnconfirmedFlushItem
-	// queuedSendTurns maps a queued send's row to the turn a provider turn
-	// start opened for it, when that is not the turn the row sits in: the
-	// provider picked the message up after the turn it was queued in. It
-	// outlives the pendingSends entry so a reader that asks after the echo
-	// still learns it (QueuedSendTurn). Bounded by queuedSendTurnHistory,
-	// cleared by MarkThreadActive and swept with threadState at cleanup.
-	queuedSendTurns map[string]int
 	// recentFlushDigests is the bounded, ordered history of this thread's
 	// flush sends and the content-block fingerprints they put on the wire.
 	// It outlives the pendingSends entry because the evidence for a provider

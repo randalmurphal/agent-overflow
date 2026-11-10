@@ -384,61 +384,47 @@ func (r *Router) claimTurnOpeningPendingSend(threadID string) (int, bool) {
 	for i := range queue {
 		if queue[i].canOpenTurn() {
 			queue[i].OpenedTurn = true
-			if quiet := queue[i].QuietItem; quiet != nil && quiet.TurnIndex != queue[i].TurnIndex {
-				r.threadStateIfPresent(threadID).recordQueuedSendTurn(queue[i].AOItemID, queue[i].TurnIndex)
-			}
 			return queue[i].TurnIndex, true
 		}
 	}
 	return 0, false
 }
 
-// queuedSendTurnHistory bounds queuedSendTurns. A reader asks about a send
-// around the end of the turn it opened, so only the newest turns matter.
-const queuedSendTurnHistory = 32
+// PendingSendState is what the registry holds about a send the provider
+// has not confirmed consuming.
+type PendingSendState int
 
-// recordQueuedSendTurn keeps the newest queuedSendTurnHistory entries,
-// dropping the lowest turn first. Caller holds r.mu.
-func (st *threadState) recordQueuedSendTurn(aoItemID string, turnIndex int) {
-	if st.queuedSendTurns == nil {
-		st.queuedSendTurns = make(map[string]int)
-	}
-	st.queuedSendTurns[aoItemID] = turnIndex
-	for len(st.queuedSendTurns) > queuedSendTurnHistory {
-		oldest, oldestTurn := "", 0
-		for id, turn := range st.queuedSendTurns {
-			if oldest == "" || turn < oldestTurn {
-				oldest, oldestTurn = id, turn
-			}
-		}
-		delete(st.queuedSendTurns, oldest)
-	}
-}
+const (
+	// PendingSendNone: no unconsumed entry. The provider consumed the send
+	// (the consumed hook has run) or the entry was dropped.
+	PendingSendNone PendingSendState = iota
+	// PendingSendWaiting: the provider has the send and no turn has taken
+	// it. A turn that ends now did not read it.
+	PendingSendWaiting
+	// PendingSendClaimed: a turn start took the send as the returned turn.
+	PendingSendClaimed
+)
 
-// QueuedSendTurn reports where the send whose row is aoItemID runs when
-// that is not known from its row. A message queued while a turn runs keeps
-// its row in that turn, and the provider either drains it into that turn or
-// picks it up after it as a turn of its own. opened: a provider turn start
-// took the send as turnIndex. waiting: the provider has not consumed it and
-// no turn start has taken it; turnIndex is the turn it opens if the provider
-// picks it up after the running one. Neither: the row's turn consumed it, or
-// triage holds nothing about it.
-func (r *Router) QueuedSendTurn(threadID, aoItemID string) (turnIndex int, opened, waiting bool) {
+// PendingSendTurn reports where the unconsumed send whose row is aoItemID
+// stands, and for a claimed one the turn that took it. It waits out a
+// confirmation in progress, so PendingSendNone after a consumption is
+// reported only once the consumed hook has run.
+func (r *Router) PendingSendTurn(threadID, aoItemID string) (int, PendingSendState) {
+	anchor := r.flushAnchor(threadID)
+	anchor.Lock()
+	defer anchor.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	st := r.threadStateIfPresent(threadID)
-	if st == nil {
-		return 0, false, false
-	}
-	if turn, ok := st.queuedSendTurns[aoItemID]; ok {
-		return turn, true, false
-	}
-	for _, entry := range st.pendingSends {
-		if entry.AOItemID == aoItemID && entry.canOpenTurn() {
-			return entry.TurnIndex, false, true
+	for _, entry := range r.pendingSendsLocked(threadID) {
+		if entry.AOItemID != aoItemID || entry.EchoConsumed {
+			continue
 		}
+		if entry.OpenedTurn {
+			return entry.TurnIndex, PendingSendClaimed
+		}
+		return 0, PendingSendWaiting
 	}
-	return 0, false, false
+	return 0, PendingSendNone
 }
 
 // turnOpeningPendingSend reads the entry claimTurnOpeningPendingSend would

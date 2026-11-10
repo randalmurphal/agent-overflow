@@ -235,6 +235,10 @@ func (r *Router) confirmConsumedSend(evt provider.ProviderEvent, pending pending
 	if r.isWireOnlyUserTextSeen(evt.ThreadID, pending.EchoProviderItemID) {
 		r.markWireOnlyUserTextSeen(evt.ThreadID, providerItemID)
 	}
+	// After the handlers: a consumption that opens the send's own turn has
+	// opened it, and a fold has widened the survivor's row. Reported even
+	// when a write failed, because the provider has the message either way.
+	r.reportSendConsumed(evt.ThreadID, &pending)
 	if handleErr != nil && !r.isWireOnlyUserTextSeen(evt.ThreadID, pending.EchoProviderItemID) {
 		// This confirmation IS the consumption boundary even though the
 		// write failed: record the message anchor now so fork /

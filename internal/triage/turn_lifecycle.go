@@ -2131,7 +2131,6 @@ func (r *Router) MarkThreadActive(threadID string) {
 		// (see the doc comment above).
 		st.settledTurns = nil
 		st.softClosedTurnSet = false
-		st.queuedSendTurns = nil
 		hadEffectiveModel = st.effectiveModelSet
 		st.effectiveModel, st.effectiveModelSet = "", false
 		// A pending harness wakeup is in-process state of the PREVIOUS

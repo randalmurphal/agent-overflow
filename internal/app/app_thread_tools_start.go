@@ -543,9 +543,10 @@ func (t threadToolsApp) dispatchRequest(
 	return nil
 }
 
-// markRequestRunning binds the receipt to the turn that consumed its message.
-// Until it applies nothing can settle the request, which is exactly right:
-// the message is still on a queue.
+// markRequestRunning binds the receipt to its message's row and that row's
+// turn. Until it applies nothing can settle the request, which is exactly
+// right: the message is still on a queue. The turn that answers is the one
+// the provider consumes the message in, which receiptEndedTurn resolves.
 //
 // It runs under the token's settle lock, so the observer's gate and the row
 // transition are one step as far as a turn end is concerned: without that the
@@ -575,7 +576,7 @@ func (t threadToolsApp) markRequestRunning(token, targetThreadID string, item st
 			// its way to the provider. Whoever settled it owns it.
 			return
 		}
-		work = t.settleIfTurnAlreadyEnded(token, targetThreadID, item.ID, item.TurnIndex)
+		work = t.settleIfTurnAlreadyEnded(token, targetThreadID, item.ID)
 	}()
 	// This runs inside the target thread's own send or queue dispatch, which
 	// holds that thread's locks. The deferred work takes thread locks of its
@@ -588,10 +589,10 @@ func (t threadToolsApp) markRequestRunning(token, targetThreadID string, item st
 // turn ended, so nothing else will ever look at it again.
 //
 // The caller holds the token's settle lock.
-func (t threadToolsApp) settleIfTurnAlreadyEnded(token, targetThreadID, messageItemID string, turnIndex int) threadSettlementWork {
-	turn, ended, err := t.app.receiptEndedTurn(targetThreadID, token, messageItemID, turnIndex)
+func (t threadToolsApp) settleIfTurnAlreadyEnded(token, targetThreadID, messageItemID string) threadSettlementWork {
+	turn, ended, err := t.app.receiptEndedTurn(targetThreadID, token, messageItemID)
 	if err != nil {
-		log.Printf("thread tools: read turn %d of %s for request %s: %v", turnIndex, targetThreadID, token, err)
+		log.Printf("thread tools: read the turn of %s that answers request %s: %v", targetThreadID, token, err)
 		return threadSettlementWork{}
 	}
 	if !ended {
