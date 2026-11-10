@@ -6,9 +6,9 @@
 // view exists here only while a command is running or after it failed to be
 // sent. A stopped or sent run has nothing left to show and is dropped.
 //
-// Convergence follows stores/worktreeSetup.svelte.ts: GetThreadShellCommands
-// is a full snapshot, output frames carry a per-run sequence, and frames that
-// arrive while a snapshot is in flight are buffered and replayed over it.
+// GetThreadShellCommands is a full snapshot and output frames carry a per-run
+// sequence. Frames that arrive while a snapshot is in flight are buffered and
+// replayed over it (snapshotStream.ts).
 
 import type { ShellCommandEvent } from '../types/events';
 import { threadHasScope } from '../transport/entityScopes';
@@ -20,6 +20,7 @@ import {
   StopThreadShellCommand,
 } from './bindings';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
+import { createSnapshotStream } from './snapshotStream';
 
 export interface ShellRunView {
   runId: string;
@@ -55,9 +56,14 @@ const starting = new Map<string, Promise<unknown>>();
 // (RunThreadShellCommand answers a repeated id), until a frame or a reply
 // says what became of it.
 const uncertainStarts = new Map<string, { command: string; runId: string }>();
-const hydrationBuffers = new Map<string, ShellCommandEvent[]>();
-const hydrationTokens = new Map<string, number>();
-let nextHydrationToken = 1;
+
+type RunningCommands = Awaited<ReturnType<typeof GetThreadShellCommands>>;
+const stream = createSnapshotStream<ShellCommandEvent, RunningCommands>({
+  name: 'shellCommands',
+  read: (threadId) => GetThreadShellCommands(threadId),
+  applySnapshot,
+  applyFrame: applyEvent,
+});
 
 /** Tracked read. Null means the thread has no command to show. */
 export function getShellRun(threadId: string | null | undefined): ShellRunView | null {
@@ -170,48 +176,29 @@ export async function hydrateShellRun(threadId: string): Promise<void> {
   // The snapshot carries local command output and rides `terminal:operate`,
   // the grant the channel itself is gated on.
   if (!threadHasScope('terminal:operate', threadId)) return;
-  const token = nextHydrationToken++;
-  hydrationTokens.set(threadId, token);
-  if (!hydrationBuffers.has(threadId)) hydrationBuffers.set(threadId, []);
+  await stream.hydrate(threadId);
+}
 
-  let failed = false;
-  let runs: Awaited<ReturnType<typeof GetThreadShellCommands>> = [];
-  try {
-    runs = await GetThreadShellCommands(threadId);
-  } catch (err) {
-    failed = true;
-    console.warn(`shellCommands: hydrate ${threadId}: ${String(err)}`);
+function applySnapshot(threadId: string, runs: RunningCommands): void {
+  const run = runs[0];
+  const previous = views.get(threadId);
+  if (run) {
+    views.set(threadId, {
+      runId: run.runId,
+      command: run.command,
+      state: 'running',
+      output: tail(run.output ?? ''),
+      outputSeq: run.outputSeq ?? 0,
+      startedAt: run.startedAt ?? Date.now(),
+      error: '',
+      stopping: previous?.runId === run.runId && previous.stopping,
+    });
+    bump(threadId);
+  } else if (previous?.state === 'running') {
+    // It ended while this client was not listening. What it became, if
+    // anything, is in the timeline.
+    drop(threadId);
   }
-  // A newer hydration owns the buffer and replays what this one would have.
-  if (hydrationTokens.get(threadId) !== token) return;
-  hydrationTokens.delete(threadId);
-  const buffered = hydrationBuffers.get(threadId) ?? [];
-  hydrationBuffers.delete(threadId);
-
-  if (!failed) {
-    const run = runs[0];
-    const previous = views.get(threadId);
-    if (run) {
-      views.set(threadId, {
-        runId: run.runId,
-        command: run.command,
-        state: 'running',
-        output: tail(run.output ?? ''),
-        outputSeq: run.outputSeq ?? 0,
-        startedAt: run.startedAt ?? Date.now(),
-        error: '',
-        stopping: previous?.runId === run.runId && previous.stopping,
-      });
-      bump(threadId);
-    } else if (previous?.state === 'running') {
-      // It ended while this client was not listening. What it became, if
-      // anything, is in the timeline.
-      drop(threadId);
-    }
-  }
-  // Replayed as reconciliation: a frame still ahead of the snapshot must not
-  // start another hydration.
-  for (const evt of buffered) applyEvent(threadId, evt, true);
 }
 
 /**
@@ -239,15 +226,10 @@ export function resyncShellRuns(): void {
 export function applyShellCommandEvent(evt: ShellCommandEvent): void {
   const threadId = evt?.threadId ?? '';
   if (!threadId) return;
-  const buffer = hydrationBuffers.get(threadId);
-  if (buffer) {
-    buffer.push(evt);
-    return;
-  }
-  applyEvent(threadId, evt, false);
+  stream.push(threadId, evt);
 }
 
-function applyEvent(threadId: string, evt: ShellCommandEvent, replaying: boolean): void {
+function applyEvent(threadId: string, evt: ShellCommandEvent): void {
   const view = views.get(threadId);
   // Any frame of the run settles what became of an uncertain start.
   if (uncertainStarts.get(threadId)?.runId === evt.runId) uncertainStarts.delete(threadId);
@@ -274,17 +256,17 @@ function applyEvent(threadId: string, evt: ShellCommandEvent, replaying: boolean
     }
     case 'output': {
       if (!view || view.runId !== evt.runId || view.state !== 'running') {
-        // Output of a run this client never saw start.
-        if (!replaying) void hydrateShellRun(threadId);
+        // Output of a run this client never saw start. The stream starts no
+        // read for a frame it is replaying.
+        void hydrateShellRun(threadId);
         return;
       }
       const seq = evt.seq ?? 0;
       // Already folded in by a snapshot that raced this frame.
       if (seq <= view.outputSeq) return;
-      if (seq > view.outputSeq + 1 && !replaying) {
-        void hydrateShellRun(threadId);
-        return;
-      }
+      // Frames were lost. Show this one so the card keeps moving, and read
+      // the snapshot, which replaces the output and fills the hole.
+      if (seq > view.outputSeq + 1) void hydrateShellRun(threadId);
       views.set(threadId, { ...view, output: tail(view.output + (evt.chunk ?? '')), outputSeq: seq });
       bump(threadId);
       return;
@@ -319,6 +301,5 @@ export function resetShellRunsForTest(): void {
   revisions.clear();
   starting.clear();
   uncertainStarts.clear();
-  hydrationBuffers.clear();
-  hydrationTokens.clear();
+  stream.reset();
 }
