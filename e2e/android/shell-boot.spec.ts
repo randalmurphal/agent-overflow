@@ -1203,27 +1203,39 @@ test('the shell stages a bundle, boots on it, and refuses a damaged one', async 
   expect(after.next).toBe('');
 
   // --- And it proves itself before the watchdog fires -------------------
-  // `pendingHealth` clears when the shell calls `ready()`, which it does
-  // once the app has mounted and its boot has run to the end. The 30s
-  // watchdog is the other outcome, so this poll is bounded well inside
-  // it: a rollback here would mean the swap never booted.
+  // `ready()` clears `pendingHealth` and records the bundle as the last
+  // known good; the shell calls it once the app has mounted and its boot
+  // has run to the end. The watchdog's rollback clears `pendingHealth`
+  // too, so the whole state is judged at once: a launch that rolled back
+  // serves the APK's assets again and lists this bundle as failed. The
+  // wait outlasts the watchdog's 30s, so a rollback is seen, not raced.
   await expect
     .poll(
-      async () =>
-        (
-          await relaunched.evaluate(async () => {
-            const plugins = (window as Window & {
-              Capacitor?: { Plugins?: { Bundle?: { state(): Promise<never> } } };
-            }).Capacitor?.Plugins;
-            return (await plugins!.Bundle!.state()) as unknown as { pendingHealth: string };
-          })
-        ).pendingHealth,
+      async () => {
+        const state = await relaunched.evaluate(async () => {
+          const plugins = (window as Window & {
+            Capacitor?: { Plugins?: { Bundle?: { state(): Promise<never> } } };
+          }).Capacitor?.Plugins;
+          return (await plugins!.Bundle!.state()) as unknown as {
+            current: string;
+            pendingHealth: string;
+            lastKnownGood: string;
+            rolledBack: string[];
+          };
+        });
+        return {
+          current: state.current,
+          pendingHealth: state.pendingHealth,
+          lastKnownGood: state.lastKnownGood,
+          rolledBack: state.rolledBack.includes(manifest.id),
+        };
+      },
       {
-        message: 'the shell must confirm this launch healthy before the watchdog rolls it back',
-        timeout: 25_000,
+        message: 'the shell must confirm this launch healthy and keep serving the staged bundle',
+        timeout: 45_000,
       },
     )
-    .toBe('');
+    .toEqual({ current: manifest.id, pendingHealth: '', lastKnownGood: manifest.id, rolledBack: false });
 });
 
 // ---------------------------------------------------------------------
