@@ -114,7 +114,12 @@ func (s *Server) serveTransferContent(w http.ResponseWriter, r *http.Request, co
 		}
 	}
 	extendTransferDeadline(w, window)
+	s.writeTransferContent(w, r, content, modTime, typeHeaders)
+}
 
+// writeTransferContent is serveTransferContent under whatever deadline the
+// route already set.
+func (s *Server) writeTransferContent(w http.ResponseWriter, r *http.Request, content io.ReadSeeker, modTime time.Time, typeHeaders func(http.Header)) {
 	h := w.Header()
 	WriteSecurityHeaders(h, s.csp)
 	// The URL carried a single-use credential; a shared cache holding the

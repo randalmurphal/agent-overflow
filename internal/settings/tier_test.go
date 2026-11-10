@@ -121,6 +121,17 @@ func TestGroupByTierSplitsAWriteAcrossTiers(t *testing.T) {
 	}
 }
 
+// Read aloud in OpenAI voices sends reply text to OpenAI under this
+// computer's API key: off until turned on, and a host-tier grant.
+func TestReadAloudIsAnOffByDefaultHostGrant(t *testing.T) {
+	if DefaultSettings.ReadAloudAPIEnabled {
+		t.Fatal("read aloud in OpenAI voices is on by default")
+	}
+	if tier, ok := TierForKey("readAloudAPIEnabled"); !ok || tier != TierHost {
+		t.Fatalf("readAloudAPIEnabled tier = %q, %v; want host", tier, ok)
+	}
+}
+
 // Dictation sends recordings to OpenAI under this computer's Codex sign-in:
 // off until turned on, and a host-tier grant like the other authorities.
 func TestDictationIsAnOffByDefaultHostGrant(t *testing.T) {

@@ -1,9 +1,10 @@
-// Package openaifake answers OpenAI's live transcription in process, for
-// tests and isolated boots, so the real client runs end to end without a
+// Package openaifake answers OpenAI's Realtime API in process, for tests
+// and isolated boots, so the real clients run end to end without a
 // network. Nothing listens on a socket: each handshake is served over an
-// in-memory pipe.
+// in-memory pipe. Two sessions are faked: live transcription (this file)
+// and speech (speech.go).
 //
-// The fake checks the session the client configures the way OpenAI does
+// For live transcription the fake checks the session the client configures the way OpenAI does
 // for the fields this client sends, then answers deterministically: every
 // appended piece of audio extends the partial text of the turn in progress
 // ("Hearing", then a dot per further piece), and a commit transcribes the
@@ -70,8 +71,8 @@ const minCommitBytes = openai.LiveSampleRate * 2 / 10
 // ErrNotFaked refuses any request the fake does not answer.
 var ErrNotFaked = errors.New("openaifake: no fake answers this request")
 
-// Transport answers the live transcription handshake and refuses
-// everything else.
+// Transport answers the live transcription and speech handshakes and
+// refuses everything else.
 type Transport struct{}
 
 // IsLiveTranscription reports whether req is the live transcription
@@ -82,17 +83,26 @@ func IsLiveTranscription(req *http.Request) bool {
 }
 
 func (Transport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if !IsLiveTranscription(req) {
-		return nil, ErrNotFaked
+	switch {
+	case IsLiveTranscription(req):
+		return ServeLiveTranscription(req)
+	case IsSpeech(req):
+		return ServeSpeech(req)
 	}
-	return ServeLiveTranscription(req)
+	return nil, ErrNotFaked
 }
 
 // ServeLiveTranscription answers one handshake over an in-memory pipe and
 // runs the session on the server end until either side closes it.
 func ServeLiveTranscription(req *http.Request) (*http.Response, error) {
+	return servePipe(req, serve)
+}
+
+// servePipe writes req to one end of a pipe, runs handler on the other,
+// and reads the handshake's response back.
+func servePipe(req *http.Request, handler func(net.Conn)) (*http.Response, error) {
 	client, server := net.Pipe()
-	go serve(server)
+	go handler(server)
 	if err := req.Write(client); err != nil {
 		return nil, errors.Join(err, client.Close())
 	}

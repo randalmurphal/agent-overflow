@@ -278,6 +278,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	939299731: 'home', // MintOwnDevicePairing
 	1802705420: 'home', // MintOwnDevicePairingOnNetwork
 	1471520668: 'thread', // MintPreviewURL
+	1195194428: 'selected', // MintReadAloudTicket
 	913927214: 'thread', // MoveDraftToThread
 	3013708277: 'thread', // MoveThreadTerminals
 	2831503793: 'home', // NotificationActivated
@@ -313,6 +314,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2998028796: 'thread', // ProviderTerminalResize
 	1382066673: 'thread', // ProviderTerminalSetControl
 	2418838611: 'home', // PutSoundFile
+	1797221017: 'selected', // ReadAloudSource
 	2036690300: 'selected', // ReadPipelineStages
 	2473150982: 'home', // ReadReviewDiff
 	3285994337: 'thread', // ReadShellAttachmentOutput

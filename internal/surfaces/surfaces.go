@@ -1061,6 +1061,43 @@ var Routes = []Route{
 			"in memory until the recording is finished or abandoned.",
 	},
 	{
+		Pattern:    "GET /attachments/speech/{speechID}",
+		Listener:   "app transport",
+		Credential: CredTransferTicket,
+		Posture:    PostureOpaqueMedia,
+		Why: "One sentence read aloud in an OpenAI voice, as a WAV file. " +
+			"The threads:operate call that admitted the sentence (bounded " +
+			"in count, length and lifetime by internal/readaloud) mints the " +
+			"ticket, from a book of its own, and the path is compared " +
+			"against its subject. The fetch is what spends the user's key: " +
+			"the backend re-checks the Settings > Voice switch, reads the " +
+			"key, asks OpenAI under the request's context so an aborted " +
+			"fetch cancels the call, as does a write to the switch, and " +
+			"answers audio/wav it built itself around OpenAI's PCM. A " +
+			"failure answers a 4xx or 5xx (403 only for the switch being " +
+			"off or written since the sentence was admitted) with a " +
+			"short plain-text message this tree wrote, OpenAI's text only " +
+			"after the openai package scrubbed it. nosniff and " +
+			"Cache-Control: no-store as on every ticketed transfer. Not " +
+			"Origin-guarded and not rate limited, for the reasons argued " +
+			"on the download row; concurrent syntheses are capped by the " +
+			"backend instead, a clip holds its place under that cap until " +
+			"its response is written, and the whole fetch has a two minute " +
+			"window.",
+	},
+	{
+		Pattern:    "OPTIONS /attachments/speech/{speechID}",
+		Listener:   "app transport",
+		Credential: CredNone,
+		Posture:    PostureNone,
+		Why: "The read-aloud route's preflight, for the reason its " +
+			"siblings have one: that route is registered method-qualified, " +
+			"and the mux answers an unmatched method with 405, which a " +
+			"browser reads as a refused preflight. No credential to check, " +
+			"no work done, 204 with the allow headers for the one admitted " +
+			"origin and the listener's ordinary 404 for anybody else.",
+	},
+	{
 		Pattern:    "GET /bundle/manifest.json",
 		Listener:   "app transport",
 		Credential: CredSessionCredential,

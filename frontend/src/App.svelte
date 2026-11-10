@@ -44,6 +44,7 @@
     refreshScreenPresence,
   } from './lib/stores/screenPresence';
   import { installDictationSourcesRefresh } from './lib/stores/dictation.svelte';
+  import { installReadAloudSourceRefresh } from './lib/stores/readAloudSource.svelte';
   import { installLongPressContextMenu } from './lib/utils/longPressContextMenu';
   import { installCompactHistoryBack } from './lib/utils/compactHistoryBack.svelte';
   import { syncUsagePeriodFromSettings } from './lib/stores/usagePeriod.svelte';
@@ -573,6 +574,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     const cleanupZoomKeys = installZoomKeybindings();
     const cleanupScreenPresence = installScreenPresence();
     const cleanupDictationSources = installDictationSourcesRefresh();
+    const cleanupReadAloudSources = installReadAloudSourceRefresh();
     const cleanupDeviceNames = installDeviceNameSync();
     const cleanupOwnDevices = remote ? installOwnDeviceSync() : noop;
     const cleanupComputerRoutes = remote ? installComputerRouteUpdates() : noop;
@@ -645,6 +647,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
       cleanupZoomKeys();
       cleanupScreenPresence();
       cleanupDictationSources();
+      cleanupReadAloudSources();
       cleanupDeviceNames();
       cleanupOwnDevices();
       cleanupComputerRoutes();

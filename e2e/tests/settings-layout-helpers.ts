@@ -18,7 +18,7 @@ const panelSelector = '[role="tabpanel"][id^="settings-panel-"]';
  * dot or underscore is a legitimate wrap point; paths and words longer than
  * the column may break anywhere.
  */
-async function layoutFaults(page: Page, section: string): Promise<LayoutFault[]> {
+export async function layoutFaults(page: Page, section: string): Promise<LayoutFault[]> {
   const found = await page.locator(panelSelector).evaluate((root) => {
     const faults: { kind: LayoutFault['kind']; text: string }[] = [];
     if (root.scrollWidth > root.clientWidth + 1) {
@@ -27,6 +27,18 @@ async function layoutFaults(page: Page, section: string): Promise<LayoutFault[]>
     const shown = (el: Element) => (el as HTMLElement).offsetParent !== null && getComputedStyle(el).visibility !== 'hidden';
     const lineTops = (range: Range) =>
       new Set([...range.getClientRects()].filter((r) => r.width > 0 && r.height > 0).map((r) => Math.round(r.top))).size;
+    // The lines a control's label takes. Only its text counts: an icon
+    // beside the label has a box of its own on the same line.
+    const labelLines = (el: Element) => {
+      const tops = new Set<number>();
+      const texts = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      for (let node = texts.nextNode(); node; node = texts.nextNode()) {
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        for (const r of range.getClientRects()) if (r.width > 0 && r.height > 0) tops.add(Math.round(r.top));
+      }
+      return tops.size;
+    };
 
     // A field scrolls its own value and an ellipsis is a deliberate cut.
     for (const el of root.querySelectorAll<HTMLElement>('*')) {
@@ -64,9 +76,7 @@ async function layoutFaults(page: Page, section: string): Promise<LayoutFault[]>
     for (const el of root.querySelectorAll('button, [role="button"], a')) {
       const label = (el.textContent ?? '').trim();
       if (!shown(el) || !label || label.length >= 40) continue;
-      const range = document.createRange();
-      range.selectNodeContents(el);
-      if (lineTops(range) > 1) faults.push({ kind: 'control-wraps', text: label });
+      if (labelLines(el) > 1) faults.push({ kind: 'control-wraps', text: label });
     }
 
     // With the When column shown the table has room for whole commands.

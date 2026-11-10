@@ -596,7 +596,7 @@ const STATIC_FIELDS = [
     id: 'voice.dictation-live-key',
     section: 'voice',
     label: 'API key file',
-    keywords: ['openai', 'api key', 'credential', 'secret', 'token', 'path', 'edit'],
+    keywords: ['openai', 'api key', 'credential', 'secret', 'token', 'path', 'edit', 'read aloud'],
   },
   {
     id: 'voice.dictation-live-delay',
@@ -638,12 +638,19 @@ const STATIC_FIELDS = [
     keywords: ['read aloud', 'speak', 'speech', 'text to speech', 'tts', 'listen', 'voice', 'narrate'],
   },
   {
+    id: 'voice.read-aloud-api',
+    section: 'voice',
+    heading: 'Read aloud',
+    label: 'Read aloud with OpenAI voices',
+    keywords: ['read aloud', 'speech', 'text to speech', 'tts', 'openai', 'api key', 'voice'],
+  },
+  {
     id: 'voice.read-aloud-voice',
     section: 'voice',
     heading: 'Read aloud',
     label: 'Voice',
-    hint: "One of this device's voices.",
-    keywords: ['read aloud', 'speech', 'text to speech', 'language', 'accent'],
+    hint: 'This device’s voices speak here; OpenAI voices are made by the computer a reply runs on.',
+    keywords: ['read aloud', 'speech', 'text to speech', 'language', 'accent', 'openai'],
   },
   {
     id: 'voice.read-aloud-rate',

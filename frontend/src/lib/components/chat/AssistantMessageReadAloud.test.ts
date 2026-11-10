@@ -8,8 +8,20 @@ import { flushSync } from 'svelte';
 import AssistantMessage from './AssistantMessage.svelte';
 import { makeItem } from '../../../test/helpers/chat';
 import { fakeSpeechEngine } from '../../../test/helpers/speech';
-import { readAloudPhase, replyReadingKey, resetReadAloudForTest, watchReadAloudVoices } from '../../stores/readAloud.svelte';
+import {
+  readAloudPhase,
+  replyReadingKey,
+  resetReadAloudForTest,
+  useOpenAIEngineForTest,
+  watchReadAloudVoices,
+} from '../../stores/readAloud.svelte';
+import { refreshReadAloudSource, resetReadAloudSourcesForTest } from '../../stores/readAloudSource.svelte';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { HOME_BACKEND } from '../../transport/backendKey';
 import { reloadReadAloudPreferencesForTest, setReadAloudPreference } from '../../stores/readAloudPreferences.svelte';
+import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { REMOTE_BACKEND_UUID, resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import type { SpeechEngine } from '../../native/speech';
 
 async function settle(): Promise<void> {
   for (let i = 0; i < 3; i += 1) await Promise.resolve();
@@ -31,6 +43,9 @@ describe('<AssistantMessage> read aloud', () => {
 
   afterEach(() => {
     resetReadAloudForTest();
+    resetReadAloudSourcesForTest();
+    resetStagedBackends();
+    __resetEntityIndexForTest();
     localStorage.clear();
     reloadReadAloudPreferencesForTest();
   });
@@ -144,6 +159,124 @@ describe('<AssistantMessage> read aloud', () => {
     expect(fake.playbacks.at(-1)!.pieces).toEqual(['From B.']);
     expect(a.getByTestId('assistant-message-read-aloud-slot').getAttribute('data-phase')).toBe('idle');
     expect(buttonA.getAttribute('aria-label')).toBe('Read aloud');
+  });
+
+  it('offers the control through the computer’s OpenAI voice on a device with none, and waits for its first sentence', async () => {
+    resetReadAloudForTest();
+    watchReadAloudVoices(fakeSpeechEngine(0).engine);
+    const clips: Array<{ voice: string; onPiece: (index: number) => void }> = [];
+    useOpenAIEngineForTest(() => ({
+      voices: async () => [],
+      onVoicesChanged: () => () => undefined,
+      speak: (_pieces, _from, options, onPiece) => {
+        clips.push({ voice: options.voiceId, onPiece });
+        return { done: new Promise(() => undefined), stop: () => undefined };
+      },
+    }));
+    await settle();
+    const item = makeItem({ id: 'reply-4', summary: 'A sentence.' });
+    const mute = render(AssistantMessage, { props: { item } });
+    await waitFor(() => expect(mute.getByTestId('assistant-message-copy-slot')).toBeTruthy());
+    expect(mute.queryByTestId('assistant-message-read-aloud')).toBeNull();
+    mute.unmount();
+
+    setBindingMock('ReadAloudSource', async () => ({ available: true, voices: [{ id: 'marin', name: 'Marin' }] }));
+    await refreshReadAloudSource(HOME_BACKEND);
+    const { getByTestId } = render(AssistantMessage, { props: { item } });
+    const button = await waitFor(() => getByTestId('assistant-message-read-aloud'));
+    await fireEvent.click(button);
+    expect(clips.map((c) => c.voice)).toEqual(['marin']);
+    const slot = getByTestId('assistant-message-read-aloud-slot');
+    await waitFor(() => expect(slot.getAttribute('data-waiting')).toBe('true'));
+    expect(slot.getAttribute('data-phase')).toBe('playing');
+    expect(button.querySelector('svg')?.getAttribute('viewBox')).toBe('0 0 24 24');
+    clips[0].onPiece(0);
+    await waitFor(() => expect(slot.getAttribute('data-waiting')).toBe('false'));
+    expect(button.getAttribute('aria-label')).toMatch(/^Pause reading/);
+  });
+
+  // Reading in an OpenAI voice spends the computer's API key, so a thread
+  // two computers claim never reads through either of them.
+  it('reads a contested thread in the device voice and asks no computer for an OpenAI voice', async () => {
+    const minted: string[] = [];
+    const clipEngine = (backend: string): SpeechEngine => ({
+      voices: async () => [],
+      onVoicesChanged: () => () => undefined,
+      speak: () => {
+        minted.push(backend);
+        return { done: new Promise(() => undefined), stop: () => undefined };
+      },
+    });
+    useOpenAIEngineForTest(clipEngine);
+    setBindingMock('ReadAloudSource', async () => ({ available: true, voices: [{ id: 'marin', name: 'Marin' }] }));
+    await refreshReadAloudSource(HOME_BACKEND);
+    setReadAloudPreference('voiceId', 'openai:marin');
+    stageBackend({ id: 'laptop', backendId: REMOTE_BACKEND_UUID });
+    noteThread('thread-c', HOME_BACKEND, 1);
+    noteThread('thread-c', 'laptop', 1);
+
+    const item = makeItem({ id: 'reply-c', threadId: 'thread-c', summary: 'A sentence.' });
+    const contested = render(AssistantMessage, { props: { item } });
+    await fireEvent.click(await waitFor(() => contested.getByTestId('assistant-message-read-aloud')));
+    expect(readAloudPhase(replyReadingKey('thread-c', 'reply-c'))).toBe('playing');
+    expect(fake.playbacks[0].options.voiceId).toBe('');
+    expect(minted).toEqual([]);
+    contested.unmount();
+
+    // With no device voice there is nothing to read it with.
+    resetReadAloudForTest();
+    watchReadAloudVoices(fakeSpeechEngine(0).engine);
+    useOpenAIEngineForTest(clipEngine);
+    await settle();
+    const mute = render(AssistantMessage, { props: { item } });
+    await waitFor(() => expect(mute.getByTestId('assistant-message-copy-slot')).toBeTruthy());
+    expect(mute.queryByTestId('assistant-message-read-aloud')).toBeNull();
+    mute.unmount();
+
+    // A thread HOME verifiably owns reads in its OpenAI voice.
+    const owned = makeItem({ id: 'reply-o', threadId: 'thread-o', summary: 'A sentence.' });
+    noteThread('thread-o', HOME_BACKEND, 1);
+    const verified = render(AssistantMessage, { props: { item: owned } });
+    await fireEvent.click(await waitFor(() => verified.getByTestId('assistant-message-read-aloud')));
+    expect(minted).toEqual([HOME_BACKEND]);
+  });
+
+  // A reading through a computer belongs to that computer only while it
+  // verifiably owns the thread.
+  it('stops a paused OpenAI reading once its thread is contested, and reads again in the device voice from the start', async () => {
+    const minted: string[] = [];
+    useOpenAIEngineForTest((backend: string): SpeechEngine => ({
+      voices: async () => [],
+      onVoicesChanged: () => () => undefined,
+      speak: (_pieces, _from, _options, onPiece) => {
+        minted.push(backend);
+        onPiece(_from);
+        return { done: new Promise(() => undefined), stop: () => undefined };
+      },
+    }));
+    setBindingMock('ReadAloudSource', async () => ({ available: true, voices: [{ id: 'marin', name: 'Marin' }] }));
+    await refreshReadAloudSource(HOME_BACKEND);
+    setReadAloudPreference('voiceId', 'openai:marin');
+    noteThread('thread-p', HOME_BACKEND, 1);
+
+    const item = makeItem({ id: 'reply-p', threadId: 'thread-p', summary: 'First sentence. Second sentence.' });
+    const { getByTestId } = render(AssistantMessage, { props: { item } });
+    const button = await waitFor(() => getByTestId('assistant-message-read-aloud'));
+    const slot = getByTestId('assistant-message-read-aloud-slot');
+    await fireEvent.click(button);
+    expect(minted).toEqual([HOME_BACKEND]);
+    await fireEvent.click(button);
+    await settle();
+    await waitFor(() => expect(slot.getAttribute('data-phase')).toBe('paused'));
+
+    stageBackend({ id: 'laptop', backendId: REMOTE_BACKEND_UUID });
+    noteThread('thread-p', 'laptop', 1);
+    await waitFor(() => expect(slot.getAttribute('data-phase')).toBe('idle'));
+
+    await fireEvent.click(getByTestId('assistant-message-read-aloud'));
+    expect(readAloudPhase(replyReadingKey('thread-p', 'reply-p'))).toBe('playing');
+    expect(fake.playbacks[0]).toMatchObject({ from: 0, options: { voiceId: '' } });
+    expect(minted).toEqual([HOME_BACKEND]);
   });
 
   it('returns to idle when speech is cancelled from outside', async () => {

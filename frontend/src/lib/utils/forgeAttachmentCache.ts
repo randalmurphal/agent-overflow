@@ -151,7 +151,7 @@ async function mintAndFetch(
   let meta = await mint();
   let bytes: Blob;
   try {
-    bytes = await fetchTicketedBytes(backend, meta.url, signal);
+    bytes = await fetchTicketedBytes(backend, meta.url, 'Could not load attachment', signal);
   } catch (err) {
     if (!(err instanceof TransferUnavailableError)) throw err;
     // Spent ticket, or the backend's byte cache evicted the entry. Mint once
@@ -159,10 +159,9 @@ async function mintAndFetch(
     signal?.throwIfAborted();
     meta = await mint();
     try {
-      bytes = await fetchTicketedBytes(backend, meta.url, signal);
+      bytes = await fetchTicketedBytes(backend, meta.url, 'Could not load attachment', signal);
     } catch (again) {
-      // The shared message says "image"; a forge attachment may be a video
-      // or a file.
+      // A forge attachment may be a video or a file, not only an image.
       if (again instanceof TransferUnavailableError) {
         throw new TransferUnavailableError('This attachment transfer is no longer available. Try again.');
       }

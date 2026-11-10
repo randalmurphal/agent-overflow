@@ -271,6 +271,9 @@ type Config struct {
 	// DictationTransfer receives the pieces of a recording uploaded for
 	// dictation (dictationroutes.go). Nil answers that route 404.
 	DictationTransfer DictationTransfer
+	// SpeechTransfer reads admitted sentences aloud (speechroutes.go). Nil
+	// answers that route 404.
+	SpeechTransfer SpeechTransfer
 
 	// ThreadTransfers accepts narrowly authorized computer-to-computer handoffs.
 	// Nil leaves the route absent; control authorization stays in bound RPCs.
@@ -629,6 +632,9 @@ type Server struct {
 	// dictationTickets is a fifth: a recording piece is not an attachment,
 	// and its ticket is minted by a `threads:operate` call.
 	dictationTickets *ticketBook
+	// speechTickets is a sixth: a sentence to read aloud is none of the
+	// above, and its ticket is minted by a `threads:operate` call.
+	speechTickets *ticketBook
 }
 
 // New constructs a Server. Generates a token if one wasn't provided.
@@ -700,6 +706,7 @@ func New(cfg Config) (*Server, error) {
 		forgeAttachmentTickets:    newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
 		localImageTickets:         newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
 		dictationTickets:          newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
+		speechTickets:             newTicketBook(maxOutstandingAttachmentTickets, SpeechTicketTTL),
 
 		bindTCP: listenTCPSharing,
 	}
@@ -1097,6 +1104,11 @@ func (s *Server) buildHTTPServer() *http.Server {
 	mux.HandleFunc(DictationUploadPath, withShellCORS(http.MethodPut,
 		s.loopbackHostGuard(s.handleDictationUpload)))
 	mux.HandleFunc(DictationUploadPreflightPath, shellPreflightHandler(http.MethodPut))
+	// Read-aloud audio, same admission and subtree, and the local-image
+	// route's literal-segment precedence over the download route.
+	mux.HandleFunc(SpeechDownloadPath, withShellCORS(http.MethodGet,
+		s.loopbackHostGuard(s.handleSpeechDownload)))
+	mux.HandleFunc(SpeechDownloadPreflightPath, shellPreflightHandler(http.MethodGet))
 	// The bundle routes. Registered unconditionally for the reason the
 	// attachment pair is: a route whose presence depended on when the mux
 	// happened to be built would be a boot whose shape varies. With no

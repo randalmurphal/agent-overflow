@@ -710,7 +710,15 @@ and anti-changes that live only here:
   speaks in the device's own voice, one reply at a time across the app;
   pausing resumes at the start of the sentence. Code, tables and URLs are
   skipped silently. It is off until this device turns it on in Settings >
-  Voice, and a device with no voice shows no control.
+  Voice, and a device with no voice shows no control unless the reply's
+  computer offers OpenAI voices.
+- Read aloud in OpenAI voices: a computer whose host switch is on (off by
+  default) makes each sentence's audio with the key in its key file, and
+  the voice picker lists those voices with a preview for each. The choice
+  of voice stays per device; the reply's computer makes the request, so
+  the key never reaches a client. A reply from a computer that does not
+  offer the saved OpenAI voice is read in the device's voice, and a device
+  with no voice reads through the computer.
 - Wide blocks pan inside their own box on every layout: markdown tables,
   inline diff bodies and unwrapped fenced code scroll horizontally only
   when they overflow (the `pan-x` rules in `frontend/src/app.css`), with

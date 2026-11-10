@@ -39,6 +39,7 @@ import (
 	"agent-overflow/internal/provideraccountapp"
 	"agent-overflow/internal/providerdiscoveryapp"
 	"agent-overflow/internal/providerlifecycleapp"
+	"agent-overflow/internal/readaloud"
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/sessionruntime"
 	"agent-overflow/internal/settings"
@@ -339,6 +340,10 @@ type App struct {
 	// (app_live_dictation.go), created on first use.
 	liveDictationOnce sync.Once
 	liveDictation     *dictation.Live
+	// readAloud holds sentences admitted to be read aloud in OpenAI voices
+	// (app_read_aloud.go), created on first use.
+	readAloudOnce sync.Once
+	readAloud     *readaloud.Sentences
 	// transportServer is the Phase C HTTP+WS transport. Set by main.go
 	// via SetTransportServer before app.Run() so Shutdown can drain
 	// in-flight RPCs BEFORE App subsystems (store, telemetry, sessions)

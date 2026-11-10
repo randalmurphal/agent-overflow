@@ -1,4 +1,5 @@
-// The device's own voice: what read-aloud speaks through.
+// The device's own voice: what read-aloud speaks through unless a reading
+// uses a computer's OpenAI voice (`clipSpeech.ts`).
 //
 // In a browser and the desktop webviews that is `speechSynthesis`, the
 // operating system's voices. Android's WebView has none, so the phone shell

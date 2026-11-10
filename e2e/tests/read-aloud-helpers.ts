@@ -6,6 +6,7 @@ import type { Locator, Page } from '@playwright/test';
 
 import type { HarnessApp } from '../src/harness.js';
 import { expect, type SeedResult } from './fixtures.js';
+import { writeOpenAIKey } from './dictation-helpers.js';
 
 /** What the stub recorded for one utterance the app spoke. */
 export interface SpokenUtterance {
@@ -140,6 +141,60 @@ export async function turnOnReadAloud(page: Page): Promise<void> {
   await toggle.click();
   await expect(toggle).toHaveAttribute('aria-checked', 'true');
   await page.keyboard.press('Escape');
+}
+
+// ---- OpenAI voices ----
+//
+// The isolated boot answers OpenAI in-process (internal/openai/openaifake):
+// a sentence's audio is 40 ms per character of its text, and a marker in
+// the text scripts a failure.
+
+/** The fake's audio length for `text`, in milliseconds. */
+export const fakeSpeechMs = (text: string): number => [...text].length * 40;
+
+/** MintReadAloudTicket's stable method id (frontend/bindings). */
+const MINT_READ_ALOUD_TICKET = 1195194428;
+
+/** Puts `key` in the computer's key file and turns its OpenAI voices
+ * switch on. Host settings outlive the per-test reset: pair with
+ * `turnOffOpenAIVoices`. */
+export async function setUpOpenAIVoices(harness: HarnessApp, key: string): Promise<void> {
+  await writeOpenAIKey(harness, key);
+  await harness.rpc('UpdateSettings', { readAloudAPIEnabled: true });
+}
+
+export async function turnOffOpenAIVoices(harness: HarnessApp): Promise<void> {
+  await harness.rpc('UpdateSettings', { readAloudAPIEnabled: false });
+}
+
+/** Records every sentence the page admits to be read in an OpenAI voice,
+ * from the transport's RPC frames, and every speech audio fetch. Call
+ * before the page opens its socket. */
+export function watchSpeech(page: Page): { minted: Array<{ text: string; voice: string }>; fetches: () => number } {
+  const minted: Array<{ text: string; voice: string }> = [];
+  let fetches = 0;
+  page.on('websocket', (socket) => {
+    socket.on('framesent', ({ payload }) => {
+      if (typeof payload !== 'string' || !payload.startsWith('{')) return;
+      const frame = JSON.parse(payload) as { type?: string; methodId?: number; params?: unknown[] };
+      if (frame.type !== 'rpc' || frame.methodId !== MINT_READ_ALOUD_TICKET) return;
+      minted.push({ text: String(frame.params?.[0]), voice: String(frame.params?.[1]) });
+    });
+  });
+  page.on('request', (request) => {
+    if (request.method() === 'GET' && new URL(request.url()).pathname.startsWith('/attachments/speech/')) fetches += 1;
+  });
+  return { minted, fetches: () => fetches };
+}
+
+/** Settings > Voice, with read-aloud on for this device. */
+export async function openVoiceSettings(page: Page): Promise<void> {
+  await page.getByTestId('sidebar-settings-button').click();
+  await page.getByRole('tab', { name: 'Voice', exact: true }).click();
+  const toggle = page.getByLabel('Toggle reading replies aloud');
+  await expect(toggle).toBeEnabled();
+  if (await toggle.getAttribute('aria-checked') !== 'true') await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-checked', 'true');
 }
 
 export const readAloudButtons = (page: Page): Locator => page.getByTestId('assistant-message-read-aloud');

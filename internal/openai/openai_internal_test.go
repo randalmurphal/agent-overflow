@@ -23,6 +23,43 @@ func TestScrubRemovesAnythingShapedLikeAKey(t *testing.T) {
 	}
 }
 
+// The speech session and request are the shapes measured against OpenAI.
+func TestTheSpeechEventsAreTheMeasuredShapes(t *testing.T) {
+	t.Parallel()
+	update, err := json.Marshal(speechSessionUpdate("marin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	instructions, err := json.Marshal(SpeechInstructions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"session":{"audio":{"input":{"turn_detection":null},"output":{"format":{"rate":24000,"type":"audio/pcm"},"voice":"marin"}},` +
+		`"instructions":` + string(instructions) + `,"output_modalities":["audio"],"reasoning":{"effort":"minimal"},"tool_choice":"none","tools":[],"type":"realtime"},"type":"session.update"}`
+	if string(update) != want {
+		t.Fatalf("session.update =\n%s\nwant\n%s", update, want)
+	}
+	envelope, err := SpeechEnvelope(`Say "hi" <now>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope != `{"require_repeat_verbatim":true,"response_text":"Say \"hi\" `+"\\u003cnow\\u003e"+`"}` {
+		t.Fatalf("envelope = %s", envelope)
+	}
+	create, err := json.Marshal(speechResponseCreate(envelope))
+	if err != nil {
+		t.Fatal(err)
+	}
+	quoted, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = `{"response":{"conversation":"none","input":[{"content":[{"text":` + string(quoted) + `,"type":"input_text"}],"role":"user","type":"message"}]},"type":"response.create"}`
+	if string(create) != want {
+		t.Fatalf("response.create =\n%s\nwant\n%s", create, want)
+	}
+}
+
 func TestTheSessionCarriesEveryOptionAndTurnDetectionOff(t *testing.T) {
 	t.Parallel()
 	payload, err := json.Marshal(sessionUpdate(LiveTranscriptionOptions{
