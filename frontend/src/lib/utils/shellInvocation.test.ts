@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import vectors from '../../test/fixtures/shellInvocationVectors.json';
 import {
   MESSAGE_JOIN_SEPARATOR,
   formatShellDuration,
   isShellInput,
   shellCommandFromInput,
   shellDisplayText,
-  shellInvocation,
+  shellInvocationRuns,
   shellOutcomeLabel,
   shellOutputTail,
   textWithoutShellInvocations,
@@ -34,53 +35,22 @@ describe('shell input', () => {
     expect(isShellInput('hello!')).toBe(false);
   });
 
-  it('round-trips through the stored invocation', () => {
-    expect(shellCommandFromInput(shellInvocation('make test'))).toBe('make test');
-  });
 });
 
-describe('textWithoutShellInvocations', () => {
-  const sep = MESSAGE_JOIN_SEPARATOR;
-
-  it('drops the typed line a command block stands for', () => {
-    expect(textWithoutShellInvocations('!ls', [shell('ls')])).toBe('');
-    expect(textWithoutShellInvocations(' !ls \n', [shell('ls')])).toBe('');
+// The cases the Go rule runs too (internal/usermessage/shell_invocation_test.go
+// keeps the two files byte-identical). Each command comes with the row
+// metadata Go projects for it, which is all this side is given.
+describe('the shared invocation vectors', () => {
+  it('were written for this separator', () => {
+    expect(vectors.separator).toBe(MESSAGE_JOIN_SEPARATOR);
+    expect(vectors.cases.length).toBeGreaterThan(0);
   });
 
-  it('keeps the other parts of a joined message in order', () => {
-    const text = `!make test${sep}fix those${sep}!ls`;
-    expect(textWithoutShellInvocations(text, [shell('make test'), shell('ls')])).toBe('fix those');
-    expect(textWithoutShellInvocations(text, [shell('ls')])).toBe(`!make test${sep}fix those`);
-  });
-
-  it('claims one part per attachment, so a repeated command is dropped once each', () => {
-    const text = `!ls${sep}!ls${sep}!ls`;
-    expect(textWithoutShellInvocations(text, [shell('ls'), shell('ls')])).toBe('!ls');
-  });
-
-  it('keeps text that is not exactly the invocation', () => {
-    expect(textWithoutShellInvocations('!ls and explain', [shell('ls')])).toBe('!ls and explain');
-    expect(textWithoutShellInvocations('ls', [shell('ls')])).toBe('ls');
-    expect(textWithoutShellInvocations('!ls', [])).toBe('!ls');
-  });
-
-  it('drops a command that holds the join rule as one piece', () => {
-    const heredoc = `cat <<EOF${sep}body${sep}EOF`;
-    expect(textWithoutShellInvocations(`!${heredoc}`, [shell(heredoc)])).toBe('');
-    expect(textWithoutShellInvocations(`before${sep}!${heredoc}${sep}after`, [shell(heredoc)])).toBe(`before${sep}after`);
-    // Its pieces are not claimed one at a time by another command.
-    expect(textWithoutShellInvocations(`!${heredoc}${sep}!ls`, [shell('ls'), shell(heredoc)])).toBe('');
-    // A different command that only starts the same way is left as typed.
-    expect(textWithoutShellInvocations(`!cat <<EOF${sep}other`, [shell(heredoc)])).toBe(`!cat <<EOF${sep}other`);
-  });
-
-  it('matches a bounded command by its start', () => {
-    const long = 'x'.repeat(600);
-    const bounded = shell(long.slice(0, 512), { commandTruncated: true });
-    expect(textWithoutShellInvocations(`!${long}`, [bounded])).toBe('');
-    expect(textWithoutShellInvocations(`!${long}${sep}after`, [bounded])).toBe('after');
-    // Without the flag the same prefix is a different, shorter command.
-    expect(textWithoutShellInvocations(`!${long}`, [shell(long.slice(0, 512))])).toBe(`!${long}`);
+  it.each(vectors.cases)('$name', ({ text, commands, runs, without }) => {
+    const shells = commands.map(({ meta }) => shell(meta.command, { commandLength: (meta as { commandLength?: number }).commandLength }));
+    const want = runs.map((run) => (run ? { first: run[0], last: run[1] } : null));
+    expect(shellInvocationRuns(text.split(MESSAGE_JOIN_SEPARATOR), shells)).toEqual(want);
+    expect(textWithoutShellInvocations(text, shells)).toBe(without);
   });
 });
 

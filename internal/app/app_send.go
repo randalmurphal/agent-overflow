@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"slices"
 	"strings"
 	"time"
 
@@ -1049,7 +1048,7 @@ func (a *App) recordSendFailureAndCompleteTurn(threadID string, turnIndex int, s
 // rather than three returns because the three are not interchangeable and
 // two of them are slices of near-identical shape: `images` is positional
 // and binds to the `[Image #N]` markers, `records` is everything for the
-// persisted meta, and `fileLines` is prompt text.
+// persisted meta, and `files` is prompt text.
 type turnAttachments struct {
 	// images is the provider slice, in attachmentIDs order over the IMAGE
 	// subset. Files are excluded: they have no marker and no slot.
@@ -1057,86 +1056,87 @@ type turnAttachments struct {
 	// records is every requested attachment, both kinds, in order. The
 	// timeline row's meta is built from this.
 	records []store.Attachment
-	// fileLines is the prompt text of each `file`, in order: an
-	// attachment.PromptLine, or the command block of a shell output file.
-	// promptText puts them on providerContent; nothing persists them.
-	fileLines []string
-	// invocations parallels fileLines: the text the person typed to run a
-	// shell output file's command, and empty for every other file.
-	invocations []string
+	// files is the prompt text of each `file`, in order. promptText puts
+	// them on providerContent; nothing persists them.
+	files []promptFile
+}
+
+// promptFile is what one `file` attachment adds to the provider text.
+type promptFile struct {
+	// text is an attachment.PromptLine, or the command block of a shell
+	// output file.
+	text string
+	// shell marks a shell output file, whose block stands where its
+	// command was typed. command is that command.
+	shell   bool
+	command string
 }
 
 // isInvocation reports whether content is exactly the typed invocation of one
 // of the shell output files.
 func (t turnAttachments) isInvocation(content string) bool {
-	typed := strings.TrimSpace(content)
-	return typed != "" && slices.Contains(t.invocations, typed)
+	commands, _ := t.shellCommands(nil)
+	return usermessage.IsShellInvocation(content, commands)
+}
+
+// shellCommands is the command of each shell output file that taken does not
+// mark, in order, with each one's index in files.
+func (t turnAttachments) shellCommands(taken []bool) (commands []string, indexes []int) {
+	for i, file := range t.files {
+		if file.shell && (taken == nil || !taken[i]) {
+			commands, indexes = append(commands, file.command), append(indexes, i)
+		}
+	}
+	return commands, indexes
 }
 
 // promptText is the provider text of one or more messages, joined by
 // separator, with what the file attachments add. The typed invocation of a
-// shell output file is replaced by that file's command block, so the model
-// reads the command where the person ran it and the typed `!command` stays a
-// transcript fact, like a composer command's word. An invocation is matched
-// between the join rules of a message (usermessage.JoinSeparator), and can
-// span several of them: a command may hold that rule itself, as a heredoc
-// does. Every other file line is appended after a blank line.
+// shell output file (usermessage.ShellInvocationRuns) is replaced by that
+// file's command block, so the model reads the command where the person ran
+// it and the typed `!command` stays a transcript fact, like a composer
+// command's word. An invocation never crosses two messages. Every other
+// file's text is appended after a blank line.
 func (t turnAttachments) promptText(messages []string, separator string) string {
-	// parts are the messages' joined parts in order. gaps[i] follows parts[i].
-	var parts, gaps []string
-	for i, message := range messages {
-		split := strings.Split(message, usermessage.JoinSeparator)
-		for j, part := range split {
-			gap := usermessage.JoinSeparator
-			if j == len(split)-1 {
-				gap = separator
-				if i == len(messages)-1 {
-					gap = ""
-				}
-			}
-			parts, gaps = append(parts, part), append(gaps, gap)
-		}
-	}
-	claimed := make([]bool, len(parts))
-	lines := make([]string, 0, len(t.fileLines))
-	for i, line := range t.fileLines {
-		at, span := -1, 0
-		if invocation := t.invocations[i]; invocation != "" {
-			span = strings.Count(invocation, usermessage.JoinSeparator) + 1
-			at = findInvocation(parts, gaps, claimed, invocation, span)
-		}
-		if at < 0 {
-			lines = append(lines, line)
+	placed := make([]bool, len(t.files))
+	texts := make([]string, 0, len(messages))
+	for _, message := range messages {
+		commands, indexes := t.shellCommands(placed)
+		if len(commands) == 0 {
+			texts = append(texts, message)
 			continue
 		}
-		parts[at], gaps[at], claimed[at] = line, gaps[at+span-1], true
-		for k := at + 1; k < at+span; k++ {
-			parts[k], gaps[k], claimed[k] = "", "", true
-		}
-	}
-	var text strings.Builder
-	for i, part := range parts {
-		text.WriteString(part)
-		text.WriteString(gaps[i])
-	}
-	return appendFileAttachmentLines(text.String(), lines)
-}
-
-// findInvocation returns the first run of span unclaimed parts of one message
-// that is exactly invocation, or -1.
-func findInvocation(parts, gaps []string, claimed []bool, invocation string, span int) int {
-candidates:
-	for at := 0; at+span <= len(parts); at++ {
-		for k := at; k < at+span; k++ {
-			if claimed[k] || (k < at+span-1 && gaps[k] != usermessage.JoinSeparator) {
-				continue candidates
+		parts := strings.Split(message, usermessage.JoinSeparator)
+		blocks := make(map[int]string, len(commands))
+		dropped := make(map[int]bool)
+		for i, run := range usermessage.ShellInvocationRuns(parts, commands) {
+			if run.First < 0 {
+				continue
+			}
+			placed[indexes[i]] = true
+			blocks[run.First] = t.files[indexes[i]].text
+			for part := run.First + 1; part <= run.Last; part++ {
+				dropped[part] = true
 			}
 		}
-		if strings.TrimSpace(strings.Join(parts[at:at+span], usermessage.JoinSeparator)) == invocation {
-			return at
+		kept := make([]string, 0, len(parts))
+		for part, text := range parts {
+			if block, ok := blocks[part]; ok {
+				text = block
+			} else if dropped[part] {
+				continue
+			}
+			kept = append(kept, text)
+		}
+		texts = append(texts, strings.Join(kept, usermessage.JoinSeparator))
+	}
+	lines := make([]string, 0, len(t.files))
+	for i, file := range t.files {
+		if !placed[i] {
+			lines = append(lines, file.text)
 		}
 	}
-	return -1
+	return appendFileAttachmentLines(strings.Join(texts, separator), lines)
 }
 
 // resolveSendMessageAttachments validates the requested attachment IDs,
@@ -1197,13 +1197,11 @@ func (a *App) resolveSendMessageAttachments(threadID string, attachmentIDs []str
 			if err != nil {
 				return turnAttachments{}, err
 			}
-			out.fileLines = append(out.fileLines, block)
-			out.invocations = append(out.invocations, shellInvocation(record.Shell.Command))
+			out.files = append(out.files, promptFile{text: block, shell: true, command: record.Shell.Command})
 			continue
 		}
 		if record.Kind == store.AttachmentKindFile {
-			out.fileLines = append(out.fileLines, attachmentstore.PromptLine(record, path))
-			out.invocations = append(out.invocations, "")
+			out.files = append(out.files, promptFile{text: attachmentstore.PromptLine(record, path)})
 			continue
 		}
 		att := provider.ImageAttachment{

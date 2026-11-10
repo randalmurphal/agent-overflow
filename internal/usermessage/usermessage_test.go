@@ -430,9 +430,9 @@ func TestProjectionCarriesBoundedShellMetadata(t *testing.T) {
 	long := strings.Repeat("é", ShellCommandMetaBytes)
 	shell.Command = "x" + long
 	bounded := Input{Attachments: []store.Attachment{{ID: "a", Kind: store.AttachmentKindFile, Shell: shell}}}.Projection().Attachments[0].Shell
-	if !bounded.CommandTruncated || len(bounded.Command) > ShellCommandMetaBytes || !utf8.ValidString(bounded.Command) ||
+	if bounded.CommandLength != 1+ShellCommandMetaBytes || len(bounded.Command) > ShellCommandMetaBytes || !utf8.ValidString(bounded.Command) ||
 		!strings.HasPrefix(shell.Command, bounded.Command) {
-		t.Fatalf("bounded command: %d bytes truncated=%v", len(bounded.Command), bounded.CommandTruncated)
+		t.Fatalf("bounded command: %d bytes, whole length %d", len(bounded.Command), bounded.CommandLength)
 	}
 
 	encoded, err := Marshal(Input{Attachments: []store.Attachment{{ID: "a1", ThreadID: "t1", Kind: store.AttachmentKindFile, Size: 9, Shell: store.AttachmentShell{Command: "ls", Preview: "one\n"}}}})

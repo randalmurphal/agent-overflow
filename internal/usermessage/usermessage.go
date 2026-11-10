@@ -170,10 +170,12 @@ const ShellCommandMetaBytes = 512
 // Every string is bounded so the item wire never elides one.
 type ShellMeta struct {
 	Command string `json:"command"`
-	// CommandTruncated reports that Command is the start of a longer one.
-	CommandTruncated bool  `json:"commandTruncated,omitempty"`
-	ExitCode         int   `json:"exitCode"`
-	DurationMs       int64 `json:"durationMs"`
+	// CommandLength is set when Command is only the start of a longer one:
+	// the whole command's length in UTF-16 code units, which is how the
+	// frontend measures the typed text it stands for.
+	CommandLength int   `json:"commandLength,omitempty"`
+	ExitCode      int   `json:"exitCode"`
+	DurationMs    int64 `json:"durationMs"`
 	// Truncated reports output past the capture cap; TimedOut that the
 	// run's time limit ended the command.
 	Truncated bool `json:"truncated,omitempty"`
@@ -189,7 +191,7 @@ func shellMeta(attachment store.Attachment) *ShellMeta {
 	if shell.IsZero() {
 		return nil
 	}
-	command, truncated := shell.Command, false
+	command, length := shell.Command, 0
 	if len(command) > ShellCommandMetaBytes {
 		// The first excluded byte starts a rune exactly when the prefix
 		// ends on one.
@@ -197,10 +199,10 @@ func shellMeta(attachment store.Attachment) *ShellMeta {
 		for cut > 0 && !utf8.RuneStart(command[cut]) {
 			cut--
 		}
-		command, truncated = command[:cut], true
+		command, length = command[:cut], utf16Length(command)
 	}
 	return &ShellMeta{
-		Command: command, CommandTruncated: truncated, ExitCode: shell.ExitCode,
+		Command: command, CommandLength: length, ExitCode: shell.ExitCode,
 		DurationMs: shell.DurationMs, Truncated: shell.Truncated, TimedOut: shell.TimedOut,
 		Preview: shell.Preview, More: attachment.Size > int64(len(shell.Preview)),
 	}

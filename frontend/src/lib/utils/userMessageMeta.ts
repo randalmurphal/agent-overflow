@@ -272,7 +272,9 @@ function shellFromMeta(value: unknown): ShellOutputMeta | null {
   const exitCode = typeof record.exitCode === 'number' && Number.isFinite(record.exitCode) ? record.exitCode : 0;
   const durationMs = typeof record.durationMs === 'number' && Number.isFinite(record.durationMs) ? record.durationMs : 0;
   const shell: ShellOutputMeta = { command, exitCode, durationMs };
-  if (record.commandTruncated === true) shell.commandTruncated = true;
+  if (typeof record.commandLength === 'number' && record.commandLength > command.length) {
+    shell.commandLength = record.commandLength;
+  }
   if (record.truncated === true) shell.truncated = true;
   if (record.timedOut === true) shell.timedOut = true;
   if (record.more === true) shell.more = true;

@@ -122,7 +122,7 @@ describe('<ShellCommandBlock>', () => {
       command: 'echo the whole command', data: 'x\n', offset: 0, size: 2, next: 2,
     }));
     const { getByTestId } = render(ShellCommandBlock, {
-      props: props({ command: 'echo the wh', commandTruncated: true, preview: 'x\n' }, 2),
+      props: props({ command: 'echo the wh', commandLength: 22, preview: 'x\n' }, 2),
     });
     expect(getByTestId('shell-command-line').textContent).toBe('echo the wh…');
     await fireEvent.click(getByTestId('shell-command-toggle'));

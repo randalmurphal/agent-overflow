@@ -76,10 +76,12 @@ send path's own.
 On the wire the typed line is replaced by the command block
 (`turnAttachments.promptText`): each part of the text that is exactly an
 attached command's invocation becomes that command's block, and a block
-whose invocation is not in the text follows it. A command that holds the
-join rule is matched across the parts it spans. A message that is exactly
-an invocation is never expanded as a composer command, and never names a
-temporary worktree branch.
+whose invocation is not in the text follows it. Which parts those are is
+one rule (`usermessage.ShellInvocationRuns`) with a frontend copy that
+hides the same parts behind the row's command block; both run one set of
+shared vectors. A command that holds the join rule is a run of several
+parts. A message that is exactly an invocation is never expanded as a
+composer command, and never names a temporary worktree branch.
 
 | Provider | Block |
 |---|---|

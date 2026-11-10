@@ -459,10 +459,12 @@ func TestUserShellPromptBlockUsesTheProvidersOwnRecord(t *testing.T) {
 func TestPromptTextPutsACommandBlockWhereItWasTyped(t *testing.T) {
 	t.Parallel()
 	separator := usermessage.JoinSeparator
-	attachments := turnAttachments{
-		fileLines:   []string{"[file a]", "<make>", "<make again>", "<ls>"},
-		invocations: []string{"", "!make test", "!make test", "!ls"},
-	}
+	attachments := turnAttachments{files: []promptFile{
+		{text: "[file a]"},
+		{text: "<make>", shell: true, command: "make test"},
+		{text: "<make again>", shell: true, command: "make test"},
+		{text: "<ls>", shell: true, command: "ls"},
+	}}
 	for name, tc := range map[string]struct{ text, want string }{
 		"the command alone": {"!ls", "<ls>\n\n[file a]\n<make>\n<make again>"},
 		"joined around other text": {
@@ -484,7 +486,7 @@ func TestPromptTextPutsACommandBlockWhereItWasTyped(t *testing.T) {
 	}
 	// A command can hold the join rule itself, as a heredoc of YAML does.
 	heredoc := "cat <<EOF\na: 1" + separator + "b: 2\nEOF"
-	spanning := turnAttachments{fileLines: []string{"<heredoc>"}, invocations: []string{"!" + heredoc}}
+	spanning := turnAttachments{files: []promptFile{{text: "<heredoc>", shell: true, command: heredoc}}}
 	for name, tc := range map[string]struct{ text, want string }{
 		"alone":            {"!" + heredoc, "<heredoc>"},
 		"joined with text": {"first" + separator + "!" + heredoc + separator + "last", "first" + separator + "<heredoc>" + separator + "last"},
