@@ -3,6 +3,7 @@ import {
   getThreads,
   getThreadLiveActivityAt,
   refreshThreads,
+  replaceAllThreads,
   prependThread,
   prependThreadReply,
   removeThread,
@@ -92,6 +93,25 @@ describe('threads store', () => {
       const kept = getThreads()[1];
       updateThreadTitle('draft', 'renamed');
       expect(getThreads()[1]).toBe(kept);
+    });
+
+    it('keeps its own list when a caller hands over an array', async () => {
+      setBindingMock('ListThreads', async () => [makeThread('t1'), makeThread('t2')]);
+      await refreshThreads();
+      // Rows the store already holds, in the caller's array.
+      const rows = [...getThreads()];
+      replaceAllThreads(rows);
+      expect(getThreads()).not.toBe(rows);
+      expect(getThreads()[0]).toBe(rows[0]);
+
+      // The caller's array stays the caller's: writable, and not the list.
+      rows.pop();
+      expect(getThreads().map((t) => t.id)).toEqual(['t1', 't2']);
+
+      const empty: Thread[] = [];
+      replaceAllThreads(empty);
+      empty.push(makeThread('late'));
+      expect(getThreads()).toEqual([]);
     });
   });
 
