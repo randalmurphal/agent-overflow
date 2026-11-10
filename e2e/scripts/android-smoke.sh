@@ -47,11 +47,6 @@
 # forward in place.
 set -euo pipefail
 
-# This script's own command line, which a fork of it shares until it runs
-# its command (stop_jobs).
-self_args="$(ps -o args= -p $$ 2>/dev/null || true)"
-[[ -n "$self_args" ]] || { echo "ps cannot read this script's command line" >&2; exit 1; }
-
 : "${ANDROID_HOME:=$HOME/Android/Sdk}"
 : "${ANDROID_AVD_HOME:=$HOME/.android/avd}"
 export ANDROID_HOME ANDROID_AVD_HOME
@@ -84,6 +79,30 @@ hold_lock() {
   }
 }
 
+# A background job starts as this shell's fork. Until it runs its command
+# it holds this script's signal handlers, and a signal sent to it then is
+# lost: the command runs anyway. So each job is started through
+# START_MARKED, which marks it in $started once it is a process of its own,
+# and stop_jobs signals a job only when it is marked or gone. From the mark
+# on, TERM either ends the job before its command starts or reaches the
+# command.
+START_MARKED='touch "$0/$$" && exec "$@"'
+
+# Stops this script's background jobs and waits for them.
+stop_jobs() {
+  local running job
+  running="$(jobs -p)"
+  [[ -n "$running" ]] || return 0
+  for job in $running; do
+    while kill -0 "$job" 2>/dev/null && [[ ! -e "$started/$job" ]]; do
+      sleep 0.02
+    done
+    kill -TERM "$job" 2>/dev/null || true
+  done
+  wait $running 2>/dev/null || true
+}
+started="$(mktemp -d)"
+
 # Long steps run as supervised children: a signal is passed on to the
 # child and waited out before the exit cleanup runs, so nothing the step
 # started outlives the PIN, the adb server or the emulator it relies on.
@@ -91,41 +110,12 @@ hold_lock() {
 # The child is found with `jobs -p`, not `$!`: a trap can run after the fork
 # and before `$!` is read.
 supervise() {
-  "$@" &
-  local status=0
-  wait "$!" || status=$?
+  "$BASH" -c "$START_MARKED" "$started" "$@" &
+  local child=$! status=0
+  wait "$child" || status=$?
+  # A later child can be given this one's process id.
+  rm -f "$started/$child"
   return "$status"
-}
-# Stops this script's background jobs and waits for them. A job that is
-# still this shell's fork holds this script's signal handlers and loses a
-# signal sent to it, so it is sent TERM once its command line is no longer
-# this script's. One still the fork after two seconds has run nothing and is
-# killed. One whose command line cannot be read by then is sent TERM: it has
-# had the time to become its command.
-stop_jobs() {
-  local running job args tries
-  running="$(jobs -p)"
-  [[ -n "$running" ]] || return 0
-  for job in $running; do
-    tries=0
-    while kill -0 "$job" 2>/dev/null; do
-      args="$(ps -o args= -p "$job" 2>/dev/null || true)"
-      if [[ -n "$args" && "$args" != "$self_args" ]]; then
-        kill -TERM "$job" 2>/dev/null || true
-        break
-      fi
-      if (( ++tries > 100 )); then
-        if [[ -n "$args" ]]; then
-          kill -KILL "$job" 2>/dev/null || true
-        else
-          kill -TERM "$job" 2>/dev/null || true
-        fi
-        break
-      fi
-      sleep 0.02
-    done
-  done
-  wait $running 2>/dev/null || true
 }
 on_signal() {
   trap - "$1"
@@ -148,6 +138,7 @@ on_exit() {
     "$adb" kill-server >/dev/null 2>&1 || true
     "$emulator" stop >/dev/null || true
   fi
+  rm -rf "$started"
 }
 trap on_exit EXIT
 

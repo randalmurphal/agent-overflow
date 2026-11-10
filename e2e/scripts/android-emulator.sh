@@ -133,13 +133,9 @@ inside || {
   echo "start the emulator inside the test network namespace (bin/ao-netns), as android-smoke.sh does; outside it, its ports and adb's would listen on the host" >&2
   exit 1
 }
-for need in bwrap flock ps systemd-run "$adb" "$ANDROID_HOME/emulator/emulator"; do
+for need in bwrap flock systemd-run "$adb" "$ANDROID_HOME/emulator/emulator"; do
   command -v "$need" >/dev/null 2>&1 || [[ -x "$need" ]] || { echo "missing $need" >&2; exit 1; }
 done
-# This script's own command line, which a fork of it shares until it runs
-# its command (stop_jobs).
-self_args="$(ps -o args= -p $$ 2>/dev/null || true)"
-[[ -n "$self_args" ]] || { echo "ps cannot read this script's command line" >&2; exit 1; }
 [[ -e /dev/kvm ]] || { echo "/dev/kvm is required; enable nested virtualization for this VM" >&2; exit 1; }
 [[ -f "$rootfs/.ao-runtime" ]] || { echo "no emulator runtime in $rootfs; run: $0 prepare" >&2; exit 1; }
 [[ -d "$ANDROID_AVD_HOME/$avd.avd" ]] || {
@@ -159,34 +155,25 @@ rm -f "$ANDROID_AVD_HOME/$avd.avd"/*.lock
 # the process stays in this namespace. HOME is a tmpfs except the AVD
 # folder, so the emulator writes nothing else of the developer's.
 read -ra extra <<<"${AO_EMULATOR_ARGS:-}"
-# Stops this script's background jobs and waits for them. A job that is
-# still this shell's fork holds this script's signal handlers and loses a
-# signal sent to it, so it is sent TERM once its command line is no longer
-# this script's. One still the fork after two seconds has run nothing and is
-# killed. One whose command line cannot be read by then is sent TERM: it has
-# had the time to become its command.
+# A background job starts as this shell's fork. Until it runs its command
+# it holds this script's signal handlers, and a signal sent to it then is
+# lost: the command runs anyway. So each job is started through
+# START_MARKED, which marks it in $started once it is a process of its own,
+# and stop_jobs signals a job only when it is marked or gone. From the mark
+# on, TERM either ends the job before its command starts or reaches the
+# command.
+START_MARKED='touch "$0/$$" && exec "$@"'
+
+# Stops this script's background jobs and waits for them.
 stop_jobs() {
-  local running job args tries
+  local running job
   running="$(jobs -p)"
   [[ -n "$running" ]] || return 0
   for job in $running; do
-    tries=0
-    while kill -0 "$job" 2>/dev/null; do
-      args="$(ps -o args= -p "$job" 2>/dev/null || true)"
-      if [[ -n "$args" && "$args" != "$self_args" ]]; then
-        kill -TERM "$job" 2>/dev/null || true
-        break
-      fi
-      if (( ++tries > 100 )); then
-        if [[ -n "$args" ]]; then
-          kill -KILL "$job" 2>/dev/null || true
-        else
-          kill -TERM "$job" 2>/dev/null || true
-        fi
-        break
-      fi
+    while kill -0 "$job" 2>/dev/null && [[ ! -e "$started/$job" ]]; do
       sleep 0.02
     done
+    kill -TERM "$job" 2>/dev/null || true
   done
   wait $running 2>/dev/null || true
 }
@@ -197,16 +184,19 @@ stop_jobs() {
 # the lock means no other run can have made one. The launcher is found with
 # `jobs -p`, not `$!`: a trap can run after the fork and before `$!` is read.
 booted=""
+started="$(mktemp -d)"
 abandon() {
-  [[ -z "$booted" ]] || return 0
-  stop_jobs
-  systemctl --user stop "$unit" >/dev/null 2>&1 || true
+  if [[ -z "$booted" ]]; then
+    stop_jobs
+    systemctl --user stop "$unit" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$started"
 }
 trap abandon EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
-systemd-run --user --scope --unit="$unit" -q \
+"$BASH" -c "$START_MARKED" "$started" systemd-run --user --scope --unit="$unit" -q \
   -p MemoryMax="$memory" -p MemorySwapMax=0 -p CPUQuota=400% \
   bwrap --bind "$rootfs" / --dev /dev --dev-bind /dev/kvm /dev/kvm --proc /proc \
     --ro-bind /sys /sys --tmpfs /tmp --tmpfs "$HOME" \

@@ -306,7 +306,7 @@ while :; do sleep 0.05; done
 `)
 			env := []string{"AO_ANDROID_SMOKE_PHASE=device", "AO_TEST_ADB_DEVICES=emulator-5554\tdevice"}
 			if afterFork {
-				env = append(env, f.signalAfterFork(t, "android-smoke.sh", `"$@"`, "*ao-harness-e2e*"))
+				env = append(env, f.signalAfterFork(t, "android-smoke.sh", `"$BASH" -c *`, "*ao-harness-e2e*"))
 			}
 			cmd := f.command(env...)
 			var out strings.Builder
@@ -434,18 +434,27 @@ func TestAndroidEmulatorStartUndoesAnInterruptedLaunch(t *testing.T) {
 	if _, err := os.Stat("/dev/kvm"); err != nil {
 		t.Skip("start requires /dev/kvm")
 	}
-	if _, err := exec.LookPath("flock"); err != nil {
-		t.Skip("flock unavailable")
+	for _, need := range []string{"flock", "pgrep"} {
+		if _, err := exec.LookPath(need); err != nil {
+			t.Skip(need + " unavailable")
+		}
 	}
 	for _, tc := range []struct {
 		name         string
 		scopeCreated bool
 		afterFork    bool
+		// held keeps the launcher from marking itself started until the
+		// signal has been waiting on it for seconds.
+		held bool
+		// died kills the held launcher while the signal waits on it.
+		died bool
 	}{
-		{"before the scope exists", false, false},
-		{"after the scope exists", true, false},
+		{name: "before the scope exists"},
+		{name: "after the scope exists", scopeCreated: true},
 		// Before start could read the launcher's PID.
-		{"right after the launcher is forked", false, true},
+		{name: "right after the launcher is forked", afterFork: true},
+		{name: "before the launcher has marked itself started", held: true},
+		{name: "when the launcher dies before it has marked itself started", held: true, died: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newSmokeFixture(t)
@@ -469,6 +478,10 @@ case "$*" in
 esac
 `)
 			mockexec.WriteIn(t, filepath.Join(f.dir, "emulator"), "emulator", "#!/bin/sh\nexit 0\n")
+			hold := ""
+			if tc.held {
+				hold = f.holdStartMark(t, 1)
+			}
 			for _, dir := range []string{filepath.Join(f.dir, "avd", "ao.avd"), filepath.Join(f.dir, "cache", "agent-overflow", "emulator-rootfs")} {
 				if err := os.MkdirAll(dir, 0o700); err != nil {
 					t.Fatal(err)
@@ -484,10 +497,20 @@ esac
 				"AO_TEST_SCOPE="+scope,
 			)
 			if tc.afterFork {
-				cmd.Env = append(cmd.Env, f.signalAfterFork(t, "android-emulator.sh", "systemd-run *", "*"))
+				cmd.Env = append(cmd.Env, f.signalAfterFork(t, "android-emulator.sh", `"$BASH" -c *systemd-run *`, "*"))
 			}
-			var out strings.Builder
-			cmd.Stdout, cmd.Stderr = &out, &out
+			// A file, not a pipe: a killed launcher's held touch outlives it
+			// and would keep a pipe open.
+			output, err := os.Create(filepath.Join(f.dir, "start.out"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = output.Close() })
+			printed := func() string {
+				body, _ := os.ReadFile(output.Name())
+				return string(body)
+			}
+			cmd.Stdout, cmd.Stderr = output, output
 			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 			if err := cmd.Start(); err != nil {
 				t.Fatal(err)
@@ -498,12 +521,59 @@ esac
 				deadline := time.Now().Add(30 * time.Second)
 				for !strings.Contains(f.calls(t), what) {
 					if time.Now().After(deadline) {
-						t.Fatalf("never saw %q:\n%s\n%s", what, out.String(), f.calls(t))
+						t.Fatalf("never saw %q:\n%s\n%s", what, printed(), f.calls(t))
 					}
 					time.Sleep(20 * time.Millisecond)
 				}
 			}
-			if !tc.afterFork {
+			done := make(chan error, 1)
+			go func() { done <- cmd.Wait() }()
+			switch {
+			case tc.died:
+				waitFor("mark asked")
+				if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+					t.Fatal(err)
+				}
+				// Start takes the signal once its boot poll's sleep ends; after
+				// this long it is waiting for the mark.
+				select {
+				case err := <-done:
+					t.Fatalf("start finished while its launcher was unmarked: %v\n%s\n%s", err, printed(), f.calls(t))
+				case <-time.After(4 * time.Second):
+				}
+				// The launcher is the shell that marks itself and then runs
+				// systemd-run; the held touch is its child.
+				found, err := exec.Command("pgrep", "-g", strconv.Itoa(cmd.Process.Pid), "-f", "touch .*systemd-run").Output()
+				if err != nil {
+					t.Fatalf("the unmarked launcher was not found: %v\n%s", err, printed())
+				}
+				launcher, err := strconv.Atoi(strings.TrimSpace(string(found)))
+				if err != nil {
+					t.Fatalf("want one unmarked launcher, got %q", found)
+				}
+				if err := syscall.Kill(launcher, syscall.SIGKILL); err != nil {
+					t.Fatal(err)
+				}
+				// The mark stays held: nothing will ever leave it.
+				t.Cleanup(func() { _ = os.Remove(hold) })
+			case tc.held:
+				waitFor("mark asked")
+				if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+					t.Fatal(err)
+				}
+				// Longer than any wait that would give up on the mark.
+				select {
+				case err := <-done:
+					t.Fatalf("start finished while its launcher was unmarked: %v\n%s\n%s", err, printed(), f.calls(t))
+				case <-time.After(4 * time.Second):
+				}
+				if calls := f.calls(t); strings.Contains(calls, "scope stopped") || strings.Contains(calls, "launcher started") {
+					t.Fatalf("start acted on a launcher that had not started:\n%s", calls)
+				}
+				if err := os.Remove(hold); err != nil {
+					t.Fatal(err)
+				}
+			case !tc.afterFork:
 				waitFor("launcher started")
 				if tc.scopeCreated {
 					if err := os.WriteFile(barrier, nil, 0o600); err != nil {
@@ -515,12 +585,10 @@ esac
 					t.Fatal(err)
 				}
 			}
-			done := make(chan error, 1)
-			go func() { done <- cmd.Wait() }()
 			select {
 			case <-done:
 			case <-time.After(30 * time.Second):
-				t.Fatalf("start did not finish after SIGTERM:\n%s\n%s", out.String(), f.calls(t))
+				t.Fatalf("start did not finish after SIGTERM:\n%s\n%s", printed(), f.calls(t))
 			}
 			// Release a launcher that was still waiting; a joined one is gone
 			// and creates nothing.
@@ -742,117 +810,200 @@ func TestAndroidEmulatorPrepareKeepsTheOlderRuntimeWhenItCannotBuild(t *testing.
 	}
 }
 
-// A job is stopped by what it has become. One that runs its command is sent
-// TERM. One that is still the smoke's own fork after the wait has run
-// nothing, would lose a TERM, and is killed. One whose command line cannot
-// be read is sent TERM after the wait. Without ps the smoke starts nothing.
-func TestAndroidSmokeStopsAJobByWhatItHasBecome(t *testing.T) {
+// holdStartMark replaces touch, which a job marks itself started with, by
+// one that says each time it is asked and, the at-th time, waits while the
+// answered file exists. A job held there is a process of its own that has
+// not marked itself yet: what a fork that has not run its command looks
+// like to the script.
+func (f smokeFixture) holdStartMark(t *testing.T, at int) (hold string) {
+	t.Helper()
+	touch, err := exec.LookPath("touch")
+	if err != nil {
+		t.Skip("touch unavailable")
+	}
+	hold = filepath.Join(f.dir, "hold-start-mark")
+	if err := os.WriteFile(hold, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mockexec.WriteIn(t, filepath.Join(f.dir, "bin"), "touch", `#!/usr/bin/env bash
+echo "mark asked" >>"$AO_TEST_LOG"
+if [[ "$(grep -c "mark asked" "$AO_TEST_LOG")" == `+strconv.Itoa(at)+` ]]; then
+  while [[ -e `+shellQuote(hold)+` ]]; do sleep 0.02; done
+fi
+exec `+shellQuote(touch)+` "$@"
+`)
+	return hold
+}
+
+// A job that has not marked itself started is not signalled, however long
+// that takes: a signal sent before it is a process of its own is lost and
+// its command runs anyway. The smoke waits for the mark, then stops the job
+// and cleans up.
+func TestAndroidSmokeSignalsAJobOnlyOnceItHasStarted(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the emulator path is Linux-only")
 	}
 	if _, err := exec.LookPath("flock"); err != nil {
 		t.Skip("flock unavailable")
 	}
-	ps, err := exec.LookPath("ps")
-	if err != nil {
-		t.Skip("ps unavailable")
-	}
-	for _, tc := range []struct {
-		name, mode string
-		// wantTERM is whether the suite sees the TERM itself.
-		wantTERM bool
-		refused  bool
-	}{
-		{name: "it runs its command", mode: "real", wantTERM: true},
-		{name: "it is still the fork", mode: "fork", wantTERM: false},
-		{name: "its command line cannot be read", mode: "unreadable", wantTERM: true},
-		{name: "ps answers nothing at all", mode: "absent", refused: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newSmokeFixture(t)
-			f.fakeEmulator(t)
-			// In fork mode every lookup answers the command line of the shell
-			// that asked, which is the smoke's own: the job never appears to
-			// have become its command. In unreadable mode only the smoke's
-			// first lookup, of itself, answers.
-			mockexec.WriteIn(t, filepath.Join(f.dir, "bin"), "ps", `#!/usr/bin/env bash
-count="$(cat "$AO_TEST_PS_COUNT" 2>/dev/null || echo 0)"
-echo $((count + 1)) >"$AO_TEST_PS_COUNT"
-case "$AO_TEST_PS" in
-  real) exec `+shellQuote(ps)+` "$@" ;;
-  fork) exec `+shellQuote(ps)+` -o args= -p "$PPID" ;;
-  unreadable) if [[ "$count" == 0 ]]; then exec `+shellQuote(ps)+` "$@"; fi; exit 1 ;;
-  absent) exit 1 ;;
-esac
-`)
-			mockexec.WriteIn(t, filepath.Join(f.dir, "repo", "bin"), "ao-harness-e2e", `#!/usr/bin/env bash
+	f := newSmokeFixture(t)
+	f.fakeEmulator(t)
+	// The second job is the suite; the first starts the emulator.
+	hold := f.holdStartMark(t, 2)
+	mockexec.WriteIn(t, filepath.Join(f.dir, "repo", "bin"), "ao-harness-e2e", `#!/usr/bin/env bash
 trap 'echo "launcher TERM" >>"$AO_TEST_LOG"; exit 143' TERM
 echo "launcher started" >>"$AO_TEST_LOG"
 while :; do sleep 0.05; done
 `)
-			cmd := f.command("AO_ANDROID_SMOKE_PHASE=device", "AO_TEST_ADB_DEVICES=emulator-5554\tdevice",
-				"AO_TEST_PS="+tc.mode, "AO_TEST_PS_COUNT="+filepath.Join(f.dir, "ps-count"))
-			var out strings.Builder
-			cmd.Stdout, cmd.Stderr = &out, &out
-			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-			if err := cmd.Start(); err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
-			done := make(chan error, 1)
-			go func() { done <- cmd.Wait() }()
-			finish := func() error {
-				t.Helper()
-				select {
-				case err := <-done:
-					return err
-				case <-time.After(30 * time.Second):
-					_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-					<-done
-					t.Fatalf("the smoke did not finish:\n%s\n%s", out.String(), f.calls(t))
-					return nil
-				}
-			}
-			if tc.refused {
-				if err := finish(); err == nil || !strings.Contains(out.String(), "ps cannot read") {
-					t.Fatalf("want the ps refusal, got %v:\n%s", err, out.String())
-				}
-				if calls := f.calls(t); calls != "" {
-					t.Fatalf("a refused run did something:\n%s", calls)
-				}
-				return
-			}
-			deadline := time.Now().Add(30 * time.Second)
-			for !strings.Contains(f.calls(t), "launcher started") {
-				if time.Now().After(deadline) {
-					t.Fatalf("the suite never started:\n%s\n%s", out.String(), f.calls(t))
-				}
-				time.Sleep(20 * time.Millisecond)
-			}
-			if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
-				t.Fatal(err)
-			}
-			var exitErr *exec.ExitError
-			if err := finish(); !errors.As(err, &exitErr) || exitErr.ExitCode() != 143 {
-				t.Fatalf("want exit 143 after SIGTERM, got %v:\n%s", err, out.String())
-			}
-			// A suite the smoke failed to stop would go on logging.
-			time.Sleep(time.Second)
-			calls := f.calls(t)
-			if got := strings.Contains(calls, "launcher TERM"); got != tc.wantTERM {
-				t.Fatalf("the suite saw TERM = %v, want %v:\n%s", got, tc.wantTERM, calls)
-			}
-			const cleared = "adb -s emulator-5554 shell locksettings clear --old 1234"
-			if strings.Index(calls, cleared) < 0 || strings.Index(calls, "emulator stop") < strings.Index(calls, cleared) {
-				t.Fatalf("the cleanup did not run in order:\n%s", calls)
-			}
-			if last := strings.LastIndex(calls, "launcher "); last > strings.Index(calls, cleared) {
-				t.Fatalf("the suite outlived the cleanup:\n%s", calls)
-			}
-			// The killed fork left no suite running.
-			if out, err := exec.Command("pgrep", "-g", strconv.Itoa(cmd.Process.Pid), "-f", "ao-harness-e2e").Output(); err == nil && len(out) > 0 {
-				t.Fatalf("the suite is still running: %s", out)
-			}
-		})
+	marks := filepath.Join(f.dir, "marks")
+	if err := os.Mkdir(marks, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := f.command("AO_ANDROID_SMOKE_PHASE=device", "AO_TEST_ADB_DEVICES=emulator-5554\tdevice", "TMPDIR="+marks)
+	var out strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &out
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	deadline := time.Now().Add(30 * time.Second)
+	for strings.Count(f.calls(t), "mark asked") < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the suite was never started:\n%s\n%s", out.String(), f.calls(t))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	// Longer than any wait that would give up on the mark.
+	select {
+	case err := <-done:
+		t.Fatalf("the smoke finished while its job was unmarked: %v\n%s\n%s", err, out.String(), f.calls(t))
+	case <-time.After(4 * time.Second):
+	}
+	if calls := f.calls(t); strings.Contains(calls, "emulator stop") || strings.Contains(calls, "launcher") {
+		t.Fatalf("the smoke acted on a job that had not started:\n%s", calls)
+	}
+	// The first job's mark went when it finished: a later job can be given
+	// its process id.
+	if left, _ := filepath.Glob(filepath.Join(marks, "*", "*")); len(left) > 0 {
+		t.Fatalf("a finished job's start mark was kept: %v", left)
+	}
+	if err := os.Remove(hold); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the smoke did not finish once its job was marked:\n%s\n%s", out.String(), f.calls(t))
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 143 {
+		t.Fatalf("want exit 143 after SIGTERM, got %v:\n%s", err, out.String())
+	}
+	// A suite the smoke failed to stop would go on logging.
+	time.Sleep(time.Second)
+	calls := f.calls(t)
+	const cleared = "adb -s emulator-5554 shell locksettings clear --old 1234"
+	if !strings.Contains(calls, cleared) || strings.Index(calls, "emulator stop") < strings.Index(calls, cleared) {
+		t.Fatalf("the cleanup did not run in order:\n%s", calls)
+	}
+	if last := strings.LastIndex(calls, "launcher "); last > strings.Index(calls, cleared) {
+		t.Fatalf("the suite outlived the cleanup:\n%s", calls)
+	}
+	if out, err := exec.Command("pgrep", "-g", strconv.Itoa(cmd.Process.Pid), "-f", "ao-harness-e2e").Output(); err == nil && len(out) > 0 {
+		t.Fatalf("the suite is still running: %s", out)
+	}
+	// The marks went with the run.
+	if left, err := os.ReadDir(marks); err != nil || len(left) > 0 {
+		t.Fatalf("start marks were left behind: %v, %v", left, err)
+	}
+}
+
+// A job that dies while the smoke waits for it to mark itself started is not
+// waited on for a mark it will never leave.
+func TestAndroidSmokeDoesNotWaitOnAJobThatDiedUnmarked(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the emulator path is Linux-only")
+	}
+	for _, need := range []string{"flock", "pgrep"} {
+		if _, err := exec.LookPath(need); err != nil {
+			t.Skip(need + " unavailable")
+		}
+	}
+	f := newSmokeFixture(t)
+	f.fakeEmulator(t)
+	// The second job is the suite; the first starts the emulator.
+	hold := f.holdStartMark(t, 2)
+	mockexec.WriteIn(t, filepath.Join(f.dir, "repo", "bin"), "ao-harness-e2e", "#!/bin/sh\nexec sleep 300\n")
+	cmd := f.command("AO_ANDROID_SMOKE_PHASE=device", "AO_TEST_ADB_DEVICES=emulator-5554\tdevice")
+	// A file, not a pipe: the killed job's held touch outlives it and would
+	// keep a pipe open.
+	output, err := os.Create(filepath.Join(f.dir, "smoke.out"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = output.Close() })
+	printed := func() string {
+		body, _ := os.ReadFile(output.Name())
+		return string(body)
+	}
+	cmd.Stdout, cmd.Stderr = output, output
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	deadline := time.Now().Add(30 * time.Second)
+	for strings.Count(f.calls(t), "mark asked") < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the suite was never started:\n%s\n%s", printed(), f.calls(t))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// The job is the shell that marks itself and then runs the suite; the
+	// held touch is its child.
+	found, err := exec.Command("pgrep", "-g", strconv.Itoa(cmd.Process.Pid), "-f", "touch .*ao-harness-e2e").Output()
+	if err != nil {
+		t.Fatalf("the unmarked job was not found: %v\n%s", err, printed())
+	}
+	job, err := strconv.Atoi(strings.TrimSpace(string(found)))
+	if err != nil {
+		t.Fatalf("want one unmarked job, got %q", found)
+	}
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	// The smoke is now waiting for the mark.
+	select {
+	case err := <-done:
+		t.Fatalf("the smoke finished while its job was unmarked: %v\n%s\n%s", err, printed(), f.calls(t))
+	case <-time.After(time.Second):
+	}
+	if err := syscall.Kill(job, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	// The mark stays held: nothing will ever leave it.
+	select {
+	case err = <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the smoke waited on a job that was gone:\n%s\n%s", printed(), f.calls(t))
+	}
+	if err := os.Remove(hold); err != nil {
+		t.Fatal(err)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 143 {
+		t.Fatalf("want exit 143 after SIGTERM, got %v:\n%s", err, printed())
+	}
+	if calls := f.calls(t); !strings.Contains(calls, "emulator stop") {
+		t.Fatalf("the cleanup did not run:\n%s", calls)
 	}
 }
