@@ -385,8 +385,8 @@ func TestSwitchingReadAloudOffEndsWhatWasAdmitted(t *testing.T) {
 
 	enableReadAloud(t, app, true)
 	status, body, _ := fetchSpeech(t, context.Background(), base+waiting)
-	if status != http.StatusNotFound || string(body) != readaloud.ErrUnknown.Error() {
-		t.Fatalf("a sentence admitted before the switch went off = %d %q, want 404", status, body)
+	if status != http.StatusForbidden || string(body) != readaloud.ErrOff.Error() {
+		t.Fatalf("a sentence admitted before the switch went off = %d %q, want 403 and the off message", status, body)
 	}
 	if asks := openaifake.SpeechAsks(key); len(asks) != 1 {
 		t.Fatalf("OpenAI was asked %d times, want only the stalled one", len(asks))

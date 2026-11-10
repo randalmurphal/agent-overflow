@@ -170,9 +170,9 @@ characters after trimming) and returns
 answers a 24 kHz mono 16-bit WAV, or a 4xx/5xx with a plain-text message
 the client shows: 404 spent or expired, 409 no usable key, 429 busy or
 rate limited, 502 an OpenAI failure, 504 over 45 seconds. 403 means the
-switch is off or was written since the sentence was admitted (the RPC
-says the same with code `read_aloud_api_off`); a client stops on it
-without an error. Code:
+switch is off or was written since the sentence was admitted, whether the
+sentence was waiting or being read (the RPC says the same with code
+`read_aloud_api_off`); a client stops on it without an error. Code:
 `internal/openai/speech.go`, `internal/openai/fidelity.go`,
 `internal/readaloud/`, `internal/app/app_read_aloud.go`,
 `internal/transport/speechroutes.go`.
@@ -189,10 +189,10 @@ without an error. Code:
   handshake is done, as for live transcription.
 - `openai.IsReading` compares the transcript with the text by words (by
   character in scripts written without spaces): a text of three or more
-  words must keep half of them, and the words spoken beyond the text are
-  bounded, with room for numbers spelled out. A result that is not a
-  reading is retried once and then refused. Audio past 90 seconds is
-  abandoned.
+  words must keep more than half of them, and the words spoken beyond the
+  text are bounded, with room for numbers spelled out. A result that is
+  not a reading is retried once and then refused. Audio past 90 seconds
+  is abandoned.
 - At most 8 sentences wait and 4 synthesize per computer; a fifth
   synthesis is refused, not queued. A clip keeps its synthesis slot until
   its response is written, and a fetch is cut off after two minutes, so
@@ -200,7 +200,8 @@ without an error. Code:
   the call.
 - A write to the switch drops every sentence admitted before it and ends
   their syntheses, as it does live recordings; switching off and on again
-  does not spare them.
+  does not spare them. A sentence's id leads with its admission revision,
+  so a dropped one is still answered 403.
 - The client plays each WAV through one audio element from a blob URL,
   fetching one sentence ahead. The element is first started on a silent
   clip inside the click or key that began the reading, so engines that

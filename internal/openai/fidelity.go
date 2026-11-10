@@ -11,9 +11,11 @@ import (
 //
 //   - nothing was spoken;
 //   - the text has three or more words, two or more of them without
-//     digits, and the transcript keeps under half of those, in order (an
+//     digits, and the transcript keeps half or fewer of those, in order (an
 //     answer, or a reading cut short). Words with digits are left out
-//     because a number is spoken as other words;
+//     because a number is spoken as other words. More than half, so that
+//     one word a question and its answer share ("is") is not a reading of
+//     two;
 //   - the spoken words that are not the text's exceed max(3, half the
 //     text's words), plus two per digit and two more for each word with
 //     digits, the room a number needs when spelled out (an answer after the
@@ -41,7 +43,7 @@ func IsReading(text, transcript string) bool {
 		}
 		numberRoom += 2
 	}
-	if len(want) >= 3 && len(plain) >= 2 && 2*lcs(plain, spoken) < len(plain) {
+	if len(want) >= 3 && len(plain) >= 2 && 2*lcs(plain, spoken) <= len(plain) {
 		return false
 	}
 	return len(spoken)-lcs(want, spoken) <= max(3, len(want)/2)+numberRoom

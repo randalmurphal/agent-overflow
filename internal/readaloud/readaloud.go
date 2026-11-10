@@ -10,11 +10,12 @@
 // synthesis slot until it is closed, so the audio held for delivery is
 // bounded by the same cap.
 //
-// Every sentence carries the settings revision it was admitted at.
-// RevokeBefore, called with the revision of a write to the switch, drops
-// the sentences admitted before it and ends their syntheses, so switching
-// read aloud off stops the spending at once and a quick off and on again
-// cannot spare an older admission.
+// Every sentence carries the settings revision it was admitted at, and its
+// id leads with it. RevokeBefore, called with the revision of a write to
+// the switch, drops the sentences admitted before it and ends their
+// syntheses, so switching read aloud off stops the spending at once and a
+// quick off and on again cannot spare an older admission. Each of those
+// answers ErrOff, a dropped one from its id alone.
 //
 // The caller supplies the speak function, so the key and the HTTP client
 // stay with it.
@@ -27,6 +28,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -47,7 +49,7 @@ const MaxTextCharacters = 1000
 
 var (
 	// ErrUnknown means the sentence was already fetched, expired, or was
-	// never admitted here.
+	// never admitted here. One dropped by RevokeBefore is ErrOff.
 	ErrUnknown = errors.New("this sentence was already read aloud or has expired")
 	// ErrBacklog refuses a sentence while MaxPending wait.
 	ErrBacklog = fmt.Errorf("%d sentences are already waiting to be read aloud; try again shortly", MaxPending)
@@ -116,9 +118,9 @@ type Sentences struct {
 
 	slots chan struct{}
 
-	// beforeHandOver, when set by a test, runs once a clip is made and
-	// before it is handed over.
-	beforeHandOver func()
+	// beforeFinish, when set by a test, runs once a synthesis has its
+	// result and before that result is decided against a revocation.
+	beforeFinish func()
 }
 
 type pendingSentence struct {
@@ -170,11 +172,10 @@ func (s *Sentences) Admit(text, voice string, admitted uint64) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	var raw [16]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "", fmt.Errorf("make a read-aloud id: %w", err)
+	id, err := newID(admitted)
+	if err != nil {
+		return "", err
 	}
-	id := hex.EncodeToString(raw[:])
 	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -192,10 +193,39 @@ func (s *Sentences) Admit(text, voice string, admitted uint64) (string, error) {
 	return id, nil
 }
 
-// Take spends id and returns its sentence.
+// idRevisionDigits and idRandomDigits are the two parts of an id, in hex:
+// the admission revision, then random bytes.
+const (
+	idRevisionDigits = 16
+	idRandomDigits   = 32
+)
+
+func newID(admitted uint64) (string, error) {
+	var raw [idRandomDigits / 2]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("make a read-aloud id: %w", err)
+	}
+	return fmt.Sprintf("%0*x%s", idRevisionDigits, admitted, hex.EncodeToString(raw[:])), nil
+}
+
+// admittedAt reads the admission revision id leads with.
+func admittedAt(id string) (uint64, bool) {
+	if len(id) != idRevisionDigits+idRandomDigits {
+		return 0, false
+	}
+	admitted, err := strconv.ParseUint(id[:idRevisionDigits], 16, 64)
+	return admitted, err == nil
+}
+
+// Take spends id and returns its sentence. An id admitted before a
+// RevokeBefore is ErrOff, known from the id, so the dropped sentence need
+// not be kept to say why it is gone.
 func (s *Sentences) Take(id string) (Sentence, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if admitted, ok := admittedAt(id); ok && admitted < s.revokedBefore {
+		return Sentence{}, ErrOff
+	}
 	s.dropExpired(s.now())
 	held, ok := s.pending[id]
 	if !ok {
@@ -225,8 +255,8 @@ func (s *Sentences) dropExpired(now time.Time) {
 // RevokeBefore drops every waiting sentence admitted before revision, the
 // settings write that changed the switch, ends every synthesis of one, and
 // refuses any still to come in with an older admission. A synthesis it
-// ends returns ErrOff, up to the moment its clip is handed over; a clip
-// already handed over is not taken back.
+// reaches returns ErrOff whatever its own result, up to the moment that
+// result is returned; a clip already handed over is not taken back.
 func (s *Sentences) RevokeBefore(revision uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -277,47 +307,45 @@ func (s *Sentences) synthesize(ctx context.Context, sentence Sentence, speak Spe
 	}
 	s.speaking[work] = struct{}{}
 	s.mu.Unlock()
-	// finish takes the synthesis out of the set and reports whether a
-	// RevokeBefore reached it first. Until it runs, a revocation still
-	// counts.
-	finish := func() (revoked bool) {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		delete(s.speaking, work)
-		return work.revoked
+
+	wav, err := s.read(running, work, sentence.Request, speak)
+	if s.beforeFinish != nil {
+		s.beforeFinish()
 	}
+	// Leaving the set and learning whether a RevokeBefore got there first
+	// are one step, so a revocation up to here decides every result, a
+	// clip and a failure alike.
+	s.mu.Lock()
+	delete(s.speaking, work)
+	revoked := work.revoked
+	s.mu.Unlock()
+	switch {
+	case revoked:
+		return nil, ErrOff
+	case err != nil:
+		return nil, err
+	}
+	return &Clip{Reader: bytes.NewReader(wav), release: release}, nil
+}
+
+// read asks speak for the request until the transcript is a reading of its
+// text, twice at most, and returns the reading as a WAV file.
+func (s *Sentences) read(ctx context.Context, work *synthesis, request openai.SpeechRequest, speak SpeakFunc) ([]byte, error) {
 	for attempt := 0; attempt < 2; attempt++ {
-		speech, err := speak(running, sentence.Request)
-		// Revoked while speaking: its error is the cancellation, and a
-		// result that is not a reading is not retried.
-		reading := err == nil && openai.IsReading(sentence.Request.Text, speech.Transcript)
-		if !reading {
-			s.mu.Lock()
-			revoked := work.revoked
-			s.mu.Unlock()
-			switch {
-			case revoked:
-				finish()
-				return nil, ErrOff
-			case err != nil:
-				finish()
-				return nil, err
-			}
-			continue
-		}
-		wav, err := WAV(speech.PCM, openai.SpeechSampleRate)
+		speech, err := speak(ctx, request)
 		if err != nil {
-			finish()
 			return nil, err
 		}
-		if s.beforeHandOver != nil {
-			s.beforeHandOver()
+		if openai.IsReading(request.Text, speech.Transcript) {
+			return WAV(speech.PCM, openai.SpeechSampleRate)
 		}
-		if finish() {
+		// A revoked sentence is not asked for a second time.
+		s.mu.Lock()
+		revoked := work.revoked
+		s.mu.Unlock()
+		if revoked {
 			return nil, ErrOff
 		}
-		return &Clip{Reader: bytes.NewReader(wav), release: release}, nil
 	}
-	finish()
 	return nil, ErrMisread
 }

@@ -369,8 +369,17 @@ func TestRevokingEndsOlderAdmissions(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("a revoked synthesis kept speaking")
 	}
-	if _, err := sentences.Take(older); !errors.Is(err, ErrUnknown) {
-		t.Fatalf("a revoked waiting sentence = %v, want ErrUnknown", err)
+	// The waiting one is dropped, and its id still says why.
+	if waiting := sentences.Pending(); waiting != 1 {
+		t.Fatalf("%d sentences wait after the revocation, want only the newer", waiting)
+	}
+	for range 2 {
+		if _, err := sentences.Take(older); !errors.Is(err, ErrOff) {
+			t.Fatalf("a revoked waiting sentence = %v, want ErrOff", err)
+		}
+	}
+	if _, err := sentences.Take(strings.Repeat("z", len(older))); !errors.Is(err, ErrUnknown) {
+		t.Fatalf("an id that is not one of ours = %v, want ErrUnknown", err)
 	}
 	if _, err := sentences.Admit(text, "marin", 4); !errors.Is(err, ErrOff) {
 		t.Fatalf("an admission older than the revocation = %v, want ErrOff", err)
@@ -425,35 +434,30 @@ func TestRevokingAsTheReadingArrivesWithholdsIt(t *testing.T) {
 	}
 }
 
-// Nor is a clip already checked and wrapped when the revocation lands: the
-// decision to hand it over is made as the synthesis leaves the set.
-func TestRevokingOnceTheClipIsMadeWithholdsIt(t *testing.T) {
+// A revocation that lands once the synthesis has its result, whatever that
+// is, still decides it: the result is settled against revocations as the
+// synthesis leaves the set.
+func TestRevokingOnceTheResultIsKnownIsOff(t *testing.T) {
 	t.Parallel()
-	sentences := New(time.Minute)
-	sentences.beforeHandOver = func() { sentences.RevokeBefore(1) }
-	if err := synthesized(t, sentences, sentenceAt(0), echo); !errors.Is(err, ErrOff) {
-		t.Fatalf("Synthesize = %v, want ErrOff", err)
-	}
-	// Its slot is free, and a sentence admitted since is read.
-	sentences.beforeHandOver = nil
-	for range MaxSpeaking {
-		if err := synthesized(t, sentences, sentenceAt(1), echo); err != nil {
-			t.Fatalf("after the withheld clip: %v", err)
+	failure := errors.New("OpenAI is down")
+	for name, speak := range map[string]SpeakFunc{
+		"a clip":          echo,
+		"two misreadings": (&scripted{transcripts: []string{answer}}).speak,
+		"a failure": func(context.Context, openai.SpeechRequest) (openai.Speech, error) {
+			return openai.Speech{}, failure
+		},
+	} {
+		sentences := New(time.Minute)
+		sentences.beforeFinish = func() { sentences.RevokeBefore(1) }
+		if err := synthesized(t, sentences, sentenceAt(0), speak); !errors.Is(err, ErrOff) {
+			t.Fatalf("%s: Synthesize = %v, want ErrOff", name, err)
 		}
-	}
-}
-
-// Two misreadings with a revocation after the second are refused as off.
-func TestRevokingAfterTheLastMisreadingIsOff(t *testing.T) {
-	t.Parallel()
-	sentences := New(time.Minute)
-	speaker := &scripted{transcripts: []string{answer}}
-	speaker.during = func() {
-		if speaker.called() == 2 {
-			sentences.RevokeBefore(1)
+		// Its slot is free, and a sentence admitted since is read.
+		sentences.beforeFinish = nil
+		for range MaxSpeaking {
+			if err := synthesized(t, sentences, sentenceAt(1), echo); err != nil {
+				t.Fatalf("%s: after the revoked synthesis: %v", name, err)
+			}
 		}
-	}
-	if err := synthesized(t, sentences, sentenceAt(0), speaker.speak); !errors.Is(err, ErrOff) {
-		t.Fatalf("Synthesize = %v, want ErrOff", err)
 	}
 }

@@ -273,7 +273,7 @@ describe('under a shell origin', () => {
     const seen: RequestInit[] = [];
     const real = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      seen.push({ ...init, ...{ url: String(input) } } as RequestInit & { url: string });
+      seen.push({ ...init, url: String(input) } as RequestInit & { url: string });
       return new Response(JSON.stringify({ id: 'att-1', threadId: 'thr-1' }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },

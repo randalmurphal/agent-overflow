@@ -164,7 +164,7 @@ export function clipSpeechEngine(options: ClipSpeechOptions): SpeechEngine {
       function release(): void {
         audio.removeEventListener('ended', onEnded);
         audio.removeEventListener('error', onError);
-        for (const index of [...clips.keys()]) dropClip(index);
+        for (const index of clips.keys()) dropClip(index);
         dropUnlock();
         sounding = -1;
         audio.pause();

@@ -124,13 +124,15 @@ type readAloudTransfer struct{ app *App }
 
 func (t readAloudTransfer) SpeakSentence(ctx context.Context, speechID string) (io.ReadSeekCloser, error) {
 	a := t.app
-	// The switch first: turning it off dropped the sentence, and "off" is
-	// the reason to give for that.
 	if !a.readAloudAPIOn() {
 		return nil, &transport.SpeechError{Status: readAloudOffStatus, Err: readaloud.ErrOff}
 	}
 	sentence, err := a.readAloudSentences().Take(speechID)
-	if err != nil {
+	switch {
+	case errors.Is(err, readaloud.ErrOff):
+		// Dropped by a write to the switch, which may be back on by now.
+		return nil, &transport.SpeechError{Status: readAloudOffStatus, Err: err}
+	case err != nil:
 		return nil, &transport.SpeechError{Status: http.StatusNotFound, Err: err}
 	}
 	speaking, cancel := context.WithTimeout(ctx, readAloudTimeout)

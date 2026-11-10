@@ -47,7 +47,7 @@ function fakeAudio() {
     log,
     listenerCount: () => listeners.ended.size + listeners.error.size,
     emit: (type: AudioEvent) => {
-      for (const listener of [...listeners[type]]) listener();
+      for (const listener of Array.from(listeners[type])) listener();
     },
     /** Start the clip play() was last called on. */
     startLatest: async () => {
