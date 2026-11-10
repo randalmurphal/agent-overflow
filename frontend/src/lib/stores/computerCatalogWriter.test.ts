@@ -173,6 +173,20 @@ it('writes what is waiting when the page goes hidden', async () => {
   expect(cache.write).toHaveBeenCalledTimes(3);
 });
 
+it('hands every write of a values writer the same row cache', async () => {
+  stageBackend({ id: 'gpu' });
+  observeCatalogStamp('gpu', 'groups', 'stamp');
+  const writer = computerCatalogWriter('groups', () => [group('gpu')], () => {}, () => 'gpu', { rowsAreValues: true });
+  writer.persist('gpu');
+  await vi.waitFor(() => expect(cache.write).toHaveBeenCalledTimes(1));
+  writer.reset();
+  writer.persist('gpu');
+  await vi.waitFor(() => expect(cache.write).toHaveBeenCalledTimes(2));
+  const [first, second] = cache.write.mock.calls.map((call) => call[5]);
+  expect(first).toBeInstanceOf(WeakMap);
+  expect(second).toBe(first);
+});
+
 it('forgets a spacing on reset', async () => {
   vi.useFakeTimers();
   stageBackend({ id: 'gpu' });

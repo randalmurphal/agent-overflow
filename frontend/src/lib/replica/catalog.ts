@@ -57,16 +57,31 @@ export function readCatalogRecord<K extends CatalogKind>(raw: unknown, generatio
   return safeRepositoryMetadata(raw.rows) as CatalogRows[K][];
 }
 
-export function makeCatalogRecord<K extends CatalogKind>(generation: string, kind: K, rows: readonly CatalogRows[K][], stamp: string): Catalog {
+/**
+ * The encoded form of rows that are values, or null for a row the catalog
+ * leaves out. A row object that is never written into encodes the same way
+ * every time, so a writer of such rows keeps one cache and each write
+ * encodes only the rows that changed since the last.
+ */
+export type CatalogRowCache = WeakMap<object, { plain: unknown; chars: number } | null>;
+
+export function makeCatalogRecord<K extends CatalogKind>(
+  generation: string, kind: K, rows: readonly CatalogRows[K][], stamp: string, cache?: CatalogRowCache,
+): Catalog {
   const kept: unknown[] = [];
   let chars = 0;
   for (const row of rows) {
-    // Flatten Svelte proxies per row; never allocate a catalog-sized string.
-    const encoded = JSON.stringify(safeRepositoryMetadata(row));
-    if (encoded.length > MAX_ROW_CHARS || !validRow(row, kind)) continue;
-    if (kept.length === MAX_CATALOG_ROWS || chars + encoded.length > MAX_CATALOG_CHARS) break;
-    kept.push(JSON.parse(encoded));
-    chars += encoded.length;
+    let entry = cache?.get(row);
+    if (entry === undefined) {
+      // Flatten Svelte proxies per row; never allocate a catalog-sized string.
+      const encoded = JSON.stringify(safeRepositoryMetadata(row));
+      entry = encoded.length > MAX_ROW_CHARS || !validRow(row, kind) ? null : { plain: JSON.parse(encoded), chars: encoded.length };
+      cache?.set(row, entry);
+    }
+    if (entry === null) continue;
+    if (kept.length === MAX_CATALOG_ROWS || chars + entry.chars > MAX_CATALOG_CHARS) break;
+    kept.push(entry.plain);
+    chars += entry.chars;
   }
   return { version: 2, generation, stamp, rows: kept };
 }

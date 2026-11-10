@@ -14,7 +14,7 @@ import { backendById } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { putReplicaCatalog, replicaToken } from '../replica/session';
 import { observedCatalogStamp } from '../replica/catalogStamp';
-import type { CatalogKind, CatalogRows } from '../replica/catalog';
+import type { CatalogKind, CatalogRowCache, CatalogRows } from '../replica/catalog';
 
 export const CATALOG_WRITE_SPACING_MS = 2000;
 
@@ -25,10 +25,20 @@ if (typeof document !== 'undefined') {
   });
 }
 
+export interface CatalogWriterOptions {
+  /**
+   * The store never writes into a row it holds: a change replaces the row.
+   * Each write then encodes only the rows replaced since the last one.
+   */
+  rowsAreValues?: boolean;
+}
+
 export function computerCatalogWriter<K extends CatalogKind>(
   kind: K, rows: () => CatalogRows[K][], commit: (rows: CatalogRows[K][]) => void,
   owner: (row: CatalogRows[K]) => BackendKey | undefined,
+  options: CatalogWriterOptions = {},
 ) {
+  const encoded: [CatalogRowCache] | [] = options.rowsAreValues ? [new WeakMap()] : [];
   const pending = new Map<BackendKey, number>();
   const running = new Set<BackendKey>();
   // Computers whose last write started less than the spacing ago.
@@ -54,7 +64,7 @@ export function computerCatalogWriter<K extends CatalogKind>(
           if (pending.has(backend)) schedule();
         }, CATALOG_WRITE_SPACING_MS));
         const selected = snapshot.filter((row) => (owner(row) ?? HOME_BACKEND) === backend);
-        void putReplicaCatalog(backend, kind, selected, observedCatalogStamp(backend, kind), token).finally(() => {
+        void putReplicaCatalog(backend, kind, selected, observedCatalogStamp(backend, kind), token, ...encoded).finally(() => {
           if (version !== epoch) return;
           running.delete(backend);
           if (pending.has(backend)) schedule();

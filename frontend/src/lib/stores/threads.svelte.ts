@@ -52,7 +52,7 @@ function setThreads(rows: readonly Thread[]): void {
   }
   threads = import.meta.env.DEV ? Object.freeze(next) : next;
 }
-const catalogWriter = computerCatalogWriter('threads', () => threads as Thread[], setThreads, (row) => threadBackend(row.id));
+const catalogWriter = computerCatalogWriter('threads', () => threads as Thread[], setThreads, (row) => threadBackend(row.id), { rowsAreValues: true });
 // Ownership changes before the destination's row is applied. Fence the
 // former owner's offline snapshot and rewrite it without the moved row;
 // otherwise removing the destination could expose the old offline snapshot.
