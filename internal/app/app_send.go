@@ -500,6 +500,9 @@ func (a *App) sendMessageLocked(
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: placement: %w", err)
 	}
+	if a.sendStageFn != nil && !placement.queue {
+		a.sendStageFn(threadID, "placed")
+	}
 	if placement.queue {
 		_, err := a.registerQueueItem(threadID, content, SendMessageOptions{
 			ConsumeDraft:                 opts.ConsumeDraft,
@@ -636,21 +639,41 @@ func (a *App) sendMessageLocked(
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: check prior items: %w", err)
 	}
-	turnIndex := placement.displayTurn
-	userItemID, err := a.userMessageItemID(threadID, opts.SendID, turnIndex, intent)
-	if err != nil {
-		return store.Item{}, fmt.Errorf("send message: allocate item id: %w", err)
-	}
-	if !isCodexReview {
-		a.maybeRenameTemporaryWorktreeBranch(threadID, content)
-	}
-
 	if opts.onUserMessageReady != nil {
 		if _, live := a.sessionManager().get(threadID); !live {
 			if err := a.startSession(ctx, threadID); err != nil {
 				return store.Item{}, fmt.Errorf("send message: start session: %w", err)
 			}
 		}
+	}
+
+	if !isCodexReview {
+		a.maybeRenameTemporaryWorktreeBranch(threadID, content)
+	}
+
+	// The index is final once the row lands. Until then a turn the
+	// provider starts on its own can take the one placement chose, so it
+	// is chosen again and the row persisted under the turn allocation
+	// lock. Nothing here waits for the provider event worker.
+	unlockAllocation := a.triage.LockTurnAllocation(threadID)
+	allocationHeld := true
+	releaseAllocation := func() {
+		if allocationHeld {
+			allocationHeld = false
+			unlockAllocation()
+		}
+	}
+	defer releaseAllocation()
+	turnIndex := placement.displayTurn
+	if next, nextErr := a.nextSendTurnIndex(threadID); nextErr != nil {
+		err = nextErr
+		return store.Item{}, fmt.Errorf("send message: resolve turn index: %w", err)
+	} else if next > turnIndex {
+		turnIndex = next
+	}
+	userItemID, err := a.userMessageItemID(threadID, opts.SendID, turnIndex, intent)
+	if err != nil {
+		return store.Item{}, fmt.Errorf("send message: allocate item id: %w", err)
 	}
 
 	// The review drafts this message carries are claimed for its turn
@@ -690,6 +713,21 @@ func (a *App) sendMessageLocked(
 	}
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: persist user message: %w", err)
+	}
+	// A live session can start a turn of its own before this send reaches
+	// its provider write. Registering the pending send with the row, under
+	// the same lock, makes that turn find the message and take its turn
+	// rather than open one past it. A cold session registers below, after
+	// it starts: no turn of its own can come first.
+	if !isCodexReview {
+		if live, ok := a.sessionManager().get(threadID); ok {
+			_, earlyExpect := providerSendIdentity(live, userItem.ID, sendUUID)
+			a.triage.RegisterPendingSendWithExpectation(threadID, userItem.ID, turnIndex, earlyExpect)
+		}
+	}
+	releaseAllocation()
+	if a.sendStageFn != nil {
+		a.sendStageFn(threadID, "persisted")
 	}
 	userMsgKept = true
 	if opts.onUserMessageReady != nil {
@@ -748,6 +786,7 @@ func (a *App) sendMessageLocked(
 	sess, unlockAccount, accountErr := a.lockProviderAccountForSendLocked(thread)
 	if accountErr != nil {
 		err = accountErr
+		a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
 		a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
 		return store.Item{}, fmt.Errorf("send message: %w", err)
 	}
@@ -799,8 +838,13 @@ func (a *App) sendMessageLocked(
 	// envelope arrives, or cleared on send failure below. The identity the
 	// echo matches by — and the wire stamp it rides in on — come from
 	// providerSendIdentity, one derivation for every send entry point.
+	// A send registered with its row is registered again when the session
+	// it was registered against was torn down since (an account switch
+	// reconnects Codex here), since teardown clears the registry.
 	clientUserMessageID, sendExpect := providerSendIdentity(sess, userItem.ID, sendUUID)
-	a.triage.RegisterPendingSendWithExpectation(threadID, userItem.ID, turnIndex, sendExpect)
+	if !a.triage.HasPendingSend(threadID, userItem.ID) {
+		a.triage.RegisterPendingSendWithExpectation(threadID, userItem.ID, turnIndex, sendExpect)
+	}
 
 	if err := sendToProvider(sess, threadID, providerContent, provider.SendOptions{
 		InteractionMode:         provider.NormalizeInteractionMode(thread.Mode),

@@ -675,7 +675,7 @@ export class MergeReadiness {
      * Approvals counts the approvals that stand and the approvals the
      * merge requires (0 when nothing is required). Unresolved counts the
      * review threads not yet resolved when the read has every thread's
-     * state (PRReadParts.Unresolved asks for it); nil otherwise.
+     * state; nil otherwise.
      */
     "approvals": ApprovalCount;
     "unresolved"?: number | null;
@@ -802,15 +802,6 @@ export class PRDetail {
      */
     "readiness": MergeReadiness;
     "merge": MergeOptions;
-
-    /**
-     * ViewerReviewState is the viewer's own review of a GitLab merge
-     * request as its reviewers read words it (unreviewed, review_started,
-     * reviewed, requested_changes, approved, unapproved); empty when the
-     * viewer is not a reviewer, on GitHub, and when the read did not ask
-     * (PRReadParts.ViewerReview).
-     */
-    "viewerReviewState"?: string;
     "mergedAt"?: string;
     "mergedBy"?: string;
     "closedAt"?: string;

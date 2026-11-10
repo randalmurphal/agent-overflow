@@ -756,3 +756,34 @@ func TestConvertMonitorAckClassifiesAsWatch(t *testing.T) {
 		})
 	}
 }
+
+// A turn the CLI started on a background-task notification imports as a
+// turn of its own with no user row, the shape the live session gives it.
+func TestConvertSelfWakeOpensTurnWithoutUserRow(t *testing.T) {
+	events, _ := convertFixture(t, ConvertOptions{},
+		userRow("u1", "", "start the background work", "2026-01-01T00:00:00.000Z"),
+		assistantRow("a1", "u1", "msg_1", []any{textBlock("started it")}, "2026-01-01T00:00:01.000Z"),
+		userRow("u2", "a1", "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>",
+			"2026-01-01T00:00:05.000Z",
+			with("origin", map[string]any{"kind": "task-notification", "producer": "session-task"}),
+			with("promptSource", "system")),
+		assistantRow("a2", "u2", "msg_2", []any{textBlock("background done")}, "2026-01-01T00:00:06.000Z"),
+	)
+	starts := eventsOfKind(events, provider.EventTurnStart)
+	if len(starts) != 2 {
+		t.Fatalf("turn starts = %d, want 2:\n%s", len(starts), renderEvents(events))
+	}
+	texts := eventsOfKind(events, provider.EventUserText)
+	if len(texts) != 1 || texts[0].Content != "start the background work" {
+		t.Fatalf("user_text events = %+v, want only the typed prompt:\n%s", texts, renderEvents(events))
+	}
+	var wakeTurn int
+	for _, e := range events {
+		if e.Content == "background done" {
+			wakeTurn = e.TurnIndex
+		}
+	}
+	if wakeTurn != starts[1].TurnIndex {
+		t.Errorf("wake response in turn %d, want the wake's turn %d:\n%s", wakeTurn, starts[1].TurnIndex, renderEvents(events))
+	}
+}

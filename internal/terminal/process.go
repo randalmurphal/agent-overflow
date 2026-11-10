@@ -83,6 +83,9 @@ type Process struct {
 	pty *osFilePty
 	// raw reads the master without blocking a thread (readOutput).
 	raw syscall.RawConn
+	// readMaster is the master's read system call. Tests replace it to
+	// place a read relative to the shell's exit.
+	readMaster func(fd int, buf []byte) (int, error)
 
 	output chan []byte   // closed when read loop exits
 	done   chan struct{} // closed when Wait returns
@@ -106,6 +109,10 @@ type Process struct {
 // Start spawns the process. On success Process.Output() returns a channel of
 // raw byte chunks from the PTY until the process exits.
 func Start(cfg ProcessConfig) (*Process, error) {
+	return startWithRead(cfg, syscall.Read)
+}
+
+func startWithRead(cfg ProcessConfig, readMaster func(fd int, buf []byte) (int, error)) (*Process, error) {
 	shell, args := resolveShell(cfg.Shell, cfg.Args)
 	rows, cols := cfg.Rows, cfg.Cols
 	if rows == 0 {
@@ -142,6 +149,7 @@ func Start(cfg ProcessConfig) (*Process, error) {
 		cmd:        cmd,
 		pty:        &osFilePty{File: master},
 		raw:        raw,
+		readMaster: readMaster,
 		output:     make(chan []byte, 64),
 		done:       make(chan struct{}),
 		pauseNudge: time.Sleep,
@@ -352,25 +360,30 @@ func (p *Process) pumpOutput() {
 
 // readOutput reads one chunk from the master. Before the shell exits it
 // waits for output; after, it returns errOutputDrained when the pty holds
-// nothing more. A master the poller does not take (darwin) blocks in the
-// read instead, and the kernel ends that read when the shell exits.
+// nothing more. Only a read that began after the exit can say so: the shell
+// may write and exit between an empty read and a later look at the exit. A
+// master the poller does not take (darwin) blocks in the read instead, and
+// the kernel ends that read when the shell exits.
 func (p *Process) readOutput(buf []byte) (int, error) {
 	for {
 		var n int
 		var readErr error
 		err := p.raw.Read(func(fd uintptr) bool {
+			exited := p.exited.Load()
 			for {
-				n, readErr = syscall.Read(int(fd), buf)
+				n, readErr = p.readMaster(int(fd), buf)
 				if readErr != syscall.EINTR {
 					break
 				}
 			}
 			if readErr == syscall.EAGAIN {
-				if p.exited.Load() {
+				if exited {
 					n, readErr = 0, errOutputDrained
 					return true
 				}
-				return false // wait until readable, or woken by the exit
+				// Wait until readable or woken by the exit (awaitExit),
+				// then read again.
+				return false
 			}
 			return true
 		})

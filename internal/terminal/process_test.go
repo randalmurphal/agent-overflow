@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -294,6 +295,51 @@ func TestProcessDeliversTheShellsLastOutputWhileAJobHoldsThePTY(t *testing.T) {
 	if got := strings.Count(out, "line"); got != lines || !strings.Contains(out, "TAIL") {
 		t.Fatalf("delivered %d of %d lines (tail seen: %v) the shell wrote before exiting",
 			got, lines, strings.Contains(out, "TAIL"))
+	}
+}
+
+// A read that finds the pty empty says nothing about a shell that writes and
+// exits right after it. The shell here waits for a line, so it is running
+// when the first read begins; that read releases it and returns empty-handed
+// only once the shell has written, exited and been reaped, which is what the
+// output pump sees when it looks at the exit after such a read. Only a
+// pollable master reads without blocking, so the case exists on Linux alone.
+func TestProcessDeliversOutputWrittenBetweenAnEmptyReadAndTheShellsExit(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the master blocks in its read outside Linux")
+	}
+	started := make(chan *Process, 1)
+	releaseErr := make(chan error, 1)
+	var emptyReadDone atomic.Bool
+	read := func(fd int, buf []byte) (int, error) {
+		if emptyReadDone.CompareAndSwap(false, true) {
+			p := <-started
+			releaseErr <- p.Write([]byte("\n"))
+			<-p.Done()
+			return 0, syscall.EAGAIN
+		}
+		return syscall.Read(fd, buf)
+	}
+	p, err := startWithRead(ProcessConfig{
+		Shell: "/bin/sh",
+		Args:  []string{"-c", `read line; printf 'last words'`},
+		Cwd:   t.TempDir(),
+	}, read)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Kill() })
+	started <- p
+
+	out, closed := collectOutput(p.Output(), 10*time.Second)
+	if !closed {
+		t.Fatalf("output still open after the shell exited; got %q", out)
+	}
+	if err := <-releaseErr; err != nil {
+		t.Fatalf("release the shell: %v", err)
+	}
+	if !strings.HasSuffix(out, "last words") {
+		t.Fatalf("delivered %q, want what the shell wrote before exiting", out)
 	}
 }
 

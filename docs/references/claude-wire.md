@@ -69,9 +69,12 @@ subagent completes. The wire-typed parent-ended signal is therefore
 `parent_tool_use_id == null`). See
 [§stream_event soft-round-close](#stream_event-streaming-deltas)
 below. We treat that signal as authoritative for the round-end UI
-(working indicator, Stop button, composer block) and absorb the late
-`result` envelope as a token-usage / cost / `assistant_message_id`
-fold-in. Backed by fixtures
+(working indicator, Stop button, composer block) and turn settlement,
+and absorb the late `result` envelope as a token-usage / cost /
+`assistant_message_id` fold-in; an input the CLI acts on meanwhile
+(each announced by `system/init`) starts a turn of its own
+([turn-lifecycle.md §Rounds and turns](../architecture/turn-lifecycle.md#rounds-and-turns)).
+Backed by fixtures
 [`local_agent_outlives.ndjson`](fixtures/claude/local_agent_outlives.ndjson)
 and
 [`local_agent_user_input_during_wait.ndjson`](fixtures/claude/local_agent_user_input_during_wait.ndjson).
@@ -401,7 +404,12 @@ a convenience string only.
 
 ## `system/init`
 
-**Fires**: once at session start, and again on model switch.
+**Fires**: before each model invocation the CLI starts on new input: a
+turn for a stdin message or command, a wake on a background-task
+notification, and each new input it acts on while it withholds `result`
+behind a running `local_agent` (§`result`). A continuation of the same
+invocation after a parent `end_turn` (a ToolSearch or ExitPlanMode
+resume) has none. Also on model switch.
 
 ```json
 {"type": "system", "subtype": "init",
@@ -420,7 +428,9 @@ a convenience string only.
  "capabilities": ["interrupt_receipt_v1", "msg_lifecycle_v1"]}
 ```
 
-Emits `EventInit`. Parser extracts model id for usage pricing, and the
+Emits `EventInit`; what it opens in AO is
+[turn-lifecycle.md §Turns the provider starts](../architecture/turn-lifecycle.md#turns-the-provider-starts).
+Parser extracts model id for usage pricing, and the
 optional fast-mode pair (same shape and same version caveat as on
 `result`, described in
 [§fast_mode_state](#fast_mode_state--fast_mode_disabled_reason-verified-21219)).
@@ -3313,8 +3323,11 @@ verbatim.
 ### Delta types
 - `text_delta: {text}`: ✅ handled
 - `thinking_delta: {thinking}`: ✅ handled
-- `signature_delta: {signature}`: ❌ unhandled (thinking signature; flows
-  even when the `thinking` text is redacted, per §Extended thinking)
+- `signature_delta: {signature}`: ✅ read for its tag, never emitted. It
+  arrives after a thinking block's `thinking_delta`s and before its
+  `content_block_stop`, and flows even when the `thinking` text is
+  redacted. The parser keeps it until the block stops
+  (§The signature tag).
 - `input_json_delta: {partial_json}`: ❌ unhandled (fine-grained tool streaming)
 
 ### `message_stop` vs `result`
@@ -3457,8 +3470,8 @@ With the flag set:
 
 - `assistant.message.content[].thinking` is populated.
 - `stream_event` emits `thinking_delta` deltas alongside the existing
-  `signature_delta`, already wired to `EventThinking` by
-  `parse_stream.go`.
+  `signature_delta`. `parse_stream.go` maps `thinking_delta` to
+  `EventThinking`.
 - The `signature` is identical regardless of display mode; it carries
   the encrypted full thinking and is required for multi-turn
   continuity. Switching `display` between turns is supported.
@@ -3484,6 +3497,55 @@ the wire surfaces, not what you pay.
 `--thinking-display omitted` keeps the redacted shape. Setting
 `--thinking enabled|adaptive` without a display flag does NOT flip
 display; the display knob is the load-bearing one.
+
+### The signature tag: narration blocks
+
+A thinking block's `signature` is base64 of a protobuf message. Field 2
+of that message holds a message whose field 1 is a header, and the
+header's field 8 is a short UTF-8 tag. Every other field is opaque.
+Observed tags:
+
+| Tag | Block |
+|---|---|
+| `thinking` | Reasoning. |
+| `narration` | Prose the model wrote for the user: a status note or a summary of what it found. |
+
+The tag is present on 2.1.302 and 2.1.321. A 2.1.132 signature
+(`opus47_thinking_summarized.ndjson`) carries none. A reader keeps the
+last occurrence of each field, as a protobuf reader does for a
+non-repeated field.
+
+The tag is known only once the signature has arrived, which is at the
+block's end on every path:
+
+| Path | Where the signature is |
+|---|---|
+| Streamed block | `signature_delta`, after the last `thinking_delta`. `content_block_start` carries `signature: ""`. |
+| `assistant` envelope (a never-streamed message, every subagent block) | `content[].signature` |
+| Session JSONL and `transcript_mirror` rows | `message.content[].signature` |
+
+`sessionimport.ThinkingTag` decodes it. A signature that is empty, not
+base64, not a well-formed message, over 256 KiB, or without the tag is
+untagged, and the block is handled exactly as before.
+
+For a `narration` block the adapter sets `provider.MetaNarrationKey`
+(`"narration": true`) on the event that settles the block:
+
+- the streamed block's `EventContentBlockStop`;
+- the recovered block's content-bearing `EventContentBlockStop`;
+- the transcript reader's `EventThinking`, which the mirror forwards
+  with its snapshot marker.
+
+Triage and the import writer store that block as an `assistant_text` row
+carrying `"narration": true` in its meta, under the thinking item id and
+payload id it would otherwise have had. A streamed block is a `thinking`
+row until its stop. A block that never stops (interrupt, error, a
+boundary settle) stays one. Compaction reasoning is never converted.
+
+The parser holds a streamed block's signature from its first
+`signature_delta` to its stop, and releases it at the scope's
+`message_stop`, the next block start on the same index, the turn
+boundary and session close.
 
 ### Empirical (same prompt, claude-opus-4-7)
 

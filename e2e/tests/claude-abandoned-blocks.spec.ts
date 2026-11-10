@@ -300,10 +300,10 @@ async function settledGeometry(page: Page, itemId: string, kind: Case): Promise<
 async function expectMarked(timeline: Locator, kind: Case, theme: Theme): Promise<void> {
   const want = EXPECTED[kind];
   if (kind === 'thinking') {
-    // A thinking row is an activity run of its own, collapsed by default
-    // after a reload; the record must stand outside it, so the run holds
-    // the one row and expanding it shows the marked reasoning.
-    await expect(timeline.getByTestId('activity-run-header-counts')).toHaveText(/^1 thinking$/);
+    // The record lands right after the discarded reasoning, so it joins
+    // that activity run like any notification; the run is collapsed by
+    // default after a reload and expanding it shows both.
+    await expect(timeline.getByTestId('activity-run-header-counts')).toHaveText(/^1 notification, 1 thinking$/);
     await expandThinkingRun(timeline);
   }
   const discarded = timeline.locator('[data-item-id][data-discarded="true"]');
@@ -443,6 +443,51 @@ for (const theme of ['light', 'dark'] as const) {
     });
   }
 }
+
+// Claude retries after discarding reasoning, so the retry's reasoning and
+// tool calls follow the record. The record joins the run of the reasoning it
+// names and the retry continues that run, on the store's pages and in the
+// pane alike. When the two disagreed, the pane's stub refresh asked for
+// members the store refused (`activity_run_stale`), reloaded its window and
+// asked again on every 200ms refresh cycle while the thread was open; every
+// reload made the timeline pin content growth instead of gliding it.
+test('a cold load holds discarded reasoning, its record and the retry as one run', async ({ harness, page }) => {
+  const RECORD = 'notification:1:abandoned:msg_cut_retry';
+  await harness.rpc('HarnessSeed', {
+    projects: [{ name: 'abandoned-retry-run', repo: {}, threads: [{ title: 'Reasoning retried', provider: 'claude', turns: [
+      { userText: 'Earlier question', items: [{ kind: 'assistant_text', summary: 'Earlier answer.' }] },
+      { userText: 'Do the thing', items: [
+        { id: 'cut-retry-thinking', kind: 'thinking', summary: THINKING, meta: { api_message_id: 'msg_cut_retry', block_index: 0 } },
+        {
+          id: RECORD, kind: 'notification', role: 'system', toolName: 'abandoned_blocks',
+          summary: 'Discarded by Claude after a stalled response',
+          meta: { kind: 'abandoned_blocks', title: 'Discarded by Claude after a stalled response', api_message_id: 'msg_cut_retry', from_block_index: 0, item_ids: ['cut-retry-thinking'] },
+        },
+        { kind: 'thinking', summary: 'Retrying: list the files, then read the config.', meta: { api_message_id: 'msg_retry_run', block_index: 0 } },
+        { kind: 'tool_call', toolName: 'Bash', summary: 'ls' },
+        { kind: 'assistant_text', summary: 'Retried and done.' },
+      ] },
+    ] }] }],
+  });
+
+  let staleRefusals = 0;
+  page.on('websocket', (ws) => {
+    ws.on('framereceived', (frame) => {
+      if (typeof frame.payload === 'string' && frame.payload.includes('"activity_run_stale"')) staleRefusals += 1;
+    });
+  });
+  await harness.open(page);
+  const timeline = page.getByTestId('message-timeline-scroll');
+  await page.getByTestId('thread-row').getByText('Reasoning retried', { exact: true }).click();
+  await expect(timeline.getByText('Retried and done.')).toBeVisible();
+
+  await expect(timeline.getByTestId('activity-run')).toHaveCount(1);
+  await expect(timeline.getByTestId('activity-run-header-counts')).toHaveText(/^1 Bash, 1 notification, 2 thinking$/);
+  // Several of the stub refresh's 200ms cycles: the disagreement was
+  // refused on every one.
+  await page.waitForTimeout(1500);
+  expect(staleRefusals, 'activity-run member reads the store refused').toBe(0);
+});
 
 // The dim is solved for the theme on screen, not fixed for the default
 // palette: under Gruvbox dark the default's strength would put text-row prose

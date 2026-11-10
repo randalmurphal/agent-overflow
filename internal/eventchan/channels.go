@@ -130,9 +130,11 @@ const (
 )
 
 // pulls:* — the Pull requests page's list of every forge project's open
-// PRs, one frame per change of the list pump's snapshot.
+// PRs, one frame per change of the list pump's snapshot, and the sidebar
+// badge's needs-you count, one frame per write of the list's stored copy.
 const (
 	PullsUpdated Channel = "pulls:updated"
+	PullsBadge   Channel = "pulls:badge"
 )
 
 // ci:* — a pipeline pump's pipeline, keyed by repository and pipeline id

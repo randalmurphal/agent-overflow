@@ -299,7 +299,27 @@ func setupE2EAppOn(t *testing.T, dbPath, settingsDir string) (*App, *capturedEve
 		}
 	})
 
+	joinThreadRequestWorkAtCleanup(t, app)
+
 	return app, bus
+}
+
+// joinThreadRequestWorkAtCleanup ends the App's thread request work when
+// the test ends, as Shutdown does. A settlement or a wake delivery runs on
+// its own goroutine and can start a session. One that outlived the test
+// would read the settings file after its directory is removed, where the
+// provider binaries are the bare defaults on PATH.
+//
+// Call it after the fixture's other cleanups are registered, so it runs
+// before the store closes and before sessions are torn down.
+func joinThreadRequestWorkAtCleanup(t *testing.T, app *App) {
+	t.Helper()
+	t.Cleanup(func() {
+		if app.appCancel != nil {
+			app.appCancel()
+		}
+		app.threadRequestsWG.Close()
+	})
 }
 
 // e2eThread builds a thread record suitable for E2E tests. Caller must insert

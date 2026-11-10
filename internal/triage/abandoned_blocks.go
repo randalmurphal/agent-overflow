@@ -31,8 +31,7 @@ import (
 
 // abandonedBlocksNotificationKind is the `meta.kind` / tool_name of the
 // notification row recording an abandonment. The frontend dispatches its
-// renderer on it (TimelineLeaf.svelte); the store keeps it out of activity
-// runs (store.AbandonedBlocksNotificationKind).
+// renderer on it (TimelineLeaf.svelte).
 const abandonedBlocksNotificationKind = store.AbandonedBlocksNotificationKind
 
 // abandonedBlocksSummary is the row's text. The renderer adds what

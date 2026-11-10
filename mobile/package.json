@@ -16,7 +16,7 @@
     "@capacitor/core": "8.5.3"
   },
   "devDependencies": {
-    "@capacitor/cli": "8.5.3",
+    "@capacitor/cli": "8.6.0",
     "typescript": "6.0.2"
   }
 }

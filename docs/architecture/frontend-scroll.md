@@ -1076,6 +1076,15 @@ teleport to a slightly unnecessary glide.
 the one input that turns growth back into an instant pin, which is the
 correct semantic for it.
 
+### Motion that is not a scroll write
+
+A row promotion (a narration block leaving its activity run, see
+[activity-runs.md](activity-runs.md#a-narration-block-leaves-the-run-on-the-spring))
+changes two box heights per frame. It steps them with `SpringValue`, which
+shares `SpringVelocity` with `SpringMotion`, so the boxes and the follow that
+chases them move on one velocity law. The controller sees ordinary content
+growth and needs no promotion-specific input.
+
 ### Liveness is a separate question
 
 `lastLiveContentAt` still exists, and `ThreadPane` still stamps it

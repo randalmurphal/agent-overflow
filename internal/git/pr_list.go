@@ -2,20 +2,18 @@ package git
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"net/url"
-	"strconv"
 	"strings"
 	"time"
-
-	"agent-overflow/internal/forgeapi"
 )
 
-// PRListRow is one open PR/MR of a project as the forge's list read
-// answers it: what a list row and its attention state need, without the
-// per-PR reads the review pane makes. A field the forge's list does not
-// carry is zero, as each field says.
+// PRListRow is one open PR/MR of a project as the project read answers
+// it (docs/architecture/forge-transport.md#project-lists): what a list
+// row and its attention state need, read with a fixed set of requests per
+// project and never one per row. A field the forge does not carry is
+// zero, as each field says; a field a detail request fills is nil or ""
+// when that request failed or does not cover the row.
 type PRListRow struct {
 	Ref PRReference `json:"ref"`
 	// NodeID is the GitHub GraphQL node id (ReadPRStates addresses a PR
@@ -36,8 +34,9 @@ type PRListRow struct {
 	// Comments counts the human comments: GitHub totalCommentsCount
 	// (conversation and review comments), GitLab user_notes_count.
 	Comments int `json:"comments"`
-	// Commits and LastCommitAt (RFC 3339) are GitHub's; GitLab's list
-	// carries neither, so they are 0 and "".
+	// Commits is GitHub's commit count, 0 on GitLab. LastCommitAt (RFC
+	// 3339) is the head commit's time: GitHub's list carries it, GitLab's
+	// activity request fills it for the rows it covers.
 	Commits      int    `json:"commits"`
 	LastCommitAt string `json:"lastCommitAt"`
 	// ViewerIsAuthor is the login opened the PR. ViewerIsReviewer is a
@@ -52,6 +51,20 @@ type PRListRow struct {
 	// ViewerReview is the login's latest review (GitHub); zero on GitLab
 	// and when the login has not reviewed.
 	ViewerReview PRListReview `json:"viewerReview"`
+	// ViewerReviewState is the login's own review in GitLab's reviewer
+	// vocabulary (unreviewed, review_started, reviewed, approved,
+	// requested_changes, unapproved). GitLab: the reviewer request's
+	// reviewState, "" when the login is not a reviewer or the request
+	// failed. GitHub: unreviewed while a review is requested from the
+	// login, else its standing opinion (approved, requested_changes) or
+	// reviewed for a latest review without one, "" when it never reviewed.
+	ViewerReviewState string `json:"viewerReviewState,omitempty"`
+	// ViewerActivityAt (RFC 3339) is the login's latest activity on the
+	// PR: GitHub its latest review; GitLab its latest comment or approval
+	// in the window of its events read (at most the last
+	// gitlabActivityDays), "" when there is none or the events could not
+	// be read.
+	ViewerActivityAt string `json:"viewerActivityAt,omitempty"`
 	// AuthorActivityAt (RFC 3339) is the author's latest conversation
 	// comment or submitted review, a review thread reply included, among
 	// the PR's last githubListActivityDepth of each (GitHub); "" on GitLab
@@ -74,6 +87,56 @@ type PRListRow struct {
 	// "pending" or "" with no checks. GitLab's list carries no pipeline,
 	// so it is "" there.
 	ChecksState string `json:"checksState"`
+
+	// The detail fields: the app projects them onto its wire row
+	// (approvals, unresolved, CI), so they are not encoded here.
+	// AuthorReplies counts the author's comments and reviews after
+	// ViewerActivityAt among the last githubListActivityDepth of each
+	// (GitHub; 0 on GitLab). ApprovalsGiven and ApprovalsRequired are the
+	// approvals standing and the approvals the base or project requires;
+	// Unresolved the resolvable threads not resolved (GitHub: nil for a
+	// PR with more than 100 threads); PipelineStatus the head pipeline's
+	// normalized CI status ("" with none). ProjectID is GitLab's numeric
+	// project id, which the viewer's events name. ViewerActivityFloor
+	// (GitLab, RFC 3339) is the events window's floor, set when the events
+	// were read and ViewerActivityAt is empty or older than it: the
+	// login's latest activity on the PR may be any time up to it, since a
+	// feed cut at its page cap hides what is older than its oldest event.
+	AuthorReplies       int    `json:"-"`
+	ApprovalsGiven      *int   `json:"-"`
+	ApprovalsRequired   *int   `json:"-"`
+	Unresolved          *int   `json:"-"`
+	PipelineStatus      string `json:"-"`
+	ProjectID           int64  `json:"-"`
+	ViewerActivityFloor string `json:"-"`
+}
+
+// PRListDetailError is a project read whose list landed while some of
+// its detail requests failed. ListProjectPRs returns it beside the rows,
+// whose fields those requests fill read as unknown; any other error
+// fails the read as a whole and comes with no rows.
+type PRListDetailError struct {
+	Errs []error
+}
+
+func (e *PRListDetailError) Error() string {
+	return errors.Join(e.Errs...).Error()
+}
+
+func (e *PRListDetailError) Unwrap() []error { return e.Errs }
+
+// detailError is the PRListDetailError of errs, nil when none failed.
+func detailError(errs ...error) error {
+	var failed []error
+	for _, err := range errs {
+		if err != nil {
+			failed = append(failed, err)
+		}
+	}
+	if len(failed) == 0 {
+		return nil
+	}
+	return &PRListDetailError{Errs: failed}
 }
 
 // PRListAuthor is a PR's author: the login and, when the forge reports
@@ -96,8 +159,11 @@ type PRListReview struct {
 // the same count, most recently updated first.
 const prListMaxPages = 10
 
-// ListProjectPRs reads the open PRs/MRs of repo, one list read per
-// project (docs/architecture/forge-transport.md#project-lists).
+// ListProjectPRs reads the open PRs/MRs of repo with the forge's fixed
+// request set, its requests concurrent
+// (docs/architecture/forge-transport.md#project-lists). It fails as a
+// whole only when the list fails; a failed detail request answers the
+// rows with a *PRListDetailError.
 func (c *Core) ListProjectPRs(ctx context.Context, repo RepoReference) ([]PRListRow, error) {
 	if err := repo.Validate(); err != nil {
 		return nil, err
@@ -116,12 +182,14 @@ func (nullForge) ListProjectPRs(context.Context, RepoReference) ([]PRListRow, er
 const githubListActivityDepth = "10"
 
 // githubPullsSearchQuery lists a repository's open pull requests through
-// search, the one connection that reads reviewDecision, review requests
-// and the rollup state of every PR in one request. The viewer's own
+// search, the one connection that reads every field a row shows for 100
+// PRs in one request, so no row needs a read of its own. The viewer's own
 // review comes from viewerLatestReview and its standing opinion from
 // latestOpinionatedReviews, since the login is not known before the
 // answer; the author's latest replies from the last comments and reviews
-// (a reply in a review thread is a review of its own).
+// (a reply in a review thread is a review of its own). The required
+// approvals come from the base's protection and rulesets as the detail
+// read takes them (refUpdateRule, readable without admin, and rules).
 const githubPullsSearchQuery = `query PullsSearch($query: String!, $after: String) {
   viewer { login }
   search(type: ISSUE, query: $query, first: 100, after: $after) {
@@ -132,8 +200,10 @@ const githubPullsSearchQuery = `query PullsSearch($query: String!, $after: Strin
         ` + githubActor + `
         totalCommentsCount reviewDecision mergeStateStatus mergeable viewerDidAuthor
         reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } } } }
-        latestOpinionatedReviews(first: 100) { nodes { viewerDidAuthor } }
+        latestOpinionatedReviews(first: 100) { nodes { state viewerDidAuthor } }
         viewerLatestReview { state submittedAt }
+        reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { isResolved } }
+        baseRef { refUpdateRule { requiredApprovingReviewCount } rules(first: 100) { nodes { type parameters { __typename ... on PullRequestParameters { requiredApprovingReviewCount } } } } }
         commits(last: 1) { totalCount nodes { commit { committedDate statusCheckRollup { state } } } }
         comments(last: ` + githubListActivityDepth + `) { nodes { author { login } createdAt } }
         reviews(last: ` + githubListActivityDepth + `) { nodes { author { login } submittedAt } }
@@ -169,11 +239,21 @@ type githubSearchPullRaw struct {
 	} `json:"reviewRequests"`
 	LatestOpinionatedReviews struct {
 		Nodes []struct {
-			ViewerDidAuthor bool `json:"viewerDidAuthor"`
+			State           string `json:"state"`
+			ViewerDidAuthor bool   `json:"viewerDidAuthor"`
 		} `json:"nodes"`
 	} `json:"latestOpinionatedReviews"`
 	ViewerLatestReview *PRListReview `json:"viewerLatestReview"`
-	Commits            struct {
+	ReviewThreads      struct {
+		PageInfo struct {
+			HasNextPage bool `json:"hasNextPage"`
+		} `json:"pageInfo"`
+		Nodes []struct {
+			IsResolved bool `json:"isResolved"`
+		} `json:"nodes"`
+	} `json:"reviewThreads"`
+	BaseRef *githubBaseRefRaw `json:"baseRef"`
+	Commits struct {
 		TotalCount int `json:"totalCount"`
 		Nodes      []struct {
 			Commit struct {
@@ -283,31 +363,91 @@ func githubPRListRow(repo RepoReference, node githubSearchPullRaw, viewer string
 			row.ChecksState = githubRollupState(commit.StatusCheckRollup.State)
 		}
 	}
+	row.PipelineStatus = githubChecksCIStatus(row.ChecksState)
 	for _, request := range node.ReviewRequests.Nodes {
 		if viewer != "" && request.RequestedReviewer != nil && strings.EqualFold(request.RequestedReviewer.Login, viewer) {
 			row.ReviewRequested = true
 		}
 	}
 	row.ViewerIsReviewer = row.ReviewRequested
+	given, opinion := 0, ""
 	for _, review := range node.LatestOpinionatedReviews.Nodes {
 		row.ViewerIsReviewer = row.ViewerIsReviewer || review.ViewerDidAuthor
+		if strings.EqualFold(review.State, "APPROVED") {
+			given++
+		}
+		if review.ViewerDidAuthor {
+			opinion = strings.ToUpper(review.State)
+		}
+	}
+	required := githubMergeInputs{pull: &githubPullRaw{BaseRef: node.BaseRef}}.baseRules().approvals
+	row.ApprovalsGiven, row.ApprovalsRequired = &given, &required
+	// Past the first 100 threads the count would be a guess: unknown.
+	if !node.ReviewThreads.PageInfo.HasNextPage {
+		unresolved := 0
+		for _, thread := range node.ReviewThreads.Nodes {
+			if !thread.IsResolved {
+				unresolved++
+			}
+		}
+		row.Unresolved = &unresolved
+	}
+	row.ViewerActivityAt = row.ViewerReview.SubmittedAt
+	switch {
+	case row.ReviewRequested:
+		// A review requested again after the login reviewed is its turn.
+		row.ViewerReviewState = "unreviewed"
+	case opinion == "APPROVED":
+		row.ViewerReviewState = "approved"
+	case opinion == "CHANGES_REQUESTED":
+		row.ViewerReviewState = "requested_changes"
+	case row.ViewerReview.SubmittedAt != "":
+		row.ViewerReviewState = "reviewed"
 	}
 	byAuthor := func(author *struct {
 		Login string `json:"login"`
 	}) bool {
 		return author != nil && author.Login != "" && strings.EqualFold(author.Login, node.Author.Login)
 	}
+	authorActed := func(at string) {
+		row.AuthorActivityAt = laterRFC3339(row.AuthorActivityAt, at)
+		if row.ViewerActivityAt != "" && rfc3339After(at, row.ViewerActivityAt) {
+			row.AuthorReplies++
+		}
+	}
 	for _, comment := range node.Comments.Nodes {
 		if byAuthor(comment.Author) {
-			row.AuthorActivityAt = laterRFC3339(row.AuthorActivityAt, comment.CreatedAt)
+			authorActed(comment.CreatedAt)
 		}
 	}
 	for _, review := range node.Reviews.Nodes {
 		if byAuthor(review.Author) {
-			row.AuthorActivityAt = laterRFC3339(row.AuthorActivityAt, review.SubmittedAt)
+			authorActed(review.SubmittedAt)
 		}
 	}
 	return row
+}
+
+// githubChecksCIStatus is the rollup state (githubRollupState) in the
+// normalized CI vocabulary.
+func githubChecksCIStatus(checks string) string {
+	switch checks {
+	case "success":
+		return CIStatusSuccess
+	case "failure":
+		return CIStatusFailed
+	case "pending":
+		return CIStatusPending
+	}
+	return ""
+}
+
+// rfc3339After reports whether a is a time after b; an unreadable time is
+// not after anything.
+func rfc3339After(a, b string) bool {
+	at, errA := time.Parse(time.RFC3339, a)
+	bt, errB := time.Parse(time.RFC3339, b)
+	return errA == nil && errB == nil && at.After(bt)
 }
 
 // laterRFC3339 is the later of two RFC 3339 times; an unreadable or empty
@@ -333,112 +473,6 @@ func githubRollupState(state string) string {
 		return "failure"
 	case "PENDING", "EXPECTED":
 		return "pending"
-	default:
-		return ""
-	}
-}
-
-type gitlabListMRRaw struct {
-	IID                         int               `json:"iid"`
-	ProjectID                   int64             `json:"project_id"`
-	SourceProjectID             int64             `json:"source_project_id"`
-	Title                       string            `json:"title"`
-	WebURL                      string            `json:"web_url"`
-	Draft                       bool              `json:"draft"`
-	WorkInProgress              bool              `json:"work_in_progress"`
-	Author                      gitlabAuthorRaw   `json:"author"`
-	Reviewers                   []gitlabAuthorRaw `json:"reviewers"`
-	CreatedAt                   string            `json:"created_at"`
-	UpdatedAt                   string            `json:"updated_at"`
-	SHA                         string            `json:"sha"`
-	SourceBranch                string            `json:"source_branch"`
-	TargetBranch                string            `json:"target_branch"`
-	UserNotesCount              int               `json:"user_notes_count"`
-	DetailedMergeStatus         string            `json:"detailed_merge_status"`
-	HasConflicts                bool              `json:"has_conflicts"`
-	BlockingDiscussionsResolved bool              `json:"blocking_discussions_resolved"`
-}
-
-// ListProjectPRs reads the project's open merge requests, most recently
-// updated first, 100 per page, at most prListMaxPages pages. The viewer
-// is the login's cached username (viewerLogin).
-func (f *gitlabForge) ListProjectPRs(ctx context.Context, repo RepoReference) ([]PRListRow, error) {
-	client, err := f.core.gitlabAPI(repo.Host)
-	if err != nil {
-		return nil, err
-	}
-	request := forgeapi.Request{
-		Path: gitlabProjectPath(repo.Project()) + "/merge_requests",
-		Query: url.Values{
-			"state": {"opened"}, "per_page": {strconv.Itoa(gitlabPageSize)},
-			"order_by": {"updated_at"}, "sort": {"desc"},
-		},
-	}
-	var raw []gitlabListMRRaw
-	page, pages := 1, 0
-	err = client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
-		var pageMRs []gitlabListMRRaw
-		if err := json.Unmarshal(resp.Body, &pageMRs); err != nil {
-			return false, fmt.Errorf("GitLab merge requests of %s: decode response: %w", repo.Project(), err)
-		}
-		raw = append(raw, pageMRs...)
-		pages++
-		return len(pageMRs) == gitlabPageSize && pages < prListMaxPages && advanceGitLabPage(resp, &page), nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	// Every attention state hangs on knowing who the viewer is, so an
-	// unknown login fails this project's read for the tick instead of
-	// listing every merge request as somebody else's.
-	viewer, err := f.readViewerLogin(ctx, client, repo.Host)
-	if err != nil {
-		return nil, fmt.Errorf("gitlab: list %s: %w", repo.Project(), err)
-	}
-	rows := make([]PRListRow, 0, len(raw))
-	for _, mr := range raw {
-		rows = append(rows, gitlabPRListRow(repo, mr, viewer))
-	}
-	return rows, nil
-}
-
-func gitlabPRListRow(repo RepoReference, mr gitlabListMRRaw, viewer string) PRListRow {
-	row := PRListRow{
-		Ref:                PRReference{Forge: repo.Forge, Host: repo.Host, Namespace: repo.Namespace, Repo: repo.Repo, Number: mr.IID},
-		URL:                mr.WebURL,
-		Title:              mr.Title,
-		Draft:              mr.Draft || mr.WorkInProgress,
-		Author:             PRListAuthor{Login: mr.Author.Username, Name: mr.Author.Name},
-		CreatedAt:          mr.CreatedAt,
-		UpdatedAt:          mr.UpdatedAt,
-		HeadSHA:            mr.SHA,
-		HeadRefName:        mr.SourceBranch,
-		BaseRefName:        mr.TargetBranch,
-		CrossRepository:    mr.SourceProjectID != mr.ProjectID,
-		Comments:           mr.UserNotesCount,
-		ViewerIsAuthor:     viewer != "" && strings.EqualFold(viewer, mr.Author.Username),
-		ReviewDecision:     gitlabListReviewDecision(mr.DetailedMergeStatus),
-		MergeStatus:        mr.DetailedMergeStatus,
-		Conflicts:          mr.HasConflicts,
-		UnresolvedBlocking: !mr.BlockingDiscussionsResolved,
-	}
-	for _, reviewer := range mr.Reviewers {
-		if viewer != "" && strings.EqualFold(viewer, reviewer.Username) {
-			row.ViewerIsReviewer = true
-		}
-	}
-	row.ReviewRequested = row.ViewerIsReviewer
-	return row
-}
-
-// gitlabListReviewDecision reads the review half of
-// detailed_merge_status in GitHub's reviewDecision vocabulary.
-func gitlabListReviewDecision(status string) string {
-	switch status {
-	case "not_approved":
-		return "REVIEW_REQUIRED"
-	case "requested_changes":
-		return "CHANGES_REQUESTED"
 	default:
 		return ""
 	}

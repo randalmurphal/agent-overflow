@@ -176,6 +176,22 @@ type pendingSend struct {
 	// the message reached the model. It decides what the send's terminal
 	// lifecycle state means (handleCommandLifecycle).
 	Started bool
+	// StartedTurn is the turn that was open when `started` arrived, when
+	// one was: the turn the model read the message in. It answers for a
+	// confirmation that arrives after that turn closed.
+	StartedTurn    int
+	StartedTurnSet bool
+	// StartedAtClaim records whether `started` had arrived when a turn
+	// start took this send: the provider opened that turn for it. A turn
+	// that took it without one (a provider-started wake, or a provider with
+	// no lifecycle frames) is weaker evidence of where it is answered.
+	StartedAtClaim bool
+	// AnswerTurn is the turn the consumed hook was told answers this send.
+	// A retried confirmation reports it again, with whatever send ids the
+	// row carries by then. Unset while the send is held in boundarySends
+	// for the turn that opens next.
+	AnswerTurn    int
+	AnswerTurnSet bool
 
 	Confirmation *userMessageConfirmation
 }
@@ -348,6 +364,14 @@ func (r *Router) HasPendingSendForThread(threadID string) bool {
 	return len(r.pendingSendsLocked(threadID)) > 0
 }
 
+// HasPendingSend reports whether aoItemID's send is registered on threadID.
+// A session teardown clears the registry, so a send registered against a
+// session that was replaced before its provider write registers again.
+func (r *Router) HasPendingSend(threadID, aoItemID string) bool {
+	_, ok := r.peekPendingSendByItemID(threadID, aoItemID)
+	return ok
+}
+
 // peekPendingSendHead returns the FIFO head for threadID without
 // popping it. Used by resolveTurnIndexOnStart to recover the
 // dispatcher-stamped TurnIndex when the wire init carries no turn
@@ -376,10 +400,57 @@ func (r *Router) claimTurnOpeningPendingSend(threadID string) (int, bool) {
 	for i := range queue {
 		if queue[i].canOpenTurn() {
 			queue[i].OpenedTurn = true
+			queue[i].StartedAtClaim = queue[i].Started
 			return queue[i].TurnIndex, true
 		}
 	}
 	return 0, false
+}
+
+// PendingSendState is what the registry holds about a send the provider
+// has not confirmed consuming.
+type PendingSendState int
+
+const (
+	// PendingSendNone: no unconsumed entry. The provider consumed the send
+	// (the consumed hook has run) or the entry was dropped.
+	PendingSendNone PendingSendState = iota
+	// PendingSendWaiting: the provider has the send and no turn has taken
+	// it, or consumed it at a turn boundary and the turn that answers has
+	// not opened. A turn that ends now did not read it.
+	PendingSendWaiting
+	// PendingSendClaimed: a turn start took the send as the returned turn.
+	PendingSendClaimed
+)
+
+// PendingSendTurn reports where the send whose row is aoItemID stands, and
+// for a claimed one the turn that took it. It waits out a confirmation in
+// progress, and a send consumed at a turn boundary stays waiting until the
+// consumed hook has been told its turn, so PendingSendNone after a
+// consumption is reported only once the hook has run.
+func (r *Router) PendingSendTurn(threadID, aoItemID string) (int, PendingSendState) {
+	anchor := r.flushAnchor(threadID)
+	anchor.Lock()
+	defer anchor.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, entry := range r.pendingSendsLocked(threadID) {
+		if entry.AOItemID != aoItemID || entry.EchoConsumed {
+			continue
+		}
+		if entry.OpenedTurn {
+			return entry.TurnIndex, PendingSendClaimed
+		}
+		return 0, PendingSendWaiting
+	}
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		for _, send := range st.boundarySends {
+			if send.aoItemID == aoItemID {
+				return 0, PendingSendWaiting
+			}
+		}
+	}
+	return 0, PendingSendNone
 }
 
 // turnOpeningPendingSend reads the entry claimTurnOpeningPendingSend would
@@ -414,6 +485,9 @@ func (r *Router) markPendingSendStarted(threadID, providerItemID string) {
 	for i := range queue {
 		if queue[i].ExpectedProviderItemID == providerItemID {
 			queue[i].Started = true
+			if st := r.threadStateIfPresent(threadID); st != nil && st.openTurnSet && !queue[i].StartedTurnSet {
+				queue[i].StartedTurn, queue[i].StartedTurnSet = st.openTurn, true
+			}
 			return
 		}
 	}

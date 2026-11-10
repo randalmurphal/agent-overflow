@@ -111,6 +111,9 @@ func (r *Router) settleCompactionReasoning(evt provider.ProviderEvent) error {
 		statusCompleted,
 		evt.Content,
 		evt.ContentPresent,
+		// The summarizer's reasoning is never prose for the user, whatever
+		// its signature says.
+		false,
 		evt.Timestamp,
 	)
 	return nil

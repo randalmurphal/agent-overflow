@@ -131,9 +131,13 @@ var isolatedHTTPClient = &http.Client{Transport: isolatedProviderTransport{}}
 // login; OpenAI live transcription is openaifake's.
 type isolatedProviderTransport struct{}
 
-func (isolatedProviderTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+func (isolatedProviderTransport) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 	if req.Body != nil {
-		defer req.Body.Close()
+		defer func() {
+			if closeErr := req.Body.Close(); closeErr != nil && err == nil {
+				resp, err = nil, fmt.Errorf("isolated boot: close request body: %w", closeErr)
+			}
+		}()
 	}
 	if req.Method == http.MethodPost && req.URL.String() == codex.TranscribeURL {
 		return fakeTranscription(req)
@@ -144,7 +148,7 @@ func (isolatedProviderTransport) RoundTrip(req *http.Request) (*http.Response, e
 	return nil, errIsolatedNetwork
 }
 
-func fakeTranscription(req *http.Request) (*http.Response, error) {
+func fakeTranscription(req *http.Request) (resp *http.Response, err error) {
 	if req.Header.Get("Authorization") == "Bearer refused" {
 		return fakeTranscriptionResponse(req, http.StatusUnauthorized, `{"detail":"token expired"}`), nil
 	}
@@ -155,7 +159,11 @@ func fakeTranscription(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, fmt.Errorf("isolated transcription: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil && err == nil {
+			resp, err = nil, fmt.Errorf("isolated transcription: close recording: %w", closeErr)
+		}
+	}()
 	body, err := json.Marshal(map[string]string{
 		"text": fmt.Sprintf("Heard %d bytes of %s", header.Size, header.Header.Get("Content-Type")),
 	})
