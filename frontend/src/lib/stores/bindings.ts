@@ -95,6 +95,7 @@ export {
   GetConversationMutationState,
   GetThreadLiveState,
   ListThreadLiveActivity,
+  ListUnsettledFlushes,
   ListPendingInteractiveRequests,
   RespondToApproval,
   RespondToUserInput,

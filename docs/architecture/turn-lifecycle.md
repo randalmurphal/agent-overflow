@@ -1036,25 +1036,33 @@ pane has no timeline for the row to be in; its item-stream handler confirms
 on arrival, which is also what lets the sidebar's working indicator settle.
 
 **Release without a row.** A thread this client does not watch is sent no
-rows, so nothing above confirms its entries. Every `provider:sends_pending`
-frame carries `flushedThrough`, the newest `provider:queue_flushed` sequence
-when the backend read the answer. The answer and the sequence are read under
-the dispatch bookkeeping lock that `queue_flushed` is emitted under, so a
-frame that reads nothing pending settles every message the thread flushed up
-to that sequence. The backend publishes such a frame after every flush, also
-when the published answer did not change (`publishSendsPending`). The client
-marks each entry with the sequence of the frame that added it, or with
-`ThreadLiveState.flushedThrough` for an entry a live-state read added, and
-for a thread with no mounted pane releases the entries a settle covers
-(`releaseSettledFlushed`). A mounted pane keeps its entries until it renders
-the rows. A replay delivers the two channels in no fixed order, so a settle
-ahead of the flush frames it covers is kept until the flush stream reaches it
-(`eventsQueue.ts`). Sequences compare within one launch of one backend; a
-settle releases every marked entry of another launch. An entry with no mark
-stays, as does every entry of a backend that omits `flushedThrough`. A settle
-lost to a transport gap on the channel is not restated: its entries stay
-until the thread settles again or is opened, when the live-state read
-replaces them.
+rows, so nothing above confirms its entries. The backend confirms them
+instead (capability `flush-settlement.v1`): an answer that none of a thread's
+sends is pending, as of a `provider:queue_flushed` sequence, settles every
+message the thread flushed up to that sequence. The answer and the sequence
+are read under the dispatch bookkeeping lock that `queue_flushed` is emitted
+under. It has two legs:
+
+- Every `provider:sends_pending` frame carries the sequence as
+  `flushedThrough`, and the backend publishes a frame that reads nothing
+  pending after every flush, also when the published answer did not change
+  (`publishSendsPending`).
+- `ListUnsettledFlushes` restates it for the whole computer: the sequence,
+  and the threads that still hold a flush no frame has covered. The client
+  reads it on every connection edge and after a gap on
+  `provider:sends_pending`, which repairs a frame that was lost or that a
+  replay delivered ahead of the flush frames it covers. Its reply can
+  overtake flush frames emitted before it, so the newest answer per computer
+  is kept and late flush frames are checked against it.
+
+The client marks each entry with the backend, launch and sequence of the
+frame that added it, or with `ThreadLiveState.flushedThrough` for an entry a
+live-state read added, and releases the entries an answer covers
+(`flushSettlement.ts`, `settleFlushed`). Sequences compare within one launch
+of one backend; a current answer also releases the entries of an earlier
+launch. An entry with no mark is not covered. A mounted pane keeps its
+entries until it renders the rows, and the answer is applied to what it never
+rendered when it leaves the thread.
 
 **The preview is bounded.** `SendQueuePreview` renders the newest four
 pending messages and a count of the earlier ones. Its height is part of the

@@ -36,7 +36,7 @@ import { getTransportHelloFor } from './transportStatus.svelte';
  * returning it to the composer. A thread no pane is mounted on and this
  * client does not watch is sent no rows, so its entries leave when the
  * backend answers that none of the thread's sends is pending
- * (`releaseSettledFlushed`).
+ * (`settleFlushed`, flushSettlement.ts).
  *
  * There is deliberately NO memo of confirmations that arrive before their
  * Zone 2 entry exists. Such a memo has to outlive both authorities that
@@ -435,6 +435,7 @@ export function markItemsFlushed(
   const knownUserItemIds = new Set(
     flushedByThread.get(threadId).map((entry) => entry.userItemId),
   );
+  const markedFlushedItems = mark !== undefined && markHeldEntries(threadId, items, mark);
   const additions: FlushedItem[] = [];
   for (const item of items) {
     if (knownUserItemIds.has(item.userItemId)) continue;
@@ -449,9 +450,30 @@ export function markItemsFlushed(
     });
   }
   const appendedFlushedItems = appendZoneItems(flushedByThread, threadId, additions);
-  if (removedQueuedItems || appendedFlushedItems) {
+  if (removedQueuedItems || markedFlushedItems || appendedFlushedItems) {
     bumpQueueRevision(threadId);
   }
+}
+
+// An entry this frame names can already be held: a canonical echo that beat
+// the frame added it with no mark (`markQueuedItemConsumed`), and a retried
+// send is flushed again under the same id. The frame is the entry's flush,
+// so its position replaces whatever the entry carried.
+function markHeldEntries(
+  threadId: string,
+  items: readonly Pick<FlushedItem, 'userItemId'>[],
+  mark: FlushMark,
+): boolean {
+  const named = new Set(items.map((item) => item.userItemId));
+  let changed = false;
+  const next = flushedByThread.get(threadId).map((entry) => {
+    if (!named.has(entry.userItemId)) return entry;
+    if (entry.flushMark && sameFlushStream(entry.flushMark, mark) && entry.flushMark.sequence === mark.sequence) return entry;
+    changed = true;
+    return { ...entry, flushMark: mark };
+  });
+  if (changed) flushedByThread.set(threadId, next);
+  return changed;
 }
 
 /** A canonical echo also acknowledges a submission whose queue event was lost. */
@@ -489,21 +511,62 @@ export function confirmFlushedByUserItemId(
   if (changed) bumpQueueRevision(threadId);
 }
 
-/** Release the Zone 2 entries a backend answer settles: `settled` is the
+/** Apply a backend answer that settles a thread's flushes: `settled` is the
  * stream position at which the backend read that none of the thread's
  * sends is pending, so every message flushed up to it was echoed or taken
- * back. An entry from another launch or backend belongs to a stream that
- * no longer vouches for it. An unmarked entry stays.
+ * back. An entry with no mark is not covered.
  *
- * For a thread with no mounted pane only: a pane holds each entry until it
- * renders the row, and the answer can precede that render. */
-export function releaseSettledFlushed(threadId: string, settled: FlushMark): void {
+ * A thread with no mounted pane releases the entries the answer covers,
+ * and those of another launch or backend, whose stream no longer vouches
+ * for them. A mounted pane holds each entry until it renders the row, which
+ * the answer can precede, so `paneHolds` keeps the answer for
+ * `releaseFlushedLeftByPane`. */
+export function settleFlushed(threadId: string, settled: FlushMark, paneHolds: boolean): void {
   if (!threadId) return;
-  const changed = filterZoneItems(flushedByThread, threadId, EMPTY_FLUSHED, (entry) => {
-    const mark = entry.flushMark;
-    return !mark || (sameFlushStream(mark, settled) && mark.sequence > settled.sequence);
-  });
+  if (!paneHolds) {
+    releaseSettled(threadId, settled, true);
+    return;
+  }
+  const held = settledWhileHeld.get(threadId);
+  if (held && sameFlushStream(held, settled) && held.sequence >= settled.sequence) return;
+  if (flushedByThread.get(threadId).some((entry) => covered(entry, settled, false))) {
+    settledWhileHeld.set(threadId, settled);
+  }
+}
+
+/** The pane that held the thread left it. Entries it never rendered leave
+ * under the answer that settled them while it was mounted. That answer is
+ * no longer current, so it covers its own stream only. */
+export function releaseFlushedLeftByPane(threadId: string): void {
+  const settled = settledWhileHeld.get(threadId);
+  if (!settled) return;
+  settledWhileHeld.delete(threadId);
+  releaseSettled(threadId, settled, false);
+}
+
+// Per thread with a mounted pane, the newest answer that settled entries
+// the pane still held. One per mounted thread at most.
+const settledWhileHeld = new Map<string, FlushMark>();
+
+function covered(entry: FlushedItem, settled: FlushMark, current: boolean): boolean {
+  const mark = entry.flushMark;
+  if (!mark) return false;
+  if (!sameFlushStream(mark, settled)) return current;
+  return mark.sequence <= settled.sequence;
+}
+
+function releaseSettled(threadId: string, settled: FlushMark, current: boolean): void {
+  const changed = filterZoneItems(flushedByThread, threadId, EMPTY_FLUSHED, (entry) => !covered(entry, settled, current));
   if (changed) bumpQueueRevision(threadId);
+}
+
+/** Untracked. Every thread that holds a Zone 2 entry marked on `backend`. */
+export function threadsWithFlushedOn(backend: BackendKey): string[] {
+  const out: string[] = [];
+  for (const threadId of flushedByThread.keys()) {
+    if (flushedByThread.get(threadId).some((entry) => entry.flushMark?.backend === backend)) out.push(threadId);
+  }
+  return out;
 }
 
 /** Stamp a provider delivery ack onto its Zone 2 entry.
@@ -611,4 +674,5 @@ export function resetForTest(): void {
   flushedByThread.reset();
   registeringByThread.reset();
   queueRevisionByThread.clear();
+  settledWhileHeld.clear();
 }

@@ -13,6 +13,17 @@ describe('createKeyedSignalRegistry', () => {
     expect(registry.get('a')).toBe('idle');
   });
 
+  it('lists the keys that have a box, until they are dropped', () => {
+    const registry = createKeyedSignalRegistry<string>('idle');
+    registry.set('a', 'running');
+    registry.set('b', 'running');
+    registry.set('never', 'idle');
+    registry.set('b', 'idle');
+    expect([...registry.keys()]).toEqual(['a', 'b']);
+    registry.drop('a');
+    expect([...registry.keys()]).toEqual(['b']);
+  });
+
   it('writing the empty value to a boxless key creates nothing and wakes nobody', () => {
     const registry = createKeyedSignalRegistry<boolean>(false);
     const probe = probeReactivity(() => registry.get('a'));

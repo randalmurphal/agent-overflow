@@ -94,6 +94,29 @@ it('reconciles every thread of a computer with threads:read, panes or not', asyn
   expect(getActiveTurn('gpu-ended')).toBeNull();
 });
 
+it('reads which flushed messages are settled on every connection edge', async () => {
+  setBindingMock('ListThreadLiveActivity', async () => []);
+  setBindingMock('GetRateLimitsSnapshots', async () => []);
+  const settlement = setBindingMock('ListUnsettledFlushes', async () => ({ flushedThrough: 0, unsettledThreadIds: [] }));
+  const gpu = stageBackend({
+    id: 'gpu',
+    status: 'reconnecting',
+    hello: {
+      protocolVersion: 1, capabilities: ['flush-settlement.v1'], backendId: 'gpu', backendName: 'gpu', serverTimeMs: 0,
+      clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0, launchId: 'launch-1',
+    },
+  });
+  setCarriedSessionScopes('gpu', ['threads:read', 'threads:operate']);
+  stop = installComputerHydration();
+  await Promise.resolve();
+  expect(settlement).not.toHaveBeenCalled();
+  gpu.setStatus('connected');
+  await vi.waitFor(() => expect(settlement).toHaveBeenCalledTimes(1));
+  gpu.setStatus('reconnecting');
+  gpu.setStatus('connected');
+  await vi.waitFor(() => expect(settlement).toHaveBeenCalledTimes(2));
+});
+
 it('rechecks the owning computer grants on every reconnect', async () => {
   installThreadPaneTestEnv();
   await buildPane(makeThread({ id: 'remote-scoped' }));

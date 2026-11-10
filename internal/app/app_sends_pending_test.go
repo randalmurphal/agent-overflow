@@ -398,11 +398,25 @@ func TestSendsPendingFrameCoversTheFlushesItSaw(t *testing.T) {
 		}
 	}
 
+	unsettled := func(stage string, through uint64, want ...string) {
+		t.Helper()
+		got, err := app.ListUnsettledFlushes()
+		if err != nil {
+			t.Fatalf("%s: ListUnsettledFlushes: %v", stage, err)
+		}
+		if got.FlushedThrough != through || !slices.Equal(got.UnsettledThreadIDs, want) {
+			t.Fatalf("%s: settlement = %+v, want through %d unsettled %v", stage, got, through, want)
+		}
+	}
+	unsettled("before any flush", 0)
+
 	// The echo beat every publish: the answer never read pending, and the
 	// flush is still owed its frame.
 	first := flush(thread.ID, "first")
+	unsettled("flush with no frame yet", first, thread.ID)
 	app.publishSendsPending(thread.ID)
 	settled("flush never published as pending", first)
+	unsettled("flush covered by its frame", first)
 	app.publishSendsPending(thread.ID)
 	noFrame("answer unchanged and no flush owed")
 
@@ -420,11 +434,15 @@ func TestSendsPendingFrameCoversTheFlushesItSaw(t *testing.T) {
 		t.Fatalf("pending frame %+v, want pending through %d", evt, second)
 	}
 	third := flush("sends-pending-covers-other", "third")
+	// Both threads hold a flush no frame has covered: this one still reads
+	// pending, the other has not been published.
+	unsettled("pending and unpublished", third, "sends-pending-covers", "sends-pending-covers-other")
 	if _, ok := app.triage.RemoveQueuedFlushItem(thread.ID, "waiting"); !ok {
 		t.Fatal("waiting not removed")
 	}
 	app.publishSendsPending(thread.ID)
 	settled("cleared after a later flush", third)
+	unsettled("this thread covered", third, "sends-pending-covers-other")
 	if first >= other || other >= second || second >= third {
 		t.Fatalf("flush sequences %d %d %d %d, want increasing", first, other, second, third)
 	}

@@ -210,6 +210,7 @@ export const GetConversationMutationState = dispatch('GetConversationMutationSta
 export const InterruptAndRevertIfClean = dispatch('InterruptAndRevertIfClean');
 export const GetThreadLiveState = dispatch('GetThreadLiveState');
 export const ListThreadLiveActivity = dispatch('ListThreadLiveActivity');
+export const ListUnsettledFlushes = dispatch('ListUnsettledFlushes');
 export const ListPendingInteractiveRequests = dispatch('ListPendingInteractiveRequests');
 export const RespondToApproval = dispatch('RespondToApproval');
 export const RespondToUserInput = dispatch('RespondToUserInput');

@@ -126,6 +126,14 @@ one read per computer at a time; a pane additionally reads
 `GetThreadLiveState` when it mounts. A push that lands while a snapshot is
 in flight wins over the snapshot.
 
+A flushed message of a thread with no pane leaves the send-queue mirror when
+the backend settles it (`flushSettlement.ts`, capability
+`flush-settlement.v1`): by the `flushedThrough` of a sends-pending frame, or
+by `ListUnsettledFlushes`, read on every connection edge and after a gap on
+`provider:sends_pending`. Both are facts about a `provider:queue_flushed`
+position, so they apply in any order. The contract is in
+[turn-lifecycle.md](../../../../docs/architecture/turn-lifecycle.md).
+
 `watchedThreads.ts` unions registered sources for every thread whose surface
 exists, including child threads with no pane, and for every subagent scope a
 surface reads. Watches never depend on focus, visibility, or `document.hidden`.

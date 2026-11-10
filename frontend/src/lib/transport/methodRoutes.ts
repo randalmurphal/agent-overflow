@@ -257,6 +257,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	4176102096: 'thread', // ListThreadSliceAround
 	1090132042: 'all', // ListThreads
 	1924357569: 'selected', // ListThreadsOnPR
+	3507874115: 'all', // ListUnsettledFlushes
 	2332614075: 'home', // ListWSLDistros
 	2808137798: 'selected', // ListWorkspaceMcpServers
 	1673567995: 'thread', // MarkDiffReviewCommentsSent

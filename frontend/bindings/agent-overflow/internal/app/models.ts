@@ -2081,6 +2081,41 @@ export class ErrorLogLines {
 }
 
 /**
+ * FlushSettlement is which flushes the provider:sends_pending frames have
+ * settled, as of FlushedThrough on provider:queue_flushed: every message a
+ * thread flushed up to that sequence was echoed or taken back, except for
+ * the threads in UnsettledThreadIDs, whose frame is still to come.
+ */
+export class FlushSettlement {
+    "flushedThrough": number;
+    "unsettledThreadIds": string[];
+
+    /** Creates a new FlushSettlement instance. */
+    constructor($$source: Partial<FlushSettlement> = {}) {
+        if (!("flushedThrough" in $$source)) {
+            this["flushedThrough"] = 0;
+        }
+        if (!("unsettledThreadIds" in $$source)) {
+            this["unsettledThreadIds"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new FlushSettlement instance from a string or object.
+     */
+    static createFrom($$source: any = {}): FlushSettlement {
+        const $$createField1_0 = $$createType8;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("unsettledThreadIds" in $$parsedSource) {
+            $$parsedSource["unsettledThreadIds"] = $$createField1_0($$parsedSource["unsettledThreadIds"]);
+        }
+        return new FlushSettlement($$parsedSource as Partial<FlushSettlement>);
+    }
+}
+
+/**
  * ForgeAttachment is what FetchForgeAttachment answers: the bytes of one
  * forge-hosted attachment (an image, video or file a PR/MR body or comment
  * references) are fetched through the user's forge CLI on the selected

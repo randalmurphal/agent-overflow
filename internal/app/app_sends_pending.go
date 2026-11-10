@@ -2,6 +2,7 @@ package app
 
 import (
 	"maps"
+	"slices"
 	"sync"
 
 	"agent-overflow/internal/eventchan"
@@ -156,6 +157,34 @@ func (a *App) publishSendsPending(threadID string) SendsPendingAnswer {
 		a.emit(eventchan.ProviderSendsPending, SendsPendingEvent{ThreadID: threadID, Pending: pending, FlushedThrough: flushedThrough})
 	}
 	return SendsPendingAnswer{Pending: pending, Sequence: a.eventSequence(eventchan.ProviderSendsPending)}
+}
+
+// FlushSettlement is which flushes the provider:sends_pending frames have
+// settled, as of FlushedThrough on provider:queue_flushed: every message a
+// thread flushed up to that sequence was echoed or taken back, except for
+// the threads in UnsettledThreadIDs, whose frame is still to come.
+type FlushSettlement struct {
+	FlushedThrough     uint64   `json:"flushedThrough"`
+	UnsettledThreadIDs []string `json:"unsettledThreadIds"`
+}
+
+// ListUnsettledFlushes is the snapshot leg of FlushedThrough on
+// provider:sends_pending. A frame that reads nothing pending is published
+// once and not restated, so a client that connects, or loses frames on that
+// channel, reads which threads still hold a flushed message here.
+//
+// threads:operate, as provider:queue_flushed: it serves only a client that
+// holds the flushed messages.
+//
+//ao:scope threads:operate
+//ao:route all
+func (a *App) ListUnsettledFlushes() (FlushSettlement, error) {
+	a.flushDispatch.mu.Lock()
+	defer a.flushDispatch.mu.Unlock()
+	return FlushSettlement{
+		FlushedThrough:     a.eventSequence(eventchan.ProviderQueueFlushed),
+		UnsettledThreadIDs: slices.Sorted(maps.Keys(a.flushDispatch.flushUnsettled)),
+	}, nil
 }
 
 // sendsPendingThreads returns every thread last published as pending. A

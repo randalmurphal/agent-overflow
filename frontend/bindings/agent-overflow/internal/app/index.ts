@@ -47,6 +47,7 @@ export {
     EditDiffVerifyFile,
     EditorInfo,
     ErrorLogLines,
+    FlushSettlement,
     ForgeAttachment,
     ForgeErrorDetail,
     ForgeProject,
