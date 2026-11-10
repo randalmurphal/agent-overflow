@@ -129,6 +129,10 @@ test('a message sent while Claude works after waking itself lands and the pane k
   await page.getByTestId('composer-send').click();
   const preview = page.getByTestId('send-queue-preview');
   await expect(preview.getByText(SENT)).toBeVisible({ timeout: 20_000 });
+  await harness.waitForEvent(
+    'provider:command_lifecycle',
+    (ev: any) => ev.threadId === threadId && ev.state === 'queued',
+  );
 
   const done = harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === threadId);
   await advance(harness, mockId, 'drain');
@@ -191,6 +195,12 @@ test('a message sent while the result is withheld opens its own turn', async ({ 
   const messageTurn = harness.waitForEvent('provider:turn_started', (ev: any) => ev.threadId === threadId);
   await page.getByLabel('Message Input').fill(WAIT_SENT);
   await page.getByTestId('composer-send').click();
+  // The mock acks `queued` when it holds the message. Released earlier, the
+  // gate's drain finds nothing and the message becomes a later turn.
+  await harness.waitForEvent(
+    'provider:command_lifecycle',
+    (ev: any) => ev.threadId === threadId && ev.state === 'queued',
+  );
   const done = harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === threadId);
   await advance(harness, mockId, 'send');
   const started = (await messageTurn) as any;
@@ -318,6 +328,10 @@ test('a message sent while the model continues its ended message lands in that t
   await page.getByTestId('composer-send').click();
   const preview = page.getByTestId('send-queue-preview');
   await expect(preview.getByText(CONT_SENT)).toBeVisible({ timeout: 20_000 });
+  await harness.waitForEvent(
+    'provider:command_lifecycle',
+    (ev: any) => ev.threadId === threadId && ev.state === 'queued',
+  );
 
   const done = harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === threadId);
   await advance(harness, mockId, 'drain');
