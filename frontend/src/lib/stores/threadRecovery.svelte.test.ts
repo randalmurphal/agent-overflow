@@ -37,6 +37,20 @@ it('keeps a consumed message pending while its row is outside the loaded window'
   expect(getFlushedForThread(threadId)).toEqual([]);
 });
 
+it('releases a consumed message it never rendered when the pane leaves the thread', async () => {
+  pane = await buildPane(makeThread({ id: 'recovery-left' }));
+  const threadId = pane.threadId!;
+  markItemsFlushed(threadId, [{ queueItemId: 'q', userItemId: 'user:flush:1', message: 'consumed outside window' }]);
+  const row = makeItem({ id: 'user:flush:1', threadId, kind: 'user_text', role: 'user', summary: 'consumed outside window', meta: '{"provider_item_id":"echo"}' });
+  setBindingMock('GetThreadItem', async () => row);
+  setBindingMock('GetThreadLiveState', async (id: string) => ({ threadId: id, activeTurn: null, queueItems: [], flushedItems: [] }));
+  await pane.refreshFromBackend(true);
+  expect(getFlushedForThread(threadId)).toHaveLength(1);
+
+  await pane.switchThread(makeThread({ id: 'recovery-elsewhere' }));
+  expect(getFlushedForThread(threadId)).toEqual([]);
+});
+
 it('hands a consumed message to history when its row is older than the loaded window', async () => {
   const threadId = 'recovery-before-window';
   const tail = [

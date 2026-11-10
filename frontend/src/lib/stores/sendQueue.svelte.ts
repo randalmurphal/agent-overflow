@@ -127,10 +127,11 @@ export interface FlushedItem {
    * the flush is at or before. Absent when the position is unknown; such
    * an entry is never released by a settle. */
   flushMark?: FlushMark;
-  /** The backend settled this flush while a pane held the thread. The pane
-   * still owns the entry until it renders the row; an entry it never
-   * rendered leaves when it leaves the thread. Belongs to the flush the
-   * mark names, so a new mark clears it. */
+  /** The backend settled this flush, or a live-state read found its row in
+   * history, while a pane held the thread. The pane still owns the entry
+   * until it renders the row; an entry it never rendered leaves when it
+   * leaves the thread. Belongs to the flush the mark names, so a new mark
+   * clears it. */
   settledWhileHeld?: true;
 }
 

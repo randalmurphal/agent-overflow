@@ -1064,7 +1064,8 @@ releases the entries of its earlier launches, and an entry another backend
 flushed, or one with no mark, is not covered. A mounted pane keeps its
 entries until it renders the rows. An answer that arrives meanwhile tags the
 entries it covers, and the tagged entries the pane never rendered leave when
-it leaves the thread; a later flush of the same message clears the tag. Each
+it leaves the thread; a later flush of the same message clears the tag. A
+live-state read that finds an entry's row in history tags it the same way. Each
 backend's newest answer is kept while the pane is mounted, for an entry
 installed after it. A backend's detach releases the entries it flushed, and
 tags them for a mounted thread.
