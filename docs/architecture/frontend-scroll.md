@@ -1391,7 +1391,10 @@ print: instant, settled, already there.
 `ChatView.svelte` positions the composer and live-turn UI as an absolute
 overlay. A `--composer-height` CSS variable drives `scrollEl`
 `padding-bottom`, keeping composer growth from changing the scroll
-surface's `clientHeight`.
+surface's `clientHeight`. The variable is inherited, so the timeline's
+content wrapper pins it to `0px`: a composer resize restyles the scroller,
+the nav rail and the scroll-to-bottom button, which read it, and none of
+the mounted rows.
 
 The composer ResizeObserver writes `--composer-height` directly before
 observing `'composer-geometry'` on the scroll controller. Waiting for

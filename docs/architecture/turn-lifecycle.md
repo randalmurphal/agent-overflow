@@ -1035,6 +1035,10 @@ message in the preview until it loads that far. A thread with no mounted
 pane has no timeline for the row to be in; its item-stream handler confirms
 on arrival, which is also what lets the sidebar's working indicator settle.
 
+**The preview is bounded.** `SendQueuePreview` renders the newest four
+pending messages and a count of the earlier ones. Its height is part of the
+composer clearance, so an unbounded list would cover the timeline.
+
 **Removal before dispatch.** `removeQueuedItem` deletes a queued message that
 has not been sent: it takes the durable row and the triage entry out together
 and refuses once the dispatcher has claimed the batch, when only an interrupt
