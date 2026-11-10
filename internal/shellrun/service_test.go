@@ -530,3 +530,137 @@ func TestAFailedRunDoesNotRemoveAnotherRunsCapture(t *testing.T) {
 		t.Fatalf("delivered: %+v %q", results, outputs)
 	}
 }
+
+// The process that started a command is gone after a restart, and with it the
+// memory of how the command ended. A start repeated with the same id is
+// refused, whether the command finished, or was cut short by the shutdown.
+func TestAStartRepeatedAfterARestartIsRefusedNotRun(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "captures")
+	ran := filepath.Join(t.TempDir(), "ran")
+	rec := &recorder{}
+	first := newService(t, rec, func(config *Config) { config.Dir = dir })
+	done := shellRequest(t, "run-done", "echo once >> "+ran)
+	if _, err := first.Start(done); err != nil {
+		t.Fatal(err)
+	}
+	rec.terminal(t)
+	live := shellRequest(t, "run-live", "echo once >> "+ran+"; echo started; sleep 60")
+	if _, err := first.Start(live); err != nil {
+		t.Fatal(err)
+	}
+	waitActiveOutput(t, first, "started")
+	first.Stop()
+
+	// Twice: the memory outlives more than one restart.
+	for restart := 1; restart <= 2; restart++ {
+		service := newService(t, &recorder{}, func(config *Config) { config.Dir = dir })
+		for _, request := range []Request{done, live} {
+			if state, err := service.Start(request); !errors.Is(err, ErrStartedBeforeRestart) {
+				t.Fatalf("restart %d: repeat of %s: %+v %v", restart, request.RunID, state, err)
+			}
+		}
+		if service.HasActive() {
+			t.Fatalf("restart %d: a refused start registered a run", restart)
+		}
+		service.Stop()
+	}
+	if data, err := os.ReadFile(ran); err != nil || string(data) != "once\nonce\n" {
+		t.Fatalf("each command ran once, the file holds %q %v", data, err)
+	}
+
+	// The person asks again: a new id is a new command.
+	again := &recorder{}
+	service := newService(t, again, func(config *Config) { config.Dir = dir })
+	fresh := done
+	fresh.RunID = "run-fresh"
+	if _, err := service.Start(fresh); err != nil {
+		t.Fatal(err)
+	}
+	if terminal := again.terminal(t); terminal.State != StateSent {
+		t.Fatalf("the new run: %+v", terminal)
+	}
+	if data, err := os.ReadFile(ran); err != nil || string(data) != "once\nonce\nonce\n" {
+		t.Fatalf("the new run did not run, the file holds %q %v", data, err)
+	}
+}
+
+// A command whose start cannot be recorded could run twice across a restart,
+// so it is not started.
+func TestACommandIsNotStartedWhenItsStartCannotBeRecorded(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "captures")
+	rec := &recorder{}
+	service := newService(t, rec, func(config *Config) { config.Dir = dir })
+	markers := filepath.Join(dir, startedMarkersDir)
+	if err := os.RemoveAll(markers); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(markers, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ran := filepath.Join(t.TempDir(), "ran")
+	if _, err := service.Start(shellRequest(t, "run-1", "echo once >> "+ran)); err != nil {
+		t.Fatal(err)
+	}
+	terminal := rec.terminal(t)
+	if terminal.State != StateFailed || !strings.Contains(terminal.Error, "Could not record that the command started") {
+		t.Fatalf("terminal frame: %+v", terminal)
+	}
+	if _, err := os.Stat(ran); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the command ran: %v", err)
+	}
+	if service.HasActive() {
+		t.Fatal("the failed run is still registered")
+	}
+}
+
+func TestStartedMarkersKeepOnlyTheNewest(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "started")
+	if err := os.MkdirAll(filepath.Join(dir, "a-directory"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().Add(-time.Hour)
+	// Oldest first, in an order the names do not share.
+	for i, runID := range []string{"c", "a", "e", "b", "d", ".hidden"} {
+		path := filepath.Join(dir, runID)
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		at := base.Add(time.Duration(i) * time.Minute)
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	markers, earlier, err := loadStartedMarkers(dir, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(earlier) != 3 || !earlier["e"] || !earlier["b"] || !earlier["d"] {
+		t.Fatalf("earlier = %v, want the three newest", earlier)
+	}
+	present := func() string {
+		t.Helper()
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		return strings.Join(names, " ")
+	}
+	if got := present(); got != ".hidden a-directory b d e" {
+		t.Fatalf("after load: %q", got)
+	}
+	for _, runID := range []string{"f", "g"} {
+		if err := markers.add(runID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := present(); got != ".hidden a-directory d f g" {
+		t.Fatalf("after two more starts: %q", got)
+	}
+}

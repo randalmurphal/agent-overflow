@@ -340,6 +340,57 @@ func TestARepeatedStartDoesNotRunASettledCommandAgain(t *testing.T) {
 	}
 }
 
+// A start repeated after the app restarted is refused with the reason, for a
+// command the stop cut short: no message records it, so nothing else would
+// stop it from running a second time.
+func TestAStartRepeatedAfterARestartIsRefusedWithTheReason(t *testing.T) {
+	app, rec := newShellCommandApp(t)
+	dataDir := t.TempDir()
+	app.stopShellCommands()
+	if err := app.initShellCommands(dataDir); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := newMixedTurnThread(t, app, "thread-shell-restart")
+	marker := filepath.Join(t.TempDir(), "ran")
+	request := ShellCommandRequest{RunID: uuid.NewString(), Command: "echo once >> " + marker + "; echo started; sleep 60"}
+	if _, err := app.RunThreadShellCommand(context.Background(), thread.ID, request); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		runs, err := app.GetThreadShellCommands(thread.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(runs) == 1 && strings.Contains(runs[0].Output, "started") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("command never reported output: %+v", runs)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// The restart: the service stops its runs and a new one is built over
+	// the same data directory.
+	app.stopShellCommands()
+	if final := waitShellFinished(t, rec, request.RunID); final.State != shellrun.StateStopped {
+		t.Fatalf("terminal frame: %+v", final)
+	}
+	if err := app.initShellCommands(dataDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if run, err := app.RunThreadShellCommand(context.Background(), thread.ID, request); !errors.Is(err, shellrun.ErrStartedBeforeRestart) {
+		t.Fatalf("repeated start after the restart: %+v %v", run, err)
+	}
+	if runs, err := app.GetThreadShellCommands(thread.ID); err != nil || len(runs) != 0 {
+		t.Fatalf("the refused start left a run: %+v %v", runs, err)
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "once\n" {
+		t.Fatalf("the command ran %q %v", data, err)
+	}
+}
+
 // An update waits for a running command and says what it is waiting for.
 func TestAnUpdateNamesARunningShellCommand(t *testing.T) {
 	app, rec := newShellCommandApp(t)

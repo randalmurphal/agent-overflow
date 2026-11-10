@@ -36,6 +36,12 @@ the bound methods and what a result becomes.
   it neither runs the command twice nor sends twice. That makes the method
   an entry of the transport's `RETRY_ON_TRANSIENT_CLOSE`, and a client
   whose start reply was lost asks again with the same run id.
+- A command that did not become a message leaves no record a later process
+  could answer from, so the service writes an empty marker file per started
+  command (`shell-runs/started/`, newest 256) before the process exists. A
+  start repeated after a restart with such an id is refused with
+  `shellrun.ErrStartedBeforeRestart` and the composer restores the text; the
+  next Run mints a new id.
 - A command is stopped after one hour and delivered as timed out.
 - Output is captured to 8 MiB from the start plus the last 64 KiB, with a
   marker for what was dropped. The process keeps draining past the cap.

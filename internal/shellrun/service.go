@@ -58,12 +58,18 @@ const (
 // ErrBusy is returned when the thread already has a running command.
 var ErrBusy = errors.New("a shell command is already running in this thread")
 
+// ErrStartedBeforeRestart is returned by Start for a run id an earlier process
+// started. That process is gone and nothing knows how far the command got, so
+// it is not run again under the same id.
+var ErrStartedBeforeRestart = errors.New("this command was started before the app restarted and may already have run, so it was not run again. Run it once more to start it again")
+
 // ErrNotRunning is returned by Stop when the run is not in flight.
 var ErrNotRunning = errors.New("shell command is not running")
 
 // Request starts one command. RunID is the caller's idempotency identity: a
-// repeated Start with the id of the running command returns that run, and
-// with the id of a command that settled returns how it settled.
+// repeated Start with the id of the running command returns that run, with
+// the id of a command that settled returns how it settled, and with the id of
+// a command an earlier process started returns ErrStartedBeforeRestart.
 type Request struct {
 	ThreadID string
 	RunID    string
@@ -125,8 +131,9 @@ type Event struct {
 type Runner func(context.Context, procutil.GroupCommand) (procutil.GroupOutcome, error)
 
 type Config struct {
-	// Dir holds capture files for the life of a run. The service owns it and
-	// empties it at construction.
+	// Dir holds capture files for the life of a run and the markers of the
+	// commands that were started. The service owns it and removes every
+	// capture at construction.
 	Dir string
 	// Emit receives every frame in the order the run produced it.
 	Emit func(Event)
@@ -145,6 +152,11 @@ type Config struct {
 // WaitGroup that joins execution before the host's stores close.
 type Service struct {
 	config Config
+
+	// earlier holds the ids of commands an earlier process started. Read only
+	// after construction.
+	earlier map[string]bool
+	started *startedMarkers
 
 	mu      sync.Mutex
 	runs    map[string]*run // by thread id
@@ -220,15 +232,28 @@ func New(config Config) (*Service, error) {
 	if config.Now == nil {
 		config.Now = time.Now
 	}
-	// A capture outlives its run only when the process died mid-run, and a
-	// run exists only inside a live process.
-	if err := os.RemoveAll(config.Dir); err != nil {
-		return nil, fmt.Errorf("shellrun: clear capture directory: %w", err)
-	}
 	if err := os.MkdirAll(config.Dir, 0o700); err != nil {
 		return nil, fmt.Errorf("shellrun: create capture directory: %w", err)
 	}
-	return &Service{config: config, runs: make(map[string]*run)}, nil
+	// A capture outlives its run only when the process died mid-run, and a
+	// run exists only inside a live process.
+	entries, err := os.ReadDir(config.Dir)
+	if err != nil {
+		return nil, fmt.Errorf("shellrun: read capture directory: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == startedMarkersDir {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(config.Dir, entry.Name())); err != nil {
+			return nil, fmt.Errorf("shellrun: clear capture directory: %w", err)
+		}
+	}
+	started, earlier, err := loadStartedMarkers(filepath.Join(config.Dir, startedMarkersDir), settledRunsKept)
+	if err != nil {
+		return nil, fmt.Errorf("shellrun: %w", err)
+	}
+	return &Service{config: config, runs: make(map[string]*run), earlier: earlier, started: started}, nil
 }
 
 // Start launches the command and returns once it is registered. The process
@@ -259,6 +284,10 @@ func (s *Service) Start(request Request) (RunState, error) {
 	if s.stopped {
 		s.mu.Unlock()
 		return RunState{}, s.config.ShutdownError
+	}
+	if s.earlier[request.RunID] {
+		s.mu.Unlock()
+		return RunState{}, ErrStartedBeforeRestart
 	}
 	if state, settled := s.settled.states[request.RunID]; settled {
 		s.mu.Unlock()
@@ -424,6 +453,13 @@ func (s *Service) execute(ctx context.Context, current *run) {
 		})
 	}
 
+	// Before the process exists: a marker written after it could be lost with
+	// the command already running.
+	if err := s.started.add(request.RunID); err != nil {
+		close(current.exited)
+		settle(StateFailed, "Could not record that the command started: "+err.Error(), -1)
+		return
+	}
 	capture, err := newCapture(capturePath, current, s.config.Emit)
 	if err != nil {
 		close(current.exited)
