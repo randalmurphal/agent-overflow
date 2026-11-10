@@ -8,7 +8,18 @@ import { onThreadHistoryInvalidated } from './threadIdentityInvalidation';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 
 const pendingByThread = createKeyedSignalRegistry<number>(0);
-const restoredByThread = createKeyedSignalRegistry<number | null>(null);
+/**
+ * What an early Stop took off the screen while its un-send settles: every
+ * row from `turnIndex` on, and the user row of `sendId` on whatever turn the
+ * backend placed it. The turn is the pane's prediction when the row had not
+ * arrived, and the backend can place the row on a lower one.
+ */
+export interface OptimisticInterruptCut {
+  turnIndex: number;
+  /** Empty when the message being un-sent carries no send id. */
+  sendId: string;
+}
+const restoredByThread = createKeyedSignalRegistry<OptimisticInterruptCut | null>(null);
 const pendingThreads = new Set<string>();
 const hiddenItemThreads = new Set<string>();
 let nextToken = 0;
@@ -44,8 +55,8 @@ export function isThreadInterruptPending(threadId: string | null | undefined): b
 }
 
 /** Hide only presentation while the authoritative interrupt is still settling. */
-export function presentThreadInterruptAsRestored(threadId: string, token: number, turnIndex = 0): void {
-  if (pendingByThread.get(threadId) === token) restoredByThread.set(threadId, turnIndex);
+export function presentThreadInterruptAsRestored(threadId: string, token: number, turnIndex = 0, sendId = ''): void {
+  if (pendingByThread.get(threadId) === token) restoredByThread.set(threadId, { turnIndex, sendId });
 }
 
 export function isThreadInterruptRestored(threadId: string | null | undefined): boolean {
@@ -69,7 +80,7 @@ onThreadHistoryInvalidated((owns) => {
   }
 });
 
-export function optimisticInterruptCut(threadId: string): number | null { return restoredByThread.get(threadId); }
+export function optimisticInterruptCut(threadId: string): OptimisticInterruptCut | null { return restoredByThread.get(threadId); }
 
 export function noteHiddenInterruptItem(threadId: string): void { hiddenItemThreads.add(threadId); }
 export function restoreThreadInterruptPresentation(threadId: string, token: number): boolean {

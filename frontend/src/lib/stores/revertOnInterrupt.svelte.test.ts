@@ -30,7 +30,10 @@ import type { Item, Thread } from '../types/models';
 import type { ComposerDraftSnapshot } from './composerDraftSnapshots';
 import { resetResendRevertMarkersForTest } from './eventsMessageRevert';
 import {
+  beginThreadInterrupt,
+  finishThreadInterrupt,
   isThreadInterruptPending,
+  presentThreadInterruptAsRestored,
   resetThreadInterruptStateForTest,
 } from './threadInterruptState.svelte';
 
@@ -907,6 +910,108 @@ describe('runInterruptOrRevert', () => {
     expect(pane.items.map((item) => item.id)).toEqual(['u:0']);
     resetItemEventQueue();
     resetPanesForTest();
+  });
+
+  describe('a row the backend placed below the turn the pane cut at', () => {
+    const SENT = JSON.stringify({ sendId: 'send' });
+    const snapshot = { content: 'sent', attachments: [], terminalChips: [], sourceProposedPlan: null };
+    const wireRow = (threadId: string, id: string, turnIndex: number, meta = '', kind: Item['kind'] = 'user_text') =>
+      makeItem({ id, threadId, turnIndex, kind, role: kind === 'user_text' ? 'user' : 'assistant', status: 'completed', meta });
+    const push = (threadId: string, item: Item, sequence: number) => {
+      applyItemStreamEvent({ action: 'upsert', threadId, item }, sequence);
+      flushItemEventQueue();
+    };
+    // The pane still shows a turn another client took back, so the send
+    // predicts turn 2 while the backend places its row on turn 1.
+    async function stoppedBeforeTheRow(threadId: string) {
+      const pane = await buildPane(makeThread({ id: threadId }), [], `pane-${threadId}`);
+      setBindingMock('CountRunningBackgroundTasks', async () => 0);
+      push(threadId, wireRow(threadId, 'u:0', 0), 1);
+      push(threadId, wireRow(threadId, 'stale:1', 1), 2);
+      const pending = beginUndoableSend(threadId, 'send', snapshot, 2);
+      const draft = optimisticDraftProbe();
+      let answer!: (result: unknown) => void;
+      const revert = setBindingMock('InterruptAndRevertIfClean', () => new Promise((resolve) => { answer = resolve; }));
+      expect(runInterruptOrRevert(pane, draft)).toBe(true);
+      expect(draft.applied).toEqual(snapshot);
+      return { pane, pending, draft, revert, answer: (result: unknown) => answer(result) };
+    }
+    const ids = (pane: { items: readonly Item[] }) => pane.items.map((item) => item.id);
+
+    it('keeps the un-sent message’s row out on any turn, and no other row', async () => {
+      const threadId = 'thread-lower';
+      const { pane, pending, revert, answer } = await stoppedBeforeTheRow(threadId);
+      push(threadId, wireRow(threadId, 'user:send', 1, SENT), 3);
+      expect(ids(pane)).toEqual(['u:0', 'stale:1']);
+      // Another send's message and a reply that names the send are not it.
+      push(threadId, wireRow(threadId, 'user:other', 1, JSON.stringify({ sendId: 'other' })), 4);
+      push(threadId, wireRow(threadId, 'reply:1', 1, SENT, 'assistant_text'), 5);
+      expect(ids(pane)).toEqual(['u:0', 'stale:1', 'user:other', 'reply:1']);
+
+      pending.finish('accepted');
+      await vi.waitFor(() => expect(revert).toHaveBeenCalledTimes(1));
+      answer(successfulRevert('user:send', 1));
+      await vi.waitFor(() => expect(isThreadInterruptPending(threadId)).toBe(false));
+      expect(ids(pane)).not.toContain('user:send');
+      resetItemEventQueue();
+      resetPanesForTest();
+    });
+
+    it('brings the row back from the backend when the un-send is refused', async () => {
+      const threadId = 'thread-lower-refused';
+      const { pane, pending, draft, revert, answer } = await stoppedBeforeTheRow(threadId);
+      const sent = wireRow(threadId, 'user:send', 1, SENT);
+      push(threadId, sent, 3);
+      expect(ids(pane)).toEqual(['u:0', 'stale:1']);
+      const history = [wireRow(threadId, 'u:0', 0), wireRow(threadId, 'stale:1', 1), { ...sent, itemIndex: 1 }];
+      const cursor = (item: Item) => ({ turnIndex: item.turnIndex, itemIndex: item.itemIndex ?? 0, itemId: item.id });
+      setBindingMock('ListThreadSliceAround', async () => ({ items: history, oldestTurnIndex: 0, newestTurnIndex: 1,
+        hasMore: false, hasMoreOlder: false, hasMoreNewer: false, oldestCursor: cursor(history[0]), newestCursor: cursor(history[2]) }));
+      setBindingMock('GetThreadLiveState', async () => ({ threadId, activeTurn: null, queueItems: [], flushedItems: [] }));
+
+      pending.finish('accepted');
+      await vi.waitFor(() => expect(revert).toHaveBeenCalledTimes(1));
+      answer({ reverted: false, reason: 'turn holds assistant_text' });
+      await vi.waitFor(() => expect(ids(pane)).toContain('user:send'));
+      expect(isThreadInterruptPending(threadId)).toBe(false);
+      expect(draft.cleared).toEqual(snapshot);
+      retireUndoableSend(threadId);
+      resetItemEventQueue();
+      resetPanesForTest();
+    });
+
+    it('keeps a removed row out when it is pushed again on a lower turn', async () => {
+      const threadId = 'thread-lower-rowed';
+      const pane = await buildPane(makeThread({ id: threadId }), [], `pane-${threadId}`);
+      setBindingMock('CountRunningBackgroundTasks', async () => 0);
+      push(threadId, wireRow(threadId, 'u:0', 0), 1);
+      push(threadId, wireRow(threadId, 'user:send', 2, SENT), 2);
+      pane.setActiveTurn({ turnId: 'turn-2', turnIndex: 2, startedAt: 1 });
+      let answer!: (result: unknown) => void;
+      const revert = setBindingMock('InterruptAndRevertIfClean', () => new Promise((resolve) => { answer = resolve; }));
+      // No undo record: the send id comes from the row itself.
+      expect(runInterruptOrRevert(pane, EMPTY_DRAFT)).toBe(true);
+      expect(ids(pane)).toEqual(['u:0']);
+      push(threadId, wireRow(threadId, 'user:send', 1, SENT), 3);
+      expect(ids(pane)).toEqual(['u:0']);
+      await vi.waitFor(() => expect(revert).toHaveBeenCalledTimes(1));
+      answer(successfulRevert('user:send', 2));
+      await vi.waitFor(() => expect(isThreadInterruptPending(threadId)).toBe(false));
+      resetItemEventQueue();
+      resetPanesForTest();
+    });
+
+    it('does not take an empty send id for a match', async () => {
+      const threadId = 'thread-lower-empty';
+      const pane = await buildPane(makeThread({ id: threadId }), [], `pane-${threadId}`);
+      const token = beginThreadInterrupt(threadId)!;
+      presentThreadInterruptAsRestored(threadId, token, 2);
+      push(threadId, wireRow(threadId, 'user:blank', 1, JSON.stringify({ sendId: '' })), 1);
+      expect(ids(pane)).toEqual(['user:blank']);
+      finishThreadInterrupt(threadId, token);
+      resetItemEventQueue();
+      resetPanesForTest();
+    });
   });
 
   it('cannot restore removed rows into a pane switched during preflight', async () => {

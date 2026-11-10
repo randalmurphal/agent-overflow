@@ -43,8 +43,14 @@ then offers the un-send from its record of the dispatched send, on the turn
 the composer predicted. A running turn must be that turn, the row must not
 already sit on another turn, and no row may sit on a later one. Otherwise Stop
 is an ordinary interrupt. The backend's check that the latest message carries
-the expected send ID stays authoritative, and a row that arrives while the
-un-send is pending stays out of the timeline.
+the expected send ID stays authoritative.
+
+While the un-send is pending, pushed rows on the cut turn or later stay out of
+the timeline, and so does the user row of the send being taken back on any
+turn: the backend can place it below the turn the client predicted. A refusal
+re-reads the window so a withheld row returns. A history read that lands in
+that window is not filtered. It is the backend's state, and the recovery from
+a lost reply depends on reading it whole.
 
 Older-message replacement keeps the editor loading until preparation completes.
 The client transfers follow intent before applying the cut and replacement in

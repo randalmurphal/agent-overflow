@@ -352,7 +352,11 @@ async function runEarlyInterrupt(
     draft.applyOptimisticRestoredDraft?.(threadId, restoredDraft);
   }
 
-  presentThreadInterruptAsRestored(threadId, interruptToken, turnIndex);
+  // The row can still arrive, or arrive again, on a turn below the cut:
+  // the turn is this pane's prediction when the row had not arrived.
+  const rowSendId = userItem ? parseUserMessageMeta(userItem.meta).sendId : undefined;
+  const interruptedSendId = matchesSend ? undo.sendId : typeof rowSendId === 'string' ? rowSendId : '';
+  presentThreadInterruptAsRestored(threadId, interruptToken, turnIndex, interruptedSendId);
   const current = () => isThreadInterruptCurrent(threadId, interruptToken);
   const reconcile = conversationMutationReconciler(pane, threadId, userItem?.id ?? '', matchesSend ? undo.sendId : '');
   const restore = () => {
