@@ -97,7 +97,7 @@ export async function uploadDictationPiece(backend: BackendKey, recordingId: str
 export async function fetchAttachmentBytes(threadId: string, attachmentId: string, signal?: AbortSignal): Promise<Blob> {
   const backend = requireEntityBackend(resolveThreadBackend(threadId));
   const url = await withBackendTarget(backend, () => MintAttachmentDownloadTicket(threadId, attachmentId));
-  return fetchTicketedBytes(backend, url, signal);
+  return fetchTicketedBytes(backend, url, 'Could not load image', signal);
 }
 
 /**
@@ -118,12 +118,14 @@ export class TransferUnavailableError extends Error {
  * body. The ticket is single use, so the URL is fetched here once and never
  * handed to an element that might request it again. A 404 throws
  * `TransferUnavailableError`; any other refusal throws an Error naming what
- * the route answered.
+ * the route answered. `prefix` leads each failure's message. Null leaves
+ * the route's reason standing alone, a 404's included: only a route whose
+ * every answer is meant for a person (read aloud) asks for that.
  */
-export async function fetchTicketedBytes(backend: BackendKey, url: string, signal?: AbortSignal): Promise<Blob> {
+export async function fetchTicketedBytes(backend: BackendKey, url: string, prefix: string | null, signal?: AbortSignal): Promise<Blob> {
   const response = await fetchPairedComputer(backend, networkFetch, backendTransferUrl(url, backend), { credentials: backendCredentials(backend), signal });
   if (!response.ok) {
-    const message = await transferFailure(response, 'Could not load image');
+    const message = await transferFailure(response, prefix);
     throw response.status === 404 ? new TransferUnavailableError(message) : new Error(message);
   }
   return await response.blob();
@@ -132,27 +134,33 @@ export async function fetchTicketedBytes(backend: BackendKey, url: string, signa
 /**
  * Turns a refused transfer into one sentence worth showing a person.
  *
- * The routes answer a status and a short line, never a stack or a path:
- * a spent, missing or mismatched ticket is 404 in every case, so there is
- * nothing here to distinguish and nothing worth quoting verbatim. The
- * body is read anyway so the connection can be reused rather than
- * abandoned mid-response.
+ * The routes answer a status and a short line, never a stack or a path. A
+ * spent, missing or mismatched ticket is the plain 404 every ticketed route
+ * answers, which says nothing worth quoting. A caller with no prefix wants
+ * the route's own reason, so its 404 with a reason (a read-aloud sentence
+ * that expired) is quoted. The body is read anyway so the connection can be
+ * reused rather than abandoned mid-response.
  */
-async function transferFailure(response: Response, prefix: string): Promise<string> {
+async function transferFailure(response: Response, prefix: string | null): Promise<string> {
   let detail = '';
   try {
     detail = (await response.text()).trim();
   } catch {
     // A body we could not read tells us nothing the status did not.
   }
+  const say = (reason: string): string => (prefix ? `${prefix}: ${reason}` : reason);
   if (response.status === 413) {
-    return `${prefix}: the file is larger than this backend accepts.`;
+    return say('the file is larger than this backend accepts.');
   }
-  if (response.status === 404) {
-    return `${prefix}: this transfer is no longer available. Try again.`;
+  const quotable = detail !== '' && detail.length <= 200;
+  if (response.status === 404 && (prefix !== null || !quotable || detail === PLAIN_NOT_FOUND)) {
+    return say('this transfer is no longer available. Try again.');
   }
-  if (detail && detail.length <= 200) {
-    return `${prefix}: ${detail}`;
+  if (quotable) {
+    return say(detail);
   }
-  return `${prefix} (${response.status}).`;
+  return prefix ? `${prefix} (${response.status}).` : `the computer answered ${response.status}.`;
 }
+
+/** The body of Go's `http.NotFound`. */
+const PLAIN_NOT_FOUND = '404 page not found';

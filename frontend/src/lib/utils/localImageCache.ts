@@ -121,12 +121,12 @@ async function mintAndFetch(
   let result = await mint();
   let bytes: Blob;
   try {
-    bytes = await fetchTicketedBytes(backend, result.url, signal);
+    bytes = await fetchTicketedBytes(backend, result.url, 'Could not load image', signal);
   } catch (err) {
     if (!(err instanceof TransferUnavailableError)) throw err;
     signal?.throwIfAborted();
     result = await mint();
-    bytes = await fetchTicketedBytes(backend, result.url, signal);
+    bytes = await fetchTicketedBytes(backend, result.url, 'Could not load image', signal);
   }
   // The RPC's classification is the type; the route's body may arrive
   // untyped.
