@@ -108,6 +108,12 @@ type pendingSend struct {
 	// message over them and persist that inverted order.
 	AnchoredAtInterrupt bool
 
+	// AnchorSettling is set with an AnchoredAtInterrupt claim made before
+	// its store write and cleared when the write lands or the claim is
+	// withdrawn. Until then the row is not in the timeline, so the entry
+	// still reads as a pending send (anchoredInTimeline).
+	AnchorSettling bool
+
 	// WasDeferred marks an entry whose row was originally deferred
 	// (persist-at-echo) and reached SQLite only through the interrupt
 	// eager-persist. Its row owns a FRESH turn index, so if its echo
@@ -972,6 +978,7 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string, interruptedTurn
 			pending[i].DeferredItem = nil
 			pending[i].WasDeferred = true
 			pending[i].AnchoredAtInterrupt = true
+			pending[i].AnchorSettling = true
 			if stampCurrent {
 				pending[i].InterruptedTurnIndex = interruptedTurnIndex
 			}
@@ -993,6 +1000,7 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string, interruptedTurn
 			r.restorePendingSendDeferred(threadID, snap.item.ID)
 			continue
 		}
+		r.settlePendingSendAnchor(threadID, snap.item.ID)
 		if confirmedHook != nil {
 			confirmedHook(threadID, persisted)
 		}
@@ -1071,6 +1079,7 @@ func (r *Router) PromoteQuietFlushSends(threadID string, tok FlushStampToken) []
 		if pending[i].DeferredItem == nil && !pending[i].AnchoredAtInterrupt && pending[i].Shape == sendShapeFlush {
 			ids = append(ids, pending[i].AOItemID)
 			pending[i].AnchoredAtInterrupt = true
+			pending[i].AnchorSettling = true
 		}
 	}
 	r.noteSendsPendingLocked(threadID)
@@ -1100,6 +1109,7 @@ func (r *Router) PromoteQuietFlushSends(threadID string, tok FlushStampToken) []
 			r.unclaimPendingSendAnchor(threadID, id)
 			continue
 		}
+		r.settlePendingSendAnchor(threadID, id)
 		r.emitItemUpsert(item)
 		if confirmedHook != nil {
 			confirmedHook(threadID, item)
@@ -1132,6 +1142,7 @@ func (r *Router) restorePendingSendDeferred(threadID, aoItemID string) {
 			}
 			pending[i].WasDeferred = false
 			pending[i].AnchoredAtInterrupt = false
+			pending[i].AnchorSettling = false
 			break
 		}
 	}
@@ -1342,11 +1353,35 @@ func (r *Router) unclaimPendingSendAnchor(threadID, aoItemID string) {
 	for i := range pending {
 		if pending[i].AOItemID == aoItemID {
 			pending[i].AnchoredAtInterrupt = false
+			pending[i].AnchorSettling = false
 			break
 		}
 	}
 	r.noteSendsPendingLocked(threadID)
 	r.mu.Unlock()
+}
+
+// settlePendingSendAnchor records that the store write behind an
+// AnchoredAtInterrupt claim landed: the row is in the timeline, and the
+// entry stops reading as a pending send. The caller holds the thread's
+// flush anchor lock.
+func (r *Router) settlePendingSendAnchor(threadID, aoItemID string) {
+	r.mu.Lock()
+	pending := r.pendingSendsLocked(threadID)
+	for i := range pending {
+		if pending[i].AOItemID == aoItemID {
+			pending[i].AnchorSettling = false
+			break
+		}
+	}
+	r.noteSendsPendingLocked(threadID)
+	r.mu.Unlock()
+}
+
+// anchoredInTimeline reports whether an interrupt placed the entry's row in
+// the timeline: the claim is made and its store write landed.
+func (p *pendingSend) anchoredInTimeline() bool {
+	return p.AnchoredAtInterrupt && !p.AnchorSettling
 }
 
 // markPendingSendsAnchoredAtInterrupt flips AnchoredAtInterrupt on the

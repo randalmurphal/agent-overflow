@@ -136,12 +136,15 @@ describe('a frame that reads nothing pending, for a thread with no pane', () => 
     expect(held()).toEqual(['message 1']);
   });
 
-  it('releases nothing when it comes from a computer that does not own the thread', () => {
+  it('releases only what its own computer flushed, whoever owns the thread', () => {
     __setTransportHelloForTest(hello('laptop-launch', 'laptop'), 'laptop');
     flushed(1, 3);
-    settled(50, 100, 'remote', 'laptop');
+    applyQueueFlushed({ threadId: 'remote', items: [entry(2)] }, 'laptop', 4);
 
+    settled(50, 100, 'remote', 'laptop');
     expect(held()).toEqual(['message 1']);
+    settled(50);
+    expect(held()).toEqual([]);
   });
 
   it('releases the entries of an earlier launch, whatever its sequence', () => {
@@ -220,6 +223,33 @@ describe('a thread with a mounted pane', () => {
     expect(held(threadId)).toEqual(['message 2']);
   });
 
+  it('releases an entry a live-state read installs after the settle, when the pane leaves', async () => {
+    const pane = await buildPane();
+    const threadId = pane.threadId!;
+    noteThread(threadId, 'gpu', 1);
+    // The read sampled the message as pending at 3; its echo and the settle
+    // arrived before the read was applied.
+    settled(5, 100, threadId);
+    replaceFlushedForThread(threadId, [{ ...entry(1), flushedAt: 0 }], flushMarkAt('gpu', 3));
+    expect(held(threadId)).toEqual(['message 1']);
+
+    await pane.switchThread(makeThread({ id: 'elsewhere' }));
+    expect(held(threadId)).toEqual([]);
+  });
+
+  it('keeps its newest settle when an older one arrives after it', async () => {
+    const pane = await buildPane();
+    const threadId = pane.threadId!;
+    noteThread(threadId, 'gpu', 1);
+    flushed(1, 3, threadId);
+    flushed(2, 5, threadId);
+    settled(5, 100, threadId);
+    settled(3, 101, threadId);
+
+    await pane.switchThread(makeThread({ id: 'elsewhere' }));
+    expect(held(threadId)).toEqual([]);
+  });
+
   it('keeps entries marked under a later launch when it leaves', async () => {
     const pane = await buildPane();
     const threadId = pane.threadId!;
@@ -271,7 +301,7 @@ describe("the computer's settlement answer", () => {
     expect(held()).toEqual(['message 1']);
   });
 
-  it('leaves a thread that moved to another computer', async () => {
+  it('releases only what its own computer flushed on a thread that moved away', async () => {
     __setTransportHelloForTest(hello('laptop-launch', 'laptop'), 'laptop');
     flushed(1, 3);
     noteThread('remote', 'laptop', 2);
@@ -279,7 +309,18 @@ describe("the computer's settlement answer", () => {
     answers(50);
 
     await reconcileSettledFlushes('gpu');
-    expect(held()).toEqual(['message 1', 'message 2']);
+    expect(held()).toEqual(['message 2']);
+  });
+
+  it("leaves another computer's pending entry on a thread it has not attributed", async () => {
+    __setTransportHelloForTest(hello('laptop-launch', 'laptop'), 'laptop');
+    // No owner known yet: an old entry from gpu, a pending one from laptop.
+    flushed(1, 3, 'unattributed');
+    applyQueueFlushed({ threadId: 'unattributed', items: [entry(2)] }, 'laptop', 1);
+    answers(50);
+
+    await reconcileSettledFlushes('gpu');
+    expect(held('unattributed')).toEqual(['message 2']);
   });
 
   it('is not replaced by an older answer that arrives after it', async () => {
@@ -345,18 +386,28 @@ describe("the computer's settlement answer", () => {
     expect(read).not.toHaveBeenCalled();
   });
 
-  it('is forgotten when its computer detaches', async () => {
+  it('is forgotten when its computer detaches, with the entries it could still have settled', async () => {
+    const pane = await buildPane();
+    const mounted = pane.threadId!;
     stageBackend({ id: 'gpu', hello: hello('launch-1') });
     setCarriedSessionScopes('gpu', ['threads:read', 'threads:operate']);
+    __setTransportHelloForTest(hello('laptop-launch', 'laptop'), 'laptop');
     try {
       answers(5);
       await reconcileSettledFlushes('gpu');
       expect(__flushSettlementFloorsForTest()).toBe(1);
+      // A thread attributed to no computer: its rows are not the detach's
+      // to drop, so only the entries gpu flushed leave.
+      flushed(1, 8, 'unattributed');
+      applyQueueFlushed({ threadId: 'unattributed', items: [entry(2)] }, 'laptop', 1);
+      flushed(3, 9, mounted);
     } finally {
       detachBackend('gpu');
       resetStagedBackends();
     }
 
     expect(__flushSettlementFloorsForTest()).toBe(0);
+    expect(held('unattributed')).toEqual(['message 2']);
+    expect(held(mounted)).toEqual(['message 3']);
   });
 });

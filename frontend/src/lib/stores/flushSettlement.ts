@@ -17,13 +17,15 @@
 //   frames emitted before it, so the newest answer per computer stays as a
 //   floor that late flush frames are checked against.
 //
-// Both are facts about a stream position, so applying one late or twice
-// changes nothing. `settleFlushed` (sendQueue.svelte.ts) owns the entries
-// and what a mounted pane does with an answer.
+// Both are facts about one backend's stream position, so applying one late
+// or twice changes nothing, and neither says anything about an entry
+// another backend flushed. `settleFlushed` (sendQueue.svelte.ts) owns the
+// entries and what a mounted pane does with an answer.
 import { getTransportHelloFor } from './transportStatus.svelte';
 import { iterPanes } from './panes.svelte';
 import {
   flushMarkAt,
+  releaseFlushedOn,
   sameFlushStream,
   settleFlushed,
   threadsWithFlushedOn,
@@ -32,7 +34,6 @@ import {
 import { ListUnsettledFlushes } from './bindings';
 import type { BackendKey } from '../transport/backendKey';
 import { onBackendDetached, withBackendTarget } from '../transport/backends';
-import { currentThreadEvent } from '../transport/entityIndex';
 import { hasScope } from '../transport/scopes';
 import type { FlushSettlement } from '../../../bindings/agent-overflow/internal/app/models';
 
@@ -45,6 +46,9 @@ interface SettlementFloor {
 const floors = new Map<BackendKey, SettlementFloor>();
 onBackendDetached(({ backendId }) => {
   floors.delete(backendId);
+  for (const threadId of threadsWithFlushedOn(backendId)) {
+    if (!threadHasPane(threadId)) releaseFlushedOn(threadId, backendId);
+  }
 });
 
 /** How many computers' settlement answers are retained. */
@@ -67,9 +71,9 @@ function settle(threadId: string, settled: FlushMark): void {
   settleFlushed(threadId, settled, threadHasPane(threadId));
 }
 
-/** A `provider:sends_pending` frame from `backend` that reads nothing pending. */
+/** A `provider:sends_pending` frame from `backend` that reads nothing
+ * pending. Whoever owns the thread now, it settles what `backend` flushed. */
 export function applySettledFrame(threadId: string, backend: BackendKey, flushedThrough: number | undefined): void {
-  if (!currentThreadEvent(threadId, backend)) return;
   const settled = flushMarkAt(backend, flushedThrough);
   if (settled) settle(threadId, settled);
 }
@@ -100,6 +104,6 @@ export async function reconcileSettledFlushes(backend: BackendKey): Promise<void
   const floor = floors.get(backend);
   if (!floor || !sameFlushStream(floor.at, at) || floor.at.sequence <= at.sequence) floors.set(backend, { at, unsettled });
   for (const threadId of threadsWithFlushedOn(backend)) {
-    if (!unsettled.has(threadId) && currentThreadEvent(threadId, backend)) settle(threadId, at);
+    if (!unsettled.has(threadId)) settle(threadId, at);
   }
 }

@@ -511,16 +511,18 @@ export function confirmFlushedByUserItemId(
   if (changed) bumpQueueRevision(threadId);
 }
 
-/** Apply a backend answer that settles a thread's flushes: `settled` is the
- * stream position at which the backend read that none of the thread's
- * sends is pending, so every message flushed up to it was echoed or taken
- * back. An entry with no mark is not covered.
+/** Apply a backend's answer that settles a thread's flushes: `settled` is
+ * the stream position at which that backend read that none of the thread's
+ * sends is pending, so every message it flushed up to there was echoed or
+ * taken back. The answer speaks for that backend only: an entry another
+ * backend flushed, or one with no mark, is not covered.
  *
  * A thread with no mounted pane releases the entries the answer covers,
- * and those of another launch or backend, whose stream no longer vouches
- * for them. A mounted pane holds each entry until it renders the row, which
+ * and those of an earlier launch of the backend, which it no longer
+ * tracks. A mounted pane holds each entry until it renders the row, which
  * the answer can precede, so `paneHolds` keeps the answer for
- * `releaseFlushedLeftByPane`. */
+ * `releaseFlushedLeftByPane`. It is kept whether or not an entry exists
+ * yet: a live-state read sampled before the answer can still install one. */
 export function settleFlushed(threadId: string, settled: FlushMark, paneHolds: boolean): void {
   if (!threadId) return;
   if (!paneHolds) {
@@ -529,9 +531,7 @@ export function settleFlushed(threadId: string, settled: FlushMark, paneHolds: b
   }
   const held = settledWhileHeld.get(threadId);
   if (held && sameFlushStream(held, settled) && held.sequence >= settled.sequence) return;
-  if (flushedByThread.get(threadId).some((entry) => covered(entry, settled, false))) {
-    settledWhileHeld.set(threadId, settled);
-  }
+  settledWhileHeld.set(threadId, settled);
 }
 
 /** The pane that held the thread left it. Entries it never rendered leave
@@ -544,15 +544,22 @@ export function releaseFlushedLeftByPane(threadId: string): void {
   releaseSettled(threadId, settled, false);
 }
 
-// Per thread with a mounted pane, the newest answer that settled entries
-// the pane still held. One per mounted thread at most.
+// Per thread with a mounted pane, the newest answer that arrived while the
+// pane held it. One per mounted thread at most.
 const settledWhileHeld = new Map<string, FlushMark>();
 
 function covered(entry: FlushedItem, settled: FlushMark, current: boolean): boolean {
   const mark = entry.flushMark;
-  if (!mark) return false;
-  if (!sameFlushStream(mark, settled)) return current;
+  if (!mark || mark.backend !== settled.backend) return false;
+  if (mark.launchId !== settled.launchId) return current;
   return mark.sequence <= settled.sequence;
+}
+
+/** `backend` detached: its entries of a thread with no pane can no longer
+ * be confirmed by anything. */
+export function releaseFlushedOn(threadId: string, backend: BackendKey): void {
+  const changed = filterZoneItems(flushedByThread, threadId, EMPTY_FLUSHED, (entry) => entry.flushMark?.backend !== backend);
+  if (changed) bumpQueueRevision(threadId);
 }
 
 function releaseSettled(threadId: string, settled: FlushMark, current: boolean): void {

@@ -1058,11 +1058,17 @@ under. It has two legs:
 The client marks each entry with the backend, launch and sequence of the
 frame that added it, or with `ThreadLiveState.flushedThrough` for an entry a
 live-state read added, and releases the entries an answer covers
-(`flushSettlement.ts`, `settleFlushed`). Sequences compare within one launch
-of one backend; a current answer also releases the entries of an earlier
-launch. An entry with no mark is not covered. A mounted pane keeps its
-entries until it renders the rows, and the answer is applied to what it never
-rendered when it leaves the thread.
+(`flushSettlement.ts`, `settleFlushed`). An answer speaks for its own
+backend: sequences compare within one launch of it, a current answer also
+releases the entries of its earlier launches, and an entry another backend
+flushed, or one with no mark, is not covered. A mounted pane keeps its
+entries until it renders the rows; the newest answer that arrived meanwhile
+is applied to what it never rendered when it leaves the thread. A detached
+backend's entries of a thread with no pane leave with it.
+
+A send an interrupt places in the timeline stops reading as pending only
+once the store write behind that claim lands (`anchoredInTimeline`), so a
+claim whose write fails never produces an answer that nothing is pending.
 
 **The preview is bounded.** `SendQueuePreview` renders the newest four
 pending messages and a count of the earlier ones. Its height is part of the
