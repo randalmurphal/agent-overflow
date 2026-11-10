@@ -93,6 +93,23 @@ describe('offline computer catalogs', () => {
     expect(readCatalogRecord({ ...record, rows: [malformed] }, 'g1', 'projects', 'stamp')).toBeNull();
   });
 
+  it('encodes a row again only when a write is given no cache for it', async () => {
+    await initReplica(identity);
+    let reads = 0;
+    const row = { ...project };
+    Object.defineProperty(row, 'threadCount', { enumerable: true, get: () => { reads++; return 3; } });
+    const cache = new WeakMap();
+    const stamp = replicaCatalogStamp('', 'projects');
+    await putCatalog('', 'projects', [row], stamp, replicaToken(''), cache);
+    const afterFirst = reads;
+    expect(afterFirst).toBeGreaterThan(0);
+    await putCatalog('', 'projects', [row], stamp, replicaToken(''), cache);
+    expect(reads).toBe(afterFirst);
+    await putCatalog('', 'projects', [row], stamp);
+    expect(reads).toBeGreaterThan(afterFirst);
+    expect(await getReplicaCatalog('', 'projects')).toEqual([{ ...project, threadCount: 3 }]);
+  });
+
   it('rejects malformed, oversized and obsolete metadata', async () => {
     const record = makeCatalogRecord('g1', 'projects', [project], 'stamp');
     expect(readCatalogRecord(record, 'g2', 'projects', 'stamp')).toBeNull();
