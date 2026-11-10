@@ -334,6 +334,7 @@ export {
   GitListBranches,
   GitListWorktrees,
   GitCommit,
+  ListCommitFiles,
   GitPush,
   GitPull,
   GitCheckout,
@@ -460,6 +461,7 @@ export {
   // is read by offset and the handle released at the end
   // (stores/reviewDiffStream.ts).
   OpenWorkspaceDiff,
+  OpenCommitFileDiff,
   OpenBranchBaseDiff,
   OpenCommitDiff,
   ReadReviewDiff,

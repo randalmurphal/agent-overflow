@@ -222,6 +222,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	130055792: 'home', // ListBackends
 	352990129: 'workspace', // ListBranchCommits
 	2114948965: 'home', // ListChatBarFavorites
+	4062094959: 'workspace', // ListCommitFiles
 	3057473088: 'thread', // ListDiffReviewComments
 	942288562: 'selected', // ListDiscussions
 	2502562885: 'thread', // ListDiscussionsForThread
@@ -283,6 +284,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	4008977316: 'selected', // OpenAIKeyFile
 	2513613347: 'workspace', // OpenBranchBaseDiff
 	1949392079: 'workspace', // OpenCommitDiff
+	4066914461: 'workspace', // OpenCommitFileDiff
 	3980787304: 'home', // OpenComputerPairing
 	2268491610: 'thread', // OpenEditDiff
 	3362740399: 'home', // OpenExternalURL

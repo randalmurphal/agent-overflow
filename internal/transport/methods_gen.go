@@ -256,6 +256,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListBackends", ID: 130055792, Scope: "host", Route: "home"},                                                       // main.App.ListBackends
 	{Name: "ListBranchCommits", ID: 352990129, Scope: "git:operate", Route: "workspace"},                                      // main.App.ListBranchCommits
 	{Name: "ListChatBarFavorites", ID: 2114948965, Scope: "settings:read", Route: "home"},                                     // main.App.ListChatBarFavorites
+	{Name: "ListCommitFiles", ID: 4062094959, Scope: "git:operate", Route: "workspace"},                                       // main.App.ListCommitFiles
 	{Name: "ListDiffReviewComments", ID: 3057473088, Scope: "threads:read", Route: "thread"},                                  // main.App.ListDiffReviewComments
 	{Name: "ListDiscussions", ID: 942288562, Scope: "threads:read", Route: "selected"},                                        // main.App.ListDiscussions
 	{Name: "ListDiscussionsForThread", ID: 2502562885, Scope: "threads:read", Route: "thread"},                                // main.App.ListDiscussionsForThread
@@ -317,6 +318,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "OpenAIKeyFile", ID: 4008977316, Scope: "settings:read", Route: "selected"},                                        // main.App.OpenAIKeyFile
 	{Name: "OpenBranchBaseDiff", ID: 2513613347, Scope: "files:read", Route: "workspace"},                                     // main.App.OpenBranchBaseDiff
 	{Name: "OpenCommitDiff", ID: 1949392079, Scope: "files:read", Route: "workspace"},                                         // main.App.OpenCommitDiff
+	{Name: "OpenCommitFileDiff", ID: 4066914461, Scope: "files:read", Route: "workspace"},                                     // main.App.OpenCommitFileDiff
 	{Name: "OpenComputerPairing", ID: 3980787304, Scope: "access:admin", Route: "home", StepUp: true, Remote: true},           // main.App.OpenComputerPairing
 	{Name: "OpenEditDiff", ID: 2268491610, Scope: "threads:read", Route: "thread"},                                            // main.App.OpenEditDiff
 	{Name: "OpenExternalURL", ID: 3362740399, Scope: "host", Route: "home"},                                                   // main.App.OpenExternalURL

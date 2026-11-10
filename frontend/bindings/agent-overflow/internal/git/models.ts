@@ -448,9 +448,9 @@ export class GitStatus {
 
     /**
      * PendingOperation surfaces an in-progress multi-step operation.
-     * Values: "merge", "rebase", "bisect", or "" when none is pending. The
-     * commit dialog shows it as a notice; git itself decides whether a
-     * commit can be recorded.
+     * Values: "merge", "cherry-pick", "revert", "rebase", "bisect", or "" when none is
+     * pending. The commit dialog shows it as a notice; git itself decides
+     * whether a commit can be recorded.
      */
     "pendingOperation"?: string;
 
