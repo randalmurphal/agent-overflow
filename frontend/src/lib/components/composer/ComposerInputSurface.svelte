@@ -207,7 +207,7 @@
   }
 
   function chooseAttachments(accept: string, capture = false): void {
-    if (!fileInput || disabled || refuseAttachment(new Event('pick'))) return;
+    if (!fileInput || attachmentsOnHold || refuseAttachment(new Event('pick'))) return;
     pickerGeneration = pane.switchGeneration;
     pickerInsertion = imagePlaceholders.currentUploadInsertion();
     fileInput.accept = accept;
@@ -474,7 +474,7 @@
   </div>
   {#if threadHasScope('attachments:write', pane.threadId, pane.thread?.projectId) && providerSupports(pane.thread?.provider, 'attachments')}
     {#if showDraftRows && editsDraft}
-      <AttachmentPicker {disabled} onChoose={chooseAttachments} />
+      <AttachmentPicker disabled={attachmentsOnHold} onChoose={chooseAttachments} />
     {/if}
     <!-- Outlives the picker button: a prompt that hides the draft rows
          while the platform picker is open must not take away the element

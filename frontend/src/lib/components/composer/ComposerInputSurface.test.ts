@@ -515,6 +515,30 @@ describe('<ComposerInputSurface>', () => {
     }
   });
 
+  // One selection is the most held: the picker does not open again while
+  // attachments are deferred, so a second pick cannot replace the first.
+  it('does not open the picker while attachments are deferred', async () => {
+    const upload = mockAttachmentUpload(async (_threadId: string, filename: string) => makeAttachment(filename));
+    const { getByTestId, getByLabelText, draft, setProps } = await mountSurface();
+    const attach = getByTestId('composer-attach') as HTMLButtonElement;
+    await fireEvent.click(attach);
+    const input = getByLabelText('Choose attachments') as HTMLInputElement;
+    await setProps({ attachmentsDeferred: true });
+    Object.defineProperty(input, 'files', { value: [new File(['a'], 'first.png', { type: 'image/png' })], configurable: true });
+    await fireEvent.change(input);
+    await tick();
+
+    const opened = vi.spyOn(input, 'click');
+    expect(attach.disabled).toBe(true);
+    attach.disabled = false;
+    await fireEvent.click(attach);
+    expect(opened, 'the picker opened while a selection was held').not.toHaveBeenCalled();
+
+    await setProps({ attachmentsDeferred: false });
+    await waitFor(() => expect(draft.attachments.map((a) => a.id)).toEqual(['first.png']));
+    expect(upload).toHaveBeenCalledOnce();
+  });
+
   it('lets go of a held selection when the pane leaves its thread first', async () => {
     const upload = mockAttachmentUpload(async () => makeAttachment('att-wrong-thread'));
     const { getByTestId, queryByTestId, getByLabelText, pane, setProps } = await mountSurface();
