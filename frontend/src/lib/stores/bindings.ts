@@ -384,6 +384,23 @@ export {
   // would pay a mint round trip per tile.
   MintAttachmentUploadTicket,
   MintAttachmentDownloadTicket,
+  // Dictation: a recording opened on the composer's computer, its pieces
+  // uploaded over HTTP under single-use tickets, transcribed on finish
+  // (lib/dictation/, lib/transport/dictationTransfer.ts).
+  DictationSources,
+  BeginDictation,
+  MintDictationChunkTicket,
+  FinishDictation,
+  CancelDictation,
+  // Live dictation: PCM streamed to the composer's computer, which relays
+  // it to OpenAI with its API key and answers with the text heard so far.
+  BeginLiveDictation,
+  AppendLiveDictation,
+  FinishLiveDictation,
+  CancelLiveDictation,
+  // The OpenAI API key file Settings > Voice describes and opens.
+  OpenAIKeyFile,
+  EditOpenAIKeyFile,
   // Writes an image attachment into the owning computer's Downloads folder,
   // for a client that cannot run a browser download (utils/fileSaveAction.ts).
   SaveAttachment,
@@ -729,6 +746,8 @@ export {
 } from '../../../bindings/agent-overflow/internal/network/models.js';
 // One result per launch a Stop All named; read, never constructed.
 export type { BackgroundTaskStop } from '../../../bindings/agent-overflow/internal/app/models.js';
+export type { DictationSources as DictationSourceSet } from '../../../bindings/agent-overflow/internal/app/models.js';
+export type { OpenAIKeyFile as OpenAIKeyFileStatus } from '../../../bindings/agent-overflow/internal/app/models.js';
 export type {
   ForgeProject,
   OpenPRThreadRequest,

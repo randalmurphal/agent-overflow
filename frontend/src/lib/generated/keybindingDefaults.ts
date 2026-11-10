@@ -263,10 +263,10 @@ export const KEYBINDING_DEFAULTS: readonly KeybindingRule[] = [
     "defaultKey": "mod+9"
   },
   {
-    "key": "mod+shift+/",
+    "key": "mod+shift+?",
     "command": "help.keybindings",
     "defaultId": "help.keybindings",
-    "defaultKey": "mod+shift+/"
+    "defaultKey": "mod+shift+?"
   },
   {
     "key": "mod+shift+f",
@@ -313,6 +313,19 @@ export const KEYBINDING_DEFAULTS: readonly KeybindingRule[] = [
     "when": "hasActiveThread \u0026\u0026 !anyModalOpen",
     "defaultId": "composer.picker.branch",
     "defaultKey": "mod+shift+b"
+  },
+  {
+    "key": "mod+shift+space",
+    "command": "composer.dictate",
+    "when": "hasActiveThread \u0026\u0026 threadsOperate \u0026\u0026 !anyModalOpen",
+    "defaultId": "composer.dictate",
+    "defaultKey": "mod+shift+space"
+  },
+  {
+    "key": "mod+shift+\u003e",
+    "command": "readAloud.toggle",
+    "defaultId": "readAloud.toggle",
+    "defaultKey": "mod+shift+\u003e"
   },
   {
     "key": "alt+shift+m",

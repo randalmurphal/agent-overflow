@@ -37,6 +37,16 @@
     threadMachineUnreachable,
   } from '../../stores/attachedBackends.svelte';
   import { HOME_BACKEND } from '../../transport/backendKey';
+  import { DictationSession } from '../../dictation/dictationSession.svelte';
+  import DictationButton from './DictationButton.svelte';
+  import ComposerDictationCaption from './ComposerDictationCaption.svelte';
+  import { browserDictationEnvironment } from '../../dictation/browserDictation';
+  import {
+    dictationRemote,
+    dictationSource,
+    refreshDictationSources,
+    registerComposerDictation,
+  } from '../../stores/dictation.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { deriveComposerSendState } from './composerSendState';
   import { dispatchSend } from './composerSend';
@@ -148,6 +158,50 @@
     return !(machine === HOME_BACKEND && hasScope('host'));
   });
   let compactLayout = $derived(isCompactLayout());
+
+  // Dictation records here and transcribes on the computer the thread runs
+  // on. A session belongs to one thread on one computer: switching either
+  // abandons a recording rather than landing its words in another thread.
+  let dictationMachine = $derived(threadMachine(pane.threadId ?? '', pane.thread?.projectId));
+  let dictation = $state<DictationSession | null>(null);
+  // What this engine can capture, fixed for the page's life.
+  const dictationEngine = {
+    records: browserDictationEnvironment.format() !== null,
+    streamsPcm: browserDictationEnvironment.streamsPcm(),
+  };
+  $effect(() => {
+    void refreshDictationSources(dictationMachine);
+  });
+  $effect(() => {
+    const backend = dictationMachine;
+    void pane.threadId;
+    const session = new DictationSession(browserDictationEnvironment, dictationRemote(backend, dictationEngine), (text) =>
+      surface?.insertText(text) ?? false,
+    );
+    dictation = session;
+    const release = registerComposerDictation(pane.paneId, backend, session, () => showDictation);
+    return () => {
+      release();
+      session.dispose();
+    };
+  });
+  // An engine that cannot capture for any source the computer has on shows
+  // no mic rather than one that fails.
+  let showDictation = $derived(
+    !isDisabled && !sendUngranted && !offline && dictationSource(dictationMachine, dictationEngine) !== null,
+  );
+  // Hiding the mic mid-recording (a sign-out, a lost grant) abandons the
+  // recording, so no microphone stays open behind a control that is gone.
+  // So does losing the source the recording started with, even when the
+  // other source is still on: switching live off stops the stream.
+  $effect(() => {
+    const session = dictation;
+    if (!session) return;
+    const source = showDictation ? dictationSource(dictationMachine, dictationEngine) : null;
+    const active = session.activeSource;
+    if (active !== null && active !== source) untrack(() => session.cancel());
+  });
+
   let respondUngranted = $derived(!threadHasScope('approvals:respond', pane.threadId, pane.thread?.projectId));
   // Mid-round signal: a wire round is currently in flight (the model
   // is streaming text/tool work). The composer stays typeable during
@@ -793,6 +847,11 @@
    * component can find it.
    */
   function claimKeydown(e: KeyboardEvent): boolean {
+    if (e.key === 'Escape' && dictation && dictation.phase !== 'idle') {
+      e.preventDefault();
+      dictation.cancel();
+      return true;
+    }
     if (hasUserInputPrompt && e.key === 'ArrowUp' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       const optionButtons = composerRoot?.querySelectorAll<HTMLButtonElement>('[data-user-input-option]');
       const lastOption = optionButtons?.[optionButtons.length - 1];
@@ -996,11 +1055,18 @@
       </div>
     </div>
   {/if}
+  <!-- The caption floats above the card from this box, which carries the
+       card's width so the two share their edges; the card itself clips
+       (overflow-hidden) and could not host it. -->
+  <div class="pointer-events-none relative mx-auto w-full max-w-[68rem]">
+  {#if showDictation && dictation}
+    <ComposerDictationCaption session={dictation} />
+  {/if}
   <div
     bind:this={composerRoot}
     inert={draft.moving}
     aria-busy={draft.moving}
-    class="pointer-events-auto mx-auto w-full max-w-[68rem] rounded-[var(--radius-composer)] border border-border-subtle bg-card shadow-sheet overflow-hidden
+    class="pointer-events-auto w-full rounded-[var(--radius-composer)] border border-border-subtle bg-card shadow-sheet overflow-hidden
            focus-within:border-border focus-within:shadow-menu transition-[border-color,box-shadow] duration-200"
     role="region"
     aria-label="Message Composer"
@@ -1075,7 +1141,16 @@
       attachmentsDeferred={hasInteractivePrompt}
       uploadThreadId={threadIdForUpload}
       ensureUploadThreadId={ensureThreadIdForUpload}
-    />
+    >
+      <!-- The phone puts the mic in the input row, in Send's column; the
+           desktop keeps it in the toolbar beside Send (owner ruling,
+           2026-10-21). One session either way. -->
+      {#snippet trailing()}
+        {#if compactLayout && showDictation && dictation}
+          <DictationButton session={dictation} />
+        {/if}
+      {/snippet}
+    </ComposerInputSurface>
 
     {#if !hasInteractivePrompt && preparingWorktree}
       <div
@@ -1101,11 +1176,13 @@
       hasCurrentPlan={Boolean(latestPlanItem)}
       planCommentCount={hasDraftDiffReviewComments ? activeDiffReviewDraftComments.length : latestPlanDraftComments.length}
       hideSendButton={hasInteractivePrompt}
+      dictation={showDictation && !compactLayout ? dictation : null}
       onSend={() => send()}
       onSendWithoutPlanComments={(hasDraftPlanComments || hasDraftDiffReviewComments) && hasDraftContent ? () => send(false) : undefined}
       onSendInNewThread={hasPlanImplementAction ? sendPlanToNewThread : undefined}
       onInterrupt={interrupt}
     />
     <ComposerWorkspaceStrip {pane} />
+  </div>
   </div>
 </div>

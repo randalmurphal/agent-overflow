@@ -84,6 +84,16 @@ var tierByKey = map[string]Tier{
 	// authority to read and drive this computer's other threads. Host, for
 	// the reason the browser keys are.
 	"threadToolsEnabled": TierHost,
+	// dictationSubscriptionEnabled spends this machine's Codex sign-in on
+	// every client's dictation. Host, like the other grants above.
+	"dictationSubscriptionEnabled": TierHost,
+	// The OpenAI API dictation switch spends this machine's key, and its
+	// options shape every client's transcription through it.
+	"dictationAPIEnabled":   TierHost,
+	"dictationAPIDelay":     TierHost,
+	"dictationAPILanguages": TierHost,
+	"dictationAPIKeywords":  TierHost,
+	"dictationAPIPrompt":    TierHost,
 	// Keep-awake inhibits THIS machine's sleep, and workflowPaused is the
 	// backend engine's own run state.
 	"keepAwakeEnabled": TierHost,

@@ -71,3 +71,16 @@ export function replaceTextareaValue(
   replaceTextareaRange(textarea, start, currentEnd, nextValue.slice(start, nextEnd));
   textarea.setSelectionRange(caret, caret);
 }
+
+/**
+ * `text` as it should land between `before` and `after`: one space on each
+ * side that touches a word, so a dictated phrase never runs into the text
+ * around the caret, and none where whitespace or the edge already separates.
+ */
+export function spacedInsertion(before: string, after: string, text: string): string {
+  const trimmed = text.trim();
+  if (trimmed === '') return '';
+  const lead = before !== '' && !/\s$/.test(before) ? ' ' : '';
+  const trail = after !== '' && !/^\s/.test(after) ? ' ' : '';
+  return lead + trimmed + trail;
+}

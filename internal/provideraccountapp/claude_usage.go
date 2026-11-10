@@ -12,15 +12,16 @@ import (
 	"agent-overflow/internal/provideraccounts"
 )
 
-var rateLimitProbeHTTPClient = &http.Client{}
+var defaultProviderHTTPClient = &http.Client{}
 
-func (m *Manager) rateLimitProbeClient() *http.Client {
+// providerHTTPClient makes AO's own requests to provider endpoints.
+func (m *Manager) providerHTTPClient() *http.Client {
 	if m.deps.HTTPClient != nil {
 		if client := m.deps.HTTPClient(); client != nil {
 			return client
 		}
 	}
-	return rateLimitProbeHTTPClient
+	return defaultProviderHTTPClient
 }
 
 // errClaudeUsageStale reports a usage refresh that was declined rather than
@@ -122,7 +123,7 @@ func (m *Manager) probeSelectedClaudeRateLimits(
 	}
 	snapshot, err := claude.ProbeRateLimitsFromCredentialData(
 		ctx,
-		m.rateLimitProbeClient(),
+		m.providerHTTPClient(),
 		credential,
 	)
 	if !errors.Is(err, claude.ErrOAuthUnauthorized) {
@@ -186,7 +187,7 @@ func (m *Manager) probeSelectedClaudeRateLimits(
 			readErr,
 		)
 	}
-	if claude.CredentialsSignedOut(refreshed.Data) {
+	if claude.CredentialsSignedOut(refreshed.Bytes()) {
 		m.audit(
 			"claude account %s found signed out: the CLI blanked the canonical credential during a usage refresh",
 			selection.AccountID,
@@ -221,8 +222,8 @@ func (m *Manager) probeSelectedClaudeRateLimits(
 	}
 	snapshot, retryErr := claude.ProbeRateLimitsFromCredentialData(
 		ctx,
-		m.rateLimitProbeClient(),
-		refreshed.Data,
+		m.providerHTTPClient(),
+		refreshed.Bytes(),
 	)
 	if errors.Is(retryErr, claude.ErrOAuthUnauthorized) {
 		// A bearer the server rejects immediately after its own refresh issued
@@ -234,7 +235,7 @@ func (m *Manager) probeSelectedClaudeRateLimits(
 	// refresh tokens are single-use, so a rotation that reaches disk but not
 	// the commit leaves this account's slot holding a token the server has
 	// already retired — a login that dies at its next use, not a stale read.
-	return snapshot, refreshed.Data, retryErr
+	return snapshot, refreshed.Bytes(), retryErr
 }
 
 // assertSelectedClaudeIdentity refuses to attribute a canonical-home refresh
@@ -303,7 +304,7 @@ func (m *Manager) probeInactiveClaudeRateLimits(
 	}
 	snapshot, err := claude.ProbeRateLimitsFromCredentialData(
 		ctx,
-		m.rateLimitProbeClient(),
+		m.providerHTTPClient(),
 		credential,
 	)
 	if errors.Is(err, claude.ErrOAuthUnauthorized) {

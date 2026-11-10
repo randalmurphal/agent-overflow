@@ -171,7 +171,7 @@ func (m *Manager) claudeProbeCredentialReader(pins map[string]string) func() ([]
 		if provideraccounts.IsCredentialMissing(err) {
 			return nil, fs.ErrNotExist
 		}
-		return snapshot.Data, err
+		return snapshot.Bytes(), err
 	}
 }
 

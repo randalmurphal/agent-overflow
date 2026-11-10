@@ -1001,6 +1001,16 @@ var Routes = []Route{
 			"and the listener's ordinary 404 for anybody else.",
 	},
 	{
+		Pattern:    "OPTIONS /attachments/dictation",
+		Listener:   "app transport",
+		Credential: CredNone,
+		Posture:    PostureNone,
+		Why: "The dictation upload's preflight, for the reason the " +
+			"attachment upload has one. No credential to check, no work " +
+			"done, 204 with the allow headers for the one admitted origin " +
+			"and the listener's ordinary 404 for anybody else.",
+	},
+	{
 		Pattern:    "/transfers/",
 		Listener:   "app transport",
 		Credential: CredTransferGrant,
@@ -1034,6 +1044,21 @@ var Routes = []Route{
 			"not. Single-shot: a failed upload is retried by minting " +
 			"again, since resumable transfer is deferred to the phone " +
 			"waves and every body here is at most 10 MiB.",
+	},
+	{
+		Pattern:    "PUT /attachments/dictation",
+		Listener:   "app transport",
+		Credential: CredTransferTicket,
+		Posture:    PostureNone,
+		Why: "One piece of a recording uploaded for dictation while the " +
+			"client records. The ticket is minted by a threads:operate call " +
+			"on the connection that opened the recording, and its subject " +
+			"names the recording, the piece's place in it and its exact " +
+			"length; the request contributes the bytes and nothing else. " +
+			"The length is capped DURING the read, as on the attachment " +
+			"upload, and the recording itself refuses a piece out of order " +
+			"or past its size cap. Answers 204 with no body. The bytes stay " +
+			"in memory until the recording is finished or abandoned.",
 	},
 	{
 		Pattern:    "GET /bundle/manifest.json",

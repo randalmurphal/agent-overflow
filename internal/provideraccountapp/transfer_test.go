@@ -26,7 +26,8 @@ func TestClaudeTransferCredentialUsesNativeCredentialWhenProfileIsAbsent(t *test
 		t.Run(tc.name, func(t *testing.T) {
 			var credential *provideraccounts.CredentialSnapshot
 			if tc.credential != "" {
-				credential = &provideraccounts.CredentialSnapshot{Data: []byte(tc.credential)}
+				snapshot := provideraccounts.NewCredentialSnapshot([]byte(tc.credential))
+				credential = &snapshot
 			}
 			if err := checkClaudeTransferCredential(tc.info, credential); (err == nil) != tc.ready {
 				t.Fatal("wrong readiness", err)

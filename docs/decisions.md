@@ -665,8 +665,29 @@ and anti-changes that live only here:
   screenshot is reduced once per tier, not once per pane or boot; memory
   holds a derivative only while the directory cannot take it. Deleting the
   directory, even while the app runs, is the whole cleanup.
-- Voice dictation: not built; the researched options and their auth
-  constraints are in `docs/references/voice-dictation.md`.
+- Voice dictation: a mic in Send's grid, an outlined circle of Send's
+  diameter. On the desktop it is in the toolbar immediately left of Send;
+  on the phone it sits in the input row in Send's column, beside the
+  attachment picker, centered on the last text line, so the toolbar keeps
+  the model label's room. It records on the device and
+  transcribes on the thread's computer through its Codex sign-in with
+  ChatGPT. It inserts at the caret and never sends; Escape or switching
+  the pane's thread abandons a recording. Dictation is off until Settings
+  > Voice turns it on for that computer, and with no dictation source on
+  there is no mic. The endpoint and its 30-day retention are in
+  `docs/references/voice-dictation.md`.
+- Live dictation: a second source that streams the microphone to OpenAI
+  with an API key while the user speaks and shows the text heard so far.
+  The key lives only in an owner-only file under the config root, never in
+  settings, the environment or a client. Where both sources are on, live
+  wins; there is no per-device source picker. An engine that cannot
+  stream uses the subscription when it is on and otherwise shows no mic.
+- Read aloud: a play control beside Copy on finished replies, in Copy's
+  grid, that pauses while playing and offers a restart while paused. It
+  speaks in the device's own voice, one reply at a time across the app;
+  pausing resumes at the start of the sentence. Code, tables and URLs are
+  skipped silently. It is off until this device turns it on in Settings >
+  Voice, and a device with no voice shows no control.
 - Wide blocks pan inside their own box on every layout: markdown tables,
   inline diff bodies and unwrapped fenced code scroll horizontally only
   when they overflow (the `pan-x` rules in `frontend/src/app.css`), with

@@ -162,7 +162,7 @@ func (a *App) readClaudeMCPCredential() ([]byte, error) {
 	if !present {
 		return nil, fs.ErrNotExist
 	}
-	return snapshot.Data, nil
+	return snapshot.Bytes(), nil
 }
 
 func mcpAuthInitResult(result mcpapp.MCPAuthInitResult) MCPAuthInitResult {

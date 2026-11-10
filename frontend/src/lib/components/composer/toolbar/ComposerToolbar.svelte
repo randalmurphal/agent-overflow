@@ -20,6 +20,8 @@
   import PlanSidebarToggleButton from './PlanSidebarToggleButton.svelte';
   import ComposerPickersRollup from './ComposerPickersRollup.svelte';
   import SendButton from './SendButton.svelte';
+  import DictationButton from '../DictationButton.svelte';
+  import type { DictationSession } from '../../../dictation/dictationSession.svelte';
   import ContextWindowMeter from '../../chat/ContextWindowMeter.svelte';
   import RateLimitMeter from '../../chat/RateLimitMeter.svelte';
   import type { SendButtonAction } from './sendButtonTypes';
@@ -54,6 +56,9 @@
     onSendInNewThread?: () => void;
     onInterrupt: () => void;
     hideSendButton?: boolean;
+    /** The composer's dictation, when this layout puts the mic here (the
+     * desktop: an outlined circle immediately left of Send, in its grid). */
+    dictation?: DictationSession | null;
   }
 
   let {
@@ -71,6 +76,7 @@
     onSendInNewThread,
     onInterrupt,
     hideSendButton = false,
+    dictation = null,
   }: Props = $props();
   let backend = $derived(threadMachine(pane.threadId ?? '', pane.thread?.projectId));
 
@@ -235,6 +241,9 @@
       >
         <ContextWindowMeter data={pane.contextWindow} thread={pane.thread} threadId={pane.threadId} />
       </div>
+    {/if}
+    {#if dictation}
+      <DictationButton session={dictation} />
     {/if}
     {#if !hideSendButton}
       <SendButton

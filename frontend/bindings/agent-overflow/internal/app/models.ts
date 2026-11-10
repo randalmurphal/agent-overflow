@@ -34,6 +34,9 @@ import * as highlight$0 from "../highlight/models.js";
 import * as highlightapp$0 from "../highlightapp/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as openaikey$0 from "../openaikey/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as owndevices$0 from "../owndevices/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -1576,6 +1579,53 @@ export class DeviceRevocationResult {
     static createFrom($$source: any = {}): DeviceRevocationResult {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new DeviceRevocationResult($$parsedSource as Partial<DeviceRevocationResult>);
+    }
+}
+
+/**
+ * DictationSources reports what this computer can dictate with. With
+ * either source on, the composer offers a mic.
+ */
+export class DictationSources {
+    /**
+     * Subscription is true when dictation through the Codex sign-in is on
+     * here and Codex is signed in with ChatGPT.
+     */
+    "subscription": boolean;
+
+    /**
+     * Live is true when live dictation through the OpenAI API key is on
+     * here and the key file holds a usable key (app_live_dictation.go).
+     */
+    "live": boolean;
+
+    /**
+     * ChatGPTSignIn is true when Codex is signed in with ChatGPT here,
+     * whether or not dictation through it is on.
+     */
+    "chatGPTSignIn": boolean;
+
+    /** Creates a new DictationSources instance. */
+    constructor($$source: Partial<DictationSources> = {}) {
+        if (!("subscription" in $$source)) {
+            this["subscription"] = false;
+        }
+        if (!("live" in $$source)) {
+            this["live"] = false;
+        }
+        if (!("chatGPTSignIn" in $$source)) {
+            this["chatGPTSignIn"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DictationSources instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DictationSources {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new DictationSources($$parsedSource as Partial<DictationSources>);
     }
 }
 
@@ -3339,6 +3389,40 @@ export class NewThreadDefaultsUpdate {
     static createFrom($$source: any = {}): NewThreadDefaultsUpdate {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new NewThreadDefaultsUpdate($$parsedSource as Partial<NewThreadDefaultsUpdate>);
+    }
+}
+
+/**
+ * OpenAIKeyFile describes this computer's OpenAI API key file, never the
+ * key.
+ */
+export class OpenAIKeyFile {
+    "path": string;
+    "state": openaikey$0.State;
+
+    /**
+     * Problem says why a refused file is refused.
+     */
+    "problem"?: string;
+
+    /** Creates a new OpenAIKeyFile instance. */
+    constructor($$source: Partial<OpenAIKeyFile> = {}) {
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = openaikey$0.State.$zero;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new OpenAIKeyFile instance from a string or object.
+     */
+    static createFrom($$source: any = {}): OpenAIKeyFile {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new OpenAIKeyFile($$parsedSource as Partial<OpenAIKeyFile>);
     }
 }
 

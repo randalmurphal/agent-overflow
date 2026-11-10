@@ -231,14 +231,14 @@ func (s securityClaudeKeychain) write(configHome string, active bool, data []byt
 		}
 		cmd.Stdin = strings.NewReader(command)
 	} else {
-		// Matches Claude Code's native fallback for Keychain payloads
-		// larger than security(1)'s interactive line buffer. The value
-		// is hex-encoded and provider output is never surfaced — but it
-		// rides in argv, which any same-uid process can read via
-		// KERN_PROCARGS2 for the duration of the call, unlike the
-		// ACL-gated item it lands in. Real Claude credentials (~1-2KB)
-		// stay on the -i path; see the review note in AGENTS.md before
-		// relying on this branch for anything bigger.
+		// Claude Code's own fallback for payloads larger than
+		// security(1)'s interactive line buffer, which it takes on every
+		// refresh of such a credential. The hex value rides in argv, so
+		// any same-uid process can read it via KERN_PROCARGS2 while the
+		// call runs. Hex doubles the size, so a credential over about
+		// 1.95 KB lands here: a bare login is about 0.5 KB, and MCP OAuth
+		// tokens stored in the same item push it past. See AGENTS.md for
+		// why neither alternative is better.
 		cmd, cmdErr = securityCommand(
 			"add-generic-password", "-U",
 			"-a", username, "-s", service, "-X", hexValue,
@@ -312,7 +312,7 @@ func (f fileClaudeKeychain) read(configHome string, active bool) ([]byte, error)
 		}
 		return nil, err
 	}
-	return snapshot.Data, nil
+	return snapshot.Bytes(), nil
 }
 
 func (f fileClaudeKeychain) present(configHome string, active bool) (bool, error) {

@@ -579,6 +579,87 @@ const STATIC_FIELDS = [
     keywords: ['merge request', 'glab', 'self-hosted'],
   },
 
+  // --- Voice --------------------------------------------------------------
+  {
+    id: 'voice.dictation',
+    section: 'voice',
+    label: 'Dictate with ChatGPT',
+    keywords: ['microphone', 'mic', 'speech', 'transcribe', 'voice', 'dictation', 'codex', 'whisper'],
+  },
+  {
+    id: 'voice.dictation-live',
+    section: 'voice',
+    label: 'Dictate live with an OpenAI API key',
+    keywords: ['microphone', 'mic', 'speech', 'transcribe', 'voice', 'dictation', 'openai', 'api key', 'live', 'realtime', 'streaming'],
+  },
+  {
+    id: 'voice.dictation-live-key',
+    section: 'voice',
+    label: 'API key file',
+    keywords: ['openai', 'api key', 'credential', 'secret', 'token', 'path', 'edit'],
+  },
+  {
+    id: 'voice.dictation-live-delay',
+    section: 'voice',
+    label: 'Delay',
+    hint: 'How long OpenAI waits for a sentence to settle before transcribing it.',
+    keywords: ['latency', 'eagerness', 'dictation', 'live'],
+    conditional: true,
+  },
+  {
+    id: 'voice.dictation-live-languages',
+    section: 'voice',
+    label: 'Languages',
+    hint: 'ISO 639 codes you speak, separated by commas; empty lets OpenAI detect.',
+    keywords: ['language', 'locale', 'dictation', 'live'],
+    conditional: true,
+  },
+  {
+    id: 'voice.dictation-live-keywords',
+    section: 'voice',
+    label: 'Keywords',
+    hint: 'Names and terms to spell as written, one per line.',
+    keywords: ['vocabulary', 'spelling', 'terms', 'names', 'dictation', 'live'],
+    conditional: true,
+  },
+  {
+    id: 'voice.dictation-live-prompt',
+    section: 'voice',
+    label: 'Prompt',
+    hint: 'Context for the transcription, such as what you dictate about.',
+    keywords: ['context', 'instructions', 'dictation', 'live'],
+    conditional: true,
+  },
+  {
+    id: 'voice.read-aloud',
+    section: 'voice',
+    heading: 'Read aloud',
+    label: 'Read replies aloud',
+    keywords: ['read aloud', 'speak', 'speech', 'text to speech', 'tts', 'listen', 'voice', 'narrate'],
+  },
+  {
+    id: 'voice.read-aloud-voice',
+    section: 'voice',
+    heading: 'Read aloud',
+    label: 'Voice',
+    hint: "One of this device's voices.",
+    keywords: ['read aloud', 'speech', 'text to speech', 'language', 'accent'],
+  },
+  {
+    id: 'voice.read-aloud-rate',
+    section: 'voice',
+    heading: 'Read aloud',
+    label: 'Speed',
+    keywords: ['read aloud', 'rate', 'speech', 'faster', 'slower'],
+  },
+  {
+    id: 'voice.read-aloud-volume',
+    section: 'voice',
+    heading: 'Read aloud',
+    label: 'Volume',
+    keywords: ['read aloud', 'speech', 'loudness', 'quiet', 'loud'],
+  },
+
   // --- Editor -------------------------------------------------------------
   {
     id: 'editor.preferred',
