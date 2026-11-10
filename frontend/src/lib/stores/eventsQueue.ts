@@ -4,11 +4,15 @@
 // setupEventListeners.
 import {
   applyFlushedLifecycle,
+  flushMarkAt,
   markItemsFlushed,
   queueItemFromWire,
+  releaseSettledFlushed,
   removeRestoredQueueItems,
   replaceQueueForThread,
+  sameFlushStream,
   type FlushedLifecycle,
+  type FlushMark,
 } from './sendQueue.svelte';
 import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/internal/app/models';
 import { iterPanes } from './panes.svelte';
@@ -16,12 +20,60 @@ import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { applySendsPendingFrame } from './threadStatuses.svelte';
 import type { BackendKey } from '../transport/backendKey';
+import { onBackendDetached } from '../transport/backends';
+import { currentThreadEvent } from '../transport/entityIndex';
+import { threadHasScope } from '../transport/entityScopes';
 
 // The registry hands out whole ThreadPanes; this module narrows them to
 // the ingest surface at the one acquisition point, so a new pane member
 // use here fails to compile until threadPaneRoles.ts lists it.
 function ingestPanes(): Iterable<ThreadPaneIngest> {
   return iterPanes();
+}
+
+function threadHasPane(threadId: string): boolean {
+  for (const pane of ingestPanes()) {
+    if (pane.threadId === threadId) return true;
+  }
+  return false;
+}
+
+// A `provider:sends_pending` frame that reads nothing pending settles the
+// thread's flushes up to its `flushedThrough`, a `provider:queue_flushed`
+// sequence. Live frames arrive in the order the backend emitted them, so
+// the flush frames a settle covers have arrived. A replay hands each
+// channel over whole, in no fixed order, so a settle can arrive first.
+// `flushStreams` is the flush frame each backend's launch has reached, and
+// `settledAhead` keeps a settle that is ahead of it until the stream
+// catches up, so the entries its late flush frames add are released too.
+const flushStreams = new Map<BackendKey, FlushMark>();
+const settledAhead = new Map<string, FlushMark>();
+
+function reachFlushStream(mark: FlushMark): void {
+  const stream = flushStreams.get(mark.backend);
+  if (stream && sameFlushStream(stream, mark) && stream.sequence >= mark.sequence) return;
+  flushStreams.set(mark.backend, mark);
+  for (const [threadId, settled] of settledAhead) {
+    if (settled.backend !== mark.backend) continue;
+    if (!sameFlushStream(settled, mark) || settled.sequence <= mark.sequence) settledAhead.delete(threadId);
+  }
+}
+
+onBackendDetached(({ backendId }) => {
+  flushStreams.delete(backendId);
+  for (const [threadId, settled] of settledAhead) {
+    if (settled.backend === backendId) settledAhead.delete(threadId);
+  }
+});
+
+/** How many backends' flush streams and threads' settles the ordering retains. */
+export function __flushSettleOrderForTest(): { streams: number; ahead: number } {
+  return { streams: flushStreams.size, ahead: settledAhead.size };
+}
+
+export function __resetFlushSettleOrderForTest(): void {
+  flushStreams.clear();
+  settledAhead.clear();
 }
 
 export interface QueueStateChangedPayload {
@@ -39,6 +91,9 @@ export interface QueueFlushedPayload {
 export interface SendsPendingPayload {
   threadId: string;
   pending: boolean;
+  /** The newest `provider:queue_flushed` sequence the answer saw. Absent
+   * from a backend that does not report it. */
+  flushedThrough?: number;
 }
 
 export interface QueueRestoredPayload {
@@ -83,9 +138,24 @@ export function applyQueueStateChanged(evt: QueueStateChangedPayload | undefined
   }
 }
 
-export function applyQueueFlushed(evt: QueueFlushedPayload | undefined): void {
-  if (!evt || !evt.threadId || !evt.items || evt.items.length === 0) return;
-  markItemsFlushed(evt.threadId, evt.items);
+// A gap marker on the channel arrives here too, with no payload: its
+// sequence moves the stream past the frames it lost.
+export function applyQueueFlushed(
+  evt: QueueFlushedPayload | null | undefined,
+  backend?: BackendKey,
+  sequence?: number,
+): void {
+  const mark = backend === undefined ? undefined : flushMarkAt(backend, sequence);
+  if (evt && evt.threadId && evt.items && evt.items.length > 0) addFlushed(evt, mark);
+  if (mark) reachFlushStream(mark);
+}
+
+function addFlushed(evt: QueueFlushedPayload, mark: FlushMark | undefined): void {
+  markItemsFlushed(evt.threadId, evt.items, mark);
+  const settled = settledAhead.get(evt.threadId);
+  if (mark && settled && sameFlushStream(settled, mark) && !threadHasPane(evt.threadId)) {
+    releaseSettledFlushed(evt.threadId, settled);
+  }
   for (const pane of ingestPanes()) {
     if (pane.threadId !== evt.threadId) continue;
     for (const item of evt.items) {
@@ -128,5 +198,19 @@ export function applySendsPendingEvent(
   backend: BackendKey,
   sequence: number | undefined,
 ): void {
+  releaseSettledFlushes(evt, backend);
   applySendsPendingFrame(evt, backend, sequence);
+}
+
+// Runs for every frame, including one the status ordering drops as older
+// than a RegisterQueueItem answer: what a frame settles stays settled.
+function releaseSettledFlushes(evt: SendsPendingPayload | null | undefined, backend: BackendKey): void {
+  if (!evt?.threadId || evt.pending || !currentThreadEvent(evt.threadId, backend)) return;
+  const settled = flushMarkAt(backend, evt.flushedThrough);
+  if (!settled) return;
+  const stream = flushStreams.get(backend);
+  const reached = stream !== undefined && sameFlushStream(stream, settled) && stream.sequence >= settled.sequence;
+  // Flush frames reach only a client that may operate the thread.
+  if (!reached && threadHasScope('threads:operate', evt.threadId)) settledAhead.set(evt.threadId, settled);
+  if (!threadHasPane(evt.threadId)) releaseSettledFlushed(evt.threadId, settled);
 }

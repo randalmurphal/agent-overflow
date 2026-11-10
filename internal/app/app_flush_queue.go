@@ -221,6 +221,9 @@ func (a *App) ensureFlushDispatchMapsLocked() {
 	if a.flushDispatch.generation == nil {
 		a.flushDispatch.generation = make(map[string]uint64)
 	}
+	if a.flushDispatch.flushUnsettled == nil {
+		a.flushDispatch.flushUnsettled = make(map[string]struct{})
+	}
 }
 
 func (a *App) clearFlushDispatchForRollback(threadID string) {
@@ -545,6 +548,12 @@ func (a *App) publishFlushDispatch(threadID string, group []triage.QueuedFlushIt
 	for _, item := range group {
 		a.noteFlushDispatchItemSettledLocked(threadID, item.ID)
 	}
+	a.ensureFlushDispatchMapsLocked()
+	a.flushDispatch.flushUnsettled[threadID] = struct{}{}
+	// The items just left dispatching, which marks the answer dirty only
+	// when it found them there. The frame owed for this flush needs a
+	// publish either way.
+	a.markSendsPendingDirty(threadID)
 	a.emit(eventchan.ProviderQueueFlushed, QueueFlushedEvent{ThreadID: threadID, Items: items})
 }
 

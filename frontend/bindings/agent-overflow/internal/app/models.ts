@@ -6958,6 +6958,12 @@ export class ThreadLiveState {
     "flushedItems": QueueFlushedItem[];
 
     /**
+     * FlushedThrough is the newest provider:queue_flushed sequence when
+     * FlushedItems was read: every item in it was flushed at or before it.
+     */
+    "flushedThrough": number;
+
+    /**
      * DeferredItems are NON-FLUSH pending-send timeline rows not yet
      * persisted to SQLite (they persist on their wire echo), in FIFO send
      * order. A refresh reconciling against a ListThreadSliceAround page
@@ -7016,6 +7022,9 @@ export class ThreadLiveState {
         if (!("flushedItems" in $$source)) {
             this["flushedItems"] = [];
         }
+        if (!("flushedThrough" in $$source)) {
+            this["flushedThrough"] = 0;
+        }
         if (!("deferredItems" in $$source)) {
             this["deferredItems"] = [];
         }
@@ -7035,10 +7044,10 @@ export class ThreadLiveState {
         const $$createField5_0 = $$createType115;
         const $$createField6_0 = $$createType121;
         const $$createField7_0 = $$createType123;
-        const $$createField8_0 = $$createType117;
-        const $$createField9_0 = $$createType124;
-        const $$createField10_0 = $$createType126;
-        const $$createField11_0 = $$createType128;
+        const $$createField9_0 = $$createType117;
+        const $$createField10_0 = $$createType124;
+        const $$createField11_0 = $$createType126;
+        const $$createField12_0 = $$createType128;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("codexAgents" in $$parsedSource) {
             $$parsedSource["codexAgents"] = $$createField0_0($$parsedSource["codexAgents"]);
@@ -7056,16 +7065,16 @@ export class ThreadLiveState {
             $$parsedSource["flushedItems"] = $$createField7_0($$parsedSource["flushedItems"]);
         }
         if ("deferredItems" in $$parsedSource) {
-            $$parsedSource["deferredItems"] = $$createField8_0($$parsedSource["deferredItems"]);
+            $$parsedSource["deferredItems"] = $$createField9_0($$parsedSource["deferredItems"]);
         }
         if ("interactive" in $$parsedSource) {
-            $$parsedSource["interactive"] = $$createField9_0($$parsedSource["interactive"]);
+            $$parsedSource["interactive"] = $$createField10_0($$parsedSource["interactive"]);
         }
         if ("todo" in $$parsedSource) {
-            $$parsedSource["todo"] = $$createField10_0($$parsedSource["todo"]);
+            $$parsedSource["todo"] = $$createField11_0($$parsedSource["todo"]);
         }
         if ("providerAccount" in $$parsedSource) {
-            $$parsedSource["providerAccount"] = $$createField11_0($$parsedSource["providerAccount"]);
+            $$parsedSource["providerAccount"] = $$createField12_0($$parsedSource["providerAccount"]);
         }
         return new ThreadLiveState($$parsedSource as Partial<ThreadLiveState>);
     }

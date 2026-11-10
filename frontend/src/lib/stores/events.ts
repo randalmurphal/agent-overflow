@@ -507,9 +507,9 @@ export function setupEventListeners(): () => void {
     'provider:queue_state_changed',
     applyQueueStateChanged,
   );
-  const cancelQueueFlushed = wailsEventOn<QueueFlushedPayload>(
+  const cancelQueueFlushed = wailsEventOn<QueueFlushedPayload | null>(
     'provider:queue_flushed',
-    applyQueueFlushed,
+    (evt, origin, sequence) => applyQueueFlushed(evt, backendKeyForOrigin(origin.backendId), sequence),
   );
   const cancelQueueRestored = wailsEventOn<QueueRestoredPayload>(
     'provider:queue_restored',

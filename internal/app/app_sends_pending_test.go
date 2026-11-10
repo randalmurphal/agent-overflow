@@ -329,3 +329,123 @@ func TestRegisterQueueItemAnswersSendsPendingAtItsFrameSequence(t *testing.T) {
 		t.Fatalf("cleared answer %+v, frames %+v: want the clear as of its own frame, after %d", cleared, frames, first.Sequence)
 	}
 }
+
+// A frame that reads nothing pending names the newest queue_flushed it saw,
+// and one follows every flush, even when pending was never published.
+func TestSendsPendingFrameCoversTheFlushesItSaw(t *testing.T) {
+	t.Parallel()
+	app, _ := newAppForFlushQueueRPC(t)
+	bus := transport.NewEventBus(64)
+	t.Cleanup(bus.Close)
+	app.SetEventBus(bus)
+	sub := bus.Subscribe()
+	t.Cleanup(sub.Close)
+	thread := testThread("sends-pending-covers")
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	// The test publishes every answer itself.
+	app.stopSendsPending()
+
+	// next returns the next frame on either channel: a queue_flushed
+	// sequence, or a sends_pending frame.
+	next := func() (flushed uint64, pending *SendsPendingEvent) {
+		t.Helper()
+		deadline := time.After(2 * time.Second)
+		for {
+			select {
+			case e := <-sub.Events():
+				switch e.Channel {
+				case string(eventchan.ProviderQueueFlushed):
+					return e.Seq, nil
+				case string(eventchan.ProviderSendsPending):
+					var evt SendsPendingEvent
+					if err := json.Unmarshal(e.Data, &evt); err != nil {
+						t.Fatalf("decode %s: %v", e.Data, err)
+					}
+					return 0, &evt
+				}
+			case <-deadline:
+				t.Fatal("no frame")
+			}
+		}
+	}
+	noFrame := func(stage string) {
+		t.Helper()
+		select {
+		case e := <-sub.Events():
+			t.Fatalf("%s: unexpected %s frame %s", stage, e.Channel, e.Data)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	flush := func(threadID, itemID string) uint64 {
+		t.Helper()
+		group := []triage.QueuedFlushItem{{ID: itemID, Message: itemID}}
+		app.beginFlushDispatchVisibility(threadID, group)
+		app.publishFlushDispatch(threadID, group, []QueueFlushedItem{{QueueItemID: itemID, UserItemID: "user-" + itemID, Message: itemID}})
+		seq, _ := next()
+		if seq == 0 {
+			t.Fatalf("flush %s: want a queue_flushed frame", itemID)
+		}
+		return seq
+	}
+	settled := func(stage string, want uint64) {
+		t.Helper()
+		_, evt := next()
+		if evt == nil || evt.ThreadID != thread.ID || evt.Pending || evt.FlushedThrough != want {
+			t.Fatalf("%s: frame %+v, want nothing pending through %d", stage, evt, want)
+		}
+	}
+
+	// The echo beat every publish: the answer never read pending, and the
+	// flush is still owed its frame.
+	first := flush(thread.ID, "first")
+	app.publishSendsPending(thread.ID)
+	settled("flush never published as pending", first)
+	app.publishSendsPending(thread.ID)
+	noFrame("answer unchanged and no flush owed")
+
+	// Another thread's flush moves the sequence and owes this thread nothing.
+	other := flush("sends-pending-covers-other", "other")
+	app.publishSendsPending(thread.ID)
+	noFrame("another thread's flush")
+
+	// A flush whose echo is still out reads pending; the frame that clears
+	// it names every flush up to its own read.
+	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{ID: "waiting", Message: "waiting"})
+	second := flush(thread.ID, "second")
+	app.publishSendsPending(thread.ID)
+	if _, evt := next(); evt == nil || !evt.Pending || evt.FlushedThrough != second {
+		t.Fatalf("pending frame %+v, want pending through %d", evt, second)
+	}
+	third := flush("sends-pending-covers-other", "third")
+	if _, ok := app.triage.RemoveQueuedFlushItem(thread.ID, "waiting"); !ok {
+		t.Fatal("waiting not removed")
+	}
+	app.publishSendsPending(thread.ID)
+	settled("cleared after a later flush", third)
+	if first >= other || other >= second || second >= third {
+		t.Fatalf("flush sequences %d %d %d %d, want increasing", first, other, second, third)
+	}
+
+	state, err := app.GetThreadLiveState(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThreadLiveState: %v", err)
+	}
+	if state.FlushedThrough != third {
+		t.Fatalf("live state flushedThrough = %d, want %d", state.FlushedThrough, third)
+	}
+}
+
+// A flush whose batch a rollback already cleared from the dispatch
+// bookkeeping still gets the frame that covers it.
+func TestSendsPendingCoversAFlushWithNoDispatchRecord(t *testing.T) {
+	t.Parallel()
+	app, rec := newAppForFlushQueueRPC(t)
+	const threadID = "sends-pending-no-record"
+	group := []triage.QueuedFlushItem{{ID: "orphan", Message: "orphan"}}
+	app.publishFlushDispatch(threadID, group, []QueueFlushedItem{{QueueItemID: "orphan", UserItemID: "user-orphan", Message: "orphan"}})
+
+	assertSendsPendingFrames(t, app, rec, threadID, "flush with no dispatch record", false)
+}

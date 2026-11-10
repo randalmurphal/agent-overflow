@@ -1035,6 +1035,27 @@ message in the preview until it loads that far. A thread with no mounted
 pane has no timeline for the row to be in; its item-stream handler confirms
 on arrival, which is also what lets the sidebar's working indicator settle.
 
+**Release without a row.** A thread this client does not watch is sent no
+rows, so nothing above confirms its entries. Every `provider:sends_pending`
+frame carries `flushedThrough`, the newest `provider:queue_flushed` sequence
+when the backend read the answer. The answer and the sequence are read under
+the dispatch bookkeeping lock that `queue_flushed` is emitted under, so a
+frame that reads nothing pending settles every message the thread flushed up
+to that sequence. The backend publishes such a frame after every flush, also
+when the published answer did not change (`publishSendsPending`). The client
+marks each entry with the sequence of the frame that added it, or with
+`ThreadLiveState.flushedThrough` for an entry a live-state read added, and
+for a thread with no mounted pane releases the entries a settle covers
+(`releaseSettledFlushed`). A mounted pane keeps its entries until it renders
+the rows. A replay delivers the two channels in no fixed order, so a settle
+ahead of the flush frames it covers is kept until the flush stream reaches it
+(`eventsQueue.ts`). Sequences compare within one launch of one backend; a
+settle releases every marked entry of another launch. An entry with no mark
+stays, as does every entry of a backend that omits `flushedThrough`. A settle
+lost to a transport gap on the channel is not restated: its entries stay
+until the thread settles again or is opened, when the live-state read
+replaces them.
+
 **The preview is bounded.** `SendQueuePreview` renders the newest four
 pending messages and a count of the earlier ones. Its height is part of the
 composer clearance, so an unbounded list would cover the timeline.

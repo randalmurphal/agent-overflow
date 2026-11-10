@@ -31,6 +31,7 @@ import {
   type ActiveTurn,
 } from './threadStatuses.svelte';
 import {
+  flushMarkAt,
   getQueueRevisionForThread,
   getFlushedForThread,
   getQueueForThread,
@@ -184,7 +185,7 @@ export function createThreadLiveStateHydration(
       const flushedItems: FlushedItem[] = (snapshot.flushedItems ?? [])
         .filter((item) => item.userItemId && item.queueItemId)
         .map((item) => {
-          const deliveredAt = (item as Partial<FlushedItem>).deliveredAt;
+          const { deliveredAt, flushMark } = item as Partial<FlushedItem>;
           return {
             sendId: item.sendId,
             queueItemId: item.queueItemId,
@@ -192,9 +193,14 @@ export function createThreadLiveStateHydration(
             message: item.message,
             flushedAt: Date.now(),
             ...(deliveredAt ? { deliveredAt } : {}),
+            ...(flushMark ? { flushMark } : {}),
           };
         });
-      replaceFlushedForThread(threadID, flushedItems);
+      replaceFlushedForThread(
+        threadID,
+        flushedItems,
+        flushMarkAt(threadBackend(threadID) ?? HOME_BACKEND, snapshot.flushedThrough),
+      );
       // The snapshot lists every send the backend still holds unconfirmed,
       // including quiet reservations loaded by this pane's history read.
       // Only confirmed rows may hand over to the timeline; pendingFlush

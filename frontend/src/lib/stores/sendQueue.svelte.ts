@@ -8,6 +8,7 @@ import type { BackendKey } from '../transport/backendKey';
 import type { TimelineCursorLike } from './threadItems';
 import { requireEntityBackend } from '../transport/backends';
 import { threadOwner } from '../transport/threadOwner';
+import { getTransportHelloFor } from './transportStatus.svelte';
 
 /**
  * Pending send queue.
@@ -32,7 +33,10 @@ import { threadOwner } from '../transport/threadOwner';
  * there (eventsItemStream.ts). The other way out is the backend taking the
  * message back: a `provider:queue_state_changed` snapshot that names the
  * entry's queue id again (a requeued dispatch), or `provider:queue_restored`
- * returning it to the composer.
+ * returning it to the composer. A thread no pane is mounted on and this
+ * client does not watch is sent no rows, so its entries leave when the
+ * backend answers that none of the thread's sends is pending
+ * (`releaseSettledFlushed`).
  *
  * There is deliberately NO memo of confirmations that arrive before their
  * Zone 2 entry exists. Such a memo has to outlive both authorities that
@@ -79,6 +83,27 @@ export interface FlushedLifecycle {
   delivery?: 'mid_turn' | 'new_turn';
 }
 
+/** A position in the `provider:queue_flushed` stream of one launch of one
+ * backend. Sequences from different launches do not compare. */
+export interface FlushMark {
+  backend: BackendKey;
+  launchId: string;
+  sequence: number;
+}
+
+/** The mark for `sequence` on `backend`'s current launch. Undefined when
+ * the delivery carried no sequence or the launch is unknown: such a
+ * position cannot be ordered. */
+export function flushMarkAt(backend: BackendKey, sequence: number | undefined): FlushMark | undefined {
+  if (sequence === undefined) return undefined;
+  const launchId = getTransportHelloFor(backend)?.launchId;
+  return launchId ? { backend, launchId, sequence } : undefined;
+}
+
+export function sameFlushStream(a: FlushMark, b: FlushMark): boolean {
+  return a.backend === b.backend && a.launchId === b.launchId;
+}
+
 /** Zone 2 entry. Carries the queue id (frontend-allocated) and the
  * opaque backend-allocated user item id so the
  * "this row's Meta has provider_item_id" detection can clear the
@@ -97,6 +122,11 @@ export interface FlushedItem {
    * does not hold the row reads it to tell history before its window from
    * a row it will still render. */
   deliveredAt?: TimelineCursorLike;
+  /** The `provider:queue_flushed` frame that added the entry. For an entry
+   * a live-state read added it is the stream position of that read, which
+   * the flush is at or before. Absent when the position is unknown; such
+   * an entry is never released by a settle. */
+  flushMark?: FlushMark;
 }
 
 const EMPTY_QUEUE: readonly QueueItem[] = Object.freeze([]);
@@ -351,14 +381,27 @@ export function replaceQueueForThread(
  * Installing it can re-add an entry whose row this client already renders
  * (the snapshot was sampled before the echo). The caller resolves that
  * immediately through its pane's render sync, in the same synchronous
- * hydration step, so no "both" instant is observable. */
+ * hydration step, so no "both" instant is observable.
+ *
+ * `readAt` is the stream position of the snapshot. An entry keeps the mark
+ * it already has on that stream, which is its own frame; any other takes
+ * `readAt`. */
 export function replaceFlushedForThread(
   threadId: string,
   items: readonly FlushedItem[],
+  readAt?: FlushMark,
 ): void {
   if (!threadId) return;
   const removedQueuedItems = removeDispatchedQueueItems(threadId, items);
-  const replacedFlushedItems = replaceZoneItems(flushedByThread, threadId, items, EMPTY_FLUSHED);
+  const held = new Map(flushedByThread.get(threadId).map((entry) => [entry.userItemId, entry.flushMark]));
+  const marked = items.map((item) => {
+    const own = item.flushMark ?? held.get(item.userItemId);
+    const flushMark = own && readAt && !(sameFlushStream(own, readAt) && own.sequence <= readAt.sequence)
+      ? readAt
+      : own ?? readAt;
+    return flushMark === item.flushMark ? item : { ...item, flushMark };
+  });
+  const replacedFlushedItems = replaceZoneItems(flushedByThread, threadId, marked, EMPTY_FLUSHED);
   if (removedQueuedItems || replacedFlushedItems) bumpQueueRevision(threadId);
 }
 
@@ -378,10 +421,13 @@ export function replaceFlushedForThread(
  * row: the caller runs its panes' render sync straight after this call,
  * which is the one place allowed to decide the row is on screen. Adding
  * first and letting the timeline take it back is what makes "never
- * neither" hold for a re-flushed send whose row is no longer rendered. */
+ * neither" hold for a re-flushed send whose row is no longer rendered.
+ *
+ * `mark` is the frame's position in its stream. */
 export function markItemsFlushed(
   threadId: string,
   items: readonly Pick<FlushedItem, 'queueItemId' | 'userItemId' | 'message' | 'sendId'>[],
+  mark?: FlushMark,
 ): void {
   if (!threadId || items.length === 0) return;
   const now = Date.now();
@@ -399,6 +445,7 @@ export function markItemsFlushed(
       userItemId: item.userItemId,
       message: item.message,
       flushedAt: now,
+      ...(mark ? { flushMark: mark } : {}),
     });
   }
   const appendedFlushedItems = appendZoneItems(flushedByThread, threadId, additions);
@@ -439,6 +486,23 @@ export function confirmFlushedByUserItemId(
     EMPTY_FLUSHED,
     (entry) => entry.userItemId !== userItemId,
   );
+  if (changed) bumpQueueRevision(threadId);
+}
+
+/** Release the Zone 2 entries a backend answer settles: `settled` is the
+ * stream position at which the backend read that none of the thread's
+ * sends is pending, so every message flushed up to it was echoed or taken
+ * back. An entry from another launch or backend belongs to a stream that
+ * no longer vouches for it. An unmarked entry stays.
+ *
+ * For a thread with no mounted pane only: a pane holds each entry until it
+ * renders the row, and the answer can precede that render. */
+export function releaseSettledFlushed(threadId: string, settled: FlushMark): void {
+  if (!threadId) return;
+  const changed = filterZoneItems(flushedByThread, threadId, EMPTY_FLUSHED, (entry) => {
+    const mark = entry.flushMark;
+    return !mark || (sameFlushStream(mark, settled) && mark.sequence > settled.sequence);
+  });
   if (changed) bumpQueueRevision(threadId);
 }
 

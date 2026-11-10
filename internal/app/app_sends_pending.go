@@ -16,6 +16,11 @@ import (
 type SendsPendingEvent struct {
 	ThreadID string `json:"threadId"`
 	Pending  bool   `json:"pending"`
+	// FlushedThrough is the newest provider:queue_flushed sequence when
+	// the answer was read. An answer that nothing is pending says every
+	// message the thread flushed up to that sequence was echoed or taken
+	// back, in whatever order the two channels' frames arrive.
+	FlushedThrough uint64 `json:"flushedThrough"`
 }
 
 // SendsPendingAnswer is a thread's sends-pending answer as of the
@@ -103,14 +108,12 @@ func (a *App) runSendsPendingWorker() {
 	}
 }
 
-// readSendsPending answers for threadID across the whole handoff chain:
+// readSendsPendingLocked answers for threadID across the whole handoff chain:
 // triage's queue and claim, the dispatcher's batches, and the pending sends
 // awaiting their echo. Dispatch bookkeeping is held across the triage read,
 // as in queueSnapshotForThread, so a message moving between the two is
-// seen on one side.
-func (a *App) readSendsPending(threadID string) bool {
-	a.flushDispatch.mu.Lock()
-	defer a.flushDispatch.mu.Unlock()
+// seen on one side. The caller holds flushDispatch.mu.
+func (a *App) readSendsPendingLocked(threadID string) bool {
 	if len(a.pendingFlushDispatchItemsLocked(threadID)) > 0 {
 		return true
 	}
@@ -122,13 +125,26 @@ func (a *App) readSendsPending(threadID string) bool {
 // channel. The read happens under publishMu so two publishers cannot emit
 // their answers in the opposite order to the one they read them in, and
 // the sequence is read there too, after the emit, so it names this answer.
+// Dispatch bookkeeping is held across the read: queue_flushed is emitted
+// under it, so the queue_flushed sequence read beside the answer names
+// exactly the flushes the answer saw. An answer that nothing is pending is
+// also published when a flush since the last one is not covered yet, so
+// every queue_flushed is followed by a frame whose FlushedThrough reaches
+// it, even when the echo arrived before pending was ever published.
 // Lock order: publishMu -> flushDispatch.mu -> triage.
 func (a *App) publishSendsPending(threadID string) SendsPendingAnswer {
 	s := &a.sendsPending
 	s.publishMu.Lock()
 	defer s.publishMu.Unlock()
-	pending := a.readSendsPending(threadID)
-	if _, was := s.pending[threadID]; was != pending {
+	a.flushDispatch.mu.Lock()
+	pending := a.readSendsPendingLocked(threadID)
+	flushedThrough := a.eventSequence(eventchan.ProviderQueueFlushed)
+	_, owesSettle := a.flushDispatch.flushUnsettled[threadID]
+	if !pending {
+		delete(a.flushDispatch.flushUnsettled, threadID)
+	}
+	a.flushDispatch.mu.Unlock()
+	if _, was := s.pending[threadID]; was != pending || (!pending && owesSettle) {
 		if pending {
 			if s.pending == nil {
 				s.pending = make(map[string]struct{})
@@ -137,7 +153,7 @@ func (a *App) publishSendsPending(threadID string) SendsPendingAnswer {
 		} else {
 			delete(s.pending, threadID)
 		}
-		a.emit(eventchan.ProviderSendsPending, SendsPendingEvent{ThreadID: threadID, Pending: pending})
+		a.emit(eventchan.ProviderSendsPending, SendsPendingEvent{ThreadID: threadID, Pending: pending, FlushedThrough: flushedThrough})
 	}
 	return SendsPendingAnswer{Pending: pending, Sequence: a.eventSequence(eventchan.ProviderSendsPending)}
 }
