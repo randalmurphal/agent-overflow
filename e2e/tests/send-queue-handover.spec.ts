@@ -483,7 +483,10 @@ test('a message queued after an early Stop took the previous one back shows in t
   await startZoneSampler(page, QUEUED_AFTER_STOP);
   await input.fill(QUEUED_AFTER_STOP);
   await input.press('Enter');
-  await harness.waitForEvent('provider:queue_flushed', (ev: any) => ev.threadId === threadId);
+  // This message's own flush: a send made while the previous turn's text
+  // was still revealing is queued too, and its flush frame is older.
+  await harness.waitForEvent('provider:queue_flushed', (ev: any) =>
+    ev.threadId === threadId && ev.items.some((item: any) => item.message === QUEUED_AFTER_STOP));
   const live = await harness.rpc<{ flushedItems: Array<{ message: string }> }>('GetThreadLiveState', threadId);
   expect(live.flushedItems.map((item) => item.message)).toEqual([QUEUED_AFTER_STOP]);
   await expect(previewRows.filter({ hasText: QUEUED_AFTER_STOP })).toBeVisible();
