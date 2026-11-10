@@ -17,10 +17,6 @@ import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import type { BackendKey } from '../transport/backendKey';
 import type { FetchClip } from '../native/clipSpeech';
 
-/** The computer's code for a sentence refused because its switch is off
- * (internal/readaloud, OffCode). */
-export const READ_ALOUD_API_OFF = 'read_aloud_api_off';
-
 // What each computer answered once asked, absent until then.
 const sources = new SvelteMap<BackendKey, ReadAloudSourceStatus>();
 // Each read's generation per computer; only the newest read applies.

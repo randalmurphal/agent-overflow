@@ -5,7 +5,8 @@
   // beside it. While an OpenAI voice is fetching the first sentence the
   // control shows a spinner instead of pause. The store
   // (`stores/readAloud.svelte.ts`) owns the voice and the one reading at a
-  // time; `backend` is the computer the reply belongs to.
+  // time; `backend` is the computer the reply belongs to, or null when it
+  // is not verified.
 
   import Pause from '@lucide/svelte/icons/pause';
   import Play from '@lucide/svelte/icons/play';
@@ -24,7 +25,7 @@
     resumeReadAloud,
   } from '../../stores/readAloud.svelte';
 
-  let { readingKey, markdown, backend }: { readingKey: string; markdown: string; backend: BackendKey } = $props();
+  let { readingKey, markdown, backend }: { readingKey: string; markdown: string; backend: BackendKey | null } = $props();
 
   let phase = $derived(readAloudPhase(readingKey));
   let waiting = $derived(readAloudWaiting(readingKey));

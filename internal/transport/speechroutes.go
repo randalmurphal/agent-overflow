@@ -1,10 +1,10 @@
 package transport
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -38,12 +38,19 @@ const SpeechDownloadPreflightPath = "OPTIONS /attachments/speech/{speechID}"
 // admits, may wait to be fetched.
 const SpeechTicketTTL = attachmentTicketTTL
 
+// SpeechTransferWindow bounds one fetch, synthesis and delivery together.
+// A clip is a few megabytes at most and holds one of the app's synthesis
+// slots until it is delivered, so a reader slower than this is cut off
+// rather than given the attachment window.
+const SpeechTransferWindow = 2 * time.Minute
+
 // SpeechTransfer is the app-side surface behind the route.
 type SpeechTransfer interface {
 	// SpeakSentence synthesizes the sentence speechID admits under ctx,
-	// which ends when the request does, and returns a WAV file. A failure
-	// a person should see is a *SpeechError.
-	SpeakSentence(ctx context.Context, speechID string) ([]byte, error)
+	// which ends when the request does, and returns a WAV file. The route
+	// closes it once the response is written or abandoned. A failure a
+	// person should see is a *SpeechError.
+	SpeakSentence(ctx context.Context, speechID string) (io.ReadSeekCloser, error)
 }
 
 // SpeechError is a failed synthesis as the route answers it: Status, with
@@ -85,7 +92,7 @@ func (s *Server) handleSpeechDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	// The synthesis runs before the first byte; the window covers it and
 	// the body.
-	extendTransferDeadline(w, AttachmentTransferWindow)
+	extendTransferDeadline(w, SpeechTransferWindow)
 	wav, err := transfer.SpeakSentence(r.Context(), speechID)
 	if err != nil {
 		status, message := http.StatusInternalServerError, err.Error()
@@ -109,7 +116,8 @@ func (s *Server) handleSpeechDownload(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	s.serveTransferContent(w, r, bytes.NewReader(wav), time.Time{}, func(h http.Header) {
+	defer closeTransferContent(wav, "speech", speechID)
+	s.writeTransferContent(w, r, wav, time.Time{}, func(h http.Header) {
 		h.Set("Content-Type", "audio/wav")
 	})
 }

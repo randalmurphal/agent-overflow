@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
@@ -22,6 +22,11 @@ import { clearThreadScrollSnapshotsForTest } from '../../utils/threadScrollSnaps
 import MessageTimeline from './MessageTimeline.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { addProjectLocal, resetProjectsForTest, updateProjectLocal } from '../../stores/projects.svelte';
+import { reloadReadAloudPreferencesForTest, setReadAloudPreference } from '../../stores/readAloudPreferences.svelte';
+import { resetReadAloudSourcesForTest } from '../../stores/readAloudSource.svelte';
+import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { HOME_BACKEND } from '../../transport/backendKey';
+import { REMOTE_BACKEND_UUID, resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 
 beforeAll(() => {
   if (typeof (Element.prototype as unknown as { animate?: unknown }).animate !== 'function') {
@@ -1751,5 +1756,42 @@ describe('<MessageTimeline> under compact', () => {
     } finally {
       setCompactLayoutForTest(false);
     }
+  });
+});
+
+// OpenAI voices spend a computer's API key, so the timeline asks only the
+// computer its thread verifiably runs on which voices it offers.
+describe('<MessageTimeline> read-aloud source', () => {
+  beforeEach(async () => {
+    resetBindingMocks();
+    clearThreadScrollSnapshotsForTest();
+    resetReadAloudSourcesForTest();
+    setBindingMock('GetSettings', async () => null);
+    await loadSettings();
+    localStorage.clear();
+    reloadReadAloudPreferencesForTest();
+    setReadAloudPreference('enabled', true);
+  });
+  afterEach(() => {
+    resetStagedBackends();
+    __resetEntityIndexForTest();
+    resetReadAloudSourcesForTest();
+    localStorage.clear();
+    reloadReadAloudPreferencesForTest();
+  });
+
+  it('asks the owner, and no computer for a thread two computers claim', async () => {
+    const reads = setBindingMock('ReadAloudSource', async () => ({ available: false, voices: [] }));
+    stageBackend({ id: 'laptop', backendId: REMOTE_BACKEND_UUID });
+    noteThread('thread-1', HOME_BACKEND, 1);
+    const owned = render(MessageTimeline, { props: { pane: await buildPane() } });
+    await vi.waitFor(() => expect(reads).toHaveBeenCalledTimes(1));
+    owned.unmount();
+
+    reads.mockClear();
+    noteThread('thread-1', 'laptop', 1);
+    render(MessageTimeline, { props: { pane: await buildPane() } });
+    for (let i = 0; i < 5; i += 1) await tick();
+    expect(reads).not.toHaveBeenCalled();
   });
 });

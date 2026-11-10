@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -19,7 +20,8 @@ import (
 // (MintReadAloudTicket) and fetches its audio from the URL it gets back.
 // The fetch is what calls OpenAI with the key (internal/openai) and answers
 // a WAV file (transport's speech route). Nothing is stored, and the key is
-// read only for each connection's handshake.
+// read only for each connection's handshake. A write to the switch ends
+// every sentence admitted before it (app_settings_broadcast.go).
 
 // readAloudTimeout bounds one fetch's synthesis, retry included.
 const readAloudTimeout = 45 * time.Second
@@ -75,6 +77,12 @@ func (a *App) ReadAloudSource() (ReadAloudSourceStatus, error) {
 //ao:scope threads:operate
 //ao:route selected
 func (a *App) MintReadAloudTicket(ctx context.Context, text, voice string) (string, error) {
+	if a.settings == nil {
+		return "", readaloud.ErrOff
+	}
+	// Read before the switch, so a write that lands between the two
+	// revokes this admission rather than slipping past it.
+	admitted := a.settings.Revision()
 	if !a.readAloudAPIOn() {
 		return "", readaloud.ErrOff
 	}
@@ -83,7 +91,7 @@ func (a *App) MintReadAloudTicket(ctx context.Context, text, voice string) (stri
 		return "", errors.New("read aloud: transport is not serving")
 	}
 	sentences := a.readAloudSentences()
-	id, err := sentences.Admit(text, voice)
+	id, err := sentences.Admit(text, voice, admitted)
 	if err != nil {
 		return "", err
 	}
@@ -108,26 +116,24 @@ func ReadAloudTransfer(a *App) transport.SpeechTransfer { return readAloudTransf
 
 type readAloudTransfer struct{ app *App }
 
-func (t readAloudTransfer) SpeakSentence(ctx context.Context, speechID string) ([]byte, error) {
+func (t readAloudTransfer) SpeakSentence(ctx context.Context, speechID string) (io.ReadSeekCloser, error) {
 	a := t.app
-	request, err := a.readAloudSentences().Take(speechID)
-	if err != nil {
-		return nil, &transport.SpeechError{Status: http.StatusNotFound, Err: err}
-	}
+	// The switch first: turning it off dropped the sentence, and "off" is
+	// the reason to give for that.
 	if !a.readAloudAPIOn() {
 		return nil, &transport.SpeechError{Status: http.StatusConflict, Err: readaloud.ErrOff}
 	}
+	sentence, err := a.readAloudSentences().Take(speechID)
+	if err != nil {
+		return nil, &transport.SpeechError{Status: http.StatusNotFound, Err: err}
+	}
 	speaking, cancel := context.WithTimeout(ctx, readAloudTimeout)
 	defer cancel()
-	speech, err := a.readAloudSentences().Synthesize(speaking, request, a.speakWithOpenAI)
+	clip, err := a.readAloudSentences().Synthesize(speaking, sentence, a.speakWithOpenAI)
 	if err != nil {
 		return nil, readAloudFailure(ctx, err)
 	}
-	wav, err := readaloud.WAV(speech.PCM, openai.SpeechSampleRate)
-	if err != nil {
-		return nil, &transport.SpeechError{Status: http.StatusBadGateway, Err: err}
-	}
-	return wav, nil
+	return clip, nil
 }
 
 func (a *App) speakWithOpenAI(ctx context.Context, request openai.SpeechRequest) (openai.Speech, error) {
@@ -135,20 +141,20 @@ func (a *App) speakWithOpenAI(ctx context.Context, request openai.SpeechRequest)
 }
 
 // speakOnce reads one request aloud on a connection of its own. The key is
-// read for the handshake and zeroed once that is done, before OpenAI
-// speaks.
+// read for the handshake and zeroed once that is done, before the session
+// is configured.
 func speakOnce(ctx context.Context, client *http.Client, readKey func() (*secret.Bytes, error), request openai.SpeechRequest) (openai.Speech, error) {
 	key, err := readKey()
 	if err != nil {
 		return openai.Speech{}, &transport.SpeechError{Status: http.StatusConflict, Err: err}
 	}
-	session, err := openai.DialSpeech(ctx, client, key, request.Voice)
+	session, err := openai.DialSpeech(ctx, client, key)
 	key.Zero()
 	if err != nil {
 		return openai.Speech{}, err
 	}
 	defer session.Close()
-	return session.Speak(ctx, request.Text)
+	return session.Speak(ctx, request)
 }
 
 // readAloudFailure gives a failed synthesis the status the route answers.
@@ -158,6 +164,8 @@ func readAloudFailure(request context.Context, err error) error {
 	switch {
 	case request.Err() != nil, errors.As(err, &classified):
 		return err
+	case errors.Is(err, readaloud.ErrOff):
+		return &transport.SpeechError{Status: http.StatusConflict, Err: err}
 	case errors.Is(err, context.DeadlineExceeded):
 		return &transport.SpeechError{Status: http.StatusGatewayTimeout,
 			Err: fmt.Errorf("OpenAI took longer than %d seconds to read the sentence aloud", int(readAloudTimeout.Seconds()))}

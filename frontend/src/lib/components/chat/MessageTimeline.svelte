@@ -62,7 +62,7 @@
   import { createTimelineActivityRunAutoCollapse } from './timelineActivityRunAutoCollapse';
   import { createTimelineVisibilityGeometry } from './timelineVisibilityGeometry';
   import { coldLoadPriors, coldLoadWarmEdge } from '../../utils/coldLoadTrace';
-  import { threadMachine } from '../../stores/attachedBackends.svelte';
+  import { verifiedThreadMachine } from '../../stores/attachedBackends.svelte';
   import { readAloudPreferences } from '../../stores/readAloudPreferences.svelte';
   import { refreshReadAloudSource } from '../../stores/readAloudSource.svelte';
 
@@ -156,8 +156,8 @@
 
   // Replies read aloud may use the thread's computer's OpenAI voices, so
   // while read-aloud is on here the timeline asks that computer which it
-  // offers.
-  let readAloudMachine = $derived(pane.threadId ? threadMachine(pane.threadId, null) : null);
+  // offers. A thread whose computer is not verified asks none.
+  let readAloudMachine = $derived(pane.threadId ? verifiedThreadMachine(pane.threadId) : null);
   $effect(() => {
     if (readAloudMachine !== null && readAloudPreferences().enabled) void refreshReadAloudSource(readAloudMachine);
   });

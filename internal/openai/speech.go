@@ -15,7 +15,7 @@ import (
 )
 
 // Speech: a Realtime API session that reads text aloud. DialSpeech opens a
-// connection and configures an audio-only voice with no tools; Speak asks
+// connection; Speak configures an audio-only voice with no tools and asks
 // for one out-of-band response. The text travels inside a JSON envelope
 // the instructions describe, so the model reads it rather than answering
 // it.
@@ -100,19 +100,15 @@ var ErrSpeechTooLong = fmt.Errorf("OpenAI's audio ran past %d seconds, so it was
 // errRedirected does.
 var errSpeechRedirected = errors.New("OpenAI speech redirected the connection")
 
-// SpeechSession is one open connection that reads in one voice.
+// SpeechSession is one open connection.
 type SpeechSession struct {
 	conn *websocket.Conn
 }
 
-// DialSpeech opens a session that reads in voice and waits until OpenAI
-// accepts its configuration. The key is read only to build the handshake
-// header, so the caller zeroes it when DialSpeech returns. An unknown voice
-// is refused before anything is sent.
-func DialSpeech(ctx context.Context, client *http.Client, key *secret.Bytes, voice string) (*SpeechSession, error) {
-	if !KnownSpeechVoice(voice) {
-		return nil, fmt.Errorf("OpenAI has no voice %q", voice)
-	}
+// DialSpeech opens a session and returns as soon as the handshake is done.
+// The key is read only to build the handshake header, so the caller zeroes
+// it when DialSpeech returns.
+func DialSpeech(ctx context.Context, client *http.Client, key *secret.Bytes) (*SpeechSession, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -138,12 +134,30 @@ func DialSpeech(ctx context.Context, client *http.Client, key *secret.Bytes, voi
 		return nil, fmt.Errorf("connect to OpenAI speech: %s", scrub(err.Error()))
 	}
 	conn.SetReadLimit(maxSpeechEventBytes)
-	s := &SpeechSession{conn: conn}
-	if err := s.configure(ctx, voice); err != nil {
-		s.Close()
-		return nil, callerEnded(ctx, err)
+	return &SpeechSession{conn: conn}, nil
+}
+
+// Speak configures the session for request.Voice, reads request.Text aloud
+// and returns the audio. An unknown voice or empty text is refused before
+// anything is sent. ctx bounds the call; when it ends, the connection
+// closes and Speak returns its error. A session that failed a Speak is
+// closed.
+func (s *SpeechSession) Speak(ctx context.Context, request SpeechRequest) (Speech, error) {
+	if !KnownSpeechVoice(request.Voice) {
+		return Speech{}, fmt.Errorf("OpenAI has no voice %q", request.Voice)
 	}
-	return s, nil
+	if strings.TrimSpace(request.Text) == "" {
+		return Speech{}, errors.New("there is no text to read aloud")
+	}
+	speech, err := s.speak(ctx, request)
+	if err != nil {
+		s.Close()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return Speech{}, ctxErr
+		}
+		return Speech{}, err
+	}
+	return speech, nil
 }
 
 func (s *SpeechSession) configure(ctx context.Context, voice string) error {
@@ -161,33 +175,9 @@ func (s *SpeechSession) configure(ctx context.Context, voice string) error {
 	}
 }
 
-// Speak reads text aloud and returns the audio. ctx bounds the call; when
-// it ends, the connection closes and Speak returns its error. A session
-// that failed a Speak is closed.
-func (s *SpeechSession) Speak(ctx context.Context, text string) (Speech, error) {
-	if strings.TrimSpace(text) == "" {
-		return Speech{}, errors.New("there is no text to read aloud")
-	}
-	speech, err := s.speak(ctx, text)
-	if err != nil {
-		s.Close()
-		return Speech{}, callerEnded(ctx, err)
-	}
-	return speech, nil
-}
-
 // Close ends the session at once. Closing a closed session does nothing.
 func (s *SpeechSession) Close() {
 	_ = s.conn.CloseNow()
-}
-
-// callerEnded is ctx's error when the caller ended the call, which is then
-// the cause of err; otherwise err.
-func callerEnded(ctx context.Context, err error) error {
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return ctxErr
-	}
-	return err
 }
 
 func speechSessionUpdate(voice string) map[string]any {
@@ -258,9 +248,12 @@ type speechEvent struct {
 	} `json:"error"`
 }
 
-func (s *SpeechSession) speak(ctx context.Context, text string) (Speech, error) {
+func (s *SpeechSession) speak(ctx context.Context, request SpeechRequest) (Speech, error) {
+	if err := s.configure(ctx, request.Voice); err != nil {
+		return Speech{}, err
+	}
 	conn := s.conn
-	envelope, err := SpeechEnvelope(text)
+	envelope, err := SpeechEnvelope(request.Text)
 	if err != nil {
 		return Speech{}, err
 	}

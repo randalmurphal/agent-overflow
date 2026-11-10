@@ -7,25 +7,44 @@ import (
 
 // IsReading reports whether transcript, the model's account of what it
 // spoke, is a reading of text rather than an answer to it, a repeat, or
-// silence. Words are lowercase runs of letters and digits (words). With lcs the
-// longest common subsequence of the two word lists, it is not a reading
-// when nothing was spoken, when the spoken words outside lcs exceed
-// max(3, half the text's words), or when a text of six or more words kept
-// under half of them. The slack admits a number read as words or a filler
-// word; an answer or a second reading exceeds it.
+// silence. Both are split into words (words). It is not a reading when:
+//
+//   - nothing was spoken;
+//   - the text has three or more words without digits and the transcript
+//     keeps under half of them, in order (an answer, or a reading cut
+//     short). Words with digits are left out because a number is spoken as
+//     other words;
+//   - the spoken words that are not the text's exceed max(3, half the
+//     text's words), plus two per digit and two more for each word with
+//     digits, the room a number needs when spelled out (an answer after the
+//     reading, or a second reading).
+//
+// A text of one or two words is judged only by the last rule: one word
+// spoken for another there is as likely a spelling ("OK", "Okay") as an
+// answer.
 func IsReading(text, transcript string) bool {
 	want, spoken := words(text), words(transcript)
 	if len(spoken) == 0 {
 		return false
 	}
-	common := lcs(want, spoken)
-	if extra := len(spoken) - common; extra > max(3, len(want)/2) {
+	var plain []string
+	numberRoom := 0
+	for _, word := range want {
+		if digits := strings.IndexFunc(word, unicode.IsDigit); digits < 0 {
+			plain = append(plain, word)
+			continue
+		}
+		for _, r := range word {
+			if unicode.IsDigit(r) {
+				numberRoom += 2
+			}
+		}
+		numberRoom += 2
+	}
+	if len(plain) >= 3 && 2*lcs(plain, spoken) < len(plain) {
 		return false
 	}
-	if len(want) >= 6 && float64(common)/float64(len(want)) < 0.5 {
-		return false
-	}
-	return true
+	return len(spoken)-lcs(want, spoken) <= max(3, len(want)/2)+numberRoom
 }
 
 // words splits text into lowercase runs of letters and digits. A script

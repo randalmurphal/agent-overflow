@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -13,17 +14,37 @@ import (
 )
 
 // stubSpeech answers every sentence with wav or err and records the ids
-// and contexts it was asked with.
+// and contexts it was asked with, and how many clips were closed.
 type stubSpeech struct {
-	mu   sync.Mutex
-	wav  []byte
-	err  error
-	ids  []string
-	wait chan struct{}
-	ctxs []context.Context
+	mu     sync.Mutex
+	wav    []byte
+	err    error
+	ids    []string
+	wait   chan struct{}
+	ctxs   []context.Context
+	closed int
 }
 
-func (s *stubSpeech) SpeakSentence(ctx context.Context, speechID string) ([]byte, error) {
+// stubClip counts its close on the stub that made it.
+type stubClip struct {
+	*bytes.Reader
+	stub *stubSpeech
+}
+
+func (c stubClip) Close() error {
+	c.stub.mu.Lock()
+	c.stub.closed++
+	c.stub.mu.Unlock()
+	return nil
+}
+
+func (s *stubSpeech) closes() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
+
+func (s *stubSpeech) SpeakSentence(ctx context.Context, speechID string) (io.ReadSeekCloser, error) {
 	s.mu.Lock()
 	s.ids = append(s.ids, speechID)
 	s.ctxs = append(s.ctxs, ctx)
@@ -34,7 +55,10 @@ func (s *stubSpeech) SpeakSentence(ctx context.Context, speechID string) ([]byte
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
-	return s.wav, s.err
+	if s.err != nil {
+		return nil, s.err
+	}
+	return stubClip{Reader: bytes.NewReader(s.wav), stub: s}, nil
 }
 
 func (s *stubSpeech) asked() []string {
@@ -89,6 +113,14 @@ func TestSpeechServesTheSentencesAudioOnce(t *testing.T) {
 	}
 	if asked := stub.asked(); len(asked) != 1 || asked[0] != "speech-1" {
 		t.Fatalf("the seam was asked for %v", asked)
+	}
+	// The clip is released once its response is written.
+	deadline := time.Now().Add(5 * time.Second)
+	for stub.closes() != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the served clip was closed %d times, want 1", stub.closes())
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

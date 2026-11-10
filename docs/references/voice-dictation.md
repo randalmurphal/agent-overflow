@@ -185,11 +185,19 @@ the client shows: 404 spent or expired, 409 switched off or no usable key,
 - The key is read from its file for each connection and zeroed when the
   handshake is done, as for live transcription.
 - `openai.IsReading` compares the transcript with the text by words (by
-  character in scripts written without spaces); a result that is not a
+  character in scripts written without spaces): a text of three or more
+  words must keep half of them, and the words spoken beyond the text are
+  bounded, with room for numbers spelled out. A result that is not a
   reading is retried once and then refused. Audio past 90 seconds is
   abandoned.
 - At most 8 sentences wait and 4 synthesize per computer; a fifth
-  synthesis is refused, not queued. An aborted fetch cancels the call.
+  synthesis is refused, not queued. A clip keeps its synthesis slot until
+  its response is written, and a fetch is cut off after two minutes, so
+  the audio held for slow readers is bounded too. An aborted fetch cancels
+  the call.
+- A write to the switch drops every sentence admitted before it and ends
+  their syntheses, as it does live recordings; switching off and on again
+  does not spare them.
 - The client plays each WAV through one audio element from a blob URL,
   fetching one sentence ahead. The element is first started on a silent
   clip inside the click or key that began the reading, so engines that

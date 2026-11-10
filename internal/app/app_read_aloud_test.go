@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/openai"
 	"agent-overflow/internal/openai/openaifake"
 	"agent-overflow/internal/openaikey"
@@ -124,8 +123,8 @@ func TestMintReadAloudTicketRefusesWhatItCannotRead(t *testing.T) {
 	}
 	enableReadAloud(t, app, false)
 	_, err := app.MintReadAloudTicket(context.Background(), "Hello.", "marin")
-	if code, _, _ := errorsx.PublicDetails(err); !errors.Is(err, readaloud.ErrOff) || code != readaloud.OffCode {
-		t.Fatalf("Mint with the switch off = %v (code %q)", err, code)
+	if !errors.Is(err, readaloud.ErrOff) {
+		t.Fatalf("Mint with the switch off = %v, want ErrOff", err)
 	}
 }
 
@@ -307,26 +306,104 @@ func TestAnAbandonedReadAloudFetchClosesTheOpenAICall(t *testing.T) {
 	}
 }
 
-// The key is gone from memory once the handshake is done: while OpenAI is
-// still speaking, the secret the reader handed over reveals nothing.
-func TestTheReadAloudKeyIsZeroedBeforeOpenAISpeaks(t *testing.T) {
+// The key is gone from memory once the handshake is done: while OpenAI has
+// yet to accept the session's configuration, the secret the reader handed
+// over reveals nothing.
+func TestTheReadAloudKeyIsZeroedOnceTheHandshakeIsDone(t *testing.T) {
 	t.Parallel()
-	const key = "sk-proj-read-aloud-zeroed"
+	const key = openaifake.SpeechConfigStallsKey
 	held := secret.New([]byte(key))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
 		_, err := speakOnce(ctx, isolatedHTTPClient, func() (*secret.Bytes, error) { return held, nil },
-			openai.SpeechRequest{Text: "Wait " + openaifake.SpeechStalls, Voice: "marin"})
+			openai.SpeechRequest{Text: "Hello there.", Voice: "marin"})
 		done <- err
 	}()
-	waitFor(t, "OpenAI to be asked to speak", func() bool { return len(openaifake.SpeechAsks(key)) == 1 })
+	waitFor(t, "the session to send its configuration", func() bool { return openaifake.SpeechSessionsConfigured(key) == 1 })
 	if held.Reveal() != nil || held.Len() != 0 {
-		t.Fatal("the key is still in memory while OpenAI speaks")
+		t.Fatal("the key is still in memory after the handshake")
 	}
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("speakOnce = %v, want context.Canceled", err)
+	}
+}
+
+// Turning the switch off ends a synthesis in progress, and one admitted
+// before it stays refused when the switch comes back on.
+func TestSwitchingReadAloudOffEndsWhatWasAdmitted(t *testing.T) {
+	t.Parallel()
+	const key = "sk-proj-read-aloud-revoked"
+	app, base := newReadAloudTestApp(t, key)
+	speaking, err := app.MintReadAloudTicket(context.Background(), "Wait "+openaifake.SpeechStalls, "marin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waiting, err := app.MintReadAloudTicket(context.Background(), "Hello there.", "marin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type answer struct {
+		status int
+		body   string
+	}
+	fetched := make(chan answer, 1)
+	go func() {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, base+speaking, nil)
+		if err != nil {
+			fetched <- answer{0, err.Error()}
+			return
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			fetched <- answer{0, err.Error()}
+			return
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err := errors.Join(err, resp.Body.Close()); err != nil {
+			fetched <- answer{0, err.Error()}
+			return
+		}
+		fetched <- answer{resp.StatusCode, string(body)}
+	}()
+	waitFor(t, "the stalled OpenAI call", func() bool { return openaifake.OpenSpeechSessions(key) == 1 })
+
+	enableReadAloud(t, app, false)
+
+	select {
+	case got := <-fetched:
+		if got.status != http.StatusConflict || got.body != readaloud.ErrOff.Error() {
+			t.Fatalf("the synthesis in progress answered %d %q, want 409 and the off message", got.status, got.body)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the synthesis kept running after the switch went off")
+	}
+	waitFor(t, "the OpenAI call to close", func() bool { return openaifake.OpenSpeechSessions(key) == 0 })
+
+	enableReadAloud(t, app, true)
+	status, body, _ := fetchSpeech(t, context.Background(), base+waiting)
+	if status != http.StatusNotFound || string(body) != readaloud.ErrUnknown.Error() {
+		t.Fatalf("a sentence admitted before the switch went off = %d %q, want 404", status, body)
+	}
+	if asks := openaifake.SpeechAsks(key); len(asks) != 1 {
+		t.Fatalf("OpenAI was asked %d times, want only the stalled one", len(asks))
+	}
+	// What is admitted now is read.
+	if status, _, _ := mintAndFetch(t, app, base, "Hello again.", "marin"); status != http.StatusOK {
+		t.Fatalf("a fetch after the switch came back on = %d", status)
+	}
+}
+
+// Each served clip gives its synthesis slot back, so more sentences than
+// the cap can be read one after another.
+func TestAServedReadAloudClipFreesItsSlot(t *testing.T) {
+	t.Parallel()
+	app, base := newReadAloudTestApp(t, "sk-proj-read-aloud-slots")
+	for i := range readaloud.MaxSpeaking + 2 {
+		if status, body, _ := mintAndFetch(t, app, base, "Hello there.", "marin"); status != http.StatusOK {
+			t.Fatalf("fetch %d = %d %q", i+1, status, body)
+		}
 	}
 }

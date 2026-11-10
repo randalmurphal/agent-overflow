@@ -5,8 +5,10 @@
 // the page to its end (the fixtures fail a test on any CSP violation, so
 // blob playback is allowed); pause and resume refetch the sentence it
 // paused in; Preview reads a voice without changing the saved one; a
-// failure shows the computer's reason; a device with no voices reads
-// through the computer; with the switch off nothing is offered or fetched.
+// failure shows the computer's reason; switching the computer's switch off
+// ends a reading, sounding or still waiting on OpenAI, without an error; a
+// device with no voices reads through the computer; with the switch off
+// nothing is offered or fetched.
 // The isolated boot answers OpenAI in-process (internal/openai/openaifake).
 
 import type { Page } from '@playwright/test';
@@ -31,6 +33,8 @@ const LONG_REPLY = 'This first sentence is long enough to pause while it is stil
 // Read aloud drops a bracketed span as a citation, so the fake's marker is
 // escaped to reach the computer as text.
 const MISREAD_REPLY = 'This one is answered instead of read \\[fake: answer\\].';
+const STALLED_REPLY = 'OpenAI never answers this one \\[fake: stall\\].';
+const REPLIES = 4;
 
 async function seedReplies(harness: HarnessApp): Promise<void> {
   await harness.rpc<SeedResult>('HarnessSeed', {
@@ -43,6 +47,7 @@ async function seedReplies(harness: HarnessApp): Promise<void> {
           { userText: 'First?', items: [{ kind: 'assistant_text', summary: FIRST_REPLY }] },
           { userText: 'Long?', items: [{ kind: 'assistant_text', summary: LONG_REPLY }] },
           { userText: 'Misread?', items: [{ kind: 'assistant_text', summary: MISREAD_REPLY }] },
+          { userText: 'Stalled?', items: [{ kind: 'assistant_text', summary: STALLED_REPLY }] },
         ],
       }],
     }],
@@ -52,7 +57,7 @@ async function seedReplies(harness: HarnessApp): Promise<void> {
 async function openThread(harness: HarnessApp, page: Page): Promise<void> {
   await harness.open(page);
   await page.getByTestId('thread-row').click();
-  await expect(page.getByTestId('assistant-message-meta')).toHaveCount(3);
+  await expect(page.getByTestId('assistant-message-meta')).toHaveCount(REPLIES);
 }
 
 /** Saved voice `voiceId`, chosen in Settings > Voice. */
@@ -163,6 +168,42 @@ test('a reading OpenAI cannot do stops with the computer’s reason', async ({ h
   expect(speech.minted).toEqual([{ text: 'This one is answered instead of read [fake: answer].', voice: 'marin' }]);
 });
 
+test('switching the computer’s OpenAI voices off ends a reading without an error', async ({ harness, page }) => {
+  await installSpeechStub(page);
+  await setUpOpenAIVoices(harness, 'sk-e2e-read-aloud-revoked');
+  await seedReplies(harness);
+  const speech = watchSpeech(page);
+  await openThread(harness, page);
+  await chooseVoice(page, 'openai:marin');
+
+  // While a sentence is sounding.
+  const sounding = readAloudSlots(page).nth(1);
+  await readAloudButtons(page).nth(1).click();
+  await expect(sounding).toHaveAttribute('data-waiting', 'false');
+  await expect(sounding).toHaveAttribute('data-phase', 'playing');
+  await turnOffOpenAIVoices(harness);
+  await expect(sounding).toHaveAttribute('data-phase', 'idle');
+
+  // While OpenAI has yet to answer the first sentence.
+  await setUpOpenAIVoices(harness, 'sk-e2e-read-aloud-revoked');
+  await openVoiceSettings(page);
+  await expect(page.getByTestId('voice-read-aloud-api-status')).toHaveText('Ready');
+  await page.keyboard.press('Escape');
+  const waiting = readAloudSlots(page).nth(3);
+  const minted = speech.minted.length;
+  await readAloudButtons(page).nth(3).click();
+  await expect(waiting).toHaveAttribute('data-waiting', 'true');
+  await expect.poll(() => speech.minted.length).toBe(minted + 1);
+  await turnOffOpenAIVoices(harness);
+  await expect(waiting).toHaveAttribute('data-phase', 'idle');
+
+  await expect(page.getByTestId('toast-message')).toHaveCount(0);
+  // The saved OpenAI voice is no longer offered here, so the device reads.
+  await readAloudButtons(page).first().click();
+  await expect.poll(async () => (await spoken(page)).map((u) => u.text)).toEqual(['First one.']);
+  expect(speech.minted).toHaveLength(minted + 1);
+});
+
 test('a device with no voices reads through the computer’s OpenAI voice', async ({ harness, page }) => {
   await installSpeechStub(page, { voices: false, enabled: true });
   await setUpOpenAIVoices(harness, 'sk-e2e-read-aloud-mute');
@@ -170,7 +211,7 @@ test('a device with no voices reads through the computer’s OpenAI voice', asyn
   const speech = watchSpeech(page);
   // Straight to the thread: the timeline asks the computer.
   await openThread(harness, page);
-  await expect(readAloudButtons(page)).toHaveCount(3);
+  await expect(readAloudButtons(page)).toHaveCount(REPLIES);
   await readAloudButtons(page).first().click();
   await expect(readAloudSlots(page).first()).toHaveAttribute('data-phase', 'idle', { timeout: 20_000 });
   expect(speech.minted.map((m) => m.text)).toEqual(FIRST_SENTENCES);
@@ -199,7 +240,7 @@ test('with the switch off no OpenAI voice is offered and nothing is fetched', as
   const mute = await page.context().newPage();
   await installSpeechStub(mute, { voices: false, enabled: true });
   await openThread(harness, mute);
-  await expect(mute.getByTestId('assistant-message-copy-slot').getByRole('button')).toHaveCount(3);
+  await expect(mute.getByTestId('assistant-message-copy-slot').getByRole('button')).toHaveCount(REPLIES);
   await expect(readAloudButtons(mute)).toHaveCount(0);
   await mute.close();
 });

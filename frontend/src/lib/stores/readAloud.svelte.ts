@@ -16,15 +16,9 @@ import { untrack } from 'svelte';
 import { speechEngine, type SpeechEngine, type SpeechPlayback, type SpeechVoice } from '../native/speech';
 import { clipSpeechEngine } from '../native/clipSpeech';
 import { speakablePieces } from '../utils/speakableText';
-import { TransportError } from '../transport/wsClient';
 import type { BackendKey } from '../transport/backendKey';
 import { readAloudPreferences } from './readAloudPreferences.svelte';
-import {
-  READ_ALOUD_API_OFF,
-  readAloudClipFetcher,
-  readAloudSourceVoices,
-  refreshReadAloudSource,
-} from './readAloudSource.svelte';
+import { readAloudClipFetcher, readAloudSourceVoices, refreshReadAloudSource } from './readAloudSource.svelte';
 import { addErrorToast } from './toast.svelte';
 
 export type ReadAloudPhase = 'idle' | 'playing' | 'paused';
@@ -61,6 +55,8 @@ const voices = $state<{ list: SpeechVoice[] }>({ list: [] });
 let engine: SpeechEngine | null = null;
 let pieces: string[] = [];
 let playback: SpeechPlayback | null = null;
+// Counts readings started, so a late failure report knows it is stale.
+let readings = 0;
 let watchingVoices = false;
 
 const clipEngineFor = (backend: BackendKey): SpeechEngine => clipSpeechEngine({
@@ -149,6 +145,7 @@ export function readAloud(key: string, markdown: string, backend: BackendKey | n
   const route = readAloudRoute(backend, voiceId ?? readAloudPreferences().voiceId);
   if (!route) return;
   stopVoice();
+  readings += 1;
   pieces = speakablePieces(markdown);
   if (pieces.length === 0) {
     reset();
@@ -224,16 +221,20 @@ function speakFrom(index: number): void {
       if (playback !== current) return;
       playback = null;
       reset();
-      if (route.kind === 'device') {
-        addErrorToast('Read aloud stopped: this device’s voice failed.', err);
-      } else if (err instanceof TransportError && err.code === READ_ALOUD_API_OFF) {
-        // The switch went off there: stop as when the source goes away.
-        void refreshReadAloudSource(route.backend);
-      } else {
-        addErrorToast(`Read aloud stopped: ${err instanceof Error ? err.message : String(err)}`, err);
-      }
+      if (route.kind === 'device') addErrorToast('Read aloud stopped: this device’s voice failed.', err);
+      else void reportOpenAIFailure(route, err);
     },
   );
+}
+
+// A failed OpenAI reading asks its computer again first. A voice it no
+// longer offers went away, which stops a reading silently; any other
+// failure says the computer's reason, unless another reading has started.
+async function reportOpenAIFailure(route: ReadAloudRoute & { kind: 'openai' }, err: unknown): Promise<void> {
+  const reading = readings;
+  await refreshReadAloudSource(route.backend);
+  if (reading !== readings || !servable(route)) return;
+  addErrorToast(`Read aloud stopped: ${err instanceof Error ? err.message : String(err)}`, err);
 }
 
 function stopVoice(): void {
@@ -267,6 +268,7 @@ export function resetReadAloudForTest(): void {
   engine = null;
   watchingVoices = false;
   voices.list = [];
+  readings = 0;
   openAIEngineFor = clipEngineFor;
 }
 

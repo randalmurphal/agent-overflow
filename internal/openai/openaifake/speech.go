@@ -16,8 +16,8 @@ import (
 )
 
 // Speech: the fake checks the session.update and response.create the
-// client sends against the shapes openai.DialSpeech and SpeechSession.Speak
-// use, refusing anything else
+// client sends against the shapes openai.SpeechSession.Speak uses,
+// refusing anything else
 // with an error event, and reads the envelope's response_text back: the
 // transcript is the text, and the audio is SpeechAudio(transcript), sent in
 // several deltas.
@@ -35,7 +35,11 @@ import (
 //   - SpeechRunsLong sends SpeechRunsLongSeconds of audio, past
 //     openai.MaxSpeechSeconds.
 //
-// RefusedKey is refused at the handshake, as for live transcription.
+// RefusedKey is refused at the handshake, as for live transcription. A
+// session opened with SpeechConfigStallsKey is never told its
+// configuration was accepted.
+const SpeechConfigStallsKey = "sk-fake-speech-config-stalls"
+
 const (
 	SpeechStalls      = "[fake: stall]"
 	SpeechAnswers     = "[fake: answer]"
@@ -80,9 +84,10 @@ type SpeechAsk struct {
 }
 
 type speechLog struct {
-	mu   sync.Mutex
-	asks []SpeechAsk
-	open int
+	mu         sync.Mutex
+	asks       []SpeechAsk
+	open       int
+	configured int
 }
 
 // speechLogs maps a key to what sessions opened with it asked for.
@@ -109,6 +114,15 @@ func OpenSpeechSessions(key string) int {
 	log.mu.Lock()
 	defer log.mu.Unlock()
 	return log.open
+}
+
+// SpeechSessionsConfigured counts the session.update events sessions
+// opened with key sent, accepted or not.
+func SpeechSessionsConfigured(key string) int {
+	log := logFor(key)
+	log.mu.Lock()
+	defer log.mu.Unlock()
+	return log.configured
 }
 
 // answersOnce counts the requests per SpeechAnswersOnce text, so odd ones
@@ -153,7 +167,8 @@ func serveSpeech(conn net.Conn) {
 		return
 	}
 	defer func() { _ = ws.CloseNow() }()
-	log := logFor(strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer "))
+	key := strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
+	log := logFor(key)
 	log.mu.Lock()
 	log.open++
 	log.mu.Unlock()
@@ -162,13 +177,14 @@ func serveSpeech(conn net.Conn) {
 		log.open--
 		log.mu.Unlock()
 	}()
-	(&speechSession{session: session{ws: ws}, log: log}).run(context.Background())
+	(&speechSession{session: session{ws: ws}, log: log, configStalls: key == SpeechConfigStallsKey}).run(context.Background())
 }
 
 type speechSession struct {
 	session
-	log   *speechLog
-	voice string
+	log          *speechLog
+	voice        string
+	configStalls bool
 }
 
 func (s *speechSession) run(ctx context.Context) {
@@ -188,12 +204,20 @@ func (s *speechSession) run(ctx context.Context) {
 		}
 		switch event.Type {
 		case "session.update":
+			s.log.mu.Lock()
+			s.log.configured++
+			s.log.mu.Unlock()
 			voice, problem := checkSpeechSession(event.Session)
 			if problem != "" {
 				s.fail(ctx, "invalid_value", problem)
 				continue
 			}
 			s.voice = voice
+			if s.configStalls {
+				// Never acknowledge; return once the client closes.
+				_, _, _ = s.ws.Read(ctx)
+				return
+			}
 			s.send(ctx, map[string]any{"type": "session.updated", "session": event.Session})
 		case "response.create":
 			if s.voice == "" {
@@ -266,7 +290,7 @@ func (s *speechSession) respond(ctx context.Context, text string) {
 }
 
 // checkSpeechSession returns the voice of a session.update shaped as
-// openai.DialSpeech sends it, or what OpenAI would refuse.
+// SpeechSession.Speak sends it, or what OpenAI would refuse.
 func checkSpeechSession(raw json.RawMessage) (string, string) {
 	var session struct {
 		Type             string   `json:"type"`

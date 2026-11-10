@@ -35,6 +35,7 @@
     backendReachable,
     threadMachine,
     threadMachineUnreachable,
+    verifiedThreadMachine,
   } from '../../stores/attachedBackends.svelte';
   import { HOME_BACKEND } from '../../transport/backendKey';
   import { DictationSession } from '../../dictation/dictationSession.svelte';
@@ -165,7 +166,8 @@
   // Dictation records here and transcribes on the computer the thread runs
   // on. A session belongs to one thread on one computer: switching either
   // abandons a recording rather than landing its words in another thread.
-  let dictationMachine = $derived(threadMachine(pane.threadId ?? '', pane.thread?.projectId));
+  // A thread whose computer is not verified has no mic and asks no computer.
+  let dictationMachine = $derived(verifiedThreadMachine(pane.threadId ?? ''));
   let dictation = $state<DictationSession | null>(null);
   // What this engine can capture, fixed for the page's life.
   const dictationEngine = {
@@ -173,11 +175,15 @@
     streamsPcm: browserDictationEnvironment.streamsPcm(),
   };
   $effect(() => {
-    void refreshDictationSources(dictationMachine);
+    if (dictationMachine !== null) void refreshDictationSources(dictationMachine);
   });
   $effect(() => {
     const backend = dictationMachine;
     void pane.threadId;
+    if (backend === null) {
+      dictation = null;
+      return;
+    }
     const session = new DictationSession(browserDictationEnvironment, dictationRemote(backend, dictationEngine), (text) =>
       surface?.insertText(text) ?? false,
     );
@@ -191,7 +197,8 @@
   // An engine that cannot capture for any source the computer has on shows
   // no mic rather than one that fails.
   let showDictation = $derived(
-    !isDisabled && !sendUngranted && !offline && dictationSource(dictationMachine, dictationEngine) !== null,
+    !isDisabled && !sendUngranted && !offline && dictationMachine !== null
+      && dictationSource(dictationMachine, dictationEngine) !== null,
   );
   // Hiding the mic mid-recording (a sign-out, a lost grant) abandons the
   // recording, so no microphone stays open behind a control that is gone.
@@ -200,7 +207,7 @@
   $effect(() => {
     const session = dictation;
     if (!session) return;
-    const source = showDictation ? dictationSource(dictationMachine, dictationEngine) : null;
+    const source = showDictation && dictationMachine !== null ? dictationSource(dictationMachine, dictationEngine) : null;
     const active = session.activeSource;
     if (active !== null && active !== source) untrack(() => session.cancel());
   });

@@ -1072,14 +1072,16 @@ var Routes = []Route{
 			"against its subject. The fetch is what spends the user's key: " +
 			"the backend re-checks the Settings > Voice switch, reads the " +
 			"key, asks OpenAI under the request's context so an aborted " +
-			"fetch cancels the call, and answers audio/wav it built itself " +
-			"around OpenAI's PCM. A failure answers a 4xx or 5xx with a " +
+			"fetch cancels the call, as does a write to the switch, and " +
+			"answers audio/wav it built itself around OpenAI's PCM. A failure answers a 4xx or 5xx with a " +
 			"short plain-text message this tree wrote, OpenAI's text only " +
 			"after the openai package scrubbed it. nosniff and " +
 			"Cache-Control: no-store as on every ticketed transfer. Not " +
 			"Origin-guarded and not rate limited, for the reasons argued " +
 			"on the download row; concurrent syntheses are capped by the " +
-			"backend instead.",
+			"backend instead, a clip holds its place under that cap until " +
+			"its response is written, and the whole fetch has a two minute " +
+			"window.",
 	},
 	{
 		Pattern:    "OPTIONS /attachments/speech/{speechID}",

@@ -28,7 +28,7 @@
   import type { StreamingAssistantRenderContext } from '../../stores/streamingAssistantReveal';
   import { previewRewriteKey } from '../../stores/devServers.svelte';
   import { hasScope } from '../../transport/scopes';
-  import { threadMachine } from '../../stores/attachedBackends.svelte';
+  import { threadMachine, verifiedThreadMachine } from '../../stores/attachedBackends.svelte';
   import { isHarnessSession } from '../../transport/harnessMode';
 
   type AssistantMarkdownDiagnostics = {
@@ -102,8 +102,9 @@
   // It hides with the hover chrome, except while its reply is being read:
   // the control that pauses it must stay where it was found.
   // It reads through this device's voice or the thread's computer's OpenAI
-  // voice, so the computer is part of whether it is offered.
-  const readAloudMachine = $derived(threadMachine(item.threadId, null));
+  // voice, so the computer is part of whether it is offered. A thread whose
+  // computer is not verified reads in this device's voice only.
+  const readAloudMachine = $derived(verifiedThreadMachine(item.threadId));
   const canReadAloud = $derived(canCopy && readAloudAvailable(readAloudMachine));
   const readingKey = $derived(replyReadingKey(item.threadId, item.id));
   const readingThis = $derived(readAloudPhase(readingKey) !== 'idle');

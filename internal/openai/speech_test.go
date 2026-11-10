@@ -27,13 +27,13 @@ func speakWith(t *testing.T, client *http.Client, key string, request openai.Spe
 // speak dials, zeroes the key as a caller does, and reads request aloud.
 func speak(ctx context.Context, client *http.Client, key string, request openai.SpeechRequest) (openai.Speech, error) {
 	secretKey := secret.New([]byte(key))
-	session, err := openai.DialSpeech(ctx, client, secretKey, request.Voice)
+	session, err := openai.DialSpeech(ctx, client, secretKey)
 	secretKey.Zero()
 	if err != nil {
 		return openai.Speech{}, err
 	}
 	defer session.Close()
-	return session.Speak(ctx, request.Text)
+	return session.Speak(ctx, request)
 }
 
 func TestSpeakReturnsTheVoicesAudioAndTranscript(t *testing.T) {
@@ -98,16 +98,18 @@ func TestSpeakReturnsWhatWasSpokenEvenWhenItIsNotTheText(t *testing.T) {
 	}
 }
 
-func TestSpeakRefusesAnUnknownVoiceWithoutConnecting(t *testing.T) {
+func TestSpeakRefusesAnUnknownVoiceOrNoTextWithoutAsking(t *testing.T) {
 	t.Parallel()
-	transport := &keyedTransport{answer: func(*http.Request) *http.Response { panic("dialed") }}
-	for _, voice := range []string{"", "nova", "Marin"} {
-		if _, err := speakWith(t, &http.Client{Transport: transport}, testKey, openai.SpeechRequest{Text: "Hi.", Voice: voice}); err == nil {
-			t.Fatalf("voice %q was accepted", voice)
+	const key = "sk-proj-speech-refusals"
+	for _, request := range []openai.SpeechRequest{
+		{Text: "Hi.", Voice: ""}, {Text: "Hi.", Voice: "nova"}, {Text: "Hi.", Voice: "Marin"}, {Text: " \n", Voice: "marin"},
+	} {
+		if _, err := speakWith(t, fakeClient(), key, request); err == nil {
+			t.Fatalf("%+v was accepted", request)
 		}
 	}
-	if transport.keyed != 0 {
-		t.Fatalf("an unknown voice dialed %d times", transport.keyed)
+	if configured, asks := openaifake.SpeechSessionsConfigured(key), openaifake.SpeechAsks(key); configured != 0 || len(asks) != 0 {
+		t.Fatalf("a refused request configured %d sessions and asked %v", configured, asks)
 	}
 }
 
@@ -211,6 +213,19 @@ func TestTheKeyTravelsOnlyInTheAuthorizationHeader(t *testing.T) {
 	if len(audit.carriers) != 2 || audit.carriers[0] != "Authorization" || audit.carriers[1] != "Authorization" {
 		t.Fatalf("the key was carried in %v; want one Authorization header per request", audit.carriers)
 	}
+}
+
+// A session whose configuration OpenAI never accepts ends with the caller's
+// deadline.
+func TestSpeakGivesUpOnAConfigurationNeverAccepted(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, err := speak(ctx, fakeClient(), openaifake.SpeechConfigStallsKey, openai.SpeechRequest{Text: "Hello there.", Voice: "marin"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Speak = %v, want context.DeadlineExceeded", err)
+	}
+	eventually(t, "the fake to see the connection close", func() bool { return openaifake.OpenSpeechSessions(openaifake.SpeechConfigStallsKey) == 0 })
 }
 
 // Cancelling the caller's context ends a reading OpenAI never answers, and

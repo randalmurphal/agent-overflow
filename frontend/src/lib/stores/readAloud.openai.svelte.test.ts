@@ -281,30 +281,76 @@ describe('read-aloud in OpenAI voices', () => {
     expect(readAloudPhase('a')).toBe('playing');
   });
 
-  it('says the computer’s reason when a reading fails, and stops silently when its switch went off', async () => {
+  it('says the computer’s reason when a reading fails and the computer still offers the voice', async () => {
     const shown = vi.spyOn(toast, 'addErrorToast').mockImplementation(() => undefined as never);
+    const reads = setBindingMock('ReadAloudSource', async () => ({ available: true, voices: VOICES }));
     setReadAloudPreference('voiceId', 'openai:marin');
     readAloud('a', REPLY, 'laptop');
     const failure = new Error('OpenAI did not read the text as written');
     clips.playbacks[0].fail(failure);
     await settle();
     expect(readAloudPhase('a')).toBe('idle');
-    expect(shown).toHaveBeenCalledWith('Read aloud stopped: OpenAI did not read the text as written', failure);
-
-    const reads = setBindingMock('ReadAloudSource', async () => ({ available: false, voices: VOICES }));
-    readAloud('a', REPLY, 'laptop');
-    clips.playbacks[1].fail(new TransportError('read_aloud_api_off', 'Read aloud in OpenAI voices is off on this computer; turn it on in Settings > Voice.'));
-    await settle();
-    expect(readAloudPhase('a')).toBe('idle');
-    expect(shown).toHaveBeenCalledTimes(1);
-    // The computer is asked again, so the voice stops being offered.
-    await vi.waitFor(() => expect(reads).toHaveBeenCalled());
-    await vi.waitFor(() => expect(readAloudRoute('laptop', 'openai:marin')).toEqual({ kind: 'device', voiceId: '' }));
+    await vi.waitFor(() => expect(shown).toHaveBeenCalledWith('Read aloud stopped: OpenAI did not read the text as written', failure));
+    expect(reads).toHaveBeenCalledTimes(1);
 
     readAloud('b', REPLY, null);
     const voiceFailure = new Error('speech failed: synthesis-failed');
     device.playbacks[0].fail(voiceFailure);
     await settle();
     expect(shown).toHaveBeenLastCalledWith('Read aloud stopped: this device’s voice failed.', voiceFailure);
+  });
+
+  it('stops silently when a sentence is refused and the computer no longer offers the voice', async () => {
+    const shown = vi.spyOn(toast, 'addErrorToast').mockImplementation(() => undefined as never);
+    const reads = setBindingMock('ReadAloudSource', async () => ({ available: available.get(getPinnedBackend() ?? '') ?? false, voices: VOICES }));
+    setReadAloudPreference('voiceId', 'openai:marin');
+    // The mint refuses over the socket; a sentence minted before the
+    // switch went off is refused by its audio fetch with a plain error.
+    for (const failure of [
+      new TransportError('internal', 'read aloud in OpenAI voices is off on this computer'),
+      new Error('read aloud in OpenAI voices is off on this computer'),
+    ]) {
+      await offer('laptop', true);
+      reads.mockClear();
+      readAloud('a', REPLY, 'laptop');
+      available.set('laptop', false);
+      clips.playbacks.at(-1)!.fail(failure);
+      await vi.waitFor(() => expect(reads).toHaveBeenCalledTimes(1));
+      await settle();
+      expect(readAloudPhase('a')).toBe('idle');
+      expect(readAloudRoute('laptop', 'openai:marin')).toEqual({ kind: 'device', voiceId: '' });
+    }
+    expect(shown).not.toHaveBeenCalled();
+  });
+
+  it('says the reason when asking the computer again fails', async () => {
+    const shown = vi.spyOn(toast, 'addErrorToast').mockImplementation(() => undefined as never);
+    const reads = setBindingMock('ReadAloudSource', async () => { throw new Error('computer did not answer'); });
+    setReadAloudPreference('voiceId', 'openai:marin');
+    readAloud('a', REPLY, 'laptop');
+    const failure = new Error('clip download failed');
+    clips.playbacks[0].fail(failure);
+    await vi.waitFor(() => expect(shown).toHaveBeenCalledWith('Read aloud stopped: clip download failed', failure));
+    expect(reads).toHaveBeenCalledTimes(1);
+    expect(readAloudPhase('a')).toBe('idle');
+  });
+
+  it('leaves a reading started while the computer is asked again alone', async () => {
+    const shown = vi.spyOn(toast, 'addErrorToast').mockImplementation(() => undefined as never);
+    let answer!: (status: { available: boolean; voices: typeof VOICES }) => void;
+    const reads = setBindingMock('ReadAloudSource', () => new Promise((resolve) => { answer = resolve; }));
+    setReadAloudPreference('voiceId', 'openai:marin');
+    readAloud('a', REPLY, 'laptop');
+    clips.playbacks[0].fail(new Error('clip download failed'));
+    await vi.waitFor(() => expect(reads).toHaveBeenCalledTimes(1));
+
+    readAloud('b', REPLY, 'laptop');
+    expect(clips.playbacks).toHaveLength(2);
+    answer({ available: true, voices: VOICES });
+    await settle();
+    await settle();
+    expect(clips.playbacks[1].stopped).toBe(false);
+    expect(readAloudPhase('b')).toBe('playing');
+    expect(shown).not.toHaveBeenCalled();
   });
 });

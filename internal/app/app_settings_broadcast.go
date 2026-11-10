@@ -74,17 +74,22 @@ func (a *App) registerSettingsBroadcast() {
 		// A live recording admitted while live dictation was on, before
 		// this write switched it, saw it go off: it ends now, not at its
 		// next piece, and a quick off and on again cannot spare it.
-		if revision, ok := liveDictationSwitch(changes); ok {
+		if revision, ok := switchRevision(changes, "dictationAPIEnabled"); ok {
 			a.liveDictations().RevokeBefore(revision)
+		}
+		// The same for read aloud in OpenAI voices: sentences admitted
+		// before this write are dropped and their syntheses ended.
+		if revision, ok := switchRevision(changes, "readAloudAPIEnabled"); ok {
+			a.readAloudSentences().RevokeBefore(revision)
 		}
 	})
 }
 
-// liveDictationSwitch is the revision of the write that changed the live
-// dictation switch, if this one did.
-func liveDictationSwitch(changes []settings.TierChange) (uint64, bool) {
+// switchRevision is the revision of the write that changed the setting
+// key, if this one did.
+func switchRevision(changes []settings.TierChange, key string) (uint64, bool) {
 	for _, change := range changes {
-		if slices.Contains(change.Keys, "dictationAPIEnabled") {
+		if slices.Contains(change.Keys, key) {
 			return change.Revision, true
 		}
 	}

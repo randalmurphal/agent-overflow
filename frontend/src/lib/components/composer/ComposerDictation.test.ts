@@ -17,6 +17,9 @@ import { resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import type { DictationEnvironment } from '../../dictation/dictationSession.svelte';
+import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { HOME_BACKEND } from '../../transport/backendKey';
+import { REMOTE_BACKEND_UUID, resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 
 const scripted = vi.hoisted(() => ({ env: null as DictationEnvironment | null }));
 vi.mock('../../dictation/browserDictation', () => ({
@@ -67,6 +70,43 @@ describe('<Composer> dictation', () => {
     resetToLocalPage();
     setCompactLayoutForTest(false);
     scripted.env = null;
+    resetStagedBackends();
+    __resetEntityIndexForTest();
+  });
+
+  // Dictation spends the computer's credentials, so a thread two computers
+  // claim has no mic and asks neither of them.
+  it('shows no mic and asks no computer for a thread two computers claim', async () => {
+    scripted.env = dictationFixture().env;
+    const sources = setBindingMock('DictationSources', async () => ({ subscription: true }));
+    stageBackend({ id: 'laptop', backendId: REMOTE_BACKEND_UUID });
+    noteThread('thread-1', HOME_BACKEND, 1);
+    noteThread('thread-1', 'laptop', 1);
+    const { queryByTestId, findByTestId } = await mountComposer();
+    await findByTestId('composer-send');
+    for (let i = 0; i < 5; i += 1) await tick();
+    expect(sources).not.toHaveBeenCalled();
+    expect(queryByTestId('composer-dictate')).toBeNull();
+  });
+
+  it('abandons a recording when a second computer claims the thread', async () => {
+    const f = dictationFixture();
+    scripted.env = f.env;
+    setBindingMock('DictationSources', async () => ({ subscription: true }));
+    setBindingMock('BeginDictation', async () => 'rec-1');
+    const cancel = setBindingMock('CancelDictation', async () => {});
+    noteThread('thread-1', HOME_BACKEND, 1);
+    const { findByTestId, queryByTestId } = await mountComposer();
+    const mic = await findByTestId('composer-dictate');
+    await fireEvent.click(mic);
+    await expect.poll(() => mic.dataset.phase).toBe('recording');
+
+    stageBackend({ id: 'laptop', backendId: REMOTE_BACKEND_UUID });
+    noteThread('thread-1', 'laptop', 1);
+
+    await expect.poll(() => queryByTestId('composer-dictate')).toBeNull();
+    expect(f.tracks[0].stop).toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledWith('rec-1');
   });
 
   it('keeps the mic in the toolbar on the desktop and moves it into the input row on the phone', async () => {
