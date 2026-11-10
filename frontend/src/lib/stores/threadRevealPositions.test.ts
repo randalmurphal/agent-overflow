@@ -58,6 +58,7 @@ function harness(initial: Item[]) {
     armStructuralSpring: () => {},
     appendLivePayloadDeltaForItem: () => {},
     onStreamGap: (itemId) => gaps.push(itemId),
+    commitPromotedRow: () => { throw new Error('test held no row to promote'); },
   });
   const row = (id = 'r') => items[indexById.get(id)!];
   return {
