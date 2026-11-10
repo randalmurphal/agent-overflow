@@ -343,18 +343,18 @@ func TestCursorPagesAdmitWholeUnits(t *testing.T) {
 	assertPageAccounts(t, s, "t", newer, ids[1:41])
 }
 
-// TestAbandonedBlocksRecordBreaksARun: a notification after a run member
-// is absorbed into the run, but the abandoned-blocks record is not; it
-// ships as its own row and the run ends at the thinking row before it, so
-// a collapsed run never hides the record of what the stall discarded.
-func TestAbandonedBlocksRecordBreaksARun(t *testing.T) {
+// TestAbandonedBlocksRecordJoinsTheRunItFollows: the abandoned-blocks
+// record is absorbed like any notification. After discarded thinking it
+// joins that run and the retry continues it; after discarded prose it
+// stands alone, because the prose already ended the run.
+func TestAbandonedBlocksRecordJoinsTheRunItFollows(t *testing.T) {
 	for _, tc := range []struct {
 		spec        string
 		wantMembers int
-		wantShipped []int
 	}{
-		{spec: "pknp", wantMembers: 2, wantShipped: []int{0, 1, 2, 3}},
-		{spec: "pkap", wantMembers: 1, wantShipped: []int{0, 1, 2, 3}},
+		{spec: "pknp", wantMembers: 2},
+		{spec: "pkakp", wantMembers: 3},
+		{spec: "pkpap", wantMembers: 1},
 	} {
 		s := newTestStore(t)
 		ids := seedRunThread(t, s, "t", tc.spec)
@@ -370,12 +370,8 @@ func TestAbandonedBlocksRecordBreaksARun(t *testing.T) {
 		if stub.FirstItemID != ids[1] {
 			t.Errorf("%s: run starts at %s, want the thinking row %s", tc.spec, stub.FirstItemID, ids[1])
 		}
-		want := make([]string, 0, len(tc.wantShipped))
-		for _, i := range tc.wantShipped {
-			want = append(want, ids[i])
-		}
-		if got := pageItemIDs(page); !reflect.DeepEqual(got, want) {
-			t.Errorf("%s: shipped %v, want %v", tc.spec, got, want)
+		if got := pageItemIDs(page); !reflect.DeepEqual(got, ids) {
+			t.Errorf("%s: shipped %v, want %v", tc.spec, got, ids)
 		}
 	}
 }

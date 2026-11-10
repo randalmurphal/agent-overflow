@@ -2785,8 +2785,31 @@ func TestTwoQueuedRequestsSettleOnTheOneTurnThatConsumedThem(t *testing.T) {
 		t.Errorf("message rows = %q / %q, want the one merged message", firstReceipt.MessageItemID, secondReceipt.MessageItemID)
 	}
 
+	// The turn the messages waited out ends without reading them, so it
+	// answers neither.
 	if err := f.app.store.UpdateTurnCompleted("merge-turn", time.Now().UnixMilli(), "end_turn", "", "", ""); err != nil {
 		t.Fatalf("UpdateTurnCompleted: %v", err)
+	}
+	f.app.settleReceiptsForEndedTurn(target.ID)
+	firstReceipt, secondReceipt = f.receipt(t, first.Token), f.receipt(t, second.Token)
+	if firstReceipt.State != store.ThreadReceiptRunning || secondReceipt.State != store.ThreadReceiptRunning {
+		t.Fatalf("receipts = %q / %q, want both still running: the ended turn never read the message", firstReceipt.State, secondReceipt.State)
+	}
+
+	// The provider picks the merged message up as a turn of its own, and
+	// that turn's end answers both.
+	meta, err := json.Marshal(provider.SessionInfo{TurnOpener: provider.TurnOpenerCommand})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, evt := range []provider.ProviderEvent{
+		{Kind: provider.EventInit, Meta: meta},
+		{Kind: provider.EventTurnComplete, TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"}},
+	} {
+		evt.ThreadID, evt.Timestamp = target.ID, time.Now()
+		if err := f.app.triage.Handle(evt); err != nil {
+			t.Fatalf("%s: %v", evt.Kind, err)
+		}
 	}
 	f.app.settleReceiptsForEndedTurn(target.ID)
 	for _, token := range []string{first.Token, second.Token} {

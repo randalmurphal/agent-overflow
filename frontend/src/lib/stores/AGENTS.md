@@ -214,6 +214,15 @@ The message must be terminal and its smoother drained. Exercise reveal ordering
 through `eventsItemStream`, because independent rows may be batched differently
 even while each item's order is preserved.
 
+A settled read that turns a revealing `thinking` row into `assistant_text`
+under the same id (a Claude narration block) is not installed when it arrives.
+`threadRowPromotions.svelte.ts` holds it: the pane keeps its own row until the
+reveal has drained and a mounted timeline has presented the change, then the
+held row installs through `upsertItemsBatch`. Until then the pane's items
+describe what is on screen, the held id gates the reveal queue, and patches,
+meta and later reads for the id go to the held row. `snapAllToReceived`
+installs every held row at once.
+
 ## Draft and model writes
 
 `composerDraftSnapshots` serializes draft persistence. A prepared send is a fixed

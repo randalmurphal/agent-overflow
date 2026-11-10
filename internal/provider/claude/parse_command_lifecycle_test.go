@@ -188,3 +188,64 @@ func TestCommandResultUserCommandRequiresAdmittedComposerCommand(t *testing.T) {
 		})
 	}
 }
+
+// initTurnOpeners parses lines and returns the TurnOpener of every init.
+func initTurnOpeners(t *testing.T, parser *Parser, lines [][]byte) []provider.TurnOpener {
+	t.Helper()
+	var openers []provider.TurnOpener
+	for _, line := range lines {
+		events, err := parser.ParseLine(testThread, line)
+		if err != nil {
+			t.Fatalf("ParseLine(%s): %v", line, err)
+		}
+		for _, evt := range events {
+			if evt.Kind != provider.EventInit {
+				continue
+			}
+			var info provider.SessionInfo
+			if err := json.Unmarshal(evt.Meta, &info); err != nil {
+				t.Fatalf("decode init meta: %v", err)
+			}
+			openers = append(openers, info.TurnOpener)
+		}
+	}
+	return openers
+}
+
+// Every turn in the live /effort and /fast capture is opened by a stdin
+// command: its init names the opener, and a command AO issued on its own
+// reads as internal so triage opens no turn for it.
+func TestInitNamesTheCommandThatOpenedTheTurn(t *testing.T) {
+	s := &Session{}
+	s.directCommands.note("aaaaaaa1-0000-4000-8000-000000000001", "/effort low", provider.SendOptions{InternalCommand: true})
+	s.directCommands.note("aaaaaaa2-0000-4000-8000-000000000002", "/effort bogus", provider.SendOptions{})
+	parser := NewParser()
+	parser.peerTurns = s
+
+	got := initTurnOpeners(t, parser, fixtureLines(t, effortLiveFixture))
+	want := []provider.TurnOpener{provider.TurnOpenerInternalCommand, provider.TurnOpenerCommand, provider.TurnOpenerCommand}
+	if len(got) != len(want) {
+		t.Fatalf("init openers = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("init openers = %v, want %v", got, want)
+		}
+	}
+}
+
+// A turn the CLI starts itself has no started window open at its init:
+// the previous turn's result closed it.
+func TestInitAfterResultHasNoOpener(t *testing.T) {
+	parser := NewParser()
+	got := initTurnOpeners(t, parser, [][]byte{
+		[]byte(`{"type":"command_lifecycle","command_uuid":"u1","state":"started"}`),
+		[]byte(`{"type":"system","subtype":"init","session_id":"s1","model":"claude-sonnet-5-5"}`),
+		[]byte(`{"type":"result","subtype":"success","session_id":"s1","num_turns":1,"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`),
+		[]byte(`{"type":"system","subtype":"init","session_id":"s1","model":"claude-sonnet-5-5"}`),
+	})
+	want := []provider.TurnOpener{provider.TurnOpenerCommand, ""}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("init openers = %q, want %q", got, want)
+	}
+}

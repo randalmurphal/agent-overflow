@@ -24,6 +24,7 @@ const maxRequestBody = 1 << 20
 //	/github/rest/<endpoint>      GitHub REST (the githubAPI routes)
 //	/github/graphql              GitHub GraphQL (githubGraphQL, by operationName)
 //	/gitlab/api/v4/<endpoint>    GitLab REST (the gitlabAPI routes)
+//	/gitlab/api/graphql          GitLab GraphQL (gitlabGraphQL, by operationName)
 //	/{forge}/absolute/<host>/<p> https://<host>/<p> (attachments)
 //
 // The forge host a REST or GraphQL request is for is its Host header,
@@ -187,7 +188,7 @@ func (e *Engine) httpCall(r *http.Request, forge, mount, rest string, body []byt
 	case forge == "github" && mount == "rest" && rest != "":
 		endpoint = rest + query
 		c.flags["hostname"] = []string{c.http.host}
-	case forge == "github" && mount == "graphql" && rest == "":
+	case (forge == "github" && mount == "graphql" && rest == "") || (forge == "gitlab" && mount == "api" && rest == "graphql"):
 		if r.Method != http.MethodPost || query != "" {
 			return c, "graphql", "GraphQL is a POST with no query string"
 		}

@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -84,10 +86,34 @@ func fakeBackendMain(mode string) {
 	if mode == "startup-error" {
 		payload["startupError"] = "open database: disk is full"
 	}
+	// Subscribed before the bootstrap line: the launcher may signal as soon
+	// as it reads the line, and an unhandled SIGTERM would end this process
+	// before it starts its child.
+	var terms chan os.Signal
+	if mode == "fork-on-term" {
+		terms = make(chan os.Signal, 1)
+		signal.Notify(terms, syscall.SIGTERM)
+	}
 	line, _ := json.Marshal(payload)
 	fmt.Printf("\n%s %s\n", BootstrapPrefix, line)
 
 	switch mode {
+	case "fork-on-term":
+		// The group's SIGTERM reaches this process only: the child starts
+		// after it, as a shell's command does when the signal lands while
+		// the shell blocks TERM across its fork. The child never receives
+		// the signal, and this process exits without waiting for it.
+		<-terms
+		child := exec.Command(os.Args[0])
+		child.Env = append(os.Environ(), fakeBackendEnv+"=child-only")
+		if err := child.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "fake backend: child start: %v\n", err)
+			os.Exit(4)
+		}
+		if path := os.Getenv(fakeBackendChildPID); path != "" {
+			_ = os.WriteFile(path, []byte(strconv.Itoa(child.Process.Pid)), 0o600)
+		}
+		os.Exit(0)
 	case "linger", "wrong-pid", "startup-error":
 		// Live until the test terminates us. A real backend whose App failed
 		// keeps serving so its logs stay readable, and the launcher must end it.

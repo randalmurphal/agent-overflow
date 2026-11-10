@@ -275,6 +275,15 @@ func (c *converter) convertUser(row Row) {
 		return
 	}
 
+	if c.subagentScope == "" && rowStartsSelfWakeTurn(row) {
+		// The CLI started this turn itself: its prompt is the
+		// `<task-notification>` of the background work that finished, not
+		// something the person typed. Live, the turn opens with no user row
+		// (the completion's own rows precede it), so the import opens the
+		// turn and keeps the prompt out of the transcript the same way.
+		c.startTurn(row)
+		return
+	}
 	text, ok := userPromptText(row)
 	if !ok {
 		return
@@ -304,6 +313,18 @@ func (c *converter) convertUser(row Row) {
 		evt.Meta = meta
 	}
 	c.emit(evt, row)
+}
+
+// rowStartsSelfWakeTurn reports whether a main-transcript user row is the
+// prompt of a turn the CLI started on a background-task notification. The
+// typed `origin.kind` is the signal; the same prompt delivered mid-turn is a
+// `queued_command` attachment, not a user row.
+func rowStartsSelfWakeTurn(row Row) bool {
+	if row.Type != "user" {
+		return false
+	}
+	kind, _ := rawMap(row.Raw, "origin")["kind"].(string)
+	return kind == "task-notification"
 }
 
 // userPromptText reports whether a user row is something the person

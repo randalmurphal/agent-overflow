@@ -136,11 +136,15 @@ type appPRUpdateState struct {
 	listHandles    map[string]*prListHandle
 	listProjectsFn func(ctx context.Context) ([]ForgeProject, error)
 	listFetchFn    func(ctx context.Context, repo gitops.RepoReference) ([]gitops.PRListRow, error)
-	listDetailFn   func(ctx context.Context, pr gitops.PRReference) (gitops.PRDetail, error)
-	// listFocusPauseHook runs in pollPRListFocus right after it reads the
-	// pause, before it takes the wake's admission, under App.prUpdates.mu;
-	// tests start a resume there.
-	listFocusPauseHook func()
+	// listGen counts the writers of the PR list's stored copy started (each
+	// list pump and the boot prefetch), under mu: the latest owns the copy
+	// (commitPRListStore). listStore serializes that copy's writes and
+	// prunes with the badge each emits. listStoreHook, for tests, runs at
+	// each change's stages: "enter" before listStore is taken, "owned"
+	// once the writer is found to own the copy.
+	listGen       uint64
+	listStore     sync.Mutex
+	listStoreHook func(stage string)
 }
 
 // appSessionImportState is the session-import concern

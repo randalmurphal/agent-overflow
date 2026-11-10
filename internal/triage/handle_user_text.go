@@ -235,6 +235,10 @@ func (r *Router) confirmConsumedSend(evt provider.ProviderEvent, pending pending
 	if r.isWireOnlyUserTextSeen(evt.ThreadID, pending.EchoProviderItemID) {
 		r.markWireOnlyUserTextSeen(evt.ThreadID, providerItemID)
 	}
+	// After the handlers: a consumption that opens the send's own turn has
+	// opened it, and a fold has widened the survivor's row. Reported even
+	// when a write failed, because the provider has the message either way.
+	r.reportSendConsumed(evt.ThreadID, &pending)
 	if handleErr != nil && !r.isWireOnlyUserTextSeen(evt.ThreadID, pending.EchoProviderItemID) {
 		// This confirmation IS the consumption boundary even though the
 		// write failed: record the message anchor now so fork /
@@ -564,9 +568,9 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pending
 		log.Printf("triage: Claude did not honour the supplied uuid %q; echo carries %q", oldID, providerItemID)
 	}
 	// A direct send owns a fresh turn that a provider turn start normally
-	// opens. Drained into a turn the provider started itself (a background
-	// re-round), it gets no start of its own, so its consumption opens it,
-	// exactly as a deferred row's does. A no-op when its turn is open.
+	// opens. Drained mid-loop into a running turn, it gets no start of its
+	// own, so its consumption opens it, exactly as a deferred row's does.
+	// A no-op when its turn is open.
 	if pending.Shape == sendShapeDirect && !pending.OpenedTurn {
 		r.openQueuedEchoTurn(threadID, pending.TurnIndex, eventTimestampMillis(evt), pending.InterruptedTurnIndex)
 	}

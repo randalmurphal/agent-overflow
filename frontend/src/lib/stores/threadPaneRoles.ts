@@ -85,6 +85,7 @@ import type {
 import type { SettledTurn, TimelineTurnFacet } from './threadTurnProjection';
 import type { ThreadPane } from './thread.svelte';
 import type { ProvenAppend } from '../markdown';
+import type { PresentingRowPromotion, RowPromotionPresenter } from './threadRowPromotions.svelte';
 
 /**
  * Pane identity, the thread it is holding, and the switch-load
@@ -284,6 +285,15 @@ export interface RevealRead {
   readonly liveThinkingTailForItem: (itemId: string) => string | null;
   readonly liveThinkingWindowForItem: (itemId: string) => TextWindow | null;
   readonly isItemSmoothing: (itemId: string) => boolean;
+  /**
+   * Held rows a timeline is presenting: the pane still holds the row each
+   * replaces (threadRowPromotions.svelte.ts).
+   */
+  readonly presentingRowPromotions: readonly PresentingRowPromotion[];
+  /** Offer this timeline the presentation of held rows, for its lifetime. */
+  readonly registerRowPromotionPresenter: (presenter: RowPromotionPresenter) => () => void;
+  /** The presentation of the hold for `itemId` ended: install its row. */
+  readonly completeRowPromotion: (itemId: string) => void;
   /** Changes after pane-wide reveal disposal so mounted rows re-register. */
   readonly assistantRevealRegistrationGeneration: number;
   readonly registerAssistantRevealSink: (

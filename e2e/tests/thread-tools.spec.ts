@@ -2813,13 +2813,15 @@ test('thread_send with notify into a mid-turn thread lands after the boundary wi
   const draft = 'half a sentence the person is still typing';
 
   // The target's first turn parks, so the send arrives mid-turn and the
-  // only way into the thread is the turn boundary.
+  // only way into the thread is the turn boundary: the CLI holds the message
+  // until the running turn ends, then starts its turn.
   await setScenario(
     harness,
     targetPath,
     threadToolsScenario({
       name: 'tt-draft-target-script',
       provider: 'claude',
+      holdQueuedInput: true,
       turns: [
         { steps: [{ gate: 'hold-target' }], text: 'Still on the first task.' },
         {

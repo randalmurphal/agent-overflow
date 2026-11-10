@@ -183,6 +183,12 @@
     (parseJsonObject(item.meta)?.delivery ?? '') === 'async',
   );
 
+  // Claude replaces some of its mid-turn notes with a summary and sends them
+  // as a thinking block tagged as narration; the backend stores those as
+  // prose with `narration: true` (docs/references/claude-wire.md). The tag
+  // says the words are a summary, not the model's own.
+  const isSummarized = $derived(parseJsonObject(item.meta)?.narration === true);
+
   // Streamdown reads the router's stable parser checkpoint while sink-owned
   // literal text extends its trailing leaf. Punctuation and authoritative
   // rewrites clear the checkpoint and hand the canonical source back to it.
@@ -337,6 +343,15 @@
           title="Sent while the model kept working; not the turn's final answer"
         >
           Interim
+        </span>
+      {/if}
+      {#if isSummarized}
+        <span
+          class="rounded-full border border-border px-1.5 py-px text-[0.5625rem] uppercase tracking-wide text-fg-hint"
+          data-testid="assistant-message-summarized"
+          title="Claude's note from between steps, summarized before it reached the app"
+        >
+          Summarized
         </span>
       {/if}
       {#if discarded}

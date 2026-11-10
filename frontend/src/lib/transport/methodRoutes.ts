@@ -132,6 +132,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1026796858: 'home', // GetNetworkSettings
 	1435724188: 'selected', // GetPRCILogLines
 	2443547196: 'selected', // GetPRDetail
+	3288121945: 'selected', // GetPRListNeedsYou
 	106351482: 'workspace', // GetPRMergeConflicts
 	73280836: 'thread', // GetPayloadChunk
 	3448919335: 'thread', // GetPayloadData
@@ -252,7 +253,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1673567995: 'thread', // MarkDiffReviewCommentsSent
 	3609806653: 'selected', // MarkPRDiffReviewCommentsSent
 	404041677: 'selected', // MarkPRReady
-	2793490958: 'selected', // MarkPRViewed
 	1480646012: 'thread', // MarkThreadRead
 	236597375: 'thread', // MarkThreadUnread
 	3922935373: 'selected', // MergePR
@@ -382,7 +382,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3915514446: 'home', // SetNetworkSettings
 	1675722685: 'home', // SetPRCILogFollows
 	2324570575: 'home', // SetPRListActive
-	910260531: 'home', // SetPRListFocus
 	2594833485: 'selected', // SetPRThreadResolved
 	1078249699: 'home', // SetPRUpdatesActive
 	1113626255: 'home', // SetPipelineActive

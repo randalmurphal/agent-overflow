@@ -157,6 +157,11 @@ so that parallel subagents in the same turn don't collide:
 | `tool_completion` | `complete:<tool_call.id>` (still unique because tool_call.id is unique)  |
 | `error`           | `error:<turn_index>:<card_id>:<error_seq>`                         |
 
+A Claude thinking block tagged as narration is stored as `assistant_text`
+under the `think:` id and `thinking:` payload id it streamed with
+([claude-wire.md](../references/claude-wire.md), §The signature tag). The id
+prefix names the block's slot, not the row's kind.
+
 Without the card_id scope, two subagents launched in the same turn
 (parent turn_index=5, card A and card B) would both mint `text:5:0`
 for their first child text segment and collide on upsert. The

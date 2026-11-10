@@ -166,6 +166,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetNetworkSettings", ID: 1026796858, Scope: "access:admin", Route: "home"},                                        // main.App.GetNetworkSettings
 	{Name: "GetPRCILogLines", ID: 1435724188, Scope: "git:operate", Route: "selected"},                                        // main.App.GetPRCILogLines
 	{Name: "GetPRDetail", ID: 2443547196, Scope: "git:operate", Route: "selected"},                                            // main.App.GetPRDetail
+	{Name: "GetPRListNeedsYou", ID: 3288121945, Scope: "git:operate", Route: "selected"},                                      // main.App.GetPRListNeedsYou
 	{Name: "GetPRMergeConflicts", ID: 106351482, Scope: "git:operate", Route: "workspace"},                                    // main.App.GetPRMergeConflicts
 	{Name: "GetPayloadChunk", ID: 73280836, Scope: "threads:read", Route: "thread"},                                           // main.App.GetPayloadChunk
 	{Name: "GetPayloadData", ID: 3448919335, Scope: "threads:read", Route: "thread"},                                          // main.App.GetPayloadData
@@ -286,7 +287,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "MarkDiffReviewCommentsSent", ID: 1673567995, Scope: "threads:operate", Route: "thread"},                           // main.App.MarkDiffReviewCommentsSent
 	{Name: "MarkPRDiffReviewCommentsSent", ID: 3609806653, Scope: "git:operate", Route: "selected"},                           // main.App.MarkPRDiffReviewCommentsSent
 	{Name: "MarkPRReady", ID: 404041677, Scope: "git:operate", Route: "selected"},                                             // main.App.MarkPRReady
-	{Name: "MarkPRViewed", ID: 2793490958, Scope: "git:operate", Route: "selected"},                                           // main.App.MarkPRViewed
 	{Name: "MarkThreadRead", ID: 1480646012, Scope: "threads:operate", Route: "thread"},                                       // main.App.MarkThreadRead
 	{Name: "MarkThreadUnread", ID: 236597375, Scope: "threads:operate", Route: "thread"},                                      // main.App.MarkThreadUnread
 	{Name: "MergePR", ID: 3922935373, Scope: "git:operate", Route: "selected"},                                                // main.App.MergePR
@@ -416,7 +416,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetNetworkSettings", ID: 3915514446, Scope: "settings:write", Route: "home", StepUp: true},                        // main.App.SetNetworkSettings
 	{Name: "SetPRCILogFollows", ID: 1675722685, Scope: "git:operate", Route: "home"},                                          // main.App.SetPRCILogFollows
 	{Name: "SetPRListActive", ID: 2324570575, Scope: "git:operate", Route: "home"},                                            // main.App.SetPRListActive
-	{Name: "SetPRListFocus", ID: 910260531, Scope: "git:operate", Route: "home"},                                              // main.App.SetPRListFocus
 	{Name: "SetPRThreadResolved", ID: 2594833485, Scope: "git:operate", Route: "selected"},                                    // main.App.SetPRThreadResolved
 	{Name: "SetPRUpdatesActive", ID: 1078249699, Scope: "git:operate", Route: "home"},                                         // main.App.SetPRUpdatesActive
 	{Name: "SetPipelineActive", ID: 1113626255, Scope: "git:operate", Route: "home"},                                          // main.App.SetPipelineActive

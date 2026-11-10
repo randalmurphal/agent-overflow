@@ -81,6 +81,7 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
       if (reads.size) streamGapDuringRead = true;
       else contextRefresh.request();
     },
+    commitPromotedRow: (row) => { stream.upsertItemsBatch([row]); },
   });
   const window = createThreadTimelineWindow({
     getItems, replaceTimelineItems, installTimelineItems, getThread: () => thread, windowedRowCount: itemWindow.windowedRowCount,

@@ -226,6 +226,8 @@ export interface ForgeRepo {
   /** Pipelines on any ref beside the pulls' CI. */
   pipelines?: ForgePipeline[];
   deletedBranches?: string[];
+  /** GitLab: the viewer's events here are dropped from an events page after it is selected, as GitLab drops hidden ones. */
+  eventsHidden?: boolean;
 }
 
 interface ForgeInvocationCommon {

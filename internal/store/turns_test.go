@@ -256,6 +256,35 @@ func TestUpdateTurnCompletedFlipsFields(t *testing.T) {
 	}
 }
 
+// A reopened turn is the active turn again, keeps its other columns until
+// its next settlement, and a missing turn is an error.
+func TestReopenTurnMakesItActive(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForTurn(t, s, "t1")
+	if err := s.InsertTurn(makeInflightTurn("turn-1", "t1", 0, 1000)); err != nil {
+		t.Fatalf("insert turn: %v", err)
+	}
+	if err := s.UpdateTurnCompleted("turn-1", 2000, "end_turn", "msg-a", "", ""); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if _, active, err := s.GetActiveTurn("t1"); err != nil || active {
+		t.Fatalf("active after settle = %v (%v), want idle", active, err)
+	}
+	if err := s.ReopenTurn("turn-1"); err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	got, active, err := s.GetActiveTurn("t1")
+	if err != nil || !active || got.TurnID != "turn-1" || got.CompletedAt != nil {
+		t.Fatalf("active after reopen = (%+v, %v, %v), want turn-1 in flight", got, active, err)
+	}
+	if got.StopReason != "end_turn" || got.AssistantMessageID != "msg-a" {
+		t.Fatalf("reopen changed columns: %+v", got)
+	}
+	if err := s.ReopenTurn("missing"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("reopen missing turn: %v, want sql.ErrNoRows", err)
+	}
+}
+
 func TestUpdateTurnCompletedWithErrorMessage(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThreadForTurn(t, s, "t1")
@@ -291,8 +320,8 @@ func TestUpdateTurnLatePayload(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThreadForTurn(t, s, "thread-1")
 
-	// Fresh row — both columns empty after the soft settle that
-	// did not include either field.
+	// Fresh row — both columns empty after a first settle that
+	// did not include either field (e.g. a synthetic truncated complete).
 	if err := s.InsertTurn(Turn{
 		TurnID:    "turn-late",
 		ThreadID:  "thread-1",
@@ -323,9 +352,8 @@ func TestUpdateTurnLatePayload(t *testing.T) {
 		t.Fatalf("assistant_message_id after first fold = %q, want %q", got.AssistantMessageID, "msg_first")
 	}
 
-	// Second late fold (e.g. round-2 result after round-1 settle in
-	// a multi-result-per-turn cascade): usage stays first-write-wins,
-	// amid OVERWRITES with the later round's id.
+	// Second late fold: usage stays first-write-wins, amid OVERWRITES
+	// with the later completion's id.
 	if err := s.UpdateTurnLatePayload("turn-late", LateTurnPayload{
 		TokenUsageJSONIfEmpty:       `{"inputTokens":99}`,
 		AssistantMessageIDOverwrite: "msg_round2",

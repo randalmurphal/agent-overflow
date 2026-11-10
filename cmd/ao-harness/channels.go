@@ -59,6 +59,7 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.PRCIUpdated,
 		eventchan.PRCILog,
 		eventchan.PullsUpdated,
+		eventchan.PullsBadge,
 		eventchan.PipelineUpdated,
 		eventchan.ProjectUpdated,
 		eventchan.ProviderAccount,

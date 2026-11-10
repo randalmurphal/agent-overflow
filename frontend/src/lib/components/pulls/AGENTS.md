@@ -14,11 +14,11 @@ the detail beside it (the review pane pinned to the picked MR through
 `reviewSubjectForPR`, or `PipelineView` on the picked pipeline). It
 attaches `stores/pullsPage.svelte.ts` for its lifetime and
 `stores/pipelinesPage.svelte.ts` while the Pipelines tab shows, and
-detaches both on destroy. It reports whether the selected MR's review is
-displayed (`setReviewShown`: the Merge requests tab, and on compact the
-detail screen); the store marks an MR viewed only while it is. Filters
-are per computer in `stores/pullsPageFilters.svelte.ts`; the tab and the
-list width are appStorage. `listWidth.svelte.ts` holds the width the reader asked for and
+detaches both on destroy. The Merge requests tab's filter, projects and
+sort (`PullsToolbar`) are per computer in
+`stores/pullsPageFilters.svelte.ts`; the tab and the list width are
+appStorage. The list column is a container (`@container/pulls`): under
+380px the toolbar's buttons keep their icons and drop their labels. `listWidth.svelte.ts` holds the width the reader asked for and
 the width rendered, clamped to leave the detail its minimum in the pane as
 measured; the pointer and keyboard paths of `PullsListResizer` set it
 through that one clamp.
@@ -34,16 +34,20 @@ controls while it owns Back.
 ## Rows and reads
 
 Row components (`PullRow`, `PipelineRow`) render the views in
-`pullRowView.ts` and `pipelineRowView.ts`; attention text and sort live in
-`utils/pullsAttention.ts`. `PullsList` and `PipelinesList` take their rows
-as props and render through `PullsListBody`, which virtualizes headings,
-project errors and rows in one `LongListVirtualizer` and reports the rows
-in its viewport range (none while the list is hidden, and none when it
-unmounts). The stores forward
-those as the list's focus (`SetPRListFocus`) and the stage reads
-(`ReadPipelineStages`); do not read a row's detail from a component. Both
-tabs' filter chips take `primitives/chipClasses.ts`, which carries the
-shared compact hit target.
+`pullRowView.ts` and `pipelineRowView.ts`; the state labels, tones and
+order live in `utils/pullsAttention.ts`, the sort in
+`stores/pullsPageRows.ts`. A `PullRow` wraps its title (two lines) and
+its facts rather than cutting them, and shows CI only on the reader's
+own MRs. `PullsList` and `PipelinesList` take their rows as props and
+render through `PullsListBody`, which virtualizes headings, project
+errors and rows in one `LongListVirtualizer` and, for a list that asks
+(`onVisible`), reports the rows in its viewport range (none while the
+list is hidden, and none when it unmounts). The Pipelines list asks, and
+its store reads the stages for those rows (`ReadPipelineStages`); the
+Merge requests list does not, its rows arriving whole. Do not read a
+row's detail from a component. The Pipelines tab's filter chips take
+`primitives/chipClasses.ts`, which carries the shared compact hit target;
+the toolbar's buttons carry the same.
 
 `OpenWithAgentMenu.svelte` is one menu for the header button (the picked
 MR) and the row menu (that row's MR, by key, without picking it, so the

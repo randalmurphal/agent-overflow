@@ -650,10 +650,9 @@ describe('App integration — messaging flow', () => {
     expect([...launchBox!.children].every((dot) => dot.classList.contains('invisible'))).toBe(true);
   });
 
-  // Multi-result-per-turn cascade: the backend emits one
-  // provider:turn_started/turn_completed pair per wire `result`
-  // envelope (see internal/triage/AGENTS.md "Wire-round vs
-  // logical-turn"). The frontend's working indicator + composer block
+  // Rounds: the backend emits one provider:turn_started/turn_completed
+  // pair per round (see docs/architecture/turn-lifecycle.md § Rounds
+  // and turns). The frontend's working indicator + composer block
   // must flip OFF between rounds — the model is genuinely idle while
   // a backgrounded task hasn't yet produced its notification — and
   // re-flip ON for round 2 when the task notification provokes
@@ -717,7 +716,7 @@ describe('App integration — messaging flow', () => {
 
   // Composer is enabled between rounds — the user can send a
   // follow-up prompt during the bg-wait gap. Matches Claude Code's
-  // actual behaviour and is the canonical wire-round emission
+  // actual behaviour and is the canonical per-round emission
   // contract. Without this assertion, a regression that gates the
   // composer on logical-turn-active would silently lock the user out
   // of the gap window.
