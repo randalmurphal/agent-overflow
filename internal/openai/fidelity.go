@@ -10,18 +10,18 @@ import (
 // silence. Both are split into words (words). It is not a reading when:
 //
 //   - nothing was spoken;
-//   - the text has three or more words without digits and the transcript
-//     keeps under half of them, in order (an answer, or a reading cut
-//     short). Words with digits are left out because a number is spoken as
-//     other words;
+//   - the text has three or more words, two or more of them without
+//     digits, and the transcript keeps under half of those, in order (an
+//     answer, or a reading cut short). Words with digits are left out
+//     because a number is spoken as other words;
 //   - the spoken words that are not the text's exceed max(3, half the
 //     text's words), plus two per digit and two more for each word with
 //     digits, the room a number needs when spelled out (an answer after the
 //     reading, or a second reading).
 //
-// A text of one or two words is judged only by the last rule: one word
-// spoken for another there is as likely a spelling ("OK", "Okay") as an
-// answer.
+// A text of one or two words, or with one word beside its numbers, is
+// judged only by the last rule: one word spoken for another there is as
+// likely a spelling ("OK", "Okay") as an answer.
 func IsReading(text, transcript string) bool {
 	want, spoken := words(text), words(transcript)
 	if len(spoken) == 0 {
@@ -41,7 +41,7 @@ func IsReading(text, transcript string) bool {
 		}
 		numberRoom += 2
 	}
-	if len(plain) >= 3 && 2*lcs(plain, spoken) < len(plain) {
+	if len(want) >= 3 && len(plain) >= 2 && 2*lcs(plain, spoken) < len(plain) {
 		return false
 	}
 	return len(spoken)-lcs(want, spoken) <= max(3, len(want)/2)+numberRoom

@@ -1,7 +1,8 @@
 // Read-aloud through a computer's OpenAI voices: which voice a reading
 // takes by computer and saved or overriding voice, the wait for the first
 // clip, a source that goes away mid-reading, pause and resume keeping the
-// reading's choice, and what a failure says.
+// reading's choice, a thread whose computer stops being verified, and what
+// a failure says.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
@@ -11,6 +12,8 @@ import { fakeSpeechEngine } from '../../test/helpers/speech';
 import { hasScope } from '../transport/scopes';
 import { __attachBackendForTest, __resetBackendsForTest, detachBackend, getPinnedBackend } from '../transport/backends';
 import { TransportError } from '../transport/wsClient';
+import { __resetEntityIndexForTest, noteThread } from '../transport/entityIndex';
+import { clipSpeechEngine, type ClipAudio } from '../native/clipSpeech';
 import {
   pauseReadAloud,
   readAloud,
@@ -26,13 +29,24 @@ import {
   watchReadAloudVoices,
 } from './readAloud.svelte';
 import { reloadReadAloudPreferencesForTest, setReadAloudPreference } from './readAloudPreferences.svelte';
-import { refreshReadAloudSource, resetReadAloudSourcesForTest } from './readAloudSource.svelte';
+import {
+  READ_ALOUD_OFF_CODE,
+  readAloudClipFetcher,
+  readAloudSourceVoices,
+  refreshReadAloudSource,
+  resetReadAloudSourcesForTest,
+} from './readAloudSource.svelte';
 import * as toast from './toast.svelte';
 
 vi.mock('../transport/scopes', async (original) => ({ ...await original<object>(), hasScope: vi.fn(() => true) }));
 
 const VOICES = [{ id: 'marin', name: 'Marin' }, { id: 'cedar', name: 'Cedar' }];
 const REPLY = 'First sentence. Second sentence. Third sentence.';
+// Replies of a thread on each computer, and of one no computer verifiably
+// owns (its owner is unknown and several are attached).
+const LAPTOP = { thread: 'on-laptop' };
+const DESK = { thread: 'on-desk' };
+const NOBODY = { thread: 'unowned' };
 
 interface ClipPlayback {
   backend: string;
@@ -120,6 +134,8 @@ describe('read-aloud in OpenAI voices', () => {
     available.clear();
     attach('laptop', '99999999-8888-4777-8666-555555555555');
     attach('desk', '11111111-2222-4333-8444-555555555555');
+    noteThread(LAPTOP.thread, 'laptop', 1);
+    noteThread(DESK.thread, 'desk', 1);
     setBindingMock('ReadAloudSource', async () => ({ available: available.get(getPinnedBackend() ?? '') ?? false, voices: VOICES }));
     localStorage.clear();
     reloadReadAloudPreferencesForTest();
@@ -133,6 +149,8 @@ describe('read-aloud in OpenAI voices', () => {
     resetReadAloudForTest();
     resetReadAloudSourcesForTest();
     __resetBackendsForTest();
+    __resetEntityIndexForTest();
+    vi.unstubAllGlobals();
     vi.mocked(hasScope).mockReset().mockReturnValue(true);
     localStorage.clear();
     reloadReadAloudPreferencesForTest();
@@ -142,7 +160,7 @@ describe('read-aloud in OpenAI voices', () => {
   it('reads a saved OpenAI voice through the computer that offers it, and the device voice elsewhere', () => {
     setReadAloudPreference('voiceId', 'openai:cedar');
     setReadAloudPreference('rate', 1.5);
-    readAloud('a', REPLY, 'laptop');
+    readAloud('a', REPLY, LAPTOP);
     expect(clips.playbacks[0]).toMatchObject({
       backend: 'laptop',
       pieces: ['First sentence.', 'Second sentence.', 'Third sentence.'],
@@ -152,25 +170,25 @@ describe('read-aloud in OpenAI voices', () => {
     expect(device.playbacks).toHaveLength(0);
 
     // The desk is off: its reply is read in the device's default voice.
-    readAloud('b', REPLY, 'desk');
+    readAloud('b', REPLY, DESK);
     expect(clips.playbacks[0].stopped).toBe(true);
     expect(device.playbacks[0].options.voiceId).toBe('');
     // No computer: the device's voice.
-    readAloud('c', REPLY, null);
+    readAloud('c', REPLY, NOBODY);
     expect(device.playbacks[1].options.voiceId).toBe('');
     expect(clips.playbacks).toHaveLength(1);
   });
 
   it('reads a saved device voice on the device even where OpenAI voices are offered', () => {
     setReadAloudPreference('voiceId', 'v0');
-    readAloud('a', REPLY, 'laptop');
+    readAloud('a', REPLY, LAPTOP);
     expect(device.playbacks[0].options.voiceId).toBe('v0');
     expect(clips.playbacks).toHaveLength(0);
   });
 
   it('reads a saved OpenAI voice the computer does not list in the device’s default voice', () => {
     setReadAloudPreference('voiceId', 'openai:ash');
-    readAloud('a', REPLY, 'laptop');
+    readAloud('a', REPLY, LAPTOP);
     expect(device.playbacks[0].options.voiceId).toBe('');
     expect(clips.playbacks).toHaveLength(0);
   });
@@ -181,16 +199,16 @@ describe('read-aloud in OpenAI voices', () => {
     expect(readAloudAvailable('desk')).toBe(false);
     expect(readAloudAvailable(null)).toBe(false);
 
-    readAloud('a', REPLY, 'laptop');
+    readAloud('a', REPLY, LAPTOP);
     expect(clips.playbacks[0].options.voiceId).toBe('marin');
     setReadAloudPreference('voiceId', 'openai:cedar');
-    readAloud('a', REPLY, 'laptop');
+    readAloud('a', REPLY, LAPTOP);
     expect(clips.playbacks[1].options.voiceId).toBe('cedar');
     setReadAloudPreference('voiceId', 'v3');
-    readAloud('a', REPLY, 'laptop');
+    readAloud('a', REPLY, LAPTOP);
     expect(clips.playbacks[2].options.voiceId).toBe('marin');
 
-    readAloud('b', REPLY, 'desk');
+    readAloud('b', REPLY, DESK);
     expect(readAloudRoute('desk', 'openai:cedar')).toBeNull();
     expect(clips.playbacks).toHaveLength(3);
     expect(readAloudPhase('b')).toBe('idle');
@@ -198,19 +216,19 @@ describe('read-aloud in OpenAI voices', () => {
 
   it('takes an overriding voice for one reading without changing the saved one', () => {
     setReadAloudPreference('voiceId', 'v0');
-    readAloud('preview', REPLY, 'laptop', 'openai:cedar');
+    readAloud('preview', REPLY, LAPTOP, 'openai:cedar');
     expect(clips.playbacks[0].options.voiceId).toBe('cedar');
-    readAloud('a', REPLY, 'laptop');
+    readAloud('a', REPLY, LAPTOP);
     expect(device.playbacks[0].options.voiceId).toBe('v0');
 
     setReadAloudPreference('voiceId', 'openai:marin');
-    readAloud('b', REPLY, 'laptop', 'v0');
+    readAloud('b', REPLY, LAPTOP, 'v0');
     expect(device.playbacks[1].options.voiceId).toBe('v0');
   });
 
   it('waits from the start of a reading until its first sentence sounds', async () => {
     setReadAloudPreference('voiceId', 'openai:marin');
-    readAloud('a', REPLY, 'laptop');
+    readAloud('a', REPLY, LAPTOP);
     expect(readAloudPhase('a')).toBe('playing');
     expect(readAloudWaiting('a')).toBe(true);
     expect(readAloudWaiting('b')).toBe(false);
@@ -223,13 +241,13 @@ describe('read-aloud in OpenAI voices', () => {
     expect(readAloudWaiting('a')).toBe(false);
     resumeReadAloud();
     expect(readAloudWaiting('a')).toBe(true);
-    readAloud('b', REPLY, null);
+    readAloud('b', REPLY, NOBODY);
     expect(readAloudWaiting('b')).toBe(false);
   });
 
   it('pause, resume and restart keep the reading’s computer and voice', async () => {
     setReadAloudPreference('voiceId', 'openai:cedar');
-    readAloud('a', REPLY, 'laptop');
+    readAloud('a', REPLY, LAPTOP);
     clips.playbacks[0].onPiece(0);
     clips.playbacks[0].onPiece(1);
     pauseReadAloud();
@@ -250,13 +268,13 @@ describe('read-aloud in OpenAI voices', () => {
   it('stops silently when the computer stops offering the voice, playing or paused', async () => {
     const shown = vi.spyOn(toast, 'addErrorToast').mockImplementation(() => undefined as never);
     setReadAloudPreference('voiceId', 'openai:marin');
-    readAloud('a', REPLY, 'laptop');
+    readAloud('a', REPLY, LAPTOP);
     await offer('laptop', false);
     expect(clips.playbacks[0].stopped).toBe(true);
     expect(readAloudPhase('a')).toBe('idle');
 
     await offer('laptop', true);
-    readAloud('a', REPLY, 'laptop');
+    readAloud('a', REPLY, LAPTOP);
     pauseReadAloud();
     await settle();
     await offer('laptop', false);
@@ -265,7 +283,7 @@ describe('read-aloud in OpenAI voices', () => {
     expect(toggleReadAloud()).toBe(false);
 
     // A detached computer is gone the same way.
-    readAloud('a', REPLY, 'laptop');
+    readAloud('a', REPLY, LAPTOP);
     detachBackend('laptop');
     flushSync();
     expect(clips.playbacks.at(-1)!.stopped).toBe(true);
@@ -275,82 +293,181 @@ describe('read-aloud in OpenAI voices', () => {
 
   it('a device reading is not stopped by a computer going away', async () => {
     setReadAloudPreference('voiceId', 'v0');
-    readAloud('a', REPLY, 'laptop');
+    readAloud('a', REPLY, LAPTOP);
     await offer('laptop', false);
     expect(device.playbacks[0].stopped).toBe(false);
     expect(readAloudPhase('a')).toBe('playing');
   });
 
-  it('says the computer’s reason when a reading fails and the computer still offers the voice', async () => {
+  it('says the reason at once when a reading fails for another cause, and asks the computer nothing', async () => {
     const shown = vi.spyOn(toast, 'addErrorToast').mockImplementation(() => undefined as never);
     const reads = setBindingMock('ReadAloudSource', async () => ({ available: true, voices: VOICES }));
     setReadAloudPreference('voiceId', 'openai:marin');
-    readAloud('a', REPLY, 'laptop');
+    readAloud('a', REPLY, LAPTOP);
     const failure = new Error('OpenAI did not read the text as written');
     clips.playbacks[0].fail(failure);
     await settle();
     expect(readAloudPhase('a')).toBe('idle');
-    await vi.waitFor(() => expect(shown).toHaveBeenCalledWith('Read aloud stopped: OpenAI did not read the text as written', failure));
-    expect(reads).toHaveBeenCalledTimes(1);
+    expect(shown).toHaveBeenCalledWith('Read aloud stopped: OpenAI did not read the text as written', failure);
+    expect(reads).not.toHaveBeenCalled();
 
-    readAloud('b', REPLY, null);
+    readAloud('b', REPLY, NOBODY);
     const voiceFailure = new Error('speech failed: synthesis-failed');
     device.playbacks[0].fail(voiceFailure);
     await settle();
     expect(shown).toHaveBeenLastCalledWith('Read aloud stopped: this device’s voice failed.', voiceFailure);
   });
 
-  it('stops silently when a sentence is refused and the computer no longer offers the voice', async () => {
-    const shown = vi.spyOn(toast, 'addErrorToast').mockImplementation(() => undefined as never);
-    const reads = setBindingMock('ReadAloudSource', async () => ({ available: available.get(getPinnedBackend() ?? '') ?? false, voices: VOICES }));
-    setReadAloudPreference('voiceId', 'openai:marin');
-    // The mint refuses over the socket; a sentence minted before the
-    // switch went off is refused by its audio fetch with a plain error.
-    for (const failure of [
-      new TransportError('internal', 'read aloud in OpenAI voices is off on this computer'),
-      new Error('read aloud in OpenAI voices is off on this computer'),
-    ]) {
-      await offer('laptop', true);
-      reads.mockClear();
-      readAloud('a', REPLY, 'laptop');
-      available.set('laptop', false);
-      clips.playbacks.at(-1)!.fail(failure);
-      await vi.waitFor(() => expect(reads).toHaveBeenCalledTimes(1));
-      await settle();
+  describe('a thread whose computer stops being verified', () => {
+    it('stops a playing OpenAI reading when another computer claims the thread or it moves', async () => {
+      const shown = vi.spyOn(toast, 'addErrorToast').mockImplementation(() => undefined as never);
+      setReadAloudPreference('voiceId', 'openai:marin');
+      readAloud('a', REPLY, LAPTOP);
+      clips.playbacks[0].onPiece(0);
+      expect(clips.playbacks[0].backend).toBe('laptop');
+
+      // Both computers claim it at one epoch.
+      noteThread(LAPTOP.thread, 'desk', 1);
+      flushSync();
+      expect(clips.playbacks[0].stopped).toBe(true);
       expect(readAloudPhase('a')).toBe('idle');
-      expect(readAloudRoute('laptop', 'openai:marin')).toEqual({ kind: 'device', voiceId: '' });
+
+      // It moves to a computer that offers the voice too.
+      await offer('desk', true);
+      noteThread(DESK.thread, 'desk', 1);
+      readAloud('b', REPLY, DESK);
+      expect(clips.playbacks[1].backend).toBe('desk');
+      noteThread(DESK.thread, 'laptop', 2);
+      flushSync();
+      expect(clips.playbacks[1].stopped).toBe(true);
+      expect(readAloudPhase('b')).toBe('idle');
+      await settle();
+      expect(shown).not.toHaveBeenCalled();
+    });
+
+    it('stops a paused OpenAI reading and resumes nothing on the old computer', async () => {
+      setReadAloudPreference('voiceId', 'openai:marin');
+      readAloud('a', REPLY, LAPTOP);
+      clips.playbacks[0].onPiece(1);
+      pauseReadAloud();
+      await settle();
+      expect(readAloudPhase('a')).toBe('paused');
+
+      noteThread(LAPTOP.thread, 'desk', 1);
+      // Before the store reacts, resume and restart refuse on their own.
+      resumeReadAloud();
+      restartReadAloud();
+      expect(clips.playbacks).toHaveLength(1);
+      flushSync();
+      expect(readAloudPhase('a')).toBe('idle');
+      expect(toggleReadAloud()).toBe(false);
+      expect(clips.playbacks).toHaveLength(1);
+    });
+
+    it('leaves a device-voice reading playing and resumable', async () => {
+      setReadAloudPreference('voiceId', 'v0');
+      readAloud('a', REPLY, LAPTOP);
+      noteThread(LAPTOP.thread, 'desk', 1);
+      flushSync();
+      expect(device.playbacks[0].stopped).toBe(false);
+      expect(readAloudPhase('a')).toBe('playing');
+      pauseReadAloud();
+      await settle();
+      resumeReadAloud();
+      expect(device.playbacks[1].options.voiceId).toBe('v0');
+      expect(readAloudPhase('a')).toBe('playing');
+    });
+
+    it('leaves a reading that names its computer, as Settings > Voice does, alone', async () => {
+      readAloud('preview', REPLY, { computer: 'laptop' }, 'openai:cedar');
+      noteThread(LAPTOP.thread, 'desk', 1);
+      noteThread(NOBODY.thread, 'laptop', 1);
+      noteThread(NOBODY.thread, 'desk', 1);
+      flushSync();
+      expect(clips.playbacks[0].stopped).toBe(false);
+      expect(readAloudPhase('preview')).toBe('playing');
+      pauseReadAloud();
+      await settle();
+      resumeReadAloud();
+      expect(clips.playbacks[1]).toMatchObject({ backend: 'laptop', options: { voiceId: 'cedar' } });
+    });
+  });
+
+  // The real clip engine and fetcher against a scripted mint and HTTP
+  // route, so what is tested is what the computer answers on the wire.
+  describe('a failure the computer answers', () => {
+    const SWITCHED_OFF = 'read aloud in OpenAI voices is off on this computer';
+
+    function silentAudio(): ClipAudio {
+      return {
+        src: '', volume: 1, playbackRate: 1, defaultPlaybackRate: 1, preservesPitch: true,
+        play: () => new Promise<void>(() => undefined),
+        pause: () => undefined, load: () => undefined, removeAttribute: () => undefined,
+        addEventListener: () => undefined, removeEventListener: () => undefined,
+      };
     }
-    expect(shown).not.toHaveBeenCalled();
-  });
 
-  it('says the reason when asking the computer again fails', async () => {
-    const shown = vi.spyOn(toast, 'addErrorToast').mockImplementation(() => undefined as never);
-    const reads = setBindingMock('ReadAloudSource', async () => { throw new Error('computer did not answer'); });
-    setReadAloudPreference('voiceId', 'openai:marin');
-    readAloud('a', REPLY, 'laptop');
-    const failure = new Error('clip download failed');
-    clips.playbacks[0].fail(failure);
-    await vi.waitFor(() => expect(shown).toHaveBeenCalledWith('Read aloud stopped: clip download failed', failure));
-    expect(reads).toHaveBeenCalledTimes(1);
-    expect(readAloudPhase('a')).toBe('idle');
-  });
+    function wire(mint: () => string | Promise<string>, route: () => Response): { reads: ReturnType<typeof setBindingMock>; fetches: string[] } {
+      const audio = silentAudio();
+      useOpenAIEngineForTest((backend) => clipSpeechEngine({
+        voices: () => readAloudSourceVoices(backend).map((voice) => ({ id: voice.id, name: voice.name, lang: '', isDefault: false })),
+        fetchClip: readAloudClipFetcher(backend),
+        audio: () => audio,
+        urls: { create: () => 'blob:clip', revoke: () => undefined },
+      }));
+      setBindingMock('MintReadAloudTicket', mint);
+      const fetches: string[] = [];
+      vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+        fetches.push(String(input));
+        return route();
+      });
+      // The computer offers the voice again by the time it is asked: the
+      // switch went off and straight back on.
+      const reads = setBindingMock('ReadAloudSource', async () => ({ available: true, voices: VOICES }));
+      return { reads, fetches };
+    }
 
-  it('leaves a reading started while the computer is asked again alone', async () => {
-    const shown = vi.spyOn(toast, 'addErrorToast').mockImplementation(() => undefined as never);
-    let answer!: (status: { available: boolean; voices: typeof VOICES }) => void;
-    const reads = setBindingMock('ReadAloudSource', () => new Promise((resolve) => { answer = resolve; }));
-    setReadAloudPreference('voiceId', 'openai:marin');
-    readAloud('a', REPLY, 'laptop');
-    clips.playbacks[0].fail(new Error('clip download failed'));
-    await vi.waitFor(() => expect(reads).toHaveBeenCalledTimes(1));
+    async function readUntilStopped(): Promise<void> {
+      setReadAloudPreference('voiceId', 'openai:marin');
+      readAloud('a', REPLY, LAPTOP);
+      await vi.waitFor(() => expect(readAloudPhase('a')).toBe('idle'), { timeout: 1000 });
+      await settle();
+    }
 
-    readAloud('b', REPLY, 'laptop');
-    expect(clips.playbacks).toHaveLength(2);
-    answer({ available: true, voices: VOICES });
-    await settle();
-    await settle();
-    expect(clips.playbacks[1].stopped).toBe(false);
-    expect(readAloudPhase('b')).toBe('playing');
-    expect(shown).not.toHaveBeenCalled();
+    it('stops quietly and asks the computer again when the mint says the switch is off', async () => {
+      const shown = vi.spyOn(toast, 'addErrorToast').mockImplementation(() => undefined as never);
+      const { reads, fetches } = wire(() => { throw new TransportError(READ_ALOUD_OFF_CODE, SWITCHED_OFF); }, () => new Response('', { status: 500 }));
+      await readUntilStopped();
+      expect(fetches).toEqual([]);
+      expect(reads).toHaveBeenCalledTimes(1);
+      expect(shown).not.toHaveBeenCalled();
+    });
+
+    it('stops quietly and asks the computer again when the speech route answers 403', async () => {
+      const shown = vi.spyOn(toast, 'addErrorToast').mockImplementation(() => undefined as never);
+      const { reads, fetches } = wire(() => '/attachments/speech/s1?ticket=t', () => new Response(SWITCHED_OFF, { status: 403 }));
+      await readUntilStopped();
+      expect(fetches).toEqual(['/backend/laptop/attachments/speech/s1?ticket=t']);
+      expect(reads).toHaveBeenCalledTimes(1);
+      expect(shown).not.toHaveBeenCalled();
+      expect(readAloudRoute('laptop', 'openai:marin')).toMatchObject({ kind: 'openai', backend: 'laptop' });
+    });
+
+    it('says the reason of any other refusal at once and asks the computer nothing', async () => {
+      const shown = vi.spyOn(toast, 'addErrorToast').mockImplementation(() => undefined as never);
+      for (const [status, body] of [
+        [409, 'the key file is readable by other users; run chmod 600 on it'],
+        [502, 'OpenAI did not read the text as written'],
+        [404, 'this sentence was already read aloud or has expired'],
+      ] as const) {
+        shown.mockClear();
+        const { reads } = wire(() => '/attachments/speech/s1?ticket=t', () => new Response(body, { status }));
+        await readUntilStopped();
+        expect(shown).toHaveBeenCalledTimes(1);
+        expect(shown.mock.calls[0][0]).toBe(`Read aloud stopped: ${body}`);
+        expect(shown.mock.calls[0][1]).toMatchObject({ status });
+        expect(reads).not.toHaveBeenCalled();
+      }
+    });
   });
 });

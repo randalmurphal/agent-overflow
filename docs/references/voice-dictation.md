@@ -168,8 +168,11 @@ in the API key file, a computer reads sentences in OpenAI voices.
 characters after trimming) and returns
 `/attachments/speech/{id}?ticket=...`. Fetching it runs the synthesis and
 answers a 24 kHz mono 16-bit WAV, or a 4xx/5xx with a plain-text message
-the client shows: 404 spent or expired, 409 switched off or no usable key,
-429 busy or rate limited, 502 an OpenAI failure, 504 over 45 seconds. Code:
+the client shows: 404 spent or expired, 409 no usable key, 429 busy or
+rate limited, 502 an OpenAI failure, 504 over 45 seconds. 403 means the
+switch is off or was written since the sentence was admitted (the RPC
+says the same with code `read_aloud_api_off`); a client stops on it
+without an error. Code:
 `internal/openai/speech.go`, `internal/openai/fidelity.go`,
 `internal/readaloud/`, `internal/app/app_read_aloud.go`,
 `internal/transport/speechroutes.go`.

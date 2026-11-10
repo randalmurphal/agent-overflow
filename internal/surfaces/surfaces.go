@@ -1073,7 +1073,9 @@ var Routes = []Route{
 			"the backend re-checks the Settings > Voice switch, reads the " +
 			"key, asks OpenAI under the request's context so an aborted " +
 			"fetch cancels the call, as does a write to the switch, and " +
-			"answers audio/wav it built itself around OpenAI's PCM. A failure answers a 4xx or 5xx with a " +
+			"answers audio/wav it built itself around OpenAI's PCM. A " +
+			"failure answers a 4xx or 5xx (403 only for the switch being " +
+			"off or written since the sentence was admitted) with a " +
 			"short plain-text message this tree wrote, OpenAI's text only " +
 			"after the openai package scrubbed it. nosniff and " +
 			"Cache-Control: no-store as on every ticketed transfer. Not " +

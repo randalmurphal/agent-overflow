@@ -92,13 +92,13 @@
 
   function trySample(): void {
     if (sampling) stopReadAloud();
-    else readAloud(SAMPLE_KEY, SAMPLE, backend);
+    else readAloud(SAMPLE_KEY, SAMPLE, { computer: backend });
   }
 
   function preview(voice: string): void {
     const key = `${PREVIEW_KEY}${voice}`;
     if (readAloudPhase(key) !== 'idle') stopReadAloud();
-    else readAloud(key, SAMPLE, backend, openAIVoiceId(voice));
+    else readAloud(key, SAMPLE, { computer: backend }, openAIVoiceId(voice));
   }
 
   // Leaving the page must not leave a sample or preview speaking.

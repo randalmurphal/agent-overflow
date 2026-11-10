@@ -392,7 +392,7 @@
       </span>
       {#if canReadAloud}
         <span class="flex shrink-0 items-center transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100 compact:opacity-100 {readingThis ? 'opacity-100' : 'opacity-0'}">
-          <ReadAloudButton {readingKey} markdown={item.summary} backend={readAloudMachine} />
+          <ReadAloudButton {readingKey} markdown={item.summary} threadId={item.threadId} />
         </span>
       {/if}
     </div>

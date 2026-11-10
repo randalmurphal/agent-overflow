@@ -61,9 +61,21 @@ var (
 	ErrTextTooLong = fmt.Errorf("a sentence to read aloud is at most %d characters", MaxTextCharacters)
 )
 
+// OffCode is the wire code of ErrOff, so a client tells the switch from a
+// failure whatever the switch says by the time it asks again.
+const OffCode = "read_aloud_api_off"
+
 // ErrOff refuses a sentence while the Settings > Voice switch is off, or
 // once a write to the switch revoked it.
-var ErrOff = errors.New("read aloud in OpenAI voices is off on this computer; turn it on in Settings > Voice")
+var ErrOff error = off{}
+
+type off struct{}
+
+func (off) Error() string {
+	return "read aloud in OpenAI voices is off on this computer; turn it on in Settings > Voice"
+}
+
+func (o off) PublicDetails() (code, message string) { return OffCode, o.Error() }
 
 // SpeakFunc reads one request aloud.
 type SpeakFunc func(ctx context.Context, request openai.SpeechRequest) (openai.Speech, error)
@@ -103,6 +115,10 @@ type Sentences struct {
 	revokedBefore uint64
 
 	slots chan struct{}
+
+	// beforeHandOver, when set by a test, runs once a clip is made and
+	// before it is handed over.
+	beforeHandOver func()
 }
 
 type pendingSentence struct {
@@ -209,7 +225,8 @@ func (s *Sentences) dropExpired(now time.Time) {
 // RevokeBefore drops every waiting sentence admitted before revision, the
 // settings write that changed the switch, ends every synthesis of one, and
 // refuses any still to come in with an older admission. A synthesis it
-// ends returns ErrOff. A clip already made is not taken back.
+// ends returns ErrOff, up to the moment its clip is handed over; a clip
+// already handed over is not taken back.
 func (s *Sentences) RevokeBefore(revision uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -260,32 +277,47 @@ func (s *Sentences) synthesize(ctx context.Context, sentence Sentence, speak Spe
 	}
 	s.speaking[work] = struct{}{}
 	s.mu.Unlock()
-	revoked := func() bool {
+	// finish takes the synthesis out of the set and reports whether a
+	// RevokeBefore reached it first. Until it runs, a revocation still
+	// counts.
+	finish := func() (revoked bool) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		delete(s.speaking, work)
 		return work.revoked
 	}
-	defer func() {
-		s.mu.Lock()
-		delete(s.speaking, work)
-		s.mu.Unlock()
-	}()
 	for attempt := 0; attempt < 2; attempt++ {
 		speech, err := speak(running, sentence.Request)
-		if revoked() {
-			return nil, ErrOff
-		}
-		if err != nil {
-			return nil, err
-		}
-		if !openai.IsReading(sentence.Request.Text, speech.Transcript) {
+		// Revoked while speaking: its error is the cancellation, and a
+		// result that is not a reading is not retried.
+		reading := err == nil && openai.IsReading(sentence.Request.Text, speech.Transcript)
+		if !reading {
+			s.mu.Lock()
+			revoked := work.revoked
+			s.mu.Unlock()
+			switch {
+			case revoked:
+				finish()
+				return nil, ErrOff
+			case err != nil:
+				finish()
+				return nil, err
+			}
 			continue
 		}
 		wav, err := WAV(speech.PCM, openai.SpeechSampleRate)
 		if err != nil {
+			finish()
 			return nil, err
+		}
+		if s.beforeHandOver != nil {
+			s.beforeHandOver()
+		}
+		if finish() {
+			return nil, ErrOff
 		}
 		return &Clip{Reader: bytes.NewReader(wav), release: release}, nil
 	}
+	finish()
 	return nil, ErrMisread
 }

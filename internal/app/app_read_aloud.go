@@ -26,6 +26,12 @@ import (
 // readAloudTimeout bounds one fetch's synthesis, retry included.
 const readAloudTimeout = 45 * time.Second
 
+// readAloudOffStatus is the status of a fetch refused because the switch
+// is off or was written since the sentence was admitted. No other failure
+// of the route uses it: it is the HTTP form of readaloud.OffCode, and a
+// client stops on it without reporting an error.
+const readAloudOffStatus = http.StatusForbidden
+
 // ReadAloudVoice is one OpenAI voice a reply can be read in.
 type ReadAloudVoice struct {
 	ID   string `json:"id"`
@@ -121,7 +127,7 @@ func (t readAloudTransfer) SpeakSentence(ctx context.Context, speechID string) (
 	// The switch first: turning it off dropped the sentence, and "off" is
 	// the reason to give for that.
 	if !a.readAloudAPIOn() {
-		return nil, &transport.SpeechError{Status: http.StatusConflict, Err: readaloud.ErrOff}
+		return nil, &transport.SpeechError{Status: readAloudOffStatus, Err: readaloud.ErrOff}
 	}
 	sentence, err := a.readAloudSentences().Take(speechID)
 	if err != nil {
@@ -165,7 +171,7 @@ func readAloudFailure(request context.Context, err error) error {
 	case request.Err() != nil, errors.As(err, &classified):
 		return err
 	case errors.Is(err, readaloud.ErrOff):
-		return &transport.SpeechError{Status: http.StatusConflict, Err: err}
+		return &transport.SpeechError{Status: readAloudOffStatus, Err: err}
 	case errors.Is(err, context.DeadlineExceeded):
 		return &transport.SpeechError{Status: http.StatusGatewayTimeout,
 			Err: fmt.Errorf("OpenAI took longer than %d seconds to read the sentence aloud", int(readAloudTimeout.Seconds()))}

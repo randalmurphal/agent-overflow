@@ -6,7 +6,8 @@
 // blob playback is allowed); pause and resume refetch the sentence it
 // paused in; Preview reads a voice without changing the saved one; a
 // failure shows the computer's reason; switching the computer's switch off
-// ends a reading, sounding or still waiting on OpenAI, without an error; a
+// ends a reading, sounding or still waiting on OpenAI, without an error,
+// also when it is switched straight back on; a
 // device with no voices reads through the computer; with the switch off
 // nothing is offered or fetched.
 // The isolated boot answers OpenAI in-process (internal/openai/openaifake).
@@ -194,14 +195,33 @@ test('switching the computer’s OpenAI voices off ends a reading without an err
   await readAloudButtons(page).nth(3).click();
   await expect(waiting).toHaveAttribute('data-waiting', 'true');
   await expect.poll(() => speech.minted.length).toBe(minted + 1);
+  // Off and straight back on. Whether the page hears of the switch first
+  // or the refused fetch lands first, the reading ends without an error.
   await turnOffOpenAIVoices(harness);
+  await setUpOpenAIVoices(harness, 'sk-e2e-read-aloud-revoked');
   await expect(waiting).toHaveAttribute('data-phase', 'idle');
-
   await expect(page.getByTestId('toast-message')).toHaveCount(0);
-  // The saved OpenAI voice is no longer offered here, so the device reads.
+
+  // The voice is offered again, and a reading started now is read.
+  await openVoiceSettings(page);
+  await expect(page.getByTestId('voice-read-aloud-api-status')).toHaveText('Ready');
+  await page.keyboard.press('Escape');
+  const again = readAloudSlots(page).first();
+  await readAloudButtons(page).first().click();
+  await expect(again).toHaveAttribute('data-phase', 'playing');
+  await expect(again).toHaveAttribute('data-phase', 'idle', { timeout: 20_000 });
+  expect(speech.minted.slice(minted + 1)).toEqual(FIRST_SENTENCES.map((text) => ({ text, voice: 'marin' })));
+  await expect(page.getByTestId('toast-message')).toHaveCount(0);
+
+  // With the switch off the saved OpenAI voice is not offered, so the
+  // device reads.
+  await turnOffOpenAIVoices(harness);
+  await openVoiceSettings(page);
+  await expect(page.getByTestId('voice-read-aloud-api-status')).toHaveText('Off');
+  await page.keyboard.press('Escape');
   await readAloudButtons(page).first().click();
   await expect.poll(async () => (await spoken(page)).map((u) => u.text)).toEqual(['First one.']);
-  expect(speech.minted).toHaveLength(minted + 1);
+  expect(speech.minted).toHaveLength(minted + 1 + FIRST_SENTENCES.length);
 });
 
 test('a device with no voices reads through the computer’s OpenAI voice', async ({ harness, page }) => {

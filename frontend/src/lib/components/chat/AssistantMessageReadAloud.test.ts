@@ -241,6 +241,44 @@ describe('<AssistantMessage> read aloud', () => {
     expect(minted).toEqual([HOME_BACKEND]);
   });
 
+  // A reading through a computer belongs to that computer only while it
+  // verifiably owns the thread.
+  it('stops a paused OpenAI reading once its thread is contested, and reads again in the device voice from the start', async () => {
+    const minted: string[] = [];
+    useOpenAIEngineForTest((backend: string): SpeechEngine => ({
+      voices: async () => [],
+      onVoicesChanged: () => () => undefined,
+      speak: (_pieces, _from, _options, onPiece) => {
+        minted.push(backend);
+        onPiece(_from);
+        return { done: new Promise(() => undefined), stop: () => undefined };
+      },
+    }));
+    setBindingMock('ReadAloudSource', async () => ({ available: true, voices: [{ id: 'marin', name: 'Marin' }] }));
+    await refreshReadAloudSource(HOME_BACKEND);
+    setReadAloudPreference('voiceId', 'openai:marin');
+    noteThread('thread-p', HOME_BACKEND, 1);
+
+    const item = makeItem({ id: 'reply-p', threadId: 'thread-p', summary: 'First sentence. Second sentence.' });
+    const { getByTestId } = render(AssistantMessage, { props: { item } });
+    const button = await waitFor(() => getByTestId('assistant-message-read-aloud'));
+    const slot = getByTestId('assistant-message-read-aloud-slot');
+    await fireEvent.click(button);
+    expect(minted).toEqual([HOME_BACKEND]);
+    await fireEvent.click(button);
+    await settle();
+    await waitFor(() => expect(slot.getAttribute('data-phase')).toBe('paused'));
+
+    stageBackend({ id: 'laptop', backendId: REMOTE_BACKEND_UUID });
+    noteThread('thread-p', 'laptop', 1);
+    await waitFor(() => expect(slot.getAttribute('data-phase')).toBe('idle'));
+
+    await fireEvent.click(getByTestId('assistant-message-read-aloud'));
+    expect(readAloudPhase(replyReadingKey('thread-p', 'reply-p'))).toBe('playing');
+    expect(fake.playbacks[0]).toMatchObject({ from: 0, options: { voiceId: '' } });
+    expect(minted).toEqual([HOME_BACKEND]);
+  });
+
   it('returns to idle when speech is cancelled from outside', async () => {
     const { getByTestId } = render(AssistantMessage, { props: { item: makeItem({ id: 'reply-3', summary: 'A sentence.' }) } });
     const button = await waitFor(() => getByTestId('assistant-message-read-aloud'));

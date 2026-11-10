@@ -10,12 +10,28 @@
 import { SvelteMap } from 'svelte/reactivity';
 import { MintReadAloudTicket, ReadAloudSource, type ReadAloudSourceStatus, type ReadAloudVoice } from './bindings';
 import { onBackendDetached, withBackendTarget } from '../transport/backends';
-import { fetchTicketedBytes } from '../transport/attachmentTransfer';
+import { fetchTicketedBytes, TransferRefusedError } from '../transport/attachmentTransfer';
+import { TransportError } from '../transport/wsClient';
 import { hasScope } from '../transport/scopes';
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import type { BackendKey } from '../transport/backendKey';
 import type { FetchClip } from '../native/clipSpeech';
+
+/** The mint's refusal code when the computer's switch is off or was
+ * written since: `internal/readaloud` `OffCode`. */
+export const READ_ALOUD_OFF_CODE = 'read_aloud_api_off';
+
+/** The speech route's status for the same cause, a sentence revoked by a
+ * write to the switch included (`internal/app/app_read_aloud.go`). */
+export const READ_ALOUD_OFF_STATUS = 403;
+
+/** Whether an OpenAI reading failed because its computer's switch is off
+ * or was written. */
+export function isReadAloudSwitchedOff(err: unknown): boolean {
+  return (err instanceof TransportError && err.code === READ_ALOUD_OFF_CODE)
+    || (err instanceof TransferRefusedError && err.status === READ_ALOUD_OFF_STATUS);
+}
 
 // What each computer answered once asked, absent until then.
 const sources = new SvelteMap<BackendKey, ReadAloudSourceStatus>();
@@ -89,7 +105,7 @@ onBackendDetached(({ backendId }) => {
 
 /** Fetches one sentence's audio from `backend`: the sentence is admitted
  * there, then its ticketed URL is spent once. A failure's message is the
- * computer's reason. */
+ * computer's reason; `isReadAloudSwitchedOff` tells its switch apart. */
 export function readAloudClipFetcher(backend: BackendKey): FetchClip {
   return async (text, voice, signal) => {
     const url = await withBackendTarget(backend, () => MintReadAloudTicket(text, voice));

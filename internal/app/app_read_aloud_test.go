@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/openai"
 	"agent-overflow/internal/openai/openaifake"
 	"agent-overflow/internal/openaikey"
@@ -123,8 +124,8 @@ func TestMintReadAloudTicketRefusesWhatItCannotRead(t *testing.T) {
 	}
 	enableReadAloud(t, app, false)
 	_, err := app.MintReadAloudTicket(context.Background(), "Hello.", "marin")
-	if !errors.Is(err, readaloud.ErrOff) {
-		t.Fatalf("Mint with the switch off = %v, want ErrOff", err)
+	if code, _, _ := errorsx.PublicDetails(err); !errors.Is(err, readaloud.ErrOff) || code != readaloud.OffCode {
+		t.Fatalf("Mint with the switch off = %v (code %q), want ErrOff with its code", err, code)
 	}
 }
 
@@ -181,8 +182,8 @@ func TestReadAloudSwitchedOffBeforeTheFetchRefusesIt(t *testing.T) {
 	}
 	enableReadAloud(t, app, false)
 	status, body, _ := fetchSpeech(t, context.Background(), base+url)
-	if status != http.StatusConflict || string(body) != readaloud.ErrOff.Error() {
-		t.Fatalf("fetch after the switch went off = %d %q", status, body)
+	if status != http.StatusForbidden || string(body) != readaloud.ErrOff.Error() {
+		t.Fatalf("fetch after the switch went off = %d %q, want 403 and the off message", status, body)
 	}
 	if asks := openaifake.SpeechAsks(key); len(asks) != 0 {
 		t.Fatalf("OpenAI was asked after the switch went off: %+v", asks)
@@ -374,8 +375,8 @@ func TestSwitchingReadAloudOffEndsWhatWasAdmitted(t *testing.T) {
 
 	select {
 	case got := <-fetched:
-		if got.status != http.StatusConflict || got.body != readaloud.ErrOff.Error() {
-			t.Fatalf("the synthesis in progress answered %d %q, want 409 and the off message", got.status, got.body)
+		if got.status != http.StatusForbidden || got.body != readaloud.ErrOff.Error() {
+			t.Fatalf("the synthesis in progress answered %d %q, want 403 and the off message", got.status, got.body)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("the synthesis kept running after the switch went off")

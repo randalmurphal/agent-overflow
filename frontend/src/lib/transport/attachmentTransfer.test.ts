@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import {
+  TransferRefusedError,
   TransferUnavailableError,
   fetchAttachmentBytes,
   fetchTicketedBytes,
@@ -203,6 +204,25 @@ describe('fetchTicketedBytes', () => {
     expect(refused).toBeInstanceOf(Error);
     expect(refused).not.toBeInstanceOf(TransferUnavailableError);
     expect((refused as Error).message).toBe('Could not load image: the file is larger than this backend accepts.');
+  });
+
+  it('carries the route\'s status on every refusal, a 404 as TransferUnavailableError', async () => {
+    const url = '/attachments/speech/s1?ticket=t';
+    for (const [status, body, message] of [
+      [403, 'read aloud in OpenAI voices is off on this computer', 'read aloud in OpenAI voices is off on this computer'],
+      [404, 'this sentence was already read aloud or has expired', 'this sentence was already read aloud or has expired'],
+      [409, 'the key file is empty', 'the key file is empty'],
+      [502, 'OpenAI did not read the text as written', 'OpenAI did not read the text as written'],
+    ] as const) {
+      answerWith(() => new Response(body, { status }));
+      const refused = await fetchTicketedBytes(HOME_BACKEND, url, null).catch((err: unknown) => err);
+      expect(refused).toBeInstanceOf(TransferRefusedError);
+      expect(refused).toMatchObject({ status, message });
+      expect(refused instanceof TransferUnavailableError).toBe(status === 404);
+    }
+    answerWith(() => new Response('', { status: 403 }));
+    const prefixed = await fetchTicketedBytes(HOME_BACKEND, '/attachments/image/abc?ticket=t', 'Could not load image').catch((err: unknown) => err);
+    expect(prefixed).toMatchObject({ status: 403, message: 'Could not load image (403).' });
   });
 
   it('words a failure with the caller\'s prefix, or with the route\'s reason alone', async () => {

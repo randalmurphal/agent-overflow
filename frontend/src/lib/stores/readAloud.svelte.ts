@@ -10,15 +10,18 @@
 // Each reading chooses its voice when it starts, and resume and restart
 // keep that choice: a saved (or overriding) `openai:` voice when the
 // reading's computer offers it, otherwise this device's voice, otherwise
-// the computer's OpenAI voice on a device that has none.
+// the computer's OpenAI voice on a device that has none. A reply's
+// computer is the one its thread verifiably runs on; a reading through
+// OpenAI stops when that stops being the computer it reads through.
 
 import { untrack } from 'svelte';
 import { speechEngine, type SpeechEngine, type SpeechPlayback, type SpeechVoice } from '../native/speech';
 import { clipSpeechEngine } from '../native/clipSpeech';
 import { speakablePieces } from '../utils/speakableText';
 import type { BackendKey } from '../transport/backendKey';
+import { verifiedThreadMachine } from './attachedBackends.svelte';
 import { readAloudPreferences } from './readAloudPreferences.svelte';
-import { readAloudClipFetcher, readAloudSourceVoices, refreshReadAloudSource } from './readAloudSource.svelte';
+import { isReadAloudSwitchedOff, readAloudClipFetcher, readAloudSourceVoices, refreshReadAloudSource } from './readAloudSource.svelte';
 import { addErrorToast } from './toast.svelte';
 
 export type ReadAloudPhase = 'idle' | 'playing' | 'paused';
@@ -28,6 +31,15 @@ export type ReadAloudPhase = 'idle' | 'playing' | 'paused';
 export type ReadAloudRoute =
   | { kind: 'device'; voiceId: string }
   | { kind: 'openai'; backend: BackendKey; voice: string };
+
+/** What a reading's text belongs to: a reply's thread, read through the
+ * computer it verifiably runs on, or a computer named outright (Settings >
+ * Voice). */
+export type ReadAloudOwner = { thread: string } | { computer: BackendKey };
+
+function ownerMachine(owner: ReadAloudOwner): BackendKey | null {
+  return 'thread' in owner ? verifiedThreadMachine(owner.thread) : owner.computer;
+}
 
 /** The saved voice id prefix of an OpenAI voice. */
 export const OPENAI_VOICE_PREFIX = 'openai:';
@@ -49,14 +61,13 @@ const player = $state<{
   // sentence sounds.
   waiting: boolean;
   route: ReadAloudRoute | null;
-}>({ key: null, phase: 'idle', index: 0, waiting: false, route: null });
+  owner: ReadAloudOwner | null;
+}>({ key: null, phase: 'idle', index: 0, waiting: false, route: null, owner: null });
 const voices = $state<{ list: SpeechVoice[] }>({ list: [] });
 
 let engine: SpeechEngine | null = null;
 let pieces: string[] = [];
 let playback: SpeechPlayback | null = null;
-// Counts readings started, so a late failure report knows it is stale.
-let readings = 0;
 let watchingVoices = false;
 
 const clipEngineFor = (backend: BackendKey): SpeechEngine => clipSpeechEngine({
@@ -112,9 +123,13 @@ export function readAloudRoute(backend: BackendKey | null, voiceId: string): Rea
   return null;
 }
 
-function servable(route: ReadAloudRoute): boolean {
+// Whether a reading can go on: a device route while the device has a
+// voice, an OpenAI route while its computer offers the voice and the text
+// still belongs to that computer.
+function servable(route: ReadAloudRoute, owner: ReadAloudOwner): boolean {
   if (!readAloudPreferences().enabled) return false;
-  return route.kind === 'device' ? engine !== null && voices.list.length > 0 : offersOpenAIVoice(route.backend, route.voice);
+  if (route.kind === 'device') return engine !== null && voices.list.length > 0;
+  return offersOpenAIVoice(route.backend, route.voice) && ownerMachine(owner) === route.backend;
 }
 
 /** The reading key of a reply. Item ids are thread-local, so the thread
@@ -139,13 +154,12 @@ export function readAloudKey(): string | null {
 }
 
 /** Read `markdown` aloud as `key` from its first sentence, stopping
- * whatever is being read. `backend` is the computer the text belongs to;
- * `voiceId` overrides the saved voice for this reading only. */
-export function readAloud(key: string, markdown: string, backend: BackendKey | null, voiceId?: string): void {
-  const route = readAloudRoute(backend, voiceId ?? readAloudPreferences().voiceId);
+ * whatever is being read. `owner` is what the text belongs to; `voiceId`
+ * overrides the saved voice for this reading only. */
+export function readAloud(key: string, markdown: string, owner: ReadAloudOwner, voiceId?: string): void {
+  const route = readAloudRoute(ownerMachine(owner), voiceId ?? readAloudPreferences().voiceId);
   if (!route) return;
   stopVoice();
-  readings += 1;
   pieces = speakablePieces(markdown);
   if (pieces.length === 0) {
     reset();
@@ -153,6 +167,7 @@ export function readAloud(key: string, markdown: string, backend: BackendKey | n
   }
   player.key = key;
   player.route = route;
+  player.owner = owner;
   speakFrom(0);
 }
 
@@ -166,14 +181,18 @@ export function pauseReadAloud(): void {
 
 /** Read on from the start of the sentence it paused in. */
 export function resumeReadAloud(): void {
-  if (player.phase !== 'paused' || !player.route || !servable(player.route)) return;
+  if (!resumable()) return;
   speakFrom(player.index);
 }
 
 /** Read the paused reply again from its first sentence. */
 export function restartReadAloud(): void {
-  if (player.phase !== 'paused' || !player.route || !servable(player.route)) return;
+  if (!resumable()) return;
   speakFrom(0);
+}
+
+function resumable(): boolean {
+  return player.phase === 'paused' && player.route !== null && player.owner !== null && servable(player.route, player.owner);
 }
 
 /** Stop and forget the place. */
@@ -222,19 +241,12 @@ function speakFrom(index: number): void {
       playback = null;
       reset();
       if (route.kind === 'device') addErrorToast('Read aloud stopped: this device’s voice failed.', err);
-      else void reportOpenAIFailure(route, err);
+      // The computer's switch went off or was written there on purpose: the
+      // reading stops quietly and the picker and controls catch up.
+      else if (isReadAloudSwitchedOff(err)) void refreshReadAloudSource(route.backend);
+      else addErrorToast(`Read aloud stopped: ${err instanceof Error ? err.message : String(err)}`, err);
     },
   );
-}
-
-// A failed OpenAI reading asks its computer again first. A voice it no
-// longer offers went away, which stops a reading silently; any other
-// failure says the computer's reason, unless another reading has started.
-async function reportOpenAIFailure(route: ReadAloudRoute & { kind: 'openai' }, err: unknown): Promise<void> {
-  const reading = readings;
-  await refreshReadAloudSource(route.backend);
-  if (reading !== readings || !servable(route)) return;
-  addErrorToast(`Read aloud stopped: ${err instanceof Error ? err.message : String(err)}`, err);
 }
 
 function stopVoice(): void {
@@ -249,16 +261,18 @@ function reset(): void {
   player.index = 0;
   player.waiting = false;
   player.route = null;
+  player.owner = null;
   pieces = [];
 }
 
-// Turning read-aloud off, the device losing its voices, or the reading's
-// computer no longer offering its OpenAI voice stops a reading in progress
-// and forgets its place.
+// Turning read-aloud off, the device losing its voices, or an OpenAI
+// reading's computer no longer offering its voice or no longer owning its
+// text stops a reading in progress and forgets its place.
 $effect.root(() => {
   $effect(() => {
     const route = player.route;
-    if (route && !servable(route)) untrack(stopReadAloud);
+    const owner = player.owner;
+    if (route && owner && !servable(route, owner)) untrack(stopReadAloud);
   });
 });
 
@@ -268,7 +282,6 @@ export function resetReadAloudForTest(): void {
   engine = null;
   watchingVoices = false;
   voices.list = [];
-  readings = 0;
   openAIEngineFor = clipEngineFor;
 }
 

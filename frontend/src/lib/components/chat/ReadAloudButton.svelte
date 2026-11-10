@@ -5,8 +5,7 @@
   // beside it. While an OpenAI voice is fetching the first sentence the
   // control shows a spinner instead of pause. The store
   // (`stores/readAloud.svelte.ts`) owns the voice and the one reading at a
-  // time; `backend` is the computer the reply belongs to, or null when it
-  // is not verified.
+  // time, and reads through the computer `threadId` verifiably runs on.
 
   import Pause from '@lucide/svelte/icons/pause';
   import Play from '@lucide/svelte/icons/play';
@@ -14,7 +13,6 @@
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
   import SteppedSpinner from '../primitives/SteppedSpinner.svelte';
-  import type { BackendKey } from '../../transport/backendKey';
   import { chordHintSuffix } from '../../stores/keybindings.svelte';
   import {
     pauseReadAloud,
@@ -25,7 +23,7 @@
     resumeReadAloud,
   } from '../../stores/readAloud.svelte';
 
-  let { readingKey, markdown, backend }: { readingKey: string; markdown: string; backend: BackendKey | null } = $props();
+  let { readingKey, markdown, threadId }: { readingKey: string; markdown: string; threadId: string } = $props();
 
   let phase = $derived(readAloudPhase(readingKey));
   let waiting = $derived(readAloudWaiting(readingKey));
@@ -40,7 +38,7 @@
   function toggle(): void {
     if (phase === 'playing') pauseReadAloud();
     else if (phase === 'paused') resumeReadAloud();
-    else readAloud(readingKey, markdown, backend);
+    else readAloud(readingKey, markdown, { thread: threadId });
   }
 </script>
 

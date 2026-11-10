@@ -414,12 +414,45 @@ func TestRevokingBetweenAttemptsStopsTheRetry(t *testing.T) {
 	}
 }
 
-// A clip already made when the revocation lands is still not handed over.
+// A reading that arrives as the revocation lands is not handed over.
 func TestRevokingAsTheReadingArrivesWithholdsIt(t *testing.T) {
 	t.Parallel()
 	sentences := New(time.Minute)
 	speaker := &scripted{transcripts: []string{text}}
 	speaker.during = func() { sentences.RevokeBefore(1) }
+	if err := synthesized(t, sentences, sentenceAt(0), speaker.speak); !errors.Is(err, ErrOff) {
+		t.Fatalf("Synthesize = %v, want ErrOff", err)
+	}
+}
+
+// Nor is a clip already checked and wrapped when the revocation lands: the
+// decision to hand it over is made as the synthesis leaves the set.
+func TestRevokingOnceTheClipIsMadeWithholdsIt(t *testing.T) {
+	t.Parallel()
+	sentences := New(time.Minute)
+	sentences.beforeHandOver = func() { sentences.RevokeBefore(1) }
+	if err := synthesized(t, sentences, sentenceAt(0), echo); !errors.Is(err, ErrOff) {
+		t.Fatalf("Synthesize = %v, want ErrOff", err)
+	}
+	// Its slot is free, and a sentence admitted since is read.
+	sentences.beforeHandOver = nil
+	for range MaxSpeaking {
+		if err := synthesized(t, sentences, sentenceAt(1), echo); err != nil {
+			t.Fatalf("after the withheld clip: %v", err)
+		}
+	}
+}
+
+// Two misreadings with a revocation after the second are refused as off.
+func TestRevokingAfterTheLastMisreadingIsOff(t *testing.T) {
+	t.Parallel()
+	sentences := New(time.Minute)
+	speaker := &scripted{transcripts: []string{answer}}
+	speaker.during = func() {
+		if speaker.called() == 2 {
+			sentences.RevokeBefore(1)
+		}
+	}
 	if err := synthesized(t, sentences, sentenceAt(0), speaker.speak); !errors.Is(err, ErrOff) {
 		t.Fatalf("Synthesize = %v, want ErrOff", err)
 	}

@@ -100,15 +100,27 @@ export async function fetchAttachmentBytes(threadId: string, attachmentId: strin
   return fetchTicketedBytes(backend, url, 'Could not load image', signal);
 }
 
+/** A ticketed route refused the transfer with `status`; the message is
+ * what the user sees. */
+export class TransferRefusedError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'TransferRefusedError';
+    this.status = status;
+  }
+}
+
 /**
  * The route answered 404 for a ticket: spent by an earlier request, expired,
  * or its bytes evicted from the backend's short-lived cache. A caller that
  * minted the ticket itself may mint once more; the message is what the user
  * sees when that fails too.
  */
-export class TransferUnavailableError extends Error {
+export class TransferUnavailableError extends TransferRefusedError {
   constructor(message: string) {
-    super(message);
+    super(message, 404);
     this.name = 'TransferUnavailableError';
   }
 }
@@ -116,9 +128,9 @@ export class TransferUnavailableError extends Error {
 /**
  * Spends one ticketed download URL that `backend` minted and returns the
  * body. The ticket is single use, so the URL is fetched here once and never
- * handed to an element that might request it again. A 404 throws
- * `TransferUnavailableError`; any other refusal throws an Error naming what
- * the route answered. `prefix` leads each failure's message. Null leaves
+ * handed to an element that might request it again. A refusal throws
+ * `TransferRefusedError` with the route's status and what it answered, a
+ * 404 as `TransferUnavailableError`. `prefix` leads each failure's message. Null leaves
  * the route's reason standing alone, a 404's included: only a route whose
  * every answer is meant for a person (read aloud) asks for that.
  */
@@ -126,7 +138,7 @@ export async function fetchTicketedBytes(backend: BackendKey, url: string, prefi
   const response = await fetchPairedComputer(backend, networkFetch, backendTransferUrl(url, backend), { credentials: backendCredentials(backend), signal });
   if (!response.ok) {
     const message = await transferFailure(response, prefix);
-    throw response.status === 404 ? new TransferUnavailableError(message) : new Error(message);
+    throw response.status === 404 ? new TransferUnavailableError(message) : new TransferRefusedError(message, response.status);
   }
   return await response.blob();
 }
