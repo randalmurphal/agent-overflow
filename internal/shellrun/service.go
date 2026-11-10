@@ -242,7 +242,9 @@ func New(config Config) (*Service, error) {
 		return nil, fmt.Errorf("shellrun: read capture directory: %w", err)
 	}
 	for _, entry := range entries {
-		if entry.Name() == startedMarkersDir {
+		// Anything else by that name is removed with the captures, so a
+		// damaged directory does not fail every later start of the service.
+		if entry.Name() == startedMarkersDir && entry.IsDir() {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(config.Dir, entry.Name())); err != nil {

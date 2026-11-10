@@ -615,6 +615,28 @@ func TestACommandIsNotStartedWhenItsStartCannotBeRecorded(t *testing.T) {
 	}
 }
 
+func TestNewReplacesAMarkersDirectoryThatIsNotADirectory(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "captures")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, startedMarkersDir), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := &recorder{}
+	service := newService(t, rec, func(config *Config) { config.Dir = dir })
+	if _, err := service.Start(shellRequest(t, "run-1", "true")); err != nil {
+		t.Fatal(err)
+	}
+	if terminal := rec.terminal(t); terminal.State != StateSent {
+		t.Fatalf("terminal frame: %+v", terminal)
+	}
+	if _, err := os.Stat(filepath.Join(dir, startedMarkersDir, "run-1")); err != nil {
+		t.Fatalf("the run left no marker: %v", err)
+	}
+}
+
 func TestStartedMarkersKeepOnlyTheNewest(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "started")

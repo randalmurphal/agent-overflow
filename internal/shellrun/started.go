@@ -60,7 +60,8 @@ func loadStartedMarkers(dir string, kept int) (*startedMarkers, map[string]bool,
 	markers := &startedMarkers{dir: dir, kept: kept}
 	for len(found) > kept {
 		if err := os.Remove(filepath.Join(dir, found[0].runID)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return nil, nil, fmt.Errorf("remove old started marker: %w", err)
+			// Not worth failing the service for: the next start removes it.
+			log.Printf("shellrun: remove old started marker: %v", err)
 		}
 		found = found[1:]
 	}
