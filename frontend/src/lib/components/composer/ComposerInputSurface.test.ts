@@ -456,6 +456,45 @@ describe('<ComposerInputSurface>', () => {
     expect(upload).not.toHaveBeenCalled();
   });
 
+  // The camera can return after the connection dropped under it. The photo
+  // was taken while the composer was usable, so it waits and is not lost.
+  it('keeps a picker selection returned while disabled and uploads it once usable', async () => {
+    const upload = mockAttachmentUpload(async () => makeAttachment('att-held'));
+    const { getByTestId, queryByTestId, getByLabelText, draft, setProps } = await mountSurface();
+    await fireEvent.click(getByTestId('composer-attach'));
+    const input = getByLabelText('Choose attachments') as HTMLInputElement;
+    await setProps({ disabled: true });
+    Object.defineProperty(input, 'files', { value: [new File(['x'], 'camera.jpg', { type: 'image/jpeg' })] });
+    await fireEvent.change(input);
+    await tick();
+    expect(upload).not.toHaveBeenCalled();
+    expect(getByTestId('composer-attachment-held').textContent).toBe('Waiting to attach…');
+
+    await setProps({ disabled: false });
+    await waitFor(() => expect(draft.attachments.map((a) => a.id)).toEqual(['att-held']));
+    expect(upload).toHaveBeenCalledOnce();
+    expect(queryByTestId('composer-attachment-held')).toBeNull();
+  });
+
+  it('lets go of a held selection when the pane leaves its thread first', async () => {
+    const upload = mockAttachmentUpload(async () => makeAttachment('att-wrong-thread'));
+    const { getByTestId, queryByTestId, getByLabelText, pane, setProps } = await mountSurface();
+    await fireEvent.click(getByTestId('composer-attach'));
+    const input = getByLabelText('Choose attachments') as HTMLInputElement;
+    await setProps({ disabled: true });
+    Object.defineProperty(input, 'files', { value: [new File(['x'], 'camera.jpg', { type: 'image/jpeg' })] });
+    await fireEvent.change(input);
+    await tick();
+    expect(getByTestId('composer-attachment-held')).toBeTruthy();
+
+    pane.clear();
+    await tick();
+    expect(queryByTestId('composer-attachment-held')).toBeNull();
+    await setProps({ disabled: false });
+    await tick();
+    expect(upload).not.toHaveBeenCalled();
+  });
+
   it('refuses every attachment path the host blocks', async () => {
     const upload = mockAttachmentUpload(async () => makeAttachment('att-pasted'));
     const blockAttachment = vi.fn(() => true);

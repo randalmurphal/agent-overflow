@@ -7,7 +7,7 @@
   // comment for what deliberately does NOT live here.
 
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
-  import { flushSync, onDestroy } from 'svelte';
+  import { flushSync, onDestroy, untrack } from 'svelte';
   import { paneWorkspacePath } from '../../stores/thread.svelte';
   import ComposerAttachmentRow from './ComposerAttachmentRow.svelte';
   import AttachmentPicker from './AttachmentPicker.svelte';
@@ -50,6 +50,7 @@
   let fileInput: HTMLInputElement | undefined = $state();
   let pickerGeneration = -1;
   let pickerInsertion: UploadInsertionPoint | null = null;
+  let heldPick: { files: File[]; insertion: UploadInsertionPoint | null; generation: number } | null = $state.raw(null);
   let lastAutosizedTextarea: HTMLTextAreaElement | undefined;
   let lastAutosizedValue = '';
   // Bumped by recreateInput() to swap the <textarea> element itself (the
@@ -217,9 +218,34 @@
   function attachSelectedFiles(event: Event): void {
     const files = Array.from(fileInput?.files ?? []);
     if (fileInput) fileInput.value = '';
-    if (pickerGeneration !== pane.switchGeneration || disabled || refuseAttachment(event)) return;
+    if (files.length === 0 || pickerGeneration !== pane.switchGeneration || refuseAttachment(event)) return;
+    // The picker opened while the surface was usable. A selection that
+    // comes back while it is not (a connection that dropped under the
+    // camera, a prompt that arrived) is kept until it is usable again.
+    if (disabled) {
+      heldPick = { files, insertion: pickerInsertion, generation: pickerGeneration };
+      return;
+    }
     void uploads.uploadFiles(files, pickerInsertion);
   }
+
+  // The held selection uploads once the surface is usable again, and is
+  // let go when the pane moved to another thread first. The picker cannot
+  // open while the surface is disabled, so one selection is the most held.
+  $effect(() => {
+    const held = heldPick;
+    if (!held) return;
+    if (held.generation !== pane.switchGeneration) {
+      heldPick = null;
+      return;
+    }
+    if (disabled) return;
+    heldPick = null;
+    untrack(() => {
+      if (refuseAttachment(new Event('pick'))) return;
+      void uploads.uploadFiles(held.files, held.insertion);
+    });
+  });
 
   function handlePaste(event: ClipboardEvent): void {
     if (refuseAttachment(event)) return;
@@ -361,6 +387,8 @@
 {#if showDraftRows}
   {#if uploads.uploading}
     <div class="px-4 py-1 text-xs text-fg-muted" role="status">Uploading…</div>
+  {:else if heldPick}
+    <div class="px-4 py-1 text-xs text-fg-muted" role="status" data-testid="composer-attachment-held">Waiting to attach…</div>
   {/if}
   <ComposerAttachmentRow
     attachments={draft.attachments}
