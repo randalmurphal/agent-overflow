@@ -17,7 +17,8 @@
 # stop there; start refuses anywhere else.
 #
 # The SDK's emulator needs libraries a host may lack, so `prepare` builds
-# e2e/android/emulator.Dockerfile and exports its files once; start runs
+# e2e/android/emulator.Dockerfile and exports its files, once for each
+# version of that file; start runs
 # the SDK's binary on them with bubblewrap. A container runtime cannot run
 # inside the namespace (rootless Podman rejoins its own user namespace), and
 # the namespace must hold the emulator for adb and the suite to reach it.
@@ -36,7 +37,8 @@
 #                        /run/user/$UID/ao-emulator.lock)
 #
 # Linux and WSL2 only: it needs /dev/kvm, bubblewrap, flock, a user systemd
-# with the memory controller delegated, and Docker or Podman for `prepare`.
+# with the memory controller delegated, and Docker or Podman when `prepare`
+# has to build the runtime.
 set -euo pipefail
 
 : "${ANDROID_HOME:=$HOME/Android/Sdk}"
@@ -87,17 +89,20 @@ case "${1:-}" in
     exit
     ;;
   prepare)
-    for need in docker flock; do
-      command -v "$need" >/dev/null 2>&1 || { echo "missing $need" >&2; exit 1; }
-    done
+    command -v flock >/dev/null 2>&1 || { echo "missing flock" >&2; exit 1; }
     hold_lock
-    docker build -q -t ao-emulator -f "$repo/e2e/android/emulator.Dockerfile" "$repo/e2e/android" >/dev/null
-    image="$(docker image inspect -f '{{.Id}}' ao-emulator)"
-    if [[ "$(cat "$rootfs/.ao-image" 2>/dev/null)" != "$image" ]]; then
+    # The runtime is what the Dockerfile builds, so the Dockerfile's hash
+    # names it. Files exported from an unchanged Dockerfile are reused
+    # without the image, which a container prune may have removed.
+    dockerfile="$repo/e2e/android/emulator.Dockerfile"
+    runtime="$(sha256sum "$dockerfile" | cut -d' ' -f1)"
+    if [[ "$(cat "$rootfs/.ao-runtime" 2>/dev/null)" != "$runtime" ]]; then
+      command -v docker >/dev/null 2>&1 || { echo "missing docker" >&2; exit 1; }
       if systemctl --user is-active -q "$unit"; then
         echo "an emulator is running as $unit on the current runtime; stop it first: $0 stop" >&2
         exit 1
       fi
+      docker build -q -t ao-emulator -f "$dockerfile" "$repo/e2e/android" >/dev/null
       # Extracted beside the old root and swapped in whole, so a failed
       # export leaves the previous runtime intact and stamped.
       fresh="$rootfs.new"
@@ -106,7 +111,7 @@ case "${1:-}" in
       container="$(docker create ao-emulator true)"
       trap 'docker rm "$container" >/dev/null' EXIT
       docker export "$container" | tar -x -C "$fresh"
-      echo "$image" >"$fresh/.ao-image"
+      echo "$runtime" >"$fresh/.ao-runtime"
       if [[ -d "$rootfs" ]]; then mv "$rootfs" "$rootfs.old"; fi
       mv "$fresh" "$rootfs"
       rm -rf "$rootfs.old"
@@ -132,7 +137,7 @@ for need in bwrap flock systemd-run "$adb" "$ANDROID_HOME/emulator/emulator"; do
   command -v "$need" >/dev/null 2>&1 || [[ -x "$need" ]] || { echo "missing $need" >&2; exit 1; }
 done
 [[ -e /dev/kvm ]] || { echo "/dev/kvm is required; enable nested virtualization for this VM" >&2; exit 1; }
-[[ -f "$rootfs/.ao-image" ]] || { echo "no emulator runtime in $rootfs; run: $0 prepare" >&2; exit 1; }
+[[ -f "$rootfs/.ao-runtime" ]] || { echo "no emulator runtime in $rootfs; run: $0 prepare" >&2; exit 1; }
 [[ -d "$ANDROID_AVD_HOME/$avd.avd" ]] || {
   echo "no AVD '$avd' under $ANDROID_AVD_HOME; create it with avdmanager first (make e2e-android prints the commands)" >&2
   exit 1

@@ -473,7 +473,7 @@ esac
 					t.Fatal(err)
 				}
 			}
-			if err := os.WriteFile(filepath.Join(f.dir, "cache", "agent-overflow", "emulator-rootfs", ".ao-image"), []byte("test\n"), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(f.dir, "cache", "agent-overflow", "emulator-rootfs", ".ao-runtime"), []byte("test\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			cmd := exec.Command("bash", filepath.Join(filepath.Dir(f.smoke), "android-emulator.sh"), "start")
@@ -534,6 +534,208 @@ esac
 			}
 			if _, err := os.Stat(scope); err == nil {
 				t.Fatalf("the scope is still active:\n%s", calls)
+			}
+		})
+	}
+}
+
+// prepareFixture adds what `android-emulator.sh prepare` reads: the
+// Dockerfile in the copied repository and a container runtime that records
+// its calls and exports one file.
+func prepareFixture(t *testing.T) (f smokeFixture, rootfs, stamp string) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("the emulator path is Linux-only")
+	}
+	for _, need := range []string{"flock", "sha256sum", "tar"} {
+		if _, err := exec.LookPath(need); err != nil {
+			t.Skip(need + " unavailable")
+		}
+	}
+	f = newSmokeFixture(t)
+	android := filepath.Join(f.dir, "repo", "e2e", "android")
+	if err := os.MkdirAll(android, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(android, "emulator.Dockerfile"), []byte("FROM scratch\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("sha256sum", filepath.Join(android, "emulator.Dockerfile")).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp, _, _ = strings.Cut(string(out), " ")
+	mockexec.WriteIn(t, filepath.Join(f.dir, "bin"), "docker", `#!/usr/bin/env bash
+echo "docker $1" >>"$AO_TEST_LOG"
+case "$1" in
+  build) [[ "${AO_TEST_BUILD_FAILS:-}" != 1 ]] ;;
+  create) echo container-1 ;;
+  export)
+    work="$(mktemp -d)"
+    echo built >"$work/built"
+    tar -c -C "$work" built
+    rm -rf "$work"
+    ;;
+esac
+`)
+	return f, filepath.Join(f.dir, "cache", "agent-overflow", "emulator-rootfs"), stamp
+}
+
+// withoutContainerRuntime removes the fixture's docker and answers a PATH
+// of the fixture's tools and only the system tools prepare runs, so a
+// container runtime installed on the host is not found either.
+func (f smokeFixture) withoutContainerRuntime(t *testing.T) string {
+	t.Helper()
+	if err := os.Remove(filepath.Join(f.dir, "bin", "docker")); err != nil {
+		t.Fatal(err)
+	}
+	tools := filepath.Join(f.dir, "tools")
+	if err := os.MkdirAll(tools, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"bash", "cat", "cut", "dirname", "flock", "id", "mkdir", "sha256sum"} {
+		path, err := exec.LookPath(name)
+		if err != nil {
+			t.Skip(name + " unavailable")
+		}
+		if err := os.Symlink(path, filepath.Join(tools, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return "PATH=" + filepath.Join(f.dir, "bin") + string(os.PathListSeparator) + tools
+}
+
+func (f smokeFixture) prepare(env ...string) (string, error) {
+	cmd := exec.Command("bash", filepath.Join(filepath.Dir(f.smoke), "android-emulator.sh"), "prepare")
+	cmd.Env = append(append([]string{}, f.env...), env...)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// stampRuntime writes a runtime of one file, stamped as built from the
+// Dockerfile whose hash is stamp.
+func stampRuntime(t *testing.T, rootfs, stamp string) {
+	t.Helper()
+	if err := os.MkdirAll(rootfs, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"kept": "kept\n", ".ao-runtime": stamp + "\n"} {
+		if err := os.WriteFile(filepath.Join(rootfs, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Runtime files exported from the current Dockerfile are reused as they
+// are: no image is built or looked up, so a pruned image, or a host with no
+// container runtime at all, costs nothing.
+func TestAndroidEmulatorPrepareReusesTheRuntimeOfAnUnchangedDockerfile(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		docker bool
+	}{
+		{"with a container runtime", true},
+		{"without one", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, rootfs, stamp := prepareFixture(t)
+			var env []string
+			if !tc.docker {
+				env = []string{f.withoutContainerRuntime(t)}
+			}
+			stampRuntime(t, rootfs, stamp)
+			out, err := f.prepare(env...)
+			if err != nil {
+				t.Fatalf("prepare failed: %v\n%s", err, out)
+			}
+			if calls := f.calls(t); strings.Contains(calls, "docker") {
+				t.Fatalf("a current runtime was rebuilt:\n%s", calls)
+			}
+			if _, err := os.Stat(filepath.Join(rootfs, "kept")); err != nil {
+				t.Fatalf("the runtime was replaced: %v", err)
+			}
+		})
+	}
+}
+
+// A runtime from another version of the Dockerfile, or none, is built and
+// swapped in whole, stamped with the Dockerfile it came from.
+func TestAndroidEmulatorPrepareBuildsTheRuntimeOfAChangedDockerfile(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		existing bool
+	}{
+		{"over an older runtime", true},
+		{"with no runtime", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, rootfs, stamp := prepareFixture(t)
+			if tc.existing {
+				stampRuntime(t, rootfs, "another-dockerfile")
+			}
+			out, err := f.prepare()
+			if err != nil {
+				t.Fatalf("prepare failed: %v\n%s", err, out)
+			}
+			if want := "docker build\ndocker create\ndocker export\ndocker rm\n"; !strings.HasSuffix(f.calls(t), want) {
+				t.Fatalf("calls = %q, want them to end %q", f.calls(t), want)
+			}
+			got, err := os.ReadFile(filepath.Join(rootfs, ".ao-runtime"))
+			if err != nil || strings.TrimSpace(string(got)) != stamp {
+				t.Fatalf("stamp = %q, %v; want %q", got, err, stamp)
+			}
+			if _, err := os.Stat(filepath.Join(rootfs, "built")); err != nil {
+				t.Fatalf("the built runtime is missing: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(rootfs, "kept")); err == nil {
+				t.Fatal("the older runtime's files survived the swap")
+			}
+			// The next prepare finds it current.
+			if err := os.Remove(f.log); err != nil {
+				t.Fatal(err)
+			}
+			if out, err := f.prepare(); err != nil || strings.Contains(f.calls(t), "docker") {
+				t.Fatalf("the built runtime was not reused: %v\n%s\n%s", err, out, f.calls(t))
+			}
+		})
+	}
+}
+
+// A build that cannot run leaves the older runtime and its stamp, and says
+// why: no container runtime, a failed build, or an emulator running on the
+// files that would be replaced.
+func TestAndroidEmulatorPrepareKeepsTheOlderRuntimeWhenItCannotBuild(t *testing.T) {
+	for _, tc := range []struct {
+		name, env, want string
+		noDocker        bool
+	}{
+		{name: "the build fails", env: "AO_TEST_BUILD_FAILS=1"},
+		{name: "an emulator is running", env: "AO_TEST_SCOPE_ACTIVE=1", want: "stop it first"},
+		{name: "no container runtime", noDocker: true, want: "missing docker"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, rootfs, _ := prepareFixture(t)
+			env := []string{tc.env}
+			if tc.noDocker {
+				env = []string{f.withoutContainerRuntime(t)}
+			}
+			stampRuntime(t, rootfs, "another-dockerfile")
+			out, err := f.prepare(env...)
+			if err == nil {
+				t.Fatalf("prepare succeeded:\n%s", out)
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Fatalf("output = %q, want it to say %q", out, tc.want)
+			}
+			got, readErr := os.ReadFile(filepath.Join(rootfs, ".ao-runtime"))
+			if readErr != nil || strings.TrimSpace(string(got)) != "another-dockerfile" {
+				t.Fatalf("stamp = %q, %v; the older runtime was touched", got, readErr)
+			}
+			if _, err := os.Stat(filepath.Join(rootfs, "kept")); err != nil {
+				t.Fatalf("the older runtime's files are gone: %v", err)
+			}
+			if tc.env == "AO_TEST_SCOPE_ACTIVE=1" && strings.Contains(f.calls(t), "docker") {
+				t.Fatalf("a runtime was built under a running emulator:\n%s", f.calls(t))
 			}
 		})
 	}
