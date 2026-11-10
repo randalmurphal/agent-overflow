@@ -35,13 +35,22 @@ type ThreadReadStatePatch = Partial<Pick<Thread, 'lastReadAt' | 'hasIncompleteTu
 // all of them several times (lookups by id, the row transform, the catalog
 // write).
 let threads: readonly Thread[] = $state.raw([]);
+// The rows this store made. A row from outside is copied on its way in: a
+// caller may hand over a pane's reactive row, and the store's copy must
+// neither be that proxy nor change when the pane writes to it.
+const owned = new WeakSet<Thread>();
 function setThreads(rows: readonly Thread[]): void {
-  threads = import.meta.env.DEV ? frozenRows(rows) : rows;
-}
-/** Development and test builds reject a write into a stored row or the array. */
-function frozenRows(rows: readonly Thread[]): readonly Thread[] {
-  for (const row of rows) Object.freeze(row);
-  return Object.freeze(rows);
+  let copied: Thread[] | null = null;
+  for (let i = 0; i < rows.length; i++) {
+    if (owned.has(rows[i])) continue;
+    const row = { ...rows[i] };
+    // Development and test builds reject a write into a stored row.
+    if (import.meta.env.DEV) Object.freeze(row);
+    owned.add(row);
+    (copied ??= rows.slice())[i] = row;
+  }
+  const next = copied ?? rows;
+  threads = import.meta.env.DEV ? Object.freeze(next) : next;
 }
 const catalogWriter = computerCatalogWriter('threads', () => threads as Thread[], setThreads, (row) => threadBackend(row.id));
 // Ownership changes before the destination's row is applied. Fence the

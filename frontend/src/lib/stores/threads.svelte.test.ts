@@ -69,6 +69,30 @@ describe('threads store', () => {
       expect(() => { rows.push(makeThread('t3')); }).toThrow(TypeError);
       expect(getThreads().map((t) => t.title)).toEqual([makeThread('t1').title, 'Renamed']);
     });
+
+    it('stores its own copy of a reactive row a pane hands over', async () => {
+      setBindingMock('ListThreads', async () => [makeThread('t1')]);
+      await refreshThreads();
+      const paneRow = $state(makeThread('draft'));
+
+      prependThread(paneRow);
+      expect(getThreads().map((t) => t.id)).toEqual(['draft', 't1']);
+      expect(getThreads()[0]).not.toBe(paneRow);
+      expect(getThreads()[0]).toEqual(makeThread('draft'));
+
+      // The pane writing to its row does not reach the catalog's copy.
+      paneRow.title = 'typed in the pane';
+      expect(getThreads()[0].title).toBe(makeThread('draft').title);
+
+      replaceThread(paneRow);
+      expect(getThreads()[0]).not.toBe(paneRow);
+      expect(getThreads()[0].title).toBe('typed in the pane');
+
+      // Rows the store already holds keep their identity across a change.
+      const kept = getThreads()[1];
+      updateThreadTitle('draft', 'renamed');
+      expect(getThreads()[1]).toBe(kept);
+    });
   });
 
   describe('mutations', () => {
