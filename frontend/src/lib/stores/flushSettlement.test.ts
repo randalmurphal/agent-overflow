@@ -237,6 +237,20 @@ describe('a thread with a mounted pane', () => {
     expect(held(threadId)).toEqual([]);
   });
 
+  it("keeps each computer's settle when another computer answers after it", async () => {
+    __setTransportHelloForTest(hello('laptop-launch', 'laptop'), 'laptop');
+    const pane = await buildPane();
+    const threadId = pane.threadId!;
+    // The thread moved from gpu to laptop; each flushed one message.
+    flushed(1, 3, threadId);
+    applyQueueFlushed({ threadId, items: [entry(2)] }, 'laptop', 4);
+    settled(4, 100, threadId, 'laptop');
+    settled(3, 101, threadId);
+
+    await pane.switchThread(makeThread({ id: 'elsewhere' }));
+    expect(held(threadId)).toEqual([]);
+  });
+
   it('keeps its newest settle when an older one arrives after it', async () => {
     const pane = await buildPane();
     const threadId = pane.threadId!;
@@ -408,6 +422,9 @@ describe("the computer's settlement answer", () => {
 
     expect(__flushSettlementFloorsForTest()).toBe(0);
     expect(held('unattributed')).toEqual(['message 2']);
+    // The mounted thread's pane keeps its entry until it leaves.
     expect(held(mounted)).toEqual(['message 3']);
+    await pane.switchThread(makeThread({ id: 'elsewhere' }));
+    expect(held(mounted)).toEqual([]);
   });
 });

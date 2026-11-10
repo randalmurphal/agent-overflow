@@ -47,7 +47,7 @@ const floors = new Map<BackendKey, SettlementFloor>();
 onBackendDetached(({ backendId }) => {
   floors.delete(backendId);
   for (const threadId of threadsWithFlushedOn(backendId)) {
-    if (!threadHasPane(threadId)) releaseFlushedOn(threadId, backendId);
+    releaseFlushedOn(threadId, backendId, threadHasPane(threadId));
   }
 });
 

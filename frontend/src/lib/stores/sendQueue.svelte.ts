@@ -529,24 +529,44 @@ export function settleFlushed(threadId: string, settled: FlushMark, paneHolds: b
     releaseSettled(threadId, settled, true);
     return;
   }
-  const held = settledWhileHeld.get(threadId);
-  if (held && sameFlushStream(held, settled) && held.sequence >= settled.sequence) return;
-  settledWhileHeld.set(threadId, settled);
+  const held = heldAnswers(threadId);
+  const prior = held.get(settled.backend);
+  if (prior && prior !== DETACHED && sameFlushStream(prior, settled) && prior.sequence >= settled.sequence) return;
+  held.set(settled.backend, settled);
+}
+
+/** `backend` detached, so nothing can settle the entries it flushed any
+ * more. A thread with no mounted pane releases them. A mounted pane keeps
+ * them, as it does on an answer, until `releaseFlushedLeftByPane`. */
+export function releaseFlushedOn(threadId: string, backend: BackendKey, paneHolds: boolean): void {
+  if (paneHolds) heldAnswers(threadId).set(backend, DETACHED);
+  else releaseFlushedBy(threadId, backend);
 }
 
 /** The pane that held the thread left it. Entries it never rendered leave
- * under the answer that settled them while it was mounted. That answer is
- * no longer current, so it covers its own stream only. */
+ * under what each backend said while it was mounted. An answer kept from
+ * then is no longer current, so it covers its own launch only. */
 export function releaseFlushedLeftByPane(threadId: string): void {
-  const settled = settledWhileHeld.get(threadId);
-  if (!settled) return;
-  settledWhileHeld.delete(threadId);
-  releaseSettled(threadId, settled, false);
+  const held = answersWhileHeld.get(threadId);
+  if (!held) return;
+  answersWhileHeld.delete(threadId);
+  for (const [backend, answer] of held) {
+    if (answer === DETACHED) releaseFlushedBy(threadId, backend);
+    else releaseSettled(threadId, answer, false);
+  }
 }
 
-// Per thread with a mounted pane, the newest answer that arrived while the
-// pane held it. One per mounted thread at most.
-const settledWhileHeld = new Map<string, FlushMark>();
+// Per thread with a mounted pane and per backend: the newest answer that
+// arrived while the pane held the thread, or that the backend detached.
+// One slot per backend, since each answer speaks for its own entries.
+const DETACHED = 'detached';
+const answersWhileHeld = new Map<string, Map<BackendKey, FlushMark | typeof DETACHED>>();
+
+function heldAnswers(threadId: string): Map<BackendKey, FlushMark | typeof DETACHED> {
+  let held = answersWhileHeld.get(threadId);
+  if (!held) answersWhileHeld.set(threadId, held = new Map());
+  return held;
+}
 
 function covered(entry: FlushedItem, settled: FlushMark, current: boolean): boolean {
   const mark = entry.flushMark;
@@ -555,9 +575,7 @@ function covered(entry: FlushedItem, settled: FlushMark, current: boolean): bool
   return mark.sequence <= settled.sequence;
 }
 
-/** `backend` detached: its entries of a thread with no pane can no longer
- * be confirmed by anything. */
-export function releaseFlushedOn(threadId: string, backend: BackendKey): void {
+function releaseFlushedBy(threadId: string, backend: BackendKey): void {
   const changed = filterZoneItems(flushedByThread, threadId, EMPTY_FLUSHED, (entry) => entry.flushMark?.backend !== backend);
   if (changed) bumpQueueRevision(threadId);
 }
@@ -681,5 +699,5 @@ export function resetForTest(): void {
   flushedByThread.reset();
   registeringByThread.reset();
   queueRevisionByThread.clear();
-  settledWhileHeld.clear();
+  answersWhileHeld.clear();
 }
