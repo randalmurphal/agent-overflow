@@ -8,8 +8,8 @@
 // Also covered: the mic and Settings → Voice follow the off-by-default
 // switch and whether Codex is signed in with ChatGPT, the chord starts it
 // and Escape abandons it, a recording left running when the pane switches
-// threads is dropped rather than landing in the next thread, and the mic
-// sits in Send's grid.
+// threads is dropped rather than landing in the next thread, a recording
+// with no sound in it is not transcribed, and the mic sits in Send's grid.
 
 import { rm } from 'node:fs/promises';
 
@@ -88,6 +88,34 @@ test('dictation inserts the transcript at the caret and never sends', async ({ h
   expect(Number(/Heard (\d+) bytes/.exec(value)![1])).toBeGreaterThan(4000);
   // Still in the composer: dictation never sends.
   await expect(input(page)).toBeFocused();
+});
+
+// The silence check hears every sample through the capture worklet. A
+// capture that failed to open would send the recording, and the isolated
+// boot's transcription would land in the message.
+test('a recording with no sound in it is not transcribed', async ({ harness, page }) => {
+  // A real stream that carries silence, in place of the fake device's tone.
+  await page.addInitScript(() => {
+    navigator.mediaDevices.getUserMedia = async () => {
+      const context = new AudioContext();
+      const output = context.createMediaStreamDestination();
+      const silence = new ConstantSourceNode(context, { offset: 0 });
+      silence.connect(output);
+      silence.start();
+      return output.stream;
+    };
+  });
+  await seedThreads(harness, ['Dictate here']);
+  await setUpDictation(harness);
+  await openThread(harness, page, 'Dictate here');
+
+  const uploaded = countPieces(page);
+  await input(page).fill('Please');
+  await dictate(page, uploaded);
+
+  await expect(mic(page)).toHaveAttribute('title', 'No speech heard.');
+  await expect(mic(page)).toHaveAttribute('data-phase', 'idle');
+  await expect(input(page)).toHaveValue('Please');
 });
 
 test('the chord starts dictation and Escape abandons it', async ({ harness, page }) => {

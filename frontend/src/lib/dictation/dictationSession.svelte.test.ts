@@ -76,28 +76,117 @@ describe('DictationSession', () => {
     expect(f.inserted).toEqual([]);
   });
 
-  it('skips transcription when nothing louder than silence was heard', async () => {
+  it('skips transcription when no sample was louder than silence', async () => {
     const f = fixture();
-    f.level.value = 0.001;
     await f.session.start();
+    f.pcm().tail = new Uint8Array([1, 0]);
+    f.pcm().emit(2, 0, 3, 0);
     f.recorder().emit('a');
     f.tick();
     await f.session.stop();
     expect(f.remote.finish).not.toHaveBeenCalled();
     expect(f.remote.cancel).toHaveBeenCalledWith('rec-1');
     expect(f.session.error).toBe('No speech heard.');
+    expect(f.pcm().closed).toBe(true);
   });
 
-  it('counts a sound that ended before the level was read as speech', async () => {
+  it('judges silence from every sample, not from the level shown', async () => {
     const f = fixture();
-    f.level.value = 0.001;
-    f.level.loudest = 0.5;
+    // The ring reads silence at every tick; one loud sample fell between.
+    f.level.value = 0;
     await f.session.start();
+    f.pcm().tail = null;
+    f.tick();
+    f.pcm().emit(0, 0, 0, 0x40, 0, 0);
     f.tick();
     await f.session.stop();
     expect(f.remote.finish).toHaveBeenCalledWith('rec-1', 1);
     expect(f.inserted).toEqual(['hello world']);
     expect(f.session.error).toBeNull();
+  });
+
+  it('hears the samples the capture hands over as it stops', async () => {
+    const f = fixture();
+    f.level.value = 0;
+    await f.session.start();
+    f.pcm().tail = new Uint8Array([0, 0x40]);
+    await f.session.stop();
+    expect(f.inserted).toEqual(['hello world']);
+  });
+
+  it('lets the computer decide where the engine cannot hear every sample', async () => {
+    const f = fixture({ streamsPcm: false });
+    f.level.value = 0;
+    await f.session.start();
+    f.tick();
+    await f.session.stop();
+    expect(f.remote.finish).toHaveBeenCalledWith('rec-1', 1);
+    expect(f.inserted).toEqual(['hello world']);
+    expect(f.unjudged).toEqual([]);
+  });
+
+  it('lets the computer decide, and says so, when the capture does not open', async () => {
+    const refused = new Error('worklet refused');
+    const f = fixture({ openPcm: async () => { throw refused; } });
+    f.level.value = 0;
+    await f.session.start();
+    expect(f.session.phase).toBe('recording');
+    await f.session.stop();
+    expect(f.inserted).toEqual(['hello world']);
+    expect(f.unjudged).toEqual([refused]);
+  });
+
+  it('lets the computer decide when the capture loses its ending', async () => {
+    const f = fixture();
+    await f.session.start();
+    f.pcm().emit(1, 0);
+    f.pcm().flushFails = true;
+    await f.session.stop();
+    expect(f.remote.finish).toHaveBeenCalledWith('rec-1', 1);
+    expect(f.inserted).toEqual(['hello world']);
+    expect(f.pcm().closed).toBe(true);
+  });
+
+  it('starts the recorder only once the capture is open', async () => {
+    const opening = deferred<FakePcm>();
+    const f = fixture({ openPcm: () => opening.promise });
+    const starting = f.session.start();
+    await settle();
+    expect(f.remote.begin).toHaveBeenCalled();
+    expect(f.session.phase).toBe('starting');
+    expect(f.recorder()).toBeNull();
+    opening.resolve(new FakePcm());
+    await starting;
+    expect(f.session.phase).toBe('recording');
+    expect(f.recorder().state).toBe('recording');
+  });
+
+  it('closes a capture that opens after the attempt was abandoned', async () => {
+    const opening = deferred<FakePcm>();
+    const f = fixture({ openPcm: () => opening.promise });
+    const starting = f.session.start();
+    await settle();
+    f.session.cancel();
+    const pcm = new FakePcm();
+    opening.resolve(pcm);
+    await starting;
+    expect(pcm.closed).toBe(true);
+    expect(f.session.phase).toBe('idle');
+    expect(f.recorder()).toBeNull();
+    expect(f.unjudged).toEqual([]);
+  });
+
+  it('closes a capture that opens after the start failed', async () => {
+    const opening = deferred<FakePcm>();
+    const f = fixture({ openPcm: () => opening.promise });
+    f.remote.begin.mockRejectedValueOnce(new Error('computer refused'));
+    await f.session.start();
+    expect(f.session.error).toBe('computer refused');
+    const pcm = new FakePcm();
+    opening.resolve(pcm);
+    await settle();
+    expect(pcm.closed).toBe(true);
+    expect(f.unjudged).toEqual([]);
   });
 
   it('transcribes without a level meter rather than guessing silence', async () => {

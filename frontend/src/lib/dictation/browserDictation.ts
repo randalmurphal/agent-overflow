@@ -3,6 +3,7 @@
 
 import { isNativeShell } from '../native/platform';
 import { pauseReadAloud } from '../stores/readAloud.svelte';
+import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import type { DictationEnvironment, LevelMeter, PcmStream, RecorderLike, RecordingFormat } from './dictationSession.svelte';
 import { PCM_CAPTURE_PROCESSOR } from './pcmDownsampler';
 import pcmCaptureUrl from './pcmCapture.worklet.ts?worker&url';
@@ -52,22 +53,17 @@ export const browserDictationEnvironment: DictationEnvironment = {
     && globalThis.AudioWorkletNode !== undefined
     && 'audioWorklet' in globalThis.AudioContext.prototype,
   openPcm,
+  silenceUnjudged: (err) => {
+    reportFrontendDiagnostic('dictation: the capture that judges silence did not open', err instanceof Error ? err.message : '');
+  },
   setInterval: (fn, ms) => globalThis.setInterval(fn, ms),
   clearInterval: (handle) => globalThis.clearInterval(handle as ReturnType<typeof setInterval>),
   setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
   clearTimeout: (handle) => globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>),
 };
 
-/** Loudness is the RMS of this many samples, about 21 ms. */
-const METER_BLOCK = 1024;
-
-/** The analyser holds this many samples, about a third of a second: three
- * times the session's level cadence, so a late read still overlaps the
- * one before it. */
-const METER_WINDOW = 16 * METER_BLOCK;
-
-/** RMS loudness of the microphone, read on demand. Null where the engine
- * has no Web Audio, which only disables the silence check and the ring. */
+/** RMS loudness of the microphone, read on demand, for the ring. Null
+ * where the engine has no Web Audio. */
 function createLevelMeter(stream: MediaStream): LevelMeter | null {
   const Context = globalThis.AudioContext;
   if (Context === undefined) return null;
@@ -76,29 +72,20 @@ function createLevelMeter(stream: MediaStream): LevelMeter | null {
   let source: MediaStreamAudioSourceNode;
   try {
     analyser = context.createAnalyser();
-    analyser.fftSize = METER_WINDOW;
+    analyser.fftSize = 1024;
     source = context.createMediaStreamSource(stream);
     source.connect(analyser);
   } catch (err) {
     void context.close().catch(() => {});
     throw err;
   }
-  const samples = new Float32Array(METER_WINDOW);
-  const blockLoudness = (from: number): number => {
-    let sum = 0;
-    for (let i = from; i < from + METER_BLOCK; i++) sum += samples[i] * samples[i];
-    return Math.sqrt(sum / METER_BLOCK);
-  };
+  const samples = new Float32Array(analyser.fftSize);
   return {
     read() {
       analyser.getFloatTimeDomainData(samples);
-      return blockLoudness(METER_WINDOW - METER_BLOCK);
-    },
-    loudest() {
-      analyser.getFloatTimeDomainData(samples);
-      let loudest = 0;
-      for (let from = 0; from < METER_WINDOW; from += METER_BLOCK) loudest = Math.max(loudest, blockLoudness(from));
-      return loudest;
+      let sum = 0;
+      for (const sample of samples) sum += sample * sample;
+      return Math.sqrt(sum / samples.length);
     },
     close() {
       source.disconnect();

@@ -44,9 +44,6 @@ export interface PcmStream {
 export interface LevelMeter {
   /** Current loudness, 0 to 1. */
   read(): number;
-  /** The loudest moment the meter still holds, 0 to 1. It holds longer
-   * than the level cadence, so a sound between two reads is not missed. */
-  loudest(): number;
   close(): void;
 }
 
@@ -62,6 +59,9 @@ export interface DictationEnvironment {
   /** Whether this engine can stream PCM for live dictation. */
   streamsPcm(): boolean;
   openPcm(stream: MediaStream): Promise<PcmStream>;
+  /** A recorded attempt could not open the capture it judges silence
+   * from; the computer decides what that recording holds. */
+  silenceUnjudged(err: unknown): void;
   setInterval(fn: () => void, ms: number): unknown;
   clearInterval(handle: unknown): void;
   setTimeout(fn: () => void, ms: number): unknown;
@@ -99,8 +99,8 @@ export interface DictationRemote {
 /** A recording stops itself after this long; the computer caps the bytes. */
 export const MAX_RECORDING_MS = 10 * 60 * 1000;
 
-/** Below this peak loudness nothing was said, and nothing is uploaded
- * for transcription. */
+/** A recording whose loudest sample is below this, 0 to 1, holds no
+ * speech and is not transcribed. */
 export const SILENCE_PEAK = 0.02;
 
 /** The level shown steps at this rate rather than per frame. */
@@ -170,7 +170,15 @@ export class DictationSession {
         attempt.abandon();
         return;
       }
+      // The capture opens while the computer answers, and is open before
+      // the recorder starts, so it hears everything the recorder records.
+      const listening = attempt.listen();
       attempt.recordingId = await this.remote.begin(format.container);
+      if (this.current !== attempt) {
+        attempt.abandon();
+        return;
+      }
+      await listening;
       if (this.current !== attempt) {
         attempt.abandon();
         return;
@@ -365,11 +373,16 @@ class Attempt implements Recording {
   private readonly remote: DictationRemote;
   private recorder: RecorderLike | null = null;
   private meter: LevelMeter | null = null;
+  /** Every sample of the microphone, heard only to judge silence. */
+  private pcm: PcmStream | null = null;
   private levelTimer: unknown = null;
   private capTimer: unknown = null;
   private stopped: Promise<void> = Promise.resolve();
+  /** The loudest sample heard so far, 0 to 1. */
   private peak = 0;
-  private metered = false;
+  /** Whether every sample of the recording was heard. Without that there
+   * is no silence check and the computer decides what was said. */
+  private heardAll = false;
   private uploadError: unknown = null;
   private abandoned = false;
   /** The computer has let the recording go: finished, or told to cancel. */
@@ -378,6 +391,28 @@ class Attempt implements Recording {
   constructor(env: DictationEnvironment, remote: DictationRemote) {
     this.env = env;
     this.remote = remote;
+  }
+
+  /** Opens the capture that hears every sample, where the engine has one.
+   * Settles once it is open or known to be unavailable; never rejects. */
+  listen(): Promise<void> {
+    if (!this.env.streamsPcm()) return Promise.resolve();
+    return this.env.openPcm(this.stream!).then(
+      (pcm) => {
+        if (this.abandoned) {
+          pcm.close();
+          return;
+        }
+        this.pcm = pcm;
+        pcm.onPiece = (piece) => {
+          this.peak = loudestSample(piece, this.peak);
+        };
+        this.heardAll = true;
+      },
+      (err) => {
+        if (!this.abandoned) this.env.silenceUnjudged(err);
+      },
+    );
   }
 
   record(format: RecordingFormat, onLevel: () => void, onCap: () => void): void {
@@ -405,21 +440,16 @@ class Attempt implements Recording {
     recorder.onerror = () => {
       if (!this.abandoned) this.uploadError = new Error('The recorder stopped unexpectedly.');
     };
+    // The meter only drives the ring; a sampled meter misses what falls
+    // between its reads.
     this.meter = this.env.createLevelMeter(stream);
-    this.metered = this.meter !== null;
     this.levelTimer = this.env.setInterval(onLevel, LEVEL_INTERVAL_MS);
     this.capTimer = this.env.setTimeout(onCap, MAX_RECORDING_MS);
     recorder.start(format.timeslice);
   }
 
-  /** The level to show now. The silence check hears everything since the
-   * last sample, not only this instant. */
   sample(): number {
-    const meter = this.meter;
-    if (meter === null) return 0;
-    const loudest = meter.loudest();
-    if (loudest > this.peak) this.peak = loudest;
-    return meter.read();
+    return this.meter?.read() ?? 0;
   }
 
   delivered(): Promise<void> {
@@ -430,21 +460,29 @@ class Attempt implements Recording {
     return this.remote.finish(this.recordingId!, this.pieces);
   }
 
-  /** Stops the recorder, waits for its last piece, and releases the
-   * microphone. */
+  /** Stops the recorder, waits for its last piece and the capture's last
+   * samples, and releases the microphone. */
   async stopRecording(): Promise<void> {
     this.stopTimers();
     const recorder = this.recorder;
     if (recorder && recorder.state !== 'inactive') recorder.stop();
     await this.stopped;
+    const pcm = this.pcm;
+    if (pcm !== null) {
+      try {
+        await pcm.flush();
+      } catch {
+        // The ending went unheard, so silence cannot be judged.
+        this.heardAll = false;
+      }
+    }
     this.releaseDevices();
   }
 
   /** Why the recording should not be transcribed, or null to transcribe. */
   refusal(): string | null {
     if (this.uploadError !== null) return errorMessage(this.uploadError, 'Recording upload failed.');
-    // Without a meter there is no silence check; the computer decides.
-    if ((this.metered && this.peak < SILENCE_PEAK) || this.pieces === 0) return 'No speech heard.';
+    if ((this.heardAll && this.peak < SILENCE_PEAK) || this.pieces === 0) return 'No speech heard.';
     return null;
   }
 
@@ -487,6 +525,11 @@ class Attempt implements Recording {
   private releaseDevices(): void {
     this.meter?.close();
     this.meter = null;
+    if (this.pcm !== null) {
+      this.pcm.onPiece = null;
+      this.pcm.close();
+    }
+    this.pcm = null;
     if (this.stream) stopStream(this.stream);
     this.stream = null;
     if (this.recorder) {
@@ -542,7 +585,7 @@ class LiveAttempt implements Recording {
     this.pcm = pcm;
     pcm.onPiece = (piece) => {
       if (this.abandoned || this.sendError !== null) return;
-      this.hearPeak(piece);
+      this.peak = loudestSample(piece, this.peak);
       this.queue.push(piece);
       this.pump();
     };
@@ -616,17 +659,6 @@ class LiveAttempt implements Recording {
     return this.meter?.read() ?? 0;
   }
 
-  /** The loudest sample of a little-endian 16-bit piece, as 0 to 1. */
-  private hearPeak(piece: Uint8Array): void {
-    const samples = new DataView(piece.buffer, piece.byteOffset, piece.byteLength);
-    let loudest = this.peak * 0x8000;
-    for (let offset = 0; offset + 1 < piece.byteLength; offset += 2) {
-      const sample = Math.abs(samples.getInt16(offset, true));
-      if (sample > loudest) loudest = sample;
-    }
-    this.peak = loudest / 0x8000;
-  }
-
   async stopRecording(): Promise<void> {
     this.stopTimers();
     const pcm = this.pcm;
@@ -698,6 +730,18 @@ class LiveAttempt implements Recording {
     if (this.stream) stopStream(this.stream);
     this.stream = null;
   }
+}
+
+/** The loudest of `floor` and the samples of a little-endian 16-bit
+ * piece, as 0 to 1. */
+function loudestSample(piece: Uint8Array, floor: number): number {
+  const samples = new DataView(piece.buffer, piece.byteOffset, piece.byteLength);
+  let loudest = floor * 0x8000;
+  for (let offset = 0; offset + 1 < piece.byteLength; offset += 2) {
+    const sample = Math.abs(samples.getInt16(offset, true));
+    if (sample > loudest) loudest = sample;
+  }
+  return loudest / 0x8000;
 }
 
 function stopStream(stream: MediaStream): void {
