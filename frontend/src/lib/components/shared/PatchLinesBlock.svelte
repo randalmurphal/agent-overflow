@@ -1,15 +1,17 @@
 <script lang="ts">
   import { tick } from 'svelte';
-  import { ownText, PatchTextLost, type ReviewFile } from '../../utils/patchStore';
+  import { lineTypeOf, ownText, PatchTextLost, type ReviewFile } from '../../utils/patchStore';
+  import { lineTintClass } from '../../utils/diffLineTint';
   import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
-  import { WORKFLOW_DIFF_LINE_PX } from './WorkflowDiffLines.svelte';
+  import { PATCH_LINES_LINE_PX } from './PatchLines.svelte';
 
-  // Lines [start, end) of a gate-diff file as preformatted text. The text
+  // Lines [start, end) of a file's patch as preformatted text. The text
   // is read when the block mounts, again from the diff if it was evicted;
   // until then the block keeps its height with empty lines. A read that
   // fails marks the diff lost, and its owner (WorkflowGateDiff) reads the
   // diff again. Once the text renders, the block reports how wide it is,
-  // so the box can scroll sideways to its longest line.
+  // so the box can scroll sideways to its longest line. With `tint`, each
+  // line carries the review surface's add/del/meta tint.
 
   interface Props {
     file: ReviewFile;
@@ -18,10 +20,12 @@
     padTop: number;
     padBottom: number;
     onWidth: (px: number) => void;
+    tint?: boolean;
   }
-  let { file, start, end, padTop, padBottom, onWidth }: Props = $props();
+  let { file, start, end, padTop, padBottom, onWidth, tint = false }: Props = $props();
 
   let text = $state('');
+  let lines = $derived(tint && text ? text.split('\n') : []);
   let pre: HTMLPreElement | undefined = $state();
 
   $effect(() => {
@@ -45,7 +49,7 @@
       },
       (error: unknown) => {
         if (!(error instanceof PatchTextLost)) {
-          reportFrontendDiagnostic('workflow diff: block text could not be read', String(error));
+          reportFrontendDiagnostic('patch lines: block text could not be read', String(error));
         }
       },
     );
@@ -58,8 +62,8 @@
 <pre
   bind:this={pre}
   class="m-0 px-2 font-mono"
-  style:height="{(end - start) * WORKFLOW_DIFF_LINE_PX + padTop + padBottom}px"
+  style:height="{(end - start) * PATCH_LINES_LINE_PX + padTop + padBottom}px"
   style:padding-top="{padTop}px"
   style:padding-bottom="{padBottom}px"
   style:box-sizing="border-box"
->{text}</pre>
+>{#if tint}{#each lines as line, offset (offset)}<span class="block {lineTintClass(lineTypeOf(file.body.kind(start + offset)))}" style:height="{PATCH_LINES_LINE_PX}px">{line}</span>{/each}{:else}{text}{/if}</pre>
