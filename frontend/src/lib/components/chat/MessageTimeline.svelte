@@ -1045,7 +1045,15 @@
            `visibility: visible` would override the inherited hidden that
            the compact screen swap keys on and paint the timeline over the
            thread list (found on-device 2026-09-04). -->
-      <div style:visibility={hideContentForWarmup ? 'hidden' : undefined}>
+      <!-- `--composer-height` is inherited, and ChatView rewrites it on an
+           ancestor every time the composer overlay resizes. Pinning it here
+           keeps that change from restyling every mounted row: only the
+           scroller, the nav rail and the scroll-to-bottom button read it,
+           and all three sit outside this wrapper. -->
+      <div
+        style:visibility={hideContentForWarmup ? 'hidden' : undefined}
+        style:--composer-height="0px"
+      >
         {#key pane.threadId}
         <TimelineVirtualizer
           bind:this={listRef}

@@ -428,10 +428,20 @@ function showsThreadRunning(threadId: string): boolean {
   return sendsPendingThreads.get(threadId) || isRegisteringQueueItem(threadId);
 }
 
+// Told each time a thread's answer is "nothing pending": a frame, a queue
+// RPC's answer or a snapshot row. The send-queue mirror listens.
+type SendsSettledListener = (threadId: string) => void;
+const sendsSettledListeners = new Set<SendsSettledListener>();
+export function onSendsSettled(listener: SendsSettledListener): () => void {
+  sendsSettledListeners.add(listener);
+  return () => sendsSettledListeners.delete(listener);
+}
+
 function setSendsPending(threadId: string, pending: boolean): void {
   if (pending) sendsPendingThreads.set(threadId, true);
   else sendsPendingThreads.drop(threadId);
   recalculateThreadStatus(threadId);
+  if (!pending) for (const listener of sendsSettledListeners) listener(threadId);
 }
 
 /** Record a change of answer that outranks every snapshot read in flight. */
