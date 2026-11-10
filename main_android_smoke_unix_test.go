@@ -911,6 +911,18 @@ while :; do sleep 0.05; done
 	if left, _ := filepath.Glob(filepath.Join(marks, "*", "*")); len(left) > 0 {
 		t.Fatalf("a finished job's start mark was kept: %v", left)
 	}
+	// More signals while it waits change nothing: the job is still stopped
+	// and joined, and the first signal's status is kept.
+	for _, again := range []syscall.Signal{syscall.SIGTERM, syscall.SIGHUP} {
+		if err := cmd.Process.Signal(again); err != nil {
+			t.Fatal(err)
+		}
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("a second signal cut the stop short: %v\n%s\n%s", err, out.String(), f.calls(t))
+	case <-time.After(time.Second):
+	}
 	if err := os.Remove(hold); err != nil {
 		t.Fatal(err)
 	}
@@ -940,6 +952,90 @@ while :; do sleep 0.05; done
 	// The marks went with the run.
 	if left, err := os.ReadDir(marks); err != nil || len(left) > 0 {
 		t.Fatalf("start marks were left behind: %v, %v", left, err)
+	}
+}
+
+// More signals while the smoke waits for a stopped job to end do not cut
+// the wait short: the job is joined before the cleanup, and the first
+// signal's status is kept.
+func TestAndroidSmokeJoinsItsJobWhenSignalledAgain(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the emulator path is Linux-only")
+	}
+	if _, err := exec.LookPath("flock"); err != nil {
+		t.Skip("flock unavailable")
+	}
+	f := newSmokeFixture(t)
+	f.fakeEmulator(t)
+	// The suite takes TERM and ends only once the barrier exists.
+	barrier := filepath.Join(f.dir, "suite-barrier")
+	mockexec.WriteIn(t, filepath.Join(f.dir, "repo", "bin"), "ao-harness-e2e", `#!/usr/bin/env bash
+trap 'echo "launcher TERM" >>"$AO_TEST_LOG"; while [[ ! -e `+shellQuote(barrier)+` ]]; do sleep 0.02; done; echo "launcher gone" >>"$AO_TEST_LOG"; exit 143' TERM
+echo "launcher started" >>"$AO_TEST_LOG"
+while :; do sleep 0.05; done
+`)
+	cmd := f.command("AO_ANDROID_SMOKE_PHASE=device", "AO_TEST_ADB_DEVICES=emulator-5554\tdevice")
+	output, err := os.Create(filepath.Join(f.dir, "smoke.out"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = output.Close() })
+	printed := func() string {
+		body, _ := os.ReadFile(output.Name())
+		return string(body)
+	}
+	cmd.Stdout, cmd.Stderr = output, output
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	waitFor := func(what string) {
+		t.Helper()
+		deadline := time.Now().Add(30 * time.Second)
+		for !strings.Contains(f.calls(t), what) {
+			if time.Now().After(deadline) {
+				t.Fatalf("never saw %q:\n%s\n%s", what, printed(), f.calls(t))
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	waitFor("launcher started")
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	waitFor("launcher TERM")
+	for _, again := range []syscall.Signal{syscall.SIGTERM, syscall.SIGHUP} {
+		if err := cmd.Process.Signal(again); err != nil {
+			t.Fatal(err)
+		}
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("the smoke finished while its suite was still stopping: %v\n%s\n%s", err, printed(), f.calls(t))
+	case <-time.After(time.Second):
+	}
+	if calls := f.calls(t); strings.Contains(calls, "emulator stop") {
+		t.Fatalf("the cleanup ran while the suite was still stopping:\n%s", calls)
+	}
+	if err := os.WriteFile(barrier, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err = <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the smoke did not finish:\n%s\n%s", printed(), f.calls(t))
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 143 {
+		t.Fatalf("want the first signal's exit 143, got %v:\n%s", err, printed())
+	}
+	calls := f.calls(t)
+	gone, stopped := strings.Index(calls, "launcher gone"), strings.Index(calls, "emulator stop")
+	if gone < 0 || stopped < gone {
+		t.Fatalf("want the suite gone before the emulator is stopped:\n%s", calls)
 	}
 }
 

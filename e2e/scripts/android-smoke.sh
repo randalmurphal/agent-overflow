@@ -118,7 +118,8 @@ supervise() {
   return "$status"
 }
 on_signal() {
-  trap - "$1"
+  # A second signal must not cut the stop or the cleanup short.
+  trap '' INT TERM HUP
   stop_jobs
   exit $((128 + $(kill -l "$1")))
 }
