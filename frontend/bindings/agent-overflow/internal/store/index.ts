@@ -9,6 +9,7 @@ export {
     AsyncQuestion,
     AsyncQuestionAnswer,
     Attachment,
+    AttachmentShell,
     ChannelMessage,
     ChatBarFavorite,
     DiffReviewComment,

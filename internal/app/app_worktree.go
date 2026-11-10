@@ -453,8 +453,11 @@ func (a *App) removeProjectWorktree(projectID, project, worktreePath string, pol
 	// Then clear the durable state of every thread that pointed here — a "Setup
 	// failed" pill for a worktree that no longer exists has nothing to offer.
 	// Their runs are already gone, so this is the column and nothing else.
+	// A composer shell command still running in the directory is stopped for
+	// the same reason the recipe is: it would race git's removal.
 	for _, id := range mutable {
 		a.cancelThreadWorktreeSetup(id)
+		a.cancelThreadShellCommand(id)
 	}
 	// Hold the workspace's git status off the wire while git deletes it:
 	// the reads in between (every file deleted, then no repository) are

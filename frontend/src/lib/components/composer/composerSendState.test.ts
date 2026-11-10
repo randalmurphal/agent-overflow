@@ -117,4 +117,29 @@ describe('deriveComposerSendState', () => {
       hasPlanImplementAction: false,
     });
   });
+
+  // A draft that is a shell command: Send means Run, whatever else the
+  // composer holds, and only a command that can run enables it.
+  it('turns Send into Run for a shell command and enables it only when ready', () => {
+    const run = { action: 'send', label: 'Run', hasPlanImplementAction: false };
+    expect(deriveComposerSendState(input({ shell: 'ready', hasDraftContent: true }))).toEqual({ ...run, canSend: true });
+    expect(deriveComposerSendState(input({ shell: 'empty', hasDraftContent: true }))).toEqual({ ...run, canSend: false });
+    expect(deriveComposerSendState(input({ shell: 'blocked', hasDraftContent: true }))).toEqual({ ...run, canSend: false });
+    // Plan and review actions do not take the button over while the draft is a command.
+    expect(deriveComposerSendState(input({
+      shell: 'ready', hasDraftContent: true, hasPlanSource: true, hasDraftPlanComments: true,
+      hasDiffReviewSource: true, hasDraftDiffReviewComments: true,
+    }))).toEqual({ ...run, canSend: true });
+    // A turn in flight does not block a command: its output queues.
+    expect(deriveComposerSendState(input({ shell: 'ready', hasDraftContent: true, isTurnActive: true })).canSend).toBe(true);
+  });
+
+  it('keeps every refusal that applies to a send in force for a command', () => {
+    for (const refusal of [
+      { isDisabled: true }, { sendUngranted: true }, { sending: true }, { sendSuspended: true },
+      { hasBlockingPrompt: true }, { hasUserInputPrompt: true },
+    ]) {
+      expect(deriveComposerSendState(input({ shell: 'ready', hasDraftContent: true, ...refusal })).canSend).toBe(false);
+    }
+  });
 });

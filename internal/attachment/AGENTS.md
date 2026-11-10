@@ -17,8 +17,17 @@ only through `commitStagedWrite`. Metadata insertion and rename roll back
 reported failures but are not crash-atomic.
 
 Every byte or path accessor is thread-scoped through
-`resolveThreadAttachment`. Only image rows may return bytes to a client or
-enter a decoder. `Root()` is the sole attachments-root authority.
+`resolveThreadAttachment`. Only image rows may enter a decoder or return
+bytes to a client, with one exception: a `file` row that carries
+`store.AttachmentShell` is the output of a command the person ran from the
+composer, and `ReadShellOutput` serves its text in bounded pages. That
+accessor refuses every other row. `Root()` is the sole attachments-root
+authority.
+
+`shell.go` owns shell output files: `SaveShellOutput` copies a finished
+capture in and records its preview, and `ShellPromptOutput` is the bounded
+text a model reads inline. The contract is in
+[composer shell commands](../../docs/specs/composer-shell-commands.md).
 
 Files live at `<thread>/<id>/<sanitized-name>` and images at
 `<thread>/<id><ext>`. Filename filtering and `resolveWritePath` provide

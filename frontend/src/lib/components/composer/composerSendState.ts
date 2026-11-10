@@ -26,6 +26,12 @@ export interface ComposerSendStateInput {
    * started it and nothing here can stop it; the button just refuses.
    */
   sendSuspended?: boolean;
+  /**
+   * The draft is a shell command (a leading `!`): `ready` to run, `empty`
+   * while no command follows the `!`, `blocked` while it cannot run. Send
+   * then means Run, and nothing else the draft holds is sent with it.
+   */
+  shell?: 'ready' | 'empty' | 'blocked';
 }
 
 export interface ComposerSendState {
@@ -41,6 +47,20 @@ export function deriveComposerSendState(input: ComposerSendStateInput): Composer
   const hasPlanImplementAction = input.hasPlanSource
     && !input.hasDraftContent
     && !input.hasDraftPlanComments;
+  if (input.shell) {
+    return {
+      canSend: input.shell === 'ready'
+        && !input.isDisabled
+        && !input.sendUngranted
+        && !input.sending
+        && !input.sendSuspended
+        && !input.hasBlockingPrompt
+        && !input.hasUserInputPrompt,
+      action: 'send',
+      label: 'Run',
+      hasPlanImplementAction: false,
+    };
+  }
   const action = sendAction(input, {
     hasPlanCommentAction,
     hasDiffReviewCommentAction,

@@ -693,6 +693,83 @@ describe('<UserMessage>', () => {
     expect(thumbnail.mock.calls.map((call) => call[1])).toEqual(['att-1', 'att-3']);
   });
 
+  describe('composer shell commands', () => {
+    function shellAttachment(id: string, command: string, extra: Record<string, unknown> = {}) {
+      return {
+        id,
+        threadId: 'thread-1',
+        filename: 'output.txt',
+        mimeType: 'text/plain; charset=utf-8',
+        size: 15,
+        kind: 'file',
+        shell: { command, exitCode: 0, durationMs: 12, preview: 'On branch main\n', ...extra },
+      };
+    }
+
+    it('draws a message that is only a command as its block, without the typed line or a file chip', () => {
+      const { getByTestId, queryByTestId, queryByText } = render(UserMessage, {
+        props: {
+          item: makeItem({
+            id: 'user-shell',
+            kind: 'user_text',
+            role: 'user',
+            summary: '!git status',
+            meta: JSON.stringify({ attachments: [shellAttachment('att-1', 'git status')] }),
+          }),
+        },
+      });
+      expect(getByTestId('shell-command-line').textContent).toBe('git status');
+      expect(getByTestId('shell-command-output').querySelector('pre')?.textContent).toBe('On branch main\n');
+      expect(queryByText('!git status')).toBeNull();
+      expect(queryByText('output.txt')).toBeNull();
+      expect(queryByTestId('user-message-file-attachments')).toBeNull();
+      // The block is the message: no accent bubble is drawn around it.
+      expect(getByTestId('user-message-bubble').className).not.toContain('bg-accent');
+    });
+
+    it('keeps the words of a joined message beside its command block, inside the bubble', () => {
+      const { getByTestId, getByText, queryByText, getAllByTestId } = render(UserMessage, {
+        props: {
+          item: makeItem({
+            id: 'user-shell-joined',
+            kind: 'user_text',
+            role: 'user',
+            summary: '!make test\n\n---\n\nfix those failures',
+            meta: JSON.stringify({
+              attachments: [
+                shellAttachment('att-1', 'make test', { exitCode: 2 }),
+                { id: 'att-2', threadId: 'thread-1', filename: 'notes.txt', mimeType: 'text/plain', size: 10, kind: 'file' },
+              ],
+            }),
+          }),
+        },
+      });
+      expect(getAllByTestId('shell-command-block')).toHaveLength(1);
+      expect(getByTestId('shell-command-outcome').textContent).toContain('exit 2');
+      expect(getByText('fix those failures')).toBeInTheDocument();
+      expect(queryByText(/!make test/)).toBeNull();
+      // The ordinary file is still a chip, and the bubble is still a bubble.
+      expect(getByText('notes.txt')).toBeInTheDocument();
+      expect(getByTestId('user-message-bubble').className).toContain('bg-accent');
+    });
+
+    it('keeps text that is more than the invocation', () => {
+      const { getByText, getByTestId } = render(UserMessage, {
+        props: {
+          item: makeItem({
+            id: 'user-shell-edited',
+            kind: 'user_text',
+            role: 'user',
+            summary: '!git status and explain it',
+            meta: JSON.stringify({ attachments: [shellAttachment('att-1', 'git status')] }),
+          }),
+        },
+      });
+      expect(getByText('!git status and explain it')).toBeInTheDocument();
+      expect(getByTestId('shell-command-line').textContent).toBe('git status');
+    });
+  });
+
   it('loads history attachment thumbnails on mount (windowing bufferSize bounds the mount window)', async () => {
     // Pre-rebuild this was gated by an IntersectionObserver inside the
     // row. After the rebuild, the virtualizer's buffer already restricts

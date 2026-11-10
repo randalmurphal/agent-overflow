@@ -31,6 +31,19 @@ Send button, queued sends, and accessibility actions must agree about empty
 content, pending uploads, provider readiness, and active operations. Compact
 Return inserts a newline; the Send button submits.
 
+## Shell mode
+
+A draft whose first character is `!`, and that holds no command output, is
+a shell command: Send runs it through `stores/shellCommands.svelte.ts`
+instead of sending it, and only the text is consumed. The composer decides
+the mode and passes `shellPrefix` to the surface, which accents the `!`,
+sets the text in monospace and keeps slash completion closed. A draft that
+holds a command's output (a message taken back) is a message again, so it
+is resent and never rerun. `ShellRunCard.svelte` shows the running command
+above the composer. Keyboard submit and the button share
+`deriveComposerSendState`'s `shell` input. The contract is in
+[composer shell commands](../../../../../docs/specs/composer-shell-commands.md).
+
 ## Toolbar and background work
 
 Composer controls register with the shared picker registry so keyboard commands,

@@ -84,6 +84,9 @@ function keywordText(container: HTMLElement): string[] {
   return Array.from(container.querySelectorAll('.syntax-keyword'), (el) => el.textContent ?? '');
 }
 
+import { resetShellRunsForTest } from '../../stores/shellCommands.svelte';
+import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
+
 describe('<ChatMarkdown> code-block spans', () => {
   afterEach(() => {
     delete (navigator as { clipboard?: unknown }).clipboard;
@@ -499,6 +502,76 @@ describe('<ChatMarkdown> code-block spans', () => {
     expect(
       container.querySelector('[data-code-source]')?.getAttribute('data-code-source'),
     ).toBe('');
+  });
+
+  describe('Run on a shell block', () => {
+    const FENCES = '```bash\necho hi\nls\n```\n\n```python\nprint(1)\n```';
+
+    function chatSurface(threadId: string): HTMLElement {
+      const host = document.createElement('div');
+      host.setAttribute('data-ui-surface', 'chat');
+      host.setAttribute('data-thread-id', threadId);
+      document.body.appendChild(host);
+      return host;
+    }
+
+    async function settledRunButton(container: HTMLElement): Promise<HTMLButtonElement> {
+      return await waitFor(() => {
+        const found = container.querySelector<HTMLButtonElement>('button[data-static-code-run]');
+        expect(found).not.toBeNull();
+        return found!;
+      });
+    }
+
+    afterEach(() => {
+      resetShellRunsForTest();
+      document.querySelectorAll('[data-ui-surface="chat"]').forEach((node) => node.remove());
+    });
+
+    it('offers Run on shell fences only and runs the whole block for the thread that shows it', async () => {
+      setBindingMock('HighlightCode', async () => keywordSpans());
+      const run = setBindingMock('RunThreadShellCommand', async () => ({ state: 'running' }));
+      const target = chatSurface('thread-7');
+      const { container } = render(ChatMarkdown, { target, props: { source: FENCES, pathRefs: [] } });
+
+      const button = await settledRunButton(container);
+      await waitFor(() => expect(container.querySelectorAll('button[data-static-code-copy]')).toHaveLength(2));
+      expect(container.querySelectorAll('button[data-static-code-run]')).toHaveLength(1);
+      expect(button.closest('.streamdown-code-host')?.getAttribute('data-code-lang')).toBe('bash');
+      expect(button.getAttribute('aria-label')).toBe('Run and send the output to the agent');
+
+      await fireEvent.click(button);
+      await waitFor(() => expect(run).toHaveBeenCalledWith('thread-7', {
+        runId: expect.any(String), command: 'echo hi\nls',
+      }));
+
+      // One command per thread: a second click while it runs is refused here.
+      await fireEvent.click(button);
+      expect(run).toHaveBeenCalledTimes(1);
+    });
+
+    it('does nothing outside a chat surface, where no thread would receive the output', async () => {
+      setBindingMock('HighlightCode', async () => keywordSpans());
+      const run = setBindingMock('RunThreadShellCommand', async () => ({ state: 'running' }));
+      const { container } = render(ChatMarkdown, { props: { source: FENCES, pathRefs: [] } });
+      await fireEvent.click(await settledRunButton(container));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(run).not.toHaveBeenCalled();
+    });
+
+    it('reports a refused run', async () => {
+      setBindingMock('HighlightCode', async () => keywordSpans());
+      setBindingMock('RunThreadShellCommand', async () => {
+        throw new Error('the workspace is not a directory');
+      });
+      const target = chatSurface('thread-8');
+      const { container } = render(ChatMarkdown, { target, props: { source: FENCES, pathRefs: [] } });
+      await fireEvent.click(await settledRunButton(container));
+      await waitFor(() => {
+        expect(getToasts().map((toast) => toast.message)).toContain('Failed to run the command');
+      });
+      resetToastsForTest();
+    });
   });
 
   it('keeps an empty settled fence idle when its copy button is clicked', async () => {

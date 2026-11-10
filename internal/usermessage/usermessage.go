@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"agent-overflow/internal/store"
 )
@@ -155,6 +156,54 @@ type AttachmentMeta struct {
 	// existed carried an image, so an absent value is the truth about that
 	// row rather than a gap to repair.
 	Kind string `json:"kind,omitempty"`
+	// Shell is set when the file is the output of a command the person ran
+	// from the composer. The row renders the command and its outcome from
+	// here and reads the rest of the output on demand.
+	Shell *ShellMeta `json:"shell,omitempty"`
+}
+
+// ShellCommandMetaBytes bounds the command a row's metadata carries. The
+// attachment record keeps the whole command.
+const ShellCommandMetaBytes = 512
+
+// ShellMeta is what a shell output attachment's row shows without a read.
+// Every string is bounded so the item wire never elides one.
+type ShellMeta struct {
+	Command string `json:"command"`
+	// CommandTruncated reports that Command is the start of a longer one.
+	CommandTruncated bool  `json:"commandTruncated,omitempty"`
+	ExitCode         int   `json:"exitCode"`
+	DurationMs       int64 `json:"durationMs"`
+	// Truncated reports output past the capture cap; TimedOut that the
+	// run's time limit ended the command.
+	Truncated bool `json:"truncated,omitempty"`
+	TimedOut  bool `json:"timedOut,omitempty"`
+	// Preview is the first lines of the output; More reports that the file
+	// holds output past it.
+	Preview string `json:"preview,omitempty"`
+	More    bool   `json:"more,omitempty"`
+}
+
+func shellMeta(attachment store.Attachment) *ShellMeta {
+	shell := attachment.Shell
+	if shell.IsZero() {
+		return nil
+	}
+	command, truncated := shell.Command, false
+	if len(command) > ShellCommandMetaBytes {
+		// The first excluded byte starts a rune exactly when the prefix
+		// ends on one.
+		cut := ShellCommandMetaBytes
+		for cut > 0 && !utf8.RuneStart(command[cut]) {
+			cut--
+		}
+		command, truncated = command[:cut], true
+	}
+	return &ShellMeta{
+		Command: command, CommandTruncated: truncated, ExitCode: shell.ExitCode,
+		DurationMs: shell.DurationMs, Truncated: shell.Truncated, TimedOut: shell.TimedOut,
+		Preview: shell.Preview, More: attachment.Size > int64(len(shell.Preview)),
+	}
 }
 
 // Marshal returns the JSON-encoded user-message meta for the given

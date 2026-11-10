@@ -6367,6 +6367,140 @@ export class ServiceUpdateStatus {
     }
 }
 
+/**
+ * ShellCommandRequest starts one composer shell command.
+ */
+export class ShellCommandRequest {
+    /**
+     * RunID is the client-minted identity of the run. It is also the send id
+     * of the message the result becomes, so a repeated request neither runs
+     * the command twice nor sends its output twice.
+     */
+    "runId": string;
+    "command": string;
+
+    /**
+     * RuntimeMode is the composer's staged runtime mode, applied when the
+     * result is sent, exactly as SendMessageWithOptions applies it.
+     */
+    "runtimeMode"?: string;
+
+    /** Creates a new ShellCommandRequest instance. */
+    constructor($$source: Partial<ShellCommandRequest> = {}) {
+        if (!("runId" in $$source)) {
+            this["runId"] = "";
+        }
+        if (!("command" in $$source)) {
+            this["command"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ShellCommandRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ShellCommandRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ShellCommandRequest($$parsedSource as Partial<ShellCommandRequest>);
+    }
+}
+
+/**
+ * ShellCommandRun is a running command: the answer to a start and the
+ * snapshot a client reads at mount and after a transport gap.
+ */
+export class ShellCommandRun {
+    "threadId": string;
+    "runId": string;
+    "command": string;
+    "state": string;
+    "output": string;
+    "outputSeq": number;
+
+    /**
+     * OutputTruncated reports that Output is the end of a longer stream.
+     */
+    "outputTruncated"?: boolean;
+    "startedAt": number;
+
+    /** Creates a new ShellCommandRun instance. */
+    constructor($$source: Partial<ShellCommandRun> = {}) {
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("runId" in $$source)) {
+            this["runId"] = "";
+        }
+        if (!("command" in $$source)) {
+            this["command"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+        if (!("output" in $$source)) {
+            this["output"] = "";
+        }
+        if (!("outputSeq" in $$source)) {
+            this["outputSeq"] = 0;
+        }
+        if (!("startedAt" in $$source)) {
+            this["startedAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ShellCommandRun instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ShellCommandRun {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ShellCommandRun($$parsedSource as Partial<ShellCommandRun>);
+    }
+}
+
+/**
+ * ShellOutputPage is one bounded read of a shell output attachment, with the
+ * whole command its timeline row may hold only the start of.
+ */
+export class ShellOutputPage {
+    "command": string;
+    "data": string;
+    "offset": number;
+    "size": number;
+    "next": number;
+
+    /** Creates a new ShellOutputPage instance. */
+    constructor($$source: Partial<ShellOutputPage> = {}) {
+        if (!("command" in $$source)) {
+            this["command"] = "";
+        }
+        if (!("data" in $$source)) {
+            this["data"] = "";
+        }
+        if (!("offset" in $$source)) {
+            this["offset"] = 0;
+        }
+        if (!("size" in $$source)) {
+            this["size"] = 0;
+        }
+        if (!("next" in $$source)) {
+            this["next"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ShellOutputPage instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ShellOutputPage {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ShellOutputPage($$parsedSource as Partial<ShellOutputPage>);
+    }
+}
+
 export const SourceDiffReview = store$0.DiffReviewSourceRef;
 export type SourceDiffReview = store$0.DiffReviewSourceRef;
 
@@ -7039,6 +7173,14 @@ export class ThreadLiveState {
      */
     "promptStale"?: boolean;
     "promptStaleRevision"?: number;
+
+    /**
+     * ShellCommandRunID is the id of the composer shell command running in
+     * this thread's workspace, empty when none is. It carries no output: a
+     * client that may read it calls GetThreadShellCommands, and a client
+     * holding a run this does not name drops it.
+     */
+    "shellCommandRunId"?: string;
 
     /** Creates a new ThreadLiveState instance. */
     constructor($$source: Partial<ThreadLiveState> = {}) {

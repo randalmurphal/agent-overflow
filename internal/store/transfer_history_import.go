@@ -191,7 +191,7 @@ func readTransferHistoryTx(ctx context.Context, tx *sql.Tx, target Thread, input
 			if err := json.Unmarshal(record.Data, &a); err != nil {
 				return err
 			}
-			if a.ID == "" || (a.Kind != AttachmentKindImage && a.Kind != AttachmentKindFile) || len(attachments) >= 16_384 {
+			if a.ID == "" || validateAttachment(a) != nil || len(attachments) >= 16_384 {
 				return errors.New("transfer: invalid attachment metadata")
 			}
 			original := a

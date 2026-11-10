@@ -53,6 +53,7 @@ that recreates App's surface moves files without moving authority.
 | git status/fetch and worktree queries | `internal/gitapp`, `internal/worktreeapp` |
 | worktree registry watch (external removals) | `internal/worktreewatch` |
 | chat-worktree setup runs | `internal/worktreesetupapp` |
+| composer shell command runs | `internal/shellrun` |
 | workflow application runtime | `internal/workflowapp` |
 | workflow provider execution | `internal/workflowhost` |
 | MCP coordination | `internal/mcpapp` |

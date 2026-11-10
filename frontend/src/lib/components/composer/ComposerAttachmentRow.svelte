@@ -11,6 +11,7 @@
   } from '../../utils/attachmentPreview.svelte';
   import { openImageLightbox } from '../../stores/imageLightbox.svelte';
   import { attachmentImageMenuTag } from '../../utils/imageMenuActions';
+  import { shellOutcomeLabel } from '../../utils/shellInvocation';
 
   interface Props {
     attachments: Attachment[];
@@ -59,7 +60,31 @@
     data-testid="composer-attachment-row"
   >
     {#each entries as { attachment, imageNumber } (attachment.id)}
-      {#if attachment.kind === 'file'}
+      {#if attachment.kind === 'file' && attachment.shell}
+        <!-- A command's output, back in the composer because its message was
+             taken back. It names the command; sending the draft sends it again. -->
+        <div
+          class="group relative flex h-16 max-w-[280px] items-center gap-2 rounded-lg border border-border bg-surface-1 px-2.5 shadow-sheet"
+          data-testid="attachment-shell-chip"
+          title={`Output of: ${attachment.shell.command}`}
+        >
+          <span class="shrink-0 select-none font-mono text-sm text-accent" aria-hidden="true">$</span>
+          <div class="min-w-0 flex-1 leading-tight">
+            <div class="truncate font-mono text-xs text-text-primary">{attachment.shell.command}</div>
+            <div class="text-[0.625rem] {attachment.shell.exitCode !== 0 || attachment.shell.timedOut ? 'text-error' : 'text-text-secondary'}">
+              {shellOutcomeLabel(attachment.shell)} · {formatAttachmentSize(attachment.size)} of output
+            </div>
+          </div>
+          <button
+            type="button"
+            aria-label="Remove command output"
+            class="shrink-0 rounded-full p-0.5 compact:p-2 text-text-secondary transition hover:bg-surface-2 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+            onclick={() => onRemove(attachment.id)}
+          >
+            <Icon icon={X} size={12} strokeWidth={2.5} />
+          </button>
+        </div>
+      {:else if attachment.kind === 'file'}
         <div
           class="group relative flex h-16 max-w-[240px] items-center gap-2 rounded-lg border border-border bg-surface-1 px-2.5 shadow-sheet"
           data-testid="attachment-file-chip"

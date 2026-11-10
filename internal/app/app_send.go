@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 
@@ -281,13 +282,15 @@ func (a *App) resolveUserMessageEnvelope(
 	// context it asked for.
 	providerContent := content
 	command := ""
-	if inputs.expandComposerCommands {
+	// A shell command is not prose: a `/word` in it is a path, not a
+	// composer command to expand.
+	if inputs.expandComposerCommands && !attachments.isInvocation(content) {
 		providerContent, command, err = a.expandComposerCommand(threadID, content)
 		if err != nil {
 			return resolvedUserMessage{}, fmt.Errorf("composer command: %w", err)
 		}
 	}
-	providerContent = appendFileAttachmentLines(providerContent, attachments.fileLines)
+	providerContent = attachments.promptText(strings.Split(providerContent, usermessage.JoinSeparator), usermessage.JoinSeparator)
 
 	userMeta, err := usermessage.Marshal(usermessage.Input{
 		Attachments:            attachments.records,
@@ -1048,9 +1051,49 @@ type turnAttachments struct {
 	// records is every requested attachment, both kinds, in order. The
 	// timeline row's meta is built from this.
 	records []store.Attachment
-	// fileLines is one attachment.PromptLine per `file`, in order. The
-	// envelope appends them to providerContent; nothing persists them.
+	// fileLines is the prompt text of each `file`, in order: an
+	// attachment.PromptLine, or the command block of a shell output file.
+	// promptText puts them on providerContent; nothing persists them.
 	fileLines []string
+	// invocations parallels fileLines: the text the person typed to run a
+	// shell output file's command, and empty for every other file.
+	invocations []string
+}
+
+// isInvocation reports whether content is exactly the typed invocation of one
+// of the shell output files.
+func (t turnAttachments) isInvocation(content string) bool {
+	typed := strings.TrimSpace(content)
+	return typed != "" && slices.Contains(t.invocations, typed)
+}
+
+// promptText is a message's provider text: its parts joined by separator,
+// with what the file attachments add. A part that is exactly the invocation
+// of a shell output file is replaced by that file's command block, so the
+// model reads the command where the person ran it and the typed `!command`
+// stays a transcript fact, like a composer command's word. Every other file
+// line is appended after a blank line.
+func (t turnAttachments) promptText(parts []string, separator string) string {
+	parts = slices.Clone(parts)
+	claimed := make([]bool, len(parts))
+	lines := make([]string, 0, len(t.fileLines))
+	for i, line := range t.fileLines {
+		at := -1
+		if invocation := t.invocations[i]; invocation != "" {
+			for j, part := range parts {
+				if !claimed[j] && strings.TrimSpace(part) == invocation {
+					at = j
+					break
+				}
+			}
+		}
+		if at < 0 {
+			lines = append(lines, line)
+			continue
+		}
+		parts[at], claimed[at] = line, true
+	}
+	return appendFileAttachmentLines(strings.Join(parts, separator), lines)
 }
 
 // resolveSendMessageAttachments validates the requested attachment IDs,
@@ -1104,8 +1147,20 @@ func (a *App) resolveSendMessageAttachments(threadID string, attachmentIDs []str
 			return turnAttachments{}, err
 		}
 		out.records = append(out.records, record)
+		if !record.Shell.IsZero() {
+			// A command the person ran reaches the model as its output,
+			// in the form the provider's own CLI records one.
+			block, err := userShellPromptBlock(thread.Provider, record, path)
+			if err != nil {
+				return turnAttachments{}, err
+			}
+			out.fileLines = append(out.fileLines, block)
+			out.invocations = append(out.invocations, shellInvocation(record.Shell.Command))
+			continue
+		}
 		if record.Kind == store.AttachmentKindFile {
 			out.fileLines = append(out.fileLines, attachmentstore.PromptLine(record, path))
+			out.invocations = append(out.invocations, "")
 			continue
 		}
 		att := provider.ImageAttachment{
@@ -1131,8 +1186,9 @@ func (a *App) resolveSendMessageAttachments(threadID string, attachmentIDs []str
 	return out, nil
 }
 
-// appendFileAttachmentLines returns providerContent with one
-// `[Attached file …]` line per file attachment, after a blank line.
+// appendFileAttachmentLines returns providerContent with the prompt text of
+// each file attachment, after a blank line: one `[Attached file …]` line, or
+// a shell output file's command block.
 //
 // It runs LAST, after composer-command expansion, so every content
 // transform is already applied and a new one cannot be sandwiched between
@@ -1150,8 +1206,13 @@ func appendFileAttachmentLines(providerContent string, fileLines []string) strin
 	}
 	var b strings.Builder
 	b.Grow(size)
-	b.WriteString(providerContent)
-	b.WriteString("\n\n")
+	// A message that is nothing but its files starts with the first one: a
+	// shell command's block is then the whole message, as the provider's
+	// own CLI records it.
+	if providerContent != "" {
+		b.WriteString(providerContent)
+		b.WriteString("\n\n")
+	}
 	for i, line := range fileLines {
 		if i > 0 {
 			b.WriteByte('\n')

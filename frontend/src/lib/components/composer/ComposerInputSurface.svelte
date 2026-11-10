@@ -41,6 +41,7 @@
     onKeydownAfterPopovers,
     editsDraft = true,
     showDraftRows = true,
+    shellPrefix = false,
     blockAttachment,
     attachmentsDeferred = false,
     shouldDeleteAttachmentRecord,
@@ -90,7 +91,11 @@
     getWorkspace: () => pane.workspace,
   });
 
-  const slash = createComposerSlash({ getTextarea: () => textarea, getPane: () => pane });
+  const slash = createComposerSlash({
+    getTextarea: () => textarea,
+    getPane: () => pane,
+    isShellInput: () => shellPrefix && (textarea?.value.startsWith('!') ?? false),
+  });
 
   const uploads = createComposerUploads({
     getContext: () => draft.contextKey,
@@ -131,6 +136,8 @@
   // is in both registries.
   let commandRanges = $derived.by(() => {
     if (!editsDraft || disabled || composingText || !selectionCollapsed) return [];
+    // A shell command is not a message, so no slash word in it is live.
+    if (shellPrefix && value.startsWith('!')) return [{ name: '!', start: 0, end: 1 }];
     return [...slash.interceptedRanges(value), ...slashCommandMatches(value)];
   });
 
@@ -433,7 +440,9 @@
      padding took (COMPOSER_TEXT_CLASSES), so the text's top sits where it
      did. -->
 <div class="flex items-end gap-1 pl-4 pr-2.5 pt-2.5 pb-2 compact:pt-1.5 compact:pb-1">
-  <div class="relative min-w-0 flex-1">
+  <!-- A shell command is set in the monospace face, on the wrapper so the
+       textarea and its highlight twin inherit the same metrics. -->
+  <div class={['relative min-w-0 flex-1', shellPrefix && value.startsWith('!') && 'font-mono']} data-shell-input={shellPrefix && value.startsWith('!') ? '' : undefined}>
     <ComposerMentionPopover backend={threadMachine(pane.threadId ?? '', pane.thread?.projectId)}
       anchor={textarea}
       open={mentions.mentionTrigger !== null}

@@ -1706,6 +1706,20 @@ var channelPolicies = []ChannelPolicy{
 			"frames — never latest-only.",
 	},
 	{
+		Channel:   eventchan.ShellCommand,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeTerminalOperate,
+		Why: "Streams the stdout/stderr of a command the person ran from a " +
+			"thread's composer in its workspace: the same data class as " +
+			"terminal:output. RunThreadShellCommand starts it and " +
+			"GetThreadShellCommands returns the same buffered output under " +
+			"terminal:operate, so the stream reaches the sessions those " +
+			"answer. Audience any because a command started from a phone has " +
+			"to show its output there. Output frames are sequenced per run, " +
+			"so never latest-only.",
+	},
+	{
 		Channel:   eventchan.WorktreeRemoved,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,

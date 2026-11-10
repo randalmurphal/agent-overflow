@@ -174,6 +174,15 @@ export {
   GetThreadWorktreeSetup,
   RetryThreadWorktreeSetup,
 
+  // Composer shell commands (`!command`, and Run on a shell code block).
+  // The snapshot is the reconnect companion of the shell:command stream;
+  // the output read serves a sent command's timeline row. See
+  // app_shell_command.go.
+  RunThreadShellCommand,
+  StopThreadShellCommand,
+  GetThreadShellCommands,
+  ReadShellAttachmentOutput,
+
   // Usage accounting (append-only ledger aggregates; costs are
   // wire-true for Claude, table-priced at read time for Codex /
   // claude-tui — see internal/usagecost).

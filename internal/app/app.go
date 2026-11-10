@@ -42,6 +42,7 @@ import (
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/sessionruntime"
 	"agent-overflow/internal/settings"
+	"agent-overflow/internal/shellrun"
 	"agent-overflow/internal/soundlib"
 	"agent-overflow/internal/spinner"
 	"agent-overflow/internal/store"
@@ -199,7 +200,9 @@ type App struct {
 	transfers  appThreadTransfers
 	terminals  *terminal.Manager
 	remoteJobs *remotejobs.Manager
-	remoteMCP  appRemoteMCP
+	// shellCommands owns the composer shell commands in flight.
+	shellCommands *shellrun.Service
+	remoteMCP     appRemoteMCP
 	// threadMCP owns the ao-thread-tools server and the threadtools
 	// contract bound to this app. Zero value ready; built on first use.
 	threadMCP appThreadMCP

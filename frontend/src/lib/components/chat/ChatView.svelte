@@ -7,6 +7,7 @@
   import MessageTimeline from './MessageTimeline.svelte';
   import Composer from '../composer/Composer.svelte';
   import SendQueuePreview from '../composer/SendQueuePreview.svelte';
+  import ShellRunCard from '../composer/ShellRunCard.svelte';
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
   import ThreadTerminalPlacement from '../terminal/ThreadTerminalPlacement.svelte';
   import ChatHeader from './ChatHeader.svelte';
@@ -481,6 +482,7 @@
       >
         <div class="pointer-events-auto mx-auto w-full max-w-[62rem] px-6">
           <SendQueuePreview {pane} />
+          <ShellRunCard {pane} />
         </div>
         {#if showWorktreeSetup && worktreeSetupPanelModule && setupKey}
           {#await worktreeSetupPanelModule then { default: WorktreeSetupPanel }}

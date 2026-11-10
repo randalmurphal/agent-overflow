@@ -51,6 +51,7 @@ import type {
   UsageEvent,
   UserInputEvent,
   WorktreeSetupEvent,
+  ShellCommandEvent,
   WorktreeRemovedEvent,
   ThreadGroupUpdateEvent,
 } from '../types/events';
@@ -175,6 +176,7 @@ import { bumpUsageRefresh } from './usageRefresh.svelte';
 import { applyUserMessageReverted } from './eventsMessageRevert';
 import { applyTransportGap } from './eventsTransportGap';
 import { applyWorktreeSetup } from './eventsWorktreeSetup';
+import { applyShellCommandEvent } from './shellCommands.svelte';
 import { applyWorktreeRemoved, revalidateDraftWorktrees } from './eventsWorktreeRemoved';
 import {
   applyThreadTitleGeneration,
@@ -713,6 +715,13 @@ export function setupEventListeners(): () => void {
     'worktree:setup',
     applyWorktreeSetup,
   );
+  // shell:command: a command the person ran from a thread's composer.
+  // Gated on `terminal:operate` like worktree:setup, for the same reason;
+  // stores/shellCommands.svelte.ts owns the sequence and snapshot contract.
+  const cancelShellCommand = wailsEventOn<ShellCommandEvent>(
+    'shell:command',
+    applyShellCommandEvent,
+  );
   // worktree:removed: one frame per removed worktree, whoever removed it.
   // Moved thread rows ride thread:updated; this moves the draft composers
   // parked in the directory, which have no row.
@@ -884,6 +893,7 @@ export function setupEventListeners(): () => void {
     cancelThreadGroupUpdated();
     cancelThreadTitleGeneration();
     cancelWorktreeSetup();
+    cancelShellCommand();
     cancelWorktreeRemoved();
     cancelWorktreeRemovedRecovery();
     cancelTransportGap();
