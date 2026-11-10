@@ -36,11 +36,12 @@ A direct send is on screen only as the Send button's pending state until the
 backend shows evidence of it. The originating pane holds the send ID
 (`awaitSendConfirmation` in `thread.svelte.ts`) and releases it on the first
 of: the pushed `user_text` row carrying that send ID, whether or not the
-loaded window admits the row; a `provider:queue_state_changed` or
+loaded window admits the row; that row installed in the window by a history
+read, which covers a lost row frame; a `provider:queue_state_changed` or
 `provider:queue_flushed` entry naming it; a live-state read listing it, which
-covers a missed event; or the send's reply, accepted or refused. A thread
-switch abandons the wait. Another frontend's send and another thread's events
-are never a match.
+covers a missed queue event; or the send's reply, accepted or refused. A
+thread switch abandons the wait. Another frontend's send and another thread's
+events are never a match.
 
 Same-ID public admissions serialize before their thread/action locks. The
 existing history row, durable queue row, or pending provider-echo entry answers

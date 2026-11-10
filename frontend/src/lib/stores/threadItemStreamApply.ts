@@ -226,8 +226,9 @@ export function createThreadItemStreamApply(
     if (applied && applied.appendedItems.length > 0 && !timelineWindow.hasMoreNewer) {
       activityRuns.noteLiveAppend(applied.appendedItems, previousTail);
     }
-    // Only the wire confirms a send, and it does so whether or not the
-    // window admitted the row.
+    // A pushed row confirms its send whether or not the window admitted
+    // it. The window's own commit confirms a row it admits, from the wire
+    // or from a history read.
     const awaited = options.awaitedSendId();
     if (awaited !== null) {
       for (const item of incoming) {

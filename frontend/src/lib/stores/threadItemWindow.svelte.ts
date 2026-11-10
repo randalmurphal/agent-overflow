@@ -59,6 +59,12 @@ export interface ThreadItemWindowOptions {
   rowUiState(): ThreadRowUiState;
   activityRuns(): ThreadActivityRuns;
   switchLoad(): Pick<ThreadSwitchLoad, 'noteItemMutation' | 'noteItemMutations' | 'noteItemWindowReplacement'>;
+  /**
+   * The rows a commit just put in the window: every row of a wholesale
+   * replacement, the written rows of a merge. Both carry rows from history
+   * reads as well as from the wire.
+   */
+  rowsCommitted?(rows: readonly Item[]): void;
 }
 
 export function createThreadItemWindow(options: ThreadItemWindowOptions) {
@@ -411,6 +417,11 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
       } catch (error) {
         errors.push(error);
       }
+      try {
+        options.rowsCommitted?.(nextItems);
+      } catch (error) {
+        errors.push(error);
+      }
       finalizeItemsCommit(
         'timeline window replacement',
         commitOptions.afterCommit,
@@ -553,6 +564,11 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
       } catch (error) {
         errors.push(error);
       }
+    }
+    try {
+      options.rowsCommitted?.(next.changedItems);
+    } catch (error) {
+      errors.push(error);
     }
     if (next.structureChanged) timelineRevision++;
     if (next.rowUiRetentionChanged) rowUiRetentionRevision += 1;

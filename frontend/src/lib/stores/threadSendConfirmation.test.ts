@@ -16,6 +16,14 @@ function queued(threadId: string, sendId: string) {
 function flushed(threadId: string, sendId: string) {
   return { threadId, items: [{ queueItemId: `queue:${sendId}`, userItemId: `user:${sendId}`, sendId, message: 'Hello' }] };
 }
+/** Answer the pane's next window read with `items` and an idle live state. */
+function answerWindowRead(threadId: string, items: ReturnType<typeof makeItem>[]): void {
+  const cursor = (item: ReturnType<typeof makeItem>) => ({ turnIndex: item.turnIndex, itemIndex: item.itemIndex ?? 0, itemId: item.id });
+  setBindingMock('ListThreadSliceAround', async () => ({ items, oldestTurnIndex: items[0].turnIndex,
+    newestTurnIndex: items[items.length - 1].turnIndex, hasMore: false, hasMoreOlder: false, hasMoreNewer: false,
+    oldestCursor: cursor(items[0]), newestCursor: cursor(items[items.length - 1]) }));
+  setBindingMock('GetThreadLiveState', async () => ({ threadId, activeTurn: null, queueItems: [], flushedItems: [] }));
+}
 async function awaitingPane(items: ReturnType<typeof makeItem>[] = []): Promise<ThreadPane> {
   const pane = await buildPane(makeThread(), items);
   expect(pane.sendAwaitingConfirmation).toBe(false);
@@ -44,15 +52,34 @@ describe('a dispatched send awaiting its confirmation', () => {
     expect(pane.sendAwaitingConfirmation).toBe(false);
   });
 
-  it('is not confirmed by another send’s row, an assistant row or a history read', async () => {
+  it('is not confirmed by another send’s row or an assistant row, pushed or read', async () => {
     const pane = await awaitingPane();
+    const threadId = pane.threadId!;
+    const assistant = (id: string) => makeItem({ id, threadId, turnIndex: 1, meta: JSON.stringify({ sendId: 'mine' }) });
     pane.applyProviderItemUpserts([userRow(pane, 'theirs')]);
-    pane.applyProviderItemUpserts([makeItem({ id: 'assistant', threadId: pane.threadId!, turnIndex: 1,
-      meta: JSON.stringify({ sendId: 'mine' }) })]);
-    // Only the wire confirms: a row merged from a read is not evidence
-    // the backend took this dispatch.
-    pane.upsertItems([userRow(pane, 'mine')]);
+    pane.applyProviderItemUpserts([assistant('assistant')]);
+    pane.upsertItems([userRow(pane, 'theirs', { id: 'user:read' }), assistant('assistant:read')]);
+    answerWindowRead(threadId, [userRow(pane, 'theirs'), assistant('assistant')]);
+    await pane.refreshFromBackend(true);
+    expect(pane.items.map((item) => item.id)).toEqual(['user:theirs', 'assistant']);
     expect(pane.sendAwaitingConfirmation).toBe(true);
+  });
+
+  it('is confirmed by its row merged from a history read', async () => {
+    const pane = await awaitingPane([makeItem({ id: 'loaded', turnIndex: 0 })]);
+    const row = userRow(pane, 'mine', { turnIndex: 1 });
+    pane.upsertItems([row]);
+    expect(pane.items.map((item) => item.id)).toEqual(['loaded', row.id]);
+    expect(pane.sendAwaitingConfirmation).toBe(false);
+  });
+
+  it('is confirmed by a window read that installs its row after its frame was lost', async () => {
+    const pane = await awaitingPane();
+    const row = userRow(pane, 'mine');
+    answerWindowRead(pane.threadId!, [row]);
+    await pane.refreshFromBackend(true);
+    expect(pane.items.map((item) => item.id)).toEqual([row.id]);
+    expect(pane.sendAwaitingConfirmation).toBe(false);
   });
 
   it('is confirmed by a queue state naming it', async () => {

@@ -24,7 +24,9 @@
 // Add per-thread runtime state to one of those (or a new one composed here),
 // never to a store beside the pane.
 
+import { untrack } from 'svelte';
 import type { Item, Thread } from '../types/models';
+import { parseUserMessageMeta } from '../utils/userMessageMeta';
 import type {
   ApprovalRequest,
   ContextWindow,
@@ -172,6 +174,18 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   function confirmSend(threadId: string, sendId: string | undefined): void {
     if (sendId && sendId === awaitedSendId && thread?.id === threadId) awaitedSendId = null;
   }
+  // The awaited send's row reached the window. A row from a history read
+  // counts like a pushed one: the message is on screen either way. Nothing
+  // is scanned unless a send is awaited.
+  function confirmSendFromRows(rows: readonly Item[]): void {
+    const awaited = untrack(() => awaitedSendId);
+    if (awaited === null) return;
+    for (const row of rows) {
+      if (row.kind !== 'user_text' || parseUserMessageMeta(row.meta).sendId !== awaited) continue;
+      confirmSend(row.threadId, awaited);
+      return;
+    }
+  }
   /**
    * Generation counter for switchThread. Incremented on every switchThread
    * entry so a slow paged fetch from thread A cannot clobber thread B's
@@ -208,6 +222,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     rowUiState: () => rowUiState,
     activityRuns: () => activityRuns,
     switchLoad: () => switchLoad,
+    rowsCommitted: confirmSendFromRows,
   });
   const {
     getItems,
