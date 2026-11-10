@@ -433,6 +433,97 @@ describe('<RateLimitMeter>', () => {
     expect(screen.queryByText(/^Plan:/)).toBeNull();
   });
 
+  function seedWeekly(scoped: Array<[string, number]>, allModels: number | null = 40): void {
+    setProviderRateLimits({
+      provider: 'claude',
+      complete: true,
+      limits: [
+        ...(allModels === null ? [] : [{
+          limitId: 'weekly_all', limitName: 'All models', usedPercent: allModels, windowMins: 10080, resetsAt: NOW_SEC + 86400,
+        }]),
+        ...scoped.map(([name, usedPercent]) => ({
+          limitId: `weekly_scoped:${name.toLowerCase()}`, limitName: name, usedPercent, windowMins: 10080, resetsAt: NOW_SEC + 86400,
+        })),
+      ],
+      updatedAt: NOW_SEC,
+    });
+  }
+
+  it('draws a scoped weekly limit as an inner ring with its own threshold color', () => {
+    seedWeekly([['Fable', 97]]);
+    const { container, getByRole } = render(RateLimitMeter, {
+      props: { windowMins: 10080, provider: 'claude' as const },
+    });
+    // The account-wide ring stays subtle at 40% while the scoped ring is in error.
+    expect(container.querySelector('[data-meter-arc="main"]')!.getAttribute('class')).toContain('stroke-fg-subtle');
+    expect(container.querySelector('[data-meter-arc="main"]')!.getAttribute('r')).toBe('12');
+    const inner = container.querySelector('[data-meter-arc="inner"]')!;
+    expect(inner.getAttribute('class')).toContain('stroke-error');
+    expect(Number(inner.getAttribute('stroke-dashoffset'))).toBeCloseTo(2 * Math.PI * 9 * 0.03, 6);
+    expect(getByRole('button').getAttribute('aria-label')).toBe('7-day limits: 40% used, Fable 97% used');
+  });
+
+  it('keeps the account-wide color independent of a low scoped limit', () => {
+    seedWeekly([['Fable', 30]], 90);
+    const { container } = render(RateLimitMeter, {
+      props: { windowMins: 10080, provider: 'claude' as const },
+    });
+    expect(container.querySelector('[data-meter-arc="main"]')!.getAttribute('class')).toContain('stroke-warning');
+    expect(container.querySelector('[data-meter-arc="inner"]')!.getAttribute('class')).toContain('stroke-fg-subtle');
+  });
+
+  it('keeps the single full-width ring when the account reports no scoped limit', () => {
+    seedWeekly([]);
+    const { container, getByRole } = render(RateLimitMeter, {
+      props: { windowMins: 10080, provider: 'claude' as const },
+    });
+    expect(container.querySelector('[data-meter-arc="inner"]')).toBeNull();
+    expect(container.querySelector('[data-meter-arc="main"]')!.getAttribute('r')).toBe('11.375');
+    expect(getByRole('button').getAttribute('aria-label')).toBe('7-day limit: 40% used');
+  });
+
+  it('adds and removes the inner ring as the scoped limit comes and goes', async () => {
+    seedWeekly([]);
+    const { container } = render(RateLimitMeter, {
+      props: { windowMins: 10080, provider: 'claude' as const },
+    });
+    expect(container.querySelector('[data-meter-arc="inner"]')).toBeNull();
+
+    seedWeekly([['Fable', 60]]);
+    await vi.waitFor(() => expect(container.querySelector('[data-meter-arc="inner"]')).not.toBeNull());
+
+    // A complete reading without the scoped bucket (a weekly reset) drops it.
+    seedWeekly([]);
+    await vi.waitFor(() => expect(container.querySelector('[data-meter-arc="inner"]')).toBeNull());
+    expect(container.querySelector('[data-meter-arc="main"]')!.getAttribute('r')).toBe('11.375');
+  });
+
+  it('uses the most-used scoped limit for the inner ring and keeps the hover card in name order', async () => {
+    seedWeekly([['Alpha', 10], ['Fable', 70], ['Zeta', 30]]);
+    const { container, getByRole } = render(RateLimitMeter, {
+      props: { windowMins: 10080, provider: 'claude' as const },
+    });
+    const inner = container.querySelector('[data-meter-arc="inner"]')!;
+    expect(Number(inner.getAttribute('stroke-dashoffset'))).toBeCloseTo(2 * Math.PI * 9 * 0.3, 6);
+    expect(getByRole('button').getAttribute('aria-label')).toContain('Fable 70% used');
+
+    await fireEvent.mouseEnter(getByRole('button'));
+    const tooltip = await screen.findByRole('tooltip');
+    const names = [...tooltip.querySelectorAll('p[title]')].map((el) => el.textContent);
+    expect(names).toEqual(['All models', 'Alpha', 'Fable', 'Zeta']);
+  });
+
+  // A scoped-only reading has no account-wide ring to sit inside, so the
+  // meter stays on its "no data yet" track instead of drawing a lone inner ring.
+  it('draws no inner ring when only a scoped limit is known', () => {
+    seedWeekly([['Fable', 99]], null);
+    const { container, getByRole } = render(RateLimitMeter, {
+      props: { windowMins: 10080, provider: 'claude' as const },
+    });
+    expect(container.querySelectorAll('svg circle').length).toBe(1);
+    expect(getByRole('button').getAttribute('aria-label')).toBe('7-day limit: awaiting first update');
+  });
+
   it('treats NaN usedPercent as 0% so a non-numeric wire payload renders an empty ring', () => {
     seedProviderEntry('claude', {
       limitId: 'five_hour', limitName: '5h', usedPercent: NaN, windowMins: 300, resetsAt: NOW_SEC + 3600,

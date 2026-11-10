@@ -6,6 +6,7 @@
   import {
     getProviderRateLimitsForWindow,
     rateLimitDisplayName,
+    rateLimitWindowLabel,
   } from '../../stores/rateLimitsInfo.svelte';
   import type { ProviderID } from '../../types/providers';
   import { useHoverPopover } from './hoverPopover.svelte';
@@ -38,14 +39,17 @@
     subscriptionType?: string;
   } = $props();
 
-  // The recognized provider-wide default remains the sole source for the
-  // ring. Additional entries only enrich the hover card, so a scoped
-  // Fable/Spark quota can never make the account-wide ring look exhausted.
+  // The recognized provider-wide default is the sole source for the main
+  // ring. The most-used scoped limit gets its own inner ring beside it, so
+  // a scoped Fable/Spark quota can never make the account-wide ring look
+  // exhausted. Without a provider-wide default there is no inner ring
+  // either: the meter stays on its "no data yet" track.
   let limitGroup = $derived(
     getProviderRateLimitsForWindow(provider, windowMins, accountId, backend),
   );
   let entries = $derived(limitGroup.limits);
   let entry = $derived(limitGroup.primary);
+  let scopedEntry = $derived(entry ? limitGroup.secondary : null);
 
   let buttonEl: HTMLButtonElement | undefined = $state(undefined);
   // Touched on every hover-open so countdowns recompute against current wall
@@ -55,13 +59,7 @@
     countdownGeneration += 1;
   });
 
-  let label = $derived(
-    windowMins === 300
-      ? '5h'
-      : windowMins === 10080
-        ? '7d'
-        : `${Math.max(1, Math.round(windowMins / 60))}h`,
-  );
+  let label = $derived(rateLimitWindowLabel(windowMins));
   let popoverHeader = $derived.by(() => {
     const base = windowMins === 300 ? '5-hour' : windowMins === 10080 ? '7-day' : label;
     return `${base} ${entries.length > 1 ? 'limits' : 'limit'}`;
@@ -92,17 +90,27 @@
   // Same threshold palette as ContextWindowMeter — percent-only,
   // provider-agnostic. Claude's status field intentionally does not
   // override; rings stay visually consistent with Codex.
-  let strokeColor = $derived(
-    !entry
-      ? 'stroke-fg-subtle'
-      : percentage > 95
-        ? 'stroke-error'
-        : percentage > 80
-          ? 'stroke-warning'
-          : 'stroke-fg-subtle',
-  );
+  function thresholdStroke(value: number): string {
+    return value > 95
+      ? 'stroke-error'
+      : value > 80
+        ? 'stroke-warning'
+        : 'stroke-fg-subtle';
+  }
+  let strokeColor = $derived(entry ? thresholdStroke(percentage) : 'stroke-fg-subtle');
+  let innerRing = $derived.by(() => {
+    if (!scopedEntry) return undefined;
+    const scopedPercentage = normalizedPercentage(scopedEntry.usedPercent);
+    return { percentage: scopedPercentage, strokeClass: thresholdStroke(scopedPercentage) };
+  });
 
   let displayPct = $derived(Math.round(percentage));
+  let ariaLabel = $derived.by(() => {
+    if (!entry) return `${popoverHeader}: awaiting first update`;
+    const main = `${popoverHeader}: ${displayPct}% used`;
+    if (!scopedEntry || !innerRing) return main;
+    return `${main}, ${rateLimitDisplayName(scopedEntry)} ${Math.round(innerRing.percentage)}% used`;
+  });
 
   // Pull plan info (subscriptionType) out of the global accountInfo store
   // when a provider is known. The store is reactive — calling
@@ -127,9 +135,7 @@
   bind:this={buttonEl}
   type="button"
   class={METER_BUTTON_CLASS}
-  aria-label={entry
-    ? `${popoverHeader}: ${displayPct}% used`
-    : `${popoverHeader}: awaiting first update`}
+  aria-label={ariaLabel}
   onmouseenter={popover.open}
   onpointerdown={popover.pointerDown}
   onclick={popover.click}
@@ -137,7 +143,13 @@
   onfocus={popover.open}
   onblur={popover.scheduleClose}
 >
-  <MeterRing {label} {percentage} strokeClass={strokeColor} showArc={!!entry} />
+  <MeterRing
+    {label}
+    {percentage}
+    strokeClass={strokeColor}
+    showArc={!!entry}
+    inner={innerRing}
+  />
 </button>
 
 <Popover

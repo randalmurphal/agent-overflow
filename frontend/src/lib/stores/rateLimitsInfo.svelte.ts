@@ -1,5 +1,5 @@
 // Last-known provider quotas, isolated by native account and dynamic limit ID.
-// The toolbar asks for the active account's default 5h/7d allowance; Provider
+// The toolbar asks for the active account's 5h/7d limits by duration; Provider
 // Settings renders every server-advertised bucket for every saved account.
 
 import type { RateLimitEntry, RateLimitsSnapshot } from '../types/events';
@@ -200,7 +200,14 @@ export function getProviderRateLimit(
 
 export interface RateLimitWindowGroup {
   primary: RateLimitEntry | null;
+  // The most-used scoped/model limit of this duration, or null when the
+  // account reports none. The composer draws it as the meter's inner ring.
+  secondary: RateLimitEntry | null;
   limits: RateLimitEntry[];
+}
+
+function comparableUsedPercent(entry: RateLimitEntry): number {
+  return Number.isFinite(entry.usedPercent) ? entry.usedPercent : 0;
 }
 
 // Returns every account limit for one composer duration, with the recognized
@@ -213,7 +220,7 @@ export function getProviderRateLimitsForWindow(
   accountId?: string,
   backend: BackendKey = HOME_BACKEND,
 ): RateLimitWindowGroup {
-  if (!provider || windowMins <= 0) return { primary: null, limits: [] };
+  if (!provider || windowMins <= 0) return { primary: null, secondary: null, limits: [] };
   const candidates = entriesForAccount(provider, accountId, backend)
     .filter((entry) => entry.windowMins === windowMins);
   const primary = defaultLimit(provider, candidates);
@@ -221,10 +228,52 @@ export function getProviderRateLimitsForWindow(
   const scoped = candidates
     .filter((entry) => entryKey(entry) !== primaryKey)
     .sort((a, b) => rateLimitDisplayName(a).localeCompare(rateLimitDisplayName(b)));
+  // Ties keep display-name order, so equal readings never swap rings.
+  let secondary: RateLimitEntry | null = null;
+  for (const entry of scoped) {
+    if (!secondary || comparableUsedPercent(entry) > comparableUsedPercent(secondary)) {
+      secondary = entry;
+    }
+  }
   return {
     primary,
+    secondary,
     limits: primary ? [primary, ...scoped] : scoped,
   };
+}
+
+const WEEKLY_WINDOW_MINS = 10080;
+
+// The durations the composer shows a meter for, shortest first: every
+// duration the account has a provider-wide default limit of, which is the
+// limit a meter's main ring draws. An account with none (no reading yet, or
+// scoped limits only) gets the weekly meter alone, so the composer always
+// has one place to show "awaiting first update" and the hover details.
+export function getComposerRateLimitWindows(
+  provider: ProviderID | undefined,
+  accountId?: string,
+  backend: BackendKey = HOME_BACKEND,
+): number[] {
+  if (!provider) return [WEEKLY_WINDOW_MINS];
+  const byWindow = new Map<number, RateLimitEntry[]>();
+  for (const entry of entriesForAccount(provider, accountId, backend)) {
+    if (entry.windowMins <= 0) continue;
+    const group = byWindow.get(entry.windowMins);
+    if (group) group.push(entry);
+    else byWindow.set(entry.windowMins, [entry]);
+  }
+  const windows = [...byWindow]
+    .filter(([, entries]) => defaultLimit(provider, entries) !== null)
+    .map(([windowMins]) => windowMins)
+    .sort((a, b) => a - b);
+  return windows.length > 0 ? windows : [WEEKLY_WINDOW_MINS];
+}
+
+// Short duration label shared by the composer meters and the Settings list.
+export function rateLimitWindowLabel(windowMins: number): string {
+  if (windowMins === 300) return '5h';
+  if (windowMins === WEEKLY_WINDOW_MINS) return '7d';
+  return `${Math.max(1, Math.round(windowMins / 60))}h`;
 }
 
 export function getProviderRateLimits(

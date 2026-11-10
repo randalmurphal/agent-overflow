@@ -24,6 +24,10 @@
   import type { DictationSession } from '../../../dictation/dictationSession.svelte';
   import ContextWindowMeter from '../../chat/ContextWindowMeter.svelte';
   import RateLimitMeter from '../../chat/RateLimitMeter.svelte';
+  import {
+    getComposerRateLimitWindows,
+    rateLimitWindowLabel,
+  } from '../../../stores/rateLimitsInfo.svelte';
   import type { SendButtonAction } from './sendButtonTypes';
   import { asProviderID } from '../../../types/providers';
   import { providerSupports } from '../../../providers/catalog';
@@ -124,6 +128,11 @@
         : (sessionAccount.account.subscriptionType ?? '')
       : (selectedAccount?.subscriptionType ?? ''),
   );
+  // One meter per duration the account has a provider-wide limit of, so a
+  // plan without a 5h window gets no 5h ring.
+  let limitWindows = $derived(
+    getComposerRateLimitWindows(providerID ?? undefined, currentAccountID, backend),
+  );
   // Provider capability gates. claude-tui drives the real TUI, so the
   // AO-mediated runtime-mode, plan, and MCP affordances are omitted — the
   // human reaches them inside the terminal via take-control.
@@ -207,34 +216,22 @@
   {/if}
   <div data-composer-toolbar-cluster class="ml-auto flex shrink-0 items-center gap-1.5">
     {#if showLimitRings}
-      <div
-        class="shrink-0 flex items-center"
-        data-composer-toolbar-meter
-        data-testid="composer-rate-limit-5h"
-      >
-        <RateLimitMeter
-          {backend}
-          windowMins={300}
-          provider={providerID ?? undefined}
-          accountId={currentAccountID}
-          accountEmail={currentAccountEmail}
-          subscriptionType={currentAccountPlan}
-        />
-      </div>
-      <div
-        class="shrink-0 flex items-center"
-        data-composer-toolbar-meter
-        data-testid="composer-rate-limit-7d"
-      >
-        <RateLimitMeter
-          {backend}
-          windowMins={10080}
-          provider={providerID ?? undefined}
-          accountId={currentAccountID}
-          accountEmail={currentAccountEmail}
-          subscriptionType={currentAccountPlan}
-        />
-      </div>
+      {#each limitWindows as windowMins (windowMins)}
+        <div
+          class="shrink-0 flex items-center"
+          data-composer-toolbar-meter
+          data-testid={`composer-rate-limit-${rateLimitWindowLabel(windowMins)}`}
+        >
+          <RateLimitMeter
+            {backend}
+            {windowMins}
+            provider={providerID ?? undefined}
+            accountId={currentAccountID}
+            accountEmail={currentAccountEmail}
+            subscriptionType={currentAccountPlan}
+          />
+        </div>
+      {/each}
     {/if}
     {#if pane.contextWindow}
       <div

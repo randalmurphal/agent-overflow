@@ -1,10 +1,10 @@
 // The composer's Claude usage meters through the shipped UI and the real
 // backend: a Claude turn whose stream carries rate_limit_event lines (a
-// warning-band weekly reading and a refusal) leaves both meters and the
+// warning-band weekly reading and a refusal) leaves the meters and the
 // backend's quota cache untouched. The event cannot say which account it
 // reports, so the meters read only the OAuth usage endpoint, which an
-// isolated boot refuses; "awaiting first update" is therefore the only
-// correct state here.
+// isolated boot refuses; "awaiting first update" on the 7d meter and no 5h
+// meter is therefore the only correct state here.
 import { test, expect } from './fixtures.js';
 import {
   claudeScenario, claudeUsageResult, emit, seedAgentThread, startMock, textLines,
@@ -32,8 +32,8 @@ test('Claude rate_limit_event lines do not move the usage meters', async ({ harn
   // The rate_limit_event lines precede the result on the same ordered
   // thread worker, so by turn completion they have been fully handled.
   expect(await harness.rpc('GetRateLimitsSnapshots')).toEqual([]);
-  for (const window of ['5h', '7d']) {
-    await expect(page.getByTestId(`composer-rate-limit-${window}`).getByRole('button'))
-      .toHaveAttribute('aria-label', /awaiting first update/);
-  }
+  await expect(page.getByTestId('composer-rate-limit-7d').getByRole('button'))
+    .toHaveAttribute('aria-label', /awaiting first update/);
+  // No reading names a 5h limit, so the 5h meter is not mounted at all.
+  await expect(page.getByTestId('composer-rate-limit-5h')).toHaveCount(0);
 });

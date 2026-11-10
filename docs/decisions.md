@@ -379,6 +379,13 @@ Mechanism in
   first account on a machine becomes active by signing in. Saved accounts
   stay in the order the user drags them into; being active does not move a
   card.
+- The composer shows one usage meter per duration the account has a
+  provider-wide limit of, so a plan without a 5h window has no 5h ring. An
+  account with no such limit yet shows the weekly meter alone. A scoped limit
+  of the same duration (a per-model weekly quota) is the meter's inner ring,
+  colored by its own threshold; with several, the most-used one. The
+  provider-wide limit keeps the outer ring so a scoped quota never reads as
+  the account being exhausted.
 - Claude usage meters read only `/api/oauth/usage`. The stdio
   `rate_limit_event` (including 2.1.257 `unifiedWindows`) is not a quota
   source: it names no account, and responses to requests sent before an
