@@ -24,6 +24,7 @@
 // it. When the model instead continues its message's turn with no init (a
 // ToolSearch or ExitPlanMode continuation), that turn reopens: a message
 // sent during the continuation queues behind it like any running turn.
+import type { HarnessApp } from '../src/harness.js';
 import { test, expect } from './fixtures.js';
 import {
   RESULT_LINE,
@@ -53,6 +54,16 @@ const CONT_THINKING_OPEN = 'Loading the deferred tool; ';
 const CONT_THINKING_FULL = 'Loading the deferred tool; then exit plan mode.';
 const CONT_SENT = 'Also run the flaky suite twice.';
 const CONT_REPLY = 'Plan approved: running batch 6 and the flaky suite twice.';
+
+// How many `queued` acks the provider has written for the thread. Every
+// message gets one when it reaches the mock, the turn's own included, so a
+// send is held once the count passes what it was before the send.
+function queuedAcks(harness: HarnessApp, threadId: string): number {
+  return harness.countEvents(
+    'provider:command_lifecycle',
+    (ev: any) => ev.threadId === threadId && ev.state === 'queued',
+  );
+}
 
 // Streamed text whose message ends with end_turn: the soft round close.
 function endedTextLines(messageId: string, text: string): string[] {
@@ -125,14 +136,12 @@ test('a message sent while Claude works after waking itself lands and the pane k
   await waitForGate(harness, 'drain');
 
   // The wake is a turn of its own and still running: the message queues.
+  const acksBeforeSend = queuedAcks(harness, threadId);
   await page.getByLabel('Message Input').fill(SENT);
   await page.getByTestId('composer-send').click();
   const preview = page.getByTestId('send-queue-preview');
   await expect(preview.getByText(SENT)).toBeVisible({ timeout: 20_000 });
-  await harness.waitForEvent(
-    'provider:command_lifecycle',
-    (ev: any) => ev.threadId === threadId && ev.state === 'queued',
-  );
+  await expect.poll(() => queuedAcks(harness, threadId)).toBeGreaterThan(acksBeforeSend);
 
   const done = harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === threadId);
   await advance(harness, mockId, 'drain');
@@ -193,14 +202,12 @@ test('a message sent while the result is withheld opens its own turn', async ({ 
   await expect(timeline.getByText(WAITING)).toBeVisible({ timeout: 20_000 });
 
   const messageTurn = harness.waitForEvent('provider:turn_started', (ev: any) => ev.threadId === threadId);
+  const acksBeforeSend = queuedAcks(harness, threadId);
   await page.getByLabel('Message Input').fill(WAIT_SENT);
   await page.getByTestId('composer-send').click();
-  // The mock acks `queued` when it holds the message. Released earlier, the
-  // gate's drain finds nothing and the message becomes a later turn.
-  await harness.waitForEvent(
-    'provider:command_lifecycle',
-    (ev: any) => ev.threadId === threadId && ev.state === 'queued',
-  );
+  // Released before the mock holds the message, the gate's drain finds
+  // nothing and the message becomes a later turn.
+  await expect.poll(() => queuedAcks(harness, threadId)).toBeGreaterThan(acksBeforeSend);
   const done = harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === threadId);
   await advance(harness, mockId, 'send');
   const started = (await messageTurn) as any;
@@ -324,14 +331,12 @@ test('a message sent while the model continues its ended message lands in that t
   await waitForGate(harness, 'drain');
 
   // The continuation is running: the message queues behind it.
+  const acksBeforeSend = queuedAcks(harness, threadId);
   await page.getByLabel('Message Input').fill(CONT_SENT);
   await page.getByTestId('composer-send').click();
   const preview = page.getByTestId('send-queue-preview');
   await expect(preview.getByText(CONT_SENT)).toBeVisible({ timeout: 20_000 });
-  await harness.waitForEvent(
-    'provider:command_lifecycle',
-    (ev: any) => ev.threadId === threadId && ev.state === 'queued',
-  );
+  await expect.poll(() => queuedAcks(harness, threadId)).toBeGreaterThan(acksBeforeSend);
 
   const done = harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === threadId);
   await advance(harness, mockId, 'drain');
