@@ -161,6 +161,9 @@ type run struct {
 	cancel    context.CancelFunc
 	tail      *procutil.TailBuffer
 	seq       atomic.Uint64
+	// capture is set once the output sink exists. It orders the tail and the
+	// sequence for a snapshot.
+	capture atomic.Pointer[capture]
 	// exited closes once the process group is gone, before any Finish work.
 	exited chan struct{}
 	// stopReason is set under Service.mu by whoever cancels the run.
@@ -244,11 +247,10 @@ func (s *Service) Start(request Request) (RunState, error) {
 		return RunState{}, s.config.ShutdownError
 	}
 	if existing := s.runs[request.ThreadID]; existing != nil {
-		state := existing.snapshot()
 		s.mu.Unlock()
 		endWork()
 		if existing.request.RunID == request.RunID {
-			return state, nil
+			return existing.snapshot(), nil
 		}
 		return RunState{}, ErrBusy
 	}
@@ -274,8 +276,8 @@ func (s *Service) Start(request Request) (RunState, error) {
 // Active returns the thread's running command, if any.
 func (s *Service) Active(threadID string) []RunState {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	current := s.runs[threadID]
+	s.mu.Unlock()
 	if current == nil {
 		return nil
 	}
@@ -345,15 +347,18 @@ func (s *Service) Stop() {
 	s.wg.Wait()
 }
 
-// snapshot reads the sequence before the tail, so a chunk racing the read is
-// one the client already holds rather than one it never sees.
+// snapshot is the run as its emitted frames describe it: the output they
+// carried and the sequence of the last one. A client that folds every later
+// frame onto it holds each byte once.
 func (r *run) snapshot() RunState {
-	seq := r.seq.Load()
-	return RunState{
+	state := RunState{
 		ThreadID: r.request.ThreadID, RunID: r.request.RunID, Command: r.request.Command,
-		State: StateRunning, Output: r.tail.String(), OutputSeq: seq,
-		OutputTruncated: r.tail.Truncated(), StartedAt: r.startedAt.UnixMilli(),
+		State: StateRunning, StartedAt: r.startedAt.UnixMilli(),
 	}
+	if sink := r.capture.Load(); sink != nil {
+		state.OutputSeq, state.Output, state.OutputTruncated = sink.emitted()
+	}
+	return state
 }
 
 func (s *Service) execute(ctx context.Context, current *run) {
@@ -387,6 +392,7 @@ func (s *Service) execute(ctx context.Context, current *run) {
 		settle(StateFailed, "Could not capture the command's output: "+err.Error(), -1)
 		return
 	}
+	current.capture.Store(capture)
 	outcome, runErr := s.config.Run(ctx, procutil.GroupCommand{
 		Dir: request.Dir, Env: request.Env,
 		Argv: []string{request.Shell, "-c", request.Command}, Output: capture,

@@ -11,8 +11,8 @@ import (
 
 // capture is a run's single output sink: the bounded file the result is built
 // from, the in-memory tail a snapshot reads, and the coalesced live frames.
-// One lock orders all three, so a frame's sequence and its position on the
-// wire cannot disagree.
+// One lock orders all three, so a frame's sequence, its position on the wire
+// and the snapshot that names it cannot disagree.
 type capture struct {
 	run  *run
 	emit func(Event)
@@ -40,12 +40,11 @@ func (c *capture) Write(chunk []byte) (int, error) {
 	if len(chunk) == 0 {
 		return 0, nil
 	}
-	// The tail is written first and unconditionally: the snapshot reads it,
-	// and it is what a capped capture ends with.
-	_, _ = c.run.tail.Write(chunk)
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// The tail takes every byte: the snapshot reads it, and it is what a
+	// capped capture ends with.
+	_, _ = c.run.tail.Write(chunk)
 	if c.closed {
 		return len(chunk), nil
 	}
@@ -155,6 +154,17 @@ func completePrefix(b []byte) int {
 		break
 	}
 	return len(b)
+}
+
+// emitted is the retained output up to the last frame, with that frame's
+// sequence. Bytes buffered for the next frame are left out: the tail holds
+// them already, and a snapshot that included them would deliver them twice.
+func (c *capture) emitted() (seq uint64, output string, truncated bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	output = c.run.tail.String()
+	output = output[:max(0, len(output)-len(c.pending))]
+	return c.run.seq.Load(), output, c.run.tail.Truncated()
 }
 
 func (c *capture) truncated() bool {
