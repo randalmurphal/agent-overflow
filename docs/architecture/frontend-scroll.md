@@ -1740,7 +1740,9 @@ collapse's bottom restore) never cancels a jump, and the jump's write ends
 every hold. A newer navigation, a switch, or reader input on the scroller
 (`noteReaderGesture`) ends a pending jump silently. Every jump ends with one
 outcome, traced as `timeline.jump`: `issued` and `withheld` land; `missing`
-tells the reader the row is gone; `failed` was already reported by the
+tells the reader the row is gone; `hidden` tells the reader an early Stop is
+returning the message to the composer
+([revert modes](revert-modes.md)); `failed` was already reported by the
 window; `unresolved` means a loaded row no node shows, which is a defect, so
 it toasts "Could not show that message" and reports a diagnostic.
 

@@ -13,6 +13,13 @@ import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import type { UseStickToBottomController } from '../../utils/scroll/index.svelte';
 import { createTimelineRestore } from './timelineRestore.svelte';
 import { getToasts } from '../../stores/toast.svelte';
+import type { Item } from '../../types/models';
+import {
+  beginThreadInterrupt,
+  presentThreadInterruptAsRestored,
+  resetThreadInterruptStateForTest,
+  restoreThreadInterruptPresentation,
+} from '../../stores/threadInterruptState.svelte';
 import { installDiagnosticsCapture } from '../../../test/helpers/diagnostics';
 import { resetBindingMocks } from '../../../test/mocks/bindings-app';
 import {
@@ -40,7 +47,7 @@ function deferred(): Deferred {
   return { promise, resolve };
 }
 
-function harness(opts: { revealed?: string[]; grouped?: string[]; nodes?: TimelineNode[]; resolveAs?: Record<string, number> } = {}) {
+function harness(opts: { revealed?: string[]; grouped?: string[]; nodes?: TimelineNode[]; resolveAs?: Record<string, number>; items?: Item[] } = {}) {
   const revealed = opts.nodes ?? (opts.revealed ?? ['a', 'b', 'c']).map(leaf);
   const grouped = opts.nodes ?? (opts.grouped ?? opts.revealed ?? ['a', 'b', 'c']).map(leaf);
   const lookups: Deferred[] = [];
@@ -53,6 +60,7 @@ function harness(opts: { revealed?: string[]; grouped?: string[]; nodes?: Timeli
     loading: false,
     hasMoreNewer: false,
     activityRuns: {},
+    getItemById: (id: string) => opts.items?.find((item) => item.id === id),
     loadUntilItem: vi.fn((): Promise<LoadUntilItemResult> => {
       const lookup = deferred();
       lookups.push(lookup);
@@ -106,6 +114,7 @@ function toastsSince(count: number) {
 describe('scrollToItem', () => {
   // Before the capture's own beforeEach, which installs its binding mock.
   beforeEach(() => {
+    resetThreadInterruptStateForTest();
     resetBindingMocks();
   });
   const diagnostics = installDiagnosticsCapture();
@@ -232,6 +241,55 @@ describe('scrollToItem', () => {
       ['warning', 'Message is no longer in this thread'],
     ]);
     expect(await diagnostics.messages()).toEqual([]);
+  });
+
+  describe('while an early Stop keeps rows off the screen', () => {
+    const sent = { id: 'sent', kind: 'user_text', turnIndex: 2, meta: JSON.stringify({ sendId: 's1' }) } as Item;
+    const reply = { id: 'reply', kind: 'agent_text', turnIndex: 3 } as Item;
+    const other = { id: 'other', kind: 'user_text', turnIndex: 2, meta: JSON.stringify({ sendId: 's2' }) } as Item;
+
+    async function jumpTo(h: ReturnType<typeof harness>, id: string) {
+      const toasts = getToasts().length;
+      const jump = h.restore.scrollToItem(id);
+      await h.answer('loaded');
+      return { landed: await jump, toasts: toastsSince(toasts).map((toast) => [toast.type, toast.message]) };
+    }
+
+    it('tells the reader a hidden row is being returned, and reports no defect', async () => {
+      const token = beginThreadInterrupt('t')!;
+      presentThreadInterruptAsRestored('t', token, 3, 's1');
+      // The window holds both rows; the projection shows neither.
+      const h = harness({ revealed: ['a'], items: [sent, reply, other] });
+      for (const id of ['sent', 'reply']) {
+        expect(await jumpTo(h, id)).toEqual({
+          landed: false,
+          toasts: [['warning', 'That message is being returned to the composer']],
+        });
+      }
+      expect(h.scrollToIndex).not.toHaveBeenCalled();
+      expect(await diagnostics.messages()).toEqual([]);
+    });
+
+    it('still lands on a row the cut leaves on the screen', async () => {
+      const token = beginThreadInterrupt('t')!;
+      presentThreadInterruptAsRestored('t', token, 3, 's1');
+      const h = harness({ revealed: ['a', 'other'], items: [sent, reply, other] });
+      expect(await jumpTo(h, 'other')).toEqual({ landed: true, toasts: [] });
+      expect(h.scrollToIndex).toHaveBeenCalledWith(1, { align: 'center' });
+    });
+
+    it('ignores another thread\'s cut, and lands once this thread\'s cut clears', async () => {
+      const elsewhere = beginThreadInterrupt('elsewhere')!;
+      presentThreadInterruptAsRestored('elsewhere', elsewhere, 0, 's1');
+      const h = harness({ revealed: ['a', 'sent'], items: [sent] });
+      expect((await jumpTo(h, 'sent')).landed).toBe(true);
+
+      const token = beginThreadInterrupt('t')!;
+      presentThreadInterruptAsRestored('t', token, 3, 's1');
+      expect((await jumpTo(h, 'sent')).landed).toBe(false);
+      restoreThreadInterruptPresentation('t', token);
+      expect(await jumpTo(h, 'sent')).toEqual({ landed: true, toasts: [] });
+    });
   });
 
   it('adds nothing to a failed lookup the window already reported', async () => {
