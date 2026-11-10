@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import VoiceSettings from './VoiceSettings.svelte';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
+import { OBSERVE_SCOPES, pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { makeSettings } from '../../../test/helpers/settings';
 import { loadSettings } from '../../stores/settings.svelte';
 import type { Settings } from '../../types/settings';
@@ -164,5 +164,173 @@ describe('<VoiceSettings> read aloud', () => {
     expect((getByLabelText('Toggle reading replies aloud') as HTMLButtonElement).disabled).toBe(true);
     expect((await findByTestId('read-aloud-voice-select') as HTMLSelectElement).disabled).toBe(true);
     expect((await findByTestId('read-aloud-try') as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe('<VoiceSettings> live dictation', () => {
+  const keyFile = (state: string, problem?: string) => ({ path: '/data/credentials/openai-api-key', state, problem });
+
+  beforeEach(() => {
+    resetBindingMocks();
+    resetToLocalPage();
+    setBindingMock('DictationSources', async () => ({ subscription: false, live: false, chatGPTSignIn: false }));
+    setBindingMock('OpenAIKeyFile', async () => keyFile('present'));
+  });
+  afterEach(() => {
+    resetToLocalPage();
+  });
+
+  it('reads the ChatGPT row as Off while only live is on', async () => {
+    await seed({ dictationAPIEnabled: true });
+    setBindingMock('DictationSources', async () => ({ subscription: false, live: true, chatGPTSignIn: true }));
+    const { findByTestId } = render(VoiceSettings);
+    await expect.poll(async () => (await findByTestId('voice-dictation-live-status')).textContent?.trim()).toBe('Ready');
+    expect((await findByTestId('voice-dictation-status')).textContent?.trim()).toBe('Off');
+  });
+
+  it('is off by default with its fields hidden, and turning it on sends only the switch', async () => {
+    await seed({});
+    const { findByRole, findByTestId, queryByTestId } = render(VoiceSettings);
+    const toggle = (await findByRole('switch', { name: 'Toggle live dictation with an OpenAI API key' })) as HTMLButtonElement;
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    await expect.poll(async () => (await findByTestId('voice-dictation-live-status')).textContent?.trim()).toBe('Off');
+    expect(queryByTestId('voice-dictation-live-delay')).toBeNull();
+    expect(queryByTestId('voice-dictation-live-prompt')).toBeNull();
+    expect((await findByTestId('voice-dictation-live-disclosure')).textContent).toMatch(/does not\s+train on API data/);
+
+    await fireEvent.click(toggle);
+    expect(getBindingMock('UpdateSettings')!.mock.calls.at(-1)![0]).toEqual({ dictationAPIEnabled: true });
+  });
+
+  it('shows the key file with its state, and reads the problem into the status', async () => {
+    await seed({ dictationAPIEnabled: true });
+    setBindingMock('OpenAIKeyFile', async () => keyFile('refused', 'the key file is readable by others'));
+    const { findByTestId, getByRole } = render(VoiceSettings);
+    expect((await findByTestId('voice-dictation-live-key-path')).textContent).toBe('/data/credentials/openai-api-key');
+    await expect.poll(async () => (await findByTestId('voice-dictation-live-key-line')).textContent?.trim()).toBe('the key file is readable by others');
+    await expect.poll(async () => (await findByTestId('voice-dictation-live-status')).textContent?.trim()).toBe('the key file is readable by others');
+    expect(getByRole('button', { name: 'Copy key file path' })).toBeTruthy();
+    // Nothing here ever shows the key itself: only its path and state.
+    expect((await findByTestId('voice-dictation-live-key')).textContent).not.toMatch(/sk-/);
+  });
+
+  it('shows the fields when on, sends each as the computer expects, and re-reads the key file on focus', async () => {
+    await seed({ dictationAPIEnabled: true, dictationAPIDelay: 'low', dictationAPILanguages: ['en'], dictationAPIKeywords: ['Agent Overflow'] });
+    const read = setBindingMock('OpenAIKeyFile', async () => keyFile('missing'));
+    const { findByTestId, getByTestId } = render(VoiceSettings);
+    await expect.poll(async () => (await findByTestId('voice-dictation-live-status')).textContent?.trim()).toBe('No key file yet.');
+    expect((getByTestId('voice-dictation-live-delay') as HTMLSelectElement).value).toBe('low');
+    expect((getByTestId('voice-dictation-live-languages') as HTMLInputElement).value).toBe('en');
+    expect((getByTestId('voice-dictation-live-keywords') as HTMLTextAreaElement).value).toBe('Agent Overflow');
+
+    const update = getBindingMock('UpdateSettings')!;
+    await fireEvent.change(getByTestId('voice-dictation-live-delay'), { target: { value: 'high' } });
+    expect(update.mock.calls.at(-1)![0]).toEqual({ dictationAPIDelay: 'high' });
+    await fireEvent.change(getByTestId('voice-dictation-live-languages'), { target: { value: 'en, fr de' } });
+    expect(update.mock.calls.at(-1)![0]).toEqual({ dictationAPILanguages: ['en', 'fr', 'de'] });
+    await fireEvent.change(getByTestId('voice-dictation-live-keywords'), { target: { value: 'Agent Overflow\n\n  Svelte  \n' } });
+    expect(update.mock.calls.at(-1)![0]).toEqual({ dictationAPIKeywords: ['Agent Overflow', 'Svelte'] });
+    await fireEvent.change(getByTestId('voice-dictation-live-prompt'), { target: { value: 'About Go.' } });
+    expect(update.mock.calls.at(-1)![0]).toEqual({ dictationAPIPrompt: 'About Go.' });
+
+    const before = read.mock.calls.length;
+    window.dispatchEvent(new Event('focus'));
+    await expect.poll(() => read.mock.calls.length).toBe(before + 1);
+  });
+
+  it('opens the key file in the editor on this computer and then shows what is there', async () => {
+    await seed({ dictationAPIEnabled: true });
+    const read = setBindingMock('OpenAIKeyFile', async () => keyFile('missing'));
+    const edit = setBindingMock('EditOpenAIKeyFile', async () => {
+      read.mockImplementation(async () => keyFile('empty'));
+      return keyFile('empty');
+    });
+    const sources = getBindingMock('DictationSources')!;
+    const { findByTestId } = render(VoiceSettings);
+    const button = await findByTestId('voice-dictation-live-key-edit');
+    const asked = sources.mock.calls.length;
+    await fireEvent.click(button);
+    expect(edit).toHaveBeenCalledTimes(1);
+    await expect.poll(async () => (await findByTestId('voice-dictation-live-key-line')).textContent?.trim()).toBe('The key file is empty.');
+    await expect.poll(() => sources.mock.calls.length).toBeGreaterThan(asked);
+  });
+
+  it('shows a failed edit beside the row', async () => {
+    await seed({ dictationAPIEnabled: true });
+    setBindingMock('EditOpenAIKeyFile', async () => { throw new Error('open the OpenAI API key file: no editor'); });
+    const { findByTestId } = render(VoiceSettings);
+    await fireEvent.click(await findByTestId('voice-dictation-live-key-edit'));
+    await expect.poll(async () => (await findByTestId('voice-dictation-live-key-line')).textContent?.trim()).toBe('open the OpenAI API key file: no editor');
+  });
+
+  it('tells a remote client where to put the key and offers no editor', async () => {
+    await seed({ dictationAPIEnabled: true });
+    await pairWithScopes([...OBSERVE_SCOPES, 'threads:operate']);
+    const { findByTestId, queryByTestId, getByText } = render(VoiceSettings);
+    expect((await findByTestId('voice-dictation-live-key-path')).textContent).toBe('/data/credentials/openai-api-key');
+    expect(getByText(/Put the key in this file on that computer/)).toBeTruthy();
+    expect(queryByTestId('voice-dictation-live-key-edit')).toBeNull();
+    // The tuning fields are host settings, so they are as inert here as
+    // the switch, and changing one writes nothing.
+    const update = getBindingMock('UpdateSettings')!;
+    const writes = update.mock.calls.length;
+    for (const id of ['voice-dictation-live-delay', 'voice-dictation-live-languages', 'voice-dictation-live-keywords', 'voice-dictation-live-prompt']) {
+      const field = (await findByTestId(id)) as HTMLInputElement;
+      expect(field.disabled, id).toBe(true);
+    }
+    expect(update.mock.calls.length).toBe(writes);
+  });
+
+  it('keeps a failed edit on show when a status read lands while it was pending', async () => {
+    await seed({ dictationAPIEnabled: true });
+    let failEdit!: () => void;
+    setBindingMock('EditOpenAIKeyFile', () => new Promise((_resolve, reject) => {
+      failEdit = () => reject(new Error('open the OpenAI API key file: no editor'));
+    }));
+    const { findByTestId } = render(VoiceSettings);
+    await fireEvent.click(await findByTestId('voice-dictation-live-key-edit'));
+    window.dispatchEvent(new Event('focus'));
+    await expect.poll(async () => (await findByTestId('voice-dictation-live-key-line')).textContent?.trim()).toBe('Key present.');
+    failEdit();
+    await expect.poll(async () => (await findByTestId('voice-dictation-live-key-line')).textContent?.trim()).toBe('open the OpenAI API key file: no editor');
+  });
+
+  it('never lets a slow edit reply replace a newer status', async () => {
+    await seed({ dictationAPIEnabled: true });
+    let state = 'missing';
+    setBindingMock('OpenAIKeyFile', async () => keyFile(state));
+    let finishEdit!: () => void;
+    setBindingMock('EditOpenAIKeyFile', () => new Promise((resolve) => {
+      finishEdit = () => resolve(keyFile('empty'));
+    }));
+    const { findByTestId } = render(VoiceSettings);
+    await expect.poll(async () => (await findByTestId('voice-dictation-live-key-line')).textContent?.trim()).toBe('No key file yet.');
+    await fireEvent.click(await findByTestId('voice-dictation-live-key-edit'));
+    state = 'present';
+    window.dispatchEvent(new Event('focus'));
+    await expect.poll(async () => (await findByTestId('voice-dictation-live-key-line')).textContent?.trim()).toBe('Key present.');
+    finishEdit();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+    await expect.poll(async () => (await findByTestId('voice-dictation-live-key-line')).textContent?.trim()).toBe('Key present.');
+  });
+
+  it('never lets an older key file read replace a newer one', async () => {
+    await seed({ dictationAPIEnabled: true });
+    let releaseFirst!: () => void;
+    let calls = 0;
+    setBindingMock('OpenAIKeyFile', () => {
+      calls += 1;
+      if (calls === 1) return new Promise((resolve) => { releaseFirst = () => resolve(keyFile('present')); });
+      return Promise.resolve(keyFile('missing'));
+    });
+    const { findByTestId } = render(VoiceSettings);
+    await expect.poll(() => calls).toBe(1);
+    window.dispatchEvent(new Event('focus'));
+    await expect.poll(async () => (await findByTestId('voice-dictation-live-key-line')).textContent?.trim()).toBe('No key file yet.');
+    releaseFirst();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+    expect((await findByTestId('voice-dictation-live-key-line')).textContent?.trim()).toBe('No key file yet.');
   });
 });

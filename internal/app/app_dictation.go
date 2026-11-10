@@ -17,11 +17,15 @@ import (
 // that computer transcribe the recording with its ChatGPT sign-in for
 // Codex. The text comes back to the composer; nothing is stored.
 
-// DictationSources reports what this computer can dictate with.
+// DictationSources reports what this computer can dictate with. With
+// either source on, the composer offers a mic.
 type DictationSources struct {
 	// Subscription is true when dictation through the Codex sign-in is on
-	// here and Codex is signed in with ChatGPT: the composer offers a mic.
+	// here and Codex is signed in with ChatGPT.
 	Subscription bool `json:"subscription"`
+	// Live is true when live dictation through the OpenAI API key is on
+	// here and the key file holds a usable key (app_live_dictation.go).
+	Live bool `json:"live"`
 	// ChatGPTSignIn is true when Codex is signed in with ChatGPT here,
 	// whether or not dictation through it is on.
 	ChatGPTSignIn bool `json:"chatGPTSignIn"`
@@ -40,7 +44,11 @@ func (a *App) DictationSources() (DictationSources, error) {
 	if err != nil {
 		return DictationSources{}, fmt.Errorf("read the Codex sign-in: %w", err)
 	}
-	return DictationSources{Subscription: signedIn && a.dictationSubscriptionOn(), ChatGPTSignIn: signedIn}, nil
+	return DictationSources{
+		Subscription:  signedIn && a.dictationSubscriptionOn(),
+		Live:          a.liveDictationAvailable(),
+		ChatGPTSignIn: signedIn,
+	}, nil
 }
 
 // dictationSubscriptionOn is the Settings > Voice switch. Off by default:
@@ -85,7 +93,7 @@ func (a *App) BeginDictation(ctx context.Context, mimeType string) (string, erro
 //ao:scope threads:operate
 //ao:route selected
 func (a *App) MintDictationChunkTicket(ctx context.Context, recordingID string, seq int, size int64) (string, error) {
-	if err := ownsDictation(ctx, recordingID); err != nil {
+	if err := ownsConnectionResource(ctx, dictationCleanupKey(recordingID), dictation.ErrUnknownRecording); err != nil {
 		return "", err
 	}
 	if err := a.dictationRecordings().Admits(recordingID, seq, size); err != nil {
@@ -106,7 +114,7 @@ func (a *App) MintDictationChunkTicket(ctx context.Context, recordingID string, 
 //ao:scope threads:operate
 //ao:route selected
 func (a *App) FinishDictation(ctx context.Context, recordingID string, pieces int) (string, error) {
-	if err := ownsDictation(ctx, recordingID); err != nil {
+	if err := ownsConnectionResource(ctx, dictationCleanupKey(recordingID), dictation.ErrUnknownRecording); err != nil {
 		return "", err
 	}
 	job, err := a.dictationRecordings().Finish(ctx, recordingID, pieces)
@@ -136,7 +144,7 @@ func (a *App) FinishDictation(ctx context.Context, recordingID string, pieces in
 //ao:scope threads:operate
 //ao:route selected
 func (a *App) CancelDictation(ctx context.Context, recordingID string) error {
-	if err := ownsDictation(ctx, recordingID); err != nil {
+	if err := ownsConnectionResource(ctx, dictationCleanupKey(recordingID), dictation.ErrUnknownRecording); err != nil {
 		return err
 	}
 	a.dictationRecordings().Cancel(recordingID)
@@ -152,14 +160,15 @@ func dictationCleanupKey(recordingID string) string {
 	return "dictation:" + recordingID
 }
 
-// ownsDictation refuses a recording another connection opened. An
-// in-process caller has no connection and owns any recording.
-func ownsDictation(ctx context.Context, recordingID string) error {
+// ownsConnectionResource refuses a recording another connection opened,
+// answering unknown as if it were gone. An in-process caller has no
+// connection and owns any recording.
+func ownsConnectionResource(ctx context.Context, cleanupKey string, unknown error) error {
 	state := transport.ConnStateFromContext(ctx)
-	if state == nil || state.HasCleanup(dictationCleanupKey(recordingID)) {
+	if state == nil || state.HasCleanup(cleanupKey) {
 		return nil
 	}
-	return dictation.ErrUnknownRecording
+	return unknown
 }
 
 // DictationTransfer adapts the open recordings onto the transport's upload

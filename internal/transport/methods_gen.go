@@ -55,6 +55,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "AgentRemoteStart", ID: 1273975760, Scope: "terminal:operate", Route: "selected", Remote: true},                    // main.App.AgentRemoteStart
 	{Name: "AgentRemoteStatus", ID: 1365876070, Scope: "terminal:operate", Route: "selected"},                                 // main.App.AgentRemoteStatus
 	{Name: "AllowPreviewPort", ID: 4007046465, Scope: "access:admin", Route: "selected", Remote: true},                        // main.App.AllowPreviewPort
+	{Name: "AppendLiveDictation", ID: 2562809680, Scope: "threads:operate", Route: "selected"},                                // main.App.AppendLiveDictation
 	{Name: "AppendUIRenderTraceBatch", ID: 2157691816, Scope: "host", Route: "home"},                                          // main.App.AppendUIRenderTraceBatch
 	{Name: "ApprovePR", ID: 580543372, Scope: "git:operate", Route: "selected"},                                               // main.App.ApprovePR
 	{Name: "ArchiveProject", ID: 1352159878, Scope: "threads:operate", Route: "project"},                                      // main.App.ArchiveProject
@@ -64,6 +65,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "BackgroundClaudeTask", ID: 2098425262, Scope: "threads:operate", Route: "thread"},                                 // main.App.BackgroundClaudeTask
 	{Name: "BeginDictation", ID: 3647000619, Scope: "threads:operate", Route: "selected"},                                     // main.App.BeginDictation
 	{Name: "BeginDraftProjectTransfer", ID: 3256859589, Scope: "threads:operate", Route: "thread", Remote: true},              // main.App.BeginDraftProjectTransfer
+	{Name: "BeginLiveDictation", ID: 110177777, Scope: "threads:operate", Route: "selected"},                                  // main.App.BeginLiveDictation
 	{Name: "BeginPasskeyRegistration", ID: 1189501287, Scope: "access:admin", Route: "home", StepUp: true, Remote: true},      // main.App.BeginPasskeyRegistration
 	{Name: "BeginPasskeyStepUp", ID: 3214812657, Scope: "session", Route: "home"},                                             // main.App.BeginPasskeyStepUp
 	{Name: "BeginThreadTransfer", ID: 3037746585, Scope: "threads:operate", Route: "thread", Remote: true},                    // main.App.BeginThreadTransfer
@@ -79,6 +81,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "BrowserHostReport", ID: 2848608143, Scope: "host", Route: "home"},                                                 // main.App.BrowserHostReport
 	{Name: "CancelDevicePairing", ID: 2608316491, Scope: "access:admin", Route: "home"},                                       // main.App.CancelDevicePairing
 	{Name: "CancelDictation", ID: 1562772056, Scope: "threads:operate", Route: "selected"},                                    // main.App.CancelDictation
+	{Name: "CancelLiveDictation", ID: 3365706830, Scope: "threads:operate", Route: "selected"},                                // main.App.CancelLiveDictation
 	{Name: "CancelPRAutoMerge", ID: 472111634, Scope: "git:operate", Route: "selected"},                                       // main.App.CancelPRAutoMerge
 	{Name: "CancelProviderLogin", ID: 341374423, Scope: "access:admin", Route: "home"},                                        // main.App.CancelProviderLogin
 	{Name: "CancelRestartToUpdate", ID: 73679326, Scope: "host", Route: "home"},                                               // main.App.CancelRestartToUpdate
@@ -131,8 +134,10 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DismissSessionBanner", ID: 1317713039, Scope: "threads:operate", Route: "thread"},                                 // main.App.DismissSessionBanner
 	{Name: "DismissThreadWorktreeSetup", ID: 41472159, Scope: "terminal:operate", Route: "thread"},                            // main.App.DismissThreadWorktreeSetup
 	{Name: "DownloadUpdate", ID: 115027584, Scope: "host", Route: "home"},                                                     // main.App.DownloadUpdate
+	{Name: "EditOpenAIKeyFile", ID: 1579042384, Scope: "host", Route: "selected"},                                             // main.App.EditOpenAIKeyFile
 	{Name: "FetchForgeAttachment", ID: 1594348919, Scope: "git:operate", Route: "selected"},                                   // main.App.FetchForgeAttachment
 	{Name: "FinishDictation", ID: 2178028847, Scope: "threads:operate", Route: "selected"},                                    // main.App.FinishDictation
+	{Name: "FinishLiveDictation", ID: 3774452621, Scope: "threads:operate", Route: "selected"},                                // main.App.FinishLiveDictation
 	{Name: "FinishPasskeyRegistration", ID: 1601396603, Scope: "access:admin", Route: "home", Remote: true},                   // main.App.FinishPasskeyRegistration
 	{Name: "FinishPasskeyStepUp", ID: 1569276637, Scope: "session", Route: "home"},                                            // main.App.FinishPasskeyStepUp
 	{Name: "ForgetAccessDevice", ID: 516065248, Scope: "access:admin", Route: "home"},                                         // main.App.ForgetAccessDevice
@@ -307,6 +312,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "MoveDraftToThread", ID: 913927214, Scope: "threads:operate", Route: "thread"},                                     // main.App.MoveDraftToThread
 	{Name: "MoveThreadTerminals", ID: 3013708277, Scope: "terminal:operate", Route: "thread"},                                 // main.App.MoveThreadTerminals
 	{Name: "NotificationActivated", ID: 2831503793, Scope: "host", Route: "home"},                                             // main.App.NotificationActivated
+	{Name: "OpenAIKeyFile", ID: 4008977316, Scope: "settings:read", Route: "selected"},                                        // main.App.OpenAIKeyFile
 	{Name: "OpenBranchBaseDiff", ID: 2513613347, Scope: "files:read", Route: "workspace"},                                     // main.App.OpenBranchBaseDiff
 	{Name: "OpenCommitDiff", ID: 1949392079, Scope: "files:read", Route: "workspace"},                                         // main.App.OpenCommitDiff
 	{Name: "OpenComputerPairing", ID: 3980787304, Scope: "access:admin", Route: "home", StepUp: true, Remote: true},           // main.App.OpenComputerPairing

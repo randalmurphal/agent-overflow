@@ -4,7 +4,10 @@ import { hasScope } from '../transport/scopes';
 import { __attachBackendForTest, __resetBackendsForTest, detachBackend } from '../transport/backends';
 import {
   applyDictationSourcesChanged,
-  dictationAvailable,
+  dictationLiveReady,
+  dictationSubscriptionReady,
+  dictationSource,
+  installDictationSourcesRefresh,
   refreshDictationSources,
   registerComposerDictation,
   toggleComposerDictation,
@@ -52,14 +55,14 @@ describe('dictation availability', () => {
     await second;
     answers[0](false);
     await first;
-    expect(dictationAvailable('laptop')).toBe(true);
+    expect(dictationSubscriptionReady('laptop')).toBe(true);
   });
 
   it('forgets a detached computer and drops its read in flight', async () => {
     attachLaptop();
     setBindingMock('DictationSources', async () => ({ subscription: true }));
     await refreshDictationSources('laptop');
-    expect(dictationAvailable('laptop')).toBe(true);
+    expect(dictationSubscriptionReady('laptop')).toBe(true);
 
     const answers = heldAnswers();
     const read = refreshDictationSources('laptop');
@@ -67,7 +70,7 @@ describe('dictation availability', () => {
     detachBackend('laptop');
     answers[0](true);
     await read;
-    expect(dictationAvailable('laptop')).toBe(false);
+    expect(dictationSubscriptionReady('laptop')).toBe(false);
   });
 
   it('asks nothing without permission to dictate there, and forgets the old answer', async () => {
@@ -78,7 +81,7 @@ describe('dictation availability', () => {
     vi.mocked(hasScope).mockReturnValue(false);
     await refreshDictationSources('laptop');
     expect(read).not.toHaveBeenCalled();
-    expect(dictationAvailable('laptop')).toBe(false);
+    expect(dictationSubscriptionReady('laptop')).toBe(false);
   });
 
   it('re-reads after an account change only a computer someone asked about', async () => {
@@ -88,10 +91,10 @@ describe('dictation availability', () => {
     expect(read).not.toHaveBeenCalled();
 
     await refreshDictationSources('laptop');
-    expect(dictationAvailable('laptop')).toBe(false);
+    expect(dictationSubscriptionReady('laptop')).toBe(false);
     read.mockImplementation(async () => ({ subscription: true }));
     applyDictationSourcesChanged('laptop');
-    await vi.waitFor(() => expect(dictationAvailable('laptop')).toBe(true));
+    await vi.waitFor(() => expect(dictationSubscriptionReady('laptop')).toBe(true));
   });
 
   it('re-reads after a change that lands before the first answer', async () => {
@@ -104,7 +107,51 @@ describe('dictation availability', () => {
     answers[1](false);
     answers[0](true);
     await first;
-    expect(dictationAvailable('laptop')).toBe(false);
+    expect(dictationSubscriptionReady('laptop')).toBe(false);
+  });
+
+  it('chooses live where it is on and the engine streams, else the recording', async () => {
+    attachLaptop();
+    const read = setBindingMock('DictationSources', async () => ({ subscription: true, live: true }));
+    const both = { records: true, streamsPcm: true };
+    expect(dictationSource('laptop', both)).toBeNull();
+    await refreshDictationSources('laptop');
+    expect(dictationSubscriptionReady('laptop')).toBe(true);
+    expect(dictationLiveReady('laptop')).toBe(true);
+    expect(dictationSource('laptop', both)).toBe('live');
+    expect(dictationSource('laptop', { records: true, streamsPcm: false })).toBe('recorded');
+    expect(dictationSource('laptop', { records: false, streamsPcm: false })).toBeNull();
+
+    read.mockImplementation(async () => ({ subscription: false, live: true }));
+    await refreshDictationSources('laptop');
+    expect(dictationSubscriptionReady('laptop')).toBe(false);
+    expect(dictationLiveReady('laptop')).toBe(true);
+    expect(dictationSource('laptop', { records: true, streamsPcm: false })).toBeNull();
+    expect(dictationSource('laptop', { records: false, streamsPcm: true })).toBe('live');
+
+    read.mockImplementation(async () => ({ subscription: false, live: false }));
+    await refreshDictationSources('laptop');
+    expect(dictationLiveReady('laptop')).toBe(false);
+    expect(dictationSource('laptop', both)).toBeNull();
+  });
+
+  it('re-reads every computer asked about when the window comes back, and stops when removed', async () => {
+    attachLaptop();
+    const read = setBindingMock('DictationSources', async () => ({ subscription: false, live: false }));
+    const remove = installDictationSourcesRefresh();
+    window.dispatchEvent(new Event('focus'));
+    expect(read).not.toHaveBeenCalled();
+
+    await refreshDictationSources('laptop');
+    read.mockImplementation(async () => ({ subscription: false, live: true }));
+    window.dispatchEvent(new Event('focus'));
+    await vi.waitFor(() => expect(dictationLiveReady('laptop')).toBe(true));
+    expect(read).toHaveBeenCalledTimes(2);
+
+    remove();
+    window.dispatchEvent(new Event('focus'));
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(read).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -112,7 +159,7 @@ describe('composer dictation registry', () => {
   it("routes the chord to that pane's session and forgets it on release", () => {
     const toggle = vi.fn();
     const session = { toggle } as unknown as DictationSession;
-    const release = registerComposerDictation('pane-1', session, () => true);
+    const release = registerComposerDictation('pane-1', 'laptop', session, () => true);
     expect(toggleComposerDictation('pane-1')).toBe(true);
     expect(toggleComposerDictation('pane-2')).toBe(false);
     expect(toggleComposerDictation(null)).toBe(false);
@@ -120,7 +167,7 @@ describe('composer dictation registry', () => {
 
     // A later session on the same pane is not released by the earlier one.
     const next = { toggle: vi.fn() } as unknown as DictationSession;
-    const releaseNext = registerComposerDictation('pane-1', next, () => true);
+    const releaseNext = registerComposerDictation('pane-1', 'laptop', next, () => true);
     release();
     expect(toggleComposerDictation('pane-1')).toBe(true);
     releaseNext();
@@ -130,7 +177,7 @@ describe('composer dictation registry', () => {
   it('never starts a session whose mic is not shown', () => {
     const toggle = vi.fn();
     let shown = false;
-    const release = registerComposerDictation('pane-1', { toggle } as unknown as DictationSession, () => shown);
+    const release = registerComposerDictation('pane-1', 'laptop', { toggle } as unknown as DictationSession, () => shown);
     expect(toggleComposerDictation('pane-1')).toBe(false);
     expect(toggle).not.toHaveBeenCalled();
     shown = true;

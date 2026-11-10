@@ -26,15 +26,31 @@ export async function signInCodexWithChatGPT(harness: HarnessApp): Promise<void>
   }), { mode: 0o600 });
 }
 
-/** Turns on Settings > Voice's dictation switch, which is off by default. */
+/** Turns on Settings > Voice's dictation switch, which is off by default,
+ * and live dictation off: the worker's reset keeps host settings, and live
+ * wins where both are on. */
 export async function turnOnDictation(harness: HarnessApp): Promise<void> {
-  await harness.rpc('UpdateSettings', { dictationSubscriptionEnabled: true });
+  await harness.rpc('UpdateSettings', { dictationSubscriptionEnabled: true, dictationAPIEnabled: false });
 }
 
 /** A computer that dictates: signed in with ChatGPT, switch on. */
 export async function setUpDictation(harness: HarnessApp): Promise<void> {
   await signInCodexWithChatGPT(harness);
   await turnOnDictation(harness);
+}
+
+/** Where the computer reads its OpenAI API key (internal/openaikey). */
+export function openAIKeyPath(harness: HarnessApp): string {
+  return path.join(harness.bootstrap.dataDir, 'credentials', 'openai-api-key');
+}
+
+/** Puts `key` in the key file, owner-only as the computer requires. The
+ * isolated boot answers live transcription in-process (openaifake), which
+ * refuses only its scripted keys. */
+export async function writeOpenAIKey(harness: HarnessApp, key = 'sk-e2e-live-dictation'): Promise<void> {
+  const file = openAIKeyPath(harness);
+  await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  await writeFile(file, `${key}\n`, { mode: 0o600 });
 }
 
 // ---- mic geometry ----
@@ -121,4 +137,53 @@ export async function expectDesktopMicAligned(page: Page): Promise<void> {
   const gapFromPrevious = mic.x - neighbors.previous!.right;
   expectClose(gapFromPrevious, gapToSend, 'the gap before the mic vs the gap before Send');
   expectClose(centerX(clip), centerX(send), 'paperclip center x vs Send');
+}
+
+// ---- live caption geometry ----
+
+/** The composer's boxes a caption must leave alone. */
+export interface ComposerBoxes {
+  input: Box;
+  toolbar: Box;
+  send: Box;
+  mic: Box;
+}
+
+export async function composerBoxes(page: Page): Promise<ComposerBoxes> {
+  return {
+    input: await boxOf(page.getByLabel('Message Input')),
+    toolbar: await boxOf(page.getByTestId('composer-toolbar')),
+    send: await boxOf(page.getByTestId('composer-send')),
+    mic: await boxOf(page.getByTestId('composer-dictate')),
+  };
+}
+
+/**
+ * The live caption floats above the card in the card's own box and the
+ * input's text column, and the composer's controls sit exactly where they
+ * did before it appeared.
+ */
+export async function expectCaptionInComposerGrid(page: Page, before: ComposerBoxes): Promise<void> {
+  const caption = await boxOf(page.getByTestId('composer-dictation-caption'));
+  const text = await boxOf(page.getByTestId('composer-dictation-caption-text'));
+  const card = await boxOf(page.getByTestId('composer-root'));
+  const input = page.getByLabel('Message Input');
+  const inputBox = await boxOf(input);
+  const textStart = inputBox.x + await input.evaluate((el) => parseFloat(getComputedStyle(el).paddingLeft));
+  const dotWidth = await page.getByTestId('composer-dictation-caption-text').evaluate((el) => {
+    const dot = el.previousElementSibling as HTMLElement;
+    return dot.getBoundingClientRect().width + parseFloat(getComputedStyle(el.parentElement!).columnGap);
+  });
+  expectClose(caption.x, card.x, 'caption left vs the card');
+  expectClose(caption.x + caption.width, card.x + card.width, 'caption right vs the card');
+  expect(caption.y + caption.height, 'the caption ends above the card').toBeLessThanOrEqual(card.y + TOLERANCE);
+  expectClose(text.x - dotWidth, textStart, 'caption text column vs the input text column');
+  const lineHeight = await page.getByTestId('composer-dictation-caption-text').evaluate((el) => parseFloat(getComputedStyle(el).lineHeight));
+  expect(caption.height, 'the caption shows at most two lines').toBeLessThanOrEqual(2 * lineHeight + 12 + 2 + TOLERANCE);
+  const after = await composerBoxes(page);
+  for (const key of ['input', 'toolbar', 'send', 'mic'] as const) {
+    for (const edge of ['x', 'y', 'width', 'height'] as const) {
+      expectClose(after[key][edge], before[key][edge], `${key} ${edge} with the caption shown`);
+    }
+  }
 }

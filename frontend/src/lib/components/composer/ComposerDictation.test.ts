@@ -120,4 +120,94 @@ describe('<Composer> dictation', () => {
     await expect.poll(() => sources.mock.calls.length).toBeGreaterThan(0);
     expect(queryByTestId('composer-dictate')).toBeNull();
   });
+
+  it('dictates live when only the API key source is on, sending the PCM as base64', async () => {
+    const f = dictationFixture();
+    scripted.env = f.env;
+    setBindingMock('DictationSources', async () => ({ subscription: false, live: true }));
+    setBindingMock('BeginLiveDictation', async () => 'live-1');
+    const append = setBindingMock('AppendLiveDictation', async () => 'Hearing');
+    setBindingMock('FinishLiveDictation', async () => 'spoken live');
+    const begin = setBindingMock('BeginDictation', async () => 'rec-1');
+
+    const { findByTestId } = await mountComposer();
+    const mic = await findByTestId('composer-dictate');
+    await fireEvent.click(mic);
+    await expect.poll(() => mic.dataset.phase).toBe('recording');
+    f.pcm().emit(0x48, 0x69);
+    await expect.poll(() => append.mock.calls.length).toBe(1);
+    expect(append.mock.calls[0]).toEqual(['live-1', 0, 'SGk=']);
+    f.tick();
+    await fireEvent.click(mic);
+    await expect.poll(() => mic.dataset.phase).toBe('idle');
+    expect(begin).not.toHaveBeenCalled();
+  });
+
+  it('shows no mic where only the live source is on and the engine cannot stream', async () => {
+    scripted.env = dictationFixture({ streamsPcm: false }).env;
+    const sources = setBindingMock('DictationSources', async () => ({ subscription: false, live: true }));
+    const { queryByTestId, findByTestId } = await mountComposer();
+    await findByTestId('composer-send');
+    await expect.poll(() => sources.mock.calls.length).toBeGreaterThan(0);
+    expect(queryByTestId('composer-dictate')).toBeNull();
+  });
+
+  it('records for the subscription where both are on and the engine cannot stream', async () => {
+    const f = dictationFixture({ streamsPcm: false });
+    scripted.env = f.env;
+    setBindingMock('DictationSources', async () => ({ subscription: true, live: true }));
+    const begin = setBindingMock('BeginDictation', async () => 'rec-1');
+    const beginLive = setBindingMock('BeginLiveDictation', async () => 'live-1');
+    setBindingMock('CancelDictation', async () => {});
+    const { findByTestId } = await mountComposer();
+    const mic = await findByTestId('composer-dictate');
+    await fireEvent.click(mic);
+    await expect.poll(() => mic.dataset.phase).toBe('recording');
+    expect(begin).toHaveBeenCalledWith('audio/webm');
+    expect(beginLive).not.toHaveBeenCalled();
+  });
+});
+
+describe('<Composer> live caption', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    resetComposerDraftSnapshotsForTest();
+    resetPanesForTest();
+    resetPaneLayoutForTest();
+    resetToLocalPage();
+    installComposerMocks();
+  });
+  afterEach(() => {
+    resetToLocalPage();
+    scripted.env = null;
+  });
+
+  it('shows what a live recording has heard above the card, and clears it when the recording ends', async () => {
+    const f = dictationFixture();
+    scripted.env = f.env;
+    setBindingMock('DictationSources', async () => ({ subscription: false, live: true }));
+    setBindingMock('BeginLiveDictation', async () => 'live-1');
+    setBindingMock('AppendLiveDictation', async (_id: string, seq: number) => `Hearing ${seq}`);
+    setBindingMock('FinishLiveDictation', async () => 'spoken live');
+
+    const { findByTestId, queryByTestId, getByTestId } = await mountComposer();
+    const mic = await findByTestId('composer-dictate');
+    expect(queryByTestId('composer-dictation-caption')).toBeNull();
+    await fireEvent.click(mic);
+    await expect.poll(() => mic.dataset.phase).toBe('recording');
+    // Nothing heard yet: no caption, rather than an empty strip.
+    expect(queryByTestId('composer-dictation-caption')).toBeNull();
+
+    f.pcm().emit(0x48, 0x69);
+    await expect.poll(() => queryByTestId('composer-dictation-caption-text')?.textContent).toBe('Hearing 0');
+    // Out of the card's flow: a sibling of the card, not inside it.
+    const caption = getByTestId('composer-dictation-caption');
+    expect(getByTestId('composer-root').contains(caption)).toBe(false);
+    expect(caption.parentElement).toBe(getByTestId('composer-root').parentElement);
+
+    f.tick();
+    await fireEvent.click(mic);
+    await expect.poll(() => mic.dataset.phase).toBe('idle');
+    expect(queryByTestId('composer-dictation-caption')).toBeNull();
+  });
 });

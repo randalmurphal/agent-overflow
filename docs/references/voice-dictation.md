@@ -1,7 +1,13 @@
 # Voice: dictation and read-aloud
 
-Dictation sends a recording to ChatGPT's transcription endpoint under the
-computer's Codex sign-in with ChatGPT. Code: `internal/provider/codex/transcribe.go`
+Dictation has two sources, each a host-tier switch in Settings > Voice and
+off by default. The subscription source sends a recording to ChatGPT's
+transcription endpoint under the computer's Codex sign-in with ChatGPT.
+The live source streams the microphone to OpenAI's live transcription with
+an API key from an owner-only file (below). Where both are on and the
+engine can stream, the composer dictates live.
+
+Subscription source code: `internal/provider/codex/transcribe.go`
 (the request), `internal/provideraccountapp/dictation.go` (the credential
 and its refresh), `internal/dictation` (pieces held until the transcription
 ends) and `frontend/src/lib/dictation` (recording). Re-verify the facts
@@ -41,6 +47,55 @@ starts no refresh, and a refresh that started runs to its end: one stopped
 after the server rotated the token, before the CLI saved it, would lose the
 sign-in. A Codex configured to keep credentials in the OS keyring has
 no `auth.json`, and dictation reads as unavailable there.
+
+## Live transcription with an API key
+
+Code: `internal/openaikey` (the key file), `internal/openai/live.go` (the
+socket), `internal/dictation/live.go` (sessions per connection),
+`internal/app/app_live_dictation.go` (the bound methods),
+`frontend/src/lib/dictation/pcmCapture.worklet.ts` and
+`pcmDownsampler.ts` (capture) and `LiveAttempt` in
+`dictationSession.svelte.ts`.
+
+The key lives only in `<config root>/credentials/openai-api-key`, never in
+settings or the environment. The reader opens the folder without following
+links, then the file inside it the same way, refuses anything that is not
+a regular file owned by this user, resets both to owner-only (0700, 0600),
+and refuses a file that holds more than one key or more than a key's
+bytes. The key is read for each connect into a buffer that is zeroed after
+the handshake, and never reaches a client: `OpenAIKeyFile` reports only the
+path and whether a usable key is there. Errors from OpenAI are scrubbed of
+anything shaped like a key. Without host scope the settings page shows the
+path; with it, Edit creates the file owner-only and opens it.
+
+Verified 2026-10-22 against OpenAI's docs:
+
+- `wss://api.openai.com/v1/realtime?intent=transcription` with
+  `Authorization: Bearer`; one `session.update` of type `transcription`
+  with `audio/pcm` at 24000 Hz, model `gpt-live-transcribe`, the delay
+  (`minimal` to `xhigh`), languages, keywords and prompt from settings,
+  and no turn detection.
+- The client sends `input_audio_buffer.append` (base64 PCM) and, at stop,
+  one `commit`; the server answers `committed`, then
+  `conversation.item.input_audio_transcription.delta` and `.completed`
+  for that item. A commit under 100 ms of audio is refused.
+- OpenAI does not train on API data by default and keeps it up to 30 days
+  for abuse monitoring; Settings > Voice says so.
+
+The browser captures with an AudioWorklet, averages down to 24 kHz 16-bit
+mono, and posts 100 ms pieces. Pieces queue while the computer connects
+and go one append at a time, joined up to five seconds; each append answers
+with the text heard so far. A failed connect or append ends the recording
+at once. Stop flushes the worklet's part-filled piece, waits for the
+connect and the last append, then finishes. The computer caps a session at
+ten minutes of audio, four open at once, and closes one idle for 30 s; a
+session belongs to the connection that opened it and closes with it.
+Switching live off ends every live session at once, connecting ones
+included, and the composer stops without an error. Silence is judged from
+every sample sent, not from the sampled level meter, so a short word
+counts.
+Sources are re-read when the window regains focus, since the key file
+changes outside the app.
 
 ## Platform microphone access
 
@@ -90,5 +145,4 @@ read), `frontend/src/lib/native/speech.ts` (the engines),
 - Codex app-server `thread/realtime/*`: thread-scoped full realtime session;
   `realtime_api_key()` in `core/src/realtime_conversation.rs` rejected
   ChatGPT sign-ins at research time.
-- OpenAI API transcription (`gpt-4o-transcribe` family) needs an API key;
-  it is the planned key-file mode.
+- OpenAI API transcription needs an API key; it is the live source above.

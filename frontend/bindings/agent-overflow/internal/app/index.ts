@@ -76,6 +76,7 @@ export {
     MCPAuthInitResult,
     ManagedProviderAccount,
     NewThreadDefaultsUpdate,
+    OpenAIKeyFile,
     OpenPRThreadRequest,
     OpenPRThreadResult,
     OwnDeviceList,

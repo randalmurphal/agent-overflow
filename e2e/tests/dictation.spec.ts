@@ -141,7 +141,7 @@ test('the mic shows only while dictation is on and Codex is signed in with ChatG
   await rm(codexAuthPath(harness), { force: true });
   // The worker's reset keeps host settings, and earlier tests turned the
   // switch on; its default is pinned by the settings defaults test.
-  await harness.rpc('UpdateSettings', { dictationSubscriptionEnabled: false });
+  await harness.rpc('UpdateSettings', { dictationSubscriptionEnabled: false, dictationAPIEnabled: false });
   await openThread(harness, page, 'No mic here');
   await expect(page.getByTestId('composer-send')).toBeVisible();
   await expect(mic(page)).toHaveCount(0);
