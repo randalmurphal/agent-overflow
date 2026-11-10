@@ -38,19 +38,28 @@
 // assistant reveal is the only such path; its router updates every mounted
 // representation before allowing the mutation.
 
+// What a released box holds. It is never a registry value, so writing it
+// always changes the box and wakes its readers.
+const RELEASED = Symbol('released');
+
 interface ValueBox<V> {
   get current(): V;
   set current(value: V);
+  /** Wake every reader, whatever the box holds. The box is discarded after. */
+  release(): void;
 }
 
-function newValueBox<V>(initial: V): ValueBox<V> {
-  let current: V = $state.raw(initial);
+function newValueBox<V>(empty: V): ValueBox<V> {
+  let current: V | typeof RELEASED = $state.raw(empty);
   return {
     get current() {
-      return current;
+      return current === RELEASED ? empty : current;
     },
     set current(value: V) {
       current = value;
+    },
+    release() {
+      current = RELEASED;
     },
   };
 }
@@ -68,7 +77,7 @@ export interface KeyedSignalRegistry<V> {
    * of deleting an absent Map/Set entry.
    */
   set(key: string, value: V): void;
-  /** Empty the key's box (waking its readers) and release it. */
+  /** Release the key's box. Its readers re-run and read the empty value. */
   drop(key: string): void;
   /** Wipe every box. Test isolation only. */
   reset(): void;
@@ -104,17 +113,19 @@ export function createKeyedSignalRegistry<V>(emptyValue: V): KeyedSignalRegistry
     drop(key: string): void {
       const box = boxes.get(key);
       if (!box) return;
-      // Empty the signal BEFORE dropping the box: a still-mounted
-      // reader re-runs off the write, re-reads through `get` (which
-      // tracks `creationVersion` while box-less and re-attaches when
-      // the key's next write creates a fresh box); the orphan is GC'd
-      // with the reader.
-      box.current = emptyValue;
+      // Wake the readers BEFORE dropping the box: a still-mounted
+      // reader re-runs, re-reads through `get` (which tracks
+      // `creationVersion` while box-less and re-attaches when the key's
+      // next write creates a fresh box); the orphan is GC'd with the
+      // reader. Writing the empty value would not do it: a box that
+      // already holds it wakes nobody, and its readers would stay on the
+      // orphan and miss every later write to the key.
+      box.release();
       boxes.delete(key);
     },
 
     reset(): void {
-      for (const box of boxes.values()) box.current = emptyValue;
+      for (const box of boxes.values()) box.release();
       boxes.clear();
       creationVersion = 0;
     },
