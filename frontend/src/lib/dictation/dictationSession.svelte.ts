@@ -66,6 +66,8 @@ export interface DictationEnvironment {
   /** A recording the meter heard nothing in could not be checked; it is
    * sent and the computer decides what it holds. */
   silenceUnjudged(err: unknown): void;
+  /** Milliseconds on a clock that never runs backwards. */
+  now(): number;
   setInterval(fn: () => void, ms: number): unknown;
   clearInterval(handle: unknown): void;
   setTimeout(fn: () => void, ms: number): unknown;
@@ -106,6 +108,12 @@ export const MAX_RECORDING_MS = 10 * 60 * 1000;
 /** Below this peak loudness nothing was said, and nothing is uploaded
  * for transcription. */
 export const SILENCE_PEAK = 0.02;
+
+/** A recording longer than this is not measured itself. Decoding holds the
+ * whole recording as samples, several times over while the engine works:
+ * about 12 MB a copy for a minute of one channel. Past it the meter's
+ * verdict stands, as it has read the microphone hundreds of times. */
+export const MAX_MEASURED_MS = 60_000;
 
 /** The level shown steps at this rate rather than per frame. */
 const LEVEL_INTERVAL_MS = 100;
@@ -376,9 +384,11 @@ class Attempt implements Recording {
   private metered = false;
   /** Every piece so far, kept while the meter has heard nothing. The meter
    * samples, so a sound can fall between its reads: the silence it reports
-   * is checked against the recording itself. Null once sound was heard. */
+   * is checked against the recording itself. Null once sound was heard or
+   * the recording is too long to measure. */
   private unheard: Blob[] | null = null;
   private container = '';
+  private startedAt = 0;
   /** The check of the meter's silence failed, so there is no verdict. */
   private unjudged = false;
   private uploadError: unknown = null;
@@ -398,6 +408,7 @@ class Attempt implements Recording {
     this.recorder = recorder;
     recorder.ondataavailable = ({ data }) => {
       if (this.abandoned || data.size === 0) return;
+      if (this.env.now() - this.startedAt > MAX_MEASURED_MS) this.unheard = null;
       this.unheard?.push(data);
       const seq = this.pieces++;
       // One at a time and in order: the computer refuses a piece out of
@@ -421,6 +432,7 @@ class Attempt implements Recording {
     this.metered = this.meter !== null;
     this.container = format.container;
     this.unheard = this.metered ? [] : null;
+    this.startedAt = this.env.now();
     this.levelTimer = this.env.setInterval(onLevel, LEVEL_INTERVAL_MS);
     this.capTimer = this.env.setTimeout(onCap, MAX_RECORDING_MS);
     recorder.start(format.timeslice);
@@ -443,7 +455,8 @@ class Attempt implements Recording {
 
   /** Stops the recorder, waits for its last piece, and releases the
    * microphone. A recording the meter heard nothing in is then measured
-   * itself, so only a recording that holds no sound is called silent. */
+   * itself, so one short enough to measure is called silent only when it
+   * holds no sound. */
   async stopRecording(): Promise<void> {
     this.stopTimers();
     const recorder = this.recorder;

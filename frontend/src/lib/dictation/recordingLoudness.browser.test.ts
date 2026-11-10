@@ -4,7 +4,7 @@
 
 import { expect, it } from 'vitest';
 import { userEvent } from 'vitest/browser';
-import { recordingFormat, recordingLoudness } from './browserDictation';
+import { recordingFormat, recordingMeasurer } from './browserDictation';
 import { SILENCE_PEAK } from './dictationSession.svelte';
 
 /** Records `stream` in 100 ms pieces until `context`'s clock passes
@@ -22,16 +22,16 @@ async function record(context: AudioContext, stream: MediaStream, until: number)
   return new Blob(pieces, { type: format.container });
 }
 
-/** The measured loudness of `length` seconds of silence carrying a tone
- * for each burst. */
-async function measured(bursts: Array<{ at: number; seconds: number }>, length: number): Promise<number> {
+/** The measured loudness of `length` seconds of silence carrying a tone of
+ * `frequency` Hz for each burst. */
+async function measured(bursts: Array<{ at: number; seconds: number }>, length: number, frequency = 440): Promise<number> {
   // An AudioContext runs only after a gesture.
   await userEvent.click(document.body);
   const context = new AudioContext();
   try {
     await context.resume();
     const output = context.createMediaStreamDestination();
-    const source = new OscillatorNode(context, { frequency: 440 });
+    const source = new OscillatorNode(context, { frequency });
     const gate = new GainNode(context, { gain: 0 });
     source.connect(gate).connect(output);
     source.start();
@@ -40,7 +40,7 @@ async function measured(bursts: Array<{ at: number; seconds: number }>, length: 
       gate.gain.setValueAtTime(0.5, start + at);
       gate.gain.setValueAtTime(0, start + at + seconds);
     }
-    return await recordingLoudness(await record(context, output.stream, start + length));
+    return await recordingMeasurer()(await record(context, output.stream, start + length));
   } finally {
     await context.close();
   }
@@ -54,6 +54,10 @@ it('hears one short sound in a recording that is otherwise silent', async () => 
   expect(await measured([{ at: 0.4, seconds: 0.04 }], 1)).toBeGreaterThanOrEqual(SILENCE_PEAK);
 });
 
+it('hears a short sound pitched above what a narrow decode keeps', async () => {
+  expect(await measured([{ at: 0.4, seconds: 0.04 }], 1, 6000)).toBeGreaterThanOrEqual(SILENCE_PEAK);
+});
+
 it('rejects what is not a recording', async () => {
-  await expect(recordingLoudness(new Blob(['not audio'], { type: 'audio/webm' }))).rejects.toThrow();
+  await expect(recordingMeasurer()(new Blob(['not audio'], { type: 'audio/webm' }))).rejects.toThrow();
 });

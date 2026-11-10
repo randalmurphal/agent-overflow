@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MAX_LIVE_APPEND_BYTES, MAX_RECORDING_MS } from './dictationSession.svelte';
+import { MAX_LIVE_APPEND_BYTES, MAX_MEASURED_MS, MAX_RECORDING_MS } from './dictationSession.svelte';
 import { FakePcm, SWITCHED_OFF, dictationFixture as fixture } from '../../test/helpers/dictation';
 
 function deferred<T>() {
@@ -142,6 +142,35 @@ describe('DictationSession', () => {
     expect(f.recorded.measured).toEqual([]);
     expect(f.recorded.unjudged).toEqual([]);
     expect(f.session.phase).toBe('idle');
+  });
+
+  it('measures a recording as long as the longest it measures', async () => {
+    const f = fixture();
+    f.level.value = 0.001;
+    f.recorded.loudness = 0.3;
+    await f.session.start();
+    f.recorder().emit('a');
+    f.clock.now += MAX_MEASURED_MS;
+    f.tick();
+    await f.session.stop();
+    expect(await f.recorded.measured[0].text()).toBe('atail');
+    expect(f.inserted).toEqual(['hello world']);
+  });
+
+  it('leaves a longer recording to the meter and keeps none of it', async () => {
+    const f = fixture();
+    f.level.value = 0.001;
+    f.recorded.loudness = 0.3;
+    await f.session.start();
+    f.recorder().emit('a');
+    f.clock.now += MAX_MEASURED_MS + 1;
+    f.recorder().emit('b');
+    f.tick();
+    await f.session.stop();
+    expect(f.recorded.measured).toEqual([]);
+    expect(f.recorded.unjudged).toEqual([]);
+    expect(f.remote.finish).not.toHaveBeenCalled();
+    expect(f.session.error).toBe('No speech heard.');
   });
 
   it('reports nothing for a recording abandoned while it is measured', async () => {

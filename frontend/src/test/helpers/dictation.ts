@@ -84,6 +84,8 @@ export interface DictationFixture {
    * the error measuring fails with when set, a promise measuring waits on
    * first, and each recording measured. */
   recorded: { loudness: number; fails: unknown; hold: Promise<void> | null; measured: Blob[]; unjudged: unknown[] };
+  /** The environment's clock, in milliseconds. */
+  clock: { now: number };
   /** How many times the session quieted this device's speech. */
   quieted: { count: number };
   tick: () => void;
@@ -108,6 +110,8 @@ export function dictationFixture(options: {
   let currentPcm: FakePcm | null = null;
   const level = { value: 0.5, closed: false };
   const recorded: DictationFixture['recorded'] = { loudness: 0, fails: null, hold: null, measured: [], unjudged: [] };
+  // Not zero: a recording's length is counted from when it started.
+  const clock = { now: 7_200_000 };
   const quieted = { count: 0 };
   const intervals = new Map<number, () => void>();
   const timeouts = new Map<number, () => void>();
@@ -135,6 +139,7 @@ export function dictationFixture(options: {
       read: () => level.value,
       close: () => { level.closed = true; },
     },
+    now: () => clock.now,
     setInterval: (fn) => { const h = nextHandle++; intervals.set(h, fn); return h; },
     clearInterval: (h) => { intervals.delete(h as number); },
     setTimeout: (fn) => { const h = nextHandle++; timeouts.set(h, fn); return h; },
@@ -171,6 +176,7 @@ export function dictationFixture(options: {
     inserted,
     level,
     recorded,
+    clock,
     quieted,
     tick: () => { for (const fn of intervals.values()) fn(); },
     // A copy: a fired callback may set or clear timeouts.

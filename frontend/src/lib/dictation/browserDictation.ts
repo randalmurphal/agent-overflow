@@ -19,59 +19,69 @@ const WEBM_TIMESLICE_MS = 1000;
  * stopped running. */
 const FLUSH_TIMEOUT_MS = 2000;
 
-/** A finished recording is decoded at this rate to be measured: speech
- * survives it, and ten minutes of one channel stay under 20 MB. */
-const LOUDNESS_SAMPLE_RATE = 8000;
+/** A finished recording is decoded at this rate to be measured. Opus
+ * decodes at it, so nothing recorded is filtered out before it is judged. */
+const LOUDNESS_SAMPLE_RATE = 48_000;
 
-/** Loudness is the RMS of this long a stretch, the level meter's 1024
- * samples at 48 kHz. Stretches overlap by half, so a sound that long is
- * never split evenly across two of them. */
+/** Loudness is the RMS of this long a stretch: the level meter's 1024
+ * samples at 48 kHz. */
 const LOUDNESS_BLOCK_SECONDS = 1024 / 48_000;
 
 /** A decode the engine has not finished by now is given up on. */
 const LOUDNESS_DEADLINE_MS = 5000;
+
+type DecodedAudio = Pick<AudioBuffer, 'numberOfChannels' | 'sampleRate' | 'getChannelData'>;
 
 async function decodeRecording(recording: Blob): Promise<AudioBuffer> {
   const context = new OfflineAudioContext(1, 1, LOUDNESS_SAMPLE_RATE);
   return context.decodeAudioData(await recording.arrayBuffer());
 }
 
-/** The loudest stretch of decoded audio, 0 to 1. */
-export function loudestStretch(audio: Pick<AudioBuffer, 'numberOfChannels' | 'sampleRate' | 'getChannelData'>): number {
+/** The loudest stretch of decoded audio, 0 to 1: the highest RMS of a
+ * stretch starting at any sample, so the verdict does not depend on where
+ * a sound falls. A recording shorter than a stretch is measured over a
+ * whole one, so a few samples cannot stand for a loud moment. */
+export function loudestStretch(audio: DecodedAudio): number {
   const block = Math.max(1, Math.round(audio.sampleRate * LOUDNESS_BLOCK_SECONDS));
-  const hop = Math.max(1, block >> 1);
   let loudest = 0;
   for (let channel = 0; channel < audio.numberOfChannels; channel++) {
     const samples = audio.getChannelData(channel);
-    for (let from = 0; from < samples.length; from += hop) {
-      const to = Math.min(samples.length, from + block);
-      let sum = 0;
-      for (let i = from; i < to; i++) sum += samples[i] * samples[i];
-      // A short last stretch is measured over a whole block, so a few
-      // samples at the very end cannot stand for a loud moment.
-      loudest = Math.max(loudest, Math.sqrt(sum / block));
-      if (to === samples.length) break;
+    let sum = 0;
+    for (let i = 0; i < samples.length; i++) {
+      sum += samples[i] * samples[i];
+      if (i >= block) sum -= samples[i - block] * samples[i - block];
+      if (sum > loudest) loudest = sum;
     }
   }
-  return loudest;
+  return Math.sqrt(loudest / block);
 }
 
-/** The loudest moment of a finished recording, 0 to 1. Rejects when the
- * engine cannot decode it, or has not within `deadlineMs`. */
-export async function recordingLoudness(
-  recording: Blob,
+/** Measures finished recordings: the loudest moment of one, 0 to 1.
+ * Rejects when the engine cannot decode the recording, or has not within
+ * `deadlineMs`. An engine cannot be told to stop decoding, so a decode
+ * given up on still holds its audio: until it settles, another recording
+ * is refused rather than decoded beside it. */
+export function recordingMeasurer(
+  decode: (recording: Blob) => Promise<DecodedAudio> = decodeRecording,
   deadlineMs = LOUDNESS_DEADLINE_MS,
-  decode: (recording: Blob) => Promise<Pick<AudioBuffer, 'numberOfChannels' | 'sampleRate' | 'getChannelData'>> = decodeRecording,
-): Promise<number> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<never>((_, reject) => {
-    timer = globalThis.setTimeout(() => reject(new Error('The recording took too long to measure.')), deadlineMs);
-  });
-  try {
-    return loudestStretch(await Promise.race([decode(recording), late]));
-  } finally {
-    globalThis.clearTimeout(timer);
-  }
+): (recording: Blob) => Promise<number> {
+  let decoding = false;
+  return async (recording) => {
+    if (decoding) throw new Error('Another recording is still being measured.');
+    decoding = true;
+    const decoded = Promise.resolve().then(() => decode(recording));
+    const settled = () => { decoding = false; };
+    decoded.then(settled, settled);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<never>((_, reject) => {
+      timer = globalThis.setTimeout(() => reject(new Error('The recording took too long to measure.')), deadlineMs);
+    });
+    try {
+      return loudestStretch(await Promise.race([decoded, late]));
+    } finally {
+      globalThis.clearTimeout(timer);
+    }
+  };
 }
 
 export function recordingFormat(recorder: typeof MediaRecorder | undefined): RecordingFormat | null {
@@ -108,10 +118,11 @@ export const browserDictationEnvironment: DictationEnvironment = {
     && globalThis.AudioWorkletNode !== undefined
     && 'audioWorklet' in globalThis.AudioContext.prototype,
   openPcm,
-  recordingLoudness: (recording) => recordingLoudness(recording),
+  recordingLoudness: recordingMeasurer(),
   silenceUnjudged: (err) => {
     reportFrontendDiagnostic('dictation: a recording the meter heard nothing in could not be measured', err instanceof Error ? err.message : '');
   },
+  now: () => globalThis.performance.now(),
   setInterval: (fn, ms) => globalThis.setInterval(fn, ms),
   clearInterval: (handle) => globalThis.clearInterval(handle as ReturnType<typeof setInterval>),
   setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
