@@ -117,6 +117,8 @@ export {
     PushSenderStatus,
     QueueFlushedItem,
     QueuedItem,
+    ReadAloudSourceStatus,
+    ReadAloudVoice,
     RegisteredQueueItem,
     ReleaseSummary,
     RemoteArtifact,

@@ -311,6 +311,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "MintOwnDevicePairing", ID: 939299731, Scope: "access:admin", Route: "home", StepUp: true, Remote: true},           // main.App.MintOwnDevicePairing
 	{Name: "MintOwnDevicePairingOnNetwork", ID: 1802705420, Scope: "access:admin", Route: "home", StepUp: true, Remote: true}, // main.App.MintOwnDevicePairingOnNetwork
 	{Name: "MintPreviewURL", ID: 1471520668, Scope: "preview:open", Route: "thread", Remote: true},                            // main.App.MintPreviewURL
+	{Name: "MintReadAloudTicket", ID: 1195194428, Scope: "threads:operate", Route: "selected"},                                // main.App.MintReadAloudTicket
 	{Name: "MoveDraftToThread", ID: 913927214, Scope: "threads:operate", Route: "thread"},                                     // main.App.MoveDraftToThread
 	{Name: "MoveThreadTerminals", ID: 3013708277, Scope: "terminal:operate", Route: "thread"},                                 // main.App.MoveThreadTerminals
 	{Name: "NotificationActivated", ID: 2831503793, Scope: "host", Route: "home"},                                             // main.App.NotificationActivated
@@ -345,6 +346,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ProviderTerminalResize", ID: 2998028796, Scope: "terminal:operate", Route: "thread"},                              // main.App.ProviderTerminalResize
 	{Name: "ProviderTerminalSetControl", ID: 1382066673, Scope: "terminal:operate", Route: "thread"},                          // main.App.ProviderTerminalSetControl
 	{Name: "PutSoundFile", ID: 2418838611, Scope: "settings:write", Route: "home"},                                            // main.App.PutSoundFile
+	{Name: "ReadAloudSource", ID: 1797221017, Scope: "threads:operate", Route: "selected"},                                    // main.App.ReadAloudSource
 	{Name: "ReadPipelineStages", ID: 2036690300, Scope: "git:operate", Route: "selected"},                                     // main.App.ReadPipelineStages
 	{Name: "ReadReviewDiff", ID: 2473150982, Scope: "session", Route: "home"},                                                 // main.App.ReadReviewDiff
 	{Name: "ReadShellAttachmentOutput", ID: 3285994337, Scope: "threads:read", Route: "thread"},                               // main.App.ReadShellAttachmentOutput

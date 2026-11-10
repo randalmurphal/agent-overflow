@@ -125,10 +125,11 @@ var errIsolatedNetwork = errors.New("isolated boot: outbound provider requests a
 var isolatedHTTPClient = &http.Client{Transport: isolatedProviderTransport{}}
 
 // isolatedProviderTransport refuses every request except the two
-// transcriptions, which it answers in-process so dictation runs end to end
-// through the real clients. Codex transcription names the bytes and type it
-// received, and an access token of "refused" is answered as an expired
-// login; OpenAI live transcription is openaifake's.
+// transcriptions and OpenAI speech, which it answers in-process so
+// dictation and read aloud run end to end through the real clients. Codex
+// transcription names the bytes and type it received, and an access token
+// of "refused" is answered as an expired login; OpenAI live transcription
+// and speech are openaifake's.
 type isolatedProviderTransport struct{}
 
 func (isolatedProviderTransport) RoundTrip(req *http.Request) (resp *http.Response, err error) {
@@ -144,6 +145,9 @@ func (isolatedProviderTransport) RoundTrip(req *http.Request) (resp *http.Respon
 	}
 	if openaifake.IsLiveTranscription(req) {
 		return openaifake.ServeLiveTranscription(req)
+	}
+	if openaifake.IsSpeech(req) {
+		return openaifake.ServeSpeech(req)
 	}
 	return nil, errIsolatedNetwork
 }

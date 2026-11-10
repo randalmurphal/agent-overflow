@@ -148,6 +148,32 @@ read), `frontend/src/lib/native/speech.ts` (the engines),
   kept in frontend storage, and read-aloud is off until turned on.
 - `Mod+Shift+>` pauses or resumes; starting dictation pauses a reading.
 
+### OpenAI voices
+
+With the host setting `readAloudAPIEnabled` on and a key in the API key
+file, a computer reads sentences in OpenAI voices. `ReadAloudSource`
+reports availability and the voices; `MintReadAloudTicket(text, voice)`
+admits one sentence (1 to 1000 characters after trimming) and returns
+`/attachments/speech/{id}?ticket=...`. Fetching it runs the synthesis and
+answers a 24 kHz mono 16-bit WAV, or a 4xx/5xx with a plain-text message:
+404 spent or expired, 409 switched off or no usable key, 429 busy or rate
+limited, 502 an OpenAI failure, 504 over 45 seconds. Code:
+`internal/openai/speech.go`, `internal/readaloud/`,
+`internal/app/app_read_aloud.go`, `internal/transport/speechroutes.go`.
+
+- One Realtime connection per sentence to `gpt-realtime-2.1-mini`: an
+  audio-only session with no tools and minimal reasoning, then one
+  out-of-band `response.create` whose text is the JSON envelope
+  `{"require_repeat_verbatim": true, "response_text": ...}`. Measured
+  2026-11-10 over 113 calls: first audio about 0.5 s after the request,
+  the whole clip in 0.4 to 3.5 s, and the model's transcript equal to the
+  text every time.
+- `openai.IsReading` compares the transcript with the text by words; a
+  result that is not a reading is retried once and then refused. Audio
+  past 90 seconds is abandoned.
+- At most 8 sentences wait and 4 synthesize per computer; a fifth
+  synthesis is refused, not queued. An aborted fetch cancels the call.
+
 ## Other options researched (2026-08-04)
 
 - Claude Code `/voice` (binary 2.1.219): TUI-only push-to-talk over

@@ -538,6 +538,8 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		AttachmentTransfer: appservice.AttachmentTransfer(appService.App),
 		// Dictation recordings, uploaded in pieces while the client records.
 		DictationTransfer: appservice.DictationTransfer(appService.App),
+		// Read-aloud audio, synthesized when its URL is fetched.
+		SpeechTransfer: appservice.ReadAloudTransfer(appService.App),
 		// The SPA a paired phone shell downloads from this backend
 		// (internal/bundle, docs/specs/remote-access.md §9). Nil on a
 		// dev-server boot, which leaves the two routes answering 404 and
