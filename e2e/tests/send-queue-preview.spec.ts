@@ -99,8 +99,8 @@ test('a pile of pending messages shows the newest four and leaves the timeline i
   await expect(rows).toHaveCount(4);
   await expect(rows.first()).toContainText('Agent answer 9:');
   await expect(rows.last()).toContainText('Agent answer 12:');
-  const live = await harness.rpc<{ flushedItems: unknown[] }>('GetThreadLiveState', threadId);
-  expect(live.flushedItems).toHaveLength(12);
+  // The backend flushed all twelve and the mock holds each.
+  await mockHoldsEveryFlushedMessage(harness, threadId, 12);
 
   // The overlay grew by the count line only, and the turn's last row is
   // still on screen above it.
@@ -126,7 +126,6 @@ test('a pile of pending messages shows the newest four and leaves the timeline i
   ).toBe('0px');
 
   // The turn consumes all twelve.
-  await mockHoldsEveryFlushedMessage(harness, threadId, 12);
   await advance(harness, mockId, 'hold');
   await harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === threadId);
   await expect(rows).toHaveCount(0);
