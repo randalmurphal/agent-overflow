@@ -21,7 +21,19 @@ func speakWith(t *testing.T, client *http.Client, key string, request openai.Spe
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return openai.Speak(ctx, client, secret.New([]byte(key)), request)
+	return speak(ctx, client, key, request)
+}
+
+// speak dials, zeroes the key as a caller does, and reads request aloud.
+func speak(ctx context.Context, client *http.Client, key string, request openai.SpeechRequest) (openai.Speech, error) {
+	secretKey := secret.New([]byte(key))
+	session, err := openai.DialSpeech(ctx, client, secretKey, request.Voice)
+	secretKey.Zero()
+	if err != nil {
+		return openai.Speech{}, err
+	}
+	defer session.Close()
+	return session.Speak(ctx, request.Text)
 }
 
 func TestSpeakReturnsTheVoicesAudioAndTranscript(t *testing.T) {
@@ -210,7 +222,7 @@ func TestCancellingSpeakLeavesNothingRunning(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := openai.Speak(ctx, fakeClient(), secret.New([]byte(key)), openai.SpeechRequest{Text: "Wait " + openaifake.SpeechStalls, Voice: "marin"})
+		_, err := speak(ctx, fakeClient(), key, openai.SpeechRequest{Text: "Wait " + openaifake.SpeechStalls, Voice: "marin"})
 		done <- err
 	}()
 	eventually(t, "the stalled response", func() bool { return len(openaifake.SpeechAsks(key)) == 1 })

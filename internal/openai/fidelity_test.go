@@ -23,6 +23,8 @@ func TestIsReadingTellsAReadingFromAnAnswer(t *testing.T) {
 		{"a leading filler", "The build finished in forty seconds, and all twelve checks passed.", "Hmm. The build finished in forty seconds, and all twelve checks passed.", true},
 		{"stopped early", "The build finished in forty seconds, and all twelve checks passed.", "The build finished.", false},
 		{"a number read as words", "42", "forty two", true},
+		{"unspaced script, one character changed", "構築は四十秒で完了し、十二個の検査がすべて合格しました。", "構築は四十秒で完了し、十二個の試験がすべて合格しました。", true},
+		{"unspaced script, answered", "フランスの首都はどこですか、そしてなぜそこが首都になったのですか。", "パリです。何世紀にもわたって王政の中心地だったからです。", false},
 		{"nothing spoken", "Done.", "", false},
 		{"punctuation only spoken", "Done.", "...", false},
 	} {

@@ -10,6 +10,7 @@ import (
 	"agent-overflow/internal/openai"
 	"agent-overflow/internal/openaikey"
 	"agent-overflow/internal/readaloud"
+	"agent-overflow/internal/secret"
 	"agent-overflow/internal/transport"
 )
 
@@ -18,7 +19,7 @@ import (
 // (MintReadAloudTicket) and fetches its audio from the URL it gets back.
 // The fetch is what calls OpenAI with the key (internal/openai) and answers
 // a WAV file (transport's speech route). Nothing is stored, and the key is
-// read only for each fetch.
+// read only for each connection's handshake.
 
 // readAloudTimeout bounds one fetch's synthesis, retry included.
 const readAloudTimeout = 45 * time.Second
@@ -116,17 +117,9 @@ func (t readAloudTransfer) SpeakSentence(ctx context.Context, speechID string) (
 	if !a.readAloudAPIOn() {
 		return nil, &transport.SpeechError{Status: http.StatusConflict, Err: readaloud.ErrOff}
 	}
-	key, err := a.readOpenAIKey()
-	if err != nil {
-		return nil, &transport.SpeechError{Status: http.StatusConflict, Err: err}
-	}
-	defer key.Zero()
 	speaking, cancel := context.WithTimeout(ctx, readAloudTimeout)
 	defer cancel()
-	client := a.openAIHTTPClient()
-	speech, err := a.readAloudSentences().Synthesize(speaking, request, func(ctx context.Context, request openai.SpeechRequest) (openai.Speech, error) {
-		return openai.Speak(ctx, client, key, request)
-	})
+	speech, err := a.readAloudSentences().Synthesize(speaking, request, a.speakWithOpenAI)
 	if err != nil {
 		return nil, readAloudFailure(ctx, err)
 	}
@@ -137,11 +130,33 @@ func (t readAloudTransfer) SpeakSentence(ctx context.Context, speechID string) (
 	return wav, nil
 }
 
+func (a *App) speakWithOpenAI(ctx context.Context, request openai.SpeechRequest) (openai.Speech, error) {
+	return speakOnce(ctx, a.openAIHTTPClient(), a.readOpenAIKey, request)
+}
+
+// speakOnce reads one request aloud on a connection of its own. The key is
+// read for the handshake and zeroed once that is done, before OpenAI
+// speaks.
+func speakOnce(ctx context.Context, client *http.Client, readKey func() (*secret.Bytes, error), request openai.SpeechRequest) (openai.Speech, error) {
+	key, err := readKey()
+	if err != nil {
+		return openai.Speech{}, &transport.SpeechError{Status: http.StatusConflict, Err: err}
+	}
+	session, err := openai.DialSpeech(ctx, client, key, request.Voice)
+	key.Zero()
+	if err != nil {
+		return openai.Speech{}, err
+	}
+	defer session.Close()
+	return session.Speak(ctx, request.Text)
+}
+
 // readAloudFailure gives a failed synthesis the status the route answers.
 // request is the fetch's own context, to tell its end from the time limit.
 func readAloudFailure(request context.Context, err error) error {
+	var classified *transport.SpeechError
 	switch {
-	case request.Err() != nil:
+	case request.Err() != nil, errors.As(err, &classified):
 		return err
 	case errors.Is(err, context.DeadlineExceeded):
 		return &transport.SpeechError{Status: http.StatusGatewayTimeout,

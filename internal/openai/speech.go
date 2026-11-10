@@ -14,11 +14,11 @@ import (
 	"agent-overflow/internal/secret"
 )
 
-// Speech: a Realtime API session that reads one piece of text aloud. Each
-// call opens its own connection, configures an audio-only voice with no
-// tools, asks for one out-of-band response and closes. The text travels
-// inside a JSON envelope the instructions describe, so the model reads it
-// rather than answering it.
+// Speech: a Realtime API session that reads text aloud. DialSpeech opens a
+// connection and configures an audio-only voice with no tools; Speak asks
+// for one out-of-band response. The text travels inside a JSON envelope
+// the instructions describe, so the model reads it rather than answering
+// it.
 
 // SpeechModel is the Realtime model that speaks.
 const SpeechModel = "gpt-realtime-2.1-mini"
@@ -100,32 +100,19 @@ var ErrSpeechTooLong = fmt.Errorf("OpenAI's audio ran past %d seconds, so it was
 // errRedirected does.
 var errSpeechRedirected = errors.New("OpenAI speech redirected the connection")
 
-// Speak reads request.Text aloud in request.Voice and returns the audio.
-// The key is read only to build the handshake header. ctx bounds the whole
-// call; when it ends, the connection closes and Speak returns its error.
-func Speak(ctx context.Context, client *http.Client, key *secret.Bytes, request SpeechRequest) (Speech, error) {
-	if !KnownSpeechVoice(request.Voice) {
-		return Speech{}, fmt.Errorf("OpenAI has no voice %q", request.Voice)
-	}
-	if strings.TrimSpace(request.Text) == "" {
-		return Speech{}, errors.New("there is no text to read aloud")
-	}
-	conn, err := dialSpeech(ctx, client, key)
-	if err != nil {
-		return Speech{}, err
-	}
-	defer func() { _ = conn.CloseNow() }()
-	speech, err := speak(ctx, conn, request)
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return Speech{}, ctxErr
-		}
-		return Speech{}, err
-	}
-	return speech, nil
+// SpeechSession is one open connection that reads in one voice.
+type SpeechSession struct {
+	conn *websocket.Conn
 }
 
-func dialSpeech(ctx context.Context, client *http.Client, key *secret.Bytes) (*websocket.Conn, error) {
+// DialSpeech opens a session that reads in voice and waits until OpenAI
+// accepts its configuration. The key is read only to build the handshake
+// header, so the caller zeroes it when DialSpeech returns. An unknown voice
+// is refused before anything is sent.
+func DialSpeech(ctx context.Context, client *http.Client, key *secret.Bytes, voice string) (*SpeechSession, error) {
+	if !KnownSpeechVoice(voice) {
+		return nil, fmt.Errorf("OpenAI has no voice %q", voice)
+	}
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -151,7 +138,56 @@ func dialSpeech(ctx context.Context, client *http.Client, key *secret.Bytes) (*w
 		return nil, fmt.Errorf("connect to OpenAI speech: %s", scrub(err.Error()))
 	}
 	conn.SetReadLimit(maxSpeechEventBytes)
-	return conn, nil
+	s := &SpeechSession{conn: conn}
+	if err := s.configure(ctx, voice); err != nil {
+		s.Close()
+		return nil, callerEnded(ctx, err)
+	}
+	return s, nil
+}
+
+func (s *SpeechSession) configure(ctx context.Context, voice string) error {
+	if err := writeSpeechEvent(ctx, s.conn, speechSessionUpdate(voice)); err != nil {
+		return err
+	}
+	for {
+		event, err := readSpeechEvent(ctx, s.conn)
+		if err != nil {
+			return err
+		}
+		if event.Type == "session.updated" {
+			return nil
+		}
+	}
+}
+
+// Speak reads text aloud and returns the audio. ctx bounds the call; when
+// it ends, the connection closes and Speak returns its error. A session
+// that failed a Speak is closed.
+func (s *SpeechSession) Speak(ctx context.Context, text string) (Speech, error) {
+	if strings.TrimSpace(text) == "" {
+		return Speech{}, errors.New("there is no text to read aloud")
+	}
+	speech, err := s.speak(ctx, text)
+	if err != nil {
+		s.Close()
+		return Speech{}, callerEnded(ctx, err)
+	}
+	return speech, nil
+}
+
+// Close ends the session at once. Closing a closed session does nothing.
+func (s *SpeechSession) Close() {
+	_ = s.conn.CloseNow()
+}
+
+// callerEnded is ctx's error when the caller ended the call, which is then
+// the cause of err; otherwise err.
+func callerEnded(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	return err
 }
 
 func speechSessionUpdate(voice string) map[string]any {
@@ -222,20 +258,9 @@ type speechEvent struct {
 	} `json:"error"`
 }
 
-func speak(ctx context.Context, conn *websocket.Conn, request SpeechRequest) (Speech, error) {
-	if err := writeSpeechEvent(ctx, conn, speechSessionUpdate(request.Voice)); err != nil {
-		return Speech{}, err
-	}
-	for {
-		event, err := readSpeechEvent(ctx, conn)
-		if err != nil {
-			return Speech{}, err
-		}
-		if event.Type == "session.updated" {
-			break
-		}
-	}
-	envelope, err := SpeechEnvelope(request.Text)
+func (s *SpeechSession) speak(ctx context.Context, text string) (Speech, error) {
+	conn := s.conn
+	envelope, err := SpeechEnvelope(text)
 	if err != nil {
 		return Speech{}, err
 	}

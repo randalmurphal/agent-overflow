@@ -16,6 +16,7 @@ import (
 	"agent-overflow/internal/openai/openaifake"
 	"agent-overflow/internal/openaikey"
 	"agent-overflow/internal/readaloud"
+	"agent-overflow/internal/secret"
 	"agent-overflow/internal/transport"
 )
 
@@ -305,5 +306,29 @@ func TestAnAbandonedReadAloudFetchClosesTheOpenAICall(t *testing.T) {
 	// The synthesis slot is free again.
 	if status, _, _ := mintAndFetch(t, app, base, "Hello there.", "marin"); status != http.StatusOK {
 		t.Fatalf("a fetch after the abandoned one = %d", status)
+	}
+}
+
+// The key is gone from memory once the handshake is done: while OpenAI is
+// still speaking, the secret the reader handed over reveals nothing.
+func TestTheReadAloudKeyIsZeroedBeforeOpenAISpeaks(t *testing.T) {
+	t.Parallel()
+	const key = "sk-proj-read-aloud-zeroed"
+	held := secret.New([]byte(key))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := speakOnce(ctx, isolatedHTTPClient, func() (*secret.Bytes, error) { return held, nil },
+			openai.SpeechRequest{Text: "Wait " + openaifake.SpeechStalls, Voice: "marin"})
+		done <- err
+	}()
+	waitFor(t, "OpenAI to be asked to speak", func() bool { return len(openaifake.SpeechAsks(key)) == 1 })
+	if held.Reveal() != nil || held.Len() != 0 {
+		t.Fatal("the key is still in memory while OpenAI speaks")
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("speakOnce = %v, want context.Canceled", err)
 	}
 }
