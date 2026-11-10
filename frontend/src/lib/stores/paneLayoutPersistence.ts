@@ -352,7 +352,7 @@ function readPersistedLayout(): PersistedPaneLayout | null {
   return layout;
 }
 
-async function loadThreadsForValidation(availableThreads?: Thread[]): Promise<Thread[]> {
+async function loadThreadsForValidation(availableThreads?: readonly Thread[]): Promise<readonly Thread[]> {
   if (availableThreads) return availableThreads;
   return await ListThreads() as Thread[];
 }
@@ -364,7 +364,7 @@ async function loadThreadsForValidation(availableThreads?: Thread[]): Promise<Th
  * launch would restore an empty layout.
  */
 export async function loadPersistedPaneLayout(
-  availableThreads?: Thread[], expectedRevision = paneLayoutMutationRevision(),
+  availableThreads?: readonly Thread[], expectedRevision = paneLayoutMutationRevision(),
 ): Promise<void> {
   // Opening/closing a pane while startup waits is newer user intent than
   // the saved layout. Never erase that interaction when a slow host answers.

@@ -29,8 +29,30 @@ import { registerCatalogReader, settleCatalogAnswers } from './catalogLoad.svelt
 
 type ThreadReadStatePatch = Partial<Pick<Thread, 'lastReadAt' | 'hasIncompleteTurn' | 'hasFailedTurn'>>;
 
-let threads: Thread[] = $state([]);
-const catalogWriter = computerCatalogWriter('threads', () => threads, (rows) => { threads = rows; }, (row) => threadBackend(row.id));
+// Rows are values: a change replaces the row and the array, never writes
+// into either. The array is therefore held raw. A deep proxy would add a
+// trap call to every field read of every row, and each thread event reads
+// all of them several times (lookups by id, the row transform, the catalog
+// write).
+let threads: readonly Thread[] = $state.raw([]);
+// The rows this store made. A row from outside is copied on its way in: a
+// caller may hand over a pane's reactive row, and the store's copy must
+// neither be that proxy nor change when the pane writes to it. The list is
+// the store's own array for the same reason.
+const owned = new WeakSet<Thread>();
+function setThreads(rows: readonly Thread[]): void {
+  const next = rows.slice();
+  for (let i = 0; i < next.length; i++) {
+    if (owned.has(next[i])) continue;
+    const row = { ...next[i] };
+    // Development and test builds reject a write into a stored row.
+    if (import.meta.env.DEV) Object.freeze(row);
+    owned.add(row);
+    next[i] = row;
+  }
+  threads = import.meta.env.DEV ? Object.freeze(next) : next;
+}
+const catalogWriter = computerCatalogWriter('threads', () => threads as Thread[], setThreads, (row) => threadBackend(row.id));
 // Ownership changes before the destination's row is applied. Fence the
 // former owner's offline snapshot and rewrite it without the moved row;
 // otherwise removing the destination could expose the old offline snapshot.
@@ -54,7 +76,7 @@ onThreadOwnershipChanged((_id, previousBackend) => {
 // next full row sync.
 const liveActivityAt = createKeyedSignalRegistry<number>(0);
 
-export function getThreads(): Thread[] {
+export function getThreads(): readonly Thread[] {
   return threads;
 }
 
@@ -95,7 +117,7 @@ function threadReadOptions(only?: BackendKey) {
  * startup validates saved panes against the winning snapshot, even when a
  * first hello superseded its read.
  */
-export async function loadThreads(): Promise<Thread[]> {
+export async function loadThreads(): Promise<readonly Thread[]> {
   pendingThreadReads++;
   const request = readCurrentThreadRows();
   latestThreadRead = request;
@@ -149,7 +171,7 @@ export async function refreshThreads(): Promise<void> {
  */
 export function replaceAllThreads(rows: Thread[]): void {
   for (const backend of new Set([...threads, ...rows].map((row) => threadBackend(row.id)))) catalogWriter.persist(backend);
-  threads = rows;
+  setThreads(rows);
   // Callers hand rows already reconciled against local state (including
   // the live-activity box, via mergeThreadRowWithLocal), so the boxes'
   // content is folded into the rows and stale entries can go.
@@ -159,7 +181,7 @@ export function replaceAllThreads(rows: Thread[]): void {
 /** Test-only: an empty catalog with no live-activity bumps, without the
  *  catalog write a replacement records. */
 export function resetThreadsForTest(): void {
-  threads = [];
+  setThreads([]);
   liveActivityAt.reset();
 }
 
@@ -413,7 +435,7 @@ export function dropThreadsForDetachedBackend(ids: readonly string[]): void {
   }
   const gone = new Set(ids);
   const kept = threads.filter((t) => !gone.has(t.id));
-  if (kept.length !== threads.length) threads = kept;
+  if (kept.length !== threads.length) setThreads(kept);
 }
 
 onBackendDetached(({ threadIds }) => dropThreadsForDetachedBackend(threadIds));
