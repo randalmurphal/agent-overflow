@@ -3,6 +3,7 @@ import {
   getThreads,
   getThreadLiveActivityAt,
   refreshThreads,
+  replaceAllThreads,
   prependThread,
   prependThreadReply,
   removeThread,
@@ -54,6 +55,63 @@ describe('threads store', () => {
       // Prior value preserved.
       expect(getThreads().map((t) => t.id)).toEqual(['keep']);
       consoleErr.mockRestore();
+    });
+  });
+
+  describe('rows as values', () => {
+    it('rejects a write into a stored row or into the list', async () => {
+      setBindingMock('ListThreads', async () => [makeThread('t1'), makeThread('t2')]);
+      await refreshThreads();
+      updateThreadTitle('t2', 'Renamed');
+      const rows = getThreads() as Thread[];
+      // Both a row a read committed and a row a mutation replaced.
+      expect(() => { rows[0].title = 'written in place'; }).toThrow(TypeError);
+      expect(() => { rows[1].title = 'written in place'; }).toThrow(TypeError);
+      expect(() => { rows.push(makeThread('t3')); }).toThrow(TypeError);
+      expect(getThreads().map((t) => t.title)).toEqual([makeThread('t1').title, 'Renamed']);
+    });
+
+    it('stores its own copy of a reactive row a pane hands over', async () => {
+      setBindingMock('ListThreads', async () => [makeThread('t1')]);
+      await refreshThreads();
+      const paneRow = $state(makeThread('draft'));
+
+      prependThread(paneRow);
+      expect(getThreads().map((t) => t.id)).toEqual(['draft', 't1']);
+      expect(getThreads()[0]).not.toBe(paneRow);
+      expect(getThreads()[0]).toEqual(makeThread('draft'));
+
+      // The pane writing to its row does not reach the catalog's copy.
+      paneRow.title = 'typed in the pane';
+      expect(getThreads()[0].title).toBe(makeThread('draft').title);
+
+      replaceThread(paneRow);
+      expect(getThreads()[0]).not.toBe(paneRow);
+      expect(getThreads()[0].title).toBe('typed in the pane');
+
+      // Rows the store already holds keep their identity across a change.
+      const kept = getThreads()[1];
+      updateThreadTitle('draft', 'renamed');
+      expect(getThreads()[1]).toBe(kept);
+    });
+
+    it('keeps its own list when a caller hands over an array', async () => {
+      setBindingMock('ListThreads', async () => [makeThread('t1'), makeThread('t2')]);
+      await refreshThreads();
+      // Rows the store already holds, in the caller's array.
+      const rows = [...getThreads()];
+      replaceAllThreads(rows);
+      expect(getThreads()).not.toBe(rows);
+      expect(getThreads()[0]).toBe(rows[0]);
+
+      // The caller's array stays the caller's: writable, and not the list.
+      rows.pop();
+      expect(getThreads().map((t) => t.id)).toEqual(['t1', 't2']);
+
+      const empty: Thread[] = [];
+      replaceAllThreads(empty);
+      empty.push(makeThread('late'));
+      expect(getThreads()).toEqual([]);
     });
   });
 
