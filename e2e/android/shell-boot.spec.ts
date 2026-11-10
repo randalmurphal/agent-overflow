@@ -1580,6 +1580,29 @@ async function dictationUploads(page: Page): Promise<DictationUpload[]> {
   return page.evaluate(() => (window as UploadWatch).__dictationUploads ?? []);
 }
 
+type MeterWatch = Window & { __meterReads?: number };
+
+/** Counts the loudness meter's reads of the microphone, leaving each read
+ * as the engine answers it. */
+async function watchMeter(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const watch = window as MeterWatch;
+    watch.__meterReads = 0;
+    const read = AnalyserNode.prototype.getFloatTimeDomainData;
+    AnalyserNode.prototype.getFloatTimeDomainData = function (
+      this: AnalyserNode,
+      samples: Parameters<AnalyserNode['getFloatTimeDomainData']>[0],
+    ): void {
+      watch.__meterReads = (watch.__meterReads ?? 0) + 1;
+      read.call(this, samples);
+    };
+  });
+}
+
+async function meterReads(page: Page): Promise<number> {
+  return page.evaluate(() => (window as MeterWatch).__meterReads ?? 0);
+}
+
 /** Whether Android has granted the shell the microphone. */
 async function microphoneGranted(device: AndroidDevice): Promise<boolean> {
   const dump = (await device.shell(`dumpsys package ${SHELL_PACKAGE}`)).toString();
@@ -1656,6 +1679,7 @@ test('dictation records through the phone’s microphone once Android allows it'
   await expect(mic).toHaveAttribute('data-phase', 'idle', { timeout: PAIRED_MOUNT_MS });
   expect(await microphoneGranted(device), 'a fresh install has not been granted the microphone').toBe(false);
   await watchDictationUploads(page);
+  await watchMeter(page);
 
   // Refused: Android asked, and the mic says where to undo the refusal.
   await mic.click();
@@ -1671,9 +1695,12 @@ test('dictation records through the phone’s microphone once Android allows it'
   await tapNode(device, { res: /.*:id\/permission_allow_foreground_only_button/ });
   await expect(mic).toHaveAttribute('data-phase', 'recording', { timeout: 30_000 });
   expect(await microphoneGranted(device)).toBe(true);
-  // The loudness meter runs on the device: without it the silence check
-  // below would never apply.
-  await expect(mic).toHaveAttribute('data-level', /^[0-4]$/);
+  // The loudness meter samples the microphone while it records: without
+  // it the silence check below would never apply.
+  const readsAtStart = await meterReads(page);
+  await expect.poll(() => meterReads(page), { message: 'the loudness meter must keep sampling while the phone records' })
+    .toBeGreaterThanOrEqual(readsAtStart + 5);
+  await expect(mic).toHaveAttribute('data-phase', 'recording');
   await expect.poll(() => microphoneState(device), { message: 'Android must have the shell recording' }).toBe('recording');
 
   // The recording streams to the computer while it runs, through the
