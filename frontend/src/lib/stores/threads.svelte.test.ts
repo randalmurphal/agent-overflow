@@ -155,6 +155,17 @@ describe('threads store', () => {
       expect(prependThreadReply(makeThread('fresh', { title: 'Reply' }), later).title).toBe('Reply');
     });
 
+    it('prependThreadReply applies a ready fork answer over the preparing row a frame set', async () => {
+      setBindingMock('ListThreads', async () => [makeThread('b')]);
+      await refreshThreads();
+      const mark = threadRowFrameMark();
+      applyThreadUpdated({ action: 'listed', thread: makeThread('fork', { forkPreparing: true }) });
+      const applied = prependThreadReply(makeThread('fork', { sessionRef: 'ready-session' }), mark);
+      expect(applied.forkPreparing ?? false).toBe(false);
+      expect(applied.sessionRef).toBe('ready-session');
+      expect(getThreads().map((t) => [t.id, t.forkPreparing ?? false])).toEqual([['fork', false], ['b', false]]);
+    });
+
     it('removeThread drops the matching id and leaves others', async () => {
       setBindingMock('ListThreads', async () => [
         makeThread('a'),
