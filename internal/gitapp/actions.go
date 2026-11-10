@@ -40,15 +40,13 @@ func (s *Service) MaybeFetchRemotes(ref WorkspaceRef) (bool, error) {
 	return s.core.MaybeFetchRemotes(project)
 }
 
-func (s *Service) Commit(ref WorkspaceRef, subject, body string) (gitops.GitActionResult, error) {
+// Commit records what the selection covers in the referenced workspace.
+func (s *Service) Commit(ref WorkspaceRef, subject, body string, selection gitops.CommitSelection) (gitops.GitActionResult, error) {
 	_, workspace, err := s.ResolveWorkspace(ref)
 	if err != nil {
 		return gitops.GitActionResult{}, err
 	}
-	if err := s.core.StageAll(workspace); err != nil {
-		return gitops.GitActionResult{}, err
-	}
-	sha, err := s.core.Commit(workspace, subject, body)
+	sha, err := s.core.CommitSelected(workspace, subject, body, selection)
 	if err != nil {
 		return gitops.GitActionResult{}, err
 	}

@@ -7,7 +7,7 @@
   // which takes the focused workflows pane's slot (R3).
   //
   // The whole patch is read once into compact storage, and an expanded file
-  // renders its lines from it (WorkflowDiffLines), so opening three files
+  // renders its lines from it (PatchLines), so opening three files
   // costs one read, not four. The read can hold the diff open to read
   // evicted text again; it is disposed with its files, and read again when
   // that text is lost.

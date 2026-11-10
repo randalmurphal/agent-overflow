@@ -56,19 +56,13 @@ func headCommit(ctx context.Context, workspace string) (string, error) {
 // no HEAD the diff runs against the empty tree, so untracked files still
 // show. The snapshot lives in a directory under tempRoot until Close.
 func OpenWorktreeDiff(ctx context.Context, workspace, tempRoot string, opts Options) (*Diff, error) {
-	snapshot, err := captureSyntheticWorktreeTree(ctx, workspace, tempRoot)
+	snapshot, err := CaptureWorktree(ctx, workspace, tempRoot)
 	if err != nil {
 		return nil, err
 	}
-	oldSide := snapshot.head
-	if oldSide == "" {
-		oldSide, err = emptyTreeOID(ctx, workspace, snapshot.env)
-		if err != nil {
-			return nil, errors.Join(err, snapshot.release())
-		}
-	}
-	return newDiff(workspace, snapshot.env, snapshot.release,
-		opts.gitArgs("diff", oldSide, snapshot.oid, "--")), nil
+	diff := snapshot.Diff(opts)
+	diff.release = snapshot.Close
+	return diff, nil
 }
 
 // emptyTreeOID writes (into the temp object dir the env points at) and
@@ -258,6 +252,21 @@ func stageWorktreeNoFilters(ctx context.Context, workspace string, env []string)
 		if statErr != nil {
 			return fmt.Errorf("gitdiff: inspect %s: %w", p, statErr)
 		}
+		if info.IsDir() {
+			// A directory here is a repository of its own: a submodule, or
+			// an untracked nested repository (listed with a trailing
+			// slash). It is recorded as `git add` records it, a gitlink to
+			// the commit it has checked out.
+			name := strings.TrimSuffix(p, "/")
+			oid, err := nestedRepositoryHead(ctx, filepath.Join(workspace, name))
+			if err != nil {
+				return fmt.Errorf("gitdiff: read repository %s: %w", name, err)
+			}
+			if oid != "" {
+				writeIndexInfo("160000", oid, name)
+			}
+			continue
+		}
 		if info.Mode()&os.ModeSymlink != 0 || strings.ContainsRune(p, '\n') {
 			// Symlinks hash their target text via stdin, and a path holding
 			// a newline can't ride the LF-separated --stdin-paths batch.
@@ -303,6 +312,20 @@ func stageWorktreeNoFilters(ctx context.Context, workspace string, env []string)
 		}
 	}
 	return nil
+}
+
+// nestedRepositoryHead returns the commit the repository at dir has checked
+// out, or "" when dir holds no repository of its own or one with no commit
+// yet, neither of which git can record.
+func nestedRepositoryHead(ctx context.Context, dir string) (string, error) {
+	// Without its own .git, rev-parse would answer for the enclosing
+	// repository.
+	if _, err := os.Lstat(filepath.Join(dir, ".git")); errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	} else if err != nil {
+		return "", err
+	}
+	return headCommit(ctx, dir)
 }
 
 func hashWorktreePathNoFilters(ctx context.Context, workspace, p string, mode os.FileMode, env []string) (string, error) {

@@ -94,6 +94,22 @@
   // only end of that relationship still reachable from here.
   let panelEl: HTMLDivElement | undefined = $state(undefined);
 
+  // The backdrop is moved to `document.body` on mount. A dialog is rendered
+  // where its owner sits, and an owner inside a stacking context (the chat
+  // header's `z-10`) would otherwise cap the dialog's z-index at that
+  // context's level: the composer overlay (`z-20`) painted over, and took
+  // the clicks of, any dialog tall enough to reach it. The node is removed
+  // explicitly because Svelte only knows its original parent.
+  let backdropEl: HTMLDivElement | undefined = $state(undefined);
+  $effect(() => {
+    if (!backdropEl) return;
+    const node = backdropEl;
+    document.body.appendChild(node);
+    return () => {
+      node.remove();
+    };
+  });
+
   // Stable id keeps aria-labelledby wired even if the title prop changes.
   // Through utils/randomId: crypto.randomUUID is secure-context only and
   // throws on the plain-HTTP LAN page this app also serves.
@@ -149,6 +165,7 @@
 {#if open}
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div
+    bind:this={backdropEl}
     class={[
       'fixed inset-0 z-[60] flex justify-center bg-overlay backdrop-blur-md',
       align === 'top' ? 'items-start pt-[10vh]' : 'items-center',

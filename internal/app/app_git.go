@@ -114,13 +114,24 @@ func (a *App) GitSyncBranch(ws WorkspaceRef, branch string) ([]gitops.GitBranch,
 	return core.ListBranches(project)
 }
 
-// GitCommit stages all changes and commits workspace changes.
-// WARNING: This stages everything (git add -A) before committing, including
-// untracked files.
+// GitCommit commits what the selection covers in the workspace: every
+// uncommitted change, untracked files included, or exactly the given files
+// as ListCommitFiles listed them, leaving every other change, staged or not,
+// as it is. A selected file that changed since it was listed fails the
+// commit with ErrCommitFilesChanged.
 //
 //ao:scope git:operate
-func (a *App) GitCommit(ws WorkspaceRef, subject, body string) (gitops.GitActionResult, error) {
-	return a.gitApplication().Commit(ws, subject, body)
+func (a *App) GitCommit(ws WorkspaceRef, subject, body string, selection CommitSelection) (gitops.GitActionResult, error) {
+	const action = "commit"
+	workspace, err := a.reviewWorkspace(action, ws)
+	if err != nil {
+		return gitops.GitActionResult{}, err
+	}
+	listed, err := a.listedCommitSelection(a.lifeCtx(), workspace, selection)
+	if err != nil {
+		return gitops.GitActionResult{}, fmt.Errorf("%s: %w", action, err)
+	}
+	return a.gitApplication().Commit(ws, subject, body, listed)
 }
 
 // GitPush pushes the workspace's current branch.

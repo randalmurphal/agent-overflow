@@ -165,7 +165,7 @@ func TestGitCommitReturnsCommitSHA(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	result, err := app.GitCommit(workspaceRefForThread(thread), "update readme", "body")
+	result, err := app.GitCommit(workspaceRefForThread(thread), "update readme", "body", CommitSelection{All: true})
 	if err != nil {
 		t.Fatalf("GitCommit() error = %v", err)
 	}

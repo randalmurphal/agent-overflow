@@ -81,7 +81,7 @@ func TestGitActions_CommitPushCreatePR(t *testing.T) {
 
 	// Step 1: commit.
 	installMockGh(t, app, "https://example.com/pr/1", "", 0)
-	result, err := app.GitCommit(ref, "ship: add feature", "body")
+	result, err := app.GitCommit(ref, "ship: add feature", "body", CommitSelection{All: true})
 	if err != nil {
 		t.Fatalf("GitCommit() error = %v", err)
 	}
@@ -130,7 +130,7 @@ func TestGitActions_CommitOnly(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	result, err := app.GitCommit(ref, "update readme", "body")
+	result, err := app.GitCommit(ref, "update readme", "body", CommitSelection{All: true})
 	if err != nil {
 		t.Fatalf("GitCommit() error = %v", err)
 	}
@@ -159,7 +159,7 @@ func TestGitActions_CommitAndPushNoPR(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	commitResult, err := app.GitCommit(ref, "ship: extra", "body")
+	commitResult, err := app.GitCommit(ref, "ship: extra", "body", CommitSelection{All: true})
 	if err != nil {
 		t.Fatalf("GitCommit() error = %v", err)
 	}
@@ -186,7 +186,7 @@ func TestGitActions_CommitFailsOnNoChanges(t *testing.T) {
 	t.Parallel()
 	app, ref, _, _ := gitActionTestSetup(t)
 
-	_, err := app.GitCommit(ref, "nothing", "")
+	_, err := app.GitCommit(ref, "nothing", "", CommitSelection{All: true})
 	if err == nil {
 		t.Fatal("GitCommit() on clean tree error = nil, want failure (nothing to commit)")
 	}
@@ -255,7 +255,7 @@ func TestGitActions_NewBranchFromCurrent(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	commitResult, err := app.GitCommit(ref, "ship: feature", "")
+	commitResult, err := app.GitCommit(ref, "ship: feature", "", CommitSelection{All: true})
 	if err != nil {
 		t.Fatalf("GitCommit() error = %v", err)
 	}
@@ -289,7 +289,7 @@ func TestGitActions_RepeatedCommitIdempotent(t *testing.T) {
 	if err := os.WriteFile(feature, []byte("shipped\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
-	first, err := app.GitCommit(ref, "ship: first", "")
+	first, err := app.GitCommit(ref, "ship: first", "", CommitSelection{All: true})
 	if err != nil {
 		t.Fatalf("first GitCommit() error = %v", err)
 	}
@@ -299,7 +299,7 @@ func TestGitActions_RepeatedCommitIdempotent(t *testing.T) {
 
 	// Second call: tree is now clean because we committed everything. Must
 	// error out, not silently produce a duplicate commit.
-	_, err = app.GitCommit(ref, "ship: second", "")
+	_, err = app.GitCommit(ref, "ship: second", "", CommitSelection{All: true})
 	if err == nil {
 		t.Fatal("second GitCommit() on clean tree error = nil, want failure")
 	}
