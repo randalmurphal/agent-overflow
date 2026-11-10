@@ -1111,11 +1111,16 @@ test('the shell stages a bundle, boots on it, and refuses a damaged one', async 
 
   // --- The shell's own sync stages it first ----------------------------
   // The app paired, its backend's hello named a bundle that is not the
-  // APK's, and `native/bundleSync.ts` downloaded it over the paired
-  // session and staged it — behind the lock, without being asked. Waiting
-  // for that proves the download path end to end, and it is what makes
-  // the state below deterministic: the refusals run against a store that
-  // has settled rather than racing the sync.
+  // APK's, and `native/bundleSync.ts` downloads it over the paired
+  // session and stages it without being asked. Waiting for that proves
+  // the download path end to end, and it is what makes the state below
+  // deterministic: the refusals run against a store that has settled
+  // rather than racing the sync.
+  //
+  // The credential prompt is answered first. It pauses the activity, and
+  // a paused app defers the download until it is in front again, so a
+  // sync that first looked after the prompt rose would wait here forever.
+  await passCredentialPrompt(device, page.getByTestId('app-lock'));
   expect(
     await page.evaluate(async () => (await (await fetch('/bundle-id.txt')).text()).trim()),
     'the APK must ship a different bundle than the harness serves, or the swap proves nothing',
@@ -1164,10 +1169,9 @@ test('the shell stages a bundle, boots on it, and refuses a damaged one', async 
   // --- The cold start adopts it ----------------------------------------
   // Force-stop rather than a back press: the swap happens in
   // `MainActivity.onCreate` before `super.onCreate`, so it needs a
-  // process that is actually starting. This launch's prompt is answered
-  // first: one still up when the process dies animates out over the
+  // process that is actually starting. This launch's prompt was answered
+  // above: one still up when the process dies animates out over the
   // relaunch, and would be taken for the new launch's prompt.
-  await passCredentialPrompt(device, page.getByTestId('app-lock'));
   await device.shell(`am force-stop ${SHELL_PACKAGE}`);
   await device.shell(`am start -n ${SHELL_ACTIVITY}`);
   // The app is paired, so the relaunch raises the lock's credential prompt
