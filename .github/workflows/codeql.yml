@@ -48,12 +48,20 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
+          # Generated code, and test and development tooling: none of it
+          # ships, and its alerts were all code that builds strings for a
+          # test on purpose.
           config: |
             paths-ignore:
               - frontend/bindings
               - frontend/dist
               - "**/node_modules"
-              - e2e/test-results
+              - e2e
+              - scripts/perfprobe
+              - frontend/src/test
+              - "**/*.test.ts"
+              - cmd/ao-harness
+              - cmd/ao-mockprovider
       - name: Build for the Go extractor
         if: matrix.language == 'go'
         run: go build ./...
