@@ -298,7 +298,7 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
     if (previous.kind === 'placeholder') {
       // Placeholder → materialized transition: the timeline was empty
       // so there is no measurement cascade to hide. Skip the warm-up
-      // gate so the optimistic user message renders immediately.
+      // gate so the first user message renders as soon as its row arrives.
       options.stick.skipWarmup();
       options.stick.markAtBottom();
       return;

@@ -265,8 +265,8 @@ export interface PaneScrollController {
    * thread.svelte.ts): synchronously while applying provider upserts that
    * APPEND in-window rows, when the reveal gate releases withheld rows
    * (both of which also stamp the pane's live-content latch — see
-   * `armLiveContentAppendSpring`), and for the composer's optimistic
-   * user-send (arm only) — each ordered strictly before the flush in
+   * `armLiveContentAppendSpring`), and for the replacement row of an
+   * edit-and-resend (arm only) — each ordered strictly before the flush in
    * which the virtualizer delivers the resulting content-geometry
    * sample. A component-effect arm loses that race — and is blind to
    * appends outside an active turn (interrupt echo, force-closed tool

@@ -157,10 +157,7 @@ describe('canRevertEarlyInterrupt', () => {
 
     const result = canRevertEarlyInterrupt(pane, EMPTY_DRAFT);
 
-    expect(result.canRevert).toBe(true);
-    if (result.canRevert) {
-      expect(result.userItem.id).toBe('u:0');
-    }
+    expect(result).toEqual({ canRevert: true, turnIndex: 0, userItem: expect.objectContaining({ id: 'u:0' }) });
   });
 
   it('rejects when there is no active turn (Stop after settle)', () => {
@@ -236,10 +233,91 @@ describe('canRevertEarlyInterrupt', () => {
 
     const result = canRevertEarlyInterrupt(pane, EMPTY_DRAFT);
 
-    expect(result.canRevert).toBe(true);
-    if (result.canRevert) {
-      expect(result.userItem.id).toBe('u:0');
-    }
+    expect(result).toEqual({ canRevert: true, turnIndex: 0, userItem: expect.objectContaining({ id: 'u:0' }) });
+  });
+});
+
+describe('canRevertEarlyInterrupt before the send’s row arrives', () => {
+  const SNAPSHOT = { content: 'sent', attachments: [], terminalChips: [], sourceProposedPlan: null };
+  beforeEach(() => {
+    replaceQueueForThread('thread-1', []);
+    retireUndoableSend('thread-1');
+  });
+
+  it('un-sends from the undo record, at the turn the composer predicted', () => {
+    const pane = readyPane();
+    pane.upsertItem(userItem('u:0', 0));
+    pane.upsertItem(assistantItem('a:0', 0));
+    beginUndoableSend('thread-1', 'send', SNAPSHOT, 1);
+
+    expect(canRevertEarlyInterrupt(pane, EMPTY_DRAFT)).toEqual({ canRevert: true, turnIndex: 1 });
+  });
+
+  it('allows it over reasoning that reached the predicted turn first', () => {
+    const pane = readyPane();
+    pane.upsertItem(thinkingItem('think:1', 1));
+    beginUndoableSend('thread-1', 'send', SNAPSHOT, 1);
+
+    expect(canRevertEarlyInterrupt(pane, EMPTY_DRAFT)).toEqual({ canRevert: true, turnIndex: 1 });
+  });
+
+  it('uses the row’s own turn once the row has arrived', () => {
+    const pane = readyPane();
+    pane.upsertItem({ ...userItem('u:2', 2), meta: JSON.stringify({ sendId: 'send' }) });
+    beginUndoableSend('thread-1', 'send', SNAPSHOT, 1);
+
+    expect(canRevertEarlyInterrupt(pane, EMPTY_DRAFT))
+      .toEqual({ canRevert: true, turnIndex: 2, userItem: expect.objectContaining({ id: 'u:2' }) });
+  });
+
+  it('rejects an undo record that names no turn', () => {
+    const pane = readyPane();
+    beginUndoableSend('thread-1', 'send', SNAPSHOT);
+
+    expect(canRevertEarlyInterrupt(pane, EMPTY_DRAFT)).toEqual({ canRevert: false, reason: 'no pending user message' });
+  });
+
+  it('rejects an active turn that holds no user row', () => {
+    const pane = readyPane();
+    beginUndoableSend('thread-1', 'send', SNAPSHOT, 1);
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 1, startedAt: 1 });
+
+    expect(canRevertEarlyInterrupt(pane, EMPTY_DRAFT)).toEqual({ canRevert: false, reason: 'no user_text item' });
+  });
+
+  it('rejects when the predicted turn already holds provider content', () => {
+    const pane = readyPane();
+    pane.upsertItem(assistantItem('a:1', 1));
+    beginUndoableSend('thread-1', 'send', SNAPSHOT, 1);
+
+    expect(canRevertEarlyInterrupt(pane, EMPTY_DRAFT)).toEqual({ canRevert: false, reason: 'turn holds assistant_text' });
+  });
+
+  it('rejects when the predicted turn has settled', () => {
+    const pane = readyPane();
+    pane.settleTurn({ turnId: 'round-1', turnIndex: 1, startedAt: 1, completedAt: 2, stopReason: 'end_turn',
+      assistantMessageId: null, tokenUsage: null, aborted: false, errorMessage: '' });
+    beginUndoableSend('thread-1', 'send', SNAPSHOT, 1);
+
+    expect(canRevertEarlyInterrupt(pane, EMPTY_DRAFT)).toEqual({ canRevert: false, reason: 'turn already settled' });
+  });
+
+  it('rejects when the composer carries new typing', () => {
+    const pane = readyPane();
+    beginUndoableSend('thread-1', 'send', SNAPSHOT, 1);
+
+    expect(canRevertEarlyInterrupt(pane, { content: 'next thought', attachments: { length: 0 }, terminalChips: { length: 0 } }))
+      .toEqual({ canRevert: false, reason: 'composer not empty' });
+  });
+
+  it('rejects a turn resolved from a row that is not the predicted one', () => {
+    const pane = readyPane();
+    // A row that carries the send id but is not the reader's message
+    // resolves another turn, which the undo record says nothing about.
+    pane.upsertItem({ ...thinkingItem('think:2', 2), meta: JSON.stringify({ sendId: 'send' }) });
+    beginUndoableSend('thread-1', 'send', SNAPSHOT, 1);
+
+    expect(canRevertEarlyInterrupt(pane, EMPTY_DRAFT)).toEqual({ canRevert: false, reason: 'no user_text item' });
   });
 });
 
@@ -739,20 +817,29 @@ describe('runInterruptOrRevert', () => {
     expect(isThreadInterruptPending('thread-1')).toBe(false);
   });
 
-  it('cancels a prepared send before dispatch and restores its raw multiline draft', async () => {
+  it.each([
+    ['before its row arrives', false],
+    ['after its row arrives', true],
+  ] as const)('cancels a prepared send %s and restores its raw multiline draft', async (_name, rowArrived) => {
     const pane = readyPane();
-    const item = { ...userItem('optimistic:send', 0), meta: JSON.stringify({ sendId: 'send' }) };
-    pane.upsertItem(item);
+    pane.upsertItem(userItem('u:0', 0));
+    pane.upsertItem(thinkingItem('think:1', 1));
+    if (rowArrived) pane.upsertItem({ ...userItem('u:1', 1), meta: JSON.stringify({ sendId: 'send' }) });
     const snapshot = { content: 'raw\n  text', attachments: [], terminalChips: [], sourceProposedPlan: null };
-    const pending = beginUndoableSend('thread-1', 'send', snapshot);
+    const pending = beginUndoableSend('thread-1', 'send', snapshot, 1);
     const draft = optimisticDraftProbe();
+    const revert = setBindingMock('InterruptAndRevertIfClean', async () => successfulRevert('u:1', 1));
     runInterruptOrRevert(pane, draft);
     expect(pending.undoRequested).toBe(true);
     expect(draft.applied).toEqual(snapshot);
-    expect(pane.items).toHaveLength(0);
+    // Only the send's own turn is cut.
+    expect(pane.items.map((item) => item.id)).toEqual(['u:0']);
+    expect(isThreadInterruptPending('thread-1')).toBe(true);
     pending.finish('cancelled');
     await flushInterruptFlow();
     expect(isThreadInterruptPending('thread-1')).toBe(false);
+    expect(revert).not.toHaveBeenCalled();
+    expect(draft.cleared).toBeNull();
     retireUndoableSend('thread-1');
   });
 

@@ -2344,20 +2344,24 @@ describe('<Composer>', () => {
     const pane = await buildPane();
     const draft = await buildDraft();
     setBindingMock('SaveDraft', async () => {});
-    setBindingMock('SendMessageWithOptions', async () => makeTestThread());
+    const send = setBindingMock('SendMessageWithOptions', async () => makeTestThread());
     setBindingMock('CountRunningBackgroundTasks', async () => 0);
     const revert = deferred<never>();
     setBindingMock('InterruptAndRevertIfClean', async () => revert.promise);
 
-    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+    const { getByLabelText, getByTestId, findByTestId } = render(Composer, { props: { pane, draft } });
     const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
     await fireEvent.input(textarea, { target: { value: 'a side question' } });
     await fireEvent.click(getByTestId('composer-send'));
-    await waitFor(() => expect(pane.items.some((item) => item.kind === 'user_text')).toBe(true));
-    const sent = pane.items.find((item) => item.kind === 'user_text')!;
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    // The backend's row for the accepted send.
+    const { sendId } = (send.mock.calls[0] as unknown as [string, string, { sendId: string }])[2];
+    const sent = makeItem({ id: 'user:canonical', threadId: 'thread-1', kind: 'user_text', role: 'user',
+      status: 'completed', turnIndex: 0, itemIndex: 0, summary: 'a side question', meta: JSON.stringify({ sendId }) });
+    pane.applyProviderItemUpserts([sent]);
     pane.setActiveTurn({ turnId: 't1', turnIndex: sent.turnIndex, startedAt: 0 });
 
-    await fireEvent.click(getByTestId('composer-interrupt'));
+    await fireEvent.click(await findByTestId('composer-interrupt'));
     // The un-send paints the message back into the composer while it runs.
     await waitFor(() => expect(textarea.value).toBe('a side question'));
     revert.reject(new Error('interrupt-and-revert: claude rollback: refusing a slice'));
@@ -2740,7 +2744,7 @@ describe('<Composer>', () => {
 
       expect(send).not.toHaveBeenCalled();
       expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['while it drains']);
-      expect(pane.items.some((item) => item.id.startsWith('optimistic:'))).toBe(false);
+      expect(pane.items.some((item) => item.summary === 'while it drains')).toBe(false);
 
       // Drained: the same composer sends directly again.
       for (let i = 0; i < 400 && pane.revealBoundary !== null; i++) clock.tickFrame(16);
@@ -2945,11 +2949,71 @@ describe('<Composer>', () => {
 
     await waitFor(() => expect(send).toHaveBeenCalledWith('thread-1', 'idle send', sentWith({ attachmentIds: [] })));
     expect(getQueueForThread('thread-1')).toEqual([]);
-    const options = send.mock.calls[0][2] as { sendId: string };
-    const placeholder = pane.items.find((item) => item.summary === 'idle send');
-    expect(placeholder?.id).toBe(`optimistic:${options.sendId}`);
-    expect(JSON.parse(placeholder?.meta ?? '{}').sendId).toBe(options.sendId);
-    expect(pane.isOptimisticItem(placeholder!.id)).toBe(true);
+  });
+
+  // A direct send draws nothing itself: the message is on screen only once
+  // the backend's row for it arrives, and the Send button says so until then.
+  describe('a direct send awaiting its confirmation', () => {
+    async function sendHeld(text: string) {
+      const pane = await buildPane();
+      const draft = await buildDraft();
+      const reply = deferred<ReturnType<typeof makeTestThread>>();
+      const send = setBindingMock('SendMessageWithOptions', () => reply.promise);
+      const view = render(Composer, { props: { pane, draft } });
+      const revision = pane.timelineRevision;
+      await fireEvent.input(view.getByLabelText('Message Input'), { target: { value: text } });
+      await fireEvent.click(view.getByTestId('composer-send'));
+      await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+      const sendId = (send.mock.calls[0] as unknown as [string, string, { sendId: string }])[2].sendId;
+      return { pane, draft, reply, view, revision, sendId };
+    }
+    const pendingButton = (view: Awaited<ReturnType<typeof sendHeld>>['view']) =>
+      view.container.querySelector('[data-testid="composer-send"][data-pending]');
+
+    it('draws no row and shows the button pending until the row arrives', async () => {
+      const { pane, draft, reply, view, revision, sendId } = await sendHeld('idle send');
+      expect(draft.content).toBe('');
+      expect(pane.items).toEqual([]);
+      expect(pane.timelineRevision).toBe(revision);
+      expect(pane.sendAwaitingConfirmation).toBe(true);
+      expect(pendingButton(view)).not.toBeNull();
+      expect(view.queryByTestId('composer-interrupt')).toBeNull();
+
+      pane.applyProviderItemUpserts([makeItem({
+        id: 'user:canonical', threadId: 'thread-1', kind: 'user_text', role: 'user', status: 'completed',
+        turnIndex: 0, itemIndex: 0, summary: 'idle send', meta: JSON.stringify({ sendId }),
+      })]);
+      await tick();
+      expect(pane.sendAwaitingConfirmation).toBe(false);
+      expect(pendingButton(view)).toBeNull();
+      // The reply is still out: the send is in flight, so Stop is offered.
+      expect(view.getByTestId('composer-interrupt')).toBeTruthy();
+      expect(pane.items.map((item) => item.id)).toEqual(['user:canonical']);
+      reply.resolve(makeTestThread());
+      await waitFor(() => expect(pane.sendInFlight).toBe(false));
+    });
+
+    it('ends the wait on the reply when no row arrived first', async () => {
+      const { pane, reply, view } = await sendHeld('reply first');
+      expect(pendingButton(view)).not.toBeNull();
+      reply.resolve(makeTestThread());
+      await waitFor(() => expect(pane.sendAwaitingConfirmation).toBe(false));
+      await tick();
+      expect(pendingButton(view)).toBeNull();
+      expect(pane.items).toEqual([]);
+    });
+
+    it('ends the wait and restores the draft when the send is refused', async () => {
+      const { pane, draft, reply, view } = await sendHeld('refused send');
+      expect(draft.content).toBe('');
+      reply.reject(new Error('backend refused'));
+      await waitFor(() => expect(pane.sendAwaitingConfirmation).toBe(false));
+      expect(draft.content).toBe('refused send');
+      await tick();
+      expect(pendingButton(view)).toBeNull();
+      expect(pane.items).toEqual([]);
+      expect(pane.generalError).toContain('Failed to send message');
+    });
   });
 
   // Runtime mode is persisted on the thread/defaults before send time.

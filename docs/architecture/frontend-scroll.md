@@ -279,8 +279,7 @@ The switch edge is not the only cache writer: pane close is the other
 `destroyPane` before `clear()` empties the items, and by
 `startDraftPlaceholder` when "+ New" replaces a mounted thread). Both
 edges share `cacheOutgoingWindow` (size priors, write-back timer
-retirement, optimistic-row stripping, the L1 snapshot + durable
-replica), so a reopened thread restores warm instead of cold-fetching
+retirement, the L1 snapshot + durable replica), so a reopened thread restores warm instead of cold-fetching
 and paying the estimate→measure cascade as a visible spring
 (bug-report-20260822T020840Z: every reopen in the trace was
 `source: "fetch"`). The close path skips a thread the store no longer
@@ -1164,8 +1163,9 @@ already in `pane.items` and mount without any upsert in that flush) and
 moved past the loaded tail: the hand-off from the send-queue preview to the
 timeline is that message appearing, and the row is rewritten in place, so
 the wire-upsert arm never sees an append), and bare
-`armStructuralSpring` (arm only, no stamp) for the composer's optimistic
-user-send. All arm sites run
+`armStructuralSpring` (arm only, no stamp) for the replacement row of an
+edit-and-resend. A sent message appears through the wire-append arm when
+its row arrives. All arm sites run
 synchronously with the data change, strictly before the Svelte flush in
 which the virtualizer measures the new/released rows and delivers their
 geometry sample. An effect-based arm (MessageTimeline's former

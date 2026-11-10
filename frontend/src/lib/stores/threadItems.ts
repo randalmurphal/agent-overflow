@@ -352,7 +352,8 @@ export function itemsForThread(
  * Merge `incoming` into `current` by id, returning a fresh array sorted by
  * (turnIndex, itemIndex). Used by paging paths where the backend can
  * legitimately re-return ancestor rows already in the window. A top-level
- * user send also matches its provisional representation by send identity.
+ * user send also matches a loaded row of the same send identity under
+ * another id.
  *
  * Returns the original `current` reference when `incoming` is empty or every
  * incoming row is already present by the same object reference, so callers can

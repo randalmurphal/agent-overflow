@@ -16,9 +16,7 @@ import { isWindowedTimelineRow } from './threadWindowDigest';
 const threadId = 't';
 
 function harness(selection?: TimelineSelection) {
-  const optimisticItemIds = new Set<string>();
   const window = createThreadItemWindow({
-    optimisticItemIds,
     selection: selection ? () => selection : undefined,
     streamingReveal: () => ({
       reconcileItemWrite() {},
@@ -34,7 +32,6 @@ function harness(selection?: TimelineSelection) {
       current: window.getItems(),
       incoming,
       itemIndexById: window.itemIndexById,
-      optimisticItemIds,
       currentThreadId: threadId,
       scopeRootId: selection?.scopeRootId,
       hasMoreNewer: false,
@@ -56,7 +53,7 @@ function harness(selection?: TimelineSelection) {
     });
     expect(window.windowedRowCount()).toBe(items.filter((item) => isWindowedTimelineRow(item, selection)).length);
   }
-  return { window, upsert, expectConsistent, optimisticItemIds };
+  return { window, upsert, expectConsistent };
 }
 
 function row(id: string, itemIndex: number, overrides: Partial<Item> = {}): Item {
@@ -134,21 +131,6 @@ describe('threadItemWindow upsert commit', () => {
     const next = h.upsert([row('n', 20), row('n', 5, { summary: 'moved' })]);
     expect(h.window.getItems().map((item) => item.id)).toEqual(['a', 'n', 'b']);
     expect(next?.appendedItems.map((item) => item.summary)).toEqual(['moved']);
-    h.expectConsistent();
-  });
-
-  it('confirms a provisional send in place of its row and retires its id', () => {
-    const h = harness();
-    const meta = JSON.stringify({ sendId: 'send-1' });
-    const provisional = row('local-1', 5, { kind: 'user_text', role: 'user', toolName: '', meta });
-    h.upsert([row('a', 0), provisional, row('b', 10)]);
-    h.optimisticItemIds.add('local-1');
-    const confirmed = row('server-1', 5, { kind: 'user_text', role: 'user', toolName: '', meta, updatedAt: 3 });
-    const next = h.upsert([confirmed]);
-    expect(next?.replacedItems).toEqual([provisional]);
-    expect(h.window.getItems().map((item) => item.id)).toEqual(['a', 'server-1', 'b']);
-    expect(h.window.itemIndexById.has('local-1')).toBe(false);
-    expect(h.optimisticItemIds.has('local-1')).toBe(false);
     h.expectConsistent();
   });
 

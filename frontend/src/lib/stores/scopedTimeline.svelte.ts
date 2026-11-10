@@ -48,7 +48,6 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
   const reads = new Map<AbortSignal, Set<string>>();
   const unheldItems = new Map<AbortSignal, Map<string, Item>>();
   const unheldMutations = new Map<AbortSignal, Set<string>>();
-  const optimisticItemIds = new Set<string>();
   const includes = (item: Item) => isWindowedTimelineRow(item, selection)
     && (!selection.digestItemId || includesDigestItem(item, scope?.digest));
   const noteItemMutation = (id: string) => { for (const touched of reads.values()) touched.add(id); };
@@ -61,7 +60,7 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
     },
   };
   const itemWindow = createThreadItemWindow({
-    optimisticItemIds, selection: () => selection, streamingReveal: () => reveal, rowUiState: () => rows,
+    selection: () => selection, streamingReveal: () => reveal, rowUiState: () => rows,
     activityRuns: () => runs, switchLoad: () => mutations,
   });
   const { getItems, getItemById, itemIndexById, writeItemAt, appendDirectAssistantLiteral,
@@ -102,7 +101,9 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
   });
   const stream = createThreadItemStreamApply({
     getItems, getItemById, itemIndexById, getThread: () => thread, writeItemAt, commitUpsertResult,
-    armLiveContentAppendSpring: scroll.armLiveContentAppendSpring, optimisticItemIds,
+    armLiveContentAppendSpring: scroll.armLiveContentAppendSpring,
+    // A scoped surface holds child rows only; sends belong to the thread's pane.
+    confirmSend: () => {}, awaitedSendId: () => null,
     timelineWindow: window, streamingReveal: reveal, activityRuns: runs, get scopeRootId() { return selection.scopeRootId; },
   });
   const contextRefresh = createRefreshScheduler({

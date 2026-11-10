@@ -206,7 +206,7 @@ async function waitForDrain(pane: ThreadPane, id: string): Promise<void> {
 }
 
 describe('append after a quiet gap — the growth glides', () => {
-  it('an optimistic send keeps gliding when composer padding changes during the append', async () => {
+  it('a sent message keeps gliding when composer padding changes during the append', async () => {
     setUiRenderTraceEnabled(true);
     clearUiRenderTrace();
     const threadId = 'thread-send-composer-resize';
@@ -215,13 +215,12 @@ describe('append after a quiet gap — the growth glides', () => {
     );
     await sleep(SILENT_GAP_MS);
     const since = lastTraceSeq();
-    // Composer arms before inserting its optimistic row. No provider turn
-    // or liveness stamp exists yet.
-    pane.armStructuralSpring();
-    pane.upsertItems([makeItem({
-      id: 'optimistic-send', threadId, turnIndex: 100, itemIndex: 0,
+    // The sent message's row arrives on the wire with no provider turn
+    // open yet.
+    pane.applyProviderItemUpserts([makeItem({
+      id: 'user:sent', threadId, turnIndex: 100, itemIndex: 0,
       kind: 'user_text', role: 'user', status: 'completed',
-      summary: 'A multiline draft becomes the optimistic sent message. '.repeat(40),
+      summary: 'A multiline draft becomes the sent message. '.repeat(40),
     })]);
     await tick();
     await waitFor(() => getUiRenderTraceRecords().some((r) =>

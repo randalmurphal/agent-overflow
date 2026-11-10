@@ -84,7 +84,7 @@ export function applyQueueStateChanged(evt: QueueStateChangedPayload | undefined
   replaceQueueForThread(evt.threadId, items);
   for (const pane of ingestPanes()) {
     if (pane.threadId !== evt.threadId) continue;
-    for (const item of items) pane.confirmOptimisticSend(evt.threadId, item.sendId);
+    for (const item of items) pane.confirmSend(evt.threadId, item.sendId);
   }
 }
 
@@ -102,7 +102,7 @@ export function applyQueueFlushed(
   for (const pane of ingestPanes()) {
     if (pane.threadId !== evt.threadId) continue;
     for (const item of evt.items) {
-      pane.confirmOptimisticSend(evt.threadId, item.sendId, item.userItemId);
+      pane.confirmSend(evt.threadId, item.sendId);
     }
     // The row can already be on screen when this frame lands: the eager
     // quiet persist emits `queue_flushed` before its `item_event`, but a

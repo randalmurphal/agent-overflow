@@ -20,18 +20,27 @@ response turns. A known turn with no items still reserves its index. Queue
 dispatch resolves placement again; a Codex rejected-steer fallback explicitly
 allocates a fresh response turn.
 
-The frontend creates one send ID before drawing its provisional row and uses
-that same ID for every retry. Identified backend messages derive an opaque row
-ID from it when the caller opts into `reconcileBySendId`. Older frontends
-already send idempotency IDs but predict `user:<turn>` for their provisional
-row: without this opt-in, direct sends retain numeric IDs. An idle-style send
+The frontend creates one send ID per message and uses that same ID for every
+retry. It draws no row of its own for the message. Identified backend messages
+derive an opaque row ID from the send ID when the caller opts into
+`reconcileBySendId`. Older frontends already send idempotency IDs but draw a
+provisional row and predict `user:<turn>` for it: without this opt-in, direct
+sends retain numeric IDs. An idle-style send
 from such a caller is rejected before acceptance if the backend is active or
 starting, allowing its existing rollback to restore the draft. Explicit queue
 and steer paths already consume backend-resolved item IDs and remain available.
 Moving a modern message does not rename it; legacy numeric IDs remain valid.
-Only row coordinates determine ordering. Queue, dispatched, and canonical-item
-acknowledgements reconcile the originating frontend's provisional row by send
-ID, including after a missed event. Another frontend's row is never a match.
+Only row coordinates determine ordering.
+
+A direct send is on screen only as the Send button's pending state until the
+backend shows evidence of it. The originating pane holds the send ID
+(`awaitSendConfirmation` in `thread.svelte.ts`) and releases it on the first
+of: the pushed `user_text` row carrying that send ID, whether or not the
+loaded window admits the row; a `provider:queue_state_changed` or
+`provider:queue_flushed` entry naming it; a live-state read listing it, which
+covers a missed event; or the send's reply, accepted or refused. A thread
+switch abandons the wait. Another frontend's send and another thread's events
+are never a match.
 
 Same-ID public admissions serialize before their thread/action locks. The
 existing history row, durable queue row, or pending provider-echo entry answers
@@ -177,8 +186,8 @@ response rows, including imported overlays and fork/revert boundaries.
 An exhaustive store test covers all relative orders of two messages and their
 surrounding content, including negative positions, gaps, failed commits and retries.
 
-`threadOptimisticSend.test.ts` checks acknowledgement permutations and cross-client
-isolation. `compact-stale-send.spec.ts` drives the real paired phone composer while
+`threadSendConfirmation.test.ts` checks each confirmation source and cross-client
+and cross-thread isolation. `compact-stale-send.spec.ts` drives the real paired phone composer while
 withholding activity events; the resulting prompt must appear once in the running
 Codex turn and remain before its answer after reload. The existing send-recovery
 browser cases drop successful RPC replies to exercise reconnect retries.

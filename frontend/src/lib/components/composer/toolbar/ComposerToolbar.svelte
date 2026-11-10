@@ -40,12 +40,14 @@
     canSend: boolean;
     isTurnActive: boolean;
     /**
-     * Optimistic stop-button gate: true while the SendMessage RPC is
-     * pending, before `provider:turn_started` arrives. Composer flips
-     * it via `pane.setSendInFlight(true)` at the top of send() and
-     * clears it in finally.
+     * Stop-button gate: true while the SendMessage RPC is pending, before
+     * `provider:turn_started` arrives. Composer flips it via
+     * `pane.setSendInFlight(true)` at the top of send() and clears it in
+     * finally.
      */
     sendInFlight?: boolean;
+    /** A dispatched send the backend has shown no evidence of yet. */
+    sendPending?: boolean;
     sendAction?: SendButtonAction;
     sendLabel?: string;
     sendDisabledReason?: string;
@@ -66,6 +68,7 @@
     canSend,
     isTurnActive,
     sendInFlight = false,
+    sendPending = false,
     sendAction,
     sendLabel,
     sendDisabledReason,
@@ -250,6 +253,7 @@
         {canSend}
         {isTurnActive}
         {sendInFlight}
+        {sendPending}
         action={sendAction}
         label={sendLabel}
         disabledReason={sendDisabledReason}

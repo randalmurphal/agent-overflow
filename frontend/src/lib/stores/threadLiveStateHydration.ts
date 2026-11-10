@@ -49,8 +49,8 @@ import { compactingRevision, hydrateCompactingState } from './compactingState.sv
 export interface ThreadLiveStateHydrationOptions {
   getThread(): Thread | null;
   getItems(): readonly Item[];
-  isOptimisticItem(itemId: string): boolean;
-  confirmOptimisticSend(threadId: string, sendId: string | undefined, canonicalItemId?: string): void;
+  /** A queue or flush entry is the backend's evidence it accepted that send. */
+  confirmSend(threadId: string, sendId: string | undefined): void;
   /** The pane's send-queue render handover (thread.svelte.ts). */
   syncRenderedFlushRows(): void;
   /** Pane switch generation — captured at load start, compared after awaits. */
@@ -89,13 +89,6 @@ export interface LiveStateFetchResult {
   /** Present when the full execution snapshot could not be fetched. */
   error?: unknown;
   /**
-   * Pending-send timeline rows the backend has NOT persisted to SQLite
-   * yet (a pending send's row lands on its wire echo). A caller
-   * reconciling a SQLite page merges these in — the page is
-   * structurally blind to them. Empty when the fetch failed.
-   */
-  deferredItems: Item[];
-  /**
    * Apply the fetched snapshot to the pane and the global registries,
    * gen/token-guarded, entirely synchronously. Consumes the hydration
    * token (idempotent: second call no-ops). If never called, the caller
@@ -108,14 +101,12 @@ export interface LiveStateFetchResult {
 export interface ThreadLiveStateHydration {
   /**
    * Fetch the thread's live state (active turn, send queue, pending
-   * interactive requests, live todos, deferred pending-send rows);
-   * apply when the caller says so. Both authoritative install paths —
-   * the cold-open sync leg and `refreshFromBackend` — fetch in
-   * parallel with their SQLite page, merge the result's
-   * `deferredItems` into the page, and commit the install and the
-   * live-state apply back-to-back with no await between them, so the
-   * timeline never paints the slice-only intermediate state (which is
-   * missing pending sends and streaming partials).
+   * interactive requests, live todos); apply when the caller says so.
+   * Both authoritative install paths — the cold-open sync leg and
+   * `refreshFromBackend` — fetch in parallel with their SQLite page and
+   * commit the install and the live-state apply back-to-back with no
+   * await between them, so the timeline never paints the slice-only
+   * intermediate state (which is missing streaming partials).
    */
   startLiveStateFetch(
     threadID: string,
@@ -137,15 +128,6 @@ export interface ThreadLiveStateHydration {
 export function createThreadLiveStateHydration(
   options: ThreadLiveStateHydrationOptions,
 ): ThreadLiveStateHydration {
-  function deferredItemsForThread(
-    snapshot: ThreadLiveState,
-    threadID: string,
-  ): Item[] {
-    const rows = (snapshot.deferredItems ?? []) as Item[];
-    if (rows.length === 0) return rows;
-    return rows.filter((row) => row.threadId === threadID);
-  }
-
   function applyActiveTurnSnapshot(
     snapshot: ThreadLiveState,
     threadID: string,
@@ -206,18 +188,15 @@ export function createThreadLiveStateHydration(
       // including quiet reservations loaded by this pane's history read.
       // Only confirmed rows may hand over to the timeline; pendingFlush
       // keeps reservations in the preview across navigation and refresh.
-      for (const item of queueItems) options.confirmOptimisticSend(threadID, item.sendId);
-      for (const item of flushedItems) {
-        options.confirmOptimisticSend(threadID, item.sendId, item.userItemId);
-      }
+      for (const item of queueItems) options.confirmSend(threadID, item.sendId);
+      for (const item of flushedItems) options.confirmSend(threadID, item.sendId);
     }
 
     // Recovery may learn consumption from history before the admission
-    // reply or echo reaches this client. Provisional timeline rows cannot
-    // acknowledge their own submission.
+    // reply or echo reaches this client.
     if (getQueueForThread(threadID).length > 0) {
       for (const item of options.getItems()) {
-        if (!options.isOptimisticItem(item.id)) markQueuedItemConsumed(item);
+        markQueuedItemConsumed(item);
       }
     }
     options.syncRenderedFlushRows();
@@ -348,7 +327,6 @@ export function createThreadLiveStateHydration(
     let tokenConsumed = false;
     return {
       error: snapshotError,
-      deferredItems: snapshot ? deferredItemsForThread(snapshot, threadID) : [],
       apply(onStaleQueue): void {
         if (tokenConsumed) return;
         try {

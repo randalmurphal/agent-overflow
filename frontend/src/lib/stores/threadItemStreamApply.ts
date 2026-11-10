@@ -10,6 +10,7 @@ import type { ThreadTimelineWindow } from './threadTimelineWindow.svelte';
 import type { ThreadStreamingReveal } from './threadStreamingReveal.svelte';
 import type { ThreadActivityRuns } from './threadActivityRuns.svelte';
 import { isSmoothLiveContentKind } from './threadPaneShared';
+import { parseUserMessageMeta } from '../utils/userMessageMeta';
 
 export interface ThreadItemStreamApplyOptions {
   /** Current item window, sorted by (turnIndex, itemIndex). Re-read per call. */
@@ -42,8 +43,13 @@ export interface ThreadItemStreamApplyOptions {
   ): void;
   /** Wire append to the loaded tail: arm the structural spring AND stamp. */
   armLiveContentAppendSpring(): void;
-  /** The pane's optimistic-row ledger — discharged by a wire echo. */
-  optimisticItemIds: Set<string>;
+  /**
+   * A pushed user row is the backend's evidence that it accepted the send
+   * it names; the pane ends that send's wait for confirmation.
+   */
+  confirmSend(threadId: string, sendId: string | undefined): void;
+  /** The send the pane is waiting on, or null. Gates the meta parse. */
+  awaitedSendId(): string | null;
   timelineWindow: ThreadTimelineWindow;
   /**
    * The transcript root of a scoped surface; omitted for a thread's main
@@ -64,7 +70,7 @@ export interface ThreadItemStreamApply {
    * rows of another scope, rows refused admission, or no row changed).
    */
   upsertItemsBatch(incoming: Item[]): ApplyItemUpsertsToWindowResult | null;
-  /** `upsertItemsBatch` plus optimistic-marker discharge and the append spring. */
+  /** `upsertItemsBatch` plus send confirmation and the append spring. */
   applyProviderItemUpserts(
     incoming: Item[],
   ): ApplyItemUpsertsToWindowResult | null;
@@ -151,7 +157,6 @@ export function createThreadItemStreamApply(
    */
   function upsertItemsBatch(
     incoming: Item[],
-    optimisticItemIds?: ReadonlySet<string>,
     opensStreams = false,
   ): ApplyItemUpsertsToWindowResult | null {
     const scope = options.scopeRootId ?? '';
@@ -165,7 +170,7 @@ export function createThreadItemStreamApply(
       }
       break;
     }
-    return rows.length > 0 ? upsertWindowRows(rows, optimisticItemIds, opensStreams) : null;
+    return rows.length > 0 ? upsertWindowRows(rows, opensStreams) : null;
   }
 
   /** The event names a row of another scope, which this window never holds. */
@@ -175,7 +180,6 @@ export function createThreadItemStreamApply(
 
   function upsertWindowRows(
     incoming: Item[],
-    optimisticItemIds: ReadonlySet<string> | undefined,
     opensStreams: boolean,
   ): ApplyItemUpsertsToWindowResult | null {
     const thread = options.getThread();
@@ -185,7 +189,6 @@ export function createThreadItemStreamApply(
         current: previousItems,
         incoming,
         itemIndexById,
-        optimisticItemIds,
         currentThreadId: thread?.id ?? null,
         scopeRootId: options.scopeRootId,
         oldestLoadedCursor: timelineWindow.oldestLoadedCursor,
@@ -219,24 +222,18 @@ export function createThreadItemStreamApply(
     incoming: Item[],
   ): ApplyItemUpsertsToWindowResult | null {
     const previousTail = options.getItems().at(-1);
-    const applied = upsertItemsBatch(incoming, options.optimisticItemIds, true);
+    const applied = upsertItemsBatch(incoming, true);
     if (applied && applied.appendedItems.length > 0 && !timelineWindow.hasMoreNewer) {
       activityRuns.noteLiveAppend(applied.appendedItems, previousTail);
     }
-    // Discharging an optimistic marker belongs HERE, not in
-    // `upsertItemsBatch`: the marker means "this row exists only in
-    // this pane's hope", and only the wire can disprove that. Doing it
-    // in the shared batch untracked the composer's own optimistic
-    // insert on the very call that mounted it (an append lands in
-    // `changedItems` too), which left `isOptimisticItem` permanently
-    // false — the failed-send rollback never fired, and the
-    // cache/replica filters that exist to keep phantoms out of the
-    // durable tiers had nothing to filter.
-    if (options.optimisticItemIds.size > 0) {
+    // Only the wire confirms a send, and it does so whether or not the
+    // window admitted the row.
+    const awaited = options.awaitedSendId();
+    if (awaited !== null) {
       for (const item of incoming) {
-        if (item.threadId === options.getThread()?.id && itemIndexById.has(item.id)) {
-          options.optimisticItemIds.delete(item.id);
-        }
+        if (item.kind !== 'user_text' || parseUserMessageMeta(item.meta).sendId !== awaited) continue;
+        options.confirmSend(item.threadId, awaited);
+        break;
       }
     }
     // A wire append to the loaded tail arms the structural-append
@@ -248,10 +245,7 @@ export function createThreadItemStreamApply(
     // siblings) arm too — an effect keyed on the active turn never saw
     // those and they landed as instant whole-viewport teleports
     // (bug-report-20260702T193212Z). Rollback-restore rows route
-    // through `upsertItems` above, deliberately outside this arm;
-    // the composer's optimistic user-send arms at its own call site
-    // (`pane.armStructuralSpring()` before its upsert) without the
-    // stamp.
+    // through `upsertItems` above, deliberately outside this arm.
     if (applied && applied.appendedItems.length > 0) {
       options.armLiveContentAppendSpring();
     }

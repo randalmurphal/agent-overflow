@@ -48,7 +48,6 @@ export interface TimelineCommitOptions {
  * take its commit entry points), and none is read during construction.
  */
 export interface ThreadItemWindowOptions {
-  optimisticItemIds: Set<string>;
   /**
    * The transcript this window holds: omitted for a thread's main window;
    * an agent scope names its launch in `scopeRootId`. Rows parented
@@ -269,9 +268,6 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
       windowed += isWindowed(item);
     }
     windowedRows = windowed;
-    for (const id of options.optimisticItemIds) {
-      if (!itemIndexById.has(id)) options.optimisticItemIds.delete(id);
-    }
   }
 
   function disposeDroppedItemState(
@@ -505,7 +501,7 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     return dropped;
   }
 
-  /** Commit the merge, including provisional identities replaced by confirmation. */
+  /** Commit the merge. */
   function commitUpsertResult(
     next: ApplyItemUpsertsToWindowResult,
     afterCommit: (committed: ApplyItemUpsertsToWindowResult) => void,
@@ -539,44 +535,21 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     }
     for (const item of next.appendedItems) windowedRows += isWindowed(item);
     try {
-      if (next.replacedItems.length > 0) {
-        options.switchLoad().noteItemWindowReplacement(previousItems, committed);
-      } else {
-        options.switchLoad().noteItemMutations(next.changedItems);
-      }
+      options.switchLoad().noteItemMutations(next.changedItems);
     } catch (error) {
       errors.push(error);
     }
     try {
-      // Only entries from `reindexFrom` moved; a confirmed send's
-      // provisional id leaves the map and the optimistic ledger with it.
-      for (const replaced of next.replacedItems) {
-        itemIndexById.delete(replaced.id);
-        options.optimisticItemIds.delete(replaced.id);
-      }
+      // Only entries from `reindexFrom` moved.
       for (let index = next.reindexFrom; index < committed.length; index += 1) {
         itemIndexById.set(committed[index].id, index);
       }
     } catch (error) {
       errors.push(error);
     }
-    for (const item of next.replacedItems) {
-      try {
-        itemBoxes.drop(item.id);
-      } catch (error) {
-        errors.push(error);
-      }
-    }
     for (const item of next.changedItems) {
       try {
         itemBoxes.set(item.id, item);
-      } catch (error) {
-        errors.push(error);
-      }
-    }
-    if (next.replacedItems.length > 0) {
-      try {
-        disposeDroppedItemState(next.replacedItems);
       } catch (error) {
         errors.push(error);
       }

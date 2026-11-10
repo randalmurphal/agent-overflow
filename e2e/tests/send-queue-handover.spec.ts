@@ -273,7 +273,7 @@ test('a queued message the pane already holds hands over when Claude picks it up
 
 // A message sent after the turn completed on the wire but while its text is
 // still revealing. The backend is idle, so nothing queues there; the pane's
-// reveal frontier is still up, so a directly sent optimistic row would be
+// reveal frontier is still up, so a directly sent message's row would be
 // withheld behind the draining prose with everything else past the frontier,
 // and the person's own message would leave the composer and appear nowhere
 // until the drain ended. The composer routes the send through the queue
@@ -311,7 +311,7 @@ test('a message sent while the previous turn is still revealing stays in the pre
   await startZoneSampler(page, QUEUED);
 
   // The send is accepted into the queue (and dispatched at once by the
-  // idle backend) rather than appended as an optimistic row.
+  // idle backend) rather than sent directly.
   const flushed = harness.waitForEvent('provider:queue_flushed', (ev: any) => ev.threadId === threadId);
   await input.fill(QUEUED);
   await input.press('Enter');

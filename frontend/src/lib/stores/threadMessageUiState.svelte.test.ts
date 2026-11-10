@@ -3,35 +3,35 @@ import { makeItem } from '../../test/helpers/chat';
 import { createThreadMessageUiState } from './threadMessageUiState.svelte';
 
 function fixture() {
-  const provisional = makeItem({ id: 'optimistic:send', kind: 'user_text', meta: '{"sendId":"send"}' });
-  const confirmed = { ...provisional, id: 'user:send' };
-  const items = new Map([[provisional.id, provisional]]);
+  const earlier = makeItem({ id: 'user:earlier', kind: 'user_text', meta: '{"sendId":"send"}' });
+  const renamed = { ...earlier, id: 'user:send' };
+  const items = new Map([[earlier.id, earlier]]);
   const ui = createThreadMessageUiState({ getItemById: id => items.get(id), loadedItems: () => items.values() });
-  const confirm = () => { items.delete(provisional.id); items.set(confirmed.id, confirmed); ui.disposeItems([provisional]); };
-  return { provisional, confirmed, items, ui, confirm };
+  const rename = () => { items.delete(earlier.id); items.set(renamed.id, renamed); ui.disposeItems([earlier]); };
+  return { earlier, renamed, items, ui, rename };
 }
 
 const preview = (url: string) => ({ id: 'image', filename: 'image.png', mimeType: 'image/png', url, width: 0, height: 0, originalBytes: 1, menuTag: {} });
 
 describe('message presentation lifetime', () => {
-  it('preserves expansion and previews across confirmation, then clears them on pruning', () => {
-    const { provisional, confirmed, ui, confirm } = fixture();
+  it('preserves expansion and previews when the send’s row changes id, then clears them on pruning', () => {
+    const { earlier, renamed, ui, rename } = fixture();
     const revoke = vi.spyOn(URL, 'revokeObjectURL');
-    const cache = ui.attachmentCacheFor(provisional.id);
+    const cache = ui.attachmentCacheFor(earlier.id);
     cache.set('image', preview('blob:original'));
-    ui.setExpanded(provisional.id, true);
+    ui.setExpanded(earlier.id, true);
     const signature = ui.expansionSignature();
-    confirm();
-    ui.prune(new Set([confirmed.id]));
-    expect(ui.isExpanded(confirmed.id)).toBe(true);
+    rename();
+    ui.prune(new Set([renamed.id]));
+    expect(ui.isExpanded(renamed.id)).toBe(true);
     expect(ui.expansionSignature()).toBe(signature);
-    expect(ui.attachmentCacheFor(confirmed.id).get('image')?.url).toBe('blob:original');
+    expect(ui.attachmentCacheFor(renamed.id).get('image')?.url).toBe('blob:original');
     expect(revoke).not.toHaveBeenCalled();
     ui.prune(new Set());
-    expect(ui.isExpanded(confirmed.id)).toBe(false);
+    expect(ui.isExpanded(renamed.id)).toBe(false);
     expect(cache.get('image')).toBeUndefined();
     expect(revoke).toHaveBeenCalledWith('blob:original');
-    const fresh = ui.attachmentCacheFor(confirmed.id);
+    const fresh = ui.attachmentCacheFor(renamed.id);
     cache.set('image', preview('blob:late'));
     expect(revoke).toHaveBeenCalledWith('blob:late');
     expect(fresh.get('image')).toBeUndefined();
@@ -43,25 +43,25 @@ describe('message presentation lifetime', () => {
   });
 
   it('collapses and expands through either representation without carrying state to another thread', () => {
-    const { provisional, confirmed, ui, confirm, items } = fixture();
-    ui.setExpanded(provisional.id, true);
-    confirm();
-    ui.setExpanded(confirmed.id, false);
-    expect(ui.isExpanded(confirmed.id)).toBe(false);
-    ui.setExpanded(confirmed.id, true);
-    const other = { ...confirmed, id: 'user:other', threadId: 'other-thread' };
+    const { earlier, renamed, ui, rename, items } = fixture();
+    ui.setExpanded(earlier.id, true);
+    rename();
+    ui.setExpanded(renamed.id, false);
+    expect(ui.isExpanded(renamed.id)).toBe(false);
+    ui.setExpanded(renamed.id, true);
+    const other = { ...renamed, id: 'user:other', threadId: 'other-thread' };
     items.set(other.id, other);
     expect(ui.isExpanded(other.id)).toBe(false);
-    items.delete(confirmed.id);
-    ui.disposeItems([confirmed]);
-    items.set(confirmed.id, confirmed);
-    expect(ui.isExpanded(confirmed.id)).toBe(false);
+    items.delete(renamed.id);
+    ui.disposeItems([renamed]);
+    items.set(renamed.id, renamed);
+    expect(ui.isExpanded(renamed.id)).toBe(false);
   });
 
   it('keeps borrowed previews alive until disposal and revokes every owned URL once', () => {
-    const { ui, provisional } = fixture();
+    const { ui, earlier } = fixture();
     const revoke = vi.spyOn(URL, 'revokeObjectURL');
-    const cache = ui.attachmentCacheFor(provisional.id);
+    const cache = ui.attachmentCacheFor(earlier.id);
     cache.set('image', preview('blob:old'));
     cache.set('image', preview('blob:new'));
     cache.set('image', preview('blob:new'));
@@ -71,10 +71,10 @@ describe('message presentation lifetime', () => {
     revoke.mockRestore();
   });
   it('does not confuse backend ids with send keys or ambiguous expansion lists', () => {
-    const { provisional, items, ui } = fixture();
+    const { earlier, items, ui } = fixture();
     const collision = makeItem({ id: 'send:["thread-1","send"]' });
     items.set(collision.id, collision);
-    ui.setExpanded(provisional.id, true);
+    ui.setExpanded(earlier.id, true);
     expect(ui.isExpanded(collision.id)).toBe(false);
     ui.clear();
     ui.setExpanded('a,item:b', true);

@@ -579,6 +579,17 @@ describe('independent agent timeline', () => {
     expect(pane.getItemById(root.id)).toMatchObject({ summary: 'original launch', status: 'completed' });
   });
 
+  it('reads and settles a send awaiting confirmation on the thread pane', async () => {
+    const pane = await setup();
+    const view = await open(pane);
+    view.pane.awaitSendConfirmation('mine');
+    expect(pane.sendAwaitingConfirmation).toBe(true);
+    expect(view.pane.sendAwaitingConfirmation).toBe(true);
+    view.pane.confirmSend(threadId, 'mine');
+    expect(pane.sendAwaitingConfirmation).toBe(false);
+    expect(view.pane.sendAwaitingConfirmation).toBe(false);
+  });
+
   it('owns streaming reveal and releases it without touching another scope', async () => {
     const nested = row('nested', 1, { kind: 'tool_call', toolName: 'Agent', status: 'running' });
     const pane = await setup([root, nested]);
