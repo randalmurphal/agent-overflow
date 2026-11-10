@@ -98,6 +98,7 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.ServiceUpdateOutcome,
 		eventchan.ServiceUpdateStatus,
 		eventchan.SettingsUpdated,
+		eventchan.ShellCommand,
 		eventchan.SoundChanged,
 		eventchan.SpinnerChanged,
 		eventchan.ThemeChanged,

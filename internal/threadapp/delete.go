@@ -21,6 +21,9 @@ type DeletePorts struct {
 	CleanProviderBackground func(store.Thread) error
 	StopSession             func(threadID string) error
 	CancelWorktreeSetup     func(threadID string)
+	// CancelShellCommand stops a composer shell command still running in the
+	// thread's workspace; its result is discarded.
+	CancelShellCommand func(threadID string)
 	// CloseTerminals runs before the row drops and again after, for a
 	// terminal a client opened meanwhile: OpenTerminal needs the row, so
 	// none can open after the drop.
@@ -110,6 +113,9 @@ func (s *Service) DeleteTree(threadID string, subtreeLocksHeld bool, ports Delet
 	if ports.CancelWorktreeSetup != nil {
 		ports.CancelWorktreeSetup(threadID)
 	}
+	if ports.CancelShellCommand != nil {
+		ports.CancelShellCommand(threadID)
+	}
 	if ports.CloseTerminals != nil {
 		if err := ports.CloseTerminals(threadID); err != nil {
 			errs = append(errs, fmt.Errorf("close terminals: %w", err))
@@ -133,6 +139,11 @@ func (s *Service) DeleteTree(threadID string, subtreeLocksHeld bool, ports Delet
 	// and final deletion, after provider/process cleanup has finished.
 	unlockMutation := s.mutations.Lock(threadID)
 	defer unlockMutation()
+	// A command is registered under this lock, so one that started during
+	// the cleanup above is stopped here and none starts after.
+	if ports.CancelShellCommand != nil {
+		ports.CancelShellCommand(threadID)
+	}
 	if ports.StopRemoteWork != nil {
 		if err := ports.StopRemoteWork(threadID); err != nil {
 			return err

@@ -94,6 +94,10 @@
   import { errString } from '../../utils/errors';
   import { implementProposedPlan, implementProposedPlanInNewThread } from '../../utils/proposedPlanImplementation';
   import { sourceFromProposedPlanItem } from '../../utils/proposedPlan';
+  import { isShellInput, shellCommandFromInput } from '../../utils/shellInvocation';
+  import { getShellRun, isShellRunActive, runShellCommand } from '../../stores/shellCommands.svelte';
+  import { isTransportClassError } from '../../stores/transportStatus.svelte';
+  import { pathBasename } from '../../utils/pathDisplay';
   import type { DiffReviewComment, ProposedPlanComment, SourceDiffReview, SourceProposedPlan } from '../../types/models';
 
   interface Props {
@@ -286,7 +290,32 @@
       : [],
   );
   let hasDraftDiffReviewComments = $derived(Boolean(activeDiffReviewSource) && activeDiffReviewDraftComments.length > 0);
+  // Shell mode: a draft whose first character is `!` runs as a command in the
+  // thread's workspace and its output is sent. A draft that already holds a
+  // command's output (a message taken back) is a message again, so restoring
+  // one and pressing Enter resends it instead of running the command twice.
+  let shellMode = $derived(
+    !hasInteractivePrompt
+      && isShellInput(draft.content)
+      && !draft.attachments.some((attachment) => attachment.shell),
+  );
+  let shellCommand = $derived(shellMode ? shellCommandFromInput(draft.content) : null);
+  let shellUngranted = $derived(!threadHasScope('terminal:operate', pane.threadId, pane.thread?.projectId));
+  let shellRunning = $derived(isShellRunActive(pane.threadId));
+  let shellBlockedReason = $derived(
+    !shellMode ? ''
+      : shellUngranted ? 'This session cannot run commands'
+      : shellRunning ? 'A command is already running'
+      : '',
+  );
+  let shellSendState = $derived<'ready' | 'empty' | 'blocked' | undefined>(
+    !shellMode ? undefined
+      : shellBlockedReason ? 'blocked'
+      : shellCommand === null ? 'empty'
+      : 'ready',
+  );
   let sendState = $derived(deriveComposerSendState({
+    shell: shellSendState,
     isDisabled,
     sendUngranted,
     sending: false,
@@ -359,7 +388,11 @@
       Boolean(pane.thread?.worktreePath) ||
       // Applying a staged branch/worktree intent materializes an item-less
       // draft row first; deleting it mid-RPC fails the apply on the backend.
-      isWorktreeIntentApplying(pane.threadId)
+      isWorktreeIntentApplying(pane.threadId) ||
+      // Running a command clears the composer while the thread is still
+      // empty. Its output becomes the first message, and a failure notice
+      // has to stay readable.
+      getShellRun(pane.threadId) !== null
     );
   }
 
@@ -592,6 +625,9 @@
     // must not materialize a thread, open a queue slot, or leave a persisted
     // draft behind. The composed message is what the backend would have seen,
     // so the classification matches what a send would actually have sent.
+    // The command Enter was pressed on. The steps below await, and the text
+    // can change under them; only this command may run.
+    const commandAtSubmit = shellCommand;
     if (!hasUserInputPrompt && (surface?.consumeInterceptedSend(draft.composeOutgoingMessage()) ?? false)) {
       // Consume the TEXT only. Attachments and terminal chips are the user's
       // uploads, not part of the command, so they stay in the draft.
@@ -620,6 +656,14 @@
     // synchronous path until a staged choice actually needs an RPC.
     if (hasStagedWorktreeIntent(pane.thread)) {
       if (!(await prepareWorktreeForSend(pane, isCurrent)) || !isCurrent() || !sendState.canSend) return;
+    }
+    if (shellMode || commandAtSubmit !== null) {
+      // After the awaits above, so the command runs in the workspace they
+      // settled. Text edited meanwhile is left alone, unsent and not run.
+      const shellThreadId = pane.threadId;
+      if (commandAtSubmit === null || shellCommand !== commandAtSubmit || !shellThreadId) return;
+      await runShellFromComposer(pane, draft, shellThreadId, commandAtSubmit);
+      return;
     }
     const planSourceForImplement = latestPlanSource;
     if (planSourceForImplement && !hasDraftContent && !hasDraftPlanComments && !hasDraftDiffReviewComments) {
@@ -770,6 +814,42 @@
       if (isCurrent()) {
         preparingWorktree = false;
         sendPane.setSendInFlight(false);
+      }
+    }
+  }
+
+  /**
+   * Runs a `!command`. Only the text is consumed: attachments and terminal
+   * chips are not part of a command and stay for the next message. The run
+   * shows above the composer (ShellRunCard) and its output is sent by the
+   * backend when it exits, so nothing is added to the timeline here.
+   */
+  async function runShellFromComposer(
+    pane: ThreadPane,
+    draft: ComposerDraftStore,
+    threadId: string,
+    command: string,
+  ): Promise<void> {
+    const typed = draft.content;
+    draft.setContent('');
+    resetTextareaHeight();
+    surface?.recreateInput();
+    try {
+      await runShellCommand(threadId, command);
+    } catch (err) {
+      // A lost reply is not a refusal. The store keeps the run's identity,
+      // so running the restored text again cannot start it twice.
+      const message = isTransportClassError(err)
+        ? 'The connection dropped while the command was starting. Run it again: a command that already started is not run twice.'
+        : `Failed to run the command: ${errString(err)}`;
+      pane.setGeneralError(message, err);
+      // The text goes back ahead of anything typed since, on the thread it
+      // was typed in even when the pane has moved on.
+      try {
+        await draft.restoreUnsentDraftFor(threadId, { content: typed, attachments: [], terminalChips: [] });
+      } catch (restoreErr) {
+        console.error('Failed to restore the command text:', restoreErr);
+        pane.setGeneralError(`${message} The command text could not be restored.`, err);
       }
     }
   }
@@ -1108,6 +1188,7 @@
       onKeydownAfterPopovers={claimHistoryRecallKey}
       editsDraft={!hasUserInputPrompt}
       showDraftRows={!hasInteractivePrompt}
+      shellPrefix={shellMode}
       {blockAttachment}
       attachmentsDeferred={hasInteractivePrompt}
       uploadThreadId={threadIdForUpload}
@@ -1123,6 +1204,29 @@
       {/snippet}
     </ComposerInputSurface>
 
+    {#if shellMode}
+      <!-- One fixed-height line, so entering and leaving shell mode moves
+           the card by exactly this row and nothing reflows inside it. -->
+      <div
+        class="flex h-5 items-center gap-1.5 px-4 text-[0.6875rem] leading-none text-fg-subtle"
+        aria-live="polite"
+        data-testid="composer-shell-hint"
+      >
+        <span class="font-mono text-accent" aria-hidden="true">$</span>
+        {#if shellBlockedReason}
+          <span class="truncate text-warning">{shellBlockedReason}</span>
+        {:else}
+          <span class="truncate">
+            {#if hasStagedWorktreeIntent(pane.thread)}
+              Runs in the new worktree
+            {:else}
+              Runs in <span class="font-mono text-fg-muted">{pathBasename(paneWorkspacePath(pane) ?? '') || 'the workspace'}</span>
+            {/if}
+            · the output is sent to the agent
+          </span>
+        {/if}
+      </div>
+    {/if}
     {#if !hasInteractivePrompt && preparingWorktree}
       <div
         class="px-4 pb-1 text-[0.6875rem] text-text-secondary/70"
@@ -1142,6 +1246,8 @@
       {sendLabel}
       sendDisabledReason={preparingSend
         ? 'Preparing message…'
+        : shellBlockedReason
+        ? shellBlockedReason
         : interruptPending
         ? 'Wait for the interrupted message to finish reverting'
         : undefined}

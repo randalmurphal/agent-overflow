@@ -32,6 +32,7 @@ import { fetchDiscussionChannelSnapshot } from './eventsDiscussion';
 import { hydrateProviderAccounts } from './eventsProvider';
 import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
 import { resyncWorktreeSetups } from './eventsWorktreeSetup';
+import { resyncShellRuns } from './shellCommands.svelte';
 import { revalidateDraftWorktrees } from './eventsWorktreeRemoved';
 import { markImportConnectionLost } from './sessionImport.svelte';
 import { releaseThreadTitleGenerationPending } from './threadTitleGeneration.svelte';
@@ -502,6 +503,13 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       // Scoped to threads whose row says a setup ran — every other thread
       // would be an RPC for a guaranteed-idle answer.
       resyncWorktreeSetups(getThreads());
+      return;
+    }
+    case 'shell:command': {
+      // A lost `finished` frame would leave a command running forever here.
+      // The store re-reads the runs it holds; a run it never saw start
+      // announces itself with its next output frame.
+      resyncShellRuns();
       return;
     }
     case 'session-import:progress': {

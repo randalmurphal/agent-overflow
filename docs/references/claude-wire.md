@@ -1221,6 +1221,32 @@ the client-supplied `uuid`, with `promptSource:"sdk"`, the CLI-assigned
 has no user entry; the transcript records it as a `queued_command`
 attachment carrying the uuid as `source_uuid`.
 
+### A host-sent `!` record is read as a command the person ran (verified 2.1.321)
+
+The TUI's `!` mode writes two user messages: `<bash-input>CMD</bash-input>`,
+then `<bash-stdout>…</bash-stdout><bash-stderr>…</bash-stderr>`. On success
+the merged output is in stdout with its trailing newline trimmed and stderr
+is empty. On failure stdout is empty and stderr holds the merged output; no
+exit code is recorded. Output is XML-escaped (`&lt;`, `&amp;`, `&gt;`) and
+the command is not. `bashOutputMaxChars` defaults to 30000; past it the CLI
+writes the output to a file and sends a preview with the path.
+
+A stream-json host that sends one user message holding both tags gets the
+same treatment as any prompt: it is written to the transcript under the
+client `uuid`, the model answers it as output of a command the person ran,
+and mid-turn it is drained into the running turn as a `queued_command`.
+Because the text holds `<bash-stdout>`, a turn-opening send is subject to
+the echo filter above, so its confirmation is the transcript mirror. Agent
+Overflow's composer shell commands send this shape
+(`internal/provider/claude/user_shell.go`) and add the exit code to stderr.
+The CLI's internal `bash_command` stdin frame runs a command the model
+never sees and is not used.
+
+The TUI's two records are not prompts, so the fork-point walk
+(`sessionfork.isRealUserPrompt`) skips them. The host's single record is
+one: the walk recognizes it by `</bash-input>` followed directly by
+`<bash-stdout>`, which the TUI never writes into one message.
+
 Spike 2026-10-11 (haiku, AO's flag set), each case with its
 `command_lifecycle` bracket:
 

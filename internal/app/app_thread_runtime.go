@@ -245,6 +245,7 @@ func (a *App) threadDeletePorts() threadapp.DeletePorts {
 		CleanProviderBackground: a.cleanThreadProviderBackground,
 		StopSession:             a.stopSession,
 		CancelWorktreeSetup:     a.cancelThreadWorktreeSetup,
+		CancelShellCommand:      a.cancelThreadShellCommand,
 		CloseTerminals: func(threadID string) error {
 			if a.terminals == nil {
 				return nil

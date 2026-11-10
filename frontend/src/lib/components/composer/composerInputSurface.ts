@@ -76,6 +76,11 @@ export interface ComposerInputSurfaceProps {
    * user-input prompt owns the card.
    */
   showDraftRows?: boolean;
+  /**
+   * The host runs this text as a shell command (a leading `!`), so the `!`
+   * is painted like a command word. The host decides what Enter does.
+   */
+  shellPrefix?: boolean;
 
   // ---- attachments ----
   /**

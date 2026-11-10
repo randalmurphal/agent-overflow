@@ -61,6 +61,11 @@ type ThreadLiveState struct {
 	// the user has not dismissed this revision. See app_prompt_stale.go.
 	PromptStale         bool `json:"promptStale,omitempty"`
 	PromptStaleRevision int  `json:"promptStaleRevision,omitempty"`
+	// ShellCommandRunID is the id of the composer shell command running in
+	// this thread's workspace, empty when none is. It carries no output: a
+	// client that may read it calls GetThreadShellCommands, and a client
+	// holding a run this does not name drops it.
+	ShellCommandRunID string `json:"shellCommandRunId,omitempty"`
 }
 
 type LiveStateActiveTurn struct {
@@ -115,6 +120,9 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 	state.Todo = a.threadLiveTodo(threadID)
 	state.SessionCLIVersion, state.InstalledCLIVersion = a.staleProviderBinaryVersions(threadID)
 	state.PromptStale, state.PromptStaleRevision = a.promptStaleRevision(threadID)
+	if a.shellCommands != nil {
+		state.ShellCommandRunID = a.shellCommands.ActiveRunID(threadID)
+	}
 	if a.triage == nil {
 		return state, nil
 	}

@@ -621,6 +621,12 @@ and anti-changes that live only here:
 
 ## Miscellany
 
+- Composer shell commands (`!command`, Run on a shell code block): the app
+  runs the command for every provider and always sends the output; Stop
+  discards it. Codex's native shell command is not used because it never
+  starts a reply. Run on a code block runs on click. Claude TUI `!` history
+  is not converted. See
+  [composer-shell-commands.md](specs/composer-shell-commands.md).
 - Same-pane outside-click dismissal leaving focus on body (Enter-to-send
   after a background click stops working) is accepted; type-to-focus
   covers typing.

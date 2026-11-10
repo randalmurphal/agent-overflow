@@ -201,6 +201,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetThreadItemProjectionSource", ID: 1848576136, Scope: "threads:read", Route: "thread"},                           // main.App.GetThreadItemProjectionSource
 	{Name: "GetThreadLiveState", ID: 70226550, Scope: "threads:operate", Route: "thread"},                                     // main.App.GetThreadLiveState
 	{Name: "GetThreadRuntimeMode", ID: 2573491630, Scope: "threads:read", Route: "thread"},                                    // main.App.GetThreadRuntimeMode
+	{Name: "GetThreadShellCommands", ID: 1598034249, Scope: "terminal:operate", Route: "thread"},                              // main.App.GetThreadShellCommands
 	{Name: "GetThreadTransferDestinationProject", ID: 183380121, Scope: "threads:operate", Route: "selected"},                 // main.App.GetThreadTransferDestinationProject
 	{Name: "GetThreadTransferIntent", ID: 704384690, Scope: "threads:operate", Route: "thread"},                               // main.App.GetThreadTransferIntent
 	{Name: "GetThreadTransferStatus", ID: 316516814, Scope: "threads:read", Route: "thread"},                                  // main.App.GetThreadTransferStatus
@@ -346,6 +347,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "PutSoundFile", ID: 2418838611, Scope: "settings:write", Route: "home"},                                            // main.App.PutSoundFile
 	{Name: "ReadPipelineStages", ID: 2036690300, Scope: "git:operate", Route: "selected"},                                     // main.App.ReadPipelineStages
 	{Name: "ReadReviewDiff", ID: 2473150982, Scope: "session", Route: "home"},                                                 // main.App.ReadReviewDiff
+	{Name: "ReadShellAttachmentOutput", ID: 3285994337, Scope: "threads:read", Route: "thread"},                               // main.App.ReadShellAttachmentOutput
 	{Name: "ReadThreadRemoteLog", ID: 2424974671, Scope: "terminal:operate", Route: "thread"},                                 // main.App.ReadThreadRemoteLog
 	{Name: "RecheckClaudeAccount", ID: 2274850917, Scope: "access:admin", Route: "home"},                                      // main.App.RecheckClaudeAccount
 	{Name: "RecheckCodexAccount", ID: 227978482, Scope: "access:admin", Route: "home"},                                        // main.App.RecheckCodexAccount
@@ -403,6 +405,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "RevertConversationAndResendMessage", ID: 2059566413, Scope: "threads:operate", Route: "thread"},                   // main.App.RevertConversationAndResendMessage
 	{Name: "RevokeAccessDevice", ID: 2945903583, Scope: "access:admin", Route: "home"},                                        // main.App.RevokeAccessDevice
 	{Name: "RevokeAccessSession", ID: 2284519219, Scope: "access:admin", Route: "home"},                                       // main.App.RevokeAccessSession
+	{Name: "RunThreadShellCommand", ID: 651196145, Scope: "terminal:operate", Route: "thread"},                                // main.App.RunThreadShellCommand
 	{Name: "RunningBackgroundAgents", ID: 2886446326, Scope: "threads:read", Route: "thread"},                                 // main.App.RunningBackgroundAgents
 	{Name: "SaveAttachment", ID: 2182723789, Scope: "attachments:write", Route: "thread"},                                     // main.App.SaveAttachment
 	{Name: "SaveDraft", ID: 3025273299, Scope: "threads:operate", Route: "thread"},                                            // main.App.SaveDraft
@@ -457,6 +460,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "StopCodexSubagent", ID: 4232843083, Scope: "threads:operate", Route: "thread"},                                    // main.App.StopCodexSubagent
 	{Name: "StopSession", ID: 3838500111, Scope: "threads:operate", Route: "thread"},                                          // main.App.StopSession
 	{Name: "StopThreadBackgroundWork", ID: 2155771620, Scope: "threads:operate", Route: "thread"},                             // main.App.StopThreadBackgroundWork
+	{Name: "StopThreadShellCommand", ID: 212331826, Scope: "terminal:operate", Route: "thread"},                               // main.App.StopThreadShellCommand
 	{Name: "SubmitAsyncAnswers", ID: 1219107798, Scope: "threads:operate", Route: "thread"},                                   // main.App.SubmitAsyncAnswers
 	{Name: "SubmitPRReview", ID: 2692607191, Scope: "git:operate", Route: "selected"},                                         // main.App.SubmitPRReview
 	{Name: "SubmitProviderLoginCode", ID: 3556446736, Scope: "access:admin", Route: "home"},                                   // main.App.SubmitProviderLoginCode

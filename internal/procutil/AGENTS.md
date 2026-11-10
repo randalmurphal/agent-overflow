@@ -1,6 +1,6 @@
 # Process helpers
 
-This package owns three utilities:
+This package owns four utilities:
 
 - `ConfigureGroup` and `KillConfiguredGroup` arrange and terminate an owned
   child process group using the platform implementation. On Unix,
@@ -20,6 +20,16 @@ This package owns three utilities:
   Pass the context the command was created with: exec stops watching it at
   exit, so on Unix RunDrained watches it while draining and returns its
   error.
+
+- `RunGroup` runs argv as its own process group and owns the output pipe,
+  so output from grandchildren is captured. Cancellation sends SIGTERM,
+  then SIGKILL after `TerminateGrace`. After the leader exits it kills
+  whatever is still in the group and reports those processes as
+  `Leftovers`. Its error is the start failure, `Wait`'s `*exec.ExitError`
+  for a non-zero exit or a signal death, or `ErrGroupSurvived` when the
+  leader ignored SIGKILL (it runs as another user) and was abandoned.
+  `Output` should not return an error; one is reported as `PipeErr` and
+  the rest of the output is discarded.
 
 Call `ConfigureGroup` before starting the command and pass the same command to
 `KillConfiguredGroup`. These APIs do not verify process identity or establish

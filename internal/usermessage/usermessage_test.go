@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"agent-overflow/internal/store"
 )
@@ -400,5 +401,46 @@ func TestMarshalProjectsAttachmentKind(t *testing.T) {
 	}
 	if legacy.Attachments[0].Kind != "" {
 		t.Errorf("legacy kind: got %q want empty", legacy.Attachments[0].Kind)
+	}
+}
+
+func TestProjectionCarriesBoundedShellMetadata(t *testing.T) {
+	t.Parallel()
+	shell := store.AttachmentShell{
+		Command: "git status", ExitCode: 3, DurationMs: 42, Truncated: true, TimedOut: true, Preview: "one\n",
+	}
+	meta := Input{Attachments: []store.Attachment{
+		{ID: "a1", ThreadID: "t1", Filename: "output.txt", Kind: store.AttachmentKindFile, Size: 9, Shell: shell},
+		{ID: "a2", ThreadID: "t1", Filename: "notes.txt", Kind: store.AttachmentKindFile, Size: 4},
+	}}.Projection()
+	got := meta.Attachments[0].Shell
+	want := ShellMeta{Command: "git status", ExitCode: 3, DurationMs: 42, Truncated: true, TimedOut: true, Preview: "one\n", More: true}
+	if got == nil || *got != want {
+		t.Fatalf("shell meta: %+v", got)
+	}
+	if meta.Attachments[1].Shell != nil {
+		t.Fatal("an ordinary file carries shell metadata")
+	}
+
+	whole := Input{Attachments: []store.Attachment{{ID: "a", Kind: store.AttachmentKindFile, Size: 4, Shell: shell}}}.Projection()
+	if whole.Attachments[0].Shell.More {
+		t.Fatal("a preview holding the whole output reports more")
+	}
+
+	long := strings.Repeat("é", ShellCommandMetaBytes)
+	shell.Command = "x" + long
+	bounded := Input{Attachments: []store.Attachment{{ID: "a", Kind: store.AttachmentKindFile, Shell: shell}}}.Projection().Attachments[0].Shell
+	if !bounded.CommandTruncated || len(bounded.Command) > ShellCommandMetaBytes || !utf8.ValidString(bounded.Command) ||
+		!strings.HasPrefix(shell.Command, bounded.Command) {
+		t.Fatalf("bounded command: %d bytes truncated=%v", len(bounded.Command), bounded.CommandTruncated)
+	}
+
+	encoded, err := Marshal(Input{Attachments: []store.Attachment{{ID: "a1", ThreadID: "t1", Kind: store.AttachmentKindFile, Size: 9, Shell: store.AttachmentShell{Command: "ls", Preview: "one\n"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := FromItem(store.Item{Meta: encoded})
+	if err != nil || decoded.Attachments[0].Shell == nil || decoded.Attachments[0].Shell.Command != "ls" {
+		t.Fatalf("round trip: %+v %v", decoded.Attachments, err)
 	}
 }

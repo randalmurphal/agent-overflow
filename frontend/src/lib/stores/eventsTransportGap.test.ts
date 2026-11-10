@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyTransportGap } from './eventsTransportGap';
 import { __setTransportHelloForTest } from './transportStatus.svelte';
 import type { TransportHello } from '../transport/wsClient';
+import { applyShellCommandEvent, getShellRun, resetShellRunsForTest } from './shellCommands.svelte';
+import { prependThread, removeThread } from './threads.svelte';
 import { setPullsReceiver } from './pullsStore.svelte';
 import { resetPanesForTest } from './panes.svelte';
 import {
@@ -125,6 +127,24 @@ describe('transport gap', () => {
       await vi.waitFor(() => expect(settlement).toHaveBeenCalledTimes(1));
     } finally {
       __setTransportHelloForTest(null);
+    }
+  });
+
+  it('re-reads a running composer shell command on a shell:command gap', async () => {
+    // A lost `finished` frame is the only push that would have ended the run
+    // here, so the gap asks the backend whether it is still running.
+    resetShellRunsForTest();
+    prependThread(makeThread({ id: 'gap-shell' }));
+    applyShellCommandEvent({ phase: 'started', threadId: 'gap-shell', runId: 'run-1', command: 'make test', startedAt: 1 });
+    setBindingMock('GetThreadShellCommands', async () => []);
+    try {
+      applyTransportGap({ channel: 'shell:command', seq: 3 });
+      await vi.waitFor(() => expect(getBindingMock('GetThreadShellCommands')).toHaveBeenCalledWith('gap-shell'));
+      await vi.waitFor(() => expect(getShellRun('gap-shell')).toBeNull());
+      expect(getBindingMock('ListThreads')).not.toHaveBeenCalled();
+    } finally {
+      removeThread('gap-shell');
+      resetShellRunsForTest();
     }
   });
 

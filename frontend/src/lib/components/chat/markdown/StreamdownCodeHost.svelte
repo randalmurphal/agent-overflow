@@ -107,6 +107,8 @@
   import type { Tokens } from '../../../markdown';
   import { onDestroy, onMount, untrack } from 'svelte';
   import TextWrap from '@lucide/svelte/icons/text-wrap';
+  import Play from '@lucide/svelte/icons/play';
+  import { CODE_RUN_CLASS, CODE_RUN_LABEL, isRunnableShellLang, runCodeBlock } from './codeRun';
   import CopyButton from '../../primitives/CopyButton.svelte';
   import Icon from '../../primitives/Icon.svelte';
   import IconButton from '../../primitives/IconButton.svelte';
@@ -182,6 +184,17 @@
   // island retires, so a choice made on a still-streaming block also lands
   // in its static HTML.
   let unwrapped = $state(isCodeBlockUnwrappedByKey(renderedLang, sourceIdentity.contentKey));
+
+  // Run is offered once the block is complete: a block still streaming holds
+  // the start of a command, and running that is running something else.
+  let runnable = $derived(
+    streamdown.parseIncompleteMarkdown === false
+      && isRunnableShellLang(codeFenceInfoWord(token.lang ?? '')),
+  );
+
+  function runFromHost(event: MouseEvent): void {
+    if (event.currentTarget instanceof Element) void runCodeBlock(event.currentTarget, token.text);
+  }
 
   function toggleWrap(): void {
     unwrapped = !unwrapped;
@@ -634,6 +647,15 @@
   <div
     class="absolute top-1 right-1 z-10 flex items-center gap-0.5 opacity-0 transition-opacity duration-150 ease-out group-hover/codeblock:opacity-100 focus-within:opacity-100 compact:opacity-100"
   >
+    {#if runnable}
+      <span class="{CODE_RUN_CLASS}">
+        <IconButton label={CODE_RUN_LABEL} size="sm" onClick={(event) => runFromHost(event)}>
+          {#snippet children()}
+            <Icon icon={Play} size={13} />
+          {/snippet}
+        </IconButton>
+      </span>
+    {/if}
     <IconButton label={codeWrapLabel(unwrapped)} size="sm" onClick={toggleWrap}>
       {#snippet children()}
         <Icon icon={TextWrap} size={13} />

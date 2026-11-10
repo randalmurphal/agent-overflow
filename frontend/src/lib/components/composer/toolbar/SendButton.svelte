@@ -117,7 +117,9 @@
       ? 'Refine proposed plan'
       : action === 'send-comments'
         ? 'Send plan comments'
-        : 'Send message');
+        : action === 'run'
+          ? 'Run command'
+          : 'Send message');
   let showImplementMenu = $derived(action === 'implement' && !showStop && Boolean(onSendInNewThread));
   let showCommentsMenu = $derived(action === 'send-comments' && !showStop && Boolean(onSendWithoutPlanComments));
   let showCommentCount = $derived(action === 'send-comments' && planCommentCount > 0);

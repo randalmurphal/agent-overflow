@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"maps"
-	"strings"
 	"time"
 
 	"agent-overflow/internal/chatmodel"
@@ -1111,7 +1110,7 @@ func (a *App) codexResendAfterInterrupt(
 	// carries the file lines too — the original dispatch put them on its
 	// providerContent, which Codex discarded with the rest of the pending
 	// input at turn/interrupt.
-	merged := appendFileAttachmentLines(strings.Join(contents, "\n\n"), attachments.fileLines)
+	merged := attachments.promptText(contents, "\n\n")
 	// The merged re-send is correlated to the FIRST item's row, which is
 	// the row the pending entry below is registered for. Items 2+ share
 	// that correlation, exactly as they share the turn.

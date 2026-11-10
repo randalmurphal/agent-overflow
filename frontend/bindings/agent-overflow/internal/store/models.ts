@@ -426,6 +426,13 @@ export class Attachment {
      */
     "kind": string;
 
+    /**
+     * Shell is set on a `file` attachment whose bytes are the output of a
+     * command the person ran from the composer (migration v147). The zero
+     * value means an ordinary file.
+     */
+    "shell"?: AttachmentShell;
+
     /** Creates a new Attachment instance. */
     constructor($$source: Partial<Attachment> = {}) {
         if (!("id" in $$source)) {
@@ -460,8 +467,64 @@ export class Attachment {
      * Creates a new Attachment instance from a string or object.
      */
     static createFrom($$source: any = {}): Attachment {
+        const $$createField8_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("shell" in $$parsedSource) {
+            $$parsedSource["shell"] = $$createField8_0($$parsedSource["shell"]);
+        }
         return new Attachment($$parsedSource as Partial<Attachment>);
+    }
+}
+
+/**
+ * AttachmentShell describes the composer shell command whose combined
+ * stdout and stderr a `file` attachment holds. A value type so Attachment
+ * stays comparable; Command is never empty on a shell attachment.
+ */
+export class AttachmentShell {
+    "command": string;
+
+    /**
+     * ExitCode is the command's own, or -1 when a signal or the timeout
+     * ended it.
+     */
+    "exitCode": number;
+    "durationMs": number;
+
+    /**
+     * Truncated reports that the file holds the head and tail of a longer
+     * stream around an omission marker.
+     */
+    "truncated"?: boolean;
+    "timedOut"?: boolean;
+
+    /**
+     * Preview is the first lines of the output, bounded, so a timeline row
+     * paints without reading the file.
+     */
+    "preview"?: string;
+
+    /** Creates a new AttachmentShell instance. */
+    constructor($$source: Partial<AttachmentShell> = {}) {
+        if (!("command" in $$source)) {
+            this["command"] = "";
+        }
+        if (!("exitCode" in $$source)) {
+            this["exitCode"] = 0;
+        }
+        if (!("durationMs" in $$source)) {
+            this["durationMs"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AttachmentShell instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AttachmentShell {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new AttachmentShell($$parsedSource as Partial<AttachmentShell>);
     }
 }
 
@@ -723,7 +786,7 @@ export class DiffReviewPRContext {
      * Creates a new DiffReviewPRContext instance from a string or object.
      */
     static createFrom($$source: any = {}): DiffReviewPRContext {
-        const $$createField2_0 = $$createType9;
+        const $$createField2_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("comments" in $$parsedSource) {
             $$parsedSource["comments"] = $$createField2_0($$parsedSource["comments"]);
@@ -785,7 +848,7 @@ export class DiffReviewSourceRef {
      * Creates a new DiffReviewSourceRef instance from a string or object.
      */
     static createFrom($$source: any = {}): DiffReviewSourceRef {
-        const $$createField4_0 = $$createType11;
+        const $$createField4_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pr" in $$parsedSource) {
             $$parsedSource["pr"] = $$createField4_0($$parsedSource["pr"]);
@@ -842,8 +905,8 @@ export class DiscussionDefinition {
      * Creates a new DiscussionDefinition instance from a string or object.
      */
     static createFrom($$source: any = {}): DiscussionDefinition {
-        const $$createField5_0 = $$createType13;
-        const $$createField6_0 = $$createType14;
+        const $$createField5_0 = $$createType14;
+        const $$createField6_0 = $$createType15;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("participants" in $$parsedSource) {
             $$parsedSource["participants"] = $$createField5_0($$parsedSource["participants"]);
@@ -1107,7 +1170,7 @@ export class Item {
      * Creates a new Item instance from a string or object.
      */
     static createFrom($$source: any = {}): Item {
-        const $$createField0_0 = $$createType15;
+        const $$createField0_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("completionLaunch" in $$parsedSource) {
             $$parsedSource["completionLaunch"] = $$createField0_0($$parsedSource["completionLaunch"]);
@@ -1196,11 +1259,11 @@ export class PagedItems {
      * Creates a new PagedItems instance from a string or object.
      */
     static createFrom($$source: any = {}): PagedItems {
-        const $$createField0_0 = $$createType17;
+        const $$createField0_0 = $$createType18;
         const $$createField1_0 = $$createType1;
-        const $$createField2_0 = $$createType18;
-        const $$createField3_0 = $$createType19;
-        const $$createField4_0 = $$createType19;
+        const $$createField2_0 = $$createType19;
+        const $$createField3_0 = $$createType20;
+        const $$createField4_0 = $$createType20;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("scope" in $$parsedSource) {
             $$parsedSource["scope"] = $$createField0_0($$parsedSource["scope"]);
@@ -1336,7 +1399,7 @@ export class ProjectWithCounts {
      * Creates a new ProjectWithCounts instance from a string or object.
      */
     static createFrom($$source: any = {}): ProjectWithCounts {
-        const $$createField0_0 = $$createType20;
+        const $$createField0_0 = $$createType21;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("project" in $$parsedSource) {
             $$parsedSource["project"] = $$createField0_0($$parsedSource["project"]);
@@ -1837,7 +1900,7 @@ export class Thread {
      * Creates a new Thread instance from a string or object.
      */
     static createFrom($$source: any = {}): Thread {
-        const $$createField36_0 = $$createType21;
+        const $$createField36_0 = $$createType22;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("origin" in $$parsedSource) {
             $$parsedSource["origin"] = $$createField36_0($$parsedSource["origin"]);
@@ -2125,8 +2188,8 @@ export class TimelineDigestContext {
      * Creates a new TimelineDigestContext instance from a string or object.
      */
     static createFrom($$source: any = {}): TimelineDigestContext {
-        const $$createField0_0 = $$createType22;
-        const $$createField1_0 = $$createType22;
+        const $$createField0_0 = $$createType23;
+        const $$createField1_0 = $$createType23;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("after" in $$parsedSource) {
             $$parsedSource["after"] = $$createField0_0($$parsedSource["after"]);
@@ -2167,8 +2230,8 @@ export class TimelineScopeContext {
     static createFrom($$source: any = {}): TimelineScopeContext {
         const $$createField0_0 = $$createType0;
         const $$createField1_0 = $$createType0;
-        const $$createField2_0 = $$createType15;
-        const $$createField3_0 = $$createType24;
+        const $$createField2_0 = $$createType16;
+        const $$createField3_0 = $$createType25;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("root" in $$parsedSource) {
             $$parsedSource["root"] = $$createField0_0($$parsedSource["root"]);
@@ -2724,20 +2787,21 @@ const $$createType4 = $Create.Array($$createType3);
 const $$createType5 = $Create.Array($Create.Any);
 const $$createType6 = ActivityRunGroupKey.createFrom;
 const $$createType7 = $Create.Nullable($$createType6);
-const $$createType8 = DiffReviewPRContextEntry.createFrom;
-const $$createType9 = $Create.Array($$createType8);
-const $$createType10 = DiffReviewPRContext.createFrom;
-const $$createType11 = $Create.Nullable($$createType10);
-const $$createType12 = DiscussionParticipant.createFrom;
-const $$createType13 = $Create.Array($$createType12);
-const $$createType14 = DiscussionSettings.createFrom;
-const $$createType15 = $Create.Nullable($$createType0);
-const $$createType16 = TimelineScopeContext.createFrom;
-const $$createType17 = $Create.Nullable($$createType16);
-const $$createType18 = $Create.Array($$createType2);
-const $$createType19 = TimelineCursor.createFrom;
-const $$createType20 = Project.createFrom;
-const $$createType21 = ThreadOrigin.createFrom;
-const $$createType22 = $Create.Nullable($$createType19);
-const $$createType23 = TimelineDigestContext.createFrom;
-const $$createType24 = $Create.Nullable($$createType23);
+const $$createType8 = AttachmentShell.createFrom;
+const $$createType9 = DiffReviewPRContextEntry.createFrom;
+const $$createType10 = $Create.Array($$createType9);
+const $$createType11 = DiffReviewPRContext.createFrom;
+const $$createType12 = $Create.Nullable($$createType11);
+const $$createType13 = DiscussionParticipant.createFrom;
+const $$createType14 = $Create.Array($$createType13);
+const $$createType15 = DiscussionSettings.createFrom;
+const $$createType16 = $Create.Nullable($$createType0);
+const $$createType17 = TimelineScopeContext.createFrom;
+const $$createType18 = $Create.Nullable($$createType17);
+const $$createType19 = $Create.Array($$createType2);
+const $$createType20 = TimelineCursor.createFrom;
+const $$createType21 = Project.createFrom;
+const $$createType22 = ThreadOrigin.createFrom;
+const $$createType23 = $Create.Nullable($$createType20);
+const $$createType24 = TimelineDigestContext.createFrom;
+const $$createType25 = $Create.Nullable($$createType24);

@@ -7,6 +7,7 @@ import {
 } from '../types/attachment';
 import type { Item, SourceProposedPlan } from '../types/models';
 import { commandWordRanges, type CommandWordRange } from './commandWords';
+import type { ShellOutputMeta } from './shellInvocation';
 
 export interface AttachmentPreviewSource {
   id: string;
@@ -15,6 +16,8 @@ export interface AttachmentPreviewSource {
   mimeType: string;
   size: number;
   kind: AttachmentKind;
+  /** Set when the file is the output of a composer shell command. */
+  shell?: ShellOutputMeta;
 }
 
 export interface UserMessageMeta {
@@ -232,7 +235,7 @@ function attachmentFromMeta(
   const size = sizeField(record.size, maxAttachmentSizeFor(kind));
   if (size === null) return null;
 
-  return {
+  const source: AttachmentPreviewSource = {
     id,
     threadId,
     filename: stringField(record.filename) || id,
@@ -240,6 +243,25 @@ function attachmentFromMeta(
     size,
     kind,
   };
+  const shell = kind === 'file' ? shellFromMeta(record.shell) : null;
+  if (shell) source.shell = shell;
+  return source;
+}
+
+function shellFromMeta(value: unknown): ShellOutputMeta | null {
+  const record = objectRecord(value);
+  if (!record) return null;
+  const command = stringField(record.command);
+  if (!command) return null;
+  const exitCode = typeof record.exitCode === 'number' && Number.isFinite(record.exitCode) ? record.exitCode : 0;
+  const durationMs = typeof record.durationMs === 'number' && Number.isFinite(record.durationMs) ? record.durationMs : 0;
+  const shell: ShellOutputMeta = { command, exitCode, durationMs };
+  if (record.commandTruncated === true) shell.commandTruncated = true;
+  if (record.truncated === true) shell.truncated = true;
+  if (record.timedOut === true) shell.timedOut = true;
+  if (record.more === true) shell.more = true;
+  if (typeof record.preview === 'string' && record.preview !== '') shell.preview = record.preview;
+  return shell;
 }
 
 export function parseUserMessageAttachments(

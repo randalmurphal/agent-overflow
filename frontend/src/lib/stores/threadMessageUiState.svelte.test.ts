@@ -42,6 +42,40 @@ describe('message presentation lifetime', () => {
     revoke.mockRestore();
   });
 
+  it('keeps an open part of a message with the message, apart from its text', () => {
+    const { earlier, renamed, ui, rename } = fixture();
+    ui.setExpanded(earlier.id, true, 'attachment-1');
+    expect(ui.isExpanded(earlier.id, 'attachment-1')).toBe(true);
+    // The message's own text and its other parts are separate state.
+    expect(ui.isExpanded(earlier.id)).toBe(false);
+    expect(ui.isExpanded(earlier.id, 'attachment-2')).toBe(false);
+    expect(ui.expansionSignature()).not.toBe('');
+    // The part follows the message through an id change and retention.
+    rename();
+    ui.prune(new Set([renamed.id]));
+    expect(ui.isExpanded(renamed.id, 'attachment-1')).toBe(true);
+    ui.setExpanded(renamed.id, true);
+    ui.setExpanded(renamed.id, false, 'attachment-1');
+    expect(ui.isExpanded(renamed.id, 'attachment-1')).toBe(false);
+    expect(ui.isExpanded(renamed.id)).toBe(true);
+    // It is released with the message, by pruning and by disposal.
+    ui.setExpanded(renamed.id, true, 'attachment-1');
+    ui.prune(new Set());
+    expect(ui.isExpanded(renamed.id, 'attachment-1')).toBe(false);
+    expect(ui.stats().expandedUserMessages).toBe(0);
+  });
+
+  it('releases the open parts of a disposed message', () => {
+    const { renamed, items, ui } = fixture();
+    items.clear();
+    const plain = { ...renamed, id: 'plain', meta: '' };
+    items.set(plain.id, plain);
+    ui.setExpanded(plain.id, true, 'attachment-1');
+    items.delete(plain.id);
+    ui.disposeItems([plain]);
+    expect(ui.stats().expandedUserMessages).toBe(0);
+  });
+
   it('collapses and expands through either representation without carrying state to another thread', () => {
     const { earlier, renamed, ui, rename, items } = fixture();
     ui.setExpanded(earlier.id, true);
