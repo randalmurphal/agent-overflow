@@ -7,8 +7,8 @@ import (
 
 // IsReading reports whether transcript, the model's account of what it
 // spoke, is a reading of text rather than an answer to it, a repeat, or
-// silence. Both are split into words (words), and a word and a longer
-// spelling of it are one word (same). It is not a reading when:
+// silence. Both are split into words (words), each compared as written
+// except the few short forms in spelledOut. It is not a reading when:
 //
 //   - nothing was spoken;
 //   - the text has three or more words, two or more of them without
@@ -50,15 +50,30 @@ func IsReading(text, transcript string) bool {
 	return len(spoken)-lcs(want, spoken) <= max(3, len(want)/2)+numberRoom
 }
 
-// words splits text into lowercase runs of letters and digits. A script
-// written without spaces between words gives one word per character, so a
-// sentence in it is compared piece by piece like any other.
+// spelledOut gives the short forms a transcript may write in full the
+// spelling they are compared under. Only whole words listed here are
+// treated as one another: a word that merely begins another ("up",
+// "update") is a different word.
+var spelledOut = map[string]string{
+	"ok":     "okay",
+	"vs":     "versus",
+	"approx": "approximately",
+}
+
+// words splits text into lowercase runs of letters and digits, each under
+// its spelledOut form when it has one. A script written without spaces
+// between words gives one word per character, so a sentence in it is
+// compared piece by piece like any other.
 func words(text string) []string {
 	var out []string
 	start := -1
 	flush := func(end int) {
 		if start >= 0 {
-			out = append(out, text[start:end])
+			word := text[start:end]
+			if full, ok := spelledOut[word]; ok {
+				word = full
+			}
+			out = append(out, word)
 			start = -1
 		}
 	}
@@ -85,25 +100,14 @@ var unspaced = []*unicode.RangeTable{
 	unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Thai, unicode.Lao, unicode.Khmer, unicode.Myanmar,
 }
 
-// same reports whether a and b are one word: equal, or one of them the
-// other with more letters after it, as a transcript may spell a word out
-// ("ok" and "okay", "approx" and "approximately"). A single letter is only
-// itself.
-func same(a, b string) bool {
-	if len(a) > len(b) {
-		a, b = b, a
-	}
-	return a == b || len(a) >= 2 && strings.HasPrefix(b, a)
-}
-
-// lcs is the length of the longest common subsequence of a and b by same,
-// in two rows of memory.
+// lcs is the length of the longest common subsequence of a and b, in two
+// rows of memory.
 func lcs(a, b []string) int {
 	previous, current := make([]int, len(b)+1), make([]int, len(b)+1)
 	for i := range a {
 		for j := range b {
 			switch {
-			case same(a[i], b[j]):
+			case a[i] == b[j]:
 				current[j+1] = previous[j] + 1
 			case previous[j+1] >= current[j]:
 				current[j+1] = previous[j+1]

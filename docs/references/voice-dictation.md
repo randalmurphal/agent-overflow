@@ -188,8 +188,8 @@ sentence was waiting or being read (the RPC says the same with code
 - The key is read from its file for each connection and zeroed when the
   handshake is done, as for live transcription.
 - `openai.IsReading` compares the transcript with the text by words (by
-  character in scripts written without spaces; a word and a longer
-  spelling of it, "OK" and "Okay", are one word): a text of three or more
+  character in scripts written without spaces; a few short forms such
+  as "OK" compare under their full spelling): a text of three or more
   words must keep more than half of them, and the words spoken beyond the
   text are bounded, with room for numbers spelled out. A result that is
   not a reading is retried once and then refused. Audio past 90 seconds
