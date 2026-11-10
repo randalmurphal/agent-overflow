@@ -66,7 +66,12 @@ type appFlushDispatchState struct {
 	running       map[string]bool
 	inflightItems map[string]int
 	generation    map[string]uint64
-	wg            sync.WaitGroup
+	// flushUnsettled holds each thread with a `queue_flushed` that no
+	// provider:sends_pending frame reading nothing pending has covered yet.
+	// publishSendsPending emits that frame for a listed thread even when
+	// the published answer did not change.
+	flushUnsettled map[string]struct{}
+	wg             sync.WaitGroup
 	// handoffMu serializes RegisterQueueItem's enqueue→flush handoff
 	// against the revert-on-interrupt predicate's read of the queued /
 	// in-flight counters. tryFlushQueue deletes a batch from the triage queue

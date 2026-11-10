@@ -28,6 +28,8 @@ import {
 } from './sendQueue.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
+import { __setTransportHelloForTest } from './transportStatus.svelte';
+import { HOME_BACKEND } from '../transport/backendKey';
 import { installThreadPaneTestEnv } from '../../test/helpers/threadPane';
 
 describe('createThreadPane', () => {
@@ -709,6 +711,29 @@ describe('createThreadPane', () => {
     setBindingMock('GetThreadLiveState', async (threadId: string) => ({ threadId }));
     await pane.switchThread(makeThread({ id: 'thread-other', provider: 'claude' }));
     expect(pane.sessionBanners).toEqual([]);
+  });
+
+  it('marks hydrated pending sends with the flush position of the read', async () => {
+    __setTransportHelloForTest({
+      protocolVersion: 1, capabilities: [], backendId: 'home', backendName: 'home', serverTimeMs: 0,
+      clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0, launchId: 'launch-1',
+    });
+    try {
+      const pane = createThreadPane();
+      setBindingMock('GetThreadLiveState', async (threadId: string) => ({
+        threadId,
+        flushedItems: [{ queueItemId: 'queue-flushed', userItemId: 'user:4:flush:1', message: 'sent' }],
+        flushedThrough: 12,
+      }));
+
+      await pane.switchThread(makeThread({ id: 'thread-marked' }));
+
+      expect(getFlushedForThread('thread-marked').map((item) => item.flushMark)).toEqual([
+        { backend: HOME_BACKEND, launchId: 'launch-1', sequence: 12 },
+      ]);
+    } finally {
+      __setTransportHelloForTest(null);
+    }
   });
 
   it('hydrates live server state on thread switch', async () => {

@@ -18,6 +18,7 @@ import { preloadProviderModelsForSettings } from './providerModels.svelte';
 import { loadProviderAccounts, hydrateProviderLogins } from './providerAccounts.svelte';
 import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
 import { reconcileThreadLiveActivity } from './threadLiveActivity';
+import { reconcileSettledFlushes } from './flushSettlement';
 import { isWorkflowOverlayLoaded, refreshWorkflowRunsSoon, resyncWorkflowEngineState } from './workflowRuns.svelte';
 import { hydratePullsAttention } from './pullsAttention.svelte';
 
@@ -83,6 +84,11 @@ export function installComputerHydration(): () => void {
         console.warn('Failed to refresh computer quotas:', error);
       });
     }
+    // The flushed messages of threads with no pane: a settle that was
+    // published while this client was away is not restated.
+    holdBackendRecovery(backend, reconcileSettledFlushes(backend).catch((error: unknown) => {
+      if (!isPassiveConnectionFailure(error)) console.warn('Failed to refresh pending messages:', error);
+    }));
   }
   // Hello publication is intentionally deduplicated by content. A reconnect
   // to the same boot may repeat identical metadata, so connection edges are

@@ -4,12 +4,14 @@
 // setupEventListeners.
 import {
   applyFlushedLifecycle,
+  flushMarkAt,
   markItemsFlushed,
   queueItemFromWire,
   removeRestoredQueueItems,
   replaceQueueForThread,
   type FlushedLifecycle,
 } from './sendQueue.svelte';
+import { applySettledFrame, applySettlementToFlush } from './flushSettlement';
 import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/internal/app/models';
 import { iterPanes } from './panes.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
@@ -39,6 +41,9 @@ export interface QueueFlushedPayload {
 export interface SendsPendingPayload {
   threadId: string;
   pending: boolean;
+  /** The newest `provider:queue_flushed` sequence the answer saw. Absent
+   * from a backend that does not report it. */
+  flushedThrough?: number;
 }
 
 export interface QueueRestoredPayload {
@@ -83,9 +88,17 @@ export function applyQueueStateChanged(evt: QueueStateChangedPayload | undefined
   }
 }
 
-export function applyQueueFlushed(evt: QueueFlushedPayload | undefined): void {
+// `backend` and `sequence` place the frame in its stream, which is what a
+// later answer that nothing is pending settles it by.
+export function applyQueueFlushed(
+  evt: QueueFlushedPayload | null | undefined,
+  backend?: BackendKey,
+  sequence?: number,
+): void {
   if (!evt || !evt.threadId || !evt.items || evt.items.length === 0) return;
-  markItemsFlushed(evt.threadId, evt.items);
+  const mark = backend === undefined ? undefined : flushMarkAt(backend, sequence);
+  markItemsFlushed(evt.threadId, evt.items, mark);
+  if (mark) applySettlementToFlush(evt.threadId, mark);
   for (const pane of ingestPanes()) {
     if (pane.threadId !== evt.threadId) continue;
     for (const item of evt.items) {
@@ -128,5 +141,8 @@ export function applySendsPendingEvent(
   backend: BackendKey,
   sequence: number | undefined,
 ): void {
+  // Before the status ordering, which drops a frame older than a
+  // RegisterQueueItem answer: what a frame settles stays settled.
+  if (evt?.threadId && !evt.pending) applySettledFrame(evt.threadId, backend, evt.flushedThrough);
   applySendsPendingFrame(evt, backend, sequence);
 }

@@ -23,6 +23,7 @@ type sendsPendingProbe struct {
 	threadID string
 	mu       sync.Mutex
 	marked   bool
+	idle     int
 }
 
 func newSendsPendingProbe(t *testing.T, router *Router, threadID string) *sendsPendingProbe {
@@ -34,9 +35,19 @@ func newSendsPendingProbe(t *testing.T, router *Router, threadID string) *sendsP
 		answer := router.sendsPendingLocked(id)
 		p.mu.Lock()
 		p.marked = answer
+		if !answer {
+			p.idle++
+		}
 		p.mu.Unlock()
 	})
 	return p
+}
+
+// idleMarks is how many marks saw nothing pending.
+func (p *sendsPendingProbe) idleMarks() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.idle
 }
 
 func (p *sendsPendingProbe) step(label string, want bool) {
@@ -205,13 +216,17 @@ func TestSendsPendingClearsOnEveryExit(t *testing.T) {
 
 // A transition that drops the composer marker and then fails puts the
 // marker back. The rollback is a change of answer of its own, which the
-// observer must hear, or clients keep the intermediate idle.
+// observer must hear, or clients keep the intermediate idle. An interrupt
+// claim is only a claim until its store write lands, so the two that fail
+// there never read idle at all: an idle answer settles the thread's
+// flushes for every client, and nothing would restate the message.
 func TestSendsPendingFollowsFailedTransitionRollbacks(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		run  func(*testing.T, *Router, *store.Store)
+		name      string
+		staysBusy bool
+		run       func(*testing.T, *Router, *store.Store)
 	}{
-		{"eager persist fails", func(t *testing.T, r *Router, st *store.Store) {
+		{"eager persist fails", true, func(t *testing.T, r *Router, st *store.Store) {
 			// Malformed meta defeats the persist (json_valid CHECK).
 			r.RegisterPendingFlushSendWithExpectation("t1", "queue-1", store.Item{
 				ID: "user:1:flush:1", ThreadID: "t1", TurnIndex: 1,
@@ -222,7 +237,7 @@ func TestSendsPendingFollowsFailedTransitionRollbacks(t *testing.T) {
 				t.Fatal("eager persist of an unpersistable row succeeded")
 			}
 		}},
-		{"quiet promotion fails", func(t *testing.T, r *Router, _ *store.Store) {
+		{"quiet promotion fails", true, func(t *testing.T, r *Router, _ *store.Store) {
 			now := time.Now().UnixMilli()
 			// Registered without its row, so the bump finds nothing.
 			r.RegisterPendingQuietFlushSendWithExpectation("t1", "queue-1", store.Item{
@@ -233,7 +248,7 @@ func TestSendsPendingFollowsFailedTransitionRollbacks(t *testing.T) {
 				t.Fatal("promotion of a missing row succeeded")
 			}
 		}},
-		{"popped send reinserted", func(t *testing.T, r *Router, _ *store.Store) {
+		{"popped send reinserted", false, func(t *testing.T, r *Router, _ *store.Store) {
 			r.RegisterPendingFlushSendWithExpectation("t1", "queue-1", store.Item{
 				ID: "user:1:flush:1", ThreadID: "t1", TurnIndex: 1, Kind: "user_text", Summary: "queued",
 			}, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: "echo-1"})
@@ -252,6 +267,9 @@ func TestSendsPendingFollowsFailedTransitionRollbacks(t *testing.T) {
 			probe := newSendsPendingProbe(t, router, "t1")
 			tc.run(t, router, st)
 			probe.step("rolled back", true)
+			if tc.staysBusy && probe.idleMarks() != 0 {
+				t.Fatalf("%d marks saw nothing pending during a claim that failed", probe.idleMarks())
+			}
 		})
 	}
 }

@@ -61,6 +61,7 @@ import { reconcileTerminalSurfaces } from './eventsTerminal';
 import { threadMachine, getAttachedBackends } from './attachedBackends.svelte';
 import { applyBackendSetChange } from './systems.svelte';
 import { reconcileThreadLiveActivity } from './threadLiveActivity';
+import { reconcileSettledFlushes } from './flushSettlement';
 import { recoverThreadWindows } from './threadWindowRecovery';
 import { resyncLiveCodeRows } from '../components/chat/markdown/liveCodeSpans.svelte';
 import { hydratePullsAttention } from './pullsAttention.svelte';
@@ -207,11 +208,20 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       // Working through minutes of silence, a missed close leaves it
       // saying Compacting after the turn moved on. The flag is read from
       // the registry by panes and rows alike, so no pane refresh is owed.
-    case 'provider:sends_pending':
-      // A missed clear leaves a row running with nothing queued; panes
-      // read their own queue, so only the registry needs the snapshot.
       resyncThreadLiveActivity(origin);
       return;
+    case 'provider:sends_pending': {
+      // A missed clear leaves a row running with nothing queued; panes
+      // read their own queue, so only the registry needs the snapshot. It
+      // also leaves a thread with no pane holding its flushed messages,
+      // which the settlement read releases.
+      resyncThreadLiveActivity(origin);
+      const backend = backendKeyForOrigin(origin?.backendId ?? '');
+      holdBackendRecovery(backend, reconcileSettledFlushes(backend).catch((err: unknown) => {
+        console.warn(`events: refresh pending messages after transport gap: ${err}`);
+      }));
+      return;
+    }
     case 'provider:item_event':
       // An item-event loss the server attributed: the sidebar and every
       // other thread are as current as before the loss.

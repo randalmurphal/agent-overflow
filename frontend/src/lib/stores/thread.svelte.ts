@@ -59,7 +59,7 @@ import type { TimelineTurnFacet } from './threadTurnProjection';
 import { createThreadRowUiState, type RowUiStateRetention } from './threadRowUiState.svelte';
 import { createThreadStreamingReveal } from './threadStreamingReveal.svelte';
 import { flushedUserItemIdsInTimeline } from './threadFlushRowReveal';
-import { confirmFlushedByUserItemId, getFlushedForThread } from './sendQueue.svelte';
+import { confirmFlushedByUserItemId, getFlushedForThread, releaseFlushedLeftByPane } from './sendQueue.svelte';
 import type { StreamingAssistantRenderContext } from './streamingAssistantReveal';
 import type { TextWindow } from '../utils/liveText';
 import { createThreadTimelineWindow } from './threadTimelineWindow.svelte';
@@ -151,6 +151,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     const before = thread?.id ?? null;
     thread = next;
     if ((next?.id ?? null) === before) return;
+    // A thread is mounted in one pane, so `before` has none now.
+    if (before) releaseFlushedLeftByPane(before);
     refreshWatchedThreads();
     options.onThreadChanged?.();
   }

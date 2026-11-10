@@ -1035,6 +1035,45 @@ message in the preview until it loads that far. A thread with no mounted
 pane has no timeline for the row to be in; its item-stream handler confirms
 on arrival, which is also what lets the sidebar's working indicator settle.
 
+**Release without a row.** A thread this client does not watch is sent no
+rows, so nothing above confirms its entries. The backend confirms them
+instead (capability `flush-settlement.v1`): an answer that none of a thread's
+sends is pending, as of a `provider:queue_flushed` sequence, settles every
+message the thread flushed up to that sequence. The answer and the sequence
+are read under the dispatch bookkeeping lock that `queue_flushed` is emitted
+under. It has two legs:
+
+- Every `provider:sends_pending` frame carries the sequence as
+  `flushedThrough`, and the backend publishes a frame that reads nothing
+  pending after every flush, also when the published answer did not change
+  (`publishSendsPending`).
+- `ListUnsettledFlushes` restates it for the whole computer: the sequence,
+  and the threads that still hold a flush no frame has covered. The client
+  reads it on every connection edge and after a gap on
+  `provider:sends_pending`, which repairs a frame that was lost or that a
+  replay delivered ahead of the flush frames it covers. Its reply can
+  overtake flush frames emitted before it, so the newest answer per computer
+  is kept and late flush frames are checked against it.
+
+The client marks each entry with the backend, launch and sequence of the
+frame that added it, or with `ThreadLiveState.flushedThrough` for an entry a
+live-state read added, and releases the entries an answer covers
+(`flushSettlement.ts`, `settleFlushed`). An answer speaks for its own
+backend: sequences compare within one launch of it, a current answer also
+releases the entries of its earlier launches, and an entry another backend
+flushed, or one with no mark, is not covered. A mounted pane keeps its
+entries until it renders the rows. An answer that arrives meanwhile tags the
+entries it covers, and the tagged entries the pane never rendered leave when
+it leaves the thread; a later flush of the same message clears the tag. A
+live-state read that finds an entry's row in history tags it the same way. Each
+backend's newest answer is kept while the pane is mounted, for an entry
+installed after it. A backend's detach releases the entries it flushed, and
+tags them for a mounted thread.
+
+A send an interrupt places in the timeline stops reading as pending only
+once the store write behind that claim lands (`anchoredInTimeline`), so a
+claim whose write fails never produces an answer that nothing is pending.
+
 **The preview is bounded.** `SendQueuePreview` renders the newest four
 pending messages and a count of the earlier ones. Its height is part of the
 composer clearance, so an unbounded list would cover the timeline.

@@ -88,6 +88,12 @@ const CapabilityTimelineDigests = "timeline.digests.v1"
 // its own send-queue mirror.
 const CapabilitySendsPending = "sends-pending.v1"
 
+// CapabilityFlushSettlement reports which queue_flushed frames an answer
+// that nothing is pending covers: flushedThrough on provider:sends_pending
+// and GetThreadLiveState, and ListUnsettledFlushes. A client reading a
+// backend without it keeps a flushed message until it sees the row.
+const CapabilityFlushSettlement = "flush-settlement.v1"
+
 var serverCapabilities = []string{
 	CapabilityRemoteNotifications,
 	CapabilityPasskeys,
@@ -102,6 +108,7 @@ var serverCapabilities = []string{
 	CapabilityTimelineScopes,
 	CapabilityTimelineDigests,
 	CapabilitySendsPending,
+	CapabilityFlushSettlement,
 }
 
 // serverCapabilitiesWithBrowser is that list plus the one flag whose

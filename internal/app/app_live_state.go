@@ -10,6 +10,7 @@ import (
 
 	"agent-overflow/internal/slicesx"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/itemwire"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -35,6 +36,9 @@ type ThreadLiveState struct {
 	ActiveTurn             *LiveStateActiveTurn           `json:"activeTurn,omitempty"`
 	QueueItems             []QueuedItem                   `json:"queueItems"`
 	FlushedItems           []QueueFlushedItem             `json:"flushedItems"`
+	// FlushedThrough is the newest provider:queue_flushed sequence when
+	// FlushedItems was read: every item in it was flushed at or before it.
+	FlushedThrough uint64 `json:"flushedThrough"`
 	// DeferredItems are NON-FLUSH pending-send timeline rows not yet
 	// persisted to SQLite (they persist on their wire echo), in FIFO send
 	// order. A refresh reconciling against a ListThreadSliceAround page
@@ -128,6 +132,7 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 	a.flushDispatch.mu.Lock()
 	queued := a.queueSnapshotForThreadLocked(threadID)
 	live := a.triage.LiveStateSnapshotForThread(threadID)
+	state.FlushedThrough = a.eventSequence(eventchan.ProviderQueueFlushed)
 	a.flushDispatch.mu.Unlock()
 	state.CodexAgents = itemwire.ProjectItems(a.triage.CodexAgentRuntimeSnapshot(threadID), true)
 	state.SubagentProgress = a.triage.LiveSubagentProgress(threadID)

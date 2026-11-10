@@ -34,7 +34,7 @@ func (r *Router) sendsPendingLocked(threadID string) bool {
 		return true
 	}
 	for _, pending := range st.pendingSends {
-		if pending.Shape == sendShapeFlush && !pending.AnchoredAtInterrupt &&
+		if pending.Shape == sendShapeFlush && !pending.anchoredInTimeline() &&
 			(pending.DeferredItem != nil || pending.QuietItem != nil) {
 			return true
 		}

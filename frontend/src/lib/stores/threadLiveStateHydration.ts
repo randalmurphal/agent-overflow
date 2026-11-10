@@ -31,6 +31,7 @@ import {
   type ActiveTurn,
 } from './threadStatuses.svelte';
 import {
+  flushMarkAt,
   getQueueRevisionForThread,
   getFlushedForThread,
   getQueueForThread,
@@ -184,7 +185,7 @@ export function createThreadLiveStateHydration(
       const flushedItems: FlushedItem[] = (snapshot.flushedItems ?? [])
         .filter((item) => item.userItemId && item.queueItemId)
         .map((item) => {
-          const deliveredAt = (item as Partial<FlushedItem>).deliveredAt;
+          const { deliveredAt, flushMark, settledWhileHeld } = item as Partial<FlushedItem>;
           return {
             sendId: item.sendId,
             queueItemId: item.queueItemId,
@@ -192,9 +193,15 @@ export function createThreadLiveStateHydration(
             message: item.message,
             flushedAt: Date.now(),
             ...(deliveredAt ? { deliveredAt } : {}),
+            ...(flushMark ? { flushMark } : {}),
+            ...(settledWhileHeld ? { settledWhileHeld } : {}),
           };
         });
-      replaceFlushedForThread(threadID, flushedItems);
+      replaceFlushedForThread(
+        threadID,
+        flushedItems,
+        flushMarkAt(threadBackend(threadID) ?? HOME_BACKEND, snapshot.flushedThrough),
+      );
       // The snapshot lists every send the backend still holds unconfirmed,
       // including quiet reservations loaded by this pane's history read.
       // Only confirmed rows may hand over to the timeline; pendingFlush
@@ -299,14 +306,15 @@ export function createThreadLiveStateHydration(
           // consumed row outside the window from a message restored or
           // removed while disconnected. The row's position goes with the
           // entry, since a row before the window is history this pane may
-          // never hold.
+          // never hold. History proves the flush settled, so the entry
+          // leaves with the pane if the pane never renders the row.
           const queuedIDs = new Set((snapshot.queueItems ?? []).map(item => item.id));
           const flushedIDs = new Set((snapshot.flushedItems ?? []).map(item => item.userItemId));
           const missing = previousFlushed.filter(item => !queuedIDs.has(item.queueItemId) && !flushedIDs.has(item.userItemId));
           const retained = await Promise.all(missing.map(async (item): Promise<FlushedItem | null> => {
             const row = await withBackendTarget(backend, () => GetThreadItem(threadID, item.userItemId));
             return row?.id === item.userItemId && row.kind === 'user_text' && !isPendingFlushRow(row as Item)
-              ? { ...item, deliveredAt: cursorFromItem(row as Item) }
+              ? { ...item, deliveredAt: cursorFromItem(row as Item), settledWhileHeld: true as const }
               : null;
           }));
           snapshot = { ...snapshot, flushedItems: [

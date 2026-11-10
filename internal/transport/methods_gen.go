@@ -291,6 +291,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListThreadSliceAround", ID: 4176102096, Scope: "threads:read", Route: "thread"},                                   // main.App.ListThreadSliceAround
 	{Name: "ListThreads", ID: 1090132042, Scope: "threads:read", Route: "all"},                                                // main.App.ListThreads
 	{Name: "ListThreadsOnPR", ID: 1924357569, Scope: "git:operate", Route: "selected"},                                        // main.App.ListThreadsOnPR
+	{Name: "ListUnsettledFlushes", ID: 3507874115, Scope: "threads:operate", Route: "all"},                                    // main.App.ListUnsettledFlushes
 	{Name: "ListWSLDistros", ID: 2332614075, Scope: "host", Route: "home"},                                                    // main.App.ListWSLDistros
 	{Name: "ListWorkspaceMcpServers", ID: 2808137798, Scope: "settings:write", Route: "selected"},                             // main.App.ListWorkspaceMcpServers
 	{Name: "MarkDiffReviewCommentsSent", ID: 1673567995, Scope: "threads:operate", Route: "thread"},                           // main.App.MarkDiffReviewCommentsSent

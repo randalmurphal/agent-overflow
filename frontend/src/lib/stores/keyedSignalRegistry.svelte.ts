@@ -79,6 +79,8 @@ export interface KeyedSignalRegistry<V> {
   set(key: string, value: V): void;
   /** Release the key's box. Its readers re-run and read the empty value. */
   drop(key: string): void;
+  /** Untracked. Every key with a box, including one that holds the empty value. */
+  keys(): IterableIterator<string>;
   /** Wipe every box. Test isolation only. */
   reset(): void;
 }
@@ -122,6 +124,10 @@ export function createKeyedSignalRegistry<V>(emptyValue: V): KeyedSignalRegistry
       // orphan and miss every later write to the key.
       box.release();
       boxes.delete(key);
+    },
+
+    keys(): IterableIterator<string> {
+      return boxes.keys();
     },
 
     reset(): void {

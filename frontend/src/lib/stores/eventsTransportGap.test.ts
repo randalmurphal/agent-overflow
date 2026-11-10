@@ -4,6 +4,8 @@
 // tier that holds a stamp, not just the registry.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyTransportGap } from './eventsTransportGap';
+import { __setTransportHelloForTest } from './transportStatus.svelte';
+import type { TransportHello } from '../transport/wsClient';
 import { setPullsReceiver } from './pullsStore.svelte';
 import { resetPanesForTest } from './panes.svelte';
 import {
@@ -106,6 +108,24 @@ describe('transport gap', () => {
     // The burst shares the read in flight and one read after it.
     await vi.waitFor(() => expect(getBindingMock('ListThreadLiveActivity')).toHaveBeenCalledTimes(4));
     await vi.waitFor(() => expect(getBindingMock('ListThreads')).toHaveBeenCalled());
+  });
+
+  it('re-reads which flushed messages are settled on a sends-pending gap', async () => {
+    const settlement = setBindingMock('ListUnsettledFlushes', async () => ({ flushedThrough: 0, unsettledThreadIds: [] }));
+    const hello: TransportHello = {
+      protocolVersion: 1, capabilities: ['flush-settlement.v1'], backendId: 'home', backendName: 'home', serverTimeMs: 0,
+      clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0, launchId: 'launch-1',
+    };
+    __setTransportHelloForTest(hello);
+    try {
+      applyTransportGap({ channel: 'provider:compacting', seq: 3 });
+      await vi.waitFor(() => expect(getBindingMock('ListThreadLiveActivity')).toHaveBeenCalledTimes(1));
+      expect(settlement).not.toHaveBeenCalled();
+      applyTransportGap({ channel: 'provider:sends_pending', seq: 3 });
+      await vi.waitFor(() => expect(settlement).toHaveBeenCalledTimes(1));
+    } finally {
+      __setTransportHelloForTest(null);
+    }
   });
 
   it('coalesces a replay gap burst into one sidebar read but preserves later invalidations', async () => {
