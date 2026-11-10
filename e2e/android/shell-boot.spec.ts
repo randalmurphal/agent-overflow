@@ -1363,3 +1363,186 @@ test('a real push crosses Google and lands in the tray', async ({ device, harnes
   expect(dump).toContain('Turn complete');
   expect(dump).not.toContain('Real push thread');
 });
+
+// ---------------------------------------------------------------------
+// The phone's microphone.
+// ---------------------------------------------------------------------
+
+/** One recording piece the page sent its computer through the `Network`
+ * plugin: its size, and the status the computer answered once it did. */
+type DictationUpload = { id: string; bytes: number; status?: number };
+
+type UploadWatch = Window & { __dictationUploads?: DictationUpload[] };
+
+/** Records every recording piece the page uploads. The shell's requests go
+ * through the `Network` plugin rather than the WebView's own stack, so
+ * Playwright's request events never see them; the bridge call does. */
+async function watchDictationUploads(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    type Bridge = { nativePromise: (plugin: string, method: string, options?: Record<string, unknown>) => Promise<unknown> };
+    const cap = (window as Window & { Capacitor?: Bridge }).Capacitor;
+    if (!cap) throw new Error('the Capacitor bridge is not present');
+    const uploads: DictationUpload[] = ((window as UploadWatch).__dictationUploads = []);
+    const send = cap.nativePromise.bind(cap);
+    cap.nativePromise = (plugin, method, options) => {
+      const answer = send(plugin, method, options);
+      if (plugin !== 'Network') return answer;
+      const id = String(options?.id);
+      if (method === 'httpStart' && options?.method === 'PUT'
+        && new URL(String(options.url)).pathname === '/attachments/dictation') {
+        uploads.push({ id, bytes: Number(options.length) });
+      } else if (method === 'httpHeaders') {
+        const upload = uploads.find((u) => u.id === id);
+        if (upload) void answer.then((headers) => { upload.status = (headers as { status: number }).status; }, () => undefined);
+      }
+      return answer;
+    };
+  });
+}
+
+async function dictationUploads(page: Page): Promise<DictationUpload[]> {
+  return page.evaluate(() => (window as UploadWatch).__dictationUploads ?? []);
+}
+
+type MeterWatch = Window & { __meterReads?: number };
+
+/** Counts the loudness meter's reads of the microphone, leaving each read
+ * as the engine answers it. */
+async function watchMeter(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const watch = window as MeterWatch;
+    watch.__meterReads = 0;
+    const read = AnalyserNode.prototype.getFloatTimeDomainData;
+    AnalyserNode.prototype.getFloatTimeDomainData = function (
+      this: AnalyserNode,
+      samples: Parameters<AnalyserNode['getFloatTimeDomainData']>[0],
+    ): void {
+      watch.__meterReads = (watch.__meterReads ?? 0) + 1;
+      read.call(this, samples);
+    };
+  });
+}
+
+async function meterReads(page: Page): Promise<number> {
+  return page.evaluate(() => (window as MeterWatch).__meterReads ?? 0);
+}
+
+/** Whether Android has granted the shell the microphone. */
+async function microphoneGranted(device: AndroidDevice): Promise<boolean> {
+  const dump = (await device.shell(`dumpsys package ${SHELL_PACKAGE}`)).toString();
+  const line = dump.split('\n').find((l) => l.includes('android.permission.RECORD_AUDIO: granted='));
+  expect(line, 'the APK must declare RECORD_AUDIO').toBeTruthy();
+  return line!.includes('granted=true');
+}
+
+/** Whether the shell holds the microphone, from the last recording event
+ * the audio service logged for it. A recording is first logged as `start`
+ * or, when the service saw its configuration first, as `update`. */
+async function microphoneState(device: AndroidDevice): Promise<'recording' | 'released' | 'never used'> {
+  const dump = (await device.shell('dumpsys audio')).toString();
+  const events = [...dump.matchAll(/\brec (start|update|stop|release)\b.*/g)]
+    .filter((event) => event[0].includes(`pack:${SHELL_PACKAGE}`));
+  const last = events.at(-1)?.[1];
+  if (last === undefined) return 'never used';
+  return last === 'start' || last === 'update' ? 'recording' : 'released';
+}
+
+// The composer's mic on the phone is the WebView's getUserMedia, which
+// Capacitor's chrome client answers by asking Android for RECORD_AUDIO and
+// MODIFY_AUDIO_SETTINGS; the manifest must declare both or the request is
+// refused without a prompt. This presses the mic on a device and proves
+// what only a device can: Android's own prompt appears, a refusal reaches
+// the mic as its blocked message, an allowance starts a metered recording,
+// the recording's pieces reach the computer through the shell's network
+// plugin while it runs, and stopping releases the microphone.
+//
+// The emulator's microphone is silent, so the recording ends as "No speech
+// heard." and nothing is inserted. What a transcript does once the
+// computer returns one is not a fact about the device; `tests/dictation.spec.ts`
+// and `tests/compact-live-dictation.spec.ts` cover it with a microphone
+// that makes sound.
+test('dictation records through the phone’s microphone once Android allows it', async ({ device, harness, page }) => {
+  test.skip(HUMAN_LOCK, 'this case answers Android’s permission prompt itself and expects a silent microphone');
+  await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      {
+        name: 'shell-dictation',
+        repo: { commits: [{ message: 'init', files: { 'README.md': '# Seeded\n' } }] },
+        threads: [{ title: 'Dictate thread', turns: [{ userText: 'hello', items: [{ kind: 'assistant_text', summary: 'Hi.' }] }] }],
+      },
+    ],
+  });
+  // A computer that dictates: Codex signed in with ChatGPT in the
+  // harness's own provider home, and Settings > Voice's switch on.
+  const home = harness.bootstrap.homeDir;
+  expect(home, 'the harness must isolate a provider home').toBeTruthy();
+  fs.mkdirSync(path.join(home!, '.codex'), { recursive: true });
+  fs.writeFileSync(path.join(home!, '.codex', 'auth.json'), JSON.stringify({
+    auth_mode: 'chatgpt',
+    tokens: { access_token: 'e2e-access', refresh_token: 'e2e-refresh', account_id: 'e2e-workspace', id_token: '' },
+    last_refresh: new Date().toISOString(),
+  }), { mode: 0o600 });
+  await harness.rpc('UpdateSettings', { dictationSubscriptionEnabled: true, dictationAPIEnabled: false });
+
+  const invite = await harness.rpc<PairingInvite>('MintDevicePairing', 'phone', 'full');
+  await page.goto(SHELL_ORIGIN + '/' + fragmentOf(invite));
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Pair this device' })).toBeVisible();
+  await page.getByLabel('Device name').fill('Emulator shell');
+  await page.getByRole('button', { name: 'Pair' }).click();
+  const shown = page.getByLabel('Verification number');
+  await expect(shown).toBeVisible();
+  await confirmOnHost(harness, ((await shown.textContent()) ?? '').trim());
+  const lock = page.getByTestId('app-lock');
+  await expect(lock).toBeVisible({ timeout: PAIRED_MOUNT_MS });
+  await passCredentialPrompt(device, lock);
+
+  await page.getByTestId('thread-row').filter({ hasText: 'Dictate thread' }).click({ timeout: PAIRED_MOUNT_MS });
+  const mic = page.getByTestId('composer-dictate');
+  const input = page.getByLabel('Message Input');
+  await expect(mic).toHaveAttribute('data-phase', 'idle', { timeout: PAIRED_MOUNT_MS });
+  expect(await microphoneGranted(device), 'a fresh install has not been granted the microphone').toBe(false);
+  await watchDictationUploads(page);
+  await watchMeter(page);
+
+  // Refused: Android asked, and the mic says where to undo the refusal.
+  await mic.click();
+  await tapNode(device, { res: /.*:id\/permission_deny_button/ });
+  await expect(mic).toHaveAttribute('data-error', 'true');
+  await expect(mic).toHaveAttribute('data-phase', 'idle');
+  await expect(mic).toHaveAttribute('title', 'Microphone access is blocked. Allow it for Agent Overflow in Android settings.');
+  expect(await microphoneGranted(device)).toBe(false);
+  expect(await dictationUploads(page), 'a refused microphone uploads nothing').toEqual([]);
+
+  // Allowed: Android asks a second time, and the recording starts.
+  await mic.click();
+  await tapNode(device, { res: /.*:id\/permission_allow_foreground_only_button/ });
+  await expect(mic).toHaveAttribute('data-phase', 'recording', { timeout: 30_000 });
+  expect(await microphoneGranted(device)).toBe(true);
+  // The loudness meter samples the microphone while it records: without
+  // it the silence check below would never apply.
+  const readsAtStart = await meterReads(page);
+  await expect.poll(() => meterReads(page), { message: 'the loudness meter must keep sampling while the phone records' })
+    .toBeGreaterThanOrEqual(readsAtStart + 5);
+  await expect(mic).toHaveAttribute('data-phase', 'recording');
+  await expect.poll(() => microphoneState(device), { message: 'Android must have the shell recording' }).toBe('recording');
+
+  // The recording streams to the computer while it runs, through the
+  // shell's network plugin, and the computer accepts each piece.
+  await expect.poll(async () => (await dictationUploads(page)).filter((u) => u.status === 204).length, {
+    message: 'recording pieces must reach the computer while the phone records',
+    timeout: 30_000,
+  }).toBeGreaterThanOrEqual(2);
+  for (const upload of await dictationUploads(page)) {
+    expect(upload.bytes, 'a piece carries recorded audio').toBeGreaterThan(0);
+  }
+
+  // Stopping settles the attempt. The emulator's microphone is silent, so
+  // nothing is transcribed and nothing lands in the message.
+  await mic.click();
+  await expect(mic).toHaveAttribute('data-phase', 'idle', { timeout: 60_000 });
+  await expect(mic).toHaveAttribute('title', 'No speech heard.');
+  await expect(input).toHaveValue('');
+  await expect.poll(() => microphoneState(device), { message: 'the microphone must be released once the recording stops' })
+    .toBe('released');
+});

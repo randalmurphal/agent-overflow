@@ -23,6 +23,7 @@ export const SETTINGS_DEFAULTS = {
   browserAllowOutsideWorkspace: false,
   browserChromiumPath: "",
   threadToolsEnabled: true,
+  dictationSubscriptionEnabled: false,
   agentGuideEnabled: true,
   confirmArchive: true,
   confirmDelete: true,

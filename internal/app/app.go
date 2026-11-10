@@ -17,6 +17,7 @@ import (
 	"agent-overflow/internal/claudeapp"
 	"agent-overflow/internal/codexapp"
 	"agent-overflow/internal/codexthread"
+	"agent-overflow/internal/dictation"
 	"agent-overflow/internal/discussionapp"
 	"agent-overflow/internal/forgeattach"
 	gitops "agent-overflow/internal/git"
@@ -327,6 +328,10 @@ type App struct {
 	// first use for the reason forgeAttachCache is lazy.
 	ciLogOnce  sync.Once
 	ciLogStore *cilog.Store
+	// dictation holds recordings clients are uploading for transcription
+	// (app_dictation.go), created on first use.
+	dictationOnce sync.Once
+	dictation     *dictation.Recordings
 	// transportServer is the Phase C HTTP+WS transport. Set by main.go
 	// via SetTransportServer before app.Run() so Shutdown can drain
 	// in-flight RPCs BEFORE App subsystems (store, telemetry, sessions)

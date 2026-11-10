@@ -2433,11 +2433,12 @@ third breakpoint, not a new app. Compact rules:
   compact, not a bottom drawer, so the keyboard and the key row own the
   bottom edge.
 
-**Voice.** Comes free: the composer is a real text field, so the phone
-keyboard's dictation key types into it, and the platform's recognizer is
-better than anything a laptop has. No plugin, no permission, nothing to
-build. A dedicated mic button that streams to a recognizer is a later
-option, not a first-shell need.
+**Voice.** The composer is a real text field, so the phone keyboard's
+dictation key types into it. The composer's mic is the same on the phone
+as on the desktop: the WebView records and the thread's computer
+transcribes (`docs/references/voice-dictation.md`). The shell declares
+`RECORD_AUDIO` and `MODIFY_AUDIO_SETTINGS`, which Capacitor's WebView
+client asks for on the first press.
 
 **Opening the app.** The app lock is the platform's biometric or
 credential prompt, run on cold start and on a resume past a
@@ -2638,7 +2639,7 @@ text above was deviated from:
   inputs, and `boot.ts` whose `adoptPairingEndpoint` is the one place
   scanned codes, pasted invitations and pairing hashes point the shell at a backend. Deviations from the
   text above: `minSdkVersion` 26 (the scanner's native library declares
-  it); dictation is the keyboard's, as ruled; the composer's Take photo, Photos
+  it); the composer's Take photo, Photos
   and Files choices use the WebView's native capture/chooser; no dedicated
   picker plugin is needed. iOS is not added. Signed distribution now uses
   `make apk-release` and a persistent keystore (see

@@ -15,6 +15,7 @@ import PerformanceSettings from './PerformanceSettings.svelte';
 import KeybindingsSettings from './KeybindingsSettings.svelte';
 import NotificationsSection from './NotificationsSection.svelte';
 import UpdatesSettings from './UpdatesSettings.svelte';
+import VoiceSettings from './VoiceSettings.svelte';
 import ClaudeSettings from './ClaudeSettings.svelte';
 import CodexSettings from './CodexSettings.svelte';
 import CommitMessageSettings from './CommitMessageSettings.svelte';
@@ -41,6 +42,7 @@ export const SETTINGS_PAGES: Record<SettingsSection, Component> = {
   performance: PerformanceSettings,
   keybindings: KeybindingsSettings,
   notifications: NotificationsSection,
+  voice: VoiceSettings,
   updates: UpdatesSettings,
   claude: ClaudeSettings,
   codex: CodexSettings,

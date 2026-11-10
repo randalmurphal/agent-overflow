@@ -268,6 +268,9 @@ type Config struct {
 	// That is every boot before the App's startup wires it, and every test
 	// that does not ask for byte transfer.
 	AttachmentTransfer AttachmentTransfer
+	// DictationTransfer receives the pieces of a recording uploaded for
+	// dictation (dictationroutes.go). Nil answers that route 404.
+	DictationTransfer DictationTransfer
 
 	// ThreadTransfers accepts narrowly authorized computer-to-computer handoffs.
 	// Nil leaves the route absent; control authorization stays in bound RPCs.
@@ -623,6 +626,9 @@ type Server struct {
 	// local image's content id is not a forge cache id or a thread
 	// attachment, and no ticket minted for one may decode at another.
 	localImageTickets *ticketBook
+	// dictationTickets is a fifth: a recording piece is not an attachment,
+	// and its ticket is minted by a `threads:operate` call.
+	dictationTickets *ticketBook
 }
 
 // New constructs a Server. Generates a token if one wasn't provided.
@@ -693,6 +699,7 @@ func New(cfg Config) (*Server, error) {
 		attachmentUploadTickets:   newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
 		forgeAttachmentTickets:    newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
 		localImageTickets:         newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
+		dictationTickets:          newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
 
 		bindTCP: listenTCPSharing,
 	}
@@ -1086,6 +1093,10 @@ func (s *Server) buildHTTPServer() *http.Server {
 	mux.HandleFunc(LocalImageDownloadPath, withShellCORS(http.MethodGet,
 		s.loopbackHostGuard(s.handleLocalImageDownload)))
 	mux.HandleFunc(LocalImageDownloadPreflightPath, shellPreflightHandler(http.MethodGet))
+	// Recording pieces for dictation, same admission and subtree.
+	mux.HandleFunc(DictationUploadPath, withShellCORS(http.MethodPut,
+		s.loopbackHostGuard(s.handleDictationUpload)))
+	mux.HandleFunc(DictationUploadPreflightPath, shellPreflightHandler(http.MethodPut))
 	// The bundle routes. Registered unconditionally for the reason the
 	// attachment pair is: a route whose presence depended on when the mux
 	// happened to be built would be a boot whose shape varies. With no

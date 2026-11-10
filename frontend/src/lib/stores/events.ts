@@ -1,5 +1,6 @@
 import { refreshAsyncQuestions } from './asyncQuestions.svelte';
 import { invalidateClaudeProbeCommands } from './providerCommands.svelte';
+import { applyDictationSourcesChanged } from './dictation.svelte';
 import { installComputerHydration } from './computerHydration';
 // Composition root for backend event wiring. `setupEventListeners()` is the
 // single place that subscribes to every Wails channel and fans events out
@@ -388,6 +389,9 @@ export function setupEventListeners(): () => void {
       // the re-read this triggers is a second RPC and every other settings
       // write would otherwise pay for it.
       if (payload?.keys?.includes('editor')) void resyncEditorPreference(backendKeyForOrigin(origin.backendId));
+      // Dictation availability folds this switch in on the computer, so it
+      // is re-read the same way.
+      if (payload?.keys?.includes('dictationSubscriptionEnabled')) applyDictationSourcesChanged(backendKeyForOrigin(origin.backendId));
     },
   );
   // keybindings:updated — the user keybindings file was rewritten or reset,
@@ -413,6 +417,7 @@ export function setupEventListeners(): () => void {
     const backend = backendKeyForOrigin(origin.backendId);
     invalidateClaudeProbeCommands(backend);
     applyProviderAccountsChanged(backend);
+    applyDictationSourcesChanged(backend);
   });
   // discussion:definitions-changed — a discussion definition was created,
   // renamed, edited or deleted. Payload-less, the same shape

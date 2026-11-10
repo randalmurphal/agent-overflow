@@ -28,6 +28,29 @@ describe('measureDensity', () => {
     expect(measureDensity(el, RUNGS)).toBe('mid');
   });
 
+  it('reads a child that ends inside the end padding as overflow', () => {
+    // scrollWidth never passes clientWidth here (the overflow sits on the
+    // padding), so only the box reading can see it.
+    const el = elementWithWidths(400, () => 400);
+    el.style.paddingRight = '10px';
+    Object.defineProperty(el, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ left: 0, right: 400, width: 400 }),
+    });
+    const child = document.createElement('span');
+    Object.defineProperty(child, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ left: 300, right: el.dataset.density === 'dense' ? 380 : 398 }),
+    });
+    el.append(child);
+    document.body.append(el);
+    try {
+      expect(measureDensity(el, RUNGS)).toBe('dense');
+    } finally {
+      el.remove();
+    }
+  });
+
   it('falls to the densest rung when nothing fits, and restores the attribute', () => {
     const el = elementWithWidths(100, () => 600);
     el.dataset.density = 'mid';

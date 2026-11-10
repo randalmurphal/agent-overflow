@@ -96,8 +96,8 @@ for it. Its sweep also restores a selected account's orphan into the
 canonical home while that still holds the consumed token. Another data
 root's sweep restores the slot alone. While the canonical store still holds
 the consumed token, the owner promotes the slot (`PromoteSlotOverCanonical`):
-at boot, before reconciliation, before an account probe and before a
-selected usage probe. Coherence of the
+at boot, before reconciliation, before an account probe, before a
+selected usage probe and before a dictation token refresh. Coherence of the
 shared canonical credential across stores otherwise belongs to
 external-login reconciliation.
 

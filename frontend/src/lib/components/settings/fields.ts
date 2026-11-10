@@ -579,6 +579,14 @@ const STATIC_FIELDS = [
     keywords: ['merge request', 'glab', 'self-hosted'],
   },
 
+  // --- Voice --------------------------------------------------------------
+  {
+    id: 'voice.dictation',
+    section: 'voice',
+    label: 'Dictate with ChatGPT',
+    keywords: ['microphone', 'mic', 'speech', 'transcribe', 'voice', 'dictation', 'codex', 'whisper'],
+  },
+
   // --- Editor -------------------------------------------------------------
   {
     id: 'editor.preferred',
