@@ -102,7 +102,8 @@ export function shellOutcomeLabel(shell: Pick<ShellOutputMeta, 'exitCode' | 'tim
 // Terminal control that is not color: cursor movement and erasure (CSI with
 // any final byte but `m`), character-set selection and keypad modes. Color
 // (SGR) and OSC are left for AnsiText, which renders one and drops the other.
-const NON_COLOR_CONTROL = /\x1b\[[0-?]*[ -/]*[@-ln-~]|\x1b[()][0-9A-Za-z]|\x1b[=>]/g;
+const ESC = String.fromCharCode(27);
+const NON_COLOR_CONTROL = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-ln-~]|${ESC}[()][0-9A-Za-z]|${ESC}[=>]`, 'g');
 
 /**
  * Command output as a terminal would leave it on screen: cursor control is
@@ -110,7 +111,7 @@ const NON_COLOR_CONTROL = /\x1b\[[0-?]*[ -/]*[@-ln-~]|\x1b[()][0-9A-Za-z]|\x1b[=
  * as its latest frame instead of every frame it drew.
  */
 export function shellDisplayText(output: string): string {
-  if (!output.includes('\x1b') && !output.includes('\r')) return output;
+  if (!output.includes(ESC) && !output.includes('\r')) return output;
   return output
     .replace(NON_COLOR_CONTROL, '')
     .split('\n')
