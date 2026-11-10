@@ -29,6 +29,7 @@ export const SETTINGS_DEFAULTS = {
   dictationAPILanguages: [],
   dictationAPIKeywords: [],
   dictationAPIPrompt: "",
+  readAloudAPIEnabled: false,
   agentGuideEnabled: true,
   confirmArchive: true,
   confirmDelete: true,

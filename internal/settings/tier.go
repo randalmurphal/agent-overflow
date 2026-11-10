@@ -94,6 +94,8 @@ var tierByKey = map[string]Tier{
 	"dictationAPILanguages": TierHost,
 	"dictationAPIKeywords":  TierHost,
 	"dictationAPIPrompt":    TierHost,
+	// Read aloud in OpenAI voices spends this machine's key too.
+	"readAloudAPIEnabled": TierHost,
 	// Keep-awake inhibits THIS machine's sleep, and workflowPaused is the
 	// backend engine's own run state.
 	"keepAwakeEnabled": TierHost,

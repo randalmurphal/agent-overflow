@@ -301,6 +301,12 @@ export interface Settings {
   /** Describes the speaker or setting to the model. */
   dictationAPIPrompt: string;
   /**
+   * Let any client read replies aloud in OpenAI voices through this
+   * computer's OpenAI API key file, which sends each sentence to OpenAI.
+   * Off by default.
+   */
+  readAloudAPIEnabled: boolean;
+  /**
    * Append Agent Overflow's guide to every interactive Claude, claude-tui
    * and Codex session's system prompt: what the chat pane renders and which
    * built-in tool servers are on. Read at spawn, so a change applies to

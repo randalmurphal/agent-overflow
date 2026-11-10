@@ -134,6 +134,10 @@ type Settings struct {
 	DictationAPIKeywords []string `json:"dictationAPIKeywords,omitempty"`
 	// DictationAPIPrompt describes the speaker or setting to the model.
 	DictationAPIPrompt string `json:"dictationAPIPrompt,omitempty"`
+	// ReadAloudAPIEnabled lets any client read replies aloud in OpenAI
+	// voices through this computer's OpenAI API key, which sends each
+	// sentence to OpenAI. Default off.
+	ReadAloudAPIEnabled bool `json:"readAloudAPIEnabled,omitempty"`
 	// AgentGuideEnabled appends Agent Overflow's own guide to every
 	// interactive Claude, claude-tui and Codex session's system prompt: what
 	// the chat pane renders and which built-in tool servers are on
