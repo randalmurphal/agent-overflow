@@ -45,12 +45,18 @@ already sit on another turn, and no row may sit on a later one. Otherwise Stop
 is an ordinary interrupt. The backend's check that the latest message carries
 the expected send ID stays authoritative.
 
-While the un-send is pending, pushed rows on the cut turn or later stay out of
-the timeline, and so does the user row of the send being taken back on any
-turn: the backend can place it below the turn the client predicted. A refusal
-re-reads the window so a withheld row returns. A history read that lands in
-that window is not filtered. It is the backend's state, and the recovery from
-a lost reply depends on reading it whole.
+While the un-send is pending, the timeline presents no row on the cut turn or
+later, and not the user row of the send being taken back on any turn: the
+backend can place it below the turn the client predicted. One predicate
+(`hiddenByInterruptCut`) is applied in two places. The row projection leaves
+such a row out of what it renders, whichever path put it in the pane's window,
+and reads the cut reactively. A history read in that window therefore installs
+whole, so cursors, caches and the recovery from a lost reply keep the backend's
+state, and none of it is painted beside the restored draft. The item stream
+also refuses such a pushed row, so a row nobody sees starts no reveal, follow
+or run state. A refusal clears the cut, which shows the rows the window holds,
+and re-reads the window when a pushed row was refused. A committed un-send
+removes the rows before the cut clears.
 
 Older-message replacement keeps the editor loading until preparation completes.
 The client transfers follow intent before applying the cut and replacement in

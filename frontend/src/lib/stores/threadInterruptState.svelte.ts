@@ -4,6 +4,8 @@
 // state remains live. Send stays closed until the caller applies its confirmed
 // cut or reconciles an uncertain outcome. Edit/resend uses the same Send gate.
 
+import type { Item } from '../types/models';
+import { parseUserMessageMeta } from '../utils/userMessageMeta';
 import { onThreadHistoryInvalidated } from './threadIdentityInvalidation';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 
@@ -80,7 +82,20 @@ onThreadHistoryInvalidated((owns) => {
   }
 });
 
+/** Reactive: a reader re-runs when the thread's cut is installed or cleared. */
 export function optimisticInterruptCut(threadId: string): OptimisticInterruptCut | null { return restoredByThread.get(threadId); }
+
+/**
+ * Whether `cut` takes `item` off the screen. The one rule, applied twice:
+ * the item stream refuses such a pushed row, so it starts no reveal, follow
+ * or run state for a row nobody sees, and the timeline's row projection
+ * leaves out such a row the window holds, which is how a history read that
+ * lands while the un-send settles stays whole without being painted.
+ */
+export function hiddenByInterruptCut(item: Item, cut: OptimisticInterruptCut): boolean {
+  return item.turnIndex >= cut.turnIndex
+    || (cut.sendId !== '' && item.kind === 'user_text' && parseUserMessageMeta(item.meta).sendId === cut.sendId);
+}
 
 export function noteHiddenInterruptItem(threadId: string): void { hiddenItemThreads.add(threadId); }
 export function restoreThreadInterruptPresentation(threadId: string, token: number): boolean {

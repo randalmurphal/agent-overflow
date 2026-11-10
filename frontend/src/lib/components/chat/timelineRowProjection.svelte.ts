@@ -39,6 +39,7 @@ import { filterRedundantNotifications } from '../../utils/notificationFilter';
 import { isPendingFlushRow } from '../../utils/userMessageMeta';
 import { itemsWithinLoadedWindow } from '../../stores/threadItems';
 import { getFlushedForThread } from '../../stores/sendQueue.svelte';
+import { hiddenByInterruptCut, optimisticInterruptCut } from '../../stores/threadInterruptState.svelte';
 
 const EMPTY_RECEIVER_LABELS = new Map<string, string>();
 /** Shared, so the common "gate is holding nothing" case allocates nothing. */
@@ -89,7 +90,7 @@ export function createTimelineRowProjection(
     getFlushedForThread(options.getPane().threadId).map((entry) => entry.userItemId),
   ));
   let groupedNodes = $derived.by(() => {
-    options.getPane().timelineRevision;
+    void options.getPane().timelineRevision;
     // The live snapshot owns pending delivery. A quiet SQLite reservation
     // must not become history merely because navigation loaded its row.
     // After session loss the registry is empty; retained history continues
@@ -99,14 +100,19 @@ export function createTimelineRowProjection(
     // agent scope keeps outside its edges (see `itemsWithinLoadedWindow`)
     // render only on that scope's surface. The edges move with the
     // window, so a cursor change alone re-derives here.
-    options.getPane().activityRuns.windowRevision;
+    void options.getPane().activityRuns.windowRevision;
     const oldest = options.getPane().oldestLoadedCursor;
     const newest = options.getPane().newestLoadedCursor;
+    // An early Stop's un-send in flight. The window keeps whatever a read
+    // installs; the rows the Stop took off the screen are not painted until
+    // the cut clears. Tracked, so they show the moment a refusal clears it.
+    const interruptCut = optimisticInterruptCut(options.getPane().threadId ?? '');
     return untrack(() => {
       const pane = options.getPane();
       const items = itemsWithinLoadedWindow(options.getPane().items, oldest, newest);
-      const visibleItems = pendingIds.size === 0 ? items : items.filter(
-        (item) => !pendingIds.has(item.id) || !isPendingFlushRow(item),
+      const visibleItems = pendingIds.size === 0 && interruptCut === null ? items : items.filter(
+        (item) => (!pendingIds.has(item.id) || !isPendingFlushRow(item))
+          && (interruptCut === null || !hiddenByInterruptCut(item, interruptCut)),
       );
       const loadedIds = new Set(pane.activityRuns.loadedItems(visibleItems).map(item => item.id));
       // Relationship lookup sees retained agent context and children; only
@@ -150,7 +156,7 @@ export function createTimelineRowProjection(
     const nodes = gatedNodes;
     const withheld = withheldNodes;
     const pane = options.getPane();
-    pane.activityRuns.revision;
+    void pane.activityRuns.revision;
     activityRunDefaultCollapsed();
     activityRunWindowRows();
     // Both tail facts are pane state the registry reads inside the untracked
@@ -159,7 +165,7 @@ export function createTimelineRowProjection(
     // nothing, and without this read the pass that records the verified
     // tail's open hold would wait for an unrelated structural change.
     const windowReachesTail = !pane.hasMoreNewer;
-    pane.loading;
+    void pane.loading;
     return untrack(() => {
       const runs = groupActivityRuns(nodes, {
         identity: pane.activityRuns,
@@ -181,7 +187,7 @@ export function createTimelineRowProjection(
     const provider = options.getPane().thread?.provider;
     // Receiver labels come from spawn-row metadata. Summary-only streaming
     // deltas do not change that metadata and do not bump timelineRevision.
-    options.getPane().timelineRevision;
+    void options.getPane().timelineRevision;
 
     return provider === PROVIDER_DEFINITIONS.codex.id
       ? untrack(() => codexSubagentReceiverLabels(options.getPane().items))

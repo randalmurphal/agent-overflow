@@ -88,6 +88,65 @@ for (const provider of ['claude', 'codex'] as const) {
     await expect(page.getByLabel('Message Input')).toHaveValue(`${original}\nEdited while cleaning up`);
   });
 
+  test(`${provider}: a history read while the un-send settles does not paint the message beside its draft`, async ({ harness, page }) => {
+    let release: (() => void) | undefined;
+    let threadId = '';
+    let reopened = false;
+    const reads = new Set<string>();
+    let answered = 0;
+    await page.routeWebSocket(/\/ws(?:\?|$)/, socket => {
+      const server = socket.connectToServer();
+      socket.onMessage(message => {
+        const frame = JSON.parse(String(message));
+        // SyncThreadWindow for the thread, sent once it is reopened.
+        if (reopened && frame.type === 'rpc' && frame.methodId === 3841902986 && String(message).includes(threadId)) reads.add(frame.id);
+        if (frame.type === 'rpc' && frame.methodId === 2617952423) release = () => server.send(message);
+        else server.send(message);
+      });
+      server.onMessage(message => {
+        socket.send(message);
+        const frame = JSON.parse(String(message));
+        if (frame.type === 'rpc' && reads.has(frame.id)) answered++;
+      });
+    });
+    await harness.rpc('HarnessSetScenario', { scenario: waitingScenario(provider) });
+    threadId = await seed(harness, provider, false);
+    await harness.open(page);
+    await page.getByTestId('thread-row-title').filter({ hasText: `Revert ${provider}` }).click();
+    const input = page.getByLabel('Message Input');
+    const sent = 'Taken back while stopping';
+    await input.fill(sent);
+    await page.getByRole('button', { name: 'Send message', exact: true }).click();
+    await harness.waitForEvent<HarnessMockEvent>('harness:mock', ev => ev.report.kind === 'waiting_signal' && ev.report.detail === 'answer');
+    await expect(page.getByText(sent, { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Interrupt current turn', exact: true }).click();
+    await expect.poll(() => release !== undefined).toBe(true);
+    await expect(input).toHaveValue(sent);
+    await expect(page.getByText(sent, { exact: true })).toHaveCount(0);
+
+    // The rollback has not run, so the backend still holds the row and a
+    // read of the thread returns it.
+    const held = await harness.rpc<Array<{ kind: string; summary: string }>>('ListItems', threadId, true);
+    expect(held.filter(row => row.kind === 'user_text').map(row => row.summary)).toContain(sent);
+    await page.getByTestId('thread-row-title').filter({ hasText: 'Other conversation' }).click();
+    await expect(page.getByText('Other answer', { exact: true })).toBeVisible();
+    reopened = true;
+    await page.getByTestId('thread-row-title').filter({ hasText: `Revert ${provider}` }).click();
+    await expect.poll(() => answered).toBeGreaterThan(0);
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await expect(page.getByTestId('empty-thread-greeting')).toBeVisible();
+    await expect(page.getByText(sent, { exact: true })).toHaveCount(0);
+    await expect(input).toHaveValue(sent);
+    await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeDisabled();
+
+    release!();
+    await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeEnabled();
+    await expect(page.getByText(sent, { exact: true })).toHaveCount(0);
+    await expect(input).toHaveValue(sent);
+    const rows = await harness.rpc<Array<{ kind: string }>>('ListItems', threadId, true);
+    expect(rows.filter(row => row.kind === 'user_text')).toHaveLength(0);
+  });
+
   test(`${provider}: older-message preparation retains history and WIP until the replacement is ready`, async ({ harness, page }) => {
     let release: (() => void) | undefined;
     await page.routeWebSocket(/\/ws(?:\?|$)/, socket => {

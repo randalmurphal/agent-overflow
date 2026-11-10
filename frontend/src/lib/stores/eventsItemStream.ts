@@ -1,5 +1,5 @@
 import { applyTimelineMutation } from './timelineSurfaces';
-import { optimisticInterruptCut, noteHiddenInterruptItem } from './threadInterruptState.svelte';
+import { hiddenByInterruptCut, optimisticInterruptCut, noteHiddenInterruptItem } from './threadInterruptState.svelte';
 import { getTransportHelloFor } from './transportStatus.svelte';
 import { threadBackend, HOME_BACKEND } from '../transport/entityIndex';
 import { getUndoableSend, retireUndoableSend } from './composerSendUndo';
@@ -26,7 +26,7 @@ import { lookupDiscussionLiveTail } from './discussionLiveTail';
 import { isBoundedString, isFiniteNumber, isStreamOffset } from './eventsGuards';
 import { utf8Length } from '../utils/utf8Offsets';
 import { compositeKey } from '../utils/compositeKey';
-import { isPendingFlushRow, parseUserMessageMeta } from '../utils/userMessageMeta';
+import { isPendingFlushRow } from '../utils/userMessageMeta';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { itemEventQueued, itemEventsSettled, resetItemEventSettlement } from './itemEventSettlement';
 
@@ -77,11 +77,6 @@ export function survivesRevertedTurnEvent(threadId: string, kind: 'turnStartedSe
   if (cut?.launchId && launch && cut.launchId !== launch) return true;
   const boundary = cut?.[kind];
   return boundary === undefined || sequence === undefined || sequence > boundary;
-}
-
-/** The user row of the send an early Stop is taking back, on any turn. */
-function isInterruptedSendRow(item: Item, sendId: string): boolean {
-  return sendId !== '' && item.kind === 'user_text' && parseUserMessageMeta(item.meta).sendId === sendId;
 }
 
 function survivesCut(entry: QueuedItemEvent): boolean {
@@ -690,8 +685,7 @@ export function flushItemEventQueue(): void {
       if (!survivesCut(entry)) continue;
       const { evt, rowKey: itemKey } = entry;
       const hidden = optimisticInterruptCut(evt.threadId);
-      if (hidden !== null && evt.action === 'upsert'
-        && (evt.item.turnIndex >= hidden.turnIndex || isInterruptedSendRow(evt.item, hidden.sendId))) {
+      if (hidden !== null && evt.action === 'upsert' && hiddenByInterruptCut(evt.item, hidden)) {
         noteHiddenInterruptItem(evt.threadId);
         continue;
       }
