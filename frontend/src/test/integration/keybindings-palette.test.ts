@@ -108,7 +108,7 @@ describe('App integration — keybindings + palette', () => {
     expect(input).toBeInTheDocument();
     // Default focus is the list root (so plain j/k navigates without
     // typing into the search box); mod+/ swings focus to the input.
-    const list = rendered.container.querySelector<HTMLElement>('#palette-listbox');
+    const list = document.querySelector<HTMLElement>('#palette-listbox');
     expect(list).not.toBeNull();
     await waitFor(() => expect(document.activeElement).toBe(list));
   });

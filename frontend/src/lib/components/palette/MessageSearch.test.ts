@@ -345,8 +345,8 @@ describe('<MessageSearch> — interactions', () => {
     setBindingMock('SearchThreadMessages', async () => []);
     const onClose = vi.fn();
     const pane = makePane();
-    const { container } = renderSearch({ open: true, pane, onClose });
-    const backdrop = container.querySelector('[data-modal-backdrop]')!;
+    renderSearch({ open: true, pane, onClose });
+    const backdrop = document.querySelector('[data-modal-backdrop]')!;
     await fireEvent.keyDown(backdrop, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
@@ -355,12 +355,12 @@ describe('<MessageSearch> — interactions', () => {
     setBindingMock('SearchThreadMessages', async () => []);
     const onClose = vi.fn();
     const pane = makePane();
-    const { getByTestId, container } = renderSearch({ open: true, pane, onClose });
+    const { getByTestId } = renderSearch({ open: true, pane, onClose });
     // Clicking the dialog body should not dismiss; Modal only fires
     // onClose when the click originates on the backdrop itself.
     await fireEvent.click(getByTestId('message-search'));
     expect(onClose).not.toHaveBeenCalled();
-    const backdrop = container.querySelector('[data-modal-backdrop]') as HTMLElement;
+    const backdrop = document.querySelector('[data-modal-backdrop]') as HTMLElement;
     await fireEvent.click(backdrop);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
