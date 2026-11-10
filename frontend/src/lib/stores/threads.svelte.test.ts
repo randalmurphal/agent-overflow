@@ -57,6 +57,20 @@ describe('threads store', () => {
     });
   });
 
+  describe('rows as values', () => {
+    it('rejects a write into a stored row or into the list', async () => {
+      setBindingMock('ListThreads', async () => [makeThread('t1'), makeThread('t2')]);
+      await refreshThreads();
+      updateThreadTitle('t2', 'Renamed');
+      const rows = getThreads() as Thread[];
+      // Both a row a read committed and a row a mutation replaced.
+      expect(() => { rows[0].title = 'written in place'; }).toThrow(TypeError);
+      expect(() => { rows[1].title = 'written in place'; }).toThrow(TypeError);
+      expect(() => { rows.push(makeThread('t3')); }).toThrow(TypeError);
+      expect(getThreads().map((t) => t.title)).toEqual([makeThread('t1').title, 'Renamed']);
+    });
+  });
+
   describe('mutations', () => {
     it('prependThread puts new thread at the head', async () => {
       setBindingMock('ListThreads', async () => [makeThread('b'), makeThread('c')]);

@@ -160,7 +160,7 @@ export function syncThreadActivity(threadId: string, updatedAt: number): void {
  * closes the panes of threads deleted while their frame was lost.
  */
 async function resyncThreadRows(): Promise<void> {
-  let rows: Thread[];
+  let rows: readonly Thread[];
   try {
     rows = await loadThreads();
   } catch (err) {
