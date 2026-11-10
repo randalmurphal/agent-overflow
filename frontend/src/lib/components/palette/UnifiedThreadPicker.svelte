@@ -42,8 +42,11 @@
 
   // Non-archived threads are the only candidates. Archived threads live
   // behind their own filter in the sidebar and shouldn't clutter the picker.
+  // A closed picker reads no threads: it is always mounted, and the clamp
+  // effect below keeps this chain live, so it would otherwise filter the
+  // whole catalog on every thread change.
   let visibleThreads: Thread[] = $derived(
-    getThreads().filter((thread) => !thread.archived && !isHiddenThreadMode(thread.mode)),
+    open ? getThreads().filter((thread) => !thread.archived && !isHiddenThreadMode(thread.mode)) : [],
   );
 
   let matches: Ranked[] = $derived.by(() => {
