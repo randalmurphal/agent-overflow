@@ -18,10 +18,17 @@ import "net"
 // process inside the namespaces.
 const HelperArg = "__ao-netisolate-helper"
 
+// EnvNamespace names the environment variable the helper sets to its network
+// namespace's identity (the /proc/self/ns/net link) before it execs the
+// target, so the target and its descendants can prove they run in the
+// namespace Command built rather than on a host that merely looks like one.
+const EnvNamespace = "AO_NETISOLATE_NS"
+
 // containedInterfaces reports whether ifaces are the namespace Command
 // builds: loopback plus lanName carrying lanAddress and nothing routable
-// besides. Linux brings a dummy interface up with an IPv6 link-local
-// address, which reaches nothing beyond it either.
+// besides. lanName without lanAddress is not the namespace's interface.
+// Linux brings a dummy interface up with an IPv6 link-local address, which
+// reaches nothing beyond it either.
 func containedInterfaces(ifaces []net.Interface, addrs func(net.Interface) ([]net.Addr, error), lanName string, lanAddress net.IP) bool {
 	lan := false
 	for _, iface := range ifaces {
@@ -35,11 +42,22 @@ func containedInterfaces(ifaces []net.Interface, addrs func(net.Interface) ([]ne
 		if err != nil {
 			return false
 		}
+		addressed := false
 		for _, addr := range list {
 			ipNet, ok := addr.(*net.IPNet)
-			if !ok || !(ipNet.IP.Equal(lanAddress) || (ipNet.IP.To4() == nil && ipNet.IP.IsLinkLocalUnicast())) {
+			if !ok {
 				return false
 			}
+			switch {
+			case ipNet.IP.Equal(lanAddress):
+				addressed = true
+			case ipNet.IP.To4() == nil && ipNet.IP.IsLinkLocalUnicast():
+			default:
+				return false
+			}
+		}
+		if !addressed {
+			return false
 		}
 		lan = true
 	}

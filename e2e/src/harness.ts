@@ -89,6 +89,12 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
   // suite's fake listeners live, and at the backend's own. Nothing else on
   // the machine is dialled.
   if (!opts.savedRelease) args.push('--scan-scope-pid', String(process.pid));
+  // The backend runs in a process group of its own (below), so the group
+  // teardown that stops a killed worker would miss it; it ends itself when
+  // this worker is no longer its parent. Windows' Job Object owns the tree.
+  if (!opts.savedRelease && process.platform !== 'win32') {
+    args.push('--exit-with-parent', String(process.pid));
+  }
 
   const child = spawnContained(binary, args, {
     memoryLimitBytes: opts.memoryLimitBytes ?? FALLBACK_MEMORY_LIMIT_BYTES,

@@ -180,30 +180,45 @@ async function awaitOwnerUnlock(device: AndroidDevice): Promise<void> {
  * The generous human timeout is prompt-to-fingers latency, not machinery.
  */
 async function passCredentialPrompt(device: AndroidDevice, lock: Locator): Promise<void> {
-  if (!HUMAN_LOCK) {
-    // Window focus arrives before the native PIN field is ready on a
-    // cold launch. Fill that field through Android's UI selector so no
-    // prefix of the PIN is lost during the credential animation.
-    try {
-      await expect.poll(() => focusedWindow(device), { message: 'the platform credential prompt must receive focus' })
-        .toContain('BiometricPrompt');
-      fs.writeFileSync(test.info().outputPath('native-lock-ime.txt'), await device.shell('dumpsys input_method'));
-      // A WebView field may have owned the IME before the second pairing.
-      // Focus the system field explicitly, as a tap on the prompt would.
-      await device.tap({ res: 'com.android.systemui:id/lockPassword' });
-      await device.fill({ res: 'com.android.systemui:id/lockPassword', focused: true }, LOCK_PIN);
-    } catch (error) {
-      await test.info().attach('native-lock-screen', { body: await device.screenshot({ path: test.info().outputPath('native-lock.png') }), contentType: 'image/png' });
-      console.info('Native lock focus:', await focusedWindow(device));
-      console.info('App lock text:', await lock.innerText().catch(() => '<not present>'));
-      // Use the driver's existing UiAutomation connection. Android allows
-      // only one owner, so a second `uiautomator dump` cannot inspect it.
-      fs.writeFileSync(test.info().outputPath('native-lock.json'), JSON.stringify(await device.info({ depth: 0 }), null, 2));
-      throw error;
-    }
-    await device.shell('input keyevent 66');
-  }
+  // The owner answers in their own time, possibly already: the lock coming
+  // down is the evidence either way.
+  if (!HUMAN_LOCK) await answerCredentialPrompt(device, lock);
   await expect(lock).toBeHidden({ timeout: HUMAN_LOCK ? 120_000 : 30_000 });
+}
+
+/**
+ * The emulator's half of `passCredentialPrompt`, which needs no WebView: it
+ * types the PIN the smoke script set into the platform prompt. A real phone
+ * is never typed at (see HUMAN_LOCK). `lock` only feeds the diagnostics.
+ */
+async function answerCredentialPrompt(device: AndroidDevice, lock?: Locator): Promise<void> {
+  expect(HUMAN_LOCK, "the suite never types at a real phone's prompt").toBe(false);
+  // Window focus arrives before the native PIN field is ready on a
+  // cold launch. Fill that field through Android's UI selector so no
+  // prefix of the PIN is lost during the credential animation.
+  try {
+    await expect.poll(() => focusedWindow(device), {
+      message: 'the platform credential prompt must receive focus',
+      timeout: PAIRED_MOUNT_MS,
+    })
+      .toContain('BiometricPrompt');
+    fs.writeFileSync(test.info().outputPath('native-lock-ime.txt'), await device.shell('dumpsys input_method'));
+    // A WebView field may have owned the IME before the second pairing.
+    // Focus the system field explicitly, as a tap on the prompt would.
+    await device.tap({ res: 'com.android.systemui:id/lockPassword' });
+    await device.fill({ res: 'com.android.systemui:id/lockPassword', focused: true }, LOCK_PIN);
+  } catch (error) {
+    await test.info().attach('native-lock-screen', { body: await device.screenshot({ path: test.info().outputPath('native-lock.png') }), contentType: 'image/png' });
+    console.info('Native lock focus:', await focusedWindow(device));
+    console.info('App lock text:', lock ? await lock.innerText().catch(() => '<not present>') : '<not attached>');
+    // Use the driver's existing UiAutomation connection. Android allows
+    // only one owner, so a second `uiautomator dump` cannot inspect it.
+    // The tree can change under the dump; that must not replace the error.
+    const tree = await device.info({ depth: 0 }).catch((dumpError: unknown) => ({ dumpError: String(dumpError) }));
+    fs.writeFileSync(test.info().outputPath('native-lock.json'), JSON.stringify(tree, null, 2));
+    throw error;
+  }
+  await device.shell('input keyevent 66');
 }
 
 // Playwright 1.62 resolves a WebView's package with `ps -A | grep <pid>`
@@ -217,6 +232,28 @@ async function shellWebView(device: AndroidDevice) {
     return pid;
   }, { message: 'the shell must have one running app process', timeout: WEBVIEW_MS }).toMatch(/^[1-9]\d*$/);
   return device.webView({ socketName: `webview_devtools_remote_${pid}` }, { timeout: WEBVIEW_MS });
+}
+
+/**
+ * The shell WebView's page. `AndroidWebView.page()` takes no timeout, and an
+ * attach that stalls would otherwise hold the case and then its teardown
+ * for the whole test timeout each, so the attach gets the WebView's own
+ * deadline.
+ */
+async function shellPage(device: AndroidDevice): Promise<Page> {
+  const webView = await shellWebView(device);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`the shell WebView did not attach within ${WEBVIEW_MS}ms`)),
+      WEBVIEW_MS,
+    );
+  });
+  try {
+    return await Promise.race([webView.page(), deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Long enough for a cold WebView on an emulator, short enough to fail. */
@@ -426,16 +463,16 @@ const test = base.extend<ShellFixtures>({
     await device.shell(`pm clear ${SHELL_PACKAGE}`);
     await device.shell(`pm grant ${SHELL_PACKAGE} android.permission.POST_NOTIFICATIONS`);
     await device.shell(`am start -n ${SHELL_ACTIVITY}`);
-    const webView = await shellWebView(device);
+    const shell = await shellPage(device);
     try {
-      await use(await webView.page());
+      await use(shell);
     } finally {
       if (testInfo.status !== testInfo.expectedStatus) {
         try {
           const screenshot = testInfo.outputPath('failed-device-screen.png');
           await device.screenshot({ path: screenshot });
           await testInfo.attach('failed-device-screen', { path: screenshot, contentType: 'image/png' });
-          const page = await (await shellWebView(device)).page();
+          const page = await shellPage(device);
           const state = await page.evaluate(() => ({
             selected: localStorage.getItem('agent-overflow:frontend:selected-computer'),
             endpoints: localStorage.getItem('agent-overflow:backendEndpoints'),
@@ -590,7 +627,7 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
   await device.shell(`am force-stop ${SHELL_PACKAGE}`);
   await run(adbPath(), ['-s', device.serial(), 'reverse', '--remove', `tcp:${harness.bootstrap.port}`]);
   await device.shell(`am start -n ${SHELL_ACTIVITY}`);
-  page = await (await shellWebView(device)).page();
+  page = await shellPage(device);
   lock = page.getByTestId('app-lock');
   row = page.getByTestId('thread-row').filter({ hasText: 'Shell boot thread' });
   await expect(lock).toBeVisible({ timeout: PAIRED_MOUNT_MS });
@@ -683,6 +720,10 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
       const screenshot = test.info().outputPath('camera-confirmation-failure.png');
       await device.screenshot({ path: screenshot });
       await test.info().attach('camera-confirmation-failure', { path: screenshot, contentType: 'image/png' });
+      // The stock camera can stall in a capture; its own log says where.
+      const cameraLog = test.info().outputPath('camera-confirmation-logcat.txt');
+      fs.writeFileSync(cameraLog, await device.shell(`logcat -d -v time -t 2000 --pid=$(pidof ${camera})`).catch((logError) => `logcat failed: ${logError}`));
+      await test.info().attach('camera-confirmation-logcat', { path: cameraLog, contentType: 'text/plain' });
       throw error;
     }
     const captured = page.getByRole('button', { name: /^Remove JPEG_.*\.jpg$/ });
@@ -1070,11 +1111,16 @@ test('the shell stages a bundle, boots on it, and refuses a damaged one', async 
 
   // --- The shell's own sync stages it first ----------------------------
   // The app paired, its backend's hello named a bundle that is not the
-  // APK's, and `native/bundleSync.ts` downloaded it over the paired
-  // session and staged it — behind the lock, without being asked. Waiting
-  // for that proves the download path end to end, and it is what makes
-  // the state below deterministic: the refusals run against a store that
-  // has settled rather than racing the sync.
+  // APK's, and `native/bundleSync.ts` downloads it over the paired
+  // session and stages it without being asked. Waiting for that proves
+  // the download path end to end, and it is what makes the state below
+  // deterministic: the refusals run against a store that has settled
+  // rather than racing the sync.
+  //
+  // The credential prompt is answered first. It pauses the activity, and
+  // a paused app defers the download until it is in front again, so a
+  // sync that first looked after the prompt rose would wait here forever.
+  await passCredentialPrompt(device, page.getByTestId('app-lock'));
   expect(
     await page.evaluate(async () => (await (await fetch('/bundle-id.txt')).text()).trim()),
     'the APK must ship a different bundle than the harness serves, or the swap proves nothing',
@@ -1123,11 +1169,18 @@ test('the shell stages a bundle, boots on it, and refuses a damaged one', async 
   // --- The cold start adopts it ----------------------------------------
   // Force-stop rather than a back press: the swap happens in
   // `MainActivity.onCreate` before `super.onCreate`, so it needs a
-  // process that is actually starting.
+  // process that is actually starting. This launch's prompt was answered
+  // above: one still up when the process dies animates out over the
+  // relaunch, and would be taken for the new launch's prompt.
   await device.shell(`am force-stop ${SHELL_PACKAGE}`);
   await device.shell(`am start -n ${SHELL_ACTIVITY}`);
-  const relaunched = await (await shellWebView(device))
-    .page();
+  // The app is paired, so the relaunch raises the lock's credential prompt
+  // within seconds. On the emulator it is answered first and the page
+  // attached after, on an activity that is running rather than paused
+  // behind the prompt; a phone's owner answers whenever they do.
+  if (!HUMAN_LOCK) await answerCredentialPrompt(device);
+  const relaunched = await shellPage(device);
+  await expect(relaunched.getByTestId('app-lock')).toBeHidden({ timeout: HUMAN_LOCK ? 120_000 : PAIRED_MOUNT_MS });
 
   // The origin is unchanged: a bundle swap changes which FILES the
   // WebView is served, never the origin it is served under — which is
@@ -1150,27 +1203,39 @@ test('the shell stages a bundle, boots on it, and refuses a damaged one', async 
   expect(after.next).toBe('');
 
   // --- And it proves itself before the watchdog fires -------------------
-  // `pendingHealth` clears when the shell calls `ready()`, which it does
-  // once the app has mounted and its boot has run to the end. The 30s
-  // watchdog is the other outcome, so this poll is bounded well inside
-  // it: a rollback here would mean the swap never booted.
+  // `ready()` clears `pendingHealth` and records the bundle as the last
+  // known good; the shell calls it once the app has mounted and its boot
+  // has run to the end. The watchdog's rollback clears `pendingHealth`
+  // too, so the whole state is judged at once: a launch that rolled back
+  // serves the APK's assets again and lists this bundle as failed. The
+  // wait outlasts the watchdog's 30s, so a rollback is seen, not raced.
   await expect
     .poll(
-      async () =>
-        (
-          await relaunched.evaluate(async () => {
-            const plugins = (window as Window & {
-              Capacitor?: { Plugins?: { Bundle?: { state(): Promise<never> } } };
-            }).Capacitor?.Plugins;
-            return (await plugins!.Bundle!.state()) as unknown as { pendingHealth: string };
-          })
-        ).pendingHealth,
+      async () => {
+        const state = await relaunched.evaluate(async () => {
+          const plugins = (window as Window & {
+            Capacitor?: { Plugins?: { Bundle?: { state(): Promise<never> } } };
+          }).Capacitor?.Plugins;
+          return (await plugins!.Bundle!.state()) as unknown as {
+            current: string;
+            pendingHealth: string;
+            lastKnownGood: string;
+            rolledBack: string[];
+          };
+        });
+        return {
+          current: state.current,
+          pendingHealth: state.pendingHealth,
+          lastKnownGood: state.lastKnownGood,
+          rolledBack: state.rolledBack.includes(manifest.id),
+        };
+      },
       {
-        message: 'the shell must confirm this launch healthy before the watchdog rolls it back',
-        timeout: 25_000,
+        message: 'the shell must confirm this launch healthy and keep serving the staged bundle',
+        timeout: 45_000,
       },
     )
-    .toBe('');
+    .toEqual({ current: manifest.id, pendingHealth: '', lastKnownGood: manifest.id, rolledBack: false });
 });
 
 // ---------------------------------------------------------------------
@@ -1246,7 +1311,7 @@ test('a notification tap opens its thread after the lock is answered', async ({
     `am start -n ${SHELL_ACTIVITY} --es ${EXTRA_TARGET} '${target}' --es ${EXTRA_ID} '${tag}'`,
   );
 
-  const tapped = await (await shellWebView(device)).page();
+  const tapped = await shellPage(device);
 
   // The lock is in front of it, and the tap survives being held there:
   // the activation queue waits for hydration and the app under the lock

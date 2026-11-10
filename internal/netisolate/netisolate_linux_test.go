@@ -49,6 +49,7 @@ type isolationProbe struct {
 	LoopbackV6Dial string
 	LANDial        string
 	Contained      bool
+	Inside         bool
 }
 
 // runIsolationProbe reports what an isolated command would see. It dials off the LAN
@@ -86,6 +87,7 @@ func runIsolationProbe(out io.Writer) int {
 	probe.LoopbackV6Dial = selfDial("tcp6", "[::1]:0")
 	probe.LANDial = selfDial("tcp4", net.JoinHostPort(LANAddress.String(), "0"))
 	probe.Contained = Contained()
+	probe.Inside = Inside()
 	if err := json.NewEncoder(out).Encode(probe); err != nil {
 		return 1
 	}
@@ -215,10 +217,35 @@ func TestIsolatedSuiteSeesOnlyLoopbackAndPrivateLAN(t *testing.T) {
 	if !probe.Contained {
 		t.Fatal("Contained() is false inside the namespace")
 	}
+	if !probe.Inside {
+		t.Fatal("Inside() is false inside the namespace")
+	}
 	for name, outcome := range map[string]string{"127.0.0.1": probe.LoopbackV4Dial, "::1": probe.LoopbackV6Dial, "lan0": probe.LANDial} {
 		if outcome != "connected" {
 			t.Fatalf("dial %s = %q, want connected", name, outcome)
 		}
+	}
+}
+
+// TestInsideRequiresTheHelpersOwnNamespace: the variable alone, or a value
+// naming another namespace, does not make a process inside. The nested
+// namespace the probe runs in proves the true case.
+func TestInsideRequiresTheHelpersOwnNamespace(t *testing.T) {
+	id, err := namespaceID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(EnvNamespace, "")
+	if Inside() {
+		t.Fatal("Inside() without the variable")
+	}
+	t.Setenv(EnvNamespace, "net:[1]")
+	if Inside() {
+		t.Fatal("Inside() with another namespace's identity")
+	}
+	t.Setenv(EnvNamespace, id)
+	if Inside() != Contained() {
+		t.Fatalf("Inside() = %v with this namespace's identity, want Contained() = %v", Inside(), Contained())
 	}
 }
 
