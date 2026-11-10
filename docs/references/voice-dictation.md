@@ -37,11 +37,12 @@ same sentence as a 12 KB browser-recorded WebM/Opus clip, sent through
 `codex.Transcribe`, returned the exact text in 0.58 s. MP4 has not been
 sent to the live endpoint.
 
-A recording with no sample above the silence floor is not transcribed. The
-recorded attempt opens the same AudioWorklet capture live dictation uses,
-before its recorder starts, only to hear every sample; the level meter is
-sampled and drives the ring alone. Where the capture cannot open or loses
-its ending, the recording is sent and the computer decides.
+The level meter reads about 21 ms of the microphone every 100 ms, so a
+short sound can fall between its reads. When the meter heard nothing, the
+recording itself is decoded and measured (`recordingLoudness` in
+`browserDictation.ts`), and only one that holds no sound is dropped as
+"No speech heard." A recording the engine cannot decode within five
+seconds is sent, and the computer decides.
 
 The access token is read from the canonical Codex `auth.json` for each
 request and never retained. On a 401, AO asks Codex to refresh through

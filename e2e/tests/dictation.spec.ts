@@ -19,7 +19,9 @@ import type { HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
 import { codexAuthPath, expectDesktopMicAligned, setUpDictation, signInCodexWithChatGPT } from './dictation-helpers.js';
 
-// The fake device plays a tone, loud enough to pass the silence check.
+// The fake device beeps for 64 ms in every 500. The level meter can miss
+// every beep; the recording itself is then measured and passes the silence
+// check.
 test.use({
   launchOptions: { args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] },
   permissions: ['microphone'],
@@ -90,8 +92,8 @@ test('dictation inserts the transcript at the caret and never sends', async ({ h
   await expect(input(page)).toBeFocused();
 });
 
-// The silence check hears every sample through the capture worklet. A
-// capture that failed to open would send the recording, and the isolated
+// The meter hears nothing, so the recording itself is decoded and measured.
+// A recording that could not be measured would be sent, and the isolated
 // boot's transcription would land in the message.
 test('a recording with no sound in it is not transcribed', async ({ harness, page }) => {
   // A real stream that carries silence, in place of the fake device's tone.

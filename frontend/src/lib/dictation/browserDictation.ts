@@ -19,6 +19,61 @@ const WEBM_TIMESLICE_MS = 1000;
  * stopped running. */
 const FLUSH_TIMEOUT_MS = 2000;
 
+/** A finished recording is decoded at this rate to be measured: speech
+ * survives it, and ten minutes of one channel stay under 20 MB. */
+const LOUDNESS_SAMPLE_RATE = 8000;
+
+/** Loudness is the RMS of this long a stretch, the level meter's 1024
+ * samples at 48 kHz. Stretches overlap by half, so a sound that long is
+ * never split evenly across two of them. */
+const LOUDNESS_BLOCK_SECONDS = 1024 / 48_000;
+
+/** A decode the engine has not finished by now is given up on. */
+const LOUDNESS_DEADLINE_MS = 5000;
+
+async function decodeRecording(recording: Blob): Promise<AudioBuffer> {
+  const context = new OfflineAudioContext(1, 1, LOUDNESS_SAMPLE_RATE);
+  return context.decodeAudioData(await recording.arrayBuffer());
+}
+
+/** The loudest stretch of decoded audio, 0 to 1. */
+export function loudestStretch(audio: Pick<AudioBuffer, 'numberOfChannels' | 'sampleRate' | 'getChannelData'>): number {
+  const block = Math.max(1, Math.round(audio.sampleRate * LOUDNESS_BLOCK_SECONDS));
+  const hop = Math.max(1, block >> 1);
+  let loudest = 0;
+  for (let channel = 0; channel < audio.numberOfChannels; channel++) {
+    const samples = audio.getChannelData(channel);
+    for (let from = 0; from < samples.length; from += hop) {
+      const to = Math.min(samples.length, from + block);
+      let sum = 0;
+      for (let i = from; i < to; i++) sum += samples[i] * samples[i];
+      // A short last stretch is measured over a whole block, so a few
+      // samples at the very end cannot stand for a loud moment.
+      loudest = Math.max(loudest, Math.sqrt(sum / block));
+      if (to === samples.length) break;
+    }
+  }
+  return loudest;
+}
+
+/** The loudest moment of a finished recording, 0 to 1. Rejects when the
+ * engine cannot decode it, or has not within `deadlineMs`. */
+export async function recordingLoudness(
+  recording: Blob,
+  deadlineMs = LOUDNESS_DEADLINE_MS,
+  decode: (recording: Blob) => Promise<Pick<AudioBuffer, 'numberOfChannels' | 'sampleRate' | 'getChannelData'>> = decodeRecording,
+): Promise<number> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = globalThis.setTimeout(() => reject(new Error('The recording took too long to measure.')), deadlineMs);
+  });
+  try {
+    return loudestStretch(await Promise.race([decode(recording), late]));
+  } finally {
+    globalThis.clearTimeout(timer);
+  }
+}
+
 export function recordingFormat(recorder: typeof MediaRecorder | undefined): RecordingFormat | null {
   if (recorder === undefined) return null;
   if (recorder.isTypeSupported('audio/webm;codecs=opus')) {
@@ -53,8 +108,9 @@ export const browserDictationEnvironment: DictationEnvironment = {
     && globalThis.AudioWorkletNode !== undefined
     && 'audioWorklet' in globalThis.AudioContext.prototype,
   openPcm,
+  recordingLoudness: (recording) => recordingLoudness(recording),
   silenceUnjudged: (err) => {
-    reportFrontendDiagnostic('dictation: the capture that judges silence did not open', err instanceof Error ? err.message : '');
+    reportFrontendDiagnostic('dictation: a recording the meter heard nothing in could not be measured', err instanceof Error ? err.message : '');
   },
   setInterval: (fn, ms) => globalThis.setInterval(fn, ms),
   clearInterval: (handle) => globalThis.clearInterval(handle as ReturnType<typeof setInterval>),
@@ -62,8 +118,8 @@ export const browserDictationEnvironment: DictationEnvironment = {
   clearTimeout: (handle) => globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>),
 };
 
-/** RMS loudness of the microphone, read on demand, for the ring. Null
- * where the engine has no Web Audio. */
+/** RMS loudness of the microphone, read on demand. Null where the engine
+ * has no Web Audio, which only disables the silence check and the ring. */
 function createLevelMeter(stream: MediaStream): LevelMeter | null {
   const Context = globalThis.AudioContext;
   if (Context === undefined) return null;

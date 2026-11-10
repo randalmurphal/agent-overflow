@@ -80,8 +80,10 @@ export interface DictationFixture {
   tracks: { stop: ReturnType<typeof vi.fn> }[];
   inserted: string[];
   level: { value: number; closed: boolean };
-  /** Each capture a recorded attempt could not open to judge silence. */
-  unjudged: unknown[];
+  /** The recording itself, as the environment measures it: its loudness,
+   * the error measuring fails with when set, a promise measuring waits on
+   * first, and each recording measured. */
+  recorded: { loudness: number; fails: unknown; hold: Promise<void> | null; measured: Blob[]; unjudged: unknown[] };
   /** How many times the session quieted this device's speech. */
   quieted: { count: number };
   tick: () => void;
@@ -105,7 +107,7 @@ export function dictationFixture(options: {
   let current: FakeRecorder | null = null;
   let currentPcm: FakePcm | null = null;
   const level = { value: 0.5, closed: false };
-  const unjudged: unknown[] = [];
+  const recorded: DictationFixture['recorded'] = { loudness: 0, fails: null, hold: null, measured: [], unjudged: [] };
   const quieted = { count: 0 };
   const intervals = new Map<number, () => void>();
   const timeouts = new Map<number, () => void>();
@@ -122,7 +124,13 @@ export function dictationFixture(options: {
     createRecorder: () => (current = options.createRecorder?.() ?? new FakeRecorder()),
     streamsPcm: () => options.streamsPcm ?? true,
     openPcm: async () => (currentPcm = options.openPcm ? await options.openPcm() : new FakePcm()),
-    silenceUnjudged: (err) => { unjudged.push(err); },
+    recordingLoudness: async (recording) => {
+      recorded.measured.push(recording);
+      await recorded.hold;
+      if (recorded.fails !== null) throw recorded.fails;
+      return recorded.loudness;
+    },
+    silenceUnjudged: (err) => { recorded.unjudged.push(err); },
     createLevelMeter: () => options.meter === false ? null : {
       read: () => level.value,
       close: () => { level.closed = true; },
@@ -157,12 +165,12 @@ export function dictationFixture(options: {
     session,
     env,
     remote,
-    recorder: () => current as FakeRecorder,
+    recorder: () => current!,
     pcm: () => currentPcm!,
     tracks,
     inserted,
     level,
-    unjudged,
+    recorded,
     quieted,
     tick: () => { for (const fn of intervals.values()) fn(); },
     // A copy: a fired callback may set or clear timeouts.
