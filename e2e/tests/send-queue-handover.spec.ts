@@ -488,6 +488,8 @@ test('a message queued after an early Stop took the previous one back shows in t
   expect(live.flushedItems.map((item) => item.message)).toEqual([QUEUED_AFTER_STOP]);
   await expect(previewRows.filter({ hasText: QUEUED_AFTER_STOP })).toBeVisible();
   await expect(page.getByTestId('user-message-bubble').filter({ hasText: QUEUED_AFTER_STOP })).toHaveCount(0);
+  // The sampler has a preview-only frame before the pickup can end it.
+  await expect.poll(lastZoneSample(page)).toBe('1/0');
 
   await advance(harness, restarted.mockId, 'tool-3');
   await harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === threadId);
