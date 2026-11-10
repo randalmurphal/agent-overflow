@@ -256,6 +256,26 @@ func (s *Store) MarkThreadReceiptRunning(token, messageItemID, turnID string) (b
 	return rowsChanged(result, action)
 }
 
+// RebindThreadReceiptTurn moves a running receipt to the turn that answers
+// its message, once that is known not to be the turn it was bound to. It
+// reports whether the binding changed: a receipt that is not running, or is
+// already on that turn, is left alone.
+func (s *Store) RebindThreadReceiptTurn(token, turnID string) (bool, error) {
+	action := fmt.Sprintf("store: rebind thread receipt %s", token)
+	if turnID == "" {
+		return false, fmt.Errorf("%s: turn id is required", action)
+	}
+	result, err := s.db.Exec(
+		`UPDATE thread_request_receipts SET turn_id = ?, updated_at = ?
+		  WHERE token = ? AND state = 'running' AND turn_id IS NOT ?`,
+		turnID, nowMillis(), token, turnID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", action, err)
+	}
+	return rowsChanged(result, action)
+}
+
 // SettleThreadRequestReceipt stores the whole answer on the destination row
 // and bumps the revision, provided the row is still in one of `from`. The
 // turn-end observer passes {running} so a thread_reply that landed first

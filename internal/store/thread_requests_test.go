@@ -458,6 +458,59 @@ func TestThreadRequestReceiptAcceptanceIsIdempotent(t *testing.T) {
 	}
 }
 
+// Only a running receipt moves to another turn, and only when the turn
+// differs: an accepted one has no turn yet and a settled one keeps the turn
+// that answered it.
+func TestRebindThreadReceiptTurnMovesOnlyARunningReceipt(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-target")
+	if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{
+		Token: "tok-r", OwnerDeviceID: "device-1", Kind: ThreadRequestSend,
+		TargetThreadID: "t-target", CreatedAt: 100, UpdatedAt: 100,
+	}); err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	rebind := func(when, turnID string, want bool) {
+		t.Helper()
+		moved, err := s.RebindThreadReceiptTurn("tok-r", turnID)
+		if err != nil {
+			t.Fatalf("%s: %v", when, err)
+		}
+		if moved != want {
+			t.Fatalf("%s: moved = %v, want %v", when, moved, want)
+		}
+	}
+	wantTurn := func(when, want string) {
+		t.Helper()
+		row, found, err := s.GetThreadRequestReceipt("tok-r")
+		if err != nil || !found {
+			t.Fatalf("%s: found=%v err=%v", when, found, err)
+		}
+		if row.TurnID != want {
+			t.Fatalf("%s: turn = %q, want %q", when, row.TurnID, want)
+		}
+	}
+
+	rebind("accepted", "turn-2", false)
+	wantTurn("accepted", "")
+	if running, err := s.MarkThreadReceiptRunning("tok-r", "item-1", "turn-1"); err != nil || !running {
+		t.Fatalf("mark running: running=%v err=%v", running, err)
+	}
+	rebind("running", "turn-2", true)
+	wantTurn("running", "turn-2")
+	rebind("already there", "turn-2", false)
+	if _, err := s.RebindThreadReceiptTurn("tok-r", ""); err == nil {
+		t.Error("a receipt cannot be bound to no turn")
+	}
+	if settled, err := s.SettleThreadRequestReceipt("tok-r", []string{ThreadReceiptRunning}, ThreadRequestSettlement{
+		State: ThreadReceiptFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal, SettledAt: 500,
+	}); err != nil || !settled {
+		t.Fatalf("settle: settled=%v err=%v", settled, err)
+	}
+	rebind("settled", "turn-3", false)
+	wantTurn("settled", "turn-2")
+}
+
 // An answer nobody collected is dropped once its hold runs out; a collected
 // one is left alone, because the acknowledgement is what proves the caller
 // has it durably.

@@ -98,11 +98,11 @@ func (a *App) settleReceiptOnTurnEnd(threadID, token string) error {
 	if !ok {
 		return fmt.Errorf("receipt names turn %q, which is not a turn of this thread", receipt.TurnID)
 	}
-	turn, found, err := a.store.GetTurnByThreadIndex(threadID, index)
+	turn, ended, err := a.receiptEndedTurn(threadID, token, receipt.MessageItemID, index)
 	if err != nil {
 		return err
 	}
-	if !found || turn.CompletedAt == nil {
+	if !ended {
 		// The request's own turn is still running. Some other turn ended.
 		return nil
 	}
@@ -111,6 +111,34 @@ func (a *App) settleReceiptOnTurnEnd(threadID, token string) error {
 		return err
 	}
 	return a.settleThreadReceipt(token, []string{store.ThreadReceiptRunning}, settlement)
+}
+
+// receiptEndedTurn returns the ended turn that answers a running receipt
+// bound to turn index, or false while that answer is still to come.
+//
+// A message queued while a turn runs keeps its row in that turn, and the
+// receipt is bound there when the message is written. The provider either
+// drains it into that turn or picks it up after it as a turn of its own
+// (triage.Router.QueuedSendTurn). A bound turn that ended without consuming
+// the message did not answer it: the receipt moves to the turn the message
+// opens, and that turn's end settles it.
+func (a *App) receiptEndedTurn(threadID, token, messageItemID string, index int) (store.Turn, bool, error) {
+	for {
+		// The turn's end is read before the send's state: a send still
+		// waiting after its bound turn ended was not consumed by it.
+		turn, found, err := a.store.GetTurnByThreadIndex(threadID, index)
+		if err != nil || !found || turn.CompletedAt == nil {
+			return store.Turn{}, false, err
+		}
+		next, opened, waiting := a.triage.QueuedSendTurn(threadID, messageItemID)
+		if (!opened && !waiting) || next == index {
+			return turn, true, nil
+		}
+		if _, err := a.store.RebindThreadReceiptTurn(token, threadRequestTurnKey(threadID, next)); err != nil {
+			return store.Turn{}, false, err
+		}
+		index = next
+	}
 }
 
 // turnSettlement maps one ended turn onto the answer its requester reads.

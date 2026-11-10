@@ -575,7 +575,7 @@ func (t threadToolsApp) markRequestRunning(token, targetThreadID string, item st
 			// its way to the provider. Whoever settled it owns it.
 			return
 		}
-		work = t.settleIfTurnAlreadyEnded(token, targetThreadID, item.TurnIndex)
+		work = t.settleIfTurnAlreadyEnded(token, targetThreadID, item.ID, item.TurnIndex)
 	}()
 	// This runs inside the target thread's own send or queue dispatch, which
 	// holds that thread's locks. The deferred work takes thread locks of its
@@ -588,13 +588,13 @@ func (t threadToolsApp) markRequestRunning(token, targetThreadID string, item st
 // turn ended, so nothing else will ever look at it again.
 //
 // The caller holds the token's settle lock.
-func (t threadToolsApp) settleIfTurnAlreadyEnded(token, targetThreadID string, turnIndex int) threadSettlementWork {
-	turn, found, err := t.app.store.GetTurnByThreadIndex(targetThreadID, turnIndex)
+func (t threadToolsApp) settleIfTurnAlreadyEnded(token, targetThreadID, messageItemID string, turnIndex int) threadSettlementWork {
+	turn, ended, err := t.app.receiptEndedTurn(targetThreadID, token, messageItemID, turnIndex)
 	if err != nil {
 		log.Printf("thread tools: read turn %d of %s for request %s: %v", turnIndex, targetThreadID, token, err)
 		return threadSettlementWork{}
 	}
-	if !found || turn.CompletedAt == nil {
+	if !ended {
 		return threadSettlementWork{}
 	}
 	settlement, err := t.app.turnSettlement(targetThreadID, turn)
