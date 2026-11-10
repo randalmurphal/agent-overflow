@@ -70,9 +70,8 @@ func fetchSpeech(t *testing.T, ctx context.Context, url string) (int, []byte, ht
 	if err != nil {
 		t.Fatalf("fetch %s: %v", url, err)
 	}
-	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
-	if err != nil {
+	if err := errors.Join(err, resp.Body.Close()); err != nil {
 		t.Fatal(err)
 	}
 	return resp.StatusCode, body, resp.Header
@@ -290,8 +289,7 @@ func TestAnAbandonedReadAloudFetchClosesTheOpenAICall(t *testing.T) {
 		}
 		resp, err := http.DefaultClient.Do(req)
 		if err == nil {
-			resp.Body.Close()
-			err = errors.New("the abandoned fetch got an answer")
+			err = errors.Join(errors.New("the abandoned fetch got an answer"), resp.Body.Close())
 		} else {
 			err = nil
 		}

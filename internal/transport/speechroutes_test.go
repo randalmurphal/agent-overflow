@@ -171,7 +171,7 @@ func TestAnAbandonedSpeechFetchCancelsTheSynthesis(t *testing.T) {
 	go func() {
 		resp, err := http.DefaultClient.Do(req)
 		if err == nil {
-			resp.Body.Close()
+			err = resp.Body.Close()
 		}
 		fetched <- err
 	}()
@@ -203,7 +203,9 @@ func TestSpeechPreflight(t *testing.T) {
 		if err != nil {
 			t.Fatalf("preflight: %v", err)
 		}
-		resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			t.Fatalf("preflight body: %v", err)
+		}
 		if resp.StatusCode != want {
 			t.Fatalf("preflight from %s = %d, want %d", origin, resp.StatusCode, want)
 		}
