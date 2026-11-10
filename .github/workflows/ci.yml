@@ -176,9 +176,10 @@ jobs:
 
   # Three shards: internal/store is the longest package by far, app and
   # triage are the next two, and the rest fits beside them. The release
-  # candidate and installer script tests ride with the rest. The noremote
-  # shard runs every package compiled without remote access
-  # (docs/architecture/noremote-build.md).
+  # candidate and installer script tests ride with the rest. The two
+  # noremote shards run every package compiled without remote access
+  # (docs/architecture/noremote-build.md); one job for all of it was the
+  # slowest in the run, so the three long packages are split across two.
   go-test:
     name: Go tests (${{ matrix.shard }})
     needs: toolchain
@@ -206,9 +207,13 @@ jobs:
             packages: . ./cmd/... ./internal/...
             exclude: ^agent-overflow(/internal/(store|app|triage)(/.*)?)?$
             flags: ""
-          - shard: noremote
-            packages: . ./cmd/... ./internal/...
+          - shard: noremote-store-triage
+            packages: ./internal/store/... ./internal/triage/...
             exclude: ""
+            flags: -tags noremote
+          - shard: noremote-rest
+            packages: . ./cmd/... ./internal/...
+            exclude: ^agent-overflow/internal/(store|triage)(/.*)?$
             flags: -tags noremote
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

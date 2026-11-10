@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 
@@ -123,11 +124,7 @@ func WriteUpdateEvent(w io.Writer, event UpdateEvent) error {
 	if err != nil {
 		return err
 	}
-	line := make([]byte, 0, len(UpdateEventPrefix)+len(data)+1)
-	line = append(line, UpdateEventPrefix...)
-	line = append(line, data...)
-	line = append(line, '\n')
-	_, err = w.Write(line)
+	_, err = w.Write(slices.Concat([]byte(UpdateEventPrefix), data, []byte{'\n'}))
 	return err
 }
 

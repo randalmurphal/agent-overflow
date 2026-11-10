@@ -166,8 +166,8 @@ func decodeAttachmentIDs(raw string) ([]string, error) {
 }
 
 func appendUniqueStrings(existing []string, additions []string) []string {
-	seen := make(map[string]struct{}, len(existing)+len(additions))
-	out := make([]string, 0, len(existing)+len(additions))
+	seen := make(map[string]struct{}, max(len(existing), len(additions)))
+	out := make([]string, 0, max(len(existing), len(additions)))
 	for _, value := range existing {
 		value = strings.TrimSpace(value)
 		if value == "" {
