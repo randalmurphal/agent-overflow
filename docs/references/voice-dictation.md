@@ -124,10 +124,15 @@ WebKit needs GStreamer libraries this development host lacks.
 
 ## Read aloud
 
-Read-aloud speaks a finished reply in this device's own voice; nothing
-leaves the device. Code: `frontend/src/lib/utils/speakableText.ts` (what is
-read), `frontend/src/lib/native/speech.ts` (the engines),
-`frontend/src/lib/stores/readAloud.svelte.ts` (one reading at a time) and
+Read-aloud speaks a finished reply sentence by sentence, in this device's
+own voice or in an OpenAI voice made by the computer the reply's thread
+runs on. With a device voice nothing leaves the device. Code:
+`frontend/src/lib/utils/speakableText.ts` (what is read),
+`frontend/src/lib/native/speech.ts` (the device engines),
+`frontend/src/lib/native/clipSpeech.ts` (playback of fetched clips),
+`frontend/src/lib/stores/readAloud.svelte.ts` (one reading at a time),
+`frontend/src/lib/stores/readAloudSource.svelte.ts` (what each computer
+offers) and
 `mobile/android/app/src/main/java/dev/agentoverflow/app/speech/`.
 
 - The reply is read from its parsed markdown as sentences. Code blocks,
@@ -143,36 +148,69 @@ read), `frontend/src/lib/native/speech.ts` (the engines),
   shell speaks through Android's TextToSpeech, queueing every sentence at
   once so a reading continues in the background. Package visibility needs
   the `TTS_SERVICE` query in the manifest.
-- A device with no voices (Arch's WebKitGTK is built without speech) shows
-  no control. The switch, voice, speed and volume are this device's,
-  kept in frontend storage, and read-aloud is off until turned on.
+- The switch, voice, speed and volume are this device's, kept in frontend
+  storage, and read-aloud is off until turned on. A saved OpenAI voice is
+  `openai:<id>`.
+- Each reading chooses its voice when it starts: the saved OpenAI voice
+  when the reply's computer offers it, otherwise the device's voice (its
+  default when the saved voice is an OpenAI one), otherwise the computer's
+  first OpenAI voice on a device with none. A device with no voices (Arch's
+  WebKitGTK is built without speech) shows no control unless the computer
+  offers OpenAI voices.
 - `Mod+Shift+>` pauses or resumes; starting dictation pauses a reading.
 
 ### OpenAI voices
 
-With the host setting `readAloudAPIEnabled` on and a key in the API key
-file, a computer reads sentences in OpenAI voices. `ReadAloudSource`
-reports availability and the voices; `MintReadAloudTicket(text, voice)`
-admits one sentence (1 to 1000 characters after trimming) and returns
+With the host setting `readAloudAPIEnabled` on (off by default) and a key
+in the API key file, a computer reads sentences in OpenAI voices.
+`ReadAloudSource` reports availability and the voices;
+`MintReadAloudTicket(text, voice)` admits one sentence (1 to 1000
+characters after trimming) and returns
 `/attachments/speech/{id}?ticket=...`. Fetching it runs the synthesis and
-answers a 24 kHz mono 16-bit WAV, or a 4xx/5xx with a plain-text message:
-404 spent or expired, 409 switched off or no usable key, 429 busy or rate
-limited, 502 an OpenAI failure, 504 over 45 seconds. Code:
-`internal/openai/speech.go`, `internal/readaloud/`,
-`internal/app/app_read_aloud.go`, `internal/transport/speechroutes.go`.
+answers a 24 kHz mono 16-bit WAV, or a 4xx/5xx with a plain-text message
+the client shows: 404 spent or expired, 409 switched off or no usable key,
+429 busy or rate limited, 502 an OpenAI failure, 504 over 45 seconds. Code:
+`internal/openai/speech.go`, `internal/openai/fidelity.go`,
+`internal/readaloud/`, `internal/app/app_read_aloud.go`,
+`internal/transport/speechroutes.go`.
 
-- One Realtime connection per sentence to `gpt-realtime-2.1-mini`: an
-  audio-only session with no tools and minimal reasoning, then one
-  out-of-band `response.create` whose text is the JSON envelope
-  `{"require_repeat_verbatim": true, "response_text": ...}`. Measured
-  2026-11-10 over 113 calls: first audio about 0.5 s after the request,
-  the whole clip in 0.4 to 3.5 s, and the model's transcript equal to the
-  text every time.
-- `openai.IsReading` compares the transcript with the text by words; a
-  result that is not a reading is retried once and then refused. Audio
-  past 90 seconds is abandoned.
+- One Realtime connection per sentence to `gpt-realtime-2.1-mini`
+  (`wss://api.openai.com/v1/realtime?model=...`): a `session.update` of
+  type `realtime` with audio-only output, no tools, minimal reasoning and
+  turn detection off, then one out-of-band `response.create`
+  (`conversation: "none"`) whose text is the JSON envelope
+  `{"require_repeat_verbatim": true, "response_text": ...}`. The audio
+  arrives as `response.output_audio.delta` and the model's own transcript
+  as `response.output_audio_transcript.done`.
+- The key is read from its file for each connection and zeroed when the
+  handshake is done, as for live transcription.
+- `openai.IsReading` compares the transcript with the text by words (by
+  character in scripts written without spaces); a result that is not a
+  reading is retried once and then refused. Audio past 90 seconds is
+  abandoned.
 - At most 8 sentences wait and 4 synthesize per computer; a fifth
   synthesis is refused, not queued. An aborted fetch cancels the call.
+- The client plays each WAV through one audio element from a blob URL,
+  fetching one sentence ahead. The element is first started on a silent
+  clip inside the click or key that began the reading, so engines that
+  require a gesture allow the later plays. Speed is the element's
+  `playbackRate` with pitch preserved.
+- Voices: alloy, ash, ballad, coral, echo, sage, shimmer, verse, marin,
+  cedar.
+
+Measured 2026-11-10 with an API key over 113 calls: first audio about
+0.5 s after the request (connect about 0.3 s more), a whole clip in 0.4 to
+3.5 s, and the model's transcript equal to the text every time, including
+text that asks a question or tells the model to do something else. 70 of
+the clips were transcribed back with `gpt-transcribe`: 61 matched the
+text, 4 differed by one word, and 5 were a sentence containing
+`./internal/store`, which is spoken as "dot slash"; file paths and
+similar symbols read poorly. Audio is billed at about 20 tokens per
+second, about 2.6 cents per minute of speech at that date's prices.
+
+Not verified: playback in WebKitGTK and WKWebView, and whether Android's
+WebView keeps playing a reading while the app is in the background (the
+device voice does, through the native queue).
 
 ## Other options researched (2026-08-04)
 
@@ -183,3 +221,17 @@ limited, 502 an OpenAI failure, 504 over 45 seconds. Code:
   `realtime_api_key()` in `core/src/realtime_conversation.rs` rejected
   ChatGPT sign-ins at research time.
 - OpenAI API transcription needs an API key; it is the live source above.
+
+Researched 2026-11-10 for read-aloud:
+
+- OpenAI's speech endpoint (`/v1/audio/speech`; `tts-1`, `tts-1-hd`,
+  `gpt-4o-mini-tts`) shuts down 2027-01-06, and OpenAI names
+  `gpt-realtime-2.1-mini` over the Realtime API as its replacement. That
+  is why read-aloud speaks through a Realtime session.
+- ChatGPT sign-in realtime voice
+  (`POST https://chatgpt.com/backend-api/codex/realtime/calls`, WebRTC,
+  model `gpt-live-1-codex`): it speaks only while microphone audio flows,
+  takes text through `session.context.append` as context rather than as a
+  script, and refuses `response.create` for a ChatGPT sign-in. Over about
+  130 calls, 3 of 8 spaced calls stayed silent and 4 of 5 that spoke
+  answered the text instead of reading it. Not usable as a reader.
