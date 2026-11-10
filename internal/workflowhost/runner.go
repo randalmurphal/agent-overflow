@@ -62,11 +62,15 @@ type Runner struct {
 	// space is item ids, and the two must never contend.
 	workspaceLocks *keyedlock.Registry
 
-	mu        sync.Mutex
-	runs      map[string]*workflowAttempt
-	tools     map[string]*workflowToolAttempt
-	schemas   map[string]json.RawMessage
-	takeovers map[string]workflowTakeover
+	mu    sync.Mutex
+	runs  map[string]*workflowAttempt
+	tools map[string]*workflowToolAttempt
+	// toolsStopped refuses a tool start once StopTools ran; toolReapers counts
+	// the registered attempts whose process has not been reaped.
+	toolsStopped bool
+	toolReapers  sync.WaitGroup
+	schemas      map[string]json.RawMessage
+	takeovers    map[string]workflowTakeover
 	// startProgress holds one entry per in-flight Runner.Start, keyed the same
 	// way runs are. It is where the start deadline and its once-guard live. See
 	// start_watchdog.go.

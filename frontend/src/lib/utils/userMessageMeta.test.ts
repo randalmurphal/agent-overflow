@@ -49,7 +49,7 @@ describe('parseUserMessageAttachments — attachment kind', () => {
 
   it('reads a shell command off a file and bounds what it trusts', () => {
     const shell = {
-      command: 'make test', commandTruncated: true, exitCode: 2, durationMs: 340,
+      command: 'make test', commandLength: 640, exitCode: 2, durationMs: 340,
       truncated: true, timedOut: true, preview: 'FAIL\n', more: true, unknown: 'dropped',
     };
     const [attachment] = parseUserMessageAttachments(
@@ -57,7 +57,7 @@ describe('parseUserMessageAttachments — attachment kind', () => {
       'thread-1',
     );
     expect(attachment?.shell).toEqual({
-      command: 'make test', commandTruncated: true, exitCode: 2, durationMs: 340,
+      command: 'make test', commandLength: 640, exitCode: 2, durationMs: 340,
       truncated: true, timedOut: true, preview: 'FAIL\n', more: true,
     });
 
@@ -67,6 +67,13 @@ describe('parseUserMessageAttachments — attachment kind', () => {
       'thread-1',
     );
     expect(plain?.shell).toEqual({ command: 'ls', exitCode: 0, durationMs: 0 });
+
+    // A whole length that is not longer than the command says nothing.
+    const [whole] = parseUserMessageAttachments(
+      meta([entry({ kind: 'file', mimeType: 'text/plain', shell: { command: 'ls', commandLength: 2, exitCode: 0, durationMs: 1 } })]),
+      'thread-1',
+    );
+    expect(whole?.shell).toEqual({ command: 'ls', exitCode: 0, durationMs: 1 });
   });
 
   it('never reads a shell command off an image or without a command', () => {

@@ -158,14 +158,6 @@ func (r *Runner) startToolRun(ctx context.Context, run workflowToolRun, complete
 	}
 	attempt.lastOutput.Store(attempt.started.UnixNano())
 
-	command := exec.CommandContext(processCtx, run.argv[0], run.argv[1:]...)
-	command.Dir = run.workspace
-	command.Env = append(append(os.Environ(), run.secrets.Environ()...), "AO_ENVELOPE="+run.envelopePath)
-	writer := &workflowToolWriter{attempt: attempt, now: r.now}
-	command.Stdout = writer
-	command.Stderr = writer
-	procutil.ConfigureGroup(command)
-
 	runKey := workflowRunKey(run.key)
 	r.mu.Lock()
 	if _, exists := r.tools[runKey]; exists {
@@ -184,10 +176,26 @@ func (r *Runner) startToolRun(ctx context.Context, run workflowToolRun, complete
 		return fmt.Errorf(
 			"workflow runner: attempt %s was reported dead before its tool process could be started", runKey)
 	}
+	if r.toolsStopped {
+		r.mu.Unlock()
+		cancel()
+		return fmt.Errorf("workflow runner: attempt %s cannot start a tool process: the app is shutting down", runKey)
+	}
 	r.tools[runKey] = attempt
+	r.toolReapers.Add(1)
 	r.mu.Unlock()
 
-	if err := command.Start(); err != nil {
+	// A process the command left running in its group is kept: a command may
+	// start a service a later phase uses.
+	group, err := procutil.StartGroup(processCtx, procutil.GroupCommand{
+		Dir:           run.workspace,
+		Env:           append(append(os.Environ(), run.secrets.Environ()...), "AO_ENVELOPE="+run.envelopePath),
+		Argv:          run.argv,
+		Output:        &workflowToolWriter{attempt: attempt, now: r.now},
+		KeepLeftovers: true,
+	})
+	if err != nil {
+		r.toolReapers.Done()
 		r.stopToolAttempt(runKey, workflowToolTornDown)
 		startErr := fmt.Errorf("workflow runner: start tool %s command %s: %w", run.label, workflowrunner.FormatArgv(run.argv), err)
 		r.writeToolNarrative(attempt, workflowrunner.ToolReport{
@@ -202,7 +210,7 @@ func (r *Runner) startToolRun(ctx context.Context, run workflowToolRun, complete
 	}
 	r.mu.Unlock()
 
-	go r.awaitToolPhase(runKey, attempt, command)
+	go r.awaitToolPhase(runKey, attempt, group)
 
 	// A teardown that raced this startup found nothing to stop, so kill the
 	// process now rather than leaving it orphaned by its own success.
@@ -216,24 +224,36 @@ func (r *Runner) startToolRun(ctx context.Context, run workflowToolRun, complete
 // awaitToolPhase reaps the process and is the single place a tool attempt
 // reports an outcome. It always writes the attempt narrative, including when
 // teardown owns the transition, so a killed command still explains itself.
-func (r *Runner) awaitToolPhase(runKey string, attempt *workflowToolAttempt, command *exec.Cmd) {
-	waitErr := command.Wait()
+func (r *Runner) awaitToolPhase(runKey string, attempt *workflowToolAttempt, group *procutil.Group) {
+	defer r.toolReapers.Done()
+	process, waitErr := group.Wait()
 	attempt.cancel()
 	stop := r.detachToolAttempt(runKey, attempt)
+	if waitErr == nil {
+		// A command that exited cleanly with its output cut did not complete.
+		waitErr = process.OutputErr()
+	} else if process.PipeErr != nil {
+		log.Printf("workflow runner: tool run %s output: %v", runKey, process.PipeErr)
+	}
 
 	report := workflowrunner.ToolReport{
 		Duration: r.now().Sub(attempt.started), Envelope: workflowrunner.ToolEnvelopeAbsent,
 	}
 	exitCode, exited := workflowToolExitStatus(waitErr)
+	if process.Stopped && exited {
+		// The status answers the stop signal; it is not the command's result.
+		waitErr = fmt.Errorf("it was stopped before it finished (exit code %d)", exitCode)
+		exitCode, exited = 0, false
+	}
 	report.Exited, report.ExitCode = exited, exitCode
 
 	switch stop {
 	case workflowToolTornDown:
-		report.Outcome = "the process was killed by workflow teardown"
+		report.Outcome = workflowToolStopOutcome("by workflow teardown", waitErr)
 		r.writeToolNarrative(attempt, report)
 		return
 	case workflowToolStalled:
-		report.Outcome = fmt.Sprintf("the process was killed after %s without output", attempt.watchdog)
+		report.Outcome = workflowToolStopOutcome(fmt.Sprintf("after %s without output", attempt.watchdog), waitErr)
 		r.writeToolNarrative(attempt, report)
 		attempt.complete(engine.Outcome{Kind: engine.OutcomeStalled})
 		return
@@ -381,6 +401,15 @@ func (r *Runner) writeToolNarrative(attempt *workflowToolAttempt, report workflo
 	}
 }
 
+// workflowToolStopOutcome is the narrative line for a process the runner
+// stopped. A process that outlived the kill is said to be running, not killed.
+func workflowToolStopOutcome(reason string, waitErr error) string {
+	if errors.Is(waitErr, procutil.ErrGroupSurvived) {
+		return "the process was signaled " + reason + " but could not be stopped and is still running"
+	}
+	return "the process was killed " + reason
+}
+
 // workflowToolExitStatus separates "the command ran and exited" from "the
 // process never produced an exit status". A non-zero exit is a result, not a
 // failure; a signal kill or a wait error is not a result at all.
@@ -496,8 +525,9 @@ func (r *Runner) toolWatchdogFired(runKey string) {
 	r.stopToolAttempt(runKey, workflowToolStalled)
 }
 
-// stopToolAttempt detaches an attempt and kills its process group. It is the
-// one kill path: teardown, the watchdog, and a cancelled startup all use it.
+// stopToolAttempt detaches an attempt and stops its process group: SIGTERM,
+// then SIGKILL after procutil's grace. It is the one stop path: teardown, the
+// watchdog, and a cancelled startup all use it.
 func (r *Runner) stopToolAttempt(runKey string, stop workflowToolStop) (*workflowToolAttempt, bool) {
 	r.mu.Lock()
 	attempt, ok := r.stopToolAttemptLocked(runKey, stop)
@@ -506,6 +536,26 @@ func (r *Runner) stopToolAttempt(runKey string, stop workflowToolStop) (*workflo
 		attempt.cancel()
 	}
 	return attempt, ok
+}
+
+// StopTools stops every running tool command and returns once each is reaped
+// and has written its narrative. Shutdown calls it before the engine closes,
+// because a stop is SIGTERM first and the process would otherwise outlive the
+// app inside the grace. A later tool start is refused. Idempotent.
+func (r *Runner) StopTools() {
+	r.mu.Lock()
+	r.toolsStopped = true
+	attempts := make([]*workflowToolAttempt, 0, len(r.tools))
+	for runKey := range r.tools {
+		if attempt, ok := r.stopToolAttemptLocked(runKey, workflowToolTornDown); ok {
+			attempts = append(attempts, attempt)
+		}
+	}
+	r.mu.Unlock()
+	for _, attempt := range attempts {
+		attempt.cancel()
+	}
+	r.toolReapers.Wait()
 }
 
 // stopToolAttemptLocked is stopToolAttempt's registry half, for the one caller

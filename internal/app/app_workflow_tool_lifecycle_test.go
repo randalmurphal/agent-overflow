@@ -145,3 +145,56 @@ func waitForNarrative(t *testing.T, path string) string {
 	t.Fatalf("tool phase narrative %s was never written", path)
 	return ""
 }
+
+// A tool command is stopped with SIGTERM first, so Shutdown has to wait for
+// it: the app must not exit with the command still running.
+func TestShutdownWaitsForARunningWorkflowToolCommandToStop(t *testing.T) {
+	t.Parallel()
+	fixture := newToolWorkflowFixture(t, toolLifecyclePhase)
+	pidPath := filepath.Join(t.TempDir(), "pid")
+	// The command takes far longer to answer SIGTERM than the rest of
+	// Shutdown takes, so a Shutdown that did not join it returns first.
+	fixture.writeProfile(t, map[string][]string{
+		"verify": {"/bin/sh", "-c", "trap 'sleep 2; exit 0' TERM\n" +
+			"echo $$ > '" + pidPath + ".tmp' && mv '" + pidPath + ".tmp' '" + pidPath + "'\n" +
+			"while :; do sleep 0.05; done\n"},
+	}, nil, "reliability:\n  watchdog: 1h\n  backoff: [1ms]\n")
+	item := fixture.start(t, "shutdown")
+
+	var pid int
+	deadline := time.Now().Add(8 * time.Second)
+	for pid == 0 {
+		if data, err := os.ReadFile(pidPath); err == nil {
+			parsed, convErr := strconv.Atoi(strings.TrimSpace(string(data)))
+			if convErr != nil {
+				t.Fatalf("pid file contains %q", data)
+			}
+			pid = parsed
+		} else if time.Now().After(deadline) {
+			t.Fatal("the tool command never recorded its process id")
+		} else {
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	t.Cleanup(func() {
+		if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			t.Errorf("kill tool command group %d: %v", pid, err)
+		}
+	})
+	phases := listWorkflowPhases(t, fixture.app, item.ID)
+	if len(phases) != 1 {
+		t.Fatalf("phases = %+v", phases)
+	}
+
+	if err := fixture.app.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("Shutdown returned with the tool command still running: kill(0) = %v", err)
+	}
+	narrative, err := os.ReadFile(phases[0].NarrativePath)
+	if err != nil || !strings.Contains(string(narrative), "killed by workflow teardown") {
+		t.Fatalf("Shutdown returned before the narrative was written: %q, %v", narrative, err)
+	}
+}

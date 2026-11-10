@@ -19,6 +19,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/usermessage"
 )
 
 // Composer shell commands: `!command` in a thread's composer, and the Run
@@ -265,7 +266,7 @@ func (a *App) finishShellCommand(ctx context.Context, result shellrun.Result) er
 	}
 	unlockAdmission, err := a.lockSendAdmission(ctx, result.ThreadID, result.RunID)
 	if err == nil {
-		_, err = a.sendMessageWithOptions(ctx, result.ThreadID, shellInvocation(result.Command), sendMessageOptions{
+		_, err = a.sendMessageWithOptions(ctx, result.ThreadID, usermessage.ShellInvocation(result.Command), sendMessageOptions{
 			AttachmentIDs:     []string{record.ID},
 			SendID:            result.RunID,
 			ReconcileBySendID: true,
@@ -300,12 +301,6 @@ func (a *App) saveShellOutput(ctx context.Context, result shellrun.Result) (stor
 		Command: result.Command, ExitCode: result.ExitCode, DurationMs: result.Duration.Milliseconds(),
 		Truncated: result.Truncated, TimedOut: result.TimedOut,
 	}, result.OutputPath, time.Now().UnixMilli())
-}
-
-// shellInvocation is the message text a composer command is stored as: what
-// the person typed. Its frontend twin is utils/shellInvocation.ts.
-func shellInvocation(command string) string {
-	return "!" + command
 }
 
 // userShellPromptBlock renders a shell output attachment as the text the

@@ -1,14 +1,19 @@
 // Composer shell commands as text. A message that starts with `!` runs the
 // rest as a command in the thread's workspace; the stored message keeps what
 // was typed, and its output travels as a `file` attachment that records the
-// command. The Go twin of the invocation rule is `shellInvocation` and
-// `turnAttachments.promptText` (internal/app).
+// command. Which parts of a message stand for which attachment is one rule,
+// owned by `internal/usermessage/shell_invocation.go`; this is its copy, and
+// both run the shared vectors (test/fixtures/shellInvocationVectors.json).
+import { isWordSeparator } from './commandWords';
 
 /** What a shell output attachment says about its command. */
 export interface ShellOutputMeta {
   command: string;
-  /** `command` is the start of a longer one (timeline rows only). */
-  commandTruncated?: boolean;
+  /**
+   * Set when `command` is only the start of a longer one (timeline rows
+   * only): the whole command's length in UTF-16 code units.
+   */
+  commandLength?: number;
   exitCode: number;
   durationMs: number;
   /** The output outgrew the capture and was cut in the middle. */
@@ -42,38 +47,80 @@ export function isShellInput(text: string): boolean {
   return text.startsWith(SHELL_PREFIX);
 }
 
-/** The message text a command is stored as. */
-export function shellInvocation(command: string): string {
-  return SHELL_PREFIX + command;
+/** A run of a message's joined parts, first to last inclusive. */
+export interface PartRun {
+  first: number;
+  last: number;
+}
+
+/** `text` without surrounding white space, as Go's `strings.TrimSpace` reads it. */
+function trimSpace(text: string): string {
+  let start = 0;
+  let end = text.length;
+  while (start < end && isWordSeparator(text[start])) start++;
+  while (end > start && isWordSeparator(text[end - 1])) end--;
+  return text.slice(start, end);
+}
+
+/**
+ * For each shell attachment in order, the parts of one message that are its
+ * typed invocation, or null. `parts` is the message split on
+ * MESSAGE_JOIN_SEPARATOR. Mirrors `usermessage.ShellInvocationRuns`:
+ *
+ * - an invocation is whole parts: the run's text, joined by the separator
+ *   and trimmed of surrounding white space, is exactly `!command`. A command
+ *   that holds the separator itself, as a heredoc can, is a run of several;
+ * - attachments claim in order, each the first run no earlier one took.
+ *
+ * A row's metadata bounds the command, so a longer one is known here by its
+ * start and its whole length, which together say where its run ends.
+ */
+export function shellInvocationRuns(
+  parts: readonly string[],
+  shells: readonly Pick<ShellOutputMeta, 'command' | 'commandLength'>[],
+): (PartRun | null)[] {
+  const claimed = new Set<number>();
+  return shells.map((shell) => {
+    const start = SHELL_PREFIX + shell.command;
+    const length = SHELL_PREFIX.length + (shell.commandLength ?? shell.command.length);
+    for (let first = 0; first < parts.length; first++) {
+      const last = invocationEnd(parts, claimed, first, start, length);
+      if (last < 0) continue;
+      for (let part = first; part <= last; part++) claimed.add(part);
+      return { first, last };
+    }
+    return null;
+  });
+}
+
+/** The last part of the run starting at `first` whose text is the invocation, or -1. */
+function invocationEnd(
+  parts: readonly string[],
+  claimed: ReadonlySet<number>,
+  first: number,
+  start: string,
+  length: number,
+): number {
+  for (let last = first; last < parts.length && !claimed.has(last); last++) {
+    const typed = trimSpace(parts.slice(first, last + 1).join(MESSAGE_JOIN_SEPARATOR));
+    if (typed.length < length) continue;
+    return typed.length === length && typed.startsWith(start) ? last : -1;
+  }
+  return -1;
 }
 
 /**
  * A message's text without the invocations its shell attachments stand for.
- * Each attachment claims the first unclaimed run of parts (between join
- * separators) that is exactly its invocation; the row shows a command block
- * for the attachment, so showing the typed line too would say it twice. A
- * command can hold the separator itself (a heredoc), so its invocation can
- * span several parts, as `turnAttachments.promptText` matches it. Text that
- * is not exactly an invocation is the person's own and stays.
+ * The row shows a command block for each attachment, so showing the typed
+ * line too would say it twice. Text that is not exactly an invocation is the
+ * person's own and stays.
  */
 export function textWithoutShellInvocations(text: string, shells: readonly ShellOutputMeta[]): string {
   if (shells.length === 0 || !text.includes(SHELL_PREFIX)) return text;
   const parts = text.split(MESSAGE_JOIN_SEPARATOR);
   const claimed = new Set<number>();
-  for (const shell of shells) {
-    const invocation = shellInvocation(shell.command);
-    // A row's metadata bounds the command, so a truncated one is matched by
-    // its start, in the part that begins it.
-    const span = shell.commandTruncated ? 1 : invocation.split(MESSAGE_JOIN_SEPARATOR).length;
-    for (let at = 0; at + span <= parts.length; at++) {
-      let free = true;
-      for (let k = at; k < at + span; k++) free &&= !claimed.has(k);
-      if (!free) continue;
-      const typed = parts.slice(at, at + span).join(MESSAGE_JOIN_SEPARATOR).trim();
-      if (shell.commandTruncated ? !typed.startsWith(invocation) : typed !== invocation) continue;
-      for (let k = at; k < at + span; k++) claimed.add(k);
-      break;
-    }
+  for (const run of shellInvocationRuns(parts, shells)) {
+    for (let part = run?.first ?? 0; run && part <= run.last; part++) claimed.add(part);
   }
   if (claimed.size === 0) return text;
   return parts.filter((_, index) => !claimed.has(index)).join(MESSAGE_JOIN_SEPARATOR);

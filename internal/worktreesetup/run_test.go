@@ -110,7 +110,7 @@ func TestRunReportsTheFailingCommandsOutputTail(t *testing.T) {
 	err := Run(context.Background(), project, worktree, Config{
 		Run: [][]string{{"/bin/sh", "-c", "echo diagnosis >&2; exit 3"}},
 	})
-	if err == nil || !strings.Contains(err.Error(), "diagnosis") || !strings.Contains(err.Error(), "failed") {
+	if err == nil || !strings.Contains(err.Error(), "failed: exit status 3; output tail: diagnosis") {
 		t.Fatalf("failure error = %v", err)
 	}
 }

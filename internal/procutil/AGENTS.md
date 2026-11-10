@@ -20,16 +20,25 @@ This package owns four utilities:
   Pass the context the command was created with: exec stops watching it at
   exit, so on Unix RunDrained watches it while draining and returns its
   error.
-
-- `RunGroup` runs argv as its own process group and owns the output pipe,
-  so output from grandchildren is captured. Cancellation sends SIGTERM,
-  then SIGKILL after `TerminateGrace`. After the leader exits it kills
-  whatever is still in the group and reports those processes as
-  `Leftovers`. Its error is the start failure, `Wait`'s `*exec.ExitError`
-  for a non-zero exit or a signal death, or `ErrGroupSurvived` when the
-  leader ignored SIGKILL (it runs as another user) and was abandoned.
-  `Output` should not return an error; one is reported as `PipeErr` and
-  the rest of the output is discarded.
+- `StartGroup` starts argv as the leader of its own process group and
+  returns a `Group`; `Group.Wait` supervises it to the end, and `RunGroup` is
+  the two together. This is the one implementation of pipe ownership,
+  cancellation, the leftover sweep and the drain: do not build another from
+  `ConfigureGroup`. A done context starts nothing. The `Group` owns the
+  output pipe, so output from grandchildren is captured, from the start and
+  never after `Wait` returns. Cancellation sends SIGTERM, then SIGKILL after
+  `TerminateGrace`, and sets `Stopped`: an exit status is then the command's
+  answer to the signal, not its result. After the leader exits `Wait` stops
+  whatever is still in the group and reports those processes as `Leftovers`;
+  `KeepLeftovers` leaves them running for a command that may start a service
+  on purpose. `OutputHeld` reports a pipe still open after the drain grace.
+  `Wait`'s error is `*exec.ExitError` for a non-zero exit or a signal death,
+  or `ErrGroupSurvived` when the leader ignored SIGKILL (it runs as another
+  user) and was abandoned. `Output` should not return an error; one is
+  reported as `PipeErr` and the rest of the output is discarded.
+  `GroupOutcome.OutputErr` folds `PipeErr` and `OutputHeld` (as
+  `ErrOutputHeld`) into one error for a caller that fails a command whose
+  output was cut.
 
 Call `ConfigureGroup` before starting the command and pass the same command to
 `KillConfiguredGroup`. These APIs do not verify process identity or establish

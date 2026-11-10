@@ -135,6 +135,36 @@ describe('snapshot reconciliation', () => {
     expect(getShellRun(THREAD)?.output).toBe('a\nb\nc\nd\n');
   });
 
+  it('shows a live frame past a hole at once and fills the hole from the snapshot', async () => {
+    applyShellCommandEvent(started());
+    applyShellCommandEvent(output(1, 'a\n'));
+    const pending = deferred<ReturnType<typeof snapshot>>();
+    GetThreadShellCommands.mockReturnValue(pending.promise);
+    applyShellCommandEvent(output(3, 'c\n'));
+    expect(getShellRun(THREAD)).toMatchObject({ output: 'a\nc\n', outputSeq: 3 });
+    // A frame behind the read in flight is replayed over the snapshot.
+    applyShellCommandEvent(output(4, 'd\n'));
+    pending.resolve(snapshot('run-1', 'a\nb\nc\n', 3));
+    await vi.waitFor(() => expect(getShellRun(THREAD)?.output).toBe('a\nb\nc\nd\n'));
+    expect(GetThreadShellCommands).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the stream moving past a hole when the read for it fails', async () => {
+    applyShellCommandEvent(started());
+    applyShellCommandEvent(output(1, 'a\n'));
+    const pending = deferred<never>();
+    GetThreadShellCommands.mockReturnValue(pending.promise);
+    applyShellCommandEvent(output(3, 'c\n'));
+    applyShellCommandEvent(output(4, 'd\n'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    pending.reject(new Error('socket closed'));
+    await vi.waitFor(() => expect(getShellRun(THREAD)?.output).toBe('a\nc\nd\n'));
+    warn.mockRestore();
+    applyShellCommandEvent(output(5, 'e\n'));
+    expect(getShellRun(THREAD)).toMatchObject({ state: 'running', output: 'a\nc\nd\ne\n', outputSeq: 5 });
+    expect(GetThreadShellCommands).toHaveBeenCalledTimes(1);
+  });
+
   it('learns a run from its output when the start was never seen', async () => {
     GetThreadShellCommands.mockResolvedValue(snapshot('run-1', 'a\n', 1));
     applyShellCommandEvent(output(1, 'a\n'));
@@ -151,6 +181,28 @@ describe('snapshot reconciliation', () => {
     pending.resolve(snapshot('run-1', 'a\nb\n', 2));
     await hydration;
     expect(getShellRun(THREAD)?.output).toBe('a\nb\nc\n');
+    expect(GetThreadShellCommands).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies a replayed frame past a hole instead of reading again', async () => {
+    const pending = deferred<ReturnType<typeof snapshot>>();
+    GetThreadShellCommands.mockReturnValue(pending.promise);
+    const hydration = hydrateShellRun(THREAD);
+    applyShellCommandEvent(output(3, 'c\n'));
+    pending.resolve(snapshot('run-1', 'a\n', 1));
+    await hydration;
+    expect(getShellRun(THREAD)?.output).toBe('a\nc\n');
+    expect(GetThreadShellCommands).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not read again for a replayed frame of a run the snapshot does not name', async () => {
+    const pending = deferred<ReturnType<typeof snapshot>>();
+    GetThreadShellCommands.mockReturnValue(pending.promise);
+    const hydration = hydrateShellRun(THREAD);
+    applyShellCommandEvent(output(1, 'x\n', 'run-2'));
+    pending.resolve(snapshot('run-1', 'a\n', 1));
+    await hydration;
+    expect(getShellRun(THREAD)).toMatchObject({ runId: 'run-1', output: 'a\n' });
     expect(GetThreadShellCommands).toHaveBeenCalledTimes(1);
   });
 
@@ -183,6 +235,16 @@ describe('snapshot reconciliation', () => {
     await hydration;
     warn.mockRestore();
     expect(getShellRun(THREAD)).toMatchObject({ state: 'running', output: 'a\n' });
+  });
+
+  it('forgets a read in flight on reset', async () => {
+    const pending = deferred<ReturnType<typeof snapshot>>();
+    GetThreadShellCommands.mockReturnValue(pending.promise);
+    const hydration = hydrateShellRun(THREAD);
+    resetShellRunsForTest();
+    pending.resolve(snapshot('run-1', 'stale\n', 1));
+    await hydration;
+    expect(getShellRun(THREAD)).toBeNull();
   });
 
   it('lets the newest of two overlapping reads decide', async () => {

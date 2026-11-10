@@ -42,9 +42,9 @@
   const outcome = $derived(shellOutcomeLabel(shell));
   const duration = $derived(formatShellDuration(shell.durationMs));
   const command = $derived(reader.command || shell.command);
-  const commandCut = $derived(shell.commandTruncated === true && !reader.command);
+  const commandCut = $derived(shell.commandLength !== undefined && !reader.command);
   const preview = $derived(shell.preview ?? '');
-  const expandable = $derived(shell.more === true || shell.commandTruncated === true);
+  const expandable = $derived(shell.more === true || shell.commandLength !== undefined);
   let localExpanded = $state(false);
   const expanded = $derived(
     expandable && (pane ? pane.isUserMessageExpanded(itemId, attachmentId) : localExpanded),

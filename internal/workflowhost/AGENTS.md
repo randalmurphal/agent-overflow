@@ -37,7 +37,11 @@ the engine. The engine decides what runs next.
 - Fan-out units receive isolated sub-worktrees when required. Retire them only
   after their outcome is durable.
 - Tool processes use the same supervision and envelope-validation path as other
-  workflow tool execution.
+  workflow tool execution. The process runs through `procutil.StartGroup`;
+  the exit status of a process the runner or shutdown stopped is never its
+  result, and a process the command leaves running in its group is kept.
+  A stop is SIGTERM first, so shutdown calls `Runner.StopTools`, which joins
+  every tool reaper before the engine closes.
 - Settle an accepted attempt's narrative from the documented ordered sources;
   do not replace missing narrative with envelope text.
 - Capture artifacts beneath the run-owned artifact root. Listing and opening

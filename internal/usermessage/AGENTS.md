@@ -22,10 +22,18 @@ An attachment's `Shell` (`ShellMeta`) is set when the file is the output of
 a composer shell command. Every string in it is bounded
 (`ShellCommandMetaBytes`, the attachment's preview) so the item wire never
 elides one; the attachment record keeps the whole command, and the row's
-text keeps the typed `!command`. `JoinSeparator` is mirrored by
-`MESSAGE_JOIN_SEPARATOR` in the frontend's `utils/shellInvocation.ts`,
-which matches invocations between joined parts the way
-`turnAttachments.promptText` does.
+text keeps the typed `!command`. A bounded command carries its whole
+length (`CommandLength`, in UTF-16 code units) so the frontend can still
+tell where its invocation ends.
+
+`shell_invocation.go` owns which parts of a message stand for which shell
+attachment (`ShellInvocationRuns`), as `command.go` owns the slash command
+word. The send path replaces those parts with the provider's command block
+and the timeline hides them behind the block. The frontend's copy is
+`utils/shellInvocation.ts` (`MESSAGE_JOIN_SEPARATOR` mirrors
+`JoinSeparator`). Both run `testdata/shell_invocation_vectors.json`, kept
+byte-identical with `frontend/src/test/fixtures/shellInvocationVectors.json`:
+change the rule by changing the vectors and both implementations.
 
 An empty attachment `kind` means image for rows written before the kind field
 existed; MIME type cannot replace that compatibility rule. `SendID` belongs
