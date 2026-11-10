@@ -28,6 +28,7 @@
   import { UpdateProjectSortPositions } from '../../stores/bindings';
   import { addErrorToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
+  import { reuseUnchangedBuckets } from '../../utils/stableBuckets';
   import {
     openDraftThreadForProject,
     openTerminalThread,
@@ -86,10 +87,13 @@
   // skipped. A group that neither matches by name nor holds a surviving
   // member is dropped, so search never leaves an empty container behind.
   //
-  // Both maps are re-minted per derivation, as threadsByProject always
-  // was: the ROWS inside them are stable references, and the identity
+  // Both maps are re-minted per derivation, and the ROWS inside them are
+  // stable references. A bucket whose rows did not change keeps its array,
+  // so a thread change rebuilds only its own project's tree; the identity
   // cutoffs downstream (visibleProjects here, sameSidebarVisibleNodes in
-  // ProjectThreadList) are what keep a streaming beat off the DOM.
+  // ProjectThreadList) keep a streaming beat off the DOM.
+  let previousThreadBuckets: ReadonlyMap<string, Thread[]> = new Map();
+  let previousGroupBuckets: ReadonlyMap<string, ThreadGroup[]> = new Map();
   let searchBuckets = $derived.by(() => {
     const groups = getThreadGroups();
     const filterDevices = sidebarDeviceFilterActive();
@@ -134,6 +138,8 @@
       if (bucket) bucket.push(group);
       else groupsByProject.set(key, [group]);
     }
+    previousThreadBuckets = reuseUnchangedBuckets(previousThreadBuckets, threadsByProject);
+    previousGroupBuckets = reuseUnchangedBuckets(previousGroupBuckets, groupsByProject);
     return { threadsByProject, groupsByProject };
   });
 
