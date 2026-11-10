@@ -315,6 +315,7 @@ func TestPRCILogCutDownloadResumes(t *testing.T) {
 	body := strings.Repeat("0123456789abcdef\n", 2000)
 	f.setLog("7", body, nil)
 	f.cutLog("7", 10000)
+	resume := f.holdLaterLogs(t)
 	sub := f.subscribe(t)
 	awaitCIEvent(t, f.ciEvents, "pipeline frame")
 	result, err := f.app.SetPRCILogFollows(context.Background(), sub.ID, []string{"7"})
@@ -324,6 +325,7 @@ func TestPRCILogCutDownloadResumes(t *testing.T) {
 	if state := result.Logs["7"]; !state.Downloading || state.Available || state.Error != "" || state.TotalLines != 0 {
 		t.Fatalf("cut download state = %+v, want downloading", state)
 	}
+	resume()
 	awaitLogEvent(t, f.logEvents, "downloading frame")
 	done := awaitLogEvent(t, f.logEvents, "resumed log frame")
 	if done.Downloading || !done.Available || done.TotalLines != 2000 {
@@ -558,6 +560,7 @@ func TestPRCILogRefusedResumeStartsOver(t *testing.T) {
 	body := strings.Repeat("0123456789abcdef\n", 2000)
 	f.setLog("7", body, nil)
 	f.cutLog("7", len(body))
+	resume := f.holdLaterLogs(t)
 	sub := f.subscribe(t)
 	awaitCIEvent(t, f.ciEvents, "pipeline frame")
 	result, err := f.app.SetPRCILogFollows(context.Background(), sub.ID, []string{"7"})
@@ -567,6 +570,7 @@ func TestPRCILogRefusedResumeStartsOver(t *testing.T) {
 	if state := result.Logs["7"]; !state.Downloading || state.Error != "" {
 		t.Fatalf("cut download state = %+v, want downloading", state)
 	}
+	resume()
 	awaitLogEvent(t, f.logEvents, "downloading frame")
 	done := awaitLogEvent(t, f.logEvents, "restarted log frame")
 	if done.Downloading || !done.Available || done.Error != "" || done.TotalLines != 2000 {
