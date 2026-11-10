@@ -154,6 +154,45 @@ describe('<SendQueuePreview>', () => {
     });
   });
 
+  it('shows the newest four messages and counts the earlier ones', async () => {
+    const pane = await buildPane();
+    markItemsFlushed('thread-1', [
+      { queueItemId: 'q-0', userItemId: 'user:0', message: 'flushed 0' },
+      { queueItemId: 'q-1', userItemId: 'user:1', message: 'flushed 1' },
+    ]);
+    replaceQueueForThread('thread-1', [2, 3, 4, 5].map((n) => makeQueueItem({ id: `q-${n}`, message: `queued ${n}` })));
+
+    const { getAllByTestId, getByTestId } = render(SendQueuePreview, { props: { pane } });
+
+    expect(getAllByTestId('send-queue-preview-row').map((row) => row.textContent?.trim().replace(/^→\s*/, ''))).toEqual([
+      'queued 2',
+      'queued 3',
+      'queued 4',
+      'queued 5',
+    ]);
+    expect(getByTestId('send-queue-preview-earlier').textContent?.trim()).toBe('2 earlier messages waiting');
+  });
+
+  it('counts one earlier message in the singular', async () => {
+    const pane = await buildPane();
+    replaceQueueForThread('thread-1', [1, 2, 3, 4, 5].map((n) => makeQueueItem({ id: `q-${n}`, message: `queued ${n}` })));
+
+    const { getAllByTestId, getByTestId } = render(SendQueuePreview, { props: { pane } });
+
+    expect(getAllByTestId('send-queue-preview-row')).toHaveLength(4);
+    expect(getByTestId('send-queue-preview-earlier').textContent?.trim()).toBe('1 earlier message waiting');
+  });
+
+  it('shows every message and no count while four or fewer wait', async () => {
+    const pane = await buildPane();
+    replaceQueueForThread('thread-1', [1, 2, 3, 4].map((n) => makeQueueItem({ id: `q-${n}`, message: `queued ${n}` })));
+
+    const { getAllByTestId, queryByTestId } = render(SendQueuePreview, { props: { pane } });
+
+    expect(getAllByTestId('send-queue-preview-row')).toHaveLength(4);
+    expect(queryByTestId('send-queue-preview-earlier')).toBeNull();
+  });
+
   it('exposes an aria-label naming pending messages', async () => {
     const pane = await buildPane();
     replaceQueueForThread('thread-1', [makeQueueItem({ id: 'q-1' })]);
