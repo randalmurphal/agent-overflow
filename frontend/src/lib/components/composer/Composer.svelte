@@ -1138,6 +1138,7 @@
       editsDraft={!hasUserInputPrompt}
       showDraftRows={!hasInteractivePrompt}
       {blockAttachment}
+      attachmentsDeferred={hasInteractivePrompt}
       uploadThreadId={threadIdForUpload}
       ensureUploadThreadId={ensureThreadIdForUpload}
     >

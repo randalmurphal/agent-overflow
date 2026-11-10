@@ -7,7 +7,7 @@
   // comment for what deliberately does NOT live here.
 
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
-  import { flushSync, onDestroy } from 'svelte';
+  import { flushSync, onDestroy, untrack } from 'svelte';
   import { paneWorkspacePath } from '../../stores/thread.svelte';
   import ComposerAttachmentRow from './ComposerAttachmentRow.svelte';
   import AttachmentPicker from './AttachmentPicker.svelte';
@@ -42,6 +42,7 @@
     editsDraft = true,
     showDraftRows = true,
     blockAttachment,
+    attachmentsDeferred = false,
     shouldDeleteAttachmentRecord,
     attachmentCache,
     uploadThreadId,
@@ -53,6 +54,9 @@
   let fileInput: HTMLInputElement | undefined = $state();
   let pickerGeneration = -1;
   let pickerInsertion: UploadInsertionPoint | null = null;
+  let heldPick: { files: File[]; insertion: UploadInsertionPoint | null; generation: number } | null = $state.raw(null);
+  // Attachments are refused for now, not for good.
+  const attachmentsOnHold = $derived(disabled || attachmentsDeferred);
   let lastAutosizedTextarea: HTMLTextAreaElement | undefined;
   let lastAutosizedValue = '';
   // Bumped by recreateInput() to swap the <textarea> element itself (the
@@ -206,7 +210,7 @@
   }
 
   function chooseAttachments(accept: string, capture = false): void {
-    if (!fileInput || disabled || refuseAttachment(new Event('pick'))) return;
+    if (!fileInput || attachmentsOnHold || refuseAttachment(new Event('pick'))) return;
     pickerGeneration = pane.switchGeneration;
     pickerInsertion = imagePlaceholders.currentUploadInsertion();
     fileInput.accept = accept;
@@ -220,9 +224,38 @@
   function attachSelectedFiles(event: Event): void {
     const files = Array.from(fileInput?.files ?? []);
     if (fileInput) fileInput.value = '';
-    if (pickerGeneration !== pane.switchGeneration || disabled || refuseAttachment(event)) return;
+    if (files.length === 0 || pickerGeneration !== pane.switchGeneration) return;
+    // The picker opened while the surface took attachments. A selection
+    // that comes back while it does not (a connection that dropped under
+    // the camera, a prompt that arrived) is kept until it does again. The
+    // host's veto is asked only then: while a prompt waits it refuses
+    // everything, and that refusal is not about this selection.
+    if (attachmentsOnHold) {
+      heldPick = { files, insertion: pickerInsertion, generation: pickerGeneration };
+      return;
+    }
+    if (refuseAttachment(event)) return;
     void uploads.uploadFiles(files, pickerInsertion);
   }
+
+  // The held selection uploads once the surface takes attachments again,
+  // and is let go when the pane moved to another thread first. The picker
+  // cannot open while attachments are on hold, so one selection is the
+  // most held.
+  $effect(() => {
+    const held = heldPick;
+    if (!held) return;
+    if (held.generation !== pane.switchGeneration) {
+      heldPick = null;
+      return;
+    }
+    if (attachmentsOnHold) return;
+    heldPick = null;
+    untrack(() => {
+      if (refuseAttachment(new Event('pick'))) return;
+      void uploads.uploadFiles(held.files, held.insertion);
+    });
+  });
 
   function handlePaste(event: ClipboardEvent): void {
     if (refuseAttachment(event)) return;
@@ -373,6 +406,8 @@
 {#if showDraftRows}
   {#if uploads.uploading}
     <div class="px-4 py-1 text-xs text-fg-muted" role="status">Uploading…</div>
+  {:else if heldPick}
+    <div class="px-4 py-1 text-xs text-fg-muted" role="status" data-testid="composer-attachment-held">Waiting to attach…</div>
   {/if}
   <ComposerAttachmentRow
     attachments={draft.attachments}
@@ -454,8 +489,13 @@
       {textarea}
     />
   </div>
-  {#if showDraftRows && editsDraft && threadHasScope('attachments:write', pane.threadId, pane.thread?.projectId) && providerSupports(pane.thread?.provider, 'attachments')}
-    <AttachmentPicker {disabled} onChoose={chooseAttachments} />
+  {#if threadHasScope('attachments:write', pane.threadId, pane.thread?.projectId) && providerSupports(pane.thread?.provider, 'attachments')}
+    {#if showDraftRows && editsDraft}
+      <AttachmentPicker disabled={attachmentsOnHold} onChoose={chooseAttachments} />
+    {/if}
+    <!-- Outlives the picker button: a prompt that hides the draft rows
+         while the platform picker is open must not take away the element
+         its selection returns to. -->
     <input bind:this={fileInput} type="file" multiple hidden aria-label="Choose attachments" onchange={attachSelectedFiles} />
   {/if}
   {@render trailing?.()}

@@ -86,6 +86,12 @@ type harnessPaths struct {
 // bootTransportOptions.HarnessReceiver), and the harness bootstrap line
 // that hands agents the URL, token, and data paths in one place.
 func runHarness(flags cliFlags) {
+	// First: a worker that died while this backend booted must still end it.
+	if flags.exitWithParent > 0 {
+		if err := watchParentExit(flags.exitWithParent); err != nil {
+			fatalf("harness: %v", err)
+		}
+	}
 	if flags.window {
 		// Before any work: a nogui payload can never open a window, and
 		// finding that out after seeding a data directory would be a worse

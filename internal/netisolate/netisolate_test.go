@@ -32,6 +32,8 @@ func TestContainedInterfacesAcceptOnlyTheNamespaceShape(t *testing.T) {
 		want   bool
 	}{
 		{"namespace", []net.Interface{lo, lan}, nil, true},
+		{"lan0 without its address", []net.Interface{lo, lan}, []net.Addr{}, false},
+		{"lan0 with only a link-local address", []net.Interface{lo, lan}, []net.Addr{ipNet("fe80::1", 64)}, false},
 		{"loopback only", []net.Interface{lo}, nil, false},
 		{"host interface beside lan0", []net.Interface{lo, lan, wifi}, nil, false},
 		{"host interface alone", []net.Interface{lo, wifi}, nil, false},

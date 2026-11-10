@@ -74,6 +74,7 @@ interface MountOptions {
   showDraftRows?: boolean;
   editsDraft?: boolean;
   blockAttachment?: (event: Event, notify: boolean) => boolean;
+  attachmentsDeferred?: boolean;
   shouldDeleteAttachmentRecord?: (id: string) => boolean;
   onKeydown?: (event: KeyboardEvent) => boolean;
   trailing?: Snippet;
@@ -135,6 +136,7 @@ async function mountSurface(options: MountOptions = {}) {
     showDraftRows: options.showDraftRows,
     editsDraft: options.editsDraft,
     blockAttachment: options.blockAttachment,
+    attachmentsDeferred: options.attachmentsDeferred,
     shouldDeleteAttachmentRecord: options.shouldDeleteAttachmentRecord,
     trailing: options.trailing,
   };
@@ -489,6 +491,106 @@ describe('<ComposerInputSurface>', () => {
     pane.clear();
     Object.defineProperty(input, 'files', { value: [new File(['x'], 'picked.png', { type: 'image/png' })] });
     await fireEvent.change(input);
+    await tick();
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  // The camera can return after the connection dropped under it. The photo
+  // was taken while the composer was usable, so it waits and is not lost.
+  it('keeps a picker selection returned while disabled and uploads it once usable', async () => {
+    const upload = mockAttachmentUpload(async () => makeAttachment('att-held'));
+    const { getByTestId, queryByTestId, getByLabelText, draft, setProps } = await mountSurface();
+    await fireEvent.click(getByTestId('composer-attach'));
+    const input = getByLabelText('Choose attachments') as HTMLInputElement;
+    await setProps({ disabled: true });
+    Object.defineProperty(input, 'files', { value: [new File(['x'], 'camera.jpg', { type: 'image/jpeg' })] });
+    await fireEvent.change(input);
+    await tick();
+    expect(upload).not.toHaveBeenCalled();
+    expect(getByTestId('composer-attachment-held').textContent).toBe('Waiting to attach…');
+
+    await setProps({ disabled: false });
+    await waitFor(() => expect(draft.attachments.map((a) => a.id)).toEqual(['att-held']));
+    expect(upload).toHaveBeenCalledOnce();
+    expect(queryByTestId('composer-attachment-held')).toBeNull();
+  });
+
+  // While a prompt waits, the host refuses every attachment. That refusal
+  // is for now: a selection made before it, or held through an outage that
+  // ended in it, is not asked about until the prompt is answered.
+  it('keeps a selection through a deferral, whichever closed first', async () => {
+    for (const outageFirst of [false, true]) {
+      const upload = mockAttachmentUpload(async () => makeAttachment('att-deferred'));
+      let prompting = false;
+      const blockAttachment = vi.fn(() => prompting);
+      const { getByTestId, getByLabelText, draft, setProps, unmount } = await mountSurface({ blockAttachment });
+      await fireEvent.click(getByTestId('composer-attach'));
+      const input = getByLabelText('Choose attachments') as HTMLInputElement;
+      blockAttachment.mockClear();
+      if (outageFirst) {
+        await setProps({ disabled: true });
+      } else {
+        prompting = true;
+        await setProps({ attachmentsDeferred: true });
+      }
+      Object.defineProperty(input, 'files', { value: [new File(['x'], 'camera.jpg', { type: 'image/jpeg' })] });
+      await fireEvent.change(input);
+      await tick();
+      if (outageFirst) {
+        // The connection returns into a prompt that leaves the input enabled.
+        prompting = true;
+        await setProps({ disabled: false, attachmentsDeferred: true });
+      }
+      expect(upload).not.toHaveBeenCalled();
+      expect(blockAttachment, 'a deferred selection is not put to the veto').not.toHaveBeenCalled();
+
+      prompting = false;
+      await setProps({ attachmentsDeferred: false });
+      await waitFor(() => expect(draft.attachments.map((a) => a.id)).toEqual(['att-deferred']));
+      expect(upload).toHaveBeenCalledOnce();
+      unmount();
+    }
+  });
+
+  // One selection is the most held: the picker does not open again while
+  // attachments are deferred, so a second pick cannot replace the first.
+  it('does not open the picker while attachments are deferred', async () => {
+    const upload = mockAttachmentUpload(async (_threadId: string, filename: string) => makeAttachment(filename));
+    const { getByTestId, getByLabelText, draft, setProps } = await mountSurface();
+    const attach = getByTestId('composer-attach') as HTMLButtonElement;
+    await fireEvent.click(attach);
+    const input = getByLabelText('Choose attachments') as HTMLInputElement;
+    await setProps({ attachmentsDeferred: true });
+    Object.defineProperty(input, 'files', { value: [new File(['a'], 'first.png', { type: 'image/png' })], configurable: true });
+    await fireEvent.change(input);
+    await tick();
+
+    const opened = vi.spyOn(input, 'click');
+    expect(attach.disabled).toBe(true);
+    attach.disabled = false;
+    await fireEvent.click(attach);
+    expect(opened, 'the picker opened while a selection was held').not.toHaveBeenCalled();
+
+    await setProps({ attachmentsDeferred: false });
+    await waitFor(() => expect(draft.attachments.map((a) => a.id)).toEqual(['first.png']));
+    expect(upload).toHaveBeenCalledOnce();
+  });
+
+  it('lets go of a held selection when the pane leaves its thread first', async () => {
+    const upload = mockAttachmentUpload(async () => makeAttachment('att-wrong-thread'));
+    const { getByTestId, queryByTestId, getByLabelText, pane, setProps } = await mountSurface();
+    await fireEvent.click(getByTestId('composer-attach'));
+    const input = getByLabelText('Choose attachments') as HTMLInputElement;
+    await setProps({ disabled: true });
+    Object.defineProperty(input, 'files', { value: [new File(['x'], 'camera.jpg', { type: 'image/jpeg' })] });
+    await fireEvent.change(input);
+    await tick();
+    expect(getByTestId('composer-attachment-held')).toBeTruthy();
+
+    pane.clear();
+    await tick();
+    expect(queryByTestId('composer-attachment-held')).toBeNull();
+    await setProps({ disabled: false });
     await tick();
     expect(upload).not.toHaveBeenCalled();
   });
