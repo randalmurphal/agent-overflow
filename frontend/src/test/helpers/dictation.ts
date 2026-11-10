@@ -101,7 +101,8 @@ export function dictationFixture(options: {
     inserted,
     level,
     tick: () => { for (const fn of intervals.values()) fn(); },
-    fireCap: () => { for (const fn of [...timeouts.values()]) fn(); },
+    // A copy: a fired callback may set or clear timeouts.
+    fireCap: () => { for (const fn of Array.from(timeouts.values())) fn(); },
     timers: () => intervals.size + timeouts.size,
   };
 }
