@@ -32,6 +32,8 @@ type prCIFixture struct {
 	logErrs     map[string]error
 	// logCuts cuts the next download of a job off after that many bytes.
 	logCuts map[string]int
+	// logHold holds every log request after the first until it is closed.
+	logHold chan struct{}
 	// ciInteractive and logInteractive record, per fetch, whether its
 	// context carried the interactive mark.
 	ciInteractive  []bool
@@ -80,7 +82,18 @@ func newPRCIFixture(t *testing.T, streams bool) *prCIFixture {
 		f.logRequests = append(f.logRequests, req)
 		text, err, cut := f.logs[req.JobID], f.logErrs[req.JobID], f.logCuts[req.JobID]
 		delete(f.logCuts, req.JobID)
+		hold := f.logHold
+		if len(f.logRequests) == 1 {
+			hold = nil
+		}
 		f.mu.Unlock()
+		if hold != nil {
+			select {
+			case <-hold:
+			case <-ctx.Done():
+				return false, ctx.Err()
+			}
+		}
 		if err != nil {
 			return false, err
 		}
@@ -137,6 +150,20 @@ func (f *prCIFixture) cutLog(jobID string, n int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.logCuts[jobID] = n
+}
+
+// holdLaterLogs holds every log request after the first until the returned
+// release is called, so a test reads the reply to the first download before
+// the follow cadence asks again. The test's end releases it too.
+func (f *prCIFixture) holdLaterLogs(t *testing.T) (release func()) {
+	t.Helper()
+	hold := make(chan struct{})
+	f.mu.Lock()
+	f.logHold = hold
+	f.mu.Unlock()
+	release = sync.OnceFunc(func() { close(hold) })
+	t.Cleanup(release)
+	return release
 }
 
 func (f *prCIFixture) requests() []gitops.CIJobLogRequest {
