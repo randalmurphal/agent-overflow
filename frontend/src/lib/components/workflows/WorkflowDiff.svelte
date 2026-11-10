@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import WorkflowDiffLines from './WorkflowDiffLines.svelte';
+  import PatchLines from '../shared/PatchLines.svelte';
   import type { ReviewFile } from '../../utils/patchStore';
   interface Props {
     files: readonly ReviewFile[];
@@ -46,7 +46,7 @@
           <span class="text-success">+{file.additions}</span><span class="text-error">−{file.deletions}</span>
         </button>
         {#if expanded.has(file.path)}
-          <WorkflowDiffLines {file} />
+          <PatchLines {file} />
         {/if}
       </div>
     {/each}

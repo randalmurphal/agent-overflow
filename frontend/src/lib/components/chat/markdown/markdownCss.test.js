@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { SHORT_CODESPAN_CLASS } from '../../../markdown/render/codespan';
 
 const appCss = readFileSync('src/app.css', 'utf8');
 
@@ -41,15 +42,26 @@ describe('markdown CSS', () => {
     expect(unwrapBody).toMatch(/word-break:\s*normal;/);
   });
 
-  it('wraps Streamdown tables within the markdown width', () => {
+  it('sizes Streamdown tables to their content within the markdown width', () => {
     expect(appCss).toMatch(/\.markdown-body\s+\[data-streamdown-table\]\s*\{[^}]*max-width:\s*100%;/s);
     expect(appCss).not.toMatch(/\.markdown-body\s+\[data-streamdown-table\]\s*\{[^}]*overflow-x:\s*visible;/s);
     expect(appCss).toMatch(/\.markdown-body\s+\[data-streamdown-table\]\s+table\s*\{[^}]*display:\s*table;/s);
     expect(appCss).toMatch(/\.markdown-body\s+\[data-streamdown-table\]\s+table\s*\{[^}]*overflow:\s*visible;/s);
-    expect(appCss).toMatch(/\.markdown-body\s+\[data-streamdown-table\]\s+table\s*\{[^}]*table-layout:\s*auto;/s);
-    expect(appCss).toMatch(/\.markdown-body\s+\[data-streamdown-table\]\s+table\s*\{[^}]*width:\s*100%;/s);
-    expect(appCss).toMatch(/\.markdown-body\s+\[data-streamdown-table\]\s+table\s*\{[^}]*max-width:\s*100%;/s);
     expect(appCss).toMatch(/\.markdown-body\s+\[data-streamdown-table\]\s+table\s*\{[^}]*margin:\s*0;/s);
+    expect(appCss).toMatch(/\.markdown-body\s+table\s*\{[^}]*table-layout:\s*auto;/s);
+    // No declared width on either table rule: `auto` gives a table that fits
+    // its content width and still holds a wider one to the column. A
+    // `width: 100%` stretches every column of a small table across the pane.
+    expect(appCss).not.toMatch(/\.markdown-body\s+table\s*\{[^}]*(?<![-\w])width:/s);
+    expect(appCss).not.toMatch(/\.markdown-body\s+\[data-streamdown-table\]\s+table\s*\{[^}]*(?<![-\w])width:/s);
+    // Short inline code keeps its column open. The selector is built from the
+    // renderers' constant so the rule and the marker cannot drift apart.
+    expect(appCss).toMatch(
+      new RegExp(
+        String.raw`\.markdown-body\s+:is\(td, th\)\s+code\.${SHORT_CODESPAN_CLASS}\s*\{[^}]*white-space:\s*pre;`,
+        's',
+      ),
+    );
     // Cells use break-word, NOT anywhere. With table-layout:auto the browser
     // sizes each column from its cell's min-content width; `anywhere` collapses
     // that to ~1ch and starves narrow columns (#, Sev), splitting short values

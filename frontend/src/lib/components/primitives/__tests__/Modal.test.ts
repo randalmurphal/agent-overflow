@@ -10,7 +10,7 @@
 //   - footer snippet renders when provided.
 
 import { describe, expect, it, vi } from 'vitest';
-import { render, fireEvent } from '@testing-library/svelte';
+import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import Harness from './ModalHarness.svelte';
 import PaletteHarness from './ModalPaletteHarness.svelte';
@@ -41,11 +41,36 @@ describe('<Modal>', () => {
     expect(getByText('Add Project').id).toBe(labelId);
   });
 
+  it('mounts on the body, outside its owner, and leaves with its owner', async () => {
+    // An owner inside a stacking context would cap the dialog's z-index.
+    const { container, unmount } = render(Harness);
+    await flushFocus();
+    const backdrop = document.querySelector('[data-modal-backdrop]');
+    expect(backdrop?.parentElement).toBe(document.body);
+    expect(container.contains(backdrop)).toBe(false);
+    unmount();
+    expect(document.querySelector('[data-modal-backdrop]')).toBeNull();
+  });
+
+  it('leaves the body when closed and mounts once when opened again', async () => {
+    const { rerender } = render(Harness);
+    await flushFocus();
+    for (let round = 0; round < 2; round += 1) {
+      await rerender({ open: false });
+      await waitFor(() => expect(document.querySelector('[data-modal-backdrop]')).toBeNull());
+      await rerender({ open: true });
+      await flushFocus();
+      const backdrops = document.querySelectorAll('[data-modal-backdrop]');
+      expect(backdrops).toHaveLength(1);
+      expect(backdrops[0].parentElement).toBe(document.body);
+    }
+  });
+
   it('Escape on the backdrop calls onClose', async () => {
     const onClose = vi.fn();
-    const { container } = render(Harness, { props: { onClose } });
+    render(Harness, { props: { onClose } });
     await flushFocus();
-    const backdrop = container.querySelector('[data-modal-backdrop]');
+    const backdrop = document.querySelector('[data-modal-backdrop]');
     expect(backdrop).toBeTruthy();
     await fireEvent.keyDown(backdrop!, { key: 'Escape' });
     expect(onClose).toHaveBeenCalled();
@@ -114,9 +139,9 @@ describe('<Modal>', () => {
 
   it('declines Escape while a popover it OWNS is layered over the dialog', async () => {
     const onClose = vi.fn();
-    const { container, getByTestId } = render(Harness, { props: { onClose } });
+    const { getByTestId } = render(Harness, { props: { onClose } });
     await flushFocus();
-    const backdrop = container.querySelector('[data-modal-backdrop]');
+    const backdrop = document.querySelector('[data-modal-backdrop]');
 
     const popover = openPopoverAnchoredAt(getByTestId('modal-middle'));
     try {
@@ -135,7 +160,7 @@ describe('<Modal>', () => {
 
   it('takes Escape while the only open popover belongs to something else', async () => {
     const onClose = vi.fn();
-    const { container } = render(Harness, { props: { onClose } });
+    render(Harness, { props: { onClose } });
     await flushFocus();
 
     // A picker in another pane, or one left open behind this dialog. Nothing
@@ -145,7 +170,7 @@ describe('<Modal>', () => {
     document.body.appendChild(stranger);
     const popover = openPopoverAnchoredAt(stranger);
     try {
-      await fireEvent.keyDown(container.querySelector('[data-modal-backdrop]')!, {
+      await fireEvent.keyDown(document.querySelector('[data-modal-backdrop]')!, {
         key: 'Escape',
       });
       expect(onClose).toHaveBeenCalledTimes(1);
@@ -157,7 +182,7 @@ describe('<Modal>', () => {
 
   it('declines Escape for a popover nested inside a picker it owns', async () => {
     const onClose = vi.fn();
-    const { container, getByTestId } = render(Harness, { props: { onClose } });
+    const { getByTestId } = render(Harness, { props: { onClose } });
     await flushFocus();
 
     // Submenu shape: the outer picker is anchored in the panel, the inner one
@@ -168,7 +193,7 @@ describe('<Modal>', () => {
     outer.appendChild(innerAnchor);
     const inner = openPopoverAnchoredAt(innerAnchor);
     try {
-      await fireEvent.keyDown(container.querySelector('[data-modal-backdrop]')!, {
+      await fireEvent.keyDown(document.querySelector('[data-modal-backdrop]')!, {
         key: 'Escape',
       });
       expect(onClose).not.toHaveBeenCalled();
@@ -180,9 +205,9 @@ describe('<Modal>', () => {
 
   it('backdrop click calls onClose', async () => {
     const onClose = vi.fn();
-    const { container } = render(Harness, { props: { onClose } });
+    render(Harness, { props: { onClose } });
     await flushFocus();
-    const backdrop = container.querySelector('[data-modal-backdrop]') as HTMLElement;
+    const backdrop = document.querySelector('[data-modal-backdrop]') as HTMLElement;
     await fireEvent.click(backdrop);
     expect(onClose).toHaveBeenCalled();
   });
@@ -230,16 +255,16 @@ describe('<Modal>', () => {
   });
 
   it('width="sm" maps to max-w-[380px]', async () => {
-    const { container } = render(Harness, { props: { width: 'sm' } });
+    render(Harness, { props: { width: 'sm' } });
     await flushFocus();
-    const panel = container.querySelector('[data-modal-panel]');
+    const panel = document.querySelector('[data-modal-panel]');
     expect(panel?.className).toContain('max-w-[380px]');
   });
 
   it('width="lg" maps to max-w-[800px]', async () => {
-    const { container } = render(Harness, { props: { width: 'lg' } });
+    render(Harness, { props: { width: 'lg' } });
     await flushFocus();
-    const panel = container.querySelector('[data-modal-panel]');
+    const panel = document.querySelector('[data-modal-panel]');
     expect(panel?.className).toContain('max-w-[800px]');
   });
 
@@ -250,59 +275,59 @@ describe('<Modal>', () => {
   });
 
   it('omits the footer element when no snippet is supplied', async () => {
-    const { container } = render(Harness, { props: { withFooter: false } });
+    render(Harness, { props: { withFooter: false } });
     await flushFocus();
-    expect(container.querySelector('footer')).toBeNull();
+    expect(document.querySelector('footer')).toBeNull();
   });
 
   // --- New in Stage 1 redesign: xl width, padding variants, headerActions ---
 
   it('width="xl" maps to max-w-[960px]', async () => {
-    const { container } = render(Harness, { props: { width: 'xl' } });
+    render(Harness, { props: { width: 'xl' } });
     await flushFocus();
-    const panel = container.querySelector('[data-modal-panel]');
+    const panel = document.querySelector('[data-modal-panel]');
     expect(panel?.className).toContain('max-w-[960px]');
   });
 
   it('panel uses the redesigned radius + shadow tokens', async () => {
-    const { container } = render(Harness);
+    render(Harness);
     await flushFocus();
-    const panel = container.querySelector('[data-modal-panel]')!;
+    const panel = document.querySelector('[data-modal-panel]')!;
     expect(panel.className).toContain('rounded-[var(--radius-card)]');
     expect(panel.className).toContain('shadow-modal');
     expect(panel.className).toContain('border-border-subtle');
   });
 
   it('backdrop uses the dimmer + heavier blur tokens', async () => {
-    const { container } = render(Harness);
+    render(Harness);
     await flushFocus();
-    const backdrop = container.querySelector('[data-modal-backdrop]')!;
+    const backdrop = document.querySelector('[data-modal-backdrop]')!;
     expect(backdrop.className).toContain('bg-overlay');
     expect(backdrop.className).toContain('backdrop-blur-md');
   });
 
   it('padding="tight" reduces the body padding', async () => {
-    const { container } = render(Harness, { props: { padding: 'tight' } });
+    render(Harness, { props: { padding: 'tight' } });
     await flushFocus();
     // Body is the div containing the children snippet — between header
     // and footer. Find by class signature rather than testid.
-    const body = container.querySelector('[data-modal-panel] > div:nth-of-type(1)')!;
+    const body = document.querySelector('[data-modal-panel] > div:nth-of-type(1)')!;
     expect(body.className).toContain('px-4');
     expect(body.className).toContain('py-3');
   });
 
   it('padding="loose" enlarges the body padding', async () => {
-    const { container } = render(Harness, { props: { padding: 'loose' } });
+    render(Harness, { props: { padding: 'loose' } });
     await flushFocus();
-    const body = container.querySelector('[data-modal-panel] > div:nth-of-type(1)')!;
+    const body = document.querySelector('[data-modal-panel] > div:nth-of-type(1)')!;
     expect(body.className).toContain('px-6');
     expect(body.className).toContain('py-5');
   });
 
   it('padding defaults to "comfortable"', async () => {
-    const { container } = render(Harness);
+    render(Harness);
     await flushFocus();
-    const body = container.querySelector('[data-modal-panel] > div:nth-of-type(1)')!;
+    const body = document.querySelector('[data-modal-panel] > div:nth-of-type(1)')!;
     expect(body.className).toContain('px-5');
     expect(body.className).toContain('py-4');
   });
@@ -336,18 +361,18 @@ describe('<Modal>', () => {
   // can mount near the top of the viewport without reinventing their own
   // backdrop chrome.
   it('defaults align="center" which centers the panel vertically', async () => {
-    const { container } = render(Harness);
+    render(Harness);
     await flushFocus();
-    const backdrop = container.querySelector('[data-modal-backdrop]')!;
+    const backdrop = document.querySelector('[data-modal-backdrop]')!;
     expect(backdrop.getAttribute('data-modal-align')).toBe('center');
     expect(backdrop.className).toContain('items-center');
     expect(backdrop.className).not.toContain('items-start');
   });
 
   it('align="top" anchors the panel 10vh below the top edge', async () => {
-    const { container } = render(Harness, { props: { align: 'top' } });
+    render(Harness, { props: { align: 'top' } });
     await flushFocus();
-    const backdrop = container.querySelector('[data-modal-backdrop]')!;
+    const backdrop = document.querySelector('[data-modal-backdrop]')!;
     expect(backdrop.getAttribute('data-modal-align')).toBe('top');
     expect(backdrop.className).toContain('items-start');
     expect(backdrop.className).toContain('pt-[10vh]');
@@ -380,22 +405,22 @@ describe('<Modal>', () => {
     });
 
     it('renders NEITHER default header NOR custom header when both title and header are absent', async () => {
-      const { container, queryByRole } = render(PaletteHarness, {
+      const { queryByRole } = render(PaletteHarness, {
         props: { withHeader: false },
       });
       await flushFocus();
       expect(queryByRole('heading', { level: 2 })).toBeNull();
       // No <header> element was rendered inside the panel.
-      const panel = container.querySelector('[data-modal-panel]')!;
+      const panel = document.querySelector('[data-modal-panel]')!;
       expect(panel.querySelector('header')).toBeNull();
     });
 
     it('padding="none" produces an un-padded body', async () => {
-      const { container } = render(PaletteHarness, {
+      render(PaletteHarness, {
         props: { padding: 'none' },
       });
       await flushFocus();
-      const panel = container.querySelector('[data-modal-panel]')!;
+      const panel = document.querySelector('[data-modal-panel]')!;
       // The direct child wrapping the body snippet is the scroller
       // with overflow-y-auto. Its class string should contain none of
       // the default padding tokens.
@@ -406,11 +431,11 @@ describe('<Modal>', () => {
     });
 
     it('padding="tight" still produces the tight padding token set', async () => {
-      const { container } = render(PaletteHarness, {
+      render(PaletteHarness, {
         props: { padding: 'tight', withHeader: true },
       });
       await flushFocus();
-      const body = container.querySelector('[data-modal-panel] .overflow-y-auto')!;
+      const body = document.querySelector('[data-modal-panel] .overflow-y-auto')!;
       expect(body.className).toContain('px-4');
       expect(body.className).toContain('py-3');
     });

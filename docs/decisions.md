@@ -634,6 +634,16 @@ and anti-changes that live only here:
   starts a reply. Run on a code block runs on click. Claude TUI `!` history
   is not converted. See
   [composer-shell-commands.md](specs/composer-shell-commands.md).
+- Commit dialog: the changed files are listed with none selected, and a
+  commit records exactly the selected files, whole. Files that appear
+  while it is open arrive unselected. It stays open on what is left and
+  closes after the commit that leaves nothing. Generate describes the
+  selection. Neither touches what the user staged outside the selection.
+  A selected file that changed after it was listed fails the commit, so
+  nothing is recorded that the dialog did not show. During a merge,
+  cherry-pick or revert a commit takes every change, so every file is
+  selected and locked. Not built: hunk staging, discard, amend, push
+  after commit.
 - Same-pane outside-click dismissal leaving focus on body (Enter-to-send
   after a background click stops working) is accepted; type-to-focus
   covers typing.
@@ -708,6 +718,9 @@ and anti-changes that live only here:
   nothing changes for a block that fits. Fenced code wraps by default; the
   block overlay toggles unwrap per block, recorded by content identity so
   it survives retirement and remounts.
+- Markdown tables take their content width: one that fits does not stretch
+  across the pane. In a cell, inline code of 32 characters or fewer stays on
+  one line and longer code wraps; a table whose short code cannot fit pans.
 - Rejected from the t3-code survey, do not re-propose: hard steer, codex
   shadow homes, workspace file browser, changed-files card, global word
   wrap (per-block opt-in only), top-edge fade, favicon fetching, settled

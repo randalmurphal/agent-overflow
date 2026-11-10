@@ -6,6 +6,7 @@
 	import type { ProvenAppend, StreamdownToken } from '../../parser/index';
 	import Slot from './Slot.svelte';
 	import { useStreamdown } from '../context.svelte';
+	import { codespanClass } from '../codespan';
 	import FootnoteRef from './FootnoteRef.svelte';
 	let {
 		token,
@@ -101,7 +102,10 @@
 	</Slot>
 {:else if token.type === 'codespan'}
 	<Slot props={{ children, token }} render={streamdown.snippets.codespan}>
-		<code data-streamdown-codespan={id} class={streamdown.theme.codespan.base}>
+		<code
+			data-streamdown-codespan={id}
+			class={codespanClass(streamdown.theme.codespan.base, token.text)}
+		>
 			{@render children()}
 		</code>
 	</Slot>

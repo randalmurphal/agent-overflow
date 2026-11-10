@@ -6,6 +6,74 @@
 import { Create as $Create } from "@wailsio/runtime";
 
 /**
+ * ChangedFile is one uncommitted change of a workspace against HEAD: what
+ * committing the file whole would record.
+ */
+export class ChangedFile {
+    "path": string;
+
+    /**
+     * OldPath is the path a renamed file had on HEAD. Committing the rename
+     * takes both paths.
+     */
+    "oldPath"?: string;
+
+    /**
+     * Status is git's change letter: A, M, D, R or T.
+     */
+    "status": string;
+    "additions": number;
+    "deletions": number;
+
+    /**
+     * Binary reports a change git does not count lines for.
+     */
+    "binary"?: boolean;
+
+    /**
+     * Version identifies the working-tree side of the change (its mode and
+     * blob). It differs whenever the file's uncommitted content does, line
+     * counts aside.
+     */
+    "version": string;
+
+    /**
+     * PartlyStaged reports that the user's index holds some of this file's
+     * change and the working tree holds more.
+     */
+    "partlyStaged"?: boolean;
+
+    /** Creates a new ChangedFile instance. */
+    constructor($$source: Partial<ChangedFile> = {}) {
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+        if (!("additions" in $$source)) {
+            this["additions"] = 0;
+        }
+        if (!("deletions" in $$source)) {
+            this["deletions"] = 0;
+        }
+        if (!("version" in $$source)) {
+            this["version"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ChangedFile instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ChangedFile {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ChangedFile($$parsedSource as Partial<ChangedFile>);
+    }
+}
+
+/**
  * Chunk is the patch bytes [Offset, NextOffset) of a Diff. EOF reports
  * that NextOffset is the end of the patch.
  */

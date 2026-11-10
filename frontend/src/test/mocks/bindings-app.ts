@@ -41,6 +41,7 @@ export function setBindingMock(
 export function setReviewDiffMock(
   name:
     | 'OpenWorkspaceDiff'
+    | 'OpenCommitFileDiff'
     | 'OpenBranchBaseDiff'
     | 'OpenCommitDiff'
     | 'OpenPRDiff'
@@ -634,6 +635,8 @@ export const ResetKeybindings = dispatch('ResetKeybindings');
 
 // Review pane diffs
 export const OpenWorkspaceDiff = dispatch('OpenWorkspaceDiff');
+export const OpenCommitFileDiff = dispatch('OpenCommitFileDiff');
+export const ListCommitFiles = dispatch('ListCommitFiles');
 export const OpenBranchBaseDiff = dispatch('OpenBranchBaseDiff');
 export const OpenCommitDiff = dispatch('OpenCommitDiff');
 export const ReadReviewDiff = dispatch('ReadReviewDiff');

@@ -934,14 +934,14 @@ input[type="search"]::-webkit-search-cancel-button {
   margin: var(--markdown-block-gap) 0;
 }
 
-/* GFM tables. */
+/* GFM tables. Width stays `auto`: a table that fits takes its content width
+   instead of stretching every column across the pane, and a wider one is
+   still held to the column until its min-content exceeds it. */
 .markdown-body table {
   border-collapse: collapse;
   margin: var(--markdown-block-gap) 0;
   font-size: 0.8125rem;
   table-layout: auto;
-  width: 100%;
-  max-width: 100%;
 }
 .markdown-body th,
 .markdown-body td {
@@ -959,9 +959,16 @@ input[type="search"]::-webkit-search-cancel-button {
      last resort; a table whose columns still cannot fit pans inside its
      wrapper (pan-x rules above). `word-break` is omitted on
      purpose: its legacy `break-word` value re-introduces the anywhere
-     collapse in some engines. Inline code keeps `anywhere` (above) so long
-     code tokens still wrap rather than force column width. */
+     collapse in some engines. */
   overflow-wrap: break-word;
+}
+/* Inline code has the same collapse: its `anywhere` (above) gives a column of
+   identifiers a ~1ch min-content, so the layout squeezes it until each one
+   splits mid-token. Short code (render/codespan.ts) stays on one line and
+   holds its column open; longer code keeps `anywhere`, so a path or hash
+   wraps rather than forcing the column width. */
+.markdown-body :is(td, th) code.sd-codespan-short {
+  white-space: pre;
 }
 .markdown-body thead th {
   background: var(--surface-0);
@@ -984,9 +991,6 @@ input[type="search"]::-webkit-search-cancel-button {
 .markdown-body [data-streamdown-table] table {
   display: table;
   overflow: visible;
-  table-layout: auto;
-  width: 100%;
-  max-width: 100%;
   margin: 0;
 }
 

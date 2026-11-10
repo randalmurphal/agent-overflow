@@ -76,4 +76,4 @@ a range of rows short of every cap and moves it as the reader scrolls
 toward its ends or jumps elsewhere. Scrolling across a move keeps the line
 being read in place, and the file tree, comment jumps and reading-position
 restores reach any row. The gate diff renders a file in blocks read from
-compact storage (`WorkflowDiffLines`), never the whole file at once.
+compact storage (`PatchLines`), never the whole file at once.

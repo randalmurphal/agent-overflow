@@ -12,6 +12,14 @@ export type {
   BranchPruneSelection,
 } from '../../../bindings/agent-overflow/internal/app/models';
 
+// The commit dialog's file list (`ListCommitFiles`): one uncommitted change
+// per row, a rename as one row.
+export type { CommitFiles } from '../../../bindings/agent-overflow/internal/app/models';
+// What GitCommit commits and GenerateCommitMessage describes: everything, or
+// exactly the given rows of the file list.
+export type { CommitSelection } from '../../../bindings/agent-overflow/internal/app/models';
+export type { ChangedFile as CommitFile } from '../../../bindings/agent-overflow/internal/gitdiff/models';
+
 export interface GitStatus {
   isRepo: boolean;
   branch: string;
@@ -45,9 +53,9 @@ export interface GitStatus {
    */
   openPrLookupPending?: boolean;
   /**
-   * Identifier of an in-progress multi-step git operation that blocks new
-   * commits. Empty string when the repo is idle. Known values: "merge",
-   * "rebase", "bisect".
+   * Identifier of an in-progress multi-step git operation. Empty string
+   * when the repo is idle. Known values: "merge", "cherry-pick", "revert", "rebase",
+   * "bisect".
    */
   pendingOperation?: string;
 }

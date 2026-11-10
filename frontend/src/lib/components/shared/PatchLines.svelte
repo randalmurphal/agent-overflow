@@ -1,28 +1,32 @@
 <script lang="ts" module>
-  export const WORKFLOW_DIFF_BLOCK_LINES = 200;
-  export const WORKFLOW_DIFF_LINE_PX = 20;
-  export const WORKFLOW_DIFF_PAD_PX = 8;
+  export const PATCH_LINES_BLOCK_LINES = 200;
+  export const PATCH_LINES_LINE_PX = 20;
+  export const PATCH_LINES_PAD_PX = 8;
 </script>
 
 <script lang="ts">
   import { untrack } from 'svelte';
   import LongListVirtualizer, { type LongListHandle } from '../virtual/LongListVirtualizer.svelte';
-  import WorkflowDiffBlock from './WorkflowDiffBlock.svelte';
+  import PatchLinesBlock from './PatchLinesBlock.svelte';
   import type { ReviewFile } from '../../utils/patchStore';
   import type { RowEstimate } from '../../utils/virtual/types';
 
-  // An expanded file of the gate diff: its raw patch lines in a bounded
+  // One file's raw patch lines in a bounded
   // box, virtualized in blocks so a file of any length opens at once and
   // stays reachable. Blocks read their text from the diff's compact
-  // storage (WorkflowDiffBlock); nothing materializes the whole file.
+  // storage (PatchLinesBlock); nothing materializes the whole file.
 
   const IS_TEST = import.meta.env.MODE === 'test'
     && typeof window !== 'undefined' && 'happyDOM' in window;
 
   interface Props {
     file: ReviewFile;
+    /** Tints added, removed and header lines. */
+    tint?: boolean;
+    /** The box's size and edge. */
+    boxClass?: string;
   }
-  let { file }: Props = $props();
+  let { file, tint = false, boxClass = 'max-h-72 border-t border-border-subtle' }: Props = $props();
 
   interface Block {
     start: number;
@@ -31,19 +35,19 @@
 
   const blocks = $derived.by(() => {
     const out: Block[] = [];
-    for (let start = 0; start < file.body.lineCount; start += WORKFLOW_DIFF_BLOCK_LINES) {
-      out.push({ start, end: Math.min(file.body.lineCount, start + WORKFLOW_DIFF_BLOCK_LINES) });
+    for (let start = 0; start < file.body.lineCount; start += PATCH_LINES_BLOCK_LINES) {
+      out.push({ start, end: Math.min(file.body.lineCount, start + PATCH_LINES_BLOCK_LINES) });
     }
     return out;
   });
 
   // The first and last blocks carry the box's vertical padding.
   function padTop(block: Block): number {
-    return block.start === 0 ? WORKFLOW_DIFF_PAD_PX : 0;
+    return block.start === 0 ? PATCH_LINES_PAD_PX : 0;
   }
 
   function padBottom(block: Block): number {
-    return block.end === file.body.lineCount ? WORKFLOW_DIFF_PAD_PX : 0;
+    return block.end === file.body.lineCount ? PATCH_LINES_PAD_PX : 0;
   }
 
   // Stable identity for the virtualizer's constructor; reads the current
@@ -51,8 +55,8 @@
   const estimate: RowEstimate = {
     at: (index) => {
       const block = blocks[index];
-      if (!block) return WORKFLOW_DIFF_LINE_PX;
-      return (block.end - block.start) * WORKFLOW_DIFF_LINE_PX + padTop(block) + padBottom(block);
+      if (!block) return PATCH_LINES_LINE_PX;
+      return (block.end - block.start) * PATCH_LINES_LINE_PX + padTop(block) + padBottom(block);
     },
     isExact: () => true,
   };
@@ -82,9 +86,9 @@
 
 <div
   bind:this={scrollEl}
-  class="max-h-72 overflow-auto border-t border-border-subtle bg-surface-0 text-[11px] leading-5"
+  class="{boxClass} overflow-auto bg-surface-0 text-[11px] leading-5"
   style:overflow-anchor="none"
-  data-testid="wf-diff-hunks"
+  data-testid="patch-lines"
 >
   <div style:min-width="{contentWidth}px">
   <LongListVirtualizer
@@ -98,13 +102,14 @@
     onCompensation={(compensation) => applyScrollTarget(compensation.target)}
   >
     {#snippet children(block: Block)}
-      <WorkflowDiffBlock
+      <PatchLinesBlock
         {file}
         start={block.start}
         end={block.end}
         padTop={padTop(block)}
         padBottom={padBottom(block)}
         onWidth={noteWidth}
+        {tint}
       />
     {/snippet}
   </LongListVirtualizer>
