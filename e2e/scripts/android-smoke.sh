@@ -47,6 +47,11 @@
 # forward in place.
 set -euo pipefail
 
+# This script's own command line, which a fork of it shares until it runs
+# its command (stop_jobs).
+self_args="$(ps -o args= -p $$ 2>/dev/null || true)"
+[[ -n "$self_args" ]] || { echo "ps cannot read this script's command line" >&2; exit 1; }
+
 : "${ANDROID_HOME:=$HOME/Android/Sdk}"
 : "${ANDROID_AVD_HOME:=$HOME/.android/avd}"
 export ANDROID_HOME ANDROID_AVD_HOME
@@ -91,22 +96,36 @@ supervise() {
   wait "$!" || status=$?
   return "$status"
 }
-# Stops this script's background jobs and waits for them. A job is first
-# let become its command: while it is still this shell's fork it holds this
-# script's signal handlers, and a signal sent then is lost.
+# Stops this script's background jobs and waits for them. A job that is
+# still this shell's fork holds this script's signal handlers and loses a
+# signal sent to it, so it is sent TERM once its command line is no longer
+# this script's. One still the fork after two seconds has run nothing and is
+# killed. One whose command line cannot be read by then is sent TERM: it has
+# had the time to become its command.
 stop_jobs() {
-  local jobs_running self job tries
-  jobs_running="$(jobs -p)"
-  [[ -n "$jobs_running" ]] || return 0
-  self="$(ps -o args= -p $$)"
-  for job in $jobs_running; do
+  local running job args tries
+  running="$(jobs -p)"
+  [[ -n "$running" ]] || return 0
+  for job in $running; do
     tries=0
-    while [[ "$(ps -o args= -p "$job" 2>/dev/null)" == "$self" ]] && (( tries++ < 100 )); do
+    while kill -0 "$job" 2>/dev/null; do
+      args="$(ps -o args= -p "$job" 2>/dev/null || true)"
+      if [[ -n "$args" && "$args" != "$self_args" ]]; then
+        kill -TERM "$job" 2>/dev/null || true
+        break
+      fi
+      if (( ++tries > 100 )); then
+        if [[ -n "$args" ]]; then
+          kill -KILL "$job" 2>/dev/null || true
+        else
+          kill -TERM "$job" 2>/dev/null || true
+        fi
+        break
+      fi
       sleep 0.02
     done
-    kill -TERM "$job" 2>/dev/null || true
   done
-  wait $jobs_running 2>/dev/null || true
+  wait $running 2>/dev/null || true
 }
 on_signal() {
   trap - "$1"

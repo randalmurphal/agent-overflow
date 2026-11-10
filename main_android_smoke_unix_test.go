@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -736,6 +737,121 @@ func TestAndroidEmulatorPrepareKeepsTheOlderRuntimeWhenItCannotBuild(t *testing.
 			}
 			if tc.env == "AO_TEST_SCOPE_ACTIVE=1" && strings.Contains(f.calls(t), "docker") {
 				t.Fatalf("a runtime was built under a running emulator:\n%s", f.calls(t))
+			}
+		})
+	}
+}
+
+// A job is stopped by what it has become. One that runs its command is sent
+// TERM. One that is still the smoke's own fork after the wait has run
+// nothing, would lose a TERM, and is killed. One whose command line cannot
+// be read is sent TERM after the wait. Without ps the smoke starts nothing.
+func TestAndroidSmokeStopsAJobByWhatItHasBecome(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the emulator path is Linux-only")
+	}
+	if _, err := exec.LookPath("flock"); err != nil {
+		t.Skip("flock unavailable")
+	}
+	ps, err := exec.LookPath("ps")
+	if err != nil {
+		t.Skip("ps unavailable")
+	}
+	for _, tc := range []struct {
+		name, mode string
+		// wantTERM is whether the suite sees the TERM itself.
+		wantTERM bool
+		refused  bool
+	}{
+		{name: "it runs its command", mode: "real", wantTERM: true},
+		{name: "it is still the fork", mode: "fork", wantTERM: false},
+		{name: "its command line cannot be read", mode: "unreadable", wantTERM: true},
+		{name: "ps answers nothing at all", mode: "absent", refused: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSmokeFixture(t)
+			f.fakeEmulator(t)
+			// In fork mode every lookup answers the command line of the shell
+			// that asked, which is the smoke's own: the job never appears to
+			// have become its command. In unreadable mode only the smoke's
+			// first lookup, of itself, answers.
+			mockexec.WriteIn(t, filepath.Join(f.dir, "bin"), "ps", `#!/usr/bin/env bash
+count="$(cat "$AO_TEST_PS_COUNT" 2>/dev/null || echo 0)"
+echo $((count + 1)) >"$AO_TEST_PS_COUNT"
+case "$AO_TEST_PS" in
+  real) exec `+shellQuote(ps)+` "$@" ;;
+  fork) exec `+shellQuote(ps)+` -o args= -p "$PPID" ;;
+  unreadable) if [[ "$count" == 0 ]]; then exec `+shellQuote(ps)+` "$@"; fi; exit 1 ;;
+  absent) exit 1 ;;
+esac
+`)
+			mockexec.WriteIn(t, filepath.Join(f.dir, "repo", "bin"), "ao-harness-e2e", `#!/usr/bin/env bash
+trap 'echo "launcher TERM" >>"$AO_TEST_LOG"; exit 143' TERM
+echo "launcher started" >>"$AO_TEST_LOG"
+while :; do sleep 0.05; done
+`)
+			cmd := f.command("AO_ANDROID_SMOKE_PHASE=device", "AO_TEST_ADB_DEVICES=emulator-5554\tdevice",
+				"AO_TEST_PS="+tc.mode, "AO_TEST_PS_COUNT="+filepath.Join(f.dir, "ps-count"))
+			var out strings.Builder
+			cmd.Stdout, cmd.Stderr = &out, &out
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
+			done := make(chan error, 1)
+			go func() { done <- cmd.Wait() }()
+			finish := func() error {
+				t.Helper()
+				select {
+				case err := <-done:
+					return err
+				case <-time.After(30 * time.Second):
+					_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+					<-done
+					t.Fatalf("the smoke did not finish:\n%s\n%s", out.String(), f.calls(t))
+					return nil
+				}
+			}
+			if tc.refused {
+				if err := finish(); err == nil || !strings.Contains(out.String(), "ps cannot read") {
+					t.Fatalf("want the ps refusal, got %v:\n%s", err, out.String())
+				}
+				if calls := f.calls(t); calls != "" {
+					t.Fatalf("a refused run did something:\n%s", calls)
+				}
+				return
+			}
+			deadline := time.Now().Add(30 * time.Second)
+			for !strings.Contains(f.calls(t), "launcher started") {
+				if time.Now().After(deadline) {
+					t.Fatalf("the suite never started:\n%s\n%s", out.String(), f.calls(t))
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+				t.Fatal(err)
+			}
+			var exitErr *exec.ExitError
+			if err := finish(); !errors.As(err, &exitErr) || exitErr.ExitCode() != 143 {
+				t.Fatalf("want exit 143 after SIGTERM, got %v:\n%s", err, out.String())
+			}
+			// A suite the smoke failed to stop would go on logging.
+			time.Sleep(time.Second)
+			calls := f.calls(t)
+			if got := strings.Contains(calls, "launcher TERM"); got != tc.wantTERM {
+				t.Fatalf("the suite saw TERM = %v, want %v:\n%s", got, tc.wantTERM, calls)
+			}
+			const cleared = "adb -s emulator-5554 shell locksettings clear --old 1234"
+			if strings.Index(calls, cleared) < 0 || strings.Index(calls, "emulator stop") < strings.Index(calls, cleared) {
+				t.Fatalf("the cleanup did not run in order:\n%s", calls)
+			}
+			if last := strings.LastIndex(calls, "launcher "); last > strings.Index(calls, cleared) {
+				t.Fatalf("the suite outlived the cleanup:\n%s", calls)
+			}
+			// The killed fork left no suite running.
+			if out, err := exec.Command("pgrep", "-g", strconv.Itoa(cmd.Process.Pid), "-f", "ao-harness-e2e").Output(); err == nil && len(out) > 0 {
+				t.Fatalf("the suite is still running: %s", out)
 			}
 		})
 	}
