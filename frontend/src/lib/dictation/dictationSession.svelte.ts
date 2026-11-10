@@ -44,6 +44,9 @@ export interface PcmStream {
 export interface LevelMeter {
   /** Current loudness, 0 to 1. */
   read(): number;
+  /** The loudest moment the meter still holds, 0 to 1. It holds longer
+   * than the level cadence, so a sound between two reads is not missed. */
+  loudest(): number;
   close(): void;
 }
 
@@ -409,10 +412,14 @@ class Attempt implements Recording {
     recorder.start(format.timeslice);
   }
 
+  /** The level to show now. The silence check hears everything since the
+   * last sample, not only this instant. */
   sample(): number {
-    const value = this.meter?.read() ?? 0;
-    if (value > this.peak) this.peak = value;
-    return value;
+    const meter = this.meter;
+    if (meter === null) return 0;
+    const loudest = meter.loudest();
+    if (loudest > this.peak) this.peak = loudest;
+    return meter.read();
   }
 
   delivered(): Promise<void> {

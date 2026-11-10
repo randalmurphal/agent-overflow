@@ -79,7 +79,9 @@ export interface DictationFixture {
   pcm: () => FakePcm;
   tracks: { stop: ReturnType<typeof vi.fn> }[];
   inserted: string[];
-  level: { value: number; closed: boolean };
+  /** `value` is the meter's loudness now; `loudest`, when set, is the
+   * loudest moment it still holds, otherwise the same as `value`. */
+  level: { value: number; loudest: number | null; closed: boolean };
   /** How many times the session quieted this device's speech. */
   quieted: { count: number };
   tick: () => void;
@@ -102,7 +104,7 @@ export function dictationFixture(options: {
   const tracks: { stop: ReturnType<typeof vi.fn> }[] = [];
   let current: FakeRecorder | null = null;
   let currentPcm: FakePcm | null = null;
-  const level = { value: 0.5, closed: false };
+  const level: DictationFixture['level'] = { value: 0.5, loudest: null, closed: false };
   const quieted = { count: 0 };
   const intervals = new Map<number, () => void>();
   const timeouts = new Map<number, () => void>();
@@ -121,6 +123,7 @@ export function dictationFixture(options: {
     openPcm: async () => (currentPcm = options.openPcm ? await options.openPcm() : new FakePcm()),
     createLevelMeter: () => options.meter === false ? null : {
       read: () => level.value,
+      loudest: () => level.loudest ?? level.value,
       close: () => { level.closed = true; },
     },
     setInterval: (fn) => { const h = nextHandle++; intervals.set(h, fn); return h; },

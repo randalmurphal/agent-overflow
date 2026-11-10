@@ -88,6 +88,18 @@ describe('DictationSession', () => {
     expect(f.session.error).toBe('No speech heard.');
   });
 
+  it('counts a sound that ended before the level was read as speech', async () => {
+    const f = fixture();
+    f.level.value = 0.001;
+    f.level.loudest = 0.5;
+    await f.session.start();
+    f.tick();
+    await f.session.stop();
+    expect(f.remote.finish).toHaveBeenCalledWith('rec-1', 1);
+    expect(f.inserted).toEqual(['hello world']);
+    expect(f.session.error).toBeNull();
+  });
+
   it('transcribes without a level meter rather than guessing silence', async () => {
     const f = fixture({ meter: false });
     await f.session.start();
