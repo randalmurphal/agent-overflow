@@ -33,6 +33,8 @@ func TestIsReadingTellsAReadingFromAnAnswer(t *testing.T) {
 		{"a contraction beside notation answered", "What's 2+2?", "It's four.", false},
 		{"half of a question's words in the answer", "What is the capital?", "The capital is Paris.", false},
 		{"one of four words changed beside a number", "Run all 12 checks now.", "Run all twelve tests now.", true},
+		{"a word spelled out beside a number", "OK, 2 checks.", "Okay, two checks.", true},
+		{"a one-letter word is not the start of another", "Is 2 a prime?", "Yes, it is always.", false},
 		{"one word beside numbers, spelled another way", "OK 1 2", "Okay one two", true},
 		{"three words answered", "Is it done?", "Yes.", false},
 		{"one word spelled another way", "OK.", "Okay.", true},

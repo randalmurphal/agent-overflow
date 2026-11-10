@@ -280,33 +280,15 @@ func (s *Sentences) RevokeBefore(revision uint64) {
 // returns the clip once its transcript is a reading of the text; the
 // caller closes the clip to free the slot. One result that is not a
 // reading is retried; a second is ErrMisread. A sentence revoked before or
-// during the synthesis is ErrOff.
+// during the synthesis is ErrOff, also when every slot is taken.
 func (s *Sentences) Synthesize(ctx context.Context, sentence Sentence, speak SpeakFunc) (*Clip, error) {
-	select {
-	case s.slots <- struct{}{}:
-	default:
-		return nil, ErrBusy
-	}
-	release := func() { <-s.slots }
-	clip, err := s.synthesize(ctx, sentence, speak, release)
-	if err != nil {
-		release()
-		return nil, err
-	}
-	return clip, nil
-}
-
-func (s *Sentences) synthesize(ctx context.Context, sentence Sentence, speak SpeakFunc, release func()) (*Clip, error) {
 	running, stop := context.WithCancel(ctx)
 	defer stop()
 	work := &synthesis{admitted: sentence.Admitted, stop: stop}
-	s.mu.Lock()
-	if sentence.Admitted < s.revokedBefore {
-		s.mu.Unlock()
-		return nil, ErrOff
+	if err := s.begin(work); err != nil {
+		return nil, err
 	}
-	s.speaking[work] = struct{}{}
-	s.mu.Unlock()
+	release := func() { <-s.slots }
 
 	wav, err := s.read(running, work, sentence.Request, speak)
 	if s.beforeFinish != nil {
@@ -319,13 +301,32 @@ func (s *Sentences) synthesize(ctx context.Context, sentence Sentence, speak Spe
 	delete(s.speaking, work)
 	revoked := work.revoked
 	s.mu.Unlock()
-	switch {
-	case revoked:
-		return nil, ErrOff
-	case err != nil:
+	if revoked {
+		err = ErrOff
+	}
+	if err != nil {
+		release()
 		return nil, err
 	}
 	return &Clip{Reader: bytes.NewReader(wav), release: release}, nil
+}
+
+// begin takes a synthesis slot for work and adds it to the set. The
+// revocation is checked first, so a revoked admission is ErrOff and not
+// ErrBusy when every slot is taken.
+func (s *Sentences) begin(work *synthesis) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if work.admitted < s.revokedBefore {
+		return ErrOff
+	}
+	select {
+	case s.slots <- struct{}{}:
+	default:
+		return ErrBusy
+	}
+	s.speaking[work] = struct{}{}
+	return nil
 }
 
 // read asks speak for the request until the transcript is a reading of its

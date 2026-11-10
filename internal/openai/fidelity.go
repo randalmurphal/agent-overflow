@@ -7,7 +7,8 @@ import (
 
 // IsReading reports whether transcript, the model's account of what it
 // spoke, is a reading of text rather than an answer to it, a repeat, or
-// silence. Both are split into words (words). It is not a reading when:
+// silence. Both are split into words (words), and a word and a longer
+// spelling of it are one word (same). It is not a reading when:
 //
 //   - nothing was spoken;
 //   - the text has three or more words, two or more of them without
@@ -84,14 +85,25 @@ var unspaced = []*unicode.RangeTable{
 	unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Thai, unicode.Lao, unicode.Khmer, unicode.Myanmar,
 }
 
-// lcs is the length of the longest common subsequence of a and b, in two
-// rows of memory.
+// same reports whether a and b are one word: equal, or one of them the
+// other with more letters after it, as a transcript may spell a word out
+// ("ok" and "okay", "approx" and "approximately"). A single letter is only
+// itself.
+func same(a, b string) bool {
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	return a == b || len(a) >= 2 && strings.HasPrefix(b, a)
+}
+
+// lcs is the length of the longest common subsequence of a and b by same,
+// in two rows of memory.
 func lcs(a, b []string) int {
 	previous, current := make([]int, len(b)+1), make([]int, len(b)+1)
 	for i := range a {
 		for j := range b {
 			switch {
-			case a[i] == b[j]:
+			case same(a[i], b[j]):
 				current[j+1] = previous[j] + 1
 			case previous[j+1] >= current[j]:
 				current[j+1] = previous[j+1]

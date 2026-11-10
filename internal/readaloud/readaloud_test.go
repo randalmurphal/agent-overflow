@@ -62,6 +62,25 @@ func synthesized(t *testing.T, sentences *Sentences, sentence Sentence, speak Sp
 	return clip.Close()
 }
 
+// everySlotIsFree fails the test unless MaxSpeaking clips can be held at
+// once, which one slot not given back prevents.
+func everySlotIsFree(t *testing.T, sentences *Sentences, admitted uint64) {
+	t.Helper()
+	clips := make([]*Clip, 0, MaxSpeaking)
+	for range MaxSpeaking {
+		clip, err := sentences.Synthesize(context.Background(), sentenceAt(admitted), echo)
+		if err != nil {
+			t.Fatalf("a slot was not given back: %v", err)
+		}
+		clips = append(clips, clip)
+	}
+	for _, clip := range clips {
+		if err := clip.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestAnAdmittedSentenceIsTakenOnce(t *testing.T) {
 	t.Parallel()
 	sentences := New(time.Minute)
@@ -211,11 +230,7 @@ func TestASpeakFailureIsNotRetried(t *testing.T) {
 	if !errors.Is(err, failure) || calls != 1 {
 		t.Fatalf("Synthesize = %v after %d calls", err, calls)
 	}
-	for range MaxSpeaking {
-		if err := synthesized(t, sentences, sentenceAt(0), echo); err != nil {
-			t.Fatalf("a failed synthesis kept its slot: %v", err)
-		}
-	}
+	everySlotIsFree(t, sentences, 0)
 }
 
 // blocking speaks only when released or cancelled.
@@ -267,9 +282,7 @@ func TestSynthesesAreCappedAndTheCapFrees(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := synthesized(t, sentences, sentenceAt(0), echo); err != nil {
-		t.Fatalf("a synthesis once the slots freed: %v", err)
-	}
+	everySlotIsFree(t, sentences, 0)
 }
 
 // A clip not yet delivered still counts against the cap, so the audio held
@@ -302,11 +315,7 @@ func TestAClipHoldsItsSlotUntilClosed(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for range MaxSpeaking {
-		if err := synthesized(t, sentences, sentenceAt(0), echo); err != nil {
-			t.Fatalf("closed clips kept their slots: %v", err)
-		}
-	}
+	everySlotIsFree(t, sentences, 0)
 }
 
 func TestCancellingASynthesisEndsItAndFreesItsSlot(t *testing.T) {
@@ -333,9 +342,7 @@ func TestCancellingASynthesisEndsItAndFreesItsSlot(t *testing.T) {
 			t.Fatal("a cancelled synthesis did not return")
 		}
 	}
-	if err := synthesized(t, sentences, sentenceAt(0), echo); err != nil {
-		t.Fatalf("cancelled syntheses kept their slots: %v", err)
-	}
+	everySlotIsFree(t, sentences, 0)
 }
 
 // A write to the switch at revision 5 ends what was admitted before it,
@@ -401,11 +408,36 @@ func TestRevokingEndsOlderAdmissions(t *testing.T) {
 		t.Fatalf("a synthesis admitted at the revocation's revision: %v", err)
 	}
 	// The revoked synthesis gave its slot back.
+	everySlotIsFree(t, sentences, 5)
+}
+
+// A sentence revoked before its synthesis begins is off, not busy, when
+// every slot is taken by clips still being delivered.
+func TestARevokedSentenceIsOffWhenEverySlotIsTaken(t *testing.T) {
+	t.Parallel()
+	sentences := New(time.Minute)
+	clips := make([]*Clip, 0, MaxSpeaking)
 	for range MaxSpeaking {
-		if err := synthesized(t, sentences, sentenceAt(5), echo); err != nil {
-			t.Fatalf("after the revocation: %v", err)
+		clip, err := sentences.Synthesize(context.Background(), sentenceAt(0), echo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clips = append(clips, clip)
+	}
+	sentences.RevokeBefore(1)
+	if err := synthesized(t, sentences, sentenceAt(0), echo); !errors.Is(err, ErrOff) {
+		t.Fatalf("a revoked sentence with every slot taken = %v, want ErrOff", err)
+	}
+	if err := synthesized(t, sentences, sentenceAt(1), echo); !errors.Is(err, ErrBusy) {
+		t.Fatalf("a sentence admitted since, with every slot taken = %v, want ErrBusy", err)
+	}
+	for _, clip := range clips {
+		if err := clip.Close(); err != nil {
+			t.Fatal(err)
 		}
 	}
+	// Neither refusal took a slot.
+	everySlotIsFree(t, sentences, 1)
 }
 
 // A revocation that lands while the first attempt answers instead of
@@ -452,12 +484,8 @@ func TestRevokingOnceTheResultIsKnownIsOff(t *testing.T) {
 		if err := synthesized(t, sentences, sentenceAt(0), speak); !errors.Is(err, ErrOff) {
 			t.Fatalf("%s: Synthesize = %v, want ErrOff", name, err)
 		}
-		// Its slot is free, and a sentence admitted since is read.
+		// Its slot is free, and sentences admitted since are read.
 		sentences.beforeFinish = nil
-		for range MaxSpeaking {
-			if err := synthesized(t, sentences, sentenceAt(1), echo); err != nil {
-				t.Fatalf("%s: after the revoked synthesis: %v", name, err)
-			}
-		}
+		everySlotIsFree(t, sentences, 1)
 	}
 }
