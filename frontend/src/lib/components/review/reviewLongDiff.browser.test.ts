@@ -197,7 +197,7 @@ describe('a review diff past the held limit', () => {
   it('find reveals a scanned match outside the held rows a third down the view', async () => {
     const { scrollEl, body, files } = await mountBody();
     const hits: ReviewFindHit[] = [];
-    await scanReviewFind({ files, drafts: [], prThreads: [] }, 'F650:700', {
+    await scanReviewFind({ files, drafts: [], prThreads: [], commentText: (body) => [body] }, 'F650:700', {
       limit: 10, live: () => true, emit: (hit) => hits.push(hit), pause: async () => {},
     });
     expect(hits.map((hit) => [hit.path, hit.rowKey])).toEqual([['src/f650.ts', expect.stringMatching(/^l:/)]]);

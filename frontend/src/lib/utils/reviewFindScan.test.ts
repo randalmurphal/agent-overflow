@@ -1,6 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { conflictPatchFile } from './conflictFile';
+import { applyContextExpansion } from './diffContextExpansion';
+import { setPatchTextBudgetForTest } from './patchMemory.svelte';
 import { parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from './patchStore';
+import { createMarkdownFindTextCache } from '../components/chat/markdown/markdownFindText';
+import { streamPatch } from '../../test/helpers/streamedPatch';
 import { scanReviewFind, type ReviewFindContent, type ReviewFindHit } from './reviewFindScan';
 import type { DiffReviewComment, ReviewThread } from '../types/models';
 
@@ -29,7 +33,7 @@ function files(patch = PATCH): ReviewFile[] {
 }
 
 function content(over: Partial<ReviewFindContent> = {}): ReviewFindContent {
-  return { files: files(), drafts: [], prThreads: [], ...over };
+  return { files: files(), drafts: [], prThreads: [], commentText: (body) => [body], ...over };
 }
 
 async function scan(source: ReviewFindContent, query: string, limit = 1000): Promise<{ hits: ReviewFindHit[]; capped: boolean; pauses: number }> {
@@ -126,15 +130,15 @@ describe('scanReviewFind', () => {
     const folded = reviewFileFromPatchFile(conflictPatchFile('m.go', merged));
     const folds = new Map<number, readonly string[]>();
     conflictPatchFile('m.go', merged, { onFold: (id, lines) => folds.set(id, lines) });
-    const closed = await scan({ files: [folded], drafts: [], prThreads: [], foldLines: () => folds }, 'needle');
+    const closed = await scan({ files: [folded], drafts: [], prThreads: [], commentText: (body) => [body], foldLines: () => folds }, 'needle');
     expect(closed.hits.map((hit) => hit.place.kind)).toEqual(['fold', 'line']);
     const opened = reviewFileFromPatchFile(conflictPatchFile('m.go', merged, { expandedFolds: new Set([0]) }));
-    const open = await scan({ files: [opened], drafts: [], prThreads: [], foldLines: () => new Map() }, 'needle');
+    const open = await scan({ files: [opened], drafts: [], prThreads: [], commentText: (body) => [body], foldLines: () => new Map() }, 'needle');
     expect(open.hits.map((hit) => hit.place.kind)).toEqual(['line', 'line']);
     expect(open.hits.map((hit) => hit.identity)).toEqual(closed.hits.map((hit) => hit.identity));
     // Markers are content; the fold row's own label is not.
-    expect((await scan({ files: [folded], drafts: [], prThreads: [], foldLines: () => folds }, '=======')).hits).toHaveLength(1);
-    expect((await scan({ files: [folded], drafts: [], prThreads: [], foldLines: () => folds }, 'unchanged lines')).hits).toHaveLength(0);
+    expect((await scan({ files: [folded], drafts: [], prThreads: [], commentText: (body) => [body], foldLines: () => folds }, '=======')).hits).toHaveLength(1);
+    expect((await scan({ files: [folded], drafts: [], prThreads: [], commentText: (body) => [body], foldLines: () => folds }, 'unchanged lines')).hits).toHaveLength(0);
   });
 
   it('pauses between slices and stops when it is no longer live', async () => {
@@ -143,7 +147,7 @@ describe('scanReviewFind', () => {
     let clock = 0;
     let pauses = 0;
     const all: ReviewFindHit[] = [];
-    await scanReviewFind({ files: big, drafts: [], prThreads: [] }, 'needle', {
+    await scanReviewFind({ files: big, drafts: [], prThreads: [], commentText: (body) => [body] }, 'needle', {
       limit: 10_000, live: () => true, emit: (hit) => all.push(hit),
       pause: async () => { pauses += 1; }, now: () => (clock += 1), sliceMs: 0,
     });
@@ -152,12 +156,120 @@ describe('scanReviewFind', () => {
 
     let live = true;
     const some: ReviewFindHit[] = [];
-    const capped = await scanReviewFind({ files: big, drafts: [], prThreads: [] }, 'needle', {
+    const capped = await scanReviewFind({ files: big, drafts: [], prThreads: [], commentText: (body) => [body] }, 'needle', {
       limit: 10_000, live: () => live, emit: (hit) => some.push(hit),
       pause: async () => { live = false; }, now: () => (clock += 1), sliceMs: 10,
     });
     expect(capped).toBe(false);
     expect(some.length).toBeGreaterThan(0);
     expect(some.length).toBeLessThan(5000);
+  });
+
+  it('searches a PR comment as its markdown renders, never its markup', async () => {
+    const source = content({
+      prThreads: [thread('p1', 2, ['**nee**dle in `code`', 'plain [linked](https://example.com/needle) words'])],
+      commentText: createMarkdownFindTextCache({ embeddedHtml: true }),
+    });
+    expect((await scan(source, 'needle')).hits.filter((hit) => hit.place.kind === 'thread').map((hit) => hit.rowKey)).toEqual(['pc:0:p1']);
+    expect((await scan(source, 'in code')).hits).toHaveLength(1);
+    expect((await scan(source, '**')).hits).toHaveLength(0);
+    expect((await scan(source, 'example.com')).hits).toHaveLength(0);
+    expect((await scan(source, 'linked words')).hits).toHaveLength(1);
+  });
+});
+
+describe('scanReviewFind over hunk gaps', () => {
+  const GAPPED = [
+    'diff --git a/app.ts b/app.ts',
+    '--- a/app.ts',
+    '+++ b/app.ts',
+    '@@ -10,2 +10,2 @@',
+    ' ctx1',
+    '-old1',
+    '+new1',
+    '@@ -40,2 +40,2 @@',
+    ' ctx2',
+    '-old2',
+    '+new2',
+    '',
+  ].join('\n');
+
+  it('a gap the reader expanded is searched, an unexpanded one is not', async () => {
+    const [file] = parseReviewFiles(GAPPED);
+    expect((await scan(content({ files: [file] }), 'gap needle')).hits).toHaveLength(0);
+    const lines = new Map<number, string>([[12, 'const gap = "gap needle";'], [13, 'plain']]);
+    const expanded = applyContextExpansion(file, { lines, eofLine: null, version: 1 });
+    const { hits } = await scan(content({ files: [expanded] }), 'gap needle');
+    expect(hits.map((hit) => [hit.place.kind, hit.identity.split('\u0000')[1]])).toEqual([['line', 'c12:12']]);
+  });
+});
+
+describe('scanReviewFind over evicted text', () => {
+  const disposers: (() => void)[] = [];
+  afterEach(() => {
+    for (const dispose of disposers.splice(0)) dispose();
+    setPatchTextBudgetForTest(null);
+  });
+
+  function bigPatch(count = 400): string {
+    const lines = Array.from({ length: count }, (_, i) => `+line ${i}${i % 50 === 7 ? ' needle' : ''}`);
+    return ['diff --git a/big.ts b/big.ts', '--- a/big.ts', '+++ b/big.ts', `@@ -0,0 +1,${lines.length} @@`, ...lines, ''].join('\n');
+  }
+
+  function streamed(count = 400) {
+    setPatchTextBudgetForTest(300);
+    const out = streamPatch(bigPatch(count), 200);
+    disposers.push(() => out.parser.store.dispose());
+    expect(out.files[0].body.resident()).toBe(false);
+    return out;
+  }
+
+  it('reads evicted text back and finds what a resident copy finds', async () => {
+    const { files: evicted, source } = streamed();
+    const reference = parseReviewFiles(bigPatch());
+    disposers.push(() => reference[0].body.segments[0].store.dispose());
+    const want = (await scan(content({ files: reference }), 'needle')).hits.map((hit) => hit.identity);
+    expect(want).toHaveLength(8);
+    const got = (await scan(content({ files: evicted }), 'needle')).hits.map((hit) => hit.identity);
+    expect(got).toEqual(want);
+    expect(source.read).toHaveBeenCalled();
+  });
+
+  it('a scan replaced while a read is out goes no further once it lands', async () => {
+    // Four read-back ranges of text: the scan stops within the first.
+    const { files: evicted, source, spans } = streamed(2000);
+    const gates: (() => void)[] = [];
+    const real = source.read.getMockImplementation()!;
+    source.read.mockImplementation(async (offset, next) => {
+      await new Promise<void>((resolve) => gates.push(resolve));
+      return real(offset, next);
+    });
+    let live = true;
+    const hits: ReviewFindHit[] = [];
+    const done = scanReviewFind(content({ files: evicted }), 'needle', {
+      limit: 1000, live: () => live, emit: (hit) => hits.push(hit), pause: async () => {},
+    });
+    await expect.poll(() => gates.length).toBeGreaterThan(0);
+    const emitted = hits.length;
+    const reads = source.read.mock.calls.length;
+    live = false;
+    // The pinned range may span chunks that read one after another.
+    let settled = false;
+    void done.finally(() => { settled = true; });
+    while (!settled) {
+      gates.shift()?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    await expect(done).resolves.toBe(false);
+    expect(hits.length).toBe(emitted);
+    expect(reads).toBeGreaterThan(0);
+    // Only the range that was out was read, never the ranges after it.
+    expect(source.read.mock.calls.length).toBeLessThan(spans.length / 2);
+  });
+
+  it('a read that fails rejects the scan', async () => {
+    const { files: evicted, source } = streamed();
+    source.read.mockRejectedValue(new Error('backend gone'));
+    await expect(scan(content({ files: evicted }), 'needle')).rejects.toThrow();
   });
 });

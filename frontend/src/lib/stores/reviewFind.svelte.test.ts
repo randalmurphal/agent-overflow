@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createReviewFind, REVIEW_FIND_REMOTE_DEBOUNCE_MS, type ReviewFindHost, type ReviewFindSource } from './reviewFind.svelte';
 import { closePaneFind, openPaneFind, registerPaneFindProvider, resetPaneFindForTest, setPaneFindQuery } from './paneFind.svelte';
+import { setPatchTextBudgetForTest } from '../utils/patchMemory.svelte';
+import { scanReviewFind, type ReviewFindHit } from '../utils/reviewFindScan';
+import { streamPatch } from '../../test/helpers/streamedPatch';
 
 interface Hit { identity: string; at: number }
 
@@ -63,6 +66,7 @@ function host(src: () => ReviewFindSource<Hit> | null, overrides: Partial<Review
 afterEach(() => {
   resetPaneFindForTest();
   vi.useRealTimers();
+  setPatchTextBudgetForTest(null);
 });
 
 describe('review find', () => {
@@ -250,5 +254,112 @@ describe('review find', () => {
     find.rescope();
     expect(find.result.count).toBe(0);
     expect(find.result.pending).toBe(false);
+  });
+
+  it('a live log that grows updates the count in place and keeps the current match without moving', async () => {
+    vi.useFakeTimers();
+    const log = ['step 1 done'];
+    const s = source(() => log, { remote: true });
+    const { h, reveals } = host(() => s.src);
+    const find = createReviewFind(h, () => 'log');
+    find.search('done');
+    await vi.advanceTimersByTimeAsync(REVIEW_FIND_REMOTE_DEBOUNCE_MS);
+    expect([find.result.current, find.result.count]).toEqual([0, 1]);
+    expect(reveals).toEqual([['step 1 done', false]]);
+    for (const step of [2, 3]) {
+      log.push(`step ${step} done`);
+      find.refresh();
+      // The old count stays while the new read is out.
+      expect(find.result.count).toBe(step - 1);
+      await vi.advanceTimersByTimeAsync(0);
+      expect([find.result.current, find.result.count, find.result.pending]).toEqual([0, step, false]);
+    }
+    expect(s.runs).toBe(3);
+    expect(reveals).toEqual([['step 1 done', false]]);
+  });
+});
+
+describe('review find over evicted diff text', () => {
+  function evictedFiles() {
+    const lines = Array.from({ length: 2000 }, (_, i) => `+line ${i}${i % 100 === 7 ? ' needle' : ''}`);
+    setPatchTextBudgetForTest(300);
+    const patch = ['diff --git a/big.ts b/big.ts', '--- a/big.ts', '+++ b/big.ts', `@@ -0,0 +1,${lines.length} @@`, ...lines, ''].join('\n');
+    const out = streamPatch(patch, 200);
+    expect(out.files[0].body.resident()).toBe(false);
+    return out;
+  }
+
+  function scanning(files: ReturnType<typeof evictedFiles>['files']): ReviewFindSource<ReviewFindHit> {
+    return {
+      remote: false,
+      run: (query, context) => scanReviewFind({ files, drafts: [], prThreads: [], commentText: (body) => [body] }, query, {
+        limit: 1000, live: context.live, emit: context.emit, pause: () => new Promise((resolve) => setTimeout(resolve, 0)),
+      }),
+    };
+  }
+
+  function gate(source: ReturnType<typeof evictedFiles>['source']): () => void {
+    const gates: (() => void)[] = [];
+    const real = source.read.getMockImplementation()!;
+    source.read.mockImplementation(async (offset, next) => {
+      await new Promise<void>((resolve) => gates.push(resolve));
+      return real(offset, next);
+    });
+    return () => {
+      source.read.mockImplementation(real);
+      while (gates.length > 0) gates.shift()!();
+    };
+  }
+
+  it('a close while a read is out leaves nothing behind when it lands', async () => {
+    const { parser, files, source } = evictedFiles();
+    try {
+      const open = gate(source);
+      const { h, paints } = host(() => scanning(files) as unknown as ReviewFindSource<Hit>);
+      const find = createReviewFind(h, () => 'diff');
+      find.search('needle');
+      await vi.waitFor(() => expect(source.read).toHaveBeenCalled());
+      find.clear();
+      const reads = source.read.mock.calls.length;
+      open();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect([find.result.count, find.result.pending, find.hits.length]).toEqual([0, false, 0]);
+      expect(paints.at(-1)).toEqual(['', null]);
+      expect(source.read.mock.calls.length).toBeLessThan(reads + 30);
+    } finally {
+      parser.store.dispose();
+    }
+  });
+
+  it('a query change while a read is out answers only the new query', async () => {
+    const { parser, files, source } = evictedFiles();
+    try {
+      const open = gate(source);
+      const { h } = host(() => scanning(files) as unknown as ReviewFindSource<Hit>);
+      const find = createReviewFind(h, () => 'diff');
+      find.search('needle');
+      await vi.waitFor(() => expect(source.read).toHaveBeenCalled());
+      find.search('line 1999');
+      open();
+      await vi.waitFor(() => expect(find.result.pending).toBe(false));
+      expect(find.hits.map((hit) => (hit as unknown as ReviewFindHit).line)).toEqual([4 + 1999]);
+    } finally {
+      parser.store.dispose();
+    }
+  });
+
+  it('a read that fails ends the scan with its error for the bar', async () => {
+    const { parser, files, source } = evictedFiles();
+    try {
+      source.read.mockRejectedValue(new Error('backend gone'));
+      const { h } = host(() => scanning(files) as unknown as ReviewFindSource<Hit>);
+      const find = createReviewFind(h, () => 'diff');
+      find.search('needle');
+      await vi.waitFor(() => expect(find.result.pending).toBe(false));
+      expect(find.result.error).toMatch(/backend gone/);
+      expect(find.result.count).toBe(0);
+    } finally {
+      parser.store.dispose();
+    }
   });
 });

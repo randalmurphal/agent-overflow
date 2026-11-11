@@ -127,17 +127,17 @@ interface Segment {
   row: Element | null;
 }
 
-function collectSegments(root: HTMLElement, rowSelector: string | undefined, rowsOnly: boolean): Segment[] {
+function collectSegments(root: Element, rowSelector: string | undefined, rowsOnly: boolean, laidOut = true): Segment[] {
   const visible = new Map<Element, boolean>();
   const isVisible = (element: Element): boolean => {
     let answer = visible.get(element);
     if (answer === undefined) {
-      answer = typeof element.checkVisibility === 'function' ? element.checkVisibility() : true;
+      answer = !laidOut || typeof element.checkVisibility !== 'function' || element.checkVisibility();
       visible.set(element, answer);
     }
     return answer;
   };
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const segments: Segment[] = [];
   let current: Segment | null = null;
   for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
@@ -156,6 +156,15 @@ function collectSegments(root: HTMLElement, rowSelector: string | undefined, row
     current.text += foldFindText(node.data);
   }
   return segments;
+}
+
+/**
+ * The folded text of each run the highlighter matches within, in document
+ * order. `laidOut: false` reads a tree with no layout (a parsed fragment)
+ * and takes every element as visible.
+ */
+export function findTextSegments(root: Element, laidOut = true): string[] {
+  return collectSegments(root, undefined, false, laidOut).map((segment) => segment.text);
 }
 
 function pointAt(segment: Segment, offset: number, end: boolean): [Text, number] {

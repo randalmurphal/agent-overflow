@@ -6,8 +6,8 @@
 // removed and context rows and of conflict marker rows (never the +/-
 // prefix, the line numbers or a hunk gap's hidden lines, which are not
 // in memory), the hidden lines of a collapsed conflict fold, and the
-// bodies of the draft comments and PR thread comments the diff inserts
-// after their lines, as their source text. A match names the element
+// bodies of the draft comments the diff inserts after their lines, and of
+// its PR thread comments as their markdown renders (`commentText`). A match names the element
 // that shows it (`data-find-key`, the keys below) and its index among
 // that element's matches, which the highlighter paints as current.
 //
@@ -69,6 +69,9 @@ export interface ReviewFindContent {
   readonly files: readonly ReviewFile[];
   readonly drafts: readonly DiffReviewComment[];
   readonly prThreads: readonly ReviewThread[];
+  /** The runs of text a PR comment's shown body renders as
+   * (chat/markdown/markdownFindText.ts). */
+  commentText(body: string): readonly string[];
   /** The hidden lines of each collapsed fold of a conflict file, by fold id. */
   foldLines?(path: string): ReadonlyMap<number, readonly string[]> | null;
 }
@@ -120,18 +123,32 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
     sliceEnd = now() + sliceMs;
   }
 
-  // Emits the matches of `text` in one element; true once the limit is hit.
-  function emitText(text: string, make: (occurrence: number) => ReviewFindHit): boolean {
+  // Emits the matches of one element's text, given whole or as the runs
+  // a match cannot cross; true once the limit is hit.
+  function emitText(text: string | readonly string[], make: (occurrence: number) => ReviewFindHit): boolean {
     let occurrence = 0;
     let full = false;
-    forEachFindMatch(foldFindText(text), needle, () => {
-      if (full) return;
-      options.emit(make(occurrence));
-      occurrence += 1;
-      emitted += 1;
-      if (emitted >= options.limit) full = true;
-    });
+    for (const run of typeof text === 'string' ? [text] : text) {
+      forEachFindMatch(foldFindText(run), needle, () => {
+        if (full) return;
+        options.emit(make(occurrence));
+        occurrence += 1;
+        emitted += 1;
+        if (emitted >= options.limit) full = true;
+      });
+      if (full) break;
+    }
     return full;
+  }
+
+  // A line's text, read back when evicted; a scan that stopped being live
+  // while the read was out goes no further.
+  async function lineText(file: ReviewFile, lineIndex: number): Promise<string> {
+    const body = file.body;
+    if (body.residentLine(lineIndex)) return body.text(lineIndex);
+    const text = await body.whenResident(() => body.text(lineIndex), lineIndex, Math.min(body.lineCount, lineIndex + LOAD_LINES));
+    if (!options.live()) throw new StopScan();
+    return text;
   }
 
   const inserts = reviewInsertsByFile(content.files, content.drafts, [], content.prThreads, new Set());
@@ -164,7 +181,8 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
         const thread = insert.thread;
         for (let index = 0; index < thread.comments.length; index += 1) {
           const rowKey = findThreadCommentKey(thread.id, index);
-          if (emitText(visibleBody(thread.comments[index].body), (occurrence) => ({
+          const shown = visibleBody(thread.comments[index].body);
+          if (shown !== '' && emitText(content.commentText(shown), (occurrence) => ({
             ...base, identity: `${path}\u0000${rowKey}\u0000${occurrence}`, rowKey, occurrence, line, place: { kind: 'thread', threadId: thread.id },
           }))) return true;
         }
@@ -237,10 +255,4 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
     throw err;
   }
   return false;
-}
-
-async function lineText(file: ReviewFile, lineIndex: number): Promise<string> {
-  const body = file.body;
-  if (body.residentLine(lineIndex)) return body.text(lineIndex);
-  return body.whenResident(() => body.text(lineIndex), lineIndex, Math.min(body.lineCount, lineIndex + LOAD_LINES));
 }

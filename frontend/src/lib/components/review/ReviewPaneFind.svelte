@@ -26,6 +26,7 @@
   import { createFindHighlighter, findHighlightName, type FindHighlighter } from '../../utils/findHighlights';
   import type { ReviewFile } from '../../utils/patchStore';
   import { createRefreshScheduler } from '../../utils/refreshScheduler';
+  import { createMarkdownFindTextCache } from '../chat/markdown/markdownFindText';
   import { scanReviewFind, type ReviewFindHit } from '../../utils/reviewFindScan';
   import { findHitAtOrBelow } from '../../utils/reviewFindRows';
   import { REVIEW_FILE_HEADER_BAR_PX } from '../../utils/reviewRows';
@@ -72,7 +73,12 @@
   // The match a scroll just aimed at; its painted range corrects the landing.
   let landing: { identity: string; until: number } | null = null;
 
+  // PR comments are searched as they render (ReviewThreadComments), held
+  // while find is open.
+  let commentText: ((body: string) => readonly string[]) | null = null;
+
   function releaseHighlighter(): void {
+    commentText = null;
     highlighter?.dispose();
     highlighter = null;
     highlighterRoot = null;
@@ -143,6 +149,7 @@
         drafts: conflicts ? [] : review.drafts,
         prThreads: conflicts ? [] : review.prThreads,
         foldLines: conflicts ? (path: string) => review.conflictFoldLines(path) : undefined,
+        commentText: (commentText ??= createMarkdownFindTextCache({ embeddedHtml: true })),
       }));
       return scanReviewFind(content, query, { limit: REVIEW_FIND_LIMIT, live: context.live, emit: context.emit, pause });
     },
