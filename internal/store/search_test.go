@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -19,7 +20,7 @@ func TestSearchHidesPreparingForkUntilPublication(t *testing.T) {
 	if hits, err := s.SearchThreadMessages("quokka", 10); err != nil || len(hits) != 0 {
 		t.Errorf("global search exposed preparing fork: %+v err=%v", hits, err)
 	}
-	if _, err := s.SearchThreadItems(thread.ID, "quokka", 10); !errors.Is(err, ErrForkPreparing) {
+	if _, err := s.SearchThreadItems(context.Background(), thread.ID, "quokka", TimelineSelection{}, 10); !errors.Is(err, ErrForkPreparing) {
 		t.Errorf("thread search accepted preparing fork: %v", err)
 	}
 	if _, err := s.FinishForkPreparation(thread.ID); err != nil {
@@ -441,7 +442,7 @@ func TestSearchThreadItems_EmptyQueryReturnsNil(t *testing.T) {
 	mustCreateThreadForSearch(t, s, "t1", "alpha")
 	mustInsertItemForSearch(t, s, "t1", "i1", 0, "hello seconds", 100)
 
-	got, err := s.SearchThreadItems("t1", "   ", 10)
+	got, err := s.SearchThreadItems(context.Background(), "t1", "   ", TimelineSelection{}, 10)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -457,7 +458,7 @@ func TestSearchThreadItems_ScopedToOneThread(t *testing.T) {
 	mustCreateThreadForSearch(t, s, "t2", "thread two")
 	mustInsertItemForSearch(t, s, "t2", "b1", 0, "also thirty seconds here", 100)
 
-	got, err := s.SearchThreadItems("t1", "seconds", 10)
+	got, err := s.SearchThreadItems(context.Background(), "t1", "seconds", TimelineSelection{}, 10)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -476,7 +477,7 @@ func TestSearchThreadItems_DoesNotMatchTitle(t *testing.T) {
 	mustCreateThreadForSearch(t, s, "t1", "All about seconds")
 	mustInsertItemForSearch(t, s, "t1", "i1", 0, "no temporal words here", 100)
 
-	got, _ := s.SearchThreadItems("t1", "seconds", 10)
+	got, _ := s.SearchThreadItems(context.Background(), "t1", "seconds", TimelineSelection{}, 10)
 	if len(got) != 0 {
 		t.Errorf("expected no item hits (term only in title), got %+v", got)
 	}
@@ -493,7 +494,7 @@ func TestSearchThreadItems_DocumentOrder(t *testing.T) {
 	mustInsertItemForSearch(t, s, "t1", "first", 0, "find me A", 300)
 	mustInsertItemForSearch(t, s, "t1", "second", 1, "find me B", 200)
 
-	got, _ := s.SearchThreadItems("t1", "find me", 10)
+	got, _ := s.SearchThreadItems(context.Background(), "t1", "find me", TimelineSelection{}, 10)
 	if len(got) != 3 {
 		t.Fatalf("expected 3 hits, got %d", len(got))
 	}
@@ -510,11 +511,11 @@ func TestSearchThreadItems_LimitCapsAndZeroReturnsAll(t *testing.T) {
 		mustInsertItemForSearch(t, s, "t1", fmt.Sprintf("i%d", i), i, "same match body", int64(100+i))
 	}
 
-	capped, _ := s.SearchThreadItems("t1", "match", 4)
+	capped, _ := s.SearchThreadItems(context.Background(), "t1", "match", TimelineSelection{}, 4)
 	if len(capped) != 4 {
 		t.Errorf("expected 4 hits (limit), got %d", len(capped))
 	}
-	all, _ := s.SearchThreadItems("t1", "match", 0)
+	all, _ := s.SearchThreadItems(context.Background(), "t1", "match", TimelineSelection{}, 0)
 	if len(all) != 9 {
 		t.Errorf("expected 9 hits (zero-limit), got %d", len(all))
 	}
@@ -541,7 +542,7 @@ func TestSearchThreadItems_ItemIndexBreaksTurnTies(t *testing.T) {
 		t.Fatalf("insert first: %v", err)
 	}
 
-	got, _ := s.SearchThreadItems("t1", "find me", 10)
+	got, _ := s.SearchThreadItems(context.Background(), "t1", "find me", TimelineSelection{}, 10)
 	if len(got) != 2 {
 		t.Fatalf("expected 2 hits, got %d", len(got))
 	}
@@ -559,7 +560,7 @@ func TestSearchThreadItems_LiteralPercentInSummary(t *testing.T) {
 	mustInsertItemForSearch(t, s, "t1", "pct", 0, "build is 100% done", 100)
 	mustInsertItemForSearch(t, s, "t1", "nopct", 1, "build is 100 done", 200)
 
-	got, _ := s.SearchThreadItems("t1", "100%", 10)
+	got, _ := s.SearchThreadItems(context.Background(), "t1", "100%", TimelineSelection{}, 10)
 	if len(got) != 1 || got[0].ItemID != "pct" {
 		t.Errorf("expected only the literal-%% item, got %+v", got)
 	}

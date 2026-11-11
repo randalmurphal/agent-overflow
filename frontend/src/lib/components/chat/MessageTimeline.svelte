@@ -943,11 +943,33 @@
 
   // Take a pane's scroll-to-item request once the pane has installed its
   // window: a switch still loading can replace the window the jump lands
-  // in. Taken once, so a remount cannot replay it.
+  // in. Taken once, so a remount cannot replay it. A marked request lands
+  // through the explicit-jump session, which flashes the row.
+  //
+  // An owned request can be withdrawn after it was taken (a find query
+  // replaced or closed): the withdrawal starts a newer navigation, the
+  // scroller's own supersession, if the request's navigation is still the
+  // current one, so its pending lookup lands nowhere and flashes nothing.
+  let ownedNavigation: { owner: object; navigation: number } | null = null;
   $effect(() => {
     if (!pane.scrollToItemRequest || pane.loading) return;
+    const request = untrack(() => pane.scrollToItemRequest);
     const itemId = untrack(() => pane.takeScrollToItemRequest());
-    if (itemId) void restore.scrollToItem(itemId);
+    if (!itemId || !request) return;
+    if (request.mark) void jump.jumpToItem(itemId);
+    else void restore.scrollToItem(itemId);
+    ownedNavigation = request.owner ? { owner: request.owner, navigation: restore.navigation } : null;
+  });
+  $effect(() => {
+    const withdrawal = pane.scrollToItemWithdrawal;
+    const owned = ownedNavigation;
+    if (!withdrawal || !owned || withdrawal.owner !== owned.owner) return;
+    ownedNavigation = null;
+    untrack(() => {
+      if (restore.navigation !== owned.navigation) return;
+      restore.beginNavigation();
+      jump.invalidate();
+    });
   });
 
   onDestroy(() => {

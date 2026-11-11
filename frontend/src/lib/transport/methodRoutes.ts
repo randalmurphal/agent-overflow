@@ -385,6 +385,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3576148797: 'thread', // SavePayloadToFile
 	1414650511: 'thread', // SearchThreadItems
 	3644945077: 'all', // SearchThreadMessages
+	1822896830: 'thread', // SearchTimelineItems
 	3852272821: 'workspace', // SearchWorkspaceFiles
 	2317109106: 'thread', // SendDiffReviewComments
 	1496882310: 'thread', // SendMessage

@@ -82,6 +82,7 @@ function makeHarness(nodes: TimelineNode[]): Harness {
     hasMoreNewer: false,
     loadUntilItem: async (itemId: string) =>
       nodes.some((node) => (node as { item?: { id?: string } }).item?.id === itemId) ? 'loaded' : 'missing',
+    releaseEndedNavigation: () => {},
   };
   let listRefPresent = true;
   let windowVerified = true;

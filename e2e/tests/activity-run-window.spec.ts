@@ -363,17 +363,15 @@ test('a live run a jump left holding its head counts the members it gains until 
   await harness.rpc('SendMessage', threadId, 'Start', null);
   await waitForGate(harness, 'grow');
 
-  // Opened mid-run, the page ships the run's newest members; in-thread find
-  // then jumps to its first, which re-centers the run on it.
+  // Opened mid-run, the page ships the run's newest members; the pane's
+  // find then jumps to its first, which re-centers the run on it.
   await openThread('Live run');
   const run = page.getByTestId('activity-run').last();
   await expect(run.getByTestId('activity-run-header-counts')).toContainText('60 Bash');
   await page.keyboard.press('ControlOrMeta+f');
-  await expect(page.getByTestId('message-search-input')).toBeFocused();
+  await expect(page.getByTestId('pane-find-input')).toBeFocused();
   await page.keyboard.type('live-run-0');
-  const hits = page.getByTestId('message-search-results').getByRole('button');
-  await expect(hits).toHaveCount(1);
-  await hits.click();
+  await expect(page.getByTestId('pane-find-count')).toHaveText('1/1');
   if ((await run.getAttribute('data-collapsed')) === 'true') await run.getByTestId('activity-run-header').click();
   const rows = run.getByTestId('command-output-row');
   const later = run.getByTestId('activity-run-later');

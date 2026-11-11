@@ -183,9 +183,9 @@ export const KEYBINDING_DEFAULTS: readonly KeybindingRule[] = [
   },
   {
     "key": "mod+f",
-    "command": "search.in-thread",
-    "when": "hasActiveThread \u0026\u0026 !terminalFocus",
-    "defaultId": "search.in-thread",
+    "command": "find.in-pane",
+    "when": "paneFindAvailable \u0026\u0026 !terminalFocus",
+    "defaultId": "find.in-pane",
     "defaultKey": "mod+f"
   },
   {
@@ -204,8 +204,15 @@ export const KEYBINDING_DEFAULTS: readonly KeybindingRule[] = [
   {
     "key": "esc",
     "command": "thread.interrupt",
-    "when": "hasActiveThread \u0026\u0026 (turnActive || sendInFlight || hasPendingPrompt) \u0026\u0026 !anyModalOpen",
+    "when": "hasActiveThread \u0026\u0026 (turnActive || sendInFlight || hasPendingPrompt) \u0026\u0026 !anyModalOpen \u0026\u0026 !paneFindOpen",
     "defaultId": "thread.interrupt",
+    "defaultKey": "esc"
+  },
+  {
+    "key": "esc",
+    "command": "find.close",
+    "when": "paneFindOpen \u0026\u0026 !anyModalOpen",
+    "defaultId": "find.close",
     "defaultKey": "esc"
   },
   {
@@ -451,3 +458,8 @@ export const KEYBINDING_DEFAULTS: readonly KeybindingRule[] = [
     "defaultKey": "enter"
   }
 ];
+
+/** Renamed default ids, old to current, for overrides kept by id alone. */
+export const KEYBINDING_DEFAULT_ID_RENAMES: Readonly<Record<string, string>> = {
+  "search.in-thread": "find.in-pane"
+};

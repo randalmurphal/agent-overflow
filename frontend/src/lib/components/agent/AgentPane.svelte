@@ -12,6 +12,7 @@
   import { companionForSource } from '../../stores/companionPanes.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import AgentPaneComposerShell from './AgentPaneComposerShell.svelte';
+  import ThreadPaneFind from '../chat/ThreadPaneFind.svelte';
   import {
     codexSubagentLaunchInfo,
     codexSubagentTaskDescription,
@@ -128,6 +129,7 @@
   // state cannot disagree; the fallbacks here cover only the degenerate
   // case of a context with no registered source pane.
   let lifecycleItem = $derived(view ? view.lifecycle : launch);
+  let timelineEl: HTMLDivElement | undefined = $state(undefined);
   let lifecycleCompletionItem = $derived(view ? view.lifecycleCompletion : completionItem);
 
 </script>
@@ -195,8 +197,18 @@
         <Icon icon={X} size={12} strokeWidth={2} />
       </PaneHeaderIconButton>
     </header>
+    {#if companionPaneId}
+      <ThreadPaneFind
+        paneId={companionPaneId}
+        title={visibleBreadcrumb.at(-1)?.label ?? 'Agent'}
+        timeline={view?.pane ?? null}
+        scope={view && ctx.threadId ? { threadId: ctx.threadId, scopeRootId: view.pane.agentScopeRootId } : null}
+        root={timelineEl ?? null}
+        noun="transcript"
+      />
+    {/if}
 
-    <div class="flex min-h-0 flex-1 flex-col" data-testid="agent-pane-timeline" aria-busy={!view || view.pane.loading}>
+    <div bind:this={timelineEl} class="flex min-h-0 flex-1 flex-col" data-testid="agent-pane-timeline" aria-busy={!view || view.pane.loading}>
       {#if view?.error}
         <div class="px-4 py-3 text-sm text-text-secondary" role="alert">
           <p>{view.error}</p>

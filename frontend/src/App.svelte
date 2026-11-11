@@ -91,7 +91,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
   import type { Thread } from './lib/types/models';
   import { getPaletteTargetPaneId, isPaletteOpen } from './lib/stores/palette.svelte';
   import { closeCheatSheet, isCheatSheetOpen } from './lib/stores/cheatSheet.svelte';
-  import { closeMessageSearch, getMessageSearchMode, getMessageSearchTargetPaneId, isMessageSearchOpen } from './lib/stores/messageSearch.svelte';
+  import { closeMessageSearch, getMessageSearchTargetPaneId, isMessageSearchOpen } from './lib/stores/messageSearch.svelte';
   import { closeThreadPicker, getThreadPickerTargetPaneId, isThreadPickerOpen } from './lib/stores/threadPicker.svelte';
   import { closeAccountSwitcher, isAccountSwitcherOpen } from './lib/stores/accountSwitcher.svelte';
   import { isSessionImportOpen } from './lib/stores/sessionImport.svelte';
@@ -102,7 +102,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     loadKeybindings,
   } from './lib/stores/keybindings.svelte';
   import { clearCommandRegistry, listCommands, type CommandContext } from './lib/stores/commandRegistry.svelte';
-  import { registerBuiltinCommands, makeCommandContext } from './lib/stores/builtinCommands.svelte';
+  import { registerBuiltinCommands, makeCommandContext, overlayBesidePalette } from './lib/stores/builtinCommands.svelte';
   import { installUiRenderTraceApi } from './lib/utils/uiRenderTrace';
   import { installLoafTrace } from './lib/utils/loafTrace';
   import { installHarnessBridge } from './lib/stores/harnessBridge';
@@ -156,7 +156,8 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     discussionStartFor = null;
   }
 
-  function makeAppCommandContext(targetPane = getFocusedPaneOrNull()) {
+  // `forPalette`: the palette's own list, whose command runs after it closes.
+  function makeAppCommandContext(targetPane = getFocusedPaneOrNull(), forPalette = false) {
     const pickerOpen =
       isPaletteOpen() ||
       isCheatSheetOpen() ||
@@ -165,6 +166,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
       isAccountSwitcherOpen() ||
       isAnyComposerPickerOpen();
     return makeCommandContext(targetPane, {
+      ...(forPalette ? { overlayOpen: overlayBesidePalette() } : {}),
       paletteOpen: isPaletteOpen(),
       cheatSheetOpen: isCheatSheetOpen(),
       messageSearchOpen: isMessageSearchOpen(),
@@ -182,7 +184,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
 
   function makeCommandContextForPaneId(paneId: string): CommandContext | null {
     const targetPane = getPane(paneId);
-    return targetPane ? makeAppCommandContext(targetPane) : null;
+    return targetPane ? makeAppCommandContext(targetPane, true) : null;
   }
 
   // Resolve the pane an overlay/command targets: the overlay's pinned pane when
@@ -206,7 +208,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
   // updates replace pane state many times a second, but a hidden palette has
   // nothing to filter or render from those replacements.
   let paletteContext = $derived(
-    isPaletteOpen() ? makeAppCommandContext(currentContextPane()) : null,
+    isPaletteOpen() ? makeAppCommandContext(currentContextPane(), true) : null,
   );
   let messageSearchPane = $derived(resolveContextPane(getMessageSearchTargetPaneId()));
   let threadPickerPane = $derived(resolveContextPane(getThreadPickerTargetPaneId()));
@@ -710,7 +712,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
 <UnsentMessageConfirmationHost />
 <BackgroundKillConfirmationHost />
 <KeybindingsCheatSheet open={isCheatSheetOpen()} onClose={closeCheatSheet} />
-<MessageSearch open={isMessageSearchOpen()} pane={messageSearchPane} mode={getMessageSearchMode()} onClose={closeMessageSearch} />
+<MessageSearch open={isMessageSearchOpen()} pane={messageSearchPane} onClose={closeMessageSearch} />
 <UnifiedThreadPicker open={isThreadPickerOpen()} pane={threadPickerPane} onClose={closeThreadPicker} />
 <!--
   Account switcher loads lazily: it is a rarely-mounted picker that pulls in the

@@ -13,7 +13,7 @@ import { detachBackend } from '../transport/backends';
 beforeEach(() => {
   localStorage.clear();
   resetKeybindingsStore();
-  for (const toast of [...getToasts()]) removeToast(toast.id);
+  for (const toast of getToasts().slice()) removeToast(toast.id);
 });
 afterEach(() => {
   setKeybindingPersistence(null);
@@ -76,4 +76,18 @@ it('keeps the existing choice when local persistence fails', async () => {
     await expect(saveKeybindings(withReboundRow(original, original[0], 'ctrl+alt+y'))).rejects.toThrow('could not save');
     expect(getKeybindingRules()).toEqual(original);
   } finally { setItem.mockRestore(); }
+});
+
+it('keeps a choice saved under a renamed default id, chord or unbinding, and saves it under the new id', async () => {
+  installNativeKeybindings();
+  writeFrontendValue('keybindings', { 'search.in-thread': 'ctrl+alt+f' });
+  await loadKeybindings();
+  const find = getKeybindingRules().find((rule) => rule.defaultId === 'find.in-pane')!;
+  expect(find.key).toBe('ctrl+alt+f');
+  await saveKeybindings(getKeybindingRules());
+  expect(readFrontendValue('keybindings')).toEqual({ 'find.in-pane': 'ctrl+alt+f' });
+
+  writeFrontendValue('keybindings', { 'search.in-thread': '' });
+  await loadKeybindings();
+  expect(getKeybindingRules().find((rule) => rule.defaultId === 'find.in-pane')?.key).toBe('');
 });

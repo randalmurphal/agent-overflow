@@ -4976,12 +4976,10 @@ export function SavePayloadToFile(threadID: string, payloadID: string): $Cancell
 }
 
 /**
- * SearchThreadItems runs a substring search over the message text of a single
- * thread — the in-thread "find" surface — returning hits in document order so
- * the UI can step through them top-to-bottom. Kept thin: the store owns the
- * query shape. A blank query short-circuits to an empty slice in the store;
- * this binding returns the same without an error so the frontend can call it
- * on every keystroke cheaply. limit caps the result set.
+ * SearchThreadItems searches the main transcript of one thread for the
+ * find bar: the visible top-level rows, in document order, so the UI can
+ * step through them top-to-bottom. A blank query answers an empty slice
+ * without an error. limit caps the result set. The store owns the query.
  */
 export function SearchThreadItems(threadID: string, query: string, limit: number): $CancellablePromise<store$0.ThreadMessageHit[]> {
     return $Call.ByID(1414650511, threadID, query, limit).then(($result: any) => {
@@ -5001,6 +4999,18 @@ export function SearchThreadItems(threadID: string, query: string, limit: number
  */
 export function SearchThreadMessages(query: string, limit: number): $CancellablePromise<store$0.ThreadMessageHit[]> {
     return $Call.ByID(3644945077, query, limit).then(($result: any) => {
+        return $$createType199($result);
+    });
+}
+
+/**
+ * SearchTimelineItems searches the selected transcript of one thread: the
+ * rows the timeline shows for that selection (an agent scope answers its
+ * direct children), in document order. A cancelled call (the connection
+ * closed) stops the read.
+ */
+export function SearchTimelineItems(threadID: string, query: string, selection: store$0.TimelineSelection, limit: number): $CancellablePromise<store$0.ThreadMessageHit[]> {
+    return $Call.ByID(1822896830, threadID, query, selection, limit).then(($result: any) => {
         return $$createType199($result);
     });
 }

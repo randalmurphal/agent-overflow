@@ -22,6 +22,28 @@ is the drag handle. Open, close and placement belong to
   time while keeping the strip mounted; use the shared layout mode rather than
   device or runtime detection.
 
+## Find
+
+Every pane kind with find mounts `PaneFindBar.svelte` directly under its
+header, in the flow, keyed by its layout pane id (a companion's own id, not
+its source's), and registers a `PaneFindProvider` for that id while its body
+is mounted (`stores/paneFind.svelte.ts`). The store owns open, query and
+focus return; the provider owns matching, stepping and clearing. Escape
+belongs to the `find.close` command, never the bar. A bar's `fallbackFocus`
+must be focusable by script (a scroller takes `tabindex="-1"`); the bar
+checks that focus landed and reports a fallback that refused it. Paint
+matches with `utils/findHighlights.ts` under `findHighlightName(paneId)`.
+Thread timelines use `chat/ThreadPaneFind.svelte`; a plain scroll container
+uses `scrollTextFind.svelte.ts`. A provider with asynchronous reads runs
+them through `paneFindReads(paneId)`, which keeps one in flight per layout
+pane across body remounts, applies an answer only for the query and owner
+it asked, updates in place on a content change without moving the view,
+and withdraws any jump it requested when its query changes or it closes.
+Find acts on the focused pane, or under compact on the pane on screen, and
+on no overlay above it; the store drops a pane's state and reads when the
+pane leaves the layout. Review, terminal, browser, discussion and tool
+panes have no provider yet, so mod+f falls through there.
+
 Timeline scroll ownership belongs to
 [`components/chat/`](../chat/AGENTS.md). Generic virtualization belongs to
 [`components/virtual/`](../virtual/AGENTS.md).
