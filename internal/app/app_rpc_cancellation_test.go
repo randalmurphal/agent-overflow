@@ -41,6 +41,7 @@ var callerBoundMethods = map[string]string{
 	"RemoteCommandArtifact":     "in-memory snapshot and local file read",
 	"RemoteCommandLogArtifact":  "local file read",
 	"ThreadToolExportChunk":     "local file read",
+	"SearchPRCILog":             "local file read",
 	"MintDictationChunkTicket":  "in-memory snapshot",
 	"ReadReviewDiff":            "stream released by cleanup",
 	"OpenEditDiff":              "store read; stream released by cleanup",

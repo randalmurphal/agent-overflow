@@ -7,15 +7,24 @@
 // stylesheet, so two open bars never paint each other's query.
 //
 // The walk covers only what is mounted under `root` (a virtualized list
-// mounts its visible rows) and reruns when that DOM changes, coalesced
-// through the refresh scheduler. Text is matched by `findMatch.ts` within a
-// block, across inline markup. Where the API is missing the matches are
+// mounts its visible rows) and reruns when that DOM changes or a
+// <details> under it opens or closes, coalesced through the refresh
+// scheduler. Text is matched by the find rule (`findMatch.ts`) within a
+// block, across inline markup; with `rowsOnly`, only text inside a row is
+// matched, and a row boundary ends a block. Where the API is missing the matches are
 // still computed, for providers that count or step through them, and
 // nothing paints. An empty query or `dispose` releases every range, the
 // observer and the names.
 
 import { createRefreshScheduler, type RefreshScheduler } from './refreshScheduler';
-import { findNeedle, lowerPreservingLength } from './findMatch';
+import { findNeedle, foldFindText } from './findMatch';
+
+/** A run of text find matches within, and whether it shows now (a run
+ * inside a closed <details> does not). */
+export interface FindRun {
+  readonly text: string;
+  readonly shown: boolean;
+}
 
 export interface FindMatch {
   readonly range: Range;
@@ -23,8 +32,15 @@ export interface FindMatch {
   readonly rowKey: string | null;
 }
 
-/** The current match: every match in one row, or one match by index. */
-export type FindCurrent = { row: string } | { match: number } | null;
+/**
+ * The current match: every match in one row, the `occurrence`-th match in
+ * one row (counted in document order), or one match by index.
+ */
+export type FindCurrent = { row: string; occurrence?: number } | { match: number } | null;
+
+/** A current match, or how to find it in the content at each paint (an
+ * owner whose content moves under the rows derives the row from it). */
+export type FindCurrentSource = FindCurrent | (() => FindCurrent);
 
 export interface FindHighlighterOptions {
   root: HTMLElement;
@@ -32,15 +48,19 @@ export interface FindHighlighterOptions {
   name: string;
   rowSelector?: string;
   rowKeyAttribute?: string;
+  /** Match only text inside a `rowSelector` element. */
+  rowsOnly?: boolean;
   /** Called after every recompute with the new matches. */
   onMatches?(matches: readonly FindMatch[]): void;
 }
 
 export interface FindHighlighter {
   setQuery(query: string): void;
-  setCurrent(current: FindCurrent): void;
+  setCurrent(current: FindCurrentSource): void;
   /** Matches in document order, for the current query. */
   readonly matches: readonly FindMatch[];
+  /** The range of the current match when it is mounted; the first of a row. */
+  currentRange(): Range | null;
   dispose(): void;
 }
 
@@ -116,35 +136,74 @@ interface Segment {
   starts: number[];
   text: string;
   block: Element | null;
+  row: Element | null;
+  /** In a closed <details>: kept only when asked for (`keepHidden`). */
+  hidden: boolean;
 }
 
-function collectSegments(root: HTMLElement): Segment[] {
+// A closed <details> shows only its summary.
+function hiddenByDetails(element: Element): boolean {
+  for (let details = element.closest('details'); details; details = details.parentElement?.closest('details') ?? null) {
+    if ((details as HTMLDetailsElement).open) continue;
+    const summary = details.querySelector(':scope > summary');
+    if (!summary || !summary.contains(element)) return true;
+  }
+  return false;
+}
+
+function collectSegments(root: Element, rowSelector: string | undefined, rowsOnly: boolean, laidOut = true, keepHidden = false): Segment[] {
   const visible = new Map<Element, boolean>();
   const isVisible = (element: Element): boolean => {
     let answer = visible.get(element);
     if (answer === undefined) {
-      answer = typeof element.checkVisibility === 'function' ? element.checkVisibility() : true;
+      // checkVisibility passes a closed <details> itself, whose loose
+      // body text it does not show.
+      answer = !hiddenByDetails(element)
+        && (!laidOut || typeof element.checkVisibility !== 'function' || element.checkVisibility());
       visible.set(element, answer);
     }
     return answer;
   };
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const segments: Segment[] = [];
   let current: Segment | null = null;
   for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
     const parent = node.parentElement;
     if (!parent || node.data.length === 0) continue;
-    if (parent.closest(SKIP_SELECTOR) || !isVisible(parent)) continue;
+    if (parent.closest(SKIP_SELECTOR)) continue;
+    const hidden = !isVisible(parent);
+    if (hidden && !keepHidden) continue;
+    const row = rowsOnly && rowSelector ? parent.closest(rowSelector) : null;
+    if (rowsOnly && (!row || !root.contains(row))) continue;
     const block = parent.closest(BLOCK_SELECTOR);
-    if (!current || current.block !== block) {
-      current = { nodes: [], starts: [], text: '', block };
+    if (!current || current.block !== block || current.row !== row || current.hidden !== hidden) {
+      current = { nodes: [], starts: [], text: '', block, row, hidden };
       segments.push(current);
     }
     current.starts.push(current.text.length);
     current.nodes.push(node);
-    current.text += lowerPreservingLength(node.data);
+    current.text += foldFindText(node.data);
   }
   return segments;
+}
+
+/**
+ * The folded text of each run the highlighter matches within, in document
+ * order. `laidOut: false` reads a tree with no layout (a parsed fragment):
+ * every element is visible but the body of a closed <details>.
+ */
+export function findTextSegments(root: Element, laidOut = true): string[] {
+  return collectSegments(root, undefined, false, laidOut).map((segment) => segment.text);
+}
+
+/**
+ * Every run of a tree with no layout (a parsed fragment), in walk order:
+ * the runs `findTextSegments(root, false)` gives, and the body of each
+ * closed <details> as runs of its own, not shown. Numbered this way a run
+ * keeps its place whichever <details> are open.
+ */
+export function findTextRuns(root: Element): FindRun[] {
+  return collectSegments(root, undefined, false, false, true).map((segment) => ({ text: segment.text, shown: !segment.hidden }));
 }
 
 function pointAt(segment: Segment, offset: number, end: boolean): [Text, number] {
@@ -153,12 +212,12 @@ function pointAt(segment: Segment, offset: number, end: boolean): [Text, number]
   return [segment.nodes[index], offset - segment.starts[index]];
 }
 
-function collectMatches(root: HTMLElement, needle: string, rowSelector?: string, rowKeyAttribute?: string): FindMatch[] {
+function collectMatches(root: HTMLElement, needle: string, rowSelector: string | undefined, rowKeyAttribute: string | undefined, rowsOnly: boolean): FindMatch[] {
   const matches: FindMatch[] = [];
-  for (const segment of collectSegments(root)) {
+  for (const segment of collectSegments(root, rowSelector, rowsOnly)) {
     let at = segment.text.indexOf(needle);
     if (at < 0) continue;
-    const row = rowSelector ? segment.nodes[0].parentElement?.closest(rowSelector) : null;
+    const row = segment.row ?? (rowSelector ? segment.nodes[0].parentElement?.closest(rowSelector) : null);
     const rowKey = row && rowKeyAttribute ? row.getAttribute(rowKeyAttribute) : null;
     while (at >= 0) {
       const range = document.createRange();
@@ -178,19 +237,33 @@ function collectMatches(root: HTMLElement, needle: string, rowSelector?: string,
 
 export function createFindHighlighter(options: FindHighlighterOptions): FindHighlighter {
   const { root, name, rowSelector, rowKeyAttribute } = options;
+  const rowsOnly = options.rowsOnly === true;
   const currentName = `${name}-current`;
   const paints = findHighlightsSupported();
   let needle = '';
-  let current: FindCurrent = null;
+  let current: FindCurrentSource = null;
   let matches: FindMatch[] = [];
   let observer: MutationObserver | null = null;
+  let onToggle: (() => void) | null = null;
   let scheduler: RefreshScheduler | null = null;
   let rulesHeld = false;
   let disposed = false;
 
-  function isCurrent(match: FindMatch, index: number): boolean {
-    if (!current) return false;
-    return 'row' in current ? match.rowKey === current.row : index === current.match;
+  // Indexes of the current matches.
+  function currentIndexes(): number[] {
+    const now = typeof current === 'function' ? current() : current;
+    if (!now) return [];
+    if ('match' in now) return now.match >= 0 && now.match < matches.length ? [now.match] : [];
+    const { row, occurrence } = now;
+    const out: number[] = [];
+    let seen = 0;
+    for (let index = 0; index < matches.length; index += 1) {
+      if (matches[index].rowKey !== row) continue;
+      if (occurrence === undefined || seen === occurrence) out.push(index);
+      seen += 1;
+      if (occurrence !== undefined && seen > occurrence) break;
+    }
+    return out;
   }
 
   function paint(): void {
@@ -203,14 +276,15 @@ export function createFindHighlighter(options: FindHighlighterOptions): FindHigh
     const all = new Highlight();
     const focused = new Highlight();
     focused.priority = 1;
-    matches.forEach((match, index) => (isCurrent(match, index) ? focused : all).add(match.range));
+    const currentSet = new Set(currentIndexes());
+    matches.forEach((match, index) => (currentSet.has(index) ? focused : all).add(match.range));
     CSS.highlights.set(name, all);
     CSS.highlights.set(currentName, focused);
   }
 
   function recompute(): void {
     if (disposed) return;
-    matches = needle ? collectMatches(root, needle, rowSelector, rowKeyAttribute) : [];
+    matches = needle ? collectMatches(root, needle, rowSelector, rowKeyAttribute, rowsOnly) : [];
     paint();
     options.onMatches?.(matches);
   }
@@ -226,6 +300,9 @@ export function createFindHighlighter(options: FindHighlighterOptions): FindHigh
     const pending = scheduler;
     observer = new MutationObserver(() => pending.request());
     observer.observe(root, { childList: true, subtree: true, characterData: true });
+    // `toggle` does not bubble; a capture listener sees every <details>.
+    onToggle = () => pending.request();
+    root.addEventListener('toggle', onToggle, true);
     if (paints && !rulesHeld) {
       retainRules(name);
       rulesHeld = true;
@@ -235,6 +312,8 @@ export function createFindHighlighter(options: FindHighlighterOptions): FindHigh
   function unfollow(): void {
     observer?.disconnect();
     observer = null;
+    if (onToggle) root.removeEventListener('toggle', onToggle, true);
+    onToggle = null;
     scheduler?.dispose();
     scheduler = null;
     if (rulesHeld) {
@@ -251,13 +330,17 @@ export function createFindHighlighter(options: FindHighlighterOptions): FindHigh
       else unfollow();
       recompute();
     },
-    setCurrent(next: FindCurrent): void {
+    setCurrent(next: FindCurrentSource): void {
       if (disposed) return;
       current = next;
       paint();
     },
     get matches() {
       return matches;
+    },
+    currentRange(): Range | null {
+      const first = currentIndexes()[0];
+      return first === undefined ? null : matches[first].range;
     },
     dispose(): void {
       if (disposed) return;

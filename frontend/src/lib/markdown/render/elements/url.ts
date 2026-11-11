@@ -2,8 +2,15 @@ import { FILE_SCHEME, isOpenableScheme, urlScheme } from './urlSchemes';
 
 // WHATWG parsing strips leading and trailing C0 controls and spaces before
 // reading the scheme; the scheme checks here see the same string.
-const trimUrl = (url: string): string =>
-    url.replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, '');
+const trimUrl = (url: string): string => {
+    let start = 0;
+    let end = url.length;
+    while (start < end && url.charCodeAt(start) <= 0x20)
+        start += 1;
+    while (end > start && url.charCodeAt(end - 1) <= 0x20)
+        end -= 1;
+    return url.slice(start, end);
+};
 
 /**
  * Absolute-URL parse only, by design. Upstream took a `defaultOrigin`
@@ -96,6 +103,26 @@ export const transformUrl = (
  * - `blocked`: an absolute URL the policy refused (a denied scheme, or a
  *   prefix list without `*` that it did not match). Renders tagged.
  */
+/** The text a blocked link's span shows after the link text. */
+export const BLOCKED_LINK_SUFFIX = ' [blocked]';
+
+/** The href the incomplete-markdown pass gives a link still being typed;
+ * it renders as an anchor with no target. */
+export const INCOMPLETE_LINK_HREF = 'streamdown:incomplete-link';
+
+/** Whether a table cell renders: a cell another merged up into (rowspan
+ * 0, extensions/table.ts) does not. Both renderers and find's
+ * projection ask this. */
+export const tableCellRenders = (cell: { rowspan: number }): boolean => cell.rowspan > 0;
+
+/** The text a link shows after its own: BLOCKED_LINK_SUFFIX for an href
+ * the policy blocked, nothing for an anchor, an untagged reference or the
+ * incomplete-link sentinel. Both renderers and find's projection ask this. */
+export const linkTagText = (href: unknown, allowedPrefixes: string[]): string =>
+    href !== INCOMPLETE_LINK_HREF && classifyLinkHref(href, allowedPrefixes).kind === 'blocked'
+        ? BLOCKED_LINK_SUFFIX
+        : '';
+
 export type LinkHrefClass =
     | { kind: 'anchor'; href: string }
     | { kind: 'reference'; title: string }

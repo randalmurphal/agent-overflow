@@ -8,6 +8,7 @@
     REVIEW_FILE_HEADER_PX,
   } from '../../utils/reviewRows';
   import type { DiffFileSummary } from '../../utils/patchStore';
+  import { findHeaderKey } from '../../utils/reviewFindScan';
 
   // File header row — rendered both as a virtualized row and as the
   // sticky overlay copy. The virtualized row paints the between-files
@@ -85,7 +86,7 @@
       data-testid="review-file-header-path"
       onclick={onJump ?? onToggle}
     >
-      <span class="min-w-0 flex-1 truncate font-mono text-xs">
+      <span class="min-w-0 flex-1 truncate font-mono text-xs" data-find-key={overlay ? undefined : findHeaderKey(file.path)}>
         {#if pathSplit.dir}<span class="text-fg-muted">{pathSplit.dir}</span>{/if}<span class="font-medium text-fg">{pathSplit.base}</span>
       </span>
       {#if file.conflicts}

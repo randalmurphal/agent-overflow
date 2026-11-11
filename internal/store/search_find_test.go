@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -112,13 +113,53 @@ func TestSearchThreadItems_CancelledContextStopsTheSearch(t *testing.T) {
 
 // A find read stops at its limit: each physical arm walks its ordering
 // index and the merged compound takes the first hits, rather than reading
-// every match of the view into a sorter.
+// every match of the view into a sorter. The index narrows to the thread
+// first, so find_fold reads only that thread's summaries, never the table.
 func TestSearchThreadItems_WalksTheTimelineArms(t *testing.T) {
 	s := newTestStore(t)
 	seedTimelineParityThread(t, s)
 	for _, selection := range []TimelineSelection{{}, {ScopeRootID: "root"}} {
-		sel := threadFindSelection(timelineScope{selection: selection}, likePattern("needle"), 50)
+		sel := threadFindSelection(timelineScope{selection: selection}, findPattern("needle"), 50)
 		query, args := mustTimelineIDSelection(t, s, timelineParityThreadID, sel)
 		assertLocalArmWalksAnIndex(t, s, fmt.Sprintf("thread find %+v", selection), query, args...)
+		plan := explainPlan(t, s, query, args...)
+		t.Logf("thread find %+v plan:\n%s", selection, planText(plan))
+		scoped := false
+		for _, r := range plan {
+			if strings.HasPrefix(r.detail, "SCAN items") || strings.HasPrefix(r.detail, "SCAN import_history_items") {
+				t.Errorf("thread find %+v scans a table: %q\n%s", selection, r.detail, planText(plan))
+			}
+			if strings.HasPrefix(r.detail, "SEARCH items USING") && strings.Contains(r.detail, "thread_id=?") {
+				scoped = true
+			}
+		}
+		if !scoped {
+			t.Errorf("thread find %+v: no search of items by thread_id\n%s", selection, planText(plan))
+		}
+	}
+}
+
+// A summary holding a NUL is searched past it, stored as TEXT or as a BLOB,
+// and a needle ahead of the NUL still matches once.
+func TestSearchThreadItems_MatchesPastAnEmbeddedNUL(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForSearch(t, s, "t1", "x")
+	mustInsertItemForSearch(t, s, "t1", "text", 0, "Lead\x00tail NEEDLE", 100)
+	mustInsertItemForSearch(t, s, "t1", "blob", 1, "Lead\x00tail NEEDLE", 200)
+	if _, err := s.db.Exec(`UPDATE items SET summary = CAST(summary AS BLOB) WHERE id = 'blob'`); err != nil {
+		t.Fatal(err)
+	}
+	var kinds string
+	if err := s.db.QueryRow(`SELECT group_concat(typeof(summary), ',') FROM (SELECT summary FROM items WHERE thread_id = 't1' ORDER BY turn_index)`).Scan(&kinds); err != nil || kinds != "text,blob" {
+		t.Fatalf("summary types = %q, %v", kinds, err)
+	}
+	for _, query := range []string{"needle", "lead", "tail needle"} {
+		got, err := s.SearchThreadItems(context.Background(), "t1", query, TimelineSelection{}, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ids := findHitIDs(got); ids != "[text blob]" {
+			t.Fatalf("%q hits = %s", query, ids)
+		}
 	}
 }

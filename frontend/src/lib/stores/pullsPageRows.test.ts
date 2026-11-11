@@ -122,7 +122,7 @@ describe('the find needle over the Merge requests tab', () => {
       project('p1', 'Widgets', [
         item(1, { title: 'Retry delivery', group: 'needs_you' }),
         item(2, { title: 'Speed up builds', group: 'needs_you' }),
-        item(3, { title: 'Retry webhooks' }),
+        item(3, { title: 'Retry webhooks for École' }),
       ]),
       project('p2', 'Gadgets', [{ ...item(4, { title: 'Retry header' }), ref: { Forge: 'gitlab', Host: 'gitlab.com', Namespace: 'group', Repo: 'gadgets', Number: 4 } } as PRListItem]),
     ],
@@ -136,6 +136,9 @@ describe('the find needle over the Merge requests tab', () => {
     expect(counts(findNeedle('retry'))).toEqual([['needs_you', [1]], ['waiting', [4, 3]]]);
     expect(counts(findNeedle('builds'))).toEqual([['needs_you', [2]]]);
     expect(counts(findNeedle('nothing'))).toEqual([]);
+    // Every code point folds, not only ASCII.
+    expect(counts(findNeedle('école'))).toEqual([['waiting', [3]]]);
+    expect(counts(findNeedle('ÉCOLE'))).toEqual([['waiting', [3]]]);
   });
 
   it('composes with the project picker and the filter', () => {

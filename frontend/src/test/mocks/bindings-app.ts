@@ -753,6 +753,7 @@ export const GetMergeConflictFile = dispatch('GetMergeConflictFile');
 export const SavePRCIJobLog = dispatch('SavePRCIJobLog');
 export const SavePRCIJobLogSection = dispatch('SavePRCIJobLogSection');
 export const GetPRCILogLines = dispatch('GetPRCILogLines');
+export const SearchPRCILog = dispatch('SearchPRCILog');
 export const FetchForgeAttachment = dispatch('FetchForgeAttachment');
 export const SaveAttachment = dispatch('SaveAttachment');
 export const SaveForgeAttachment = dispatch('SaveForgeAttachment');

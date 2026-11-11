@@ -499,7 +499,7 @@ export function __parsePatchCacheStatsForTest(): { entries: number; chars: numbe
 
 // Identity-keyed memo: the review surface derives display rows for
 // every file on every row-model rebuild (buildReviewRows AND
-// buildInsertsByFile AND anchor checks), always from the same parsed
+// reviewInsertsByFile AND anchor checks), always from the same parsed
 // `lines` arrays (parsePatchFilesCached returns shared results). One
 // build per lines identity also means the intraline pass runs once,
 // not per rebuild. `newSideTotal` (learned from a context-expansion

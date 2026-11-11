@@ -41,8 +41,11 @@ it asked, updates in place on a content change without moving the view,
 and withdraws any jump it requested when its query changes or it closes.
 Find acts on the focused pane, or under compact on the pane on screen, and
 on no overlay above it; the store drops a pane's state and reads when the
-pane leaves the layout. Review, terminal, browser and discussion panes
-have no provider yet, so mod+f falls through there.
+pane leaves the layout. Review panes use `review/ReviewPaneFind.svelte`
+over `stores/reviewFind.svelte.ts`, keyed by `ReviewPane`'s `findKey`: its
+layout pane id as a companion, the detail region key on the Pull requests
+page; a review hosted without a key registers nothing. Terminal, browser
+and discussion panes have no provider yet, so mod+f falls through there.
 
 A pane whose body holds a list beside a detail declares find regions
 (`declarePaneFindRegions`) and keys each region's provider, bar, reads
@@ -57,8 +60,8 @@ focus return, `paneFindAvailable`, drop on layout removal) holds per
 region. A list region's provider is a filter: it has no `next` or
 `previous`, the bar shows the matching row count and Enter calls
 `focusFirst`, and its query narrows the rows in the page's store so every
-count follows one source. Matching uses `utils/findMatch.ts`, the rule
-thread find paints with. The Pull requests page
+count follows one source. Every find, filter and highlighter matches by
+`utils/findMatch.ts`. The Pull requests page
 (`pulls/pullsPaneFind.svelte.ts`) and Workflows home
 (`workflows/workflowsPaneFind.svelte.ts`) filter this way.
 
