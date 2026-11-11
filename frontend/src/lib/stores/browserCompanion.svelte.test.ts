@@ -10,7 +10,9 @@ import {
 import { BROWSER_FIND_DEBOUNCE_MS, createBrowserFind } from './browserFind.svelte';
 import { companionForSource, installCompanionPanes, resetCompanionPanesForTest } from './companionPanes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
-import { createPane, focusPane, getFocusedPaneId, resetPanesForTest } from './panes.svelte';
+import { createPane, focusPane, getFocusedPaneId, getPane, resetPanesForTest } from './panes.svelte';
+import { makeCommandContext } from './builtinCommands.svelte';
+import { notifyTerminalFocus } from '../components/terminal/terminalStore.svelte';
 import { makeThread } from '../../test/helpers/chat';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { flushSync } from 'svelte';
@@ -329,6 +331,31 @@ describe('accelerators from the native page view', () => {
     } finally {
       window.removeEventListener('keydown', listener);
       composer.remove();
+    }
+  });
+
+  // The engine hands keyboard focus back to the SPA when it claims a chord,
+  // so a terminal caret the SPA kept may be focused again by the time the
+  // chord arrives: the chord was typed in the page, not the terminal.
+  it('resolves a replayed chord outside a terminal the SPA kept focus in', () => {
+    notifyTerminalFocus('main', true);
+    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+    let during: boolean | null = null;
+    const listener = () => { during = makeCommandContext(getPane('main') ?? null, {}).flags.terminalFocus; };
+    window.addEventListener('keydown', listener);
+    try {
+      expect(makeCommandContext(getPane('main') ?? null, {}).flags.terminalFocus).toBe(true);
+      applyBrowserCompanionState({
+        kind: 'accelerator',
+        threadId: 'thread-browser',
+        accelerator: { key: 'w', ctrl: true },
+      });
+      expect(during).toBe(false);
+      expect(makeCommandContext(getPane('main') ?? null, {}).flags.terminalFocus).toBe(true);
+    } finally {
+      window.removeEventListener('keydown', listener);
+      hasFocus.mockRestore();
+      notifyTerminalFocus('main', false);
     }
   });
 

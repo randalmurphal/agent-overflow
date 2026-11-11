@@ -379,3 +379,11 @@ func webkitDownloadOwner(handle string) *webkitProfile {
 func (e *webkitEngine) OnUIThread() bool { return gtkOnMainThread() }
 
 var _ engineUIThread = (*webkitEngine)(nil)
+
+// FocusApp is engineAppFocus: the SPA's webview becomes the window's focus
+// widget. Called on the GTK thread from the key gate, where gtkDo runs
+// inline. In a window that is not active GTK only records the focus
+// widget, which takes the keys once the window is activated.
+func (e *webkitEngine) FocusApp() error { return webkitFocusApp() }
+
+var _ engineAppFocus = (*webkitEngine)(nil)

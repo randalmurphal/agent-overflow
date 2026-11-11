@@ -38,7 +38,7 @@ import { threadRowFrameMark } from './threadRowFrames';
 import { closePaneFind, hasPaneFindProvider, isPaneFindOpen, openPaneFind, paneFindRegionElement, paneFindTarget, paneOfFindKey } from './paneFind.svelte';
 import { findSeedIn, isInFindBar, paneElement } from '../utils/paneFindSeed';
 import { closeFocusedPaneOrCompanion } from './companionPanes.svelte';
-import { closeFocusedBrowserTab } from './browserCompanion.svelte';
+import { closeFocusedBrowserTab, isReplayingBrowserPageChord } from './browserCompanion.svelte';
 import type { PaneLayoutItem } from './paneLayout.svelte';
 import { focusPaneComposer, focusPaneComposerIfEditableActive } from '../components/panes/paneComposerFocus';
 import { getThreadById } from './threads.svelte';
@@ -1224,9 +1224,11 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     // events. With no pane there's no terminal to gate against, so false —
     // never fall through to "any terminal anywhere is focused", which would
     // suppress an unrelated pane's chords. A document without keyboard focus
-    // has no focused terminal, whatever DOM focus it kept: a chord the
-    // browser pane's native view replays arrives that way.
-    terminalFocus: pane ? getTerminalFocused(pane.paneId) && documentHasFocus() : false,
+    // has no focused terminal, whatever DOM focus it kept, and a chord the
+    // browser pane's native view replays was typed in the page.
+    terminalFocus: pane && !isReplayingBrowserPageChord()
+      ? getTerminalFocused(pane.paneId) && documentHasFocus()
+      : false,
     approvalPending: pane ? pane.pendingApprovals.length > 0 : false,
     anyModalOpen: false,
     hasActiveThread: thread !== null,

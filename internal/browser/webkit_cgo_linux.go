@@ -654,6 +654,63 @@ func (p *webkitPage) onKeyPress(seen func(keybindings.Accelerator, KeyPress)) (r
 	}, nil
 }
 
+// webkitFocusApp hands keyboard focus to the SPA's webview.
+func webkitFocusApp() error {
+	ok := false
+	if !gtkDo(func() { ok = C.ao_wk_focus_app() == 1 }) {
+		return errGTKUnavailable
+	}
+	if !ok {
+		return fmt.Errorf("browser: the desktop window has no app webview to focus")
+	}
+	return nil
+}
+
+// offerCtrlKey hands the page's key gate one Control press of key, as
+// offerEscapes does, and answers whether AO stopped it. For the native
+// smoke.
+func (p *webkitPage) offerCtrlKey(key rune) (bool, error) {
+	handled := C.int(0)
+	err := p.liveView().do(func(view unsafe.Pointer) {
+		handled = C.ao_wk_view_offer_ctrl_key(view, C.uint(key))
+	})
+	if err != nil {
+		return false, err
+	}
+	if handled < 0 {
+		return false, fmt.Errorf("browser: page %d has no key controller", p.id)
+	}
+	return handled == 1, nil
+}
+
+// webkitFocusHolder is which widget a page's window has as its focus
+// widget (ao_wk_focus_holder). For the native smoke.
+type webkitFocusHolder int
+
+const (
+	focusHeldByNone webkitFocusHolder = iota
+	focusHeldByPage
+	focusHeldByApp
+	focusHeldByOther
+)
+
+// grabFocus gives the page's view keyboard focus, as a click into it
+// does. For the native smoke.
+func (p *webkitPage) grabFocus() error {
+	return p.liveView().do(func(view unsafe.Pointer) { C.ao_wk_view_grab_focus(view) })
+}
+
+// focusHolder answers who holds the page window's focus and whether that
+// window is active. For the native smoke.
+func (p *webkitPage) focusHolder() (webkitFocusHolder, bool, error) {
+	holder, active := C.int(0), C.int(0)
+	err := p.liveView().do(func(view unsafe.Pointer) {
+		holder = C.ao_wk_focus_holder(view)
+		active = C.ao_wk_window_active(view)
+	})
+	return webkitFocusHolder(holder), active == 1, err
+}
+
 // hasInputMethod answers whether the page's view has an input method
 // context, the one the key gate reads a composition from. For the native
 // smoke.
