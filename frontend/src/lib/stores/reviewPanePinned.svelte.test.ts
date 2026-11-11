@@ -68,6 +68,11 @@ function detail(number: number, overrides: Partial<PRDetail> = {}): PRDetail {
   };
 }
 
+// The attempt id a SubmitPRReview call carried.
+function attemptOf(submit: { mock: { calls: unknown[][] } }, call: number): string | undefined {
+  return (submit.mock.calls[call]?.[1] as { attemptId?: string } | undefined)?.attemptId;
+}
+
 function patchFor(path: string, lines: number): string {
   return [
     `diff --git a/${path} b/${path}`,
@@ -454,7 +459,7 @@ describe('pinned comments and actions', () => {
       await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
 
       expect(submit.mock.calls[0]?.[1]).toEqual({ verdict: 'comment', body: 'overall', comments: [], drafts: { threadId: undefined, ids: ['c1'], headSha: 'sha-5' }, attemptId: expect.any(String) });
-      expect(ask).toHaveBeenCalledWith(expect.anything(), submit.mock.calls[0]?.[1].attemptId);
+      expect(ask).toHaveBeenCalledWith(expect.anything(), attemptOf(submit, 0));
       expect(fake.mark).not.toHaveBeenCalled();
       expect(state.drafts).toEqual([]);
       expect(state.summaryBody).toBe('');

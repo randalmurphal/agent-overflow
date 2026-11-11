@@ -64,6 +64,11 @@ function linesOf(file: ReviewFile | undefined): PatchLine[] | undefined {
   return file?.body.toPatchLines();
 }
 
+// The attempt id a SubmitPRReview call carried.
+function attemptOf(submit: { mock: { calls: unknown[][] } }, call: number): string | undefined {
+  return (submit.mock.calls[call]?.[1] as { attemptId?: string } | undefined)?.attemptId;
+}
+
 function patchFor(path: string, lines: number): string {
   return [
     `diff --git a/${path} b/${path}`,
@@ -2457,7 +2462,7 @@ describe('reviewPane store — PR scope', () => {
       expect(state.drafts).toEqual([]);
       state.setSummaryBody('another note');
       await state.submitPRReview();
-      expect(submit.mock.calls[1]?.[1].attemptId).not.toBe(submit.mock.calls[0]?.[1].attemptId);
+      expect(attemptOf(submit, 1)).not.toBe(attemptOf(submit, 0));
     });
 
     for (const withDraft of [true, false]) {
@@ -2471,7 +2476,7 @@ describe('reviewPane store — PR scope', () => {
 
         await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
 
-        expect(ask).toHaveBeenCalledWith(expect.anything(), submit.mock.calls[0]?.[1].attemptId);
+        expect(ask).toHaveBeenCalledWith(expect.anything(), attemptOf(submit, 0));
         expect(state.summaryBody).toBe('');
         expect(state.submitError).toBeNull();
         expect(state.drafts).toEqual([]);
@@ -2496,7 +2501,7 @@ describe('reviewPane store — PR scope', () => {
       expect(state.submitError).toBe(NEVER_ARRIVED);
       await state.submitPRReview();
       expect(submit).toHaveBeenCalledTimes(2);
-      expect(submit.mock.calls[1]?.[1].attemptId).not.toBe(submit.mock.calls[0]?.[1].attemptId);
+      expect(attemptOf(submit, 1)).not.toBe(attemptOf(submit, 0));
       expect(state.summaryBody).toBe('');
       expect(state.drafts).toEqual([]);
     });
