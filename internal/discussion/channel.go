@@ -140,9 +140,10 @@ func (cs *ChannelService) PostMessage(input PostMessageInput) (store.ChannelMess
 
 // buildChannelMessageMeta runs path-shaped tokens in content through
 // the workspace filesystem allowlist and returns a JSON meta sidecar.
-// The result is the empty string when there are no validated paths
-// (pre-pathlinks behavior preserved). The frontend's markdown
-// linkifier consumes the `pathRefs` key — mirrors the assistant_text
+// The result is the empty string when there are no validated paths and
+// no markdown image. The frontend's markdown linkifier consumes the
+// `pathRefs` key, and resolves the message's relative images against
+// the workspace recorded beside it — mirrors the assistant_text
 // settle-time enrichment in `internal/triage/stream_state.go`.
 //
 // Failures are non-fatal: a missing thread record (deleted concurrently
@@ -158,16 +159,20 @@ func (cs *ChannelService) buildChannelMessageMeta(threadID, content string) stri
 	if workspacePath == "" {
 		return ""
 	}
-	refs := pathlinks.ExtractAndValidate(workspacePath, content)
-	if len(refs) == 0 {
-		return ""
+	meta := ""
+	if refs := pathlinks.ExtractAndValidate(workspacePath, content); len(refs) > 0 {
+		meta, err = pathlinks.MarshalRefsJSON(refs)
+		if err != nil {
+			log.Printf("discussion: pathlinks marshal meta thread=%s: %v", threadID, err)
+			return ""
+		}
 	}
-	encoded, err := pathlinks.MarshalRefsJSON(refs)
+	recorded, err := pathlinks.RecordWorkspace(meta, workspacePath, content)
 	if err != nil {
-		log.Printf("discussion: pathlinks marshal meta thread=%s: %v", threadID, err)
-		return ""
+		log.Printf("discussion: authored workspace meta thread=%s: %v", threadID, err)
+		return meta
 	}
-	return encoded
+	return recorded
 }
 
 // GetMessages returns ordered channel messages after the given sequence cursor.

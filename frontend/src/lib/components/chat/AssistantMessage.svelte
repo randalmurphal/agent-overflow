@@ -13,7 +13,7 @@
   import ReadAloudButton from './ReadAloudButton.svelte';
   import { readAloudAvailable, readAloudPhase, replyReadingKey } from '../../stores/readAloud.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import { EMPTY_PATH_REFS, getPathRefsFromMeta } from '../../utils/pathLinkify';
+  import { EMPTY_PATH_REFS, getAuthoredWorkspaceFromMeta, getPathRefsFromMeta } from '../../utils/pathLinkify';
   import { formatTimeOfDay } from '../../utils/format';
   import { getSettings } from '../../stores/settings.svelte';
   import { copyMarkdownToClipboard } from '../../utils/markdownClipboard';
@@ -151,6 +151,7 @@
   // rebuild ChatMarkdown's marked extension and re-lex every block.
   const pathRefs = $derived(getPathRefsFromMeta(item.meta) ?? EMPTY_PATH_REFS);
   const workspacePath = $derived(paneWorkspacePath(pane));
+  const imageWorkspacePath = $derived(getAuthoredWorkspaceFromMeta(item.meta));
   const threadId = $derived(pane?.threadId ?? '');
   // Names the row to its code blocks, which paint from the spans the backend
   // pushes while it streams.
@@ -335,6 +336,7 @@
       sourceAppend={markdownSourceAppend}
       {streaming}
       {workspacePath}
+      {imageWorkspacePath}
       {pathRefs}
       {threadId}
       {liveCodeRow}

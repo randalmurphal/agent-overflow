@@ -181,3 +181,62 @@ func TestChannelPostMessageMissingWorkspaceLeavesMetaEmpty(t *testing.T) {
 		t.Fatalf("expected empty meta when workspace is missing, got %q", msg.Meta)
 	}
 }
+
+// A channel message that holds a markdown image records the workspace it
+// was posted from, with or without validated paths beside it, so its
+// relative image keeps resolving there after the thread moves.
+func TestChannelPostMessageRecordsWorkspaceForImages(t *testing.T) {
+	wsRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(wsRoot, "internal"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wsRoot, "internal", "handler.go"), nil, 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	st := newDiscussionTestStore(t)
+	channelSvc := NewChannelService(st)
+	project := testutil.EnsureProject(t, st, "/tmp/project")
+	thread := store.Thread{
+		ID:            "thread-image",
+		ProjectID:     project.ID,
+		Title:         "Discussion Thread",
+		Provider:      "codex",
+		WorkspacePath: wsRoot,
+		Model:         "gpt-5.4",
+		Mode:          "discussion",
+		CreatedAt:     time.Now().UnixMilli(),
+		UpdatedAt:     time.Now().UnixMilli(),
+	}
+	if err := st.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	channel, err := channelSvc.Create(thread.ID, "deliberation", 5)
+	if err != nil {
+		t.Fatalf("Create channel: %v", err)
+	}
+
+	for content, wantRefs := range map[string]int{
+		"Here is the shot: ![shot](shots/a.png)":                 0,
+		"See internal/handler.go and ![shot](shots/a.png) again": 1,
+	} {
+		msg, err := channelSvc.PostMessage(PostMessageInput{
+			ChannelID: channel.ID, FromType: "agent", FromID: "thread-a", FromRole: "proposer", Content: content,
+		})
+		if err != nil {
+			t.Fatalf("PostMessage %q: %v", content, err)
+		}
+		var decoded struct {
+			PathRefs          []pathlinks.PathRef `json:"pathRefs"`
+			AuthoredWorkspace string              `json:"authoredWorkspace"`
+		}
+		if err := json.Unmarshal([]byte(msg.Meta), &decoded); err != nil {
+			t.Fatalf("decode meta %q for %q: %v", msg.Meta, content, err)
+		}
+		if decoded.AuthoredWorkspace != wsRoot {
+			t.Fatalf("%q: authored workspace = %q, want %q (meta %s)", content, decoded.AuthoredWorkspace, wsRoot, msg.Meta)
+		}
+		if len(decoded.PathRefs) != wantRefs {
+			t.Fatalf("%q: %d path refs, want %d (meta %s)", content, len(decoded.PathRefs), wantRefs, msg.Meta)
+		}
+	}
+}

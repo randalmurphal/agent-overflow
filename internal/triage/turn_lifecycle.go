@@ -2157,6 +2157,9 @@ func (r *Router) MarkThreadActive(threadID string) {
 		// Same reasoning for the command-lifecycle correlation: the acks
 		// it waits on can only come from the process that just died.
 		st.commandLifecycle = nil
+		// The directory is the dead process's. Its replacement launches
+		// from the thread row's workspace, wherever the last one moved to.
+		st.workspacePath, st.workspacePathSet = "", false
 	}
 	if hadEffectiveModel {
 		effectiveModelRevision = r.nextEffectiveModelRevisionLocked(threadID)

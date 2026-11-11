@@ -600,7 +600,11 @@ func (r *Router) nextTextItemID(threadID string, turnIndex int, scope string) st
 // path-shaped tokens across one or more text sources against the
 // workspace filesystem and stores the resulting allowlist on item.Meta.
 // Per-item dedupe keeps the slice size bounded when several sources
-// reference the same path.
+// reference the same path. A source that holds a markdown image also
+// records the workspace itself (pathlinks.RecordWorkspace): the thread's
+// workspace moves (a worktree entered or left, a switch, an attach) while
+// the row's text does not, and a relative image destination names a file
+// in the checkout the text was written in.
 //
 // Failures are non-fatal: a missing thread record or a malformed
 // existing meta JSON falls back to skipping enrichment so the
@@ -611,6 +615,11 @@ func (r *Router) enrichPathRefsFromTexts(threadID string, item *store.Item, sour
 	workspacePath := r.workspacePathFor(threadID)
 	if workspacePath == "" {
 		return
+	}
+	if recorded, err := pathlinks.RecordWorkspace(item.Meta, workspacePath, sources...); err != nil {
+		log.Printf("triage: authored workspace for %s: %v", item.ID, err)
+	} else {
+		item.Meta = recorded
 	}
 	refs := extractPathRefsFromTexts(workspacePath, sources)
 	if len(refs) == 0 {
@@ -762,13 +771,11 @@ func (r *Router) enrichStreamingPathRefsAndEmit(item store.Item, updatedAt int64
 	r.emit(eventchan.ProviderItemEvent, newItemStreamMeta(item.ThreadID, item.ID, item.ParentID, item.Kind, merged, updatedAt))
 }
 
-// workspacePathFor returns the WorkspacePath for threadID, using a
-// per-router cache so repeat callers in a single turn (e.g. several
-// assistant_text settles back-to-back) don't each pay a SQLite read
-// for the same effectively-immutable value. Misses log and return
-// empty so the caller skips enrichment cleanly. Eviction is tied to
-// CleanupThread (the only point at which the workspace association
-// goes away from the router's perspective).
+// workspacePathFor returns the directory threadID's provider process works
+// in, through the thread state's cache (see threadState.workspacePath) so
+// the streaming flushes and prose settles of a turn do not each pay a
+// SQLite read. A failed lookup logs and returns empty so the caller skips
+// enrichment cleanly.
 func (r *Router) workspacePathFor(threadID string) string {
 	r.mu.Lock()
 	st := r.threadStateIfPresent(threadID)
@@ -786,12 +793,37 @@ func (r *Router) workspacePathFor(threadID string) string {
 	r.mu.Lock()
 	// A final settle can outlive CleanupThread. Reads never resurrect its
 	// caches, and a lookup begun by an old session cannot seed its replacement.
+	// A move the process reported during the read is newer than the row.
 	if st != nil && r.threadStateIfPresent(threadID) == st {
-		st.workspacePath = workspacePath
-		st.workspacePathSet = true
+		if st.workspacePathSet {
+			workspacePath = st.workspacePath
+		} else {
+			st.workspacePath = workspacePath
+			st.workspacePathSet = true
+		}
 	}
 	r.mu.Unlock()
 	return workspacePath
+}
+
+// followWorkspaceChange moves the thread's cached workspace to the directory
+// the provider process reports it now works in, so the rows that settle
+// after the move are validated against, and record, the checkout they were
+// written in. An event with no readable directory drops the cache; the next
+// read takes the thread row.
+func (r *Router) followWorkspaceChange(evt provider.ProviderEvent) {
+	var change provider.WorkspaceChangeMeta
+	cwd := ""
+	if err := json.Unmarshal(evt.Meta, &change); err != nil {
+		log.Printf("triage: workspace change for %s: %v", evt.ThreadID, err)
+	} else {
+		cwd = strings.TrimSpace(change.Cwd)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if st := r.threadStateIfPresent(evt.ThreadID); st != nil {
+		st.workspacePath, st.workspacePathSet = cwd, cwd != ""
+	}
 }
 
 // mergePathRefsIntoMeta returns the item.Meta JSON string with a

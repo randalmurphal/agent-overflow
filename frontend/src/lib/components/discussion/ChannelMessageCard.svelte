@@ -12,6 +12,7 @@
   let {
     threadId,
     workspacePath,
+    imageWorkspacePath,
     accentClass,
     badgeClass,
     roleLabel,
@@ -25,6 +26,9 @@
      *  message is read from. */
     threadId: string;
     workspacePath: string;
+    /** The workspace the message was posted from, when it recorded one:
+     *  relative image paths resolve against it. */
+    imageWorkspacePath?: string;
     /** Card border/background classes — human/agent/system/live-tail
      * each get a distinct treatment (see ChannelView's `messageAccentClass`). */
     accentClass: string;
@@ -59,6 +63,7 @@
     source={content}
     {threadId}
     {workspacePath}
+    {imageWorkspacePath}
     {pathRefs}
     {streaming}
     class="text-[0.8125rem] text-fg break-words"

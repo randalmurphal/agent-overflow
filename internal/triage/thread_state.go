@@ -311,13 +311,13 @@ type threadState struct {
 	// why neither value can be recovered lazily.
 	commandLifecycle map[string]commandLifecycleEntry
 
-	// workspacePath is a small read-through cache for the thread row's
-	// WorkspacePath, populated lazily by path-ref enrichment (the only hot
-	// caller). A thread's workspace is set at create time and effectively
-	// immutable, so the cache is safe without invalidation beyond session
-	// teardown. Without it, every assistant_text settle ran a SQLite
-	// GetThread JUST to read a stable string — fine on its own, but adds
-	// up across the 10-30 text blocks per heavy turn.
+	// workspacePath caches the directory the thread's provider process
+	// works in, for path-ref enrichment: every streaming text flush and
+	// every prose settle reads it, 10-30 times in a heavy turn. It is read
+	// from the thread row at first use, follows the process's own move
+	// (followWorkspaceChange), and is dropped when the process is replaced
+	// (MarkThreadActive) or the session is torn down. Every other checkout
+	// move restarts the session.
 	workspacePath    string
 	workspacePathSet bool
 
