@@ -241,9 +241,11 @@ export class CILogBlockCache {
     block.clipped = clipped.size > 0 ? clipped : NO_CLIPPED;
     block.version = version;
     block.loading = false;
-    // The index moved on while the load ran: read the block again. A
-    // reply ahead of the index waits for the index to reach it.
-    if (block.uses > 0 && version < this.#version) this.#refresh(index, block);
+    // The index moved on while the load ran (a new version, or more lines
+    // of this one, whose refresh the load in flight turned away): read the
+    // block again if it is not current. A reply ahead of the index waits
+    // for the index to reach it.
+    if (block.uses > 0 && version <= this.#version) this.#refresh(index, block);
     this.#evict();
   }
 

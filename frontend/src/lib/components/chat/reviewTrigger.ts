@@ -26,12 +26,14 @@ export function openReviewForItem(pane: PaneSession, opts: OpenReviewForItemOpts
       scope: 'edits',
       editItemId: opts.editItemId,
       filePath: opts.filePath,
+      userInitiated: true,
     });
     return;
   }
   void openReviewCompanion(pane.paneId, subject, {
     scope: 'workspace',
     filePath: opts.filePath,
+    userInitiated: true,
   });
 }
 

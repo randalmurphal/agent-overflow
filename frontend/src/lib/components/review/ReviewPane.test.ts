@@ -1,9 +1,10 @@
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ReviewPane from './ReviewPane.svelte';
+import ReviewConversationCommits from './ReviewConversationCommits.svelte';
 import type { PanelContext } from '../../stores/panelContext.svelte';
 import { makeStubPanelContext } from '../../../test/helpers/panelContext';
-import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
+import { __resetReviewPaneStateForTest, type ReviewPaneState } from '../../stores/reviewPane.svelte';
 import { resetForTest as resetDiffReviewCommentsForTest } from '../../stores/diffReviewComments.svelte';
 import { resetAppStorageForTest } from '../../stores/appStorage';
 import type { CIPipeline, DiffReviewComment, DiffReviewCommentInput, PRDetail, ReviewThread, Thread } from '../../types/models';
@@ -340,28 +341,138 @@ describe('<ReviewPane>', () => {
     expect(view.getByTestId('review-tree-comment-count').classList.contains('text-warning')).toBe(true);
   });
 
-  it('applies the extension filter to the diff when the dropdown toggle is checked', async () => {
-    const view = render(ReviewPane, { ctx: makeCtx() });
-    // Distinct paths, because the sticky overlay can duplicate the top
-    // file's header row.
-    const headerPaths = () =>
-      [...new Set(view.getAllByTestId('review-file-header').map((node) => node.getAttribute('data-path')))];
+  it('applies the extension filter to the diff by default, and the dropdown item turns that off', async () => {
+    const mount = () => {
+      const view = render(ReviewPane, { ctx: makeCtx() });
+      // Distinct paths, because the sticky overlay can duplicate the top
+      // file's header row.
+      const headerPaths = () =>
+        [...new Set(view.getAllByTestId('review-file-header').map((node) => node.getAttribute('data-path')))];
+      const treePaths = () =>
+        view.getAllByTestId('review-tree-file').map((node) => node.getAttribute('data-file-path'));
+      return { view, headerPaths, treePaths };
+    };
+    const { view, headerPaths, treePaths } = mount();
     await waitFor(() => {
       expect(headerPaths()).toEqual(['src/app.ts', 'pnpm-lock.yaml']);
     });
 
     await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
+    expect(view.getByTestId('review-tree-filter-diff')).toHaveTextContent('✓');
     await fireEvent.click(view.getByRole('menuitem', { name: /^\.ts/ }));
-    // Rail-only by default: the diff still shows both files.
-    expect(headerPaths()).toHaveLength(2);
-
-    await fireEvent.click(view.getByRole('menuitem', { name: /apply filter to diff/i }));
+    // Nothing else touched: the diff narrows with the tree.
+    expect(treePaths()).toEqual(['src/app.ts']);
     expect(headerPaths()).toEqual(['src/app.ts']);
     expect(view.getByTestId('review-diff-stats').textContent).toContain('1 file');
 
-    // Unchecking restores the full diff; the rail filter stays active.
-    await fireEvent.click(view.getByRole('menuitem', { name: /apply filter to diff/i }));
-    expect(headerPaths()).toHaveLength(2);
+    // Unchecking restores the full diff; the tree stays filtered.
+    await fireEvent.click(view.getByTestId('review-tree-filter-diff'));
+    expect(view.getByTestId('review-tree-filter-diff')).not.toHaveTextContent('✓');
+    expect(headerPaths()).toEqual(['src/app.ts', 'pnpm-lock.yaml']);
+    expect(treePaths()).toEqual(['src/app.ts']);
+
+    // Checking it again narrows the diff again.
+    await fireEvent.click(view.getByTestId('review-tree-filter-diff'));
+    expect(headerPaths()).toEqual(['src/app.ts']);
+    await fireEvent.click(view.getByTestId('review-tree-filter-diff'));
+    view.unmount();
+
+    // A new pane starts with no filter and the item back on.
+    const again = mount();
+    await waitFor(() => {
+      expect(again.headerPaths()).toEqual(['src/app.ts', 'pnpm-lock.yaml']);
+    });
+    expect(again.treePaths()).toHaveLength(2);
+    await fireEvent.click(again.view.getByTestId('review-tree-ext-trigger'));
+    expect(again.view.getByTestId('review-tree-filter-diff')).toHaveTextContent('✓');
+    await fireEvent.click(again.view.getByRole('menuitem', { name: /^\.ts/ }));
+    expect(again.headerPaths()).toEqual(['src/app.ts']);
+  });
+
+  // An explicit jump reveals its target: a thread's location in the
+  // Conversation on a file the filter hides shows that file in the diff
+  // and the tree, until the filter selection changes.
+  it('a Conversation location jump reveals a file hidden by hide tests or a type filter', async () => {
+    const filePatch = (path: string) => [
+      `diff --git a/${path} b/${path}`,
+      'index 1111111..2222222 100644',
+      `--- a/${path}`,
+      `+++ b/${path}`,
+      '@@ -1 +1 @@',
+      '-old',
+      '+new',
+    ];
+    const detail: PRDetail = {
+      number: 5, title: 'Add feature', body: '', authorLogin: 'octocat', state: 'open', draft: false,
+      headRefName: 'feature', baseRefName: 'main', baseRefSHA: 'base-main', headSHA: 'sha-a',
+      url: 'https://github.com/owner/repo/pull/5', additions: 3, deletions: 3, changedFiles: 3,
+      viewerIsAuthor: false, reviewDecision: '', latestReviews: [],
+      checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
+      mergeability: 'clean', readiness: { state: 'ready', blockers: [], settled: [] },
+      merge: { methods: ['merge'], deleteBranchOffered: false, deleteBranchDefault: false, autoMergeAvailable: false, viewerCanMerge: false, viewerCanApprove: false, viewerApproved: false },
+    };
+    const thread = (id: string, path: string): ReviewThread => ({
+      id, path, line: 1, side: 'right', isResolvable: true, isResolved: false, isOutdated: false,
+      comments: [{ authorLogin: 'alice', body: `About ${path}.`, createdAt: '2026-01-01T00:00:00Z', databaseID: Number(id.slice(2)) }],
+    });
+    const threads = [thread('t-1', 'src/app.test.ts'), thread('t-2', 'docs/notes.md')];
+    setBindingMock('SubscribePRUpdates', async () => ({ id: 'sub-1', prKey: 'github:owner/repo:5', detail, threads, headSHA: 'sha-a' }));
+    setBindingMock('UnsubscribePRUpdates', async () => undefined);
+    setReviewDiffMock('OpenPRDiff', async () =>
+      [...filePatch('src/app.ts'), ...filePatch('src/app.test.ts'), ...filePatch('docs/notes.md')].join('\n'));
+    setBindingMock('ListPRReviewThreads', async () => threads);
+
+    seedSourcePanePR();
+    const view = render(ReviewPane, { ctx: makeCtx() });
+    await waitFor(() => expect(view.getByTestId('review-diff-stats')).toBeInTheDocument());
+    await pickScope(view, 'pr');
+    const headerPaths = () =>
+      [...new Set(view.queryAllByTestId('review-file-header').map((node) => node.getAttribute('data-path')))];
+    const treePaths = () =>
+      view.queryAllByTestId('review-tree-file').map((node) => node.getAttribute('data-file-path'));
+    await waitFor(() => expect(headerPaths()).toHaveLength(3));
+    const jumpTo = async (path: string) => {
+      const conversation = view.getByTestId('review-pr-conversation');
+      if (conversation.getAttribute('data-open') !== 'true') await fireEvent.click(conversation.querySelector('button')!);
+      const card = await waitFor(() => {
+        const found = view.getAllByTestId('review-conversation-thread').find((node) => node.textContent?.includes(`About ${path}.`));
+        expect(found).toBeDefined();
+        return found!;
+      });
+      await fireEvent.click(within(card).getByTestId('review-conversation-jump-diff'));
+    };
+    const filterItem = async (testIdOrName: string | RegExp) => {
+      if (view.queryByTestId('review-tree-filter-diff') === null) await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
+      const item = typeof testIdOrName === 'string'
+        ? view.getByTestId(testIdOrName)
+        : view.getByRole('menuitem', { name: testIdOrName });
+      await fireEvent.click(item);
+    };
+
+    // Hide tests: the jump brings the test file into the diff and the tree.
+    await filterItem('review-tree-hide-tests');
+    expect(headerPaths()).not.toContain('src/app.test.ts');
+    expect(treePaths()).not.toContain('src/app.test.ts');
+    await jumpTo('src/app.test.ts');
+    await waitFor(() => expect(headerPaths()).toContain('src/app.test.ts'));
+    expect(treePaths()).toContain('src/app.test.ts');
+    // Changing the filter hides it again.
+    await filterItem('review-tree-hide-tests');
+    await filterItem('review-tree-hide-tests');
+    expect(headerPaths()).not.toContain('src/app.test.ts');
+    expect(treePaths()).not.toContain('src/app.test.ts');
+    await filterItem('review-tree-hide-tests');
+
+    // A type filter: the same for a file of another type.
+    await filterItem(/^\.ts/);
+    expect(headerPaths()).toEqual(['src/app.test.ts', 'src/app.ts']);
+    await jumpTo('docs/notes.md');
+    await waitFor(() => expect(headerPaths()).toContain('docs/notes.md'));
+    expect(treePaths()).toContain('docs/notes.md');
+    await filterItem(/^\.ts/);
+    await filterItem(/^\.ts/);
+    expect(headerPaths()).not.toContain('docs/notes.md');
+    expect(treePaths()).not.toContain('docs/notes.md');
   });
 
   it('toggles hide-whitespace from the toolbar and re-requests the diff', async () => {
@@ -1311,6 +1422,87 @@ describe('<ReviewPane> load failures', () => {
     });
     expect(diff.mock.calls.length).toBe(calls + 1);
     expect(view.queryByTestId('review-error')).not.toBeInTheDocument();
+  });
+});
+
+// A PR read the pane's controls start is a person's: it may ask for git
+// credentials (the store reads unattended unless told).
+describe('<ReviewPane> PR read intent', () => {
+  const commitSHA = 'b'.repeat(40);
+  const lastIntent = (mock: { mock: { calls: unknown[][] } }) => mock.mock.calls.at(-1)?.at(-1);
+
+  it('every control that reads the PR says a person asked', async () => {
+    installFakeHighlighter();
+    let fail = false;
+    const diff = setReviewDiffMock('OpenPRDiff', async () => {
+      if (fail) throw new Error('fetch failed');
+      return patch();
+    });
+    const list = setBindingMock('ListPRCommits', async () => [
+      { sha: commitSHA, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
+    ]);
+    const commitDiff = setReviewDiffMock('OpenPRCommitDiff', async () => patch());
+    const view = await renderPRScope();
+    await waitFor(() => expect(view.getByTestId('review-diff-stats')).toBeInTheDocument());
+    // The scope pick.
+    expect(lastIntent(list)).toBe(true);
+    expect(lastIntent(diff)).toBe(true);
+
+    // The toolbar's Reload.
+    await waitFor(() => expect(view.getByTestId('review-reload')).toBeEnabled());
+    let calls = diff.mock.calls.length;
+    await fireEvent.click(view.getByTestId('review-reload'));
+    await waitFor(() => expect(diff.mock.calls.length).toBe(calls + 1));
+    expect(lastIntent(diff)).toBe(true);
+
+    // The error banner's Retry.
+    fail = true;
+    await waitFor(() => expect(view.getByTestId('review-reload')).toBeEnabled());
+    await fireEvent.click(view.getByTestId('review-reload'));
+    await waitFor(() => expect(view.getByTestId('review-error')).toBeInTheDocument());
+    fail = false;
+    calls = diff.mock.calls.length;
+    await fireEvent.click(await waitFor(() => view.getByTestId('review-error-retry')));
+    await waitFor(() => expect(diff.mock.calls.length).toBe(calls + 1));
+    expect(lastIntent(diff)).toBe(true);
+
+    // The stale banner's Reload.
+    setReviewDiffMock('OpenPRDiff', async (...args: never[]) => {
+      diff(...args);
+      return patch();
+    });
+    pushTo('sha-b');
+    await waitFor(() => expect(view.getByTestId('review-pr-stale')).toBeInTheDocument());
+    calls = diff.mock.calls.length;
+    await fireEvent.click(view.getByTestId('review-pr-stale').querySelector('button')!);
+    await waitFor(() => expect(diff.mock.calls.length).toBe(calls + 1));
+    expect(lastIntent(diff)).toBe(true);
+
+    // Hide whitespace.
+    calls = diff.mock.calls.length;
+    const toggle = await openViewOption(view, 'review-ignore-whitespace-toggle');
+    await waitFor(() => expect(toggle).not.toHaveAttribute('aria-disabled', 'true'));
+    await fireEvent.click(toggle);
+    await waitFor(() => expect(diff.mock.calls.length).toBe(calls + 1));
+    expect(lastIntent(diff)).toBe(true);
+
+    // The commit picker.
+    await waitFor(() => expect(view.getByTestId('review-commit-select')).toBeEnabled());
+    await fireEvent.click(view.getByTestId('review-commit-select'));
+    await fireEvent.click(await waitFor(() => view.getByTestId('review-commit-option')));
+    await waitFor(() => expect(commitDiff).toHaveBeenCalled());
+    expect(lastIntent(commitDiff)).toBe(true);
+  });
+
+  it('a commit picked in the Conversation feed says a person asked', async () => {
+    const selectCommit = vi.fn(async () => undefined);
+    const view = render(ReviewConversationCommits, {
+      review: { selectCommit } as unknown as ReviewPaneState,
+      author: 'r',
+      commits: [{ sha: commitSHA, shortSha: 'bbbbbbb', subject: 'first', body: '', author: 'r', authoredAt: 1 }],
+    });
+    await fireEvent.click(view.getByTitle("Show this commit's diff"));
+    expect(selectCommit).toHaveBeenCalledWith(commitSHA, { userInitiated: true });
   });
 });
 

@@ -217,14 +217,15 @@ func (a *App) GetPRDetail(ctx context.Context, pr gitops.PRReference) (gitops.PR
 	return a.gitCore().GetPRDetail(forgeapi.WithInteractive(ctx), pr)
 }
 
-// OpenPRDiff opens the PR's three-dot diff (merge base of the base branch
-// tip to the head) at rev, the revision of the PR snapshot the caller
-// shows, computed in the referenced clone.
+// OpenPRDiff opens the PR's three-dot diff (merge base of the recorded base
+// and the head, to the head) at rev, the revision of the PR snapshot the caller
+// shows, computed in the referenced clone. userInitiated is whether a person
+// asked for the read (prRevisionWorkspace).
 //
 //ao:scope git:operate
-func (a *App) OpenPRDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, ignoreWhitespace bool) (ReviewDiffOpened, error) {
+func (a *App) OpenPRDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, ignoreWhitespace, userInitiated bool) (ReviewDiffOpened, error) {
 	const action = "open PR diff"
-	workspace, err := a.prRevisionWorkspace(action, ws, pr, rev)
+	workspace, err := a.prRevisionWorkspace(action, ws, pr, rev, userInitiated)
 	if err != nil {
 		return ReviewDiffOpened{}, err
 	}
@@ -235,11 +236,12 @@ func (a *App) OpenPRDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRRefer
 }
 
 // ListPRCommits returns the commits a PR carries at rev (`base..head`,
-// newest first), computed from the referenced clone.
+// newest first), computed from the referenced clone. userInitiated is
+// whether a person asked for the read (prRevisionWorkspace).
 //
 //ao:scope git:operate
-func (a *App) ListPRCommits(ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision) ([]BranchCommit, error) {
-	workspace, err := a.prRevisionWorkspace("list PR commits", ws, pr, rev)
+func (a *App) ListPRCommits(ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, userInitiated bool) ([]BranchCommit, error) {
+	workspace, err := a.prRevisionWorkspace("list PR commits", ws, pr, rev, userInitiated)
 	if err != nil {
 		return nil, err
 	}
@@ -248,11 +250,12 @@ func (a *App) ListPRCommits(ws WorkspaceRef, pr gitops.PRReference, rev gitops.P
 
 // OpenPRCommitDiff opens the unified patch a single commit of the PR at rev
 // introduced (first-parent diff), read from the referenced clone.
+// userInitiated is whether a person asked for the read (prRevisionWorkspace).
 //
 //ao:scope git:operate
-func (a *App) OpenPRCommitDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, sha string, ignoreWhitespace bool) (ReviewDiffOpened, error) {
+func (a *App) OpenPRCommitDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, sha string, ignoreWhitespace, userInitiated bool) (ReviewDiffOpened, error) {
 	const action = "open PR commit diff"
-	workspace, err := a.prRevisionWorkspace(action, ws, pr, rev)
+	workspace, err := a.prRevisionWorkspace(action, ws, pr, rev, userInitiated)
 	if err != nil {
 		return ReviewDiffOpened{}, err
 	}
@@ -278,7 +281,11 @@ func (a *App) prCloneWorkspace(action string, ws WorkspaceRef) (string, error) {
 
 // prRevisionWorkspace is the shared entry of a PR read at rev: it resolves
 // the clone and makes rev's commits present in it (EnsurePRObjects).
-func (a *App) prRevisionWorkspace(action string, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision) (string, error) {
+// userInitiated is whether a person asked for this read: only then may the
+// fetch ask for credentials, and only then does a failure arm the PR pump's
+// retry (notePRReadFailed), so an automatic read that fails cannot chain
+// into another one on every poll.
+func (a *App) prRevisionWorkspace(action string, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, userInitiated bool) (string, error) {
 	if a.shuttingDown.Load() {
 		return "", ErrShuttingDown
 	}
@@ -292,8 +299,14 @@ func (a *App) prRevisionWorkspace(action string, ws WorkspaceRef, pr gitops.PRRe
 	if err != nil {
 		return "", err
 	}
-	if err := a.gitCore().EnsurePRObjects(workspace, pr, rev); err != nil {
-		a.notePRReadFailed(pr)
+	ensure := a.gitCore().EnsurePRObjectsUnattended
+	if userInitiated {
+		ensure = a.gitCore().EnsurePRObjects
+	}
+	if err := ensure(workspace, pr, rev); err != nil {
+		if userInitiated {
+			a.notePRReadFailed(pr)
+		}
 		return "", fmt.Errorf("%s: %w", action, err)
 	}
 	return workspace, nil

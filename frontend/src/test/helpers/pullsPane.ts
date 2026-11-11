@@ -83,7 +83,8 @@ export function pullsSnapshot(projects: ProjectPRList[] = [pullsProject([pullIte
   return { seq: 1, fetchedAt: '2026-10-20T00:00:00Z', projects } as PRListSnapshot;
 }
 
-function prDetail(number: number) {
+/** The detail the mocked pump reports for PR `number`. */
+export function prDetail(number: number) {
   return {
     number,
     title: `PR ${number}`,

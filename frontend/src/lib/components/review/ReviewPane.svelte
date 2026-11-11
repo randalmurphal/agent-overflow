@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onDestroy, onMount, setContext } from 'svelte';
+  import { onDestroy, onMount, setContext, untrack } from 'svelte';
+  import { companionForSource } from '../../stores/companionPanes.svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import ReviewCILogView from './ReviewCILogView.svelte';
   import ReviewCommentThread from './ReviewCommentThread.svelte';
@@ -46,15 +47,19 @@
      * `disposePRReviewStates(ownerPaneId)` when its page goes; the states
      * of the PR on screen and the one before it outlive this component. */
     pr?: { ownerPaneId: string; backend: BackendKey; projectId: string; pr: PRRef };
+    /** Pinned: whether a person opened this PR, which a new state's first
+     * read carries (a restored page's does not). */
+    userInitiated?: boolean;
   }
 
-  let { ctx, pr }: Props = $props();
+  let { ctx, pr, userInitiated = false }: Props = $props();
   // File-filter state (type chips, hide tests) is owned here, not in the
-  // tree, so the dropdown's "Apply filter to diff" toggle can also narrow
-  // the diff body, and the selection survives the rail hiding.
+  // tree, so it narrows the diff body too, and the selection survives the
+  // rail hiding. The dropdown's "Apply filter to diff" item is the switch
+  // that turns the diff narrowing off.
   const activeExtensions = new SvelteSet<string>();
   let hideTests = $state(false);
-  let filterDiff = $state(false);
+  let filterDiff = $state(true);
   // Captured at init, NOT $derived: the subject is fixed for this instance
   // (CompanionPane keys the body on conversation, ownership epoch and checkout,
   // so a move, workspace change or draft materialization remounts it; the
@@ -77,9 +82,16 @@
   const sourcePaneId = pr?.ownerPaneId ?? ctx?.paneId ?? '';
   function initialState(): ReviewPaneState | null {
     if (!subject) return null;
-    return subject.pinned ? reviewStateForPR(sourcePaneId, subject) : reviewStateForPane(sourcePaneId, subject);
+    return subject.pinned ? reviewStateForPR(sourcePaneId, subject, { userInitiated }) : reviewStateForPane(sourcePaneId, subject);
   }
   const review = initialState();
+  // The conflict view's reconcile permit follows this mount, and whether
+  // the layout pane hosting it is on screen, not how long the state is
+  // retained. A pinned review lives in its owner's pane; a companion in
+  // its own layout pane, fixed for its life.
+  // svelte-ignore state_referenced_locally
+  const hostPaneId = pr?.ownerPaneId ?? untrack(() => companionForSource(sourcePaneId, 'review')?.paneId) ?? sourcePaneId;
+  $effect(() => review?.attachSurface(hostPaneId));
   // The conflict view's Back, unless the host's header owns Back.
   const hostOwnsBack = hostedBackReader();
   // Forge attachments in every ChatMarkdown under this pane — the PR body,
@@ -106,13 +118,13 @@
   let treeVisible = $state(storedTreeVisible ?? true);
   let jumpFilePath: string | null = $state(null);
   let topFileIndex = $state(-1);
-  // The files the diff body renders: the full set, or the tree's filtered
-  // subset (type chips, hide tests; never the search box) when the
-  // dropdown's apply-to-diff toggle is on.
+  // The files the diff body renders: the tree's filtered subset (type
+  // chips, hide tests; never the search box), or the full set once the
+  // dropdown's apply-to-diff item is turned off.
   const diffFiles = $derived.by(() => {
     const files = review?.files ?? [];
     if (!filterDiff || (activeExtensions.size === 0 && !hideTests)) return files;
-    return filterReviewFiles(files, '', activeExtensions, hideTests).files;
+    return filterReviewFiles(files, '', activeExtensions, hideTests, review?.revealedPaths).files;
   });
   // The tree highlights by index into the FULL file list; the diff body
   // reports indexes into diffFiles — map through the path.
@@ -247,7 +259,7 @@
           type="button"
           class="shrink-0 rounded border border-error/40 px-2 py-0.5 disabled:opacity-50"
           disabled={review.loading}
-          onclick={() => { void review?.reload(); }}
+          onclick={() => { void review?.reload({ userInitiated: true }); }}
           data-testid="review-error-retry"
         >Retry</button>
       </div>
@@ -289,7 +301,7 @@
     {#if review.prStale}
       <div class="flex items-center justify-between gap-3 border-b border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning" data-testid="review-pr-stale">
         <span>PR updated.</span>
-        <button type="button" class="rounded border border-warning/40 px-2 py-0.5" onclick={() => { void review?.reload(); }}>Reload</button>
+        <button type="button" class="rounded border border-warning/40 px-2 py-0.5" onclick={() => { void review?.reload({ userInitiated: true }); }}>Reload</button>
       </div>
     {/if}
     {#if review.scope === 'pr' && review.prDetail}
@@ -418,6 +430,8 @@
             onHideTestsChange={(value) => { hideTests = value; }}
             {filterDiff}
             onFilterDiffChange={(value) => { filterDiff = value; }}
+            revealedPaths={review.revealedPaths}
+            onFilterSelectionChange={() => review?.clearRevealedPaths()}
           />
         {/if}
         {#snippet leadRowContent()}

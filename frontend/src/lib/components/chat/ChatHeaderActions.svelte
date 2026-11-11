@@ -184,7 +184,7 @@
   function openPrReview(): boolean {
     const subject = reviewSubjectForPane(pane);
     if (!subject) return false;
-    void openReviewCompanion(pane.paneId, subject, { scope: 'pr' });
+    void openReviewCompanion(pane.paneId, subject, { scope: 'pr', userInitiated: true });
     return true;
   }
 
@@ -195,7 +195,7 @@
     }
     const subject = reviewSubjectForPane(pane);
     if (!subject) return;
-    void openReviewCompanion(pane.paneId, subject, { scope: 'workspace' });
+    void openReviewCompanion(pane.paneId, subject, { scope: 'workspace', userInitiated: true });
   }
 
   // Compact keeps the diff badge visible and rolls other actions into a menu.

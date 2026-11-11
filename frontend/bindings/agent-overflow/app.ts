@@ -1772,11 +1772,19 @@ export function GetPRDetail(pr: git$0.PRReference): $CancellablePromise<git$0.PR
 }
 
 /**
- * GetPRMergeConflicts merges the PR at rev in the referenced clone and
- * reports the conflicts.
+ * GetPRMergeConflicts merges rev's head with the tip rev.BaseRef has on
+ * origin now, read by this call and fetched when the clone lacks it, in the referenced clone and reports the
+ * conflicts. rev.BaseSHA is not merged: it is the base the forge recorded,
+ * which the head usually contains, so merging with it never conflicts.
+ * 
+ * userInitiated is true when a person opened the conflict view and false
+ * for the view's automatic re-reads (a forge poll that changed what the
+ * merge depends on, a retry after a failed read). Only a user-initiated
+ * read may ask for git credentials or arm the PR pump's retry after a
+ * failure; an automatic read fails fast and reports the failure.
  */
-export function GetPRMergeConflicts(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: git$0.PRRevision, headRefName: string): $CancellablePromise<app$0.PRMergeConflictsResult> {
-    return $Call.ByID(106351482, ws, pr, rev, headRefName).then(($result: any) => {
+export function GetPRMergeConflicts(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: git$0.PRRevision, headRefName: string, userInitiated: boolean): $CancellablePromise<app$0.PRMergeConflictsResult> {
+    return $Call.ByID(106351482, ws, pr, rev, headRefName, userInitiated).then(($result: any) => {
         return $$createType65($result);
     });
 }
@@ -2987,10 +2995,11 @@ export function ListOwnDevices(): $CancellablePromise<app$0.OwnDeviceList> {
 
 /**
  * ListPRCommits returns the commits a PR carries at rev (`base..head`,
- * newest first), computed from the referenced clone.
+ * newest first), computed from the referenced clone. userInitiated is
+ * whether a person asked for the read (prRevisionWorkspace).
  */
-export function ListPRCommits(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: git$0.PRRevision): $CancellablePromise<app$0.BranchCommit[]> {
-    return $Call.ByID(4110818691, ws, pr, rev).then(($result: any) => {
+export function ListPRCommits(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: git$0.PRRevision, userInitiated: boolean): $CancellablePromise<app$0.BranchCommit[]> {
+    return $Call.ByID(4110818691, ws, pr, rev, userInitiated).then(($result: any) => {
         return $$createType132($result);
     });
 }
@@ -3690,20 +3699,22 @@ export function OpenOwnComputerPairing(networkChoice: string): $CancellablePromi
 /**
  * OpenPRCommitDiff opens the unified patch a single commit of the PR at rev
  * introduced (first-parent diff), read from the referenced clone.
+ * userInitiated is whether a person asked for the read (prRevisionWorkspace).
  */
-export function OpenPRCommitDiff(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: git$0.PRRevision, sha: string, ignoreWhitespace: boolean): $CancellablePromise<app$0.ReviewDiffOpened> {
-    return $Call.ByID(110447601, ws, pr, rev, sha, ignoreWhitespace).then(($result: any) => {
+export function OpenPRCommitDiff(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: git$0.PRRevision, sha: string, ignoreWhitespace: boolean, userInitiated: boolean): $CancellablePromise<app$0.ReviewDiffOpened> {
+    return $Call.ByID(110447601, ws, pr, rev, sha, ignoreWhitespace, userInitiated).then(($result: any) => {
         return $$createType175($result);
     });
 }
 
 /**
- * OpenPRDiff opens the PR's three-dot diff (merge base of the base branch
- * tip to the head) at rev, the revision of the PR snapshot the caller
- * shows, computed in the referenced clone.
+ * OpenPRDiff opens the PR's three-dot diff (merge base of the recorded base
+ * and the head, to the head) at rev, the revision of the PR snapshot the caller
+ * shows, computed in the referenced clone. userInitiated is whether a person
+ * asked for the read (prRevisionWorkspace).
  */
-export function OpenPRDiff(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: git$0.PRRevision, ignoreWhitespace: boolean): $CancellablePromise<app$0.ReviewDiffOpened> {
-    return $Call.ByID(4075510992, ws, pr, rev, ignoreWhitespace).then(($result: any) => {
+export function OpenPRDiff(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: git$0.PRRevision, ignoreWhitespace: boolean, userInitiated: boolean): $CancellablePromise<app$0.ReviewDiffOpened> {
+    return $Call.ByID(4075510992, ws, pr, rev, ignoreWhitespace, userInitiated).then(($result: any) => {
         return $$createType175($result);
     });
 }

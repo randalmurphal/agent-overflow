@@ -117,13 +117,19 @@
   provideHostedBack(() => compact);
 
   const selection = $derived(selectedPR(paneId));
+  // The row a person opened, so its review's first read may ask for git
+  // credentials; a selection the page restored is not one.
+  let openedKey = $state<string | null>(null);
   // The pinned review's subject, one nullable value the template reads
   // through its guard: the pane id and the selection never split into
   // two render effects.
-  const pinnedReview = $derived.by(() => {
+  const pinnedSubject = $derived.by(() => {
     if (!selection) return null;
     return { key: selection.key, subject: { ownerPaneId: paneId, backend: selection.backend, projectId: selection.projectId, pr: selection.pr } };
   });
+  // The subject keeps its identity when only `openedKey` changes, so
+  // opening the row already shown does not hand the review a new subject.
+  const pinnedReview = $derived(pinnedSubject ? { ...pinnedSubject, userInitiated: openedKey === pinnedSubject.key } : null);
   const pipeline = $derived(selectedPipeline(paneId));
   const detailShown = $derived(tab === 'mrs' ? selection !== null : pipeline !== null);
   const filters = $derived(mrFilters(backend));
@@ -183,6 +189,7 @@
   }
 
   function openRow(row: PullRowView): void {
+    openedKey = row.key;
     selectPR(paneId, row.key);
   }
 
@@ -369,7 +376,7 @@
       {#if tab === 'mrs'}
         {#if pinnedReview}
           {#key pinnedReview.key}
-            <ReviewPane pr={pinnedReview.subject} />
+            <ReviewPane pr={pinnedReview.subject} userInitiated={pinnedReview.userInitiated} />
           {/key}
         {:else}
           <div class="flex flex-1 items-center justify-center px-6" data-testid="pulls-detail-empty">

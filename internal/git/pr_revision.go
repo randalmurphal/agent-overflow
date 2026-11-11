@@ -6,12 +6,18 @@ import (
 )
 
 // PRRevision is the pull request state a local read is computed at, as the
-// forge last reported it: the head commit and the base branch's tip. Every
-// PR read of one snapshot (diff, commit list, merge conflicts) uses the
-// same pair, so they agree with each other and with the forge.
+// forge last reported it: the head commit and the base commit the forge
+// recorded for the PR. The diff and the commit list of one snapshot use the
+// same pair, so they agree with each other and with the forge. The merge
+// conflict read merges the head with the base branch's live tip instead
+// (RemoteBranchTip), because the recorded base does not follow the branch.
 type PRRevision struct {
 	BaseRef string `json:"baseRef"`
-	// BaseSHA is the base branch's tip (PRDetail.BaseRefSHA).
+	// BaseSHA is the base commit the forge recorded for the PR
+	// (PRDetail.BaseRefSHA). It is not the base branch's current tip:
+	// GitLab's start_sha is the target tip when the diff was last
+	// computed, usually the merge base, and GitHub's baseRefOid can lag
+	// the branch by several merges.
 	BaseSHA string `json:"baseSHA"`
 	HeadSHA string `json:"headSHA"`
 }
@@ -44,7 +50,22 @@ func (r PRRevision) Validate() error {
 // another git process still did its job. A fetch failure is returned only
 // when a commit is still missing, and a commit origin does not have (the
 // PR moved after the snapshot) is reported as such.
+//
+// EnsurePRObjects is for a read the user asked for, so the fetch may ask
+// for credentials; EnsurePRObjectsUnattended is the same read run
+// automatically.
 func (c *Core) EnsurePRObjects(cwd string, pr PRReference, rev PRRevision) error {
+	return c.ensurePRObjects(cwd, pr, rev, true)
+}
+
+// EnsurePRObjectsUnattended is EnsurePRObjects for a read nobody asked for
+// at that moment (a reconcile on a forge poll, a retry after a failed
+// read): a credential prompt fails fast instead of opening a dialog.
+func (c *Core) EnsurePRObjectsUnattended(cwd string, pr PRReference, rev PRRevision) error {
+	return c.ensurePRObjects(cwd, pr, rev, false)
+}
+
+func (c *Core) ensurePRObjects(cwd string, pr PRReference, rev PRRevision, allowCredentialPrompt bool) error {
 	if err := rev.Validate(); err != nil {
 		return err
 	}
@@ -56,7 +77,7 @@ func (c *Core) EnsurePRObjects(cwd string, pr PRReference, rev PRRevision) error
 	if err != nil {
 		return err
 	}
-	_, _, fetchErr := c.executeInteractive(cwd, "fetch", "origin", headRef, rev.BaseRef)
+	_, _, fetchErr := c.executeNetwork(cwd, allowCredentialPrompt, "fetch", "origin", headRef, rev.BaseRef)
 	missing, err = c.missingCommits(cwd, missing...)
 	if err != nil || len(missing) == 0 {
 		return err
@@ -66,6 +87,83 @@ func (c *Core) EnsurePRObjects(cwd string, pr PRReference, rev PRRevision) error
 	}
 	return fmt.Errorf("origin has no commit %s for %s or %s; the pull request changed since the forge reported it",
 		strings.Join(missing, ", "), headRef, rev.BaseRef)
+}
+
+// RemoteBranchTip returns the commit branch names on origin now, with its
+// objects present in cwd's repository. `git ls-remote` resolves the tip;
+// when that commit is already local nothing else touches the network and no
+// ref moves. Otherwise one fetch of the branch downloads it, and, as with
+// EnsurePRObjects, the fetch names the branch, so git also moves
+// origin/<branch>. Success is the commit being present afterwards, not the
+// fetch's exit status. A tip still missing after a successful fetch means
+// the branch moved between the two calls; that is an error, not a retry.
+//
+// RemoteBranchTip is for a read the user asked for, so both network steps
+// may ask for credentials; RemoteBranchTipUnattended is the same read run
+// automatically.
+func (c *Core) RemoteBranchTip(cwd, branch string) (string, error) {
+	return c.remoteBranchTip(cwd, branch, true)
+}
+
+// RemoteBranchTipUnattended is RemoteBranchTip for an automatic read: a
+// credential prompt fails fast instead of opening a dialog.
+func (c *Core) RemoteBranchTipUnattended(cwd, branch string) (string, error) {
+	return c.remoteBranchTip(cwd, branch, false)
+}
+
+func (c *Core) remoteBranchTip(cwd, branch string, allowCredentialPrompt bool) (string, error) {
+	if err := ValidateBranchName(branch); err != nil {
+		return "", err
+	}
+	ref := "refs/heads/" + branch
+	stdout, _, err := c.executeNetwork(cwd, allowCredentialPrompt, "ls-remote", "origin", ref)
+	if err != nil {
+		return "", fmt.Errorf("read %s on origin: %w", branch, err)
+	}
+	tip, err := lsRemoteTip(stdout, ref)
+	if err != nil {
+		return "", fmt.Errorf("read %s on origin: %w", branch, err)
+	}
+	missing, err := c.missingCommits(cwd, tip)
+	if err != nil || len(missing) == 0 {
+		return tip, err
+	}
+	_, _, fetchErr := c.executeNetwork(cwd, allowCredentialPrompt, "fetch", "origin", ref)
+	missing, err = c.missingCommits(cwd, tip)
+	if err != nil {
+		return "", err
+	}
+	if len(missing) == 0 {
+		return tip, nil
+	}
+	if fetchErr != nil {
+		return "", fmt.Errorf("fetch %s from origin: %w", branch, fetchErr)
+	}
+	return "", fmt.Errorf("%s moved on origin during the read: it named %s, which the fetch did not bring; try again", branch, tip)
+}
+
+// lsRemoteTip returns the object ID of the one `git ls-remote` line
+// ("<oid>\t<ref>") naming ref exactly. ls-remote matches its pattern
+// against trailing path components, so lines for other refs are skipped.
+func lsRemoteTip(stdout, ref string) (string, error) {
+	tip := ""
+	for _, line := range strings.Split(stdout, "\n") {
+		oid, name, ok := strings.Cut(strings.TrimSuffix(line, "\r"), "\t")
+		if !ok || name != ref {
+			continue
+		}
+		if tip != "" {
+			return "", fmt.Errorf("git ls-remote listed %s more than once", ref)
+		}
+		if !treeOIDPattern.MatchString(oid) {
+			return "", fmt.Errorf("git ls-remote listed %s at %q, not an object ID", ref, oid)
+		}
+		tip = oid
+	}
+	if tip == "" {
+		return "", fmt.Errorf("origin has no branch %s", strings.TrimPrefix(ref, "refs/heads/"))
+	}
+	return tip, nil
 }
 
 // missingCommits returns the oids that do not name a commit in cwd's

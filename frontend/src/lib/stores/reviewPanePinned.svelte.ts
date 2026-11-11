@@ -5,7 +5,7 @@
 
 import { untrack } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
-import { createReviewPaneState, type ReviewPaneState, type ReviewSubject } from './reviewPane.svelte';
+import { createReviewPaneState, type ReadIntent, type ReviewPaneState, type ReviewSubject } from './reviewPane.svelte';
 import type { BackendKey } from '../transport/backendKey';
 import { evictDiffSpansForThread } from '../utils/diffSpanCache.svelte';
 import { prKey, type PRRef } from '../utils/prReference';
@@ -51,12 +51,14 @@ const pinnedStatesByOwner = new SvelteMap<string, readonly ReviewPaneState[]>();
  * current one. States past the retention bound are disposed. The owner
  * disposes the rest with `disposePRReviewStates` when its page goes.
  */
-export function reviewStateForPR(ownerPaneId: string, subject: ReviewSubject): ReviewPaneState {
+export function reviewStateForPR(ownerPaneId: string, subject: ReviewSubject, opts: ReadIntent = {}): ReviewPaneState {
   if (!subject.pinned) throw new Error('reviewStateForPR needs a subject from reviewSubjectForPR.');
   const held = untrack(() => pinnedStatesByOwner.get(ownerPaneId)) ?? [];
   let state = held.find((candidate) => candidate.identity === subject.identity);
   const rest = held.filter((candidate) => candidate !== state);
-  state ??= createReviewPaneState(ownerPaneId, subject, false);
+  // A state the owner already holds keeps its diff: only a new one loads,
+  // carrying whether a person opened it.
+  state ??= createReviewPaneState(ownerPaneId, subject, false, opts.userInitiated ?? false);
   const kept = [state, ...rest];
   if (held[0] !== state) pinnedStatesByOwner.set(ownerPaneId, kept.slice(0, PINNED_STATES_PER_OWNER));
   for (const dropped of kept.slice(PINNED_STATES_PER_OWNER)) disposePinnedState(dropped);

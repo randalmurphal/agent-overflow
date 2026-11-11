@@ -163,7 +163,7 @@ function withWorkspace(
 function openWorkspaceReview(pane: ThreadPane): void {
   const subject = reviewSubjectForPane(pane);
   if (!subject) return;
-  void openReviewCompanion(pane.paneId, subject, { scope: 'workspace' });
+  void openReviewCompanion(pane.paneId, subject, { scope: 'workspace', userInitiated: true });
 }
 
 /**

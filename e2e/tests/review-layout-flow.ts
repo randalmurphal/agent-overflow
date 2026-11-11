@@ -10,12 +10,13 @@
 // and on compact opens over the diff at full width and closes on a pick
 // or on Back, with the pane still on screen;
 // "Hide tests" in the tree's filter menu drops test files from the tree
-// and, applied to the diff, from the diff's counts; the conversation
+// and, by default, from the diff's counts, and "Apply filter to diff"
+// turns the latter off and on; the conversation
 // refresh sits on the Conversation header and re-reads the threads; an
 // outdated open thread stays unresolved, counted and resolvable with the
 // outdated marker on its card.
 import { randomBytes } from 'node:crypto';
-import type { Locator, Page, TestInfo } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 
 import type { HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
@@ -282,8 +283,8 @@ export function reviewLayoutFlow({ compact }: LayoutSurface): void {
       await expect(rail).toHaveAttribute('data-open', 'true');
     }
 
-    // "Hide tests" drops the two test files from the tree; applied to the
-    // diff, from its counts too.
+    // "Hide tests" drops the two test files from the tree and, by default,
+    // from the diff's counts too; "Apply filter to diff" turns the latter off.
     await expect(rail.getByTestId('review-tree-file')).toHaveCount(5);
     await press(rail.getByTestId('review-tree-ext-trigger'));
     const filterMenu = page.locator('[data-popover]').last();
@@ -294,10 +295,14 @@ export function reviewLayoutFlow({ compact }: LayoutSurface): void {
     await expect(rail.getByTestId('review-tree-file')).toHaveCount(3);
     await expect(rail.getByTestId('review-tree-file').filter({ hasText: 'send.test.ts' })).toHaveCount(0);
     await expect(rail.getByTestId('review-tree-file').filter({ hasText: 'mail_test.go' })).toHaveCount(0);
-    await press(filterMenu.getByTestId('review-tree-filter-diff'));
     await expect(toolbar.getByTestId('review-diff-stats')).toContainText('3 files');
     await expect(review.getByTestId('review-file-header-path').filter({ hasText: 'mail_test.go' })).toHaveCount(0);
     await paneShot('tests-hidden');
+    await press(filterMenu.getByTestId('review-tree-filter-diff'));
+    await expect(toolbar.getByTestId('review-diff-stats')).toContainText('5 files');
+    await expect(rail.getByTestId('review-tree-file')).toHaveCount(3);
+    await press(filterMenu.getByTestId('review-tree-filter-diff'));
+    await expect(toolbar.getByTestId('review-diff-stats')).toContainText('3 files');
     // Clear filters is the pick that closes it.
     await press(filterMenu.getByText('Clear filters'));
     await expect(filterMenu).toHaveCount(0);
