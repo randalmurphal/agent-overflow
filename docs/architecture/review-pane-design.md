@@ -269,17 +269,21 @@ polling.
   or runs `glab`/`git` annotates `//ao:scope git:operate`, so only a
   session granted that scope reaches it.
 - **Find searches the view on screen.** `ReviewPaneFind.svelte` registers
-  the pane's find provider under `ReviewPane`'s `findKey`. The diff and the
-  conflict view are scanned in memory by `utils/reviewFindScan.ts` in
-  slices that yield, with the count growing while `pending`; it covers
-  header paths, line text without the gutter, folded conflict lines, draft
-  bodies and PR thread comments, in row order. A CI log is searched by
-  `SearchPRCILog` (`cilog.Store.Search`, bounded and cancellable). Matching
-  is `utils/findMatch.ts`, shared with thread find; `cilog.FoldForFind`
-  mirrors its folding. A step expands what hides its match (a collapsed
-  file, a resolved thread, a conflict fold, a closed log step). A content,
-  filter or view change re-runs the query in place and keeps the current
-  match by identity.
+  the pane's find provider under `ReviewPane`'s `findKey`: the companion's
+  layout pane id, or the Pull requests page's detail region key. The diff
+  and the conflict view are scanned in memory by `utils/reviewFindScan.ts`
+  in slices that yield, with the count growing while `pending`; it covers
+  header paths, line text without the gutter, expanded hunk-gap lines,
+  folded conflict lines, draft bodies, and PR thread comments as their
+  markdown renders (`chat/markdown/markdownFindText.ts`), in row order.
+  Text the patch budget evicted is read back through `whenResident`. A CI
+  log is searched by `SearchPRCILog` (`cilog.Store.Search`, bounded and
+  cancellable). Matching is `utils/findMatch.ts` everywhere (trimmed
+  literal, ASCII case folding); `cilog.FoldForFind` folds the same, held by
+  shared vectors. A step expands what hides its match (a collapsed file, a
+  resolved thread, a conflict fold, a closed log step). A content, filter
+  or view change re-runs the query in place and keeps the current match by
+  identity.
 
 ## Edge Cases
 

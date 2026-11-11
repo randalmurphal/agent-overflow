@@ -1,16 +1,25 @@
 // Find inside the review pane under the compact layout: with the review on
 // screen, mod+f opens its bar under the toolbar, the count covers a match
 // the virtualizer has not mounted, the query brings it on screen painted
-// current, and Back closes the find before it closes the review. Desktop
-// coverage: review-find.spec.ts.
+// current, and Back closes the find before it closes the review. With a CI
+// job log open, find counts the log and brings its match on screen; Back
+// closes the find, then the review. Desktop coverage:
+// review-find.spec.ts; the Pull requests page: pulls-page-find-flow.ts.
 import { randomBytes } from 'node:crypto';
 import type { Page } from '@playwright/test';
 
 import { expect, test, type SeedResult } from './fixtures.js';
 import { expectEveryForgeCallHandled, publishPullRequest } from './forge-helpers.js';
+import { currentInView } from './review-find-helpers.js';
 
 const TITLE = 'Phone review find';
 const NEEDLE = 'needle-phone';
+
+function ciLog(): string {
+  let text = '';
+  for (let i = 1; i <= 600; i += 1) text += i === 520 ? 'unit phone-log-needle\n' : `unit line ${i}\n`;
+  return text;
+}
 
 function painted(page: Page, name: string): Promise<string[]> {
   return page.evaluate((n) => {
@@ -32,7 +41,7 @@ test('mod+f finds in the review on screen and Back closes the find first', async
   await publishPullRequest(harness, seeded.projects[0].path, {
     forge: 'gitlab',
     project: `ao-e2e/compact-review-find-${randomBytes(4).toString('hex')}`,
-    pulls: [{ number: 7, title: 'Values', body: '' }],
+    pulls: [{ number: 7, title: 'Values', body: '', ci: { id: 9_700, jobs: [{ id: 7_700, name: 'unit', stage: 'test', status: 'success', log: ciLog() }] } }],
   }, { 'src/values.ts': body });
   await harness.open(page);
 
@@ -70,6 +79,23 @@ test('mod+f finds in the review on screen and Back closes the find first', async
   await expect(bar).toHaveCount(0);
   await expect(review).toBeInViewport({ ratio: 1 });
   await expect.poll(() => painted(page, name)).toEqual([]);
+
+  // The CI log is searched on the backend and its match brought on screen.
+  await review.getByTestId('review-ci-chip').filter({ hasText: 'test' }).tap();
+  await page.getByTestId('review-ci-job').filter({ hasText: 'unit' }).tap();
+  const logScroll = review.getByTestId('review-ci-log-scroll');
+  await expect(logScroll).toBeVisible({ timeout: 30_000 });
+  await logScroll.focus();
+  await page.keyboard.press('ControlOrMeta+f');
+  await expect(bar).toBeVisible();
+  await expect(review.getByTestId('pane-find-input')).toHaveAttribute('placeholder', 'Find in log');
+  await review.getByTestId('pane-find-input').fill('phone-log-needle');
+  await expect(bar.getByTestId('pane-find-count')).toHaveText('1/1');
+  await expect.poll(() => painted(page, `${name}-current`)).toEqual(['phone-log-needle']);
+  await expect.poll(() => currentInView(logScroll, name)).toBe(true);
+  await page.goBack();
+  await expect(bar).toHaveCount(0);
+  await expect(logScroll).toBeVisible();
   await page.goBack();
   await expect(review.getByTestId('review-pr-header')).toHaveCount(0);
   await expectEveryForgeCallHandled(harness);
