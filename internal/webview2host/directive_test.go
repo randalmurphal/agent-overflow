@@ -26,6 +26,10 @@ func TestDirectiveValidateAcceptsEveryOp(t *testing.T) {
 		// A clear addresses the whole folder, so it names no profile: its
 		// page id is purely the correlation id the report comes back under.
 		{Op: OpClearData, PageID: "0123456789abcdef"},
+		{Op: OpFind, PageID: "page-1"},
+		{Op: OpFind, PageID: "page-1", Query: "größe \U0001F600"},
+		{Op: OpFind, PageID: "page-1", Query: strings.Repeat("a", MaxFindQueryBytes)},
+		{Op: OpFindStop, PageID: "page-1"},
 	} {
 		if err := directive.Validate(); err != nil {
 			t.Errorf("Validate(%#v) = %v, want nil", directive, err)
@@ -65,6 +69,11 @@ func TestDirectiveValidateRejects(t *testing.T) {
 		// clear timeout and then report a failure the launcher never had.
 		{"clear-data without correlation id", Directive{Op: OpClearData}, "page id is required"},
 		{"clear-data with a path correlation id", Directive{Op: OpClearData, PageID: "../evil"}, "disallowed byte"},
+		{"find without page", Directive{Op: OpFind, Query: "a"}, "page id is required"},
+		{"find-stop without page", Directive{Op: OpFindStop}, "page id is required"},
+		{"find query too long", Directive{Op: OpFind, PageID: "p", Query: strings.Repeat("a", MaxFindQueryBytes+1)}, "exceeds"},
+		{"find query with NUL", Directive{Op: OpFind, PageID: "p", Query: "a\x00b"}, "without NUL"},
+		{"find query not UTF-8", Directive{Op: OpFind, PageID: "p", Query: "a\xffb"}, "UTF-8"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.directive.Validate()
@@ -126,13 +135,13 @@ func TestClearDataWireSpelling(t *testing.T) {
 func TestValidKind(t *testing.T) {
 	for _, kind := range []ReportKind{
 		ReportCreated, ReportCreateFailed, ReportClosed, ReportProcessFailed,
-		ReportCleared, ReportClearFailed,
+		ReportCleared, ReportClearFailed, ReportAccelerator, ReportFindUnavailable,
 	} {
 		if !ValidKind(kind) {
 			t.Errorf("ValidKind(%q) = false, want true", kind)
 		}
 	}
-	for _, kind := range []ReportKind{"", "Created", "created ", "boom", "clear", "cleared "} {
+	for _, kind := range []ReportKind{"", "Created", "created ", "boom", "clear", "cleared ", "find"} {
 		if ValidKind(kind) {
 			t.Errorf("ValidKind(%q) = true, want false", kind)
 		}

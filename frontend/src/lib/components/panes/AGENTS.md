@@ -44,8 +44,16 @@ on no overlay above it; the store drops a pane's state and reads when the
 pane leaves the layout. Review panes use `review/ReviewPaneFind.svelte`
 over `stores/reviewFind.svelte.ts`, keyed by `ReviewPane`'s `findKey`: its
 layout pane id as a companion, the detail region key on the Pull requests
-page; a review hosted without a key registers nothing. Terminal, browser
-and discussion panes have no provider yet, so mod+f falls through there.
+page; a review hosted without a key registers nothing. The browser pane uses
+`stores/browserFind.svelte.ts`, where the engine searches and matches are
+the engine's to paint; its calls run on its own queue, not
+`paneFindReads`, because a queued stop is backend cleanup that no other
+read may replace. A provider that cannot count reports `count: null`,
+and one with `openNative` opens its engine's own find UI instead of the bar,
+which never reads as open, so its Escape stays the engine's
+([browser-tools.md](../../../../../docs/architecture/browser-tools.md#find)).
+Terminal and discussion panes have no provider yet, so mod+f falls through
+there.
 
 A pane whose body holds a list beside a detail declares find regions
 (`declarePaneFindRegions`) and keys each region's provider, bar, reads

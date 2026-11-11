@@ -117,6 +117,9 @@ type paneMount struct {
 	threadID string
 	rect     PaneRect
 	hasRect  bool
+	// findSeq is the sequence of the newest find start the Manager took
+	// from this mount (admitFindStart).
+	findSeq uint64
 }
 
 func (p *managedPage) setInfo(info PageInfo) {
@@ -163,8 +166,12 @@ func (m *Manager) threadState(threadID string) CompanionEvent {
 	m.mu.Lock()
 	tabs := m.threadTabsLocked(threadID)
 	session, hasSession := m.sessions[threadID]
+	active, _ := m.livePageLocked(session.ActivePageID)
 	m.mu.Unlock()
 	event := CompanionEvent{Kind: "state", ThreadID: threadID, Pages: make([]PageInfo, 0, len(tabs))}
+	if active != nil && active.owner == threadID {
+		event.FindMode = findModeOf(active)
+	}
 	visible := false
 	if hasSession {
 		visible = session.Visible
@@ -208,9 +215,30 @@ func (m *Manager) pageByHandleLocked(handle string) *managedPage {
 	return nil
 }
 
+// pageEscape is the key the page always keeps: a bare Escape, which AO only
+// observes (keyChord).
+var pageEscape = keybindings.Accelerator{Key: "escape"}
+
+// pageEscapeAnnounced decides whether a key pressed in a page is announced
+// as the page's Escape: a bare Escape, newly pressed (not repeating, not
+// held), that no input method composition takes to cancel itself.
+func pageEscapeAnnounced(pressed keybindings.Accelerator, press KeyPress) bool {
+	return pressed == pageEscape && !press.Repeat && !press.Held && !press.Composing
+}
+
 // keyChord is engineEvents.KeyChord: it answers on the engine's UI thread, so
 // it is one set lookup, and the routing that takes m.mu happens off it.
-func (m *Manager) keyChord(handle string, pressed keybindings.Accelerator) bool {
+//
+// A bare Escape is never AO's: the page has it exactly as if AO were not
+// there. When pageEscapeAnnounced says so it is announced (emitEscape), so
+// a find bar the pane shows over the page can close.
+func (m *Manager) keyChord(handle string, pressed keybindings.Accelerator, press KeyPress) bool {
+	if pressed == pageEscape {
+		if pageEscapeAnnounced(pressed, press) {
+			go m.emitEscape(handle)
+		}
+		return false
+	}
 	if m.accelerators == nil {
 		return false
 	}
@@ -220,6 +248,18 @@ func (m *Manager) keyChord(handle string, pressed keybindings.Accelerator) bool 
 	}
 	go m.emitAccelerator(handle, bound)
 	return true
+}
+
+// emitEscape announces a bare Escape pressed in a page a pane shows, as a
+// Kind "escape" event naming the thread and the page.
+func (m *Manager) emitEscape(handle string) {
+	m.mu.Lock()
+	p := m.pageByHandleLocked(handle)
+	m.mu.Unlock()
+	if p == nil || !m.pageShown(p.owner, p.id) {
+		return
+	}
+	m.emit(CompanionEvent{Kind: "escape", ThreadID: p.owner, PageID: p.id})
 }
 
 func (m *Manager) emitAccelerator(handle string, bound keybindings.Accelerator) {
@@ -454,11 +494,51 @@ func (m *Manager) OpenPaneDevTools(ctx context.Context, access Access, pageID st
 // An engine whose pages are not real windows implements no paneHost, so this
 // is a type assertion that fails and costs nothing on every deployment that
 // cannot present a page at all.
+//
+// A find runs on the shown active page only, so this is also where a find on
+// a page that stopped being it (a tab switch, a hidden companion) ends, and
+// so does a find bar whose pane mount is gone.
+// Occlusion is not hiding: an overlay over the pane leaves the find running.
+//
+// Passes of a thread never overlap: each reads the state and tells the
+// engine without a lock held, so two at once could land in either order and
+// leave a page shown that the newer state hides. A call made while a pass
+// runs leaves it to that caller, which runs one more pass after its own, so
+// the last pass always reads the newest state and no caller waits on a pass
+// it did not start (an engine's UI thread among them).
 func (m *Manager) syncPanePresentation(threadID string) {
-	host, ok := m.engine.(paneHost)
-	if !ok {
+	m.mu.Lock()
+	st := m.presenting[threadID]
+	if st == nil {
+		if m.presenting == nil {
+			m.presenting = make(map[string]*presentSync)
+		}
+		st = &presentSync{}
+		m.presenting[threadID] = st
+	}
+	st.dirty = true
+	if st.busy {
+		m.mu.Unlock()
 		return
 	}
+	st.busy = true
+	for st.dirty {
+		st.dirty = false
+		m.mu.Unlock()
+		m.presentPanes(threadID)
+		m.mu.Lock()
+	}
+	delete(m.presenting, threadID)
+	m.mu.Unlock()
+}
+
+// presentSync is one thread's presentation passes: busy while one runs,
+// dirty when another was asked for. Guarded by Manager.mu.
+type presentSync struct{ busy, dirty bool }
+
+// presentPanes is one presentation pass of syncPanePresentation.
+func (m *Manager) presentPanes(threadID string) {
+	host, ok := m.engine.(paneHost)
 	m.mu.Lock()
 	session, hasSession := m.sessions[threadID]
 	rect, shown := m.shownPaneRectLocked(threadID)
@@ -477,6 +557,10 @@ func (m *Manager) syncPanePresentation(threadID string) {
 		}
 	}
 	m.mu.Unlock()
+	m.endHiddenFinds(pages)
+	if !ok {
+		return
+	}
 	var placement PanePlacement
 	if visible {
 		// The page keeps the session's viewport; the pane shows it scaled to

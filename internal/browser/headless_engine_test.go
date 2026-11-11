@@ -868,6 +868,45 @@ func TestCDPPageOwnsItsMainFrameBeforeReportingOne(t *testing.T) {
 	}
 }
 
+// A CDP page reports a new document when its main frame navigates
+// (Page.frameNavigated with no parent); a child frame's navigation and a
+// same-document one (Page.navigatedWithinDocument) are not one. The hosted
+// WebView2 engine drives the same page.
+func TestCDPPageReportsOnlyMainFrameDocumentCommits(t *testing.T) {
+	browser := writeFakeChromium(t, "chromium")
+	engine := newTestHeadlessEngine(t, browser.path)
+	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
+	var commits atomic.Int64
+	hooks := testPageHooks()
+	hooks.DocumentCommitted = func() func() {
+		commits.Add(1)
+		return nil
+	}
+	page, err := profile.NewPage(context.Background(), hooks)
+	if err != nil {
+		t.Fatalf("new page: %v", err)
+	}
+	defer page.Close()
+	frame := func(id, parent string) map[string]any {
+		f := map[string]any{"id": id, "loaderId": "L-2", "url": "https://example.test/", "securityOrigin": "https://example.test", "mimeType": "text/html"}
+		if parent != "" {
+			f["parentId"] = parent
+		}
+		return f
+	}
+	send := func(method string, params map[string]any) {
+		browser.send(map[string]any{"method": method, "sessionId": "S-1", "params": params})
+	}
+	send("Page.navigatedWithinDocument", map[string]any{"frameId": "F-1", "url": "https://example.test/#part", "navigationType": "fragment"})
+	send("Page.frameNavigated", map[string]any{"frame": frame("F-child", "F-1"), "type": "Navigation"})
+	send("Page.frameNavigated", map[string]any{"frame": frame("F-1", ""), "type": "Navigation"})
+	eventually(t, "the main frame's commit", func() bool { return commits.Load() >= 1 })
+	time.Sleep(50 * time.Millisecond)
+	if got := commits.Load(); got != 1 {
+		t.Fatalf("document commits = %d, want 1 (the main frame's only)", got)
+	}
+}
+
 // A browser whose connection is lost is gone: the browser context is
 // cancelled, and the profile's watcher disposes the profile, which kills and
 // reaps the process and removes its ephemeral site data.

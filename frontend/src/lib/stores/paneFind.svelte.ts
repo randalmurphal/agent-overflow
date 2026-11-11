@@ -19,9 +19,12 @@ import { errString } from '../utils/errors';
 
 /** What a provider reports about the current query. */
 export interface PaneFindResult {
-  /** Matches for the current query; 0 while it is empty. */
-  readonly count: number;
-  /** Index of the current match, or -1 when there is none. */
+  /**
+   * Matches for the current query; 0 while it is empty. null when the
+   * provider found a match but cannot count them.
+   */
+  readonly count: number | null;
+  /** Index of the current match, or -1 when there is none or it is unknown. */
   readonly current: number;
   /** True while the provider has not answered the current query. */
   readonly pending: boolean;
@@ -38,6 +41,10 @@ export interface PaneFindResult {
  * query included; a provider debounces and drops superseded answers itself.
  * `next` and `previous` are absent for a provider whose query only filters.
  * `clear` ends the session: highlights, timers and pending reads go.
+ * A provider with `openNative` has its own find UI: an open goes there with
+ * the seed and no bar opens. That UI closes without telling the provider, so
+ * the pane's find never reads as open for it and `find.close` leaves its
+ * Escape to the UI; another open seeds it again.
  */
 export interface PaneFindProvider {
   /** Completes the placeholder: "Find in {noun}", or "Filter {noun}" for a filter. */
@@ -50,6 +57,7 @@ export interface PaneFindProvider {
   /** A filter's Enter: focus its first result. False when there is none. */
   focusFirst?(): Promise<boolean> | boolean;
   clear(): void;
+  openNative?(seed: string): void;
 }
 
 /** True for a provider that steps through matches rather than filtering. */
@@ -255,6 +263,10 @@ export interface OpenPaneFindOptions {
 export function openPaneFind(paneId: string, options: OpenPaneFindOptions = {}): boolean {
   const provider = providers.get(paneId);
   if (!provider) return false;
+  if (provider.openNative) {
+    provider.openNative(options.seed ?? '');
+    return true;
+  }
   let state = states.get(paneId);
   if (!state) {
     // Allocated here, outside any reader, so the bar's reads track it.

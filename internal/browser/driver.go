@@ -136,6 +136,14 @@ type pageHooks struct {
 	PageURL func() string
 	// Allow answers the navigation-authority question for one request URL.
 	Allow func(url string) bool
+	// DocumentCommitted reports that the page's main frame committed a new
+	// document: a load, a reload, or a history move to another document. A
+	// same-document navigation (a fragment, the History API) is not one.
+	// Engines call it where the engine reports the commit (the UI thread for
+	// WebKitGTK and WKWebView), and it only stamps the commit's order. The
+	// engine then runs the work it returns, when not nil, in the same
+	// callback: that work never waits, and the Manager joins what it starts.
+	DocumentCommitted func() (finish func())
 }
 
 // pageDriver is one engine's implementation of every per-page operation the
@@ -227,6 +235,38 @@ type pageDriver interface {
 	// current document, so a bundle costs one frame lookup rather than one
 	// per asset.
 	AssetFetcher(ctx context.Context) (assetFetcher, error)
+}
+
+// pageFind is the optional find-in-page half of a page driver: the engine's
+// own text search, never one AO runs in the document. A driver without it
+// has no find. The Manager owns the session (which page, its query, the
+// current match, when it ends); the driver only carries a call out.
+type pageFind interface {
+	// FindMode answers how this page's find is presented: FindModeBar, where
+	// AO's find bar drives FindStart and FindStep and shows their answers;
+	// FindModeEngine, where FindStart opens the engine's own find bar and the
+	// engine steps and counts in it; or "" when this page has no find (an
+	// engine runtime too old for its find API).
+	FindMode() string
+	// FindStart replaces any search with one for query. In FindModeEngine the
+	// query seeds the engine's bar and the answer is empty.
+	FindStart(ctx context.Context, query string) (findResult, error)
+	// FindStep moves to the next match, or the previous one when backwards,
+	// wrapping at the ends. FindModeBar only.
+	FindStep(ctx context.Context, backwards bool) (findResult, error)
+	// FindStop ends the search and clears what it highlighted or selected.
+	FindStop(ctx context.Context) error
+}
+
+// findResult is one engine answer to a start or a step.
+type findResult struct {
+	Found bool
+	// Matches is the engine's count of matches, or -1 when the engine can
+	// only say whether there is one.
+	Matches int
+	// Capped is set when the engine stopped counting at its limit: Matches is
+	// that limit and the page has more.
+	Capped bool
 }
 
 // assetFetcher opens one asset through the page's own credentials.
@@ -330,12 +370,25 @@ type engineEvents struct {
 	// cancels one it answers false for.
 	DownloadStarted  func(downloadStart) bool
 	DownloadProgress func(downloadProgress)
-	// KeyChord is the one SYNCHRONOUS question on this seam: a modifier chord
-	// was pressed while the page's native view held keyboard focus — does AO
-	// own it? True means the engine swallows the event and AO dispatches the
-	// chord; false means the page keeps it. It runs on the engine's UI
-	// thread, so the answer must be a set lookup and nothing that waits.
-	KeyChord func(handle string, pressed keybindings.Accelerator) bool
+	// KeyChord is the one SYNCHRONOUS question on this seam: a modifier chord,
+	// or a bare Escape, was pressed while the page's native view held
+	// keyboard focus — does AO own it? True means the engine swallows the
+	// event and AO dispatches the chord; false means the page keeps it. A
+	// bare Escape is always the page's; press is what the engine knows of
+	// it besides the chord. It runs on the engine's UI thread, so the answer
+	// must be a set lookup and nothing that waits.
+	KeyChord func(handle string, pressed keybindings.Accelerator, press KeyPress) bool
+}
+
+// KeyPress is what an in-process engine gathers about a key press besides
+// its chord, for the Manager's decision on a bare Escape
+// (pageEscapeAnnounced): Repeat is the OS's auto-repeat flag (WKWebView),
+// Held is the engine's own record that the key went down before without its
+// release (WebKitGTK, whose GTK 4 reports no repeat), and Composing is
+// whether the page's input method has a composition in progress, which the
+// Escape cancels.
+type KeyPress struct {
+	Repeat, Held, Composing bool
 }
 
 // matchStatus reports whether a sampled page state satisfies a wait condition.
