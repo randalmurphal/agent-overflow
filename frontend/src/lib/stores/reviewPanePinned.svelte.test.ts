@@ -22,6 +22,8 @@ import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
 import { __seedGitStatusForTest } from './gitStatusStore.svelte';
 import { createThreadPane } from './thread.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
+import { DisconnectedError } from '../transport/wsClient';
+import { __setTransportHelloForTest } from './transportStatus.svelte';
 import { takePinnedBackend } from '../transport/backends';
 import { composeWorkspaceKey } from '../utils/workspaceKey';
 import { prKey, type PRRef } from '../utils/prReference';
@@ -404,6 +406,52 @@ describe('pinned comments and actions', () => {
     expect(state.drafts).toEqual([]);
     const held = getPRDiffReviewComments(composeWorkspaceKey(HOME_BACKEND, prKey(ref(5))), 'pr', `pr:${prKey(ref(5))}`);
     expect(held.map((comment) => comment.status)).toEqual(['sent']);
+  });
+
+  describe('on a backend with the draft submit', () => {
+    beforeEach(() => __setTransportHelloForTest({ launchId: 'l', protocolVersion: 1, capabilities: ['pr-review-drafts.v1'], backendId: 'b1', backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 }));
+    afterEach(() => __setTransportHelloForTest(null));
+
+    // The backend posts the PR's drafts it is named and marks them, then
+    // the answer is lost (or, with posts false, the forge never had it).
+    function lostDraftSubmit(fake: PRDraftsFake, posts: boolean) {
+      return setBindingMock('SubmitPRReview', async (wire: { Number: number }, review: { drafts?: { threadId?: string; ids: string[] } }) => {
+        if (posts) for (const row of fake.held.get(wire.Number) ?? []) if (review.drafts?.ids.includes(row.id)) row.status = 'sent';
+        throw new DisconnectedError('socket closed');
+      });
+    }
+
+    it('names the PR’s drafts, and after a lost answer reads them as sent and ends as a success', async () => {
+      const { drafts: fake } = installPRMocks();
+      const submit = lostDraftSubmit(fake, true);
+      const state = pinned(5);
+      await waitLoaded(state);
+      await state.createComment(anchor, 'needs a test');
+      state.setSummaryBody('overall');
+
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
+
+      expect(submit.mock.calls[0]?.[1]).toEqual({ verdict: 'comment', body: 'overall', comments: [], drafts: { threadId: undefined, ids: ['c1'], headSha: 'sha-5' } });
+      expect(fake.mark).not.toHaveBeenCalled();
+      expect(state.drafts).toEqual([]);
+      expect(state.summaryBody).toBe('');
+      expect(state.submitError).toBeNull();
+    });
+
+    it('keeps the PR’s drafts and summary when the lost answer left them unsent, and says to check the PR', async () => {
+      const { drafts: fake } = installPRMocks();
+      lostDraftSubmit(fake, false);
+      const state = pinned(5);
+      await waitLoaded(state);
+      await state.createComment(anchor, 'needs a test');
+      state.setSummaryBody('overall');
+
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
+
+      expect(state.drafts.map((comment) => comment.id)).toEqual(['c1']);
+      expect(state.summaryBody).toBe('overall');
+      expect(state.submitError).toContain('may already be on the PR');
+    });
   });
 
   it('sends its drafts to a thread with their hunks, settling them, and only on the whole PR', async () => {

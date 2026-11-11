@@ -365,7 +365,11 @@ func TestSubmitPRReviewPostedButUnmarkedReconcilesWithoutASecondPost(t *testing.
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer db.Close()
+		t.Cleanup(func() {
+			if err := db.Close(); err != nil {
+				t.Error(err)
+			}
+		})
 		if _, err := db.Exec(`CREATE TRIGGER refuse_review_sent BEFORE UPDATE OF status ON diff_review_comments WHEN NEW.status = 'sent' BEGIN SELECT RAISE(ABORT, 'injected mark failure'); END`); err != nil {
 			t.Fatal(err)
 		}

@@ -482,16 +482,15 @@ func (s *Store) MarkPostedDiffReviewDraftsSent(owner DiffReviewOwner, scope, sou
 	if err != nil {
 		return nil, fmt.Errorf("store: mark posted diff review comments sent for %s/%s: %w", owner, scope, err)
 	}
-	defer rows.Close()
 	marked := make([]string, 0, len(posted))
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("store: scan a posted diff review comment marked sent: %w", err)
+			return nil, errors.Join(fmt.Errorf("store: scan a posted diff review comment marked sent: %w", err), rows.Close())
 		}
 		marked = append(marked, id)
 	}
-	if err := rows.Err(); err != nil {
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, fmt.Errorf("store: mark posted diff review comments sent for %s/%s: %w", owner, scope, err)
 	}
 	return marked, nil

@@ -735,6 +735,10 @@ export interface SubmitPRReviewResult {
   partialFailurePath?: string;
   partialFailure?: string;
   partialFailureKind?: string;
+  /** A draft submit's drafts marked sent, and the ones posted with text
+   * edited since, which stay drafts (pr-review-drafts.v1). */
+  sentDraftIds?: string[];
+  editedDraftIds?: string[];
 }
 
 export interface ProposedPlanComment {

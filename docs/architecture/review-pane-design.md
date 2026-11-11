@@ -252,8 +252,15 @@ polling.
   row). Drafts batch across files; one submit action with target picker:
   - *Linked agent*: extends the existing `SendDiffReviewComments` saga.
   - *The PR*: `SubmitReview` with Comment / Approve / Request changes.
+    On a backend with capability `pr-review-drafts.v1`, `SubmitPRReview`
+    takes the draft ids, posts their stored text and marks the posted
+    ones sent in the same call, one submit per PR at a time
+    (`internal/app/app_pr_review_submit.go` owns the contract). An older
+    backend gets the comments and the pane marks them after.
   Drafts clear only on confirmed success; failures surface in the pane and
-  keep drafts (errors are user-facing state).
+  keep drafts (errors are user-facing state). After every outcome,
+  including a lost answer, the pane reads its drafts again before the next
+  submit: drafts that read as sent mean the review posted.
 - **Agent context rule (deterministic, no toggle).** If the target thread's
   workspace is the diff source (commenting on that agent's own live work),
   keep today's lean prompt. The agent sees the diff in-turn. Otherwise

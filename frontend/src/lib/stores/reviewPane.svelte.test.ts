@@ -27,7 +27,7 @@ import {
 import { applyPRCILogEvent, applyPRCIUpdatedEvent, applyPRUpdatedEvent, attachPR } from './prReviewStore.svelte';
 import { closeCompanion, hideCompanion, openCompanion, resetCompanionPanesForTest } from './companionPanes.svelte';
 import { __setTransportHelloForTest, __setTransportStatusForTest } from './transportStatus.svelte';
-import type { TransportHello } from '../transport/wsClient';
+import { DisconnectedError, TransportError, type TransportHello } from '../transport/wsClient';
 import { companionSubjectKey } from './companionSubject';
 import { __seedGitStatusForTest } from './gitStatusStore.svelte';
 import { getPane, registerPaneForTest, resetPanesForTest, revealPane } from './panes.svelte';
@@ -2274,90 +2274,255 @@ describe('reviewPane store — PR scope', () => {
     expect(state.error).toBeNull();
   });
 
-  it('submit success marks drafts sent against the head SHA and clears the summary', async () => {
-    installPRMocks();
-    const markSent = setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
-    const state = reviewStateForPane('pane-1', prSubject());
-    await waitLoaded(state);
-    await state.setScope('pr');
-    replaceDiffReviewCommentsForTest('thread-1', 'pr', PR_SOURCE_KEY, [
-      draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' }),
-    ]);
-    state.setSummaryBody('overall note');
-
-    await state.submitPRReview();
-
-    expect(markSent).toHaveBeenCalledWith('thread-1', 'pr', PR_SOURCE_KEY, ['d-1'], 'pr:sha-a');
-    expect(state.summaryBody).toBe('');
-    expect(state.submitError).toBeNull();
-  });
-
-  it('partial submit keeps unposted file-level drafts and marks line drafts sent', async () => {
-    installPRMocks();
-    setBindingMock('SubmitPRReview', async () => ({
-      postedReview: true,
-      postedFileComments: 0,
-      partialFailurePath: 'src/app.ts',
-      partialFailure: 'boom',
-    }));
-    const markSent = setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
-    const state = reviewStateForPane('pane-1', prSubject());
-    await waitLoaded(state);
-    await state.setScope('pr');
-    replaceDiffReviewCommentsForTest('thread-1', 'pr', PR_SOURCE_KEY, [
-      // Same file: the line draft rode the batched review and posted; only
-      // the file-level draft (standalone follow-up call) failed.
-      draft({ id: 'd-file', scope: 'pr', sourceKey: PR_SOURCE_KEY, filePath: 'src/app.ts', side: 'file', newLine: undefined }),
-      draft({ id: 'd-line', scope: 'pr', sourceKey: PR_SOURCE_KEY, filePath: 'src/app.ts', newLine: 1, side: 'new' }),
-    ]);
-
-    await state.submitPRReview();
-
-    expect(markSent).toHaveBeenCalledWith('thread-1', 'pr', PR_SOURCE_KEY, ['d-line'], 'pr:sha-a');
-    expect(state.submitError).toContain('src/app.ts');
-  });
-
-  it('a pathless partial failure (approve failed after publish) marks all drafts sent and keeps the error', async () => {
-    installPRMocks();
-    setBindingMock('SubmitPRReview', async () => ({
-      postedReview: true,
-      postedFileComments: 0,
-      partialFailure: 'glab api approve merge request failed',
-    }));
-    const markSent = setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
-    const state = reviewStateForPane('pane-1', prSubject());
-    await waitLoaded(state);
-    await state.setScope('pr');
-    replaceDiffReviewCommentsForTest('thread-1', 'pr', PR_SOURCE_KEY, [
-      draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' }),
-    ]);
-    state.setSummaryBody('overall note');
-
-    await state.submitPRReview();
-
-    expect(markSent).toHaveBeenCalledWith('thread-1', 'pr', PR_SOURCE_KEY, ['d-1'], 'pr:sha-a');
-    expect(state.submitError).toContain('approve');
-    expect(state.summaryBody).toBe('overall note');
-  });
-
-  it('a thrown submit keeps every draft and surfaces the error', async () => {
-    installPRMocks();
-    setBindingMock('SubmitPRReview', async () => {
-      throw new Error('gh api submit review failed');
+  // The thread's pr-scope drafts as the backend holds them: listed, marked
+  // by the two-call flow's MarkDiffReviewCommentsSent, and by a draft
+  // submit that posted them (`posts`: whether the forge takes the review).
+  function threadDraftsBackend(rows: DiffReviewComment[]) {
+    const list = setBindingMock('ListDiffReviewComments', async (_thread: string, scope: string, sourceKey: string) =>
+      rows.filter((row) => row.scope === scope && row.sourceKey === sourceKey).map((row) => ({ ...row })));
+    const mark = setBindingMock('MarkDiffReviewCommentsSent', async (_thread: string, _scope: string, _source: string, ids: string[]) => {
+      for (const row of rows) if (ids.includes(row.id)) row.status = 'sent';
     });
-    const markSent = setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
+    return { list, mark };
+  }
+
+  function draftSubmitHello(capabilities: string[]): void {
+    __setTransportHelloForTest({ launchId: 'l', protocolVersion: 1, capabilities, backendId: 'b1', backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
+  }
+
+  async function prScopeWith(rows: DiffReviewComment[]): Promise<ReturnType<typeof reviewStateForPane>> {
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
-    replaceDiffReviewCommentsForTest('thread-1', 'pr', PR_SOURCE_KEY, [
-      draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' }),
-    ]);
+    replaceDiffReviewCommentsForTest('thread-1', 'pr', PR_SOURCE_KEY, rows.map((row) => ({ ...row })));
+    return state;
+  }
 
-    await expect(state.submitPRReview()).rejects.toThrow('gh api submit review failed');
+  describe('a backend without the draft submit (two calls)', () => {
+    beforeEach(() => draftSubmitHello([]));
+    afterEach(() => __setTransportHelloForTest(null));
 
-    expect(markSent).not.toHaveBeenCalled();
-    expect(state.submitError).toContain('gh api submit review failed');
-    expect(state.drafts.map((comment) => comment.id)).toEqual(['d-1']);
+    it('posts the comments, marks the drafts sent against the head SHA and clears the summary', async () => {
+      installPRMocks();
+      const rows = [draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' })];
+      const { mark } = threadDraftsBackend(rows);
+      const submit = getBindingMock('SubmitPRReview')!;
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+
+      await state.submitPRReview();
+
+      expect(submit.mock.calls[0]?.[1]).toEqual({ verdict: 'comment', body: 'overall note', comments: [{ path: 'src/app.ts', body: 'comment', line: 1, side: 'right' }] });
+      expect(mark).toHaveBeenCalledWith('thread-1', 'pr', PR_SOURCE_KEY, ['d-1'], 'pr:sha-a');
+      expect(state.summaryBody).toBe('');
+      expect(state.submitError).toBeNull();
+      expect(state.drafts).toEqual([]);
+    });
+
+    it('a partial submit marks the drafts that posted and keeps the unposted file draft', async () => {
+      installPRMocks();
+      setBindingMock('SubmitPRReview', async () => ({ postedReview: true, postedFileComments: 0, partialFailurePath: 'src/app.ts', partialFailure: 'boom' }));
+      const rows = [
+        // Same file: the line draft rode the batched review and posted; only
+        // the file-level draft (standalone follow-up call) failed.
+        draft({ id: 'd-file', scope: 'pr', sourceKey: PR_SOURCE_KEY, filePath: 'src/app.ts', side: 'file', newLine: undefined }),
+        draft({ id: 'd-line', scope: 'pr', sourceKey: PR_SOURCE_KEY, filePath: 'src/app.ts', newLine: 1, side: 'new' }),
+      ];
+      const { mark } = threadDraftsBackend(rows);
+      const state = await prScopeWith(rows);
+
+      await state.submitPRReview();
+
+      expect(mark).toHaveBeenCalledWith('thread-1', 'pr', PR_SOURCE_KEY, ['d-line'], 'pr:sha-a');
+      expect(state.submitError).toContain('src/app.ts');
+      expect(state.drafts.map((comment) => comment.id)).toEqual(['d-file']);
+    });
+
+    it('a pathless partial failure (approve failed after publish) marks all drafts sent and keeps the error', async () => {
+      installPRMocks();
+      setBindingMock('SubmitPRReview', async () => ({ postedReview: true, postedFileComments: 0, partialFailure: 'glab api approve merge request failed' }));
+      const rows = [draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' })];
+      const { mark } = threadDraftsBackend(rows);
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+
+      await state.submitPRReview();
+
+      expect(mark).toHaveBeenCalledWith('thread-1', 'pr', PR_SOURCE_KEY, ['d-1'], 'pr:sha-a');
+      expect(state.submitError).toContain('approve');
+      expect(state.summaryBody).toBe('overall note');
+    });
+
+    it('a thrown submit keeps every draft and surfaces the error', async () => {
+      installPRMocks();
+      setBindingMock('SubmitPRReview', async () => {
+        throw new Error('gh api submit review failed');
+      });
+      const rows = [draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' })];
+      const { mark } = threadDraftsBackend(rows);
+      const state = await prScopeWith(rows);
+
+      await expect(state.submitPRReview()).rejects.toThrow('gh api submit review failed');
+
+      expect(mark).not.toHaveBeenCalled();
+      expect(state.submitError).toContain('gh api submit review failed');
+      expect(state.drafts.map((comment) => comment.id)).toEqual(['d-1']);
+    });
+  });
+
+  describe('a backend with the draft submit (pr-review-drafts.v1)', () => {
+    beforeEach(() => draftSubmitHello(['pr-review-drafts.v1']));
+    afterEach(() => __setTransportHelloForTest(null));
+
+    // The backend's draft submit: posts (unless `posts` is false), marks
+    // the drafts it names sent and answers, or loses the answer.
+    function draftSubmit(rows: DiffReviewComment[], opts: { posts?: boolean; answer?: 'lost' | 'answered' } = {}) {
+      return setBindingMock('SubmitPRReview', async (_wire: unknown, review: { drafts?: { ids: string[] } }) => {
+        const ids = review.drafts?.ids ?? [];
+        if (opts.posts !== false) for (const row of rows) if (ids.includes(row.id)) row.status = 'sent';
+        if (opts.answer === 'lost') throw new DisconnectedError('socket closed');
+        return { postedReview: true, postedFileComments: 0, sentDraftIds: ids };
+      });
+    }
+
+    it('names the drafts in one call and marks nothing itself', async () => {
+      installPRMocks();
+      const rows = [draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' })];
+      const { mark } = threadDraftsBackend(rows);
+      const submit = draftSubmit(rows);
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+
+      await state.submitPRReview();
+
+      expect(submit.mock.calls[0]?.[1]).toEqual({ verdict: 'comment', body: 'overall note', comments: [], drafts: { threadId: 'thread-1', ids: ['d-1'], headSha: 'sha-a' } });
+      expect(mark).not.toHaveBeenCalled();
+      expect(state.summaryBody).toBe('');
+      expect(state.drafts).toEqual([]);
+    });
+
+    it('an answer lost after the review posted reads the drafts as sent and ends as a success', async () => {
+      installPRMocks();
+      const rows = [draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' })];
+      threadDraftsBackend(rows);
+      const submit = draftSubmit(rows, { answer: 'lost' });
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
+
+      expect(state.summaryBody).toBe('');
+      expect(state.submitError).toBeNull();
+      expect(state.drafts).toEqual([]);
+      // Nothing is left to send again.
+      await state.submitPRReview();
+      expect(submit).toHaveBeenCalledTimes(1);
+    });
+
+    it('an answer lost with the drafts still unsent keeps them and the summary, and says to check the PR', async () => {
+      installPRMocks();
+      const rows = [draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' })];
+      threadDraftsBackend(rows);
+      draftSubmit(rows, { posts: false, answer: 'lost' });
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
+
+      expect(state.summaryBody).toBe('overall note');
+      expect(state.submitError).toContain('may already be on the PR');
+      expect(state.drafts.map((comment) => comment.id)).toEqual(['d-1']);
+    });
+
+    it('a draft gone (deleted elsewhere) after a lost answer says nothing about the review', async () => {
+      installPRMocks();
+      const rows = [draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' })];
+      threadDraftsBackend(rows);
+      setBindingMock('SubmitPRReview', async () => {
+        rows.length = 0;
+        throw new DisconnectedError('socket closed');
+      });
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
+
+      expect(state.summaryBody).toBe('overall note');
+      expect(state.submitError).toContain('may already be on the PR');
+    });
+
+    it('a summary alone whose answer was lost keeps the summary and says to check the PR', async () => {
+      installPRMocks();
+      threadDraftsBackend([]);
+      draftSubmit([], { answer: 'lost' });
+      const state = await prScopeWith([]);
+      state.setSummaryBody('overall note');
+
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
+
+      expect(state.summaryBody).toBe('overall note');
+      expect(state.submitError).toContain('may already be on the PR');
+    });
+
+    it('drafts another submit sent first are a success, not a failure', async () => {
+      installPRMocks();
+      const rows = [draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' })];
+      threadDraftsBackend(rows);
+      setBindingMock('SubmitPRReview', async () => {
+        rows[0]!.status = 'sent';
+        throw new TransportError('review_drafts_not_drafts', 'Some of these comments were already sent or removed, so the review was not posted.');
+      });
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(TransportError);
+
+      expect(state.submitError).toBeNull();
+      expect(state.summaryBody).toBe('');
+    });
+
+    it('a draft edited while the review posted stays a draft and is named', async () => {
+      installPRMocks();
+      const rows = [
+        draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' }),
+        draft({ id: 'd-2', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 2, side: 'new' }),
+      ];
+      threadDraftsBackend(rows);
+      setBindingMock('SubmitPRReview', async () => {
+        rows[0]!.status = 'sent';
+        return { postedReview: true, postedFileComments: 0, sentDraftIds: ['d-1'], editedDraftIds: ['d-2'] };
+      });
+      const state = await prScopeWith(rows);
+
+      await state.submitPRReview();
+
+      expect(state.drafts.map((comment) => comment.id)).toEqual(['d-2']);
+      expect(state.submitError).toContain('edited while it posted');
+    });
+
+    it('a failed read after a submit holds the next one until the drafts read', async () => {
+      installPRMocks();
+      const rows = [draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' })];
+      const { list } = threadDraftsBackend(rows);
+      const submit = draftSubmit(rows, { posts: false, answer: 'lost' });
+      const state = await prScopeWith(rows);
+      const reads = list.getMockImplementation()!;
+      list.mockImplementation(async () => {
+        throw new Error('read failed');
+      });
+
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
+      expect(state.submitError).toContain('could not be read again');
+
+      // The next press reads instead of posting.
+      list.mockImplementation(reads);
+      await state.submitPRReview();
+      expect(submit).toHaveBeenCalledTimes(1);
+      expect(state.drafts.map((comment) => comment.id)).toEqual(['d-1']);
+      // Then a submit goes.
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
+      expect(submit).toHaveBeenCalledTimes(2);
+    });
   });
 
   function setDocumentVisibility(value: DocumentVisibilityState): void {

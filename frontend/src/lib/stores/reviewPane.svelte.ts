@@ -41,7 +41,7 @@ import {
 import { addCompanionClosedObserver, openCompanion } from './companionPanes.svelte';
 import { addThreadRemovedObserver } from './threads.svelte';
 import { peekGitStatus, peekGitStatusError } from './gitStatusStore.svelte';
-import { getTransportHelloFor } from './transportStatus.svelte';
+import { getTransportHelloFor, isTransportClassError } from './transportStatus.svelte';
 import { workspaceKeyForThread } from '../utils/workspaceKey';
 import { getPane } from './panes.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
@@ -594,6 +594,14 @@ export interface PinnedReviewPR {
   readonly backend: BackendKey;
 }
 
+// The backend's SubmitPRReview posts named drafts and marks them itself
+// (internal/app/app_pr_review_submit.go).
+const REVIEW_DRAFT_SUBMIT = 'pr-review-drafts.v1';
+function reviewDraftSubmit(backend: BackendKey): boolean {
+  return getTransportHelloFor(backend)?.capabilities.includes(REVIEW_DRAFT_SUBMIT) ?? false;
+}
+const REVIEW_ANSWER_LOST = 'The connection dropped before the forge answered, so the review may already be on the PR. Check the PR before you submit again.';
+
 /** The one place a review subject is built. Structural in the pane so both
  *  `ThreadPane` and the narrower `PanelContext` projection satisfy it. */
 export function reviewSubjectForPane(pane: {
@@ -821,6 +829,9 @@ export function createReviewPaneState(
   const contextExpansions = new Map<string, ContextExpansionState>();
   let contextExpansionVersion = $state(0);
   let sendingComments = $state(false);
+  // A PR review submit ran and its drafts were not read since: what it
+  // posted is not known yet (reconcileSubmit).
+  let submitUnreconciled = false;
   let openEditors: CommentAnchor[] = $state([]);
   // Draft-editor text lives HERE, not in the row component: editor rows
   // are virtualized, so scrolling one out of the render window unmounts
@@ -2018,7 +2029,7 @@ export function createReviewPaneState(
   }
 
   // A sent draft is no longer editable; its open edit goes with it.
-  function forgetDraftEdits(sent: readonly DiffReviewComment[]): void {
+  function forgetDraftEdits(sent: readonly Pick<DiffReviewComment, 'id'>[]): void {
     for (const comment of sent) draftEditBodies.delete(comment.id);
   }
 
@@ -2087,6 +2098,17 @@ export function createReviewPaneState(
     // wrong lines or hard failures. The UI hides the 'pr' target there;
     // this guard backs it up.
     if (scope !== 'pr' || selectedCommitSHA || !prRef || !sourceKey || sendingComments) return;
+    // The last submit's outcome is not known until its drafts are read
+    // again; nothing is sent before that read succeeds.
+    if (submitUnreconciled) {
+      sendingComments = true;
+      try {
+        await reconcileSubmit(prRef, sourceKey, null);
+      } finally {
+        sendingComments = false;
+      }
+      return;
+    }
     const orphaned = orphanedDraftIds();
     const submitDrafts = drafts.filter((comment) => !orphaned.has(comment.id));
     // A bare Approve is a valid review; comment and request-changes need
@@ -2095,51 +2117,114 @@ export function createReviewPaneState(
       submitError = 'No non-orphaned PR comments to submit.';
       return;
     }
+    const ref = prRef;
+    const source = sourceKey;
+    const submitted = submitDrafts.map((comment) => comment.id);
     sendingComments = true;
+    submitUnreconciled = true;
     submitError = null;
+    let failure: unknown = null;
     try {
-      const result = (await withBackendTarget(backend, () => SubmitPRReview(prReferenceWire(prRef), {
-        verdict,
-        body: summaryBody.trim(),
-        comments: submitDrafts.map(reviewLineCommentForDraft).filter((comment) => comment !== null),
-      }))) as SubmitPRReviewResult;
-      let sent = submitDrafts;
-      if (result.partialFailurePath) {
-        // The review (with every line comment) posted; file-level comments
-        // post one-by-one after it and stop at the first failure, so only
-        // the first postedFileComments of them made it up.
-        const fileLevel = submitDrafts.filter((comment) => comment.side === 'file');
-        const unposted = new Set(fileLevel.slice(result.postedFileComments).map((comment) => comment.id));
-        sent = submitDrafts.filter((comment) => !unposted.has(comment.id));
-        submitError = `The review posted, but its comment on ${result.partialFailurePath} did not. ${result.partialFailure ?? 'Unknown error.'}`;
-      } else if (result.partialFailure) {
-        // Everything posted; a follow-up step (GitLab approve) failed.
-        submitError = `The review posted, but a step after it did not. ${result.partialFailure}`;
-      }
-      forgetDraftEdits(sent);
-      if (pinnedDrafts !== null) {
-        // Posted drafts are the forge's comments now; the rest stay.
-        if (sent.length > 0) await markPRDiffReviewCommentsSent(pinnedDrafts, scope, sourceKey, sent.map((comment) => comment.id));
-      } else {
-        if (sent.length > 0) {
-          await MarkDiffReviewCommentsSent(commentThreadId(), scope, sourceKey, sent.map((comment) => comment.id), `pr:${loadedPRHeadSHA}`);
-        }
-        pruneDraftEdits(sourceKey, await refreshDiffReviewComments(commentThreadId(), scope, sourceKey));
-      }
+      const result = reviewDraftSubmit(backend)
+        ? await submitReviewWithDrafts(ref, submitted)
+        : await submitReviewThenMark(ref, source, submitDrafts);
       // Through the store: the posted review is now part of the PR, so
       // every pane looking at it shows the new threads.
-      applyPRThreads(computerPRKey(prRef), ((await withBackendTarget(backend, () => ListPRReviewThreads(prReferenceWire(prRef)))) ?? []) as ReviewThread[]);
+      applyPRThreads(computerPRKey(ref), ((await withBackendTarget(backend, () => ListPRReviewThreads(prReferenceWire(ref)))) ?? []) as ReviewThread[]);
       if (!result.partialFailure) {
         summaryBody = '';
-        submitError = null;
+        if (!result.editedDraftIds?.length) submitError = null;
       }
       error = null;
     } catch (err) {
-      submitError = userFacingError(err);
+      failure = err;
+      submitError = isTransportClassError(err) ? REVIEW_ANSWER_LOST : userFacingError(err);
       error = submitError;
-      throw err;
     } finally {
+      await reconcileSubmit(ref, source, failure === null ? null : submitted);
       sendingComments = false;
+    }
+    if (failure !== null) throw failure;
+  }
+
+  // A backend with the draft submit posts the drafts it holds and marks
+  // the ones the forge received, in one call (SubmitPRReview).
+  async function submitReviewWithDrafts(ref: PRRef, ids: readonly string[]): Promise<SubmitPRReviewResult> {
+    const result = (await withBackendTarget(backend, () => SubmitPRReview(prReferenceWire(ref), {
+      verdict,
+      body: summaryBody.trim(),
+      comments: [],
+      drafts: { threadId: pinnedDrafts !== null ? undefined : commentThreadId(), ids: [...ids], headSha: loadedPRHeadSHA },
+    }))) as SubmitPRReviewResult;
+    if (result.partialFailurePath) {
+      submitError = `The review posted, but its comment on ${result.partialFailurePath} did not. ${result.partialFailure ?? 'Unknown error.'}`;
+    } else if (result.partialFailure) {
+      submitError = `The review posted, but a step after it did not. ${result.partialFailure}`;
+    } else if (result.editedDraftIds?.length) {
+      submitError = `The review posted. ${result.editedDraftIds.length === 1 ? 'A comment was' : `${result.editedDraftIds.length} comments were`} edited while it posted and ${result.editedDraftIds.length === 1 ? 'stays a draft' : 'stay drafts'}; the review has the text from before the edit.`;
+    }
+    forgetDraftEdits((result.sentDraftIds ?? []).map((id) => ({ id })));
+    return result;
+  }
+
+  // A backend without it (an older build on a connected computer) posts
+  // the comments it is given; the pane marks the drafts that posted.
+  async function submitReviewThenMark(ref: PRRef, source: string, submitDrafts: readonly DiffReviewComment[]): Promise<SubmitPRReviewResult> {
+    const result = (await withBackendTarget(backend, () => SubmitPRReview(prReferenceWire(ref), {
+      verdict,
+      body: summaryBody.trim(),
+      comments: submitDrafts.map(reviewLineCommentForDraft).filter((comment) => comment !== null),
+    }))) as SubmitPRReviewResult;
+    let sent = submitDrafts;
+    if (result.partialFailurePath) {
+      // The review (with every line comment) posted; file-level comments
+      // post one-by-one after it and stop at the first failure, so only
+      // the first postedFileComments of them made it up.
+      const fileLevel = submitDrafts.filter((comment) => comment.side === 'file');
+      const unposted = new Set(fileLevel.slice(result.postedFileComments).map((comment) => comment.id));
+      sent = submitDrafts.filter((comment) => !unposted.has(comment.id));
+      submitError = `The review posted, but its comment on ${result.partialFailurePath} did not. ${result.partialFailure ?? 'Unknown error.'}`;
+    } else if (result.partialFailure) {
+      // Everything posted; a follow-up step (GitLab approve) failed.
+      submitError = `The review posted, but a step after it did not. ${result.partialFailure}`;
+    }
+    forgetDraftEdits(sent);
+    if (sent.length > 0) {
+      const ids = sent.map((comment) => comment.id);
+      if (pinnedDrafts !== null) await markPRDiffReviewCommentsSent(pinnedDrafts, scope, source, ids);
+      else await MarkDiffReviewCommentsSent(commentThreadId(), scope, source, ids, `pr:${loadedPRHeadSHA}`);
+    }
+    return result;
+  }
+
+  // Reads the drafts after a submit, whatever its outcome, and only then
+  // lets the next one go. A submit that failed (an answer lost, a refusal)
+  // whose drafts all read as sent now landed after all, it or the submit
+  // that sent them first: it ends as a
+  // success does. One whose answer was lost with nothing to read it from
+  // (a summary alone, or drafts still unsent) keeps its summary and says
+  // the review may be on the PR. A failed read keeps the outcome unknown.
+  async function reconcileSubmit(ref: PRRef, source: string, failedIds: readonly string[] | null): Promise<void> {
+    let read: readonly DiffReviewComment[];
+    try {
+      read = pinnedDrafts !== null
+        ? await refreshPRDiffReviewComments(pinnedDrafts, scope, source)
+        : await refreshDiffReviewComments(commentThreadId(), scope, source);
+    } catch (err) {
+      submitError = `${submitError ? `${submitError} ` : ''}The drafts could not be read again, so the next submit waits for them: ${userFacingError(err)}`;
+      return;
+    }
+    pruneDraftEdits(source, read);
+    submitUnreconciled = false;
+    if (failedIds === null || failedIds.length === 0) return;
+    if (!failedIds.every((id) => read.some((comment) => comment.id === id && comment.status === 'sent'))) return;
+    summaryBody = '';
+    submitError = null;
+    error = null;
+    try {
+      applyPRThreads(computerPRKey(ref), ((await withBackendTarget(backend, () => ListPRReviewThreads(prReferenceWire(ref)))) ?? []) as ReviewThread[]);
+    } catch (err) {
+      error = userFacingError(err);
     }
   }
 
