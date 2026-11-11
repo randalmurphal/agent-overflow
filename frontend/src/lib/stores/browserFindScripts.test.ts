@@ -42,11 +42,14 @@ function deliver(events: ScriptStep['events']): void {
 }
 
 async function replay(script: Script): Promise<void> {
-  let reply: { resolve: (s: BrowserFindState) => void; reject: (e: Error) => void } | null = null;
+  const reply: { resolve?: (s: BrowserFindState) => void; reject?: (e: Error) => void } = {};
   const sent: string[] = [];
   setBindingMock('BrowserCompanionFind', (_thread: string, action: { kind: string }) => {
     sent.push(action.kind);
-    return new Promise<BrowserFindState>((resolve, reject) => { reply = { resolve, reject }; });
+    return new Promise<BrowserFindState>((resolve, reject) => {
+      reply.resolve = resolve;
+      reply.reject = reject;
+    });
   });
   let shown = false;
   const find = createBrowserFind({
@@ -61,7 +64,8 @@ async function replay(script: Script): Promise<void> {
         continue;
       }
       const before = sent.length;
-      reply = null;
+      reply.resolve = undefined;
+      reply.reject = undefined;
       switch (step.act) {
         case 'open':
           shown = true;
@@ -84,9 +88,8 @@ async function replay(script: Script): Promise<void> {
       await vi.advanceTimersByTimeAsync(step.act === 'start' ? BROWSER_FIND_DEBOUNCE_MS : 0);
       expect(sent.slice(before), `step ${index}: the provider's calls for ${step.act}`).toEqual([step.act]);
       deliver(step.events);
-      const pending = reply as typeof reply;
-      if (step.error) pending!.reject(new Error('refused'));
-      else pending!.resolve(new BrowserFindState(step.answer as Partial<BrowserFindState>));
+      if (step.error) reply.reject?.(new Error('refused'));
+      else reply.resolve?.(new BrowserFindState(step.answer as Partial<BrowserFindState>));
       await vi.advanceTimersByTimeAsync(0);
     }
     await vi.advanceTimersByTimeAsync(BROWSER_FIND_DEBOUNCE_MS);

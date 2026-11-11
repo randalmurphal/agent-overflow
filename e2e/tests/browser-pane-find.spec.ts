@@ -113,7 +113,10 @@ test('mod+f finds in the shown browser page and closes when the page navigates a
     expect(mount).not.toBe('');
     await pane.getByRole('button', { name: 'Close browser' }).click();
     await expect(pane).toHaveCount(0);
-    await expect(harness.rpc('BrowserCompanionFind', threadId, { kind: 'next', pageId, mount })).rejects.toThrow(/no find is in progress/);
+    // The pane's find is gone: a step from its mount changes nothing and
+    // says the find is not its own.
+    const step = await harness.rpc<{ foreign: boolean; active: boolean }>('BrowserCompanionFind', threadId, { kind: 'next', pageId, mount });
+    expect(step).toMatchObject({ foreign: true, active: false });
     await harness.rpc('BrowserCompanionDo', threadId, { kind: 'show', pageId });
     await expect(pane).toBeVisible();
   }

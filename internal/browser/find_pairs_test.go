@@ -234,7 +234,7 @@ func (e *findTableEnv) collect() {
 }
 
 func (e *findTableEnv) endsHeld(model *findModel, label string, end FindState) bool {
-	if !(model.bar || model.search) || end.Mount != e.mounts[label] || end.PageID != e.f.pageID {
+	if (!model.bar && !model.search) || end.Mount != e.mounts[label] || end.PageID != e.f.pageID {
 		return false
 	}
 	if end.Incarnation != model.incarnation {
@@ -431,7 +431,7 @@ func (e *findTableEnv) check(t *testing.T, name string) {
 	if engine != (session.active || session.engine) {
 		t.Errorf("%s: engine holds a search %v; the Manager's session active %v, engine owed %v", name, engine, session.active, session.engine)
 	}
-	if engine && !session.active && !(lastStop.failed && lastStop.at == actions) {
+	if engine && !session.active && (!lastStop.failed || lastStop.at != actions) {
 		t.Errorf("%s: engine holds a search no session wants after a find action could have stopped it", name)
 	}
 	for _, answer := range e.answers {
