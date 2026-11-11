@@ -1042,39 +1042,36 @@ export function createReviewPaneState(
     if (contextExpansions.size === 0) return parsed;
     return parsed.map((file) => applyContextExpansion(file, contextExpansions.get(file.path)));
   });
-  const conflictFiles = $derived.by(() => {
+  // The conflict view's files and, per file with content, the hidden lines
+  // of each fold it renders: find reads the folds this one build made.
+  const conflictProjection = $derived.by(() => {
+    const folds = new Map<string, Map<number, readonly string[]>>();
     const conflicts = conflictsState.state;
-    if (!conflicts) return [];
+    if (!conflicts) return { files: [] as ReviewFile[], folds };
     const { baseLabel, headLabel, notes } = conflicts;
-    return conflicts.paths.map((path) => {
+    const files = conflicts.paths.map((path) => {
       const content = conflictsState.contentByPath.get(path);
       const pathNotes = notes[path];
       // A structural conflict's content can be unfetchable (the path may
       // not exist in the merged tree at all) — its notes still render.
       if (content !== undefined || pathNotes?.length) {
+        const fileFolds = new Map<number, readonly string[]>();
+        if (content !== undefined) folds.set(path, fileFolds);
         return reviewFileFromPatchFile(conflictPatchFile(path, content ?? '', {
           baseLabel,
           headLabel,
           notes: pathNotes,
           expandedFolds: conflictExpandedFolds.get(path),
+          onFold: (id, lines) => fileFolds.set(id, lines),
         }));
       }
       return reviewFileFromPatchFile({ path, kind: 'conflict', additions: 0, deletions: 0, lines: [] });
     });
+    return { files, folds };
   });
+  const conflictFiles = $derived(conflictProjection.files);
   function conflictFoldLines(path: string): ReadonlyMap<number, readonly string[]> | null {
-    const conflicts = conflictsState.state;
-    const content = conflictsState.contentByPath.get(path);
-    if (!conflicts || content === undefined) return null;
-    const folds = new Map<number, readonly string[]>();
-    conflictPatchFile(path, content, {
-      baseLabel: conflicts.baseLabel,
-      headLabel: conflicts.headLabel,
-      notes: conflicts.notes[path],
-      expandedFolds: conflictExpandedFolds.get(path),
-      onFold: (id, lines) => folds.set(id, lines),
-    });
-    return folds;
+    return conflictProjection.folds.get(path) ?? null;
   }
   // The colors each surface last painted (see PaintedSpans), retained
   // for exactly the files that surface shows. Lines keep them while

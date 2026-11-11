@@ -1626,7 +1626,14 @@ describe('reviewPane store — PR scope', () => {
     await state.openConflictView();
     expect(linesOf(state.conflictFiles[0])?.[0]?.fold).toEqual({ id: 0, lines: 7 });
 
+    // Find reads the folds the view built, not a rebuild per call.
+    const folds = state.conflictFoldLines('main.go');
+    expect(folds).toBe(state.conflictFoldLines('main.go'));
+    expect([...folds!]).toEqual([[0, ['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7']]]);
+    expect(state.conflictFoldLines('other.go')).toBeNull();
+
     state.expandConflictFold('main.go', 0);
+    expect(state.conflictFoldLines('main.go')!.size).toBe(0);
     const expanded = state.conflictFiles[0];
     expect(linesOf(expanded)?.some((line) => line.fold)).toBe(false);
     expect(linesOf(expanded)?.[1]?.content).toBe(' c1');
