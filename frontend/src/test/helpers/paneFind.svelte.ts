@@ -1,4 +1,5 @@
-// A reactive stand-in find provider for component tests of the find bar.
+// Reactive stand-in find providers (a stepper, a filter) for component
+// tests of the find bar.
 import { vi, type Mock } from 'vitest';
 import type { PaneFindProvider } from '../../lib/stores/paneFind.svelte';
 
@@ -24,6 +25,30 @@ export function fakeFindProvider(noun = 'thread'): FakeFindProvider {
     search: vi.fn<(query: string) => void>(),
     next: vi.fn<() => void>(),
     previous: vi.fn<() => void>(),
+    clear: vi.fn<() => void>(),
+  };
+}
+
+export interface FakeFilterProvider extends PaneFindProvider {
+  set(result: { count?: number; pending?: boolean }): void;
+  readonly search: Mock<(query: string) => void>;
+  readonly focusFirst: Mock<() => boolean>;
+  readonly clear: Mock<() => void>;
+}
+
+/** A filter: no `next` / `previous`; Enter runs `focusFirst`. */
+export function fakeFilterProvider(noun: string, focusFirst: () => boolean = () => false): FakeFilterProvider {
+  const state = $state({ count: 0, pending: false });
+  return {
+    noun,
+    result: {
+      get count() { return state.count; },
+      current: -1,
+      get pending() { return state.pending; },
+    },
+    set(next) { Object.assign(state, next); },
+    search: vi.fn<(query: string) => void>(),
+    focusFirst: vi.fn<() => boolean>(focusFirst),
     clear: vi.fn<() => void>(),
   };
 }

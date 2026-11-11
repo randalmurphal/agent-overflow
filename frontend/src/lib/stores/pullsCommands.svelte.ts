@@ -44,12 +44,13 @@ export function registerPullsCommands(): void {
   // Gated on `toolDetailOpen` as well as focus, like workflows.escape: a
   // surface dismissal that passed at the list would consume the phone's
   // Back without doing anything, and Back could never leave the pane.
+  // An open find in the target region closes first (`find.close`).
   registerCommand({
     id: 'pulls.escape',
     dismissesSurface: true,
     label: 'Pull requests: Back to the list',
     description: 'Close the open log or conflicts, else the open merge request or pipeline, and return to the list.',
-    when: 'pullsPaneFocused && toolDetailOpen && !overlayOpen',
+    when: 'pullsPaneFocused && toolDetailOpen && !overlayOpen && !paneFindOpen',
     run: () => {
       stepPullsBack();
     },

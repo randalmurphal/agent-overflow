@@ -32,6 +32,8 @@
   } from '../../stores/workflowsOverlay.svelte';
   import { cancelWorkflowAutoAdvance } from '../../stores/workflowResolve';
   import { setWorkflowsScroller } from './workflowsScroller';
+  import PaneFindBar from '../panes/PaneFindBar.svelte';
+  import { attachWorkflowsPaneFind } from './workflowsPaneFind.svelte';
 
   interface Props {
     paneId: string;
@@ -51,6 +53,11 @@
   // leaving the run map to find it by walking the DOM. A getter, because the
   // binding lands after this runs.
   setWorkflowsScroller(() => bodyEl);
+
+  // Find filters home's rows; a run detail or all-clear has no find.
+  let homeListed = $derived(top.level === 'home' && (isWorkflowOverlayLoaded() || !isWorkflowLoading()) && !(getWorkflowLoadError() && !isWorkflowOverlayLoaded()));
+  // svelte-ignore state_referenced_locally
+  const listFindKey = attachWorkflowsPaneFind({ paneId, homeListed: () => homeListed, body: () => bodyEl });
 
   // RUN-MAP §9.9 — one scroller serves every level, so where a level swap
   // leaves the reader is this component's contract, not an emergent property.
@@ -136,13 +143,15 @@
     {/if}
   </ToolPaneHeader>
 
+  <PaneFindBar paneId={listFindKey} title="Workflows" fallbackFocus={() => bodyEl} />
+
   <!--
     `overflow-anchor:none` because the run map owns its own compensation
     (RUN-MAP §9.7): native scroll anchoring picks its own anchor element and
     fights the anchor-hold, which is the difference between a fold that holds
     still and one that fights you.
   -->
-  <div class="min-h-0 flex-1 overflow-y-auto [overflow-anchor:none]" bind:this={bodyEl} data-testid="workflows-pane-body">
+  <div class="min-h-0 flex-1 overflow-y-auto [overflow-anchor:none] focus:outline-none" tabindex="-1" bind:this={bodyEl} data-testid="workflows-pane-body">
     {#if getWorkflowLoadError() && !isWorkflowOverlayLoaded()}
       <p class="px-4 py-6 text-xs text-error" data-testid="workflows-load-error">{getWorkflowLoadError()}</p>
     {:else if !isWorkflowOverlayLoaded() && isWorkflowLoading()}

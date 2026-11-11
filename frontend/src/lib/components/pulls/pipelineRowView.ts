@@ -19,6 +19,8 @@ export interface PipelineRowView {
   refKind: 'branch' | 'tag' | 'merge_request' | string;
   mrNumber: number;
   forge: 'github' | 'gitlab';
+  /** The head commit's sha as the forge sent it. */
+  sha: string;
   shortSHA: string;
   title: string;
   projectName: string;

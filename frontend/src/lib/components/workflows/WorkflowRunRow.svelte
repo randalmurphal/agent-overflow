@@ -57,6 +57,7 @@
   ].join(' ')}
   onclick={() => onOpen(run.id)}
   data-testid="workflow-run-row"
+  data-find-row
   data-item-id={run.id}
   data-run-state={run.state}
 >
@@ -73,7 +74,7 @@
       {#if signal.label}
         <span class={['shrink-0 text-xs font-medium', signal.tone].join(' ')}>{signal.label}</span>
       {/if}
-      <span class="min-w-0 flex-1 truncate text-sm text-fg">{run.goal || run.workflowId}</span>
+      <span class="min-w-0 flex-1 truncate text-sm text-fg" data-testid="workflow-run-title">{run.goal || run.workflowId}</span>
       <span class="shrink-0 truncate text-[0.6875rem] text-fg-muted">{meta}</span>
     </span>
     {#if activity}

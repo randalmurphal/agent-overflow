@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { WorkItem, WorkflowDefinitionListing, WorkflowResolvedReceipt } from '../types/workflow';
+import type { WorkItem, WorkflowAutomationView, WorkflowDefinitionListing, WorkflowResolvedReceipt } from '../types/workflow';
+import { findNeedle } from '../utils/findMatch';
 import {
   formatWorkflowCost,
   groupWorkflowRunsByProject,
@@ -14,6 +15,8 @@ import {
   workflowChainSummary,
   workflowCountdown,
   workflowDefinitionMeta,
+  workflowHomeGroups,
+  workflowHomeRowCount,
   workflowMetaLine,
   workflowRunSection,
   workflowSessionSummary,
@@ -203,5 +206,62 @@ describe('workflow copy helpers', () => {
     expect(workflowChainSummary(definition)).toBe('plan → port → check');
     expect(workflowDefinitionMeta({ phaseCount: 1, humanGateCount: 0 } as WorkflowDefinitionListing)).toBe('1 phase');
     expect(workflowChainSummary({ phases: [] } as unknown as WorkflowDefinitionListing)).toBe('');
+  });
+});
+
+describe('home groups and the list find needle', () => {
+  const names = new Map([['p1', 'Widgets'], ['p2', 'Gadgets'], ['p3', 'Quiet']]);
+  const runs = [
+    item('r1', 'needs-human', 1, { projectId: 'p1', goal: 'Port the queue', workflowId: 'port', reason: 'gate' }),
+    item('r2', 'running', 2, { projectId: 'p1', goal: '', workflowId: 'nightly-audit', startedAt: 2 }),
+    item('r3', 'done', 3, { projectId: 'p2', goal: 'Trim retention', workflowId: 'port', disposition: MERGED }),
+    item('r4', 'failed', 4, { projectId: 'p2', goal: 'Rework header', workflowId: 'fix' }),
+  ];
+  const definitions: Record<string, WorkflowDefinitionListing[]> = {
+    p1: [{ id: 'port', name: 'Port a module', scope: 'project', phaseCount: 2, phases: [{ id: 'plan' }, { id: 'merge' }] } as WorkflowDefinitionListing],
+  };
+  const automations: Record<string, WorkflowAutomationView[]> = {
+    p1: [{ id: 'a1', name: 'Weekly sweep', workflowId: 'port' } as WorkflowAutomationView],
+  };
+  const source = {
+    runs,
+    projectNames: names,
+    projectFilter: '',
+    definitionsOf: (projectId: string) => definitions[projectId] ?? [],
+    automationsOf: (projectId: string) => automations[projectId] ?? [],
+  };
+  const ids = (query: string, projectFilter = '') => workflowHomeGroups({ ...source, projectFilter }, findNeedle(query)).map((group) => [
+    group.projectId,
+    [...group.attention, ...group.running, ...group.recent].map((run) => run.id),
+    group.definitions.map((entry) => entry.definition.id),
+  ]);
+
+  it('lists every project with rows, and none without, while the query is blank', () => {
+    expect(ids('')).toEqual([['p2', ['r4', 'r3'], []], ['p1', ['r1', 'r2'], ['port']]]);
+    const groups = workflowHomeGroups(source);
+    expect(workflowHomeRowCount(groups)).toBe(5);
+    expect(groups.find((group) => group.projectId === 'p1')!.definitions[0].automations.map((a) => a.id)).toEqual(['a1']);
+  });
+
+  it('matches a run on its title, workflow, state word and project', () => {
+    expect(ids('queue')).toEqual([['p1', ['r1'], []]]);
+    expect(ids('NIGHTLY')).toEqual([['p1', ['r2'], []]]);
+    expect(ids('failed')).toEqual([['p2', ['r4'], []]]);
+    expect(ids('running')).toEqual([['p1', ['r2'], []]]);
+    expect(ids('gadgets')).toEqual([['p2', ['r4', 'r3'], []]]);
+  });
+
+  it('matches a definition on its name, id, chain and automations', () => {
+    expect(ids('port a')).toEqual([['p1', [], ['port']]]);
+    expect(ids('plan → merge')).toEqual([['p1', [], ['port']]]);
+    expect(ids('weekly')).toEqual([['p1', [], ['port']]]);
+    // The id matches the definition and the runs of it.
+    expect(ids('port')).toEqual([['p2', ['r3'], []], ['p1', ['r1'], ['port']]]);
+  });
+
+  it('composes with the project filter and drops every group when nothing matches', () => {
+    expect(ids('port', 'p2')).toEqual([['p2', ['r3'], []]]);
+    expect(ids('nothing at all')).toEqual([]);
+    expect(workflowHomeRowCount(workflowHomeGroups(source, findNeedle('nothing at all')))).toBe(0);
   });
 });

@@ -12,10 +12,12 @@ import {
   clearSelection,
   detachPullsPage,
   detailOpen,
+  pullsListedCount,
   pullsLoading,
   pullsNeedsYouCount,
   pullsProjectErrors,
   pullsProjects,
+  pullsQuery,
   pullsError,
   pullsRefreshFailure,
   pullsRowsByGroup,
@@ -24,6 +26,7 @@ import {
   resyncPullsAfterGap,
   selectedPR,
   selectPR,
+  setPullsQuery,
 } from './pullsPage.svelte';
 import {
   __resetPullsPageAgentForTest,
@@ -724,5 +727,64 @@ describe('open with agent', () => {
     const del = setBindingMock('DeleteThread', async () => undefined);
     expect(await openPRThread(PANE)).toBe(false);
     expect(del).not.toHaveBeenCalled();
+  });
+});
+
+describe('the list find query', () => {
+  function findSnapshot(): PRListSnapshot {
+    return snapshot(1, [
+      project('p1', [
+        item(1, { group: 'needs_you', title: 'Retry delivery' }),
+        item(2, { group: 'needs_you', title: 'Speed up builds' }),
+        item(3, { title: 'Retry webhooks' }),
+      ]),
+    ]);
+  }
+
+  it('narrows the groups, the listed count and the Needs you count from one source, per pane', async () => {
+    installListMocks(findSnapshot());
+    attachPullsPage(PANE, HOME_BACKEND);
+    attachPullsPage('tools-other', HOME_BACKEND);
+    await flush();
+    setMRFilters(HOME_BACKEND, { filter: 'all' });
+    expect(pullsListedCount(PANE)).toBe(3);
+    setPullsQuery(PANE, 'retry');
+    expect(pullsQuery(PANE)).toBe('retry');
+    expect(groupKeys()).toEqual([[rowKey(1)], [rowKey(3)]]);
+    expect(pullsListedCount(PANE)).toBe(2);
+    expect(pullsNeedsYouCount(PANE)).toBe(1);
+    // Another pane on the same computer is not narrowed.
+    expect(pullsListedCount('tools-other')).toBe(3);
+    expect(pullsNeedsYouCount('tools-other')).toBe(2);
+    // The filter composes with the query.
+    setMRFilters(HOME_BACKEND, { filter: 'needs_you' });
+    expect(pullsListedCount(PANE)).toBe(1);
+    setPullsQuery(PANE, '');
+    expect(pullsListedCount(PANE)).toBe(2);
+  });
+
+  it('keeps a selection the query hides', async () => {
+    installListMocks(findSnapshot());
+    attachPullsPage(PANE, HOME_BACKEND);
+    await flush();
+    setMRFilters(HOME_BACKEND, { filter: 'all' });
+    expect(selectPR(PANE, rowKey(2))).toBe(true);
+    setPullsQuery(PANE, 'retry');
+    expect(groupKeys().flat()).not.toContain(rowKey(2));
+    expect(selectedPR(PANE)).toMatchObject({ key: rowKey(2) });
+    expect(detailOpen(PANE)).toBe(true);
+  });
+
+  it('starts empty on a reattached page and is ignored before one attaches', async () => {
+    installListMocks(findSnapshot());
+    setPullsQuery(PANE, 'early');
+    attachPullsPage(PANE, HOME_BACKEND);
+    await flush();
+    expect(pullsQuery(PANE)).toBe('');
+    setPullsQuery(PANE, 'retry');
+    detachPullsPage(PANE);
+    attachPullsPage(PANE, HOME_BACKEND);
+    await flush();
+    expect(pullsQuery(PANE)).toBe('');
   });
 });

@@ -15,6 +15,7 @@ const ROW: PipelineRowView = {
   refKind: 'branch',
   mrNumber: 0,
   forge: 'gitlab',
+  sha: 'abcdef1234567890abcd',
   shortSHA: 'abcdef1',
   title: 'Fix the parser',
   projectName: 'App',
