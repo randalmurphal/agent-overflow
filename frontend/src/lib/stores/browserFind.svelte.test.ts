@@ -8,6 +8,7 @@ import {
 } from './browserFind.svelte';
 import { BrowserCompanionEvent, BrowserFindState } from './bindings';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { TransportError } from '../transport/wsClient';
 import { closePaneFind, isPaneFindOpen, openPaneFind, registerPaneFindProvider, resetPaneFindForTest } from './paneFind.svelte';
 
 interface Call {
@@ -16,6 +17,7 @@ interface Call {
   pageId: string;
   query: string;
   mount: string;
+  open: string;
 }
 
 function state(partial: Partial<BrowserFindState>): BrowserFindState {
@@ -28,16 +30,14 @@ let calls: Call[];
 let answer: (call: Call) => Promise<BrowserFindState>;
 let pageId: string;
 let mount: string | null;
-// The backend's generation: every action takes the next one. A restored
-// page is a new incarnation whose generations may start over.
+// The backend's generation: every action takes the next one.
 let gen: number;
-let incarnation: number;
 
-/** The page is suspended and restored: a new incarnation, numbered afresh. */
-function restore(): void {
-  incarnation += 1;
-  gen = 0;
-}
+/** The open the provider's newest call named. */
+const lastOpen = (): string => calls.at(-1)?.open ?? '';
+
+/** A refusal the backend answered: the action did not run. */
+const refused = (message: string) => new TransportError('method_error', message);
 
 function setup(mode: BrowserFindMode = 'bar') {
   const onEnded = vi.fn();
@@ -57,10 +57,11 @@ async function setupOpen() {
   return made;
 }
 
+/** The backend ends a find: by default the one of the newest call's open. */
 function ended(session: number, page = 'page-1', identity: Partial<BrowserFindState> = {}): void {
   applyBrowserFindEvent(new BrowserCompanionEvent({
     kind: 'find', threadId: 'thread', pageId: page,
-    find: state({ pageId: page, incarnation, session, active: false, ...identity }),
+    find: state({ pageId: page, session, active: false, open: lastOpen(), ...identity }),
   }));
 }
 
@@ -85,17 +86,16 @@ beforeEach(() => {
   pageId = 'page-1';
   mount = 'mount-1';
   gen = 0;
-  incarnation = 1;
   answer = async (call) => {
     gen += 1;
-    const identity = { pageId: call.pageId, mount: call.mount, incarnation, session: gen };
+    const identity = { pageId: call.pageId, mount: call.mount, open: call.open, session: gen };
     if (call.kind === 'start' || call.kind === 'next' || call.kind === 'previous') {
       return state({ ...identity, query: call.query, found: true, matches: 3, current: 0 });
     }
     return state({ ...identity, active: false });
   };
-  setBindingMock('BrowserCompanionFind', async (threadId: string, action: { kind: string; pageId: string; query?: string; mount?: string }) => {
-    const call = { threadId, kind: action.kind, pageId: action.pageId, query: action.query ?? '', mount: action.mount ?? '' };
+  setBindingMock('BrowserCompanionFind', async (threadId: string, action: { kind: string; pageId: string; query?: string; mount?: string; open?: string }) => {
+    const call = { threadId, kind: action.kind, pageId: action.pageId, query: action.query ?? '', mount: action.mount ?? '', open: action.open ?? '' };
     calls.push(call);
     return answer(call);
   });
@@ -114,7 +114,26 @@ describe('browser find provider', () => {
     const { find } = setup();
     find.opened?.();
     await settle(0);
-    expect(calls).toEqual([{ threadId: 'thread', kind: 'open', pageId: 'page-1', query: '', mount: 'mount-1' }]);
+    expect(calls).toMatchObject([{ threadId: 'thread', kind: 'open', pageId: 'page-1', query: '', mount: 'mount-1' }]);
+    expect(lastOpen()).not.toBe('');
+  });
+
+  // Every explicit open is its own: each action carries the open it was
+  // made under, and a reopen makes a new one.
+  it('names its open on every action, and a new one for each open', async () => {
+    const { find } = setup();
+    find.opened?.();
+    find.search('alpha');
+    await settle();
+    find.next?.();
+    find.clear();
+    await settle(0);
+    find.opened?.();
+    await settle(0);
+    const opens = calls.map((call) => call.open);
+    expect(kinds()).toEqual(['open', 'start', 'next', 'close', 'open']);
+    expect(new Set(opens.slice(0, 4)).size).toBe(1);
+    expect(opens[4]).not.toBe(opens[0]);
   });
 
   // Row: query typed.
@@ -292,23 +311,22 @@ describe('browser find provider', () => {
   // Row: failure.
   it('reports a failed request and clears the result', async () => {
     const { find, onError } = await setupOpen();
-    answer = async () => { throw new Error('find runs on the page the browser pane shows'); };
+    answer = async () => { throw refused('find runs on the page the browser pane shows'); };
     find.search('alpha');
     await settle();
     expect(onError).toHaveBeenCalledWith('find runs on the page the browser pane shows');
     expect(find.result).toMatchObject({ count: 0, pending: false });
   });
 
-  // Row: end event, newer than known, for the held page.
-  it('closes its bar when the backend ends its find, not on an older end or another page', async () => {
+  // Row: end event for the held open.
+  it('closes its bar when the backend ends its open\'s find, not on another open\'s end', async () => {
     const { find, onEnded } = await setupOpen();
-    answer = async () => state({ session: 4, found: true, matches: 3, current: 0 });
+    answer = async (call) => state({ open: call.open, session: 4, found: true, matches: 3, current: 0 });
     find.search('alpha');
     await settle();
-    ended(3);
-    ended(5, 'page-2');
+    ended(5, 'page-1', { open: 'another-open' });
     expect(onEnded).not.toHaveBeenCalled();
-    ended(5);
+    ended(3);
     expect(onEnded).toHaveBeenCalledTimes(1);
     expect(find.result).toMatchObject({ count: 0, current: -1 });
   });
@@ -325,8 +343,8 @@ describe('browser find provider', () => {
   });
 
   // Reported order: a step in flight when the backend ends the find (a tab
-  // switch). The end waits for the step, whose inactive answer clears the
-  // shown result; the end still closes the bar.
+  // switch). An open's find never comes back once ended, so the end closes
+  // the bar at once, and the step's late answer shows nothing.
   it('closes the bar on an end that lands while a step is in flight', async () => {
     const { find, onEnded } = setup();
     find.opened?.();
@@ -337,26 +355,52 @@ describe('browser find provider', () => {
     find.next?.();
     await settle(0);
     ended(gen + 1);
-    expect(onEnded).not.toHaveBeenCalled();
-    step.release(state({ session: 2, active: false }));
+    expect(onEnded).toHaveBeenCalledTimes(1);
+    step.release(state({ session: 2, found: true, matches: 3, current: 1 }));
     await settle(0);
     expect(onEnded).toHaveBeenCalledTimes(1);
+    expect(find.result).toMatchObject({ count: 0, current: -1 });
   });
 
-  it('an end older than the answer in flight does not close the bar it opened', async () => {
+  // Reported order: the bar is closed and opened again while the first
+  // open's start is in flight; that start then answers foreign, and the
+  // first open's end arrives. Neither is the reopened bar's.
+  it('a late answer or end of an earlier open leaves the reopened bar open', async () => {
     const { find, onEnded } = await setupOpen();
-    answer = async () => state({ session: 1, found: true, matches: 3, current: 0 });
+    const start = held();
+    answer = (call) => call.kind === 'start' ? start.promise : Promise.resolve(state({ open: call.open, session: 9, active: false }));
     find.search('alpha');
     await settle();
-    const start = held();
-    answer = () => start.promise;
-    find.search('beta');
-    await settle();
-    ended(2);
-    start.release(state({ session: 3, found: true, matches: 1, current: 0 }));
+    const first = lastOpen();
+    find.clear();
+    find.opened?.();
+    start.release(state({ session: 3, mount: '', open: '', active: false, foreign: true }));
+    await settle(0);
+    ended(4, 'page-1', { open: first });
     await settle(0);
     expect(onEnded).not.toHaveBeenCalled();
-    expect(find.result.count).toBe(1);
+    expect(calls.map((call) => call.kind)).toEqual(['start', 'close', 'open']);
+    expect(calls[1].open).toBe(first);
+    expect(calls[2].open).not.toBe(first);
+  });
+
+  // The same order with the first open refused late: its failure is not the
+  // reopened bar's.
+  it('a late refusal of an earlier open leaves the reopened bar open', async () => {
+    const { find, onEnded } = setup();
+    let failFirst!: () => void;
+    answer = (call) => {
+      if (call.kind !== 'open' || calls.length > 1) return Promise.resolve(state({ open: call.open, session: 9, active: false }));
+      return new Promise((_resolve, reject) => { failFirst = () => reject(refused('find opens in a mounted browser pane')); });
+    };
+    find.opened?.();
+    await settle(0);
+    find.clear();
+    find.opened?.();
+    failFirst();
+    await settle(0);
+    expect(onEnded).not.toHaveBeenCalled();
+    expect(kinds()).toEqual(['open', 'close', 'open']);
   });
 
   // Reported order: the page closes with its bar open while another tab
@@ -406,7 +450,7 @@ describe('browser find provider', () => {
     find.search('ignored');
     await settle();
     expect(calls).toMatchObject([{ kind: 'start', pageId: 'page-1', query: 'needle' }]);
-    answer = async () => { throw new Error('no engine find'); };
+    answer = async () => { throw refused('no engine find'); };
     find.openNative?.('');
     await settle(0);
     expect(onError).toHaveBeenCalledWith('no engine find');
@@ -466,8 +510,14 @@ describe('browser find provider', () => {
     await settle();
     find.clear();
     pageId = 'page-2';
-    find.opened?.();
-    ended(20, 'page-2');
+    const later = '00000000-0000-4000-8000-000000000002';
+    const uuid = vi.spyOn(crypto, 'randomUUID').mockReturnValueOnce(later);
+    try {
+      find.opened?.();
+    } finally {
+      uuid.mockRestore();
+    }
+    ended(20, 'page-2', { open: later });
     start.release(state({ session: 2, query: 'alpha', found: true, matches: 2, current: 0 }));
     await settle(0);
     expect(onEnded).toHaveBeenCalledTimes(1);
@@ -475,37 +525,31 @@ describe('browser find provider', () => {
     expect(calls).toHaveLength(2);
   });
 
-  // Reported order: a page searched up to generation 10 is suspended and
-  // restored, and the restored page numbers its finds afresh. Its answers
-  // reset what the provider knows, so its end closes the bar, and a late end
-  // of the old incarnation does not.
-  it('follows a restored page whose generations started over', async () => {
+  // Reported order: a page is suspended and restored with its generations
+  // numbered afresh, and the bar is opened again. A late end of the find
+  // before is an earlier open's, whatever its generation; the new open's
+  // end closes the bar whatever its generation.
+  it('takes ends by open, not by generation', async () => {
     const { find, onEnded } = setup();
-    find.opened?.();
-    for (const query of ['a', 'al', 'alp', 'alph', 'alpha']) {
-      find.search(query);
-      await settle();
-    }
-    gen = 10;
-    find.next?.();
-    await settle(0);
-    find.clear();
-    await settle(0);
-    restore();
     find.opened?.();
     find.search('alpha');
     await settle();
-    expect(gen).toBe(2);
-    ended(11, 'page-1', { incarnation: 1 });
+    const before = lastOpen();
+    find.clear();
+    await settle(0);
+    gen = 0;
+    find.opened?.();
+    find.search('alpha');
+    await settle();
+    ended(99, 'page-1', { open: before });
     expect(onEnded).not.toHaveBeenCalled();
-    ended(3);
+    ended(1);
     expect(onEnded).toHaveBeenCalledTimes(1);
   });
 
   // Reported order: a reload ends the find while the reader's stop waits for
-  // the page. The stop then changes nothing and says so; its answer must not
-  // read as newer than the end, or the bar would stay open over a page with
-  // no find.
+  // the page. The end closes the bar; the stop then changes nothing and says
+  // so, and its answer closes nothing more.
   it('closes on an end that overtook its stop, whose answer is foreign', async () => {
     const { find, onEnded } = setup();
     find.opened?.();
@@ -516,7 +560,7 @@ describe('browser find provider', () => {
     find.search('');
     await settle(0);
     ended(gen + 1);
-    expect(onEnded).not.toHaveBeenCalled();
+    expect(onEnded).toHaveBeenCalledTimes(1);
     stop.release(state({ session: gen + 1, mount: '', active: false, foreign: true }));
     await settle(0);
     expect(onEnded).toHaveBeenCalledTimes(1);
@@ -559,14 +603,14 @@ describe('browser find provider', () => {
   });
 
   // Another mount opening the page takes its find over: the backend ends
-  // this mount's find, and this bar closes. An end of another mount's find
+  // this open's find, and this bar closes. An end of another mount's open
   // leaves this one alone.
-  it('closes only on an end of its own mount', async () => {
+  it('closes only on an end of its own open', async () => {
     const { find, onEnded } = setup();
     find.opened?.();
     find.search('alpha');
     await settle();
-    ended(gen + 5, 'page-1', { mount: 'mount-2' });
+    ended(gen + 5, 'page-1', { mount: 'mount-2', open: 'mount-2-open' });
     expect(onEnded).not.toHaveBeenCalled();
     ended(gen + 1);
     expect(onEnded).toHaveBeenCalledTimes(1);
@@ -640,7 +684,7 @@ describe('browser find provider', () => {
 
   it('closes a bar the backend would not open, and reports why', async () => {
     const { find, onEnded, onError } = setup();
-    answer = async () => { throw new Error('find runs on the page the browser pane shows'); };
+    answer = async () => { throw refused('find runs on the page the browser pane shows'); };
     find.opened?.();
     await settle(0);
     expect(onError).toHaveBeenCalledWith('find runs on the page the browser pane shows');

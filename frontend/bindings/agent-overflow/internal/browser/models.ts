@@ -147,6 +147,12 @@ export class FindState {
     "mount": string;
 
     /**
+     * Open is the id the owning mount's provider gave the explicit open the
+     * find belongs to, "" for none.
+     */
+    "open": string;
+
+    /**
      * Document is the epoch of the document the find was opened on.
      */
     "document": number;
@@ -160,8 +166,9 @@ export class FindState {
 
     /**
      * Foreign marks an answer for an action that changed nothing because
-     * the find it named is gone or another mount's; Mount then names the
-     * find's real owner, and the answer acknowledges nothing of the asker's.
+     * the find it named is gone or another open's; Mount and Open then name
+     * the find's real owner, and the answer acknowledges nothing of the
+     * asker's.
      */
     "foreign": boolean;
     "active": boolean;
@@ -191,6 +198,9 @@ export class FindState {
         }
         if (!("mount" in $$source)) {
             this["mount"] = "";
+        }
+        if (!("open" in $$source)) {
+            this["open"] = "";
         }
         if (!("document" in $$source)) {
             this["document"] = 0;

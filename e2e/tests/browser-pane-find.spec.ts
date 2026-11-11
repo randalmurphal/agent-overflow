@@ -20,15 +20,18 @@ interface BrowserState {
 }
 
 test('mod+f finds in the shown browser page and closes when the page navigates away', async ({ harness, page }) => {
-  // The pane mount each find action names: a find belongs to its mount, so
-  // only that mount can see whether the pane's find is still there.
+  // The pane mount and open each find action names: a find belongs to its
+  // mount's open, so only that open can see whether the pane's find is
+  // still there.
   let findMount = '';
+  let findOpen = '';
   await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
     const server = socket.connectToServer();
     socket.onMessage((message) => {
       const frame = JSON.parse(String(message));
       if (frame.type === 'rpc' && frame.methodId === FIND_METHOD_ID && frame.params?.[1]?.mount) {
         findMount = frame.params[1].mount;
+        findOpen = frame.params[1].open;
       }
       server.send(message);
     });
@@ -110,12 +113,14 @@ test('mod+f finds in the shown browser page and closes when the page navigates a
     await bar.getByTestId('pane-find-input').fill('gamma');
     await expect(count).toHaveText('1/1');
     const mount = findMount;
+    const open = findOpen;
     expect(mount).not.toBe('');
+    expect(open).not.toBe('');
     await pane.getByRole('button', { name: 'Close browser' }).click();
     await expect(pane).toHaveCount(0);
-    // The pane's find is gone: a step from its mount changes nothing and
+    // The pane's find is gone: a step from its open changes nothing and
     // says the find is not its own.
-    const step = await harness.rpc<{ foreign: boolean; active: boolean }>('BrowserCompanionFind', threadId, { kind: 'next', pageId, mount });
+    const step = await harness.rpc<{ foreign: boolean; active: boolean }>('BrowserCompanionFind', threadId, { kind: 'next', pageId, mount, open });
     expect(step).toMatchObject({ foreign: true, active: false });
     await harness.rpc('BrowserCompanionDo', threadId, { kind: 'show', pageId });
     await expect(pane).toBeVisible();

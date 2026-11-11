@@ -166,28 +166,36 @@ the accelerator path above.
   event on `browser:companion-state`, and the bar showing it closes, and
   the engine's search is stopped with it. `stop` and `close` never restore
   a suspended page and answer for a gone page as for no find.
-- A find's identity is its page (id and incarnation), the pane mount that
-  owns it, the document it was opened on, and a generation; every action,
-  answer and end carries all four (`FindState`). Each action names its
-  mount. A mount's `open` on a find another mount owns takes it over (in
-  "engine" mode, its `start`): the old owner gets an end and its search is
-  stopped. In "bar" mode a `start` searches only in the mount's own open
-  bar. A `start`, `stop`, `close` or step that finds no find of its mount's
-  (it ended, or another mount took it) changes nothing, and its answer is
-  marked `foreign` and names the find's real owner, "" for none, so the
-  provider never takes it as an acknowledgement. A step on the mount's bar
-  with no search answers it inactive.
-  A restored page is a new incarnation under the same id, and generations
-  come from one counter across the Manager, so their order holds across a
+- A find's owner is a pane mount and an open: the id the mount's provider
+  makes for each explicit open (the bar opened, or in "engine" mode the
+  engine's find opened) and names on every action of that open (`open` on
+  `BrowserFindAction`). Every answer and end carries the owner with the
+  page (id and incarnation), the document the find was opened on and a
+  generation (`FindState`). An `open` on a find another owner holds, of
+  another mount or an earlier open of the same one, takes it over (in
+  "engine" mode, its `start`): the old owner gets an end, and the end of
+  the transition stops its search unless the action replaced it. In "bar"
+  mode a `start` searches only in its own open's bar. A `start`, `stop`,
+  `close` or step that finds no find of its owner's (it ended, or another
+  owner took it) changes nothing, and its answer is marked `foreign` and
+  names the find's real owner, "" for none, so the provider never takes it
+  as an acknowledgement. A step on the open's bar with no search answers it
+  inactive. An open's find, once ended, never comes back. Generations come
+  from one counter across the Manager, so their order holds across a
   suspend and restore.
 - Every find transition of a page is serialized on the page lock
   (`managedPage.mu`, which every engine call already takes) and holds it
   from its checks through its engine calls to the state it publishes:
   `open`, `start`, step, `stop`, `close`, every end and the engine's
-  cleanup. An end raised where waiting is not allowed (the engine's UI
+  cleanup. An action's 10 s deadline starts before it waits for the lock,
+  and an action whose deadline or caller (its connection closing) ended
+  while it waited is refused before it publishes anything; every engine
+  call under the lock is bounded by the transition's deadline, and a stop
+  that times out stays owed. An end raised where waiting is not allowed (the engine's UI
   thread, a presentation change, a mount detaching, a page closing outside
   its lock) is submitted to the page without blocking and applied by the
-  next transition, or by a transition of its own when none runs. Each
+  next transition, or by a transition of its own when none runs, which
+  `Manager.Close` joins after refusing new ones. Each
   transition applies what was submitted before it first and what was
   submitted during it last, so an end lands strictly before or strictly
   after an action. A presentation end rereads what is shown when it is
@@ -212,8 +220,9 @@ the accelerator path above.
   frame (hosted WebView2 and headless Chromium), each reported through
   `pageHooks.DocumentCommitted`. The hook runs where the engine reports the
   commit (the UI thread for WebKitGTK and WKWebView) and only stamps the
-  page's next document epoch; the end it returns is submitted from a
-  goroutine and ends only a find opened on an earlier document, so a late
+  page's next document epoch; the engine submits the end it returns in
+  the same callback, without waiting, and that end ends only a find
+  opened on an earlier document, so a late
   end never closes a find opened after the commit. A CDP commit is stamped when its
   event reaches Go, so a find answered first on the new document is ended
   (the bar closes), never left showing the old document's results.
@@ -224,23 +233,23 @@ the accelerator path above.
   otherwise the page keeps it. Every end of the bar releases the claim.
 - The pane's provider (`frontend/src/lib/stores/browserFind.svelte.ts`) turns
   each reader action into an intent (open, start with its query, step,
-  stop, close) carried with its page, mount and display generation to its
-  answer, and runs them one at a time, in order, through the pane's
+  stop, close) carried with its page, mount, open and display generation
+  to its answer, and runs them one at a time, in order, through the pane's
   `paneFindReads` slot; its header holds the state table. A queued start is
   dropped when the query changes, an answer shows only under its own
-  generation, and an end the backend announces is accepted only for the
-  held page and mount, against the newest generation an answer of that
-  incarnation reported, so nothing is sent to a find the backend already
-  ended. A queued close is removed only by running, so a release and a
-  dispose in a row still close the backend's find. The provider is bound
-  to the page and mount of the find it opened until that find's end is
-  taken or its close is queued: a query never goes to another page, and
-  another page takes an explicit open behind the close of the find before.
-  The bar it shows is the backend's bar for its mount or none: a foreign
-  answer to anything but a close, or an open the backend refused, closes
-  it. The Go find tables record each provider's view of every sequence
-  they run, and the frontend replays those scripts against the real
-  provider (`frontend/src/test/fixtures/browserFind/`, regenerated with
+  generation, and an answer or an end is taken only for the open it holds,
+  so a late reply or end of an earlier open never closes a reopened bar. A
+  queued close is removed only by running, so a release and a dispose in a
+  row still close the backend's find. The provider is bound to the page and
+  open of the find it opened until that find's end is taken or its close
+  is queued: a query never goes to another page, and an explicit open on
+  another page queues the close of the find before. The bar it shows is
+  the backend's bar for its open or none: a foreign answer to anything but
+  a close, or an open the backend refused, closes it. The Go find tables run
+  each sequence against a port of the provider, including calls left
+  outstanding across later reader actions, and record each provider's view
+  of it; the frontend replays those scripts against the real provider
+  (`frontend/src/test/fixtures/browserFind/`, regenerated with
   `AO_UPDATE_FIND_SCRIPTS=1` on the tables in `find_pairs_test.go`).
 - WebKitGTK (`findMode` "bar") drives the shared find bar through
   `WebKitFindController`: a case-insensitive, wrapping search that counts up

@@ -175,14 +175,16 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 // BrowserFindAction is one request of the browser pane's find: open (AO's
 // bar opened), start (the query; empty ends the search, or opens an
 // engine's own find bar empty), next, previous, stop (the search) or close
-// (the search and the bar). Mount is the pane mount the find belongs to;
-// every action names it, and one for a find another mount owns changes
-// nothing.
+// (the search and the bar). Mount is the pane mount the find belongs to
+// and Open the id its provider made for the explicit open the action
+// belongs to; every action names both, and one for a find another open
+// owns changes nothing.
 type BrowserFindAction struct {
 	Kind   string `json:"kind"`
 	PageID string `json:"pageId"`
 	Query  string `json:"query,omitempty"`
 	Mount  string `json:"mount"`
+	Open   string `json:"open"`
 }
 
 // BrowserCompanionFind runs one find action on the page the thread's browser
@@ -200,7 +202,7 @@ func (a *App) BrowserCompanionFind(ctx context.Context, threadID string, action 
 	if err != nil {
 		return appbrowser.FindState{}, err
 	}
-	state, err := a.browser.manager.Find(ctx, access, action.PageID, action.Kind, action.Query, action.Mount)
+	state, err := a.browser.manager.Find(ctx, access, action.PageID, action.Kind, action.Query, action.Mount, action.Open)
 	// An open or start on a suspended page restores it.
 	if deletedErr := a.closeBrowserPagesIfThreadDeleted(access.ThreadID); deletedErr != nil {
 		return appbrowser.FindState{}, deletedErr

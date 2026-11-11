@@ -316,7 +316,7 @@ func TestNativeEngineRealFind(t *testing.T) {
 	t.Cleanup(func() { manager.DetachPane(mount.ID) })
 	find := func(kind, query string) FindState {
 		t.Helper()
-		state, err := manager.Find(ctx, access, page.ID, kind, query, mount.ID)
+		state, err := manager.Find(ctx, access, page.ID, kind, query, mount.ID, "smoke-open")
 		if err != nil {
 			t.Fatalf("find %s %q: %v", kind, query, err)
 		}

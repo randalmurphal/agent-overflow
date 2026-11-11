@@ -69,6 +69,9 @@ type FindState struct {
 	Incarnation uint64 `json:"incarnation"`
 	// Mount is the pane mount that owns the find, "" for none.
 	Mount string `json:"mount"`
+	// Open is the id the owning mount's provider gave the explicit open the
+	// find belongs to, "" for none.
+	Open string `json:"open"`
 	// Document is the epoch of the document the find was opened on.
 	Document uint64 `json:"document"`
 	// Session is the generation: it increases with every find action and
@@ -76,8 +79,9 @@ type FindState struct {
 	// recognizably stale.
 	Session uint64 `json:"session"`
 	// Foreign marks an answer for an action that changed nothing because
-	// the find it named is gone or another mount's; Mount then names the
-	// find's real owner, and the answer acknowledges nothing of the asker's.
+	// the find it named is gone or another open's; Mount and Open then name
+	// the find's real owner, and the answer acknowledges nothing of the
+	// asker's.
 	Foreign bool   `json:"foreign"`
 	Active  bool   `json:"active"`
 	Query   string `json:"query"`

@@ -799,20 +799,20 @@ func TestBrowserCompanionFindRunsOnTheThreadsShownPage(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = app.BrowserCompanionPaneDetach(context.Background(), mount.ID) })
-	if _, err := app.BrowserCompanionFind(ctx, thread.ID, BrowserFindAction{Kind: "open", PageID: pageID, Mount: mount.ID}); err != nil {
+	if _, err := app.BrowserCompanionFind(ctx, thread.ID, BrowserFindAction{Kind: "open", PageID: pageID, Mount: mount.ID, Open: "open-1"}); err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	found, err := app.BrowserCompanionFind(ctx, thread.ID, BrowserFindAction{Kind: "start", PageID: pageID, Query: "alpha", Mount: mount.ID})
+	found, err := app.BrowserCompanionFind(ctx, thread.ID, BrowserFindAction{Kind: "start", PageID: pageID, Query: "alpha", Mount: mount.ID, Open: "open-1"})
 	if err != nil || found.Matches != 2 || found.Current != 0 || !found.Active || found.Mount != mount.ID {
 		t.Fatalf("start = %+v, %v", found, err)
 	}
-	if next, err := app.BrowserCompanionFind(ctx, thread.ID, BrowserFindAction{Kind: "next", PageID: pageID, Mount: mount.ID}); err != nil || next.Current != 1 {
+	if next, err := app.BrowserCompanionFind(ctx, thread.ID, BrowserFindAction{Kind: "next", PageID: pageID, Mount: mount.ID, Open: "open-1"}); err != nil || next.Current != 1 {
 		t.Fatalf("next = %+v, %v", next, err)
 	}
-	if _, err := app.BrowserCompanionFind(ctx, other.ID, BrowserFindAction{Kind: "next", PageID: pageID, Mount: mount.ID}); err == nil {
+	if _, err := app.BrowserCompanionFind(ctx, other.ID, BrowserFindAction{Kind: "next", PageID: pageID, Mount: mount.ID, Open: "open-1"}); err == nil {
 		t.Fatal("another thread stepped this thread's find")
 	}
-	if stopped, err := app.BrowserCompanionFind(ctx, thread.ID, BrowserFindAction{Kind: "stop", PageID: pageID, Mount: mount.ID}); err != nil || stopped.Active {
+	if stopped, err := app.BrowserCompanionFind(ctx, thread.ID, BrowserFindAction{Kind: "stop", PageID: pageID, Mount: mount.ID, Open: "open-1"}); err != nil || stopped.Active {
 		t.Fatalf("stop = %+v, %v", stopped, err)
 	}
 }
