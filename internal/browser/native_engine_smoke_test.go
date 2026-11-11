@@ -483,7 +483,7 @@ func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 	page, err := manager.OpenFile(ctx, access, writeSmokeFile(t, workspace, "frames.html",
-		`<!doctype html><title>frames</title><p id="top">alpha in the page</p><iframe src="data:text/html,<p>alpha in a cross-origin frame</p>"></iframe>`), OpenOptions{})
+		`<!doctype html><title>frames</title><p id="top">alpha in the page</p>`), OpenOptions{})
 	if err != nil {
 		t.Fatalf("open the page: %v", err)
 	}
@@ -504,13 +504,43 @@ func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 		}
 		return value
 	}
-	// An about:blank frame is same-origin and ready at once: two levels. The
-	// data: frame is cross-origin: nothing reaches into it, and the clearing
-	// passes over it.
-	eval("build the frames", `(() => {
+	// An about:blank frame is same-origin and ready at once: two levels. A
+	// data: frame is cross-origin, with a data: frame of its own, and so is
+	// a sandboxed srcdoc frame: the page's world cannot reach into them, so
+	// each runs a responder the test asks over postMessage to select, to
+	// override the selection API, or to say whether it holds a selection.
+	eval("build the frames", `(async () => {
 		const add = (doc, text) => { const f = doc.createElement("iframe"); doc.body.appendChild(f); f.contentDocument.body.innerHTML = "<p>" + text + "</p>"; return f.contentDocument; };
 		add(add(document, "alpha in a frame"), "alpha in a nested frame");
+		const responder = "<scr" + "ipt>addEventListener('message', (e) => { const d = e.data; if (!d || !d.probe) return; const reply = (v) => e.source.postMessage({ probeReply: d.id, value: v }, '*'); if (d.path && d.path.length) { const on = (r) => { if (r.data && r.data.probeReply === d.id) { removeEventListener('message', on); reply(r.data.value); } }; addEventListener('message', on); frames[d.path[0]].postMessage({ probe: d.probe, id: d.id, path: d.path.slice(1) }, '*'); return; } const s = Document.prototype.getSelection.call(document); if (d.probe === 'select') { s.selectAllChildren(document.body); reply(true); } else if (d.probe === 'override') { window.getSelection = () => { throw new Error('the page getSelection'); }; Selection.prototype.removeAllRanges = function () { throw new Error('the page removeAllRanges'); }; reply(true); } else reply(s.rangeCount > 0 && !s.isCollapsed); });</scr" + "ipt>";
+		const inner = "<p>alpha in a nested cross-origin frame</p>" + responder;
+		const frame = (set) => new Promise((resolve) => { const f = document.createElement("iframe"); set(f); f.onload = () => resolve(f.contentWindow); document.body.appendChild(f); });
+		window.aoCrossOrigin = await frame((f) => { f.src = "data:text/html," + encodeURIComponent("<p>alpha in a cross-origin frame</p>" + responder + "<iframe src=\"data:text/html," + encodeURIComponent(inner) + "\"></iframe>"); });
+		window.aoSandboxed = await frame((f) => { f.sandbox = "allow-scripts"; f.srcdoc = "<p>alpha in a sandboxed frame</p>" + responder; });
 		return 1; })()`)
+	// probe asks one cross-origin frame (the window named, then the frame
+	// path below it) and answers what it replied.
+	probe := func(what, frame, op string, path ...int) any {
+		t.Helper()
+		pathJSON, _ := json.Marshal(append([]int{}, path...))
+		return eval(what, `new Promise((resolve) => { const id = Math.random(); const on = (e) => { if (e.data && e.data.probeReply === id) { removeEventListener("message", on); resolve(e.data.value); } }; addEventListener("message", on); window.`+frame+`.postMessage({ probe: "`+op+`", id, path: `+string(pathJSON)+` }, "*"); })`)
+	}
+	crossOrigin := []struct {
+		name, frame string
+		path        []int
+	}{
+		{"the cross-origin frame", "aoCrossOrigin", nil},
+		{"the nested cross-origin frame", "aoCrossOrigin", []int{0}},
+		{"the sandboxed srcdoc frame", "aoSandboxed", nil},
+	}
+	crossSelected := func(state string, want bool) {
+		t.Helper()
+		for _, f := range crossOrigin {
+			if got := probe(state+": "+f.name, f.frame, "count", f.path...); got != want {
+				t.Errorf("%s: %s holds a selection %v, want %v", state, f.name, got, want)
+			}
+		}
+	}
 	// selections counts the windows, the page and its frames, holding a
 	// selection, through the document's getSelection, which the page leaves
 	// alone.
@@ -535,13 +565,20 @@ func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 	eval("select in every window", `(() => {
 		const walk = (w) => { try { w.getSelection().selectAllChildren(w.document.body); } catch (e) { return; } for (let i = 0; i < w.frames.length; i++) walk(w.frames[i]); };
 		walk(window); return 1; })()`)
+	for _, f := range crossOrigin {
+		probe("select in "+f.name, f.frame, "select", f.path...)
+	}
 	if n := eval("count the selections", selections); n != float64(3) {
 		t.Fatalf("selected in %v windows, want 3", n)
 	}
+	crossSelected("selected", true)
 	find(FindStop, "")
 	if n := eval("count the selections", selections); n != float64(0) {
 		t.Fatalf("%v selections left after the search stopped", n)
 	}
+	// The stop told the cross-origin frames to clear before the probes,
+	// which reach each frame after the message did.
+	crossSelected("stopped", false)
 
 	// The page shadows what the clearing calls, in every window.
 	eval("override the selection API", `(() => {
@@ -552,16 +589,23 @@ func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 			for (let i = 0; i < w.frames.length; i++) walk(w.frames[i]);
 		};
 		walk(window); return 1; })()`)
+	for _, f := range crossOrigin {
+		probe("override in "+f.name, f.frame, "override", f.path...)
+	}
 	if state := find(FindStart, "alpha"); !state.Found {
 		t.Fatalf("start under the overrides = %+v", state)
 	}
 	if n := eval("count the selections", selections); n == float64(0) {
 		t.Fatal("the search selected no match")
 	}
+	for _, f := range crossOrigin {
+		probe("select in "+f.name, f.frame, "select", f.path...)
+	}
 	find(FindStop, "")
 	if n := eval("count the selections", selections); n != float64(0) {
 		t.Fatalf("%v selections left after the search stopped under the page's overrides", n)
 	}
+	crossSelected("stopped under the overrides", false)
 	// In the page's own world the overrides reach the clearing: it fails.
 	if _, _, err := manager.Evaluate(ctx, access, page.ID, "(async () => {"+webkitClearSelectionScript+"})()", nil); err == nil || !strings.Contains(err.Error(), "clear the selection") {
 		t.Fatalf("the clearing in the page's world under its overrides = %v, want a failure", err)

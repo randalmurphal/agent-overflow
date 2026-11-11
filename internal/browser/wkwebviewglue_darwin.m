@@ -291,6 +291,38 @@ static void ao_place(NSView *view, NSRect frame) {
 
 int ao_wkv_on_main_thread(void) { return [NSThread isMainThread] ? 1 : 0; }
 
+// The find's frame script (webkitFindFrameScript) and its isolated world,
+// set once with the host.
+static NSString *ao_find_frame_script = nil;
+static NSString *ao_find_world = nil;
+
+void ao_wkv_set_find_frame_script(const char *script, const char *world) {
+  if (ao_find_frame_script == nil && script != NULL && world != NULL) {
+    ao_find_frame_script = [[NSString alloc] initWithUTF8String:script];
+    ao_find_world = [[NSString alloc] initWithUTF8String:world];
+  }
+}
+
+// ao_add_find_frame_script installs the frame script in every frame of the
+// controller's pages, in the find's world. A registration WebKit refuses
+// leaves the frames without it: a cross-origin frame then keeps a match
+// selected after find closes, and nothing else changes.
+static void ao_add_find_frame_script(WKUserContentController *controller) {
+  if (ao_find_frame_script == nil) {
+    return;
+  }
+  @try {
+    WKUserScript *frames = [[[WKUserScript alloc]
+          initWithSource:ao_find_frame_script
+           injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+        forMainFrameOnly:NO
+          inContentWorld:[WKContentWorld worldWithName:ao_find_world]] autorelease];
+    [controller addUserScript:frames];
+  } @catch (NSException *refused) {
+    NSLog(@"browser: the find frame script was not registered: %@", refused);
+  }
+}
+
 int ao_wkv_host_attach(void *ns_window) {
   @autoreleasepool {
     if (ao_host != nil) {
@@ -1066,6 +1098,7 @@ static void ao_connect_view(WKWebView *view, uint64_t page_id, uint64_t profile_
               injectionTime:WKUserScriptInjectionTimeAtDocumentStart
            forMainFrameOnly:NO] autorelease];
       [controller addUserScript:script];
+      ao_add_find_frame_script(controller);
     }
   }
 

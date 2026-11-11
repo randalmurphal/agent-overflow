@@ -394,9 +394,17 @@ func wkLookupProfile(id uint64) *wkProfile {
 // view join an existing content view without any reparenting surgery.
 func wkAttachHost(window unsafe.Pointer) error {
 	ok := false
-	if !wkDo(func() { ok = C.ao_wkv_host_attach(window) == 1 }) {
+	// The glue copies both strings. A dispatch that did not run in time may
+	// still run, so they are freed only after it did.
+	script, world := C.CString(webkitFindFrameScript), C.CString(webkitFindWorld)
+	if !wkDo(func() {
+		ok = C.ao_wkv_host_attach(window) == 1
+		C.ao_wkv_set_find_frame_script(script, world)
+	}) {
 		return errWKUnavailable
 	}
+	C.free(unsafe.Pointer(script))
+	C.free(unsafe.Pointer(world))
 	if !ok {
 		return fmt.Errorf("browser: the desktop window has no content view to host the browser pane in")
 	}

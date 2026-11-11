@@ -196,13 +196,34 @@ func webkitScrollScript(selector string, x, y float64) string {
 // getSelection or removeAllRanges) reaches it.
 const webkitFindWorld = "ao-find"
 
+// webkitFrameClearJS is the selection clearing both webkitClearSelectionScript
+// and webkitFindFrameScript run, in webkitFindWorld. aoClear(w) drops w's
+// selection and walks its frames: a frame it can reach (same origin) is
+// cleared directly; one it cannot (a SecurityError) is told to clear itself
+// with the message {"ao-find": "clear-selection"} through postMessage, which
+// crosses origins, and
+// webkitFindFrameScript in that frame does so and passes it on to its own
+// frames. A failure other than an unreachable frame goes to aoFailures.
+const webkitFrameClearJS = `const aoFailures=[];const aoPost=(f)=>{try{f.postMessage({"ao-find":"clear-selection"},"*");}catch(e){}};const aoReachable=(e)=>{if(e&&e.name==="SecurityError")return false;aoFailures.push(String(e&&e.message||e));return false;};const aoClear=(w)=>{let s,n=0;try{s=w.getSelection();}catch(e){return aoReachable(e);}try{if(s)s.removeAllRanges();}catch(e){aoFailures.push(String(e&&e.message||e));}try{n=w.frames.length;}catch(e){return aoReachable(e);}for(let i=0;i<n;i++){let f;try{f=w.frames[i];}catch(e){aoReachable(e);continue;}if(f&&!aoClear(f))aoPost(f);}return true;};`
+
 // webkitClearSelectionScript drops the selection of the page and of every
-// same-origin frame inside it, walking window.frames recursively; WKWebView's
-// find starts at the selection and both engines mark the match with it. It
-// runs in webkitFindWorld. Each frame is tried on its own: a cross-origin
-// frame cannot be reached (a SecurityError) and keeps its selection, and any
-// other failure fails the script, so the stop it serves fails and stays owed.
-const webkitClearSelectionScript = `const failures=[];const reachable=(e)=>{if(e&&e.name==="SecurityError")return false;failures.push(String(e&&e.message||e));return false;};const clear=(w)=>{let s,n=0;try{s=w.getSelection();}catch(e){return reachable(e);}try{if(s)s.removeAllRanges();}catch(e){failures.push(String(e&&e.message||e));}try{n=w.frames.length;}catch(e){return reachable(e);}for(let i=0;i<n;i++){let f;try{f=w.frames[i];}catch(e){reachable(e);continue;}if(f)clear(f);}return true;};clear(window);if(failures.length)throw new Error("browser: clear the selection: "+failures.join("; "));return null;`
+// frame inside it (webkitFrameClearJS); WKWebView's find starts at the
+// selection and both engines mark the match with it. It runs in
+// webkitFindWorld. A failure in the page or a frame it reaches fails the
+// script, so the stop it serves fails and stays owed. A cross-origin frame
+// is told to clear and not waited for: it answers nothing, so it cannot fail
+// the stop, and a frame without webkitFindFrameScript keeps its selection.
+const webkitClearSelectionScript = webkitFrameClearJS + `aoClear(window);if(aoFailures.length)throw new Error("browser: clear the selection: "+aoFailures.join("; "));return null;`
+
+// webkitFindFrameScript is installed in every frame at document start, in
+// webkitFindWorld, so it exists in a frame added or navigated after the page
+// loaded and nothing the page defines reaches it. On the clear message it
+// clears its frame's selection and passes the message on
+// (webkitFrameClearJS). Any window may post the message, the page's own
+// scripts included, and every frame's page sees it: all it can cause is a
+// cleared selection. A frame whose scripts are disabled (sandboxed without
+// allow-scripts) may not run it, and keeps its selection.
+const webkitFindFrameScript = `(()=>{` + webkitFrameClearJS + `addEventListener("message",(e)=>{const d=e.data;if(d&&typeof d==="object"&&d["ao-find"]==="clear-selection")aoClear(window);});})();`
 
 // webkitSelectionTextScript reads the page's current selection for the copy
 // chord, matching the CDP driver's expression exactly.

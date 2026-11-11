@@ -296,9 +296,17 @@ store's alone; the backend holds only what the engine holds.
   match. On both engines that clearing (`webkitClearSelectionScript`) runs
   in an isolated script world (`webkitFindWorld`), so a page's own
   `getSelection` or `removeAllRanges` never reaches it, over the page and
-  each same-origin frame on its own; a match selected in a cross-origin
-  frame stays selected, and any other failure fails the stop, which stays
-  owed.
+  each same-origin frame on its own, and any failure there fails the stop,
+  which stays owed. A frame it cannot reach (cross-origin, or sandboxed
+  with an opaque origin) is sent `{"ao-find": "clear-selection"}` by
+  `postMessage`; `webkitFindFrameScript`, installed in every frame at
+  document start in the same world, clears that frame and passes the
+  message on, so frames added or navigated later have it too. The page may
+  see or forge the message; all it does is clear a selection. Nothing
+  waits for a frame's answer, so a frame cannot fail the stop, and a frame
+  that runs no script (sandboxed without `allow-scripts`) keeps its
+  selection. WebView2's own find bar has no selection housekeeping of AO's
+  to fix.
 - Hosted WebView2 ("engine") opens the engine's own find bar
   (`ICoreWebView2Find` with the default dialog left on), seeded with the
   SPA's selection or else the page's, and moves keyboard focus into the page.
