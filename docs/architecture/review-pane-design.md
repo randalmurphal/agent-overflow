@@ -283,8 +283,10 @@ polling.
   `stringsx.FoldForFind` folds the same for the CI log and thread find, held by
   shared vectors. A step expands what hides its match (a collapsed file, a
   resolved thread, a conflict fold, a closed log step). A match is in view
-  only inside the scroller on both axes; with wrap off, a code line that
-  clips one is scrolled sideways to it and back when find moves on. A content, filter
+  only inside the scroller on both axes. With wrap off, the one line
+  shifted sideways is the line that clips the current match, derived from
+  it; every other line, and every line once there is no current match,
+  reads from its start. A content, filter
   or view change, or a `<details>` in a comment opened or closed by hand,
   re-runs the query in place and keeps the current match by identity; a
   current match that is gone gives way to the next surviving one, else the

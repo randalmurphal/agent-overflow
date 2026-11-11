@@ -498,4 +498,90 @@ describe('review find over the real list', () => {
       unmount(finder);
     }
   });
+
+  it('shifts only the line that clips the current match, and no line once it is not one', async () => {
+    const long = (fill: string, tail: string) => `${fill.repeat(300)} ${tail}`;
+    const patchOf = (lines: string[]) => ['diff --git a/src/a.ts b/src/a.ts', '--- a/src/a.ts', '+++ b/src/a.ts', `@@ -1,${lines.length} +1,${lines.length} @@`, ...lines.map((line) => ` ${line}`), ''].join('\n');
+    const { props, scrollEl, body } = await mountBody('diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n');
+    const host = mounted.at(-1)!.host;
+    host.style.width = '360px';
+    let files = readFiles(patchOf(['short zq here', long('w', 'zq one'), long('v', 'zq two'), 'tail']));
+    props.files = files;
+    await settle(scrollEl);
+    const review = rawProps({
+      drafts: [] as DiffReviewComment[], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
+      wordWrap: false,
+    });
+    const findProps = rawProps({
+      findKey: 'pane-shift', title: 'Review', view: 'diff' as const, files, root: host as HTMLElement | undefined,
+      review: review as unknown as ReviewPaneState, diff: () => body as never, log: () => undefined,
+    });
+    const finder = mount(ReviewPaneFind, { target: document.body, props: findProps });
+    flushSync();
+    const find = getPaneFindProvider('pane-shift') as ReviewFind<ReviewFindHit>;
+    // Every line scrolled sideways under the list.
+    const shifted = () => [...scrollEl.querySelectorAll<HTMLElement>('[data-testid="review-line-block"] *')].filter((el) => el.scrollLeft > 0);
+    const holdsCurrent = (line: HTMLElement) => {
+      const hit = find.hits[find.result.current];
+      return hit !== undefined && line.querySelector(`[data-find-key="${hit.rowKey}"]`) !== null;
+    };
+    const settleShift = async () => {
+      await settle(scrollEl);
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    };
+    try {
+      openPaneFind('pane-shift');
+      setPaneFindQuery('pane-shift', 'zq');
+      await waitFor(() => find.result.count === 3 && !find.result.pending, 'the scan');
+      // The first match is on the short line: nothing shifts.
+      await settleShift();
+      expect(shifted()).toEqual([]);
+      find.next();
+      await waitFor(() => shifted().length === 1, 'the long line shifted');
+      expect(holdsCurrent(shifted()[0])).toBe(true);
+      find.next();
+      await settleShift();
+      expect(shifted().length).toBe(1);
+      expect(holdsCurrent(shifted()[0])).toBe(true);
+      // A new query whose match is in view on a short line.
+      setPaneFindQuery('pane-shift', 'tail');
+      await waitFor(() => find.result.count === 1 && !find.result.pending, 'the short match');
+      await settleShift();
+      expect(shifted()).toEqual([]);
+      // Back to the far match, then a recount that removes it.
+      setPaneFindQuery('pane-shift', 'zq two');
+      await waitFor(() => shifted().length === 1, 'the far match shifted');
+      files = readFiles(patchOf(['short zq here', long('w', 'zq one'), 'tail']));
+      props.files = files;
+      findProps.files = files;
+      await waitFor(() => find.result.count === 0 && !find.result.pending, 'the recount');
+      await settleShift();
+      expect(shifted()).toEqual([]);
+      // Wrap on: no line clips, so none stays shifted.
+      setPaneFindQuery('pane-shift', 'zq one');
+      await waitFor(() => shifted().length === 1, 'shifted again');
+      props.wordWrap = true;
+      review.wordWrap = true;
+      flushSync();
+      await settleShift();
+      expect(shifted()).toEqual([]);
+      props.wordWrap = false;
+      review.wordWrap = false;
+      flushSync();
+      await waitFor(() => shifted().length === 1 && holdsCurrent(shifted()[0]), 'shifted after wrap off');
+      // No results, then close.
+      setPaneFindQuery('pane-shift', 'nothing here at all');
+      await waitFor(() => find.result.count === 0 && !find.result.pending, 'no results');
+      await settleShift();
+      expect(shifted()).toEqual([]);
+      setPaneFindQuery('pane-shift', 'zq one');
+      await waitFor(() => shifted().length === 1, 'shifted before close');
+      find.clear();
+      await settleShift();
+      expect(shifted()).toEqual([]);
+    } finally {
+      unmount(finder);
+    }
+  });
 });

@@ -76,9 +76,7 @@
   let highlighterRoot: HTMLElement | null = null;
   let paintedQuery = '';
   // The match a scroll just aimed at; its painted range corrects the landing.
-  // `sideways` once the vertical move is done and only the horizontal
-  // one remains.
-  let landing: { identity: string; until: number; sideways?: boolean } | null = null;
+  let landing: { identity: string; until: number } | null = null;
 
   // PR comments are searched as they render (ReviewThreadComments), with
   // the <details> the reader toggled in mounted rows as they left them.
@@ -126,7 +124,7 @@
     highlighterRoot = null;
     paintedQuery = '';
     landing = null;
-    unshift();
+    restoreShifted(null);
   }
 
   interface Placement {
@@ -172,18 +170,36 @@
     return at !== null && at.dy === 0 && at.dx === 0;
   }
 
-  // A code line find scrolled sideways to show a match; put back when find
-  // moves to another line or closes.
-  let shifted: HTMLElement | null = null;
+  // The code lines find has scrolled sideways (wrap off). Derived from the
+  // current match, never set by a reveal: only the line that clips the
+  // current match is shifted, to show it; every other line goes back, so
+  // none is shifted with no current match, no results or find closed.
+  const shiftedLines = new Set<HTMLElement>();
 
-  function unshift(): void {
-    if (shifted?.isConnected) shifted.scrollLeft = 0;
-    shifted = null;
+  function restoreShifted(keep: HTMLElement | null): void {
+    for (const line of shiftedLines) {
+      if (line === keep) continue;
+      if (line.isConnected) line.scrollLeft = 0;
+      shiftedLines.delete(line);
+    }
   }
 
-  function shiftBy(across: HTMLElement, dx: number): void {
-    if (across !== scroller()) shifted = across;
-    across.scrollLeft = Math.max(0, across.scrollLeft + dx);
+  // Runs whenever the current match, its row or the layout may have
+  // changed: a paint, a recompute of the matches, a wrap toggle.
+  function syncShift(): void {
+    const el = scroller();
+    const range = el ? (highlighter?.currentRange() ?? null) : null;
+    const across = range && el ? clipAcross(range.startContainer, el) : null;
+    const line = across && across !== el ? across : null;
+    if (line && range) {
+      const rect = range.getBoundingClientRect();
+      const box = line.getBoundingClientRect();
+      if (rect.left < box.left || rect.right > box.right) {
+        line.scrollLeft = Math.max(0, line.scrollLeft + Math.round(rect.left - (box.left + box.width / 3)));
+      }
+      if (line.scrollLeft > 0) shiftedLines.add(line);
+    }
+    restoreShifted(line);
   }
 
   function isLogView(): boolean {
@@ -198,20 +214,15 @@
       if (performance.now() > aim.until) landing = null;
       return;
     }
-    if (at.dy !== 0 && !aim.sideways) {
+    landing = null;
+    if (at.dy !== 0) {
       if (isLogView()) log()?.scrollFindBy(at.dy);
       else diff()?.scrollFindBy(at.dy);
-      landing = null;
-      // The row may move or remount: place it sideways once it settles.
-      if (at.dx !== 0) {
-        landing = { ...aim, sideways: true };
-        requestAnimationFrame(() => requestAnimationFrame(land));
-      }
-      return;
     }
-    landing = null;
-    if (shifted && shifted !== at.across) unshift();
-    if (at.dx !== 0 && at.across) shiftBy(at.across, at.dx);
+    // The scroller itself scrolling sideways; a clipped line is syncShift's.
+    const el = scroller();
+    if (at.dx !== 0 && el && at.across === el) el.scrollLeft = Math.max(0, el.scrollLeft + at.dx);
+    syncShift();
   }
 
   function aim(hit: Hit): void {
@@ -333,6 +344,7 @@
           rowsOnly: true,
           onMatches: () => {
             land();
+            syncShift();
             reconcileMounted();
           },
         });
@@ -343,6 +355,7 @@
         highlighter!.setQuery(query);
       }
       highlighter!.setCurrent(current ? { row: current.rowKey, occurrence: current.occurrence } : null);
+      syncShift();
     },
   }, () => (view === 'log' ? 'log' : view === 'conflicts' ? 'conflicts' : 'diff'));
 
@@ -364,6 +377,12 @@
     run: () => find.refresh(),
   });
   $effect(() => () => logRefreshes.dispose());
+  // A wrap toggle changes which lines clip, after its rows lay out.
+  $effect(() => {
+    void review.wordWrap;
+    const frame = requestAnimationFrame(syncShift);
+    return () => cancelAnimationFrame(frame);
+  });
   // Another job's log is another view.
   const scopeOf = (shown: ReviewFindView) => `${shown}:${shown === 'log' ? (review.ciLogView?.jobId ?? '') : ''}`;
   let seenView = untrack(() => scopeOf(view));
