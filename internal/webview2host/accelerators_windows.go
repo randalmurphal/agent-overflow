@@ -15,7 +15,8 @@ import (
 // callback, so the match runs here, in the launcher, against the set the
 // backend ships in OpAccelerators. A match is swallowed and reported as
 // ReportAccelerator; the backend routes it to the owning thread and the SPA
-// dispatches it. Plain typing never enters the gate.
+// dispatches it. Plain typing never enters the gate; a bare Escape does only
+// while the page's find bar is open (claimChord).
 
 func (h *Host) setAccelerators(list []keybindings.Accelerator) {
 	set := make(keybindings.AcceleratorSet, len(list))
@@ -37,17 +38,11 @@ func (h *Host) acceleratorPressed(page *hostPage, args *iAcceleratorKeyPressedEv
 		Alt:   keyDown(vkMenu),
 		Shift: keyDown(vkShift),
 	}
-	if !pressed.Ctrl && !pressed.Meta && !pressed.Alt {
-		return
-	}
 	pressed.Key = domKeyForVirtualKey(args.virtualKey())
 	if pressed.Key == "" {
 		return
 	}
-	h.mu.Lock()
-	set := h.accelerators
-	h.mu.Unlock()
-	bound, ok := set.Match(pressed)
+	bound, ok := h.claimChord(page, pressed)
 	if !ok {
 		return
 	}
@@ -59,6 +54,20 @@ func (h *Host) acceleratorPressed(page *hostPage, args *iAcceleratorKeyPressedEv
 		return
 	}
 	h.config.Report(page.id, ReportAccelerator, string(detail))
+}
+
+// claimChord answers the bound chord a key event is, if AO takes it. A bare
+// Escape (always an accelerator: WebView2.idl, add_AcceleratorKeyPressed) is
+// taken only while the page's find bar is open, so `find.close` closes it
+// from the page too. Runs on the UI thread.
+func (h *Host) claimChord(page *hostPage, pressed keybindings.Accelerator) (keybindings.Accelerator, bool) {
+	if !pressed.Ctrl && !pressed.Meta && !pressed.Alt {
+		return pressed, page.findOpen && pressed == keybindings.Accelerator{Key: "escape"}
+	}
+	h.mu.Lock()
+	set := h.accelerators
+	h.mu.Unlock()
+	return set.Match(pressed)
 }
 
 // domKeyForVirtualKey spells a Win32 virtual key the way KeyboardEvent.key

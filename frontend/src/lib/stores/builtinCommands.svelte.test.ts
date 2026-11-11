@@ -1052,6 +1052,42 @@ describe('find.in-pane command', () => {
     }
   });
 
+  // The page's Escape is replayed as a bare window keydown with the
+  // companion focused and DOM focus dropped; it must reach find.close for
+  // the shared bar and for an engine's own find UI alike.
+  it('Escape closes a focused browser companion\'s find, bar or engine UI', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
+    setPaneLayoutItemsForTest([
+      { id: 'a', paneId: 'a', kind: 'thread', widthPx: 600 },
+      { id: 'browser-a', paneId: 'browser-a', kind: 'browser', widthPx: 600 },
+    ]);
+    focusPane('browser-a');
+    const escape = () => dispatchKey(
+      new KeyboardEvent('keydown', { key: 'escape', cancelable: true }),
+      makeCommandContext(pane, {}) as CommandContext,
+      { isMac: false },
+    );
+
+    const bar = providerFor();
+    const release = registerPaneFindProvider('browser-a', bar);
+    openPaneFind('browser-a');
+    expect(escape()).toBe(true);
+    expect(getPaneFind('browser-a')?.open).toBe(false);
+    expect(bar.clear).toHaveBeenCalledTimes(1);
+    release();
+
+    let nativeOpen = true;
+    const engine = { ...providerFor(), openNative: vi.fn(), clear: vi.fn(() => { nativeOpen = false; }) };
+    Object.defineProperty(engine, 'nativeOpen', { get: () => nativeOpen });
+    registerPaneFindProvider('browser-a', engine);
+    expect(escape()).toBe(true);
+    expect(engine.clear).toHaveBeenCalledTimes(1);
+    // Closed, Escape is no longer the find's.
+    expect(escape()).toBe(false);
+  });
+
   it('seeds the query from text selected inside the pane', () => {
     const pane = readyPane();
     registerFixtureCommands(pane);

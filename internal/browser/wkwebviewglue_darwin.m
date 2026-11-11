@@ -132,11 +132,13 @@ static BOOL ao_claim_chord(WKWebView *view, NSEvent *event) {
   int meta = (flags & NSEventModifierFlagCommand) != 0;
   int alt = (flags & NSEventModifierFlagOption) != 0;
   int shift = (flags & NSEventModifierFlagShift) != 0;
-  if (!ctrl && !meta && !alt) {
-    return NO;
-  }
   NSString *key = ao_key_name(event);
   if (key == nil) {
+    return NO;
+  }
+  // A bare Escape is offered too: Go claims it only while the page has a
+  // find, which it then closes.
+  if (!ctrl && !meta && !alt && ![key isEqualToString:@"escape"]) {
     return NO;
   }
   return aoWKVKeyChord(ao_view_page_id(view), [key UTF8String], ctrl, meta, alt, shift) == 1;

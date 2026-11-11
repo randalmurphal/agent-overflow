@@ -790,6 +790,15 @@ func TestBrowserCompanionFindRunsOnTheThreadsShownPage(t *testing.T) {
 	if state, err := app.BrowserCompanionThreadState(thread.ID); err != nil || state.FindMode != appbrowser.FindModeBar {
 		t.Fatalf("state find mode = %+v, %v", state, err)
 	}
+	// The find shows in the mounted pane; with none there is nothing to show it.
+	if _, err := app.BrowserCompanionFind(ctx, thread.ID, BrowserFindAction{Kind: "start", PageID: pageID, Query: "alpha"}); err == nil {
+		t.Fatal("a find started with no pane mounted")
+	}
+	mount, err := app.BrowserCompanionPaneAttach(ctx, thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = app.BrowserCompanionPaneDetach(context.Background(), mount.ID) })
 	found, err := app.BrowserCompanionFind(ctx, thread.ID, BrowserFindAction{Kind: "start", PageID: pageID, Query: "alpha"})
 	if err != nil || found.Matches != 2 || found.Current != 0 || !found.Active {
 		t.Fatalf("start = %+v, %v", found, err)

@@ -195,10 +195,6 @@ func webkitScrollScript(selector string, x, y float64) string {
 // chord, matching the CDP driver's expression exactly.
 const webkitSelectionTextScript = `const a=document.activeElement;if(a&&(a instanceof HTMLInputElement||a instanceof HTMLTextAreaElement)&&a.selectionStart!==null)return a.value.slice(a.selectionStart,a.selectionEnd);return String(getSelection()||"");`
 
-// webkitClearSelectionScript drops the page's selection, which is where
-// WKWebView's find starts and what marks its match.
-const webkitClearSelectionScript = `const s=getSelection();if(s)s.removeAllRanges();return null;`
-
 // webkitVisibleScript reports whether a selector currently has a visible
 // match. The Manager polls it; the driver never loops.
 func webkitVisibleScript(selector string) string {

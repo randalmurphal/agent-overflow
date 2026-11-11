@@ -335,7 +335,7 @@ describe('accelerators from the native page view', () => {
     }));
     const onEnded = vi.fn();
     const find = createBrowserFind({
-      threadId: 'thread-browser', mode: 'bar', pageId: () => 'page-1', onEnded, onError: vi.fn(),
+      threadId: 'thread-browser', paneId: 'browser-main', mode: 'bar', pageId: () => 'page-1', onEnded, onError: vi.fn(),
     });
     try {
       find.search('alpha');

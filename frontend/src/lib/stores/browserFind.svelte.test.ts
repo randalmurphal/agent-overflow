@@ -8,6 +8,7 @@ import {
 } from './browserFind.svelte';
 import { BrowserCompanionEvent, BrowserFindState } from './bindings';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { closePaneFind, isPaneFindOpen, openPaneFind, registerPaneFindProvider, resetPaneFindForTest } from './paneFind.svelte';
 
 interface Call {
   threadId: string;
@@ -27,7 +28,7 @@ let pageId: string;
 function setup(mode: BrowserFindMode = 'bar') {
   const onEnded = vi.fn();
   const onError = vi.fn();
-  const find = createBrowserFind({ threadId: 'thread', mode, pageId: () => pageId, onEnded, onError });
+  const find = createBrowserFind({ threadId: 'thread', paneId: 'browser-main', mode, pageId: () => pageId, onEnded, onError });
   return { find, onEnded, onError };
 }
 
@@ -44,6 +45,7 @@ async function settle(ms = BROWSER_FIND_DEBOUNCE_MS): Promise<void> {
 beforeEach(() => {
   vi.useFakeTimers();
   resetBrowserFindForTest();
+  resetPaneFindForTest();
   calls = [];
   pageId = 'page-1';
   answer = async (call) =>
@@ -58,6 +60,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   resetBrowserFindForTest();
+  resetPaneFindForTest();
 });
 
 describe('browser find provider', () => {
@@ -200,13 +203,78 @@ describe('browser find provider', () => {
     expect(find.openNative).toBeTypeOf('function');
     find.openNative?.('needle');
     find.search('ignored');
-    find.clear();
     await settle();
     expect(calls).toEqual([{ threadId: 'thread', kind: 'start', pageId: 'page-1', query: 'needle' }]);
     answer = async () => { throw new Error('no engine find'); };
     find.openNative?.('');
     await settle(0);
     expect(onError).toHaveBeenCalledWith('no engine find');
+  });
+
+  it('makes every engine call in order, one at a time, and counts each step', async () => {
+    const { find } = setup();
+    const releases: Array<() => void> = [];
+    answer = (call) => new Promise((resolve) => {
+      releases.push(() => resolve(state({ found: true, matches: 3, current: call.kind === 'start' ? 0 : 1 })));
+    });
+    find.search('alpha');
+    await settle();
+    expect(calls.map((call) => call.kind)).toEqual(['start']);
+    releases.shift()!();
+    await settle(0);
+    find.next?.();
+    find.next?.();
+    find.next?.();
+    find.previous?.();
+    find.next?.();
+    await settle(0);
+    // One in flight; the presses wait, net of each other, and none is lost.
+    expect(calls.map((call) => call.kind)).toEqual(['start', 'next']);
+    while (releases.length) {
+      releases.shift()!();
+      await settle(0);
+    }
+    expect(calls.map((call) => call.kind)).toEqual(['start', 'next', 'next', 'next']);
+  });
+
+  it('opens and closes twice, each close stopping its own session', async () => {
+    const { find } = setup();
+    let session = 0;
+    answer = async (call) => call.kind === 'stop'
+      ? state({ active: false, session: ++session })
+      : state({ session: ++session, found: true, matches: 2, current: 0 });
+    for (let round = 0; round < 2; round++) {
+      find.search('alpha');
+      await settle();
+      expect(find.result.count).toBe(2);
+      find.clear();
+      await settle(0);
+      expect(find.result).toMatchObject({ count: 0, current: -1, pending: false });
+    }
+    expect(calls.map((call) => call.kind)).toEqual(['start', 'stop', 'start', 'stop']);
+  });
+
+  it('reads as open while the engine find UI is, and find.close stops it', async () => {
+    const { find, onEnded } = setup('engine');
+    registerPaneFindProvider('browser-main', find);
+    expect(isPaneFindOpen('browser-main')).toBe(false);
+    for (let round = 0; round < 2; round++) {
+      openPaneFind('browser-main', { seed: '' });
+      await settle(0);
+      expect(find.nativeOpen).toBe(true);
+      expect(isPaneFindOpen('browser-main')).toBe(true);
+      closePaneFind('browser-main');
+      await settle(0);
+      expect(isPaneFindOpen('browser-main')).toBe(false);
+    }
+    expect(calls.map((call) => call.kind)).toEqual(['start', 'stop', 'start', 'stop']);
+    // The backend's own end closes it too.
+    answer = async () => state({ session: 7, found: false });
+    openPaneFind('browser-main', { seed: '' });
+    await settle(0);
+    ended(8);
+    expect(isPaneFindOpen('browser-main')).toBe(false);
+    expect(onEnded).toHaveBeenCalledTimes(1);
   });
 
   it('a disposed provider hears no end and stops its session', async () => {

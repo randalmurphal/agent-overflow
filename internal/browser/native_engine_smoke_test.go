@@ -308,6 +308,11 @@ func TestNativeEngineRealFind(t *testing.T) {
 	if _, err := manager.Visibility(ctx, access, &show, page.ID); err != nil {
 		t.Fatalf("show the page: %v", err)
 	}
+	mount, err := manager.AttachPane(access)
+	if err != nil {
+		t.Fatalf("mount a pane: %v", err)
+	}
+	t.Cleanup(func() { manager.DetachPane(mount.ID) })
 	find := func(kind, query string) FindState {
 		t.Helper()
 		state, err := manager.Find(ctx, access, page.ID, kind, query)

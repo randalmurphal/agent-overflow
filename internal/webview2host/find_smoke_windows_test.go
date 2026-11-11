@@ -11,7 +11,33 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"agent-overflow/internal/keybindings"
 )
+
+// A bare Escape is the page's unless its find bar is open; a modified one
+// goes through the bound set only.
+func TestClaimChordTakesThePagesEscapeOnlyWhileFindIsOpen(t *testing.T) {
+	host := &Host{accelerators: keybindings.AcceleratorSet{{Key: "w", Ctrl: true}: {}}}
+	page := &hostPage{id: "page-1"}
+	escape := keybindings.Accelerator{Key: "escape"}
+	if _, ok := host.claimChord(page, escape); ok {
+		t.Fatal("Escape was claimed with no find")
+	}
+	page.findOpen = true
+	if bound, ok := host.claimChord(page, escape); !ok || bound != escape {
+		t.Fatalf("Escape during a find = %+v, %v", bound, ok)
+	}
+	if _, ok := host.claimChord(page, keybindings.Accelerator{Key: "escape", Shift: true}); ok {
+		t.Fatal("Shift+Escape was claimed by the find")
+	}
+	if _, ok := host.claimChord(page, keybindings.Accelerator{Key: "a"}); ok {
+		t.Fatal("typing was claimed during a find")
+	}
+	if _, ok := host.claimChord(page, keybindings.Accelerator{Key: "w", Ctrl: true}); !ok {
+		t.Fatal("a bound chord was not claimed")
+	}
+}
 
 // The real WebView2 find path runs only under the native browser smoke gate:
 // it needs an installed WebView2 runtime and opens a window.
@@ -105,8 +131,18 @@ func TestFindSmokeOpensTheEnginesFindBar(t *testing.T) {
 	}
 
 	t.Logf("find for alpha: %d matches, active index %d", count, active)
+	escape := keybindings.Accelerator{Key: "escape"}
+	var claimed bool
+	ui.do(func() { _, claimed = host.claimChord(page, escape) })
+	if !claimed {
+		t.Fatal("the page's Escape was not claimed while its find bar is open")
+	}
 
 	host.Apply(Directive{Op: OpFindStop, PageID: "page-1"})
+	ui.do(func() { _, claimed = host.claimChord(page, escape) })
+	if claimed {
+		t.Fatal("the page's Escape was claimed after its find bar closed")
+	}
 	host.Apply(Directive{Op: OpFind, PageID: "page-1", Query: "absent"})
 	time.Sleep(time.Second)
 	ui.do(func() { count, _ = smokeFindState(t, page) })

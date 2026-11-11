@@ -121,6 +121,9 @@ type hostPage struct {
 	// findStarted is the page's one Start completion handler, made on the
 	// first find and kept in pendingHandlers (find_windows.go).
 	findStarted *iFindStartCompletedHandler
+	// findOpen is whether this page's find bar was opened and not stopped,
+	// which is when the page's Escape is AO's (claimChord). UI thread only.
+	findOpen bool
 	// pendingHandlers keeps every COM callback object this page handed to
 	// WebView2 alive for as long as WebView2 can invoke it.
 	pendingHandlers []any

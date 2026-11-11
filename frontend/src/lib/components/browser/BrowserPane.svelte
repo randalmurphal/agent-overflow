@@ -103,6 +103,7 @@
     return untrack(() => {
       const find = createBrowserFind({
         threadId,
+        paneId,
         mode,
         pageId: () => activePageId,
         onEnded: () => closePaneFind(paneId),
@@ -454,7 +455,7 @@
   </div>
 
   {#if browserPaneId}
-    <PaneFindBar paneId={browserPaneId} title={activePage?.title || 'Browser'} fallbackFocus={() => null} />
+    <PaneFindBar paneId={browserPaneId} title={activePage?.title || 'Browser'} fallbackFocus={() => surface ?? null} />
   {/if}
 
   {#if view?.actionError}
@@ -469,6 +470,7 @@
     class="relative min-h-0 flex-1 overflow-hidden bg-surface-0"
     data-testid="browser-pane-host-rect"
     aria-label="Browser page"
+    tabindex="-1"
   >
     {#if view?.error || attachment?.error}
       <div class="flex h-full items-center justify-center px-4 text-sm text-error">{view?.error || attachment?.error}</div>

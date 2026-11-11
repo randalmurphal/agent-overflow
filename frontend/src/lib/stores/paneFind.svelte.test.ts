@@ -3,6 +3,7 @@ import {
   closePaneFind,
   getPaneFind,
   hasPaneFindProvider,
+  isPaneFindOpen,
   openPaneFind,
   paneFindReads,
   registerPaneFindProvider,
@@ -174,6 +175,20 @@ describe('pane find registry', () => {
     expect(openNative).toHaveBeenLastCalledWith('');
     expect(getPaneFind('a')?.open ?? false).toBe(false);
     expect(p.search).not.toHaveBeenCalled();
+  });
+
+  it('reads an open native find UI as open, and a close ends it through clear', () => {
+    let nativeOpen = false;
+    const p = provider({ openNative: vi.fn(() => { nativeOpen = true; }) });
+    Object.defineProperty(p, 'nativeOpen', { get: () => nativeOpen });
+    registerPaneFindProvider('a', p);
+    expect(isPaneFindOpen('a')).toBe(false);
+    closePaneFind('a');
+    expect(p.clear).not.toHaveBeenCalled();
+    openPaneFind('a');
+    expect(isPaneFindOpen('a')).toBe(true);
+    closePaneFind('a');
+    expect(p.clear).toHaveBeenCalledTimes(1);
   });
 
   it('a stale release does not drop a newer provider', () => {

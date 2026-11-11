@@ -400,13 +400,17 @@ func (p *wkPage) SelectionText(ctx context.Context) string {
 
 var _ pageFind = (*wkPage)(nil)
 
+// wkClearSelectionScript drops the page's selection, which is where
+// WKWebView's find starts and what marks its match.
+const wkClearSelectionScript = `const s=getSelection();if(s)s.removeAllRanges();return null;`
+
 // FindMode is the shared find bar: WKWebView has no find UI on macOS.
 func (p *wkPage) FindMode() string { return FindModeBar }
 
 // FindStart searches from the top: WKWebView searches from the selection, so
 // the selection is dropped first. WKFindResult has no count.
 func (p *wkPage) FindStart(ctx context.Context, query string) (findResult, error) {
-	if _, err := p.evalBody(ctx, webkitClearSelectionScript); err != nil {
+	if _, err := p.evalBody(ctx, wkClearSelectionScript); err != nil {
 		return findResult{}, err
 	}
 	p.mu.Lock()
@@ -431,7 +435,7 @@ func (p *wkPage) FindStop(ctx context.Context) error {
 	p.mu.Lock()
 	p.findQuery = ""
 	p.mu.Unlock()
-	_, err := p.evalBody(ctx, webkitClearSelectionScript)
+	_, err := p.evalBody(ctx, wkClearSelectionScript)
 	return err
 }
 

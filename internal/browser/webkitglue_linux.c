@@ -714,7 +714,9 @@ static gboolean ao_key_pressed(GtkEventControllerKey *controller, guint keyval, 
   int meta = (state & (GDK_META_MASK | GDK_SUPER_MASK)) != 0;
   int alt = (state & GDK_ALT_MASK) != 0;
   int shift = (state & GDK_SHIFT_MASK) != 0;
-  if (!ctrl && !meta && !alt) {
+  // A bare Escape is offered too: Go claims it only while the page has a
+  // find, which it then closes.
+  if (!ctrl && !meta && !alt && keyval != GDK_KEY_Escape) {
     return FALSE;
   }
   char buf[8];

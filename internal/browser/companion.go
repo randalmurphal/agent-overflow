@@ -215,7 +215,18 @@ func (m *Manager) pageByHandleLocked(handle string) *managedPage {
 
 // keyChord is engineEvents.KeyChord: it answers on the engine's UI thread, so
 // it is one set lookup, and the routing that takes m.mu happens off it.
+//
+// A bare Escape is claimed only from a page with an active find, so the find
+// closes through `find.close` while keyboard focus is in the page; otherwise
+// the page keeps it.
 func (m *Manager) keyChord(handle string, pressed keybindings.Accelerator) bool {
+	if pressed == findEscape {
+		if _, finding := m.finding.Load(handle); !finding {
+			return false
+		}
+		go m.emitAccelerator(handle, pressed)
+		return true
+	}
 	if m.accelerators == nil {
 		return false
 	}
@@ -470,6 +481,7 @@ func (m *Manager) syncPanePresentation(threadID string) {
 	session, hasSession := m.sessions[threadID]
 	rect, shown := m.shownPaneRectLocked(threadID)
 	visible := hasSession && session.Visible && shown
+	mounted := m.paneMountedLocked(threadID)
 	var pages []*managedPage
 	var active *managedPage
 	for _, scope := range m.scopes {
@@ -484,7 +496,7 @@ func (m *Manager) syncPanePresentation(threadID string) {
 		}
 	}
 	m.mu.Unlock()
-	m.endHiddenFinds(pages, session, hasSession)
+	m.endHiddenFinds(pages, session, hasSession && mounted)
 	if !ok {
 		return
 	}

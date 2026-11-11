@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"agent-overflow/internal/keybindings"
 )
 
 // Find in the browser pane (docs/architecture/browser-tools.md, "Find"). The
@@ -28,6 +30,10 @@ const (
 	// findTimeout bounds one engine find call.
 	findTimeout = 10 * time.Second
 )
+
+// findEscape is the key that closes a find from inside the page: engines
+// offer it to keyChord without a modifier.
+var findEscape = keybindings.Accelerator{Key: "escape"}
 
 var errFindUnavailable = errors.New("browser: find is not available on this page's browser engine")
 
@@ -154,12 +160,24 @@ func (m *Manager) Find(ctx context.Context, access Access, pageID, kind, query s
 }
 
 // pageShown reports whether pageID is the active page of the thread's shown
-// companion.
+// companion with a pane mounted to show it.
 func (m *Manager) pageShown(threadID, pageID string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	session, ok := m.sessions[threadID]
-	return ok && session.Visible && session.ActivePageID == pageID
+	return ok && session.Visible && session.ActivePageID == pageID && m.paneMountedLocked(threadID)
+}
+
+// paneMountedLocked reports whether a pane is mounted for the thread, painted
+// or not: an occluded pane still shows its find, and no pane shows none. The
+// caller holds m.mu.
+func (m *Manager) paneMountedLocked(threadID string) bool {
+	for _, mount := range m.panes {
+		if mount.threadID == threadID {
+			return true
+		}
+	}
+	return false
 }
 
 // beginFind records a new session from a start's answer. The caller holds
@@ -169,6 +187,7 @@ func (m *Manager) beginFind(p *managedPage, mode, query string, result findResul
 	defer p.findMu.Unlock()
 	p.find.seq++
 	p.find.active = true
+	m.finding.Store(p.driver.Handle(), struct{}{})
 	p.find.mode = mode
 	p.find.doc = documentOf(p.cachedInfo().URL)
 	state := FindState{Query: query, Current: -1}
@@ -225,6 +244,7 @@ func (m *Manager) stopFindLocked(ctx context.Context, p *managedPage, finder pag
 	if active {
 		p.find.active = false
 		p.find.seq++
+		m.finding.Delete(p.driver.Handle())
 	}
 	state := p.find.snapshot(p.id)
 	p.findMu.Unlock()
@@ -244,6 +264,7 @@ func (m *Manager) failFind(p *managedPage) {
 	if p.find.active {
 		p.find.active = false
 		p.find.seq++
+		m.finding.Delete(p.driver.Handle())
 	}
 	p.findMu.Unlock()
 }
@@ -261,6 +282,7 @@ func (m *Manager) endFind(p *managedPage, stopEngine bool) {
 	}
 	p.find.active = false
 	p.find.seq++
+	m.finding.Delete(p.driver.Handle())
 	ended := p.find.seq
 	state := p.find.snapshot(p.id)
 	p.findMu.Unlock()
@@ -304,7 +326,8 @@ func (m *Manager) followFindDocument(p *managedPage) {
 }
 
 // endHiddenFinds ends the sessions of the thread's pages that are not the
-// shown active page. pages are the thread's live pages.
+// shown active page. pages are the thread's live pages; shown is whether the
+// thread has a session and a mounted pane.
 func (m *Manager) endHiddenFinds(pages []*managedPage, session SessionInfo, shown bool) {
 	for _, p := range pages {
 		if shown && session.Visible && p.id == session.ActivePageID {

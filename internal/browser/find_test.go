@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/keybindings"
 )
 
 // findFixture is a fake-engine Manager with one page shown in the thread's
@@ -14,24 +16,34 @@ type findFixture struct {
 	manager *Manager
 	access  Access
 	pageID  string
+	mount   string
 	fake    *fakePage
 	events  chan CompanionEvent
+	keys    chan keybindings.Accelerator
 	calls   chan string
 }
 
 func newFindFixture(t *testing.T, address string) *findFixture {
 	t.Helper()
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
-	t.Cleanup(func() { manager.Close() })
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Errorf("close manager: %v", err)
+		}
+	})
 	f := &findFixture{
 		manager: manager,
 		access:  Access{ThreadID: "thread", Workspace: t.TempDir()},
 		events:  make(chan CompanionEvent, 64),
+		keys:    make(chan keybindings.Accelerator, 64),
 		calls:   make(chan string, 64),
 	}
 	manager.SetEventSink(func(event CompanionEvent) {
 		if event.Kind == "find" {
 			f.events <- event
+		}
+		if event.Kind == "accelerator" && event.Accelerator != nil {
+			f.keys <- *event.Accelerator
 		}
 	})
 	info, err := manager.Open(t.Context(), f.access, address, OpenOptions{})
@@ -44,7 +56,18 @@ func newFindFixture(t *testing.T, address string) *findFixture {
 	if _, err := manager.Visibility(t.Context(), f.access, &show, info.ID); err != nil {
 		t.Fatalf("show: %v", err)
 	}
+	f.attach(t)
 	return f
+}
+
+// attach mounts a pane for the thread, as the browser pane does.
+func (f *findFixture) attach(t *testing.T) {
+	t.Helper()
+	mount, err := f.manager.AttachPane(f.access)
+	if err != nil {
+		t.Fatalf("attach pane: %v", err)
+	}
+	f.mount = mount.ID
 }
 
 func (f *findFixture) page(t *testing.T, pageID string) *fakePage {
@@ -78,6 +101,16 @@ func (f *findFixture) wantCall(t *testing.T, want string) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatalf("engine find call %q never arrived", want)
+	}
+}
+
+// noCall asserts the engine was asked nothing more.
+func (f *findFixture) noCall(t *testing.T) {
+	t.Helper()
+	select {
+	case call := <-f.calls:
+		t.Fatalf("unexpected engine find call %q", call)
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 
@@ -359,6 +392,121 @@ func TestFindEndsWhenThePageClosesOrSuspends(t *testing.T) {
 	}
 }
 
+// The find shows in a mounted pane: with none it cannot start, and the last
+// pane unmounting ends it, each time.
+func TestFindEndsWhenItsPaneUnmounts(t *testing.T) {
+	f := newFindFixture(t, "https://example.test/alpha")
+	for round := range 2 {
+		started := f.find(t, "start", "alpha")
+		f.wantCall(t, "start alpha")
+		f.manager.DetachPane(f.mount)
+		f.wantEnded(t, started.Session)
+		f.wantCall(t, "stop")
+		if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "start", "alpha"); err == nil {
+			t.Fatalf("round %d: a find started with no pane mounted", round)
+		}
+		f.attach(t)
+	}
+}
+
+// Each transition that takes the find's page away ends the find and, where
+// the page lives on, stops the engine's find on it; a find started after
+// coming back works and ends the same way.
+func TestFindEndsOnEachTransitionTwice(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// away ends the find; back restores the shown page.
+		away, back func(*testing.T, *findFixture)
+		// stops is whether the page lives on for an engine stop.
+		stops bool
+	}{
+		{
+			name: "navigate",
+			away: func(t *testing.T, f *findFixture) {
+				if _, err := f.manager.Open(t.Context(), f.access, "https://example.test/beta", OpenOptions{PageID: f.pageID}); err != nil {
+					t.Fatal(err)
+				}
+			},
+			back: func(t *testing.T, f *findFixture) {
+				if _, err := f.manager.Open(t.Context(), f.access, "https://example.test/alpha", OpenOptions{PageID: f.pageID}); err != nil {
+					t.Fatal(err)
+				}
+			},
+			stops: true,
+		},
+		{
+			name: "switch page",
+			away: func(t *testing.T, f *findFixture) {
+				other, err := f.manager.NewCompanionPage(t.Context(), f.access)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := f.manager.ActivateCompanionPage(t.Context(), f.access, other.ID); err != nil {
+					t.Fatal(err)
+				}
+			},
+			back: func(t *testing.T, f *findFixture) {
+				if err := f.manager.ActivateCompanionPage(t.Context(), f.access, f.pageID); err != nil {
+					t.Fatal(err)
+				}
+			},
+			stops: true,
+		},
+		{
+			name: "close pane",
+			away: func(t *testing.T, f *findFixture) {
+				hide := false
+				if _, err := f.manager.Visibility(t.Context(), f.access, &hide, ""); err != nil {
+					t.Fatal(err)
+				}
+			},
+			back: func(t *testing.T, f *findFixture) {
+				show := true
+				if _, err := f.manager.Visibility(t.Context(), f.access, &show, f.pageID); err != nil {
+					t.Fatal(err)
+				}
+			},
+			stops: true,
+		},
+		{
+			name: "suspend",
+			away: func(t *testing.T, f *findFixture) {
+				if err := f.manager.SuspendThread(t.Context(), f.access.ThreadID); err != nil {
+					t.Fatal(err)
+				}
+			},
+			back: func(t *testing.T, f *findFixture) {
+				if err := f.manager.ActivateCompanionPage(t.Context(), f.access, f.pageID); err != nil {
+					t.Fatal(err)
+				}
+				f.fake = f.page(t, f.pageID)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFindFixture(t, "https://example.test/alpha")
+			for round := range 2 {
+				started := f.find(t, "start", "alpha")
+				f.wantCall(t, "start alpha")
+				tc.away(t, f)
+				f.wantEnded(t, started.Session)
+				if tc.stops {
+					f.wantCall(t, "stop")
+				}
+				f.noCall(t)
+				tc.back(t, f)
+				if round == 0 {
+					continue
+				}
+				if state := f.find(t, "start", "alpha"); !state.Active || state.Matches != 1 {
+					t.Fatalf("find after coming back = %+v", state)
+				}
+				f.wantCall(t, "start alpha")
+			}
+		})
+	}
+}
+
 // Closing every page at once (disabling the browser, clearing site data)
 // ends each find the same way one page's close does.
 func TestFindEndsWhenTheBrowserCloses(t *testing.T) {
@@ -375,6 +523,53 @@ func TestFindEndsWhenTheBrowserCloses(t *testing.T) {
 			}
 			f.wantEnded(t, started.Session)
 		})
+	}
+}
+
+// A bare Escape pressed in the page is the page's, except while the page has
+// a find: then it is claimed and routed to the thread so `find.close` ends
+// the find with keyboard focus still in the page. Every end of the find
+// releases it, and a modified Escape is never claimed by the find.
+func TestFindClaimsThePagesEscapeOnlyWhileFinding(t *testing.T) {
+	f := newFindFixture(t, "https://example.test/alpha")
+	handle := f.fake.Handle()
+	escape := keybindings.Accelerator{Key: "escape"}
+	claims := func() bool { return f.manager.keyChord(handle, escape) }
+	if claims() {
+		t.Fatal("Escape was claimed with no find")
+	}
+	for round := range 2 {
+		f.find(t, "start", "alpha")
+		f.wantCall(t, "start alpha")
+		if f.manager.keyChord(handle, keybindings.Accelerator{Key: "escape", Ctrl: true}) {
+			t.Fatal("Ctrl+Escape was claimed by the find")
+		}
+		if !claims() {
+			t.Fatalf("round %d: Escape was not claimed during a find", round)
+		}
+		select {
+		case key := <-f.keys:
+			if key != escape {
+				t.Fatalf("routed chord = %+v", key)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the claimed Escape never reached the thread")
+		}
+		f.find(t, "stop", "")
+		f.wantCall(t, "stop")
+		if claims() {
+			t.Fatalf("round %d: Escape was claimed after the find stopped", round)
+		}
+	}
+	// The Manager's own ends release it too.
+	started := f.find(t, "start", "alpha")
+	f.wantCall(t, "start alpha")
+	if err := f.manager.SuspendThread(t.Context(), f.access.ThreadID); err != nil {
+		t.Fatal(err)
+	}
+	f.wantEnded(t, started.Session)
+	if claims() {
+		t.Fatal("Escape was claimed from a suspended page")
 	}
 }
 
@@ -397,7 +592,11 @@ func (p findlessProfile) NewPage(ctx context.Context, hooks pageHooks) (pageDriv
 
 func TestFindIsRefusedWhereTheEngineHasNone(t *testing.T) {
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
-	t.Cleanup(func() { manager.Close() })
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Errorf("close manager: %v", err)
+		}
+	})
 	manager.engine = findlessEngine{manager.engine.(*fakeEngine)}
 	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
 	info, err := manager.Open(t.Context(), access, "https://example.test/alpha", OpenOptions{})

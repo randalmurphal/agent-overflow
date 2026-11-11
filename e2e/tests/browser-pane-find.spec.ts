@@ -4,7 +4,7 @@
 // header; a query runs on the page the pane shows and reports its position,
 // Enter and Shift+Enter step with wrap, a miss reads No results, Escape closes
 // it. A navigation to another document ends the find on the backend, which
-// closes the bar. The harness runs the fake engine, whose find searches the
+// closes the bar, and closing the pane ends it, twice. The harness runs the fake engine, whose find searches the
 // page title (fake_engine.go); real engines are covered by the
 // AO_NATIVE_BROWSER_SMOKE gate. Unit and component coverage:
 // browserFind.svelte.test.ts, BrowserPane.test.ts, PaneFindBar.test.ts,
@@ -85,4 +85,17 @@ test('mod+f finds in the shown browser page and closes when the page navigates a
   await expect(count).toHaveText('1/1');
   await harness.rpc('BrowserCompanionDo', threadId, { kind: 'navigate', pageId, address: second });
   await expect(bar).toHaveCount(0);
+
+  // Closing the pane ends the find on the backend, each time.
+  for (let round = 0; round < 2; round++) {
+    await address.focus();
+    await address.press('ControlOrMeta+f');
+    await bar.getByTestId('pane-find-input').fill('gamma');
+    await expect(count).toHaveText('1/1');
+    await pane.getByRole('button', { name: 'Close browser' }).click();
+    await expect(pane).toHaveCount(0);
+    await expect(harness.rpc('BrowserCompanionFind', threadId, { kind: 'next', pageId })).rejects.toThrow(/no find is in progress/);
+    await harness.rpc('BrowserCompanionDo', threadId, { kind: 'show', pageId });
+    await expect(pane).toBeVisible();
+  }
 });

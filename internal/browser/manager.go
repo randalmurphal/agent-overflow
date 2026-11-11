@@ -66,7 +66,10 @@ type Manager struct {
 	// accelerators is ManagerOptions.Accelerators; read per keypress on the
 	// engine's UI thread by keyChord.
 	accelerators func() keybindings.AcceleratorSet
-	profileDir   string
+	// finding holds the driver handle of every page with an active find, so
+	// keyChord can claim the page's Escape without taking m.mu.
+	finding    sync.Map
+	profileDir string
 
 	startMu sync.Mutex
 	mu      sync.Mutex

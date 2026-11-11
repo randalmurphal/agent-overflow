@@ -157,12 +157,24 @@ the accelerator path above.
 
 - The Manager owns the session (`internal/browser/find.go`,
   `BrowserCompanionFind`): which page it runs on, its query and current
-  match. A start runs only on the active page of a shown companion. The
-  session ends when its page navigates to another document (a fragment move
-  does not count), stops being the shown active page, is suspended or closes,
-  or the browser closes; that end is a `find` event on
-  `browser:companion-state`, and the bar showing it closes. The engine's
-  highlight is cleared behind it unless a newer session started.
+  match. A start runs only on the active page of a shown companion with a
+  pane mounted. The session ends when its page navigates to another document
+  (a fragment move does not count), stops being the shown active page, is
+  suspended or closes, when the last pane unmounts, or when the browser
+  closes; that end is a `find` event on `browser:companion-state`, and the
+  bar showing it closes. The engine's find is stopped behind it unless a
+  newer session started.
+- Escape closes the find through `find.close`, wherever keyboard focus is.
+  In the app it is an ordinary keydown. In the page, while the page has a
+  find, the engine offers its bare Escape to the chord gate above, which
+  claims it (the Manager's `keyChord`; for WebView2 the launcher's
+  `claimChord`, since `AcceleratorKeyPressed` always reports Escape); without
+  a find the page keeps it.
+- The pane's provider (`frontend/src/lib/stores/browserFind.svelte.ts`) makes
+  its engine calls one at a time through the pane's `paneFindReads` slot.
+  Every call is made, since the engine holds the session; a superseded
+  answer is dropped, and a session it opened after the reader left is
+  stopped. Steps and the stop go to the page the session started on.
 - WebKitGTK (`findMode` "bar") drives the shared find bar through
   `WebKitFindController`: a case-insensitive, wrapping search that counts up
   to 1000 matches (past that the count shows as `1000+` and the position as
@@ -177,9 +189,12 @@ the accelerator path above.
 - Hosted WebView2 ("engine") opens the engine's own find bar
   (`ICoreWebView2Find` with the default dialog left on), seeded with the
   SPA's selection or else the page's, and moves keyboard focus into the page.
-  The engine's bar counts, steps and closes itself; AO's bar is not shown. A
-  runtime without the API is reported at page create (`find-unavailable`) and
-  the page has no find.
+  The engine's bar counts, steps and closes itself; AO's bar is not shown.
+  While it is open the pane's find reads as open (`nativeOpen`), so
+  `find.close` stops it. The engine reports no close of its own bar, so after
+  a close inside it AO still reads the find as open, and the next Escape
+  only stops a find already gone. A runtime without the API is reported at
+  page create (`find-unavailable`) and the page has no find.
 - Headless Chromium has no find: serve mode has no pane to find in.
 
 ## Tool surface
