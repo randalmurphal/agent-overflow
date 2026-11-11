@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
@@ -52,7 +53,7 @@ func newReviewSubmitCase(t *testing.T, forge string) *reviewSubmitCase {
 }
 
 // forgeGate holds the first review publish until released, so a test can
-// act while a submit is at the forge.
+// act while a submit is at the forge, or loses the next publish's answer.
 type forgeGate struct {
 	next    http.Handler
 	publish string
@@ -60,6 +61,20 @@ type forgeGate struct {
 	armed   bool
 	entered chan struct{}
 	release chan struct{}
+	// losing is how the next publish's answer is lost: "drop" runs it and
+	// closes the connection with no answer, "truncate" runs it and cuts
+	// its answer short, "unsent" closes the connection without running it.
+	losing string
+	// deletesGone answers every draft note delete 404 without running it,
+	// as if another publish had taken the notes.
+	deletesGone bool
+}
+
+// lose makes the next publish lose its answer (see losing).
+func (g *forgeGate) lose(how string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.losing = how
 }
 
 // hold makes the next publish wait for the returned release.
@@ -72,18 +87,46 @@ func (g *forgeGate) hold() (entered <-chan struct{}, release func()) {
 
 func (g *forgeGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.mu.Lock()
-	held := g.armed && r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, g.publish)
+	publish := r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, g.publish)
+	held := g.armed && publish
 	var release chan struct{}
 	if held {
 		g.armed = false
 		close(g.entered)
 		release = g.release
 	}
+	losing := ""
+	if publish {
+		losing, g.losing = g.losing, ""
+	}
+	deletesGone := g.deletesGone && r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/draft_notes/")
 	g.mu.Unlock()
 	if held {
 		<-release
 	}
-	g.next.ServeHTTP(w, r)
+	if deletesGone {
+		http.Error(w, `{"message":"404 Draft Note Not Found"}`, http.StatusNotFound)
+		return
+	}
+	if losing == "" {
+		g.next.ServeHTTP(w, r)
+		return
+	}
+	answer := httptest.NewRecorder()
+	if losing != "unsent" {
+		g.next.ServeHTTP(answer, r)
+	}
+	conn, buf, err := http.NewResponseController(w).Hijack()
+	if err != nil {
+		panic(err)
+	}
+	defer conn.Close()
+	if losing == "truncate" {
+		body := answer.Body.Bytes()
+		fmt.Fprintf(buf, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n", answer.Code, http.StatusText(answer.Code), len(body)+64)
+		_, _ = buf.Write(body[:len(body)/2])
+		_ = buf.Flush()
+	}
 }
 
 func (c *reviewSubmitCase) owner(threadOwned bool) store.DiffReviewOwner {
@@ -546,19 +589,216 @@ func TestSubmitPRReviewAttemptOutcomeWaitsForARunningAttempt(t *testing.T) {
 	}
 }
 
-// The attempts a process remembers are bounded.
+// The attempts a process remembers are bounded, and it never says an
+// attempt it may have received never arrived: an attempt whose outcome
+// was dropped reads forgotten, and so does every id it does not hold once
+// ids have left its window too. A repeat of a forgotten id posts nothing.
 func TestReviewAttemptsForgetTheOldestFinished(t *testing.T) {
 	t.Parallel()
 	var attempts reviewAttempts
-	for i := range reviewAttemptsKept + 1 {
+	finish := func(i int) {
 		attempt, _ := attempts.begin(fmt.Sprintf("a%d", i), "pr")
 		attempts.finish(attempt, SubmitPRReviewResult{Posted: true}, nil)
 	}
-	if attempts.find("a0", "pr") != nil || attempts.find(fmt.Sprintf("a%d", reviewAttemptsKept), "pr") == nil {
-		t.Fatal("kept the oldest attempt or forgot the newest")
+	for i := range reviewAttemptsKept + 1 {
+		finish(i)
+	}
+	if kept, _ := attempts.find(fmt.Sprintf("a%d", reviewAttemptsKept), "pr"); kept == nil {
+		t.Fatal("forgot the newest attempt")
+	}
+	if kept, forgotten := attempts.find("a0", "pr"); kept != nil || !forgotten {
+		t.Fatalf("the evicted attempt = %v, forgotten %v; want forgotten", kept, forgotten)
+	}
+	if _, forgotten := attempts.find("never-sent", "pr"); forgotten {
+		t.Fatal("an id never received reads forgotten while every id is kept")
 	}
 	if len(attempts.byID) != reviewAttemptsKept {
-		t.Fatalf("%d attempts kept, want %d", len(attempts.byID), reviewAttemptsKept)
+		t.Fatalf("%d outcomes kept, want %d", len(attempts.byID), reviewAttemptsKept)
+	}
+	repeat, repeated := attempts.begin("a0", "pr")
+	if !repeated {
+		t.Fatal("a forgotten id began again")
+	}
+	if _, err := repeat.wait(context.Background()); err == nil {
+		t.Fatal("a repeat of a forgotten id answered without an error")
+	}
+
+	for i := reviewAttemptsKept + 1; i <= reviewAttemptsKept+reviewAttemptIDsKept+1; i++ {
+		finish(i)
+	}
+	if len(attempts.forgotten) != reviewAttemptIDsKept {
+		t.Fatalf("%d ids kept, want %d", len(attempts.forgotten), reviewAttemptIDsKept)
+	}
+	if _, forgotten := attempts.find("never-sent", "pr"); !forgotten {
+		t.Fatal("an id not held reads never received after ids overflowed")
+	}
+}
+
+// The outcome read of an attempt whose outcome was dropped says so, and
+// one of an id the process never received says that.
+func TestGetPRReviewSubmitOutcomeForgottenAndNeverReceived(t *testing.T) {
+	t.Parallel()
+	c := newReviewSubmitCase(t, "github")
+	for i := range reviewAttemptsKept + 1 {
+		attempt, _ := c.app.reviewAttempts.begin(fmt.Sprintf("a%d", i), c.pr.Key())
+		c.app.reviewAttempts.finish(attempt, SubmitPRReviewResult{Posted: true}, nil)
+	}
+	if outcome, err := c.app.GetPRReviewSubmitOutcome(context.Background(), c.pr, "a0"); err != nil || outcome.State != "forgotten" {
+		t.Fatalf("an evicted attempt = %+v, %v; want forgotten", outcome, err)
+	}
+	if outcome, err := c.app.GetPRReviewSubmitOutcome(context.Background(), c.pr, "never-sent"); err != nil || outcome.State != "unknown" {
+		t.Fatalf("a never received id = %+v, %v; want unknown", outcome, err)
+	}
+}
+
+// A GitHub review the forge took whose answer was lost or cut short is
+// unconfirmed: the drafts stay drafts and are not held, the outcome says
+// unconfirmed, and nothing posts again by itself.
+func TestSubmitPRReviewGitHubAnswerLostIsUnconfirmed(t *testing.T) {
+	t.Parallel()
+	for _, how := range []string{"drop", "truncate"} {
+		t.Run(how, func(t *testing.T) {
+			t.Parallel()
+			c := newReviewSubmitCase(t, "github")
+			draft := c.draft(t, false, 3, "Guard this.")
+			review := c.request(false, draft)
+			review.AttemptID = "attempt-lost"
+			c.gate.lose(how)
+			result, err := c.submit(review)
+			if err != nil || !result.Unconfirmed || result.Posted {
+				t.Fatalf("submit = %+v, %v; want unconfirmed", result, err)
+			}
+			if got := c.comment(t, false, draft.ID).Status; got != "draft" {
+				t.Fatalf("draft is %q, want draft", got)
+			}
+			if held := c.app.postedReviewDrafts.held(c.owner(false)); len(held) != 0 {
+				t.Fatalf("held %d batches for an unconfirmed review", len(held))
+			}
+			listed, err := c.app.ListPRDiffReviewComments(c.pr, draft.Scope, draft.SourceKey)
+			if err != nil || len(listed) != 1 || listed[0].Status != "draft" {
+				t.Fatalf("a read after = %+v, %v; want the draft unmarked", listed, err)
+			}
+			outcome, err := c.app.GetPRReviewSubmitOutcome(context.Background(), c.pr, "attempt-lost")
+			if err != nil || outcome.State != "unconfirmed" {
+				t.Fatalf("outcome = %+v, %v; want unconfirmed", outcome, err)
+			}
+			if n := c.published(); n != 1 {
+				t.Fatalf("published %d reviews, want 1", n)
+			}
+		})
+	}
+}
+
+// A GitHub 422 is a refusal: nothing posted, the drafts stay drafts.
+func TestSubmitPRReviewGitHubUnprocessableIsNotPosted(t *testing.T) {
+	t.Parallel()
+	c := newReviewSubmitCase(t, "github")
+	draft := c.draft(t, false, 3, "Guard this.")
+	if err := c.engine.SetRefusal(forgefake.Refusal{Route: publishRoute["github"], Status: http.StatusUnprocessableEntity, Times: 1}); err != nil {
+		t.Fatal(err)
+	}
+	review := c.request(false, draft)
+	review.AttemptID = "attempt-422"
+	result, err := c.submit(review)
+	if err == nil || result.Unconfirmed || result.Posted {
+		t.Fatalf("submit = %+v, %v; want a not-posted error", result, err)
+	}
+	if outcome, _ := c.app.GetPRReviewSubmitOutcome(context.Background(), c.pr, "attempt-422"); outcome.State != "failed" {
+		t.Fatalf("outcome = %+v, want failed", outcome)
+	}
+	if got := c.comment(t, false, draft.ID).Status; got != "draft" {
+		t.Fatalf("draft is %q, want draft", got)
+	}
+}
+
+// A GitLab publish whose answer was lost is settled by the pending draft
+// notes: gone means it published (posted, drafts marked, one publish);
+// still pending means it never ran (not posted, the notes removed); a
+// failed read leaves it unconfirmed.
+func TestSubmitPRReviewGitLabLostPublishIsSettledByTheDraftNotes(t *testing.T) {
+	t.Parallel()
+	// The draft notes created and not removed.
+	pending := func(c *reviewSubmitCase) int {
+		n := 0
+		for _, inv := range c.engine.Invocations(0).Invocations {
+			switch {
+			case inv.Route == "glab api create draft note" && inv.Status < 300:
+				n++
+			case inv.Route == "glab api delete draft note" && inv.Status < 300:
+				n--
+			}
+		}
+		return n
+	}
+	t.Run("published", func(t *testing.T) {
+		t.Parallel()
+		c := newReviewSubmitCase(t, "gitlab")
+		draft := c.draft(t, true, 3, "Guard this.")
+		c.gate.lose("drop")
+		result, err := c.submit(c.request(true, draft))
+		if err != nil || !result.Posted || result.Unconfirmed || !slices.Equal(result.SentDraftIDs, []string{draft.ID}) {
+			t.Fatalf("submit = %+v, %v; want posted with the draft marked", result, err)
+		}
+		if got := c.comment(t, true, draft.ID).Status; got != "sent" {
+			t.Fatalf("draft is %q, want sent", got)
+		}
+		if n := c.published(); n != 1 {
+			t.Fatalf("published %d reviews, want 1", n)
+		}
+	})
+	t.Run("never ran", func(t *testing.T) {
+		t.Parallel()
+		c := newReviewSubmitCase(t, "gitlab")
+		draft := c.draft(t, true, 3, "Guard this.")
+		c.gate.lose("unsent")
+		result, err := c.submit(c.request(true, draft))
+		if err == nil || result.Posted || result.Unconfirmed {
+			t.Fatalf("submit = %+v, %v; want a not-posted error", result, err)
+		}
+		if got := c.comment(t, true, draft.ID).Status; got != "draft" {
+			t.Fatalf("draft is %q, want draft", got)
+		}
+		if n := pending(c); n != 0 {
+			t.Fatalf("%d draft notes left pending, want them removed", n)
+		}
+		if n := c.published(); n != 0 {
+			t.Fatalf("published %d reviews, want 0", n)
+		}
+	})
+	for _, how := range []string{"drop", "unsent"} {
+		t.Run("read fails, "+how, func(t *testing.T) {
+			t.Parallel()
+			c := newReviewSubmitCase(t, "gitlab")
+			draft := c.draft(t, true, 3, "Guard this.")
+			if err := c.engine.SetRefusal(forgefake.Refusal{Route: "glab api list draft notes", Status: http.StatusForbidden, Times: 1}); err != nil {
+				t.Fatal(err)
+			}
+			c.gate.lose(how)
+			result, err := c.submit(c.request(true, draft))
+			if err != nil || !result.Unconfirmed || result.Posted {
+				t.Fatalf("submit = %+v, %v; want unconfirmed", result, err)
+			}
+			if got := c.comment(t, true, draft.ID).Status; got != "draft" {
+				t.Fatalf("draft is %q, want draft", got)
+			}
+		})
+	}
+}
+
+// A GitLab submit that failed before publishing and finds its draft notes
+// already gone cannot say nothing posted: another publish may have taken
+// them.
+func TestSubmitPRReviewGitLabDraftNotesGoneBeforeRemovalIsUnconfirmed(t *testing.T) {
+	t.Parallel()
+	c := newReviewSubmitCase(t, "gitlab")
+	draft := c.draft(t, true, 3, "Guard this.")
+	if err := c.engine.SetRefusal(forgefake.Refusal{Route: publishRoute["gitlab"], Status: http.StatusForbidden, Times: 1}); err != nil {
+		t.Fatal(err)
+	}
+	c.gate.deletesGone = true
+	result, err := c.submit(c.request(true, draft))
+	if err != nil || !result.Unconfirmed {
+		t.Fatalf("submit = %+v, %v; want unconfirmed", result, err)
 	}
 }
 

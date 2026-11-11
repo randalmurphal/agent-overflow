@@ -32,9 +32,11 @@ import (
 //     locked one is still creating, which that one's cleanup would then
 //     read as removed. Nothing else creates draft notes (replies and
 //     thread actions post notes directly), so nothing else takes it.
-//   - A result means this submit reached the forge, and Posted says
-//     whether the forge took a review from it; an error means it posted
-//     nothing. A draft that is not a draft any more (sent by an earlier
+//   - A result means this submit reached the forge: Posted says the forge
+//     took a review from it, Unconfirmed that the forge's answer did not
+//     say (gitops.UnconfirmedSubmitError: its drafts stay drafts and are
+//     not held, since nothing proves they posted). An error means it
+//     posted nothing. A draft that is not a draft any more (sent by an earlier
 //     submit, another tab or device, or a message) is refused with
 //     ReviewDraftsNotDraftsCode, and one an earlier review posted that is
 //     not marked yet with ReviewDraftsUnmarkedCode, before anything reaches
@@ -172,6 +174,10 @@ func (a *App) submitPRReviewDrafts(ctx context.Context, pr gitops.PRReference, r
 		}
 	}
 	result, err := a.gitCore().SubmitReview(forgeapi.WithInteractive(ctx), pr, request)
+	if _, ok := errors.AsType[*gitops.UnconfirmedSubmitError](err); ok {
+		slog.Warn("submit PR review: the forge did not confirm the review", "pr", pr.Key(), "err", err)
+		return SubmitPRReviewResult{Unconfirmed: true}, nil
+	}
 	mapped, err := mapSubmitPRReviewResult(pr, gitops.ActionReview, result, err)
 	if err != nil {
 		return SubmitPRReviewResult{}, gitops.ExplainForgeError(pr, gitops.ActionReview, err)
@@ -206,8 +212,10 @@ func (a *App) submitPRReviewDrafts(ctx context.Context, pr gitops.PRReference, r
 }
 
 // PRReviewSubmitOutcome is what a submit attempt did: "posted" (Result),
-// "failed" (Code and Message: it posted nothing), or "unknown": this
-// process never received the attempt, or has forgotten it.
+// "unconfirmed" (Result: the forge did not say), "failed" (Code and
+// Message: it posted nothing), "unknown" (this process never received
+// it), or "forgotten" (it may have received it and no longer keeps the
+// outcome).
 type PRReviewSubmitOutcome struct {
 	State   string                `json:"state"`
 	Result  *SubmitPRReviewResult `json:"result,omitempty"`
@@ -225,7 +233,10 @@ func (a *App) GetPRReviewSubmitOutcome(ctx context.Context, pr gitops.PRReferenc
 	if err := pr.Validate(); err != nil {
 		return PRReviewSubmitOutcome{}, err
 	}
-	attempt := a.reviewAttempts.find(attemptID, pr.Key())
+	attempt, forgotten := a.reviewAttempts.find(attemptID, pr.Key())
+	if forgotten {
+		return PRReviewSubmitOutcome{State: "forgotten"}, nil
+	}
 	if attempt == nil {
 		return PRReviewSubmitOutcome{State: "unknown"}, nil
 	}
@@ -237,15 +248,26 @@ func (a *App) GetPRReviewSubmitOutcome(ctx context.Context, pr gitops.PRReferenc
 	return attempt.outcome, nil
 }
 
-// reviewAttemptsKept bounds the finished attempts a process remembers.
-const reviewAttemptsKept = 256
+// reviewAttemptsKept bounds the finished attempts whose outcome a process
+// keeps; reviewAttemptIDsKept the ones after those whose id it keeps.
+const (
+	reviewAttemptsKept   = 256
+	reviewAttemptIDsKept = 4096
+)
 
 // reviewAttempts holds the submit attempts this process received: every
-// running one, and the last reviewAttemptsKept finished.
+// running one and the outcomes of the last reviewAttemptsKept finished,
+// then the ids alone of the reviewAttemptIDsKept before those
+// (forgotten). Once an id leaves that too (overflowed), an id it does not
+// hold may be one it received, so it can no longer say an attempt never
+// arrived.
 type reviewAttempts struct {
-	mu       sync.Mutex
-	byID     map[string]*reviewAttempt
-	finished []string
+	mu         sync.Mutex
+	byID       map[string]*reviewAttempt
+	finished   []string
+	forgotten  map[string]string // id to PR key
+	forgetting []string
+	overflowed bool
 }
 
 type reviewAttempt struct {
@@ -258,11 +280,18 @@ type reviewAttempt struct {
 }
 
 // begin records attempt id, or returns the one already recorded under it.
+// An id whose outcome was dropped returns a finished attempt that says so,
+// so a repeat posts nothing.
 func (r *reviewAttempts) begin(id, prKey string) (*reviewAttempt, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if prior, ok := r.byID[id]; ok {
 		return prior, true
+	}
+	if forgottenPR, ok := r.forgotten[id]; ok {
+		attempt := &reviewAttempt{id: id, prKey: forgottenPR, done: make(chan struct{}), err: errors.New("submit PR review: this attempt ran before and its outcome is no longer kept")}
+		close(attempt.done)
+		return attempt, true
 	}
 	if r.byID == nil {
 		r.byID = make(map[string]*reviewAttempt)
@@ -274,9 +303,12 @@ func (r *reviewAttempts) begin(id, prKey string) (*reviewAttempt, bool) {
 
 func (r *reviewAttempts) finish(attempt *reviewAttempt, result SubmitPRReviewResult, err error) {
 	attempt.result, attempt.err = result, err
-	if err == nil {
+	switch {
+	case err == nil && result.Unconfirmed:
+		attempt.outcome = PRReviewSubmitOutcome{State: "unconfirmed", Result: &result}
+	case err == nil:
 		attempt.outcome = PRReviewSubmitOutcome{State: "posted", Result: &result}
-	} else {
+	default:
 		code, message, ok := errorsx.PublicDetails(err)
 		if !ok {
 			message = "The review was not posted."
@@ -287,19 +319,39 @@ func (r *reviewAttempts) finish(attempt *reviewAttempt, result SubmitPRReviewRes
 	defer r.mu.Unlock()
 	r.finished = append(r.finished, attempt.id)
 	for len(r.finished) > reviewAttemptsKept {
-		delete(r.byID, r.finished[0])
+		dropped := r.finished[0]
+		if r.forgotten == nil {
+			r.forgotten = make(map[string]string)
+		}
+		r.forgotten[dropped] = r.byID[dropped].prKey
+		r.forgetting = append(r.forgetting, dropped)
+		delete(r.byID, dropped)
 		r.finished = r.finished[1:]
+	}
+	for len(r.forgetting) > reviewAttemptIDsKept {
+		delete(r.forgotten, r.forgetting[0])
+		r.forgetting = r.forgetting[1:]
+		r.overflowed = true
 	}
 	close(attempt.done)
 }
 
-func (r *reviewAttempts) find(id, prKey string) *reviewAttempt {
+// find returns attempt id to prKey, or reports it forgotten: received and
+// its outcome dropped, or not held once ids have overflowed, so it may
+// have been received.
+func (r *reviewAttempts) find(id, prKey string) (attempt *reviewAttempt, forgotten bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if attempt, ok := r.byID[id]; ok && attempt.prKey == prKey {
-		return attempt
+	if attempt, ok := r.byID[id]; ok {
+		if attempt.prKey == prKey {
+			return attempt, false
+		}
+		return nil, false
 	}
-	return nil
+	if forgottenPR, ok := r.forgotten[id]; ok {
+		return nil, forgottenPR == prKey
+	}
+	return nil, r.overflowed
 }
 
 // wait answers a repeated attempt with the first one's outcome.

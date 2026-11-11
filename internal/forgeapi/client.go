@@ -310,7 +310,7 @@ func (c *Client) bodyLimit(r Request) (int64, error) {
 func (c *Client) call(ctx context.Context, r Request, graphQL bool) (*Response, error) {
 	limit, err := c.bodyLimit(r)
 	if err != nil {
-		return nil, err
+		return nil, notSent(err)
 	}
 	ctx, cancel := c.withTimeout(ctx, r.Timeout)
 	defer cancel()
@@ -327,7 +327,7 @@ func (c *Client) call(ctx context.Context, r Request, graphQL bool) (*Response, 
 func (c *Client) attempt(ctx context.Context, r Request, graphQL bool, limit int64, refreshed bool) (*Response, bool, error) {
 	ex, err := c.prepare(ctx, r, graphQL)
 	if err != nil {
-		return nil, false, err
+		return nil, false, notSent(err)
 	}
 	if ex.etagKey.url != "" {
 		if entry, ok := c.svc.etags.lookup(ex.etagKey); ok {
@@ -337,7 +337,7 @@ func (c *Client) attempt(ctx context.Context, r Request, graphQL bool, limit int
 	}
 	release, err := c.acquire(ctx)
 	if err != nil {
-		return nil, false, err
+		return nil, false, notSent(err)
 	}
 	defer release()
 	resp, err := c.send(ctx, c.svc.follow, ex.req)
@@ -475,7 +475,7 @@ func (c *Client) acquire(ctx context.Context) (func(), error) {
 
 // send runs one request and maps a failure to reach the forge to a
 // *TransientError whose message carries the redacted URL, or the caller's
-// cancellation.
+// cancellation; one before a connection existed is also a NotSentError.
 func (c *Client) send(ctx context.Context, client *http.Client, req *http.Request) (*http.Response, error) {
 	resp, err := client.Do(req)
 	if err == nil {
@@ -486,10 +486,14 @@ func (c *Client) send(ctx context.Context, client *http.Client, req *http.Reques
 	if errors.As(err, &urlErr) {
 		cause = urlErr.Err
 	}
+	var failed error = &TransientError{Err: fmt.Errorf("%s %s: %w", req.Method, c.redact(req.URL), cause)}
 	if errors.Is(ctx.Err(), context.Canceled) {
-		return nil, fmt.Errorf("forge %s %s: %w", req.Method, c.redact(req.URL), context.Canceled)
+		failed = fmt.Errorf("forge %s %s: %w", req.Method, c.redact(req.URL), context.Canceled)
 	}
-	return nil, &TransientError{Err: fmt.Errorf("%s %s: %w", req.Method, c.redact(req.URL), cause)}
+	if neverConnected(cause) {
+		failed = notSent(failed)
+	}
+	return nil, failed
 }
 
 func (c *Client) bodyError(ctx context.Context, req *http.Request, err error) error {

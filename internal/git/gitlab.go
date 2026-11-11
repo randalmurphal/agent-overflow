@@ -669,14 +669,19 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	}
 	// A submit is several requests. One that fails before the drafts are
 	// published removes the drafts this submit created, by the ids GitLab
-	// returned for them, so a retry does not publish them twice.
+	// returned for them, so a retry does not publish them twice. A create
+	// the forge may have applied leaves one draft with no id to remove.
 	created := make([]int64, 0, len(bodies))
 	for _, body := range bodies {
 		var draft struct {
 			ID int64 `json:"id"`
 		}
 		if _, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/draft_notes", Body: body}, &draft); err != nil {
-			return SubmitReviewResult{}, removeGitLabDrafts(ctx, client, mrPath, created, 0, err)
+			unknown := 1
+			if forgeapi.WriteNotApplied(err) {
+				unknown = 0
+			}
+			return SubmitReviewResult{}, removeGitLabDrafts(ctx, client, mrPath, created, unknown, err)
 		}
 		if draft.ID == 0 {
 			err := errors.New("GitLab created a draft note but did not return its id")
@@ -687,7 +692,14 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	out := SubmitReviewResult{}
 	if len(notes) > 0 {
 		if _, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/draft_notes/bulk_publish"}, nil); err != nil {
-			return SubmitReviewResult{}, removeGitLabDrafts(ctx, client, mrPath, created, 0, err)
+			if forgeapi.WriteNotApplied(err) {
+				return SubmitReviewResult{}, removeGitLabDrafts(ctx, client, mrPath, created, 0, err)
+			}
+			// The publish may have run: the drafts it would publish say.
+			published, failure := resolveGitLabPublish(ctx, client, mrPath, created, err)
+			if !published {
+				return SubmitReviewResult{}, failure
+			}
 		}
 		out.PostedReview = true
 	}
@@ -701,15 +713,63 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	return out, nil
 }
 
+// resolveGitLabPublish settles a bulk_publish whose answer did not say
+// whether it ran, by reading the viewer's pending draft notes: every one
+// this submit created gone means it published; every one still pending
+// means it did not, and they are removed. Anything else, or a failed
+// read, is an UnconfirmedSubmitError around publishErr.
+func resolveGitLabPublish(ctx context.Context, client *forgeapi.Client, mrPath string, created []int64, publishErr error) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gitlabDraftCleanupTimeout)
+	defer cancel()
+	pending, err := gitlabPendingDraftIDs(ctx, client, mrPath)
+	if err != nil {
+		return false, &UnconfirmedSubmitError{Err: errors.Join(publishErr, fmt.Errorf("read the pending draft notes: %w", err))}
+	}
+	still := 0
+	for _, id := range created {
+		if pending[id] {
+			still++
+		}
+	}
+	switch still {
+	case 0:
+		return true, nil
+	case len(created):
+		return false, removeGitLabDrafts(ctx, client, mrPath, created, 0, publishErr)
+	}
+	return false, &UnconfirmedSubmitError{Err: fmt.Errorf("%w; %d of %d draft notes are still pending", publishErr, still, len(created))}
+}
+
+// gitlabPendingDraftIDs are the ids of the viewer's pending draft notes on
+// the merge request at mrPath.
+func gitlabPendingDraftIDs(ctx context.Context, client *forgeapi.Client, mrPath string) (map[int64]bool, error) {
+	ids := map[int64]bool{}
+	request := forgeapi.Request{Path: mrPath + "/draft_notes", Query: url.Values{"per_page": {strconv.Itoa(gitlabPageSize)}}}
+	err := client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
+		var page []struct {
+			ID int64 `json:"id"`
+		}
+		if err := json.Unmarshal(resp.Body, &page); err != nil {
+			return false, fmt.Errorf("GitLab draft notes: decode response: %w", err)
+		}
+		for _, note := range page {
+			ids[note.ID] = true
+		}
+		return true, nil
+	})
+	return ids, err
+}
+
 // gitlabApproveFailure wraps an approve error after notes were already
 // published. A plain error would read as "nothing posted" and make the
 // caller keep (and later double-post) every comment; the typed partial
-// error carries the posted state instead.
+// error carries the posted state instead. An approve alone is the
+// submit's only write, so its error decides as any write's does.
 func gitlabApproveFailure(out SubmitReviewResult, err error) error {
 	if !out.PostedReview {
-		return err
+		return submitWriteError(err)
 	}
-	return &PartialSubmitError{PostedReview: true, PostedFileComments: out.PostedFileComments, Err: err}
+	return &PartialSubmitError{PostedReview: true, PostedFileComments: out.PostedFileComments, Unconfirmed: !forgeapi.WriteNotApplied(err), Err: err}
 }
 
 func gitlabDraftNotes(review SubmitReviewRequest) []ReviewLineComment {
@@ -740,20 +800,28 @@ const gitlabDraftCleanupTimeout = 30 * time.Second
 
 // removeGitLabDrafts deletes the drafts with ids, the ones a failed submit
 // created, and no other, then returns failure. unknown counts drafts the
-// submit created without learning their ids. A draft already gone (404) is
-// removed. A draft it could not remove is reported as a *DraftsLeftError
-// around failure.
+// submit created without learning their ids. A draft it could not remove
+// is reported as a *DraftsLeftError around failure. A draft already gone
+// (404) was not removed by this submit: another publish of the viewer's
+// drafts may have posted it, so failure becomes an UnconfirmedSubmitError.
 func removeGitLabDrafts(ctx context.Context, client *forgeapi.Client, mrPath string, ids []int64, unknown int, failure error) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gitlabDraftCleanupTimeout)
 	defer cancel()
-	left := unknown
+	left, gone := unknown, 0
 	var errs []error
 	for _, id := range ids {
 		request := forgeapi.Request{Method: http.MethodDelete, Path: mrPath + "/draft_notes/" + strconv.FormatInt(id, 10)}
-		if _, err := client.JSON(ctx, request, nil); err != nil && !errors.Is(err, forgeapi.ErrNotFound) {
+		_, err := client.JSON(ctx, request, nil)
+		switch {
+		case errors.Is(err, forgeapi.ErrNotFound):
+			gone++
+		case err != nil:
 			left++
 			errs = append(errs, err)
 		}
+	}
+	if gone > 0 {
+		failure = &UnconfirmedSubmitError{Err: fmt.Errorf("%w; %d draft notes were gone before they were removed", failure, gone)}
 	}
 	if left == 0 {
 		return failure

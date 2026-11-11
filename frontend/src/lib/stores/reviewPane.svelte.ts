@@ -625,11 +625,13 @@ interface SubmitAttempt {
   verdict: 'comment' | 'approve' | 'request-changes';
 }
 
-/** What an attempt did, as the backend answered or recorded it. */
+/** What an attempt did, as the backend answered or recorded it. Only a
+ *  proof says not-posted; without one it is unconfirmed: the review may
+ *  be on the PR. */
 type SubmitSettlement =
   | { kind: 'posted'; result: SubmitPRReviewResult }
   | { kind: 'not-posted'; message: string }
-  | { kind: 'unknown' };
+  | { kind: 'unconfirmed'; message: string };
 
 // The sentence for a submit the backend answered with an error: whatever
 // the code, the review was not posted.
@@ -641,6 +643,8 @@ function notPostedMessage(code: string | undefined, message: string): string {
 
 const REVIEW_NEVER_ARRIVED = 'The connection dropped before the review reached the computer, so nothing was posted.';
 const REVIEW_ANSWER_LOST = 'The connection dropped before the forge answered, so the review may already be on the PR. Check the PR before you submit again.';
+const REVIEW_UNCONFIRMED = 'The forge did not confirm the review, so it may already be on the PR. Check the PR before you submit again.';
+const REVIEW_OUTCOME_FORGOTTEN = 'The computer no longer has this review\'s outcome, so it may already be on the PR. Check the PR before you submit again.';
 
 /** The one place a review subject is built. Structural in the pane so both
  *  `ThreadPane` and the narrower `PanelContext` projection satisfy it. */
@@ -2182,7 +2186,7 @@ export function createReviewPaneState(
       const result = withDrafts
         ? await submitReviewWithDrafts(attempt)
         : await submitReviewThenMark(attempt, submitDrafts);
-      await settleSubmit(attempt, { kind: 'posted', result });
+      await settleSubmit(attempt, result.unconfirmed ? { kind: 'unconfirmed', message: REVIEW_UNCONFIRMED } : { kind: 'posted', result });
     } catch (err) {
       failure = err;
       if (isTransportClassError(err)) {
@@ -2211,7 +2215,9 @@ export function createReviewPaneState(
   }
 
   // A backend without it (an older build on a connected computer) posts
-  // the comments it is given; the pane marks the drafts that posted.
+  // the comments it is given; the pane marks the drafts that posted. The
+  // review is on the PR once SubmitPRReview answers, so a failed mark is a
+  // posted review with a partial failure, never a failed submit.
   async function submitReviewThenMark(attempt: SubmitAttempt, submitDrafts: readonly DiffReviewComment[]): Promise<SubmitPRReviewResult> {
     const result = (await withBackendTarget(backend, () => SubmitPRReview(prReferenceWire(attempt.ref), {
       verdict: attempt.verdict,
@@ -2230,8 +2236,18 @@ export function createReviewPaneState(
     forgetDraftEdits(sent);
     if (sent.length > 0) {
       const ids = sent.map((comment) => comment.id);
-      if (pinnedDrafts !== null) await markPRDiffReviewCommentsSent(pinnedDrafts, attempt.scope, attempt.source, ids);
-      else if (attempt.threadId !== null) await MarkDiffReviewCommentsSent(attempt.threadId, attempt.scope, attempt.source, ids, `pr:${loadedPRHeadSHA}`);
+      try {
+        if (pinnedDrafts !== null) await markPRDiffReviewCommentsSent(pinnedDrafts, attempt.scope, attempt.source, ids);
+        else if (attempt.threadId !== null) await MarkDiffReviewCommentsSent(attempt.threadId, attempt.scope, attempt.source, ids, `pr:${loadedPRHeadSHA}`);
+      } catch (err) {
+        const unmarked = `Its comments were not marked sent and still show as drafts; delete them instead of sending them again. ${userFacingError(err)}`;
+        return {
+          ...result,
+          posted: true,
+          partialFailure: result.partialFailure ? `${result.partialFailure} ${unmarked}` : unmarked,
+          partialFailureKind: result.partialFailure ? result.partialFailureKind : 'unmarked',
+        };
+      }
     }
     // An answered submit without drafts posted what it was given.
     return { ...result, posted: true };
@@ -2239,12 +2255,13 @@ export function createReviewPaneState(
 
   // A lost answer is settled by asking the backend what the attempt did.
   // Unknown to the process the submit went to, it never arrived; unknown
-  // to a restarted one, nothing says. A backend without the draft submit
-  // keeps no record, so there is nothing to ask. A failed ask keeps the
-  // attempt open: the next press of Send asks again.
+  // to a restarted one, or forgotten by the same one, nothing says. A
+  // backend without the draft submit keeps no record, so there is nothing
+  // to ask. A failed ask keeps the attempt open: the next press of Send
+  // asks again.
   async function resolveLostSubmit(attempt: SubmitAttempt): Promise<void> {
     if (!attempt.id) {
-      await settleSubmit(attempt, { kind: 'unknown' });
+      await settleSubmit(attempt, { kind: 'unconfirmed', message: REVIEW_ANSWER_LOST });
       return;
     }
     let outcome: PRReviewSubmitOutcome;
@@ -2256,12 +2273,16 @@ export function createReviewPaneState(
     }
     if (outcome.state === 'posted' && outcome.result) {
       await settleSubmit(attempt, { kind: 'posted', result: outcome.result });
+    } else if (outcome.state === 'unconfirmed') {
+      await settleSubmit(attempt, { kind: 'unconfirmed', message: REVIEW_UNCONFIRMED });
     } else if (outcome.state === 'failed') {
       await settleSubmit(attempt, { kind: 'not-posted', message: notPostedMessage(outcome.code, outcome.message ?? 'The review was not posted.') });
-    } else if (attempt.launchId !== null && getTransportHelloFor(backend)?.launchId === attempt.launchId) {
+    } else if (outcome.state === 'forgotten') {
+      await settleSubmit(attempt, { kind: 'unconfirmed', message: REVIEW_OUTCOME_FORGOTTEN });
+    } else if (outcome.state === 'unknown' && attempt.launchId !== null && getTransportHelloFor(backend)?.launchId === attempt.launchId) {
       await settleSubmit(attempt, { kind: 'not-posted', message: REVIEW_NEVER_ARRIVED });
     } else {
-      await settleSubmit(attempt, { kind: 'unknown' });
+      await settleSubmit(attempt, { kind: 'unconfirmed', message: REVIEW_ANSWER_LOST });
     }
   }
 
@@ -2295,7 +2316,7 @@ export function createReviewPaneState(
       forgetDraftEdits((result.sentDraftIds ?? []).map((id) => ({ id })));
       error = null;
     } else {
-      submitError = settlement.kind === 'unknown' ? REVIEW_ANSWER_LOST : settlement.message;
+      submitError = settlement.message;
       error = submitError;
     }
     try {

@@ -421,7 +421,8 @@ describe('pinned comments and actions', () => {
     // attempt's outcome: it refuses drafts that are not drafts (or, with
     // `unmarked`, drafts an earlier review posted), else posts and marks
     // them; `lose` drops the answer after (or, 'never', before) it ran.
-    function draftBackend(fake: PRDraftsFake, opts: { lose?: 'after' | 'never'; unmarked?: boolean } = {}) {
+    // `unconfirmed` answers as a forge that did not confirm the review.
+    function draftBackend(fake: PRDraftsFake, opts: { lose?: 'after' | 'never'; unmarked?: boolean; unconfirmed?: boolean } = {}) {
       const outcomes = new Map<string, PRReviewSubmitOutcome>();
       let lose = opts.lose;
       const submit = setBindingMock('SubmitPRReview', async (wire: { Number: number }, review: { drafts?: { ids: string[] }; attemptId?: string }) => {
@@ -431,7 +432,9 @@ describe('pinned comments and actions', () => {
         const rows = fake.held.get(wire.Number) ?? [];
         const ids = review.drafts?.ids ?? [];
         let outcome: PRReviewSubmitOutcome;
-        if (opts.unmarked && ids.length > 0) {
+        if (opts.unconfirmed) {
+          outcome = { state: 'unconfirmed', result: { postedReview: false, postedFileComments: 0, unconfirmed: true } };
+        } else if (opts.unmarked && ids.length > 0) {
           outcome = { state: 'failed', code: 'review_drafts_unmarked', message: 'These comments were posted by an earlier review and are being marked sent, so this review was not posted.' };
         } else if (ids.some((id) => rows.find((candidate) => candidate.id === id)?.status !== 'draft')) {
           outcome = { state: 'failed', code: 'review_drafts_not_drafts', message: 'Some of these comments were already sent or removed, so this review was not posted.' };
@@ -501,6 +504,25 @@ describe('pinned comments and actions', () => {
       expect(state.drafts).toEqual([]);
       await state.submitPRReview();
       expect(submit.mock.calls[1]?.[1]).toMatchObject({ verdict: 'request-changes', body: 'from tab B', drafts: { ids: [] } });
+    });
+
+    it('keeps the PR’s drafts, summary and verdict when the forge did not confirm the review, and says it may be on the PR', async () => {
+      const { drafts: fake } = installPRMocks();
+      const { submit } = draftBackend(fake, { unconfirmed: true });
+      const state = pinned(5);
+      await waitLoaded(state);
+      await state.createComment(anchor, 'needs a test');
+      state.setSummaryBody('overall');
+      state.setVerdict('approve');
+
+      await state.submitPRReview();
+
+      expect(state.drafts.map((comment) => comment.id)).toEqual(['c1']);
+      expect(state.summaryBody).toBe('overall');
+      expect(state.verdict).toBe('approve');
+      expect(state.submitError).toBe('The forge did not confirm the review, so it may already be on the PR. Check the PR before you submit again.');
+      expect(fake.mark).not.toHaveBeenCalled();
+      expect(submit).toHaveBeenCalledTimes(1);
     });
 
     it('keeps the PR’s drafts and summary when the lost request never reached the backend', async () => {

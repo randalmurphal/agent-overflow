@@ -4321,8 +4321,10 @@ export class PRReason {
 
 /**
  * PRReviewSubmitOutcome is what a submit attempt did: "posted" (Result),
- * "failed" (Code and Message: it posted nothing), or "unknown": this
- * process never received the attempt, or has forgotten it.
+ * "unconfirmed" (Result: the forge did not say), "failed" (Code and
+ * Message: it posted nothing), "unknown" (this process never received
+ * it), or "forgotten" (it may have received it and no longer keeps the
+ * outcome).
  */
 export class PRReviewSubmitOutcome {
     "state": string;
@@ -6894,9 +6896,11 @@ export class SubmitPRReviewResult {
 
     /**
      * Posted is a draft submit's own fact that the forge took a review
-     * from it; false on every answer of a submit without drafts.
+     * from it; Unconfirmed that the forge did not say whether it did. Both
+     * false on every answer of a submit without drafts.
      */
     "posted"?: boolean;
+    "unconfirmed"?: boolean;
 
     /** Creates a new SubmitPRReviewResult instance. */
     constructor($$source: Partial<SubmitPRReviewResult> = {}) {

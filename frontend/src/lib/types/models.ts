@@ -741,11 +741,16 @@ export interface SubmitPRReviewResult {
   editedDraftIds?: string[];
   /** A draft submit's own fact that the forge took a review from it. */
   posted?: boolean;
+  /** A draft submit the forge did not confirm: it may be on the PR, and
+   * its drafts stay drafts. */
+  unconfirmed?: boolean;
 }
 
 /** What a submit attempt did (GetPRReviewSubmitOutcome). */
 export interface PRReviewSubmitOutcome {
-  state: 'posted' | 'failed' | 'unknown';
+  /** unknown: this process never received the attempt; forgotten: it may
+   * have, and no longer keeps the outcome. */
+  state: 'posted' | 'unconfirmed' | 'failed' | 'unknown' | 'forgotten';
   result?: SubmitPRReviewResult;
   code?: string;
   message?: string;

@@ -161,7 +161,7 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitLab | `GET projects/P/merge_requests/N/discussions?per_page=N[&page=N]` (`glab api discussions`) | ReadPR threads and, from the system notes, events; `X-Next-Page` while more pages exist |
 | GitLab | `POST .../approve` with `{sha}`, `POST .../unapprove` (`glab api approve`, `glab api unapprove`) | Approve (409 on a moved head, 401 for a viewer GitLab takes no approval from) and Unapprove (404 with none), each with its system note |
 | GitLab | `PUT .../merge` with `{sha, squash, should_remove_source_branch, auto_merge, merge_when_pipeline_succeeds}` (`glab api merge`) | Merge now (405 while blocked, 401 without the role, 409 on a moved head) and Auto-merge (either key or both: arms a blocked merge request, with its system note) |
-| GitLab | `POST .../draft_notes` with `{note, position?}`, `DELETE .../draft_notes/ID`, `POST .../draft_notes/bulk_publish` (`glab api create draft note`, `glab api delete draft note`, `glab api publish draft notes`) | SubmitReview: a viewer's draft (a summary, or positioned on a line, a range or a file) answers its id; a delete removes the viewer's draft with that id (404 otherwise); publish makes each of the viewer's pending drafts, seeded `draftNotes` included, a thread or a conversation comment, and leaves another author's pending |
+| GitLab | `POST .../draft_notes` with `{note, position?}`, `GET .../draft_notes`, `DELETE .../draft_notes/ID`, `POST .../draft_notes/bulk_publish` (`glab api create draft note`, `glab api list draft notes`, `glab api delete draft note`, `glab api publish draft notes`) | SubmitReview: a viewer's draft (a summary, or positioned on a line, a range or a file) answers its id; the list is the viewer's pending drafts in one page (how a publish whose answer was lost is settled); a delete removes the viewer's draft with that id (404 otherwise); publish makes each of the viewer's pending drafts, seeded `draftNotes` included, a thread or a conversation comment, and leaves another author's pending |
 | GitLab | `POST .../cancel_auto_merge`, `PUT .../rebase`, `PUT projects/P/merge_requests/N` with `{title}` | Cancel auto-merge (409 with none armed), Update branch (202, the head moves), Mark ready (the title loses its draft prefix) |
 | GitHub, GitLab | `GET user` (`gh api user`, `glab api user`) | the fixture's viewer (GitLab's with account id 1): GitLab's detail and project list reads (once per host per 10 minutes), and the transport's probe after a 401 on a mutation on both forges |
 | GitLab | `GET projects/P/merge_requests?state=opened\|merged&...` (`glab api merge request list`, conditional) | open MR lookup, merged heads (checkout origin), project MR list; the full view, with `project_id` and `source_project_id` (a pull with `headRepo` answers its fork's id) and the list fields (author, reviewers, draft, times, `user_notes_count`, conflicts, blocking discussions, `detailed_merge_status`), no pipeline |
@@ -173,9 +173,10 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitLab | `GET projects/P/uploads/SECRET/NAME` (`glab api upload`) | forge attachments |
 
 Unhandled (fail with their request): GitHub's file comment and
-reply POSTs; GitLab's draft note
-list, discussion note POST, discussion resolve PUT and
-`cancel_merge_when_pipeline_succeeds`.
+reply POSTs; GitLab's discussion note POST, discussion resolve PUT and
+`cancel_merge_when_pipeline_succeeds`. A lost or cut-short answer is not
+a fake behavior: a test wraps the engine in a handler that runs the route
+and then drops or truncates the response.
 
 ## Fixture notes
 

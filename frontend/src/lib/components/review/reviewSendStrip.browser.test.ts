@@ -1,7 +1,9 @@
 // The send strip holds what the next PR review sends. In real Chromium, a
 // review the backend refused because its drafts were already sent keeps
 // its summary and verdict in the strip, with no draft left, and the
-// strip's Send posts them; once the review posts, the strip goes.
+// strip's Send posts them; once the review posts, the strip goes. A review
+// the forge did not confirm keeps the strip whole and says it may already be
+// on the PR.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount } from 'svelte';
@@ -82,7 +84,53 @@ function button(root: Element, label: string): HTMLButtonElement {
   return found;
 }
 
+// Mounts a pinned review of PR 5 whose submit is `submit` and gives it
+// one draft; answers the drafts' source key.
+async function mountWithDraft(submit: (wire: unknown, review: { drafts?: { ids: string[] } }) => Promise<unknown>) {
+  setBindingMock('SubscribePRUpdates', async () => ({
+    id: 'sub-1', prKey: 'github:owner/repo:5', detail: detail(), threads: [], headSHA: 'sha-a', seq: 1,
+  }));
+  setBindingMock('UnsubscribePRUpdates', async () => undefined);
+  setReviewDiffMock('OpenPRDiff', async () => patch());
+  setBindingMock('ListPRCommits', async () => []);
+  setBindingMock('ListPRReviewThreads', async () => []);
+  setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
+  const fake = installPRDraftsFake();
+  let sourceKey = '';
+  setBindingMock('ListPRDiffReviewComments', async (_wire: unknown, scope: string, key: string) => {
+    if (key.startsWith('pr:')) sourceKey = key;
+    return (fake.held.get(5) ?? []).filter((each) => each.scope === scope && each.sourceKey === key).map((each) => ({ ...each }));
+  });
+  const mock = setBindingMock('SubmitPRReview', submit);
+  app = mount(ReviewPane, { target, props: { pr: { ownerPaneId: OWNER, backend: HOME_BACKEND, projectId: 'project-1', pr: PR } } });
+  await vi.waitFor(() => expect(sourceKey).not.toBe(''), { timeout: 5_000 });
+  fake.held.set(5, [{
+    id: 'd1', threadId: '', scope: 'pr', sourceKey, filePath: 'src/a.ts', status: 'draft',
+    newLine: 2, side: 'new', selectedText: 'two', body: 'Guard this.', createdAt: 1, updatedAt: 1,
+  } as DiffReviewComment]);
+  q<HTMLButtonElement>('[data-testid="review-reload"]')!.click();
+  await vi.waitFor(() => expect(strip()).not.toBeNull());
+  return { fake, submit: mock };
+}
+
 describe('the send strip of a PR review', () => {
+  it('keeps the summary, verdict and draft of a review the forge did not confirm and says it may be on the PR', async () => {
+    const { submit } = await mountWithDraft(async () => ({ postedReview: false, postedFileComments: 0, unconfirmed: true }));
+    const summary = strip()!.querySelector<HTMLTextAreaElement>('textarea')!;
+    summary.value = 'looks good';
+    summary.dispatchEvent(new Event('input', { bubbles: true }));
+    button(strip()!, 'Request changes').click();
+    q<HTMLButtonElement>('[data-testid="review-send-comments"]')!.click();
+
+    await vi.waitFor(() => expect(target.textContent).toContain('The forge did not confirm the review, so it may already be on the PR. Check the PR before you submit again.'));
+    expect(target.textContent).not.toContain('nothing was posted');
+    expect(strip()!.textContent).toContain('1 draft');
+    expect(strip()!.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('looks good');
+    expect(button(strip()!, 'Request changes').className).toContain('border-accent');
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(q<HTMLButtonElement>('[data-testid="review-send-comments"]')!.disabled).toBe(false);
+  });
+
   it('stays with a refused review’s summary and verdict when no draft is left, and sends them', async () => {
     setBindingMock('SubscribePRUpdates', async () => ({
       id: 'sub-1', prKey: 'github:owner/repo:5', detail: detail(), threads: [], headSHA: 'sha-a', seq: 1,

@@ -2378,6 +2378,28 @@ describe('reviewPane store — PR scope', () => {
       expect(state.summaryBody).toBe('overall note');
     });
 
+    it('a mark that fails after the review posted ends as posted and says the drafts must not go again', async () => {
+      installPRMocks();
+      const rows = [draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' })];
+      const { mark } = threadDraftsBackend(rows);
+      mark.mockImplementation(async () => {
+        throw new DisconnectedError('socket closed');
+      });
+      const submit = getBindingMock('SubmitPRReview')!;
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+      state.setVerdict('request-changes');
+
+      await state.submitPRReview();
+
+      expect(submit).toHaveBeenCalledTimes(1);
+      expect(state.summaryBody).toBe('');
+      expect(state.verdict).toBe('comment');
+      expect(state.submitError).toContain('The review posted');
+      expect(state.submitError).toContain('not marked sent');
+      expect(state.submitError).not.toContain('may already be on the PR');
+    });
+
     it('a thrown submit keeps every draft and surfaces the error', async () => {
       installPRMocks();
       setBindingMock('SubmitPRReview', async () => {
@@ -2403,6 +2425,8 @@ describe('reviewPane store — PR scope', () => {
     const UNMARKED = 'These comments were posted by an earlier review and are being marked sent, so this review was not posted.';
     const MAY_BE_ON_PR = 'The connection dropped before the forge answered, so the review may already be on the PR. Check the PR before you submit again.';
     const NEVER_ARRIVED = 'The connection dropped before the review reached the computer, so nothing was posted.';
+    const UNCONFIRMED = 'The forge did not confirm the review, so it may already be on the PR. Check the PR before you submit again.';
+    const FORGOTTEN = 'The computer no longer has this review\'s outcome, so it may already be on the PR. Check the PR before you submit again.';
 
     function row(id = 'd-1'): DiffReviewComment {
       return draft({ id, scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' });
@@ -2414,7 +2438,8 @@ describe('reviewPane store — PR scope', () => {
     // posts and marks them. `lose` drops the answer after the backend
     // handled the call, `never` before it arrived; `restart` also gives
     // the reconnect a new launch.
-    function draftBackend(rows: DiffReviewComment[], opts: { lose?: 'after' | 'never'; restart?: boolean; unmarked?: boolean } = {}) {
+    // `unconfirmed` answers as a forge that did not confirm the review.
+    function draftBackend(rows: DiffReviewComment[], opts: { lose?: 'after' | 'never'; restart?: boolean; unmarked?: boolean; unconfirmed?: boolean } = {}) {
       const outcomes = new Map<string, PRReviewSubmitOutcome>();
       let lose = opts.lose;
       const submit = setBindingMock('SubmitPRReview', async (_wire: unknown, review: { body: string; drafts?: { ids: string[] }; attemptId?: string }) => {
@@ -2424,7 +2449,9 @@ describe('reviewPane store — PR scope', () => {
         if (losing === 'never') throw new DisconnectedError('socket closed');
         const ids = review.drafts?.ids ?? [];
         let outcome: PRReviewSubmitOutcome;
-        if (opts.unmarked && ids.length > 0) {
+        if (opts.unconfirmed) {
+          outcome = { state: 'unconfirmed', result: { postedReview: false, postedFileComments: 0, unconfirmed: true } };
+        } else if (opts.unmarked && ids.length > 0) {
           outcome = { state: 'failed', code: 'review_drafts_unmarked', message: 'These comments were posted by an earlier review and are being marked sent, so this review was not posted.' };
         } else if (ids.some((id) => rows.find((candidate) => candidate.id === id)?.status !== 'draft')) {
           outcome = { state: 'failed', code: 'review_drafts_not_drafts', message: 'Some of these comments were already sent or removed, so this review was not posted.' };
@@ -2612,6 +2639,49 @@ describe('reviewPane store — PR scope', () => {
       replaceDiffReviewCommentsForTest('thread-1', 'pr', PR_SOURCE_KEY, rows.map((each) => ({ ...each })));
       expect(state.drafts).toEqual([]);
       expect(state.submitError).toBeNull();
+    });
+
+    for (const lost of [false, true]) {
+      it(`a review the forge did not confirm keeps everything, says it may be on the PR, and posts again only on Send (${lost ? 'answer lost' : 'answered'})`, async () => {
+        installPRMocks();
+        const rows = [row()];
+        threadDraftsBackend(rows);
+        const { submit, ask } = draftBackend(rows, { unconfirmed: true, lose: lost ? 'after' : undefined });
+        const state = await prScopeWith(rows);
+        state.setSummaryBody('overall note');
+        state.setVerdict('request-changes');
+
+        if (lost) await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
+        else await state.submitPRReview();
+
+        expect(ask).toHaveBeenCalledTimes(lost ? 1 : 0);
+        expect(state.summaryBody).toBe('overall note');
+        expect(state.verdict).toBe('request-changes');
+        expect(state.drafts.map((comment) => comment.id)).toEqual(['d-1']);
+        expect(state.submitError).toBe(UNCONFIRMED);
+        expect(submit).toHaveBeenCalledTimes(1);
+        // The attempt is closed: Send posts a new one, not a re-ask.
+        await state.submitPRReview();
+        expect(submit).toHaveBeenCalledTimes(2);
+        expect(attemptOf(submit, 1)).not.toBe(attemptOf(submit, 0));
+      });
+    }
+
+    it('a lost answer whose outcome the backend no longer keeps says the review may be on the PR', async () => {
+      installPRMocks();
+      const rows = [row()];
+      threadDraftsBackend(rows);
+      const { submit, ask } = draftBackend(rows, { lose: 'never' });
+      ask.mockImplementation(async () => ({ state: 'forgotten' }));
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
+
+      expect(state.summaryBody).toBe('overall note');
+      expect(state.drafts.map((comment) => comment.id)).toEqual(['d-1']);
+      expect(state.submitError).toBe(FORGOTTEN);
+      expect(submit).toHaveBeenCalledTimes(1);
     });
 
     it('a review that posted with its drafts left unmarked ends as posted and says so', async () => {

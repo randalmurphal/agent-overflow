@@ -353,8 +353,10 @@ type SubmitPRReviewResult struct {
 	SentDraftIDs   []string `json:"sentDraftIds,omitempty"`
 	EditedDraftIDs []string `json:"editedDraftIds,omitempty"`
 	// Posted is a draft submit's own fact that the forge took a review
-	// from it; false on every answer of a submit without drafts.
-	Posted bool `json:"posted,omitempty"`
+	// from it; Unconfirmed that the forge did not say whether it did. Both
+	// false on every answer of a submit without drafts.
+	Posted      bool `json:"posted,omitempty"`
+	Unconfirmed bool `json:"unconfirmed,omitempty"`
 }
 
 // mapSubmitPRReviewResult turns a submit's result into the wire answer. A
@@ -377,6 +379,10 @@ func mapSubmitPRReviewResult(pr gitops.PRReference, action gitops.ForgeAction, r
 		mapped.PartialFailure = partial.Err.Error()
 		if explained, ok := errors.AsType[*gitops.ForgeActionError](gitops.ExplainForgeError(pr, action, partial.Err)); ok {
 			mapped.PartialFailure, mapped.PartialFailureKind = explained.Message, explained.Kind
+		}
+		if partial.Unconfirmed {
+			mapped.PartialFailure = "The forge did not confirm it, so it may already be on the PR; check the PR before sending it again. " + mapped.PartialFailure
+			mapped.PartialFailureKind = "unconfirmed"
 		}
 		return mapped, nil
 	}
