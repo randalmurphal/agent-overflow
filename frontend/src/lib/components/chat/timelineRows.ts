@@ -2,8 +2,6 @@ import type { Item } from '../../types/models';
 import {
   isToolTextBoundary,
   itemTurnIndexKey,
-  nodeRole,
-  timelineNodeRepresentativeItem,
   type TimelineNode,
 } from '../../utils/subagentGrouping';
 import { isCommandAgentResult } from '../../utils/commandAgentResult';
@@ -15,33 +13,11 @@ export interface TimelineRowDecorationSets {
 }
 
 /**
- * Every turn a node covers. All but one node covers exactly one; an
- * activity run can span several, because a turn that produces only tool
- * calls is not separated from the next by any prose row (see
- * docs/architecture/turn-lifecycle.md § Rounds and turns). Recording only the run's root turn would leave the later
- * turns with no `tool` role on record, and the assistant message closing
- * one of them would lose its response divider.
- */
-// Writes rather than returns: the single-node case is every non-run row,
-// and returning a one-element array allocated per node per decorations
-// pass (which runs on every structural bump). `Map.set` on an already-set
-// key is idempotent, so the old array's consecutive-dedupe is unneeded.
-function stampNodeTurnRoles(
-  node: TimelineNode,
-  role: 'tool' | 'text',
-  turnKeyOf: (item: Item) => number,
-  lastRenderableRoleByTurn: Map<number, 'tool' | 'text'>,
-): void {
-  if (node.kind !== 'activity_run') {
-    lastRenderableRoleByTurn.set(turnKeyOf(timelineNodeRepresentativeItem(node)), role);
-    return;
-  }
-  for (const child of node.children) {
-    lastRenderableRoleByTurn.set(turnKeyOf(timelineNodeRepresentativeItem(child)), role);
-  }
-}
-
-/**
+ * A response divider goes on assistant prose directly below an activity run,
+ * whatever turn the run belongs to: a turn the provider starts (a
+ * background-task wake) has no user row, and the completion that woke it
+ * stays in the previous turn. Only the pill reads turns.
+ *
  * Turn identity is an INPUT, not `item.turnIndex` read in place: the
  * surface decides what a "turn" is (`ThreadPane.timelineTurns`). The chat
  * timeline keys on the provider turn; the agent pane keys its whole
@@ -67,11 +43,9 @@ export function timelineRowDecorations(
   const toolTextBoundaryIndexes = new Set<number>();
   const responseDividerIndexes = new Set<number>();
   const responsePillIndexes = new Set<number>();
-  const lastRenderableRoleByTurn = new Map<number, 'tool' | 'text'>();
 
   for (let index = 0; index < nodes.length; index += 1) {
     const node = nodes[index];
-    const role = nodeRole(node);
 
     if (isToolTextBoundary(nodes, index)) {
       toolTextBoundaryIndexes.add(index);
@@ -79,16 +53,12 @@ export function timelineRowDecorations(
 
     const responseDivider = node.kind === 'leaf'
       && (node.item.kind === 'assistant_text' || isCommandAgentResult(node.item))
-      && lastRenderableRoleByTurn.get(turnKeyOf(node.item)) === 'tool';
+      && nodes[index - 1]?.kind === 'activity_run';
     if (responseDivider) {
       responseDividerIndexes.add(index);
       if (finalResponseIds.has(node.item.id)) {
         responsePillIndexes.add(index);
       }
-    }
-
-    if (role === 'tool' || role === 'text') {
-      stampNodeTurnRoles(node, role, turnKeyOf, lastRenderableRoleByTurn);
     }
   }
 

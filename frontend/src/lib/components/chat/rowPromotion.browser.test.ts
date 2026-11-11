@@ -323,11 +323,11 @@ describe('narration promotion in the timeline', () => {
     await waitForQuietBottom(scrollEl, 'bottom follow after the promotion', QUIET_BOTTOM);
   });
 
-  it('opens the divider with its margins when a run of one follows earlier activity', async () => {
+  it('opens no divider when a run of one follows an error row after earlier activity', async () => {
     const threadId = 'thread-promotion-single-divider';
     const items = seedTimelineItems(threadId, PROSE);
     // An error row ends the first run without being prose, so the block
-    // opens a run of its own and still answers the turn's activity.
+    // opens a run of its own. Only a run directly above opens a response.
     items.push(bash('run-bash-0', 0, threadId));
     items.push(makeItem({
       id: 'turn-error', threadId, turnIndex: TURN, itemIndex: 1, kind: 'error', role: 'system',
@@ -344,9 +344,9 @@ describe('narration promotion in the timeline', () => {
 
     const leaf = scrollEl.querySelector<HTMLElement>(`[data-item-id="${NARRATION_ID}"]`)!;
     const row = leaf.closest<HTMLElement>('[data-row-index]')!;
-    expect(row.querySelector('[data-testid="response-divider"]')).not.toBeNull();
+    expect(row.querySelector('[data-testid="response-divider"]')).toBeNull();
     expect(scrollEl.querySelectorAll('[data-testid="activity-run"]').length).toBe(1);
-    // The stage opened the whole box: the divider's margins are inside it.
+    // The stage opened exactly the box the installed row occupies.
     const rowMargin = Number.parseFloat(getComputedStyle(row).marginTop);
     expect(Math.abs(stage.at(-1)!.stageHeight! - (rowMargin + row.getBoundingClientRect().height)))
       .toBeLessThanOrEqual(2);

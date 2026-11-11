@@ -332,7 +332,7 @@ own stop (`agentStopScope`, `internal/triage/agent_stops.go`;
   (`ThreadPane.timelineTurns`, overridden by the scope facade): active
   while the scoped launch runs, settled on the launch's own completion
   with the agent's duration. A subagent's rows span however many
-  provider turns it outlives, so keying the response divider/pill on the
+  provider turns it outlives, so keying the response pill on the
   main thread's turn stamped "Response 1m 58s" on a still-running agent
   the moment the main turn settled (regression 2026-08-22).
 - Forked skills are detected structurally: the first attributed sidechain row
