@@ -7,6 +7,7 @@
   import type { WorkflowHomeGroup } from '../../stores/workflowData';
   import { pushWorkflowRunDetail } from '../../stores/workflowsOverlay.svelte';
   import { enterWorkflowSweep } from '../../stores/workflowSweep';
+  import { isWorkflowRecentOpen, toggleWorkflowRecent } from '../../stores/workflowsHome.svelte';
 
   interface Props {
     group: WorkflowHomeGroup;
@@ -15,8 +16,7 @@
   }
   let { group, filtering = false }: Props = $props();
 
-  let recentOpen = $state(false);
-  let recentShown = $derived(recentOpen || filtering);
+  let recentShown = $derived(isWorkflowRecentOpen(group.projectId) || filtering);
 </script>
 
 <section class="px-4 py-3" data-testid="workflow-project-group" data-project-id={group.projectId}>
@@ -50,7 +50,7 @@
     <div class="mt-2">
       <button
         class="text-[0.6875rem] text-fg-muted hover:text-fg"
-        onclick={() => (recentOpen = !recentOpen)}
+        onclick={() => toggleWorkflowRecent(group.projectId)}
         data-testid="workflow-recent-toggle"
         aria-expanded={recentShown}
         disabled={filtering}
