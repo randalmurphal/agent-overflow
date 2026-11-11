@@ -213,7 +213,9 @@ function harness() {
     if (unchosen) allowed.add(find.hits[0]?.identity ?? null);
     if (expected !== null && !content.includes(expected)) allowed.add(survivor(expected));
     // A query chooses its first match, which can be gone already too.
-    for (const id of [...allowed]) if (id !== null && !content.includes(id)) allowed.add(survivor(id));
+    // A copy: the loop adds to the set.
+    const candidates = Array.from(allowed);
+    for (const id of candidates) if (id !== null && !content.includes(id)) allowed.add(survivor(id));
     if (!allowed.has(now)) violations.push(`${op}: selected ${now}, contract allows ${[...allowed].join(' or ')}`);
     noteSeen();
   }
