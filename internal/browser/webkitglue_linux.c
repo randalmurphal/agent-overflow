@@ -165,6 +165,24 @@ static void ao_view_host_init(AoViewHost *host) {
 
 static GtkWidget *ao_overlay = NULL;
 static GtkWidget *ao_park = NULL; // the GtkFixed inside the clipping scroller
+// The Wails SPA's own WebKitWebView, the widget a claimed chord hands
+// keyboard focus to (ao_wk_focus_app). Weak: it is the window's.
+static GtkWidget *ao_app_view = NULL;
+
+// ao_find_web_view answers the first WebKitWebView in w's subtree.
+static GtkWidget *ao_find_web_view(GtkWidget *w) {
+  if (WEBKIT_IS_WEB_VIEW(w)) {
+    return w;
+  }
+  for (GtkWidget *child = gtk_widget_get_first_child(w); child != NULL;
+       child = gtk_widget_get_next_sibling(child)) {
+    GtkWidget *found = ao_find_web_view(child);
+    if (found != NULL) {
+      return found;
+    }
+  }
+  return NULL;
+}
 
 // ao_view_host answers a view's host, or NULL — a plain cast, never
 // GTK_WIDGET(): glib warns on a NULL instance cast.
@@ -260,7 +278,43 @@ int ao_wk_host_attach(void *gtk_window) {
   // gtk_scrolled_window_get_child() returns the auto-inserted GtkViewport, not
   // this GtkFixed, so keep our own pointer.
   ao_park = fixed;
+  // The SPA view sits in the Wails window's child (its box), which is the
+  // overlay's main child now; no page view has been added yet.
+  ao_app_view = ao_find_web_view(existing);
+  if (ao_app_view != NULL) {
+    g_object_add_weak_pointer(G_OBJECT(ao_app_view), (gpointer *)&ao_app_view);
+  }
   return 1;
+}
+
+int ao_wk_focus_app(void) {
+  if (ao_app_view == NULL) {
+    return 0;
+  }
+  return gtk_widget_grab_focus(ao_app_view) ? 1 : 0;
+}
+
+void ao_wk_view_grab_focus(void *view) { gtk_widget_grab_focus(GTK_WIDGET(view)); }
+
+int ao_wk_focus_holder(void *view) {
+  GtkRoot *root = gtk_widget_get_root(GTK_WIDGET(view));
+  GtkWidget *focus = root == NULL ? NULL : gtk_root_get_focus(root);
+  if (focus == NULL) {
+    return 0;
+  }
+  if (focus == GTK_WIDGET(view) || gtk_widget_is_ancestor(focus, GTK_WIDGET(view))) {
+    return 1;
+  }
+  if (ao_app_view != NULL &&
+      (focus == ao_app_view || gtk_widget_is_ancestor(focus, ao_app_view))) {
+    return 2;
+  }
+  return 3;
+}
+
+int ao_wk_window_active(void *view) {
+  GtkRoot *root = gtk_widget_get_root(GTK_WIDGET(view));
+  return root != NULL && GTK_IS_WINDOW(root) && gtk_window_is_active(GTK_WINDOW(root)) ? 1 : 0;
 }
 
 void ao_wk_host_park(void *view, int slot) {
@@ -674,7 +728,8 @@ static void ao_script_message(WebKitUserContentManager *manager, JSCValue *value
 // Once the user clicks into page content the view owns every key, Ctrl+W
 // included. A capture-phase key controller on the view offers modifier chords
 // to Go first (aoWebKitKeyChord, a synchronous set lookup); a chord AO binds
-// is stopped here and dispatched by the SPA, everything else reaches the page.
+// is stopped here and dispatched by the SPA, which Go has given keyboard
+// focus by then (ao_wk_focus_app); everything else reaches the page.
 // A bare Escape is offered too, and always reaches the page: Go only observes
 // it. GTK 4 reports no key repeat, so a held Escape is told apart here: it is
 // down from its press until its release or the view losing focus.
@@ -785,6 +840,17 @@ static void ao_key_released(GtkEventControllerKey *controller, guint keyval, gui
 static void ao_focus_left(GtkEventControllerFocus *controller, gpointer data) {
   (void)data;
   ao_escape_up(gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller)));
+}
+
+int ao_wk_view_offer_ctrl_key(void *view, unsigned int unicode) {
+  GtkEventController *keys = g_object_get_data(G_OBJECT(view), "ao-key-controller");
+  if (keys == NULL) {
+    return -1;
+  }
+  gboolean handled = FALSE;
+  g_signal_emit_by_name(keys, "key-pressed", gdk_unicode_to_keyval(unicode), 0u, GDK_CONTROL_MASK,
+                        &handled);
+  return handled ? 1 : 0;
 }
 
 int ao_wk_view_offer_escape(void *view, int ctrl, int release) {

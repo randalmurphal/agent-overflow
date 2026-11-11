@@ -60,6 +60,16 @@ type engineUIThread interface {
 	OnUIThread() bool
 }
 
+// engineAppFocus is implemented by an engine whose page views share the
+// app's window and its one keyboard focus (WebKitGTK, WKWebView). FocusApp
+// gives that focus to the app's own webview. The Manager calls it for every
+// chord it claims, inside KeyChord on the UI thread, so the handoff lands
+// before the next key and before the chord is dispatched (keyChord). The
+// launcher-hosted WebView2 claims in its own process and hands focus there.
+type engineAppFocus interface {
+	FocusApp() error
+}
+
 // engineAccelerators is implemented by an engine whose key-chord gate runs
 // in ANOTHER process (the launcher-hosted WebView2): it cannot ask the Manager
 // synchronously, so it is handed the bound set instead, and re-sent it here
@@ -373,10 +383,11 @@ type engineEvents struct {
 	// KeyChord is the one SYNCHRONOUS question on this seam: a modifier chord,
 	// or a bare Escape, was pressed while the page's native view held
 	// keyboard focus — does AO own it? True means the engine swallows the
-	// event and AO dispatches the chord; false means the page keeps it. A
-	// bare Escape is always the page's; press is what the engine knows of
-	// it besides the chord. It runs on the engine's UI thread, so the answer
-	// must be a set lookup and nothing that waits.
+	// event and AO dispatches the chord, keyboard focus already handed to
+	// the app (engineAppFocus); false means the page keeps it, and its
+	// focus. A bare Escape is always the page's; press is what the engine
+	// knows of it besides the chord. It runs on the engine's UI thread, so
+	// the answer must be a set lookup and nothing that waits.
 	KeyChord func(handle string, pressed keybindings.Accelerator, press KeyPress) bool
 }
 
