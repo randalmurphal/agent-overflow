@@ -548,15 +548,35 @@ func TestSetPRUpdatesActiveComposesAcrossSubscribers(t *testing.T) {
 	stubPRCIFetch(app)
 	app.prUpdates.interval = 5 * time.Millisecond
 	var calls atomic.Int32
+	fetched := make(chan struct{}, 1)
 	app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
 		calls.Add(1)
+		select {
+		case fetched <- struct{}{}:
+		default:
+		}
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
 	}
+	// polls waits for a fetch after any signalled before the call.
 	polls := func() bool {
+		select {
+		case <-fetched:
+		default:
+		}
+		select {
+		case <-fetched:
+			return true
+		case <-time.After(3 * time.Second):
+			return false
+		}
+	}
+	// idle reports no fetch across many intervals once an in-flight one
+	// drains; an absence has no event to wait for.
+	idle := func() bool {
 		time.Sleep(15 * time.Millisecond)
 		before := calls.Load()
 		time.Sleep(40 * time.Millisecond)
-		return calls.Load() != before
+		return calls.Load() == before
 	}
 
 	subA, err := app.SubscribePRUpdates(context.Background(), testPR)
@@ -600,7 +620,7 @@ func TestSetPRUpdatesActiveComposesAcrossSubscribers(t *testing.T) {
 	if _, active, paused, _ := prPumpState(app, subA.PRKey); active != 0 || !paused {
 		t.Fatalf("after both hidden: active=%d paused=%v, want 0/true", active, paused)
 	}
-	if polls() {
+	if !idle() {
 		t.Fatal("pump kept polling with every subscriber hidden")
 	}
 
@@ -623,7 +643,7 @@ func TestSetPRUpdatesActiveComposesAcrossSubscribers(t *testing.T) {
 	if _, active, paused, present := prPumpState(app, subB.PRKey); !present || active != 0 || !paused {
 		t.Fatalf("after active subscriber left: active=%d paused=%v present=%v, want 0/true/true", active, paused, present)
 	}
-	if polls() {
+	if !idle() {
 		t.Fatal("pump kept polling for a hidden subscriber after the visible one left")
 	}
 }

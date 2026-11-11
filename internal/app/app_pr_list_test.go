@@ -492,8 +492,11 @@ func TestPRListPausesWhileHiddenAndCatchesUpOnResume(t *testing.T) {
 	if err := app.SetPRListActive(context.Background(), sub.ID, false); err != nil {
 		t.Fatal(err)
 	}
-	// A tick already past its pause check may finish; after it nothing.
-	time.Sleep(20 * time.Millisecond)
+	// A refresh runs on the pump goroutine once no tick is in flight, so
+	// after it every tick sees the pause.
+	if err := app.RefreshPRList(context.Background(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
 	before := fake.listCount(prListRepoA)
 	time.Sleep(60 * time.Millisecond)
 	if got := fake.listCount(prListRepoA); got != before {
@@ -611,13 +614,15 @@ func TestPRListProjectFailureKeepsRowsAndIsolatesProjects(t *testing.T) {
 
 // A failed project carries the correlation id and the forge's raw text
 // behind its sentence, fixed while the same failure repeats, so a repeat
-// publishes nothing new; recovery clears it.
+// publishes nothing new; recovery clears it. The failing project is the
+// only one: a healthy project's re-read moves its ReadAt, a new frame.
 func TestPRListProjectFailureCarriesItsDetails(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.prUpdates.interval = time.Hour
 	fake := newPRListFake(t, app)
 	fake.set(func(f *prListFake) {
+		f.projects = f.projects[1:]
 		f.rows[prListRepoB.Key()] = []gitops.PRListRow{prListRow(prListRepoB, 2, nil)}
 	})
 	events := capturePRList(t, app)
