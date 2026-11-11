@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ciLogFindHits } from './ciLogFind';
+import { ciLogAnswerHits, ciLogFindHits } from './ciLogFind';
 import type { CILogSection } from '../types/models';
 
 function section(key: string, start: number, end: number): CILogSection {
@@ -25,5 +25,16 @@ describe('ciLogFindHits', () => {
   it('stops at its limit', () => {
     const search = { version: 1, totalLines: 10, matches: 5, capped: false, hits: [{ line: 1, count: 5 }] };
     expect(ciLogFindHits(search, [section('a', 0, 10)], 3)).toHaveLength(3);
+  });
+
+  it('applies an answer only to the job and log version it was read from', () => {
+    const search = { version: 4, totalLines: 10, matches: 1, capped: false, hits: [{ line: 2, count: 1 }] };
+    const a = { jobId: 'A', version: 4, sections: [section('a', 0, 10)] };
+    expect(ciLogAnswerHits(search, 'A', a, 10)?.map((hit) => [hit.line, hit.sectionKey])).toEqual([[2, 'a']]);
+    // Job B opened while A's read was out: A's lines are not B's.
+    expect(ciLogAnswerHits(search, 'A', { ...a, jobId: 'B', sections: [section('b', 0, 10)] }, 10)).toBeNull();
+    // A rewritten or grown log: its sections are not the answer's.
+    expect(ciLogAnswerHits(search, 'A', { ...a, version: 5 }, 10)).toBeNull();
+    expect(ciLogAnswerHits(search, 'A', null, 10)).toBeNull();
   });
 });

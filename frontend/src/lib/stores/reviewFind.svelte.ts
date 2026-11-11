@@ -6,7 +6,8 @@
 // (`pending` until it ends). The first match at or below the reading
 // position becomes current as soon as the scan reaches it (the last match
 // when none is below), and the view moves only when it is off screen.
-// Steps wrap once the scan is done and always move. A content change in
+// Steps wrap once the scan is done and always move; a step taken while a
+// scan runs is still current when it ends. A content change in
 // the same view (a commit, a filter, a revision, a live log growing)
 // rescans in place: the old matches stay until the new ones are in, the
 // current match is kept when it is still there, and nothing moves unless
@@ -38,8 +39,10 @@ export interface ReviewFindScanContext<H> {
 export interface ReviewFindSource<H extends ReviewFindMatch> {
   /** Reads the backend: debounced, and one read in flight per layout pane. */
   readonly remote: boolean;
-  /** Emits every match in document order; resolves true when capped. */
-  run(query: string, context: ReviewFindScanContext<H>): Promise<boolean>;
+  /** Emits every match in document order; resolves true when capped.
+   * Resolves null when what it read is no longer what the view shows:
+   * nothing applies and the host rescans. */
+  run(query: string, context: ReviewFindScanContext<H>): Promise<boolean | null>;
 }
 
 export interface ReviewFindHost<H extends ReviewFindMatch> {
@@ -159,21 +162,18 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
     const live = () => mine === seq;
     const asked = query;
     const below = host.readingPosition();
-    const keep = mode === 'refresh' ? (hits[current]?.identity ?? null) : null;
-    const before = hits;
-    const was = current;
     const found: H[] = [];
-    let chosen = -1;
     let shown = 0;
-    // Progressive: a query shows what it found at each pause of the scan.
+    // Progressive: a query shows what it found at each pause of the scan,
+    // a prefix of what it will find, so a match chosen or stepped to
+    // keeps its index.
     const publish = () => {
       if (mode !== 'query' || found.length === shown) return;
       shown = found.length;
       hits = found.slice();
-      if (chosen < 0) {
+      if (current < 0) {
         const at = found.findIndex(below);
         if (at >= 0) {
-          chosen = at;
           current = at;
           paint();
           reveal(false);
@@ -182,7 +182,7 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
       }
       paint();
     };
-    let wasCapped: boolean;
+    let wasCapped: boolean | null;
     try {
       wasCapped = await source.run(asked, {
         emit: (hit) => {
@@ -204,13 +204,17 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
       return;
     }
     if (!live()) return;
+    if (wasCapped === null) return;
+    // What is current now, after any step taken while the scan ran.
+    const keep = mode === 'refresh' ? (hits[current]?.identity ?? null) : null;
+    const before = hits;
+    const was = current;
     error = null;
     capped = wasCapped;
     pending = false;
     hits = found;
     if (mode === 'query') {
-      if (chosen >= 0) {
-        current = chosen;
+      if (current >= 0) {
         paint();
         return;
       }

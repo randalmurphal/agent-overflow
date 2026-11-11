@@ -161,6 +161,63 @@ describe('review find', () => {
     expect(reveals.at(-1)).toEqual(['c1', false]);
   });
 
+  it('a step taken while a query scans is kept when the scan ends', async () => {
+    const s = source(() => ['s1', 's2', 's3'], { slice: 2 });
+    const { h, reveals } = host(() => s.src);
+    const find = createReviewFind(h, () => 'diff');
+    find.search('s');
+    await flush();
+    expect([find.result.current, find.result.count, find.result.pending]).toEqual([0, 2, true]);
+    find.next();
+    expect(find.result.current).toBe(1);
+    await s.release();
+    expect([find.result.current, find.result.count, find.result.pending]).toEqual([1, 3, false]);
+    expect(reveals).toEqual([['s1', false], ['s2', true]]);
+  });
+
+  it('a step taken while a content change rescans is kept when the rescan ends', async () => {
+    let items = ['k1', 'k2', 'k3'];
+    const s = source(() => items, { slice: 2 });
+    const { h, reveals } = host(() => s.src);
+    const find = createReviewFind(h, () => 'diff');
+    find.search('k');
+    await flush();
+    await s.release();
+    expect([find.result.current, find.result.pending]).toEqual([0, false]);
+    items = ['k1', 'k2', 'k3', 'k4'];
+    find.refresh();
+    await flush();
+    find.next();
+    find.next();
+    expect(find.hits[find.result.current].identity).toBe('k3');
+    reveals.length = 0;
+    await s.release();
+    expect(find.result.count).toBe(4);
+    expect(find.hits[find.result.current].identity).toBe('k3');
+    expect(reveals).toEqual([]);
+  });
+
+  it('an answer for content no longer shown applies nothing', async () => {
+    let stale = false;
+    const s = source(() => ['z1', 'z2']);
+    const src: ReviewFindSource<Hit> = {
+      remote: false,
+      run: async (query, context) => (stale ? null : s.src.run(query, context)),
+    };
+    const { h } = host(() => src);
+    const find = createReviewFind(h, () => 'log');
+    find.search('z');
+    await flush();
+    find.next();
+    stale = true;
+    find.refresh();
+    await flush();
+    expect([find.result.current, find.result.count, find.result.pending]).toEqual([1, 2, false]);
+    find.search('z1');
+    await flush();
+    expect([find.result.count, find.result.pending]).toEqual([0, true]);
+  });
+
   it('a reveal that changed the content shows the match again after the rescan', async () => {
     let items = ['f1'];
     const s = source(() => items);

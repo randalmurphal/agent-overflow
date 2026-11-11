@@ -3,7 +3,8 @@
 // rows. A row of lines is at most one block of one section
 // (ReviewCILogView), so a match names the section to open, the row that
 // shows it (`data-find-key`) and its index among that row's matches.
-// Lines no section lists are not on the view and are not matches.
+// Lines no section lists are not on the view and are not matches. An
+// answer applies only to the job and log version it was read from.
 
 import { CI_LOG_BLOCK_LINES } from '../stores/ciLogBlocks.svelte';
 import type { CILogSearch, CILogSection } from '../types/models';
@@ -54,4 +55,18 @@ export function ciLogFindHits(search: CILogSearch, sections: readonly CILogSecti
     }
   }
   return out;
+}
+
+/** The open job's log as the view shows it. */
+export interface CILogFindShown {
+  readonly jobId: string;
+  readonly version: number;
+  readonly sections: readonly CILogSection[];
+}
+
+/** The hits of an answer read for job `askedJob`, mapped onto the log now
+ * shown; null when that is another job or another version of the log. */
+export function ciLogAnswerHits(search: CILogSearch, askedJob: string, shown: CILogFindShown | null, limit: number): CILogFindHit[] | null {
+  if (!shown || shown.jobId !== askedJob || shown.version !== search.version) return null;
+  return ciLogFindHits(search, shown.sections, limit);
 }

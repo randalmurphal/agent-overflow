@@ -13,6 +13,8 @@
   // (filter, commit and hidden tests applied) with their comments, the
   // conflict view's files, or the open CI job log. A content change in a
   // view rescans in place; a live log rescans at most every half second.
+  // Another job's log starts over, and a log answer applies only to the
+  // job and log version it was read from.
   // A match in a collapsed file, a settled thread or a closed log section
   // opens it; one in a collapsed conflict fold opens the fold, and the
   // rescan that follows brings it on screen. After the list scrolls to a
@@ -22,7 +24,7 @@
   import { registerPaneFindProvider } from '../../stores/paneFind.svelte';
   import { createReviewFind, REVIEW_FIND_LIMIT, type ReviewFindSource } from '../../stores/reviewFind.svelte';
   import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
-  import { ciLogFindHits, type CILogFindHit } from '../../utils/ciLogFind';
+  import { ciLogAnswerHits, type CILogFindHit, type CILogFindShown } from '../../utils/ciLogFind';
   import { createFindHighlighter, findHighlightName, type FindHighlighter } from '../../utils/findHighlights';
   import type { ReviewFile } from '../../utils/patchStore';
   import { createRefreshScheduler } from '../../utils/refreshScheduler';
@@ -169,6 +171,8 @@
     if (diff()?.revealFindHit(hit)) aim(hit);
   }
 
+  // A revision, commit, filter or conflict tree change replaces `files`,
+  // and the effect below stops the scan that read the old ones.
   const diffSource: ReviewFindSource<Hit> = {
     remote: false,
     run: (query, context) => {
@@ -185,12 +189,28 @@
     },
   };
 
+  function shownLog(): CILogFindShown | null {
+    return untrack(() => {
+      const jobId = review.ciLogView?.jobId;
+      const log = review.ciLog;
+      return jobId && log ? { jobId, version: log.version, sections: log.sections } : null;
+    });
+  }
+
   const logSource: ReviewFindSource<Hit> = {
     remote: true,
     run: async (query, context) => {
+      const asked = shownLog()?.jobId;
+      if (!asked) return null;
       const answer = await review.searchCILog(query, REVIEW_FIND_LIMIT);
       if (!context.live()) return false;
-      for (const hit of ciLogFindHits(answer, review.ciLog?.sections ?? [], REVIEW_FIND_LIMIT)) context.emit(hit);
+      const hits = ciLogAnswerHits(answer, asked, shownLog(), REVIEW_FIND_LIMIT);
+      if (!hits) {
+        // Read from another job or version than the one shown: ask again.
+        logRefreshes.request();
+        return null;
+      }
+      for (const hit of hits) context.emit(hit);
       return answer.capped;
     },
   };
@@ -272,16 +292,19 @@
     run: () => find.refresh(),
   });
   $effect(() => () => logRefreshes.dispose());
-  let seenView = untrack(() => view);
+  // Another job's log is another view.
+  const scopeOf = (shown: ReviewFindView) => `${shown}:${shown === 'log' ? (review.ciLogView?.jobId ?? '') : ''}`;
+  let seenView = untrack(() => scopeOf(view));
   $effect(() => {
     const shown = view;
+    const scope = scopeOf(shown);
     const content = shown === 'log'
       ? [review.ciLog?.version, review.ciLog?.sections]
       : [files, shown === 'diff' ? review.drafts : null, shown === 'diff' ? review.prThreads : null];
     void content;
     untrack(() => {
-      if (shown !== seenView) {
-        seenView = shown;
+      if (scope !== seenView) {
+        seenView = scope;
         logRefreshes.reset();
         find.rescope();
       } else if (shown === 'log') {
