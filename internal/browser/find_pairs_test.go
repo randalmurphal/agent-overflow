@@ -754,10 +754,11 @@ func (e *findTableEnv) check(t *testing.T, name string) {
 		}
 		owner := findOwner{mount: p.mount, id: p.id}
 		session, live := sessions[p.page]
-		if p.search && !(live && session.ownedBy(owner)) {
+		owned := live && session.ownedBy(owner)
+		if p.search && !owned {
 			t.Errorf("%s: provider %s holds a search on %s the Manager has not for its find %s (%+v)", name, label, e.pageLabel(p.page), p.id, session)
 		}
-		if p.count != 0 && !(p.search && live && session.ownedBy(owner)) {
+		if p.count != 0 && (!p.search || !owned) {
 			t.Errorf("%s: provider %s shows results with no search it owns", name, label)
 		}
 		for id, session := range sessions {
