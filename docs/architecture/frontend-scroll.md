@@ -1710,16 +1710,35 @@ only sees mounted virtual rows and is not a complete search surface.
 Find inside one pane (`find.in-pane`, mod+f) is that pane's find bar, never
 the dialog. A pane body registers a provider (`stores/paneFind.svelte.ts`)
 while it is mounted; the command opens the focused layout pane's bar and is
-disabled for a pane with no provider. A pane that renders a thread timeline
-uses `stores/threadFind.svelte.ts`: `SearchThreadItems` returns the hits of
-the transcript the pane shows (main top-level rows, or an agent scope's
-direct children) in document order with their `(turnIndex, itemIndex)`. A
-new query starts at the first hit at or below the reading position recorded
-in the pane's scroll snapshot, else the last; it moves only when that row is
-off screen. Steps wrap and always move. Every move is the pane's
-scroll-to-item request with `mark`, which `MessageTimeline` lands through the
-explicit-jump session (load until item, then the landing flash). Matches in
-mounted rows paint through `utils/findHighlights.ts`.
+disabled for a pane with no provider or under an overlay (`overlayOpen`, the
+airspace registry less the palette). Escape (`find.close`) closes the bar
+from the transcript or the composer before it can interrupt a turn, and
+Back closes it after any overlay above it. A pane's find state is dropped
+when the pane leaves the layout.
+
+A pane that renders a thread timeline uses `stores/threadFind.svelte.ts`,
+and only for an owner advertising `thread-find.v1`: `SearchThreadItems` and
+`SearchTimelineItems` return the hits of the transcript the pane shows
+(main top-level rows, or an agent scope's direct children) in document
+order with their `(turnIndex, itemIndex)`, walking the timeline arms on the
+call's context. One read is in flight per pane; a newer query or an
+invalidation waits and replaces any other waiting read, and a close drops
+it. An answer applies only for its query, transcript, owner and switch
+generation; a change of transcript, owner or generation drops the hits and
+searches again. The window's `searchRevision` (any summary change, streaming
+deltas included) drives a rate-bounded re-read that updates the count and
+the current hit without moving the view.
+
+A new query starts at the first hit at or below the reading position
+recorded in the pane's scroll snapshot, else the last; it moves only when
+that row is off screen. Steps wrap and always move. Every move is the pane's
+scroll-to-item request with `mark` and the find as its `owner`;
+`MessageTimeline` lands it through the explicit-jump session (load until
+item, then the landing flash). A replaced query or a close withdraws it
+(`withdrawScrollToItem`): an untaken request is dropped, and a taken one
+whose navigation is still current is superseded by a newer navigation, so a
+lookup still loading lands nowhere. Matches in mounted rows paint through
+`utils/findHighlights.ts`.
 
 A hit goes through `navigateToThreadItem(pane, threadId, itemId)`
 (`stores/threadItemNavigation.ts`). A pane that shows another thread by then

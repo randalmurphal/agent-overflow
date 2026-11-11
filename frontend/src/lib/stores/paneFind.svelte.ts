@@ -4,10 +4,11 @@
 // opens the bar of the focused layout pane, and a pane with no provider has
 // no find. State (open, query, the focus to return) is keyed by layout pane
 // id and outlives a body remount, so a thread switch or a reopened bar keeps
-// the query. It is dropped once the pane leaves the layout.
+// the query. It is dropped when the pane leaves the layout, whatever body
+// it last showed.
 
 import { SvelteMap } from 'svelte/reactivity';
-import { paneLayoutKindOf } from './paneLayout.svelte';
+import { onPaneLayoutItemsRemoved } from './paneLayout.svelte';
 
 /** What a provider reports about the current query. */
 export interface PaneFindResult {
@@ -52,23 +53,19 @@ export type PaneFindView = Readonly<PaneFindState>;
 const providers = new SvelteMap<string, PaneFindProvider>();
 const states = new SvelteMap<string, PaneFindState>();
 
-function pruneGonePanes(): void {
-  for (const paneId of states.keys()) {
-    if (paneLayoutKindOf(paneId) === null) states.delete(paneId);
-  }
-}
+onPaneLayoutItemsRemoved((paneIds) => {
+  for (const paneId of paneIds) states.delete(paneId);
+});
 
 /** Registers `provider` for the layout pane; returns its release. */
 export function registerPaneFindProvider(paneId: string, provider: PaneFindProvider): () => void {
   providers.set(paneId, provider);
-  pruneGonePanes();
   const state = states.get(paneId);
   if (state?.open && state.query) provider.search(state.query);
   return () => {
     if (providers.get(paneId) !== provider) return;
     providers.delete(paneId);
     provider.clear();
-    pruneGonePanes();
   };
 }
 
@@ -99,7 +96,6 @@ export interface OpenPaneFindOptions {
 export function openPaneFind(paneId: string, options: OpenPaneFindOptions = {}): boolean {
   const provider = providers.get(paneId);
   if (!provider) return false;
-  pruneGonePanes();
   let state = states.get(paneId);
   if (!state) {
     // Allocated here, outside any reader, so the bar's reads track it.

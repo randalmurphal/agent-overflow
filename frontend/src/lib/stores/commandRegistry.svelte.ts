@@ -57,6 +57,14 @@ export interface CommandFlags {
   anyPickerOpen: boolean;
   /** True while the settings overlay is mounted over the pane strip. */
   settingsOpen: boolean;
+  /**
+   * True while an overlay surface other than the command palette sits above
+   * the panes: the airspace registry holds every mounted overlay (settings,
+   * dialogs, popovers). A pane surface's keyboard and Back commands gate on
+   * it so they never act behind what the reader sees. The palette is left
+   * out because a command picked there runs after it closes.
+   */
+  overlayOpen: boolean;
   /** True while the raw focused pane has a find provider (stores/paneFind.svelte.ts). */
   paneFindAvailable: boolean;
   /** True while the raw focused pane's find bar is open. */

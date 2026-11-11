@@ -88,6 +88,11 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
   let timelineRevision = $state(0);
   // Snapshot geometry is correction even when live events share its flush.
   let historyRevision = $state(0);
+  // Revision of the window's searchable text: every write that changes a
+  // loaded row's summary, a streaming delta included, and every structural
+  // change. A find re-reads its count off it; nothing else should read it,
+  // because it advances at reveal cadence.
+  let searchRevision = $state(0);
   // Revision of the item-side inputs to offscreen row-UI-state retention
   // (`utils/rowUiRetention.ts`): bumped by an items write only when it
   // changed which rows the prune retains unconditionally, or what it
@@ -194,6 +199,7 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     }
     options.streamingReveal().reconcileItemWrite(previous, next);
     if (rowUiRetentionChanged(previous, next)) rowUiRetentionRevision += 1;
+    if (previous.summary !== next.summary) searchRevision += 1;
     windowedRows += isWindowed(next) - isWindowed(previous);
     const errors: unknown[] = [];
     // Same chokepoint logic for the activity-run header: it summarises the
@@ -261,6 +267,7 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     // remain at the source the router still knows how to render.
     options.switchLoad().noteItemMutation(itemId);
     current.summary = append.next;
+    searchRevision += 1;
     current.streamEnd = streamEnd;
     current.updatedAt = Math.max(updatedAt, current.updatedAt);
   }
@@ -400,6 +407,7 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
         errors.push(error);
       }
       timelineRevision++;
+      searchRevision += 1;
       // Unconditional: a wholesale replacement can drop an active row, land
       // one, or re-link a payload, and proving otherwise would cost the very
       // walk the revision exists to remove. These paths are rare (prune,
@@ -519,8 +527,10 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
   ): void {
     const streamingReveal = options.streamingReveal();
     const errors: unknown[] = [];
+    let textChanged = next.structureChanged;
     for (const changed of next.changedItems) {
       const previousIndex = itemIndexById.get(changed.id);
+      if (previousIndex === undefined || items[previousIndex].summary !== changed.summary) textChanged = true;
       if (previousIndex !== undefined) {
         try {
           streamingReveal.reconcileItemWrite(items[previousIndex], changed);
@@ -571,6 +581,7 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
       errors.push(error);
     }
     if (next.structureChanged) timelineRevision++;
+    if (textChanged) searchRevision += 1;
     if (next.rowUiRetentionChanged) rowUiRetentionRevision += 1;
     for (const id of next.summaryFieldsChangedIds) {
       try {
@@ -596,6 +607,8 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
      */
     itemIndexById,
     get historyRevision() { return historyRevision; },
+    /** Advances whenever loaded rows' searchable text may have changed. */
+    get searchRevision() { return searchRevision; },
     get timelineRevision() {
       return timelineRevision;
     },

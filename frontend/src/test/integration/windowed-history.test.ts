@@ -288,6 +288,11 @@ describe('App integration — windowed thread history', () => {
     // and moves the timeline to the current hit through the pane's
     // scroll-to-item request without a thread switch.
     let scopedSearch!: ReturnType<typeof setBindingMock>;
+    const { __setTransportHelloForTest } = await import('../../lib/stores/transportStatus.svelte');
+    __setTransportHelloForTest({
+      protocolVersion: 1, capabilities: ['timeline.scopes.v1', 'thread-find.v1'], backendId: '', backendName: '',
+      serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0,
+    });
     const { findByTestId, queryByTestId } = await mountAndActivateThread(
       makeThread({ title: 'Windowed Thread' }),
       () => {
@@ -340,7 +345,7 @@ describe('App integration — windowed thread history', () => {
     await waitFor(() => expect(scopedSearch).toHaveBeenCalled());
     expect(scopedSearch.mock.calls[0]).toEqual(['thread-1', 'seconds', 1000]);
     await waitFor(() => expect((queryByTestId('pane-find-count')?.textContent ?? '').trim()).toBe('1/1'));
-    expect(scrollSpy).toHaveBeenCalledWith('thr-msg', { mark: true });
+    expect(scrollSpy).toHaveBeenCalledWith('thr-msg', { mark: true, owner: expect.any(Object) });
     // The modal never opens for find.
     expect(queryByTestId('message-search')).toBeNull();
   });

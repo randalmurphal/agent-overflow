@@ -1,13 +1,15 @@
 <script lang="ts">
   // Find for a pane that renders a thread timeline: registers the thread
   // find provider (stores/threadFind.svelte.ts) for its layout pane while
-  // mounted and renders that pane's find bar. The host mounts it directly
-  // under the pane header. DOM work lives here: the reading position, the
-  // on-screen test and the highlights over the timeline's mounted rows.
+  // mounted and the thread's owner serves the find contract, and renders
+  // that pane's find bar. The host mounts it directly under the pane header.
+  // DOM work lives here: the reading position, the on-screen test and the
+  // highlights over the timeline's mounted rows.
   import { untrack } from 'svelte';
   import PaneFindBar from '../panes/PaneFindBar.svelte';
   import { getPaneFind, registerPaneFindProvider } from '../../stores/paneFind.svelte';
-  import { createThreadFind, type ThreadFindScope } from '../../stores/threadFind.svelte';
+  import { createThreadFind, threadFindScopeKey, type ThreadFindScope } from '../../stores/threadFind.svelte';
+  import { threadFindBackend } from '../../stores/timelineSelectionSupport';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getThreadScrollSnapshot } from '../../utils/threadScrollSnapshots';
   import { createFindHighlighter, findHighlightName, type FindHighlighter } from '../../utils/findHighlights';
@@ -18,7 +20,7 @@
     title: string;
     /** The pane (or scoped view) whose MessageTimeline renders the rows. */
     timeline: ThreadPane | null;
-    scope: ThreadFindScope | null;
+    scope: { threadId: string; scopeRootId?: string } | null;
     /** Element containing the timeline's scroll container. */
     root: HTMLElement | null;
     /** Completes the placeholder: "Find in {noun}". */
@@ -48,8 +50,16 @@
     paintedQuery = '';
   }
 
+  // The transcript a read is asked for, with its owner and the timeline's
+  // generation, so an answer from before a move or a reload is dropped.
+  let backend = $derived(scope ? threadFindBackend(scope.threadId) : null);
+  let findScope = $derived.by((): ThreadFindScope | null =>
+    scope && timeline && backend !== null
+      ? { ...scope, backend, generation: timeline.switchGeneration }
+      : null);
+
   const find = createThreadFind({
-    scope: () => scope,
+    scope: () => findScope,
     pane: () => timeline,
     // The position the timeline last recorded through its virtualizer
     // handle: at the bottom nothing lies below, so the last hit is current.
@@ -97,8 +107,12 @@
     },
   }, () => noun);
 
+  // A host that predates the find contract answers the main search with
+  // agent rows included, so its threads get no find: mod+f falls through.
+  let supported = $derived(backend !== null);
   $effect(() => {
     const id = paneId;
+    if (!supported) return;
     const release = untrack(() => registerPaneFindProvider(id, find));
     return () => {
       release();
@@ -106,25 +120,30 @@
     };
   });
 
-  // A new transcript (thread switch, another agent scope) is a new search
-  // for the same query.
-  let scopeKey = untrack(() => (scope ? `${scope.threadId}:${scope.scopeRootId ?? ''}` : ''));
+  // Another transcript, owner or generation (thread switch, agent scope,
+  // conversation move, reload) drops the hits and searches again.
+  let scopeKey = untrack(() => threadFindScopeKey(findScope));
   $effect(() => {
-    const key = scope ? `${scope.threadId}:${scope.scopeRootId ?? ''}` : '';
+    const key = threadFindScopeKey(findScope);
     if (key === scopeKey) return;
     scopeKey = key;
     untrack(() => {
-      const state = getPaneFind(paneId);
-      if (state?.open && state.query) find.search(state.query);
+      if (getPaneFind(paneId)?.open) find.rescope();
     });
   });
 
-  // Rows the transcript gains or changes can add hits: re-read, rate-bounded.
+  // Rows the transcript gains or whose text changes (streaming included)
+  // can change the hits: re-read, rate-bounded. Tracked only while open.
+  let seen: { timeline: ThreadPane; revision: number } | null = null;
   $effect(() => {
-    void timeline?.timelineRevision;
-    untrack(() => {
-      if (getPaneFind(paneId)?.open) find.refresh();
-    });
+    if (getPaneFind(paneId)?.open !== true || !timeline) {
+      seen = null;
+      return;
+    }
+    const revision = timeline.searchRevision;
+    const changed = seen !== null && seen.timeline === timeline && seen.revision !== revision;
+    seen = { timeline, revision };
+    if (changed) untrack(() => find.refresh());
   });
 </script>
 

@@ -982,10 +982,6 @@ func TestOrderedTimelineReadsGoThroughTheArms(t *testing.T) {
 			why:    "FindNotificationItemByTaskID resolves ONE row through a partial expression index on meta.task_id; the ORDER BY only breaks ties among that task's rows",
 		},
 		{
-			marker: "LOWER(i.summary) LIKE",
-			why:    "SearchThreadItems returns every match rather than a page, so it scans the thread either way",
-		},
-		{
 			marker: "MIN(item_index)",
 			why:    "ListTurnUserSummaries is a GROUP BY aggregate over the whole thread, not a page; the view pushes its predicate down to idx_items_user_text on the local arm already",
 		},

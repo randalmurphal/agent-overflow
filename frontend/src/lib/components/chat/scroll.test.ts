@@ -957,6 +957,43 @@ describe('scroll integration — scroll-to-item requests', () => {
     await waitFor(() => expect(escaped, 'the jump must land').toHaveBeenCalled());
   });
 
+  it('a request its owner withdrew does not land, before or after the timeline took it', async () => {
+    const pane = await buildPane(undefined, runItems());
+    let finishLookup: ((result: 'loaded') => void) | null = null;
+    const loadUntilItem = vi.spyOn(pane, 'loadUntilItem').mockImplementation(
+      () => new Promise((resolve) => { finishLookup = resolve; }),
+    );
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    const escaped = vi.spyOn(timelineStick(), 'markEscaped');
+    const owner = {};
+
+    // Taken: the lookup is in flight when the owner withdraws it.
+    pane.requestScrollToItem('prose-after', { mark: true, owner });
+    await waitFor(() => expect(finishLookup).toBeTypeOf('function'));
+    pane.withdrawScrollToItem(owner);
+    await tick();
+    finishLookup!('loaded');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(escaped, 'a withdrawn jump must not land').not.toHaveBeenCalled();
+
+    // Untaken: withdrawn while the pane still loads, so it is never run.
+    loadUntilItem.mockClear();
+    pane.requestScrollToItem('prose-before', { mark: true, owner });
+    pane.withdrawScrollToItem(owner);
+    await tick();
+    await tick();
+    expect(loadUntilItem).not.toHaveBeenCalled();
+
+    // Another owner's withdrawal leaves a request alone.
+    finishLookup = null;
+    pane.requestScrollToItem('prose-after', { mark: true, owner });
+    await waitFor(() => expect(finishLookup).toBeTypeOf('function'));
+    pane.withdrawScrollToItem({});
+    finishLookup!('loaded');
+    await waitFor(() => expect(escaped, 'the jump must land').toHaveBeenCalled());
+  });
+
   it('lands a hidden bell on the completion that hides it', async () => {
     const { getToasts } = await import('../../stores/toast.svelte');
     const pane = await buildPane(undefined, [

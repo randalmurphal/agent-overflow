@@ -10,7 +10,7 @@ import {
   SearchThreadItems as SearchThreadItemsRaw,
   SearchTimelineItems as SearchTimelineItemsRaw,
 } from '../../../bindings/agent-overflow/app.js';
-import { requireTimelineSelectionSupport } from './timelineSelectionSupport';
+import { requireThreadFindSupport, requireTimelineSelectionSupport } from './timelineSelectionSupport';
 // Re-export Wails v3 generated bindings used by components.
 //
 // Every entry here is produced by `wails3 generate bindings -ts`. When
@@ -1218,6 +1218,7 @@ export function GetThreadUserMessageTicks(threadId: string, selection: TimelineS
 
 /** Find hits in the selected transcript of one thread, in document order. */
 export function SearchThreadItems(threadId: string, query: string, limit: number, selection: TimelineSelection = {}) {
+  requireThreadFindSupport(threadId);
   requireTimelineSelectionSupport(threadId, selection);
   return selection.scopeRootId || selection.tools || selection.digestItemId
     ? SearchTimelineItemsRaw(threadId, query, selection, limit)

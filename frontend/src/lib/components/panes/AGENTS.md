@@ -31,8 +31,14 @@ is mounted (`stores/paneFind.svelte.ts`). The store owns open, query and
 focus return; the provider owns matching, stepping and clearing. Paint
 matches with `utils/findHighlights.ts` under `findHighlightName(paneId)`.
 Thread timelines use `chat/ThreadPaneFind.svelte`; a plain scroll container
-uses `scrollTextFind.svelte.ts`. Review, terminal, browser, discussion and
-tool panes have no provider yet, so mod+f falls through there.
+uses `scrollTextFind.svelte.ts`. A provider with asynchronous reads keeps
+one in flight, applies an answer only for the query and owner it asked,
+updates in place on a content change without moving the view, and
+withdraws any jump it requested when its query changes or it closes. Find
+is gated on the focused pane and on no overlay above it; the store drops a
+pane's state when the pane leaves the layout. Review, terminal, browser,
+discussion and tool panes have no provider yet, so mod+f falls through
+there.
 
 Timeline scroll ownership belongs to
 [`components/chat/`](../chat/AGENTS.md). Generic virtualization belongs to

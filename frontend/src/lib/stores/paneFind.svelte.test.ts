@@ -10,7 +10,7 @@ import {
   stepPaneFind,
   type PaneFindProvider,
 } from './paneFind.svelte';
-import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
+import { addPaneLayoutItem, removePaneLayoutItem, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 
 function provider(overrides: Partial<PaneFindProvider> = {}): PaneFindProvider & {
   search: ReturnType<typeof vi.fn>;
@@ -122,6 +122,21 @@ describe('pane find registry', () => {
     layout('b');
     release();
     expect(getPaneFind('a')).toBeNull();
+  });
+
+  it('drops the state when the pane closes with no provider mounted, so a recreated id starts closed', () => {
+    const release = registerPaneFindProvider('a', provider());
+    openPaneFind('a', { returnFocus: document.createElement('button') });
+    setPaneFindQuery('a', 'gone');
+    // The pane switched to a body with no find, then closed.
+    release();
+    removePaneLayoutItem('a', { persist: false });
+    expect(getPaneFind('a')).toBeNull();
+    addPaneLayoutItem({ id: 'a', paneId: 'a', kind: 'thread', widthPx: 600 }, undefined, { persist: false });
+    const again = provider();
+    registerPaneFindProvider('a', again);
+    expect(getPaneFind('a')).toBeNull();
+    expect(again.search).not.toHaveBeenCalled();
   });
 
   it('keeps the state of a pane whose body remounts', () => {

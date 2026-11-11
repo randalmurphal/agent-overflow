@@ -13,5 +13,7 @@ not define these command ids.
 - Accelerator projection parses only the small native menu vocabulary; it is
   not the frontend keybinding compiler.
 - Update the generator input, generated output, frontend mirror, and completeness tests together.
+- A shipped row whose command, default id or `when` changes gets a
+  `defaultRenames` entry, so stored overrides keep their chord or unbinding.
 
 UI conflict policy and event handling remain frontend responsibilities.

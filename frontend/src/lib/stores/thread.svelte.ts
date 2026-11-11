@@ -837,6 +837,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       return getItems().length > 0;
     },
     get historyRevision() { return itemWindow.historyRevision; },
+    get searchRevision() { return itemWindow.searchRevision; },
     get timelineRevision() {
       return itemWindow.timelineRevision;
     },
@@ -992,6 +993,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get scrollToItemRequest() {
       return paneScroll.scrollToItemRequest;
     },
+    get scrollToItemWithdrawal() {
+      return paneScroll.scrollToItemWithdrawal;
+    },
     get channelMessages() {
       return channelState.messages;
     },
@@ -1140,6 +1144,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
     requestScrollToItem: paneScroll.requestScrollToItem,
     takeScrollToItemRequest: paneScroll.takeScrollToItemRequest,
+    withdrawScrollToItem: paneScroll.withdrawScrollToItem,
 
     /**
      * Registered scroll controller for this pane. Read by surfaces that

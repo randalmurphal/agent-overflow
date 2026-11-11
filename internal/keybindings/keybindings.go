@@ -184,7 +184,12 @@ var Defaults = []Keybinding{
 	// exclusive (an open settings surface sets anyModalOpen, which
 	// thread.interrupt negates), so at most one of them ever matches a press.
 	{Key: "esc", Command: "settings.close", When: "settingsOpen", DefaultID: "settings.close"},
-	{Key: "esc", Command: "thread.interrupt", When: "hasActiveThread && (turnActive || sendInFlight || hasPendingPrompt) && !anyModalOpen", DefaultID: "thread.interrupt"},
+	{Key: "esc", Command: "thread.interrupt", When: "hasActiveThread && (turnActive || sendInFlight || hasPendingPrompt) && !anyModalOpen && !paneFindOpen", DefaultID: "thread.interrupt"},
+	// Esc closes the focused pane's open find bar, from the bar, the
+	// composer or the transcript, before it can interrupt a turn: interrupt
+	// negates paneFindOpen, and this row sits after it because dispatch walks
+	// the list in reverse. A modal surface owns the press (anyModalOpen).
+	{Key: "esc", Command: "find.close", When: "paneFindOpen && !anyModalOpen", DefaultID: "find.close"},
 	{Key: "mod+1", Command: "thread.jump.1", DefaultID: "thread.jump.1"},
 	{Key: "mod+2", Command: "thread.jump.2", DefaultID: "thread.jump.2"},
 	{Key: "mod+3", Command: "thread.jump.3", DefaultID: "thread.jump.3"},
@@ -501,9 +506,61 @@ func normalizeUserEntries(user []Keybinding) []Keybinding {
 	out := make([]Keybinding, len(user))
 	for i, u := range user {
 		u.Key = strings.TrimSpace(u.Key)
-		out[i] = u
+		out[i] = renamed(u)
 	}
 	return out
+}
+
+// defaultRename records a shipped row whose command, default id or `when`
+// changed. A stored override names its default by id, by (command, when,
+// key) or by (command, when), so each old value maps onto the new one at
+// load, before defaults merge: a custom chord and an explicit unbinding
+// stay on the row they were chosen for.
+type defaultRename struct {
+	oldCommand, oldDefaultID, oldWhen string
+	command, defaultID, when          string
+}
+
+var defaultRenames = []defaultRename{
+	{
+		oldCommand: "search.in-thread", oldDefaultID: "search.in-thread", oldWhen: "hasActiveThread && !terminalFocus",
+		command: "find.in-pane", defaultID: "find.in-pane", when: "paneFindAvailable && !terminalFocus",
+	},
+	{
+		oldCommand: "thread.interrupt", oldDefaultID: "thread.interrupt", oldWhen: "hasActiveThread && (turnActive || sendInFlight || hasPendingPrompt) && !anyModalOpen",
+		command: "thread.interrupt", defaultID: "thread.interrupt", when: "hasActiveThread && (turnActive || sendInFlight || hasPendingPrompt) && !anyModalOpen && !paneFindOpen",
+	},
+}
+
+// DefaultIDRenames maps each renamed default id to its current id, for a
+// store that keeps overrides by default id alone (the phone's).
+func DefaultIDRenames() map[string]string {
+	out := make(map[string]string, len(defaultRenames))
+	for _, r := range defaultRenames {
+		if r.oldDefaultID != r.defaultID {
+			out[r.oldDefaultID] = r.defaultID
+		}
+	}
+	return out
+}
+
+// renamed maps a stored override of a renamed default onto its current
+// identity. The entry's `when` changes only when it is the shipped one.
+func renamed(u Keybinding) Keybinding {
+	for _, r := range defaultRenames {
+		if u.Command != r.oldCommand || (u.DefaultID != "" && u.DefaultID != r.oldDefaultID) {
+			continue
+		}
+		u.Command = r.command
+		if u.DefaultID != "" {
+			u.DefaultID = r.defaultID
+		}
+		if u.When == r.oldWhen {
+			u.When = r.when
+		}
+		return u
+	}
+	return u
 }
 
 // Merge applies user overrides over defaults.

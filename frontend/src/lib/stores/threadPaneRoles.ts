@@ -77,6 +77,7 @@ import type {
   PaneScrollController,
   ScrollToItemOptions,
   ScrollToItemRequest,
+  ScrollToItemWithdrawal,
 } from './threadPaneShared';
 import type {
   PayloadExpansionLease,
@@ -155,6 +156,8 @@ export interface TimelineSource {
   readonly getItemById: (itemId: string) => Item | undefined;
   readonly timelineRevision: number;
   readonly historyRevision: number;
+  /** Advances when loaded rows' text may have changed; read only by find. */
+  readonly searchRevision: number;
   readonly rowUiRetentionRevision: number;
   readonly activityRuns: ThreadActivityRuns;
   /**
@@ -221,6 +224,8 @@ export interface ScrollHost {
   readonly requestScrollToItem: (itemID: string, options?: ScrollToItemOptions) => void;
   /** Take-once: clears the pending request; null when none or stale. */
   readonly takeScrollToItemRequest: () => string | null;
+  readonly scrollToItemWithdrawal: ScrollToItemWithdrawal | null;
+  readonly withdrawScrollToItem: (owner: object) => void;
   /** One-shot structural-append spring window; call before the mutation. */
   readonly armStructuralSpring: () => boolean;
 }

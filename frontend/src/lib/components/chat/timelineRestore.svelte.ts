@@ -113,6 +113,8 @@ export interface TimelineRestore {
   readonly restoredThreadId: string | null;
   /** Start a navigation: ends every older one. */
   beginNavigation(): number;
+  /** The current navigation's token; a navigation started later moves it. */
+  readonly navigation: number;
   /**
    * Whether the navigation still owns the viewport. When it does, ends
    * every hold, so call it last, right before the navigation's write.
@@ -773,6 +775,9 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
       return restoredThreadId;
     },
     beginNavigation,
+    get navigation() {
+      return navigationToken;
+    },
     claimNavigation,
     beginHold,
     isHoldCurrent,

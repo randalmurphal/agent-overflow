@@ -23,9 +23,12 @@ import {
   clearCommandRegistry,
   getCommand,
   isCommandEnabled,
+  listCommands,
   runCommand,
   type CommandContext,
 } from './commandRegistry.svelte';
+import { registerAirspaceSurface, resetAirspaceForTest } from '../utils/paneAirspace.svelte';
+import { closePalette, openPalette } from './palette.svelte';
 import { focusPane, registerPaneForTest, resetPanesForTest } from './panes.svelte';
 import { PANE_NAV_COMMAND_IDS, TERMINAL_ESCAPE_COMMAND_IDS } from './paneNavCommands';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
@@ -66,6 +69,7 @@ import {
 } from './threadActionConfirmations.svelte';
 import { getSettings, loadSettings, resetSettingsForTest } from './settings.svelte';
 import {
+  getWorkflowsOverlayTop,
   pushWorkflowRunDetail,
   resetWorkflowsOverlayForTest,
 } from './workflowsOverlay.svelte';
@@ -952,6 +956,8 @@ describe('find.in-pane command', () => {
     resetPaneFindForTest();
     resetPaneLayoutForTest();
     resetKeybindingsStore();
+    resetAirspaceForTest();
+    resetSettingsOverlayForTest();
     document.body.replaceChildren();
   });
 
@@ -1044,6 +1050,76 @@ describe('find.in-pane command', () => {
     expect(getPaneFind('a')?.open).toBe(false);
     expect(provider.clear).toHaveBeenCalled();
     expect(dispatchKey(createSurfaceDismissalEvent(), makeCommandContext(pane, {}) as CommandContext)).toBe(false);
+  });
+
+  // The shipped rules through the real resolver: Escape closes an open find
+  // from the transcript and from the composer before it can interrupt the
+  // live turn, and interrupts once the bar is closed.
+  it('Escape closes the open find before it interrupts a live turn', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
+    const interrupt = vi.spyOn(getCommand('thread.interrupt')!, 'run').mockImplementation(() => {});
+    registerPaneFindProvider('a', providerFor());
+    focusPane('a');
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+    const section = document.createElement('section');
+    section.dataset.paneId = 'a';
+    const transcript = document.createElement('div');
+    const composer = document.createElement('textarea');
+    section.append(transcript, composer);
+    document.body.appendChild(section);
+    const reachable = new Set(listCommands().filter((c) => c.editableReachable).map((c) => c.id));
+    const escape = (target: HTMLElement, editable: boolean) => {
+      const event = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true });
+      Object.defineProperty(event, 'target', { value: target });
+      const ctx = makeCommandContext(pane, {}) as CommandContext;
+      if (editable && !eventMatchesKeybindingCommand(event, ctx, reachable, { isMac: false })) return false;
+      return dispatchKey(event, ctx, { isMac: false });
+    };
+
+    for (const [target, editable] of [[transcript, false], [composer, true]] as const) {
+      openPaneFind('a');
+      expect(escape(target, editable)).toBe(true);
+      expect(getPaneFind('a')?.open).toBe(false);
+      expect(interrupt).not.toHaveBeenCalled();
+    }
+    expect(escape(transcript, false)).toBe(true);
+    expect(interrupt).toHaveBeenCalledTimes(1);
+  });
+
+  // An overlay (settings, a dialog) is on top of the pane: mod+f does not
+  // open a bar behind it and Back closes the overlay, not the hidden bar.
+  // The palette is the exception: a command picked there runs after it closes.
+  it('yields to an overlay above the panes, keyboard and Back alike', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    registerPaneFindProvider('a', providerFor());
+    focusPane('a');
+    const overlay = document.createElement('div');
+    const release = registerAirspaceSurface(overlay);
+    let ctx = makeCommandContext(pane, {}) as CommandContext;
+    expect(ctx.flags.overlayOpen).toBe(true);
+    expect(runCommand('find.in-pane', ctx)).toBe(false);
+    expect(getPaneFind('a')).toBeNull();
+    release();
+
+    openPaneFind('a');
+    openSettingsOverlay('theme');
+    const settings = registerAirspaceSurface(document.createElement('div'));
+    ctx = makeCommandContext(pane, {}) as CommandContext;
+    expect(dispatchKey(createSurfaceDismissalEvent(), ctx)).toBe(true);
+    expect(isSettingsOpen()).toBe(false);
+    expect(getPaneFind('a')?.open).toBe(true);
+    settings();
+    expect(dispatchKey(createSurfaceDismissalEvent(), makeCommandContext(pane, {}) as CommandContext)).toBe(true);
+    expect(getPaneFind('a')?.open).toBe(false);
+
+    openPalette();
+    const palette = registerAirspaceSurface(document.createElement('div'));
+    expect(isCommandEnabled('find.in-pane', makeCommandContext(pane, {}) as CommandContext)).toBe(true);
+    palette();
+    closePalette();
   });
 });
 
@@ -2053,6 +2129,28 @@ describe('tool pane command flags', () => {
     expect(flags.workflowsPaneFocused).toBe(false);
     expect(flags.toolDetailOpen).toBe(false);
     expect(flags.workflowsRunDetail).toBe(false);
+  });
+
+  // Settings opened over a run detail owns Escape, Back and the bare keys:
+  // the detail behind it is neither stepped back nor driven.
+  it('a tool pane surface yields to an overlay above it', () => {
+    registerBuiltinCommands(makeBuiltinHooks());
+    setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
+    openTool('workflows');
+    pushWorkflowRunDetail('run-1');
+    openSettingsOverlay('theme');
+    const release = registerAirspaceSurface(document.createElement('div'));
+    const ctx = makeCommandContext(null, {}) as CommandContext;
+    expect(ctx.flags.workflowsRunDetail).toBe(false);
+    expect(isCommandEnabled('workflows.escape', ctx)).toBe(false);
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape' });
+    expect(dispatchKey(escape, ctx, { isMac: false })).toBe(true);
+    expect(isSettingsOpen()).toBe(false);
+    expect(getWorkflowsOverlayTop().level).toBe('run');
+    release();
+    resetKeybindingsStore();
+    resetSettingsOverlayForTest();
+    resetAirspaceForTest();
   });
 });
 

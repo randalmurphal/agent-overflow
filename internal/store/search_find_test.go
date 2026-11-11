@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -49,7 +50,7 @@ func findHitIDs(hits []ThreadMessageHit) string {
 func TestSearchThreadItems_MainSelectionIsTheTopLevelTimeline(t *testing.T) {
 	s := newTestStore(t)
 	seedFindScopes(t, s)
-	got, err := s.SearchThreadItems("find", "needle", TimelineSelection{}, 0)
+	got, err := s.SearchThreadItems(context.Background(), "find", "needle", TimelineSelection{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +68,7 @@ func TestSearchThreadItems_AgentSelectionIsTheAgentTranscript(t *testing.T) {
 	s := newTestStore(t)
 	seedFindScopes(t, s)
 	for _, root := range []string{"root", "carrier"} {
-		got, err := s.SearchThreadItems("find", "needle", TimelineSelection{ScopeRootID: root}, 0)
+		got, err := s.SearchThreadItems(context.Background(), "find", "needle", TimelineSelection{ScopeRootID: root}, 0)
 		if err != nil {
 			t.Fatalf("scope %s: %v", root, err)
 		}
@@ -78,7 +79,7 @@ func TestSearchThreadItems_AgentSelectionIsTheAgentTranscript(t *testing.T) {
 			t.Fatalf("child-b coordinates = (%d, %d), want (1, 0)", got[1].TurnIndex, got[1].ItemIndex)
 		}
 	}
-	limited, err := s.SearchThreadItems("find", "needle", TimelineSelection{ScopeRootID: "root"}, 1)
+	limited, err := s.SearchThreadItems(context.Background(), "find", "needle", TimelineSelection{ScopeRootID: "root"}, 1)
 	if err != nil || findHitIDs(limited) != "[child-a]" {
 		t.Fatalf("limited scope hits = %s err=%v", findHitIDs(limited), err)
 	}
@@ -87,10 +88,37 @@ func TestSearchThreadItems_AgentSelectionIsTheAgentTranscript(t *testing.T) {
 func TestSearchThreadItems_GoneScopeIsAnError(t *testing.T) {
 	s := newTestStore(t)
 	seedFindScopes(t, s)
-	if _, err := s.SearchThreadItems("find", "needle", TimelineSelection{ScopeRootID: "missing"}, 0); !errors.Is(err, ErrTimelineScopeGone) {
+	if _, err := s.SearchThreadItems(context.Background(), "find", "needle", TimelineSelection{ScopeRootID: "missing"}, 0); !errors.Is(err, ErrTimelineScopeGone) {
 		t.Fatalf("missing scope err = %v, want ErrTimelineScopeGone", err)
 	}
-	if _, err := s.SearchThreadItems("find", "needle", TimelineSelection{Tools: true}, 0); err == nil {
+	if _, err := s.SearchThreadItems(context.Background(), "find", "needle", TimelineSelection{Tools: true}, 0); err == nil {
 		t.Fatal("a tools selection without a scope must be refused")
+	}
+}
+
+// A find read belongs to the call that asked: a cancelled call (the
+// client disconnected) stops the read rather than finishing the scan.
+func TestSearchThreadItems_CancelledContextStopsTheSearch(t *testing.T) {
+	s := newTestStore(t)
+	seedFindScopes(t, s)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, selection := range []TimelineSelection{{}, {ScopeRootID: "root"}} {
+		if _, err := s.SearchThreadItems(ctx, "find", "needle", selection, 0); !errors.Is(err, context.Canceled) {
+			t.Fatalf("selection %+v: err = %v, want context.Canceled", selection, err)
+		}
+	}
+}
+
+// A find read stops at its limit: each physical arm walks its ordering
+// index and the merged compound takes the first hits, rather than reading
+// every match of the view into a sorter.
+func TestSearchThreadItems_WalksTheTimelineArms(t *testing.T) {
+	s := newTestStore(t)
+	seedTimelineParityThread(t, s)
+	for _, selection := range []TimelineSelection{{}, {ScopeRootID: "root"}} {
+		sel := threadFindSelection(timelineScope{selection: selection}, likePattern("needle"), 50)
+		query, args := mustTimelineIDSelection(t, s, timelineParityThreadID, sel)
+		assertLocalArmWalksAnIndex(t, s, fmt.Sprintf("thread find %+v", selection), query, args...)
 	}
 }

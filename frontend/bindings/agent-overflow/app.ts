@@ -5016,7 +5016,8 @@ export function SearchThreadMessages(query: string, limit: number): $Cancellable
 /**
  * SearchTimelineItems searches the selected transcript of one thread: the
  * rows the timeline shows for that selection (an agent scope answers its
- * direct children), in document order.
+ * direct children), in document order. A cancelled call (the connection
+ * closed) stops the read.
  */
 export function SearchTimelineItems(threadID: string, query: string, selection: store$0.TimelineSelection, limit: number): $CancellablePromise<store$0.ThreadMessageHit[]> {
     return $Call.ByID(1822896830, threadID, query, selection, limit).then(($result: any) => {
