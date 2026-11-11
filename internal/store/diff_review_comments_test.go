@@ -54,7 +54,12 @@ func TestDiffReviewCommentsDraftLifecycle(t *testing.T) {
 		t.Fatalf("selected = %+v", selected)
 	}
 
-	recordReviewSent(t, s, ThreadReviewOwner(thread.ID), string(DiffReviewScopeWorkspace), "diff-1", []string{created.ID}, 300, "user:1")
+	if err := s.MarkDiffReviewCommentsSent(ThreadReviewOwner(thread.ID), string(DiffReviewScopeWorkspace), "diff-1", []string{created.ID}, 300, "user:1"); err != nil {
+		t.Fatalf("MarkDiffReviewCommentsSent: %v", err)
+	}
+	if err := s.MarkDiffReviewCommentsSent(ThreadReviewOwner(thread.ID), string(DiffReviewScopeWorkspace), "diff-1", []string{created.ID}, 300, "user:1"); err != nil {
+		t.Fatalf("MarkDiffReviewCommentsSent idempotent retry: %v", err)
+	}
 	sent, err := s.GetDiffReviewComment(ThreadReviewOwner(thread.ID), created.ID)
 	if err != nil {
 		t.Fatalf("GetDiffReviewComment: %v", err)
@@ -654,7 +659,9 @@ func TestSupersedingAClaimedCommentClearsItsClaim(t *testing.T) {
 		if claimed(published) {
 			t.Fatalf("%s: the edit kept the claim", owner)
 		}
-		recordReviewSent(t, s, owner, scope, source, []string{published}, 30, "")
+		if err := s.MarkDiffReviewCommentsSent(owner, scope, source, []string{published}, 30, ""); err != nil {
+			t.Fatal(err)
+		}
 		if err := s.DeleteOrResolveDiffReviewComment(owner, resolved, 40); err != nil {
 			t.Fatal(err)
 		}

@@ -313,16 +313,6 @@ done
 	return path
 }
 
-// recordReviewPosted marks draft sent in turn as a posted PR review does
-// (SubmitPRReview's store write).
-func recordReviewPosted(t *testing.T, app *App, owner store.DiffReviewOwner, draft store.DiffReviewComment, turn string) {
-	t.Helper()
-	submit := store.PRReviewSubmit{SubmitID: "submit-" + draft.ID, PRKey: diffReviewSendPR.Key(), Owner: owner, Result: []byte(`{}`), CreatedAt: time.Now().UnixMilli()}
-	if err := app.store.RecordPRReviewSubmit(submit, store.PRReviewSubmitSent{Scope: draft.Scope, SourceKey: draft.SourceKey, CommentIDs: []string{draft.ID}, SentTurnID: turn}); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // diffReviewSendThread is a Claude thread with a live passthrough session,
 // so a send reaches a provider and lands as a user item.
 func diffReviewSendThread(t *testing.T, app *App, id string) store.Thread {
@@ -484,7 +474,9 @@ func TestPRDiffReviewCommentsAreThePRsOwn(t *testing.T) {
 	if err != nil || updated.Body != "Second." {
 		t.Fatalf("update = %+v, %v", updated, err)
 	}
-	recordReviewPosted(t, app, store.PRReviewOwner(diffReviewSendPR.Key()), draft, "")
+	if err := app.store.MarkDiffReviewCommentsSent(store.PRReviewOwner(diffReviewSendPR.Key()), draft.Scope, draft.SourceKey, []string{draft.ID}, time.Now().UnixMilli(), ""); err != nil {
+		t.Fatal(err)
+	}
 	if err := app.DeletePRDiffReviewComment(diffReviewSendPR, draft.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -752,12 +744,16 @@ func TestBootKeepsACommentPublishedAfterTheMessageThatClaimedIt(t *testing.T) {
 			if _, err := app.UpdatePRDiffReviewComment(diffReviewSendPR, draft.ID, store.DiffReviewCommentUpdate{Body: "Edited."}); err != nil {
 				t.Fatal(err)
 			}
-			recordReviewPosted(t, app, store.PRReviewOwner(diffReviewSendPR.Key()), draft, "")
+			if err := app.store.MarkDiffReviewCommentsSent(store.PRReviewOwner(diffReviewSendPR.Key()), draft.Scope, draft.SourceKey, []string{draft.ID}, time.Now().UnixMilli(), ""); err != nil {
+				t.Fatal(err)
+			}
 		} else {
 			if _, err := app.UpdateDiffReviewComment(thread.ID, draft.ID, store.DiffReviewCommentUpdate{Body: "Edited."}); err != nil {
 				t.Fatal(err)
 			}
-			recordReviewPosted(t, app, store.ThreadReviewOwner(thread.ID), draft, thread.ID+":9")
+			if err := app.store.MarkDiffReviewCommentsSent(store.ThreadReviewOwner(thread.ID), draft.Scope, draft.SourceKey, []string{draft.ID}, time.Now().UnixMilli(), thread.ID+":9"); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	// The app stops before either message's row is written.
