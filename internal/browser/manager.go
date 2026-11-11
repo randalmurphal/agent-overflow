@@ -72,13 +72,12 @@ type Manager struct {
 	// findGen numbers every find action and end across all pages, so the
 	// order survives a page's suspend and restore (find.go).
 	findGen atomic.Uint64
-	// findReserved, when set by a test, runs after a find action reserved
-	// its generation and before it publishes.
-	findReserved func()
-	// deferEngineStop, when set by a test, receives the engine stop an end
-	// owes instead of a goroutine running it.
-	deferEngineStop func(func())
-	profileDir      string
+	// findPointHook, when set by a test, runs at the points inside a find
+	// transition named by findPoint.
+	findPointHook atomic.Pointer[func(point string)]
+	// findWork joins the goroutines that apply submitted find ends.
+	findWork   sync.WaitGroup
+	profileDir string
 
 	startMu sync.Mutex
 	mu      sync.Mutex
@@ -229,10 +228,14 @@ type managedPage struct {
 	nodeMu       sync.Mutex
 	nodeRefs     map[string]nodeReference
 	nodeOrder    []string
-	// findMu guards find (find.go). Taken alone or inside mu; it may be held
-	// around the Manager's mu, never taken inside it.
-	findMu sync.Mutex
-	find   findSession
+	// find is written only by a find transition, which holds mu (find.go);
+	// findMu guards it for readers. findMu may be held around the Manager's
+	// mu, never taken inside it. ends are the find ends submitted and not
+	// yet applied; findBusy is whether a find transition is running.
+	findMu   sync.Mutex
+	find     findSession
+	ends     findEnds
+	findBusy atomic.Bool
 	// incarnation tells this page apart from another under the same id: a
 	// restored page reuses its id. docEpoch counts the documents its main
 	// frame committed, stamped on the engine's own thread (find.go).
@@ -491,7 +494,7 @@ func (m *Manager) closeFoundPage(ctx context.Context, access Access, p *managedP
 	}
 	m.cancelPageDownloads(p, scope)
 	p.driver.Close()
-	m.endFind(p, false)
+	m.endFindLocked(p)
 	p.mu.Unlock()
 	m.mu.Lock()
 	delete(scope.pages, p.id)
@@ -571,7 +574,9 @@ func (m *Manager) Close() error {
 	m.mu.Lock()
 	m.closed = true
 	m.mu.Unlock()
-	return errors.Join(m.saveOpenPages(), m.closeBrowser(context.Background()))
+	err := errors.Join(m.saveOpenPages(), m.closeBrowser(context.Background()))
+	m.findWork.Wait()
+	return err
 }
 
 // pageForOpen answers the page an open navigates: the requested one, or a new
@@ -857,7 +862,7 @@ func (m *Manager) removeClosedPage(handle string) {
 	}
 	m.mu.Unlock()
 	if closed != nil {
-		m.endFind(closed, false)
+		m.endFind(closed)
 	}
 	if owner != "" {
 		m.repairActivePage(owner)
@@ -951,7 +956,7 @@ func (m *Manager) closeBrowserLocked(caller context.Context) error {
 	}
 	m.mu.Unlock()
 	for _, p := range pages {
-		m.endFind(p, false)
+		m.endFind(p)
 	}
 	for owner := range owners {
 		m.emitThreadState(owner)

@@ -163,10 +163,9 @@ the accelerator path above.
   commits another document, stops being the shown active page, is
   suspended or closes, when the owning pane mount goes (unmounted, or its
   connection closed), or when the browser closes; that end is a `find`
-  event on `browser:companion-state`, and the bar showing it closes. The
-  engine's search is stopped behind it unless a newer action ran. `stop`
-  and `close` never restore a suspended page and answer for a gone page as
-  for no find.
+  event on `browser:companion-state`, and the bar showing it closes, and
+  the engine's search is stopped with it. `stop` and `close` never restore
+  a suspended page and answer for a gone page as for no find.
 - A find's identity is its page (id and incarnation), the pane mount that
   owns it, the document it was opened on, and a generation; every action,
   answer and end carries all four (`FindState`). Each action names its
@@ -176,25 +175,36 @@ the accelerator path above.
   bar. A `start`, `stop`, `close` or step that finds no find of its mount's
   (it ended, or another mount took it) changes nothing, and its answer is
   marked `foreign` and names the find's real owner, "" for none, so the
-  provider never takes it as an acknowledgement.
+  provider never takes it as an acknowledgement. A step on the mount's bar
+  with no search answers it inactive.
   A restored page is a new incarnation under the same id, and generations
   come from one counter across the Manager, so their order holds across a
   suspend and restore.
-- An action records its mount as the owner before it checks the mount and
-  the presentation, and every pane change rereads both when it decides an
-  end, so a detach that lands between the check and the publish ends the
-  action. An action revalidates its page under the page lock before any
-  driver call, so one that waited out a close never reaches the closed
-  driver, and WebKitGTK and WKWebView also refuse any operation on a page
-  whose lifetime ended before it reaches the view. An action overtaken by
-  an end publishes nothing and stops the search it made.
+- Every find transition of a page is serialized on the page lock
+  (`managedPage.mu`, which every engine call already takes) and holds it
+  from its checks through its engine calls to the state it publishes:
+  `open`, `start`, step, `stop`, `close`, every end and the engine's
+  cleanup. An end raised where waiting is not allowed (the engine's UI
+  thread, a presentation change, a mount detaching, a page closing outside
+  its lock) is submitted to the page without blocking and applied by the
+  next transition, or by a transition of its own when none runs. Each
+  transition applies what was submitted before it first and what was
+  submitted during it last, so an end lands strictly before or strictly
+  after an action. A presentation end rereads what is shown when it is
+  applied. Ends submitted while a long page operation (a screenshot) holds
+  the lock wait for it: for that long the bar and the page's Escape claim
+  outlive the document or the presentation, and nothing else is out of
+  step. An action revalidates its page under the lock before any driver
+  call, so one that waited out a close never reaches the closed driver,
+  and WebKitGTK and WKWebView also refuse any operation on a page whose
+  lifetime ended before it reaches the view.
 - Whether the engine holds a search (highlights, a match selection, its own
   bar) is tracked apart from the logical session: every `FindStart` sets
   it and only a `FindStop` that succeeded clears it, including after a
-  failed start or step. An end owes the engine a stop, made behind the page
-  lock unless a new search replaced the engine's meanwhile, so bookkeeping
-  that runs first (a bar opened or closed, a refused action) never cancels
-  it, and a refused stop stays owed to the next close.
+  failed start or step. A search the engine holds that no session wants is
+  state every transition settles first, retrying a stop that failed before,
+  whoever owns the bar; a `stop` or `close` reports each failure of that
+  stop.
 - A new document is each engine's commit signal, so a reload ends the find
   and a same-document navigation (a fragment, the History API) keeps it:
   WebKitGTK `load-changed` with `WEBKIT_LOAD_COMMITTED`, WKWebView
@@ -202,9 +212,9 @@ the accelerator path above.
   frame (hosted WebView2 and headless Chromium), each reported through
   `pageHooks.DocumentCommitted`. The hook runs where the engine reports the
   commit (the UI thread for WebKitGTK and WKWebView) and only stamps the
-  page's next document epoch; the end it returns runs on a goroutine and
-  ends only a find opened on an earlier document, so a late end never
-  closes a find opened after the commit. A CDP commit is stamped when its
+  page's next document epoch; the end it returns is submitted from a
+  goroutine and ends only a find opened on an earlier document, so a late
+  end never closes a find opened after the commit. A CDP commit is stamped when its
   event reaches Go, so a find answered first on the new document is ended
   (the bar closes), never left showing the old document's results.
 - Escape closes AO's find bar through `find.close`, wherever keyboard focus
@@ -222,7 +232,16 @@ the accelerator path above.
   held page and mount, against the newest generation an answer of that
   incarnation reported, so nothing is sent to a find the backend already
   ended. A queued close is removed only by running, so a release and a
-  dispose in a row still close the backend's find.
+  dispose in a row still close the backend's find. The provider is bound
+  to the page and mount of the find it opened until that find's end is
+  taken or its close is queued: a query never goes to another page, and
+  another page takes an explicit open behind the close of the find before.
+  The bar it shows is the backend's bar for its mount or none: a foreign
+  answer to anything but a close, or an open the backend refused, closes
+  it. The Go find tables record each provider's view of every sequence
+  they run, and the frontend replays those scripts against the real
+  provider (`frontend/src/test/fixtures/browserFind/`, regenerated with
+  `AO_UPDATE_FIND_SCRIPTS=1` on the tables in `find_pairs_test.go`).
 - WebKitGTK (`findMode` "bar") drives the shared find bar through
   `WebKitFindController`: a case-insensitive, wrapping search that counts up
   to 1000 matches (past that the count shows as `1000+` and the position as

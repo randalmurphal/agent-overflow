@@ -1,0 +1,674 @@
+[
+ {
+  "name": "close A with commit at checked / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "close",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "next A with commit at checked / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "next",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 3,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "open A with commit at checked on an idle page / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "close",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 2,
+     "session": 4,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "open A with detach A at checked on an idle page / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "close",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 4,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 5,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "open B with commit at checked / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 3,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "open B with commit at checked / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-B",
+     "document": 2,
+     "session": 4,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "open B with detach A at checked / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-B",
+     "document": 1,
+     "session": 4,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "open B with switch away at checked / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-B",
+     "document": 1,
+     "session": 4,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-B",
+      "document": 1,
+      "session": 5,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "start A with commit at checked / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 2,
+     "session": 3,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "start A with commit at engine / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 4,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "stop A with commit at checked / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "stop",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 4,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ }
+]

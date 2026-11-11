@@ -494,7 +494,7 @@ func (m *Manager) syncPanePresentation(threadID string) {
 		}
 	}
 	m.mu.Unlock()
-	m.endHiddenFinds(threadID, pages)
+	m.endHiddenFinds(pages)
 	if !ok {
 		return
 	}

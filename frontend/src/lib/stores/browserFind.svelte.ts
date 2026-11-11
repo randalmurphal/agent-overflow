@@ -25,31 +25,45 @@
 // shown only if its intent's generation is still current. A queued close is
 // cleanup the backend still needs, so nothing but its own run removes it.
 //
+// The provider is bound to the page and mount of the find it opened until
+// that find's end is taken or its close has been queued: a query, a step or
+// a stop goes to that find, never to whatever page is shown now. Another
+// page takes an explicit open, queued behind the close of the find before.
+// The bar shown is always the backend's bar for this mount, or none: an
+// answer that says the find is gone, or an open the backend refused, closes
+// it.
+//
 // State: `seq` (display generation), `queue` and `inFlight` (intents),
-// `held` (what the backend holds for this provider: its page, mount and the
+// `held` (the find this provider is bound to: its page, mount and the
 // page's incarnation, whether the bar and a search are open there, and
 // `known`, the newest backend generation an answer of that incarnation
 // reported), `deferredEnd`, and the debounce timer.
 //
 // | Event                          | Effect                                                    |
 // |--------------------------------|-----------------------------------------------------------|
-// | bar opened (`opened`)          | seq++; queue open for the shown page; held.bar            |
-// | query typed                    | seq++; drop queued starts and steps; debounce, then queue |
-// |                                | start(query) for the shown page; held.search              |
+// | bar opened (`opened`)          | seq++; a find still held is closed first; bind to the     |
+// |                                | shown page and mount; queue open; held.bar                |
+// | query typed                    | seq++; drop queued starts and steps; with a bar held,     |
+// |                                | debounce, then queue start(query) for it; held.search     |
 // | query emptied                  | seq++; drop queued starts and steps; queue stop if a      |
 // |                                | search is held                                            |
 // | Enter / Shift+Enter            | queue a step, or cancel a queued opposite one             |
 // | bar closed (`clear`, dispose)  | seq++; drop the queue but its closes; queue close if      |
 // |                                | anything is held                                          |
-// | engine find opened             | seq++; drop the queue; queue start(seed); held.search     |
-// | answer for the held mount,     | known = max(known, session), reset by a newer incarnation;|
-// | not foreign                    |                                                           |
+// | engine find opened             | seq++; drop the queue; a find held on another page is     |
+// |                                | closed first; bind to the shown page; queue start(seed)   |
+// | own answer (not foreign)       | known = max(known, session), reset by a newer incarnation;|
 // |                                | shown if its seq is current                               |
-// | failure                        | shown as an error if its seq is current                   |
-// | end event for the held page    | in flight: kept as deferredEnd; else seq++, drop the      |
-// | and mount, newer than `known`  | queue but its closes, nothing held, onEnded (bar closes)  |
-// | or a newer incarnation         |                                                           |
-// | in-flight intent completes     | a deferredEnd newer than `known` is accepted as above     |
+// | foreign answer to open, start, | the find is gone: taken as its end (bar closes)           |
+// | step or stop of the held find  |                                                           |
+// | foreign answer to a close      | nothing: the bar is closed already                        |
+// | failed open of the held find   | shown as an error if its seq is current; bar closes       |
+// | other failure                  | shown as an error if its seq is current; the backend's    |
+// |                                | bar stays, and so does this one                           |
+// | end event for the held page    | in flight: kept as deferredEnd; else taken: seq++, drop   |
+// | and mount, newer than `known`  | the queue but its closes, nothing held, onEnded (the bar  |
+// | or a newer incarnation         | closes)                                                   |
+// | in-flight intent completes     | a deferredEnd still newer than `known` is taken as above  |
 
 import {
   BrowserCompanionFind,
@@ -167,15 +181,28 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
     if (!queued) enqueue('close');
   }
 
-  /** Holds the shown page for the pane's mount, ahead of an open or a start. */
+  /**
+   * Binds the provider to the shown page and the pane's mount, for an
+   * explicit open. A find still held elsewhere is closed first.
+   */
   function holdShown(): void {
     const pageId = options.pageId();
     const mount = options.mount() ?? '';
     if (held.pageId === pageId && held.mount === mount) return;
+    if (held.bar || held.search) {
+      enqueueClose();
+      held.bar = false;
+      held.search = false;
+    }
     held.pageId = pageId;
     held.mount = mount;
     held.incarnation = 0;
     held.known = 0;
+  }
+
+  /** Whether an intent was made for the find the provider is bound to. */
+  function bound(intent: Intent): boolean {
+    return intent.pageId === held.pageId && intent.mount === held.mount;
   }
 
   /** Whether an answer or end is for the held page and mount. */
@@ -206,15 +233,23 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
       inFlight = intent;
       try {
         const answer = await call(intent);
-        note(answer);
-        if (intent.seq === seq && (intent.kind === 'start' || intent.kind === 'next' || intent.kind === 'previous')) {
-          show(answer);
+        if (answer.foreign) {
+          // The find is gone, or another mount's: nothing of it is left to
+          // show, and a close needs nothing more.
+          if (intent.kind !== 'close' && bound(intent) && (held.bar || held.search)) accept();
+        } else {
+          note(answer);
+          if (intent.seq === seq && (intent.kind === 'start' || intent.kind === 'next' || intent.kind === 'previous')) {
+            show(answer);
+          }
         }
       } catch (err) {
         if (intent.seq === seq) {
           reset();
           options.onError(errString(err));
         }
+        // A bar the backend would not open is not shown.
+        if (intent.kind === 'open' && bound(intent) && held.bar) accept();
       } finally {
         inFlight = null;
       }
@@ -247,6 +282,7 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
   function accept(): void {
     seq += 1;
     cancelTimer();
+    deferredEnd = null;
     drop(['open', 'start', 'next', 'previous', 'stop']);
     held.bar = false;
     held.search = false;
@@ -307,10 +343,15 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
         held.search = false;
         return;
       }
+      // A query searches in the bar this provider opened, and nowhere else.
+      if (!held.bar) {
+        reset();
+        return;
+      }
       view.pending = true;
       timer = setTimeout(() => {
         timer = null;
-        holdShown();
+        if (!held.bar) return;
         held.search = true;
         enqueue('start', query);
       }, BROWSER_FIND_DEBOUNCE_MS);

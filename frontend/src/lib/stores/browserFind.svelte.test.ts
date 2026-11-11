@@ -48,6 +48,15 @@ function setup(mode: BrowserFindMode = 'bar') {
   return { find, onEnded, onError };
 }
 
+/** A bar-mode provider whose bar is open on the backend, with its calls cleared. */
+async function setupOpen() {
+  const made = setup();
+  made.find.opened?.();
+  await settle(0);
+  calls.length = 0;
+  return made;
+}
+
 function ended(session: number, page = 'page-1', identity: Partial<BrowserFindState> = {}): void {
   applyBrowserFindEvent(new BrowserCompanionEvent({
     kind: 'find', threadId: 'thread', pageId: page,
@@ -110,7 +119,7 @@ describe('browser find provider', () => {
 
   // Row: query typed.
   it('debounces the query to one start on the shown page and shows the answer', async () => {
-    const { find } = setup();
+    const { find } = await setupOpen();
     find.search('al');
     find.search('alpha');
     expect(find.result.pending).toBe(true);
@@ -122,7 +131,7 @@ describe('browser find provider', () => {
   });
 
   it('drops an answer a newer query superseded', async () => {
-    const { find } = setup();
+    const { find } = await setupOpen();
     const slow = held();
     answer = (call) => call.query === 'slow' ? slow.promise : Promise.resolve(state({ session: 2, query: call.query, found: true, matches: 1, current: 0 }));
     find.search('slow');
@@ -139,7 +148,7 @@ describe('browser find provider', () => {
   // the moment the query changes, so its answer can never show under the
   // third query.
   it('drops a queued start the moment the query changes', async () => {
-    const { find } = setup();
+    const { find } = await setupOpen();
     const alpha = held();
     answer = (call) => call.query === 'alpha'
       ? alpha.promise
@@ -210,7 +219,7 @@ describe('browser find provider', () => {
   });
 
   it('a start the reader closed on before it answered is closed after it', async () => {
-    const { find } = setup();
+    const { find } = await setupOpen();
     const start = held();
     answer = (call) => call.kind === 'start' ? start.promise : Promise.resolve(state({ session: 2, active: false }));
     find.search('late');
@@ -225,7 +234,7 @@ describe('browser find provider', () => {
 
   // Row: Enter / Shift+Enter.
   it('steps with next and previous only while a search has matches', async () => {
-    const { find } = setup();
+    const { find } = await setupOpen();
     find.next?.();
     expect(calls).toEqual([]);
     find.search('alpha');
@@ -248,7 +257,7 @@ describe('browser find provider', () => {
   });
 
   it('makes every engine call in order, one at a time, and nets opposite steps', async () => {
-    const { find } = setup();
+    const { find } = await setupOpen();
     const releases: Array<() => void> = [];
     answer = (call) => new Promise((resolve) => {
       releases.push(() => resolve(state({ found: true, matches: 3, current: call.kind === 'start' ? 0 : 1 })));
@@ -273,7 +282,7 @@ describe('browser find provider', () => {
   });
 
   it('shows an engine without a count as found with no numbers', async () => {
-    const { find } = setup();
+    const { find } = await setupOpen();
     answer = async () => state({ found: true, matches: -1, current: -1 });
     find.search('alpha');
     await settle();
@@ -282,7 +291,7 @@ describe('browser find provider', () => {
 
   // Row: failure.
   it('reports a failed request and clears the result', async () => {
-    const { find, onError } = setup();
+    const { find, onError } = await setupOpen();
     answer = async () => { throw new Error('find runs on the page the browser pane shows'); };
     find.search('alpha');
     await settle();
@@ -292,7 +301,7 @@ describe('browser find provider', () => {
 
   // Row: end event, newer than known, for the held page.
   it('closes its bar when the backend ends its find, not on an older end or another page', async () => {
-    const { find, onEnded } = setup();
+    const { find, onEnded } = await setupOpen();
     answer = async () => state({ session: 4, found: true, matches: 3, current: 0 });
     find.search('alpha');
     await settle();
@@ -335,7 +344,7 @@ describe('browser find provider', () => {
   });
 
   it('an end older than the answer in flight does not close the bar it opened', async () => {
-    const { find, onEnded } = setup();
+    const { find, onEnded } = await setupOpen();
     answer = async () => state({ session: 1, found: true, matches: 3, current: 0 });
     find.search('alpha');
     await settle();
@@ -450,7 +459,7 @@ describe('browser find provider', () => {
   // A close queued for one page survives the backend ending the find the
   // provider then held on another: the first page's search still needs it.
   it('keeps a queued close through an end of a later find', async () => {
-    const { find, onEnded } = setup();
+    const { find, onEnded } = await setupOpen();
     const start = held();
     answer = (call) => call.kind === 'start' ? start.promise : Promise.resolve(state({ pageId: call.pageId, session: 9, active: false }));
     find.search('alpha');
@@ -576,6 +585,86 @@ describe('browser find provider', () => {
     await settle(0);
     expect(calls.map((call) => call.mount)).toEqual(['mount-1', 'mount-1', 'mount-1', 'mount-1']);
     expect(kinds()).toEqual(['open', 'start', 'next', 'close']);
+  });
+
+  // Reported order: a bar and search on page 1, a step in flight, the tab
+  // switched to page 2, and a query typed before the step answers. The
+  // query searches the find the bar opened, on page 1, never page 2; page
+  // 1's end, deferred behind the step, still closes the bar.
+  it('never retargets a query to the page shown now, and closes on its own find\'s end', async () => {
+    const { find, onEnded } = await setupOpen();
+    find.search('alpha');
+    await settle();
+    const step = held();
+    answer = (call) => call.kind === 'next' ? step.promise : Promise.resolve(state({ pageId: call.pageId, session: 1, foreign: true, mount: '', active: false }));
+    find.next?.();
+    await settle(0);
+    pageId = 'page-2';
+    find.search('beta');
+    await settle();
+    ended(gen + 10);
+    step.release(state({ session: gen + 1, found: true, matches: 3, current: 1 }));
+    await settle(0);
+    expect(onEnded).toHaveBeenCalledTimes(1);
+    expect(calls.every((call) => call.pageId === 'page-1')).toBe(true);
+    expect(calls.map((call) => call.kind)).toEqual(['start', 'next']);
+  });
+
+  // The same order where the start reaches the backend first: the backend
+  // has no bar for it there and says so; the bar closes on that answer.
+  for (const kind of ['start', 'next', 'stop'] as const) {
+    it(`closes the bar on a foreign answer to a ${kind}`, async () => {
+      const { find, onEnded } = await setupOpen();
+      if (kind !== 'start') {
+        find.search('alpha');
+        await settle();
+      }
+      answer = async (call) => state({ pageId: call.pageId, session: 50, mount: '', foreign: true, active: false });
+      if (kind === 'start') find.search('alpha');
+      else if (kind === 'next') find.next?.();
+      else find.search('');
+      await settle();
+      expect(onEnded).toHaveBeenCalledTimes(1);
+      expect(find.result).toMatchObject({ count: 0, pending: false });
+    });
+  }
+
+  it('a foreign answer to a close changes nothing more', async () => {
+    const { find, onEnded } = await setupOpen();
+    answer = async (call) => state({ pageId: call.pageId, session: 50, mount: '', foreign: true, active: false });
+    find.clear();
+    await settle(0);
+    expect(onEnded).not.toHaveBeenCalled();
+    expect(kinds()).toEqual(['close']);
+  });
+
+  it('closes a bar the backend would not open, and reports why', async () => {
+    const { find, onEnded, onError } = setup();
+    answer = async () => { throw new Error('find runs on the page the browser pane shows'); };
+    find.opened?.();
+    await settle(0);
+    expect(onError).toHaveBeenCalledWith('find runs on the page the browser pane shows');
+    expect(onEnded).toHaveBeenCalledTimes(1);
+    find.search('alpha');
+    expect(find.result.pending).toBe(false);
+    await settle();
+    expect(kinds()).toEqual(['open']);
+  });
+
+  // An explicit open on another page closes the find held on the page
+  // before, then opens the new one: the old find's cleanup is never lost.
+  it('closes the find it holds before opening on another page', async () => {
+    const { find } = setup('engine');
+    find.openNative?.('alpha');
+    await settle(0);
+    pageId = 'page-2';
+    find.openNative?.('beta');
+    await settle(0);
+    expect(calls).toMatchObject([
+      { kind: 'start', pageId: 'page-1', query: 'alpha' },
+      { kind: 'close', pageId: 'page-1' },
+      { kind: 'start', pageId: 'page-2', query: 'beta' },
+    ]);
   });
 
   it('a disposed provider hears no end and closes what it held', async () => {

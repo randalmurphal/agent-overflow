@@ -365,8 +365,10 @@ func TestNativeEngineRealFind(t *testing.T) {
 	if stopped := find("stop", ""); stopped.Active {
 		t.Fatalf("stopped find = %+v", stopped)
 	}
-	if _, err := manager.Find(ctx, access, page.ID, "next", "", mount.ID); err == nil {
-		t.Fatal("a step after stop reached the engine")
+	// The bar stays open with no search: a step answers so without the
+	// engine moving the selection.
+	if state := find("next", ""); state.Active || state.Foreign {
+		t.Fatalf("a step after stop = %+v", state)
 	}
 	position(find("start", "ALPHA"), 0)
 	find("stop", "")

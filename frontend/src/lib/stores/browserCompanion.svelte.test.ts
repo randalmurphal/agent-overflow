@@ -342,6 +342,7 @@ describe('accelerators from the native page view', () => {
       threadId: 'thread-browser', paneId: 'browser-main', mode: 'bar', pageId: () => 'page-1', mount: () => 'mount-1', onEnded, onError: vi.fn(),
     });
     try {
+      find.opened?.();
       find.search('alpha');
       await vi.advanceTimersByTimeAsync(BROWSER_FIND_DEBOUNCE_MS);
       expect(find.result.count).toBe(2);

@@ -171,6 +171,11 @@ type fakePage struct {
 	findAnswer func(findResult) findResult
 	// findErr, when set, fails every find call.
 	findErr error
+	// findStartErr, when set, fails FindStart alone, after it replaced the
+	// search as a real engine's failed start can.
+	findStartErr error
+	// findStopErr, when set, is asked on each FindStop whether it fails.
+	findStopErr func() error
 }
 
 func (p *fakePage) Lifetime() context.Context { return p.ctx }
@@ -397,8 +402,13 @@ func (p *fakePage) findCall(call string) (findResult, error) {
 func (p *fakePage) FindStart(_ context.Context, query string) (findResult, error) {
 	p.mu.Lock()
 	p.findQuery = query
+	startErr := p.findStartErr
 	p.mu.Unlock()
-	return p.findCall("start " + query)
+	result, err := p.findCall("start " + query)
+	if err == nil && startErr != nil {
+		return findResult{}, startErr
+	}
+	return result, err
 }
 
 func (p *fakePage) FindStep(_ context.Context, backwards bool) (findResult, error) {
@@ -416,12 +426,17 @@ func (p *fakePage) FindStep(_ context.Context, backwards bool) (findResult, erro
 
 func (p *fakePage) FindStop(context.Context) error {
 	p.mu.Lock()
-	hook, err := p.findHook, p.findErr
+	hook, err, stopErr := p.findHook, p.findErr, p.findStopErr
+	p.mu.Unlock()
+	if err == nil && stopErr != nil {
+		err = stopErr()
+	}
 	// A refused stop leaves the search where it was.
 	if err == nil {
+		p.mu.Lock()
 		p.findQuery = ""
+		p.mu.Unlock()
 	}
-	p.mu.Unlock()
 	if hook != nil {
 		hook("stop")
 	}

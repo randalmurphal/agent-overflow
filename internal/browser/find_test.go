@@ -3,7 +3,9 @@ package browser
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -197,8 +199,10 @@ func TestFindStartsStepsWrapsAndStops(t *testing.T) {
 	if stopped.Active || stopped.Session <= started.Session {
 		t.Fatalf("stop = %+v", stopped)
 	}
-	if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "next", "", f.mount); err == nil || !strings.Contains(err.Error(), "no find") {
-		t.Fatalf("next after stop error = %v", err)
+	// The bar stays open with no search: a step answers that, asking the
+	// engine nothing.
+	if state, err := f.manager.Find(t.Context(), f.access, f.pageID, "next", "", f.mount); err != nil || state.Active || state.Foreign {
+		t.Fatalf("next after stop = %+v, %v", state, err)
 	}
 	// The caller ended it; nothing is announced.
 	f.noEvent(t)
@@ -277,8 +281,8 @@ func TestFindEndsWhenThePageNavigates(t *testing.T) {
 	}
 	ended := f.wantEnded(t, started.Session)
 	f.wantCall(t, "stop")
-	if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "next", "", f.mount); err == nil {
-		t.Fatalf("next after the navigation ended the find succeeded (session %d)", ended.Session)
+	if state, err := f.manager.Find(t.Context(), f.access, f.pageID, "next", "", f.mount); err != nil || !state.Foreign {
+		t.Fatalf("next after the navigation ended the find (session %d) = %+v, %v", ended.Session, state, err)
 	}
 
 	// A reload at the same address is a new document: the old count is
@@ -309,7 +313,9 @@ func TestFindEndsWhenThePageNavigates(t *testing.T) {
 	f.wantCall(t, "stop")
 }
 
-// The engine stop that follows an end never cancels a find started after it.
+// An end submitted while the page is busy is applied, with the engine stop
+// it owes, before any action that comes after it: the stop never lands on
+// a search started later.
 func TestFindEndDoesNotStopANewerSession(t *testing.T) {
 	f := newFindFixture(t, "https://example.test/alpha")
 	p, _, err := f.manager.lookupOwnedPage(f.access, f.pageID)
@@ -318,19 +324,15 @@ func TestFindEndDoesNotStopANewerSession(t *testing.T) {
 	}
 	f.find(t, "start", "alpha")
 	f.wantCall(t, "start alpha")
-	// Hold the page so the engine stop queues behind the next start.
+	// Hold the page so the end waits behind the page's operation.
 	p.mu.Lock()
 	f.fake.commitDocument()
-	f.wantEnded(t, 0)
+	f.noEvent(t)
 	p.mu.Unlock()
+	f.wantEnded(t, 0)
+	f.wantCall(t, "stop")
 	restarted := f.find(t, "start", "beta")
-	// Whichever ran first, the engine's last word is the new search.
-	first := <-f.calls
-	if first == "stop" {
-		f.wantCall(t, "start beta")
-	} else if first != "start beta" {
-		t.Fatalf("engine call = %q", first)
-	}
+	f.wantCall(t, "start beta")
 	if state := f.find(t, "next", ""); !state.Active || state.Session != restarted.Session {
 		t.Fatalf("the late stop ended the new find: %+v", state)
 	}
@@ -918,8 +920,8 @@ func TestFindEngineFailureEndsTheSession(t *testing.T) {
 	f.fake.mu.Lock()
 	f.fake.findErr = nil
 	f.fake.mu.Unlock()
-	if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "next", "", f.mount); err == nil {
-		t.Fatal("a failed step left the session running")
+	if state, err := f.manager.Find(t.Context(), f.access, f.pageID, "next", "", f.mount); err != nil || state.Active {
+		t.Fatalf("a failed step left the session running: %+v, %v", state, err)
 	}
 	if state := f.find(t, "start", "alpha"); !state.Active || state.Session <= started.Session {
 		t.Fatalf("restart after a failure = %+v", state)
@@ -962,11 +964,11 @@ func TestFindNeverCallsTheDriverOfAPageClosedWhileItWaited(t *testing.T) {
 	}
 }
 
-// A start whose engine call is still running when the find ends (the page
-// is switched away, or commits another document) publishes nothing: the bar
-// shows no result for a page it no longer shows, no claim is left on the
-// page, and the search it started is stopped.
-func TestFindStartOvertakenByAnEndPublishesNothing(t *testing.T) {
+// An end that lands while a start's engine call runs (the page is switched
+// away, or commits another document) is applied after the start: the start
+// answers its search, and the end that follows is newer, closes the bar,
+// releases the page's Escape and stops the search.
+func TestFindEndDuringAStartLandsAfterIt(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		end  func(*testing.T, *findFixture)
@@ -986,50 +988,28 @@ func TestFindStartOvertakenByAnEndPublishesNothing(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFindFixture(t, "https://example.test/alpha")
 			handle := f.fake.Handle()
-			opened := f.find(t, "open", "")
-			gate := make(chan struct{})
-			entered := make(chan struct{})
-			f.fake.mu.Lock()
-			f.fake.findHook = func(call string) {
-				if strings.HasPrefix(call, "start") {
-					close(entered)
-					<-gate
+			f.find(t, "open", "")
+			var once sync.Once
+			setFindPoint(f.manager, func(point string) {
+				if point == "engine" {
+					once.Do(func() { tc.end(t, f) })
 				}
-				f.calls <- call
+			})
+			got, err := f.manager.Find(t.Context(), f.access, f.pageID, "start", "alpha", f.mount)
+			if err != nil || !got.Active {
+				t.Fatalf("start with an end landing during it = %+v, %v", got, err)
 			}
-			f.fake.mu.Unlock()
-			type answer struct {
-				state FindState
-				err   error
-			}
-			answered := make(chan answer, 1)
-			go func() {
-				state, err := f.manager.Find(context.Background(), f.access, f.pageID, "start", "alpha", f.mount)
-				answered <- answer{state, err}
-			}()
-			<-entered
-			ended := make(chan struct{})
-			go func() {
-				defer close(ended)
-				tc.end(t, f)
-			}()
-			<-ended
-			end := f.wantEnded(t, opened.Session)
-			close(gate)
-			got := <-answered
-			if got.err != nil || got.state.Active {
-				t.Fatalf("start overtaken by an end = %+v, %v", got.state, got.err)
-			}
-			if got.state.Session >= end.Session {
-				t.Fatalf("the overtaken start's session %d is not older than the end %d", got.state.Session, end.Session)
+			end := f.wantEnded(t, got.Session)
+			if end.Session <= got.Session {
+				t.Fatalf("the end %d is not newer than the start %d", end.Session, got.Session)
 			}
 			f.wantCall(t, "start alpha")
 			f.wantCall(t, "stop")
 			if f.manager.keyChord(handle, findEscape) {
 				t.Fatal("the page's Escape was claimed after the find ended")
 			}
-			if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "next", "", f.mount); err == nil {
-				t.Fatal("the overtaken start left a search to step")
+			if state := f.find(t, "next", ""); !state.Foreign || state.Active {
+				t.Fatalf("step after the end = %+v", state)
 			}
 		})
 	}
@@ -1074,11 +1054,11 @@ func TestFindStopNeverRestoresAndIsIdempotent(t *testing.T) {
 	}
 }
 
-// A pane mount detached while its find action is between reserving and
-// publishing ends that action: another mount of the thread stays, so the
-// page stays shown, and the action publishes nothing, claims nothing and
-// stops the search it started.
-func TestFindDetachedWhileAnActionReservesEndsIt(t *testing.T) {
+// A pane mount detached while its find action runs, after the action
+// checked the mount, ends what the action made once the action finishes:
+// another mount of the thread stays, so the page stays shown, and the bar,
+// its claim and the search all end.
+func TestFindDetachedDuringAnActionEndsItAfter(t *testing.T) {
 	for _, kind := range []string{"open", "start"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newFindFixture(t, "https://example.test/alpha")
@@ -1088,34 +1068,18 @@ func TestFindDetachedWhileAnActionReservesEndsIt(t *testing.T) {
 				f.find(t, "open", "")
 			}
 			f.attach(t)
-			entered := make(chan struct{})
-			gate := make(chan struct{})
-			f.manager.findReserved = func() {
-				close(entered)
-				<-gate
-			}
-			type answer struct {
-				state FindState
-				err   error
-			}
-			answered := make(chan answer, 1)
-			go func() {
-				state, err := f.manager.Find(context.Background(), f.access, f.pageID, kind, "alpha", owner)
-				answered <- answer{state, err}
-			}()
-			<-entered
-			f.manager.DetachPane(owner)
-			f.wantEndedFor(t, 0, owner)
-			close(gate)
-			got := <-answered
-			f.manager.findReserved = nil
-			if kind == "open" && got.err == nil {
-				t.Fatalf("open by a detached mount = %+v", got.state)
-			}
-			if kind == "start" {
-				if got.err != nil || got.state.Active {
-					t.Fatalf("start by a detached mount = %+v, %v", got.state, got.err)
+			var once sync.Once
+			setFindPoint(f.manager, func(point string) {
+				if point == "checked" {
+					once.Do(func() { f.manager.DetachPane(owner) })
 				}
+			})
+			got, err := f.manager.Find(t.Context(), f.access, f.pageID, kind, "alpha", owner)
+			if err != nil || got.Foreign || got.Mount != owner {
+				t.Fatalf("%s by a mount detached during it = %+v, %v", kind, got, err)
+			}
+			f.wantEndedFor(t, got.Session, owner)
+			if kind == "start" {
 				f.wantCall(t, "start alpha")
 				f.wantCall(t, "stop")
 			}
@@ -1192,8 +1156,8 @@ func TestFindTakenOverByAnotherMount(t *testing.T) {
 			t.Fatalf("%s by the old owner = %+v, %v", kind, state, err)
 		}
 	}
-	if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "next", "", old); err == nil {
-		t.Fatal("the old owner stepped the new owner's search")
+	if state, err := f.manager.Find(t.Context(), f.access, f.pageID, "next", "", old); err != nil || !state.Foreign || state.Mount != f.mount {
+		t.Fatalf("the old owner stepped the new owner's search: %+v, %v", state, err)
 	}
 	f.noCall(t)
 	f.noEvent(t)
@@ -1285,8 +1249,9 @@ func TestFindFromAGoneMountTakesNothingOver(t *testing.T) {
 }
 
 // A stop that waited for the page lock while a reload ended its find
-// changes nothing: its answer is marked Foreign and names no owner, so it
-// acknowledges nothing the end did not.
+// changes nothing: the end is applied before the stop, whose answer is
+// marked Foreign and names no owner, so it acknowledges nothing the end did
+// not.
 func TestFindStopOvertakenByAnEndAnswersForeign(t *testing.T) {
 	f := newFindFixture(t, "https://example.test/alpha")
 	f.find(t, "open", "")
@@ -1307,12 +1272,12 @@ func TestFindStopOvertakenByAnEndAnswersForeign(t *testing.T) {
 		answered <- answer{state, err}
 	}()
 	// Let the stop resolve the page and wait for its lock; the reload's
-	// commit ends the find meanwhile.
+	// commit is submitted meanwhile.
 	time.Sleep(50 * time.Millisecond)
 	f.fake.commitDocument()
-	end := f.wantEnded(t, started.Session)
 	p.mu.Unlock()
 	got := <-answered
+	end := f.wantEnded(t, started.Session)
 	if got.err != nil || !got.state.Foreign || got.state.Mount != "" || got.state.Active {
 		t.Fatalf("stop overtaken by an end = %+v, %v", got.state, got.err)
 	}
@@ -1323,76 +1288,55 @@ func TestFindStopOvertakenByAnEndAnswersForeign(t *testing.T) {
 	f.noCall(t)
 }
 
-// An end owes the engine a stop. Bookkeeping that runs before that stop (a
-// bar opened or closed, a refused step, another mount's open) does not
-// clear the engine's search, so the stop is still made; a new search that
-// replaced the engine's is not stopped.
-func TestFindOwedEngineStopOutlivesBookkeeping(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		then   []string
-		search string
-	}{
-		{name: "empty open", then: []string{"open B"}},
-		{name: "open then close", then: []string{"open B", "close B"}},
-		{name: "refused step", then: []string{"step A"}},
-		{name: "refused stop and close", then: []string{"stop A", "close A"}},
-		{name: "takeover", then: []string{"open B", "open A"}},
-		{name: "new search", then: []string{"open B", "start B"}, search: "beta"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			e := newFindPairEnv(t, "search")
-			ops := map[string]findPairOp{}
-			for _, op := range findPairOps() {
-				ops[op.name] = op
+// A close whose engine stop fails reports it and closes the bar; the stop
+// stays owed, so the next close from that mount, whose find is gone, makes
+// it, and reports each failure while the engine keeps refusing.
+func TestFindCloseRetriesAStopTheEngineRefused(t *testing.T) {
+	for _, always := range []bool{false, true} {
+		t.Run(fmt.Sprintf("always %v", always), func(t *testing.T) {
+			f := newFindFixture(t, "https://example.test/alpha")
+			handle := f.fake.Handle()
+			f.find(t, "open", "")
+			f.find(t, "start", "alpha")
+			f.wantCall(t, "start alpha")
+			failures := 0
+			f.fake.mu.Lock()
+			f.fake.findStopErr = func() error {
+				if always || failures == 0 {
+					failures++
+					return errors.New("engine busy")
+				}
+				return nil
 			}
-			ops["detach A"].run(t, e)
-			for _, name := range tc.then {
-				ops[name].run(t, e)
+			f.fake.mu.Unlock()
+			if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "close", "", f.mount); err == nil {
+				t.Fatal("a close whose stop failed reported nothing")
 			}
-			ops["engine stop"].run(t, e)
-			e.f.fake.mu.Lock()
-			query := e.f.fake.findQuery
-			e.f.fake.mu.Unlock()
-			if query != tc.search {
-				t.Fatalf("engine search after the owed stop = %q, want %q", query, tc.search)
+			f.wantCall(t, "stop")
+			if f.manager.keyChord(handle, findEscape) {
+				t.Fatal("a close whose stop failed left the page's Escape claimed")
 			}
-			e.settle(t)
-			e.check(t)
+			for round := range 2 {
+				state, err := f.manager.Find(t.Context(), f.access, f.pageID, "close", "", f.mount)
+				f.wantCall(t, "stop")
+				f.fake.mu.Lock()
+				query := f.fake.findQuery
+				f.fake.mu.Unlock()
+				if always {
+					if err == nil || query == "" {
+						t.Fatalf("round %d: close against a failing engine = %+v, %v; engine %q", round, state, err, query)
+					}
+					continue
+				}
+				if err != nil || !state.Foreign || query != "" {
+					t.Fatalf("round %d: close after the engine recovered = %+v, %v; engine %q", round, state, err, query)
+				}
+				// Nothing is owed any more: the next close asks nothing.
+				f.noCall(t)
+				break
+			}
 		})
 	}
-}
-
-// A stop the engine refused stays owed: the next close clears the engine's
-// search even though no session is active.
-func TestFindFailedEngineStopStaysOwed(t *testing.T) {
-	e := newFindPairEnv(t, "search")
-	ops := map[string]findPairOp{}
-	for _, op := range findPairOps() {
-		ops[op.name] = op
-	}
-	ops["detach A"].run(t, e)
-	e.f.fake.mu.Lock()
-	e.f.fake.findErr = errors.New("engine busy")
-	e.f.fake.mu.Unlock()
-	ops["engine stop"].run(t, e)
-	e.f.fake.mu.Lock()
-	e.f.fake.findErr = nil
-	held := e.f.fake.findQuery
-	e.f.fake.mu.Unlock()
-	if held != "alpha" {
-		t.Fatalf("engine search after a refused stop = %q, want it kept", held)
-	}
-	ops["open B"].run(t, e)
-	ops["close B"].run(t, e)
-	e.f.fake.mu.Lock()
-	query := e.f.fake.findQuery
-	e.f.fake.mu.Unlock()
-	if query != "" {
-		t.Fatalf("engine search after the next close = %q", query)
-	}
-	e.settle(t)
-	e.check(t)
 }
 
 // A start or step the engine failed is cleared with it: the engine keeps no

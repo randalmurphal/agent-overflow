@@ -1,0 +1,4354 @@
+[
+ {
+  "name": "bar/close A then open A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "close",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "bar/commit then open B / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-B",
+     "document": 2,
+     "session": 3,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "bar/commit then start A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "",
+     "document": 1,
+     "session": 2,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 2,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "bar/late commit then start A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 2,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "bar/open A then close A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "close",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "bar/open A then detach A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "close",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "",
+     "document": 1,
+     "session": 2,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 2,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "bar/open A then open A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "bar/open A then open B / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 2,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "bar/open A then open B / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-B",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "bar/open A then start A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "bar/open B then close A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "close",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-B",
+     "document": 1,
+     "session": 3,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 2,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "bar/open B then close B / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-B",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "close",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-B",
+     "document": 1,
+     "session": 4,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "bar/open B then commit / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-B",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-B",
+      "document": 1,
+      "session": 4,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "bar/open B then start A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-B",
+     "document": 1,
+     "session": 3,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 2,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "bar/open B then start B / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-B",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-B",
+     "document": 1,
+     "session": 4,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "bar/start A then close A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "close",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "bar/start A then detach A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "close",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "",
+     "document": 1,
+     "session": 3,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 3,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "bar/start A then open B / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 3,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "bar/start A then start A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "bar/start A then step A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "next",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "bar/start A then stop A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "stop",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "bar/start fails then start A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "error": true
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "bar/suspend and restore then close A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "close",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 3,
+     "mount": "",
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 2,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "bar/suspend and restore then open B / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 3,
+     "mount": "mount-B",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "bar/suspend and restore then start A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 3,
+     "mount": "",
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 2,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/close A then open A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "close",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 4,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "search/commit then open B / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-B",
+     "document": 2,
+     "session": 4,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "search/commit then start A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "",
+     "document": 1,
+     "session": 3,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 3,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/commit then step A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "next",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "",
+     "document": 1,
+     "session": 3,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 3,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/commit then stop A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "stop",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "",
+     "document": 1,
+     "session": 3,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 3,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/late commit then start A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 2,
+     "session": 3,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "search/open A then close A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "close",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/open A then detach A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "close",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "",
+     "document": 1,
+     "session": 3,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 3,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/open A then open A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "search/open A then open B / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 3,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/open A then open B / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-B",
+     "document": 1,
+     "session": 4,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "search/open A then start A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "search/open A then step A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "next",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "search/open A then stop A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "stop",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "search/open B then close A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "close",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-B",
+     "document": 1,
+     "session": 4,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 3,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/open B then close B / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-B",
+     "document": 1,
+     "session": 4,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "close",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-B",
+     "document": 1,
+     "session": 5,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/open B then commit / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-B",
+     "document": 1,
+     "session": 4,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-B",
+      "document": 1,
+      "session": 5,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/open B then start A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-B",
+     "document": 1,
+     "session": 4,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 3,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/open B then start B / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-B",
+     "document": 1,
+     "session": 4,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-B",
+     "document": 1,
+     "session": 5,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "search/open B then step A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "next",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-B",
+     "document": 1,
+     "session": 4,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 3,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/open B then stop A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "stop",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-B",
+     "document": 1,
+     "session": 4,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 3,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/start A then close A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "close",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 4,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/start A then detach A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "close",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "",
+     "document": 1,
+     "session": 4,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 4,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/start A then open B / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 4,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/start A then open B / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-B",
+     "document": 1,
+     "session": 5,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "search/start A then start A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 4,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "search/start A then step A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "next",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "search/start A then stop A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "stop",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 4,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "search/start fails then start A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "error": true
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "search/step A then close A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "next",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "close",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/step A then detach A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "next",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "close",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "",
+     "document": 1,
+     "session": 3,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 3,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/step A then open B / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "next",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 3,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/step A then start A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "next",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "search/step A then step A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "next",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "next",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "search/step A then stop A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "next",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "stop",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "search/stop A then close A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "stop",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "close",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 4,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/stop A then detach A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "stop",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "close",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "",
+     "document": 1,
+     "session": 4,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 4,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/stop A then open B / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "stop",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 4,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/stop A then start A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "stop",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 4,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "search/stop fails always then detach A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "close",
+    "error": true,
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 3,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/stop fails once then close A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "close",
+    "error": true
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/stop fails once then stop A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "stop",
+    "error": true
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "search/suspend and restore then close A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "close",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 3,
+     "mount": "",
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 3,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/suspend and restore then open B / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 3,
+     "mount": "mount-B",
+     "document": 1,
+     "session": 4,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true
+ },
+ {
+  "name": "search/suspend and restore then start A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "beta",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 3,
+     "mount": "",
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 3,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/suspend and restore then step A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "next",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 3,
+     "mount": "",
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 3,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/suspend and restore then stop A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "act": "start",
+    "query": "alpha",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "act": "stop",
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 3,
+     "mount": "",
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    },
+    "events": [
+     {
+      "pageId": "page-1",
+      "incarnation": 1,
+      "mount": "mount-A",
+      "document": 1,
+      "session": 3,
+      "foreign": false,
+      "active": false,
+      "query": "",
+      "found": false,
+      "matches": 0,
+      "current": -1,
+      "capped": false
+     }
+    ]
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "search/switch away then open B / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "act": "open",
+    "error": true
+   }
+  ],
+  "bar": false
+ }
+]
