@@ -11,6 +11,14 @@ import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { copyToClipboard } from '../../utils/clipboard';
 import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import { applySettingsSnapshot, resetSettingsForTest } from '../../stores/settings.svelte';
+import { terminalFindKey } from './terminalFind.svelte';
+import {
+  getPaneFindProvider,
+  openPaneFind,
+  registerPaneFindProvider,
+  resetPaneFindForTest,
+  setPaneFindQuery,
+} from '../../stores/paneFind.svelte';
 
 // xterm can't render under happy-dom (no real canvas/WebGL context), and these
 // tests need to observe the exact ORDER of write() calls — so swap in a fake
@@ -28,6 +36,9 @@ const mocks = vi.hoisted(() => {
   const throwOn = new Set<string>();
   const decoder = new TextDecoder();
   let lastTerminal: FakeTerminal | null = null;
+  const track = (terminal: FakeTerminal): void => {
+    lastTerminal = terminal;
+  };
   class FakeTerminal {
     options: Record<string, unknown>;
     dataHandler: ((data: string) => void) | null = null;
@@ -45,7 +56,7 @@ const mocks = vi.hoisted(() => {
     unicode = { activeVersion: '6' };
     constructor(options: Record<string, unknown> = {}) {
       this.options = { ...options };
-      lastTerminal = this;
+      track(this);
     }
     loadAddon(): void {}
     open(mount?: HTMLElement): void {
@@ -92,15 +103,46 @@ const mocks = vi.hoisted(() => {
       this.dataHandler = handler;
       return { dispose(): void {} };
     }
+    onWriteParsed(): { dispose(): void } {
+      return { dispose(): void {} };
+    }
+    onResize(): { dispose(): void } {
+      return { dispose(): void {} };
+    }
     focus(): void {
       this.textarea?.focus();
     }
-    dispose(): void {}
+    disposed = false;
+    dispose(): void {
+      this.disposed = true;
+      timeline.push('dispose');
+    }
     get rows(): number {
       return 24;
     }
     get cols(): number {
       return 80;
+    }
+  }
+  // The search addon the body's find drives. Records its calls on the shared
+  // timeline so a test can order them against the xterm's own.
+  class FakeSearchAddon {
+    resultListeners = new Set<(event: { resultIndex: number; resultCount: number }) => void>();
+    findPrevious(term: string): boolean {
+      timeline.push(`findPrevious:${term}`);
+      for (const listener of this.resultListeners) listener({ resultIndex: 0, resultCount: 1 });
+      return true;
+    }
+    findNext(term: string): boolean {
+      timeline.push(`findNext:${term}`);
+      return true;
+    }
+    clearDecorations(): void {
+      timeline.push('clearDecorations');
+    }
+    onDidChangeResults(listener: (event: { resultIndex: number; resultCount: number }) => void): { dispose(): void } {
+      this.resultListeners.add(listener);
+      return { dispose: () => { this.resultListeners.delete(listener); } };
     }
   }
   return {
@@ -109,6 +151,7 @@ const mocks = vi.hoisted(() => {
     timeline,
     throwOn,
     FakeTerminal,
+    FakeSearchAddon,
     getLastTerminal: (): FakeTerminal | null => lastTerminal,
     GetTerminalReplay: vi.fn(),
     WriteTerminal: vi.fn(async () => {}),
@@ -125,6 +168,7 @@ vi.mock('../../stores/keybindings.svelte', () => ({
 
 vi.mock('@xterm/xterm', () => ({ Terminal: mocks.FakeTerminal }));
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} } }));
+vi.mock('@xterm/addon-search', () => ({ SearchAddon: mocks.FakeSearchAddon }));
 vi.mock('@xterm/addon-unicode11', () => ({ Unicode11Addon: class {} }));
 vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class {} }));
 vi.mock('@xterm/addon-webgl', () => ({
@@ -168,6 +212,10 @@ interface ReplayResult {
   throughSequence: number;
 }
 
+function findKeyFor(terminalID: string): string {
+  return terminalFindKey('pane-test', terminalID);
+}
+
 // Mount TerminalBody with GetTerminalReplay parked on an unresolved promise so
 // the test controls exactly when the replay round-trip completes — reproducing
 // the window where a live `terminal:output` event arrives mid-hydrate.
@@ -187,7 +235,7 @@ async function mountWithPendingReplay(
     }),
   );
 
-  render(TerminalBody, { props: { handle, terminalID, paneId: 'pane-test' } });
+  render(TerminalBody, { props: { handle, terminalID, paneId: 'pane-test', findKey: findKeyFor(terminalID) } });
   // Let onMount → hydrate() run up to the awaited GetTerminalReplay.
   await tick();
   await Promise.resolve();
@@ -342,6 +390,59 @@ describe('TerminalBody hydrate ordering', () => {
 // bubble to the app (pane navigation) or be written to the PTY. The escape
 // decision itself lives in eventEscapesTerminalToCommand (mocked here, unit-
 // tested in keybindings.svelte.test.ts); this asserts the handler's wiring.
+describe('TerminalBody find', () => {
+  beforeEach(() => {
+    mocks.writes.length = 0;
+    mocks.timeline.length = 0;
+    mocks.GetTerminalReplay.mockReset();
+    resetPaneFindForTest();
+  });
+
+  afterEach(() => {
+    cleanup();
+    resetPaneFindForTest();
+  });
+
+  async function settle(): Promise<void> {
+    await tick();
+    await Promise.resolve();
+    await tick();
+  }
+
+  it('registers under its find key once the replay is written, and searches an open query there', async () => {
+    const key = findKeyFor('t-find');
+    // The bar was open with a query when the previous body for this tab went.
+    const release = registerPaneFindProvider(key, { noun: 'terminal', result: { count: 0, current: -1, pending: false }, search: () => {}, clear: () => {} });
+    openPaneFind(key);
+    setPaneFindQuery(key, 'needle');
+    release();
+
+    const { resolveReplay } = await mountWithPendingReplay('t-find');
+    expect(getPaneFindProvider(key)).toBeNull();
+    resolveReplay({ data: btoa('REPLAY'), fromSequence: 0, throughSequence: 0 });
+    await settle();
+
+    expect(getPaneFindProvider(key)?.noun).toBe('terminal');
+    expect(mocks.timeline).toEqual(['resize:80x24', 'write:REPLAY', 'findPrevious:needle']);
+    expect(getPaneFindProvider(key)?.result).toMatchObject({ count: 1, current: 0 });
+  });
+
+  it('clears its matches and unregisters before the xterm is disposed', async () => {
+    const key = findKeyFor('t-find-2');
+    const { resolveReplay } = await mountWithPendingReplay('t-find-2');
+    resolveReplay({ data: '', fromSequence: 0, throughSequence: 0 });
+    await settle();
+    openPaneFind(key);
+    setPaneFindQuery(key, 'needle');
+    mocks.timeline.length = 0;
+
+    cleanup();
+
+    expect(mocks.timeline).toEqual(['clearDecorations', 'dispose']);
+    expect(getPaneFindProvider(key)).toBeNull();
+  });
+});
+
 describe('TerminalBody pane-nav key handler', () => {
   beforeEach(() => {
     mocks.GetTerminalReplay.mockReset();

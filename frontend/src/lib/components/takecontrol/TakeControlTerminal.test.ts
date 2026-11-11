@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 
 import TakeControlTerminal from './TakeControlTerminal.svelte';
 import { encodeTerminalInput } from '../../types/terminal';
+import { isPaneFindOpen, resetPaneFindForTest } from '../../stores/paneFind.svelte';
 
 // xterm can't render under happy-dom, and these tests need to observe the exact
 // sequence of write() calls (to prove the replay/live dedup), so swap in a fake
@@ -13,6 +14,9 @@ const mocks = vi.hoisted(() => {
   const resizes: Array<[number, number]> = [];
   const decoder = new TextDecoder();
   let lastTerminal: FakeTerminal | null = null;
+  const track = (terminal: FakeTerminal): void => {
+    lastTerminal = terminal;
+  };
   class FakeTerminal {
     options: Record<string, unknown> = {};
     dataHandler: ((data: string) => void) | null = null;
@@ -23,10 +27,21 @@ const mocks = vi.hoisted(() => {
     unicode = { activeVersion: '6' };
     constructor(options: Record<string, unknown> = {}) {
       this.options = { ...options };
-      lastTerminal = this;
+      track(this);
     }
+    textarea: HTMLTextAreaElement | null = null;
     loadAddon(): void {}
-    open(): void {}
+    open(mount?: HTMLElement): void {
+      if (!mount) return;
+      this.textarea = mount.ownerDocument.createElement('textarea');
+      mount.appendChild(this.textarea);
+    }
+    onWriteParsed(): { dispose(): void } {
+      return { dispose: (): void => {} };
+    }
+    onResize(): { dispose(): void } {
+      return { dispose: (): void => {} };
+    }
     hasSelection(): boolean {
       return false;
     }
@@ -62,10 +77,34 @@ const mocks = vi.hoisted(() => {
       return 80;
     }
   }
+  // The search addon the mirror's find drives; records the terms it is asked.
+  const searches: string[] = [];
+  class FakeSearchAddon {
+    listener: ((event: { resultIndex: number; resultCount: number }) => void) | null = null;
+    findPrevious(term: string): boolean {
+      searches.push(`previous:${term}`);
+      this.listener?.({ resultIndex: 0, resultCount: 2 });
+      return true;
+    }
+    findNext(term: string): boolean {
+      searches.push(`next:${term}`);
+      this.listener?.({ resultIndex: 1, resultCount: 2 });
+      return true;
+    }
+    clearDecorations(): void {
+      searches.push('clear');
+    }
+    onDidChangeResults(listener: (event: { resultIndex: number; resultCount: number }) => void): { dispose(): void } {
+      this.listener = listener;
+      return { dispose: (): void => { this.listener = null; } };
+    }
+  }
   return {
     writes,
     resizes,
+    searches,
     FakeTerminal,
+    FakeSearchAddon,
     getLastTerminal: (): FakeTerminal | null => lastTerminal,
     // Reset between tests so a test waiting on `getLastTerminal()` observes its
     // OWN component's terminal, not a stale one left mounted by a prior test
@@ -88,6 +127,7 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('@xterm/xterm', () => ({ Terminal: mocks.FakeTerminal }));
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} } }));
+vi.mock('@xterm/addon-search', () => ({ SearchAddon: mocks.FakeSearchAddon }));
 vi.mock('@xterm/addon-unicode11', () => ({ Unicode11Addon: class {} }));
 vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class {} }));
 vi.mock('@xterm/addon-webgl', () => ({
@@ -489,11 +529,49 @@ describe('<TakeControlTerminal>', () => {
   it('surfaces an attach failure instead of mounting a terminal', async () => {
     mocks.ProviderTerminalAttach.mockRejectedValue(new Error('no live session'));
 
-    const { findByText } = render(TakeControlTerminal, {
+    const { findByText, queryByTestId } = render(TakeControlTerminal, {
       props: { paneId: 'tc-1', threadId: 'thread-1' },
     });
 
     expect(await findByText(/Could not attach/i)).toBeTruthy();
     expect(mocks.ProviderTerminalReplay).not.toHaveBeenCalled();
+    expect(queryByTestId('take-control-find')).toBeNull();
+  });
+
+  it('finds in the mirror from its button, under this pane, and a close returns focus to the mirror', async () => {
+    resetPaneFindForTest();
+    mocks.searches.length = 0;
+    mocks.ProviderTerminalReplay.mockResolvedValue({ data: b64('FRAME'), fromSequence: 0, throughSequence: 0 });
+
+    const { findByTestId, getByTestId, queryByTestId, unmount } = render(TakeControlTerminal, {
+      props: { paneId: 'tc-find', threadId: 'thread-1' },
+    });
+    expect(queryByTestId('take-control-find')).toBeNull();
+    const button = await findByTestId('take-control-find');
+    expect(button.getAttribute('title')).toBe('Find in Terminal');
+    await fireEvent.click(button);
+
+    const input = (await findByTestId('pane-find-input')) as HTMLInputElement;
+    await waitFor(() => expect(document.activeElement).toBe(input));
+    expect(input.placeholder).toBe('Find in terminal');
+    await fireEvent.input(input, { target: { value: 'needle' } });
+    expect(mocks.searches).toEqual(['previous:needle']);
+    await waitFor(() => expect(getByTestId('pane-find-count').textContent?.trim()).toBe('1/2'));
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    expect(mocks.searches.at(-1)).toBe('next:needle');
+    await waitFor(() => expect(getByTestId('pane-find-count').textContent?.trim()).toBe('2/2'));
+
+    await fireEvent.click(getByTestId('pane-find-close'));
+    expect(queryByTestId('pane-find-bar')).toBeNull();
+    expect(mocks.searches.at(-1)).toBe('clear');
+    await waitFor(() => expect(document.activeElement).toBe(mocks.getLastTerminal()!.textarea));
+    expect(isPaneFindOpen('tc-find')).toBe(false);
+
+    mocks.searches.length = 0;
+    await fireEvent.click(getByTestId('take-control-find'));
+    unmount();
+    // The query was kept; the unmount clears its matches.
+    expect(mocks.searches).toEqual(['previous:needle', 'clear']);
+    resetPaneFindForTest();
   });
 });

@@ -47,10 +47,12 @@ import {
   PANE_FIND_LIST_REGION,
   activatePaneFindRegion,
   declarePaneFindRegions,
+  declarePaneFindSurface,
   getPaneFind,
   openPaneFind,
   paneFindDetailKey,
   paneFindListKey,
+  paneFindRegionKey,
   registerPaneFindProvider,
   resetPaneFindForTest,
   type PaneFindProvider,
@@ -1198,6 +1200,79 @@ describe('find.in-pane command', () => {
     }
     expect(escape(transcript, false)).toBe(true);
     expect(interrupt).toHaveBeenCalledTimes(1);
+  });
+
+  // The thread terminal is a find surface nested in the pane, with one find
+  // per tab (TerminalSurface). mod+f inside a focused xterm is the shell's
+  // (readline forward-char, a pager's page): it opens nothing and is left to
+  // the terminal. From the terminal's own bar, the find commands, Escape and
+  // Back act on that bar; from the rest of the pane, on the pane's own.
+  describe('in a thread terminal', () => {
+    function terminalPane() {
+      const pane = readyPane();
+      registerFixtureCommands(pane);
+      setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
+      setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 600 }]);
+      focusPane(pane.paneId);
+      const tab = paneFindRegionKey(pane.paneId, 'terminal:t1');
+      const own = providerFor();
+      const terminal = providerFor();
+      registerPaneFindProvider(pane.paneId, own);
+      registerPaneFindProvider(tab, terminal);
+      const surface = declarePaneFindSurface(pane.paneId, () => tab, true);
+      const ctx = () => makeCommandContext(pane, {}) as CommandContext;
+      const key = (init: KeyboardEventInit, target?: HTMLElement) => {
+        const event = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init });
+        if (target) Object.defineProperty(event, 'target', { value: target });
+        return dispatchKey(event, ctx(), { isMac: false });
+      };
+      return { pane, tab, own, terminal, surface, ctx, key };
+    }
+
+    it('leaves ctrl+f in a focused xterm to the shell and opens no bar', () => {
+      const { pane, tab, key } = terminalPane();
+      notifyTerminalFocus(pane.paneId, true);
+      try {
+        expect(key({ key: 'f', code: 'KeyF', ctrlKey: true })).toBe(false);
+        expect(getPaneFind(tab)).toBeNull();
+        expect(getPaneFind(pane.paneId)).toBeNull();
+        // Nor does the escape predicate let the chord out of the xterm.
+        expect(TERMINAL_ESCAPE_COMMAND_IDS.has('find.in-pane')).toBe(false);
+      } finally {
+        notifyTerminalFocus(pane.paneId, false);
+      }
+    });
+
+    it('opens, refocuses and closes the terminal\'s bar from it, and the pane\'s from the rest of the pane', () => {
+      const { pane, tab, own, terminal, surface, ctx, key } = terminalPane();
+      expect(ctx().flags.paneFindAvailable).toBe(true);
+      expect(runCommand('find.in-pane', ctx())).toBe(true);
+      expect(getPaneFind(tab)?.open).toBe(true);
+      expect(getPaneFind(pane.paneId)).toBeNull();
+      const request = getPaneFind(tab)!.focusRequest;
+      expect(key({ key: 'f', code: 'KeyF', ctrlKey: true })).toBe(true);
+      expect(getPaneFind(tab)!.focusRequest).toBe(request + 1);
+
+      openPaneFind(pane.paneId);
+      expect(key({ key: 'Escape', code: 'Escape' })).toBe(true);
+      expect(getPaneFind(tab)?.open).toBe(false);
+      expect(terminal.clear).toHaveBeenCalledTimes(1);
+      expect(getPaneFind(pane.paneId)?.open).toBe(true);
+
+      surface.setActive(false);
+      expect(key({ key: 'Escape', code: 'Escape' })).toBe(true);
+      expect(getPaneFind(pane.paneId)?.open).toBe(false);
+      expect(own.clear).toHaveBeenCalledTimes(1);
+    });
+
+    it('Back closes the terminal\'s bar before anything else', () => {
+      const { tab, ctx } = terminalPane();
+      openPaneFind(tab);
+      expect(ctx().flags.paneFindOpen).toBe(true);
+      expect(dispatchKey(createSurfaceDismissalEvent(), ctx())).toBe(true);
+      expect(getPaneFind(tab)?.open).toBe(false);
+      expect(dispatchKey(createSurfaceDismissalEvent(), ctx())).toBe(false);
+    });
   });
 
   // An overlay (settings, a dialog) is on top of the pane: mod+f does not

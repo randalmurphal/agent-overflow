@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import type { Terminal } from '@xterm/xterm';
   import type { FitAddon } from '@xterm/addon-fit';
   import {
@@ -12,6 +12,7 @@
   import { getSettings } from '../../stores/settings.svelte';
   import { decodeTerminalOutput, encodeTerminalInput, normalizeTerminalReplay } from '../../types/terminal';
   import { getXtermTheme } from './terminalTheme';
+  import { registerTerminalFind, type TerminalFindRegistration } from './terminalFind.svelte';
   import {
     notifyTerminalFocus,
     type ThreadTerminalStateHandle,
@@ -30,9 +31,12 @@
     // The owning pane's id. The focus registry is keyed by pane so two
     // terminal panes gate their `terminalFocus` chords independently.
     paneId: string;
+    // This terminal's find key: its find provider registers under it while
+    // the xterm lives (stores/paneFind.svelte.ts).
+    findKey: string;
   }
 
-  let { handle, terminalID, paneId }: Props = $props();
+  let { handle, terminalID, paneId, findKey }: Props = $props();
 
   let mountEl: HTMLDivElement | undefined = $state();
   let term: Terminal | null = null;
@@ -45,6 +49,8 @@
   // Unregisters this xterm from the store handle (terminal.clear reaches the
   // active tab's xterm through it). Null until hydrate() has built the term.
   let detachXterm: (() => void) | null = null;
+  // The xterm's registered find. Null until hydrate() has written the replay.
+  let find: TerminalFindRegistration | null = null;
   let destroyed = false;
   // Track whether we've already told the focus registry we're focused so
   // we don't double-decrement on teardown.
@@ -191,6 +197,8 @@
     // queue empty after the drain above; subsequent output drains normally.)
     hydrated = true;
 
+    find = registerTerminalFind(findKey, term, built.search);
+
     dataDisposable = term.onData(writeInput);
 
     attachResizeObserver();
@@ -249,6 +257,8 @@
     const theme = getXtermTheme(getResolvedTheme());
     if (!term) return;
     term.options.theme = theme;
+    // Match grounds come from the same palette; repaint them with it.
+    untrack(() => find?.restyle());
   });
 
   // Follow the app font-size setting (the mod+/- zoom chords) live. Writing
@@ -282,6 +292,9 @@
     }
     dataDisposable?.dispose();
     dataDisposable = null;
+    // Before the xterm goes: the release clears the provider's decorations.
+    find?.release();
+    find = null;
     detachXterm?.();
     detachXterm = null;
     inputWriter.dispose();
@@ -308,6 +321,11 @@
     // installed @xterm/xterm 6.0.0: Terminal.focus -> core.focus ->
     // this.textarea.focus(), guarded only by the textarea existing.)
     term.focus();
+  }
+
+  /** The element that holds the terminal's keyboard focus, once built. */
+  export function focusTarget(): HTMLElement | null {
+    return term?.textarea ?? null;
   }
 </script>
 

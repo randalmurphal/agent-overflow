@@ -11,7 +11,8 @@
   // refused while this one holds the lease, and a socket that dies without
   // unmounting gives the lease back on its own — so the detach below is the
   // tidy path, not the only one.
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
+  import Search from '@lucide/svelte/icons/search';
   import type { Terminal } from '@xterm/xterm';
   import type { FitAddon } from '@xterm/addon-fit';
   import Hand from '@lucide/svelte/icons/hand';
@@ -44,6 +45,10 @@
   import { errString } from '../../utils/errors';
   import Icon from '../primitives/Icon.svelte';
   import Button from '../primitives/Button.svelte';
+  import IconButton from '../primitives/IconButton.svelte';
+  import PaneFindBar from '../panes/PaneFindBar.svelte';
+  import { registerTerminalFind, type TerminalFindRegistration } from '../terminal/terminalFind.svelte';
+  import { openPaneFind } from '../../stores/paneFind.svelte';
 
   let { paneId, threadId }: { paneId: string; threadId: string } = $props();
 
@@ -53,6 +58,10 @@
   let resizeObserver: ResizeObserver | null = null;
   let dataDisposable: { dispose(): void } | null = null;
   let cancelOutput: (() => void) | null = null;
+  // The mirror's find, registered under this pane once the replay is written.
+  let find: TerminalFindRegistration | null = null;
+  // True once the xterm exists: the find button needs it.
+  let termReady = $state(false);
   let destroyed = false;
   let focusCounted = false;
 
@@ -195,6 +204,8 @@
     }
     hydrated = true;
 
+    find = registerTerminalFind(paneId, term, built.search);
+    termReady = true;
     dataDisposable = term.onData(writeInput);
     attachResizeObserver();
     scheduleFit();
@@ -230,6 +241,7 @@
     const theme = getXtermTheme(getResolvedTheme());
     if (!term) return;
     term.options.theme = theme;
+    untrack(() => find?.restyle());
   });
 
   // Follow the app font-size setting (the mod+/- zoom chords) live; same
@@ -285,6 +297,11 @@
     }
   }
 
+  // A close returns focus to the mirror.
+  function openFind(): void {
+    openPaneFind(paneId, { returnFocus: term?.textarea ?? null });
+  }
+
   onMount(() => {
     void hydrate();
   });
@@ -309,6 +326,8 @@
     });
     dataDisposable?.dispose();
     dataDisposable = null;
+    find?.release();
+    find = null;
     inputWriter.dispose();
     resizeWriter.dispose();
     resizeObserver?.disconnect();
@@ -343,7 +362,17 @@
     <span class="text-[11px] text-fg-muted">
       {#if attaching}Attaching…{:else if controlHeld}You are driving the terminal{:else}Live mirror{/if}
     </span>
+    {#if termReady}
+      <!-- mod+f inside the focused xterm is the TUI's; this is the find entry there. -->
+      <div class="ml-auto">
+        <IconButton size="sm" label="Find in Terminal" testId="take-control-find" onClick={openFind}>
+          {#snippet children()}<Icon icon={Search} size={13} />{/snippet}
+        </IconButton>
+      </div>
+    {/if}
   </div>
+
+  <PaneFindBar {paneId} title="Claude TUI terminal" fallbackFocus={() => term?.textarea ?? null} />
 
   {#if attachError}
     <div class="flex flex-1 min-h-0 items-center justify-center px-4 text-center text-sm text-error">

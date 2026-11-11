@@ -14,6 +14,7 @@
 //     tab chords bubble to the window handler.
 //   - Right-click: copy the selection if there is one, otherwise paste (the
 //     VS Code `copyPaste` behavior), instead of the webview's context menu.
+//   - The search addon behind the surface's find bar.
 //
 // Keeping this in one place means the two surfaces can't drift on glyph
 // rendering or key handling. The only thing the caller owns is where input
@@ -25,6 +26,7 @@
 
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { SearchAddon } from '@xterm/addon-search';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
@@ -41,6 +43,7 @@ import { errString } from '../../utils/errors';
 import { clipboardChordFor, isFontZoomChord } from './terminalKeys';
 import { isMacPlatform } from '../../utils/platform';
 import { isCompactLayout } from '../../stores/layoutMode.svelte';
+import { TERMINAL_FIND_HIGHLIGHT_LIMIT } from './terminalFind.svelte';
 
 const isMac = isMacPlatform();
 
@@ -64,11 +67,13 @@ export interface BuildTerminalOptions {
 // handling.
 // `paste` is the clipboard-to-PTY route the widget's own chord and right-click
 // use, exposed so the compact key row (which has neither) offers the same
-// action with the same failure toast.
+// action with the same failure toast. `search` is the find addon the
+// surface's find provider drives (terminalFind.svelte.ts); its match
+// decorations need `allowProposedApi`.
 export function buildTerminal(
   mount: HTMLDivElement,
   { onInput, isDisposed }: BuildTerminalOptions,
-): { term: Terminal; fit: FitAddon; paste: () => void } {
+): { term: Terminal; fit: FitAddon; search: SearchAddon; paste: () => void } {
   const terminal = new Terminal({
     convertEol: false,
     cursorBlink: true,
@@ -105,6 +110,8 @@ export function buildTerminal(
   // document-level link delegate uses, which validates http(s) and picks
   // the host binding or window.open by run mode.
   terminal.loadAddon(new WebLinksAddon((_event, uri) => void handleExternalURL(uri)));
+  const searchAddon = new SearchAddon({ highlightLimit: TERMINAL_FIND_HIGHLIGHT_LIMIT });
+  terminal.loadAddon(searchAddon);
   terminal.open(mount);
 
   // Copy the selection and drop the highlight, so the next Ctrl+C / right-
@@ -246,5 +253,5 @@ export function buildTerminal(
     );
   }
 
-  return { term: terminal, fit: fitAddon, paste: pasteClipboard };
+  return { term: terminal, fit: fitAddon, search: searchAddon, paste: pasteClipboard };
 }

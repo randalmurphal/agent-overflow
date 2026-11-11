@@ -28,6 +28,10 @@
   import TerminalTabStrip from './TerminalTabStrip.svelte';
   import TerminalBody from './TerminalBody.svelte';
   import type { ThreadTerminalSurfaceContext } from './terminalDrawerTypes';
+  import { terminalFindKey } from './terminalFind.svelte';
+  import PaneFindBar from '../panes/PaneFindBar.svelte';
+  import { paneFindSurface } from '../panes/paneFindRegion';
+  import { dropPaneFind, openPaneFind } from '../../stores/paneFind.svelte';
 
   interface Props {
     surface: ThreadTerminalSurfaceContext;
@@ -40,7 +44,7 @@
 
   let { surface, manual = false, collapsible = true }: Props = $props();
 
-  let bodyEl: { focus: () => void } | undefined = $state(undefined);
+  let bodyEl: { focus: () => void; focusTarget: () => HTMLElement | null } | undefined = $state(undefined);
   // Latch a "focus the terminal body once it exists" intent, drained (and
   // cleared) by the rAF effect below. Every create/switch/close changes
   // activeTerminalID, and TerminalBody is keyed on it, so each remounts the body
@@ -186,6 +190,30 @@
     surface.setVisible(false);
   }
 
+  // Each tab has its own find (terminalFind.svelte.ts). The pane's find
+  // commands reach the active tab's through the surface declaration; the
+  // tab strip's button is the keyboard-free entry, since mod+f inside the
+  // xterm belongs to the shell. A close returns focus to the terminal.
+  function activeFindKey(): string | null {
+    const terminalID = handle.activeTerminalID;
+    return terminalID ? terminalFindKey(surface.paneId, terminalID) : null;
+  }
+
+  function openFind() {
+    const key = activeFindKey();
+    if (key) openPaneFind(key, { returnFocus: bodyEl?.focusTarget() ?? null });
+  }
+
+  // A closed tab's find state goes with it.
+  let listedTerminals = new Set(handle.tabs.map((t) => t.terminalID));
+  $effect(() => {
+    const now = new Set(handle.tabs.map((t) => t.terminalID));
+    for (const terminalID of listedTerminals) {
+      if (!now.has(terminalID)) dropPaneFind(terminalFindKey(surface.paneId, terminalID));
+    }
+    listedTerminals = now;
+  });
+
   let previousTabCount = handle.tabs.length;
 
   $effect(() => {
@@ -255,27 +283,37 @@
   });
 </script>
 
-<TerminalTabStrip backend={threadMachine(surface.threadId ?? '', null)}
-  {handle}
-  onOpen={() => void openTerminal({ focus: true })}
-  onClose={closeTerminal}
-  onSelect={selectTerminal}
-  onRefresh={refreshActiveTerminal}
-  onCollapse={collapsible ? collapseDrawer : undefined}
-  workspacePath={surface.workspacePath}
-/>
+<div
+  class="flex flex-1 min-h-0 min-w-0 flex-col"
+  data-testid="terminal-surface"
+  {@attach paneFindSurface(surface.paneId, activeFindKey)}
+>
+  <TerminalTabStrip backend={threadMachine(surface.threadId ?? '', null)}
+    {handle}
+    onOpen={() => void openTerminal({ focus: true })}
+    onClose={closeTerminal}
+    onSelect={selectTerminal}
+    onRefresh={refreshActiveTerminal}
+    onFind={openFind}
+    onCollapse={collapsible ? collapseDrawer : undefined}
+    workspacePath={surface.workspacePath}
+  />
 
-{#if handle.activeTerminalID}
-  {#key handle.activeTerminalID}
-    <TerminalBody
-      bind:this={bodyEl}
-      {handle}
-      terminalID={handle.activeTerminalID}
-      paneId={surface.paneId}
-    />
-  {/key}
-{:else}
-  <div class="flex-1 min-h-0 flex items-center justify-center text-fg-muted text-sm">
-    No active terminal.
-  </div>
-{/if}
+  {#if handle.activeTerminalID}
+    {@const findKey = terminalFindKey(surface.paneId, handle.activeTerminalID)}
+    {#key handle.activeTerminalID}
+      <PaneFindBar paneId={findKey} title="Terminal" fallbackFocus={() => bodyEl?.focusTarget() ?? null} />
+      <TerminalBody
+        bind:this={bodyEl}
+        {handle}
+        terminalID={handle.activeTerminalID}
+        paneId={surface.paneId}
+        {findKey}
+      />
+    {/key}
+  {:else}
+    <div class="flex-1 min-h-0 flex items-center justify-center text-fg-muted text-sm">
+      No active terminal.
+    </div>
+  {/if}
+</div>

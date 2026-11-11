@@ -19,5 +19,18 @@ Key-row pointer presses must retain terminal focus. Keep `tabindex="-1"` and
 prevent the default `pointerdown` behavior. In compact mode the terminal fills
 the chat column and does not expose the desktop resize handle.
 
+## Find
+
+`terminalFind.svelte.ts` drives the search addon `buildTerminal` loads, for
+`TerminalBody` (one find per tab, under `terminalFindKey`) and the
+take-control mirror (under its pane id). The tab strip's find button opens
+the active tab's bar. mod+f inside a focused xterm stays the shell's
+(readline, pagers): never make `find.in-pane` a terminal escape chord. The
+addon matches, not `utils/findMatch.ts`: trimmed, case-insensitive, up to
+1000 counted. It searches the 4000 lines of scrollback the terminal keeps,
+and under a full-screen program (alternate screen) only the visible screen.
+New output re-searches once writes pause; until then the count reads as
+updating.
+
 Extend the `FakeTerminal` in `TerminalBody.test.ts` for component tests. Reset
 `setCompactLayoutForTest` after every test that changes it.
