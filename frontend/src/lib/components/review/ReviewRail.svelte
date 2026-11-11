@@ -4,9 +4,6 @@
   import Icon from '../primitives/Icon.svelte';
   import ReviewFileTree from './ReviewFileTree.svelte';
   import { appStorageGet, appStorageSet } from '../../stores/appStorage';
-  import { isCompactLayout } from '../../stores/layoutMode.svelte';
-  import { airspaceSurfaces } from '../../utils/paneAirspace.svelte';
-  import { isSurfaceDismissalEvent } from '../../utils/surfaceDismissal';
   import type { DiffFileSummary } from '../../utils/patchStore';
   import type { CommentFileCounts } from '../../utils/reviewComments';
 
@@ -15,11 +12,9 @@
   // control lives in one place in both states. Width is persisted
   // (appStorage `reviewTreeWidth`). On the phone the open rail lays over
   // the diff at full width (a 240px rail beside a 360px diff is neither);
-  // picking a file closes it (ReviewPane.jumpToFile), and so does Back:
-  // the open tree is the topmost layer there, so the Back ladder's
-  // surface-dismissal Escape (utils/stepBack.ts) closes it before the
-  // companion itself would close, unless an overlay (the filter menu) is
-  // up, which the airspace registry says and which takes the press first. Comments are read in
+  // picking a file closes it (ReviewPane.jumpToFile), and so does Back
+  // (ReviewPane's pane back step) before the review itself would close.
+  // Comments are read in
   // the overview's Conversation section and on the diff itself; the rail
   // only counts them per file.
 
@@ -98,17 +93,6 @@
     appStorageSet('reviewTreeWidth', String(railWidth));
   }
 
-  $effect(() => {
-    if (!open || !isCompactLayout() || typeof window === 'undefined') return;
-    const onKeydown = (event: KeyboardEvent): void => {
-      if (event.defaultPrevented || !isSurfaceDismissalEvent(event)) return;
-      if (airspaceSurfaces().length > 0) return;
-      event.preventDefault();
-      onToggleOpen();
-    };
-    window.addEventListener('keydown', onKeydown);
-    return () => window.removeEventListener('keydown', onKeydown);
-  });
 </script>
 
 {#if open}

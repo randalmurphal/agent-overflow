@@ -87,8 +87,11 @@ PR stores; components own presentation and interaction.
   picked, so the fixed chrome never changes height for it. The
   file-tree toggle lives in the rail (`ReviewRail`: the tree's header when
   open, a strip when closed; on compact the open rail covers the diff and
-  a pick closes it). The conversation refresh is on the Conversation
-  section's header. The PR title bar (`ReviewPRTitleBar`) is four
+  a pick closes it). Back steps out of the CI log, the conflict view and
+  the compact rail before the review: `ReviewPane` registers that step
+  under its host pane (`stores/paneBackSteps.ts`), which the companion
+  rung of `utils/stepBack.ts` and the Pull requests page run first. The
+  conversation refresh is on the Conversation section's header. The PR title bar (`ReviewPRTitleBar`) is four
   fixed-minimum-height lines: title, author and state, refs and verdicts,
   CI with its refresh inside the wrapping chip row.
 - A jump to a row inside a file lands under the sticky file bar: scroll it

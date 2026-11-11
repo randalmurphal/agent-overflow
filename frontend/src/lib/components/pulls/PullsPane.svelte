@@ -84,8 +84,8 @@
   } from '../../stores/pullsPageAgent.svelte';
   import { mrFilters, pipelineFilters, setMRFilters } from '../../stores/pullsPageFilters.svelte';
   import type { CapturedError } from '../../stores/errorReports.svelte';
-  import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
-  import { currentPinnedReviewState, reviewSubjectForPR } from '../../stores/reviewPanePinned.svelte';
+  import { currentPinnedReviewState } from '../../stores/reviewPanePinned.svelte';
+  import { stepPaneBack } from '../../stores/paneBackSteps';
   import { selectedBackend } from '../../stores/selectedBackend.svelte';
   import { addErrorToast } from '../../stores/toast.svelte';
   import { paneFindDetailKey } from '../../stores/paneFind.svelte';
@@ -101,8 +101,8 @@
   // the picked MR, or the picked pipeline's stages and logs. The list
   // column is resizable and remembered; compact shows the list as the
   // page and the detail full width with the header's Back, the one Back:
-  // it closes a view open in the detail (a CI log, the conflicts) before
-  // the detail. The page lists the computer selected when it opened and
+  // it closes a view open in the detail (a CI log, the conflicts, the
+  // open file-tree rail) before the detail. The page lists the computer selected when it opened and
   // keeps it for the pane's life.
 
   interface Props {
@@ -172,24 +172,10 @@
     detachPullsPage(paneId);
   });
 
-  // The selected MR's review state, when it is the one the page pins.
-  function selectedReview(): ReviewPaneState | null {
-    if (!pinnedReview) return null;
-    const state = currentPinnedReviewState(paneId);
-    try {
-      return state?.identity === reviewSubjectForPR(pinnedReview.subject).identity ? state : null;
-    } catch {
-      return null;
-    }
-  }
-
   // One step back: a view open in the detail closes first, then the detail.
   function stepBack(): boolean {
     if (tab === 'mrs' && selection) {
-      const review = selectedReview();
-      if (review?.ciLogView) review.closeCILogView();
-      else if (review?.conflictView) review.closeConflictView();
-      else clearSelection(paneId);
+      if (!stepPaneBack(paneId)) clearSelection(paneId);
       return true;
     }
     if (tab === 'pipelines' && pipeline) {

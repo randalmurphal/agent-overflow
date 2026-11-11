@@ -10,6 +10,8 @@ import {
 import { resetAppStorageForTest } from '../../stores/appStorage';
 import { getPaneFindProvider, hasPaneFindProvider, openPaneFind, resetPaneFindForTest, setPaneFindQuery } from '../../stores/paneFind.svelte';
 import { resetPanesForTest } from '../../stores/panes.svelte';
+import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
+import { stepPaneBack } from '../../stores/paneBackSteps';
 import { prReviewKeys } from '../../stores/prReviewStore.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import type { PRDetail } from '../../types/models';
@@ -198,6 +200,35 @@ describe('<ReviewPane> pinned to a PR with no thread', () => {
     keyed.unmount();
     expect(hasPaneFindProvider('tool-pulls#detail')).toBe(false);
     resetPaneFindForTest();
+  });
+
+  it('steps Back out of the open rail on compact only, before its host closes it', async () => {
+    const desktop = renderPinned().view;
+    await waitFor(() => {
+      expect(desktop.getByTestId('review-rail')).toHaveAttribute('data-open', 'true');
+    });
+    // Desktop: the rail is beside the diff, not over it.
+    expect(stepPaneBack(OWNER)).toBe(false);
+    desktop.unmount();
+    disposePRReviewStates(OWNER);
+
+    setCompactLayoutForTest(true);
+    try {
+      const { view } = renderPinned();
+      await waitFor(() => {
+        expect(view.getByTestId('review-rail')).toHaveAttribute('data-open', 'true');
+      });
+      expect(stepPaneBack(OWNER)).toBe(true);
+      await waitFor(() => {
+        expect(view.getByTestId('review-rail')).toHaveAttribute('data-open', 'false');
+      });
+      // Nothing left open: the host's own step runs.
+      expect(stepPaneBack(OWNER)).toBe(false);
+      view.unmount();
+      expect(stepPaneBack(OWNER)).toBe(false);
+    } finally {
+      setCompactLayoutForTest(false);
+    }
   });
 
   it('says why when the PR has no project', () => {

@@ -7,8 +7,10 @@
 // The stack, in order: an open overlay or sheet closes first, and so does a
 // tool pane's detail step (a workflows run steps back to the list) through
 // the tool's own surface-dismissal command, gated on `toolDetailOpen`; a
-// companion screen (review, plan, agent) on screen closes and the thread it
-// was opened from comes back; a terminal drawer stacked over the chat closes;
+// view open inside the companion on screen (the review's CI log, conflict
+// view or open rail, `stores/paneBackSteps.ts`) closes; the companion
+// screen (review, plan, agent) closes and the thread it was opened from
+// comes back; a terminal drawer stacked over the chat closes;
 // the thread screen goes back to the list; and the list screen is the
 // root, where the caller decides what leaving means. The companion rung
 // runs before the terminal rung because opening a companion leaves focus
@@ -33,6 +35,7 @@ import {
   onScreenCompactPaneId,
   showCompactList,
 } from '../stores/layoutMode.svelte';
+import { stepPaneBack } from '../stores/paneBackSteps';
 import { getFocusedPaneOrNull } from '../stores/panes.svelte';
 import { runTerminalToggle } from '../components/terminal/terminalToggle';
 import { createSurfaceDismissalEvent } from './surfaceDismissal';
@@ -68,7 +71,7 @@ export function stepBack(): boolean {
   // (`closeCompanion` reads the strip's geometry under compact).
   const onScreenPaneId = onScreenCompactPaneId();
   if (onScreenPaneId && getCompanionPane(onScreenPaneId)) {
-    closeCompanion(onScreenPaneId);
+    if (!stepPaneBack(onScreenPaneId)) closeCompanion(onScreenPaneId);
     return true;
   }
   const focused = getFocusedPaneOrNull();
