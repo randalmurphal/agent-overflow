@@ -1324,18 +1324,23 @@ describe('prReviewStore — merge conflicts follow the PR', () => {
     const a = attachPR(KEY, { ref: REF });
     await flush();
     const viewing = permitPRConflictReconcile(KEY, CONFLICT_WS);
-    await openPRConflicts(KEY, CONFLICT_WS, REF, detailStub({ baseRefSHA: '' }));
+    let opened = false;
+    const opening = openPRConflicts(KEY, CONFLICT_WS, REF, detailStub({ baseRefSHA: '' }))
+      .then(() => { opened = true; });
+    await flush();
     expect(conflicts).not.toHaveBeenCalled();
     expect(peekPRConflicts(KEY, CONFLICT_WS).error).toBeNull();
+    // The person is still waiting: no read has answered the open.
+    expect(opened).toBe(false);
 
     applyPRUpdatedEvent({ prKey: KEY, detail: detailStub(), threads: [], headSHA: 'sha-a' });
-    await flush();
+    await opening;
 
     expect(conflicts).toHaveBeenCalledTimes(1);
-    // The open that had no revision to read carries its ask to this read.
+    // The first read after the open covers it, so it is the person's.
     expect(conflicts.mock.calls[0][4]).toBe(true);
     expect(peekPRConflicts(KEY, CONFLICT_WS).state?.treeOID).toBe('tree-1');
-    // …and to that read only.
+    // …and that read only.
     applyPRUpdatedEvent({ prKey: KEY, detail: detailStub({ headSHA: 'sha-b' }), threads: [], headSHA: 'sha-b' });
     await flush();
     expect(conflicts.mock.calls.map((call) => call[4])).toEqual([true, false]);
@@ -1562,6 +1567,60 @@ describe('prReviewStore — merge conflicts follow the PR', () => {
     expect(peekPRConflicts(KEY, CONFLICT_WS).error).toContain('code 128');
     expect(peekPRConflicts(KEY, CONFLICT_WS).loading).toBe(false);
     viewing();
+    a.release();
+  });
+
+  it('an open with no revision that a joined read answers leaves no intent for a later frame', async () => {
+    installSubscribeMock();
+    let finishA!: () => void;
+    const heldA = new Promise<void>((resolve) => { finishA = resolve; });
+    let calls = 0;
+    const conflicts = setBindingMock('GetPRMergeConflicts', async () => {
+      calls += 1;
+      if (calls === 1) await heldA;
+      return { conflicted: false, treeOID: `tree-${calls}`, baseLabel: 'origin/main', headLabel: 'feature', paths: [], notes: {}, messages: [] };
+    });
+    const a = attachPR(KEY, { ref: REF });
+    await flush();
+    const viewing = permitPRConflictReconcile(KEY, CONFLICT_WS);
+    const first = openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
+    await flush();
+    // Another pane opens while the forge reports no base tip, then the base
+    // is back and a third open joins the read of A in flight.
+    const noBase = openPRConflicts(KEY, CONFLICT_WS, REF, detailStub({ baseRefSHA: '' }));
+    const joined = openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
+    await flush();
+    finishA();
+    expect(await settlesWithin(Promise.all([first, noBase, joined]))).toBe(true);
+
+    applyPRUpdatedEvent({ prKey: KEY, detail: detailStub({ headSHA: 'sha-b' }), threads: [], headSHA: 'sha-b' });
+    await flush();
+
+    expect(conflicts.mock.calls.map((call) => call[4])).toEqual([true, false]);
+    viewing();
+    a.release();
+  });
+
+  it('closing the view releases an open still waiting on a revision, and the later read is unattended', async () => {
+    installSubscribeMock();
+    const { conflicts } = installConflictMocks();
+    const a = attachPR(KEY, { ref: REF });
+    await flush();
+    const viewing = permitPRConflictReconcile(KEY, CONFLICT_WS);
+    const opening = openPRConflicts(KEY, CONFLICT_WS, REF, detailStub({ baseRefSHA: '' }));
+    await flush();
+    expect(await settlesWithin(opening)).toBe(false);
+
+    viewing();
+    expect(await settlesWithin(opening)).toBe(true);
+
+    // The view comes back on screen without an open, and the revision
+    // arrives: the read is the pump's, not the released open's.
+    const again = permitPRConflictReconcile(KEY, CONFLICT_WS);
+    applyPRUpdatedEvent({ prKey: KEY, detail: detailStub(), threads: [], headSHA: 'sha-a' });
+    await flush();
+    expect(conflicts.mock.calls.map((call) => call[4])).toEqual([false]);
+    again();
     a.release();
   });
 

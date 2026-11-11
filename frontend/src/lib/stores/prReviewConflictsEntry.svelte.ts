@@ -6,9 +6,11 @@
 // Every open and every reconcile frame overwrites `wanted` (an observation
 // is never dropped for matching the read in flight). Only `run` starts
 // reads, and after each settlement it decides, from `wanted` at that
-// moment, whether to read again. Waiters are released by a settlement that
-// covers them, by the runner stopping, or by `retire`; nothing awaits a
-// promise that teardown can leave installed.
+// moment, whether to read again. A read is a person's exactly while an open
+// waits on it. Waiters are released by a settlement that covers them, by
+// the runner stopping with the latest observation answered, by the view
+// closing, or by `retire`; nothing awaits a promise that teardown can leave
+// installed.
 
 import { SvelteMap } from 'svelte/reactivity';
 import type { WorkspaceRef } from '../types/git';
@@ -58,9 +60,8 @@ interface Observation {
 /** One read the runner runs: the observation it answers and its intent. */
 export interface ConflictRead extends Observation {
   revision: PRRevision;
-  /** A person's open is waiting on this read (or one that had no revision
-   * to read handed its ask on): the read may prompt for git credentials,
-   * and its failure arms the pump's retry. */
+  /** A person's open is waiting on this read: the read may prompt for git
+   * credentials, and its failure arms the pump's retry. */
   userInitiated: boolean;
 }
 
@@ -75,7 +76,8 @@ export type ObservationKind =
 
 interface Waiter {
   /** The read that covers this open: its own observation, or the read in
-   * flight it joined. Released when a read at or after it settles. */
+   * flight it joined. Released when a read at or after it settles. An open
+   * with no revision to read is covered by the first read after it. */
   coveredBy: number;
   resolve: () => void;
 }
@@ -112,9 +114,6 @@ export class PRConflictEntry {
 
   private wanted: Observation | null = null;
   private observed = 0;
-  /** An open that had no revision to read settled at once; the first read
-   * a later revision allows carries its ask. Cleared by every read. */
-  private askAwaitingRevision = false;
   /** A read must have started at or after this observation (an open). */
   private forceSeq = 0;
   /** A failed read is answered only once a read started at or after this
@@ -136,8 +135,9 @@ export class PRConflictEntry {
   }
 
   /** A person opened the view on this snapshot. Resolves once a read that
-   * covers it settles, the runner has nothing more to read (no revision
-   * yet), or the entry retires. */
+   * covers it settles, a read answers a later observation, the view
+   * closes, or the entry retires. With no revision to read it waits for
+   * the first read a revision allows. */
   open(ref: PRRef, detail: PRDetail, revision: PRRevision | null): Promise<void> {
     const coveredBy = this.record('open', ref, detail, revision);
     const done = new Promise<void>((resolve) => this.waiters.push({ coveredBy, resolve }));
@@ -156,6 +156,12 @@ export class PRConflictEntry {
     void this.run();
   }
 
+  /** The last view on this entry closed: nobody is waiting on a read any
+   * more, so every open is released and later reads are unattended. */
+  viewClosed(): void {
+    this.release(Infinity);
+  }
+
   /** Overwrite what is wanted with the latest observation. Returns the
    * sequence of the read that covers it. */
   private record(kind: ObservationKind, ref: PRRef, detail: PRDetail, revision: PRRevision | null): number {
@@ -170,7 +176,6 @@ export class PRConflictEntry {
       return this.current.seq;
     } else {
       this.forceSeq = seq;
-      this.askAwaitingRevision = revision === null;
     }
     return seq;
   }
@@ -193,7 +198,7 @@ export class PRConflictEntry {
     if (last && last.key === wanted.key && last.seq >= this.forceSeq && (last.ok || last.seq >= this.retrySeq)) return null;
     // A read is a person's while their open waits on it (only opens wait),
     // so no intent outlives the opens it belonged to.
-    return { ...wanted, revision: wanted.revision, userInitiated: this.waiters.length > 0 || this.askAwaitingRevision };
+    return { ...wanted, revision: wanted.revision, userInitiated: this.waiters.length > 0 };
   }
 
   private async run(): Promise<void> {
@@ -202,7 +207,6 @@ export class PRConflictEntry {
     try {
       for (let read = this.next(); read !== null; read = this.next()) {
         this.current = read;
-        this.askAwaitingRevision = false;
         this.loading = true;
         const ok = await this.readTree(this, read);
         this.current = null;
@@ -213,7 +217,9 @@ export class PRConflictEntry {
       this.current = null;
       this.running = false;
       this.loading = false;
-      this.release(Infinity);
+      // The latest observation is answered, so every open is. An open still
+      // waiting for a revision to read keeps waiting.
+      if (this.wanted?.revision) this.release(Infinity);
     }
   }
 

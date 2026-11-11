@@ -71,8 +71,12 @@ export function permitPRConflictReconcile(key: string, workspace: WorkspaceRef):
     if (released) return;
     released = true;
     const remaining = (viewHolds.get(holdKey) ?? 1) - 1;
-    if (remaining > 0) viewHolds.set(holdKey, remaining);
-    else viewHolds.delete(holdKey);
+    if (remaining > 0) {
+      viewHolds.set(holdKey, remaining);
+    } else {
+      viewHolds.delete(holdKey);
+      conflictsByKey.get(holdKey)?.viewClosed();
+    }
   };
 }
 
@@ -99,7 +103,9 @@ export function peekPRConflicts(key: string | null, workspace: WorkspaceRef): PR
  * branch's live tip, which can move without any change to the revision the
  * pane holds. An open while a read of the same snapshot is in flight shares
  * that read. The open settles once a read that covers its snapshot (or a
- * newer one) has settled, or the PR's last holder has left.
+ * newer one) has settled, the last view on the entry has closed, or the
+ * PR's last holder has left. An open made before the forge reports a
+ * revision waits for the first read one allows, which is the person's.
  */
 export function openPRConflicts(
   key: string,
