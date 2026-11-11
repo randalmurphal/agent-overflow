@@ -2,8 +2,15 @@ import { FILE_SCHEME, isOpenableScheme, urlScheme } from './urlSchemes';
 
 // WHATWG parsing strips leading and trailing C0 controls and spaces before
 // reading the scheme; the scheme checks here see the same string.
-const trimUrl = (url: string): string =>
-    url.replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, '');
+const trimUrl = (url: string): string => {
+    let start = 0;
+    let end = url.length;
+    while (start < end && url.charCodeAt(start) <= 0x20)
+        start += 1;
+    while (end > start && url.charCodeAt(end - 1) <= 0x20)
+        end -= 1;
+    return url.slice(start, end);
+};
 
 /**
  * Absolute-URL parse only, by design. Upstream took a `defaultOrigin`
