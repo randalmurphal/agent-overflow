@@ -168,7 +168,7 @@ describe('scanReviewFind', () => {
   it('searches a PR comment as its markdown renders, never its markup', async () => {
     const source = content({
       prThreads: [thread('p1', 2, ['**nee**dle in `code`', 'plain [linked](https://example.com/needle) words'])],
-      commentText: createMarkdownFindTextCache({ embeddedHtml: true }),
+      commentText: ((texts) => (body: string) => texts(body).runs)(createMarkdownFindTextCache({ embeddedHtml: true })),
     });
     expect((await scan(source, 'needle')).hits.filter((hit) => hit.place.kind === 'thread').map((hit) => hit.rowKey)).toEqual(['pc:0:p1']);
     expect((await scan(source, 'in code')).hits).toHaveLength(1);

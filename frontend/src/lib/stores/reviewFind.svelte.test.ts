@@ -137,19 +137,28 @@ describe('review find', () => {
     find.next();
     expect(find.result.current).toBe(1);
     reveals.length = 0;
-    items = ['c0', 'c1', 'c2', 'c3'];
+    items = ['c0', 'c1', 'c2', 'c2b', 'c3'];
     find.refresh();
     expect(find.result.pending).toBe(false);
     await flush();
-    expect(find.result.count).toBe(4);
+    expect(find.result.count).toBe(5);
     expect(find.result.current).toBe(2);
     expect(reveals).toEqual([]);
-    // The current match gone: a new one is chosen and shown if off screen.
-    items = ['c0', 'c3'];
+    // The current match gone with the one after it (a block closed): the
+    // first surviving match after it is current, though one before is
+    // nearer, and is shown only if off screen.
+    items = ['c0', 'c1', 'c3'];
     find.refresh();
     await flush();
-    expect(find.hits.map((hit) => hit.identity)).toEqual(['c0', 'c3']);
-    expect(reveals).toEqual([['c0', false]]);
+    expect(find.hits.map((hit) => hit.identity)).toEqual(['c0', 'c1', 'c3']);
+    expect(find.result.current).toBe(2);
+    expect(reveals).toEqual([['c3', false]]);
+    // With nothing after it, the one before.
+    items = ['c0', 'c1'];
+    find.refresh();
+    await flush();
+    expect(find.result.current).toBe(1);
+    expect(reveals.at(-1)).toEqual(['c1', false]);
   });
 
   it('a reveal that changed the content shows the match again after the rescan', async () => {

@@ -69,9 +69,9 @@ export interface ReviewFindContent {
   readonly files: readonly ReviewFile[];
   readonly drafts: readonly DiffReviewComment[];
   readonly prThreads: readonly ReviewThread[];
-  /** The runs of text a PR comment's shown body renders as
-   * (chat/markdown/markdownFindText.ts). */
-  commentText(body: string): readonly string[];
+  /** The runs of text a PR comment's shown body renders as in the element
+   * `rowKey` names (chat/markdown/markdownFindText.ts). */
+  commentText(body: string, rowKey: string): readonly string[];
   /** The hidden lines of each collapsed fold of a conflict file, by fold id. */
   foldLines?(path: string): ReadonlyMap<number, readonly string[]> | null;
 }
@@ -182,7 +182,7 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
         for (let index = 0; index < thread.comments.length; index += 1) {
           const rowKey = findThreadCommentKey(thread.id, index);
           const shown = visibleBody(thread.comments[index].body);
-          if (shown !== '' && emitText(content.commentText(shown), (occurrence) => ({
+          if (shown !== '' && emitText(content.commentText(shown, rowKey), (occurrence) => ({
             ...base, identity: `${path}\u0000${rowKey}\u0000${occurrence}`, rowKey, occurrence, line, place: { kind: 'thread', threadId: thread.id },
           }))) return true;
         }

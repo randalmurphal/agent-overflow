@@ -282,8 +282,11 @@ polling.
   literal, ASCII case folding); `cilog.FoldForFind` folds the same, held by
   shared vectors. A step expands what hides its match (a collapsed file, a
   resolved thread, a conflict fold, a closed log step). A content, filter
-  or view change re-runs the query in place and keeps the current match by
-  identity.
+  or view change, or a `<details>` in a comment opened or closed by hand,
+  re-runs the query in place and keeps the current match by identity; a
+  current match that is gone gives way to the next surviving one, else the
+  previous, scrolled to only when off screen. Mermaid, math and attachment chips
+  carry `data-find-skip`, so they are neither counted nor painted.
 
 ## Edge Cases
 

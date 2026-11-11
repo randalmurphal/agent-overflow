@@ -10,7 +10,8 @@
 // the same view (a commit, a filter, a revision, a live log growing)
 // rescans in place: the old matches stay until the new ones are in, the
 // current match is kept when it is still there, and nothing moves unless
-// it is gone. A view change starts over. Only the latest scan applies;
+// it is gone; then the first surviving match after it (else the last
+// before it) is current, shown only when it is off screen. A view change starts over. Only the latest scan applies;
 // a newer query, a rescan or a close stops the one running. A failed scan
 // is the result's `error`. DOM work (painting, scrolling, expanding)
 // belongs to the host.
@@ -67,6 +68,21 @@ export interface ReviewFind<H extends ReviewFindMatch> extends PaneFindProvider 
 }
 
 type Mode = 'query' | 'refresh';
+
+// The index in `found` of the first match after `at` in `before` that is
+// still there, else the last one before it; -1 when none is.
+function nearestSurviving<H extends ReviewFindMatch>(before: readonly H[], at: number, found: readonly H[]): number {
+  const index = new Map(found.map((hit, i) => [hit.identity, i]));
+  for (let i = at + 1; i < before.length; i += 1) {
+    const next = index.get(before[i].identity);
+    if (next !== undefined) return next;
+  }
+  for (let i = Math.min(at, before.length) - 1; i >= 0; i -= 1) {
+    const next = index.get(before[i].identity);
+    if (next !== undefined) return next;
+  }
+  return -1;
+}
 
 export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost<H>, noun: () => string): ReviewFind<H> {
   let query = '';
@@ -144,6 +160,8 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
     const asked = query;
     const below = host.readingPosition();
     const keep = mode === 'refresh' ? (hits[current]?.identity ?? null) : null;
+    const before = hits;
+    const was = current;
     const found: H[] = [];
     let chosen = -1;
     let shown = 0;
@@ -210,7 +228,8 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
       return;
     }
     revealAgain = null;
-    const at = found.findIndex(below);
+    const near = keep === null ? -1 : nearestSurviving(before, was, found);
+    const at = near >= 0 ? near : found.findIndex(below);
     current = at >= 0 ? at : found.length - 1;
     paint();
     reveal(false);

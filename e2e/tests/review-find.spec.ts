@@ -237,7 +237,7 @@ test('with a CI job log open, find counts the log and opens the step holding the
   await expectEveryForgeCallHandled(harness);
 });
 
-test('PR thread comments are found as they render; a match in a resolved thread opens it', async ({ harness, page }) => {
+test('PR thread comments are found as they render; a details opened or closed by hand recounts; a resolved thread opens', async ({ harness, page }) => {
   test.setTimeout(90_000);
   const seeded = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [{
@@ -255,6 +255,8 @@ test('PR thread comments are found as they render; a match in a resolved thread 
       body: '',
       threads: [
         { id: 'T_open', path: 'src/notes.ts', line: 5, comments: [{ author: 'priya-n', body: 'Rename this to **comment**-needle here.' }] },
+        { id: 'T_more', path: 'src/notes.ts', line: 8, comments: [{ author: 'bot', body: '<details><summary>More context</summary>\n\nThe hidden comment-needle twice: comment-needle.\n\n</details>' }] },
+        { id: 'T_next', path: 'src/notes.ts', line: 10, comments: [{ author: 'jrow', body: 'Also comment-needle below.' }] },
         { id: 'T_done', path: 'src/notes.ts', line: 300, resolved: true, comments: [{ author: 'jrow', body: 'Done, see `comment-needle`.' }] },
       ],
     }],
@@ -269,13 +271,63 @@ test('PR thread comments are found as they render; a match in a resolved thread 
   const bar = review.getByTestId('pane-find-bar');
   const count = bar.getByTestId('pane-find-count');
   const name = await highlightName(review);
-  // The rendered text, not its markup: the bold is gone, the code span's text stays.
+  // The rendered text, not its markup: the bold is gone, the code span's
+  // text stays, and a closed <details> body is not counted.
   await page.keyboard.type('comment-needle');
-  await expect(count).toHaveText('1/2');
+  await expect(count).toHaveText('1/3');
   await expect.poll(() => painted(page, `${name}-current`)).toEqual(['comment-needle']);
   await expect.poll(() => currentInView(scroller, name)).toBe(true);
+  const top = () => scroller.evaluate((el) => el.scrollTop);
+  // The scroll position once it has held for a few frames.
+  const settled = async (): Promise<number> => {
+    let last = -1;
+    let held = 0;
+    await expect.poll(async () => {
+      const now = await top();
+      held = now === last ? held + 1 : 0;
+      last = now;
+      return held >= 3;
+    }, { intervals: [100] }).toBe(true);
+    return last;
+  };
+  const summary = review.getByText('More context');
+  const details = review.locator('details').filter({ hasText: 'More context' });
+
+  // Opened by hand: the count rises in place, the current match stays,
+  // and the new matches are reachable by Enter.
+  const before = await settled();
+  // The click a reader makes, without Playwright scrolling the target first.
+  await summary.evaluate((el) => (el as HTMLElement).click());
+  await expect(details).toHaveAttribute('open', '');
+  await expect(count).toHaveText('1/5');
+  expect(await settled()).toBe(before);
+  await page.keyboard.press('ControlOrMeta+f');
   await page.keyboard.press('Enter');
-  await expect(count).toHaveText('2/2');
+  await expect(count).toHaveText('2/5');
+  await expect.poll(() => painted(page, `${name}-current`)).toEqual(['comment-needle']);
+  await expect.poll(() => currentInView(scroller, name)).toBe(true);
+  await expect.poll(() => scroller.evaluate((el, n) => {
+    const range = [...(CSS.highlights.get(`${n}-current`) ?? [])][0];
+    return range instanceof Range && range.startContainer.parentElement?.closest('details') !== null;
+  }, name)).toBe(true);
+
+  // Closed with the current match inside: the nearest surviving match,
+  // the next one on screen, is current and the view stays.
+  const inside = await settled();
+  // The click a reader makes, without Playwright scrolling the target first.
+  await summary.evaluate((el) => (el as HTMLElement).click());
+  await expect(count).toHaveText('2/3');
+  await expect.poll(() => painted(page, `${name}-current`)).toEqual(['comment-needle']);
+  await expect.poll(() => scroller.evaluate((el, n) => {
+    const range = [...(CSS.highlights.get(`${n}-current`) ?? [])][0];
+    return range instanceof Range && (range.startContainer.parentElement?.textContent ?? '').includes('Also');
+  }, name)).toBe(true);
+  expect(await settled()).toBe(inside);
+
+  // The resolved thread's match opens it.
+  await page.keyboard.press('ControlOrMeta+f');
+  await page.keyboard.press('Enter');
+  await expect(count).toHaveText('3/3');
   await expect(resolved.getByRole('button', { expanded: true }).first()).toBeVisible();
   await expect.poll(() => painted(page, `${name}-current`)).toEqual(['comment-needle']);
   await expect.poll(() => currentInView(scroller, name)).toBe(true);

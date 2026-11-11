@@ -17,7 +17,7 @@
   // opens it; one in a collapsed conflict fold opens the fold, and the
   // rescan that follows brings it on screen. After the list scrolls to a
   // match's row, the painted range corrects the landing (wrapped lines).
-  import { tick, untrack } from 'svelte';
+  import { getContext, tick, untrack } from 'svelte';
   import PaneFindBar from '../panes/PaneFindBar.svelte';
   import { registerPaneFindProvider } from '../../stores/paneFind.svelte';
   import { createReviewFind, REVIEW_FIND_LIMIT, type ReviewFindSource } from '../../stores/reviewFind.svelte';
@@ -26,7 +26,10 @@
   import { createFindHighlighter, findHighlightName, type FindHighlighter } from '../../utils/findHighlights';
   import type { ReviewFile } from '../../utils/patchStore';
   import { createRefreshScheduler } from '../../utils/refreshScheduler';
-  import { createMarkdownFindTextCache } from '../chat/markdown/markdownFindText';
+  import { createMarkdownFindTextCache, type MarkdownFindText } from '../chat/markdown/markdownFindText';
+  import { FORGE_ATTACHMENT_SOURCE_CONTEXT, type ForgeAttachmentSourceReader } from '../chat/markdown/forgeAttachmentContext';
+  import { visibleBody } from '../../utils/reviewComments';
+  import { commentOfRowKey, sameToggledDetails, toggledCommentDetails } from '../../utils/reviewFindDetails';
   import { scanReviewFind, type ReviewFindHit } from '../../utils/reviewFindScan';
   import { findHitAtOrBelow } from '../../utils/reviewFindRows';
   import { REVIEW_FILE_HEADER_BAR_PX } from '../../utils/reviewRows';
@@ -73,12 +76,38 @@
   // The match a scroll just aimed at; its painted range corrects the landing.
   let landing: { identity: string; until: number } | null = null;
 
-  // PR comments are searched as they render (ReviewThreadComments), held
-  // while find is open.
-  let commentText: ((body: string) => readonly string[]) | null = null;
+  // PR comments are searched as they render (ReviewThreadComments), with
+  // the <details> the reader toggled in mounted rows as they left them.
+  // Held while find is open.
+  const readForgeSource = getContext<ForgeAttachmentSourceReader | undefined>(FORGE_ATTACHMENT_SOURCE_CONTEXT);
+  let texts: ((source: string, open?: readonly boolean[]) => MarkdownFindText) | null = null;
+  let toggled = new Map<string, boolean[]>();
+
+  function commentTexts(): (source: string, open?: readonly boolean[]) => MarkdownFindText {
+    return (texts ??= createMarkdownFindTextCache({ embeddedHtml: true, forgeSource: readForgeSource?.() ?? null }));
+  }
+
+  function readToggled(): Map<string, boolean[]> {
+    if (!root || untrack(() => view) !== 'diff') return new Map();
+    return toggledCommentDetails(root, (rowKey) => {
+      const at = commentOfRowKey(rowKey);
+      const comment = at ? review.prThreads.find((thread) => thread.id === at.threadId)?.comments[at.index] : undefined;
+      return comment ? commentTexts()(visibleBody(comment.body)).details : null;
+    });
+  }
+
+  // A <details> opened or closed by hand, or a row that remounted as
+  // written: rescan in place.
+  function reconcileDetails(): void {
+    const next = readToggled();
+    if (sameToggledDetails(next, toggled)) return;
+    toggled = next;
+    find.refresh();
+  }
 
   function releaseHighlighter(): void {
-    commentText = null;
+    texts = null;
+    toggled = new Map();
     highlighter?.dispose();
     highlighter = null;
     highlighterRoot = null;
@@ -149,8 +178,9 @@
         drafts: conflicts ? [] : review.drafts,
         prThreads: conflicts ? [] : review.prThreads,
         foldLines: conflicts ? (path: string) => review.conflictFoldLines(path) : undefined,
-        commentText: (commentText ??= createMarkdownFindTextCache({ embeddedHtml: true })),
+        commentText: (body: string, rowKey: string) => commentTexts()(body, toggled.get(rowKey)).runs,
       }));
+      toggled = readToggled();
       return scanReviewFind(content, query, { limit: REVIEW_FIND_LIMIT, live: context.live, emit: context.emit, pause });
     },
   };
@@ -209,7 +239,10 @@
           rowSelector: '[data-find-key]',
           rowKeyAttribute: 'data-find-key',
           rowsOnly: true,
-          onMatches: land,
+          onMatches: () => {
+            land();
+            reconcileDetails();
+          },
         });
         highlighterRoot = at;
       }

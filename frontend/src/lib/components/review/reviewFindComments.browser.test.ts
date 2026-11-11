@@ -40,6 +40,11 @@ const THREAD: ReviewThread = {
   ],
 };
 
+function commentRuns(): (body: string) => readonly string[] {
+  const texts = createMarkdownFindTextCache({ embeddedHtml: true });
+  return (body) => texts(body).runs;
+}
+
 let highlighter: FindHighlighter | null = null;
 
 beforeEach(() => {
@@ -65,7 +70,7 @@ describe('review find over comments', () => {
     const hits: ReviewFindHit[] = [];
     const files = parseReviewFiles(PATCH);
     try {
-      await scanReviewFind({ files, drafts: [DRAFT], prThreads: [THREAD], commentText: createMarkdownFindTextCache({ embeddedHtml: true }) }, query, {
+      await scanReviewFind({ files, drafts: [DRAFT], prThreads: [THREAD], commentText: commentRuns() }, query, {
         limit: 1000, live: () => true, emit: (hit) => hits.push(hit), pause: async () => {},
       });
     } finally {

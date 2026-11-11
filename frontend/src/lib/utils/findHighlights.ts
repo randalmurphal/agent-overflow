@@ -7,10 +7,11 @@
 // stylesheet, so two open bars never paint each other's query.
 //
 // The walk covers only what is mounted under `root` (a virtualized list
-// mounts its visible rows) and reruns when that DOM changes, coalesced
-// through the refresh scheduler. Text is matched by the find rule
-// (`findMatch.ts`) within a block, across inline markup; with `rowsOnly`,
-// only text inside a row is matched, and a row boundary ends a block. Where the API is missing the matches are
+// mounts its visible rows) and reruns when that DOM changes or a
+// <details> under it opens or closes, coalesced through the refresh
+// scheduler. Text is matched by the find rule (`findMatch.ts`) within a
+// block, across inline markup; with `rowsOnly`, only text inside a row is
+// matched, and a row boundary ends a block. Where the API is missing the matches are
 // still computed, for providers that count or step through them, and
 // nothing paints. An empty query or `dispose` releases every range, the
 // observer and the names.
@@ -127,12 +128,25 @@ interface Segment {
   row: Element | null;
 }
 
+// A closed <details> shows only its summary.
+function hiddenByDetails(element: Element): boolean {
+  for (let details = element.closest('details'); details; details = details.parentElement?.closest('details') ?? null) {
+    if ((details as HTMLDetailsElement).open) continue;
+    const summary = details.querySelector(':scope > summary');
+    if (!summary || !summary.contains(element)) return true;
+  }
+  return false;
+}
+
 function collectSegments(root: Element, rowSelector: string | undefined, rowsOnly: boolean, laidOut = true): Segment[] {
   const visible = new Map<Element, boolean>();
   const isVisible = (element: Element): boolean => {
     let answer = visible.get(element);
     if (answer === undefined) {
-      answer = !laidOut || typeof element.checkVisibility !== 'function' || element.checkVisibility();
+      // checkVisibility passes a closed <details> itself, whose loose
+      // body text it does not show.
+      answer = !hiddenByDetails(element)
+        && (!laidOut || typeof element.checkVisibility !== 'function' || element.checkVisibility());
       visible.set(element, answer);
     }
     return answer;
@@ -160,8 +174,8 @@ function collectSegments(root: Element, rowSelector: string | undefined, rowsOnl
 
 /**
  * The folded text of each run the highlighter matches within, in document
- * order. `laidOut: false` reads a tree with no layout (a parsed fragment)
- * and takes every element as visible.
+ * order. `laidOut: false` reads a tree with no layout (a parsed fragment):
+ * every element is visible but the body of a closed <details>.
  */
 export function findTextSegments(root: Element, laidOut = true): string[] {
   return collectSegments(root, undefined, false, laidOut).map((segment) => segment.text);
@@ -205,6 +219,7 @@ export function createFindHighlighter(options: FindHighlighterOptions): FindHigh
   let current: FindCurrent = null;
   let matches: FindMatch[] = [];
   let observer: MutationObserver | null = null;
+  let onToggle: (() => void) | null = null;
   let scheduler: RefreshScheduler | null = null;
   let rulesHeld = false;
   let disposed = false;
@@ -259,6 +274,9 @@ export function createFindHighlighter(options: FindHighlighterOptions): FindHigh
     const pending = scheduler;
     observer = new MutationObserver(() => pending.request());
     observer.observe(root, { childList: true, subtree: true, characterData: true });
+    // `toggle` does not bubble; a capture listener sees every <details>.
+    onToggle = () => pending.request();
+    root.addEventListener('toggle', onToggle, true);
     if (paints && !rulesHeld) {
       retainRules(name);
       rulesHeld = true;
@@ -268,6 +286,8 @@ export function createFindHighlighter(options: FindHighlighterOptions): FindHigh
   function unfollow(): void {
     observer?.disconnect();
     observer = null;
+    if (onToggle) root.removeEventListener('toggle', onToggle, true);
+    onToggle = null;
     scheduler?.dispose();
     scheduler = null;
     if (rulesHeld) {
