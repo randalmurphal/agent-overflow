@@ -27,6 +27,10 @@ func (a *App) ListPRDiffReviewComments(pr gitops.PRReference, scope, sourceKey s
 	if err != nil {
 		return nil, err
 	}
+	// Drafts a review posted are not listed as drafts (SubmitPRReview).
+	if err := a.reconcilePostedReviewDrafts(owner); err != nil {
+		return nil, err
+	}
 	comments, err := a.store.ListDiffReviewComments(owner, scope, sourceKey)
 	if err != nil {
 		return nil, fmt.Errorf("list PR diff review comments: %w", err)

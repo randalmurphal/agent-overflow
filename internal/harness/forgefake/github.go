@@ -297,21 +297,21 @@ var githubReviewEvents = map[string]string{"APPROVE": "APPROVED", "REQUEST_CHANG
 
 // ghPullReview submits a review: `{event, body?, commit_id?}`. The review
 // is the viewer's, pinned to commit_id (the head when omitted), and is
-// the pull's latest review and its newest timeline item. GitHub refuses
-// the author's own approval or change request and a change request or
-// comment without a body (422). Line comments are not implemented.
+// the pull's latest review and its newest timeline item. Each of its
+// `comments` ({path, body, line, side, start_line?, start_side?}) opens a
+// review thread on that line, the viewer's. GitHub refuses the author's
+// own approval or change request, a change request or comment without a
+// body, and a line comment without a path, body, line or side (422). The
+// fake does not check that the line is in the pull's diff.
 func ghPullReview(e *Engine, c *call, m []string) response {
 	var in struct {
-		Event    string          `json:"event"`
-		Body     string          `json:"body"`
-		CommitID string          `json:"commit_id"`
-		Comments json.RawMessage `json:"comments"`
+		Event    string                `json:"event"`
+		Body     string                `json:"body"`
+		CommitID string                `json:"commit_id"`
+		Comments []ghReviewLineComment `json:"comments"`
 	}
 	if err := decodeRESTBody(c, &in, false); err != nil {
 		return unhandled("%v", err)
-	}
-	if len(in.Comments) > 0 {
-		return unhandled("review line comments are not implemented")
 	}
 	state, ok := githubReviewEvents[in.Event]
 	if !ok {
@@ -333,9 +333,18 @@ func ghPullReview(e *Engine, c *call, m []string) response {
 	case state != "COMMENTED" && strings.EqualFold(p.Author, e.viewer):
 		verb := map[string]string{"APPROVED": "approve", "CHANGES_REQUESTED": "request changes on"}[state]
 		return ghUnprocessable("Can not " + verb + " your own pull request")
-	case state != "APPROVED" && strings.TrimSpace(in.Body) == "":
+	case state != "APPROVED" && strings.TrimSpace(in.Body) == "" && len(in.Comments) == 0:
 		return ghUnprocessable("Body is required for this review event")
 	}
+	threads := make([]Thread, 0, len(in.Comments))
+	for _, comment := range in.Comments {
+		thread, reason := comment.thread(e)
+		if reason != "" {
+			return ghUnprocessable(reason)
+		}
+		threads = append(threads, thread)
+	}
+	p.Threads = append(p.Threads, threads...)
 	review := Review{ID: e.ids.next(), Author: e.viewer, State: state, Body: in.Body, SubmittedAt: githubNow(), CommitSHA: commit}
 	p.Reviews = append(p.Reviews, review)
 	// A review answers the reviewer's request.
@@ -353,6 +362,37 @@ func ghPullReview(e *Engine, c *call, m []string) response {
 }
 
 var gitSHA = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
+
+// ghReviewLineComment is one line comment of a submitted review.
+type ghReviewLineComment struct {
+	Path      string `json:"path"`
+	Body      string `json:"body"`
+	Line      int    `json:"line"`
+	Side      string `json:"side"`
+	StartLine *int   `json:"start_line"`
+	StartSide string `json:"start_side"`
+}
+
+// thread is the review thread the comment opens, or GitHub's reason to
+// refuse it.
+func (in ghReviewLineComment) thread(e *Engine) (Thread, string) {
+	side := map[string]string{"RIGHT": "right", "LEFT": "left"}[in.Side]
+	switch {
+	case strings.TrimSpace(in.Path) == "" || strings.TrimSpace(in.Body) == "":
+		return Thread{}, "path and body are required for a review comment"
+	case in.Line <= 0 || side == "":
+		return Thread{}, "line and side (LEFT or RIGHT) are required for a review comment"
+	case in.StartLine != nil && (*in.StartLine <= 0 || *in.StartLine > in.Line || in.StartSide != in.Side):
+		return Thread{}, "start_line must precede line on the same side"
+	case in.StartLine == nil && in.StartSide != "":
+		return Thread{}, "start_side needs start_line"
+	}
+	line := in.Line
+	return Thread{
+		ID: fmt.Sprintf("PRRT_ao%d", e.ids.next()), Path: in.Path, Line: &line, StartLine: in.StartLine, Side: side,
+		Comments: []Comment{{ID: e.ids.next(), Author: e.viewer, Body: in.Body, CreatedAt: githubNow()}},
+	}, ""
+}
 
 // ghUnprocessable is GitHub REST's 422 with the reason in errors.
 func ghUnprocessable(reason string) response {

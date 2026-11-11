@@ -13,6 +13,7 @@ import (
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/keyedlock"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/transport"
 )
 
 // --- PR review submit with stored drafts ---
@@ -104,7 +105,7 @@ func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review 
 	owner := store.PRReviewOwner(pr.Key())
 	sentTurnID := ""
 	if threadID := review.Drafts.ThreadID; threadID != "" {
-		if err := a.requireScope(ctx, "threads:operate", "SubmitPRReview marks a thread's drafts sent"); err != nil {
+		if err := a.requireScope(ctx, transport.ScopeThreadsOperate, "SubmitPRReview marks a thread's drafts sent"); err != nil {
 			return SubmitPRReviewResult{}, err
 		}
 		owner = store.ThreadReviewOwner(threadID)

@@ -5692,7 +5692,11 @@ export function SubmitAsyncAnswers(threadID: string, sendID: string, answers: st
     return $Call.ByID(1219107798, threadID, sendID, answers);
 }
 
-export function SubmitPRReview(pr: git$0.PRReference, review: git$0.SubmitReviewRequest): $CancellablePromise<app$0.SubmitPRReviewResult> {
+/**
+ * SubmitPRReview posts a review of pr. With review.Drafts it posts the
+ * named drafts and marks the ones the forge received sent (see above).
+ */
+export function SubmitPRReview(pr: git$0.PRReference, review: app$0.SubmitPRReviewRequest): $CancellablePromise<app$0.SubmitPRReviewResult> {
     return $Call.ByID(2692607191, pr, review).then(($result: any) => {
         return $$createType206($result);
     });
