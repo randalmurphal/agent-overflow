@@ -134,12 +134,12 @@ function expectShown(strip: HTMLElement, id: string, others: string[]): void {
 it('entering compact records the pane the strip shows, though a reveal named the other', async () => {
   const enterCompact = installViewportQuery(false);
   const strip = await mountStrip(['thread', 'companion'], 1200);
-  // Both panes fit the wide strip, so revealing the companion records it
-  // and leaves the strip at its start.
+  // Both panes fit the wide strip, so revealing the companion leaves the
+  // strip at its start; the desktop keeps no record.
   revealPane('companion');
   await stripAtRest(strip);
   expect(strip.scrollLeft).toBe(0);
-  expect(compactShownPaneId()).toBe('companion');
+  expect(compactShownPaneId()).toBeNull();
 
   enterCompact(true);
   await raf();
@@ -155,7 +155,7 @@ it('entering compact records the pane the strip shows, though a reveal named the
   // The person scrolled the wide strip toward the companion.
   strip.scrollLeft = 360;
   await stripAtRest(strip);
-  expect(compactShownPaneId()).toBe('thread');
+  expect(compactShownPaneId()).toBeNull();
 
   enterCompact(true);
   await raf();
@@ -210,4 +210,114 @@ it('a pane opened by a reveal on compact glides in rather than snapping', async 
   }, 'the strip at c');
   expect(midGlide).toBe(true);
   expectShown(strip, 'c', ['a', 'b']);
+});
+
+it('a reveal on compact names its pane once the strip lands there, not before', async () => {
+  installViewportQuery(true);
+  const strip = await mountStrip(['a', 'b'], 360);
+  revealPane('a');
+  await stripAtRest(strip);
+  expectShown(strip, 'a', ['b']);
+
+  revealPane('b');
+  // The strip has not moved yet, so the record still names a.
+  expect(compactShownPaneId()).toBe('a');
+  await waitFor(() => strip.scrollLeft === paneLeft('b'), 'the strip at b');
+  await stripAtRest(strip);
+  expectShown(strip, 'b', ['a']);
+});
+
+// The compact counterpart of the interrupted glide above: a native focus
+// scroll back into a ends the reveal of b, and the record follows the strip.
+it('a reveal on compact interrupted back to the first pane names that pane, through a resize', async () => {
+  installViewportQuery(true);
+  const strip = await mountStrip(['a', 'b'], 360);
+  revealPane('a');
+  await stripAtRest(strip);
+
+  revealPane('b');
+  await waitFor(() => strip.scrollLeft > 20, 'the glide under way');
+  strip.scrollLeft = 0;
+  for (let i = 0; i < 20; i += 1) await raf();
+  expect(strip.scrollLeft).toBe(0);
+  expectShown(strip, 'a', ['b']);
+
+  // The keyboard opens: the strip shortens.
+  host.style.height = '250px';
+  await raf();
+  await stripAtRest(strip);
+  expectShown(strip, 'a', ['b']);
+});
+
+// The strip keeps its offset, so no scroll event follows: the structure
+// change itself measures.
+it('closing a pane before the one on screen on compact names the pane that moved under the strip', async () => {
+  installViewportQuery(true);
+  const strip = await mountStrip(['a', 'b', 'c'], 360);
+  revealPane('b');
+  await waitFor(() => strip.scrollLeft === paneLeft('b'), 'the strip at b');
+  await stripAtRest(strip);
+  expectShown(strip, 'b', ['a', 'c']);
+
+  setPaneLayoutItemsForTest(['b', 'c'].map((id) => ({ id, paneId: id, kind: 'thread' as const, widthPx: 480 })));
+  await raf();
+  await stripAtRest(strip);
+  expectShown(strip, 'c', ['b']);
+});
+
+it('a scroll on compact that no reveal made names the pane it brought into view', async () => {
+  installViewportQuery(true);
+  const strip = await mountStrip(['a', 'b'], 360);
+  revealPane('a');
+  await stripAtRest(strip);
+  expectShown(strip, 'a', ['b']);
+
+  // A native scroll-into-view of a control in b.
+  strip.scrollLeft = paneLeft('b');
+  await raf();
+  await stripAtRest(strip);
+  expectShown(strip, 'b', ['a']);
+});
+
+it('a resize during a reveal on compact lets the reveal land', async () => {
+  installViewportQuery(true);
+  const strip = await mountStrip(['a', 'b'], 360);
+  revealPane('a');
+  await stripAtRest(strip);
+
+  revealPane('b');
+  await waitFor(() => strip.scrollLeft > 20, 'the glide under way');
+  host.style.height = '250px';
+  await raf();
+  await waitFor(() => strip.scrollLeft === paneLeft('b'), 'the strip at b');
+  await stripAtRest(strip);
+  expectShown(strip, 'b', ['a']);
+});
+
+it('leaving compact ends the record of the pane it showed', async () => {
+  const setCompact = installViewportQuery(true);
+  const strip = await mountStrip(['a', 'b'], 360);
+  revealPane('b');
+  await waitFor(() => strip.scrollLeft === paneLeft('b'), 'the strip at b');
+  await stripAtRest(strip);
+  expect(compactShownPaneId()).toBe('b');
+
+  setCompact(false);
+  await raf();
+  expect(compactShownPaneId()).toBeNull();
+  expect(isPaneOnScreen('a')).toBe(true);
+  expect(isPaneOnScreen('b')).toBe(true);
+});
+
+it('unmounting the compact strip ends the record of the pane it showed', async () => {
+  installViewportQuery(true);
+  const strip = await mountStrip(['a', 'b'], 360);
+  revealPane('b');
+  await waitFor(() => strip.scrollLeft === paneLeft('b'), 'the strip at b');
+  await stripAtRest(strip);
+  expect(compactShownPaneId()).toBe('b');
+
+  if (app) await unmount(app);
+  app = null;
+  expect(compactShownPaneId()).toBeNull();
 });

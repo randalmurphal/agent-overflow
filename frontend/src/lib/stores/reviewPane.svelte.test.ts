@@ -31,7 +31,7 @@ import type { TransportHello } from '../transport/wsClient';
 import { companionSubjectKey } from './companionSubject';
 import { __seedGitStatusForTest } from './gitStatusStore.svelte';
 import { getPane, registerPaneForTest, resetPanesForTest, revealPane } from './panes.svelte';
-import { setCompactLayoutForTest, showCompactList } from './layoutMode.svelte';
+import { noteCompactPaneShown, setCompactLayoutForTest, showCompactList, showCompactThread } from './layoutMode.svelte';
 import { persistScope } from './reviewPaneScope';
 import { removeThread } from './threads.svelte';
 import { createThreadPane } from './thread.svelte';
@@ -4290,12 +4290,18 @@ describe('reviewPane store — the conflict view\'s permit follows the mounted p
 
   it('on compact, holds the permit only while the companion is the pane on screen', async () => {
     setCompactLayoutForTest(true);
+    // No strip is mounted here: this is what PaneHost's measurement writes
+    // when the compact strip comes to rest on the pane.
+    const showOnStrip = (paneId: string): void => {
+      showCompactThread();
+      noteCompactPaneShown(paneId);
+    };
     try {
       installPRMocks();
       const conflicts = installConflictTree();
       const state = reviewStateForPane('pane-1', prSubject());
       state.attachSurface('companion-1');
-      revealPane('companion-1');
+      showOnStrip('companion-1');
       await waitLoaded(state);
       await state.setScope('pr');
       await state.openConflictView();
@@ -4308,24 +4314,24 @@ describe('reviewPane store — the conflict view\'s permit follows the mounted p
       await flushPane();
       expect(conflicts).toHaveBeenCalledTimes(1);
       // Back to the companion: the snapshot moved, so it reads.
-      revealPane('companion-1');
+      showOnStrip('companion-1');
       await vi.waitFor(() => expect(conflicts).toHaveBeenCalledTimes(2));
       expect(heads(conflicts)[1]).toEqual(['sha-b', false]);
 
       // Another pane on screen: likewise.
-      revealPane('pane-1');
+      showOnStrip('pane-1');
       await flushPane();
       applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub({ headSHA: 'sha-c' }), threads: [], headSHA: 'sha-c', seq: 41 });
       await flushPane();
       expect(conflicts).toHaveBeenCalledTimes(2);
-      revealPane('companion-1');
+      showOnStrip('companion-1');
       await vi.waitFor(() => expect(conflicts).toHaveBeenCalledTimes(3));
       expect(heads(conflicts)[2]).toEqual(['sha-c', false]);
 
       // A return with nothing moved reads nothing.
-      revealPane('pane-1');
+      showOnStrip('pane-1');
       await flushPane();
-      revealPane('companion-1');
+      showOnStrip('companion-1');
       await flushPane();
       expect(conflicts).toHaveBeenCalledTimes(3);
     } finally {

@@ -15,7 +15,7 @@
   import { getPaneLayoutItems, isCompanionKind, isToolKind } from '../../stores/paneLayout.svelte';
   import { getPaneWidth, setPaneHostWidth } from '../../stores/layoutMetrics.svelte';
   import { REVEAL_PANE_EVENT } from '../../stores/eventNames';
-  import { compactShownPaneId, getCompactScreen, isCompactLayout, noteCompactPaneShown, onScreenCompactPaneId } from '../../stores/layoutMode.svelte';
+  import { compactShownPaneId, getCompactScreen, isCompactLayout, noteCompactPaneShown } from '../../stores/layoutMode.svelte';
   import PaneDivider from './PaneDivider.svelte';
   import { measurePane } from './measurePane';
   import { createPaneThreadDrag } from './usePaneThreadDrag.svelte';
@@ -151,6 +151,7 @@
     if (!el) return;
     const publishScrollPosition = (): void => {
       scrollLeft = el.scrollLeft;
+      measureCompactShownPane();
     };
     // A horizontal wheel/trackpad gesture over the strip is user scroll
     // intent — it wins over an in-flight reveal glide. Vertical wheel
@@ -163,7 +164,7 @@
       const entry = entries[0];
       if (entry) setPaneHostWidth(entry.contentRect.width);
       reconcilePaneHostGeometry();
-      reconcileCompactShownPane(false);
+      realignCompactStrip();
     });
     obs.observe(el);
     setPaneHostWidth(el.getBoundingClientRect().width);
@@ -192,6 +193,8 @@
     return () => {
       drag.destroy();
       cancelStripGlide();
+      // The record measures this strip; it ends with it.
+      noteCompactPaneShown(null);
       if (geometryReconcileFrame) cancelAnimationFrame(geometryReconcileFrame);
     };
   });
@@ -241,13 +244,10 @@
     // Untracked — a focus change alone must not re-run this effect.
     if (stripAppeared) {
       const focusTarget = untrack(() => focusedPaneId);
-      if (focusTarget) {
-        noteCompactPaneShown(focusTarget);
-        requestPaneScroll(focusTarget, { instant: true });
-      }
-    } else {
-      reconcileCompactShownPane(false);
+      if (focusTarget) requestPaneScroll(focusTarget, { instant: true });
     }
+    // Sections came, went or moved under the strip's position.
+    measureCompactShownPane();
 
     let secondHandle = 0;
     const firstHandle = requestAnimationFrame(() => {
@@ -259,42 +259,65 @@
     };
   });
 
-  // Compact shows one pane, and the layout store records which one for
-  // `isPaneOnScreen`. A change of the strip's geometry (entering compact, a
-  // resize or rotation, a pane added, closed or moved) can put a different
-  // pane under the strip than the record names; this is the one place that
-  // brings them back together, run after every such change.
-  // - Entering compact keeps what the reflowed strip shows, as the
-  //   transition always has: the record is re-measured from the pane under
-  //   the strip's centre.
-  // - A later change keeps the recorded pane: the strip snaps back to it,
-  //   or, when that pane left the strip, the record is re-measured.
-  // Either way the strip ends aligned to the recorded pane. A reveal in
-  // flight (`revealPane` records first, its glide lands next) is the one
-  // state where the two differ past this call, so it is left to land.
-  function reconcileCompactShownPane(entering: boolean): void {
-    if (!hostEl || !untrack(() => compact)) return;
-    const recorded = untrack(compactShownPaneId);
-    const recordedEl = recorded === null ? null : paneElementById(recorded);
-    const revealing = glideTargetPaneId ?? pendingScrollPaneId;
-    if (recordedEl && revealing === recorded) return;
-    let shown = entering ? null : recorded;
-    if (shown === null || !recordedEl) {
-      shown = onScreenCompactPaneId();
-      noteCompactPaneShown(shown);
+  // Compact shows one pane, and the layout store's record of which one
+  // (`isPaneOnScreen`) is a measurement of this strip, written only here:
+  // the pane whose section holds the strip's centre. It runs wherever the
+  // strip's position or its sections change: every scroll event (each
+  // glide frame, a glide's landing, a snap, a native scroll-into-view that
+  // abandons a glide), a structure change and entering compact. So it never
+  // names a pane the strip moved away from. A reveal does not write it: the
+  // reveal moves the strip and the record follows. Reads the published
+  // offsets, no DOM walk, and the store write is a no-op unless the pane
+  // under the centre changed.
+  function measureCompactShownPane(): void {
+    const el = hostEl;
+    if (!el || !untrack(() => compact)) return;
+    // Compact sections are each the strip's full width.
+    const width = el.clientWidth;
+    const centre = el.scrollLeft + width / 2;
+    let shown: string | null = null;
+    for (const [paneId, left] of paneOffsetLeftById) {
+      if (left <= centre && centre < left + width) {
+        shown = paneId;
+        break;
+      }
     }
-    const paneEl = shown === null ? null : paneElementById(shown);
+    noteCompactPaneShown(shown);
+  }
+
+  // A resize (a rotation, the keyboard opening) keeps the pane the record
+  // measured before it, the one place the record leads the strip: the old
+  // offset can put another pane, or two halves, under the resized strip.
+  // The snap's scroll event measures the result. A reveal on its way keeps
+  // its glide, which `reconcilePaneHostGeometry` re-resolved to its pane.
+  function realignCompactStrip(): void {
+    if (!untrack(() => compact)) return;
+    const before = untrack(compactShownPaneId);
+    const revealing = glideTargetLeft !== null || pendingScrollPaneId !== null;
+    const paneEl = before === null || revealing ? null : paneElementById(before);
     if (paneEl) snapPaneIntoView(paneEl);
   }
 
+  // Entering compact keeps what the reflowed strip shows, as the transition
+  // always has, aligned to that pane so it is the one on screen. Leaving it
+  // ends the record: the desktop shows every pane.
   // Initialized to the mode at mount: the strip's first paint places the
   // focused pane, so mounting in compact is not a transition into it.
   let wasCompact = untrack(() => compact);
   $effect(() => {
     const now = compact;
     const entering = now && !wasCompact;
+    const leaving = !now && wasCompact;
     wasCompact = now;
-    if (entering) untrack(() => reconcileCompactShownPane(true));
+    untrack(() => {
+      if (leaving) noteCompactPaneShown(null);
+      if (!entering) return;
+      reconcilePaneHostGeometry();
+      measureCompactShownPane();
+      const shown = compactShownPaneId();
+      const paneEl = shown === null ? null : paneElementById(shown);
+      if (paneEl) snapPaneIntoView(paneEl);
+    });
   });
 
   // Always deferred one frame: reveal is requested in the same tick as the

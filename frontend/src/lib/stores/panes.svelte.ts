@@ -120,7 +120,7 @@ function requestPanePersistence(): void {
 export function revealPane(paneId: string): void {
   if (typeof window === 'undefined' || !paneId) return;
   // Under the compact layout "show this pane" also means "leave the list".
-  showCompactThread(paneId);
+  showCompactThread();
   window.dispatchEvent(new CustomEvent(REVEAL_PANE_EVENT, {
     detail: { paneId },
   }));
