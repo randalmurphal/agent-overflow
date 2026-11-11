@@ -235,6 +235,20 @@ describe('speakableSections', () => {
   });
 });
 
+describe('renderedBlocks', () => {
+  it('takes a container of any size, and nested ones in order', () => {
+    const paragraphs = Array.from({ length: 500_000 }, () => ({ type: 'paragraph' }));
+    expect(renderedBlocks([{ type: 'mdx', tokens: paragraphs }])).toHaveLength(500_000);
+    const nested = [
+      { type: 'heading', id: 0 },
+      { type: 'mdx', tokens: [{ type: 'paragraph', id: 1 }, { type: 'mdx', tokens: [{ type: 'code', id: 2 }, { type: 'space', id: -1 }] }, { type: 'list', id: 3 }] },
+      { type: 'html', id: -1 },
+      { type: 'hr', id: 4 },
+    ];
+    expect(renderedBlocks(nested).map((token) => (token as { id: number }).id)).toEqual([0, 1, 2, 3, 4]);
+  });
+});
+
 describe('splitSentences', () => {
   it('splits on sentence ends and drops blanks', () => {
     expect(splitSentences('One. Two?  Three!')).toEqual(['One.', 'Two?', 'Three!']);
@@ -258,6 +272,8 @@ describe('capPiece', () => {
     expect(capPiece('天'.repeat(12), 20)).toEqual(['天天天天天', '天天天天天', '天天']);
     expect(capPiece('一二三，四五六七八九', 20)).toEqual(['一二三，', '四五六七八', '九']);
     expect(capPiece('12345 6789', 40)).toEqual(['12345', '6789']);
+    // A piece is never only the clause mark it starts with.
+    expect(capPiece('，一二三四', 9)).toEqual(['，一二', '三四']);
     // A character past the basic plane is never cut in half, and one that
     // alone passes the limit is still a piece.
     expect(capPiece('𠀀𠀁𠀂', 8)).toEqual(['𠀀𠀁', '𠀂']);
@@ -267,6 +283,42 @@ describe('capPiece', () => {
     // Nothing is lost or reordered around the cuts.
     expect(capPiece('ab, cd  ef,gh ij', 4)).toEqual(['ab,', 'cd', 'ef,g', 'h ij']);
     expect(capPiece(' a\t\t\t\tb ', 2)).toEqual(['a', 'b']);
+  });
+
+  it('cuts plain text where counting its characters does', () => {
+    // The cut by character count, which spoken length equals for text
+    // with no digit and no dense script.
+    const byCharacters = (sentence: string, max: number): string[] => {
+      const pieces: string[] = [];
+      let rest = sentence;
+      while (rest.length > max) {
+        const window = rest.slice(0, max + 1);
+        const clause = Math.max(window.lastIndexOf('; '), window.lastIndexOf(': '), window.lastIndexOf(', '));
+        const space = window.lastIndexOf(' ');
+        const cut = clause > 0 ? clause + 1 : space > 0 ? space : max;
+        pieces.push(rest.slice(0, cut).trim());
+        rest = rest.slice(cut).trim();
+      }
+      if (rest) pieces.push(rest);
+      return pieces;
+    };
+    let seed = 20261110;
+    const next = (below: number): number => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return seed % below;
+    };
+    const alphabet = 'abcde   ,;:.';
+    for (let round = 0; round < 3000; round += 1) {
+      const text = Array.from({ length: 1 + next(70) }, () => alphabet[next(alphabet.length)]).join('').trim();
+      const max = 1 + next(14);
+      expect(capPiece(text, max), `${JSON.stringify(text)} at ${max}`).toEqual(byCharacters(text, max));
+    }
+  });
+
+  it('keeps a word that ends exactly at the limit in its piece', () => {
+    expect(capPiece('aa bb cc', 5)).toEqual(['aa bb', 'cc']);
+    expect(capPiece('aa bb, cc', 6)).toEqual(['aa bb,', 'cc']);
+    expect(capPiece('aa bbb cc', 5)).toEqual(['aa', 'bbb', 'cc']);
   });
 
   it('reads each character a bounded number of times, however long the run', () => {

@@ -125,10 +125,13 @@ const ELEMENT_BLOCKS = new Set([
  */
 export function renderedBlocks<T extends { type: string; tokens?: unknown }>(tokens: readonly T[]): T[] {
   const out: T[] = [];
-  for (const token of tokens) {
-    if (ELEMENT_BLOCKS.has(token.type)) out.push(token);
-    else if (token.type === 'mdx' && Array.isArray(token.tokens)) out.push(...renderedBlocks(token.tokens as T[]));
-  }
+  const collect = (from: readonly T[]): void => {
+    for (const token of from) {
+      if (ELEMENT_BLOCKS.has(token.type)) out.push(token);
+      else if (token.type === 'mdx' && Array.isArray(token.tokens)) collect(token.tokens as T[]);
+    }
+  };
+  collect(tokens);
   return out;
 }
 
@@ -324,9 +327,10 @@ export function capPiece(sentence: string, max = MAX_PIECE_CHARS): string[] {
     while (start < sentence.length && /\s/.test(sentence[start])) start += 1;
     const limit = prefixEnd(sentence, start, max);
     if (limit >= sentence.length) break;
-    // The last clause end and the last space before the limit.
+    // The last clause end before the limit and the last space up to it: a
+    // word that ends exactly at the limit stays in this piece.
     let clause = -1;
-    let space = -1;
+    let space = sentence[limit] === ' ' ? limit : -1;
     for (let i = limit - 1; i > start && clause < 0; i -= 1) {
       const char = sentence[i];
       if (char === ' ') {
