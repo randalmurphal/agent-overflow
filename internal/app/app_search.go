@@ -33,6 +33,7 @@ func (a *App) SearchThreadMessages(query string, limit int) ([]store.ThreadMessa
 // without an error. limit caps the result set. The store owns the query.
 //
 //ao:scope threads:read
+//ao:callerbound
 func (a *App) SearchThreadItems(ctx context.Context, threadID, query string, limit int) ([]store.ThreadMessageHit, error) {
 	return a.SearchTimelineItems(ctx, threadID, query, store.TimelineSelection{}, limit)
 }
@@ -43,6 +44,7 @@ func (a *App) SearchThreadItems(ctx context.Context, threadID, query string, lim
 // closed) stops the read.
 //
 //ao:scope threads:read
+//ao:callerbound
 func (a *App) SearchTimelineItems(ctx context.Context, threadID, query string, selection store.TimelineSelection, limit int) ([]store.ThreadMessageHit, error) {
 	hits, err := a.store.SearchThreadItems(ctx, threadID, query, selection, limit)
 	if err != nil {

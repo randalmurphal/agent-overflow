@@ -92,6 +92,7 @@ func (a *App) BeginDictation(ctx context.Context, mimeType string) (string, erro
 //
 //ao:scope threads:operate
 //ao:route selected
+//ao:callerbound
 func (a *App) MintDictationChunkTicket(ctx context.Context, recordingID string, seq int, size int64) (string, error) {
 	if err := ownsConnectionResource(ctx, dictationCleanupKey(recordingID), dictation.ErrUnknownRecording); err != nil {
 		return "", err

@@ -21,6 +21,8 @@ type GitPR struct {
 	Number int    `json:"number"`
 	Title  string `json:"title"`
 	State  string `json:"state"`
+	// BaseBranch is the branch the PR merges into.
+	BaseBranch string `json:"baseRefName,omitempty"`
 }
 
 // githubForge implements Forge over the GitHub API through the Core's
@@ -94,7 +96,7 @@ const githubOpenPRsQuery = `query OpenPRsByHead($owner: String!, $name: String!,
   repository(owner: $owner, name: $name) {
     pullRequests(headRefName: $head, states: [OPEN], first: 100, after: $after) {
       pageInfo { hasNextPage endCursor }
-      nodes { id url number title state isCrossRepository }
+      nodes { id url number title state baseRefName isCrossRepository }
     }
   }
 }`
@@ -459,9 +461,10 @@ func splitGitHubProject(project string) (string, string, error) {
 
 // CreatePR is a thin wrapper that dispatches to the forge detected for
 // cwd. Returns ErrUnsupportedForge (via nullForge) when the origin
-// remote is missing or its host is not a recognised forge.
+// remote is missing or its host is not a recognised forge. The CLI pushes
+// before it opens the PR, so it runs to its own timeout once started.
 func (c *Core) CreatePR(ctx context.Context, cwd, title, body, base string, draft bool) (string, error) {
-	return c.forgeFor(cwd).CreatePR(ctx, cwd, title, body, base, draft)
+	return c.forgeFor(cwd).CreatePR(forgeWrite(ctx), cwd, title, body, base, draft)
 }
 
 // ListOpenPRs is a thin wrapper that dispatches to the forge detected

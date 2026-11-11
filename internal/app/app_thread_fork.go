@@ -296,10 +296,9 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 		)
 	}
 
-	// Publish readiness only after history and provider identity agree.
-	if err := ctx.Err(); err != nil {
-		return store.Thread{}, errors.Join(err, cleanups.Run())
-	}
+	// Publish readiness only after history and provider identity agree. No
+	// caller check from here: a Codex child now exists and only this row
+	// names it.
 	ready, err := a.store.FinishForkPreparation(fork.ID)
 	if err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
@@ -454,9 +453,7 @@ func (a *App) ForkThreadFromMessage(ctx context.Context, sourceThreadID string, 
 			cleanups.Run(),
 		)
 	}
-	if err := ctx.Err(); err != nil {
-		return store.Thread{}, errors.Join(err, cleanups.Run())
-	}
+	// No caller check from here, as in ForkThread.
 	ready, err := a.store.FinishForkPreparation(fork.ID)
 	if err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())

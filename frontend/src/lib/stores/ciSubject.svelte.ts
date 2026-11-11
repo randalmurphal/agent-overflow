@@ -19,14 +19,14 @@
 // shows in place of the CI until it clears.
 
 import { SvelteSet } from 'svelte/reactivity';
-import { SavePRCIJobLog, SavePRCIJobLogSection } from './bindings';
+import { SavePRCIJobLog, SavePRCIJobLogSection, SearchPRCILog } from './bindings';
 import { ciLogFetch, readCILogLines as readCILogRange } from './ciLogBlocks.svelte';
 import { peekPRCI, refreshPRCI, type PRCILogState } from './prReviewCI.svelte';
 import { prCILogFollowPending, refreshPRCILogFollows, setPRCILogFollow } from './prReviewCIFollows.svelte';
 import { addToast } from './toast.svelte';
 import type { BackendKey } from '../transport/backendKey';
 import { withBackendTarget } from '../transport/backends';
-import type { CIJob, CILogLines, CILogSection, CIPipeline } from '../types/models';
+import type { CIJob, CILogLines, CILogSearch, CILogSection, CIPipeline } from '../types/models';
 import { copyToClipboard } from '../utils/clipboard';
 import type { ForgeFailure } from '../utils/forgeFailure';
 import { prKey, repoKey, repoReferenceWire, type PRRef, type RepoRef } from '../utils/prReference';
@@ -107,6 +107,8 @@ export interface CISubjectState {
   toggleSection(sectionKey: string): void;
   setSectionsOpen(sectionKeys: readonly string[], open: boolean): void;
   readLines(from: number, count: number): Promise<CILogLines>;
+  /** Finds `query` in the open log's cached text (SearchPRCILog). */
+  searchLog(query: string, limit: number): Promise<CILogSearch>;
   /** A section's lines as plain text, read from the backend's cache. */
   sectionText(section: CILogSection): Promise<string>;
   /** Saves a section and answers its path, or null with the failure shown. */
@@ -169,6 +171,13 @@ export function createCISubjectState(subject: () => CISubject | null, options: C
     const open = opened;
     if (!open) return Promise.reject(new Error('No CI job log is open.'));
     return ciLogFetch(open.subject.backend, repoReferenceWire(subjectRepo(open.subject)), open.job.id)(from, count);
+  }
+
+  async function searchLog(query: string, limit: number): Promise<CILogSearch> {
+    const open = opened;
+    if (!open) throw new Error('No CI job log is open.');
+    const repo = repoReferenceWire(subjectRepo(open.subject));
+    return await withBackendTarget(open.subject.backend, () => SearchPRCILog(repo, open.job.id, query, limit)) as CILogSearch;
   }
 
   async function saveSectionOf(open: CILogOpen, section: CILogSection): Promise<string | null> {
@@ -261,6 +270,7 @@ export function createCISubjectState(subject: () => CISubject | null, options: C
     },
 
     readLines,
+    searchLog,
     sectionText,
 
     async saveSection(section) {

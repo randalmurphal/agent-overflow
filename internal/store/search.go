@@ -103,7 +103,7 @@ func (s *Store) SearchThreadItems(ctx context.Context, threadID, query string, s
 	if trimmed == "" {
 		return nil, nil
 	}
-	pattern := likePattern(trimmed)
+	pattern := findPattern(trimmed)
 	return historyReadSnapshot(ctx, s, "search thread items", func(q sqlQueryer) ([]ThreadMessageHit, error) {
 		var thread ThreadMessageHit
 		if err := q.QueryRow(
@@ -145,12 +145,14 @@ func (s *Store) SearchThreadItems(ctx context.Context, threadID, query string, s
 	})
 }
 
-// threadFindSelection selects scope's rows whose summary matches pattern,
-// in document order, cut to limit (zero for none).
+// threadFindSelection selects scope's rows whose summary matches pattern
+// (findPattern) by the find bar's rule, so the pane's count is what its bar
+// paints, in document order, cut to limit (zero for none). The scope
+// narrows to one thread's rows by index before find_fold reads a summary.
 func threadFindSelection(scope timelineScope, pattern string, limit int) timelineSelection {
 	filter, args := scope.filter("items.")
 	return timelineSelection{
-		Where:     filter + ` AND LOWER(items.summary) LIKE ` + boundText + ` ESCAPE '\'`,
+		Where:     filter + ` AND ` + findMatchSQL("items.summary"),
 		WhereArgs: append(args, pattern),
 		OrderBy:   "turn_index ASC, item_index ASC",
 		Limit:     limit,

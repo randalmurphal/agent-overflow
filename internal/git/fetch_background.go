@@ -79,10 +79,9 @@ func (c *Core) CommonDir(cwd string) (string, error) {
 // decides what a failure is worth saying out loud; for the app cadence
 // that is one memoized log line per repo (app_git_background_fetch.go).
 //
-// ctx bounds the subprocess: cancelling it kills the fetch, so the owner
-// of the cadence can shut down without waiting out a fetch hanging on a
-// dead network. A joined single-flight caller rides the first caller's
-// ctx — they are the same cadence, with the same lifetime.
+// ctx bounds this caller's wait. Cancelling it kills the fetch when no
+// other caller waits for it, so the owner of the cadence can shut down
+// without waiting out a fetch hanging on a dead network (fetch_flight.go).
 func (c *Core) FetchRemotesBackground(ctx context.Context, cwd string) (bool, error) {
 	key, err := c.CommonDir(cwd)
 	if err != nil {
@@ -92,7 +91,7 @@ func (c *Core) FetchRemotesBackground(ctx context.Context, cwd string) (bool, er
 		return false, nil
 	}
 
-	fetched, err, _ := c.fetchFlight.Do(key, func() (any, error) {
+	return c.fetchFlight.do(ctx, key, func(ctx context.Context) (bool, error) {
 		// Re-check inside the flight: a caller that queued behind a
 		// just-finished fetch must not spawn a second one.
 		if c.fetchIsFresh(key) {
@@ -107,10 +106,6 @@ func (c *Core) FetchRemotesBackground(ctx context.Context, cwd string) (bool, er
 		c.stampFetchCache(key)
 		return true, nil
 	})
-	if err != nil {
-		return false, err
-	}
-	return fetched.(bool), nil
 }
 
 // fetchOriginQuiet is the production body behind Core.fetchFn.

@@ -383,6 +383,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1537914193: 'selected', // SavePRCIJobLog
 	1281545488: 'selected', // SavePRCIJobLogSection
 	3576148797: 'thread', // SavePayloadToFile
+	349857499: 'selected', // SearchPRCILog
 	1414650511: 'thread', // SearchThreadItems
 	3644945077: 'all', // SearchThreadMessages
 	1822896830: 'thread', // SearchTimelineItems

@@ -34,7 +34,7 @@ function gitIn(harness: HarnessApp) {
 
 /** Commits `content` as shared.txt on origin's main from a scratch clone the
  * workspace never sees. */
-async function pushToOriginMain(harness: HarnessApp, repo: ForgeRepo, content: string): Promise<string> {
+export async function pushToOriginMain(harness: HarnessApp, repo: ForgeRepo, content: string): Promise<string> {
   const git = gitIn(harness);
   const bare = path.join(harness.bootstrap.dataRoot, 'forge-origin', `${repo.project}.git`);
   const scratch = await mkdtemp(path.join(harness.bootstrap.dataRoot, 'pusher-'));

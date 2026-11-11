@@ -2,7 +2,7 @@
   import { untrack, type Snippet } from 'svelte';
   import LongListVirtualizer, { type LongListHandle } from '../virtual/LongListVirtualizer.svelte';
   import ReviewFileHeaderRow from './ReviewFileHeaderRow.svelte';
-  import ReviewLineBlockRow from './ReviewLineBlockRow.svelte';
+  import ReviewDiffRow from './ReviewDiffRow.svelte';
   import {
     createReviewScrollOwner,
     reviewScrollKey,
@@ -20,13 +20,17 @@
     type ReadingAnchor,
   } from '../../utils/reviewAnchor';
   import { REVIEW_JUMP_PULSE_MS } from '../../utils/reviewJumpPulse';
+  import { findLineKeyIndex, findLineKeyPath, type ReviewFindPlace } from '../../utils/reviewFindScan';
+  import { findHitRow, findRowPosition } from '../../utils/reviewFindRows';
+  import { reviewDiffKeydown, type ReviewDiffKeysHost } from './reviewDiffKeys';
+  import { elementAtEdge } from '../../utils/findReadingEdge';
+  import { reportReaderNavigation } from '../../utils/scroll/readerInput';
   import {
     BlockRowsCache,
     buildReviewRows,
     REVIEW_FILE_GAP_PX,
     REVIEW_FILE_HEADER_BAR_PX,
     REVIEW_OVERVIEW_ROW_KEY,
-    REVIEW_SURFACE_END_PX,
     reviewRowEstimate,
     type CommentAnchor,
     type ReviewLeadRow,
@@ -198,7 +202,7 @@
       const saved = savedReadingPosition(key);
       const target = saved === undefined ? readingAnchor : saved;
       if (target) restoreAnchor(target);
-      else if (saved === null) scroll.applyScrollTarget(0);
+      else if (saved === null) restoreTop();
       // The engine tail-seeds its window until its first scroll input
       // (chat's bottom-anchored mount seeding). This surface is
       // TOP-anchored, and neither a restore that lands on the current
@@ -280,6 +284,21 @@
     readingAnchor = ref ? captureReadingAnchor(built, files, blockRows, ref, offset) : null;
   }
 
+  // A key saved at the top opens at the top.
+  function restoreTop(): void {
+    scroll.applyScrollTarget(0);
+  }
+
+  // Every scroll made on the reader's behalf (a file, row, comment or
+  // sticky-header jump) goes through here and is reported as theirs, so a
+  // pending find reveal ends. Find's own reveal (revealFindPlace,
+  // scrollFindBy) and keeping the reader's place (restoreAnchor,
+  // restoreTop, the virtualizer's writes) do not.
+  function navigateToIndex(index: number, opts?: { offset?: number }): void {
+    reportReaderNavigation(scrollEl);
+    listRef?.scrollToIndex(index, opts);
+  }
+
   function restoreAnchor(target: ReadingAnchor): void {
     const ref = listRef;
     if (!ref) return;
@@ -326,7 +345,7 @@
     const headerRow = fileIndex >= 0 ? (built.firstRowOfFile[fileIndex] ?? -1) : -1;
     if (headerRow < 0) return;
     untrack(() => {
-      ref.scrollToIndex(headerRow);
+      navigateToIndex(headerRow);
       onJumpConsumed?.();
     });
   });
@@ -355,10 +374,10 @@
       // The overview is a destination, not a find: no pulse, and it
       // sits above every file so nothing overlays its top.
       if (key === REVIEW_OVERVIEW_ROW_KEY) {
-        ref.scrollToIndex(rowIndex);
+        navigateToIndex(rowIndex);
         return;
       }
-      ref.scrollToIndex(rowIndex, { offset: -REVIEW_FILE_HEADER_BAR_PX });
+      navigateToIndex(rowIndex, { offset: -REVIEW_FILE_HEADER_BAR_PX });
       pulse = { rowKey: key, generation: (pulse?.generation ?? 0) + 1 };
       clearTimeout(pulseTimer);
       pulseTimer = setTimeout(() => { pulse = null; }, REVIEW_JUMP_PULSE_MS);
@@ -380,90 +399,54 @@
 
   function jumpToStickyFile(): void {
     const headerRow = built.firstRowOfFile[stickyFileIndex] ?? -1;
-    if (headerRow >= 0) listRef?.scrollToIndex(headerRow);
+    if (headerRow >= 0) navigateToIndex(headerRow);
   }
 
-  function currentTopRowIndex(): number {
+  const keysHost: ReviewDiffKeysHost = {
+    built: () => built,
+    files: () => files,
+    list: () => listRef,
+    navigateToIndex,
+    scrollTop: () => scrollEl?.scrollTop ?? 0,
+    onAddComment: () => onAddComment,
+  };
+  const handleKeydown = reviewDiffKeydown(keysHost);
+
+  /** Find: the (file, line) at the reading edge (the viewport top, below
+   * the sticky file bar), in find-hit order. Inside a block of lines, the
+   * line laid out across the edge (lines wrap); its block's first line
+   * when none is (a gap or fold row). */
+  export function findReadingPosition(): { fileIndex: number; line: number } | null {
+    const el = scrollEl;
+    const list = listRef;
+    if (!el || !list || built.rows.length === 0) return null;
+    const inset = stickyFile ? REVIEW_FILE_HEADER_BAR_PX : 0;
+    const at = list.findItemIndex(el.scrollTop + inset);
+    const position = findRowPosition(built, at);
+    if (!position || built.rows[at]?.kind !== 'line-block') return position;
+    const path = files[position.fileIndex]?.path;
+    const lines = [...el.querySelectorAll<HTMLElement>('[data-find-key^="l:"]')].filter((line) => findLineKeyPath(line.dataset.findKey!) === path);
+    const line = findLineKeyIndex(elementAtEdge(lines, el.getBoundingClientRect().top + inset)?.dataset.findKey ?? '');
+    return line !== null && line >= position.line ? { fileIndex: position.fileIndex, line } : position;
+  }
+
+  /** Find: scrolls the row showing a match at `at` (resolved against the
+   * files shown, reviewFindRows.ts) so its line sits a third down the
+   * viewport. False when the row model does not show it. */
+  export function revealFindPlace(at: { fileIndex: number; place: ReviewFindPlace }): boolean {
     const ref = listRef;
-    if (!ref || built.rows.length === 0) return -1;
-    return ref.findItemIndex(scrollEl?.scrollTop ?? 0);
+    const target = ref ? findHitRow(built, files, at) : null;
+    if (!ref || !target) return false;
+    ref.scrollToIndex(target.index, { offset: target.within - Math.round(ref.getViewportSize() / 3) });
+    return true;
   }
 
-  function currentTopFileIndex(): number {
-    const topRow = currentTopRowIndex();
-    return topRow >= 0 ? (built.fileOfRow[topRow] ?? -1) : -1;
+  /** Find: moves the view by `delta` pixels through the scroll owner. */
+  export function scrollFindBy(delta: number): void {
+    const el = scrollEl;
+    if (el && delta !== 0) scroll.applyScrollTarget(Math.max(0, el.scrollTop + delta));
   }
 
-  function jumpFile(delta: 1 | -1): void {
-    const fileIndex = currentTopFileIndex();
-    if (fileIndex < 0) return;
-    const targetFile = fileIndex + delta;
-    const targetRow = built.firstRowOfFile[targetFile] ?? -1;
-    if (targetRow >= 0) listRef?.scrollToIndex(targetRow);
-  }
-
-  function jumpComment(delta: 1 | -1): void {
-    const topRow = currentTopRowIndex();
-    if (topRow < 0) return;
-    for (let index = topRow + delta; index >= 0 && index < built.rows.length; index += delta) {
-      const row = built.rows[index];
-      if (row?.kind === 'draft-editor' || row?.kind === 'comment-thread' || row?.kind === 'pr-thread') {
-        listRef?.scrollToIndex(index, { offset: -REVIEW_FILE_HEADER_BAR_PX });
-        return;
-      }
-    }
-  }
-
-  function openFileLevelComment(): void {
-    if (!onAddComment) return;
-    const fileIndex = currentTopFileIndex();
-    const file = fileIndex >= 0 ? files[fileIndex] : null;
-    if (!file) return;
-    onAddComment({ filePath: file.path, side: 'file', selectedText: '' });
-  }
-
-  function isInputTarget(target: EventTarget | null): boolean {
-    if (!(target instanceof HTMLElement)) return false;
-    const tag = target.tagName.toLowerCase();
-    return tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable;
-  }
-
-  function handleKeydown(event: KeyboardEvent): void {
-    if (isInputTarget(event.target) || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-    switch (event.key) {
-      case 'j':
-        event.preventDefault();
-        jumpFile(1);
-        break;
-      case 'k':
-        event.preventDefault();
-        jumpFile(-1);
-        break;
-      case 'n':
-        event.preventDefault();
-        jumpComment(1);
-        break;
-      case 'p':
-        event.preventDefault();
-        jumpComment(-1);
-        break;
-      case 'c':
-        event.preventDefault();
-        openFileLevelComment();
-        break;
-    }
-  }
-
-  // Per-file gutter width (ch) from the file's max line number — a
-  // true max over every row, not the last numbered row: a merged
-  // edits-scope file whose sections couldn't be renumbered (overlap
-  // fallback in mergePatchFilesByPath) renders sections in edit order,
-  // where numbering is non-monotonic and the last row can carry a
-  // smaller number than rows above it — sizing from it cramps every
-  // wider number.
-  function gutterChars(file: ReviewFile): number {
-    return Math.max(2, String(file.body.maxLine).length);
-  }
 </script>
 
 <div class="relative h-full min-h-0 min-w-0 flex-1" data-testid="review-diff-body">
@@ -507,58 +490,25 @@
         onscrollend={() => saveReadingPosition(scrollKey, readingAnchor)}
       >
         {#snippet children(row: ReviewRow)}
-          {@const file = files[row.fileIndex]}
-          {@const rowPulse = row === pulseRow && pulse ? pulse.generation : 0}
-          {#if row.kind === 'overview'}
-            {@render overview?.()}
-          {:else if !file}
-            <!-- Build/props raced; the next flush re-renders coherent rows. -->
-          {:else if row.kind === 'file-header'}
-            <ReviewFileHeaderRow
-              {file}
-              collapsed={collapsedPaths.has(file.path)}
-              onToggle={() => onToggleCollapsed(file.path)}
-              first={row.fileIndex === 0}
-            />
-          {:else if row.kind === 'surface-end'}
-            <!-- Closing cap for the last file's slab (exact height:
-                 REVIEW_SURFACE_END_PX; box-border keeps the border
-                 inside it). -->
-            <div style:height="{REVIEW_SURFACE_END_PX}px">
-              <div class="mx-[var(--review-slab-inset)] h-full rounded-b-[var(--radius-control)] border-x border-b border-border-subtle bg-surface-1"></div>
-            </div>
-          {:else if row.kind === 'line-block'}
-            {@const materialized = blockRows.get(file, row)}
-            <ReviewLineBlockRow
-              rows={materialized.rows}
-              splitRows={materialized.splitRows}
-              {file}
-              path={file.path}
-              {spanOwner}
-              {spanContext}
-              {painted}
-              {wordWrap}
-              gutterCh={gutterChars(file)}
-              {onAddComment}
-              {onExpandFold}
-              {onExpandGap}
-            />
-          {:else if row.kind === 'draft-editor'}
-            <!-- The slab inset + border-x + bg-surface-1 keep the file slab
-                 continuous behind the inserted rows (the page behind is
-                 darker surface-0). -->
-            <div class="mx-[var(--review-slab-inset)] border-x border-border-subtle bg-surface-1">
-              {@render draftEditor?.(row.anchor)}
-            </div>
-          {:else if row.kind === 'comment-thread'}
-            <div class="mx-[var(--review-slab-inset)] border-x border-border-subtle bg-surface-1">
-              {@render commentThread?.(row.threadKey, row.anchor, rowPulse)}
-            </div>
-          {:else}
-            <div class="mx-[var(--review-slab-inset)] border-x border-border-subtle bg-surface-1">
-              {@render prThread?.(row.thread, row.anchor, row.collapsed, row.orphaned, rowPulse)}
-            </div>
-          {/if}
+          <ReviewDiffRow
+            {row}
+            file={files[row.fileIndex]}
+            {blockRows}
+            collapsed={collapsedPaths.has(files[row.fileIndex]?.path ?? '')}
+            {onToggleCollapsed}
+            {spanOwner}
+            {spanContext}
+            {painted}
+            {wordWrap}
+            pulse={row === pulseRow && pulse ? pulse.generation : 0}
+            {overview}
+            {draftEditor}
+            {commentThread}
+            {prThread}
+            {onAddComment}
+            {onExpandFold}
+            {onExpandGap}
+          />
         {/snippet}
       </LongListVirtualizer>
     {/key}
