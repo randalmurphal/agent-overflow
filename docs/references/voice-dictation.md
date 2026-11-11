@@ -124,7 +124,7 @@ WebKit needs GStreamer libraries this development host lacks.
 
 ## Read aloud
 
-Read-aloud speaks a finished reply sentence by sentence, in this device's
+Read-aloud speaks a finished reply section by section, in this device's
 own voice or in an OpenAI voice made by the computer the reply's thread
 runs on. With a device voice nothing leaves the device. Code:
 `frontend/src/lib/utils/speakableText.ts` (what is read),
@@ -132,17 +132,35 @@ runs on. With a device voice nothing leaves the device. Code:
 `frontend/src/lib/native/clipSpeech.ts` (playback of fetched clips),
 `frontend/src/lib/stores/readAloud.svelte.ts` (one reading at a time),
 `frontend/src/lib/stores/readAloudSource.svelte.ts` (what each computer
-offers) and
+offers),
+`frontend/src/lib/components/chat/ReadAloudButton.svelte` and
+`ReadAloudSections.svelte` (the controls and the marker) and
 `mobile/android/app/src/main/java/dev/agentoverflow/app/speech/`.
 
-- The reply is read from its parsed markdown as sentences. Code blocks,
-  display math, tables, raw HTML, images, bare URLs, footnote markers and
-  emoji are skipped silently, as Open WebUI does; link text and inline code
-  are read as words.
-- Each sentence is one utterance, capped at 280 characters (cut at clause
-  punctuation, then whitespace), so no engine stalls on a long one.
-- Pause stops the voice and keeps the sentence; resume starts that
-  sentence again. Mid-sentence resume is unreliable across OS voices.
+- The reply is read from its parsed markdown. Code blocks, display math,
+  tables, raw HTML, images, bare URLs, footnote markers and emoji are
+  skipped silently, as Open WebUI does; link text and inline code are read
+  as words.
+- It is read in sections: runs of whole top-level blocks of up to 400
+  characters. A heading starts a section, a section under 80 characters
+  takes the next block up to 800, a block with nothing to say (code, a
+  table, a rule, an image) ends one, and a block over 800 characters is
+  split at sentences into parts of about equal length.
+- A device voice reads a section as its sentences, each one utterance
+  capped at 280 characters (cut at clause punctuation, then whitespace), so
+  no engine stalls on a long one. Pause stops the voice and keeps the
+  sentence; resume starts that sentence again. Mid-sentence resume is
+  unreliable across OS voices.
+- While a reply is read or paused its meta row shows previous section,
+  back, play or pause, next section and, while paused, read from the start.
+  Back moves 10 seconds within the clip for an OpenAI voice and repeats the
+  sentence for a device voice.
+- The reply being read shows a 2px accent rule in the gutter left of the
+  current section's blocks (dimmed while paused) and a "read from here"
+  button in the right gutter beside every other section: on hover of that
+  section with a mouse, always on the compact layout. Both are drawn over
+  the reply from its blocks' geometry, so the row's height does not change.
+  A reply that is not being read shows neither.
 - Browsers and the desktop webviews speak through `speechSynthesis`.
   Android System WebView has none (reports through WebView 138), so the
   shell speaks through Android's TextToSpeech, queueing every sentence at
@@ -162,22 +180,22 @@ offers) and
 ### OpenAI voices
 
 With the host setting `readAloudAPIEnabled` on (off by default) and a key
-in the API key file, a computer reads sentences in OpenAI voices.
+in the API key file, a computer reads sections in OpenAI voices.
 `ReadAloudSource` reports availability and the voices;
-`MintReadAloudTicket(text, voice)` admits one sentence (1 to 1000
+`MintReadAloudTicket(text, voice)` admits one section (1 to 1000
 characters after trimming) and returns
 `/attachments/speech/{id}?ticket=...`. Fetching it runs the synthesis and
 answers a 24 kHz mono 16-bit WAV, or a 4xx/5xx with a plain-text message
 the client shows: 404 spent or expired, 409 no usable key, 429 busy or
 rate limited, 502 an OpenAI failure, 504 over 45 seconds. 403 means the
-switch is off or was written since the sentence was admitted, whether the
-sentence was waiting or being read (the RPC says the same with code
+switch is off or was written since the section was admitted, whether the
+section was waiting or being read (the RPC says the same with code
 `read_aloud_api_off`); a client stops on it without an error. Code:
 `internal/openai/speech.go`, `internal/openai/fidelity.go`,
 `internal/readaloud/`, `internal/app/app_read_aloud.go`,
 `internal/transport/speechroutes.go`.
 
-- One Realtime connection per sentence to `gpt-realtime-2.1-mini`
+- One Realtime connection per section to `gpt-realtime-2.1-mini`
   (`wss://api.openai.com/v1/realtime?model=...`): a `session.update` of
   type `realtime` with audio-only output, no tools, minimal reasoning and
   turn detection off, then one out-of-band `response.create`
@@ -194,17 +212,22 @@ sentence was waiting or being read (the RPC says the same with code
   text are bounded, with room for numbers spelled out. A result that is
   not a reading is retried once and then refused. Audio past 90 seconds
   is abandoned.
-- At most 8 sentences wait and 4 synthesize per computer; a fifth
+- At most 8 sections wait and 4 synthesize per computer; a fifth
   synthesis is refused, not queued. A clip keeps its synthesis slot until
   its response is written, and a fetch is cut off after two minutes, so
   the audio held for slow readers is bounded too. An aborted fetch cancels
   the call.
-- A write to the switch drops every sentence admitted before it and ends
+- A write to the switch drops every section admitted before it and ends
   their syntheses, as it does live recordings; switching off and on again
-  does not spare them. A sentence's id leads with its admission revision,
+  does not spare them. A section's id leads with its admission revision,
   so a dropped one is still answered 403.
 - The client plays each WAV through one audio element from a blob URL,
-  fetching one sentence ahead. The element is first started on a silent
+  with 850 ms of silence between sections (shorter at higher speeds). It
+  requests the first two sections at once and then one section ahead,
+  holding at most two clips. Pause holds the element and its clip, so
+  resume continues mid-clip without a new request; back seeks within the
+  clip; previous, next and read from here keep a clip they can reuse. The
+  element is first started on a silent
   clip inside the click or key that began the reading, so engines that
   require a gesture allow the later plays. Speed is the element's
   `playbackRate` with pitch preserved.
@@ -220,6 +243,13 @@ text, 4 differed by one word, and 5 were a sentence containing
 `./internal/store`, which is spoken as "dot slash"; file paths and
 similar symbols read poorly. Audio is billed at about 20 tokens per
 second, about 2.6 cents per minute of speech at that date's prices.
+
+Measured 2026-11-10 on why a section is one request: across 90 responses
+sent as turns of one Realtime session, the usage reported zero audio input
+tokens (earlier turns reach the model as text only), so pace and
+intonation carry only inside one request. A whole 38 s reply generated in
+4.7 s. Pauses between sentences inside one request were 0.4 to 0.7 s,
+against 0.07 to 0.6 s between separately generated sentence clips.
 
 Not verified: playback in WebKitGTK and WKWebView, and whether Android's
 WebView keeps playing a reading while the app is in the background (the

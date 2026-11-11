@@ -2,13 +2,12 @@
 // takes by computer and saved or overriding voice, the wait for the first
 // clip, a source that goes away mid-reading, pause and resume keeping the
 // reading's choice, a thread whose computer stops being verified, and what
-// a failure says.
+// a failure says. Moving by section is in `readAloud.sections.svelte.test.ts`.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
-import type { SpeechEngine, SpeechOptions, SpeechOutcome } from '../native/speech';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
-import { fakeSpeechEngine } from '../../test/helpers/speech';
+import { fakeClipEngines, fakeSpeechEngine } from '../../test/helpers/speech';
 import { hasScope } from '../transport/scopes';
 import { __attachBackendForTest, __resetBackendsForTest, detachBackend, getPinnedBackend } from '../transport/backends';
 import { TransportError } from '../transport/wsClient';
@@ -41,51 +40,14 @@ import * as toast from './toast.svelte';
 vi.mock('../transport/scopes', async (original) => ({ ...await original<object>(), hasScope: vi.fn(() => true) }));
 
 const VOICES = [{ id: 'marin', name: 'Marin' }, { id: 'cedar', name: 'Cedar' }];
-const REPLY = 'First sentence. Second sentence. Third sentence.';
+// Three sections, one per heading.
+const REPLY = '## One\n\nFirst sentence.\n\n## Two\n\nSecond sentence.\n\n## Three\n\nThird sentence.';
+const SECTIONS = ['One\n\nFirst sentence.', 'Two\n\nSecond sentence.', 'Three\n\nThird sentence.'];
 // Replies of a thread on each computer, and of one no computer verifiably
 // owns (its owner is unknown and several are attached).
 const LAPTOP = { thread: 'on-laptop' };
 const DESK = { thread: 'on-desk' };
 const NOBODY = { thread: 'unowned' };
-
-interface ClipPlayback {
-  backend: string;
-  pieces: string[];
-  from: number;
-  options: SpeechOptions;
-  onPiece: (index: number) => void;
-  stopped: boolean;
-  finish: (outcome: SpeechOutcome) => void;
-  fail: (err: unknown) => void;
-}
-
-/** OpenAI engines per computer that, like the real one, report a sentence
- * only when the test says it sounds. */
-function fakeClipEngines() {
-  const playbacks: ClipPlayback[] = [];
-  const factory = (backend: string): SpeechEngine => ({
-    voices: async () => [],
-    onVoicesChanged: () => () => undefined,
-    speak: (pieces, from, options, onPiece) => {
-      let finish!: (outcome: SpeechOutcome) => void;
-      let fail!: (err: unknown) => void;
-      const done = new Promise<SpeechOutcome>((resolve, reject) => {
-        finish = resolve;
-        fail = reject;
-      });
-      const record: ClipPlayback = { backend, pieces, from, options, onPiece, stopped: false, finish, fail };
-      playbacks.push(record);
-      return {
-        done,
-        stop: () => {
-          record.stopped = true;
-          finish('stopped');
-        },
-      };
-    },
-  });
-  return { playbacks, factory };
-}
 
 const fakeClient = {
   callByID: async () => null, callByName: async () => null, subscribe: () => () => undefined,
@@ -163,11 +125,12 @@ describe('read-aloud in OpenAI voices', () => {
     readAloud('a', REPLY, LAPTOP);
     expect(clips.playbacks[0]).toMatchObject({
       backend: 'laptop',
-      pieces: ['First sentence.', 'Second sentence.', 'Third sentence.'],
+      pieces: SECTIONS,
       from: 0,
       options: { voiceId: 'cedar', rate: 1.5, volume: 1 },
     });
     expect(device.playbacks).toHaveLength(0);
+    expect(clips.playbacks[0].calls).toEqual([]);
 
     // The desk is off: its reply is read in the device's default voice.
     readAloud('b', REPLY, DESK);
@@ -235,17 +198,27 @@ describe('read-aloud in OpenAI voices', () => {
     clips.playbacks[0].onPiece(0);
     expect(readAloudWaiting('a')).toBe(false);
 
-    // Resume waits again for its sentence; a device reading never waits.
+    // A held pause does not wait on resume; one before the first section
+    // sounded waits again; a device reading never waits.
     pauseReadAloud();
     await settle();
     expect(readAloudWaiting('a')).toBe(false);
     resumeReadAloud();
-    expect(readAloudWaiting('a')).toBe(true);
+    expect(readAloudWaiting('a')).toBe(false);
+    readAloud('c', REPLY, LAPTOP);
+    pauseReadAloud();
+    expect(readAloudWaiting('c')).toBe(false);
+    resumeReadAloud();
+    expect(readAloudWaiting('c')).toBe(true);
+    expect(clips.playbacks[1].calls).toEqual(['pause', 'resume']);
     readAloud('b', REPLY, NOBODY);
     expect(readAloudWaiting('b')).toBe(false);
   });
 
   it('pause, resume and restart keep the reading’s computer and voice', async () => {
+    // A voice that can only stop: resume and restart speak again.
+    clips = fakeClipEngines({ holds: false });
+    useOpenAIEngineForTest(clips.factory);
     setReadAloudPreference('voiceId', 'openai:cedar');
     readAloud('a', REPLY, LAPTOP);
     clips.playbacks[0].onPiece(0);
@@ -277,7 +250,10 @@ describe('read-aloud in OpenAI voices', () => {
     readAloud('a', REPLY, LAPTOP);
     pauseReadAloud();
     await settle();
+    // The paused reading holds its playback; going away stops it.
+    expect(clips.playbacks.at(-1)!.stopped).toBe(false);
     await offer('laptop', false);
+    expect(clips.playbacks.at(-1)!.stopped).toBe(true);
     expect(readAloudPhase('a')).toBe('idle');
     await offer('laptop', true);
     expect(toggleReadAloud()).toBe(false);
@@ -358,7 +334,9 @@ describe('read-aloud in OpenAI voices', () => {
       resumeReadAloud();
       restartReadAloud();
       expect(clips.playbacks).toHaveLength(1);
+      expect(clips.playbacks[0].calls).toEqual(['pause']);
       flushSync();
+      expect(clips.playbacks[0].stopped).toBe(true);
       expect(readAloudPhase('a')).toBe('idle');
       expect(toggleReadAloud()).toBe(false);
       expect(clips.playbacks).toHaveLength(1);
@@ -389,7 +367,8 @@ describe('read-aloud in OpenAI voices', () => {
       pauseReadAloud();
       await settle();
       resumeReadAloud();
-      expect(clips.playbacks[1]).toMatchObject({ backend: 'laptop', options: { voiceId: 'cedar' } });
+      expect(clips.playbacks[0]).toMatchObject({ backend: 'laptop', options: { voiceId: 'cedar' }, calls: ['pause', 'resume'] });
+      expect(readAloudPhase('preview')).toBe('playing');
     });
   });
 
@@ -400,7 +379,7 @@ describe('read-aloud in OpenAI voices', () => {
 
     function silentAudio(): ClipAudio {
       return {
-        src: '', volume: 1, playbackRate: 1, defaultPlaybackRate: 1, preservesPitch: true,
+        src: '', currentTime: 0, volume: 1, playbackRate: 1, defaultPlaybackRate: 1, preservesPitch: true,
         play: () => new Promise<void>(() => undefined),
         pause: () => undefined, load: () => undefined, removeAttribute: () => undefined,
         addEventListener: () => undefined, removeEventListener: () => undefined,
@@ -447,7 +426,8 @@ describe('read-aloud in OpenAI voices', () => {
       const shown = vi.spyOn(toast, 'addErrorToast').mockImplementation(() => undefined as never);
       const { reads, fetches } = wire(() => '/attachments/speech/s1?ticket=t', () => new Response(SWITCHED_OFF, { status: 403 }));
       await readUntilStopped();
-      expect(fetches).toEqual(['/backend/laptop/attachments/speech/s1?ticket=t']);
+      // The first two sections are fetched at once; one quiet stop for both.
+      expect(fetches).toEqual(['/backend/laptop/attachments/speech/s1?ticket=t', '/backend/laptop/attachments/speech/s1?ticket=t']);
       expect(reads).toHaveBeenCalledTimes(1);
       expect(shown).not.toHaveBeenCalled();
       expect(readAloudRoute('laptop', 'openai:marin')).toMatchObject({ kind: 'openai', backend: 'laptop' });

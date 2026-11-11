@@ -672,7 +672,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   registerCommand({
     id: 'readAloud.toggle',
     label: 'Read Aloud: Pause or Resume',
-    description: 'Pause the reply being read aloud, or resume it from the start of its sentence.',
+    description: 'Pause the reply being read aloud, or resume it where it paused.',
     icon: '▶',
     editableReachable: true,
     run: () => {

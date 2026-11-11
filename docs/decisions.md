@@ -706,15 +706,20 @@ and anti-changes that live only here:
   wins; there is no per-device source picker. An engine that cannot
   stream uses the subscription when it is on and otherwise shows no mic.
 - Read aloud: a play control beside Copy on finished replies, in Copy's
-  grid, that pauses while playing and offers a restart while paused. It
-  speaks in the device's own voice, one reply at a time across the app;
-  pausing resumes at the start of the sentence. Code, tables and URLs are
-  skipped silently. It is off until this device turns it on in Settings >
-  Voice, and a device with no voice shows no control unless the reply's
-  computer offers OpenAI voices.
+  grid, that pauses while playing and offers a restart while paused. While
+  a reply is read the row adds previous section, back (10 seconds, or the
+  sentence for a device voice) and next section, a rule marks the section
+  being read, and a "read from here" button shows beside another section
+  on hover (always on the compact layout). A reply that is not being read
+  shows nothing new on hover. One reply is read at a time across the app;
+  a device voice resumes at the start of its sentence, an OpenAI voice
+  where it paused. Code, tables and URLs are skipped silently. It is off
+  until this device turns it on in Settings > Voice, and a device with no
+  voice shows no control unless the reply's computer offers OpenAI voices.
 - Read aloud in OpenAI voices: a computer whose host switch is on (off by
-  default) makes each sentence's audio with the key in its key file, and
-  the voice picker lists those voices with a preview for each. The choice
+  default) makes each section's audio with the key in its key file, one
+  request per section so pace and intonation carry across its sentences,
+  and the voice picker lists those voices with a preview for each. The choice
   of voice stays per device; the reply's computer makes the request, so
   the key never reaches a client. A reply from a computer that does not
   offer the saved OpenAI voice is read in the device's voice, and a device

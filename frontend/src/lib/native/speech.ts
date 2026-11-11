@@ -6,10 +6,12 @@
 // speaks through Android's TextToSpeech in the `Speech` plugin, which also
 // keeps a reading going while the app is in the background.
 //
-// Playback is a list of pieces (sentences) spoken in order from an index.
-// Stopping is the only interruption the engines offer: pausing is stopping
-// and remembering the piece, so both engines resume at the start of a
-// sentence (mid-sentence resume is unreliable across OS voices).
+// Playback is a list of pieces (a reply's sentences) spoken in order from
+// an index. Stopping is the only interruption these engines offer: they
+// implement none of `SpeechPlayback`'s optional controls, so the caller
+// pauses by stopping and remembering the piece, and resumes or moves by
+// speaking again from a piece (mid-sentence resume is unreliable across OS
+// voices). The clip engine (`clipSpeech.ts`) implements all of them.
 
 import { isNativeShell, nativePlatform } from './platform';
 import { speechPlugin, type SpeechPlugin } from './plugins';
@@ -37,6 +39,13 @@ export interface SpeechPlayback {
    * rejects when the engine fails. */
   readonly done: Promise<SpeechOutcome>;
   stop(): void;
+  /** Hold the voice where it is; `resume` continues from there. Absent when the engine can only stop. */
+  pause?(): void;
+  resume?(): void;
+  /** Move back `seconds` within the piece sounding (to its start at most). Absent when it cannot. */
+  seekBack?(seconds: number): void;
+  /** Play from piece `index` instead, reusing audio already fetched. Absent when it cannot. */
+  skipTo?(index: number): void;
 }
 
 export interface SpeechEngine {

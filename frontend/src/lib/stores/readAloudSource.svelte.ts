@@ -1,6 +1,6 @@
 // Read-aloud in OpenAI voices per computer: whether a computer reads
-// sentences aloud with its API key, in which voices, and the fetch of one
-// sentence's audio from it.
+// replies aloud with its API key, in which voices, and the fetch of one
+// section's audio from it.
 //
 // A computer is asked from a mount boundary (the thread surface while
 // read-aloud is on here, Settings > Voice for its computer), never from a
@@ -22,7 +22,7 @@ import type { FetchClip } from '../native/clipSpeech';
  * written since: `internal/readaloud` `OffCode`. */
 export const READ_ALOUD_OFF_CODE = 'read_aloud_api_off';
 
-/** The speech route's status for the same cause, a sentence revoked by a
+/** The speech route's status for the same cause, a ticket revoked by a
  * write to the switch included (`internal/app/app_read_aloud.go`). */
 export const READ_ALOUD_OFF_STATUS = 403;
 
@@ -103,7 +103,7 @@ onBackendDetached(({ backendId }) => {
   generations.delete(backendId);
 });
 
-/** Fetches one sentence's audio from `backend`: the sentence is admitted
+/** Fetches one section's audio from `backend`: the text is admitted
  * there, then its ticketed URL is spent once. A failure's message is the
  * computer's reason; `isReadAloudSwitchedOff` tells its switch apart. */
 export function readAloudClipFetcher(backend: BackendKey): FetchClip {

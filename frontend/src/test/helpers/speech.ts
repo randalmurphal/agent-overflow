@@ -1,5 +1,6 @@
-// A scripted speech engine for tests of the controls that read aloud: it
-// records each playback and lets the test finish or stop it.
+// Scripted speech engines for tests of read-aloud: a device engine and
+// OpenAI clip engines that record each playback and let the test report,
+// finish or stop it.
 
 import type { SpeechEngine, SpeechOptions, SpeechOutcome } from '../../lib/native/speech';
 
@@ -58,4 +59,49 @@ export function fakeSpeechEngine(voiceCount = 1): {
       for (const listener of changed) listener();
     },
   };
+}
+
+export interface FakeClipPlayback extends Omit<FakePlayback, 'fail'> {
+  backend: string;
+  fail: (err: unknown) => void;
+  /** Every control call, in order: 'pause', 'resume', 'seek 10', 'skip 2'. */
+  calls: string[];
+}
+
+/** OpenAI engines per computer that, like the real one, report a piece
+ * only when the test says it sounds, and hold, seek and skip within a
+ * playback. `holds: false` gives playbacks that can only stop. */
+export function fakeClipEngines({ holds = true } = {}): {
+  playbacks: FakeClipPlayback[];
+  factory: (backend: string) => SpeechEngine;
+} {
+  const playbacks: FakeClipPlayback[] = [];
+  const factory = (backend: string): SpeechEngine => ({
+    voices: async () => [],
+    onVoicesChanged: () => () => undefined,
+    speak: (pieces, from, options, onPiece) => {
+      let finish!: (outcome: SpeechOutcome) => void;
+      let fail!: (err: unknown) => void;
+      const done = new Promise<SpeechOutcome>((resolve, reject) => {
+        finish = resolve;
+        fail = reject;
+      });
+      const record: FakeClipPlayback = { backend, pieces, from, options, onPiece, stopped: false, finish, fail, calls: [] };
+      playbacks.push(record);
+      const stop = (): void => {
+        record.stopped = true;
+        finish('stopped');
+      };
+      if (!holds) return { done, stop };
+      return {
+        done,
+        stop,
+        pause: () => record.calls.push('pause'),
+        resume: () => record.calls.push('resume'),
+        seekBack: (seconds) => record.calls.push(`seek ${seconds}`),
+        skipTo: (index) => record.calls.push(`skip ${index}`),
+      };
+    },
+  });
+  return { playbacks, factory };
 }
