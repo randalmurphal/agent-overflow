@@ -176,19 +176,24 @@ store's alone; the backend holds only what the engine holds.
   `find` event on `browser:companion-state`, the bar showing the search
   closes, and the engine's search is stopped with it. `stop` never
   restores a suspended page and answers for a gone page as for no search.
-- A search's owner is a pane mount and a find id: a new id the mount's
-  provider makes for every `start` (each search of a bar's query, each open
-  of the engine's own find in "engine" mode), which that search's steps and
-  `stop` name (`findId` on `BrowserFindAction`), so a stop sent for one
-  search never ends a later one. Every answer and end carries
-  the owner with the page (id and incarnation), the document the search
-  started on and a generation (`FindState`). A `start` from another owner
-  (another mount, or another bar of the same one) replaces the search: the
-  old owner gets an end, and the engine's search is replaced rather than
-  stopped; a start under a new id from the same mount is such a start. A step or `stop` that finds no search of its owner's (it ended,
-  or another owner took it) changes nothing, and its answer is marked
-  `foreign` and names the search's real owner, "" for none, so the
-  provider never takes it as an acknowledgement. Generations come from one
+- A search's owner is a pane mount and a sequence (`seq` on
+  `BrowserFindAction` and `FindState`). Every `start` (each search of a
+  bar's query, each open of the engine's own find in "engine" mode) takes
+  the next number of one frontend counter, and the Manager refuses a start
+  whose sequence is not above every start it took from that mount. A step
+  names the exact sequence it steps. A `stop` names the highest sequence
+  the provider issued when it made the stop, and ends the mount's search,
+  on whichever of the thread's pages it runs, exactly when that search's
+  sequence is at or below it: a stop never ends a later search, and one
+  made after a start that was refused, dropped or never answered ends the
+  search the mount held before. Every answer and end carries the owner
+  with the page (id and incarnation), the document the search started on
+  and a generation (`FindState`). A `start` replaces the page's search;
+  another mount's search replaced so hears its end, and the engine's search
+  is replaced rather than stopped. A step whose search is not the page's,
+  or a `stop` that finds none at or below its bound, changes nothing, and
+  its answer is marked `foreign` and names the search's real owner, "" for
+  none, so the provider never takes it as an acknowledgement. Generations come from one
   counter across the Manager, so their order holds across a suspend and
   restore, and an end is always newer than the answers of the search it
   ends.
@@ -245,28 +250,29 @@ store's alone; the backend holds only what the engine holds.
   bar on that event if the bar is open for the page it shows.
 - The pane's provider (`frontend/src/lib/stores/browserFind.svelte.ts`)
   turns each reader action into an intent (start with its query, step,
-  stop) carried with its page, mount, find id and display generation to
-  its answer, and runs them one at a time, in order, on its own queue; its
-  header holds the state table. It sends `start` on a debounced non-empty
-  query and `stop` when the query empties, the bar closes or the pane
-  unmounts. A queued start is dropped when the query changes, an answer
-  shows only under its own generation, and an end or a foreign answer is
-  taken only for the search it holds (page, mount and id); taking it
-  closes the bar. An answer
-  showing a search the provider no longer holds is followed by that
-  search's stop. A queued stop is removed only by running. A stop that
-  fails is reported on the pane and sent again on the provider's own
-  timer, at most three times in all, until one answers; a retry names only
-  the search it was sent for. A stop that never succeeds leaves the
-  page's highlights until the next start, a navigation, a page switch or
-  the pane unmounting, each of which ends the engine's search. A start or
-  step whose outcome is unknown (a timeout, or the connection lost while
-  it was out) is followed by its search's stop. The Go find tables run
-  each sequence against a port of the provider, including calls left
-  outstanding across later reader actions and the stop retries, and
-  record each provider's view of it, checking after every sequence that a
-  provider shows counts exactly when the Manager holds a search for it; the
-  frontend replays those scripts
+  stop) carried with its page, mount and sequence to its answer, and runs
+  them one at a time, in order, on its own queue; its header holds the
+  state table. It sends `start` on a debounced non-empty query, and when
+  the query empties, the bar closes or the pane unmounts it sends `stop`
+  through the newest sequence it issued, unless a stop was made since,
+  without tracking which search the backend holds. A queued start is
+  dropped when the query changes. The bar shows one sequence: an answer or
+  failure changes what it shows only for that sequence, and an end or a
+  foreign answer for it closes the bar. A failed start or step is followed
+  by a stop through its sequence. A queued stop is removed only by
+  running. A stop that fails is reported on the pane, never changes what
+  the bar shows, and is sent again on the provider's own timer, at most
+  three times in all, until it or a later stop through it is answered. A
+  stop that never succeeds leaves the page's highlights until the next
+  start, a navigation, a page switch or the pane unmounting, each of which
+  ends the engine's search. The Go find tables run each sequence against a
+  port of the provider, including starts the Manager refuses, calls left
+  outstanding across later reader actions, the stop retries and named
+  orders from review, and record each provider's view of it, checking
+  after every sequence that a bar shows a count, a current match and
+  enabled stepping exactly when the Manager holds a search for its mount
+  at the sequence it shows, with that search's count; the frontend replays
+  those scripts, the bar's final display included,
   against the real provider and pane-find store
   (`frontend/src/test/fixtures/browserFind/`, regenerated with
   `AO_UPDATE_FIND_SCRIPTS=1` on the tables in `find_pairs_test.go`).
@@ -275,16 +281,18 @@ store's alone; the backend holds only what the engine holds.
   to 1000 matches (past that the count shows as `1000+` and the position as
   unknown), `search_next`/`search_previous` for Enter and Shift+Enter, and
   `search_finish` on stop, which clears only the highlights, so a stop also
-  drops the selection that marks the match, as WKWebView does. The engine reports no match
-  index, so the
-  Manager counts the steps.
+  drops the selection that marks the match, as WKWebView does. The engine
+  reports no match index, so the Manager counts the steps.
 - WKWebView ("bar") uses `findString:withConfiguration:completionHandler:`.
   It reports only whether a match was found, so the bar shows "Found" or "No
   results" without numbers. A search starts from the selection, so a start
   drops the selection first, and a stop drops the selection that marks the
-  match. Both clear the page and its same-origin frames
-  (`webkitClearSelectionScript`); a match selected in a cross-origin frame
-  stays selected.
+  match. On both engines that clearing (`webkitClearSelectionScript`) runs
+  in an isolated script world (`webkitFindWorld`), so a page's own
+  `getSelection` or `removeAllRanges` never reaches it, over the page and
+  each same-origin frame on its own; a match selected in a cross-origin
+  frame stays selected, and any other failure fails the stop, which stays
+  owed.
 - Hosted WebView2 ("engine") opens the engine's own find bar
   (`ICoreWebView2Find` with the default dialog left on), seeded with the
   SPA's selection or else the page's, and moves keyboard focus into the page.
