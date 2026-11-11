@@ -17,7 +17,10 @@ import { createReviewFind, type ReviewFind, type ReviewFindHost, type ReviewFind
 // reveal happened only for an ask, at most once per ask, never after
 // close, and did happen when its match survived, unless the host's last
 // answer was that it is not present now and no publish, swap or content
-// change came after.
+// change came after. One ask never has two host calls in flight, and a
+// reveal that settles unshown while still wanted is asked again exactly
+// once if a publish, swap or content change came while it ran, else not
+// until the next one.
 
 interface Hit { identity: string }
 
@@ -107,6 +110,7 @@ function harness() {
     readingPosition: () => (hit) => below(hit.identity),
     reveal: (hit) => {
       const call: Call = { ask, identity: hit.identity, answer: nextAnswer, eventsAtCall: events };
+      if (ask && running.some((each) => each.call.ask === ask)) violations.push(`reveal ${hit.identity}: ask ${ask.id} has a call in flight`);
       nextAnswer = 'true';
       if (!ask) violations.push(`reveal ${hit.identity} with no ask (after close)`);
       else {
@@ -136,14 +140,30 @@ function harness() {
     asks.push(ask);
   }
 
+  // What an unshown settle must lead to, checked once it has run.
+  let afterSettle: { ask: Ask; calls: number; again: number } | null = null;
+
   function settle(done: boolean): void {
     const next = running.shift();
     if (!next) return;
     // A reveal finishing for a match no longer wanted does not scroll.
-    const shows = done && find.wants(next.call.identity);
+    const wanted = find.wants(next.call.identity) && find.result.current >= 0;
+    const shows = done && wanted;
     if (shows && next.call.ask) next.call.ask.done += 1;
     if (!shows) next.call.answer = 'false';
+    if (!shows && next.call.ask) {
+      const seenWhileRunning = events > next.call.eventsAtCall;
+      afterSettle = { ask: next.call.ask, calls: next.call.ask.calls, again: wanted && seenWhileRunning ? 1 : 0 };
+    }
     next.resolve(shows);
+  }
+
+  function checkSettle(): void {
+    const due = afterSettle;
+    afterSettle = null;
+    if (!due) return;
+    const asked = due.ask.calls - due.calls;
+    if (asked !== due.again) violations.push(`an unshown settle of ask ${due.ask.id} asked ${asked} more times, contract says ${due.again}`);
   }
 
   // `selected` after the step rule, over the model's published matches:
@@ -291,6 +311,7 @@ function harness() {
   // make that: a new query's first match, or the nearest survivor of a
   // match that is gone.
   function check(op: Op, expected: string | null, unchosen: boolean): void {
+    checkSettle();
     const shown = find.hits.map((hit) => hit.identity);
     if (shown.join() !== published.join()) violations.push(`${op}: published ${shown.join()}, contract says ${published.join()}`);
     if (find.result.pending !== liveRunning) violations.push(`${op}: pending ${find.result.pending} with a scan ${liveRunning ? '' : 'not '}running`);
