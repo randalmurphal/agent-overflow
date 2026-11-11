@@ -265,7 +265,14 @@
       <PaneFindBar paneId={planPaneId} {title} fallbackFocus={() => planScrollEl ?? null} />
     {/if}
 
-    <div bind:this={planScrollEl} class="flex-1 overflow-y-auto px-8 pb-2" data-testid="plan-sidebar-scroll">
+    <!-- Focusable by script only (no tab stop): the find bar's focus
+         return lands here when the element it came from is gone. -->
+    <div
+      bind:this={planScrollEl}
+      class="flex-1 overflow-y-auto px-8 pb-2 focus-visible:outline-none"
+      tabindex="-1"
+      data-testid="plan-sidebar-scroll"
+    >
       {#if currentPlan}
         {#if planLoadError}
           <div class="flex flex-col items-start gap-2 py-3 text-xs text-text-secondary" data-testid="plan-sidebar-error">

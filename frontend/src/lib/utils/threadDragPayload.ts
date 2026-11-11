@@ -1,4 +1,7 @@
+import { isToolKind, type ToolPaneKind } from '../stores/paneLayout.svelte';
+
 export const THREAD_ROW_DRAG_MIME = 'application/x-agent-overflow-thread';
+export const TOOL_PANE_DRAG_MIME = 'application/x-agent-overflow-tool';
 export const PANE_REORDER_DRAG_MIME = 'application/x-agent-overflow-pane';
 
 export interface ThreadDragPayload {
@@ -15,10 +18,10 @@ export interface ThreadDragPayload {
   groupId?: string;
 }
 
-export type ThreadDropKind = 'pane-left' | 'pane-right' | 'gap' | 'end' | 'empty';
+export type PaneDropKind = 'pane-left' | 'pane-right' | 'gap' | 'end' | 'empty';
 
-export interface ThreadDropTarget {
-  kind: ThreadDropKind;
+export interface PaneDropTarget {
+  kind: PaneDropKind;
   insertIndex: number;
   paneId?: string;
 }
@@ -85,6 +88,50 @@ export function threadDragPayloadForEvent(event: DragEvent): ThreadDragPayload |
   const raw = data.getData(THREAD_ROW_DRAG_MIME);
   if (raw) return decodeThreadDragPayload(raw);
   return inFlightThreadDrag;
+}
+
+/**
+ * A sidebar tools-row button dragged into the pane strip. Its own type, so
+ * every thread target (`threadDragPayloadForEvent`) ignores it and a pane
+ * drop never reads a thread as a tool. Like a thread row, the source records
+ * the payload at `dragstart` for dragover, and every pane drop clears it.
+ */
+export interface ToolDragPayload {
+  kind: ToolPaneKind;
+}
+
+export function encodeToolDragPayload(payload: ToolDragPayload): string {
+  return JSON.stringify({ kind: payload.kind });
+}
+
+export function decodeToolDragPayload(raw: string): ToolDragPayload | null {
+  try {
+    const parsed = JSON.parse(raw) as Partial<ToolDragPayload> | null;
+    return isToolKind(parsed?.kind) ? { kind: parsed.kind } : null;
+  } catch {
+    return null;
+  }
+}
+
+let inFlightToolDrag: ToolDragPayload | null = null;
+
+export function beginToolPaneDrag(payload: ToolDragPayload): void {
+  inFlightToolDrag = payload;
+}
+
+export function endToolPaneDrag(): void {
+  inFlightToolDrag = null;
+}
+
+/** The tool behind a drag event, as `threadDragPayloadForEvent` answers for
+ * a thread: null unless the event carries the tool type. */
+export function toolDragPayloadForEvent(event: DragEvent): ToolDragPayload | null {
+  const data = event.dataTransfer;
+  if (!data) return null;
+  if (!data.types.includes(TOOL_PANE_DRAG_MIME)) return null;
+  const raw = data.getData(TOOL_PANE_DRAG_MIME);
+  if (raw) return decodeToolDragPayload(raw);
+  return inFlightToolDrag;
 }
 
 /**

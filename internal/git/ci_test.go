@@ -28,6 +28,13 @@ func TestNormalizeCIStatus(t *testing.T) {
 		{"waiting_for_resource", "", CIStatusPending},
 		{"manual", "", CIStatusManual},
 		{"canceled", "", CIStatusCanceled},
+		// GitLab GraphQL CiJobStatus values.
+		{"WAITING_FOR_CALLBACK", "", CIStatusPending},
+		{"PREPARING", "", CIStatusPending},
+		{"SCHEDULED", "", CIStatusPending},
+		{"CANCELING", "", CIStatusCanceled},
+		{"MANUAL", "", CIStatusManual},
+		{"SUCCESS", "", CIStatusSuccess},
 		// Unknown states pass through lowercased, not blank.
 		{"weird_new_state", "", "weird_new_state"},
 	}
@@ -97,18 +104,18 @@ func TestValidateCIJobID(t *testing.T) {
 	}
 }
 
-func TestGroupGitLabJobsByStage(t *testing.T) {
+// With no stage order from the forge, stages follow their rows' creation
+// order (ascending id), and each stage's status aggregates its rows.
+func TestGroupGitLabRowsByStage(t *testing.T) {
 	t.Parallel()
-	started := "2026-07-06T19:11:33Z"
-	duration := 42.5
 	// Newest-first order, as the API returns.
-	raw := []gitlabCIJobRaw{
-		{ID: 30, Name: "docs-check", Stage: "docs", Status: "manual", AllowFailure: true},
-		{ID: 20, Name: "unit", Stage: "test", Status: "failed", Duration: &duration, StartedAt: &started, WebURL: "https://x/j/20"},
-		{ID: 21, Name: "lint", Stage: "test", Status: "success", StartedAt: &started},
-		{ID: 10, Name: "compile", Stage: "build", Status: "success", StartedAt: &started},
+	raw := []gitlabCIRow{
+		{id: 30, stage: "docs", job: CIJob{ID: "30", Name: "docs-check", Status: CIStatusManual, AllowFailure: true}},
+		{id: 20, stage: "test", job: CIJob{ID: "20", Name: "unit", Status: CIStatusFailed, DurationSeconds: 42.5, LogsAvailable: true, URL: "https://x/j/20"}},
+		{id: 21, stage: "test", job: CIJob{ID: "21", Name: "lint", Status: CIStatusSuccess, LogsAvailable: true}},
+		{id: 10, stage: "build", job: CIJob{ID: "10", Name: "compile", Status: CIStatusSuccess, LogsAvailable: true}},
 	}
-	stages := groupGitLabJobsByStage(raw)
+	stages := groupGitLabRowsByStage(nil, raw)
 
 	names := make([]string, len(stages))
 	for i, s := range stages {
@@ -177,19 +184,21 @@ func TestSplitGitHubChecks(t *testing.T) {
 	}
 }
 
-// The pipeline is the MR's head pipeline, its jobs grouped into stages
-// in creation order although the jobs list answers newest first.
+// The pipeline is the MR's head pipeline, its rows grouped into its
+// stages in the pipeline's order.
 func TestGitLabListPRCIJobs(t *testing.T) {
 	t.Parallel()
 	mr := "projects/group%2Frepo/merge_requests/12"
 	var pipeline atomic.Value
 	pipeline.Store(`{"id":77,"status":"failed","web_url":"https://gl/p/77"}`)
 	core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-		switch call.Path {
-		case mr:
+		switch {
+		case call.Path == mr:
 			return forgeAPIAnswer{Body: `{"iid":12,"head_pipeline":` + pipeline.Load().(string) + `}`}
-		case "projects/group%2Frepo/pipelines/77/jobs?per_page=100":
-			return forgeAPIAnswer{Body: `[{"id":20,"name":"unit","stage":"test","status":"failed","duration":10.0,"web_url":"https://gl/j/20","allow_failure":false,"started_at":"2026-07-06T19:11:33Z"},{"id":10,"name":"compile","stage":"build","status":"success","duration":5.0,"web_url":"https://gl/j/10","allow_failure":false,"started_at":"2026-07-06T19:10:33Z"}]`}
+		case call.Op == "PipelineJobs" && call.Vars["fullPath"] == "group/repo" && call.Vars["id"] == "gid://gitlab/Ci::Pipeline/77":
+			return gitlabJobsPage([]string{"build", "test"}, "",
+				gitlabJobNode("Ci::Build", 20, "unit", "test", "FAILED", `"duration":10,"webPath":"/j/20","startedAt":"2026-07-06T19:11:33Z"`),
+				gitlabJobNode("Ci::Build", 10, "compile", "build", "SUCCESS", `"duration":5,"webPath":"/j/10","startedAt":"2026-07-06T19:10:33Z"`))
 		}
 		return forgeUnexpected(t, call)
 	})

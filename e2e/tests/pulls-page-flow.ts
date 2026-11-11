@@ -4,8 +4,9 @@
 // GitHub project, each with open merge requests in several attention
 // states and repository pipelines. Covered: the tools row opens the page
 // in the focused pane's place; the Needs you and Waiting on others groups
-// carry one state pill per row and the sidebar badge counts the first
-// group; the page reads each project with its forge's fixed request set
+// carry one state pill per row; the Needs you count on the filter button
+// counts the first group for the picked projects, and the sidebar shows no
+// Pull requests count; the page reads each project with its forge's fixed request set
 // (GitHub one PullsSearch, GitLab the list beside its GraphQL reviewer,
 // activity and approval rule reads and the viewer's events) and never a
 // read per row; a GitLab row's failed pipeline arrives with its project's
@@ -76,6 +77,8 @@ function gitlabRepo(): ForgeRepo {
     pipelines: [
       { id: 9_001, refKind: 'branch', ref: 'main', sha: SHA('a'), status: 'success', title: 'Merge !100', jobs: PIPELINE_JOBS('success') },
       { id: 9_002, refKind: 'tag', ref: 'v3.9.2', sha: SHA('b'), status: 'failed', title: 'release', jobs: PIPELINE_JOBS('failed') },
+      // An external pipeline holds one commit status and no job.
+      { id: 9_003, refKind: 'branch', ref: 'review', sha: SHA('f'), source: 'external', status: 'success', jobs: [{ name: 'CodeRabbit', kind: 'external', status: 'success' }] },
     ],
   };
 }
@@ -207,9 +210,11 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       await expect(rowState(page, 102)).toHaveText('Draft');
       await expect(rowState(page, 104)).toHaveText('Open');
       await expect(pane.getByTestId('pulls-group-waiting')).toContainText('2');
-      await expect(page.getByTestId('sidebar-tool-pulls-badge')).toHaveText('4');
-      // The needs-you count on the filter button reads the same.
+      // The filter button counts the Needs you group whatever filter shows;
+      // the sidebar's tool carries no count.
       await expect(pane.getByTestId('pulls-filter-needs-you-count')).toHaveText('4');
+      await expect(page.getByTestId('sidebar-tool-pulls-badge')).toHaveCount(0);
+      await expect(page.getByTestId('sidebar-tool-pulls')).not.toContainText('4');
       // Approvals and the CI dot come with each project's read.
       await expect(row(page, 101).getByTestId('pull-approvals')).toHaveText('0/1 approvals');
       await expect(row(page, 201).getByTestId('pull-approvals')).toHaveText('1/1 approvals');
@@ -226,16 +231,20 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       await page.keyboard.press('Escape');
       await expect(pane.getByTestId('pull-row')).toHaveCount(4);
       await expect(row(page, 201)).toHaveCount(0);
+      // The count follows the picker: the GitLab project's !101 and !103.
+      await expect(pane.getByTestId('pulls-filter-needs-you-count')).toHaveText('2');
       await page.reload();
       // Compact starts on the list screen; the tools row reveals the pane.
       if (compact) await page.getByTestId('sidebar-tool-pulls').click();
       await expect(page.getByTestId('pulls-pane')).toBeVisible();
       await expect(page.getByTestId('pulls-filter')).toHaveAttribute('data-filter', 'all');
       await expect(page.getByTestId('pull-row')).toHaveCount(4);
+      await expect(page.getByTestId('pulls-filter-needs-you-count')).toHaveText('2');
       await page.getByTestId('pulls-projects-picker').click();
       await page.getByTestId('pulls-projects-all').click();
       await page.keyboard.press('Escape');
       await expect(page.getByTestId('pull-row')).toHaveCount(6);
+      await expect(page.getByTestId('pulls-filter-needs-you-count')).toHaveText('4');
 
       // A row opens the review pinned to it: the readiness pill, the Merge
       // section, no scope selector and no close (Back on compact).
@@ -271,14 +280,14 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       };
       await seedForge(harness, [{ ...seeded.gitlab, pulls: [reviewed, ...rest] }]);
       await expect(rowState(page, 101)).toHaveText('Reviewed by you', { timeout: 20_000 });
-      await expect(page.getByTestId('sidebar-tool-pulls-badge')).toHaveText('3');
+      await expect(page.getByTestId('pulls-filter-needs-you-count')).toHaveText('3');
       // The author answers a minute later: the viewer's turn again.
       await seedForge(harness, [{
         ...seeded.gitlab,
         pulls: [{ ...reviewed, comments: [...reviewed.comments, { author: 'sabossedgh', body: 'Three would hide a dead endpoint.', createdAt: '2026-10-20T15:01:00Z' }], updatedAt: '2026-10-20T15:01:00Z' }, ...rest],
       }]);
       await expect(rowState(page, 101)).toHaveText('Author replied', { timeout: 20_000 });
-      await expect(page.getByTestId('sidebar-tool-pulls-badge')).toHaveText('4');
+      await expect(page.getByTestId('pulls-filter-needs-you-count')).toHaveText('4');
 
       await expectEveryForgeCallHandled(harness);
     } finally {
@@ -402,10 +411,10 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       const pane = await openPage(page);
       await page.getByRole('radio', { name: 'Pipelines' }).click();
       await expect(pane).toHaveAttribute('data-tab', 'pipelines');
-      // Two repository pipelines and two merge request pipelines on GitLab,
-      // one workflow run and one pull request run on GitHub.
+      // Three repository pipelines and two merge request pipelines on
+      // GitLab, one workflow run and one pull request run on GitHub.
       const rows = pane.getByTestId('pipeline-row');
-      await expect(rows).toHaveCount(6);
+      await expect(rows).toHaveCount(7);
       const tagRow = rows.filter({ hasText: '#9002' });
       await expect(tagRow).toContainText('v3.9.2');
       await expect(rows.filter({ hasText: '#7001' })).toContainText('CI');
@@ -418,7 +427,7 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       await expect(rows).toHaveCount(1);
       await pane.getByTestId('pipelines-ref-picker').click();
       await page.getByTestId('pipelines-ref-any').click();
-      await expect(rows).toHaveCount(6);
+      await expect(rows).toHaveCount(7);
 
       // The project and status filters narrow the list and survive a
       // reload: widgets' failed tag and merge request pipelines.
@@ -441,7 +450,7 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       await pane.getByTestId(`pipelines-project-${gadgets}`).click();
       await pane.getByTestId('pipelines-status-picker').click();
       await page.getByTestId('pipelines-status-all').click();
-      await expect(rows).toHaveCount(6);
+      await expect(rows).toHaveCount(7);
 
       // A row opens its stages; a job opens its log.
       await tagRow.getByRole('button').first().click();
@@ -463,7 +472,7 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
         await expect(view.getByTestId('pipeline-view-empty')).toBeVisible();
         await page.getByTestId('pulls-back').click();
         await expect(view).toBeHidden();
-        await expect(rows).toHaveCount(6);
+        await expect(rows).toHaveCount(7);
       }
 
       // A GitHub run opens the same way: #201's run, its unit job's log.
@@ -478,6 +487,31 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
         await expect(page.getByRole('button', { name: 'Back', exact: true })).toHaveCount(1);
         await page.getByTestId('pulls-back').click();
         await expect(log).toHaveCount(0);
+        await page.getByTestId('pulls-back').click();
+        await expect(view).toBeHidden();
+      }
+
+      // An external pipeline shows its commit status as its check, a
+      // link-only row in GitLab's external stage, not "No checks".
+      const externalRow = rows.filter({ hasText: '#9003' });
+      await expect(externalRow.getByTestId('pipeline-stages').locator('span')).toHaveCount(1);
+      await externalRow.getByRole('button').first().click();
+      await expect(view).toHaveAttribute('data-pipeline-key', /:9003$/);
+      await expect(view.getByTestId('pipeline-view-status')).toHaveText('success');
+      const chips = view.getByTestId('review-ci-chips');
+      await expect(chips).not.toContainText('No checks');
+      await chips.getByTestId('review-ci-chip').filter({ hasText: 'external' }).click();
+      // With no target URL the status opens nothing: a row of text, no
+      // button or link icon, and a click leaves the list open.
+      const status = page.getByTestId('review-ci-job').filter({ hasText: 'CodeRabbit' });
+      await expect(status).toBeVisible();
+      await expect(status).toHaveAttribute('data-action', 'none');
+      await expect(page.getByRole('button', { name: /CodeRabbit/ })).toHaveCount(0);
+      await expect(status.getByTestId('review-ci-job-link')).toHaveCount(0);
+      await status.click();
+      await expect(status).toBeVisible();
+      await page.keyboard.press('Escape');
+      if (compact) {
         await page.getByTestId('pulls-back').click();
         await expect(view).toBeHidden();
       }

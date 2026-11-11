@@ -401,10 +401,23 @@ export interface ScrollToItemRequest {
   switchGeneration: number;
   /** Flash the landing row, as an explicit jump does (find steps). */
   mark: boolean;
+  /** The session that may withdraw the request (a find query); null for none. */
+  owner: object | null;
 }
 
 export interface ScrollToItemOptions {
   mark?: boolean;
+  owner?: object;
+}
+
+/**
+ * The latest withdrawal: the timeline that took a request of `owner` ends
+ * its navigation if that navigation is still current. `seq` makes a repeat
+ * withdrawal by the same owner a new value.
+ */
+export interface ScrollToItemWithdrawal {
+  owner: object;
+  seq: number;
 }
 
 export function loadOlderResult(

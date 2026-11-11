@@ -95,6 +95,34 @@ describe('threadItemWindow upsert commit', () => {
     for (const probe of [arrayReads, rowReads, otherRowReads]) probe.dispose();
   });
 
+  it('advances the search revision for every summary change, structural or not', () => {
+    const h = harness();
+    h.upsert([row('a', 0), row('b', 1)]);
+    const structural = h.window.timelineRevision;
+    let search = h.window.searchRevision;
+    const reads = probeReactivity(() => h.window.searchRevision);
+
+    // A summary replacement in place: no structural change, new searchable text.
+    h.upsert([row('b', 1, { summary: 'b with needle', updatedAt: 5 })]);
+    flushSync();
+    expect(h.window.timelineRevision).toBe(structural);
+    expect(h.window.searchRevision).toBeGreaterThan(search);
+    search = h.window.searchRevision;
+
+    // A streaming delta through the single-row writer.
+    h.window.writeItemAt(1, { ...h.window.getItems()[1], summary: 'b with needle and more' });
+    flushSync();
+    expect(h.window.searchRevision).toBeGreaterThan(search);
+    search = h.window.searchRevision;
+
+    // A write that leaves the text alone does not.
+    h.window.writeItemAt(1, { ...h.window.getItems()[1], status: 'completed' });
+    expect(h.window.searchRevision).toBe(search);
+    flushSync();
+    expect(reads.evaluations).toBe(3);
+    reads.dispose();
+  });
+
   it('bumps the structural revision for a structural rewrite in place', () => {
     const h = harness();
     h.upsert([row('a', 0), row('b', 1)]);

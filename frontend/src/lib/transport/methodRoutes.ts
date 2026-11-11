@@ -142,7 +142,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1026796858: 'home', // GetNetworkSettings
 	1435724188: 'selected', // GetPRCILogLines
 	2443547196: 'selected', // GetPRDetail
-	3288121945: 'selected', // GetPRListNeedsYou
 	106351482: 'workspace', // GetPRMergeConflicts
 	73280836: 'thread', // GetPayloadChunk
 	3448919335: 'thread', // GetPayloadData

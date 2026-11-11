@@ -119,7 +119,6 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   UnsubscribePRList: owned(PULLS_PAGE_STORE, 'detachPullsPage()'),
   SetPRListActive: owned(PULLS_PAGE_STORE, 'the visibility votes'),
   RefreshPRList: owned(PULLS_PAGE_STORE, 'refreshPullsPage()'),
-  GetPRListNeedsYou: owned('lib/stores/pullsAttention.svelte.ts', 'hydratePullsAttention()'),
   SubscribePipeline: owned(PIPELINE_CI_STORE, 'attachPipelineCI()'),
   UnsubscribePipeline: owned(PIPELINE_CI_STORE, 'the attachment release()'),
   SetPipelineActive: owned(PIPELINE_CI_STORE, 'handlePipelineVisibilityChange()'),

@@ -634,14 +634,14 @@
         />
       </div>
     {/if}
-    {#if drag.threadDropTarget}
+    {#if drag.dropTarget}
       <div
         class="pointer-events-none absolute top-0 bottom-0 z-40 rounded-[var(--radius-field)] border-2 border-accent/70 bg-accent/10"
-        style:left={`${drag.threadDropPreviewLeft}px`}
-        style:width={`${drag.threadDropPreviewWidth}px`}
+        style:left={`${drag.dropPreviewLeft}px`}
+        style:width={`${drag.dropPreviewWidth}px`}
         data-testid="pane-thread-drop-preview"
-        data-drop-kind={drag.threadDropTarget.kind}
-        data-insert-index={drag.threadDropTarget.insertIndex}
+        data-drop-kind={drag.dropTarget.kind}
+        data-insert-index={drag.dropTarget.insertIndex}
       ></div>
     {/if}
   {/if}

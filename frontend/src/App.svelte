@@ -102,7 +102,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     loadKeybindings,
   } from './lib/stores/keybindings.svelte';
   import { clearCommandRegistry, listCommands, type CommandContext } from './lib/stores/commandRegistry.svelte';
-  import { registerBuiltinCommands, makeCommandContext } from './lib/stores/builtinCommands.svelte';
+  import { registerBuiltinCommands, makeCommandContext, overlayBesidePalette } from './lib/stores/builtinCommands.svelte';
   import { installUiRenderTraceApi } from './lib/utils/uiRenderTrace';
   import { installLoafTrace } from './lib/utils/loafTrace';
   import { installHarnessBridge } from './lib/stores/harnessBridge';
@@ -156,7 +156,8 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     discussionStartFor = null;
   }
 
-  function makeAppCommandContext(targetPane = getFocusedPaneOrNull()) {
+  // `forPalette`: the palette's own list, whose command runs after it closes.
+  function makeAppCommandContext(targetPane = getFocusedPaneOrNull(), forPalette = false) {
     const pickerOpen =
       isPaletteOpen() ||
       isCheatSheetOpen() ||
@@ -165,6 +166,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
       isAccountSwitcherOpen() ||
       isAnyComposerPickerOpen();
     return makeCommandContext(targetPane, {
+      ...(forPalette ? { overlayOpen: overlayBesidePalette() } : {}),
       paletteOpen: isPaletteOpen(),
       cheatSheetOpen: isCheatSheetOpen(),
       messageSearchOpen: isMessageSearchOpen(),
@@ -182,7 +184,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
 
   function makeCommandContextForPaneId(paneId: string): CommandContext | null {
     const targetPane = getPane(paneId);
-    return targetPane ? makeAppCommandContext(targetPane) : null;
+    return targetPane ? makeAppCommandContext(targetPane, true) : null;
   }
 
   // Resolve the pane an overlay/command targets: the overlay's pinned pane when
@@ -206,7 +208,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
   // updates replace pane state many times a second, but a hidden palette has
   // nothing to filter or render from those replacements.
   let paletteContext = $derived(
-    isPaletteOpen() ? makeAppCommandContext(currentContextPane()) : null,
+    isPaletteOpen() ? makeAppCommandContext(currentContextPane(), true) : null,
   );
   let messageSearchPane = $derived(resolveContextPane(getMessageSearchTargetPaneId()));
   let threadPickerPane = $derived(resolveContextPane(getThreadPickerTargetPaneId()));

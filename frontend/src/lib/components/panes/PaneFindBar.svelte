@@ -3,8 +3,10 @@
   // header, full pane width, in the flow, so it pushes the content down
   // rather than covering it. It renders only while its pane's find is open
   // (stores/paneFind.svelte.ts) and owns the keys and focus of the session:
-  // Enter / Shift+Enter step, Escape closes, a close returns focus to the
-  // element that had it when the bar opened (else `fallbackFocus`).
+  // Enter / Shift+Enter step, and a close returns focus to the element that
+  // had it when the bar opened (else `fallbackFocus`). Escape is not the
+  // bar's: it bubbles to `find.close`, which decides which pane's find may
+  // be dismissed (the focused pane, or the one on screen under compact).
   import { tick, untrack } from 'svelte';
   import Search from '@lucide/svelte/icons/search';
   import ChevronUp from '@lucide/svelte/icons/chevron-up';
@@ -23,13 +25,18 @@
   } from '../../stores/paneFind.svelte';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { PANE_FIND_BAR_ATTR } from '../../utils/paneFindSeed';
+  import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
 
   interface Props {
     /** The layout pane id the find state is keyed by. */
     paneId: string;
     /** The pane's title; labels the search landmark. */
     title: string;
-    /** Focus target when the element focused before the bar is gone. */
+    /**
+     * Focus target when the element focused before the bar is gone or
+     * cannot take focus. Must be focusable by script (a scroller takes
+     * `tabindex="-1"`); one that is not is reported.
+     */
     fallbackFocus: () => HTMLElement | null;
   }
 
@@ -78,10 +85,18 @@
     void tick().then(() => {
       const active = document.activeElement;
       if (active && active !== document.body && active.isConnected) return;
-      const next = target?.isConnected ? target : fallbackFocus();
-      next?.focus({ preventScroll: true });
+      if (target?.isConnected && takesFocus(target)) return;
+      const fallback = fallbackFocus();
+      if (fallback && !takesFocus(fallback)) {
+        reportFrontendDiagnostic('pane find focus fallback not focusable', fallback.tagName);
+      }
     });
   });
+
+  function takesFocus(element: HTMLElement): boolean {
+    element.focus({ preventScroll: true });
+    return document.activeElement === element;
+  }
 
   function handleInput(event: Event): void {
     setPaneFindQuery(paneId, (event.currentTarget as HTMLInputElement).value);
@@ -93,11 +108,9 @@
     stepPaneFind(paneId, event.shiftKey ? -1 : 1);
   }
 
+  // An Escape that ends an IME composition belongs to the composition.
   function handleKeydown(event: KeyboardEvent): void {
-    if (event.key !== 'Escape' || isImeComposingEvent(event)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    closePaneFind(paneId);
+    if (event.key === 'Escape' && isImeComposingEvent(event)) event.stopPropagation();
   }
 </script>
 

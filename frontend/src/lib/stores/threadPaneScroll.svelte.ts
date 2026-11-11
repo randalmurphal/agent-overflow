@@ -20,6 +20,7 @@ import {
   type PaneScrollController,
   type ScrollToItemOptions,
   type ScrollToItemRequest,
+  type ScrollToItemWithdrawal,
 } from './threadPaneShared';
 
 export interface ThreadPaneScrollOptions {
@@ -55,6 +56,13 @@ export interface ThreadPaneScroll {
    * reloaded since it was made).
    */
   takeScrollToItemRequest(): string | null;
+  /** The latest withdrawal, for the timeline that took the request. */
+  readonly scrollToItemWithdrawal: ScrollToItemWithdrawal | null;
+  /**
+   * End `owner`'s request: an untaken one is dropped, and a timeline that
+   * took one supersedes its navigation if it is still the current one.
+   */
+  withdrawScrollToItem(owner: object): void;
   armStructuralSpring(): boolean;
   armInitialSliceWarmup(): boolean;
   armLiveContentAppendSpring(): void;
@@ -70,6 +78,7 @@ export function createThreadPaneScroll(
    * second consumer cannot replay a request another one already ran.
    */
   let scrollToItemRequest: ScrollToItemRequest | null = $state.raw(null);
+  let scrollToItemWithdrawal: ScrollToItemWithdrawal | null = $state.raw(null);
 
   /**
    * Live registration slot for the timeline's sticky-bottom controller.
@@ -272,7 +281,15 @@ export function createThreadPaneScroll(
         itemId: itemID,
         switchGeneration: options.getSwitchGeneration(),
         mark: request?.mark === true,
+        owner: request?.owner ?? null,
       };
+    },
+    get scrollToItemWithdrawal() {
+      return scrollToItemWithdrawal;
+    },
+    withdrawScrollToItem(owner: object): void {
+      if (scrollToItemRequest?.owner === owner) scrollToItemRequest = null;
+      scrollToItemWithdrawal = { owner, seq: (scrollToItemWithdrawal?.seq ?? 0) + 1 };
     },
     takeScrollToItemRequest(): string | null {
       const request = scrollToItemRequest;

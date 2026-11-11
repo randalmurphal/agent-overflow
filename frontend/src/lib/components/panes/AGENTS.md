@@ -28,10 +28,20 @@ Every pane kind with find mounts `PaneFindBar.svelte` directly under its
 header, in the flow, keyed by its layout pane id (a companion's own id, not
 its source's), and registers a `PaneFindProvider` for that id while its body
 is mounted (`stores/paneFind.svelte.ts`). The store owns open, query and
-focus return; the provider owns matching, stepping and clearing. Paint
+focus return; the provider owns matching, stepping and clearing. Escape
+belongs to the `find.close` command, never the bar. A bar's `fallbackFocus`
+must be focusable by script (a scroller takes `tabindex="-1"`); the bar
+checks that focus landed and reports a fallback that refused it. Paint
 matches with `utils/findHighlights.ts` under `findHighlightName(paneId)`.
 Thread timelines use `chat/ThreadPaneFind.svelte`; a plain scroll container
-uses `scrollTextFind.svelte.ts`. The browser pane uses
+uses `scrollTextFind.svelte.ts`. A provider with asynchronous reads runs
+them through `paneFindReads(paneId)`, which keeps one in flight per layout
+pane across body remounts, applies an answer only for the query and owner
+it asked, updates in place on a content change without moving the view,
+and withdraws any jump it requested when its query changes or it closes.
+Find acts on the focused pane, or under compact on the pane on screen, and
+on no overlay above it; the store drops a pane's state and reads when the
+pane leaves the layout. The browser pane uses
 `stores/browserFind.svelte.ts`, where the engine searches and matches are
 the engine's to paint; a provider that cannot count reports `count: null`,
 and one with `openNative` opens its engine's own find UI instead of the bar

@@ -1,6 +1,6 @@
 // The Pull requests page store: the list subscription's lifecycle and
 // routing, the sequence watermark, the filters, the sort and their
-// persistence, the row projection, the needs-you badge, the selection,
+// persistence, the row projection, the needs-you count, the selection,
 // and Open with agent.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -42,14 +42,12 @@ import {
   setMRFilters,
   syncPullsFiltersFromAppStorage,
 } from './pullsPageFilters.svelte';
-import { applyPullsBadge, getPullsNeedsYouCount, hydratePullsAttention, resetPullsAttentionForTest } from './pullsAttention.svelte';
 import { applyPullsUpdatedEvent } from './pullsStore.svelte';
 import { __resetPRReviewStoreForTest } from './prReviewStore.svelte';
 import { appStorageGet, appStorageSet, resetAppStorageForTest } from './appStorage';
 import { __setTransportStatusForTest } from './transportStatus.svelte';
 import { resetPanesForTest } from './panes.svelte';
 import { __resetReviewPaneStateForTest } from './reviewPane.svelte';
-import { setSelectedBackend } from './selectedBackend.svelte';
 import type { PRListItem, PRListSnapshot, ProjectPRList } from './bindings';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { takePinnedBackend } from '../transport/backends';
@@ -117,8 +115,8 @@ function project(id: string, rows: PRListItem[], overrides: Partial<ProjectPRLis
   } as ProjectPRList;
 }
 
-function snapshot(seq: number, projects: ProjectPRList[], needsYou = 0, stale = false): PRListSnapshot {
-  return { seq, fetchedAt: '2026-10-20T00:00:00Z', needsYou, stale, projects } as PRListSnapshot;
+function snapshot(seq: number, projects: ProjectPRList[], stale = false): PRListSnapshot {
+  return { seq, fetchedAt: '2026-10-20T00:00:00Z', stale, projects } as PRListSnapshot;
 }
 
 interface ListMocks {
@@ -170,7 +168,6 @@ function groupKeys(): string[][] {
 beforeEach(() => {
   resetAppStorageForTest();
   resetPullsFiltersForTest();
-  resetPullsAttentionForTest();
   resetPanesForTest();
 });
 
@@ -390,7 +387,7 @@ describe('the sequence watermark', () => {
   });
 
   it('shows a stale answer as rows, not as loading, until the read lands', async () => {
-    installListMocks(snapshot(1, [project('p1', [item(1)])], 0, true));
+    installListMocks(snapshot(1, [project('p1', [item(1)])], true));
     attachPullsPage(PANE, HOME_BACKEND);
     await flush();
     setMRFilters(HOME_BACKEND, { filter: 'all' });
@@ -533,47 +530,51 @@ describe('row projection', () => {
   });
 });
 
-describe('the needs-you badge', () => {
-  it('counts the selected computer from its badge frames, its edge read and the page\'s own snapshots', async () => {
-    stageBackend();
-    await grantBackendScopes('laptop', ['git:operate']);
-    const read = setBindingMock('GetPRListNeedsYou', async () => 4);
-    applyPullsBadge({ needsYou: 3 }, HOME_BACKEND);
-    expect(getPullsNeedsYouCount()).toBe(3);
-    await hydratePullsAttention('laptop');
-    expect(read).toHaveBeenCalledTimes(1);
-    expect(getPullsNeedsYouCount()).toBe(3);
-    setSelectedBackend('laptop');
-    expect(getPullsNeedsYouCount()).toBe(4);
-    setSelectedBackend(HOME_BACKEND);
+describe('the needs-you count', () => {
+  const other = { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'other' } as const;
+  const clone = { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'clone' } as const;
+  function needsYouSnapshot(seq = 1): PRListSnapshot {
+    return snapshot(seq, [
+      project('p1', [item(1, { group: 'needs_you' }), item(2, { group: 'needs_you' }), item(3)]),
+      project('p2', [item(9, { group: 'needs_you' }, 'other')], { repo: other }),
+      project('p3', [item(4, {}, 'clone')], { repo: clone }),
+      // A second clone of p1's repository lists the same PRs.
+      project('p4', [item(1, { group: 'needs_you' }), item(2, { group: 'needs_you' }), item(3)]),
+    ]);
+  }
 
-    // The page's snapshot and the badge never disagree.
-    installListMocks(snapshot(1, [project('p1', [item(1, { group: 'needs_you' })])], 1));
+  it('counts the rows the Needs you filter lists for the picked projects', async () => {
+    installListMocks(needsYouSnapshot());
     attachPullsPage(PANE, HOME_BACKEND);
     await flush();
-    setMRFilters(HOME_BACKEND, { filter: 'mine' });
-    expect(getPullsNeedsYouCount()).toBe(1);
+    // Every project: each PR once.
+    expect(pullsNeedsYouCount(PANE)).toBe(3);
+    setMRFilters(HOME_BACKEND, { projects: ['p2'] });
     expect(pullsNeedsYouCount(PANE)).toBe(1);
-    applyPullsSnapshot(snapshot(2, [project('p1', [item(1, { group: 'needs_you' }), item(2, { group: 'needs_you' })])], 2), HOME_BACKEND);
-    expect(getPullsNeedsYouCount()).toBe(2);
-    // The page going does not take the count: the badge is right with no page open.
-    detachPullsPage(PANE);
-    expect(getPullsNeedsYouCount()).toBe(2);
-    // A malformed frame changes nothing; a device without the scope reads nothing.
-    applyPullsBadge({} as { needsYou?: number }, HOME_BACKEND);
-    expect(getPullsNeedsYouCount()).toBe(2);
-    revokeBackendScopes('laptop');
-    await hydratePullsAttention('laptop');
-    expect(read).toHaveBeenCalledTimes(1);
+    // A picked clone lists its rows even where another project lists them.
+    setMRFilters(HOME_BACKEND, { projects: ['p2', 'p4'] });
+    expect(pullsNeedsYouCount(PANE)).toBe(3);
+    setMRFilters(HOME_BACKEND, { projects: ['p3'] });
+    expect(pullsNeedsYouCount(PANE)).toBe(0);
+    // A new snapshot recounts.
+    applyPullsSnapshot(snapshot(2, [project('p3', [item(4, { group: 'needs_you' }, 'clone')], { repo: clone })]), HOME_BACKEND);
+    expect(pullsNeedsYouCount(PANE)).toBe(1);
+  });
 
-    // A read that a frame overtook answers too late to apply.
-    let answer!: (count: number) => void;
-    setBindingMock('GetPRListNeedsYou', () => new Promise<number>((resolve) => { answer = resolve; }));
-    const late = hydratePullsAttention(HOME_BACKEND);
-    applyPullsBadge({ needsYou: 5 }, HOME_BACKEND);
-    answer(1);
-    await late;
-    expect(getPullsNeedsYouCount()).toBe(5);
+  it('is what the Needs you filter lists, whatever the filter and sort shown', async () => {
+    installListMocks(needsYouSnapshot());
+    attachPullsPage(PANE, HOME_BACKEND);
+    await flush();
+    for (const projects of [[], ['p1'], ['p2', 'p4'], ['p3']]) {
+      setMRFilters(HOME_BACKEND, { projects, filter: 'needs_you' });
+      const listed = groupKeys().flat().length;
+      for (const filter of ['all', 'mine', 'reviewing', 'needs_you'] as const) {
+        for (const sort of [DEFAULT_MR_SORT, { key: 'title', reversed: true }] as const) {
+          setMRFilters(HOME_BACKEND, { projects, filter, sort });
+          expect(pullsNeedsYouCount(PANE)).toBe(listed);
+        }
+      }
+    }
   });
 });
 

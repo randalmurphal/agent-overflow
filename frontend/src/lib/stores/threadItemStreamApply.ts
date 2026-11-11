@@ -52,6 +52,11 @@ export interface ThreadItemStreamApplyOptions {
   awaitedSendId(): string | null;
   timelineWindow: ThreadTimelineWindow;
   /**
+   * An upsert, delta or patch of this scope arrived, whether or not the
+   * window holds its row; see `ThreadItemWindow.noteSearchableEvent`.
+   */
+  noteSearchableEvent(): void;
+  /**
    * The transcript root of a scoped surface; omitted for a thread's main
    * window, whose scope is the top level.
    */
@@ -222,6 +227,7 @@ export function createThreadItemStreamApply(
     incoming: Item[],
   ): ApplyItemUpsertsToWindowResult | null {
     const previousTail = options.getItems().at(-1);
+    if (incoming.some((item) => !belongsToAnotherScope(item.parentId))) options.noteSearchableEvent();
     const applied = upsertItemsBatch(incoming, true);
     if (applied && applied.appendedItems.length > 0 && !timelineWindow.hasMoreNewer) {
       activityRuns.noteLiveAppend(applied.appendedItems, previousTail);
@@ -257,6 +263,7 @@ export function createThreadItemStreamApply(
     if (!evt.itemId || !evt.delta) return;
     const thread = options.getThread();
     if (thread && evt.threadId !== thread.id) return;
+    if (!belongsToAnotherScope(evt.parentId)) options.noteSearchableEvent();
     const index = itemIndexById.get(evt.itemId);
     if (index === undefined) {
       // Expected miss: the surface of that scope applies the same event.
@@ -341,6 +348,7 @@ export function createThreadItemStreamApply(
     if (!evt.itemId) return;
     const thread = options.getThread();
     if (thread && evt.threadId !== thread.id) return;
+    if (!belongsToAnotherScope(evt.parentId)) options.noteSearchableEvent();
     const index = itemIndexById.get(evt.itemId);
     // Another scope's row has no window row and no smoother here.
     if (index === undefined && belongsToAnotherScope(evt.parentId)) return;

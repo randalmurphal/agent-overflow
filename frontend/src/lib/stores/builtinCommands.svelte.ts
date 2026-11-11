@@ -18,6 +18,7 @@ import { providerSupports } from '../providers/catalog';
 import { closeCheatSheet, isCheatSheetOpen, openCheatSheet } from './cheatSheet.svelte';
 import { closeMessageSearch, isMessageSearchOpen, openMessageSearch } from './messageSearch.svelte';
 import { closePalette, isPaletteOpen, openPalette } from './palette.svelte';
+import { airspaceSurfaces } from '../utils/paneAirspace.svelte';
 import { closeThreadPicker, isThreadPickerOpen, openThreadPicker } from './threadPicker.svelte';
 import { toggleAccountSwitcher } from './accountSwitcher.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
@@ -106,7 +107,7 @@ import {
   isSettingsOpen,
   openSettingsOverlay,
 } from './settingsOverlay.svelte';
-import { isCompactLayout } from './layoutMode.svelte';
+import { getCompactScreen, isCompactLayout, onScreenCompactPaneId } from './layoutMode.svelte';
 import { hasScope } from '../transport/scopes';
 
 export interface BuiltinCommandHooks {
@@ -747,18 +748,19 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     },
   });
 
-  // The focused layout pane's own find bar (stores/paneFind.svelte.ts). A
-  // pane kind with no provider leaves the command disabled.
+  // The target pane's own find bar (stores/paneFind.svelte.ts; target:
+  // `paneFindTargetId`). A pane kind with no provider, or a pane under an
+  // overlay, leaves the command disabled.
   registerCommand({
     id: 'find.in-pane',
     label: 'Find in Pane',
     description: 'Find text in the focused pane.',
     icon: '⌕',
-    when: 'paneFindAvailable',
+    when: 'paneFindAvailable && !overlayOpen',
     // Reachable while the composer textarea (or the bar's own input) has focus.
     editableReachable: true,
     run: () => {
-      const paneId = getFocusedPaneId();
+      const paneId = paneFindTargetId();
       if (!paneId || !hasPaneFindProvider(paneId)) return;
       const pane = paneElement(paneId);
       const active = typeof document === 'undefined' ? null : document.activeElement;
@@ -769,13 +771,16 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     },
   });
 
+  // Escape and Back close the target pane's bar, from the composer too,
+  // but never while an overlay above the pane owns them.
   registerCommand({
     id: 'find.close',
     dismissesSurface: true,
     label: 'Find: Close',
-    when: 'paneFindOpen',
+    when: 'paneFindOpen && !overlayOpen',
+    editableReachable: true,
     run: () => {
-      const paneId = getFocusedPaneId();
+      const paneId = paneFindTargetId();
       if (paneId) closePaneFind(paneId);
     },
   });
@@ -1181,11 +1186,31 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
 }
 
 /**
+ * The pane find commands act on: the focused pane, or under compact the
+ * pane on the thread screen, since opening a companion leaves focus on its
+ * source thread. The compact list screen shows no pane.
+ */
+function paneFindTargetId(): string | null {
+  if (!isCompactLayout()) return getFocusedPaneId();
+  return getCompactScreen() === 'thread' ? onScreenCompactPaneId() : null;
+}
+
+/**
+ * `overlayOpen` for the palette's own list: a command picked there runs
+ * after the palette closes, so only another overlay above the panes counts.
+ */
+export function overlayBesidePalette(): boolean {
+  return airspaceSurfaces().length > (isPaletteOpen() ? 1 : 0);
+}
+
+/**
  * Compute the CommandContext the registry expects. Centralised here so the
  * palette and the keybindings dispatcher see an identical view of the app.
  */
 export function makeCommandContext(pane: ThreadPane | null, extra: Partial<CommandFlags>): CommandContext {
   const thread = pane?.thread ?? null;
+  const overlayOpen = extra.overlayOpen ?? airspaceSurfaces().length > 0;
+  const findTarget = paneFindTargetId();
   const flags: CommandFlags = {
     paletteOpen: false,
     terminalOpen: pane?.showTerminal ?? false,
@@ -1220,12 +1245,15 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     // silently make Esc inert).
     settingsOpen: isSettingsOpen(),
     toolPaneFocused: focusedToolKind() !== null,
-    paneFindAvailable: hasPaneFindProvider(getFocusedPaneId()),
-    paneFindOpen: isPaneFindOpen(getFocusedPaneId()),
+    overlayOpen,
+    paneFindAvailable: hasPaneFindProvider(findTarget),
+    paneFindOpen: isPaneFindOpen(findTarget),
     toolDetailOpen: focusedToolDetailOpen(),
     workflowsPaneFocused: isWorkflowsPaneFocused(),
     pullsPaneFocused: isPullsPaneFocused(),
-    workflowsRunDetail: isWorkflowsPaneFocused() && getWorkflowsOverlayTop().level === 'run',
+    // The run detail's bare keys act on the pane, so an overlay above it
+    // (settings, a dialog) leaves them to the overlay.
+    workflowsRunDetail: isWorkflowsPaneFocused() && getWorkflowsOverlayTop().level === 'run' && !overlayOpen,
     compactLayout: isCompactLayout(),
     // Derived here, not passed in, for the same reason as the overlay flags:
     // the palette, per-keypress dispatch and tests must all see one answer for

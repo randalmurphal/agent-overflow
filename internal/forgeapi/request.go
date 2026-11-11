@@ -32,6 +32,14 @@ func (c *Client) prepare(ctx context.Context, r Request, graphQL bool) (*exchang
 	c.credMu.RUnlock()
 	ex := &exchange{req: req, graphQL: graphQL, body: !replayable, noRefresh: r.expiryLookup, sent: sent}
 	ex.key = gateKey{host: c.host, pool: c.pool(graphQL), fingerprint: fp}
+	// The ETag store keys a body by host, login, method and URL alone, so
+	// a request with a header of its own (Accept, Range, its own
+	// If-None-Match) asks for what the key cannot tell apart and goes
+	// without it. Stream never reads or writes the store: it looks up no
+	// entry, and settle stores only a 200, which Stream does not settle.
+	if !graphQL && req.Method == http.MethodGet && len(r.Header) == 0 {
+		ex.etagKey = etagKey{host: c.host, fingerprint: fp, method: http.MethodGet, url: req.URL.String()}
+	}
 	ex.lease, err = c.svc.gates.check(ex.key, IsInteractive(ctx), c.svc.now())
 	if err != nil {
 		return nil, err

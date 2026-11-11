@@ -4,10 +4,13 @@
 // opens the bar of the focused layout pane, and a pane with no provider has
 // no find. State (open, query, the focus to return) is keyed by layout pane
 // id and outlives a body remount, so a thread switch or a reopened bar keeps
-// the query. It is dropped once the pane leaves the layout.
+// the query. It is dropped when the pane leaves the layout, whatever body
+// it last showed.
 
 import { SvelteMap } from 'svelte/reactivity';
-import { paneLayoutKindOf } from './paneLayout.svelte';
+import { onPaneLayoutItemsRemoved } from './paneLayout.svelte';
+import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
+import { errString } from '../utils/errors';
 
 /** What a provider reports about the current query. */
 export interface PaneFindResult {
@@ -58,23 +61,73 @@ export type PaneFindView = Readonly<PaneFindState>;
 const providers = new SvelteMap<string, PaneFindProvider>();
 const states = new SvelteMap<string, PaneFindState>();
 
-function pruneGonePanes(): void {
-  for (const paneId of states.keys()) {
-    if (paneLayoutKindOf(paneId) === null) states.delete(paneId);
-  }
+/**
+ * A pane's find reads: one in flight, at most one waiting. Keyed by layout
+ * pane id rather than by provider, so a read a body left out when it
+ * unmounted still holds the pane's slot and a remounted body's provider
+ * queues behind it.
+ */
+export interface PaneFindReads {
+  /** Run `read` once the pane has none in flight; it replaces a waiting one. */
+  request(read: () => Promise<void>): void;
 }
+
+interface ReadSlot {
+  busy: boolean;
+  waiting: (() => Promise<void>) | null;
+}
+
+const readSlots = new Map<string, ReadSlot>();
+
+function runRead(paneId: string, slot: ReadSlot, read: () => Promise<void>): void {
+  slot.busy = true;
+  let running: Promise<void>;
+  try {
+    running = read();
+  } catch (err) {
+    running = Promise.reject(err);
+  }
+  void running
+    .catch((err: unknown) => reportFrontendDiagnostic('pane find read failed', errString(err)))
+    .finally(() => {
+      slot.busy = false;
+      if (readSlots.get(paneId) !== slot) return;
+      const next = slot.waiting;
+      slot.waiting = null;
+      if (next) runRead(paneId, slot, next);
+    });
+}
+
+export function paneFindReads(paneId: string): PaneFindReads {
+  return {
+    request(read) {
+      let slot = readSlots.get(paneId);
+      if (!slot) {
+        slot = { busy: false, waiting: null };
+        readSlots.set(paneId, slot);
+      }
+      if (slot.busy) slot.waiting = read;
+      else runRead(paneId, slot, read);
+    },
+  };
+}
+
+onPaneLayoutItemsRemoved((paneIds) => {
+  for (const paneId of paneIds) {
+    states.delete(paneId);
+    readSlots.delete(paneId);
+  }
+});
 
 /** Registers `provider` for the layout pane; returns its release. */
 export function registerPaneFindProvider(paneId: string, provider: PaneFindProvider): () => void {
   providers.set(paneId, provider);
-  pruneGonePanes();
   const state = states.get(paneId);
   if (state?.open && state.query) provider.search(state.query);
   return () => {
     if (providers.get(paneId) !== provider) return;
     providers.delete(paneId);
     provider.clear();
-    pruneGonePanes();
   };
 }
 
@@ -109,7 +162,6 @@ export function openPaneFind(paneId: string, options: OpenPaneFindOptions = {}):
     provider.openNative(options.seed ?? '');
     return true;
   }
-  pruneGonePanes();
   let state = states.get(paneId);
   if (!state) {
     // Allocated here, outside any reader, so the bar's reads track it.
@@ -162,4 +214,5 @@ export function takePaneFindReturnFocus(paneId: string): HTMLElement | null {
 export function resetPaneFindForTest(): void {
   providers.clear();
   states.clear();
+  readSlots.clear();
 }

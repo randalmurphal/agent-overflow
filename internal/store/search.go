@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -87,13 +88,14 @@ func (s *Store) SearchThreadMessages(query string, limit int) ([]ThreadMessageHi
 // scope root its agent's direct children (resolved to the canonical root as
 // timeline pages resolve it).
 //
-// Because it is scoped to one thread via the thread_id index it stays fast
-// even on a cold cache, which is why in-thread find does not need the FTS5
-// work the global search will eventually want.
+// The rows are the timeline's physical arms, each walked in document order
+// by its own index and merged, so a read stops at its limit instead of
+// sorting every match (timeline_arms.go).
 //
-// limit caps the number of hits; zero or negative means unbounded. It
-// reads the whole thread, so it takes a history read slot.
-func (s *Store) SearchThreadItems(threadID, query string, selection TimelineSelection, limit int) ([]ThreadMessageHit, error) {
+// limit caps the number of hits; zero or negative means unbounded. The
+// read runs on ctx, so a cancelled call stops it, and it takes a history
+// read slot.
+func (s *Store) SearchThreadItems(ctx context.Context, threadID, query string, selection TimelineSelection, limit int) ([]ThreadMessageHit, error) {
 	if err := s.CheckForkReady(threadID); err != nil {
 		return nil, err
 	}
@@ -102,31 +104,57 @@ func (s *Store) SearchThreadItems(threadID, query string, selection TimelineSele
 		return nil, nil
 	}
 	pattern := likePattern(trimmed)
-	return historyReadSnapshot(context.Background(), s, "search thread items", func(q sqlQueryer) ([]ThreadMessageHit, error) {
+	return historyReadSnapshot(ctx, s, "search thread items", func(q sqlQueryer) ([]ThreadMessageHit, error) {
+		var thread ThreadMessageHit
+		if err := q.QueryRow(
+			`SELECT id, title, provider, ownership_epoch FROM owned_threads WHERE id = ?`, threadID,
+		).Scan(&thread.ThreadID, &thread.ThreadTitle, &thread.Provider, &thread.OwnershipEpoch); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("store: search thread items: read thread: %w", err)
+		}
 		scope, err := s.resolveTimelineScope(q, threadID, selection)
 		if err != nil {
 			return nil, err
 		}
-		filter, filterArgs := scope.filter("i.")
-		args := append([]any{threadID}, filterArgs...)
-		args = append(args, pattern)
-		rows, err := q.Query(`
-		SELECT t.id, t.title, t.provider, t.ownership_epoch,
-			i.id, i.turn_index, i.item_index, i.kind, i.role, i.summary
-		FROM timeline_items i
-		JOIN owned_threads t ON t.id = i.thread_id
-		WHERE i.thread_id = ? AND `+filter+`
-			AND LOWER(i.summary) LIKE `+boundText+` ESCAPE '\'
-		ORDER BY i.turn_index ASC, i.item_index ASC
-		`+limitSuffix(limit),
-			args...,
-		)
+		sel := threadFindSelection(scope, pattern, max(limit, 0))
+		sel.Columns = func(string, string) string {
+			return `items.id AS id, items.turn_index AS turn_index, items.item_index AS item_index,
+			       items.kind AS kind, items.role AS role, items.summary AS summary`
+		}
+		arms, args, err := timelineArms(q, threadID, sel)
+		if err != nil {
+			return nil, fmt.Errorf("store: search thread items: %w", err)
+		}
+		rows, err := q.Query(arms, args...)
 		if err != nil {
 			return nil, fmt.Errorf("store: search thread items: %w", err)
 		}
 		defer rows.Close()
-		return scanItemHits(rows)
+		var hits []ThreadMessageHit
+		for rows.Next() {
+			h := thread
+			if err := rows.Scan(&h.ItemID, &h.TurnIndex, &h.ItemIndex, &h.ItemKind, &h.ItemRole, &h.Summary); err != nil {
+				return nil, fmt.Errorf("store: scan thread item hit: %w", err)
+			}
+			h.MatchType = "item"
+			hits = append(hits, h)
+		}
+		return hits, rows.Err()
 	})
+}
+
+// threadFindSelection selects scope's rows whose summary matches pattern,
+// in document order, cut to limit (zero for none).
+func threadFindSelection(scope timelineScope, pattern string, limit int) timelineSelection {
+	filter, args := scope.filter("items.")
+	return timelineSelection{
+		Where:     filter + ` AND LOWER(items.summary) LIKE ` + boundText + ` ESCAPE '\'`,
+		WhereArgs: append(args, pattern),
+		OrderBy:   "turn_index ASC, item_index ASC",
+		Limit:     limit,
+	}
 }
 
 // searchTitleHits returns one hit per thread whose title matches — no per-item

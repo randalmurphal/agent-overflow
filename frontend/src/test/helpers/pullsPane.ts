@@ -9,7 +9,6 @@ import { installPRDraftsFake } from './prDraftsFake';
 import { __resetPullsPageForTest } from '../../lib/stores/pullsPage.svelte';
 import { __resetPullsPageAgentForTest } from '../../lib/stores/pullsPageAgent.svelte';
 import { resetPullsFiltersForTest } from '../../lib/stores/pullsPageFilters.svelte';
-import { resetPullsAttentionForTest } from '../../lib/stores/pullsAttention.svelte';
 import { __resetPipelinesPageForTest } from '../../lib/stores/pipelinesPage.svelte';
 import { __resetPipelineCIForTest } from '../../lib/stores/pipelineCI.svelte';
 import { __resetReviewPaneStateForTest } from '../../lib/stores/reviewPane.svelte';
@@ -81,7 +80,7 @@ export function pullsProject(rows: PRListItem[], overrides: Partial<ProjectPRLis
 }
 
 export function pullsSnapshot(projects: ProjectPRList[] = [pullsProject([pullItem(5), pullItem(6)])]): PRListSnapshot {
-  return { seq: 1, fetchedAt: '2026-10-20T00:00:00Z', needsYou: 0, projects } as PRListSnapshot;
+  return { seq: 1, fetchedAt: '2026-10-20T00:00:00Z', projects } as PRListSnapshot;
 }
 
 function prDetail(number: number) {
@@ -125,7 +124,6 @@ export function installPullsPaneMocks(snapshot: PRListSnapshot = pullsSnapshot()
   setBindingMock('UnsubscribePRList', async () => undefined);
   setBindingMock('SetPRListActive', async () => undefined);
   const refresh = setBindingMock('RefreshPRList', async () => undefined);
-  setBindingMock('GetPRListNeedsYou', async () => 0);
   const threads = setBindingMock('ListThreadsOnPR', async () => []);
   setBindingMock('GetErrorLogLines', async () => ({ lines: [], found: false }));
   setBindingMock('OpenExternalURL', async () => undefined);
@@ -177,7 +175,6 @@ export function resetPullsPane(): void {
   __resetReviewPaneStateForTest();
   __resetPRReviewStoreForTest();
   resetPullsFiltersForTest();
-  resetPullsAttentionForTest();
   resetPullsCommandsForTest();
   resetAppStorageForTest();
   resetPanesForTest();

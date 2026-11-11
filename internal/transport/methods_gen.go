@@ -176,7 +176,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetNetworkSettings", ID: 1026796858, Scope: "access:admin", Route: "home"},                                        // main.App.GetNetworkSettings
 	{Name: "GetPRCILogLines", ID: 1435724188, Scope: "git:operate", Route: "selected"},                                        // main.App.GetPRCILogLines
 	{Name: "GetPRDetail", ID: 2443547196, Scope: "git:operate", Route: "selected"},                                            // main.App.GetPRDetail
-	{Name: "GetPRListNeedsYou", ID: 3288121945, Scope: "git:operate", Route: "selected"},                                      // main.App.GetPRListNeedsYou
 	{Name: "GetPRMergeConflicts", ID: 106351482, Scope: "git:operate", Route: "workspace"},                                    // main.App.GetPRMergeConflicts
 	{Name: "GetPayloadChunk", ID: 73280836, Scope: "threads:read", Route: "thread"},                                           // main.App.GetPayloadChunk
 	{Name: "GetPayloadData", ID: 3448919335, Scope: "threads:read", Route: "thread"},                                          // main.App.GetPayloadData

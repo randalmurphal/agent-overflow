@@ -7,15 +7,23 @@
 // highlight. With a second pane focused, mod+f opens that pane's own bar
 // with its own query and highlight; Escape closes it and returns focus to
 // the composer it came from. An agent pane's find reads only that agent's
-// transcript and the thread pane's only its top-level rows. mod+shift+f
-// still opens the dialog, which has no thread mode. Unit and component coverage: paneFind.svelte.test.ts,
+// transcript and the thread pane's only its top-level rows. During a live
+// turn the count follows streamed text, and Escape from the transcript or
+// the composer closes the find before a further Escape interrupts. mod+f
+// opens nothing behind the settings overlay or the command palette, and the
+// palette's Find in Pane opens the bar. mod+shift+f still opens the
+// dialog, which has no thread mode. Compact Back: compact-pane-find.spec.ts. Unit and component coverage: paneFind.svelte.test.ts,
 // threadFind.svelte.test.ts, PaneFindBar.test.ts, findHighlights.browser.test.ts.
 import type { Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import {
   RESULT_LINE,
+  advance,
   claudeScenario,
+  emit,
   emitBurst,
+  finishTextLines,
+  openTextLines,
   seedAgentThread,
   startMock,
   taskStartedLine,
@@ -23,6 +31,7 @@ import {
   textLines,
   toolResultLine,
   toolUseLine,
+  waitForGate,
 } from './agent-visibility-helpers.js';
 
 const TURNS = 160;
@@ -164,6 +173,104 @@ test('an agent pane finds only its own transcript, and the thread pane only its 
   await expect(threadPane.getByTestId('pane-find-count')).toHaveText('No results');
   await threadPane.getByTestId('pane-find-input').fill('surveys are done');
   await expect(threadPane.getByTestId('pane-find-count')).toHaveText('1/1');
+});
+
+test('a live turn: the count follows streamed text, and Escape closes the find before it interrupts', async ({ harness, page }) => {
+  const streamed = finishTextLines('live', ' The needle-live part arrives.', '').slice(0, 1);
+  await harness.rpc('HarnessSetScenario', { scenario: claudeScenario('pane-find-live', [
+    emit(openTextLines('live', 'Working on it.')),
+    { waitSignal: { name: 'more' } },
+    emit(streamed),
+    { waitSignal: { name: 'end' } },
+    emit([...finishTextLines('live', '', 'Working on it. The needle-live part arrives.'), RESULT_LINE]),
+  ]) });
+  const threadId = await seedAgentThread(harness, 'pane-find-live', 'Live find');
+  await harness.open(page);
+  await page.getByText('Live find', { exact: true }).click();
+  const mockId = await startMock(harness, threadId);
+  const more = waitForGate(harness, 'more');
+  await harness.rpc('SendMessage', threadId, 'go', null);
+  await more;
+  const pane = page.locator('section[data-pane-kind="thread"]');
+  await expect(pane.getByText('Working on it.', { exact: false })).toBeVisible();
+  await expect(page.getByTestId('composer-interrupt')).toBeVisible();
+
+  await pane.getByLabel('Message Input').click();
+  await page.keyboard.press('ControlOrMeta+f');
+  await page.keyboard.type('needle-live');
+  const bar = pane.getByTestId('pane-find-bar');
+  await expect(bar.getByTestId('pane-find-count')).toHaveText('No results');
+
+  // The streamed delta changes no row's structure; the count still follows it.
+  const end = waitForGate(harness, 'end');
+  await advance(harness, mockId, 'more');
+  await end;
+  await expect(pane.getByText('needle-live part', { exact: false })).toBeVisible();
+  await expect(bar.getByTestId('pane-find-count')).toHaveText('1/1', { timeout: 10_000 });
+
+  // Focus off the bar, in the transcript: Escape closes the find only.
+  await pane.getByTestId('message-timeline-scroll').click({ position: { x: 10, y: 10 } });
+  await page.keyboard.press('Escape');
+  await expect(bar).toHaveCount(0);
+  await expect(page.getByTestId('composer-interrupt')).toBeVisible();
+
+  // From the composer as well.
+  await pane.getByLabel('Message Input').click();
+  await page.keyboard.press('ControlOrMeta+f');
+  await expect(bar).toBeVisible();
+  await pane.getByLabel('Message Input').click();
+  await page.keyboard.press('Escape');
+  await expect(bar).toHaveCount(0);
+  await expect(page.getByTestId('composer-interrupt')).toBeVisible();
+
+  // With the bar closed, Escape interrupts the turn.
+  const stopped = harness.waitForEvent('provider:turn_completed');
+  await page.keyboard.press('Escape');
+  await stopped;
+  await expect(page.getByTestId('composer-interrupt')).toHaveCount(0);
+});
+
+test('mod+f opens no find behind the settings overlay', async ({ harness, page }) => {
+  await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [{ name: 'pane-find-overlay', repo: {}, threads: [
+      { title: 'Overlay thread', provider: 'claude', turns: [{ userText: 'Hello', items: [{ kind: 'assistant_text', summary: 'overlay-needle answer' }] }] },
+    ] }],
+  });
+  await harness.open(page);
+  await page.getByText('Overlay thread', { exact: true }).click();
+  // settings.open is not reachable from a text field.
+  await page.getByTestId('chat-header-title').click();
+  await page.keyboard.press('ControlOrMeta+,');
+  await expect(page.getByTestId('settings-overlay')).toBeVisible();
+  await page.keyboard.press('ControlOrMeta+f');
+  await expect(page.getByTestId('pane-find-bar')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('settings-overlay')).toHaveCount(0);
+  await page.getByLabel('Message Input').click();
+  await page.keyboard.press('ControlOrMeta+f');
+  await expect(page.getByTestId('pane-find-bar')).toBeVisible();
+});
+
+test('mod+f in the command palette opens no find behind it; picking Find in Pane opens the bar', async ({ harness, page }) => {
+  await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [{ name: 'pane-find-palette', repo: {}, threads: [
+      { title: 'Palette thread', provider: 'claude', turns: [{ userText: 'Hello', items: [{ kind: 'assistant_text', summary: 'palette-needle answer' }] }] },
+    ] }],
+  });
+  await harness.open(page);
+  await page.getByText('Palette thread', { exact: true }).click();
+  await page.getByLabel('Message Input').click();
+  await page.keyboard.press('ControlOrMeta+Shift+K');
+  const input = page.getByTestId('command-palette-input');
+  await expect(input).toBeVisible();
+  await input.fill('Find in Pane');
+  await input.press('ControlOrMeta+f');
+  await expect(page.getByTestId('pane-find-bar')).toHaveCount(0);
+  await expect(input).toBeVisible();
+  await page.getByRole('option', { name: /Find in Pane/ }).click();
+  await expect(input).toHaveCount(0);
+  await expect(page.getByTestId('pane-find-bar')).toBeVisible();
+  await expect(page.getByTestId('pane-find-input')).toBeFocused();
 });
 
 test('mod+shift+f still opens the cross-thread search dialog, with no thread mode', async ({ harness, page }) => {

@@ -63,7 +63,7 @@ export function registerWorkflowCommands(): void {
     dismissesSurface: true,
     label: 'Workflows: Escape',
     description: 'Disarm a confirmation, close a dialog, then go back — in that order.',
-    when: 'workflowsPaneFocused && toolDetailOpen',
+    when: 'workflowsPaneFocused && toolDetailOpen && !overlayOpen',
     run: () => {
       consumeWorkflowsOverlayEscape();
     },

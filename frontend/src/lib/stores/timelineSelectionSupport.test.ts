@@ -6,6 +6,7 @@ import { noteThread, __resetEntityIndexForTest } from '../transport/entityIndex'
 import { __setTransportHelloForTest } from './transportStatus.svelte';
 import type { TransportHello } from '../transport/wsClient';
 import type { TimelineSelection } from '../../../bindings/agent-overflow/internal/store/models';
+import { threadFindBackend } from './timelineSelectionSupport';
 import { GetThreadUserMessageTicks, SearchThreadItems, ListActivityRunMembers, ListItemsAfterCursor, ListItemsBeforeCursor, ListThreadSliceAround, SyncThreadWindow } from './bindings';
 
 const hello: TransportHello = { protocolVersion: 1, capabilities: ['timeline.scopes.v1'], backendId: '', backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 };
@@ -17,7 +18,6 @@ const readers = [
   ['ListItemsBeforeCursor', (selection: TimelineSelection) => ListItemsBeforeCursor('thread', cursor, 20, {}, selection)],
   ['ListItemsAfterCursor', (selection: TimelineSelection) => ListItemsAfterCursor('thread', cursor, 20, {}, selection)],
   ['GetTimelineUserMessageTicks', (selection: TimelineSelection) => GetThreadUserMessageTicks('thread', selection)],
-  ['SearchTimelineItems', (selection: TimelineSelection) => SearchThreadItems('thread', 'needle', 10, selection)],
 ] as const;
 
 beforeEach(() => { resetBindingMocks(); resetStagedBackends(); __resetEntityIndexForTest(); });
@@ -93,4 +93,26 @@ it.each(readers)('%s requires execution-digest support and recovers after upgrad
   __setTransportHelloForTest({ ...hello, capabilities: [...hello.capabilities, 'timeline.digests.v1'] });
   await read(selection);
   expect(rpc).toHaveBeenCalledOnce();
+});
+
+// An older host answers SearchThreadItems with agent descendants and has no
+// SearchTimelineItems, so find runs only against a host advertising the
+// find contract, judged on the conversation's owner.
+it('finds only on an owner that serves the find contract', async () => {
+  const main = setBindingMock('SearchThreadItems', async () => []);
+  const scoped = setBindingMock('SearchTimelineItems', async () => []);
+  __setTransportHelloForTest({ ...hello, capabilities: ['timeline.scopes.v1', 'thread-find.v1'] });
+  const remote = stageBackend({ id: 'remote', hello });
+  noteThread('thread', 'remote');
+  expect(threadFindBackend('thread')).toBeNull();
+  expect(() => SearchThreadItems('thread', 'needle', 10)).toThrow('Update the computer');
+  expect(() => SearchThreadItems('thread', 'needle', 10, { scopeRootId: 'agent' })).toThrow('Update the computer');
+  expect(main).not.toHaveBeenCalled();
+  expect(scoped).not.toHaveBeenCalled();
+  remote.setHello({ ...hello, capabilities: ['timeline.scopes.v1', 'thread-find.v1'] });
+  expect(threadFindBackend('thread')).toBe('remote');
+  await SearchThreadItems('thread', 'needle', 10);
+  await SearchThreadItems('thread', 'needle', 10, { scopeRootId: 'agent' });
+  expect(main).toHaveBeenCalledExactlyOnceWith('thread', 'needle', 10);
+  expect(scoped).toHaveBeenCalledExactlyOnceWith('thread', 'needle', { scopeRootId: 'agent' }, 10);
 });

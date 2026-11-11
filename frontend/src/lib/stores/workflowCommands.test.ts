@@ -82,7 +82,7 @@ describe('workflows commands', () => {
     for (const command of listCommands()) {
       if (!command.id.startsWith('workflows.')) continue;
       expect(
-        command.when === 'workflowsPaneFocused && toolDetailOpen'
+        command.when === 'workflowsPaneFocused && toolDetailOpen && !overlayOpen'
           || command.when === 'workflowsRunDetail'
           || command.id === 'workflows.toggle',
       ).toBe(true);

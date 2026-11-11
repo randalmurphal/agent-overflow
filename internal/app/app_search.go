@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 
 	"agent-overflow/internal/slicesx"
@@ -32,17 +33,18 @@ func (a *App) SearchThreadMessages(query string, limit int) ([]store.ThreadMessa
 // without an error. limit caps the result set. The store owns the query.
 //
 //ao:scope threads:read
-func (a *App) SearchThreadItems(threadID, query string, limit int) ([]store.ThreadMessageHit, error) {
-	return a.SearchTimelineItems(threadID, query, store.TimelineSelection{}, limit)
+func (a *App) SearchThreadItems(ctx context.Context, threadID, query string, limit int) ([]store.ThreadMessageHit, error) {
+	return a.SearchTimelineItems(ctx, threadID, query, store.TimelineSelection{}, limit)
 }
 
 // SearchTimelineItems searches the selected transcript of one thread: the
 // rows the timeline shows for that selection (an agent scope answers its
-// direct children), in document order.
+// direct children), in document order. A cancelled call (the connection
+// closed) stops the read.
 //
 //ao:scope threads:read
-func (a *App) SearchTimelineItems(threadID, query string, selection store.TimelineSelection, limit int) ([]store.ThreadMessageHit, error) {
-	hits, err := a.store.SearchThreadItems(threadID, query, selection, limit)
+func (a *App) SearchTimelineItems(ctx context.Context, threadID, query string, selection store.TimelineSelection, limit int) ([]store.ThreadMessageHit, error) {
+	hits, err := a.store.SearchThreadItems(ctx, threadID, query, selection, limit)
 	if err != nil {
 		return nil, fmt.Errorf("search thread items: %w", err)
 	}

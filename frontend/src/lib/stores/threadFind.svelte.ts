@@ -2,16 +2,24 @@
 // pane, a side chat, and an agent pane over a scoped transcript.
 //
 // Hits come from the store's indexed read of the transcript the pane shows,
-// in document order. Typing is debounced and a late answer for an older query
-// is dropped. A new query starts at the first hit at or below the reading
-// position (the last hit when none is below), so the view moves as little as
-// possible; stepping wraps. Every move goes through the pane's scroll-to-item
-// request, the reveal search navigation uses, which pages the item in when it
-// is outside the loaded window and marks the landing. DOM work (reading
-// position, highlights) belongs to the host.
+// in document order. Typing is debounced. One read is in flight at a time:
+// a newer query or an invalidation waits, replacing any other waiting read,
+// and a close drops the waiting one. An answer applies only while its
+// query, its transcript, the thread's owner and the timeline's generation
+// are all still the ones it was asked for.
+//
+// A new query starts at the first hit at or below the reading position (the
+// last hit when none is below), so the view moves as little as possible;
+// stepping wraps. Only a new query and a step move the view, through the
+// pane's scroll-to-item request, owned by this find so a replaced query or
+// a close withdraws a jump the timeline is still loading. A refresh (the
+// transcript changed) updates the count and the current hit in place. DOM
+// work (reading position, highlights) belongs to the host.
 
 import { SearchThreadItems, type ThreadMessageHit } from './bindings';
-import type { PaneFindProvider, PaneFindResult } from './paneFind.svelte';
+import { paneFindReads, type PaneFindProvider, type PaneFindResult } from './paneFind.svelte';
+import type { ScrollToItemOptions } from './threadPaneShared';
+import type { BackendKey } from '../transport/backends';
 import { addErrorToast } from './toast.svelte';
 import { createRefreshScheduler } from '../utils/refreshScheduler';
 import { errString } from '../utils/errors';
@@ -32,13 +40,22 @@ export interface ThreadFindScope {
   threadId: string;
   /** The agent transcript root; absent for the main transcript. */
   scopeRootId?: string;
+  /** The computer that owns the thread. */
+  backend: BackendKey;
+  /** The timeline's switch generation: a switch, reload or clear moves it. */
+  generation: number;
 }
 
 export interface ThreadFindHost {
+  /** The layout pane whose read slot this find's reads share. */
+  paneId(): string;
   /** The transcript searched; null while the pane has no thread. */
   scope(): ThreadFindScope | null;
   /** The pane (or scoped view) whose timeline takes the reveal. */
-  pane(): { requestScrollToItem(itemId: string, options?: { mark?: boolean }): void } | null;
+  pane(): {
+    requestScrollToItem(itemId: string, options?: ScrollToItemOptions): void;
+    withdrawScrollToItem(owner: object): void;
+  } | null;
   /** The coordinate of the first row at or below the viewport top. */
   readingPosition(): TimelineCoordinate | null;
   /** True when the item's row is mounted and in the viewport. */
@@ -52,6 +69,11 @@ export interface ThreadFind extends PaneFindProvider {
   previous(): void;
   /** Re-read the current query (the transcript changed); keeps the current hit. */
   refresh(): void;
+  /**
+   * The transcript, its owner or its generation changed: drop the hits and
+   * search the current query again.
+   */
+  rescope(): void;
 }
 
 function compare(a: TimelineCoordinate, b: TimelineCoordinate): number {
@@ -66,8 +88,10 @@ export function currentHitIndex(hits: readonly Hit[], position: TimelineCoordina
   return below >= 0 ? below : hits.length - 1;
 }
 
-function scopeKey(scope: ThreadFindScope | null): string {
-  return scope ? `${scope.threadId}\u0000${scope.scopeRootId ?? ''}` : '';
+export function threadFindScopeKey(scope: ThreadFindScope | null): string {
+  return scope
+    ? `${scope.threadId}\u0000${scope.scopeRootId ?? ''}\u0000${scope.backend}\u0000${scope.generation}`
+    : '';
 }
 
 export function createThreadFind(host: ThreadFindHost, noun: () => string = () => 'thread'): ThreadFind {
@@ -75,8 +99,15 @@ export function createThreadFind(host: ThreadFindHost, noun: () => string = () =
   let hits = $state.raw<Hit[]>([]);
   let current = $state(-1);
   let pending = $state(false);
+  // Moves on every query change, rescope and close; an answer must match it.
   let seq = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  // The read this find has asked the pane's slot for and not yet started.
+  let queued: 'query' | 'refresh' | null = null;
+  // True from a read's start until it settles.
+  let reading = false;
+  // Identifies this find's scroll-to-item requests for withdrawal.
+  const owner = {};
 
   const result: PaneFindResult = {
     get count() { return hits.length; },
@@ -97,7 +128,7 @@ export function createThreadFind(host: ThreadFindHost, noun: () => string = () =
     const id = currentId();
     if (!id) return;
     if (!force && host.isOnScreen(id)) return;
-    host.pane()?.requestScrollToItem(id, { mark: true });
+    host.pane()?.requestScrollToItem(id, { mark: true, owner });
   }
 
   function cancelTimer(): void {
@@ -105,14 +136,45 @@ export function createThreadFind(host: ThreadFindHost, noun: () => string = () =
     timer = null;
   }
 
+  function dropHits(): void {
+    hits = [];
+    current = -1;
+  }
+
+  /** Ends the session's reads and its reveal; the next read starts fresh. */
+  function supersede(): void {
+    cancelTimer();
+    refreshes.reset();
+    queued = null;
+    seq += 1;
+    host.pane()?.withdrawScrollToItem(owner);
+  }
+
+  // A waiting query covers a refresh: it reads the changed transcript.
+  function enqueue(mode: 'query' | 'refresh'): void {
+    if (queued === 'query') return;
+    queued = mode;
+    paneFindReads(host.paneId()).request(async () => {
+      const next = queued;
+      queued = null;
+      if (!next || !query) return;
+      reading = true;
+      try {
+        await read(next);
+      } finally {
+        reading = false;
+      }
+    });
+  }
+
   async function read(mode: 'query' | 'refresh'): Promise<void> {
-    const mine = ++seq;
+    const mine = seq;
     const asked = query;
     const scope = host.scope();
-    const key = scopeKey(scope);
+    const key = threadFindScopeKey(scope);
+    const stale = (): boolean => mine !== seq || asked !== query || key !== threadFindScopeKey(host.scope());
     if (!scope || !asked) {
-      hits = [];
-      current = -1;
+      dropHits();
       pending = false;
       paint();
       return;
@@ -122,36 +184,38 @@ export function createThreadFind(host: ThreadFindHost, noun: () => string = () =
       const selection = scope.scopeRootId ? { scopeRootId: scope.scopeRootId } : undefined;
       answer = (await SearchThreadItems(scope.threadId, asked, THREAD_FIND_LIMIT, selection)) ?? [];
     } catch (err) {
-      if (mine !== seq) return;
-      hits = [];
-      current = -1;
+      if (stale()) return;
+      dropHits();
       pending = false;
       paint();
       addErrorToast(`Find failed: ${errString(err)}`, err);
       return;
     }
-    if (mine !== seq || asked !== query || key !== scopeKey(host.scope())) return;
-    const previous = hits[current];
-    hits = answer;
-    pending = false;
-    if (mode === 'refresh' && previous) {
-      const kept = answer.findIndex((h) => h.itemId === previous.itemId);
-      current = kept >= 0 ? kept : currentHitIndex(answer, previous);
+    if (stale()) return;
+    if (mode === 'refresh') {
+      const previous = hits[current];
+      hits = answer;
+      const kept = previous ? answer.findIndex((h) => h.itemId === previous.itemId) : -1;
+      current = kept >= 0 ? kept : currentHitIndex(answer, previous ?? host.readingPosition());
       paint();
       return;
     }
+    hits = answer;
+    pending = false;
     current = currentHitIndex(answer, host.readingPosition());
     paint();
     reveal(false);
   }
 
+  // An invalidation while a query is still debouncing needs nothing: that
+  // query reads the changed transcript. One while a read is out waits.
   const refreshes = createRefreshScheduler({
     name: 'thread find',
     delayMs: REFRESH_DELAY_MS,
     maxWaitMs: REFRESH_MAX_WAIT_MS,
     run: (token) => {
-      if (!token.isCurrent() || !query || pending) return;
-      return read('refresh');
+      if (!token.isCurrent() || !query || (pending && !reading && queued === null)) return;
+      enqueue('refresh');
     },
   });
 
@@ -166,13 +230,10 @@ export function createThreadFind(host: ThreadFindHost, noun: () => string = () =
     get noun() { return noun(); },
     result,
     search(next: string): void {
-      cancelTimer();
-      seq += 1;
-      refreshes.reset();
+      supersede();
       query = next.trim();
       if (!query) {
-        hits = [];
-        current = -1;
+        dropHits();
         pending = false;
         paint();
         return;
@@ -181,7 +242,7 @@ export function createThreadFind(host: ThreadFindHost, noun: () => string = () =
       host.paint(query, null);
       timer = setTimeout(() => {
         timer = null;
-        void read('query');
+        enqueue('query');
       }, THREAD_FIND_DEBOUNCE_MS);
     },
     next: () => step(1),
@@ -189,13 +250,17 @@ export function createThreadFind(host: ThreadFindHost, noun: () => string = () =
     refresh(): void {
       if (query) refreshes.request();
     },
+    rescope(): void {
+      supersede();
+      dropHits();
+      pending = query !== '';
+      host.paint(query, null);
+      if (query) enqueue('query');
+    },
     clear(): void {
-      cancelTimer();
-      refreshes.reset();
-      seq += 1;
+      supersede();
       query = '';
-      hits = [];
-      current = -1;
+      dropHits();
       pending = false;
       host.paint('', null);
     },

@@ -13,15 +13,19 @@ import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/
 import { fakeFindProvider, type FakeFindProvider } from '../../../test/helpers/paneFind.svelte';
 
 let provider: FakeFindProvider;
-let fallback: HTMLButtonElement;
+let fallback: HTMLElement;
+let fallbackTarget: () => HTMLElement | null;
 
 beforeEach(() => {
   resetPaneFindForTest();
   setPaneLayoutItemsForTest([{ id: 'a', paneId: 'a', kind: 'thread', widthPx: 600 }]);
   provider = fakeFindProvider();
   registerPaneFindProvider('a', provider);
-  fallback = document.createElement('button');
+  // Like the panes' scrollers: focusable by script, never a tab stop.
+  fallback = document.createElement('div');
+  fallback.tabIndex = -1;
   document.body.appendChild(fallback);
+  fallbackTarget = () => fallback;
 });
 
 afterEach(() => {
@@ -31,7 +35,7 @@ afterEach(() => {
 });
 
 function renderBar() {
-  return render(PaneFindBar, { paneId: 'a', title: 'My thread', fallbackFocus: () => fallback });
+  return render(PaneFindBar, { paneId: 'a', title: 'My thread', fallbackFocus: () => fallbackTarget() });
 }
 
 async function openBar(returnFocus: HTMLElement | null = null) {
@@ -133,7 +137,7 @@ describe('<PaneFindBar>', () => {
     expect(provider.previous).toHaveBeenCalledTimes(1);
   });
 
-  it('Escape closes, clears, and returns focus to where it was', async () => {
+  it('a close clears and returns focus to where it was', async () => {
     const before = document.createElement('textarea');
     document.body.appendChild(before);
     before.focus();
@@ -141,14 +145,33 @@ describe('<PaneFindBar>', () => {
     await openBar(before);
     const input = getByTestId('pane-find-input');
     await waitFor(() => expect(document.activeElement).toBe(input));
-    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
-    input.dispatchEvent(escape);
+    closePaneFind('a');
     await tick();
-    expect(escape.defaultPrevented).toBe(true);
     expect(queryByTestId('pane-find-bar')).toBeNull();
-    expect(getPaneFind('a')?.open).toBe(false);
     expect(provider.clear).toHaveBeenCalled();
     await waitFor(() => expect(document.activeElement).toBe(before));
+  });
+
+  // `find.close` decides which find Escape dismisses (builtinCommands tests);
+  // the bar keeps only an IME composition's Escape from reaching it.
+  it('leaves Escape to the find.close command, except one that ends an IME composition', async () => {
+    const { getByTestId } = renderBar();
+    await openBar();
+    const input = getByTestId('pane-find-input');
+    const seen: KeyboardEvent[] = [];
+    const onKey = (event: KeyboardEvent) => seen.push(event);
+    window.addEventListener('keydown', onKey);
+    try {
+      const plain = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+      input.dispatchEvent(plain);
+      expect(seen).toEqual([plain]);
+      expect(plain.defaultPrevented).toBe(false);
+      expect(getPaneFind('a')?.open).toBe(true);
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true, cancelable: true }));
+      expect(seen).toEqual([plain]);
+    } finally {
+      window.removeEventListener('keydown', onKey);
+    }
   });
 
   it('returns focus to the pane when the element it came from is gone', async () => {
@@ -157,6 +180,17 @@ describe('<PaneFindBar>', () => {
     const { getByTestId } = renderBar();
     await openBar(before);
     before.remove();
+    await fireEvent.click(getByTestId('pane-find-close'));
+    await tick();
+    await waitFor(() => expect(document.activeElement).toBe(fallback));
+  });
+
+  it('returns focus to the pane when the element it came from is still there but cannot take focus', async () => {
+    const before = document.createElement('textarea');
+    document.body.appendChild(before);
+    const { getByTestId } = renderBar();
+    await openBar(before);
+    before.disabled = true;
     await fireEvent.click(getByTestId('pane-find-close'));
     await tick();
     await waitFor(() => expect(document.activeElement).toBe(fallback));
