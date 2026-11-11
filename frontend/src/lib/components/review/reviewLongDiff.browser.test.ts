@@ -422,4 +422,79 @@ describe('review find over the real list', () => {
       unmount(finder);
     }
   });
+
+  // The viewport rect of the first `needle` in the row keyed `rowKey`.
+  function matchRect(scrollEl: HTMLElement, rowKey: string, needle: string): DOMRect {
+    const row = scrollEl.querySelector<HTMLElement>(`[data-find-key="${rowKey}"]`)!;
+    const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const at = node.textContent!.indexOf(needle);
+      if (at < 0) continue;
+      const range = document.createRange();
+      range.setStart(node, at);
+      range.setEnd(node, at + needle.length);
+      return range.getBoundingClientRect();
+    }
+    throw new Error(`no ${needle} in ${rowKey}`);
+  }
+
+  // Inside the scroller and every box between it and the match that clips.
+  function expectShown(scrollEl: HTMLElement, rowKey: string, needle: string): void {
+    const rect = matchRect(scrollEl, rowKey, needle);
+    const view = scrollEl.getBoundingClientRect();
+    expect(rect.left, `${rowKey} left`).toBeGreaterThanOrEqual(view.left);
+    expect(rect.right, `${rowKey} right`).toBeLessThanOrEqual(view.left + scrollEl.clientWidth);
+    expect(rect.top, `${rowKey} top`).toBeGreaterThanOrEqual(view.top);
+    expect(rect.bottom, `${rowKey} bottom`).toBeLessThanOrEqual(view.bottom);
+    let at = scrollEl.querySelector<HTMLElement>(`[data-find-key="${rowKey}"]`)!.parentElement;
+    for (; at && at !== scrollEl; at = at.parentElement) {
+      if (getComputedStyle(at).overflowX === 'visible') continue;
+      const clip = at.getBoundingClientRect();
+      expect(rect.left, `${rowKey} inside its line`).toBeGreaterThanOrEqual(clip.left);
+      expect(rect.right, `${rowKey} inside its line`).toBeLessThanOrEqual(clip.right);
+    }
+  }
+
+  it.each(['diff', 'conflicts'] as const)('brings a match at the end of a long unwrapped line into view on both axes (%s)', async (view) => {
+    const long = (fill: string, tail: string) => `${fill.repeat(300)} ${tail}`;
+    const { props, scrollEl, body } = await mountBody('diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n');
+    const files = view === 'diff'
+      ? readFiles(['diff --git a/src/a.ts b/src/a.ts', '--- a/src/a.ts', '+++ b/src/a.ts', '@@ -1,3 +1,3 @@', ' short', `-${long('w', 'zq one')}`, `+${long('v', 'zq two')}`, ''].join('\n'))
+      : [reviewFileFromPatchFile(conflictPatchFile('c.go', ['short', '<<<<<<< ours', long('w', 'zq one'), '=======', long('v', 'zq two'), '>>>>>>> theirs'].join('\n')))];
+    if (view === 'conflicts') mounted.at(-1)!.files.push(files);
+    const host = mounted.at(-1)!.host;
+    host.style.width = '360px';
+    props.files = files;
+    await settle(scrollEl);
+    const finder = mount(ReviewPaneFind, {
+      target: document.body,
+      props: {
+        findKey: `pane-wide-${view}`, title: 'Review', view, files, root: host,
+        review: {
+          drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
+          conflictCollapsedPaths: new Set<string>(), conflictFoldLines: () => null,
+        } as unknown as ReviewPaneState,
+        diff: () => body as never, log: () => undefined,
+      },
+    });
+    flushSync();
+    try {
+      const find = getPaneFindProvider(`pane-wide-${view}`)!;
+      openPaneFind(`pane-wide-${view}`);
+      setPaneFindQuery(`pane-wide-${view}`, 'zq');
+      await waitFor(() => find.result.count === 2 && !find.result.pending, 'the scan');
+      const [one, two] = find.hits;
+      await waitFor(() => scrollEl.querySelector<HTMLElement>(`[data-find-key="${one.rowKey}"]`)!.parentElement!.scrollLeft > 0, 'the line scrolled sideways');
+      await settle(scrollEl);
+      expectShown(scrollEl, one.rowKey, 'zq one');
+      find.next();
+      await waitFor(() => scrollEl.querySelector<HTMLElement>(`[data-find-key="${two.rowKey}"]`)!.parentElement!.scrollLeft > 0, 'the next line scrolled sideways');
+      await settle(scrollEl);
+      expectShown(scrollEl, two.rowKey, 'zq two');
+      // The line left behind reads from its start again.
+      expect(scrollEl.querySelector<HTMLElement>(`[data-find-key="${one.rowKey}"]`)!.parentElement!.scrollLeft).toBe(0);
+    } finally {
+      unmount(finder);
+    }
+  });
 });

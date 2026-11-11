@@ -76,7 +76,9 @@
   let highlighterRoot: HTMLElement | null = null;
   let paintedQuery = '';
   // The match a scroll just aimed at; its painted range corrects the landing.
-  let landing: { identity: string; until: number } | null = null;
+  // `sideways` once the vertical move is done and only the horizontal
+  // one remains.
+  let landing: { identity: string; until: number; sideways?: boolean } | null = null;
 
   // PR comments are searched as they render (ReviewThreadComments), with
   // the <details> the reader toggled in mounted rows as they left them.
@@ -123,21 +125,64 @@
     highlighterRoot = null;
     paintedQuery = '';
     landing = null;
+    unshift();
   }
 
-  // Where the current match's range sits against the visible scroller:
-  // null when it is not mounted, 0 when it is in view, else the pixels
-  // that put it a third down.
-  function offscreenBy(): number | null {
+  interface Placement {
+    /** Pixels that put the match a third down; 0 when it is in view. */
+    dy: number;
+    /** Pixels that put it a third across `across`; 0 when it is in view. */
+    dx: number;
+    /** What scrolls it horizontally: a code line that clips it (wrap off),
+     * else the scroller when that scrolls sideways; null for neither. */
+    across: HTMLElement | null;
+  }
+
+  // The first box between the match and the scroller that clips it
+  // horizontally, else the scroller when its content is wider than it.
+  function clipAcross(node: Node, el: HTMLElement): HTMLElement | null {
+    for (let at = node.parentElement; at && at !== el; at = at.parentElement) {
+      if (at.scrollWidth > at.clientWidth && getComputedStyle(at).overflowX !== 'visible') return at;
+    }
+    return el.scrollWidth > el.clientWidth ? el : null;
+  }
+
+  // Where the current match's range sits against what the scroller shows,
+  // on both axes; null when it is not mounted.
+  function placement(): Placement | null {
     const range = highlighter?.currentRange();
     const el = scroller();
     if (!range || !el) return null;
     const rect = range.getBoundingClientRect();
-    const view = el.getBoundingClientRect();
     if (rect.height === 0 && rect.width === 0) return null;
+    const view = el.getBoundingClientRect();
     const top = view.top + (isLogView() ? 0 : REVIEW_FILE_HEADER_BAR_PX);
-    if (rect.top >= top && rect.bottom <= view.bottom) return 0;
-    return Math.round(rect.top - (view.top + view.height / 3));
+    const dy = rect.top >= top && rect.bottom <= view.bottom ? 0 : Math.round(rect.top - (view.top + view.height / 3));
+    const across = clipAcross(range.startContainer, el);
+    const box = across && across !== el ? across.getBoundingClientRect() : view;
+    const left = Math.max(box.left, view.left);
+    const right = Math.min(box.right, view.right - (el.offsetWidth - el.clientWidth));
+    const dx = rect.left >= left && rect.right <= right ? 0 : Math.round(rect.left - (left + (right - left) / 3));
+    return { dy, dx: across ? dx : 0, across };
+  }
+
+  function inView(): boolean {
+    const at = placement();
+    return at !== null && at.dy === 0 && at.dx === 0;
+  }
+
+  // A code line find scrolled sideways to show a match; put back when find
+  // moves to another line or closes.
+  let shifted: HTMLElement | null = null;
+
+  function unshift(): void {
+    if (shifted?.isConnected) shifted.scrollLeft = 0;
+    shifted = null;
+  }
+
+  function shiftBy(across: HTMLElement, dx: number): void {
+    if (across !== scroller()) shifted = across;
+    across.scrollLeft = Math.max(0, across.scrollLeft + dx);
   }
 
   function isLogView(): boolean {
@@ -147,15 +192,25 @@
   function land(): void {
     const aim = landing;
     if (!aim || find.hits[find.result.current]?.identity !== aim.identity) return;
-    const delta = offscreenBy();
-    if (delta === null) {
+    const at = placement();
+    if (at === null) {
       if (performance.now() > aim.until) landing = null;
       return;
     }
+    if (at.dy !== 0 && !aim.sideways) {
+      if (isLogView()) log()?.scrollFindBy(at.dy);
+      else diff()?.scrollFindBy(at.dy);
+      landing = null;
+      // The row may move or remount: place it sideways once it settles.
+      if (at.dx !== 0) {
+        landing = { ...aim, sideways: true };
+        requestAnimationFrame(() => requestAnimationFrame(land));
+      }
+      return;
+    }
     landing = null;
-    if (delta === 0) return;
-    if (isLogView()) log()?.scrollFindBy(delta);
-    else diff()?.scrollFindBy(delta);
+    if (shifted && shifted !== at.across) unshift();
+    if (at.dx !== 0 && at.across) shiftBy(at.across, at.dx);
   }
 
   function aim(hit: Hit): void {
@@ -244,7 +299,7 @@
       return (hit) => !isLogHit(hit) && findHitAtOrBelow(hit, position);
     },
     reveal: (hit, force) => {
-      if (!force && offscreenBy() === 0) return true;
+      if (!force && inView()) return true;
       if (isLogHit(hit)) {
         const surface = log();
         if (!surface) return false;

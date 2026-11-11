@@ -219,3 +219,42 @@ describe('review find over row chrome', () => {
     expect(target.querySelector('[data-find-key]')!.textContent).toBe(`short gamma\n${'x'.repeat(40)} gamma … line clipped at 64 KB; Save to file has the whole line\ngamma red`);
   });
 });
+
+describe('a CI log row in a narrow pane', () => {
+  // Laid out at 18 px a line (leading-[18px]); 400 characters cannot fit
+  // one line of a 240 px row at any monospace width the theme picks.
+  const LINE_PX = 18;
+
+  it.each([false, true])('wraps a long line inside the row (clipped line: %s)', async (clipped) => {
+    const lines = ['short', `${'y'.repeat(400)} zq`, 'after'];
+    const fake = new FakeCILog(lines);
+    const blocks = new CILogBlockCache(async (from, count) => ({ ...(await fake.fetch(from, count)), clipped: clipped ? [1] : [] }));
+    blocks.setIndex(fake.version, lines.length, 0);
+    const target = document.createElement('div');
+    target.style.cssText = 'position:fixed;top:0;left:0;width:240px';
+    document.body.appendChild(target);
+    cleanups.push(() => target.remove());
+    const app = mount(ReviewCILogBlockRow, { target, props: { blocks, from: 0, to: lines.length, linePx: LINE_PX } });
+    cleanups.push(() => { void unmount(app); });
+    await waitFor(() => target.textContent!.includes('after'), 'log lines');
+    const row = target.querySelector<HTMLElement>('[data-find-key]')!;
+    // Three lines, the long one wrapped onto several more.
+    expect(row.getBoundingClientRect().height).toBeGreaterThan(LINE_PX * 6);
+    expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth);
+    // The match at the end of the long line lies inside the row.
+    const text = [...row.querySelectorAll('pre')].flatMap((pre) => [...pre.childNodes]).find((node) => node.textContent!.includes('zq'))!;
+    const range = document.createRange();
+    const at = text.textContent!.indexOf('zq');
+    range.setStart(text, at);
+    range.setEnd(text, at + 2);
+    const box = row.getBoundingClientRect();
+    expect(range.getBoundingClientRect().right).toBeLessThanOrEqual(box.right);
+    // Selecting the row copies the lines as one block of text, the clip
+    // note after its line, as the single <pre> did.
+    const selection = window.getSelection()!;
+    selection.selectAllChildren(row);
+    const note = clipped ? ' … line clipped at 64 KB; Save to file has the whole line' : '';
+    expect(selection.toString()).toBe(`short\n${'y'.repeat(400)} zq${note}\nafter`);
+    selection.removeAllRanges();
+  });
+});

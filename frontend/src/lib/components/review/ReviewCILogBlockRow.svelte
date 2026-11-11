@@ -27,6 +27,9 @@
   // counts nor paints it (data-find-skip). A clipped line's color ends
   // with it, so the next line starts clean.
   const CLIPPED_NOTE = ' … line clipped at 64 KB; Save to file has the whole line';
+  // On each run's <pre> as well as the row: a <pre> does not inherit
+  // wrapping (the user agent gives it white-space: pre).
+  const LOG_TEXT_CLASS = 'whitespace-pre-wrap break-all font-mono text-xs leading-[18px] text-text-secondary';
 
   const block = $derived(blocks.block(index));
   // The shown lines as runs that each end at a clipped line or the last
@@ -53,7 +56,7 @@
 </script>
 
 {#if shown && shown.count > 0}
-  <div class="whitespace-pre-wrap break-all px-3 font-mono text-xs leading-[18px] text-text-secondary" data-find-key={findCILogKey(from)}>{#each shown.runs as run, at (at)}<AnsiText source={at > 0 ? `\n${run.text}` : run.text} class="inline" />{#if run.clipped}<span class="text-fg-subtle" data-find-skip>{CLIPPED_NOTE}</span>{/if}{/each}</div>
+  <div class={LOG_TEXT_CLASS + ' px-3'} data-find-key={findCILogKey(from)}>{#each shown.runs as run, at (at)}<AnsiText source={at > 0 ? `\n${run.text}` : run.text} class={LOG_TEXT_CLASS + ' inline'} />{#if run.clipped}<span class="text-fg-subtle" data-find-skip>{CLIPPED_NOTE}</span>{/if}{/each}</div>
 {/if}
 {#if missing > 0}
   {#if block?.error && !block.loading}
