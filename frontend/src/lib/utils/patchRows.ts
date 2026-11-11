@@ -494,6 +494,37 @@ export function anchorRow(file: ReviewFile, anchor: RowAnchor): number {
 }
 
 /**
+ * Where an anchor's line is in `file` now, found by its text: the anchor
+ * itself when the row it names still holds `selectedText`, else the one
+ * row of its side that does, or null when none or several do. An `old`
+ * or `new` anchor can sit on a context row (split view), so those sides
+ * look at context rows too. Reads line text: the caller holds the file's
+ * text resident (`whenResident`).
+ */
+export function relocateAnchor<T extends RowAnchor & { selectedText: string }>(file: ReviewFile, anchor: T): T | null {
+  if (anchor.side === 'file') return anchor;
+  const walker = new RowWalker(file);
+  let found: T | null = null;
+  let matches = 0;
+  while (walker.next()) {
+    const type = walker.type;
+    if (type === 'gap' || type === 'marker') continue;
+    if (anchor.side === 'old' ? type === 'add' : anchor.side === 'new' ? type === 'del' : type !== 'context') continue;
+    const text = file.body.text(walker.lineIndex);
+    if ((type === 'context' ? text : text.slice(1)) !== anchor.selectedText) continue;
+    const at: T = anchor.side === 'old'
+      ? { ...anchor, oldLine: walker.oldLine }
+      : anchor.side === 'new'
+        ? { ...anchor, newLine: walker.newLine }
+        : { ...anchor, oldLine: walker.oldLine, newLine: walker.newLine };
+    if (at.oldLine === anchor.oldLine && at.newLine === anchor.newLine) return anchor;
+    matches += 1;
+    found = at;
+  }
+  return matches === 1 ? found : null;
+}
+
+/**
  * The anchor lines of a file's rows, by side, for membership checks of
  * many anchors against one file (PR threads). `context` maps a context
  * row's new line to its old line.

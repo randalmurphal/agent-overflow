@@ -21,7 +21,10 @@
   let { anchor, body, onBodyChange, onCancel, onSubmit, consumeFocus }: Props = $props();
   let submitting = $state(false);
   let textarea: HTMLTextAreaElement | undefined = $state();
-  const canSubmit = $derived(body.trim().length > 0 && !submitting);
+  // A reload moved this editor's line with no one line to follow: the
+  // text stays to copy, and nothing saves it to a line it was not on.
+  const lineChanged = $derived(anchor.lineChanged === true);
+  const canSubmit = $derived(body.trim().length > 0 && !submitting && !lineChanged);
 
   $effect(() => {
     const element = textarea;
@@ -58,6 +61,11 @@
 </script>
 
 <div class="border-y border-border-subtle bg-surface-1 px-3 py-2" data-testid="review-draft-editor">
+  {#if lineChanged}
+    <p class="mb-1.5 text-[0.6875rem] text-fg-muted" data-testid="review-draft-editor-line-changed">
+      The line this comment was on ({anchor.side === 'old' ? `old line ${anchor.oldLine}` : `line ${anchor.newLine}`}) changed. Copy the comment and add it on the line again.
+    </p>
+  {/if}
   <textarea
     bind:this={textarea}
     value={body}

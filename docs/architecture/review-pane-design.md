@@ -321,7 +321,9 @@ polling.
 - **PR head moves mid-review:** poll detects a new head SHA → non-blocking
   "PR updated, reload" banner. Drafts stay anchored to the old SHA (valid
   for the API); after reload, drafts whose lines vanished are flagged
-  orphaned, never silently dropped.
+  orphaned, never silently dropped. An open new comment follows its
+  line's text; with no one line to follow it keeps its text and cannot
+  be saved.
 - **Resolved threads:** rendered collapsed at their anchors, toggleable.
   Outdated is a marker, not a state: an outdated thread keeps its resolve
   state, stays at its anchor while the diff still has the line, and

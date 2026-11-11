@@ -15,6 +15,7 @@ import {
   FILE_START,
   materializeRows,
   nearestLineRow,
+  relocateAnchor,
   RowWalker,
   rowStartAt,
   splitRowCount,
@@ -301,6 +302,39 @@ describe('conflict pseudo-files', () => {
       const parsed = conflictPatchFile('c.txt', content, { baseLabel: 'main', headLabel: 'pr', expandedFolds, notes: ['CONFLICT (content): c.txt'] });
       expectSameFile(reviewFileFromPatchFile(parsed), parsed);
     }
+  });
+});
+
+describe('relocateAnchor', () => {
+  function fileOf(lines: readonly string[]): ReviewFile {
+    return parseReviewFiles([
+      'diff --git a/src/app.ts b/src/app.ts',
+      'index 1111111..2222222 100644',
+      '--- a/src/app.ts',
+      '+++ b/src/app.ts',
+      `@@ -1,3 +1,${lines.length} @@`,
+      ...lines,
+    ].join('\n'))[0];
+  }
+  const added = { side: 'new' as const, newLine: 2, selectedText: 'beta' };
+
+  it('keeps the anchor itself while its row holds its text, duplicates elsewhere or not', () => {
+    expect(relocateAnchor(fileOf([' alpha', '+beta', ' gamma', '+beta']), added)).toBe(added);
+  });
+
+  it('follows the one row of its side that holds its text', () => {
+    expect(relocateAnchor(fileOf([' alpha', '+inserted', '+beta', ' gamma']), added)).toEqual({ ...added, newLine: 3 });
+    const removed = { side: 'old' as const, oldLine: 2, selectedText: 'old beta' };
+    expect(relocateAnchor(fileOf(['-inserted', ' alpha', '-old beta', ' gamma']), removed)).toEqual({ ...removed, oldLine: 3 });
+    const context = { side: 'context' as const, oldLine: 1, newLine: 1, selectedText: ' alpha' };
+    expect(relocateAnchor(fileOf(['+inserted', ' alpha', ' gamma']), context)).toEqual({ ...context, newLine: 2 });
+  });
+
+  it('finds nothing when no row, or several, hold its text', () => {
+    expect(relocateAnchor(fileOf([' alpha', ' gamma']), added)).toBeNull();
+    expect(relocateAnchor(fileOf(['+beta', ' alpha', '+beta']), added)).toBeNull();
+    // A deleted row with the text is the old side, not this anchor's.
+    expect(relocateAnchor(fileOf(['-beta', ' alpha']), added)).toBeNull();
   });
 });
 

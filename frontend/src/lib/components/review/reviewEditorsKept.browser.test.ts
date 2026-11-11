@@ -364,4 +364,39 @@ describe('open comment editors across a row unmount', () => {
     await startEdit();
     expect(editing()!.value).toBe('saved body');
   });
+
+  it('keep a new comment with its line when a reload moves it, and say so when its line is gone', async () => {
+    let lines = patch();
+    setBindingMock('GetThread', async () => ({ id: 'thread-1', workspacePath: '/repo' }));
+    setBindingMock('GetGitStatus', async () => ({}));
+    setReviewDiffMock('OpenWorkspaceDiff', async () => lines);
+    setBindingMock('GitListBranches', async () => [{ name: 'main', isCurrent: true, isDefault: true }]);
+    setBindingMock('ListDiffReviewComments', async () => []);
+    const create = setBindingMock('CreateDiffReviewComment', async () => draft('workspace', ''));
+    const ctx = makeStubPanelContext();
+    app = mount(ReviewPane, { target, props: { ctx } });
+    await openNewComment();
+    type(editor()!, 'kept new');
+    const review = reviewStateForPane(ctx.paneId, reviewSubjectForPane(ctx)!);
+    const opened = review.openEditors[0]!;
+
+    // The agent adds a line at the top: the editor follows its line.
+    lines = lines.replace(`@@ -0,0 +1,${LINES} @@\n`, `@@ -0,0 +1,${LINES + 1} @@\n+inserted\n`);
+    q<HTMLButtonElement>('[data-testid="review-reload"]')!.click();
+    await vi.waitFor(() => expect(review.openEditors[0]?.newLine).toBe(opened.newLine! + 1));
+    await frames(4);
+    expect(editor()?.value).toBe('kept new');
+    expect(q('[data-testid="review-draft-editor-line-changed"]')).toBeNull();
+
+    // Then rewrites every line: the text stays, and nothing saves it.
+    lines = lines.replace(/\n\+line /g, '\n+row ');
+    q<HTMLButtonElement>('[data-testid="review-reload"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="review-draft-editor-line-changed"]')).not.toBeNull());
+    expect(editor()?.value).toBe('kept new');
+    const add = button(q('[data-testid="review-draft-editor"]')!, 'Add comment');
+    expect(add.disabled).toBe(true);
+    add.click();
+    await frames(2);
+    expect(create).not.toHaveBeenCalled();
+  });
 });

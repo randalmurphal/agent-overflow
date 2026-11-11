@@ -99,6 +99,23 @@ describe('buildReviewRows', () => {
     expect(new Set(result.rowKeys).size).toBe(result.rowKeys.length);
   });
 
+  it('puts an editor whose line changed under its file header, apart from a new editor on the same numbers', () => {
+    const files = parseReviewFiles(addedPatch('src/file.ts', 12));
+    const changed: CommentAnchor = { filePath: 'src/file.ts', side: 'new', newLine: 10, lineChanged: true };
+    const fresh: CommentAnchor = { filePath: 'src/file.ts', side: 'new', newLine: 10 };
+    const result = buildReviewRows({
+      files,
+      viewMode: 'stacked',
+      collapsedPaths: new Set(),
+      drafts: [],
+      openEditors: [changed, fresh],
+    });
+
+    expect(result.rows.map((row) => row.kind)).toEqual(['file-header', 'draft-editor', 'line-block', 'draft-editor', 'line-block', 'surface-end']);
+    expect(result.rowKeys[1]).toBe('d:src/file.ts:new:0:10:changed');
+    expect(result.rowKeys[3]).toBe('d:src/file.ts:new:0:10');
+  });
+
   it('ends a line block at anchors and inserts comment/editor rows immediately after it', () => {
     const files = parseReviewFiles(addedPatch('src/file.ts', 12));
     const editor: CommentAnchor = { filePath: 'src/file.ts', side: 'new', newLine: 10 };

@@ -128,7 +128,12 @@ PR stores; components own presentation and interaction.
   review state (`draftBodyFor`, `draftEditBodyFor`, `replyBodyFor`,
   `replyOpen`) until it is saved or cancelled. Closing a reply (Cancel,
   Escape, Back) keeps its text for the next open; only a sent reply
-  clears it.
+  clears it. A reload of the same subject keeps every open editor; a
+  new comment's editor follows its line's text into the new diff
+  (`relocateAnchor`), and one whose line is gone or no longer one line
+  keeps its text under the file header marked `lineChanged`, which
+  `createComment` refuses, as it refuses any anchor whose line no longer
+  holds its text.
 - Wrap the review surface in `shared/RenderBoundary.svelte`.
 
 Review mutations reconcile from authoritative responses and show partial or

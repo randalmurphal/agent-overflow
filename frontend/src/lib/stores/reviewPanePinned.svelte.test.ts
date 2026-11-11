@@ -227,6 +227,39 @@ describe('a pinned review', () => {
     expect(Object.keys(localStorage).filter((key) => key.includes('reviewScope'))).toEqual([]);
   });
 
+  it('moves an open new-comment editor with its line when the PR head moves', async () => {
+    installPRMocks();
+    const state = pinned(5);
+    await waitLoaded(state);
+    const two = { filePath: 'src/app.ts', side: 'new' as const, newLine: 2, selectedText: 'line 2' };
+    state.openDraftEditor(two);
+    state.setDraftBody(two, 'Guard this.');
+
+    // A push adds a line above it.
+    const diff = setReviewDiffMock('OpenPRDiff', async () => [
+      'diff --git a/src/app.ts b/src/app.ts',
+      'new file mode 100644',
+      'index 0000000..1111111',
+      '--- /dev/null',
+      '+++ b/src/app.ts',
+      '@@ -0,0 +1,4 @@',
+      '+line 0',
+      '+line 1',
+      '+line 2',
+      '+line 3',
+    ].join('\n'));
+    applyPRUpdatedEvent({ prKey: prKey(ref(5)), detail: detail(5, { headSHA: 'sha-5b' }), threads: [], headSHA: 'sha-5b', seq: 2 });
+    await tick();
+    await state.reload();
+    await waitLoaded(state);
+    expect(diff).toHaveBeenCalledTimes(1);
+
+    await vi.waitFor(() => expect(state.openEditors).toEqual([{ ...two, newLine: 3 }]));
+    expect(state.draftBodyFor(state.openEditors[0])).toBe('Guard this.');
+    await state.createComment(state.openEditors[0], 'Guard this.');
+    expect(state.drafts.map((comment) => [comment.newLine, comment.selectedText])).toEqual([[3, 'line 2']]);
+  });
+
   it('keeps the PR it was opened on after the forge reports it merged', async () => {
     installPRMocks();
     const state = pinned(5);

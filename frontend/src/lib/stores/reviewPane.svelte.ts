@@ -139,7 +139,8 @@ import {
   type ExpandDirection,
 } from '../utils/diffContextExpansion';
 import type { DiffGap } from '../utils/patchFiles';
-import { reviewFileFromPatchFile, whenResident, type PatchParser, type ReviewFile } from '../utils/patchStore';
+import { PatchTextLost, reviewFileFromPatchFile, whenResident, type PatchParser, type ReviewFile } from '../utils/patchStore';
+import { relocateAnchor } from '../utils/patchRows';
 import { anchorKey, type CommentAnchor } from '../utils/reviewRows';
 import { sortFilesTreeOrder } from '../utils/reviewTree';
 import type { ReviewSectionId } from './reviewSectionSizes.svelte';
@@ -593,6 +594,9 @@ export interface PinnedReviewPR {
   readonly pr: PRRef;
   readonly backend: BackendKey;
 }
+
+// createComment's refusal of an anchor whose line changed under it.
+const REVIEW_LINE_CHANGED = 'The line this comment was on changed. Copy the comment and add it on the line again.';
 
 /** The one place a review subject is built. Structural in the pane so both
  *  `ThreadPane` and the narrower `PanelContext` projection satisfy it. */
@@ -1391,8 +1395,9 @@ export function createReviewPaneState(
     }
     if (scope === 'pr' && nextScope !== 'pr') releasePR();
     // Re-entering the subject on screen (the PR badge, the selected scope
-    // picked again) reloads it and keeps the draft edits, which name their
-    // drafts; the new-comment editors name lines the reload may move.
+    // picked again, the selected edit opened again) reloads it and keeps
+    // every open editor: draft edits name their drafts, and the reload
+    // moves new-comment editors with their lines (relocateOpenEditors).
     const subjectChanged = scopeChanged || nextBaseBranch !== baseBranch;
     if (subjectChanged) retireDiffSubject();
     scope = nextScope;
@@ -1405,9 +1410,11 @@ export function createReviewPaneState(
       selectedCommitSHA = null;
       selectedEdit = null;
     }
-    openEditors = [];
-    draftBodies.clear();
-    if (subjectChanged) draftEditBodies.clear();
+    if (subjectChanged) {
+      openEditors = [];
+      draftBodies.clear();
+      draftEditBodies.clear();
+    }
     collapseOverrides.clear();
     if (threadId !== null) persistScope(threadId, scope, baseBranch);
     await reload({ userInitiated: opts?.userInitiated });
@@ -1567,6 +1574,7 @@ export function createReviewPaneState(
       showRead(read.read);
       patchKey = read.patchKey;
       shownIgnoreWhitespace = requestedIgnoreWhitespace;
+      void relocateOpenEditors(seq);
       // Fresh defaults for the new patch, with the user's explicit
       // collapse/expand choices layered back on top.
       const nextCollapsed = new SvelteSet<string>();
@@ -1677,6 +1685,14 @@ export function createReviewPaneState(
       commits = loaded.commits ?? [];
       edits = loaded.edits ?? [];
       editTurnLabels = loaded.editTurnLabels ?? new Map();
+      const selectionChanged = (loaded.selectedEdit !== undefined && editSelectionKey(loaded.selectedEdit) !== editSelectionKey(selectedEdit))
+        || (loaded.selectedCommitSHA !== undefined && loaded.selectedCommitSHA !== selectedCommitSHA);
+      if (selectionChanged) {
+        // Another change is under review: its editors go, as selectEdit's
+        // and selectCommit's do.
+        openEditors = [];
+        draftBodies.clear();
+      }
       if (loaded.selectedEdit !== undefined) selectedEdit = loaded.selectedEdit;
       if (loaded.selectedCommitSHA !== undefined) selectedCommitSHA = loaded.selectedCommitSHA;
       clearContextExpansions();
@@ -1944,6 +1960,62 @@ export function createReviewPaneState(
     }
   }
 
+  // A reload can move or remove the lines open new-comment editors name.
+  // Each follows its line's text (relocateAnchor) into the new diff; one
+  // whose line is gone, or now one of several with that text, keeps its
+  // text in an editor marked lineChanged, which cannot be saved.
+  async function relocateOpenEditors(seq: number): Promise<void> {
+    const checked = openEditors.filter((editor) => editor.side !== 'file' && !editor.lineChanged);
+    if (checked.length === 0) return;
+    const shown = files;
+    const moves = new Map<string, CommentAnchor>();
+    try {
+      for (const editor of checked) {
+        const file = shown.find((candidate) => candidate.path === editor.filePath);
+        const probe = editor.selectedText === undefined ? null : { ...editor, selectedText: editor.selectedText };
+        const next = file && probe ? await file.body.whenResident(() => relocateAnchor(file, probe)) : null;
+        if (next !== probe) moves.set(anchorKey(editor), next ?? { ...editor, lineChanged: true });
+      }
+    } catch (err) {
+      // Lost text reloads the diff (showRead), which checks again; until
+      // then createComment refuses a line whose text changed.
+      if (!(err instanceof PatchTextLost)) reportFrontendDiagnostic('review diff: open comment editors could not follow their lines', String(err));
+      return;
+    }
+    if (seq !== loadSeq || disposed || moves.size === 0) return;
+    // Two editors cannot share a line: one that would land where another
+    // open editor is, or goes, keeps its text as changed instead.
+    const taken = new Set(openEditors.filter((editor) => !moves.has(anchorKey(editor))).map(anchorKey));
+    const bodies = new Map<string, string>();
+    const focusKey = pendingEditorFocusKey;
+    const next = openEditors.map((editor) => {
+      const key = anchorKey(editor);
+      let moved = moves.get(key);
+      if (!moved) return editor;
+      if (taken.has(anchorKey(moved))) moved = { ...editor, lineChanged: true };
+      const movedKey = anchorKey(moved);
+      taken.add(movedKey);
+      const body = draftBodies.get(key);
+      if (body !== undefined) bodies.set(movedKey, body);
+      draftBodies.delete(key);
+      if (focusKey === key) pendingEditorFocusKey = movedKey;
+      return moved;
+    });
+    for (const [key, body] of bodies) draftBodies.set(key, body);
+    openEditors = next;
+  }
+
+  // Whether an anchor's line still holds the text it was opened on, so a
+  // comment saved on it lands on that line.
+  async function anchorHoldsItsLine(anchor: CommentAnchor): Promise<boolean> {
+    if (anchor.lineChanged) return false;
+    if (anchor.side === 'file' || anchor.selectedText === undefined) return true;
+    const file = files.find((candidate) => candidate.path === anchor.filePath);
+    if (!file) return false;
+    const probe = { ...anchor, selectedText: anchor.selectedText };
+    return await file.body.whenResident(() => relocateAnchor(file, probe)) === probe;
+  }
+
   function openDraftEditor(anchor: CommentAnchor): void {
     const key = anchorKey(anchor);
     pendingEditorFocusKey = key;
@@ -1962,6 +2034,7 @@ export function createReviewPaneState(
     const trimmed = body.trim();
     if (!sourceKey || !trimmed) return;
     try {
+      if (!await anchorHoldsItsLine(anchor)) throw new Error(REVIEW_LINE_CHANGED);
       const input = {
         scope,
         sourceKey,

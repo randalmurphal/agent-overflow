@@ -49,6 +49,10 @@ export interface CommentAnchor {
   newLine?: number;
   side: DiffReviewComment['side'];
   selectedText?: string;
+  /** An open editor whose line a reload moved out from under it with no
+   * one line to follow (relocateAnchor): it keeps its text under the file
+   * header and cannot be saved. */
+  lineChanged?: true;
 }
 
 export type ReviewRow =
@@ -556,14 +560,14 @@ function commentAnchor(comment: DiffReviewComment): CommentAnchor {
   };
 }
 
-function anchorLine(anchor: Pick<CommentAnchor, 'oldLine' | 'newLine' | 'side'>): number {
-  if (anchor.side === 'file') return 0;
+function anchorLine(anchor: Pick<CommentAnchor, 'oldLine' | 'newLine' | 'side' | 'lineChanged'>): number {
+  if (anchor.side === 'file' || anchor.lineChanged) return 0;
   if (anchor.side === 'old') return anchor.oldLine || 0;
   return anchor.newLine || anchor.oldLine || 0;
 }
 
 export function anchorKey(anchor: CommentAnchor): string {
-  return `${anchor.filePath}:${anchor.side}:${anchor.oldLine || 0}:${anchor.newLine || 0}`;
+  return `${anchor.filePath}:${anchor.side}:${anchor.oldLine || 0}:${anchor.newLine || 0}${anchor.lineChanged ? ':changed' : ''}`;
 }
 
 function compareInsertRows(a: InsertRow, b: InsertRow): number {

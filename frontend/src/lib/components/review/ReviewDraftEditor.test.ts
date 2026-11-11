@@ -47,3 +47,31 @@ describe('<ReviewDraftEditor> keyboard submit', () => {
     expect(onCancel).toHaveBeenCalledWith(anchor);
   });
 });
+
+describe('<ReviewDraftEditor> whose line changed', () => {
+  it('says so, keeps the text and cannot be saved', async () => {
+    const onSubmit = vi.fn();
+    const view = render(ReviewDraftEditor, {
+      props: {
+        anchor: { ...anchor, lineChanged: true },
+        body: 'draft text',
+        onBodyChange: vi.fn(),
+        onCancel: vi.fn(),
+        onSubmit,
+      },
+    });
+    const textarea = view.container.querySelector('textarea')!;
+    expect(textarea.value).toBe('draft text');
+    expect(view.getByTestId('review-draft-editor-line-changed').textContent).toContain('The line this comment was on (line 5) changed.');
+    expect((view.getByRole('button', { name: 'Add comment' }) as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('shows no note on a line that did not change', () => {
+    const view = render(ReviewDraftEditor, {
+      props: { anchor, body: 'draft text', onBodyChange: vi.fn(), onCancel: vi.fn(), onSubmit: vi.fn() },
+    });
+    expect(view.queryByTestId('review-draft-editor-line-changed')).toBeNull();
+  });
+});

@@ -629,6 +629,117 @@ describe('reviewPane store', () => {
     expect(state.draftBodyFor(anchor)).toBe('');
   });
 
+  describe('an open new-comment editor across a refresh', () => {
+    function fileOf(lines: readonly string[]): string {
+      return [
+        'diff --git a/src/app.ts b/src/app.ts',
+        'new file mode 100644',
+        'index 0000000..1111111',
+        '--- /dev/null',
+        '+++ b/src/app.ts',
+        `@@ -0,0 +1,${lines.length} @@`,
+        ...lines.map((line) => `+${line}`),
+      ].join('\n');
+    }
+    const beta = { filePath: 'src/app.ts', side: 'new' as const, newLine: 2, selectedText: 'beta' };
+
+    // The pane shows alpha/beta/gamma with an editor open on beta; then
+    // the agent rewrites the file and the pane reloads.
+    async function editorThenRefresh(after: readonly string[]) {
+      let lines: readonly string[] = ['alpha', 'beta', 'gamma'];
+      setReviewDiffMock('OpenWorkspaceDiff', async () => fileOf(lines));
+      const create = setBindingMock('CreateDiffReviewComment', async (_thread: string, input: { sourceKey: string; newLine?: number }) =>
+        draft({ sourceKey: input.sourceKey, newLine: input.newLine, body: 'Guard this.' }));
+      const state = reviewStateForPane('pane-1', subjectFor());
+      await waitLoaded(state);
+      state.openDraftEditor(beta);
+      state.setDraftBody(beta, 'Guard this.');
+      lines = after;
+      await state.reload();
+      await waitLoaded(state);
+      return { state, create };
+    }
+
+    it('moves with its line when the agent adds lines above it', async () => {
+      const { state, create } = await editorThenRefresh(['inserted', 'alpha', 'beta', 'gamma']);
+
+      await vi.waitFor(() => expect(state.openEditors).toEqual([{ ...beta, newLine: 3 }]));
+      const editor = state.openEditors[0];
+      expect(state.draftBodyFor(editor)).toBe('Guard this.');
+      await state.createComment(editor, state.draftBodyFor(editor));
+      expect(create.mock.calls[0]?.[1]).toMatchObject({ newLine: 3, selectedText: 'beta', body: 'Guard this.' });
+    });
+
+    it('keeps its text but cannot save when its line is gone', async () => {
+      const { state, create } = await editorThenRefresh(['alpha', 'gamma']);
+
+      await vi.waitFor(() => expect(state.openEditors[0]?.lineChanged).toBe(true));
+      const editor = state.openEditors[0];
+      expect(state.draftBodyFor(editor)).toBe('Guard this.');
+      await expect(state.createComment(editor, state.draftBodyFor(editor))).rejects.toThrow('line');
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('keeps its text but cannot save when its line is no longer one line', async () => {
+      const { state, create } = await editorThenRefresh(['beta', 'alpha', 'gamma', 'beta']);
+
+      await vi.waitFor(() => expect(state.openEditors[0]?.lineChanged).toBe(true));
+      expect(state.draftBodyFor(state.openEditors[0])).toBe('Guard this.');
+      await expect(state.createComment(state.openEditors[0], 'Guard this.')).rejects.toThrow('line');
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('stays where it is when its line did not change', async () => {
+      const { state, create } = await editorThenRefresh(['alpha', 'beta', 'gamma', 'delta']);
+
+      expect(state.openEditors).toEqual([beta]);
+      await state.createComment(beta, 'Guard this.');
+      expect(create.mock.calls[0]?.[1]).toMatchObject({ newLine: 2 });
+    });
+
+    it('never saves an anchor whose line no longer holds its text', async () => {
+      const { state, create } = await editorThenRefresh(['alpha', 'gamma', 'beta']);
+
+      // The row's old anchor, saved before (or without) the editor moving.
+      await expect(state.createComment(beta, 'Guard this.')).rejects.toThrow('line');
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('moves two editors on neighbouring lines together, each with its own text', async () => {
+      let lines: readonly string[] = ['alpha', 'beta', 'gamma'];
+      setReviewDiffMock('OpenWorkspaceDiff', async () => fileOf(lines));
+      const state = reviewStateForPane('pane-1', subjectFor());
+      await waitLoaded(state);
+      const gamma = { filePath: 'src/app.ts', side: 'new' as const, newLine: 3, selectedText: 'gamma' };
+      state.openDraftEditor(beta);
+      state.setDraftBody(beta, 'On beta.');
+      state.openDraftEditor(gamma);
+      state.setDraftBody(gamma, 'On gamma.');
+
+      lines = ['inserted', 'alpha', 'beta', 'gamma'];
+      await state.reload();
+      await waitLoaded(state);
+
+      await vi.waitFor(() => expect(state.openEditors).toEqual([{ ...beta, newLine: 3 }, { ...gamma, newLine: 4 }]));
+      expect(state.draftBodyFor(state.openEditors[0])).toBe('On beta.');
+      expect(state.draftBodyFor(state.openEditors[1])).toBe('On gamma.');
+    });
+
+    it('keeps its text when the review re-enters the scope it is on', async () => {
+      setReviewDiffMock('OpenWorkspaceDiff', async () => fileOf(['alpha', 'beta', 'gamma']));
+      const state = reviewStateForPane('pane-1', subjectFor());
+      await waitLoaded(state);
+      state.openDraftEditor(beta);
+      state.setDraftBody(beta, 'Guard this.');
+
+      await state.setScope('workspace');
+      await waitLoaded(state);
+
+      expect(state.openEditors).toEqual([beta]);
+      expect(state.draftBodyFor(beta)).toBe('Guard this.');
+    });
+  });
+
   it('sendComments no-ops while a turn is active', async () => {
     const patch = patchFor('src/app.ts', 1);
     const sourceKey = diffSourceKey(patch);
@@ -2993,6 +3104,28 @@ describe('reviewPane store — edits scope', () => {
     expect(state!.sourceKey).toBe('edit:pl-2a');
     expect(payload).toHaveBeenCalledWith('thread-1', 'pl-2a');
     expect(state!.pendingJumpFilePath).toBe('lexer.go');
+  });
+
+  it('keeps an open new-comment editor when the selected edit is opened again, and drops it for another edit', async () => {
+    setPaneLayoutItemsForTest([{ id: 'pane-1', paneId: 'pane-1', kind: 'thread', widthPx: 1 }]);
+    installEditMocks();
+    const state = await openReviewCompanion('pane-1', subjectFor(), { editItemId: 'tool:2a' });
+    await waitLoaded(state!);
+    const anchor = { filePath: 'x.go', side: 'new' as const, newLine: 6, selectedText: 'new' };
+    state!.openDraftEditor(anchor);
+    state!.setDraftBody(anchor, 'Guard this.');
+
+    expect(await openReviewCompanion('pane-1', subjectFor(), { editItemId: 'tool:2a' })).toBe(state);
+    await waitLoaded(state!);
+    expect(state!.selectedEditKey).toBe('item:tool:2a');
+    expect(state!.openEditors).toEqual([anchor]);
+    expect(state!.draftBodyFor(anchor)).toBe('Guard this.');
+
+    await openReviewCompanion('pane-1', subjectFor(), { editItemId: 'tool:1' });
+    await waitLoaded(state!);
+    expect(state!.selectedEditKey).toBe('item:tool:1');
+    expect(state!.openEditors).toEqual([]);
+    expect(state!.draftBodyFor(anchor)).toBe('');
   });
 
   it('selection changes reuse the loaded list (fast path)', async () => {
