@@ -1391,7 +1391,8 @@ export function createReviewPaneState(
     }
     if (scope === 'pr' && nextScope !== 'pr') releasePR();
     // Re-entering the subject on screen (the PR badge, the selected scope
-    // picked again) reloads it and discards nothing.
+    // picked again) reloads it and keeps the draft edits, which name their
+    // drafts; the new-comment editors name lines the reload may move.
     const subjectChanged = scopeChanged || nextBaseBranch !== baseBranch;
     if (subjectChanged) retireDiffSubject();
     scope = nextScope;
@@ -1404,15 +1405,10 @@ export function createReviewPaneState(
       selectedCommitSHA = null;
       selectedEdit = null;
     }
+    openEditors = [];
+    draftBodies.clear();
     if (subjectChanged) draftEditBodies.clear();
-    // An edit pinned for this load (openReviewCompanion's editItemId) is a
-    // selection like selectEdit's: its diff's lines are not the ones the
-    // open editors name.
-    if (subjectChanged || (nextScope === 'edits' && pendingEditItemID !== null)) {
-      openEditors = [];
-      draftBodies.clear();
-      collapseOverrides.clear();
-    }
+    collapseOverrides.clear();
     if (threadId !== null) persistScope(threadId, scope, baseBranch);
     await reload({ userInitiated: opts?.userInitiated });
   }
