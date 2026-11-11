@@ -35,6 +35,11 @@ int ao_wkv_host_attach(void *ns_window);
 // per-frame selection clearing (webkitFindFrameScript). The first call wins.
 void ao_wkv_set_find_frame_script(const char *script, const char *world);
 
+// ao_wkv_focus_app makes the Wails SPA's webview its window's first
+// responder, the handoff of a claimed chord, and answers 1 when AppKit
+// accepted it, 0 otherwise.
+int ao_wkv_focus_app(void);
+
 // ao_wkv_host_park puts a view into the park view at its own slot, at its
 // viewport (ao_wkv_view_set_size) and scale 1. The park view is 1x1 with a
 // masked layer, so a parked view is IN THE WINDOW (real viewport,

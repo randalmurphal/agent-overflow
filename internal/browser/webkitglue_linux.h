@@ -145,6 +145,24 @@ void ao_wk_view_find_finish(void *view);
 // cannot make a real input event. The native smoke's door into the gate.
 int ao_wk_view_offer_escape(void *view, int ctrl, int release);
 
+// ao_wk_view_offer_ctrl_key delivers one Control press of the key whose
+// character is unicode to the view's key controller, as
+// ao_wk_view_offer_escape does, and answers the same way.
+int ao_wk_view_offer_ctrl_key(void *view, unsigned int unicode);
+
+// ao_wk_focus_app gives keyboard focus to the Wails SPA's webview, the
+// handoff of a claimed chord, and answers 1 when GTK made it the window's
+// focus widget, 0 without one.
+int ao_wk_focus_app(void);
+
+// For the native smoke: ao_wk_view_grab_focus gives the view keyboard
+// focus; ao_wk_focus_holder answers which widget the view's window has as
+// its focus widget: 1 the view (or inside it), 2 the SPA's webview, 3 any
+// other, 0 none; ao_wk_window_active whether that window is active.
+void ao_wk_view_grab_focus(void *view);
+int ao_wk_focus_holder(void *view);
+int ao_wk_window_active(void *view);
+
 // ao_wk_view_has_input_method answers whether the view has an input method
 // context, the one the key gate reads a composition from.
 int ao_wk_view_has_input_method(void *view);

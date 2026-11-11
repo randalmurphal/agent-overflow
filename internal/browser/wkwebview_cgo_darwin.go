@@ -389,6 +389,18 @@ func wkLookupProfile(id uint64) *wkProfile {
 // The Go-typed surface the rest of the engine uses
 // ---------------------------------------------------------------------------
 
+// wkFocusApp hands keyboard focus to the SPA's webview.
+func wkFocusApp() error {
+	ok := false
+	if !wkDo(func() { ok = C.ao_wkv_focus_app() == 1 }) {
+		return errWKUnavailable
+	}
+	if !ok {
+		return fmt.Errorf("browser: the desktop window's app webview did not take keyboard focus")
+	}
+	return nil
+}
+
 // wkAttachHost adds AO's clipping park view beneath the Wails window's own
 // subviews. The SPA webview is untouched: unlike GTK4, AppKit lets a second
 // view join an existing content view without any reparenting surgery.

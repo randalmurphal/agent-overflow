@@ -137,15 +137,26 @@ so AO's chords have to be taken back at the engine:
   WebKitGTK view, and WebView2's `AcceleratorKeyPressed` in the launcher, which
   matches in its own process against the set the backend ships in an
   `accelerators` directive and answers with an `accelerator` report.
-- A bound chord is swallowed by the engine and reaches the frontend as an
-  `accelerator` event on `browser:companion-state`, carrying the BOUND
-  spelling (Shift glyph variants are normalized by the match). The store
-  focuses the thread's browser companion and replays the chord as a window
-  keydown, so `when` gates, rebinds and the palette all behave as if the SPA
-  had been focused. A bound chord whose `when` fails there is a no-op — the
-  page never gets it back, which is the price of answering synchronously.
-  DOM focus left in the SPA stays put; it gates nothing because the document
-  has no keyboard focus, which the command context's `terminalFocus` reads.
+- A bound chord is swallowed by the engine and hands keyboard focus to the
+  app's webview inside the key event, before the next key and before the
+  chord is routed: the Manager does it for every chord it claims
+  (`keyChord`, through `engineAppFocus` on WebKitGTK and WKWebView), and the
+  launcher does it where it claims for WebView2 (`acceleratorPressed`,
+  focusing its window, whose WebView2 controller takes the focus), only
+  while that window is in the foreground. A chord AO does not claim, and a
+  bare Escape, leave focus in the page. No command focuses anything for
+  this; the command puts DOM focus where it wants it (the find bar's input,
+  the palette), and the keys typed next reach it.
+- The chord then reaches the frontend as an `accelerator` event on
+  `browser:companion-state`, carrying the BOUND spelling (Shift glyph
+  variants are normalized by the match). The store focuses the thread's
+  browser companion and replays the chord as a window keydown, so `when`
+  gates, rebinds and the palette all behave as if the SPA had been focused.
+  A bound chord whose `when` fails there is a no-op — the page never gets it
+  back, which is the price of answering synchronously. The replay leaves
+  DOM focus where the SPA last had it, so a surface the chord opens returns
+  focus there when it closes: focus stays in the app, and the page gets it
+  back from a click.
 - A bare Escape is never AO's in the page: WebKitGTK and WKWebView offer it
   to the gate, which always lets it through, and while a pane shows the
   page the Manager announces each press as an `escape` event (thread and

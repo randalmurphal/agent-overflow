@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"fmt"
+	"log"
 	"math"
 	"net"
 	"net/url"
@@ -232,6 +233,12 @@ func pageEscapeAnnounced(pressed keybindings.Accelerator, press KeyPress) bool {
 // A bare Escape is never AO's: the page has it exactly as if AO were not
 // there. When pageEscapeAnnounced says so it is announced (emitEscape), so
 // a find bar the pane shows over the page can close.
+//
+// A chord AO claims takes keyboard focus out of the page: the command it
+// runs puts focus where it wants it (a find bar's input, the palette), and
+// the keys typed next must reach that, not the page. So every claim hands
+// focus to the app (engineAppFocus) before it returns; a chord AO does not
+// claim leaves focus in the page.
 func (m *Manager) keyChord(handle string, pressed keybindings.Accelerator, press KeyPress) bool {
 	if pressed == pageEscape {
 		if pageEscapeAnnounced(pressed, press) {
@@ -245,6 +252,13 @@ func (m *Manager) keyChord(handle string, pressed keybindings.Accelerator, press
 	bound, ok := m.accelerators().Match(pressed)
 	if !ok {
 		return false
+	}
+	if engine, ok := m.engine.(engineAppFocus); ok {
+		if err := engine.FocusApp(); err != nil {
+			// The chord still runs; its surface opens with focus left in
+			// the page, as before the handoff existed.
+			log.Printf("browser: hand keyboard focus to the app for %s: %v", handle, err)
+		}
 	}
 	go m.emitAccelerator(handle, bound)
 	return true

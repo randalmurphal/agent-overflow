@@ -77,7 +77,8 @@ static uint64_t ao_view_profile_id(id view) {
 // goes to WebKit — Cmd+W included, which WebKit does not handle and this app
 // has no menu to catch. AOWebView is WKWebView with one addition: modifier
 // chords are offered to Go first (aoWKVKeyChord, a synchronous set lookup),
-// and a chord AO binds is swallowed here and dispatched by the SPA. A bare
+// and a chord AO binds is swallowed here and dispatched by the SPA, which Go
+// has made first responder by then (ao_wkv_focus_app). A bare
 // Escape is offered too, with whether it repeats, and always reaches the
 // page: Go only observes it. Plain typing never crosses; the page keeps
 // every chord AO does not bind.
@@ -250,6 +251,10 @@ void ao_wkv_view_press_key(void *view, const char *key, int ctrl, int meta, int 
 
 static NSView *ao_host = nil;
 static NSView *ao_park = nil;
+// The Wails SPA's own WKWebView, the view a claimed chord hands keyboard
+// focus to (ao_wkv_focus_app). Retained like the host; a view the window
+// dropped has no window and is not focused.
+static WKWebView *ao_app_view = nil;
 
 // ao_view_clip answers the container that crops one page, or nil for a page
 // that has never been presented. A native view cannot be cropped by the DOM,
@@ -347,7 +352,27 @@ int ao_wkv_host_attach(void *ns_window) {
     // process's one host, exactly like the Linux overlay.
     ao_host = [content retain];
     ao_park = park;
+    // No page view has been added yet, so the content view's webview is
+    // the SPA's.
+    for (NSView *view in existing) {
+      if ([view isKindOfClass:[WKWebView class]] && ![view isKindOfClass:[AOWebView class]]) {
+        ao_app_view = [(WKWebView *)view retain];
+        break;
+      }
+    }
     return 1;
+  }
+}
+
+int ao_wkv_focus_app(void) {
+  @autoreleasepool {
+    WKWebView *app = ao_app_view;
+    NSWindow *window = app == nil ? nil : [app window];
+    if (window == nil) {
+      return 0;
+    }
+    // A window that is not key keeps the responder for when it becomes key.
+    return [window makeFirstResponder:app] ? 1 : 0;
   }
 }
 
