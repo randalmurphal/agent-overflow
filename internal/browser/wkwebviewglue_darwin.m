@@ -25,6 +25,7 @@ extern void aoWKVDownloadStarted(uint64_t profile_id, uint64_t page_id, uint64_t
 extern void aoWKVDownloadFinished(uint64_t download_id, double received, int state, char *path);
 extern void aoWKVClearDone(uint64_t call_id, char *err);
 extern int aoWKVKeyChord(uint64_t page_id, const char *key, int ctrl, int meta, int alt, int shift);
+extern void aoWKVFindDone(uint64_t call_id, int found);
 
 // The download state vocabulary the Go seam uses (driver.go).
 #define AO_DL_IN_PROGRESS 0
@@ -1227,6 +1228,33 @@ int ao_wkv_view_can_go(void *view, int forward) {
     }
     WKWebView *v = (WKWebView *)view;
     return (forward ? [v canGoForward] : [v canGoBack]) ? 1 : 0;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Find
+// ---------------------------------------------------------------------------
+
+// ao_wkv_view_find is -[WKWebView findString:withConfiguration:
+// completionHandler:] (WKWebView.h, macOS 11): a case-insensitive, wrapping
+// search from the current selection that selects the match it finds.
+// WKFindResult carries only matchFound (WKFindResult.h).
+void ao_wkv_view_find(void *view, const char *text, int backwards, uint64_t call_id) {
+  @autoreleasepool {
+    NSString *string = text != NULL ? [NSString stringWithUTF8String:text] : nil;
+    if (view == NULL || string == nil) {
+      aoWKVFindDone(call_id, -1);
+      return;
+    }
+    WKFindConfiguration *configuration = [[[WKFindConfiguration alloc] init] autorelease];
+    configuration.backwards = backwards ? YES : NO;
+    configuration.caseSensitive = NO;
+    configuration.wraps = YES;
+    [(WKWebView *)view findString:string
+                withConfiguration:configuration
+                completionHandler:^(WKFindResult *result) {
+                  aoWKVFindDone(call_id, result.matchFound ? 1 : 0);
+                }];
   }
 }
 

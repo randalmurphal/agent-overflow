@@ -144,6 +144,43 @@ so AO's chords have to be taken back at the engine:
   keydown, so `when` gates, rebinds and the palette all behave as if the SPA
   had been focused. A bound chord whose `when` fails there is a no-op — the
   page never gets it back, which is the price of answering synchronously.
+  DOM focus left in the SPA is dropped before the replay: keyboard focus is
+  in the page, so a source pane's terminal must not gate the chord.
+
+## Find
+
+mod+f in the browser pane finds in the page the pane shows, through the
+engine's own find-in-page. The pane registers a find provider only while the
+shown page's engine has find (`findMode` on the companion state), so the
+chord falls through elsewhere. A chord pressed inside the page arrives through
+the accelerator path above.
+
+- The Manager owns the session (`internal/browser/find.go`,
+  `BrowserCompanionFind`): which page it runs on, its query and current
+  match. A start runs only on the active page of a shown companion. The
+  session ends when its page navigates to another document (a fragment move
+  does not count), stops being the shown active page, is suspended or closes,
+  or the browser closes; that end is a `find` event on
+  `browser:companion-state`, and the bar showing it closes. The engine's
+  highlight is cleared behind it unless a newer session started.
+- WebKitGTK (`findMode` "bar") drives the shared find bar through
+  `WebKitFindController`: a case-insensitive, wrapping search that counts up
+  to 1000 matches (past that the count shows as `1000+` and the position as
+  unknown), `search_next`/`search_previous` for Enter and Shift+Enter, and
+  `search_finish` on close. The engine reports no match index, so the
+  Manager counts the steps.
+- WKWebView ("bar") uses `findString:withConfiguration:completionHandler:`.
+  It reports only whether a match was found, so the bar shows "Found" or "No
+  results" without numbers. A search starts from the selection, so a start
+  drops the selection first, and a close drops the selection that marks the
+  match.
+- Hosted WebView2 ("engine") opens the engine's own find bar
+  (`ICoreWebView2Find` with the default dialog left on), seeded with the
+  SPA's selection or else the page's, and moves keyboard focus into the page.
+  The engine's bar counts, steps and closes itself; AO's bar is not shown. A
+  runtime without the API is reported at page create (`find-unavailable`) and
+  the page has no find.
+- Headless Chromium has no find: serve mode has no pane to find in.
 
 ## Tool surface
 

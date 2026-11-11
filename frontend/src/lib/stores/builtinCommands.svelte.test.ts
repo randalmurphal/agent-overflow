@@ -1010,6 +1010,38 @@ describe('find.in-pane command', () => {
     expect(getPaneFind('a')!.focusRequest).toBe(request + 1);
   });
 
+  // A chord from the browser pane's native view is replayed on the window
+  // with the companion focused (browserCompanion.replayBrowserAccelerator).
+  // The context is the source thread pane's, so only its terminal holding
+  // DOM focus could gate the chord; the replay drops that stale focus.
+  it('fires mod+f for a focused browser companion, gated only by a focused source terminal', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
+    setPaneLayoutItemsForTest([
+      { id: 'a', paneId: 'a', kind: 'thread', widthPx: 600 },
+      { id: 'browser-a', paneId: 'browser-a', kind: 'browser', widthPx: 600 },
+    ]);
+    const openNative = vi.fn();
+    registerPaneFindProvider('browser-a', { ...providerFor(), openNative });
+    focusPane('browser-a');
+    const press = () => {
+      const event = new KeyboardEvent('keydown', { key: 'f', code: 'KeyF', ctrlKey: true, cancelable: true });
+      return dispatchKey(event, makeCommandContext(pane, {}) as CommandContext, { isMac: false });
+    };
+    expect(press()).toBe(true);
+    expect(openNative).toHaveBeenCalledTimes(1);
+    expect(getPaneFind('browser-a')).toBeNull();
+
+    notifyTerminalFocus(pane.paneId, true);
+    try {
+      expect(press()).toBe(false);
+      expect(openNative).toHaveBeenCalledTimes(1);
+    } finally {
+      notifyTerminalFocus(pane.paneId, false);
+    }
+  });
+
   it('seeds the query from text selected inside the pane', () => {
     const pane = readyPane();
     registerFixtureCommands(pane);

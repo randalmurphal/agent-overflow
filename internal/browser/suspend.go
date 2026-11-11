@@ -331,6 +331,7 @@ func (m *Manager) suspendPage(ctx context.Context, p *managedPage) (bool, error)
 	m.mu.Unlock()
 	m.cancelPageDownloads(p, scope)
 	p.driver.Close()
+	m.endFind(p, false)
 	p.mu.Unlock()
 	if release {
 		return true, m.disposeScope(ctx, scope)

@@ -229,6 +229,38 @@ type pageDriver interface {
 	AssetFetcher(ctx context.Context) (assetFetcher, error)
 }
 
+// pageFind is the optional find-in-page half of a page driver: the engine's
+// own text search, never one AO runs in the document. A driver without it
+// has no find. The Manager owns the session (which page, its query, the
+// current match, when it ends); the driver only carries a call out.
+type pageFind interface {
+	// FindMode answers how this page's find is presented: FindModeBar, where
+	// AO's find bar drives FindStart and FindStep and shows their answers;
+	// FindModeEngine, where FindStart opens the engine's own find bar and the
+	// engine steps and counts in it; or "" when this page has no find (an
+	// engine runtime too old for its find API).
+	FindMode() string
+	// FindStart replaces any search with one for query. In FindModeEngine the
+	// query seeds the engine's bar and the answer is empty.
+	FindStart(ctx context.Context, query string) (findResult, error)
+	// FindStep moves to the next match, or the previous one when backwards,
+	// wrapping at the ends. FindModeBar only.
+	FindStep(ctx context.Context, backwards bool) (findResult, error)
+	// FindStop ends the search and clears what it highlighted or selected.
+	FindStop(ctx context.Context) error
+}
+
+// findResult is one engine answer to a start or a step.
+type findResult struct {
+	Found bool
+	// Matches is the engine's count of matches, or -1 when the engine can
+	// only say whether there is one.
+	Matches int
+	// Capped is set when the engine stopped counting at its limit: Matches is
+	// that limit and the page has more.
+	Capped bool
+}
+
 // assetFetcher opens one asset through the page's own credentials.
 type assetFetcher func(url string) (assetStream, error)
 

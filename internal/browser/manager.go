@@ -217,6 +217,10 @@ type managedPage struct {
 	nodeMu       sync.Mutex
 	nodeRefs     map[string]nodeReference
 	nodeOrder    []string
+	// findMu guards find (find.go). Taken alone or inside mu, never around
+	// it.
+	findMu sync.Mutex
+	find   findSession
 }
 
 // newManagedPage allocates the AO-owned half of a page. Its driver is attached
@@ -466,6 +470,7 @@ func (m *Manager) closeFoundPage(ctx context.Context, access Access, p *managedP
 	}
 	m.cancelPageDownloads(p, scope)
 	p.driver.Close()
+	m.endFind(p, false)
 	p.mu.Unlock()
 	m.mu.Lock()
 	delete(scope.pages, p.id)
@@ -816,10 +821,11 @@ func pageWithHandle(scope *workspaceScope, handle string) *managedPage {
 func (m *Manager) removeClosedPage(handle string) {
 	m.mu.Lock()
 	var owner string
+	var closed *managedPage
 	var released *workspaceScope
 	for _, scope := range m.scopes {
 		if p := pageWithHandle(scope, handle); p != nil {
-			owner = p.owner
+			owner, closed = p.owner, p
 			delete(scope.pages, p.id)
 			if m.releaseScopeLocked(scope) {
 				released = scope
@@ -828,6 +834,9 @@ func (m *Manager) removeClosedPage(handle string) {
 		}
 	}
 	m.mu.Unlock()
+	if closed != nil {
+		m.endFind(closed, false)
+	}
 	if owner != "" {
 		m.repairActivePage(owner)
 		m.emitThreadState(owner)
@@ -898,10 +907,12 @@ func (m *Manager) closeBrowserLocked(caller context.Context) error {
 	m.mu.Lock()
 	scopes := make([]*workspaceScope, 0, len(m.scopes))
 	owners := make(map[string]struct{})
+	var pages []*managedPage
 	for _, scope := range m.scopes {
 		scopes = append(scopes, scope)
 		for _, p := range scope.pages {
 			owners[p.owner] = struct{}{}
+			pages = append(pages, p)
 		}
 	}
 	m.scopes = make(map[string]*workspaceScope)
@@ -917,6 +928,9 @@ func (m *Manager) closeBrowserLocked(caller context.Context) error {
 		m.idleTimer = nil
 	}
 	m.mu.Unlock()
+	for _, p := range pages {
+		m.endFind(p, false)
+	}
 	for owner := range owners {
 		m.emitThreadState(owner)
 	}

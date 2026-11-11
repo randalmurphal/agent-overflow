@@ -46,6 +46,19 @@ export class CompanionEvent {
      */
     "accelerator"?: keybindings$0.Accelerator | null;
 
+    /**
+     * FindMode rides a Kind "state" event: how the active page's find is
+     * presented (FindModeBar or FindModeEngine), empty when it has none.
+     */
+    "findMode"?: string;
+
+    /**
+     * Find rides a Kind "find" event: a page's find session ended without
+     * being asked to (navigation, a tab switch, a hidden pane, the page
+     * closing), so a find bar showing it closes.
+     */
+    "find"?: FindState | null;
+
     /** Creates a new CompanionEvent instance. */
     constructor($$source: Partial<CompanionEvent> = {}) {
         if (!("kind" in $$source)) {
@@ -64,12 +77,16 @@ export class CompanionEvent {
     static createFrom($$source: any = {}): CompanionEvent {
         const $$createField2_0 = $$createType1;
         const $$createField11_0 = $$createType3;
+        const $$createField13_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pages" in $$parsedSource) {
             $$parsedSource["pages"] = $$createField2_0($$parsedSource["pages"]);
         }
         if ("accelerator" in $$parsedSource) {
             $$parsedSource["accelerator"] = $$createField11_0($$parsedSource["accelerator"]);
+        }
+        if ("find" in $$parsedSource) {
+            $$parsedSource["find"] = $$createField13_0($$parsedSource["find"]);
         }
         return new CompanionEvent($$parsedSource as Partial<CompanionEvent>);
     }
@@ -100,12 +117,79 @@ export class CompanionSubscription {
      * Creates a new CompanionSubscription instance from a string or object.
      */
     static createFrom($$source: any = {}): CompanionSubscription {
-        const $$createField1_0 = $$createType4;
+        const $$createField1_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("state" in $$parsedSource) {
             $$parsedSource["state"] = $$createField1_0($$parsedSource["state"]);
         }
         return new CompanionSubscription($$parsedSource as Partial<CompanionSubscription>);
+    }
+}
+
+/**
+ * FindState is a page's find session as the find bar shows it.
+ */
+export class FindState {
+    "pageId": string;
+
+    /**
+     * Session increases with every start and every end of a find on the
+     * page, so an answer from an older session is recognizably stale.
+     */
+    "session": number;
+    "active": boolean;
+    "query": string;
+    "found": boolean;
+
+    /**
+     * Matches is the engine's count, -1 when the engine reports only whether
+     * there is a match.
+     */
+    "matches": number;
+
+    /**
+     * Current is the 0-based current match, -1 when there is none or the
+     * engine cannot place it.
+     */
+    "current": number;
+    "capped": boolean;
+
+    /** Creates a new FindState instance. */
+    constructor($$source: Partial<FindState> = {}) {
+        if (!("pageId" in $$source)) {
+            this["pageId"] = "";
+        }
+        if (!("session" in $$source)) {
+            this["session"] = 0;
+        }
+        if (!("active" in $$source)) {
+            this["active"] = false;
+        }
+        if (!("query" in $$source)) {
+            this["query"] = "";
+        }
+        if (!("found" in $$source)) {
+            this["found"] = false;
+        }
+        if (!("matches" in $$source)) {
+            this["matches"] = 0;
+        }
+        if (!("current" in $$source)) {
+            this["current"] = 0;
+        }
+        if (!("capped" in $$source)) {
+            this["capped"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new FindState instance from a string or object.
+     */
+    static createFrom($$source: any = {}): FindState {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new FindState($$parsedSource as Partial<FindState>);
     }
 }
 
@@ -253,4 +337,6 @@ const $$createType0 = PageInfo.createFrom;
 const $$createType1 = $Create.Array($$createType0);
 const $$createType2 = keybindings$0.Accelerator.createFrom;
 const $$createType3 = $Create.Nullable($$createType2);
-const $$createType4 = CompanionEvent.createFrom;
+const $$createType4 = FindState.createFrom;
+const $$createType5 = $Create.Nullable($$createType4);
+const $$createType6 = CompanionEvent.createFrom;

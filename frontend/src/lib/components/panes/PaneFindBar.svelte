@@ -40,11 +40,13 @@
   let open = $derived(find?.open === true && provider !== null);
   let query = $derived(find?.query ?? '');
   let result = $derived(provider?.result ?? null);
-  let count = $derived(result?.count ?? 0);
+  let count = $derived(result ? result.count : 0);
   let countText = $derived.by(() => {
     if (!query.trim() || !result) return '';
+    if (count === null) return 'Found';
     if (count === 0) return 'No results';
-    return `${result.current + 1}/${count}${result.capped ? '+' : ''}`;
+    const total = `${count}${result.capped ? '+' : ''}`;
+    return result.current < 0 ? total : `${result.current + 1}/${total}`;
   });
   let placeholder = $derived(`Find in ${provider?.noun ?? 'pane'}`);
 

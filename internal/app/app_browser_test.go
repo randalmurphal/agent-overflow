@@ -764,3 +764,43 @@ func TestShutdownStopsTheReapersBrowserSuspension(t *testing.T) {
 		t.Fatalf("pages = %#v, want one live", pages)
 	}
 }
+
+// The pane's find reaches the thread's shown page through the binding, with
+// the caller's thread as the owner every page operation checks.
+func TestBrowserCompanionFindRunsOnTheThreadsShownPage(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	manager := appbrowser.NewManager(t.TempDir(), appbrowser.Config{Enabled: true}, appbrowser.ManagerOptions{FakeEngine: true})
+	app.browser.manager = manager
+	t.Cleanup(func() { _ = manager.Close() })
+	thread := makeWorkspaceThread(t, app, "thread-companion-find")
+	other := makeWorkspaceThread(t, app, "thread-companion-find-other")
+	ctx := t.Context()
+	if _, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "navigate", Address: "https://example.test/alpha-beta-alpha"}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := app.BrowserCompanionThreadState(thread.ID)
+	if err != nil || len(state.Pages) != 1 {
+		t.Fatalf("state = %+v, %v", state, err)
+	}
+	pageID := state.Pages[0].ID
+	if _, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "show", PageID: pageID}); err != nil {
+		t.Fatal(err)
+	}
+	if state, err := app.BrowserCompanionThreadState(thread.ID); err != nil || state.FindMode != appbrowser.FindModeBar {
+		t.Fatalf("state find mode = %+v, %v", state, err)
+	}
+	found, err := app.BrowserCompanionFind(ctx, thread.ID, BrowserFindAction{Kind: "start", PageID: pageID, Query: "alpha"})
+	if err != nil || found.Matches != 2 || found.Current != 0 || !found.Active {
+		t.Fatalf("start = %+v, %v", found, err)
+	}
+	if next, err := app.BrowserCompanionFind(ctx, thread.ID, BrowserFindAction{Kind: "next", PageID: pageID}); err != nil || next.Current != 1 {
+		t.Fatalf("next = %+v, %v", next, err)
+	}
+	if _, err := app.BrowserCompanionFind(ctx, other.ID, BrowserFindAction{Kind: "next", PageID: pageID}); err == nil {
+		t.Fatal("another thread stepped this thread's find")
+	}
+	if stopped, err := app.BrowserCompanionFind(ctx, thread.ID, BrowserFindAction{Kind: "stop", PageID: pageID}); err != nil || stopped.Active {
+		t.Fatalf("stop = %+v, %v", stopped, err)
+	}
+}

@@ -7,6 +7,7 @@ import {
   reconcileBrowserCompanionForPane,
   resetBrowserCompanionForTest,
 } from './browserCompanion.svelte';
+import { BROWSER_FIND_DEBOUNCE_MS, createBrowserFind } from './browserFind.svelte';
 import { companionForSource, installCompanionPanes, resetCompanionPanesForTest } from './companionPanes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import { createPane, focusPane, getFocusedPaneId, resetPanesForTest } from './panes.svelte';
@@ -303,6 +304,55 @@ describe('accelerators from the native page view', () => {
     expect(seen[0].key).toBe('w');
     expect(seen[0].metaKey).toBe(true);
     expect(seen[0].ctrlKey).toBe(false);
+  });
+
+  // Keyboard focus is in the native view, so DOM focus left in the SPA (the
+  // source pane's terminal) is stale: it must not gate the replayed chord.
+  it('drops stale DOM focus before replaying, so the source terminal does not gate the chord', () => {
+    const terminal = document.createElement('textarea');
+    document.body.appendChild(terminal);
+    terminal.focus();
+    let focusedAtReplay: Element | null = terminal;
+    const listener = () => { focusedAtReplay = document.activeElement; };
+    window.addEventListener('keydown', listener);
+    try {
+      applyBrowserCompanionState({
+        kind: 'accelerator',
+        threadId: 'thread-browser',
+        accelerator: { key: 'f', ctrl: true },
+      });
+    } finally {
+      window.removeEventListener('keydown', listener);
+      terminal.remove();
+    }
+    expect(focusedAtReplay).toBe(document.body);
+  });
+
+  it('routes the end of a find to the thread and leaves the pane state alone', async () => {
+    vi.useFakeTimers();
+    setBindingMock('BrowserCompanionFind', async () => ({
+      pageId: 'page-1', session: 1, active: true, query: 'alpha', found: true, matches: 2, current: 0, capped: false,
+    }));
+    const onEnded = vi.fn();
+    const find = createBrowserFind({
+      threadId: 'thread-browser', mode: 'bar', pageId: () => 'page-1', onEnded, onError: vi.fn(),
+    });
+    try {
+      find.search('alpha');
+      await vi.advanceTimersByTimeAsync(BROWSER_FIND_DEBOUNCE_MS);
+      expect(find.result.count).toBe(2);
+      applyBrowserCompanionState({
+        kind: 'find',
+        threadId: 'thread-browser',
+        pageId: 'page-1',
+        find: { pageId: 'page-1', session: 2, active: false, query: '', found: false, matches: 0, current: -1, capped: false },
+      });
+      expect(onEnded).toHaveBeenCalledTimes(1);
+      expect(companionForSource('main', 'browser')).not.toBeNull();
+    } finally {
+      find.dispose();
+      vi.useRealTimers();
+    }
   });
 
   it('is inert without a chord', () => {

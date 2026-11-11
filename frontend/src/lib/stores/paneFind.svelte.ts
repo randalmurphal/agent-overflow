@@ -11,9 +11,12 @@ import { paneLayoutKindOf } from './paneLayout.svelte';
 
 /** What a provider reports about the current query. */
 export interface PaneFindResult {
-  /** Matches for the current query; 0 while it is empty. */
-  readonly count: number;
-  /** Index of the current match, or -1 when there is none. */
+  /**
+   * Matches for the current query; 0 while it is empty. null when the
+   * provider found a match but cannot count them.
+   */
+  readonly count: number | null;
+  /** Index of the current match, or -1 when there is none or it is unknown. */
   readonly current: number;
   /** True while the provider has not answered the current query. */
   readonly pending: boolean;
@@ -26,6 +29,8 @@ export interface PaneFindResult {
  * query included; a provider debounces and drops superseded answers itself.
  * `next` and `previous` are absent for a provider whose query only filters.
  * `clear` ends the session: highlights, timers and pending reads go.
+ * A provider with `openNative` has its own find UI: an open goes there with
+ * the seed and no bar opens.
  */
 export interface PaneFindProvider {
   /** Completes the placeholder: "Find in {noun}". */
@@ -36,6 +41,7 @@ export interface PaneFindProvider {
   next?(): void;
   previous?(): void;
   clear(): void;
+  openNative?(seed: string): void;
 }
 
 interface PaneFindState {
@@ -99,6 +105,10 @@ export interface OpenPaneFindOptions {
 export function openPaneFind(paneId: string, options: OpenPaneFindOptions = {}): boolean {
   const provider = providers.get(paneId);
   if (!provider) return false;
+  if (provider.openNative) {
+    provider.openNative(options.seed ?? '');
+    return true;
+  }
   pruneGonePanes();
   let state = states.get(paneId);
   if (!state) {

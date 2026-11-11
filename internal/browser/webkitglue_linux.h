@@ -116,6 +116,22 @@ void ao_wk_view_snapshot(void *view, int full_document, uint64_t call_id);
 // deferred decision.
 void ao_wk_policy_finish(void *decision, int allow);
 
+// ---- find ----------------------------------------------------------------
+
+#define AO_FIND_SEARCH 0
+#define AO_FIND_NEXT 1
+#define AO_FIND_PREVIOUS 2
+
+// ao_wk_view_find runs one find on the view's WebKitFindController: a
+// case-insensitive, wrapping search for text from the start of the document
+// (AO_FIND_SEARCH), or a step from the current match. The outcome reaches
+// aoWebKitFindDone under call_id: found 1 with the match count (G_MAXUINT past
+// max_match_count), found 0 with none, or found -1 when the view has no find.
+void ao_wk_view_find(void *view, int op, const char *text, unsigned int max_match_count,
+                     uint64_t call_id);
+// ao_wk_view_find_finish ends the view's find and unhighlights its matches.
+void ao_wk_view_find_finish(void *view);
+
 // ---- memory --------------------------------------------------------------
 
 // ao_wk_free releases memory the C half allocated for the Go half. GLib's

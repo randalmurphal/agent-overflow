@@ -270,6 +270,7 @@ export const UpdateSettings = dispatch('UpdateSettings');
 export const ClearBrowserSiteData = dispatch('ClearBrowserSiteData');
 export const BrowserCompanionRevealPageFile = dispatch('BrowserCompanionRevealPageFile');
 export const BrowserCompanionDo = dispatch('BrowserCompanionDo');
+export const BrowserCompanionFind = dispatch('BrowserCompanionFind');
 export const BrowserCompanionPaneAttach = dispatch('BrowserCompanionPaneAttach');
 export const BrowserCompanionPaneDetach = dispatch('BrowserCompanionPaneDetach');
 export const BrowserCompanionPaneRect = dispatch('BrowserCompanionPaneRect');

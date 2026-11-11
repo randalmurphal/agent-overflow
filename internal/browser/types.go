@@ -41,6 +41,39 @@ type CompanionEvent struct {
 	// while the thread's page view held keyboard focus, for the frontend to
 	// dispatch as if the SPA had received it.
 	Accelerator *keybindings.Accelerator `json:"accelerator,omitempty"`
+	// FindMode rides a Kind "state" event: how the active page's find is
+	// presented (FindModeBar or FindModeEngine), empty when it has none.
+	FindMode string `json:"findMode,omitempty"`
+	// Find rides a Kind "find" event: a page's find session ended without
+	// being asked to (navigation, a tab switch, a hidden pane, the page
+	// closing), so a find bar showing it closes.
+	Find *FindState `json:"find,omitempty"`
+}
+
+// The find modes a page reports (pageFind.FindMode).
+const (
+	// FindModeBar: AO's find bar drives the engine's find and shows its answer.
+	FindModeBar = "bar"
+	// FindModeEngine: the engine shows its own find bar, opened by a start.
+	FindModeEngine = "engine"
+)
+
+// FindState is a page's find session as the find bar shows it.
+type FindState struct {
+	PageID string `json:"pageId"`
+	// Session increases with every start and every end of a find on the
+	// page, so an answer from an older session is recognizably stale.
+	Session uint64 `json:"session"`
+	Active  bool   `json:"active"`
+	Query   string `json:"query"`
+	Found   bool   `json:"found"`
+	// Matches is the engine's count, -1 when the engine reports only whether
+	// there is a match.
+	Matches int `json:"matches"`
+	// Current is the 0-based current match, -1 when there is none or the
+	// engine cannot place it.
+	Current int  `json:"current"`
+	Capped  bool `json:"capped"`
 }
 
 // CompanionSubscription is what mounting a pane answers: the mount id the

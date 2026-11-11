@@ -150,6 +150,9 @@ type hostedEngine struct {
 	// in flight per page, and every scale asked for while it runs collapses
 	// into the next one.
 	scales map[string]*viewScaleState
+	// noFind holds the pages whose runtime has no find API, as the launcher
+	// reported before their created report.
+	noFind map[string]bool
 }
 
 type pageRatio struct{ pane, page float64 }
@@ -178,6 +181,7 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		drivers:      make(map[string]*cdpPage),
 		ratios:       make(map[string]pageRatio),
 		scales:       make(map[string]*viewScaleState),
+		noFind:       make(map[string]bool),
 	}
 }
 
@@ -259,6 +263,7 @@ func (e *hostedEngine) Stop() {
 	e.drivers = make(map[string]*cdpPage)
 	e.ratios = make(map[string]pageRatio)
 	e.scales = make(map[string]*viewScaleState)
+	e.noFind = make(map[string]bool)
 	e.mu.Unlock()
 	if browserCancel != nil {
 		browserCancel()
@@ -475,6 +480,11 @@ func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, h
 		return nil, fmt.Errorf("browser: create pane page: %w", err)
 	}
 	if report.kind != webview2host.ReportCreated {
+		// No controller is left to close, but a find-unavailable report may
+		// have preceded the failure.
+		e.mu.Lock()
+		delete(e.noFind, pageID)
+		e.mu.Unlock()
 		return nil, fmt.Errorf("browser: pane host reported %s: %s", report.kind, report.detail)
 	}
 	targetID := strings.TrimSpace(report.detail)
@@ -655,6 +665,8 @@ func (e *hostedEngine) Report(pageID string, kind webview2host.ReportKind, detai
 			return
 		}
 		e.events.KeyChord(pageID, pressed)
+	case webview2host.ReportFindUnavailable:
+		e.noteFindUnavailable(pageID)
 	case webview2host.ReportCleared, webview2host.ReportClearFailed:
 		// A clear names a correlation id, not a page: there is no controller
 		// to close and no page to retire. Nobody waiting means ClearSiteData
@@ -684,6 +696,7 @@ func (e *hostedEngine) retirePage(pageID string) {
 	delete(e.drivers, pageID)
 	delete(e.ratios, pageID)
 	delete(e.scales, pageID)
+	delete(e.noFind, pageID)
 	e.mu.Unlock()
 	if !known {
 		return
@@ -753,6 +766,7 @@ func (e *hostedEngine) closePage(pageID string) {
 	delete(e.drivers, pageID)
 	delete(e.ratios, pageID)
 	delete(e.scales, pageID)
+	delete(e.noFind, pageID)
 	e.mu.Unlock()
 	e.dispatch(webview2host.Directive{Op: webview2host.OpClose, PageID: pageID})
 }
@@ -1011,6 +1025,54 @@ type hostedPage struct {
 // reports name and what every directive addresses, so it is the one handle
 // both halves of this engine agree on.
 func (p *hostedPage) Handle() string { return p.id }
+
+// noteFindUnavailable records a page the launcher says has no find API. It
+// arrives while the page's create waits or after it is bound; any other page
+// id is not one this engine holds.
+func (e *hostedEngine) noteFindUnavailable(pageID string) {
+	e.mu.Lock()
+	_, creating := e.pending[pageID]
+	_, bound := e.targetByPage[pageID]
+	if creating || bound {
+		e.noFind[pageID] = true
+	}
+	e.mu.Unlock()
+	if !creating && !bound {
+		e.logf("browser: pane host reported no find for unknown page %s", pageID)
+	}
+}
+
+// FindMode is the engine's own find bar, unless the page's runtime has none.
+func (p *hostedPage) FindMode() string {
+	p.engine.mu.Lock()
+	defer p.engine.mu.Unlock()
+	if p.engine.noFind[p.id] {
+		return ""
+	}
+	return FindModeEngine
+}
+
+// FindStart opens the page's find bar in the launcher. The bar counts and
+// steps itself, so there is no answer to wait for.
+func (p *hostedPage) FindStart(_ context.Context, query string) (findResult, error) {
+	if !p.engine.dispatch(webview2host.Directive{Op: webview2host.OpFind, PageID: p.id, Query: query}) {
+		return findResult{}, errors.New("browser: pane host refused the find directive")
+	}
+	return findResult{}, nil
+}
+
+func (p *hostedPage) FindStep(context.Context, bool) (findResult, error) {
+	return findResult{}, errors.New("browser: the pane host steps through matches in its own find bar")
+}
+
+func (p *hostedPage) FindStop(context.Context) error {
+	if !p.engine.dispatch(webview2host.Directive{Op: webview2host.OpFindStop, PageID: p.id}) {
+		return errors.New("browser: pane host refused the find-stop directive")
+	}
+	return nil
+}
+
+var _ pageFind = (*hostedPage)(nil)
 
 func (p *hostedPage) Close() {
 	p.pageDriver.Close()

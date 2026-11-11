@@ -103,6 +103,8 @@ type wkCallResult struct {
 	pixels []byte
 	width  int
 	height int
+	// found is a find's answer: 1 found, 0 none, -1 unusable.
+	found int
 }
 
 func wkRegisterCall() (uint64, chan wkCallResult) {
@@ -138,6 +140,11 @@ func aoWKVEvalDone(callID C.uint64_t, jsonText *C.char, errText *C.char) {
 	wkCompleteCall(uint64(callID), wkCallResult{
 		json: wkTakeString(jsonText), err: wkTakeString(errText),
 	})
+}
+
+//export aoWKVFindDone
+func aoWKVFindDone(callID C.uint64_t, found C.int) {
+	wkCompleteCall(uint64(callID), wkCallResult{found: int(found)})
 }
 
 //export aoWKVClearDone
@@ -556,6 +563,37 @@ func wkIsLoading(view unsafe.Pointer) bool {
 	loading := false
 	wkDo(func() { loading = C.ao_wkv_view_is_loading(view) == 1 })
 	return loading
+}
+
+// wkFind runs one -findString:withConfiguration:completionHandler: and
+// reports whether it found a match.
+func wkFind(ctx context.Context, view unsafe.Pointer, text string, backwards bool) (bool, error) {
+	if !wkAlive() {
+		return false, errWKUnavailable
+	}
+	id, ch := wkRegisterCall()
+	flag := C.int(0)
+	if backwards {
+		flag = 1
+	}
+	if !wkDo(func() {
+		cText := C.CString(text)
+		C.ao_wkv_view_find(view, cText, flag, C.uint64_t(id))
+		C.free(unsafe.Pointer(cText))
+	}) {
+		wkCallByID.Delete(id)
+		return false, errWKUnavailable
+	}
+	select {
+	case result := <-ch:
+		if result.found < 0 {
+			return false, fmt.Errorf("browser: the page cannot search for this text")
+		}
+		return result.found == 1, nil
+	case <-ctx.Done():
+		wkCallByID.Delete(id)
+		return false, ctx.Err()
+	}
 }
 
 // wkEvaluate runs one async-function body in the page and returns its JSON

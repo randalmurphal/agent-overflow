@@ -154,6 +154,7 @@ func (p *managedPage) cachedInfo() PageInfo {
 
 func (m *Manager) pageChanged(p *managedPage) {
 	p.touch()
+	m.followFindDocument(p)
 	m.ensureActivePage(p.owner, p.id)
 	m.emitThreadState(p.owner)
 	m.syncPanePresentation(p.owner)
@@ -163,8 +164,12 @@ func (m *Manager) threadState(threadID string) CompanionEvent {
 	m.mu.Lock()
 	tabs := m.threadTabsLocked(threadID)
 	session, hasSession := m.sessions[threadID]
+	active, _ := m.livePageLocked(session.ActivePageID)
 	m.mu.Unlock()
 	event := CompanionEvent{Kind: "state", ThreadID: threadID, Pages: make([]PageInfo, 0, len(tabs))}
+	if active != nil && active.owner == threadID {
+		event.FindMode = findModeOf(active)
+	}
 	visible := false
 	if hasSession {
 		visible = session.Visible
@@ -256,6 +261,7 @@ func (m *Manager) updatePageInfo(handle, url, title string) {
 		// and let the async refresh below correct it.
 		CanGoBack: previous.CanGoBack, CanGoForward: previous.CanGoForward,
 	})
+	m.followFindDocument(found)
 	m.emitThreadState(found.owner)
 	go m.refreshHistoryState(found)
 }
@@ -454,11 +460,12 @@ func (m *Manager) OpenPaneDevTools(ctx context.Context, access Access, pageID st
 // An engine whose pages are not real windows implements no paneHost, so this
 // is a type assertion that fails and costs nothing on every deployment that
 // cannot present a page at all.
+//
+// A find runs on the shown active page only, so this is also where a find on
+// a page that stopped being it (a tab switch, a hidden companion) ends.
+// Occlusion is not hiding: an overlay over the pane leaves the find running.
 func (m *Manager) syncPanePresentation(threadID string) {
 	host, ok := m.engine.(paneHost)
-	if !ok {
-		return
-	}
 	m.mu.Lock()
 	session, hasSession := m.sessions[threadID]
 	rect, shown := m.shownPaneRectLocked(threadID)
@@ -477,6 +484,10 @@ func (m *Manager) syncPanePresentation(threadID string) {
 		}
 	}
 	m.mu.Unlock()
+	m.endHiddenFinds(pages, session, hasSession)
+	if !ok {
+		return
+	}
 	var placement PanePlacement
 	if visible {
 		// The page keeps the session's viewport; the pane shows it scaled to

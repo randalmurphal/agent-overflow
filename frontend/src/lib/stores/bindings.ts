@@ -146,6 +146,7 @@ export {
   UpdateSettings,
   ClearBrowserSiteData,
   BrowserCompanionDo,
+  BrowserCompanionFind,
   BrowserCompanionThreadState,
   BrowserCompanionPaneAttach,
   BrowserCompanionPaneDetach,
@@ -741,6 +742,7 @@ export {
   TerminalOpenOptions,
   ThreadMCPServer,
   BrowserCompanionAction,
+  BrowserFindAction,
   UpdateAvailability,
   BackgroundKillAgent,
   BusyThread,
@@ -749,6 +751,7 @@ export {
 } from '../../../bindings/agent-overflow/internal/app/models.js';
 export {
   CompanionEvent as BrowserCompanionEvent,
+  FindState as BrowserFindState,
   PageInfo as BrowserPageInfo,
   PaneRect as BrowserPaneRect,
 } from '../../../bindings/agent-overflow/internal/browser/models.js';

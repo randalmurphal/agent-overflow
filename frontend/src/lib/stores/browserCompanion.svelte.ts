@@ -12,6 +12,7 @@ import {
   BrowserPaneRect,
   type BrowserCompanionEvent,
 } from './bindings';
+import { applyBrowserFindEvent } from './browserFind.svelte';
 import { createEntityStore, type EntityAttachment } from './entityStore.svelte';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import {
@@ -134,6 +135,10 @@ export function applyBrowserCompanionState(event: BrowserCompanionEvent): void {
     replayBrowserAccelerator(event);
     return;
   }
+  if (event.kind === 'find') {
+    applyBrowserFindEvent(event);
+    return;
+  }
   if (event.kind !== 'state') return;
   hydratedThreads.add(event.threadId);
   if ((event.pages?.length ?? 0) > 0) liveStates.set(event.threadId, event);
@@ -168,7 +173,9 @@ export function applyBrowserCompanionState(event: BrowserCompanionEvent): void {
  * behave exactly as if the SPA had been focused. The companion pane is
  * focused first: the click that gave the page focus moved no DOM focus, and
  * pane-scoped commands (pane.close → this pane's tab) need the logical focus
- * to be where the user is looking.
+ * to be where the user is looking. DOM focus left in the SPA is stale for the
+ * same reason and is dropped, so it gates nothing (a source pane's terminal
+ * would otherwise suppress `!terminalFocus` chords such as mod+f).
  */
 function replayBrowserAccelerator(event: BrowserCompanionEvent): void {
   const chord = event.accelerator;
@@ -176,6 +183,8 @@ function replayBrowserAccelerator(event: BrowserCompanionEvent): void {
   const sourcePaneId = sourcePaneIdForThread(event.threadId);
   const companion = sourcePaneId ? companionForSource(sourcePaneId, 'browser') : null;
   if (companion) focusPane(companion.paneId);
+  const stale = document.activeElement;
+  if (stale instanceof HTMLElement && stale !== document.body) stale.blur();
   window.dispatchEvent(
     new KeyboardEvent('keydown', {
       key: chord.key,

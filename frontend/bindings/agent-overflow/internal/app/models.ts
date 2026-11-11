@@ -850,6 +850,37 @@ export class BrowserCompanionAction {
 }
 
 /**
+ * BrowserFindAction is one request of the browser pane's find: start (the
+ * query; empty ends the find, or opens an engine's own find bar empty), next,
+ * previous, or stop.
+ */
+export class BrowserFindAction {
+    "kind": string;
+    "pageId": string;
+    "query"?: string;
+
+    /** Creates a new BrowserFindAction instance. */
+    constructor($$source: Partial<BrowserFindAction> = {}) {
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("pageId" in $$source)) {
+            this["pageId"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new BrowserFindAction instance from a string or object.
+     */
+    static createFrom($$source: any = {}): BrowserFindAction {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new BrowserFindAction($$parsedSource as Partial<BrowserFindAction>);
+    }
+}
+
+/**
  * BusyThread is one thread's contribution to WorkspaceActivity. At least one
  * leg is set; idle threads are not listed.
  */

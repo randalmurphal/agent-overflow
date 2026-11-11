@@ -1,10 +1,16 @@
 import { tick } from 'svelte';
-import { render, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import BrowserPane from './BrowserPane.svelte';
 import { makeStubPanelContext } from '../../../test/helpers/panelContext';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { makeThread } from '../../../test/helpers/chat';
 import { applyBrowserCompanionState, resetBrowserCompanionForTest } from '../../stores/browserCompanion.svelte';
+import { BROWSER_FIND_DEBOUNCE_MS, resetBrowserFindForTest } from '../../stores/browserFind.svelte';
+import { hasPaneFindProvider, openPaneFind, resetPaneFindForTest } from '../../stores/paneFind.svelte';
+import { installCompanionPanes, openCompanion, resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
+import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
+import { createPane, resetPanesForTest } from '../../stores/panes.svelte';
 
 const THREAD = 'thread-1';
 
@@ -78,5 +84,81 @@ describe('<BrowserPane> suspended pages', () => {
     await view.findByText('Page a');
     await tick();
     expect(act).not.toHaveBeenCalled();
+  });
+});
+
+describe('<BrowserPane> find', () => {
+  function resetAll(): void {
+    resetBrowserCompanionForTest();
+    resetBrowserFindForTest();
+    resetPaneFindForTest();
+    resetCompanionPanesForTest();
+    resetPaneLayoutForTest();
+    resetPanesForTest();
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    resetAll();
+    installCompanionPanes();
+    setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 640 }]);
+    createPane('main').replaceThread(makeThread({ id: THREAD }));
+    openCompanion('main', 'browser');
+    setBindingMock('BrowserCompanionPaneDetach', async () => undefined);
+    setBindingMock('BrowserCompanionPaneRect', async () => undefined);
+    setBindingMock('BrowserCompanionDo', async () => state([page('a', false)]));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    resetAll();
+  });
+
+  function mount(findMode: string) {
+    setBindingMock('BrowserCompanionPaneAttach', async () => ({
+      id: 'mount-1',
+      state: { ...state([page('a', false)]), findMode },
+    }));
+    return render(BrowserPane, { ctx: makeStubPanelContext({ threadId: THREAD, paneId: 'main' }) });
+  }
+
+  it('drives the shared bar on the shown page and closes it when the backend ends the find', async () => {
+    const find = setBindingMock('BrowserCompanionFind', vi.fn(async (_thread: string, action: { kind: string; query?: string }) => ({
+      pageId: 'a', session: 1, active: action.kind !== 'stop', query: action.query ?? '', found: true, matches: 2, current: 0, capped: false,
+    })));
+    const view = mount('bar');
+    await waitFor(() => expect(hasPaneFindProvider('browser-main')).toBe(true));
+    expect(view.queryByTestId('pane-find-bar')).toBeNull();
+    openPaneFind('browser-main');
+    const input = (await view.findByTestId('pane-find-input')) as HTMLInputElement;
+    expect(input.placeholder).toBe('Find in page');
+    await fireEvent.input(input, { target: { value: 'alpha' } });
+    await vi.advanceTimersByTimeAsync(BROWSER_FIND_DEBOUNCE_MS);
+    expect(find).toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'start', pageId: 'a', query: 'alpha' }));
+    await waitFor(() => expect(view.getByTestId('pane-find-count').textContent?.trim()).toBe('1/2'));
+
+    applyBrowserCompanionState({
+      kind: 'find', threadId: THREAD, pageId: 'a',
+      find: { pageId: 'a', session: 2, active: false, query: '', found: false, matches: 0, current: -1, capped: false },
+    } as never);
+    await waitFor(() => expect(view.queryByTestId('pane-find-bar')).toBeNull());
+  });
+
+  it('opens the engine find bar instead of its own for an engine that has one', async () => {
+    const find = setBindingMock('BrowserCompanionFind', vi.fn(async () => ({
+      pageId: 'a', session: 1, active: true, query: 'seed', found: false, matches: 0, current: -1, capped: false,
+    })));
+    const view = mount('engine');
+    await waitFor(() => expect(hasPaneFindProvider('browser-main')).toBe(true));
+    expect(openPaneFind('browser-main', { seed: 'seed' })).toBe(true);
+    await tick();
+    expect(find).toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'start', pageId: 'a', query: 'seed' }));
+    expect(view.queryByTestId('pane-find-bar')).toBeNull();
+  });
+
+  it('offers no find where the engine has none', async () => {
+    const view = mount('');
+    await view.findByText('Page a');
+    await tick();
+    expect(hasPaneFindProvider('browser-main')).toBe(false);
   });
 });

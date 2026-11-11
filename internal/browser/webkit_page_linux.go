@@ -62,6 +62,8 @@ type webkitPage struct {
 	closed       bool
 	lastURL      string
 	lastActivity time.Time
+	// findCount is the last search's answer, which its steps report.
+	findCount findResult
 }
 
 func (p *webkitPage) Lifetime() context.Context { return p.ctx }
@@ -369,6 +371,54 @@ func (p *webkitPage) SelectionText(ctx context.Context) string {
 	var selected string
 	_ = p.evalInto(ctx, webkitSelectionTextScript, &selected)
 	return selected
+}
+
+// webkitFindMaxMatches is the most matches a search counts and highlights;
+// past it the count is reported as capped.
+const webkitFindMaxMatches = 1000
+
+var _ pageFind = (*webkitPage)(nil)
+
+// FindMode is the shared find bar: WebKitFindController has no UI of its own.
+func (p *webkitPage) FindMode() string { return FindModeBar }
+
+func (p *webkitPage) FindStart(ctx context.Context, query string) (findResult, error) {
+	return p.find(ctx, webkitFindSearch, query)
+}
+
+func (p *webkitPage) FindStep(ctx context.Context, backwards bool) (findResult, error) {
+	op := webkitFindNext
+	if backwards {
+		op = webkitFindPrevious
+	}
+	return p.find(ctx, op, "")
+}
+
+func (p *webkitPage) FindStop(context.Context) error { return gtkFindFinish(p.view) }
+
+func (p *webkitPage) find(ctx context.Context, op int, query string) (findResult, error) {
+	opCtx, cancel := p.bind(ctx)
+	defer cancel()
+	answer, err := gtkFind(opCtx, p.view, op, query, webkitFindMaxMatches)
+	if err != nil {
+		return findResult{}, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	switch {
+	case answer.found == 0:
+		p.findCount = findResult{}
+	case op != webkitFindSearch:
+		// A step's found-text carries no total, so the search's count stands.
+		if !p.findCount.Found {
+			return findResult{Found: true, Matches: -1}, nil
+		}
+	case answer.matches == webkitFindUnbounded || answer.matches > webkitFindMaxMatches:
+		p.findCount = findResult{Found: true, Matches: webkitFindMaxMatches, Capped: true}
+	default:
+		p.findCount = findResult{Found: true, Matches: int(answer.matches)}
+	}
+	return p.findCount, nil
 }
 
 func (p *webkitPage) Scroll(ctx context.Context, selector string, x, y float64) error {

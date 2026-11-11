@@ -25,6 +25,7 @@ extern void aoWebKitDownloadProgress(uint64_t download_id, double received,
                                      int state, char *path);
 extern int aoWebKitKeyChord(uint64_t page_id, const char *key, int ctrl, int meta,
                             int alt, int shift);
+extern void aoWebKitFindDone(uint64_t call_id, int found, unsigned int match_count);
 
 // The download state vocabulary the Go seam uses (driver.go).
 #define AO_DL_IN_PROGRESS 0
@@ -36,6 +37,7 @@ extern int aoWebKitKeyChord(uint64_t page_id, const char *key, int ctrl, int met
 #define AO_SESSION_DL_DIR "ao-download-dir"
 #define AO_SESSION_KEY "ao-session"
 #define AO_DOWNLOAD_KEY "ao-download-id"
+#define AO_FIND_CALLS_KEY "ao-find-calls"
 
 static uint64_t ao_view_page_id(gpointer view) {
   return (uint64_t)GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(view), AO_PAGE_KEY));
@@ -724,6 +726,73 @@ static gboolean ao_key_pressed(GtkEventControllerKey *controller, guint keyval, 
   return aoWebKitKeyChord(ao_view_page_id(view), key, ctrl, meta, alt, shift) == 1;
 }
 
+// ---------------------------------------------------------------------------
+// Find: WebKitFindController (WebKitFindController.h). search, search_next and
+// search_previous each answer once, asynchronously, with found-text or
+// failed-to-find-text (WebKit-6.0.gir). The controller keeps the call ids in
+// issue order, so each answer goes to the call that caused it, and an answer
+// for a call whose caller gave up completes nothing.
+// ---------------------------------------------------------------------------
+
+static void ao_find_answer(WebKitFindController *finder, int found, guint match_count) {
+  GQueue *calls = g_object_get_data(G_OBJECT(finder), AO_FIND_CALLS_KEY);
+  if (calls == NULL || g_queue_is_empty(calls)) {
+    return;
+  }
+  uint64_t call_id = (uint64_t)GPOINTER_TO_SIZE(g_queue_pop_head(calls));
+  aoWebKitFindDone(call_id, found, match_count);
+}
+
+static void ao_found_text(WebKitFindController *finder, guint match_count, gpointer data) {
+  ao_find_answer(finder, 1, match_count);
+}
+
+static void ao_failed_to_find_text(WebKitFindController *finder, gpointer data) {
+  ao_find_answer(finder, 0, 0);
+}
+
+static void ao_connect_find(WebKitWebView *view) {
+  WebKitFindController *finder = webkit_web_view_get_find_controller(view);
+  if (finder == NULL || g_object_get_data(G_OBJECT(finder), AO_FIND_CALLS_KEY) != NULL) {
+    return;
+  }
+  g_object_set_data_full(G_OBJECT(finder), AO_FIND_CALLS_KEY, g_queue_new(),
+                         (GDestroyNotify)g_queue_free);
+  g_signal_connect(finder, "found-text", G_CALLBACK(ao_found_text), NULL);
+  g_signal_connect(finder, "failed-to-find-text", G_CALLBACK(ao_failed_to_find_text), NULL);
+}
+
+void ao_wk_view_find(void *view, int op, const char *text, unsigned int max_match_count,
+                     uint64_t call_id) {
+  WebKitFindController *finder = webkit_web_view_get_find_controller(WEBKIT_WEB_VIEW(view));
+  GQueue *calls = finder ? g_object_get_data(G_OBJECT(finder), AO_FIND_CALLS_KEY) : NULL;
+  if (calls == NULL) {
+    aoWebKitFindDone(call_id, -1, 0);
+    return;
+  }
+  g_queue_push_tail(calls, GSIZE_TO_POINTER((gsize)call_id));
+  switch (op) {
+    case AO_FIND_SEARCH:
+      webkit_find_controller_search(
+          finder, text, WEBKIT_FIND_OPTIONS_CASE_INSENSITIVE | WEBKIT_FIND_OPTIONS_WRAP_AROUND,
+          max_match_count);
+      break;
+    case AO_FIND_NEXT:
+      webkit_find_controller_search_next(finder);
+      break;
+    default:
+      webkit_find_controller_search_previous(finder);
+      break;
+  }
+}
+
+void ao_wk_view_find_finish(void *view) {
+  WebKitFindController *finder = webkit_web_view_get_find_controller(WEBKIT_WEB_VIEW(view));
+  if (finder != NULL) {
+    webkit_find_controller_search_finish(finder);
+  }
+}
+
 static void ao_connect_view(WebKitWebView *view, uint64_t page_id, const char *user_script,
                             const char *console_handler) {
   g_object_set_data(G_OBJECT(view), AO_PAGE_KEY, GSIZE_TO_POINTER((gsize)page_id));
@@ -757,6 +826,7 @@ static void ao_connect_view(WebKitWebView *view, uint64_t page_id, const char *u
   g_signal_connect(view, "run-file-chooser", G_CALLBACK(ao_file_chooser), NULL);
   g_signal_connect(view, "context-menu", G_CALLBACK(ao_context_menu), NULL);
   g_signal_connect(view, "create", G_CALLBACK(ao_create_view), NULL);
+  ao_connect_find(view);
 }
 
 void *ao_wk_view_new(void *session, uint64_t page_id, const char *user_script,

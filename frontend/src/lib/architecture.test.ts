@@ -79,6 +79,7 @@ const APPEARANCE_STORE = 'lib/stores/appearance.svelte.ts';
 const SOUNDS_STORE = 'lib/stores/sounds.svelte.ts';
 const EDITORS_STORE = 'lib/stores/editors.svelte.ts';
 const BROWSER_COMPANION_STORE = 'lib/stores/browserCompanion.svelte.ts';
+const BROWSER_FIND_STORE = 'lib/stores/browserFind.svelte.ts';
 const PROVIDER_ACCOUNTS_STORE = 'lib/stores/computerAccounts.svelte.ts';
 const SYSTEMS_STORE = 'lib/stores/systems.svelte.ts';
 const SERVICE_UPDATE_STORE = 'lib/stores/serviceUpdate.svelte.ts';
@@ -91,6 +92,7 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   BrowserCompanionPaneRect: owned(BROWSER_COMPANION_STORE, 'reportBrowserPaneRect()'),
   BrowserCompanionDo: owned(BROWSER_COMPANION_STORE, 'browserCompanionAct()'),
   BrowserCompanionThreadState: owned(BROWSER_COMPANION_STORE, 'hydrateBrowserCompanionState()'),
+  BrowserCompanionFind: owned(BROWSER_FIND_STORE, 'createBrowserFind()'),
   // The read marker is the one thread-row field where the newest value is
   // not the largest one (explicit unread persists as epoch 0), so the
   // merge in eventsThreadRows.ts can only tell a local write from a stale

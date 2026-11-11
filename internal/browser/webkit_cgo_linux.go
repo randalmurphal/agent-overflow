@@ -13,6 +13,7 @@ import "C"
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -93,6 +94,10 @@ type webkitCallResult struct {
 	pixels []byte
 	width  int
 	height int
+	// found and matches are a find's answer: found 1 with the match count,
+	// 0 with none, -1 when the view has no find controller.
+	found   int
+	matches uint32
 }
 
 func webkitRegisterCall() (uint64, chan webkitCallResult) {
@@ -128,6 +133,11 @@ func aoWebKitEvalDone(callID C.uint64_t, jsonText *C.char, errText *C.char) {
 	webkitCompleteCall(uint64(callID), webkitCallResult{
 		json: webkitTakeString(jsonText), err: webkitTakeString(errText),
 	})
+}
+
+//export aoWebKitFindDone
+func aoWebKitFindDone(callID C.uint64_t, found C.int, matchCount C.uint) {
+	webkitCompleteCall(uint64(callID), webkitCallResult{found: int(found), matches: uint32(matchCount)})
 }
 
 //export aoWebKitSnapshotDone
@@ -525,6 +535,50 @@ func gtkEvaluate(ctx context.Context, view unsafe.Pointer, body string) (string,
 		webkitCallByID.Delete(id)
 		return "", ctx.Err()
 	}
+}
+
+// webkitFind ops: a search from the start of the document, or a step.
+const (
+	webkitFindSearch   = C.AO_FIND_SEARCH
+	webkitFindNext     = C.AO_FIND_NEXT
+	webkitFindPrevious = C.AO_FIND_PREVIOUS
+)
+
+// webkitFindUnbounded is G_MAXUINT (guint is 32 bits), the count found-text
+// reports past the search's max_match_count (WebKit-6.0.gir,
+// WebKitFindController::found-text).
+const webkitFindUnbounded = math.MaxUint32
+
+// gtkFind runs one find on the view's WebKitFindController and waits for its
+// found-text or failed-to-find-text answer.
+func gtkFind(ctx context.Context, view unsafe.Pointer, op int, text string, maxMatches uint32) (webkitCallResult, error) {
+	id, ch := webkitRegisterCall()
+	if !gtkDo(func() {
+		cText := C.CString(text)
+		C.ao_wk_view_find(view, C.int(op), cText, C.uint(maxMatches), C.uint64_t(id))
+		C.free(unsafe.Pointer(cText))
+	}) {
+		webkitCallByID.Delete(id)
+		return webkitCallResult{}, errGTKUnavailable
+	}
+	select {
+	case result := <-ch:
+		if result.found < 0 {
+			return result, fmt.Errorf("browser: this page has no find controller")
+		}
+		return result, nil
+	case <-ctx.Done():
+		webkitCallByID.Delete(id)
+		return webkitCallResult{}, ctx.Err()
+	}
+}
+
+// gtkFindFinish ends the view's find and clears its highlight.
+func gtkFindFinish(view unsafe.Pointer) error {
+	if !gtkDo(func() { C.ao_wk_view_find_finish(view) }) {
+		return errGTKUnavailable
+	}
+	return nil
 }
 
 // webkitSnapshot captures the view. It works on a parked view and returns

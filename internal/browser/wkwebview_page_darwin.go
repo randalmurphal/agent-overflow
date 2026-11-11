@@ -66,6 +66,8 @@ type wkPage struct {
 	closed       bool
 	lastURL      string
 	lastActivity time.Time
+	// findQuery is the running find's query, which a step searches again.
+	findQuery string
 	// snapshotMu serializes the resize/capture/restore a full-document
 	// screenshot performs, so two captures cannot restore each other's size.
 	snapshotMu sync.Mutex
@@ -394,6 +396,53 @@ func (p *wkPage) SelectionText(ctx context.Context) string {
 	var selected string
 	_ = p.evalInto(ctx, webkitSelectionTextScript, &selected)
 	return selected
+}
+
+var _ pageFind = (*wkPage)(nil)
+
+// FindMode is the shared find bar: WKWebView has no find UI on macOS.
+func (p *wkPage) FindMode() string { return FindModeBar }
+
+// FindStart searches from the top: WKWebView searches from the selection, so
+// the selection is dropped first. WKFindResult has no count.
+func (p *wkPage) FindStart(ctx context.Context, query string) (findResult, error) {
+	if _, err := p.evalBody(ctx, webkitClearSelectionScript); err != nil {
+		return findResult{}, err
+	}
+	p.mu.Lock()
+	p.findQuery = query
+	p.mu.Unlock()
+	return p.find(ctx, query, false)
+}
+
+// FindStep searches again from the selected match.
+func (p *wkPage) FindStep(ctx context.Context, backwards bool) (findResult, error) {
+	p.mu.Lock()
+	query := p.findQuery
+	p.mu.Unlock()
+	if query == "" {
+		return findResult{}, fmt.Errorf("browser: no find is in progress on this page")
+	}
+	return p.find(ctx, query, backwards)
+}
+
+// FindStop drops the selection that marks the match.
+func (p *wkPage) FindStop(ctx context.Context) error {
+	p.mu.Lock()
+	p.findQuery = ""
+	p.mu.Unlock()
+	_, err := p.evalBody(ctx, webkitClearSelectionScript)
+	return err
+}
+
+func (p *wkPage) find(ctx context.Context, query string, backwards bool) (findResult, error) {
+	opCtx, cancel := p.bind(ctx)
+	defer cancel()
+	found, err := wkFind(opCtx, p.view, query, backwards)
+	if err != nil || !found {
+		return findResult{}, err
+	}
+	return findResult{Found: true, Matches: -1}, nil
 }
 
 func (p *wkPage) Scroll(ctx context.Context, selector string, x, y float64) error {

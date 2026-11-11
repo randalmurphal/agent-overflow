@@ -3,7 +3,7 @@ import { vi, type Mock } from 'vitest';
 import type { PaneFindProvider } from '../../lib/stores/paneFind.svelte';
 
 export interface FakeFindProvider extends PaneFindProvider {
-  set(result: { count?: number; current?: number; pending?: boolean; capped?: boolean }): void;
+  set(result: { count?: number | null; current?: number; pending?: boolean; capped?: boolean }): void;
   readonly search: Mock<(query: string) => void>;
   readonly next: Mock<() => void>;
   readonly previous: Mock<() => void>;
@@ -11,7 +11,9 @@ export interface FakeFindProvider extends PaneFindProvider {
 }
 
 export function fakeFindProvider(noun = 'thread'): FakeFindProvider {
-  const state = $state({ count: 0, current: -1, pending: false, capped: false });
+  const state = $state<{ count: number | null; current: number; pending: boolean; capped: boolean }>({
+    count: 0, current: -1, pending: false, capped: false,
+  });
   return {
     noun,
     result: {

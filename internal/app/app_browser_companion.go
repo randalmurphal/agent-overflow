@@ -172,6 +172,38 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	return a.browser.manager.CompanionState(access), nil
 }
 
+// BrowserFindAction is one request of the browser pane's find: start (the
+// query; empty ends the find, or opens an engine's own find bar empty), next,
+// previous, or stop.
+type BrowserFindAction struct {
+	Kind   string `json:"kind"`
+	PageID string `json:"pageId"`
+	Query  string `json:"query,omitempty"`
+}
+
+// BrowserCompanionFind runs one find action on the page the thread's browser
+// pane shows, through the engine's own find-in-page. The answer is the
+// session it leaves; an end the backend decides on its own (navigation, a
+// tab switch, the page closing) arrives as a `find` companion event.
+//
+//ao:scope host
+//ao:route home
+func (a *App) BrowserCompanionFind(ctx context.Context, threadID string, action BrowserFindAction) (appbrowser.FindState, error) {
+	if a.browser.manager == nil {
+		return appbrowser.FindState{}, fmt.Errorf("browser manager unavailable")
+	}
+	access, err := a.browserAccess(threadID)
+	if err != nil {
+		return appbrowser.FindState{}, err
+	}
+	state, err := a.browser.manager.Find(ctx, access, action.PageID, action.Kind, action.Query)
+	// A find on a suspended page restores it.
+	if deletedErr := a.closeBrowserPagesIfThreadDeleted(access.ThreadID); deletedErr != nil {
+		return appbrowser.FindState{}, deletedErr
+	}
+	return state, err
+}
+
 // closeBrowserPagesIfThreadDeleted closes the pages of a thread deleted while
 // a companion action ran. A delete closes the thread's pages again
 // after its row drops or becomes a holder, so a row read after the open that

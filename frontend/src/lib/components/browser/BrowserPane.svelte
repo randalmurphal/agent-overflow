@@ -21,6 +21,11 @@
   import { getPaneLayoutItems } from '../../stores/paneLayout.svelte';
   import { getSidebarWidth, isSidebarCollapsed } from '../../stores/sidebarLayout.svelte';
   import { getAppliedTheme } from '../../theme/themeApply.svelte';
+  import { untrack } from 'svelte';
+  import PaneFindBar from '../panes/PaneFindBar.svelte';
+  import { companionForSource } from '../../stores/companionPanes.svelte';
+  import { closePaneFind, registerPaneFindProvider } from '../../stores/paneFind.svelte';
+  import { createBrowserFind } from '../../stores/browserFind.svelte';
 
   // The pane surface is an empty HOST RECT: the platform positions a real
   // native browser view over it (spec docs/specs/embedded-browser.md §7).
@@ -82,6 +87,33 @@
       attachment?.release();
       attachment = null;
     };
+  });
+
+  // Find in the page, through the engine's own find (stores/browserFind). It
+  // belongs to this companion's layout pane, and exists only while the shown
+  // page's engine has one: "bar" drives the shared bar, "engine" opens the
+  // engine's own find UI.
+  let browserPaneId = $derived(companionForSource(ctx.paneId, 'browser')?.paneId ?? null);
+  let findMode = $derived(view?.state.findMode ?? '');
+  $effect(() => {
+    const paneId = browserPaneId;
+    const threadId = ctx.threadId;
+    const mode = findMode;
+    if (!paneId || !threadId || (mode !== 'bar' && mode !== 'engine')) return;
+    return untrack(() => {
+      const find = createBrowserFind({
+        threadId,
+        mode,
+        pageId: () => activePageId,
+        onEnded: () => closePaneFind(paneId),
+        onError: (message) => noteBrowserActionError(threadId, message),
+      });
+      const release = registerPaneFindProvider(paneId, find);
+      return () => {
+        release();
+        find.dispose();
+      };
+    });
   });
 
   $effect(() => {
@@ -420,6 +452,10 @@
     ><Icon icon={SquareCode} size={13} /></button>
     <button class="rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg" aria-label="Close browser" title="Close browser" onclick={() => void act('hide', '')}><Icon icon={X} size={14} /></button>
   </div>
+
+  {#if browserPaneId}
+    <PaneFindBar paneId={browserPaneId} title={activePage?.title || 'Browser'} fallbackFocus={() => null} />
+  {/if}
 
   {#if view?.actionError}
     <div class="shrink-0 border-b border-error/25 bg-error/10 px-3 py-1.5 text-[0.7rem] text-error" role="alert">{view.actionError}</div>

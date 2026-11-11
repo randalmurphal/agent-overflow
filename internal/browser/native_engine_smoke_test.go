@@ -274,6 +274,110 @@ func TestNativeEngineRealEvaluateSemantics(t *testing.T) {
 	})
 }
 
+// TestNativeEngineRealFind drives the engine's find-in-page through the
+// Manager on a page with known text: the count where the engine reports one,
+// next and previous moving the selected match with wrap, a miss, and a stop
+// that leaves a later search starting over.
+func TestNativeEngineRealFind(t *testing.T) {
+	window := nativeSmokeWindow.Load()
+	if window == nil {
+		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
+	}
+	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{NativeWindow: window.NativeWindow})
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Errorf("close manager: %v", err)
+		}
+	})
+	workspace := resolvedTempDir(t)
+	access := Access{ThreadID: "native-smoke-find", Workspace: workspace}
+	t.Cleanup(func() {
+		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+			t.Errorf("close the thread's pages: %v", err)
+		}
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	page, err := manager.OpenFile(ctx, access, writeSmokeFile(t, workspace, "find.html",
+		`<!doctype html><title>find</title><p id="m0">alpha one</p><p id="m1">two ALPHA</p><p id="m2">alpha three</p><p>omega</p>`),
+		OpenOptions{})
+	if err != nil {
+		t.Fatalf("open the page: %v", err)
+	}
+	show := true
+	if _, err := manager.Visibility(ctx, access, &show, page.ID); err != nil {
+		t.Fatalf("show the page: %v", err)
+	}
+	find := func(kind, query string) FindState {
+		t.Helper()
+		state, err := manager.Find(ctx, access, page.ID, kind, query)
+		if err != nil {
+			t.Fatalf("find %s %q: %v", kind, query, err)
+		}
+		return state
+	}
+	// selected names the paragraph holding the page's selection: the engine
+	// selects the match it moves to.
+	selected := func() string {
+		t.Helper()
+		value, _, err := manager.Evaluate(ctx, access, page.ID, `(() => { const s = getSelection(); const n = s && s.rangeCount ? s.getRangeAt(0).startContainer : null; const e = n && (n.nodeType === 1 ? n : n.parentElement); return s && !s.isCollapsed && e ? e.id : ""; })()`, nil)
+		if err != nil {
+			t.Fatalf("read the selection: %v", err)
+		}
+		id, _ := value.(string)
+		return id
+	}
+	counted := runtime.GOOS == "linux"
+	position := func(state FindState, want int) {
+		t.Helper()
+		if !state.Active || !state.Found {
+			t.Fatalf("find state = %+v, want an active find that found its query", state)
+		}
+		if counted && (state.Matches != 3 || state.Current != want || state.Capped) {
+			t.Fatalf("find state = %+v, want match %d of 3", state, want)
+		}
+		if !counted && (state.Matches != -1 || state.Current != -1) {
+			t.Fatalf("find state = %+v, want no count from this engine", state)
+		}
+		if got := selected(); got != fmt.Sprintf("m%d", want) {
+			t.Fatalf("selected match is %q, want m%d (state %+v)", got, want, state)
+		}
+	}
+
+	position(find("start", "alpha"), 0)
+	position(find("next", ""), 1)
+	position(find("next", ""), 2)
+	position(find("next", ""), 0)
+	position(find("previous", ""), 2)
+	position(find("previous", ""), 1)
+
+	if miss := find("start", "absent-text"); !miss.Active || miss.Found || miss.Matches != 0 || miss.Current != -1 {
+		t.Fatalf("find for missing text = %+v", miss)
+	}
+	if stopped := find("stop", ""); stopped.Active {
+		t.Fatalf("stopped find = %+v", stopped)
+	}
+	if _, err := manager.Find(ctx, access, page.ID, "next", ""); err == nil {
+		t.Fatal("a step after stop reached the engine")
+	}
+	position(find("start", "ALPHA"), 0)
+	find("stop", "")
+
+	// Past the engine's most matches the count is a floor and the position
+	// unknown.
+	if _, _, err := manager.Evaluate(ctx, access, page.ID, `document.body.textContent = "beta ".repeat(1500); 1`, nil); err != nil {
+		t.Fatalf("fill the page: %v", err)
+	}
+	many := find("start", "beta")
+	if counted && (!many.Found || !many.Capped || many.Matches != 1000 || many.Current != 0) {
+		t.Fatalf("find past the most matches = %+v, want 1000 capped", many)
+	}
+	if !counted && (!many.Found || many.Matches != -1) {
+		t.Fatalf("find past the most matches = %+v", many)
+	}
+	find("stop", "")
+}
+
 // assertNativeEvalBridge holds the glue under every WebKit page operation to
 // its contract: a result crosses as JSON text, undefined as no result, and a
 // value with no JSON form fails rather than ending the app or reading as no

@@ -43,4 +43,9 @@ reference-count, UTF-16 ownership, and callback-lifetime handling. Close the
 host before its parent HWND and release controllers, handlers, relay,
 environment, and COM references in dependency order.
 
+Real WebView2 behavior is covered only by the `AO_NATIVE_BROWSER_SMOKE=1`
+Windows tests (`find_smoke_windows_test.go`), which need an installed
+runtime and open a window. From WSL, build them with `GOOS=windows go test -c`
+and run the binary with `WSLENV=AO_NATIVE_BROWSER_SMOKE`.
+
 See [embedded browser specification](../../docs/specs/embedded-browser.md).
