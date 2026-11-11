@@ -451,10 +451,6 @@ type App struct {
 	// Entries disappear when their last holder/waiter releases them.
 	sendAdmissionsOnce sync.Once
 	sendAdmissions     *keyedlock.Registry
-	// PR review submits serialize per client submit id
-	// (app_pr_review_submit.go).
-	reviewSubmitsOnce sync.Once
-	reviewSubmits     *keyedlock.Registry
 	// sessionConfigApplyLocks serializes the live-apply section of the
 	// per-thread config reconciler (app_session_config.go); see
 	// App.configApplyLocks for the lock-order rules.

@@ -474,7 +474,7 @@ func TestPRDiffReviewCommentsAreThePRsOwn(t *testing.T) {
 	if err != nil || updated.Body != "Second." {
 		t.Fatalf("update = %+v, %v", updated, err)
 	}
-	if err := app.store.MarkDiffReviewCommentsSent(store.PRReviewOwner(diffReviewSendPR.Key()), draft.Scope, draft.SourceKey, []string{draft.ID}, time.Now().UnixMilli(), ""); err != nil {
+	if err := app.MarkPRDiffReviewCommentsSent(diffReviewSendPR, draft.Scope, draft.SourceKey, []string{draft.ID}); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.DeletePRDiffReviewComment(diffReviewSendPR, draft.ID); err != nil {
@@ -744,14 +744,14 @@ func TestBootKeepsACommentPublishedAfterTheMessageThatClaimedIt(t *testing.T) {
 			if _, err := app.UpdatePRDiffReviewComment(diffReviewSendPR, draft.ID, store.DiffReviewCommentUpdate{Body: "Edited."}); err != nil {
 				t.Fatal(err)
 			}
-			if err := app.store.MarkDiffReviewCommentsSent(store.PRReviewOwner(diffReviewSendPR.Key()), draft.Scope, draft.SourceKey, []string{draft.ID}, time.Now().UnixMilli(), ""); err != nil {
+			if err := app.MarkPRDiffReviewCommentsSent(diffReviewSendPR, draft.Scope, draft.SourceKey, []string{draft.ID}); err != nil {
 				t.Fatal(err)
 			}
 		} else {
 			if _, err := app.UpdateDiffReviewComment(thread.ID, draft.ID, store.DiffReviewCommentUpdate{Body: "Edited."}); err != nil {
 				t.Fatal(err)
 			}
-			if err := app.store.MarkDiffReviewCommentsSent(store.ThreadReviewOwner(thread.ID), draft.Scope, draft.SourceKey, []string{draft.ID}, time.Now().UnixMilli(), thread.ID+":9"); err != nil {
+			if err := app.MarkDiffReviewCommentsSent(thread.ID, draft.Scope, draft.SourceKey, []string{draft.ID}, thread.ID+":9"); err != nil {
 				t.Fatal(err)
 			}
 		}

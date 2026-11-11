@@ -300,6 +300,8 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListUnsettledFlushes", ID: 3507874115, Scope: "threads:operate", Route: "all"},                                    // main.App.ListUnsettledFlushes
 	{Name: "ListWSLDistros", ID: 2332614075, Scope: "host", Route: "home"},                                                    // main.App.ListWSLDistros
 	{Name: "ListWorkspaceMcpServers", ID: 2808137798, Scope: "settings:write", Route: "selected"},                             // main.App.ListWorkspaceMcpServers
+	{Name: "MarkDiffReviewCommentsSent", ID: 1673567995, Scope: "threads:operate", Route: "thread"},                           // main.App.MarkDiffReviewCommentsSent
+	{Name: "MarkPRDiffReviewCommentsSent", ID: 3609806653, Scope: "git:operate", Route: "selected"},                           // main.App.MarkPRDiffReviewCommentsSent
 	{Name: "MarkPRReady", ID: 404041677, Scope: "git:operate", Route: "selected"},                                             // main.App.MarkPRReady
 	{Name: "MarkThreadRead", ID: 1480646012, Scope: "threads:operate", Route: "thread"},                                       // main.App.MarkThreadRead
 	{Name: "MarkThreadUnread", ID: 236597375, Scope: "threads:operate", Route: "thread"},                                      // main.App.MarkThreadUnread

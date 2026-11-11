@@ -27,7 +27,7 @@ import { ReviewDiffSource } from './reviewDiffStream';
 import { withBackendTarget } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
 import type { BranchCommit, GitBranch, WorkspaceRef } from '../types/git';
-import type { DiffReviewComment, DiffReviewScope } from '../types/models';
+import type { DiffReviewComment, DiffReviewScope, ReviewLineComment } from '../types/models';
 import { seedPayloadPatchSpans } from '../utils/diffSpanCache.svelte';
 import { mergePatchFilesByPath } from '../utils/patchFiles';
 import { anchorRow, displayRowCount } from '../utils/patchRows';
@@ -401,6 +401,22 @@ export async function seedEditPatchSpans(
     }
     await seedPayloadPatchSpans(threadId, spans);
   }
+}
+
+export function reviewLineCommentForDraft(comment: DiffReviewComment): ReviewLineComment | null {
+  if (comment.side === 'file') {
+    return { path: comment.filePath, body: comment.body, side: 'file' };
+  }
+  if (comment.side === 'old' && comment.oldLine) {
+    return { path: comment.filePath, body: comment.body, line: comment.oldLine, side: 'left' };
+  }
+  if (comment.side === 'new' && comment.newLine) {
+    return { path: comment.filePath, body: comment.body, line: comment.newLine, side: 'right' };
+  }
+  if (comment.side === 'context' && comment.newLine) {
+    return { path: comment.filePath, body: comment.body, line: comment.newLine, side: 'right' };
+  }
+  return null;
 }
 
 export function draftAnchorExists(files: readonly ReviewFile[], comment: DiffReviewComment): boolean {

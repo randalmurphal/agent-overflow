@@ -107,7 +107,7 @@ describe('<ReviewPane> pinned to a PR with no thread', () => {
 
   it('drafts a line comment and submits it as a PR review, with no agent target', async () => {
     const create = setBindingMock('CreateDiffReviewComment', async () => ({}));
-    const { submit } = installPRDraftsFake();
+    const submit = setBindingMock('SubmitPRReview', async () => ({ postedReview: true, postedFileComments: 0 }));
     const { view } = renderPinned();
     await waitFor(() => {
       expect(view.getAllByTestId('review-line-block').length).toBeGreaterThan(0);
@@ -128,7 +128,7 @@ describe('<ReviewPane> pinned to a PR with no thread', () => {
     await waitFor(() => {
       expect(submit).toHaveBeenCalledWith(
         { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 5 },
-        expect.objectContaining({ verdict: 'comment', drafts: expect.objectContaining({ scope: 'pr', commentIds: ['c1'] }) }),
+        expect.objectContaining({ verdict: 'comment', comments: [expect.objectContaining({ path: 'src/app.ts', body: 'Guard this.' })] }),
       );
       expect(view.queryByTestId('review-send-strip')).toBeNull();
     });

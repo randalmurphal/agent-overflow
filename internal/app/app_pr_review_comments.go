@@ -14,9 +14,9 @@ import (
 // review pane writes on a PR opened with no thread
 // (store.PRReviewOwner, keyed by the computer-neutral PRReference.Key).
 // They are pr scope, never a thread's, so a thread's transfer, fork and
-// deletion never see them. SubmitPRReview posts them and marks them sent
-// in one operation; SendPRDiffReviewComments hands them to a thread
-// instead.
+// deletion never see them. SubmitPRReview posts them, after which
+// MarkPRDiffReviewCommentsSent settles them; SendPRDiffReviewComments
+// hands them to a thread instead.
 
 // ListPRDiffReviewComments lists pr's drafts for one source.
 //
@@ -77,6 +77,22 @@ func (a *App) DeletePRDiffReviewComment(pr gitops.PRReference, commentID string)
 	}
 	if err := a.store.DeleteOrResolveDiffReviewComment(owner, commentID, time.Now().UnixMilli()); err != nil {
 		return fmt.Errorf("delete PR diff review comment: %w", err)
+	}
+	return nil
+}
+
+// MarkPRDiffReviewCommentsSent settles drafts a SubmitPRReview posted to
+// the forge; no turn carried them.
+//
+//ao:scope git:operate
+//ao:route selected
+func (a *App) MarkPRDiffReviewCommentsSent(pr gitops.PRReference, scope, sourceKey string, commentIDs []string) error {
+	owner, err := prReviewOwner(pr)
+	if err != nil {
+		return err
+	}
+	if err := a.store.MarkDiffReviewCommentsSent(owner, scope, sourceKey, commentIDs, time.Now().UnixMilli(), ""); err != nil {
+		return fmt.Errorf("mark PR diff review comments sent: %w", err)
 	}
 	return nil
 }

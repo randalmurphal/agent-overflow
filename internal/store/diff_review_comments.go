@@ -394,11 +394,21 @@ func (s *Store) MarkDiffReviewCommentsSent(owner DiffReviewOwner, scope, sourceK
 	if len(ids) > MaxDiffReviewCommentIDs {
 		return fmt.Errorf("store: too many diff review comments selected")
 	}
-	n, err := markDiffReviewDraftsSentTx(s.db, owner, scope, sourceKey, ids, sentAt, sentTurnID)
-	if err != nil {
-		return err
+	column, value := owner.column()
+	query := `UPDATE diff_review_comments
+	             SET status = 'sent', sent_at = ?, sent_turn_id = ?, updated_at = ?,
+	                 claim_thread_id = '', claim_item_id = '', claim_settles = ''
+	           WHERE ` + column + ` = ? AND scope = ? AND source_key = ? AND status = 'draft' AND id IN (` + placeholders(len(ids)) + `)`
+	args := make([]any, 0, 6+len(ids))
+	args = append(args, sentAt, sentTurnID, sentAt, value, scope, sourceKey)
+	for _, id := range ids {
+		args = append(args, id)
 	}
-	if int(n) != len(ids) {
+	res, err := s.db.Exec(query, args...)
+	if err != nil {
+		return fmt.Errorf("store: mark diff review comments sent for %s/%s: %w", owner, scope, err)
+	}
+	if n, err := res.RowsAffected(); err == nil && int(n) != len(ids) {
 		ok, checkErr := s.diffReviewCommentsAlreadySent(owner, scope, sourceKey, ids, sentTurnID)
 		if checkErr != nil {
 			return checkErr
@@ -409,31 +419,6 @@ func (s *Store) MarkDiffReviewCommentsSent(owner DiffReviewOwner, scope, sourceK
 		return fmt.Errorf("store: marked %d diff review comments sent for %s/%s, want %d draft comments", n, owner, scope, len(ids))
 	}
 	return nil
-}
-
-// markDiffReviewDraftsSentTx marks the owner's drafts ids sent in the turn
-// sentTurnID, clearing any claim, and answers how many it marked. Rows
-// that are not drafts stay as they are.
-func markDiffReviewDraftsSentTx(q sqlExecutor, owner DiffReviewOwner, scope, sourceKey string, ids []string, sentAt int64, sentTurnID string) (int64, error) {
-	encoded, err := json.Marshal(ids)
-	if err != nil {
-		return 0, fmt.Errorf("store: encode sent diff review comment ids: %w", err)
-	}
-	column, value := owner.column()
-	res, err := q.Exec(`UPDATE diff_review_comments
-	                       SET status = 'sent', sent_at = ?, sent_turn_id = ?, updated_at = ?,
-	                           claim_thread_id = '', claim_item_id = '', claim_settles = ''
-	                     WHERE `+column+` = ? AND scope = ? AND source_key = ? AND status = 'draft'
-	                       AND id IN (SELECT value FROM json_each(?))`,
-		sentAt, sentTurnID, sentAt, value, scope, sourceKey, string(encoded))
-	if err != nil {
-		return 0, fmt.Errorf("store: mark diff review comments sent for %s/%s: %w", owner, scope, err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("store: count diff review comments marked sent for %s/%s: %w", owner, scope, err)
-	}
-	return n, nil
 }
 
 // DiffReviewCommentSnapshot is a draft as a send read it: its id and the

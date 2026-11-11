@@ -9,6 +9,7 @@ import {
   createPRDiffReviewComment,
   deletePRDiffReviewComment,
   getPRDiffReviewComments,
+  markPRDiffReviewCommentsSent,
   prDraftsKey,
   refreshPRDiffReviewComments,
   resetPRDiffReviewCommentsForTest,
@@ -28,6 +29,7 @@ import {
   MarkPRReady,
   MergePR,
   ListPRReviewThreads,
+  MarkDiffReviewCommentsSent,
   ReplyToPRThread,
   SetPRThreadResolved,
   SendDiffReviewComments,
@@ -87,6 +89,7 @@ import {
   editSelectionFromKey,
   editSelectionKey,
   loadPatch,
+  reviewLineCommentForDraft,
   seedEditPatchSpans,
   supportsIgnoreWhitespace,
   type EditDiffEntryView,
@@ -117,7 +120,6 @@ import type {
 } from '../types/models';
 import { PaintedSpans, type PatchScopeContext } from '../utils/diffSpanCache.svelte';
 import { conflictPatchFile } from '../utils/conflictFile';
-import { randomId } from '../utils/randomId';
 import { hunkExcerptForComment } from '../utils/prHunkExcerpt';
 import {
   prKey,
@@ -818,9 +820,6 @@ export function createReviewPaneState(
   const contextExpansions = new Map<string, ContextExpansionState>();
   let contextExpansionVersion = $state(0);
   let sendingComments = $state(false);
-  // The submit id this pane holds for its draft set until the backend
-  // answers (SubmitPRReview): key is the verdict, summary and draft ids.
-  let pendingSubmit: { id: string; key: string } | null = null;
   let openEditors: CommentAnchor[] = $state([]);
   // Draft-editor text lives HERE, not in the row component: editor rows
   // are virtualized, so scrolling one out of the render window unmounts
@@ -2087,43 +2086,35 @@ export function createReviewPaneState(
     }
     sendingComments = true;
     submitError = null;
-    const submitScope = scope;
-    const submitSource = sourceKey;
-    const ids = submitDrafts.map((comment) => comment.id);
-    const body = summaryBody.trim();
-    // One id per draft set and verdict until an answer arrives: a retry
-    // after a lost answer is the same submit, which the backend answers
-    // from its record instead of posting again.
-    const setKey = JSON.stringify([verdict, body, [...ids].sort()]);
-    if (pendingSubmit?.key !== setKey) pendingSubmit = { id: randomId(), key: setKey };
-    const submitId = pendingSubmit.id;
     try {
       const result = (await withBackendTarget(backend, () => SubmitPRReview(prReferenceWire(prRef), {
-        submitId,
         verdict,
-        body,
-        drafts: {
-          threadId: pinnedDrafts !== null ? undefined : commentThreadId(),
-          scope: submitScope,
-          sourceKey: submitSource,
-          commentIds: ids,
-          headSha: loadedPRHeadSHA,
-        },
+        body: summaryBody.trim(),
+        comments: submitDrafts.map(reviewLineCommentForDraft).filter((comment) => comment !== null),
       }))) as SubmitPRReviewResult;
-      if (pendingSubmit?.id === submitId) pendingSubmit = null;
+      let sent = submitDrafts;
       if (result.partialFailurePath) {
-        // The review (with every line comment) posted; a file-level
-        // comment after it did not, and stays a draft.
+        // The review (with every line comment) posted; file-level comments
+        // post one-by-one after it and stop at the first failure, so only
+        // the first postedFileComments of them made it up.
+        const fileLevel = submitDrafts.filter((comment) => comment.side === 'file');
+        const unposted = new Set(fileLevel.slice(result.postedFileComments).map((comment) => comment.id));
+        sent = submitDrafts.filter((comment) => !unposted.has(comment.id));
         submitError = `The review posted, but its comment on ${result.partialFailurePath} did not. ${result.partialFailure ?? 'Unknown error.'}`;
       } else if (result.partialFailure) {
         // Everything posted; a follow-up step (GitLab approve) failed.
         submitError = `The review posted, but a step after it did not. ${result.partialFailure}`;
       }
-      // The submit marked the posted drafts sent; read them back.
-      if (pinnedDrafts !== null) await refreshPRDiffReviewComments(pinnedDrafts, submitScope, submitSource);
-      else await refreshDiffReviewComments(commentThreadId(), submitScope, submitSource);
-      const stillDrafts = new Set(drafts.map((comment) => comment.id));
-      forgetDraftEdits(submitDrafts.filter((comment) => !stillDrafts.has(comment.id)));
+      forgetDraftEdits(sent);
+      if (pinnedDrafts !== null) {
+        // Posted drafts are the forge's comments now; the rest stay.
+        if (sent.length > 0) await markPRDiffReviewCommentsSent(pinnedDrafts, scope, sourceKey, sent.map((comment) => comment.id));
+      } else {
+        if (sent.length > 0) {
+          await MarkDiffReviewCommentsSent(commentThreadId(), scope, sourceKey, sent.map((comment) => comment.id), `pr:${loadedPRHeadSHA}`);
+        }
+        await refreshDiffReviewComments(commentThreadId(), scope, sourceKey);
+      }
       // Through the store: the posted review is now part of the PR, so
       // every pane looking at it shows the new threads.
       applyPRThreads(computerPRKey(prRef), ((await withBackendTarget(backend, () => ListPRReviewThreads(prReferenceWire(prRef)))) ?? []) as ReviewThread[]);
