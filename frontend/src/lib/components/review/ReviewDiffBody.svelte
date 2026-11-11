@@ -20,9 +20,10 @@
     type ReadingAnchor,
   } from '../../utils/reviewAnchor';
   import { REVIEW_JUMP_PULSE_MS } from '../../utils/reviewJumpPulse';
-  import type { ReviewFindHit } from '../../utils/reviewFindScan';
+  import { findLineKeyIndex, findLineKeyPath, type ReviewFindHit } from '../../utils/reviewFindScan';
   import { findHitRow, findRowPosition } from '../../utils/reviewFindRows';
   import { reviewDiffKeydown, topRowIndex, type ReviewDiffKeysHost } from './reviewDiffKeys';
+  import { elementAtEdge } from '../../utils/findReadingEdge';
   import {
     BlockRowsCache,
     buildReviewRows,
@@ -394,10 +395,22 @@
   };
   const handleKeydown = reviewDiffKeydown(keysHost);
 
-  /** Find: the (file, line) at the viewport top, in find-hit order. */
+  /** Find: the (file, line) at the reading edge (the viewport top, below
+   * the sticky file bar), in find-hit order. Inside a block of lines, the
+   * line laid out across the edge (lines wrap); its block's first line
+   * when none is (a gap or fold row). */
   export function findReadingPosition(): { fileIndex: number; line: number } | null {
-    const top = topRowIndex(keysHost);
-    return top >= 0 ? findRowPosition(built, top) : null;
+    const el = scrollEl;
+    const list = listRef;
+    if (!el || !list || built.rows.length === 0) return null;
+    const inset = stickyFile ? REVIEW_FILE_HEADER_BAR_PX : 0;
+    const at = list.findItemIndex(el.scrollTop + inset);
+    const position = findRowPosition(built, at);
+    if (!position || built.rows[at]?.kind !== 'line-block') return position;
+    const path = files[position.fileIndex]?.path;
+    const lines = [...el.querySelectorAll<HTMLElement>('[data-find-key^="l:"]')].filter((line) => findLineKeyPath(line.dataset.findKey!) === path);
+    const line = findLineKeyIndex(elementAtEdge(lines, el.getBoundingClientRect().top + inset)?.dataset.findKey ?? '');
+    return line !== null && line >= position.line ? { fileIndex: position.fileIndex, line } : position;
   }
 
   /** Find: scrolls the row showing `hit` so its line sits a third down

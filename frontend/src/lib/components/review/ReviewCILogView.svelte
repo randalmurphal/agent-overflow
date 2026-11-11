@@ -24,6 +24,8 @@
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
   import type { RowEstimate } from '../../utils/virtual/types';
   import { rateLimitMessage, type ForgeFailure } from '../../utils/forgeFailure';
+  import { findCILogKey } from '../../utils/ciLogFind';
+  import { textLineAtEdge } from '../../utils/findReadingEdge';
 
   // CI job log view: replaces the diff body (same pattern as the
   // conflict viewer). The log shows as one collapsible row per GitHub
@@ -232,11 +234,16 @@
     onSetSectionsOpen(expandable.map((section) => section.key), open);
   }
 
-  /** Find: the first log line at the viewport top; 0 with no rows. */
+  /** Find: the log line at the viewport top, read from the laid-out row
+   * where it is mounted (lines wrap); 0 with no rows. */
   export function findReadingLine(): number {
-    const row = listRef && rows.length > 0 ? rows[listRef.findItemIndex(scrollEl?.scrollTop ?? 0)] : undefined;
+    const el = scrollEl;
+    const row = listRef && el && rows.length > 0 ? rows[listRef.findItemIndex(el.scrollTop)] : undefined;
     if (!row) return 0;
-    return row.kind === 'lines' ? row.from : row.section.start;
+    if (row.kind !== 'lines') return row.section.start;
+    const text = el!.querySelector<HTMLElement>(`[data-find-key="${findCILogKey(row.from)}"]`);
+    const within = text ? textLineAtEdge(text, el!.getBoundingClientRect().top) : null;
+    return within === null ? row.from : Math.min(row.to - 1, row.from + within);
   }
 
   /** Find: opens the line's section and scrolls the line a third down the

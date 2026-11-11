@@ -48,27 +48,27 @@ afterEach(() => {
   }
 });
 
-function readFiles(): ReviewFile[] {
-  const files = parseReviewFiles(patch);
+function readFiles(source = patch): ReviewFile[] {
+  const files = parseReviewFiles(source);
   mounted.at(-1)?.files.push(files);
   return files;
 }
 
-async function mountBody() {
+async function mountBody(source = patch, wordWrap = false) {
   const host = document.createElement('div');
   host.style.cssText = `position:fixed;top:0;left:0;width:900px;height:${VIEWPORT_PX}px;display:flex`;
   document.body.appendChild(host);
   const entry = { app: {} as object, host, files: [] as ReviewFile[][] };
   mounted.push(entry);
   const topFiles: number[] = [];
-  const files = readFiles();
+  const files = readFiles(source);
   const props = rawProps({
     subjectId: 'subject',
     spanOwner: 'thread-1',
     scope: 'workspace',
     files,
     viewMode: 'stacked' as 'stacked' | 'split',
-    wordWrap: false,
+    wordWrap,
     collapsedPaths: new Set<string>() as ReadonlySet<string>,
     onToggleCollapsed: () => {},
     jumpToFilePath: null as string | null,
@@ -208,5 +208,41 @@ describe('a review diff past the held limit', () => {
     const view = scrollEl.getBoundingClientRect();
     expect(Math.abs(target!.getBoundingClientRect().top - view.top - Math.round(view.height / 3))).toBeLessThanOrEqual(18);
     expect(body.findReadingPosition()?.fileIndex).toBe(650);
+  });
+});
+
+describe('review find reading position', () => {
+  // The line under the reading edge (below the sticky file bar), by
+  // hit-testing the laid-out page.
+  function keyAcross(scrollEl: HTMLElement): number {
+    const view = scrollEl.getBoundingClientRect();
+    const hit = document.elementFromPoint(view.left + 300, view.top + REVIEW_FILE_HEADER_BAR_PX + 1);
+    const key = hit?.closest<HTMLElement>('[data-find-key^="l:"]')?.dataset.findKey;
+    if (!key) throw new Error('no line at the reading edge');
+    return Number(key.split(':')[1]);
+  }
+
+  it.each([false, true])('is the line at the reading edge inside a block (wrap %s)', async (wrap) => {
+    const out: string[] = [];
+    for (let file = 0; file < 3; file += 1) {
+      const path = `src/w${file}.ts`;
+      out.push(`diff --git a/${path} b/${path}`, 'new file mode 100644', '--- /dev/null', `+++ b/${path}`, '@@ -0,0 +1,300 @@');
+      // Every fifth line wraps over several rows when wrap is on.
+      for (let line = 1; line <= 300; line += 1) out.push(`+w${file}:${line}${line % 5 === 2 ? ` ${'wrapping words '.repeat(30)}` : ''}`);
+    }
+    const { props, scrollEl, body } = await mountBody(out.join('\n') + '\n', wrap);
+    props.jumpToFilePath = 'src/w1.ts';
+    await settle(scrollEl);
+    const starts = new Set<number>();
+    for (const by of [413, 777, 1290]) {
+      scrollEl.scrollTop += by;
+      await settle(scrollEl);
+      const expected = keyAcross(scrollEl);
+      const position = body.findReadingPosition();
+      expect(position?.fileIndex).toBe(1);
+      expect(position?.line, `scrolled ${by}`).toBe(expected);
+      starts.add(expected);
+    }
+    expect(starts.size).toBe(3);
   });
 });

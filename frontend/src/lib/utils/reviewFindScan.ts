@@ -35,6 +35,19 @@ export function findLineKey(path: string, lineIndex: number): string {
   return `l:${lineIndex}:${path}`;
 }
 
+const LINE_KEY = /^l:(\d+):(.*)$/s;
+
+/** The line index a `findLineKey` names; null for another key. */
+export function findLineKeyIndex(key: string): number | null {
+  const match = LINE_KEY.exec(key);
+  return match ? Number(match[1]) : null;
+}
+
+/** The path a `findLineKey` names; null for another key. */
+export function findLineKeyPath(key: string): string | null {
+  return LINE_KEY.exec(key)?.[2] ?? null;
+}
+
 /** `data-find-key` of a draft comment's body. */
 export function findDraftKey(commentId: string): string {
   return `dc:${commentId}`;
