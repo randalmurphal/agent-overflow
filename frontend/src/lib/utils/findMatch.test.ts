@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import vectors from '../../test/fixtures/findVectors.json';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { countFindMatches, findNeedle, foldFindText, forEachFindMatch, textsMatchNeedle } from './findMatch';
+import { FIND_FOLD_RANGES, FIND_FOLD_UNICODE_VERSION } from './findFoldTable';
 
 // The Go side (internal/stringsx, internal/cilog, internal/store) reads the
 // same vectors.
@@ -41,5 +44,29 @@ describe('find matching', () => {
     expect(textsMatchNeedle(findNeedle('ÉCOLE'), ['une école'])).toBe(true);
     expect(textsMatchNeedle(findNeedle('strasse'), ['Straße'])).toBe(false);
     expect(textsMatchNeedle('', [])).toBe(true);
+  });
+
+  it('reads the table the Go side reads', () => {
+    // Tests run from frontend/.
+    const go = readFileSync(resolve(process.cwd(), '../internal/stringsx/findfold_table.go'), 'utf8');
+    expect(go).toContain(`const FindFoldUnicodeVersion = "${FIND_FOLD_UNICODE_VERSION}"`);
+    const ranges = [...go.matchAll(/^\t\{(0x[0-9A-F]+), (0x[0-9A-F]+), (-?\d+), (\d+)\},$/gm)].flatMap((m) => m.slice(1).map(Number));
+    expect(ranges.length).toBeGreaterThan(100);
+    expect(Array.from(FIND_FOLD_RANGES)).toEqual(ranges);
+  });
+
+  it('folds by the table, not the engine: U+1C89 (Unicode 16) lowers to U+1C8A', () => {
+    expect(foldFindText('\u1C89')).toBe('\u1C8A');
+    // An engine's case tables follow its ICU (WebKitGTK's is Unicode 15.1).
+    const lower = vi.spyOn(String.prototype, 'toLowerCase');
+    const locale = vi.spyOn(String.prototype, 'toLocaleLowerCase');
+    try {
+      for (const [text, folded] of vectors.fold as [string, string][]) expect(foldFindText(text)).toBe(folded);
+      expect(lower).not.toHaveBeenCalled();
+      expect(locale).not.toHaveBeenCalled();
+    } finally {
+      lower.mockRestore();
+      locale.mockRestore();
+    }
   });
 });

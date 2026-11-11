@@ -12,6 +12,7 @@
     ["𐐀𐐁", "𐐨𐐩"],
     ["𞤀", "𞤢"],
     ["É", "é"],
+    ["\u1C89\u1C8A", "\u1C8A\u1C8A"],
     ["a😀B", "a😀b"],
     ["[@`{]", "[@`{]"]
   ],
@@ -28,6 +29,7 @@
     { "text": "Kelvin KELVIN", "query": "kelvin", "count": 2 },
     { "text": "𐐀𐐁 𐐨𐐩", "query": "𐐨𐐩", "count": 2 },
     { "text": "Café café", "query": "CAFÉ", "count": 1 },
+    { "text": "\u1C89 \u1C8A", "query": "\u1C8A", "count": 2 },
     { "text": "😀😀😀", "query": "😀", "count": 3 },
     { "text": "50% done_", "query": "% DONE_", "count": 1 },
     { "text": "abc", "query": "   ", "count": 0 }
