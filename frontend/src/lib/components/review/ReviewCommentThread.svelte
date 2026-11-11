@@ -6,6 +6,7 @@
   import type { DiffReviewComment } from '../../types/models';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { jumpPulse } from '../../utils/reviewJumpPulse';
+  import { findDraftKey } from '../../utils/reviewFindScan';
 
   // The reader's own draft comment on the diff surface: the same card
   // shape as a PR thread, with an accent edge in place of a state edge
@@ -137,7 +138,7 @@
           </button>
         </div>
       {:else}
-        <p class="whitespace-pre-wrap leading-relaxed text-fg">{comment.body}</p>
+        <p class="whitespace-pre-wrap leading-relaxed text-fg" data-find-key={findDraftKey(comment.id)}>{comment.body}</p>
       {/if}
     </div>
   </div>

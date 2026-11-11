@@ -41,8 +41,11 @@ it asked, updates in place on a content change without moving the view,
 and withdraws any jump it requested when its query changes or it closes.
 Find acts on the focused pane, or under compact on the pane on screen, and
 on no overlay above it; the store drops a pane's state and reads when the
-pane leaves the layout. Review, terminal, browser, discussion and tool
-panes have no provider yet, so mod+f falls through there.
+pane leaves the layout. Review panes use `review/ReviewPaneFind.svelte`
+over `stores/reviewFind.svelte.ts`, keyed by `ReviewPane`'s `findKey`; a
+review hosted without a key (the pinned review in `tool-pulls`) registers
+nothing. Terminal, browser, discussion and tool panes have no provider
+yet, so mod+f falls through there.
 
 Timeline scroll ownership belongs to
 [`components/chat/`](../chat/AGENTS.md). Generic virtualization belongs to

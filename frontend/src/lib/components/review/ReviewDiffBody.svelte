@@ -20,6 +20,9 @@
     type ReadingAnchor,
   } from '../../utils/reviewAnchor';
   import { REVIEW_JUMP_PULSE_MS } from '../../utils/reviewJumpPulse';
+  import type { ReviewFindHit } from '../../utils/reviewFindScan';
+  import { findHitRow, findRowPosition } from '../../utils/reviewFindRows';
+  import { reviewDiffKeydown, topRowIndex, type ReviewDiffKeysHost } from './reviewDiffKeys';
   import {
     BlockRowsCache,
     buildReviewRows,
@@ -383,75 +386,35 @@
     if (headerRow >= 0) listRef?.scrollToIndex(headerRow);
   }
 
-  function currentTopRowIndex(): number {
+  const keysHost: ReviewDiffKeysHost = {
+    built: () => built,
+    files: () => files,
+    list: () => listRef,
+    scrollTop: () => scrollEl?.scrollTop ?? 0,
+    onAddComment: () => onAddComment,
+  };
+  const handleKeydown = reviewDiffKeydown(keysHost);
+
+  /** Find: the (file, line) at the viewport top, in find-hit order. */
+  export function findReadingPosition(): { fileIndex: number; line: number } | null {
+    const top = topRowIndex(keysHost);
+    return top >= 0 ? findRowPosition(built, top) : null;
+  }
+
+  /** Find: scrolls the row showing `hit` so its line sits a third down
+   * the viewport. False when the row model does not show it. */
+  export function revealFindHit(hit: ReviewFindHit): boolean {
     const ref = listRef;
-    if (!ref || built.rows.length === 0) return -1;
-    return ref.findItemIndex(scrollEl?.scrollTop ?? 0);
+    const target = ref ? findHitRow(built, files, hit) : null;
+    if (!ref || !target) return false;
+    ref.scrollToIndex(target.index, { offset: target.within - Math.round(ref.getViewportSize() / 3) });
+    return true;
   }
 
-  function currentTopFileIndex(): number {
-    const topRow = currentTopRowIndex();
-    return topRow >= 0 ? (built.fileOfRow[topRow] ?? -1) : -1;
-  }
-
-  function jumpFile(delta: 1 | -1): void {
-    const fileIndex = currentTopFileIndex();
-    if (fileIndex < 0) return;
-    const targetFile = fileIndex + delta;
-    const targetRow = built.firstRowOfFile[targetFile] ?? -1;
-    if (targetRow >= 0) listRef?.scrollToIndex(targetRow);
-  }
-
-  function jumpComment(delta: 1 | -1): void {
-    const topRow = currentTopRowIndex();
-    if (topRow < 0) return;
-    for (let index = topRow + delta; index >= 0 && index < built.rows.length; index += delta) {
-      const row = built.rows[index];
-      if (row?.kind === 'draft-editor' || row?.kind === 'comment-thread' || row?.kind === 'pr-thread') {
-        listRef?.scrollToIndex(index, { offset: -REVIEW_FILE_HEADER_BAR_PX });
-        return;
-      }
-    }
-  }
-
-  function openFileLevelComment(): void {
-    if (!onAddComment) return;
-    const fileIndex = currentTopFileIndex();
-    const file = fileIndex >= 0 ? files[fileIndex] : null;
-    if (!file) return;
-    onAddComment({ filePath: file.path, side: 'file', selectedText: '' });
-  }
-
-  function isInputTarget(target: EventTarget | null): boolean {
-    if (!(target instanceof HTMLElement)) return false;
-    const tag = target.tagName.toLowerCase();
-    return tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable;
-  }
-
-  function handleKeydown(event: KeyboardEvent): void {
-    if (isInputTarget(event.target) || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-    switch (event.key) {
-      case 'j':
-        event.preventDefault();
-        jumpFile(1);
-        break;
-      case 'k':
-        event.preventDefault();
-        jumpFile(-1);
-        break;
-      case 'n':
-        event.preventDefault();
-        jumpComment(1);
-        break;
-      case 'p':
-        event.preventDefault();
-        jumpComment(-1);
-        break;
-      case 'c':
-        event.preventDefault();
-        openFileLevelComment();
-        break;
-    }
+  /** Find: moves the view by `delta` pixels through the scroll owner. */
+  export function scrollFindBy(delta: number): void {
+    const el = scrollEl;
+    if (el && delta !== 0) scroll.applyScrollTarget(Math.max(0, el.scrollTop + delta));
   }
 
   // Per-file gutter width (ch) from the file's max line number — a

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, untrack } from 'svelte';
+  import { onDestroy, tick, untrack } from 'svelte';
   import Check from '@lucide/svelte/icons/check';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
@@ -237,6 +237,37 @@
   function setAllOpen(open: boolean): void {
     takeOver();
     onSetSectionsOpen(expandable.map((section) => section.key), open);
+  }
+
+  /** Find: the first log line at the viewport top; 0 with no rows. */
+  export function findReadingLine(): number {
+    const row = listRef && rows.length > 0 ? rows[listRef.findItemIndex(scrollEl?.scrollTop ?? 0)] : undefined;
+    if (!row) return 0;
+    return row.kind === 'lines' ? row.from : row.section.start;
+  }
+
+  /** Find: opens the line's section and scrolls the line a third down the
+   * view, ending bottom-follow like any reading act. */
+  export async function revealFindLine(line: number, sectionKey: string): Promise<void> {
+    takeOver();
+    const section = sections.find((s) => s.key === sectionKey);
+    if (section && !isOpen(section)) {
+      onSetSectionsOpen([sectionKey], true);
+      await tick();
+    }
+    const index = rows.findIndex((row) => row.kind === 'lines' && row.from <= line && line < row.to);
+    const ref = listRef;
+    if (index < 0 || !ref) return;
+    const row = rows[index] as Extract<LogRow, { kind: 'lines' }>;
+    ref.scrollToIndex(index, { offset: (line - row.from) * LINE_ESTIMATE_PX - Math.round(ref.getViewportSize() / 3) });
+  }
+
+  /** Find: moves the view by `delta` pixels through the scroll owner. */
+  export function scrollFindBy(delta: number): void {
+    const el = scrollEl;
+    if (!el || delta === 0) return;
+    takeOver();
+    stick.applyScrollTarget(Math.max(0, el.scrollTop + delta));
   }
 
   let copiedKey: string | null = $state(null);

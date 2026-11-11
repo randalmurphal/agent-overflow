@@ -4,6 +4,7 @@
   import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
   import { relativeTime } from '../../utils/format';
   import { visibleBody } from '../../utils/reviewComments';
+  import { findThreadCommentKey } from '../../utils/reviewFindScan';
   import { authorDisplayName, isBotLogin } from '../../utils/reviewIdentity';
   import type { ReviewThread } from '../../types/models';
 
@@ -25,9 +26,11 @@
     skipFirst?: boolean;
     /** Avatar diameter for the comment rows. */
     avatarSize?: number;
+    /** Mark each body for the diff's find (utils/reviewFindScan.ts). */
+    findKeys?: boolean;
   }
 
-  let { thread, skipFirst = false, avatarSize = 22 }: Props = $props();
+  let { thread, skipFirst = false, avatarSize = 22, findKeys = false }: Props = $props();
 
   function commentTime(createdAt: string): string {
     const ms = Date.parse(createdAt);
@@ -35,7 +38,7 @@
   }
 </script>
 
-{#each skipFirst ? thread.comments.slice(1) : thread.comments as comment (`${comment.databaseID}:${comment.createdAt}`)}
+{#each skipFirst ? thread.comments.slice(1) : thread.comments as comment, index (`${comment.databaseID}:${comment.createdAt}`)}
   {@const shown = visibleBody(comment.body)}
   {#if shown !== ''}
     <div
@@ -54,7 +57,7 @@
         {/if}
         <span class="shrink-0 text-fg-subtle">· {commentTime(comment.createdAt)}</span>
       </div>
-      <div class="col-start-2 mt-1">
+      <div class="col-start-2 mt-1" data-find-key={findKeys ? findThreadCommentKey(thread.id, index + (skipFirst ? 1 : 0)) : undefined}>
         <ChatMarkdown source={shown} pathRefs={EMPTY_PATH_REFS} embeddedHtml class="review-prose" />
       </div>
     </div>

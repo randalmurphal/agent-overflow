@@ -1,6 +1,7 @@
 <script lang="ts">
   import AnsiText from '../chat/AnsiText.svelte';
   import { CI_LOG_BLOCK_LINES, type CILogBlockCache } from '../../stores/ciLogBlocks.svelte';
+  import { findCILogKey } from '../../utils/ciLogFind';
 
   // One row of log lines in the CI log view: lines [from, to) of the log,
   // all inside one block of the cache. Mounting holds the block, which
@@ -43,7 +44,9 @@
 </script>
 
 {#if shown && shown.length > 0}
-  <AnsiText source={shown.join('\n')} class="whitespace-pre-wrap break-all px-3 font-mono text-xs leading-[18px] text-text-secondary" />
+  <div data-find-key={findCILogKey(from)}>
+    <AnsiText source={shown.join('\n')} class="whitespace-pre-wrap break-all px-3 font-mono text-xs leading-[18px] text-text-secondary" />
+  </div>
 {/if}
 {#if missing > 0}
   {#if block?.error && !block.loading}

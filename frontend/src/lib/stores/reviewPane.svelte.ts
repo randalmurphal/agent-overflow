@@ -105,6 +105,7 @@ import type { BranchCommit, WorkspaceRef } from '../types/git';
 import type {
   CIJob,
   CILogLines,
+  CILogSearch,
   CILogSection,
   CIPipeline,
   DiffReviewComment,
@@ -286,6 +287,9 @@ export interface ReviewPaneState {
   readonly conflictContentByPath: SvelteMap<string, string>;
   readonly conflictCollapsedPaths: SvelteSet<string>;
   readonly conflictFiles: ReviewFile[];
+  /** The hidden lines of each collapsed fold of a conflict file, by fold
+   * id, as `conflictFiles` renders it now; null with no content. */
+  conflictFoldLines(path: string): ReadonlyMap<number, readonly string[]> | null;
   /** The colors the diff surface and the conflict surface last painted,
    * served to their lines while exact spans are in flight. */
   readonly paintedSpans: PaintedSpans;
@@ -459,6 +463,8 @@ export interface ReviewPaneState {
   setCILogSectionsOpen(sectionKeys: readonly string[], open: boolean): void;
   /** Reads a window of the open job's cached log, for its view. */
   readCILogLines(from: number, count: number): Promise<CILogLines>;
+  /** Finds `query` in the open job's cached log, for the pane's find. */
+  searchCILog(query: string, limit: number): Promise<CILogSearch>;
   /** Copies one section of the open log: its text up to
    * CI_SECTION_INLINE_MAX_BYTES, otherwise a file it is saved to, whose
    * path is copied. Resolves true when something was copied. */
@@ -1056,6 +1062,20 @@ export function createReviewPaneState(
       return reviewFileFromPatchFile({ path, kind: 'conflict', additions: 0, deletions: 0, lines: [] });
     });
   });
+  function conflictFoldLines(path: string): ReadonlyMap<number, readonly string[]> | null {
+    const conflicts = conflictsState.state;
+    const content = conflictsState.contentByPath.get(path);
+    if (!conflicts || content === undefined) return null;
+    const folds = new Map<number, readonly string[]>();
+    conflictPatchFile(path, content, {
+      baseLabel: conflicts.baseLabel,
+      headLabel: conflicts.headLabel,
+      notes: conflicts.notes[path],
+      expandedFolds: conflictExpandedFolds.get(path),
+      onFold: (id, lines) => folds.set(id, lines),
+    });
+    return folds;
+  }
   // The colors each surface last painted (see PaintedSpans), retained
   // for exactly the files that surface shows. Lines keep them while
   // their file's exact spans are in flight after an expansion, a reload
@@ -2662,6 +2682,7 @@ export function createReviewPaneState(
     get conflictContentByPath() { return conflictsState.contentByPath; },
     get conflictCollapsedPaths() { return conflictCollapsedPaths; },
     get conflictFiles() { return conflictFiles; },
+    conflictFoldLines,
     paintedSpans,
     conflictPaintedSpans,
     get ciPipeline() { return ci.pipeline; },
@@ -2801,6 +2822,7 @@ export function createReviewPaneState(
     toggleCILogSection: (sectionKey: string) => ci.toggleSection(sectionKey),
     setCILogSectionsOpen: (sectionKeys: readonly string[], open: boolean) => ci.setSectionsOpen(sectionKeys, open),
     readCILogLines: (from: number, count: number) => ci.readLines(from, count),
+    searchCILog: (query: string, limit: number) => ci.searchLog(query, limit),
     copyCILogSection: (section: CILogSection) => ci.copySection(section),
     sendCILogSectionToChat,
     expandDiffContext,

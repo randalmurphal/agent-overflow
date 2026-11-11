@@ -111,6 +111,10 @@ PR stores; components own presentation and interaction.
   through `whenResident`; see
   [review diff streaming](../../../../../docs/architecture/review-diff-streaming.md).
   Do not mount hidden diff bodies.
+- Find paints only text inside a `data-find-key` element, keyed as
+  `utils/reviewFindScan.ts` and `utils/ciLogFind.ts` key their hits. A row
+  that renders searched text carries the matching key; text the scanner
+  skips (the +/- gutter) carries `data-find-skip`.
 - Wrap the review surface in `shared/RenderBoundary.svelte`.
 
 Review mutations reconcile from authoritative responses and show partial or

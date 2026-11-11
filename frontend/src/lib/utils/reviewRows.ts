@@ -96,7 +96,9 @@ export interface ReviewRowsResult {
   firstRowOfFile: number[];
 }
 
-type InsertRow =
+/** A row inserted after a line of a file: a comment, a PR thread or a
+ * draft editor. */
+export type InsertRow =
   | { kind: 'comment-thread'; threadKey: string; anchor: CommentAnchor }
   | { kind: 'draft-editor'; anchor: CommentAnchor }
   | { kind: 'pr-thread'; thread: ReviewThread; anchor: CommentAnchor; collapsed: boolean; orphaned: boolean };
@@ -106,7 +108,7 @@ export function buildReviewRows(input: ReviewRowsInput): ReviewRowsResult {
   const rowKeys: string[] = [];
   const fileOfRow: number[] = [];
   const firstRowOfFile: number[] = Array.from({ length: input.files.length }, () => -1);
-  const insertsByFile = buildInsertsByFile(
+  const insertsByFile = reviewInsertsByFile(
     input.files,
     input.drafts,
     input.openEditors,
@@ -179,7 +181,12 @@ export function reviewRowEstimate(result: ReviewRowsResult, wordWrap: boolean): 
   };
 }
 
-function buildInsertsByFile(
+/**
+ * The inserted rows of each file by the anchor line they follow (0: under
+ * the file header), each bucket in row order. The row model consumes the
+ * buckets as it walks a file's rows; so does the find scan.
+ */
+export function reviewInsertsByFile(
   files: readonly ReviewFile[],
   drafts: readonly DiffReviewComment[],
   openEditors: readonly CommentAnchor[],

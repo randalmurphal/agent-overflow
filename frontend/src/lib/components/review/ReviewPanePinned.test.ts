@@ -8,6 +8,7 @@ import {
   disposePRReviewStates,
 } from '../../stores/reviewPanePinned.svelte';
 import { resetAppStorageForTest } from '../../stores/appStorage';
+import { getPaneFindProvider, hasPaneFindProvider, openPaneFind, resetPaneFindForTest, setPaneFindQuery } from '../../stores/paneFind.svelte';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { prReviewKeys } from '../../stores/prReviewStore.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
@@ -168,6 +169,35 @@ describe('<ReviewPane> pinned to a PR with no thread', () => {
     theirs.unmount();
     disposePRReviewStates('tools-2');
     expect(__diffSpanCacheStatsForTest()).toMatchObject({ entries: 0, ownerKeys: 0 });
+  });
+
+  it('has no find until its host passes a find key, then finds in its diff under that key', async () => {
+    resetPaneFindForTest();
+    const { view } = renderPinned();
+    await waitFor(() => {
+      expect(view.getAllByTestId('review-line-block').length).toBeGreaterThan(0);
+    });
+    expect(hasPaneFindProvider(OWNER)).toBe(false);
+    expect(hasPaneFindProvider('tool-pulls')).toBe(false);
+    view.unmount();
+
+    const keyed = render(ReviewPane, {
+      pr: { ownerPaneId: OWNER, backend: HOME_BACKEND, projectId: 'project-1', pr: PR },
+      findKey: 'pulls-detail',
+    });
+    await waitFor(() => {
+      expect(keyed.getAllByTestId('review-line-block').length).toBeGreaterThan(0);
+    });
+    expect(hasPaneFindProvider('pulls-detail')).toBe(true);
+    expect(openPaneFind('pulls-detail')).toBe(true);
+    setPaneFindQuery('pulls-detail', 'NEW');
+    await waitFor(() => {
+      expect(keyed.getByTestId('pane-find-count')).toHaveTextContent('1/1');
+    });
+    expect(getPaneFindProvider('pulls-detail')?.result.count).toBe(1);
+    keyed.unmount();
+    expect(hasPaneFindProvider('pulls-detail')).toBe(false);
+    resetPaneFindForTest();
   });
 
   it('says why when the PR has no project', () => {

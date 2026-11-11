@@ -8,6 +8,7 @@ import '../../../app.css';
 import ReviewDiffBody from './ReviewDiffBody.svelte';
 import type { DiffReviewComment } from '../../types/models';
 import { REVIEW_FILE_HEADER_BAR_PX } from '../../utils/reviewRows';
+import { scanReviewFind, type ReviewFindHit } from '../../utils/reviewFindScan';
 import { parseReviewFiles, type ReviewFile } from '../../utils/patchStore';
 import { HELD_EDGE_PX, HELD_LIMIT_PX } from '../../utils/virtual/heldRows';
 import { waitFor } from '../../../test/helpers/browserFrames';
@@ -60,11 +61,12 @@ async function mountBody() {
   const entry = { app: {} as object, host, files: [] as ReviewFile[][] };
   mounted.push(entry);
   const topFiles: number[] = [];
+  const files = readFiles();
   const props = rawProps({
     subjectId: 'subject',
     spanOwner: 'thread-1',
     scope: 'workspace',
-    files: readFiles(),
+    files,
     viewMode: 'stacked' as 'stacked' | 'split',
     wordWrap: false,
     collapsedPaths: new Set<string>() as ReadonlySet<string>,
@@ -80,7 +82,7 @@ async function mountBody() {
   entry.app = mount(ReviewDiffBody, { target: host, props });
   const scrollEl = host.querySelector('[data-testid="review-scroll"]') as HTMLElement;
   await settle(scrollEl);
-  return { props, scrollEl, topFiles };
+  return { props, scrollEl, topFiles, body: entry.app as { revealFindHit(hit: ReviewFindHit): boolean; findReadingPosition(): { fileIndex: number; line: number } | null }, files };
 }
 
 async function settle(scrollEl: HTMLElement): Promise<void> {
@@ -190,5 +192,21 @@ describe('a review diff past the held limit', () => {
     flushSync();
     await settle(scrollEl);
     expect(lineAtTop(scrollEl)).toEqual(before);
+  });
+
+  it('find reveals a scanned match outside the held rows a third down the view', async () => {
+    const { scrollEl, body, files } = await mountBody();
+    const hits: ReviewFindHit[] = [];
+    await scanReviewFind({ files, drafts: [], prThreads: [] }, 'F650:700', {
+      limit: 10, live: () => true, emit: (hit) => hits.push(hit), pause: async () => {},
+    });
+    expect(hits.map((hit) => [hit.path, hit.rowKey])).toEqual([['src/f650.ts', expect.stringMatching(/^l:/)]]);
+    expect(body.revealFindHit(hits[0])).toBe(true);
+    await settle(scrollEl);
+    const target = scrollEl.querySelector<HTMLElement>(`[data-find-key="${hits[0].rowKey}"]`);
+    expect(target?.textContent).toContain('f650:700');
+    const view = scrollEl.getBoundingClientRect();
+    expect(Math.abs(target!.getBoundingClientRect().top - view.top - Math.round(view.height / 3))).toBeLessThanOrEqual(18);
+    expect(body.findReadingPosition()?.fileIndex).toBe(650);
   });
 });
