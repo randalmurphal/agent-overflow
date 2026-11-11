@@ -28,10 +28,11 @@ export type CompactScreen = 'list' | 'thread';
 
 let compact = $state(false);
 let screen: CompactScreen = $state('list');
-// The pane the thread screen was last brought to: every compact move to a
-// pane goes through `revealPane` or the strip's first-paint snap, and the
-// strip has no free scroll, so this is the pane `onScreenCompactPaneId`
-// would measure once the glide settles, held reactively.
+// The pane the compact strip shows, held reactively so readers need no
+// geometry. `revealPane` records its pane before the strip glides there;
+// PaneHost writes it otherwise (first paint, and its reconcile after every
+// change of the strip's geometry), so outside a reveal's glide it is the
+// pane `onScreenCompactPaneId` measures.
 let shownPaneId: string | null = $state(null);
 
 export function isCompactLayout(): boolean {
@@ -54,8 +55,8 @@ export function showCompactThread(paneId?: string): void {
   stamp();
 }
 
-/** The strip brought `paneId` into view on its own (first paint, or the
- * shown pane left the strip). */
+/** PaneHost only: the strip shows `paneId` without a reveal naming it
+ * (first paint, or its reconcile after a geometry change). */
 export function noteCompactPaneShown(paneId: string | null): void {
   shownPaneId = paneId;
 }
@@ -66,8 +67,15 @@ export function compactShownPaneId(): string | null {
 }
 
 /**
- * Reactive: whether a mounted pane is on screen. Every mounted pane is on
- * the desktop strip; compact shows one pane, on the thread screen only.
+ * Reactive: whether the person can see the mounted pane `paneId` now.
+ * The one answer for work that should run only while its pane is seen.
+ * - Desktop: true for every mounted pane (the strip shows them side by
+ *   side; scrolled partly out of view still counts).
+ * - Compact: true only on the thread screen, and only for the one pane the
+ *   strip shows. During a reveal's glide that is the pane being revealed.
+ * False for a pane id that is not mounted on compact. Re-evaluates when
+ * the mode, the compact screen or the shown pane changes; read it inside
+ * an effect or `$derived` to follow it.
  */
 export function isPaneOnScreen(paneId: string): boolean {
   if (!compact) return true;
