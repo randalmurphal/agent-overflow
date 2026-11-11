@@ -155,25 +155,43 @@ shown page's engine has find (`findMode` on the companion state), so the
 chord falls through elsewhere. A chord pressed inside the page arrives through
 the accelerator path above.
 
-- The Manager owns the session (`internal/browser/find.go`,
-  `BrowserCompanionFind`): which page it runs on, its query and current
-  match. A start runs only on the active page of a shown companion with a
-  pane mounted. The session ends when its page navigates to another document
-  (a fragment move does not count), stops being the shown active page, is
-  suspended or closes, when the last pane unmounts, or when the browser
-  closes; that end is a `find` event on `browser:companion-state`, and the
-  bar showing it closes. The engine's find is stopped behind it unless a
-  newer session started.
+- The Manager owns the page's find (`internal/browser/find.go`,
+  `BrowserCompanionFind`): whether AO's bar is open on the page and for
+  which pane mount (`open`, `close`), and the search with its query and
+  current match (`start`, `next`, `previous`, `stop`). `open` and `start`
+  run only on the active page of a shown companion with a pane mounted.
+  Both end when the page commits another document, stops being the shown
+  active page, is suspended or closes, when the bar's pane mount goes
+  (unmounted, or its connection closed), or when the browser closes; that
+  end is a `find` event on `browser:companion-state`, and the bar showing
+  it closes. The engine's search is stopped behind it unless a newer action
+  ran. `stop` and `close` never restore a suspended page and answer for a
+  gone page as for no find.
+- Every find action and end takes the page's next generation. An action
+  revalidates its page under the page lock before any driver call, so one
+  that waited out a close never reaches the closed driver, and WebKitGTK
+  and WKWebView also refuse any operation on a page whose lifetime ended
+  before it reaches the view. A start whose engine call is overtaken by an
+  end publishes nothing and stops the search it made.
+- A new document is each engine's commit signal, so a reload ends the find
+  and a same-document navigation (a fragment, the History API) keeps it:
+  WebKitGTK `load-changed` with `WEBKIT_LOAD_COMMITTED`, WKWebView
+  `webView:didCommitNavigation:`, and CDP `Page.frameNavigated` for the main
+  frame (hosted WebView2 and headless Chromium), each reported through
+  `pageHooks.DocumentCommitted`.
 - Escape closes AO's find bar through `find.close`, wherever keyboard focus
-  is. In the app it is an ordinary keydown. In the page, while the page has
-  a find in AO's bar, the engine offers its bare Escape to the chord gate
-  above, which claims it (the Manager's `keyChord`); otherwise the page keeps
-  it.
-- The pane's provider (`frontend/src/lib/stores/browserFind.svelte.ts`) makes
-  its engine calls one at a time through the pane's `paneFindReads` slot.
-  Every call is made, since the engine holds the session; a superseded
-  answer is dropped, and a session it opened after the reader left is
-  stopped. Steps and the stop go to the page the session started on.
+  is. In the app it is an ordinary keydown. In the page, while AO's bar is
+  open on it, with or without a query, the engine offers its bare Escape to
+  the chord gate above, which claims it (the Manager's `keyChord`);
+  otherwise the page keeps it. Every end of the bar releases the claim.
+- The pane's provider (`frontend/src/lib/stores/browserFind.svelte.ts`) turns
+  each reader action into an intent (open, start with its query, step,
+  stop, close) carried with its page and display generation to its answer,
+  and runs them one at a time, in order, through the pane's `paneFindReads`
+  slot; its header holds the state table. A queued start is dropped when the
+  query changes, an answer shows only under its own generation, and an end
+  the backend announces is accepted against the newest generation any
+  answer reported, so nothing is sent to a find the backend already ended.
 - WebKitGTK (`findMode` "bar") drives the shared find bar through
   `WebKitFindController`: a case-insensitive, wrapping search that counts up
   to 1000 matches (past that the count shows as `1000+` and the position as
@@ -192,9 +210,9 @@ the accelerator path above.
   `ICoreWebView2Find` has no close event, so AO never models that bar as
   open: the pane's find does not read as open, `find.close` does not apply,
   and the launcher's `claimChord` never takes an unmodified key, so Escape
-  goes to the engine and the page. mod+f again seeds and opens the bar. The
-  Manager's session ends as above and stops the engine's find, which does
-  nothing once the user closed the bar. A runtime without the API is
+  goes to the engine and the page. mod+f again seeds and opens the bar, and
+  `open` is refused for it. The Manager's search ends as above and stops the
+  engine's find, which does nothing once the user closed the bar. A runtime without the API is
   reported at page create (`find-unavailable`) and the page has no find.
 - Headless Chromium has no find: serve mode has no pane to find in.
 

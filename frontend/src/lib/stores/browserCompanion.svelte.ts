@@ -88,6 +88,11 @@ export function attachBrowserCompanion(threadId: string): EntityAttachment<Brows
   return store.attach(threadId, undefined);
 }
 
+/** The backend's id of the thread's mounted pane, null while it has none. */
+export function browserPaneMountId(threadId: string): string | null {
+  return paneIds.get(threadId) ?? null;
+}
+
 /**
  * Reports where the mounted pane's host rect sits, already coalesced to one
  * call per changed frame by the pane. A refusal is a teardown race (the mount

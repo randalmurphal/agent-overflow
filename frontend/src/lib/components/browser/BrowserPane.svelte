@@ -10,6 +10,7 @@
   import {
     attachBrowserCompanion,
     browserCompanionAct,
+    browserPaneMountId,
     noteBrowserActionError,
     reportBrowserPaneRect,
   } from '../../stores/browserCompanion.svelte';
@@ -106,6 +107,7 @@
         paneId,
         mode,
         pageId: () => activePageId,
+        mount: () => browserPaneMountId(threadId),
         onEnded: () => closePaneFind(paneId),
         onError: (message) => noteBrowserActionError(threadId, message),
       });

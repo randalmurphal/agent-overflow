@@ -1,15 +1,38 @@
 // Find in the browser pane (docs/architecture/browser-tools.md, "Find"). The
-// backend's engine searches the page the pane shows and owns the session; this
+// backend's engine searches the page the pane shows and the backend owns the
+// page's find: AO's bar open on it, the search, and when they end. This
 // provider drives it from the pane's find bar, or for an engine with its own
-// find UI opens that instead. A session the backend ends on its own (the page
-// navigated, the tab changed, the page closed) arrives as a `find` companion
-// event and closes the bar.
+// find UI opens that instead. An end the backend decides on its own (the page
+// committed another document, the tab changed, the page closed, the pane
+// unmounted) arrives as a `find` companion event and closes the bar.
 //
-// Engine calls run through the pane's `paneFindReads` slot, one at a time in
-// the order asked. A call is not a read of a result to apply later: the
-// engine holds the session, so every call is made, and only its answer is
-// dropped when a newer query superseded it. What a sync makes is the
-// provider's current intent (start, steps, stop), read when it runs.
+// Every request is an intent object made when the reader acts and carried to
+// its answer: open, start (its query), step (its direction), stop (the
+// search) and close (the bar). Each records the page it is for and the
+// display generation (`seq`) it was made under. Intents run one at a time,
+// in order, through the pane's `paneFindReads` slot; an answer is shown only
+// if its intent's generation is still current.
+//
+// State: `seq` (display generation), `queue` and `inFlight` (intents),
+// `held` (what the backend holds for this provider: its page, whether the
+// bar and a search are open there, and `known`, the newest backend
+// generation any answer reported), `deferredEnd`, and the debounce timer.
+//
+// | Event                          | Effect                                                    |
+// |--------------------------------|-----------------------------------------------------------|
+// | bar opened (`opened`)          | seq++; queue open for the shown page; held.bar            |
+// | query typed                    | seq++; drop queued starts and steps; debounce, then queue |
+// |                                | start(query) for the shown page; held.search              |
+// | query emptied                  | seq++; drop queued starts and steps; queue stop if a      |
+// |                                | search is held                                            |
+// | Enter / Shift+Enter            | queue a step, or cancel a queued opposite one             |
+// | bar closed (`clear`, dispose)  | seq++; drop the queue; queue close if anything is held    |
+// | engine find opened             | seq++; drop the queue; queue start(seed); held.search     |
+// | answer                         | known = max(known, session); shown if its seq is current  |
+// | failure                        | shown as an error if its seq is current                   |
+// | end event, newer than `known`  | in flight: kept as deferredEnd; else seq++, drop the      |
+// | for the held page              | queue, nothing held, onEnded (the bar closes)             |
+// | in-flight intent completes     | a deferredEnd newer than `known` is accepted as above     |
 
 import {
   BrowserCompanionFind,
@@ -32,15 +55,22 @@ export interface BrowserFindOptions {
   mode: BrowserFindMode;
   /** The page the pane shows now. */
   pageId: () => string;
-  /** The backend ended the session; the pane closes its bar. */
+  /** The backend's id of the pane mount the bar shows in, null before it has one. */
+  mount: () => string | null;
+  /** The backend ended the find; the pane closes its bar. */
   onEnded: () => void;
   /** A find request failed; the pane shows why. */
   onError: (message: string) => void;
 }
 
-interface Session {
+type IntentKind = 'open' | 'start' | 'next' | 'previous' | 'stop' | 'close';
+
+interface Intent {
+  kind: IntentKind;
   pageId: string;
-  session: number;
+  query: string;
+  /** The display generation the intent was made under. */
+  seq: number;
 }
 
 interface LiveFind {
@@ -62,23 +92,13 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
   const { threadId, mode } = options;
   const reads = paneFindReads(options.paneId);
   const view = $state({ count: 0 as number | null, current: -1, pending: false, capped: false });
-  // Moves on every query change and close; an answer must match it.
   let seq = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
-  // The intent a sync carries out: a start, then steps, then a stop.
-  let startQuery: string | null = null;
-  let steps = 0;
-  let stopNeeded = false;
-  // wanted is whether the reader still wants a session.
-  let wanted = false;
-  let syncing = false;
-  // held is whether the engine may hold a session of this provider's: a
-  // start was made on heldPage and no stop since. Steps and the stop go to
-  // that page, which the pane may no longer show (a closed pane shows none).
-  let held = false;
-  let heldPage = '';
-  let session: Session | null = null;
-  let endedWhileSyncing: BrowserFindState | null = null;
+  const queue: Intent[] = [];
+  let inFlight: Intent | null = null;
+  const held = { pageId: '', bar: false, search: false, known: 0 };
+  let deferredEnd: BrowserFindState | null = null;
+  let disposed = false;
 
   const result: PaneFindResult = {
     get count() { return view.count; },
@@ -96,11 +116,9 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
 
   function show(state: BrowserFindState): void {
     if (!state.active) {
-      session = null;
       reset();
       return;
     }
-    session = { pageId: state.pageId, session: state.session };
     view.count = !state.found ? 0 : state.matches < 0 ? null : state.matches;
     view.current = state.current;
     view.capped = state.capped;
@@ -112,108 +130,93 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
     timer = null;
   }
 
-  function call(kind: string, pageId: string, query = ''): Promise<BrowserFindState> {
-    return BrowserCompanionFind(threadId, new BrowserFindAction({ kind, pageId, query }));
-  }
-
-  function fail(mine: number, err: unknown): void {
-    if (mine !== seq) return;
-    session = null;
-    reset();
-    options.onError(errString(err));
-  }
-
-  async function sync(): Promise<void> {
-    syncing = true;
-    try {
-      if (startQuery !== null) {
-        const query = startQuery;
-        const mine = seq;
-        startQuery = null;
-        steps = 0;
-        held = true;
-        heldPage = options.pageId();
-        try {
-          const answer = await call('start', heldPage, query);
-          if (!answer.active && startQuery === null) held = false;
-          if (mine === seq) show(answer);
-          // A start the reader left before it answered opened a session
-          // nobody wants.
-          else if (answer.active && !wanted) stopNeeded = true;
-        } catch (err) {
-          fail(mine, err);
-        }
-      }
-      while (steps !== 0 && session && wanted && !stopNeeded) {
-        const back = steps < 0;
-        steps += back ? 1 : -1;
-        const mine = seq;
-        try {
-          const answer = await call(back ? 'previous' : 'next', heldPage);
-          if (mine === seq) show(answer);
-        } catch (err) {
-          fail(mine, err);
-        }
-      }
-      if (stopNeeded) {
-        stopNeeded = false;
-        held = false;
-        try {
-          await call('stop', heldPage);
-        } catch (err) {
-          options.onError(errString(err));
-        }
-      }
-    } finally {
-      syncing = false;
-      settleEnded();
+  /** Drops queued intents of the given kinds; the one in flight runs on. */
+  function drop(kinds: readonly IntentKind[]): void {
+    for (let i = queue.length - 1; i >= 0; i--) {
+      if (kinds.includes(queue[i].kind)) queue.splice(i, 1);
     }
   }
 
-  function request(): void {
-    reads.request(sync);
+  function enqueue(kind: IntentKind, pageId: string, query = ''): void {
+    queue.push({ kind, pageId, query, seq });
+    reads.request(drain);
   }
 
-  function endsSession(state: BrowserFindState): boolean {
-    return session !== null && state.pageId === session.pageId && state.session > session.session;
+  function holdPage(pageId: string): void {
+    if (held.pageId === pageId) return;
+    held.pageId = pageId;
+    held.known = 0;
+  }
+
+  function call(intent: Intent): Promise<BrowserFindState> {
+    const mount = intent.kind === 'open' ? options.mount() ?? '' : '';
+    return BrowserCompanionFind(threadId, new BrowserFindAction({
+      kind: intent.kind, pageId: intent.pageId, query: intent.query, mount,
+    }));
+  }
+
+  async function drain(): Promise<void> {
+    while (queue.length > 0) {
+      const intent = queue.shift()!;
+      inFlight = intent;
+      try {
+        const answer = await call(intent);
+        if (answer.pageId === held.pageId) held.known = Math.max(held.known, answer.session);
+        if (intent.seq === seq && (intent.kind === 'start' || intent.kind === 'next' || intent.kind === 'previous')) {
+          show(answer);
+        }
+      } catch (err) {
+        if (intent.seq === seq) {
+          reset();
+          options.onError(errString(err));
+        }
+      } finally {
+        inFlight = null;
+      }
+      settleDeferredEnd();
+    }
+  }
+
+  function endsHeld(state: BrowserFindState): boolean {
+    return (held.bar || held.search) && state.pageId === held.pageId && state.session > held.known;
   }
 
   function ended(state: BrowserFindState): void {
-    if (syncing || startQuery !== null) {
-      if (!endedWhileSyncing || state.session > endedWhileSyncing.session) endedWhileSyncing = state;
+    if (!endsHeld(state)) return;
+    if (inFlight) {
+      if (!deferredEnd || state.session > deferredEnd.session) deferredEnd = state;
       return;
     }
-    if (!endsSession(state)) return;
+    accept();
+  }
+
+  function settleDeferredEnd(): void {
+    const state = deferredEnd;
+    deferredEnd = null;
+    if (state && endsHeld(state)) accept();
+  }
+
+  /** The backend ended the find: nothing is held, and nothing to stop. */
+  function accept(): void {
     seq += 1;
     cancelTimer();
-    wanted = false;
-    steps = 0;
-    session = null;
+    queue.length = 0;
+    held.bar = false;
+    held.search = false;
     reset();
     options.onEnded();
   }
 
-  function settleEnded(): void {
-    if (syncing || startQuery !== null || !endedWhileSyncing) return;
-    const state = endedWhileSyncing;
-    endedWhileSyncing = null;
-    ended(state);
-  }
-
-  /** Ends the session: the engine's highlight goes with it. */
-  function end(): void {
-    cancelTimer();
+  /** The bar closed: the backend's bar and search go with it. */
+  function close(): void {
     seq += 1;
-    wanted = false;
-    steps = 0;
-    // A start not made yet is dropped; one made is stopped.
-    startQuery = null;
-    session = null;
+    cancelTimer();
+    queue.length = 0;
+    deferredEnd = null;
     reset();
-    if (held) {
-      stopNeeded = true;
-      request();
-    }
+    if (held.bar || held.search) enqueue('close', held.pageId);
+    held.bar = false;
+    held.search = false;
   }
 
   const handle: LiveFind = { ended };
@@ -224,50 +227,69 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
   }
   threadFinds.add(handle);
 
-  function step(delta: 1 | -1): void {
-    if (!session || view.pending || view.count === 0) return;
-    steps += delta;
-    request();
+  function step(kind: 'next' | 'previous'): void {
+    if (!held.search || view.pending || view.count === 0) return;
+    const opposite = kind === 'next' ? 'previous' : 'next';
+    const last = queue[queue.length - 1];
+    if (last?.kind === opposite) {
+      queue.pop();
+      return;
+    }
+    enqueue(kind, held.pageId);
   }
 
   const provider: BrowserFind = {
     noun: 'page',
     result,
+    opened(): void {
+      if (mode === 'engine' || disposed) return;
+      seq += 1;
+      reset();
+      const pageId = options.pageId();
+      holdPage(pageId);
+      held.bar = true;
+      enqueue('open', pageId);
+    },
     search(query: string): void {
-      if (mode === 'engine') return;
-      if (!query.trim()) {
-        end();
-        return;
-      }
+      if (mode === 'engine' || disposed) return;
       cancelTimer();
       seq += 1;
-      wanted = true;
-      steps = 0;
-      stopNeeded = false;
+      drop(['start', 'next', 'previous']);
+      if (!query.trim()) {
+        reset();
+        if (held.search) enqueue('stop', held.pageId);
+        held.search = false;
+        return;
+      }
       view.pending = true;
       timer = setTimeout(() => {
         timer = null;
-        startQuery = query;
-        request();
+        const pageId = options.pageId();
+        holdPage(pageId);
+        held.search = true;
+        enqueue('start', pageId, query);
       }, BROWSER_FIND_DEBOUNCE_MS);
     },
-    next: () => step(1),
-    previous: () => step(-1),
-    clear: end,
+    next: () => step('next'),
+    previous: () => step('previous'),
+    clear: close,
     dispose(): void {
-      end();
+      close();
+      disposed = true;
       threadFinds?.delete(handle);
       if (threadFinds?.size === 0) live.delete(threadId);
     },
   };
   if (mode === 'engine') {
     provider.openNative = (seed: string) => {
+      if (disposed) return;
       cancelTimer();
       seq += 1;
-      wanted = true;
-      stopNeeded = false;
-      startQuery = seed;
-      request();
+      drop(['start']);
+      const pageId = options.pageId();
+      holdPage(pageId);
+      held.search = true;
+      enqueue('start', pageId, seed);
     };
   }
   return provider;

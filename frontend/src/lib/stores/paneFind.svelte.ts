@@ -54,6 +54,11 @@ export interface PaneFindProvider {
   focusFirst?(): Promise<boolean> | boolean;
   clear(): void;
   openNative?(seed: string): void;
+  /**
+   * The bar opened, or the provider was registered under an open bar.
+   * Called before that open's `search`; `clear` is its close.
+   */
+  opened?(): void;
 }
 
 /** True for a provider that steps through matches rather than filtering. */
@@ -224,6 +229,7 @@ onPaneLayoutItemsRemoved((paneIds) => {
 export function registerPaneFindProvider(paneId: string, provider: PaneFindProvider): () => void {
   providers.set(paneId, provider);
   const state = states.get(paneId);
+  if (state?.open) provider.opened?.();
   if (state?.open && state.query) provider.search(state.query);
   return () => {
     if (providers.get(paneId) !== provider) return;
@@ -277,6 +283,7 @@ export function openPaneFind(paneId: string, options: OpenPaneFindOptions = {}):
   if (!wasOpen) state.returnFocus = options.returnFocus ?? null;
   state.open = true;
   state.focusRequest += 1;
+  if (!wasOpen) provider.opened?.();
   if ((!wasOpen || seeded) && state.query) provider.search(state.query);
   return true;
 }
