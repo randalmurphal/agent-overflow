@@ -25,17 +25,18 @@ func TestFetchPRBranchCutAfterTheFetchStillFinishes(t *testing.T) {
 			marks := t.TempDir()
 			started, release := filepath.Join(marks, "started"), filepath.Join(marks, "release")
 			// Holds git's branch creation at this transaction state until
-			// the test releases it.
+			// the test releases it, or until the test's directory is gone:
+			// a hook whose git was killed must not outlive the test.
 			hook := fmt.Sprintf(`#!/bin/sh
 [ "$1" = %q ] || exit 0
 while read -r old new ref; do
   if [ "$ref" = refs/heads/pr/5 ]; then
     : > %q
-    while [ ! -e %q ]; do sleep 0.01; done
+    while [ ! -e %q ] && [ -d %q ]; do sleep 0.01; done
   fi
 done
 exit 0
-`, state, started, release)
+`, state, started, release, marks)
 			hooks := filepath.Join(clone, ".git", "hooks")
 			if err := os.MkdirAll(hooks, 0o755); err != nil {
 				t.Fatal(err)
