@@ -421,12 +421,93 @@ func (s *Store) MarkDiffReviewCommentsSent(owner DiffReviewOwner, scope, sourceK
 	return nil
 }
 
+// PostedDiffReviewDraft is a draft as a review posted it to the forge:
+// its id, the body the forge received and the line it was anchored to.
+type PostedDiffReviewDraft struct {
+	ID       string `json:"id"`
+	Body     string `json:"body"`
+	FilePath string `json:"filePath"`
+	Side     string `json:"side"`
+	OldLine  int    `json:"oldLine"`
+	NewLine  int    `json:"newLine"`
+}
+
+// PostedDiffReviewDraftOf is draft as a review posting it now carries it.
+func PostedDiffReviewDraftOf(draft DiffReviewComment) PostedDiffReviewDraft {
+	return PostedDiffReviewDraft{ID: draft.ID, Body: draft.Body, FilePath: draft.FilePath, Side: draft.Side, OldLine: draft.OldLine, NewLine: draft.NewLine}
+}
+
+// MarkPostedDiffReviewDraftsSent marks sent, in one statement, each of the
+// owner's drafts posted names that is still a draft with the body and
+// anchor the forge received, and answers the ids it marked. A draft edited,
+// sent, claimed or deleted since the review read it stays as it is: the
+// forge holds the text it was given, and the draft is not that text.
+func (s *Store) MarkPostedDiffReviewDraftsSent(owner DiffReviewOwner, scope, sourceKey string, posted []PostedDiffReviewDraft, sentAt int64, sentTurnID string) ([]string, error) {
+	if err := owner.validate(); err != nil {
+		return nil, err
+	}
+	scope, err := NormalizeDiffReviewScope(scope)
+	if err != nil {
+		return nil, err
+	}
+	sourceKey, err = NormalizeDiffReviewSourceKey(sourceKey)
+	if err != nil {
+		return nil, err
+	}
+	if len(posted) == 0 {
+		return []string{}, nil
+	}
+	if len(posted) > MaxDiffReviewCommentIDs {
+		return nil, fmt.Errorf("store: too many diff review comments selected")
+	}
+	encoded, err := json.Marshal(posted)
+	if err != nil {
+		return nil, fmt.Errorf("store: encode posted diff review comments: %w", err)
+	}
+	column, value := owner.column()
+	rows, err := s.db.Query(`UPDATE diff_review_comments
+	                            SET status = 'sent', sent_at = ?1, sent_turn_id = ?2, updated_at = ?1,
+	                                claim_thread_id = '', claim_item_id = '', claim_settles = ''
+	                          WHERE `+column+` = ?3 AND scope = ?4 AND source_key = ?5 AND status = 'draft'
+	                            AND id IN (SELECT json_extract(value, '$.id') FROM json_each(?6))
+	                            AND EXISTS (SELECT 1 FROM json_each(?6) AS p
+	                                         WHERE json_extract(p.value, '$.id') = diff_review_comments.id
+	                                           AND json_extract(p.value, '$.body') = diff_review_comments.body
+	                                           AND json_extract(p.value, '$.filePath') = diff_review_comments.file_path
+	                                           AND json_extract(p.value, '$.side') = diff_review_comments.side
+	                                           AND json_extract(p.value, '$.oldLine') = diff_review_comments.old_line
+	                                           AND json_extract(p.value, '$.newLine') = diff_review_comments.new_line)
+	                      RETURNING id`,
+		sentAt, sentTurnID, value, scope, sourceKey, string(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("store: mark posted diff review comments sent for %s/%s: %w", owner, scope, err)
+	}
+	defer rows.Close()
+	marked := make([]string, 0, len(posted))
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store: scan a posted diff review comment marked sent: %w", err)
+		}
+		marked = append(marked, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: mark posted diff review comments sent for %s/%s: %w", owner, scope, err)
+	}
+	return marked, nil
+}
+
 // DiffReviewCommentSnapshot is a draft as a send read it: its id and the
 // body the message carries.
 type DiffReviewCommentSnapshot struct {
 	ID   string `json:"id"`
 	Body string `json:"body"`
 }
+
+// ErrDiffReviewCommentsNotDrafts is a selection naming a comment that is
+// not one of the owner's drafts for the source any more: sent, claimed by
+// a message, deleted or never there.
+var ErrDiffReviewCommentsNotDrafts = errors.New("store: selected diff review comments include stale or non-draft ids")
 
 // ErrDiffReviewCommentsSentElsewhere is a claim naming a draft another
 // message already carried.
@@ -897,7 +978,7 @@ func (s *Store) ListDraftDiffReviewCommentsByID(owner DiffReviewOwner, scope, so
 		return nil, fmt.Errorf("store: iterate selected draft diff review comments %s/%s: %w", owner, scope, err)
 	}
 	if len(found) != len(wanted) {
-		return nil, fmt.Errorf("store: selected diff review comments include stale or non-draft ids")
+		return nil, ErrDiffReviewCommentsNotDrafts
 	}
 	return out, nil
 }

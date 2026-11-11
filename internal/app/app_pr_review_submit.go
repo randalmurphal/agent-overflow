@@ -1,0 +1,261 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"slices"
+	"sync"
+	"time"
+
+	"agent-overflow/internal/errorsx"
+	"agent-overflow/internal/forgeapi"
+	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/keyedlock"
+	"agent-overflow/internal/store"
+)
+
+// --- PR review submit with stored drafts ---
+//
+// A review whose comments are drafts posts them and marks them sent. Done
+// by the pane as two calls, an answer lost between them leaves posted
+// drafts unsent, and a retry posts them again. A request that names its
+// drafts (SubmitPRReviewRequest.Drafts, capability pr-review-drafts.v1)
+// has this backend, which owns the drafts, do both in one call:
+//
+//   - One submit per PR at a time (reviewSubmitLocks), from reading the
+//     drafts through posting and marking. A draft that is not a draft any
+//     more when the submit reads it (sent by an earlier submit, another
+//     tab or device, or a message) is refused with
+//     ReviewDraftsNotDraftsCode before anything reaches the forge.
+//   - The forge comments are built from the stored drafts; the request's
+//     own Comments are ignored.
+//   - Marking is conditional on what was posted
+//     (store.MarkPostedDiffReviewDraftsSent): a draft edited, moved or
+//     deleted while the review posted stays as it is, and the result
+//     names it (EditedDraftIDs).
+//   - A review the forge accepted whose drafts could not be marked keeps
+//     them in memory as posted (postedReviewDrafts) and answers
+//     ReviewPostedUnmarkedCode. The next submit for the owner retries the
+//     marking before it reads anything, and refuses to post while it
+//     fails; so does the next list of the owner's drafts.
+//
+// What this does not cover: the process ending between the forge's answer
+// and the mark leaves posted drafts listed as unsent, with no record that
+// they were posted; the pane's lost-answer message tells the person to
+// check the PR. The lock is this backend's: two computers holding the same
+// PR's drafts do not share it, and on GitLab, whose publish takes every
+// pending draft note of the viewer, two computers submitting the same MR
+// at once can publish each other's notes.
+//
+// A request without Drafts is the caller's comments, posted as given; the
+// caller marks its drafts with MarkDiffReviewCommentsSent or
+// MarkPRDiffReviewCommentsSent.
+
+// Codes of SubmitPRReview's refusals of a draft submit.
+const (
+	// ReviewDraftsNotDraftsCode: a named draft is not a draft any more;
+	// nothing was posted. The pane re-reads its drafts.
+	ReviewDraftsNotDraftsCode = "review_drafts_not_drafts"
+	// ReviewPostedUnmarkedCode: a review posted and some of its drafts are
+	// not marked sent yet; nothing more was posted.
+	ReviewPostedUnmarkedCode = "review_posted_unmarked"
+)
+
+// SubmitPRReviewRequest is one review submit: a verdict, a summary and the
+// comments, either built by the caller (Comments) or, with Drafts, read
+// from the stored drafts it names.
+type SubmitPRReviewRequest struct {
+	Verdict  string                     `json:"verdict"`
+	Body     string                     `json:"body"`
+	Comments []gitops.ReviewLineComment `json:"comments"`
+	// Drafts names the stored pr-scope drafts the review carries; Comments
+	// is then ignored. Absent from a client older than pr-review-drafts.v1.
+	Drafts *SubmitPRReviewDrafts `json:"drafts,omitempty"`
+}
+
+// SubmitPRReviewDrafts selects the drafts a review posts: a thread's own
+// (ThreadID set) or the PR's (ThreadID empty), of the PR's pr-scope source.
+type SubmitPRReviewDrafts struct {
+	ThreadID string   `json:"threadId,omitempty"`
+	IDs      []string `json:"ids"`
+	// HeadSHA is the PR head the drafts were written against; a thread's
+	// sent drafts record it (`pr:<head>`).
+	HeadSHA string `json:"headSha,omitempty"`
+}
+
+// SubmitPRReview posts a review of pr. With review.Drafts it posts the
+// named drafts and marks the ones the forge received sent (see above).
+//
+//ao:scope git:operate
+//ao:route selected
+func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review SubmitPRReviewRequest) (SubmitPRReviewResult, error) {
+	if a.shuttingDown.Load() {
+		return SubmitPRReviewResult{}, ErrShuttingDown
+	}
+	if err := pr.Validate(); err != nil {
+		return SubmitPRReviewResult{}, err
+	}
+	if review.Drafts == nil {
+		result, err := a.gitCore().SubmitReview(forgeapi.WithInteractive(ctx), pr, gitops.SubmitReviewRequest{Verdict: review.Verdict, Body: review.Body, Comments: review.Comments})
+		mapped, err := mapSubmitPRReviewResult(pr, gitops.ActionReview, result, err)
+		return mapped, gitops.ExplainForgeError(pr, gitops.ActionReview, err)
+	}
+	owner := store.PRReviewOwner(pr.Key())
+	sentTurnID := ""
+	if threadID := review.Drafts.ThreadID; threadID != "" {
+		if err := a.requireScope(ctx, "threads:operate", "SubmitPRReview marks a thread's drafts sent"); err != nil {
+			return SubmitPRReviewResult{}, err
+		}
+		owner = store.ThreadReviewOwner(threadID)
+		sentTurnID = "pr:" + review.Drafts.HeadSHA
+	}
+	source := prDraftSource(pr)
+
+	unlock, err := a.reviewSubmitLocks().LockCtx(ctx, pr.Key())
+	if err != nil {
+		return SubmitPRReviewResult{}, err
+	}
+	defer unlock()
+	if err := a.reconcilePostedReviewDrafts(owner); err != nil {
+		return SubmitPRReviewResult{}, err
+	}
+	drafts, err := a.store.ListDraftDiffReviewCommentsByID(owner, string(store.DiffReviewScopePR), source, review.Drafts.IDs, store.DiffReviewMessageRows{})
+	if errors.Is(err, store.ErrDiffReviewCommentsNotDrafts) {
+		return SubmitPRReviewResult{}, errorsx.Public(ReviewDraftsNotDraftsCode, "Some of these comments were already sent or removed, so the review was not posted. The drafts are read again.", err)
+	}
+	if err != nil {
+		return SubmitPRReviewResult{}, fmt.Errorf("submit PR review: %w", err)
+	}
+	request := gitops.SubmitReviewRequest{Verdict: review.Verdict, Body: review.Body, Comments: make([]gitops.ReviewLineComment, 0, len(drafts))}
+	for _, draft := range drafts {
+		if comment, ok := reviewLineCommentForDraft(draft); ok {
+			request.Comments = append(request.Comments, comment)
+		}
+	}
+	result, err := a.gitCore().SubmitReview(forgeapi.WithInteractive(ctx), pr, request)
+	mapped, err := mapSubmitPRReviewResult(pr, gitops.ActionReview, result, err)
+	if err != nil {
+		return mapped, gitops.ExplainForgeError(pr, gitops.ActionReview, err)
+	}
+	posted := postedReviewDraftsOf(drafts, mapped)
+	sentAt := time.Now().UnixMilli()
+	marked, err := a.store.MarkPostedDiffReviewDraftsSent(owner, string(store.DiffReviewScopePR), source, posted, sentAt, sentTurnID)
+	if err != nil {
+		a.postedReviewDrafts.hold(owner, postedReviewBatch{sourceKey: source, sentTurnID: sentTurnID, sentAt: sentAt, drafts: posted})
+		return SubmitPRReviewResult{}, errorsx.Public(ReviewPostedUnmarkedCode, "The review posted, but its comments are not marked sent yet. They will not post again; the app marks them on the next read.", err)
+	}
+	mapped.SentDraftIDs = marked
+	for _, draft := range posted {
+		if !slices.Contains(marked, draft.ID) {
+			mapped.EditedDraftIDs = append(mapped.EditedDraftIDs, draft.ID)
+		}
+	}
+	if owner.ThreadID != "" && len(posted) > 0 {
+		a.announceDiffCommentsChanged(owner.ThreadID, string(store.DiffReviewScopePR), source)
+	}
+	return mapped, nil
+}
+
+// prDraftSource is the comment source of pr's pr-scope drafts; the
+// frontend's prSourceKey builds the same string.
+func prDraftSource(pr gitops.PRReference) string { return "pr:" + pr.Key() }
+
+// postedReviewDraftsOf are the drafts a review that landed carried, as the
+// forge received them. File-level comments post one by one after the
+// review and stop at the first failure, so only the first
+// PostedFileComments of them made it up. A draft with no line to anchor
+// posts nothing and settles with the review.
+func postedReviewDraftsOf(drafts []store.DiffReviewComment, result SubmitPRReviewResult) []store.PostedDiffReviewDraft {
+	fileLevel := 0
+	out := make([]store.PostedDiffReviewDraft, 0, len(drafts))
+	for _, draft := range drafts {
+		if draft.Side == "file" {
+			fileLevel++
+			if result.PartialFailurePath != "" && fileLevel > result.PostedFileComments {
+				continue
+			}
+		}
+		out = append(out, store.PostedDiffReviewDraftOf(draft))
+	}
+	return out
+}
+
+// reviewLineCommentForDraft is a draft as the forge's review comment: a
+// file comment, or a line on the old (left) or new (right) side.
+func reviewLineCommentForDraft(draft store.DiffReviewComment) (gitops.ReviewLineComment, bool) {
+	line := func(n int) *int { return &n }
+	switch {
+	case draft.Side == "file":
+		return gitops.ReviewLineComment{Path: draft.FilePath, Body: draft.Body, Side: "file"}, true
+	case draft.Side == "old" && draft.OldLine > 0:
+		return gitops.ReviewLineComment{Path: draft.FilePath, Body: draft.Body, Line: line(draft.OldLine), Side: "left"}, true
+	case (draft.Side == "new" || draft.Side == "context") && draft.NewLine > 0:
+		return gitops.ReviewLineComment{Path: draft.FilePath, Body: draft.Body, Line: line(draft.NewLine), Side: "right"}, true
+	}
+	return gitops.ReviewLineComment{}, false
+}
+
+func (a *App) reviewSubmitLocks() *keyedlock.Registry {
+	a.reviewSubmitsOnce.Do(func() { a.reviewSubmits = keyedlock.New() })
+	return a.reviewSubmits
+}
+
+// reconcilePostedReviewDrafts marks the drafts of owner's reviews that
+// posted but were not marked, and forgets each batch it marked (a draft
+// edited since stays a draft). One it still cannot mark stays held, and
+// its error says so.
+func (a *App) reconcilePostedReviewDrafts(owner store.DiffReviewOwner) error {
+	for _, batch := range a.postedReviewDrafts.held(owner) {
+		if _, err := a.store.MarkPostedDiffReviewDraftsSent(owner, string(store.DiffReviewScopePR), batch.sourceKey, batch.drafts, batch.sentAt, batch.sentTurnID); err != nil {
+			return errorsx.Public(ReviewPostedUnmarkedCode, "A review posted earlier still has comments that are not marked sent, so nothing more was posted. Try again in a moment.", err)
+		}
+		a.postedReviewDrafts.forget(owner, batch)
+		if owner.ThreadID != "" {
+			a.announceDiffCommentsChanged(owner.ThreadID, string(store.DiffReviewScopePR), batch.sourceKey)
+		}
+	}
+	return nil
+}
+
+// postedReviewBatch is one posted review's drafts that were not marked.
+type postedReviewBatch struct {
+	sourceKey  string
+	sentTurnID string
+	sentAt     int64
+	drafts     []store.PostedDiffReviewDraft
+}
+
+// postedReviewDrafts holds, per owner, the batches of drafts a review
+// posted that are not marked sent yet. In memory only: see the contract
+// above for what a process exit leaves.
+type postedReviewDrafts struct {
+	mu      sync.Mutex
+	byOwner map[store.DiffReviewOwner][]*postedReviewBatch
+}
+
+func (p *postedReviewDrafts) hold(owner store.DiffReviewOwner, batch postedReviewBatch) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.byOwner == nil {
+		p.byOwner = make(map[store.DiffReviewOwner][]*postedReviewBatch)
+	}
+	p.byOwner[owner] = append(p.byOwner[owner], &batch)
+}
+
+func (p *postedReviewDrafts) held(owner store.DiffReviewOwner) []*postedReviewBatch {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.byOwner[owner])
+}
+
+func (p *postedReviewDrafts) forget(owner store.DiffReviewOwner, batch *postedReviewBatch) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	kept := slices.DeleteFunc(p.byOwner[owner], func(each *postedReviewBatch) bool { return each == batch })
+	if len(kept) == 0 {
+		delete(p.byOwner, owner)
+		return
+	}
+	p.byOwner[owner] = kept
+}
