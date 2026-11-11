@@ -1545,13 +1545,19 @@ describe('prReviewStore — merge conflicts follow the PR', () => {
     const viewing = permitPRConflictReconcile(KEY, CONFLICT_WS);
     const opening = openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
     await flush();
+    // A second pane opens the same snapshot while the read runs: it joins
+    // that read and is covered by it, so it keeps no intent for the retry.
+    const joining = openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
+    await flush();
 
     applyPRUpdatedEvent({ prKey: KEY, detail: detailStub(), threads: [], headSHA: 'sha-a', seq: 90 });
     await flush();
     failTree(new Error('fetch pull request commits: exited with code 128'));
     await opening;
+    await joining;
     await flush();
 
+    expect(conflicts).toHaveBeenCalledTimes(2);
     expect(conflicts.mock.calls.map((call) => call[4])).toEqual([true, false]);
     expect(peekPRConflicts(KEY, CONFLICT_WS).error).toContain('code 128');
     expect(peekPRConflicts(KEY, CONFLICT_WS).loading).toBe(false);

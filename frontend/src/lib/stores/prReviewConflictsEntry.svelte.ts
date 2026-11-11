@@ -74,7 +74,9 @@ export type ObservationKind =
   | 'frame';
 
 interface Waiter {
-  seq: number;
+  /** The read that covers this open: its own observation, or the read in
+   * flight it joined. Released when a read at or after it settles. */
+  coveredBy: number;
   resolve: () => void;
 }
 
@@ -137,8 +139,8 @@ export class PRConflictEntry {
    * covers it settles, the runner has nothing more to read (no revision
    * yet), or the entry retires. */
   open(ref: PRRef, detail: PRDetail, revision: PRRevision | null): Promise<void> {
-    const seq = this.record('open', ref, detail, revision);
-    const done = new Promise<void>((resolve) => this.waiters.push({ seq, resolve }));
+    const coveredBy = this.record('open', ref, detail, revision);
+    const done = new Promise<void>((resolve) => this.waiters.push({ coveredBy, resolve }));
     void this.run();
     return done;
   }
@@ -154,7 +156,8 @@ export class PRConflictEntry {
     void this.run();
   }
 
-  /** Overwrite what is wanted with the latest observation. */
+  /** Overwrite what is wanted with the latest observation. Returns the
+   * sequence of the read that covers it. */
   private record(kind: ObservationKind, ref: PRRef, detail: PRDetail, revision: PRRevision | null): number {
     const seq = ++this.observed;
     const key = revision ? conflictReadKey(revision, detail) : '';
@@ -164,6 +167,7 @@ export class PRConflictEntry {
     } else if (revision && this.current?.key === key) {
       // The read in flight answers this open: one read per key at a time.
       this.forceSeq = this.current.seq;
+      return this.current.seq;
     } else {
       this.forceSeq = seq;
       this.askAwaitingRevision = revision === null;
@@ -216,7 +220,7 @@ export class PRConflictEntry {
   private release(through: number): void {
     const remaining: Waiter[] = [];
     for (const waiter of this.waiters) {
-      if (waiter.seq <= through) waiter.resolve();
+      if (waiter.coveredBy <= through) waiter.resolve();
       else remaining.push(waiter);
     }
     this.waiters = remaining;
