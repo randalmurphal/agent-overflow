@@ -371,46 +371,6 @@ func (s *Store) DeleteOrResolveDiffReviewComment(owner DiffReviewOwner, commentI
 	return nil
 }
 
-// MarkDiffReviewCommentsSent marks the owner's drafts commentIDs sent in
-// the turn sentTurnID: the owner's own thread's turn, or for a PR's drafts
-// the turn of the thread they were sent to, or published to the forge. It
-// is a delivery of its own: the comments keep no claim of a message.
-func (s *Store) MarkDiffReviewCommentsSent(owner DiffReviewOwner, scope, sourceKey string, commentIDs []string, sentAt int64, sentTurnID string) error {
-	if err := owner.validate(); err != nil {
-		return err
-	}
-	scope, err := NormalizeDiffReviewScope(scope)
-	if err != nil {
-		return err
-	}
-	sourceKey, err = NormalizeDiffReviewSourceKey(sourceKey)
-	if err != nil {
-		return err
-	}
-	ids := uniqueNonEmptyStrings(commentIDs)
-	if len(ids) == 0 {
-		return nil
-	}
-	if len(ids) > MaxDiffReviewCommentIDs {
-		return fmt.Errorf("store: too many diff review comments selected")
-	}
-	n, err := markDiffReviewDraftsSentTx(s.db, owner, scope, sourceKey, ids, sentAt, sentTurnID)
-	if err != nil {
-		return err
-	}
-	if int(n) != len(ids) {
-		ok, checkErr := s.diffReviewCommentsAlreadySent(owner, scope, sourceKey, ids, sentTurnID)
-		if checkErr != nil {
-			return checkErr
-		}
-		if ok {
-			return nil
-		}
-		return fmt.Errorf("store: marked %d diff review comments sent for %s/%s, want %d draft comments", n, owner, scope, len(ids))
-	}
-	return nil
-}
-
 // markDiffReviewDraftsSentTx marks the owner's drafts ids sent in the turn
 // sentTurnID, clearing any claim, and answers how many it marked. Rows
 // that are not drafts stay as they are.
@@ -740,40 +700,6 @@ func (s *Store) RetireUndeliveredUserRow(threadID, itemID string) ([]DiffReviewR
 		return nil, err
 	}
 	return sources, nil
-}
-
-func (s *Store) diffReviewCommentsAlreadySent(owner DiffReviewOwner, scope, sourceKey string, ids []string, sentTurnID string) (bool, error) {
-	column, value := owner.column()
-	query := `SELECT id
-	            FROM diff_review_comments
-	           WHERE ` + column + ` = ?
-	             AND scope = ?
-	             AND source_key = ?
-	             AND status = 'sent'
-	             AND sent_turn_id = ?
-	             AND id IN (` + placeholders(len(ids)) + `)`
-	args := make([]any, 0, 4+len(ids))
-	args = append(args, value, scope, sourceKey, sentTurnID)
-	for _, id := range ids {
-		args = append(args, id)
-	}
-	rows, err := s.reader().Query(query, args...)
-	if err != nil {
-		return false, fmt.Errorf("store: check sent diff review comments for %s/%s: %w", owner, scope, err)
-	}
-	defer rows.Close()
-	found := make(map[string]bool, len(ids))
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return false, fmt.Errorf("store: scan sent diff review comment id: %w", err)
-		}
-		found[id] = true
-	}
-	if err := rows.Err(); err != nil {
-		return false, fmt.Errorf("store: iterate sent diff review comment ids: %w", err)
-	}
-	return len(found) == len(ids), nil
 }
 
 // diffReviewCommentColumns is a comment row as scanOwnedDiffReviewComment

@@ -119,9 +119,11 @@ func TestPROwnedDiffReviewCommentsStayWithTheirPR(t *testing.T) {
 	if _, err := s.ListDraftDiffReviewCommentsByID(pr, "pr", "pr:"+key, []string{"p1", "t1"}, DiffReviewMessageRows{}); err == nil {
 		t.Fatal("a PR's selection took a thread's draft")
 	}
-	if err := s.MarkDiffReviewCommentsSent(pr, "pr", "pr:"+key, []string{"p1"}, 30, "user:2"); err != nil {
-		t.Fatal(err)
+	recordReviewSent(t, s, ThreadReviewOwner("th"), "pr", "pr:"+key, []string{"p1"}, 25, "user:1")
+	if kept, err := s.GetDiffReviewComment(pr, "p1"); err != nil || kept.Status != "draft" {
+		t.Fatalf("a thread's review marked a PR's draft: %+v, %v", kept, err)
 	}
+	recordReviewSent(t, s, pr, "pr", "pr:"+key, []string{"p1"}, 30, "user:2")
 	if sent, err := s.GetDiffReviewComment(pr, "p1"); err != nil || sent.Status != "sent" || sent.SentTurnID != "user:2" {
 		t.Fatalf("sent = %+v, %v", sent, err)
 	}

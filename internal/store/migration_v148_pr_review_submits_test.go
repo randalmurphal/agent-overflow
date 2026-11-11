@@ -1,8 +1,19 @@
 package store
 
 import (
+	"strings"
 	"testing"
 )
+
+// recordReviewSent marks owner's drafts ids sent at at in turn as a posted
+// review does, under a submit id of its own.
+func recordReviewSent(t *testing.T, s *Store, owner DiffReviewOwner, scope, sourceKey string, ids []string, at int64, turn string) {
+	t.Helper()
+	submit := PRReviewSubmit{SubmitID: "submit-" + owner.String() + "-" + strings.Join(ids, ","), PRKey: "github:o/r:1", Owner: owner, Result: []byte(`{}`), CreatedAt: at}
+	if err := s.RecordPRReviewSubmit(submit, PRReviewSubmitSent{Scope: scope, SourceKey: sourceKey, CommentIDs: ids, SentTurnID: turn}); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // v148 creates pr_review_submits, whose rows name one owner and a JSON
 // result.
