@@ -60,7 +60,7 @@
     if (count === 0) return 'No results';
     return `${result.current + 1}/${count}${result.capped ? '+' : ''}`;
   });
-  let placeholder = $derived(`Find in ${provider?.noun ?? 'pane'}`);
+  let placeholder = $derived(stepping || !provider ? `Find in ${provider?.noun ?? 'pane'}` : `Filter ${provider.noun}`);
 
   let inputEl: HTMLInputElement | undefined = $state(undefined);
 
@@ -129,7 +129,7 @@
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div
     role="search"
-    aria-label={`Find in ${title}`}
+    aria-label={stepping ? `Find in ${title}` : `Filter ${title}`}
     {...{ [PANE_FIND_BAR_ATTR]: '' }}
     data-testid="pane-find-bar"
     data-find-mode={stepping ? 'step' : 'filter'}

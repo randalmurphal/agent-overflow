@@ -225,7 +225,7 @@ describe('<PaneFindBar> for a filter', () => {
     expect(queryByTestId('pane-find-previous')).toBeNull();
     expect(queryByTestId('pane-find-next')).toBeNull();
     expect(getByTestId('pane-find-close')).not.toBeNull();
-    expect((getByTestId('pane-find-input') as HTMLInputElement).placeholder).toBe('Find in merge requests');
+    expect((getByTestId('pane-find-input') as HTMLInputElement).placeholder).toBe('Filter merge requests');
     const count = getByTestId('pane-find-count');
     expect(count.textContent?.trim()).toBe('');
     await fireEvent.input(getByTestId('pane-find-input'), { target: { value: 'retry' } });

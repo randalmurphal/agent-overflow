@@ -36,7 +36,7 @@ export interface PaneFindResult {
  * `clear` ends the session: highlights, timers and pending reads go.
  */
 export interface PaneFindProvider {
-  /** Completes the placeholder: "Find in {noun}". */
+  /** Completes the placeholder: "Find in {noun}", or "Filter {noun}" for a filter. */
   readonly noun: string;
   /** Reactive. */
   readonly result: PaneFindResult;

@@ -63,7 +63,7 @@ describe('the list find', () => {
     expect(column.firstElementChild).toBe(bar);
     expect(bar.dataset.findMode).toBe('filter');
     const input = view.getByTestId('pane-find-input') as HTMLInputElement;
-    expect(input.placeholder).toBe('Find in merge requests');
+    expect(input.placeholder).toBe('Filter merge requests');
 
     await fireEvent.input(input, { target: { value: 'retry' } });
     await waitFor(() => expect(listedNumbers(view)).toEqual(['5']));
@@ -110,7 +110,7 @@ describe('the list find', () => {
     await fireEvent.click(view.getByRole('radio', { name: 'Pipelines' }));
     await waitFor(() => expect(view.getAllByTestId('pipeline-row').map((row) => row.querySelector('[data-testid="pipeline-status"]')!.textContent)).toEqual([expect.stringContaining('#72')]));
     expect((view.getByTestId('pane-find-input') as HTMLInputElement).value).toBe('retry');
-    expect(view.getByTestId('pane-find-input')).toHaveAttribute('placeholder', 'Find in pipelines');
+    expect(view.getByTestId('pane-find-input')).toHaveAttribute('placeholder', 'Filter pipelines');
     expect(view.getByTestId('pane-find-count')).toHaveTextContent('1 match');
 
     await fireEvent.click(view.getByRole('radio', { name: 'Merge requests' }));

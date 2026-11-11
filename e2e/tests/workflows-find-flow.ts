@@ -61,7 +61,7 @@ export function registerWorkflowsFindFlow({ compact }: { compact: boolean }): vo
     await expect(bar.getByTestId('pane-find-next')).toHaveCount(0);
     const input = bar.getByTestId('pane-find-input');
     await expect(input).toBeFocused();
-    await expect(input).toHaveAttribute('placeholder', 'Find in workflows');
+    await expect(input).toHaveAttribute('placeholder', 'Filter workflows');
     const barBox = (await bar.boundingBox())!;
     const controlsBox = (await pane.getByTestId('workflows-controls').boundingBox())!;
     expect(barBox.y + barBox.height).toBeLessThanOrEqual(controlsBox.y + 1);

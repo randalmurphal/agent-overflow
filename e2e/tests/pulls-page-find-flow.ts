@@ -54,7 +54,7 @@ export function registerPullsPageFindFlow({ compact }: { compact: boolean }): vo
       await expect(bar.getByTestId('pane-find-next')).toHaveCount(0);
       const input = bar.getByTestId('pane-find-input');
       await expect(input).toBeFocused();
-      await expect(input).toHaveAttribute('placeholder', 'Find in merge requests');
+      await expect(input).toHaveAttribute('placeholder', 'Filter merge requests');
       const barBox = (await bar.boundingBox())!;
       const columnBox = (await column.boundingBox())!;
       const toolbarBox = (await filterButton.boundingBox())!;
@@ -161,7 +161,7 @@ export function registerPullsPageFindFlow({ compact }: { compact: boolean }): vo
       await expect(pane.getByTestId('pipeline-row')).toHaveCount(1);
       await expect(pane.getByTestId('pipeline-row')).toContainText('v3.9.2');
       await expect(input).toHaveValue('v3.9');
-      await expect(input).toHaveAttribute('placeholder', 'Find in pipelines');
+      await expect(input).toHaveAttribute('placeholder', 'Filter pipelines');
       await expect(bar.getByTestId('pane-find-count')).toHaveText('1 match');
       await input.fill('zzz-none');
       await expect(pane.getByTestId('pipelines-empty')).toContainText('No listed pipelines match "zzz-none".');
