@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -16,9 +17,10 @@ import (
 	"agent-overflow/internal/testutil"
 )
 
-// useForgefake serves engine over HTTP as the app's isolated forge
+// useForgefake serves engine (a forgefake.Engine, or a handler in front
+// of one) over HTTP as the app's isolated forge
 // transport.
-func useForgefake(t *testing.T, app *App, engine *forgefake.Engine) {
+func useForgefake(t *testing.T, app *App, engine http.Handler) {
 	t.Helper()
 	srv := httptest.NewServer(engine)
 	t.Cleanup(srv.Close)

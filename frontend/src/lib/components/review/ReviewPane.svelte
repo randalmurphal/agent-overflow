@@ -485,7 +485,7 @@
         </ReviewDiffBody>
       </div>
     {/if}
-    {#if !review.conflictView && review.drafts.length > 0}
+    {#if !review.conflictView && review.sendStripShown}
       <ReviewSendStrip {review} />
     {/if}
     </RenderBoundary>

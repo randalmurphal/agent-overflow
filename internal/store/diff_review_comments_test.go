@@ -687,3 +687,75 @@ func TestSupersedingAClaimedCommentClearsItsClaim(t *testing.T) {
 		}
 	}
 }
+
+// A posted review marks sent exactly the drafts that still carry the text
+// and anchor the forge received: an edit, a move, a delete or an earlier
+// send since the review read them leaves the comment as it is, and another
+// owner's draft of the same id is never touched.
+func TestMarkPostedDiffReviewDraftsSentMarksOnlyWhatWasPosted(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	owner := PRReviewOwner("github:o/r:5")
+	other := PRReviewOwner("github:o/r:6")
+	const source = "pr:github:o/r:5"
+	createReviewComments(t, s, owner, "pr", source, "kept", "edited", "moved", "gone", "sent", "same")
+	createReviewComments(t, s, other, "pr", "pr:github:o/r:6", "other")
+	read, err := s.ListDraftDiffReviewCommentsByID(owner, "pr", source, []string{"kept", "edited", "moved", "gone", "sent", "same"}, DiffReviewMessageRows{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	posted := make([]PostedDiffReviewDraft, 0, len(read))
+	for _, draft := range read {
+		posted = append(posted, PostedDiffReviewDraftOf(draft))
+	}
+	posted = append(posted, PostedDiffReviewDraft{ID: "other", Body: "other", FilePath: "a.go", Side: "new", NewLine: 1})
+	// While the review posted: one edited, one edited back to its text,
+	// one deleted, one sent another way. "moved" is the same text on
+	// another line in the store.
+	if _, err := s.UpdateDiffReviewComment(owner, "edited", DiffReviewCommentUpdate{Body: "new text"}, 20); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateDiffReviewComment(owner, "same", DiffReviewCommentUpdate{Body: "x"}, 20); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateDiffReviewComment(owner, "same", DiffReviewCommentUpdate{Body: "same"}, 21); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteOrResolveDiffReviewComment(owner, "gone", 20); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkDiffReviewCommentsSent(owner, "pr", source, []string{"sent"}, 20, "user:1"); err != nil {
+		t.Fatal(err)
+	}
+	for i := range posted {
+		if posted[i].ID == "moved" {
+			posted[i].NewLine = 9
+		}
+	}
+	marked, err := s.MarkPostedDiffReviewDraftsSent(owner, "pr", source, posted, 30, "pr:head")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(marked)
+	if strings.Join(marked, " ") != "kept same" {
+		t.Fatalf("marked %v, want kept and same", marked)
+	}
+	for id, want := range map[string]string{"kept": "sent", "same": "sent", "edited": "draft", "moved": "draft", "sent": "sent"} {
+		if got := reviewCommentStatus(t, s, owner, id); got != want {
+			t.Errorf("%s is %s, want %s", id, got, want)
+		}
+	}
+	if kept, err := s.GetDiffReviewComment(owner, "kept"); err != nil || kept.SentTurnID != "pr:head" || kept.SentAt != 30 {
+		t.Fatalf("kept = %+v, %v", kept, err)
+	}
+	if got := reviewCommentStatus(t, s, other, "other"); got != "draft" {
+		t.Fatalf("another PR's draft is %s", got)
+	}
+	// Marking again marks nothing: the drafts are sent.
+	if again, err := s.MarkPostedDiffReviewDraftsSent(owner, "pr", source, posted, 40, "pr:head"); err != nil || len(again) != 0 {
+		t.Fatalf("again = %v, %v", again, err)
+	}
+	if _, err := s.ListDraftDiffReviewCommentsByID(owner, "pr", source, []string{"kept"}, DiffReviewMessageRows{}); !errors.Is(err, ErrDiffReviewCommentsNotDrafts) {
+		t.Fatalf("a sent draft read as %v, want ErrDiffReviewCommentsNotDrafts", err)
+	}
+}

@@ -32,6 +32,5 @@ export {
     ReviewLineComment,
     ReviewReplyTo,
     ReviewThread,
-    ReviewVerdict,
-    SubmitReviewRequest
+    ReviewVerdict
 } from "./models.js";

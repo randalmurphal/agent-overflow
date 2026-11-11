@@ -1258,6 +1258,40 @@ func TestGitLabMergeActionsThroughTheAppsForgeCode(t *testing.T) {
 	}
 }
 
+// A GitHub review submit with line comments through the app's own code:
+// each comment is a thread of the viewer's on its line and side, a range
+// keeps its start, and nothing is unhandled.
+func TestGitHubSubmitReviewLineCommentsThroughTheAppsForgeCode(t *testing.T) {
+	r := newRig(t, githubMergeFixture("success"))
+	ref := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "merge", Number: 9}
+	right, left, start := 3, 7, 5
+	review := gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "Two notes", Comments: []gitops.ReviewLineComment{
+		{Path: "a.go", Body: "nit", Line: &right, Side: "right"},
+		{Path: "b.go", Body: "range", Line: &left, StartLine: &start, Side: "left"},
+	}}
+	if _, err := r.core.SubmitReview(forgeapi.WithInteractive(t.Context()), ref, review); err != nil {
+		t.Fatalf("SubmitReview: %v", err)
+	}
+	got := map[string]gitops.ReviewThread{}
+	for _, thread := range mergeRead(t, r, ref).Threads {
+		if len(thread.Comments) == 1 && thread.Comments[0].AuthorLogin == "alice" {
+			got[thread.Comments[0].Body] = thread
+		}
+	}
+	nit, rangeThread := got["nit"], got["range"]
+	if nit.Path != "a.go" || nit.Line == nil || *nit.Line != 3 || nit.Side != "right" {
+		t.Fatalf("nit = %+v", nit)
+	}
+	if rangeThread.Path != "b.go" || rangeThread.Line == nil || *rangeThread.Line != 7 || rangeThread.StartLine == nil || *rangeThread.StartLine != 5 || rangeThread.Side != "left" {
+		t.Fatalf("range = %+v", rangeThread)
+	}
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		if inv.Unhandled {
+			t.Errorf("unhandled %s %s: %s", inv.Method, inv.Path, inv.Detail)
+		}
+	}
+}
+
 // A GitLab review submit through the app's own code: one that fails after
 // creating its drafts deletes exactly those, by the ids GitLab returned,
 // and never the viewer's own pending draft with the same text; a retry

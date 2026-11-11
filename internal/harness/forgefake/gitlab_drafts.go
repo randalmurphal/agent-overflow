@@ -105,6 +105,22 @@ func gitlabDraftJSON(r *Repo, p *Pull, draft DraftNote, position *gitlabDraftPos
 	return out
 }
 
+// glabDraftList lists the viewer's pending draft notes, one page: the
+// fake's merge requests hold fewer than a page.
+func glabDraftList(e *Engine, c *call, m []string) response {
+	r, p, fail, ok := e.glabMRFrom(c, m)
+	if !ok {
+		return fail
+	}
+	out := []map[string]any{}
+	for _, draft := range p.DraftNotes {
+		if strings.EqualFold(draft.Author, e.viewer) {
+			out = append(out, gitlabDraftJSON(r, p, draft, nil))
+		}
+	}
+	return glabOK(jsonResponse(out))
+}
+
 // glabDraftDelete deletes one of the viewer's draft notes by id; another
 // id, the viewer's published or another author's, is GitLab's 404.
 func glabDraftDelete(e *Engine, c *call, m []string) response {
