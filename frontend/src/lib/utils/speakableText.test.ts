@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { lex } from '../markdown';
 import {
   MAX_PIECE_CHARS,
@@ -260,9 +260,37 @@ describe('capPiece', () => {
     expect(capPiece('12345 6789', 40)).toEqual(['12345', '6789']);
     // A character past the basic plane is never cut in half, and one that
     // alone passes the limit is still a piece.
-    expect(capPiece('𠀀𠀁𠀂', 14)).toEqual(['𠀀𠀁', '𠀂']);
+    expect(capPiece('𠀀𠀁𠀂', 8)).toEqual(['𠀀𠀁', '𠀂']);
+    expect(capPiece('😀😀😀', 5)).toEqual(['😀😀', '😀']);
     expect(capPiece('𠀀𠀁', 3)).toEqual(['𠀀', '𠀁']);
     expect(capPiece('77', 3)).toEqual(['7', '7']);
+    // Nothing is lost or reordered around the cuts.
+    expect(capPiece('ab, cd  ef,gh ij', 4)).toEqual(['ab,', 'cd', 'ef,g', 'h ij']);
+    expect(capPiece(' a\t\t\t\tb ', 2)).toEqual(['a', 'b']);
+  });
+
+  it('reads each character a bounded number of times, however long the run', () => {
+    const digits = '7'.repeat(100_000);
+    const original = String.prototype.codePointAt;
+    let budget = 0;
+    // Stops the work at the budget, so a rescan fails here and fast.
+    const read = vi.spyOn(String.prototype, 'codePointAt').mockImplementation(function (this: string, at: number) {
+      if (read.mock.calls.length > budget) throw new Error(`read more than ${budget} characters`);
+      return original.call(this, at);
+    });
+    try {
+      budget = digits.length * 1.5;
+      expect(capPiece(digits, MAX_SECTION_CHARS)).toHaveLength(1000);
+      read.mockClear();
+      // The same run as a reply: measured, split into sections and into
+      // device pieces.
+      budget = digits.length * 8;
+      const sections = speakableSections(`\`${digits}\``);
+      expect(sections).toHaveLength(1000);
+      expect(sections.map((section) => section.text).join('')).toBe(digits);
+    } finally {
+      read.mockRestore();
+    }
   });
 });
 
@@ -272,9 +300,20 @@ describe('spokenLength', () => {
     expect(spokenLength('2026')).toBe(32);
     expect(spokenLength('２０')).toBe(16);
     expect(spokenLength('中文')).toBe(8);
-    expect(spokenLength('𠀀')).toBe(5);
+    expect(spokenLength('𠀀')).toBe(4);
     expect(spokenLength('한국')).toBe(6);
     expect(spokenLength('かなカナ')).toBe(8);
     expect(spokenLength('ไทย')).toBe(3);
+    expect(spokenLength('😀')).toBe(2);
+  });
+
+  it('counts a decimal digit of any script as a digit', () => {
+    // Arabic-Indic, Eastern Arabic-Indic, Devanagari, Thai, mathematical bold.
+    for (const digit of ['٣', '۳', '३', '๓', '𝟑']) expect(spokenLength(digit), digit).toBe(8);
+    const ascii = '123456 '.repeat(100).trim();
+    const sectionsOf = (text: string) => speakableSections(text).length;
+    expect(sectionsOf(ascii)).toBeGreaterThan(5);
+    expect(sectionsOf(ascii.replace(/\d/g, (d) => '٠١٢٣٤٥٦٧٨٩'[Number(d)]))).toBe(sectionsOf(ascii));
+    expect(sectionsOf(ascii.replace(/\d/g, (d) => '०१२३४५६७८९'[Number(d)]))).toBe(sectionsOf(ascii));
   });
 });

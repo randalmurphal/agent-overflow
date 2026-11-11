@@ -148,8 +148,9 @@ offers),
   split at sentences into parts of about equal length.
 - These lengths are spoken lengths (`spokenLength` in
   `utils/speakableText.ts`), because a request is capped by its audio's
-  duration: a letter counts 1, a digit 8, a Chinese character 4, a Hangul
-  syllable 3 and a kana 2. 800 is about 50 seconds in an OpenAI voice,
+  duration: a letter counts 1, a decimal digit of any script 8, a Chinese
+  character 4, a Hangul syllable 3 and a kana 2. 800 is about 50 seconds
+  in an OpenAI voice,
   against the 90 a request may run. The weights for digits and the three
   scripts are estimates from speaking rates, not measured against OpenAI.
 - A device voice reads a section as its sentences, each one utterance

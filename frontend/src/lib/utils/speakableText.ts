@@ -46,44 +46,47 @@ export const MAX_SECTION_CHARS = 800;
 
 /**
  * How long `text` takes to say, in letters of English prose (about 0.064 s
- * each in an OpenAI voice). A digit counts 8: "123,456" is said as fifty-odd
- * letters. A Chinese character counts 4, a Hangul syllable 3 and a kana 2,
- * from the syllables a second those languages are spoken at. Never less
- * than `text.length`.
+ * each in an OpenAI voice). A decimal digit of any script counts 8:
+ * "123,456" is said as fifty-odd letters. A Chinese character counts 4, a
+ * Hangul syllable 3 and a kana 2, from the syllables a second those
+ * languages are spoken at. Never less than `text.length`.
  */
 export function spokenLength(text: string): number {
   let length = 0;
-  for (let i = 0; i < text.length; i += 1) length += unitLength(text.charCodeAt(i));
+  for (let i = 0; i < text.length; i += 1) {
+    const point = text.codePointAt(i)!;
+    length += pointLength(point);
+    if (point > 0xffff) i += 1;
+  }
   return length;
 }
 
-function unitLength(code: number): number {
-  if (code < 0x30) return 1;
-  if (code <= 0x39) return 8;
-  if (code < 0x3040) return 1;
-  if (code <= 0x30ff) return 2;
-  if (code >= 0x3400 && code <= 0x9fff) return 4;
-  if (code >= 0xac00 && code <= 0xd7a3) return 3;
-  // The lead surrogate of a Chinese character past the basic plane.
-  if (code >= 0xd840 && code <= 0xd87f) return 4;
-  if (code >= 0xf900 && code <= 0xfaff) return 4;
-  if (code >= 0xff10 && code <= 0xff19) return 8;
-  return 1;
+const DECIMAL_DIGIT = /\p{Nd}/u;
+
+function pointLength(point: number): number {
+  if (point < 0x30) return 1;
+  if (point <= 0x39) return 8;
+  // Below the Arabic-Indic digits there is no other digit or dense script.
+  if (point < 0x660) return 1;
+  if (point >= 0x3040 && point <= 0x30ff) return 2;
+  if (point >= 0xac00 && point <= 0xd7a3) return 3;
+  if ((point >= 0x3400 && point <= 0x9fff) || (point >= 0xf900 && point <= 0xfaff)) return 4;
+  if (point >= 0x20000 && point <= 0x3ffff) return 4;
+  if (DECIMAL_DIGIT.test(String.fromCodePoint(point))) return 8;
+  return point > 0xffff ? 2 : 1;
 }
 
-// The longest prefix of `text` within `max` spoken length: whole
-// characters (never half a surrogate pair), and at least one.
-function prefixWithin(text: string, max: number): number {
-  const leads = (at: number): boolean => at >= 0 && text.charCodeAt(at) >= 0xd800 && text.charCodeAt(at) <= 0xdbff;
+// Where the longest run of whole characters from `start` within `max`
+// spoken length ends; at least one character.
+function prefixEnd(text: string, start: number, max: number): number {
   let length = 0;
-  let end = 0;
+  let end = start;
   while (end < text.length) {
-    length += unitLength(text.charCodeAt(end));
-    if (length > max) break;
-    end += 1;
+    const point = text.codePointAt(end)!;
+    length += pointLength(point);
+    if (length > max && end > start) break;
+    end += point > 0xffff ? 2 : 1;
   }
-  if (leads(end - 1)) end -= 1;
-  if (end === 0) end = leads(0) ? 2 : 1;
   return end;
 }
 
@@ -305,29 +308,38 @@ export function splitSentences(text: string): string[] {
   return sentences.map((s) => s.trim()).filter((s) => s !== '');
 }
 
-// Clause punctuation written without a following space.
+// Clause punctuation: written before a space, or wide and without one.
+const SPACED_CLAUSE = /[;:,]/;
 const WIDE_CLAUSE = /[，、；：]/;
 
 /** One sentence as pieces of spoken length at most `max`: cut after clause
- * punctuation where it can be, otherwise at whitespace, otherwise
- * anywhere. */
+ * punctuation where it can be, otherwise at a space, otherwise anywhere.
+ * Each cut reads only the piece it makes, so the work is linear in the
+ * sentence. */
 export function capPiece(sentence: string, max = MAX_PIECE_CHARS): string[] {
   const pieces: string[] = [];
-  let rest = sentence;
-  while (spokenLength(rest) > max) {
-    const limit = prefixWithin(rest, max);
-    // A cut after rest[i] keeps i + 1 characters, so i is below the limit;
-    // the space after spaced punctuation may sit on it.
-    const window = rest.slice(0, limit + 1);
-    let clause = Math.max(window.lastIndexOf('; '), window.lastIndexOf(': '), window.lastIndexOf(', '));
-    for (let i = limit - 1; i > clause; i -= 1) {
-      if (WIDE_CLAUSE.test(rest[i])) clause = i;
+  let start = 0;
+  for (;;) {
+    // A piece starts at a character, so none is empty.
+    while (start < sentence.length && /\s/.test(sentence[start])) start += 1;
+    const limit = prefixEnd(sentence, start, max);
+    if (limit >= sentence.length) break;
+    // The last clause end and the last space before the limit.
+    let clause = -1;
+    let space = -1;
+    for (let i = limit - 1; i > start && clause < 0; i -= 1) {
+      const char = sentence[i];
+      if (char === ' ') {
+        if (space < 0) space = i;
+      } else if (WIDE_CLAUSE.test(char) || (SPACED_CLAUSE.test(char) && sentence[i + 1] === ' ')) {
+        clause = i;
+      }
     }
-    const space = window.lastIndexOf(' ');
-    const cut = clause > 0 ? clause + 1 : space > 0 ? space : limit;
-    pieces.push(rest.slice(0, cut).trim());
-    rest = rest.slice(cut).trim();
+    const cut = clause >= 0 ? clause + 1 : space >= 0 ? space : limit;
+    pieces.push(sentence.slice(start, cut).trim());
+    start = cut;
   }
+  const rest = sentence.slice(start).trim();
   if (rest) pieces.push(rest);
   return pieces;
 }
