@@ -110,6 +110,12 @@
     return row.lineIndex === undefined ? undefined : findLineKey(path, row.lineIndex);
   }
 
+  // Split view shows a context line on both sides; find counts it once,
+  // so only its new side carries the key.
+  function leftFindKey(left: PatchDisplayRow, right: PatchDisplayRow | null | undefined): string | undefined {
+    return right && right.lineIndex === left.lineIndex ? undefined : findKey(left);
+  }
+
   function gapLabel(gap: DiffGap): string {
     if (gap.hidden < 0) return 'unchanged lines';
     return gap.hidden === 1 ? '1 unchanged line' : `${gap.hidden} unchanged lines`;
@@ -242,7 +248,7 @@
           {#if pair.left}
             {@render actionCell(pair.left, sideAnchor(pair.left, 'old'), 'old-line')}
             <span class="flex shrink-0 {gutterTintClass(pair.left.line.type)}">{@render gutter(pair.left.oldLine)}</span>
-            <span class="min-w-0 flex-1 {contentClass} pr-2" data-find-key={findKey(pair.left)}><DiffLineContent line={pair.left.line} spans={getSpansForReviewLine(file, pair.left.lineIndex ?? -1, pair.left.line, spanContext, painted)} intraline={pair.left.intraline ?? null} /></span>
+            <span class="min-w-0 flex-1 {contentClass} pr-2" data-find-key={leftFindKey(pair.left, pair.right)}><DiffLineContent line={pair.left.line} spans={getSpansForReviewLine(file, pair.left.lineIndex ?? -1, pair.left.line, spanContext, painted)} intraline={pair.left.intraline ?? null} /></span>
           {/if}
         </div>
         <div class="group relative flex w-1/2 min-w-0 border-l border-border-subtle before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {pair.right ? lineTintClass(pair.right.line.type) : 'bg-surface-0/40'}">
