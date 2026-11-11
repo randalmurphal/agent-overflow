@@ -4,6 +4,9 @@ import '../../../app.css';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import ReviewCommentThread from './ReviewCommentThread.svelte';
 import ReviewThreadComments from './ReviewThreadComments.svelte';
+import ReviewPaneFind from './ReviewPaneFind.svelte';
+import { getPaneFindProvider, openPaneFind, resetPaneFindForTest, setPaneFindQuery } from '../../stores/paneFind.svelte';
+import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
 import { createMarkdownFindTextCache } from '../chat/markdown/markdownFindText';
 import { createFindHighlighter, type FindHighlighter } from '../../utils/findHighlights';
 import { parseReviewFiles } from '../../utils/patchStore';
@@ -56,6 +59,7 @@ beforeEach(() => {
 afterEach(() => {
   highlighter?.dispose();
   highlighter = null;
+  resetPaneFindForTest();
 });
 
 describe('review find over comments', () => {
@@ -85,6 +89,46 @@ describe('review find over comments', () => {
     for (const hit of hits.filter((h) => h.place.kind !== 'line' && h.place.kind !== 'header')) {
       highlighter.setCurrent({ row: hit.rowKey, occurrence: hit.occurrence });
       expect(highlighter.currentRange(), `${hit.rowKey}#${hit.occurrence}`).not.toBeNull();
+    }
+  });
+});
+
+describe('review find over a draft open in its editor', () => {
+  it('counts nothing of a draft while its editor is open, and recounts in place on entering and leaving it', async () => {
+    const host = document.createElement('div');
+    host.style.width = '700px';
+    document.body.appendChild(host);
+    const thread = render(ReviewCommentThread, { target: host, props: { comment: DRAFT, onUpdate: () => {}, onDelete: () => {} } });
+    const files = parseReviewFiles(PATCH);
+    const review = {
+      drafts: [DRAFT], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
+    } as unknown as ReviewPaneState;
+    render(ReviewPaneFind, {
+      target: document.body,
+      props: {
+        findKey: 'pane-edit', title: 'Review', review, view: 'diff', files, root: host,
+        diff: () => ({ findReadingPosition: () => null, revealFindHit: () => false, scrollFindBy: () => {} }),
+        log: () => undefined,
+      },
+    });
+    const find = getPaneFindProvider('pane-edit')!;
+    try {
+      openPaneFind('pane-edit');
+      setPaneFindQuery('pane-edit', 'needle');
+      await waitFor(() => expect([find.result.count, find.result.pending]).toEqual([2, false]));
+      thread.getByRole('button', { name: 'Edit' }).click();
+      await waitFor(() => expect(find.result.count).toBe(0));
+      expect(host.querySelector('[data-find-key^="dc:"]')).toBeNull();
+      // The editor's text is not on the page as text find can paint.
+      const box = host.querySelector('textarea')!;
+      box.value = 'needle needle needle';
+      box.dispatchEvent(new Event('input', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(find.result.count).toBe(0);
+      thread.getByRole('button', { name: 'Cancel' }).click();
+      await waitFor(() => expect(find.result.count).toBe(2));
+    } finally {
+      files[0].body.segments[0].store.dispose();
     }
   });
 });

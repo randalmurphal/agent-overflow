@@ -31,7 +31,7 @@
   import { createMarkdownFindTextCache, type MarkdownFindText } from '../chat/markdown/markdownFindText';
   import { FORGE_ATTACHMENT_SOURCE_CONTEXT, type ForgeAttachmentSourceReader } from '../chat/markdown/forgeAttachmentContext';
   import { visibleBody } from '../../utils/reviewComments';
-  import { commentOfRowKey, sameToggledDetails, toggledCommentDetails } from '../../utils/reviewFindDetails';
+  import { commentOfRowKey, editingDrafts, sameKeys, sameToggledDetails, toggledCommentDetails } from '../../utils/reviewFindDetails';
   import { scanReviewFind, type ReviewFindHit } from '../../utils/reviewFindScan';
   import { findHitAtOrBelow } from '../../utils/reviewFindRows';
   import { REVIEW_FILE_HEADER_BAR_PX } from '../../utils/reviewRows';
@@ -84,6 +84,7 @@
   const readForgeSource = getContext<ForgeAttachmentSourceReader | undefined>(FORGE_ATTACHMENT_SOURCE_CONTEXT);
   let texts: ((source: string, open?: readonly boolean[]) => MarkdownFindText) | null = null;
   let toggled = new Map<string, boolean[]>();
+  let editing = new Set<string>();
 
   function commentTexts(): (source: string, open?: readonly boolean[]) => MarkdownFindText {
     return (texts ??= createMarkdownFindTextCache({ embeddedHtml: true, forgeSource: readForgeSource?.() ?? null }));
@@ -98,18 +99,25 @@
     });
   }
 
-  // A <details> opened or closed by hand, or a row that remounted as
-  // written: rescan in place.
-  function reconcileDetails(): void {
-    const next = readToggled();
-    if (sameToggledDetails(next, toggled)) return;
-    toggled = next;
+  function readEditing(): Set<string> {
+    return root && untrack(() => view) === 'diff' ? editingDrafts(root) : new Set();
+  }
+
+  // A <details> opened or closed by hand, a draft's editor opened or
+  // closed, or a row that remounted as written: rescan in place.
+  function reconcileMounted(): void {
+    const nextToggled = readToggled();
+    const nextEditing = readEditing();
+    if (sameToggledDetails(nextToggled, toggled) && sameKeys(nextEditing, editing)) return;
+    toggled = nextToggled;
+    editing = nextEditing;
     find.refresh();
   }
 
   function releaseHighlighter(): void {
     texts = null;
     toggled = new Map();
+    editing = new Set();
     highlighter?.dispose();
     highlighter = null;
     highlighterRoot = null;
@@ -177,14 +185,16 @@
     remote: false,
     run: (query, context) => {
       const conflicts = untrack(() => view) === 'conflicts';
+      toggled = readToggled();
+      editing = readEditing();
       const content = untrack(() => ({
         files,
         drafts: conflicts ? [] : review.drafts,
         prThreads: conflicts ? [] : review.prThreads,
         foldLines: conflicts ? (path: string) => review.conflictFoldLines(path) : undefined,
         commentText: (body: string, rowKey: string) => commentTexts()(body, toggled.get(rowKey)).runs,
+        editing,
       }));
-      toggled = readToggled();
       return scanReviewFind(content, query, { limit: REVIEW_FIND_LIMIT, live: context.live, emit: context.emit, pause });
     },
   };
@@ -261,7 +271,7 @@
           rowsOnly: true,
           onMatches: () => {
             land();
-            reconcileDetails();
+            reconcileMounted();
           },
         });
         highlighterRoot = at;

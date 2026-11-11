@@ -116,6 +116,7 @@
       {#if editing}
         <textarea
           bind:value={editBody}
+          data-find-editing={findDraftKey(comment.id)}
           rows="3"
           class="w-full resize-none rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2.5 py-2 text-xs leading-relaxed text-fg focus:border-accent/60 focus:outline-none"
           onkeydown={onEditKeydown}

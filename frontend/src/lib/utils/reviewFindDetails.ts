@@ -1,7 +1,9 @@
-// The <details> a reader opened or closed by hand in the mounted PR comment
-// rows, which review find counts as the reader left them. A row that
-// unmounts renders its comment as written again when it returns, so only
-// mounted rows are read.
+// What the reader changed by hand in the mounted comment rows, which
+// review find counts as the reader left it: the <details> opened or closed
+// in PR comments, and the drafts open in their editor, whose saved body is
+// not on screen (and whose textarea Highlight ranges cannot paint). A row
+// that unmounts renders as written again when it returns, so only mounted
+// rows are read.
 
 const COMMENT_ROWS = '[data-find-key^="pc:"]';
 
@@ -25,6 +27,15 @@ export function toggledCommentDetails(
     if (states.some((open, index) => open !== written[index])) out.set(key, states);
   }
   return out;
+}
+
+/** The `data-find-key`s of the drafts open in their editor under `root`. */
+export function editingDrafts(root: ParentNode): Set<string> {
+  return new Set(Array.from(root.querySelectorAll<HTMLElement>('[data-find-editing]'), (element) => element.dataset.findEditing!));
+}
+
+export function sameKeys(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  return a.size === b.size && [...a].every((key) => b.has(key));
 }
 
 export function sameToggledDetails(a: ReadonlyMap<string, readonly boolean[]>, b: ReadonlyMap<string, readonly boolean[]>): boolean {

@@ -7,7 +7,8 @@
 // prefix, the line numbers or a hunk gap's hidden lines, which are not
 // in memory), the hidden lines of a collapsed conflict fold, and the
 // bodies of the draft comments the diff inserts after their lines, and of
-// its PR thread comments as their markdown renders (`commentText`). A match names the element
+// its PR thread comments as their markdown renders (`commentText`); never a
+// textarea, nor a draft open in its editor (`editing`). A match names the element
 // that shows it (`data-find-key`, the keys below) and its index among
 // that element's matches, which the highlighter paints as current.
 //
@@ -74,6 +75,8 @@ export interface ReviewFindContent {
   /** The runs of text a PR comment's shown body renders as in the element
    * `rowKey` names (chat/markdown/markdownFindText.ts). */
   commentText(body: string, rowKey: string): readonly string[];
+  /** The `data-find-key`s of the drafts open in their editor: not shown. */
+  editing?: ReadonlySet<string>;
   /** The hidden lines of each collapsed fold of a conflict file, by fold id. */
   foldLines?(path: string): ReadonlyMap<number, readonly string[]> | null;
 }
@@ -209,6 +212,7 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
           const draft = content.drafts.find((comment) => comment.id === insert.threadKey);
           if (!draft) return false;
           const rowKey = findDraftKey(draft.id);
+          if (content.editing?.has(rowKey)) return false;
           return await emitText(draft.body, (occurrence) => ({
             ...base, identity: `${path}\u0000${rowKey}\u0000${occurrence}`, rowKey, occurrence, line, place: { kind: 'draft', commentId: draft.id },
           }));

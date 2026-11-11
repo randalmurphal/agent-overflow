@@ -114,7 +114,9 @@ PR stores; components own presentation and interaction.
 - Find paints only text inside a `data-find-key` element, keyed as
   `utils/reviewFindScan.ts` and `utils/ciLogFind.ts` key their hits. A row
   that renders searched text carries the matching key; text the scanner
-  skips (the +/- gutter) carries `data-find-skip`.
+  skips (the +/- gutter) carries `data-find-skip`. An editor that replaces
+  a searched text while open carries `data-find-editing` with that text's
+  key, so the text is not counted while it is off screen.
 - Wrap the review surface in `shared/RenderBoundary.svelte`.
 
 Review mutations reconcile from authoritative responses and show partial or
