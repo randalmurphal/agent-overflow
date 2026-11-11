@@ -94,6 +94,13 @@ const CapabilitySendsPending = "sends-pending.v1"
 // backend without it keeps a flushed message until it sees the row.
 const CapabilityFlushSettlement = "flush-settlement.v1"
 
+// CapabilityThreadFind names the find bar's search contract:
+// SearchTimelineItems for an agent transcript, and SearchThreadItems
+// answering only the main transcript's visible top-level rows. A backend
+// without it answers SearchThreadItems with agent descendants included, so
+// a client offers no find for its threads.
+const CapabilityThreadFind = "thread-find.v1"
+
 var serverCapabilities = []string{
 	CapabilityRemoteNotifications,
 	CapabilityPasskeys,
@@ -109,6 +116,7 @@ var serverCapabilities = []string{
 	CapabilityTimelineDigests,
 	CapabilitySendsPending,
 	CapabilityFlushSettlement,
+	CapabilityThreadFind,
 }
 
 // serverCapabilitiesWithBrowser is that list plus the one flag whose

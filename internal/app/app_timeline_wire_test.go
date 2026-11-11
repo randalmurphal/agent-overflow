@@ -68,4 +68,20 @@ func TestTimelinePagingPreservesLegacyWireAndSelectsScopedRows(t *testing.T) {
 	invoke("ListItemsAfterCursor", thread.ID, main.OldestCursor, 20, map[string]any{})
 	invoke("GetThreadUserMessageTicks", thread.ID)
 	invoke("GetTimelineUserMessageTicks", thread.ID, map[string]any{"scopeRootId": "agent"})
+
+	// Find keeps its three-argument main read and selects scoped rows
+	// through the selection-taking method.
+	var mainHits, scopedHits []store.ThreadMessageHit
+	if err := json.Unmarshal(invoke("SearchThreadItems", thread.ID, "transcript", 10), &mainHits); err != nil {
+		t.Fatal(err)
+	}
+	if len(mainHits) != 0 {
+		t.Fatalf("main find leaked child rows: %+v", mainHits)
+	}
+	if err := json.Unmarshal(invoke("SearchTimelineItems", thread.ID, "transcript", map[string]any{"scopeRootId": "agent"}, 10), &scopedHits); err != nil {
+		t.Fatal(err)
+	}
+	if len(scopedHits) != 1 || scopedHits[0].ItemID != "child" || scopedHits[0].TurnIndex != 2 || scopedHits[0].ItemIndex != 1 {
+		t.Fatalf("scoped find = %+v", scopedHits)
+	}
 }

@@ -75,7 +75,9 @@ import type {
   LoadUntilItemResult,
   PaneErrorKind,
   PaneScrollController,
+  ScrollToItemOptions,
   ScrollToItemRequest,
+  ScrollToItemWithdrawal,
 } from './threadPaneShared';
 import type {
   PayloadExpansionLease,
@@ -154,6 +156,14 @@ export interface TimelineSource {
   readonly getItemById: (itemId: string) => Item | undefined;
   readonly timelineRevision: number;
   readonly historyRevision: number;
+  /** Advances when loaded rows' text may have changed; read only by find. */
+  readonly searchRevision: number;
+  /**
+   * While watched, `searchRevision` also advances for upserts, deltas,
+   * patches and removals of rows the window refuses or does not hold.
+   * Returns the stop; a find watches only while open.
+   */
+  watchSearchableEvents(): () => void;
   readonly rowUiRetentionRevision: number;
   readonly activityRuns: ThreadActivityRuns;
   /**
@@ -187,7 +197,9 @@ export interface TimelineWindow {
   readonly loadOlder: () => Promise<LoadOlderResult>;
   readonly loadNewer: () => Promise<LoadOlderResult>;
   readonly loadRecentTail: () => Promise<boolean>;
-  readonly loadUntilItem: (itemID: string) => Promise<LoadUntilItemResult>;
+  readonly loadUntilItem: (itemID: string, live?: () => boolean) => Promise<LoadUntilItemResult>;
+  /** Free an ended navigation's paging claims; see `ThreadTimelineWindow`. */
+  readonly releaseEndedNavigation: () => void;
   /** Set when a wire settle deferred its window prune to visual quiet. */
   readonly hasDeferredRecentWindowPrune: boolean;
   readonly retryDeferredRecentWindowPrune: () => void;
@@ -217,9 +229,11 @@ export interface ScrollHost {
   readonly attachScrollController: (controller: PaneScrollController) => void;
   readonly detachScrollController: (controller: PaneScrollController) => void;
   readonly scrollToItemRequest: ScrollToItemRequest | null;
-  readonly requestScrollToItem: (itemID: string) => void;
+  readonly requestScrollToItem: (itemID: string, options?: ScrollToItemOptions) => void;
   /** Take-once: clears the pending request; null when none or stale. */
   readonly takeScrollToItemRequest: () => string | null;
+  readonly scrollToItemWithdrawal: ScrollToItemWithdrawal | null;
+  readonly withdrawScrollToItem: (owner: object) => void;
   /** One-shot structural-append spring window; call before the mutation. */
   readonly armStructuralSpring: () => boolean;
 }

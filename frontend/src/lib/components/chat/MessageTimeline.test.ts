@@ -1127,7 +1127,7 @@ describe('<MessageTimeline>', () => {
       await tick();
       await tick();
 
-      expect(loadSpy).toHaveBeenCalledWith('a');
+      expect(loadSpy).toHaveBeenCalledWith('a', expect.any(Function));
     });
 
     it('surfaces a warning toast when the scroll target no longer exists', async () => {

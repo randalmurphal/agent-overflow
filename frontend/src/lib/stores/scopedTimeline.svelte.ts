@@ -104,7 +104,7 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
     armLiveContentAppendSpring: scroll.armLiveContentAppendSpring,
     // A scoped surface holds child rows only; sends belong to the thread's pane.
     confirmSend: () => {}, awaitedSendId: () => null,
-    timelineWindow: window, streamingReveal: reveal, activityRuns: runs, get scopeRootId() { return selection.scopeRootId; },
+    timelineWindow: window, noteSearchableEvent: itemWindow.noteSearchableEvent, streamingReveal: reveal, activityRuns: runs, get scopeRootId() { return selection.scopeRootId; },
   });
   const contextRefresh = createRefreshScheduler({
     name: 'agent scope context', delayMs: 100, maxWaitMs: 500,
@@ -168,12 +168,14 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
       return;
     }
     if (mutation.kind === 'remove') {
+      itemWindow.noteSearchableEvent();
       remove(new Set([mutation.itemId]));
       if (mutation.itemId === selection.scopeRootId) { gone = true; generation++; }
       else contextRefresh.request();
       return;
     }
     if (mutation.kind === 'revert') {
+      itemWindow.noteSearchableEvent();
       const cut = mutation.event;
       const kept = new Set(cut.keptAnchorTurnItemIds ?? []);
       const survives = (item: Item) => item.turnIndex < cut.turnIndex

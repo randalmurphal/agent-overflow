@@ -173,19 +173,23 @@ var Defaults = []Keybinding{
 	{Key: "alt+shift+h", Command: "pane.moveLeft", DefaultID: "pane.moveLeft.vim"},
 	{Key: "alt+shift+l", Command: "pane.moveRight", DefaultID: "pane.moveRight.vim"},
 	{Key: "mod+shift+g", Command: "diff.panel.toggle", When: "hasActiveThread && !terminalFocus", DefaultID: "diff.panel.toggle"},
-	// mod+f is in-thread "find" (search the current thread's messages), matching
-	// the editor convention where Ctrl+F finds in the current document and
-	// Ctrl+Shift+F (search.messages) finds across everything. The sidebar
-	// thread-search it replaced stays on mod+/ (sidebar.focus-search) and the
-	// command palette.
-	{Key: "mod+f", Command: "search.in-thread", When: "hasActiveThread && !terminalFocus", DefaultID: "search.in-thread"},
+	// mod+f opens the focused pane's find bar, matching the editor convention
+	// where Ctrl+F finds in the current document and Ctrl+Shift+F
+	// (search.messages) finds across everything. paneFindAvailable is false
+	// for a pane with no find provider, so the chord falls through.
+	{Key: "mod+f", Command: "find.in-pane", When: "paneFindAvailable && !terminalFocus", DefaultID: "find.in-pane"},
 	{Key: "mod+,", Command: "settings.open", DefaultID: "settings.open"},
 	// Esc closes the settings overlay. Position relative to thread.interrupt
 	// below is not load-bearing: the two `when` expressions are mutually
 	// exclusive (an open settings surface sets anyModalOpen, which
 	// thread.interrupt negates), so at most one of them ever matches a press.
 	{Key: "esc", Command: "settings.close", When: "settingsOpen", DefaultID: "settings.close"},
-	{Key: "esc", Command: "thread.interrupt", When: "hasActiveThread && (turnActive || sendInFlight || hasPendingPrompt) && !anyModalOpen", DefaultID: "thread.interrupt"},
+	{Key: "esc", Command: "thread.interrupt", When: "hasActiveThread && (turnActive || sendInFlight || hasPendingPrompt) && !anyModalOpen && !paneFindOpen", DefaultID: "thread.interrupt"},
+	// Esc closes the focused pane's open find bar, from the bar, the
+	// composer or the transcript, before it can interrupt a turn: interrupt
+	// negates paneFindOpen, and this row sits after it because dispatch walks
+	// the list in reverse. A modal surface owns the press (anyModalOpen).
+	{Key: "esc", Command: "find.close", When: "paneFindOpen && !anyModalOpen", DefaultID: "find.close"},
 	{Key: "mod+1", Command: "thread.jump.1", DefaultID: "thread.jump.1"},
 	{Key: "mod+2", Command: "thread.jump.2", DefaultID: "thread.jump.2"},
 	{Key: "mod+3", Command: "thread.jump.3", DefaultID: "thread.jump.3"},
@@ -496,15 +500,105 @@ func chmodSensitiveFile(path string) error {
 // normalizeUserEntries canonicalises a user override list before it is
 // merged or written: `Key` is trimmed, so a whitespace-only chord from
 // a hand-edited file collapses onto the Unbound sentinel instead of
-// reaching the frontend as an unparseable chord. Copies — the caller's
-// slice is never mutated.
-func normalizeUserEntries(user []Keybinding) []Keybinding {
-	out := make([]Keybinding, len(user))
-	for i, u := range user {
+// reaching the frontend as an unparseable chord, and an override of a
+// renamed default takes its current identity (defaultRenames). An
+// override migrated that way yields to one stored for the current
+// identity of the same default row, whatever their order, so the result
+// is stable across loads. Copies — the caller's slice is never mutated.
+func normalizeUserEntries(defaults, user []Keybinding) []Keybinding {
+	out := make([]Keybinding, 0, len(user))
+	migrated := make([]bool, 0, len(user))
+	current := make(map[string]bool, len(user))
+	for _, u := range user {
 		u.Key = strings.TrimSpace(u.Key)
-		out[i] = u
+		next := renamed(u)
+		moved := next != u
+		if row := targetDefaultID(defaults, next); row != "" && !moved {
+			current[row] = true
+		}
+		out = append(out, next)
+		migrated = append(migrated, moved)
+	}
+	kept := out[:0]
+	for i, u := range out {
+		if migrated[i] && current[targetDefaultID(defaults, u)] {
+			continue
+		}
+		kept = append(kept, u)
+	}
+	return kept
+}
+
+// targetDefaultID is the id of the default row an override replaces, by
+// the identity Merge matches it with; "" when it replaces none.
+func targetDefaultID(defaults []Keybinding, u Keybinding) string {
+	for _, d := range defaults {
+		switch {
+		case u.DefaultID != "":
+			if d.DefaultID == u.DefaultID {
+				return d.DefaultID
+			}
+		case u.DefaultKey != "":
+			if d.Command == u.Command && d.When == u.When && d.Key == u.DefaultKey {
+				return d.DefaultID
+			}
+		case d.Command == u.Command && d.When == u.When:
+			return d.DefaultID
+		}
+	}
+	return ""
+}
+
+// defaultRename records a shipped row whose command, default id or `when`
+// changed. A stored override names its default by id, by (command, when,
+// key) or by (command, when), so each old value maps onto the new one at
+// load, before defaults merge: a custom chord and an explicit unbinding
+// stay on the row they were chosen for.
+type defaultRename struct {
+	oldCommand, oldDefaultID, oldWhen string
+	command, defaultID, when          string
+}
+
+var defaultRenames = []defaultRename{
+	{
+		oldCommand: "search.in-thread", oldDefaultID: "search.in-thread", oldWhen: "hasActiveThread && !terminalFocus",
+		command: "find.in-pane", defaultID: "find.in-pane", when: "paneFindAvailable && !terminalFocus",
+	},
+	{
+		oldCommand: "thread.interrupt", oldDefaultID: "thread.interrupt", oldWhen: "hasActiveThread && (turnActive || sendInFlight || hasPendingPrompt) && !anyModalOpen",
+		command: "thread.interrupt", defaultID: "thread.interrupt", when: "hasActiveThread && (turnActive || sendInFlight || hasPendingPrompt) && !anyModalOpen && !paneFindOpen",
+	},
+}
+
+// DefaultIDRenames maps each renamed default id to its current id, for a
+// store that keeps overrides by default id alone (the phone's).
+func DefaultIDRenames() map[string]string {
+	out := make(map[string]string, len(defaultRenames))
+	for _, r := range defaultRenames {
+		if r.oldDefaultID != r.defaultID {
+			out[r.oldDefaultID] = r.defaultID
+		}
 	}
 	return out
+}
+
+// renamed maps a stored override of a renamed default onto its current
+// identity. The entry's `when` changes only when it is the shipped one.
+func renamed(u Keybinding) Keybinding {
+	for _, r := range defaultRenames {
+		if u.Command != r.oldCommand || (u.DefaultID != "" && u.DefaultID != r.oldDefaultID) {
+			continue
+		}
+		u.Command = r.command
+		if u.DefaultID != "" {
+			u.DefaultID = r.defaultID
+		}
+		if u.When == r.oldWhen {
+			u.When = r.when
+		}
+		return u
+	}
+	return u
 }
 
 // Merge applies user overrides over defaults.
@@ -524,7 +618,7 @@ func normalizeUserEntries(user []Keybinding) []Keybinding {
 // nothing (the default it named is gone from this release), so keeping
 // it would only render a chordless ghost row nothing can restore.
 func Merge(defaults, user []Keybinding) []Keybinding {
-	user = normalizeUserEntries(user)
+	user = normalizeUserEntries(defaults, user)
 	type defaultID string
 	type defaultKey struct{ command, when, originalKey string }
 	type legacyKey struct{ command, when string }

@@ -247,6 +247,7 @@ export const UpdateNewThreadDefaults = dispatch('UpdateNewThreadDefaults');
 export const WriteWorkspaceFile = dispatch('WriteWorkspaceFile');
 export const SearchThreadMessages = dispatch('SearchThreadMessages');
 export const SearchThreadItems = dispatch('SearchThreadItems');
+export const SearchTimelineItems = dispatch('SearchTimelineItems');
 export const GenerateCommitMessage = dispatch('GenerateCommitMessage');
 
 export const GetPayloadPreview = dispatch('GetPayloadPreview');

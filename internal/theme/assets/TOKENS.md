@@ -4,7 +4,7 @@
      Source: frontend/src/lib/theme/tokenRegistry.ts + the app stylesheets.
      Regenerate: cd frontend && node scripts/generate-theme-reference.mjs -->
 
-Every color this app paints, and the name a theme file calls it by. 85 tokens: 46 in `colors`, 21 in `syntax`, 16 in `ansi`, 2 in `code`.
+Every color this app paints, and the name a theme file calls it by. 87 tokens: 48 in `colors`, 21 in `syntax`, 16 in `ansi`, 2 in `code`.
 
 ## Where theme files live
 
@@ -129,6 +129,8 @@ whatever base the mode has).
 | `md-link` | Markdown links in chat prose (the code-axis counterpart is syntax-markup-link). Follows the accent. **Derived** — override only to stop it tracking. | `var(--accent)` | — |
 | `md-blockquote` | Markdown block-quote text in chat prose (the code-axis counterpart is syntax-markup-quote). Follows the supporting text color. **Derived** — override only to stop it tracking. | `var(--text-secondary)` | — |
 | `md-marker` | Markdown list bullets and numbers in chat prose (the code-axis counterpart is syntax-markup-list). Follows the muted body-text tier (fg-muted). **Derived** — override only to stop it tracking. | `var(--fg-muted)` | — |
+| `find-match` | Ground painted behind every find-bar match. Translucent; follows the warning color. **Derived** — override only to stop it tracking. | `color-mix(in oklab, var(--warning) 28%, transparent)` | — |
+| `find-match-current` | Ground painted behind the current find-bar match. Translucent; follows the warning color. **Derived** — override only to stop it tracking. | `color-mix(in oklab, var(--warning) 60%, transparent)` | — |
 | `code-inline-bg` | Ground behind inline code spans in prose. | `oklch(0.275 0.014 285.82)` | `oklch(0.9 0.012 255)` |
 | `md-inline-code` | Markdown inline-code text, painted on the code-inline-bg chip (the highlight counterpart is syntax-markup-raw). Both chip tokens are UI-axis: the chip is monochrome prose furniture, not a highlighted surface, and text and ground stay on ONE axis so no UI/code combination can split the pair. Follows the focal text color. **Derived** — override only to stop it tracking. | `var(--text-primary)` | — |
 | `info` | Informational status: input prompts and neutral notices. | `oklch(0.62 0.17 250)` | `oklch(0.55 0.17 250)` |

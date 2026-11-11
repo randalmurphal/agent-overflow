@@ -11,6 +11,7 @@
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
   import ThreadTerminalPlacement from '../terminal/ThreadTerminalPlacement.svelte';
   import ChatHeader from './ChatHeader.svelte';
+  import ThreadPaneFind from './ThreadPaneFind.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
   import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
@@ -462,6 +463,13 @@
     style="--composer-height: {composerHeight}px;"
   >
     <ChatHeader {pane} {onPaneDragStart} />
+    <ThreadPaneFind
+      paneId={pane.paneId}
+      title={pane.thread?.title || 'Thread'}
+      timeline={pane}
+      scope={pane.threadId ? { threadId: pane.threadId } : null}
+      root={chatColumn ?? null}
+    />
 
     <!--
       Single growing region: the timeline takes the entire remaining

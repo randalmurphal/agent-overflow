@@ -49,7 +49,7 @@ export function registerPullsCommands(): void {
     dismissesSurface: true,
     label: 'Pull requests: Back to the list',
     description: 'Close the open log or conflicts, else the open merge request or pipeline, and return to the list.',
-    when: 'pullsPaneFocused && toolDetailOpen',
+    when: 'pullsPaneFocused && toolDetailOpen && !overlayOpen',
     run: () => {
       stepPullsBack();
     },
