@@ -52,7 +52,11 @@ import (
 //  6. a provider's bar shows a count, a current match and enabled stepping
 //     exactly when the Manager holds a search for its mount at the sequence
 //     the bar shows, and then that search's count and current match; the
-//     Manager holds no other search of the mount.
+//     Manager holds no other search of the mount;
+//  7. an open bar shows an error exactly when the last start or step of its
+//     newest search failed, and the pane shows a find cleanup error exactly
+//     when a stop the provider made failed and no stop through it or further
+//     has been answered since, while the pane is mounted.
 
 // updateFindScripts rewrites the scripts the frontend replays.
 var updateFindScripts = os.Getenv("AO_UPDATE_FIND_SCRIPTS") == "1"
@@ -87,6 +91,11 @@ type findTableEnv struct {
 	startFail bool
 	// expire makes the next call run past its deadline.
 	expire bool
+	// failed is, per provider and sequence, whether that search's last start
+	// or step failed; undelivered is, per provider, the highest bound of a
+	// failed stop no answered stop has covered since.
+	failed      map[string]map[uint64]bool
+	undelivered map[string]uint64
 	// actions counts the find actions run on each page, and lastStop is
 	// each page's last engine stop: at which action, and whether it failed.
 	actions  map[string]int
@@ -138,11 +147,14 @@ type findScriptCall struct {
 }
 
 // findScriptView is what the provider's bar shows at the end: count is -1
-// for an uncounted match.
+// for an uncounted match. Error is whether the bar shows an error, Cleanup
+// whether the pane shows a find cleanup error.
 type findScriptView struct {
 	Count   int  `json:"count"`
 	Current int  `json:"current"`
 	Pending bool `json:"pending"`
+	Error   bool `json:"error"`
+	Cleanup bool `json:"cleanup"`
 }
 
 type findScript struct {
@@ -194,8 +206,14 @@ type findProvider struct {
 	// holds an answer of the search it shows.
 	count, current    int
 	pending, answered bool
-	open              bool
-	query             string
+	// errored is whether view.error is set; undelivered and cleanup are
+	// undelivered for the provider's mount and whether onCleanupError last
+	// reported a failure.
+	errored     bool
+	undelivered uint64
+	cleanup     bool
+	open        bool
+	query       string
 	// debounce is a typed query whose debounce has not run out, "" for none.
 	debounce string
 	disposed bool
@@ -210,7 +228,7 @@ func (p *findProvider) record(step findScriptStep) {
 }
 
 func (p *findProvider) reset() {
-	p.count, p.current, p.pending, p.answered = 0, -1, false, false
+	p.count, p.current, p.pending, p.answered, p.errored = 0, -1, false, false, false
 }
 
 func (p *findProvider) show(state FindState) {
@@ -329,12 +347,17 @@ func (p *findProvider) complete(call *findCall) {
 	if call.err != nil {
 		p.record(findScriptStep{Error: true})
 		if intent.kind == FindStop {
+			p.undelivered = max(p.undelivered, intent.seq)
+			if !p.disposed {
+				p.cleanup = true
+			}
 			p.retryStop(intent)
 			return
 		}
 		if intent.seq == p.showing {
 			p.reset()
 			p.showing = 0
+			p.errored = true
 			p.drop(FindNext, FindPrev)
 		}
 		p.queueStop(intent.page, intent.seq)
@@ -345,6 +368,12 @@ func (p *findProvider) complete(call *findCall) {
 	switch {
 	case intent.kind == FindStop:
 		p.settleRetries(intent)
+		if p.undelivered != 0 && p.undelivered <= intent.seq {
+			p.undelivered = 0
+			if !p.disposed {
+				p.cleanup = false
+			}
+		}
 	case intent.seq != p.showing:
 		// A search the bar no longer shows.
 	case call.state.Foreign:
@@ -449,6 +478,7 @@ func (p *findProvider) searchQuery(t *testing.T, query string, debounced bool) {
 		return
 	}
 	p.pending = true
+	p.errored = false
 	if !debounced {
 		p.debounce = query
 		return
@@ -494,6 +524,9 @@ func (p *findProvider) dispose(t *testing.T) {
 	p.record(findScriptStep{UI: "dispose"})
 	p.open = false
 	p.close(t)
+	if p.undelivered != 0 {
+		p.cleanup = false
+	}
 	p.disposed = true
 }
 
@@ -503,6 +536,7 @@ func newFindTableEnv(t *testing.T, base string) *findTableEnv {
 	e := &findTableEnv{
 		f: f, mounts: map[string]string{"A": f.mount}, incs: map[uint64]uint64{},
 		actions: map[string]int{}, lastStop: map[string]findStopRecord{},
+		failed: map[string]map[uint64]bool{"A": {}, "B": {}}, undelivered: map[string]uint64{},
 	}
 	other, err := f.manager.NewCompanionPage(t.Context(), f.access)
 	if err != nil {
@@ -653,6 +687,14 @@ func (e *findTableEnv) run(t *testing.T, p *findProvider, call *findCall) {
 		page.findMu.Unlock()
 	}
 	call.ran, call.state, call.err = true, state, err
+	switch {
+	case intent.kind != FindStop:
+		e.failed[p.label][intent.seq] = err != nil
+	case err != nil:
+		e.undelivered[p.label] = max(e.undelivered[p.label], intent.seq)
+	case intent.seq >= e.undelivered[p.label]:
+		e.undelivered[p.label] = 0
+	}
 	name := p.label + " " + intent.kind
 	if err != nil {
 		e.errs = append(e.errs, findTableError{op: name, kind: intent.kind, err: err})
@@ -793,6 +835,14 @@ func (e *findTableEnv) check(t *testing.T, name string) {
 				t.Errorf("%s: provider %s shows count %d at %d; the Manager's search has %d at %d", name, label, p.count, p.current, want, session.state.Current)
 			}
 		}
+		wantError := p.open && p.query != "" && !p.pending && e.failed[label][p.issued]
+		if p.errored != wantError {
+			t.Errorf("%s: provider %s's bar shows an error %v; its newest search %d last failed %v", name, label, p.errored, p.issued, wantError)
+		}
+		wantCleanup := !p.disposed && e.undelivered[label] != 0
+		if p.cleanup != wantCleanup {
+			t.Errorf("%s: provider %s's pane shows a cleanup error %v; a stop through %d is undelivered", name, label, p.cleanup, e.undelivered[label])
+		}
 		for id, session := range sessions {
 			if session.active && session.owner == p.mount && (!held || id != p.page) {
 				t.Errorf("%s: provider %s: the Manager searches %s for its mount at sequence %d; the bar shows sequence %d on %s", name, label, e.pageLabel(id), session.seq, p.showing, e.pageLabel(p.page))
@@ -833,7 +883,7 @@ func (e *findTableEnv) scripts(t *testing.T, name string) []findScript {
 		}
 		out = append(out, findScript{
 			Name: name + " / " + label, Mount: e.labels[p.mount], Page: "page-1", Steps: p.steps, Bar: p.open,
-			View: findScriptView{Count: p.count, Current: p.current, Pending: p.pending},
+			View: findScriptView{Count: p.count, Current: p.current, Pending: p.pending, Error: p.errored, Cleanup: p.cleanup},
 		})
 	}
 	return out
@@ -1235,6 +1285,33 @@ func TestFindNamedSequences(t *testing.T) {
 			a.uiSearch(t, "beta")
 			a.release(t)
 			a.uiType(t, "gamma")
+			a.uiClear(t)
+		}},
+		{"a query too long, then a short one that finds, then the bar closes and opens", "search", func(t *testing.T, e *findTableEnv) {
+			a := e.providers["A"]
+			a.uiSearch(t, findOversizedQuery)
+			if !a.errored {
+				t.Fatal("the bar shows no error for a query too long")
+			}
+			a.uiSearch(t, "beta")
+			a.uiReopen(t)
+		}},
+		{"a stop refused after its retries, then a later stop answered", "search", func(t *testing.T, e *findTableEnv) {
+			a := e.providers["A"]
+			e.mu.Lock()
+			e.stopFail = "always"
+			e.mu.Unlock()
+			a.uiSearch(t, "")
+			for a.inFlight == nil && a.runRetries(t) {
+			}
+			if !a.cleanup {
+				t.Fatal("the pane shows no cleanup error for an undelivered stop")
+			}
+			e.mu.Lock()
+			e.stopFail = ""
+			e.mu.Unlock()
+			e.install(t)
+			a.uiSearch(t, "beta")
 			a.uiClear(t)
 		}},
 		{"a stop refused, the next search shown, then the stop's retry refused", "search", func(t *testing.T, e *findTableEnv) {

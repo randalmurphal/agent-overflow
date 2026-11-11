@@ -259,10 +259,15 @@ store's alone; the backend holds only what the engine holds.
   without tracking which search the backend holds. A queued start is
   dropped when the query changes. The bar shows one sequence: an answer or
   failure changes what it shows only for that sequence, and an end or a
-  foreign answer for it closes the bar. A failed start or step is followed
-  by a stop through its sequence. A queued stop is removed only by
-  running. A stop that fails is reported on the pane, never changes what
-  the bar shows, and is sent again on the provider's own timer, at most
+  foreign answer for it closes the bar. A failed start or step of the
+  shown sequence is that search's result: the bar shows its error until
+  the next query or the bar's close; in engine mode, which has no bar, a
+  toast reports it. Every failed start or step is
+  followed by a stop through its sequence. A queued stop is removed only
+  by running. A stop that fails never changes what the bar shows; the
+  pane shows a find cleanup error, in its own entry apart from browser
+  action errors, until a stop through it or further is answered or the
+  pane unmounts. It is sent again on the provider's own timer, at most
   three times in all, until it or a later stop through it is answered. A
   stop that never succeeds leaves the page's highlights until the next
   start, a navigation, a page switch or the pane unmounting, each of which

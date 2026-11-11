@@ -5,9 +5,9 @@ import BrowserPane from './BrowserPane.svelte';
 import { makeStubPanelContext } from '../../../test/helpers/panelContext';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeThread } from '../../../test/helpers/chat';
-import { applyBrowserCompanionState, resetBrowserCompanionForTest } from '../../stores/browserCompanion.svelte';
-import { BROWSER_FIND_DEBOUNCE_MS, resetBrowserFindForTest } from '../../stores/browserFind.svelte';
-import { hasPaneFindProvider, isPaneFindOpen, openPaneFind, resetPaneFindForTest } from '../../stores/paneFind.svelte';
+import { applyBrowserCompanionState, noteBrowserActionError, resetBrowserCompanionForTest } from '../../stores/browserCompanion.svelte';
+import { BROWSER_FIND_DEBOUNCE_MS, BROWSER_FIND_STOP_ATTEMPTS, BROWSER_FIND_STOP_RETRY_MS, resetBrowserFindForTest } from '../../stores/browserFind.svelte';
+import { closePaneFind, hasPaneFindProvider, isPaneFindOpen, openPaneFind, resetPaneFindForTest } from '../../stores/paneFind.svelte';
 import { installCompanionPanes, openCompanion, resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { createPane, resetPanesForTest } from '../../stores/panes.svelte';
@@ -145,6 +145,70 @@ describe('<BrowserPane> find', () => {
       find: { pageId: 'a', incarnation: 1, mount: 'mount-1', seq, document: 1, session: 2, active: false, query: '', found: false, matches: 0, current: -1, capped: false },
     } as never);
     await waitFor(() => expect(view.queryByTestId('pane-find-bar')).toBeNull());
+  });
+
+  // A refusal is the refused search's result, in the bar: the next query
+  // replaces it, and the pane shows no alert for it at any point.
+  it('shows a refused query in the bar only, until a short query finds', async () => {
+    const tooLong = 'that search is too long; shorten it to 1024 bytes or fewer';
+    setBindingMock('BrowserCompanionFind', vi.fn(async (_thread: string, action: { kind: string; query?: string; mount: string; seq: number }) => {
+      if (action.kind === 'start' && (action.query ?? '').length > 1024) throw new Error(tooLong);
+      return {
+        pageId: 'a', incarnation: 1, mount: action.mount, seq: action.seq, document: 1, session: 1, active: action.kind !== 'stop', query: action.query ?? '', found: true, matches: 2, current: 0, capped: false,
+      };
+    }));
+    const view = mount('bar');
+    await waitFor(() => expect(hasPaneFindProvider('browser-main')).toBe(true));
+    openPaneFind('browser-main');
+    const input = await view.findByTestId('pane-find-input');
+    await fireEvent.input(input, { target: { value: 'a'.repeat(1025) } });
+    await vi.advanceTimersByTimeAsync(BROWSER_FIND_DEBOUNCE_MS);
+    await waitFor(() => expect(view.getByTestId('pane-find-error').textContent).toBe(`Find failed: ${tooLong}`));
+    expect(view.getAllByRole('alert'), 'the pane shows no alert of its own').toHaveLength(1);
+    await fireEvent.input(input, { target: { value: 'alpha' } });
+    await vi.advanceTimersByTimeAsync(BROWSER_FIND_DEBOUNCE_MS);
+    await waitFor(() => expect(view.getByTestId('pane-find-count').textContent?.trim()).toBe('1/2'));
+    expect(view.queryByTestId('pane-find-error')).toBeNull();
+    expect(view.queryAllByRole('alert')).toHaveLength(0);
+    closePaneFind('browser-main');
+    openPaneFind('browser-main');
+    await tick();
+    expect(view.queryAllByRole('alert')).toHaveLength(0);
+  });
+
+  // A stop that cannot be delivered after its retries may leave highlights:
+  // the pane says so, apart from browser action errors, until a later stop
+  // answers.
+  it('shows an undelivered stop on the pane until a later stop answers, apart from action errors', async () => {
+    let refusing = false;
+    setBindingMock('BrowserCompanionFind', vi.fn(async (_thread: string, action: { kind: string; query?: string; mount: string; seq: number }) => {
+      if (action.kind === 'stop' && refusing) throw new Error('fake engine: find stop failed');
+      return {
+        pageId: 'a', incarnation: 1, mount: action.mount, seq: action.seq, document: 1, session: 1, active: action.kind !== 'stop', query: action.query ?? '', found: true, matches: 2, current: 0, capped: false,
+      };
+    }));
+    const view = mount('bar');
+    await waitFor(() => expect(hasPaneFindProvider('browser-main')).toBe(true));
+    openPaneFind('browser-main');
+    const input = await view.findByTestId('pane-find-input');
+    await fireEvent.input(input, { target: { value: 'alpha' } });
+    await vi.advanceTimersByTimeAsync(BROWSER_FIND_DEBOUNCE_MS);
+    await waitFor(() => expect(view.getByTestId('pane-find-count').textContent?.trim()).toBe('1/2'));
+    refusing = true;
+    closePaneFind('browser-main');
+    await vi.advanceTimersByTimeAsync(BROWSER_FIND_STOP_RETRY_MS * BROWSER_FIND_STOP_ATTEMPTS);
+    const cleanup = await view.findByTestId('browser-find-cleanup-error');
+    expect(cleanup.textContent).toBe('Find could not clear the page: fake engine: find stop failed');
+    noteBrowserActionError(THREAD, '');
+    await tick();
+    expect(view.queryByTestId('browser-find-cleanup-error'), 'a browser action does not clear it').not.toBeNull();
+    refusing = false;
+    openPaneFind('browser-main');
+    await fireEvent.input(await view.findByTestId('pane-find-input'), { target: { value: 'beta' } });
+    await vi.advanceTimersByTimeAsync(BROWSER_FIND_DEBOUNCE_MS);
+    closePaneFind('browser-main');
+    await waitFor(() => expect(view.queryByTestId('browser-find-cleanup-error')).toBeNull());
+    expect(view.queryAllByRole('alert')).toHaveLength(0);
   });
 
   it('opens the engine find bar instead of its own for an engine that has one', async () => {

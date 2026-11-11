@@ -74,7 +74,9 @@ const (
 
 var errFindUnavailable = errors.New("browser: find is not available on this page's browser engine")
 
-var errFindQueryTooLong = fmt.Errorf("browser: find query exceeds %d bytes", maxFindQueryBytes)
+// errFindQueryTooLong words the query limit for the find bar, which shows it
+// as the search's result.
+var errFindQueryTooLong = fmt.Errorf("that search is too long; shorten it to %d bytes or fewer", maxFindQueryBytes)
 
 // The find actions (Find's kind).
 const (

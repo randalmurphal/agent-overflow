@@ -12,6 +12,8 @@
     browserCompanionAct,
     browserPaneMountId,
     noteBrowserActionError,
+    noteBrowserFindCleanupError,
+    browserFindCleanupError,
     reportBrowserPaneRect,
   } from '../../stores/browserCompanion.svelte';
   import { BrowserCompanionRevealPageFile } from '../../stores/bindings';
@@ -50,6 +52,7 @@
   let hostHeight = $state(0);
 
   let view = $derived(attachment?.current ?? null);
+  let findCleanupError = $derived(ctx.threadId ? browserFindCleanupError(ctx.threadId) : '');
   let pages = $derived(view?.state.pages ?? []);
   let sessionName = $derived(view?.state.sessionName ?? '');
   let activePageId = $derived(view?.state.activePageId ?? '');
@@ -109,7 +112,7 @@
         pageId: () => activePageId,
         mount: () => browserPaneMountId(threadId),
         closeBar: () => closePaneFind(paneId),
-        onError: (message) => noteBrowserActionError(threadId, message),
+        onCleanupError: (message) => noteBrowserFindCleanupError(threadId, message),
       });
       const release = registerPaneFindProvider(paneId, find);
       return () => {
@@ -462,6 +465,9 @@
 
   {#if view?.actionError}
     <div class="shrink-0 border-b border-error/25 bg-error/10 px-3 py-1.5 text-[0.7rem] text-error" role="alert">{view.actionError}</div>
+  {/if}
+  {#if findCleanupError}
+    <div class="shrink-0 border-b border-error/25 bg-error/10 px-3 py-1.5 text-[0.7rem] text-error" role="alert" data-testid="browser-find-cleanup-error">Find could not clear the page: {findCleanupError}</div>
   {/if}
 
   <!-- The host rect. The native browser view is positioned exactly over this

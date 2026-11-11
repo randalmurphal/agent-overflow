@@ -21,10 +21,11 @@
 // which search the backend holds.
 //
 // The bar shows one search: `showing`, its sequence, 0 for none. An answer or
-// failure changes what the bar shows only if it is for that sequence. An
-// answer for an action that changed nothing because its search is gone or
-// another find's is marked Foreign: for the shown search it is that search's
-// end.
+// failure changes what the bar shows only if it is for that sequence. A
+// failed start or step of it is its result: the bar shows the error
+// (`result.error`) until the next query or the bar's close. An answer for an
+// action that changed nothing because its search is gone or another find's
+// is marked Foreign: for the shown search it is that search's end.
 //
 // Every request is an intent made when the reader acts and carried to its
 // answer: start (its query), next, previous or stop. Each records the page
@@ -32,17 +33,21 @@
 // on this provider's own queue. A queued stop is cleanup the backend still
 // needs, so nothing but its own run removes it.
 //
-// A stop that fails is reported, never changes what the bar shows, and is
-// sent again on this provider's own timer, at most
-// BROWSER_FIND_STOP_ATTEMPTS times in all, until the backend answers it, or
-// a later stop through it or further is answered. A stop that never succeeds
+// A stop that fails never changes what the bar shows, and is sent again on
+// this provider's own timer, at most BROWSER_FIND_STOP_ATTEMPTS times in
+// all, until the backend answers it, or a later stop through it or further
+// is answered. Its failure outlives the bar, since the page may keep its
+// highlights, so it goes to the pane (`onCleanupError`) and is withdrawn
+// once a stop through it or further is answered. A stop that never succeeds
 // leaves the page's highlights until the next start, navigation, page switch
-// or pane unmount, each of which ends the engine's search.
+// or pane unmount, each of which ends the engine's search; an unmounted pane
+// shows nothing, so a dispose withdraws the failure.
 //
 // State: `showing`, `issued` (the highest sequence this provider made),
 // `stoppedThrough` (the highest a stop was made through), `bound` (the page
-// and mount of the newest start), `queue` (intents), the debounce timer and
-// the stop retry timers.
+// and mount of the newest start), `queue` (intents), `undelivered` (per
+// mount, the highest bound of a stop that failed and is not yet covered by
+// an answered one), the debounce timer and the stop retry timers.
 //
 // | Event                          | Effect                                                    |
 // |--------------------------------|-----------------------------------------------------------|
@@ -55,11 +60,12 @@
 // | engine find opened             | start(seed) as for a typed query                          |
 // | answer for `showing`           | shown; Foreign: the search ended, the bar closes          |
 // | answer for another sequence    | nothing                                                   |
-// | failed start or step           | for `showing`: reported, nothing shown; always: queue a   |
-// |                                | stop through its sequence                                 |
-// | answered stop                  | retries through it or below are dropped                   |
-// | failed stop                    | reported; sent again after the retry wait while attempts  |
-// |                                | remain                                                    |
+// | failed start or step           | for `showing`: the bar shows its error (engine mode: a    |
+// |                                | toast); always: queue a stop through its sequence         |
+// | answered stop                  | retries through it or below are dropped; the pane's       |
+// |                                | cleanup error goes once nothing undelivered is left       |
+// | failed stop                    | the pane shows the cleanup error; sent again after the    |
+// |                                | retry wait while attempts remain                          |
 // | end event for `showing`        | showing = 0, drop queued starts and steps, the bar closes |
 // | escape event for the shown     | the bar closes, if it is open                             |
 // | page                           |                                                           |
@@ -72,6 +78,7 @@ import {
 } from './bindings';
 import { isPaneFindOpen, type PaneFindProvider, type PaneFindResult } from './paneFind.svelte';
 import { errString } from '../utils/errors';
+import { addErrorToast } from './toast.svelte';
 
 export const BROWSER_FIND_DEBOUNCE_MS = 150;
 /** The wait before a failed stop is sent again. */
@@ -93,8 +100,11 @@ export interface BrowserFindOptions {
   mount: () => string | null;
   /** Closes the pane's bar, as `find.close` does. */
   closeBar: () => void;
-  /** A find request failed; the pane shows why. */
-  onError: (message: string) => void;
+  /**
+   * A stop could not be delivered, so the page may keep its highlights: the
+   * pane shows why. null withdraws it, once a later stop is answered.
+   */
+  onCleanupError: (message: string | null) => void;
 }
 
 type IntentKind = 'start' | 'next' | 'previous' | 'stop';
@@ -142,7 +152,7 @@ export type BrowserFind = PaneFindProvider & { dispose(): void };
 
 export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
   const { threadId, mode } = options;
-  const view = $state({ count: 0 as number | null, current: -1, pending: false, capped: false });
+  const view = $state({ count: 0 as number | null, current: -1, pending: false, capped: false, error: null as string | null });
   let showing = 0;
   let issued = 0;
   let stoppedThrough = 0;
@@ -151,6 +161,7 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
   const queue: Intent[] = [];
   let running = false;
   const retries: Array<{ intent: Intent; timer: ReturnType<typeof setTimeout> }> = [];
+  const undelivered = new Map<string, number>();
   let disposed = false;
 
   const result: PaneFindResult = {
@@ -158,6 +169,7 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
     get current() { return view.current; },
     get pending() { return view.pending; },
     get capped() { return view.capped; },
+    get error() { return view.error; },
   };
 
   function reset(): void {
@@ -165,6 +177,7 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
     view.current = -1;
     view.pending = false;
     view.capped = false;
+    view.error = null;
   }
 
   function show(state: BrowserFindState): void {
@@ -224,6 +237,20 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
     retries.push(entry);
   }
 
+  /** A stop failed: its bound stays undelivered until one through it answers. */
+  function noteUndelivered(stop: Intent, err: unknown): void {
+    undelivered.set(stop.mount, Math.max(undelivered.get(stop.mount) ?? 0, stop.seq));
+    if (!disposed) options.onCleanupError(errString(err));
+  }
+
+  /** An answered stop delivers every failed one through it or below. */
+  function settleUndelivered(stop: Intent): void {
+    const owed = undelivered.get(stop.mount);
+    if (owed === undefined || owed > stop.seq) return;
+    undelivered.delete(stop.mount);
+    if (undelivered.size === 0 && !disposed) options.onCleanupError(null);
+  }
+
   /** An answered stop: retries it makes needless, through it or below, go. */
   function settleRetries(stop: Intent): void {
     for (let i = retries.length - 1; i >= 0; i--) {
@@ -249,6 +276,7 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
           const answer = await call(intent);
           if (intent.kind === 'stop') {
             settleRetries(intent);
+            settleUndelivered(intent);
           } else if (intent.seq !== showing) {
             // A search the bar no longer shows.
           } else if (answer.foreign) {
@@ -259,14 +287,16 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
           }
         } catch (err) {
           if (intent.kind === 'stop') {
-            options.onError(errString(err));
+            noteUndelivered(intent, err);
             retryStop(intent);
             continue;
           }
           if (intent.seq === showing) {
             reset();
             showing = 0;
-            options.onError(errString(err));
+            // The engine's own UI has no place for it: a toast says it.
+            if (mode === 'engine') addErrorToast('Find could not open in this page', err);
+            else view.error = errString(err);
             drop(['next', 'previous']);
           }
           // The backend ended the search, refused it, or may hold it: the
@@ -359,6 +389,7 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
         return;
       }
       view.pending = true;
+      view.error = null;
       timer = setTimeout(() => {
         timer = null;
         begin(query);
@@ -369,6 +400,9 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
     clear: close,
     dispose(): void {
       close();
+      // The pane goes, and with its mount the backend ends its search and
+      // stops the engine's: nothing is left to show the failure on.
+      if (undelivered.size > 0) options.onCleanupError(null);
       disposed = true;
       threadFinds?.delete(handle);
       if (threadFinds?.size === 0) live.delete(threadId);

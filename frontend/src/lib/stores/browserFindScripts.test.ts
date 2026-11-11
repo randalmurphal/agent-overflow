@@ -52,7 +52,7 @@ interface Script {
   page: string;
   steps: ScriptStep[];
   bar: boolean;
-  view: { count: number; current: number; pending: boolean };
+  view: { count: number; current: number; pending: boolean; error: boolean; cleanup: boolean };
 }
 
 interface SentCall {
@@ -76,9 +76,10 @@ async function replay(script: Script): Promise<void> {
   let page = script.page;
   let disposed = false;
   let checked = 0;
+  let cleanup = false;
   const find = createBrowserFind({
     threadId: THREAD, paneId: PANE, mode: 'bar', pageId: () => page, mount: () => script.mount,
-    closeBar: () => closePaneFind(PANE), onError: () => {},
+    closeBar: () => closePaneFind(PANE), onCleanupError: (message) => { cleanup = message !== null; },
   });
   const release = registerPaneFindProvider(PANE, find);
   try {
@@ -135,7 +136,7 @@ async function replay(script: Script): Promise<void> {
     expect(replies.length, 'every call the provider sent was answered').toBe(0);
     expect(vi.getTimerCount(), 'no timer of the provider outlives what it serves').toBe(0);
     expect(isPaneFindOpen(PANE), 'the bar is open exactly as the port left it').toBe(script.bar);
-    expect({ count: find.result.count ?? -1, current: find.result.current, pending: find.result.pending }, 'the bar shows what the port left')
+    expect({ count: find.result.count ?? -1, current: find.result.current, pending: find.result.pending, error: find.result.error !== null, cleanup }, 'the bar shows what the port left')
       .toEqual(script.view);
   } finally {
     if (!disposed) {

@@ -259,7 +259,7 @@ func TestFindRefusesBadRequests(t *testing.T) {
 		{"a bar's open is no action", f.pageID, "open", "", 1, "find action"},
 		{"a bar's close is no action", f.pageID, "close", "", 1, "find action"},
 		{"no page", "", "start", "a", 1, "page id is required"},
-		{"query too long", f.pageID, "start", strings.Repeat("a", maxFindQueryBytes+1), 1, "query exceeds"},
+		{"query too long", f.pageID, "start", strings.Repeat("a", maxFindQueryBytes+1), 1, "that search is too long; shorten it to 1024 bytes or fewer"},
 		{"no sequence", f.pageID, "start", "a", 0, "names its sequence"},
 		{"a stop with no sequence", f.pageID, "stop", "", 0, "names its sequence"},
 	} {

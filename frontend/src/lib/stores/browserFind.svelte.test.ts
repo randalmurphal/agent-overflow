@@ -11,6 +11,8 @@ import {
 import { BrowserCompanionEvent, BrowserFindState } from './bindings';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { DisconnectedError, TransportError } from '../transport/wsClient';
+import { errString } from '../utils/errors';
+import { getToasts, resetToastsForTest } from './toast.svelte';
 import {
   closePaneFind,
   isPaneFindOpen,
@@ -31,6 +33,7 @@ interface Call {
 }
 
 const PANE = 'browser-main';
+const TOO_LONG = 'that search is too long; shorten it to 1024 bytes or fewer';
 
 function state(partial: Partial<BrowserFindState>): BrowserFindState {
   return new BrowserFindState({
@@ -57,16 +60,16 @@ const refused = (message: string) => new TransportError('method_error', message)
  */
 function setup(mode: BrowserFindMode = 'bar') {
   const closeBar = vi.fn(() => closePaneFind(PANE));
-  const onError = vi.fn();
+  const onCleanupError = vi.fn();
   const find = createBrowserFind({
-    threadId: 'thread', paneId: PANE, mode, pageId: () => pageId, mount: () => mount, closeBar, onError,
+    threadId: 'thread', paneId: PANE, mode, pageId: () => pageId, mount: () => mount, closeBar, onCleanupError,
   });
   const release = registerPaneFindProvider(PANE, find);
   const unmount = () => {
     release();
     find.dispose();
   };
-  return { find, closeBar, onError, unmount };
+  return { find, closeBar, onCleanupError, unmount };
 }
 
 /** A bar-mode provider whose bar is open with a search for `query`. */
@@ -106,6 +109,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   resetBrowserFindForTest();
   resetPaneFindForTest();
+  resetToastsForTest();
   calls = [];
   pageId = 'page-1';
   mount = 'mount-1';
@@ -129,6 +133,7 @@ afterEach(() => {
   vi.useRealTimers();
   resetBrowserFindForTest();
   resetPaneFindForTest();
+  resetToastsForTest();
 });
 
 describe('browser find provider', () => {
@@ -346,16 +351,16 @@ describe('browser find provider', () => {
   });
 
   // Row: failed start or step.
-  it('reports a failed start, clears the result, and stops through it once', async () => {
-    const { find, onError, closeBar } = setup();
+  it('shows a failed start as its result in the bar, and stops through it once', async () => {
+    const { find, onCleanupError, closeBar } = setup();
     answer = async (call) => {
       if (call.kind === 'start') throw refused('find runs on the page the browser pane shows');
       return state({ seq: 0, active: false, foreign: true });
     };
     find.search('alpha');
     await settle();
-    expect(onError).toHaveBeenCalledWith('find runs on the page the browser pane shows');
-    expect(find.result).toMatchObject({ count: 0, pending: false });
+    expect(find.result).toMatchObject({ count: 0, pending: false, error: 'find runs on the page the browser pane shows' });
+    expect(onCleanupError).not.toHaveBeenCalled();
     find.search('');
     find.next?.();
     await settle(0);
@@ -367,18 +372,42 @@ describe('browser find provider', () => {
   // before it was sent, leaves the search shown before it on the backend:
   // the stop through the newest sequence ends it.
   it('ends the search shown before a refused replacement', async () => {
-    const { find, onError } = await setupSearching();
+    const { find, onCleanupError } = await setupSearching();
     answer = async (call) => {
-      if (call.kind === 'start') throw refused('find query exceeds 1024 bytes');
+      if (call.kind === 'start') throw refused(TOO_LONG);
       return state({ seq: 1, active: false });
     };
     setPaneFindQuery(PANE, 'a'.repeat(1025));
     await settle();
-    expect(onError).toHaveBeenCalledTimes(1);
+    expect(find.result.error).toBe(TOO_LONG);
     closePaneFind(PANE);
     await settle(0);
     expect(calls.map((call) => [call.kind, call.seq])).toEqual([['start', 1], ['start', 2], ['stop', 2]]);
-    expect(find.result).toMatchObject({ count: 0, current: -1, pending: false });
+    expect(find.result).toMatchObject({ count: 0, current: -1, pending: false, error: null });
+    expect(onCleanupError).not.toHaveBeenCalled();
+  });
+
+  // A refusal is the result of the search the bar showed: the next query's
+  // result replaces it, and a closed bar shows none.
+  it('replaces a refused search\'s error with the next query\'s result, and drops it on close', async () => {
+    const { find, onCleanupError } = await setupSearching();
+    const answering = answer;
+    answer = (call) => call.kind === 'start' && call.query.length > 1024 ? Promise.reject(refused(TOO_LONG)) : answering(call);
+    setPaneFindQuery(PANE, 'a'.repeat(1025));
+    await settle();
+    expect(find.result.error).toBe(TOO_LONG);
+    setPaneFindQuery(PANE, 'beta');
+    expect(find.result.error, 'a new query is pending, not failed').toBeNull();
+    await settle();
+    expect(find.result).toMatchObject({ count: 3, current: 0, pending: false, error: null });
+    setPaneFindQuery(PANE, 'a'.repeat(1025));
+    await settle();
+    expect(find.result.error).toBe(TOO_LONG);
+    closePaneFind(PANE);
+    expect(find.result.error).toBeNull();
+    openPaneFind(PANE);
+    expect(find.result.error).toBeNull();
+    expect(onCleanupError).not.toHaveBeenCalled();
   });
 
   it('ends the search shown before a dropped replacement when the bar closes', async () => {
@@ -500,7 +529,7 @@ describe('browser find provider', () => {
 
   // Row: engine find opened.
   it('in engine mode opens the engine find with the seed, a find of its own each time', async () => {
-    const { find, onError } = setup('engine');
+    const { find, onCleanupError } = setup('engine');
     expect(find.openNative).toBeTypeOf('function');
     find.openNative?.('needle');
     find.search('ignored');
@@ -509,10 +538,13 @@ describe('browser find provider', () => {
     await settle(0);
     expect(calls).toMatchObject([{ kind: 'start', pageId: 'page-1', query: 'needle' }, { kind: 'start', query: '' }]);
     expect(calls[1].seq).toBeGreaterThan(calls[0].seq);
-    answer = async () => { throw refused('no engine find'); };
+    const answering = answer;
+    answer = (call) => call.kind === 'start' ? Promise.reject(refused('no engine find')) : answering(call);
     find.openNative?.('x');
     await settle(0);
-    expect(onError).toHaveBeenCalledWith('no engine find');
+    expect(getToasts()).toMatchObject([{ type: 'error', message: 'Find could not open in this page' }]);
+    expect(find.result.error, 'engine mode has no bar to show it').toBeNull();
+    expect(onCleanupError).not.toHaveBeenCalled();
   });
 
   // The engine's UI closes without telling AO, so it never reads as open:
@@ -572,7 +604,7 @@ describe('browser find provider', () => {
   for (const kind of ['start', 'next'] as const) {
     for (const [why, error] of unknowns) {
       it(`stops a search a ${kind} may have left after ${why}`, async () => {
-        const { find, closeBar, onError } = setup();
+        const { find, closeBar, onCleanupError } = setup();
         const answering = answer;
         if (kind === 'next') {
           find.search('alpha');
@@ -582,7 +614,8 @@ describe('browser find provider', () => {
         if (kind === 'start') find.search('alpha');
         else find.next?.();
         await settle();
-        expect(onError).toHaveBeenCalledTimes(1);
+        expect(find.result.error).toBe(errString(error()));
+        expect(onCleanupError).not.toHaveBeenCalled();
         expect(closeBar).not.toHaveBeenCalled();
         expect(calls.at(-2)?.kind).toBe(kind);
         expect(calls.at(-1)).toMatchObject({ kind: 'stop', seq: calls.at(-2)?.seq });
@@ -591,12 +624,12 @@ describe('browser find provider', () => {
     }
   }
 
-  // Row: failed stop. Reported, and sent again on the provider's own timer
-  // while attempts remain, through the pane's unmount too; no timer is left
-  // once the attempts are spent.
+  // Row: failed stop. Sent again on the provider's own timer while attempts
+  // remain, through the pane's unmount too; no timer is left once the
+  // attempts are spent. An unmounted pane shows no cleanup error.
   for (const [why, error] of [...unknowns, ['a refusal', () => refused('fake engine: find stop failed')] as [string, () => Error]]) {
     it(`retries a stop that failed with ${why}, a bounded number of times`, async () => {
-      const { onError, unmount } = await setupSearching();
+      const { onCleanupError, unmount } = await setupSearching();
       answer = async (call) => {
         if (call.kind === 'stop') throw error();
         return state({ seq: call.seq, session: 9, active: false });
@@ -614,12 +647,12 @@ describe('browser find provider', () => {
       await settle(BROWSER_FIND_STOP_RETRY_MS * 4);
       expect(kinds()).toEqual(['start', ...Array(BROWSER_FIND_STOP_ATTEMPTS).fill('stop')]);
       expect(new Set(calls.slice(1).map((call) => call.seq))).toEqual(new Set([calls[0].seq]));
-      expect(onError).toHaveBeenCalledTimes(BROWSER_FIND_STOP_ATTEMPTS);
+      expect(onCleanupError).not.toHaveBeenCalled();
     });
   }
 
-  it('clears a stop\'s retry once a retry answers', async () => {
-    const { find } = await setupSearching();
+  it('clears a stop\'s retry and the pane\'s cleanup error once a retry answers', async () => {
+    const { find, onCleanupError } = await setupSearching();
     let failures = 1;
     answer = async (call) => {
       if (call.kind === 'stop' && failures-- > 0) throw new DisconnectedError();
@@ -628,9 +661,43 @@ describe('browser find provider', () => {
     find.search('');
     await settle(0);
     expect(vi.getTimerCount()).toBe(1);
+    expect(onCleanupError.mock.calls).toEqual([[errString(new DisconnectedError())]]);
+    expect(find.result.error).toBeNull();
     await settle(BROWSER_FIND_STOP_RETRY_MS);
     expect(kinds()).toEqual(['start', 'stop', 'stop']);
     expect(vi.getTimerCount()).toBe(0);
+    expect(onCleanupError.mock.calls.at(-1)).toEqual([null]);
+  });
+
+  // A stop refused after its retries leaves the pane's error up until a
+  // later stop through it or further answers; a dispose withdraws it.
+  it('keeps the cleanup error of a stop refused after its retries until a later stop answers', async () => {
+    const { find, onCleanupError, unmount } = await setupSearching();
+    const answering = answer;
+    let refusing = true;
+    answer = (call) => call.kind === 'stop' && refusing ? Promise.reject(refused('fake engine: find stop failed')) : answering(call);
+    find.search('');
+    await settle(BROWSER_FIND_STOP_RETRY_MS * BROWSER_FIND_STOP_ATTEMPTS);
+    expect(kinds()).toEqual(['start', ...Array(BROWSER_FIND_STOP_ATTEMPTS).fill('stop')]);
+    expect(onCleanupError.mock.calls.at(-1)).toEqual(['fake engine: find stop failed']);
+    find.search('beta');
+    await settle();
+    expect(onCleanupError.mock.calls.at(-1), 'an answered start delivers no stop').toEqual(['fake engine: find stop failed']);
+    expect(find.result.error).toBeNull();
+    refusing = false;
+    find.search('');
+    await settle(0);
+    expect(onCleanupError.mock.calls.at(-1)).toEqual([null]);
+    refusing = true;
+    find.search('gamma');
+    await settle();
+    find.search('');
+    await settle(0);
+    expect(onCleanupError.mock.calls.at(-1)).toEqual(['fake engine: find stop failed']);
+    unmount();
+    expect(onCleanupError.mock.calls.at(-1), 'an unmounted pane shows nothing').toEqual([null]);
+    await settle(BROWSER_FIND_STOP_RETRY_MS * BROWSER_FIND_STOP_ATTEMPTS);
+    expect(onCleanupError.mock.calls.at(-1)).toEqual([null]);
   });
 
   // The stop of a search is outstanding when a new query's start is made;
@@ -640,7 +707,7 @@ describe('browser find provider', () => {
   // leaves that alone when a retry finally runs: the bar keeps the new
   // counts.
   it('a stop that fails, retried and refused again, never touches a later search', async () => {
-    const { find, closeBar, onError } = setup();
+    const { find, closeBar, onCleanupError } = setup();
     // The backend: one search at a time, at its sequence.
     let running = 0;
     let failStop!: () => void;
@@ -678,14 +745,15 @@ describe('browser find provider', () => {
     expect(find.result).toMatchObject({ count: 3, current: 0, pending: false });
     await settle(BROWSER_FIND_STOP_RETRY_MS);
     expect(calls.at(-1)).toMatchObject({ kind: 'stop', seq: 1 });
-    expect(onError).toHaveBeenCalledTimes(2);
-    expect(find.result).toMatchObject({ count: 3, current: 0, pending: false });
+    expect(onCleanupError).toHaveBeenCalledTimes(2);
+    expect(find.result).toMatchObject({ count: 3, current: 0, pending: false, error: null });
     find.next?.();
     await settle(0);
     expect(calls.at(-1)).toMatchObject({ kind: 'next', seq: 2 });
     await settle(BROWSER_FIND_STOP_RETRY_MS);
     expect(calls.at(-1)).toMatchObject({ kind: 'stop', seq: 1 });
     expect(running).toBe(2);
+    expect(onCleanupError.mock.calls.at(-1), 'the answered retry delivers the stop').toEqual([null]);
     expect(find.result).toMatchObject({ count: 3, current: 1, pending: false });
     expect(closeBar).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);

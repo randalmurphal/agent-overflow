@@ -207,6 +207,22 @@ export function browserCompanionState(threadId: string): BrowserCompanionEvent |
   return liveStates.get(threadId);
 }
 
+// A find stop that could not be delivered, per thread (stores/browserFind):
+// the page may keep its highlights. Its own entry, so a browser action
+// neither clears it nor is hidden by it.
+const findCleanupErrors = createKeyedSignalRegistry<string>('');
+
+/** Records, or with null withdraws, the thread's find cleanup failure. */
+export function noteBrowserFindCleanupError(threadId: string, message: string | null): void {
+  if (message) findCleanupErrors.set(threadId, message);
+  else findCleanupErrors.drop(threadId);
+}
+
+/** The thread's find cleanup failure, '' for none. */
+export function browserFindCleanupError(threadId: string): string {
+  return findCleanupErrors.get(threadId);
+}
+
 export function noteBrowserActionError(threadId: string, message: string): void {
   const previous = store.snapshot(threadId);
   if (previous && previous.actionError !== message) store.apply(threadId, { ...previous, actionError: message });
@@ -322,6 +338,7 @@ addPaneThreadMountedObserver(reconcileBrowserCompanionForPane);
 export function resetBrowserCompanionForTest(): void {
   paneIds.clear();
   liveStates.reset();
+  findCleanupErrors.reset();
   hydratedThreads.clear();
   store.suspend();
   store.resetAll();
