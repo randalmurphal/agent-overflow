@@ -2,7 +2,10 @@ package cilog
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -30,7 +33,7 @@ func TestSearchCountsMatchesAsTheViewShowsLines(t *testing.T) {
 		t.Fatalf("search = %+v, want hits %v", got, want)
 	}
 	got, err = s.Search(t.Context(), key, "NEEDLÉ", 100, 1<<16)
-	if err != nil || !slices.Equal(got.Hits, []SearchHit{{Line: 5, Count: 2}}) {
+	if err != nil || !slices.Equal(got.Hits, []SearchHit{{Line: 5, Count: 1}}) {
 		t.Fatalf("non-ASCII search = %+v, %v", got, err)
 	}
 }
@@ -70,17 +73,56 @@ func TestSearchEndsWithItsContext(t *testing.T) {
 	}
 }
 
-func TestFoldForFindKeepsUTF16Length(t *testing.T) {
+// The frontend's findMatch.test.ts reads the same vectors.
+func TestFindRuleMatchesTheSharedVectors(t *testing.T) {
 	t.Parallel()
-	for in, want := range map[string]string{
-		"ABC":   "abc",
-		"ÀÉÎ":   "àéî",
-		"İx":    "İx",
-		"ΣΑΣ":   "σασ",
-		"\xffA": "\xffa",
-	} {
-		if got := FoldForFind(in); got != want {
-			t.Errorf("FoldForFind(%q) = %q, want %q", in, got, want)
+	raw, err := os.ReadFile("../../frontend/src/test/fixtures/findVectors.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vectors struct {
+		Fold  [][2]string `json:"fold"`
+		Count []struct {
+			Text  string `json:"text"`
+			Query string `json:"query"`
+			Count int    `json:"count"`
+		} `json:"count"`
+	}
+	if err := json.Unmarshal(raw, &vectors); err != nil {
+		t.Fatal(err)
+	}
+	if len(vectors.Fold) == 0 || len(vectors.Count) == 0 {
+		t.Fatal("no vectors")
+	}
+	for _, v := range vectors.Fold {
+		if got := FoldForFind(v[0]); got != v[1] {
+			t.Errorf("FoldForFind(%q) = %q, want %q", v[0], got, v[1])
 		}
+	}
+	s, _, _ := newTestStore(t, CacheBytes)
+	for i, v := range vectors.Count {
+		key := githubKey(fmt.Sprint(100 + i))
+		fetchText(t, s, key, v.Text+"\n", `"a"`)
+		got, err := s.Search(t.Context(), key, v.Query, 100, 1<<16)
+		if strings.TrimSpace(v.Query) == "" {
+			if err == nil {
+				t.Errorf("blank query %q searched", v.Query)
+			}
+			continue
+		}
+		if err != nil || got.Matches != v.Count {
+			t.Errorf("Search(%q in %q) = %d, %v; want %d", v.Query, v.Text, got.Matches, err, v.Count)
+		}
+	}
+}
+
+func TestSearchMatchesInvalidUTF8AsTheViewReceivesIt(t *testing.T) {
+	t.Parallel()
+	s, _, _ := newTestStore(t, CacheBytes)
+	key := githubKey("utf8")
+	fetchText(t, s, key, "a\xff\xfeB\n", `"a"`)
+	got, err := s.Search(t.Context(), key, "a\uFFFD\uFFFDb", 10, 1<<16)
+	if err != nil || got.Matches != 1 {
+		t.Fatalf("Search = %+v, %v; want one match", got, err)
 	}
 }

@@ -9,8 +9,6 @@ import (
 	"io"
 	"regexp"
 	"strings"
-	"unicode"
-	"unicode/utf16"
 	"unicode/utf8"
 )
 
@@ -42,7 +40,7 @@ var hiddenEscapes = regexp.MustCompile(`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b_[
 // Search counts the matches of query in key's published log as the log
 // view shows each line: its first lineMax bytes, without the escapes the
 // view hides. The rule is the find bar's (utils/findMatch.ts): the query
-// trimmed, matched literally and case-insensitively, matches counted left
+// trimmed, matched literally with ASCII case folded, matches counted left
 // to right without overlap. The search stops at limit matches and when
 // ctx ends; it holds one line at a time.
 func (s *Store) Search(ctx context.Context, key Key, query string, limit, lineMax int) (Search, error) {
@@ -63,7 +61,6 @@ func (s *Store) Search(ctx context.Context, key Key, query string, limit, lineMa
 	if err != nil {
 		return Search{}, fmt.Errorf("search CI log: %w", err)
 	}
-	pattern := []byte(needle)
 	line := make([]byte, 0, min(lineMax, readBlock))
 	for i := 0; i < v.idx.lines; i++ {
 		if i%searchCheckLines == 0 {
@@ -79,7 +76,12 @@ func (s *Store) Search(ctx context.Context, key Key, query string, limit, lineMa
 		if bytes.IndexByte(text, 0x1b) >= 0 {
 			text = hiddenEscapes.ReplaceAll(text, nil)
 		}
-		count := bytes.Count([]byte(FoldForFind(string(text))), pattern)
+		shown := string(text)
+		if !utf8.Valid(text) {
+			// The view receives each invalid byte as U+FFFD (encoding/json).
+			shown = string([]rune(shown))
+		}
+		count := strings.Count(FoldForFind(shown), needle)
 		if count == 0 {
 			continue
 		}
@@ -122,37 +124,21 @@ func readShownLine(br *bufio.Reader, dst []byte, lineMax int) ([]byte, error) {
 	return dst, nil
 }
 
-// FoldForFind lowercases text for find matching as the frontend's
-// foldFindText does: each character to its lowercase form when that keeps
-// its UTF-16 length, else unchanged. Invalid UTF-8 is kept as it is.
+// FoldForFind folds text for find matching by the frontend's rule
+// (utils/findMatch.ts foldFindText): ASCII letters to lower case, every
+// other byte as it is. The vectors in
+// frontend/src/test/fixtures/findVectors.json hold both sides to it.
 func FoldForFind(text string) string {
-	ascii := true
 	for i := 0; i < len(text); i++ {
-		if text[i] >= utf8.RuneSelf {
-			ascii = false
-			break
+		if c := text[i]; c >= 'A' && c <= 'Z' {
+			b := []byte(text)
+			for j := i; j < len(b); j++ {
+				if b[j] >= 'A' && b[j] <= 'Z' {
+					b[j] += 'a' - 'A'
+				}
+			}
+			return string(b)
 		}
 	}
-	if ascii {
-		return strings.ToLower(text)
-	}
-	var b strings.Builder
-	b.Grow(len(text))
-	for i := 0; i < len(text); {
-		r, size := utf8.DecodeRuneInString(text[i:])
-		if r == utf8.RuneError && size <= 1 {
-			b.WriteString(text[i : i+size])
-			i += size
-			continue
-		}
-		lower := unicode.ToLower(r)
-		// U+0130 lowercases to two characters in full case mapping, which
-		// the frontend keeps unchanged.
-		if r == 'İ' || utf16.RuneLen(lower) != utf16.RuneLen(r) {
-			lower = r
-		}
-		b.WriteRune(lower)
-		i += size
-	}
-	return b.String()
+	return text
 }
