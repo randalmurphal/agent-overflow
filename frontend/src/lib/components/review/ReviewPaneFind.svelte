@@ -31,7 +31,7 @@
   import { createMarkdownFindTextCache, type MarkdownFindText } from '../chat/markdown/markdownFindText';
   import { FORGE_ATTACHMENT_SOURCE_CONTEXT, type ForgeAttachmentSourceReader } from '../chat/markdown/forgeAttachmentContext';
   import { visibleBody } from '../../utils/reviewComments';
-  import { commentOfRowKey, editingDrafts, sameKeys, sameToggledDetails, toggledCommentDetails } from '../../utils/reviewFindDetails';
+  import { commentOfRowKey, editingDrafts, readCommentDetails, sameCommentDetails, sameKeys, type MountedCommentDetails } from '../../utils/reviewFindDetails';
   import { scanReviewFind, type ReviewFindHit } from '../../utils/reviewFindScan';
   import { findHitAtOrBelow } from '../../utils/reviewFindRows';
   import { REVIEW_FILE_HEADER_BAR_PX } from '../../utils/reviewRows';
@@ -85,16 +85,17 @@
   // Held while find is open.
   const readForgeSource = getContext<ForgeAttachmentSourceReader | undefined>(FORGE_ATTACHMENT_SOURCE_CONTEXT);
   let texts: ((source: string, open?: readonly boolean[]) => MarkdownFindText) | null = null;
-  let toggled = new Map<string, boolean[]>();
+  const NO_DETAILS: MountedCommentDetails = { toggled: new Map(), recounted: new Map() };
+  let details = NO_DETAILS;
   let editing = new Set<string>();
 
   function commentTexts(): (source: string, open?: readonly boolean[]) => MarkdownFindText {
     return (texts ??= createMarkdownFindTextCache({ embeddedHtml: true, forgeSource: readForgeSource?.() ?? null }));
   }
 
-  function readToggled(): Map<string, boolean[]> {
-    if (!root || untrack(() => view) !== 'diff') return new Map();
-    return toggledCommentDetails(root, (rowKey) => {
+  function readDetails(): MountedCommentDetails {
+    if (!root || untrack(() => view) !== 'diff') return NO_DETAILS;
+    return readCommentDetails(root, (rowKey) => {
       const at = commentOfRowKey(rowKey);
       const comment = at ? review.prThreads.find((thread) => thread.id === at.threadId)?.comments[at.index] : undefined;
       return comment ? commentTexts()(visibleBody(comment.body)).details : null;
@@ -108,17 +109,17 @@
   // A <details> opened or closed by hand, a draft's editor opened or
   // closed, or a row that remounted as written: rescan in place.
   function reconcileMounted(): void {
-    const nextToggled = readToggled();
+    const nextDetails = readDetails();
     const nextEditing = readEditing();
-    if (sameToggledDetails(nextToggled, toggled) && sameKeys(nextEditing, editing)) return;
-    toggled = nextToggled;
+    if (sameCommentDetails(nextDetails, details) && sameKeys(nextEditing, editing)) return;
+    details = nextDetails;
     editing = nextEditing;
     find.refresh();
   }
 
   function releaseHighlighter(): void {
     texts = null;
-    toggled = new Map();
+    details = NO_DETAILS;
     editing = new Set();
     highlighter?.dispose();
     highlighter = null;
@@ -243,14 +244,14 @@
     remote: false,
     run: (query, context) => {
       const conflicts = untrack(() => view) === 'conflicts';
-      toggled = readToggled();
+      details = readDetails();
       editing = readEditing();
       const content = untrack(() => ({
         files,
         drafts: conflicts ? [] : review.drafts,
         prThreads: conflicts ? [] : review.prThreads,
         foldLines: conflicts ? (path: string) => review.conflictFoldLines(path) : undefined,
-        commentText: (body: string, rowKey: string) => commentTexts()(body, toggled.get(rowKey)).runs,
+        commentText: (body: string, rowKey: string) => details.recounted.get(rowKey) ?? commentTexts()(body, details.toggled.get(rowKey)).runs,
         editing,
       }));
       return scanReviewFind(content, query, { limit: REVIEW_FIND_LIMIT, live: context.live, emit: context.emit, pause });

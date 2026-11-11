@@ -76,6 +76,35 @@ const CORPUS = [
 
 const TOGGLED = CORPUS.filter((source) => source.includes('<details'));
 
+// Every container a review comment can nest, around any markdown.
+const indent = (text: string, by: string, first = by) => text.split('\n').map((line, at) => (at === 0 ? first : line ? by : '') + line).join('\n');
+const CONTAINERS: Record<string, (inner: string) => string> = {
+  details: (inner) => `<details><summary>outer summary</summary>\n\n${inner}\n\n</details>`,
+  'open details': (inner) => `<details open><summary>open summary</summary>\n\n${inner}\n\n</details>`,
+  blockquote: (inner) => indent(inner, '> '),
+  'list item': (inner) => indent(inner, '  ', '- '),
+  'table cell': (inner) => `| head |\n| --- |\n| ${inner.replace(/\n+/g, ' ')} |`,
+  alert: (inner) => `> [!NOTE]\n${indent(inner, '> ')}`,
+  'footnote definition': (inner) => `Ref[^n].\n\n${indent(inner, '    ', '[^n]: ')}`,
+  'alignment block': (inner) => `[center]\n${inner}\n[/center]`,
+  mdx: (inner) => `<Note kind="x">\n${inner}\n</Note>`,
+};
+const INNER: Record<string, string> = {
+  details: '<details><summary>inner summary</summary>\n\ninner needle words\n\n</details>',
+  needle: 'plain needle words',
+};
+// A closed <details> after the nest, holding a needle of its own.
+const AFTER = '<details><summary>after summary</summary>\n\nafter needle words\n\n</details>';
+const NESTED: [string, string][] = [];
+for (const [outer, wrapOuter] of Object.entries(CONTAINERS)) {
+  for (const [inner, text] of Object.entries(INNER)) {
+    NESTED.push([`${outer} > ${inner}`, `${wrapOuter(text)}\n\n${AFTER}`]);
+    for (const [middle, wrapMiddle] of Object.entries(CONTAINERS)) {
+      NESTED.push([`${outer} > ${middle} > ${inner}`, `${wrapOuter(wrapMiddle(text))}\n\n${AFTER}`]);
+    }
+  }
+}
+
 beforeEach(() => {
   resetCodeSpanCacheForTest();
   __resetStreamdownCodeHostForTest();
@@ -163,6 +192,26 @@ describe('markdownFindText', () => {
     const dom = findTextSegments(root);
     expect(dom.join('\n')).not.toContain('pending');
     expect(mismatches(source, dom, markdownFindText(source, { embeddedHtml: true, forgeSource: FORGE }).runs)).toEqual([]);
+  });
+
+  it.each(NESTED)('finds every <details> and counts what shows, as written and with each toggled: %s', async (_name, source) => {
+    const root = await mounted(source);
+    const elements = [...root.querySelectorAll('details')];
+    const check = async (label: string) => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const open = elements.map((details) => details.open);
+      const projected = markdownFindText(source, { embeddedHtml: true, forgeSource: FORGE }, open);
+      expect(projected.details.length, `${label}: details found`).toBe(elements.length);
+      const dom = findTextSegments(root);
+      expect(mismatches(source, dom, projected.runs), `${label}: ${JSON.stringify({ dom, projected })}`).toEqual([]);
+    };
+    expect(markdownFindText(source, { embeddedHtml: true, forgeSource: FORGE }).details).toEqual(elements.map((details) => details.open));
+    await check('as written');
+    for (const [at, details] of elements.entries()) {
+      details.open = !details.open;
+      await check(`details ${at} toggled`);
+      details.open = !details.open;
+    }
   });
 
   it.each(TOGGLED)('counts a <details> as the reader left it: %s', async (source) => {

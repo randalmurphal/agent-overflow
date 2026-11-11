@@ -1,5 +1,5 @@
 import { render, waitFor } from '@testing-library/svelte';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished } from 'vitest';
 import '../../../app.css';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import ReviewCommentThread from './ReviewCommentThread.svelte';
@@ -12,6 +12,7 @@ import { createFindHighlighter, type FindHighlighter } from '../../utils/findHig
 import { parseReviewFiles } from '../../utils/patchStore';
 import { scanReviewFind, type ReviewFindHit } from '../../utils/reviewFindScan';
 import type { DiffReviewComment, ReviewThread } from '../../types/models';
+import { installDiagnosticsCapture } from '../../../test/helpers/diagnostics';
 
 // Review find's count over comments is what its highlighter paints: for
 // a draft and a PR thread's markdown comments, the scanner's matches per
@@ -132,3 +133,40 @@ describe('review find over a draft open in its editor', () => {
     }
   });
 });
+
+describe('review find over a comment its projection misreads', () => {
+  const diagnostics = installDiagnosticsCapture();
+
+  it('reports the defect and counts the comment from its DOM, never nothing', async () => {
+    const host = document.createElement('div');
+    host.style.width = '700px';
+    document.body.appendChild(host);
+    render(ReviewThreadComments, { target: host, props: { thread: THREAD, findKeys: true } });
+    await waitFor(() => expect(host.querySelectorAll('[data-find-key^="pc:"]').length).toBe(3));
+    const review = {
+      drafts: [], prThreads: [THREAD], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
+    } as unknown as ReviewPaneState;
+    const files = parseReviewFiles(PATCH);
+    onTestFinished(() => files[0].body.segments[0].store.dispose());
+    render(ReviewPaneFind, {
+      target: document.body,
+      props: {
+        findKey: 'pane-drift', title: 'Review', review, view: 'diff', files, root: host,
+        diff: () => ({ findReadingPosition: () => null, revealFindHit: () => false, scrollFindBy: () => {} }),
+        log: () => undefined,
+      },
+    });
+    const find = getPaneFindProvider('pane-drift')!;
+    openPaneFind('pane-drift');
+    setPaneFindQuery('pane-drift', 'needle');
+    await waitFor(() => expect(find.result.pending).toBe(false));
+    const before = find.result.count;
+    expect(before).toBeGreaterThan(0);
+    // The rendered comment gains a <details> its projection does not have.
+    const row = host.querySelector('[data-find-key="pc:1:p1"]')!;
+    row.insertAdjacentHTML('beforeend', '<details open><summary>drift</summary><p>extra needle</p></details>');
+    await waitFor(() => expect(find.result.count).toBe(before + 1));
+    expect(await diagnostics.messages()).toContain('review find comment details differ from their projection');
+  });
+});
+

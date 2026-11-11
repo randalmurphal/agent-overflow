@@ -13,6 +13,9 @@
 // record the type check holds to the lexer's whole token union; a kind it
 // does not know renders nothing. Where the renderers decide what a token
 // shows, this asks the same function (`tableCellRenders`, `linkTagText`).
+// One walk yields both the text and every <details> in render order: the
+// body of a closed <details> is walked for the elements it renders, with
+// its text held back, so a token the renderer drops hides both.
 //
 // Not shown, so not searched: markup, image alt text, link targets and
 // titles, a table cell merged into the one above, an `[align]` block (no
@@ -106,9 +109,17 @@ export function markdownFindText(source: string, options: MarkdownFindTextOption
   const runs: string[] = [];
   const details: boolean[] = [];
   let run = '';
+  // How many closed <details> the walk is inside: rendered, not shown.
+  let hidden = 0;
   const flush = () => {
     if (run !== '') runs.push(run);
     run = '';
+  };
+  const add = (text: string) => {
+    if (hidden === 0) run += text;
+  };
+  const push = (...texts: string[]) => {
+    if (hidden === 0) runs.push(...texts);
   };
   // Records a <details> and answers whether it shows its body.
   const opened = (initial: boolean): boolean => {
@@ -121,14 +132,14 @@ export function markdownFindText(source: string, options: MarkdownFindTextOption
     if (out === '') return;
     if (!token.block) {
       // A stray inline tag renders as its own literal text.
-      run += token.raw ?? '';
+      add(token.raw ?? '');
       return;
     }
     flush();
     const doc = new DOMParser().parseFromString(`<div>${out}</div>`, 'text/html');
     const fragment = doc.body.firstElementChild!;
     for (const element of fragment.querySelectorAll('details')) element.open = opened(element.open);
-    runs.push(...findTextSegments(fragment, false));
+    if (hidden === 0) runs.push(...findTextSegments(fragment, false));
   };
   const walk = (tokens: readonly TokenLike[] | undefined) => {
     for (const token of tokens ?? []) visit(token);
@@ -143,28 +154,28 @@ export function markdownFindText(source: string, options: MarkdownFindTextOption
     const block = shows === 'block';
     if (block) flush();
     if (token.tokens && token.tokens.length > 0) walk(token.tokens);
-    else if (!block && token.text !== undefined) run += token.text;
+    else if (!block && token.text !== undefined) add(token.text);
     if (block) flush();
   };
   const own = (token: TokenLike) => {
     switch (token.type) {
       case 'code':
         flush();
-        if (token.lang !== 'mermaid') runs.push(token.text ?? '');
+        if (token.lang !== 'mermaid') push(token.text ?? '');
         return;
       case 'html':
         html(token);
         return;
       case 'codespan':
       case 'escape':
-        run += token.text ?? '';
+        add(token.text ?? '');
         return;
       case 'footnoteRef':
-        if (token.label && token.label !== 'streamdown:footnote') run += token.label.replace('^', '');
+        if (token.label && token.label !== 'streamdown:footnote') add(token.label.replace('^', ''));
         return;
       case 'inline-citations':
         // ChatMarkdown's inlineCitation snippet shows the token's text.
-        run += token.text ?? token.raw ?? '';
+        add(token.text ?? token.raw ?? '');
         return;
       case 'details': {
         flush();
@@ -172,14 +183,16 @@ export function markdownFindText(source: string, options: MarkdownFindTextOption
         const [summary, ...body] = token.tokens ?? [];
         if (summary?.type === 'detailsSummary') visit(summary);
         else if (summary) body.unshift(summary);
-        if (show) walk(body);
-        else countDetails(body);
         flush();
+        if (!show) hidden += 1;
+        walk(body);
+        flush();
+        if (!show) hidden -= 1;
         return;
       }
       case 'link':
         walk(token.tokens);
-        run += linkTagText(token.href, [...CHAT_LINK_PREFIXES]);
+        add(linkTagText(token.href, [...CHAT_LINK_PREFIXES]));
         return;
       case 'td':
       case 'th':
@@ -191,29 +204,16 @@ export function markdownFindText(source: string, options: MarkdownFindTextOption
       case 'alert':
         flush();
         // The title shows the variant (ChatMarkdown passes no translations).
-        runs.push(String(token.variant ?? ''));
+        push(String(token.variant ?? ''));
         walk(token.tokens);
         flush();
         return;
       case 'text':
         if (token.tokens && token.tokens.length > 0) walk(token.tokens);
-        else run += token.text ?? '';
+        else add(token.text ?? '');
         return;
     }
     throw new Error(`markdownFindText: no rule for ${token.type}`);
-  };
-  // A closed body still holds <details> the DOM numbers.
-  const countDetails = (tokens: readonly TokenLike[] | undefined) => {
-    for (const token of tokens ?? []) {
-      if (token.type === 'details') opened(token.open === true);
-      else if (token.type === 'html' && token.block && options.embeddedHtml) {
-        const out = sanitizeEmbeddedHtmlToken({ raw: token.raw ?? '', block: true });
-        const doc = new DOMParser().parseFromString(`<div>${out}</div>`, 'text/html');
-        for (const element of doc.querySelectorAll('details')) opened(element.open);
-        continue;
-      }
-      countDetails(token.tokens);
-    }
   };
   for (const block of parseBlocks(shown, extensions)) {
     walk(lex(block, extensions) as unknown as TokenLike[]);
