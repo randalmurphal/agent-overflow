@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -315,6 +316,71 @@ func TestSubmitPRReviewGitLabSubmitsOfOneMergeRequestDoNotInterleave(t *testing.
 	}
 	if n := c.published(); n != 2 {
 		t.Fatalf("published %d reviews, want 2", n)
+	}
+}
+
+// A submit without draft ids (an older client) holds the PR's lock too:
+// with either one publishing first, the other creates no draft note until
+// that publish is done, so neither publishes the other's notes.
+func TestSubmitPRReviewGitLabSubmitsOfBothShapesDoNotInterleave(t *testing.T) {
+	t.Parallel()
+	for _, legacyFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("legacy first %v", legacyFirst), func(t *testing.T) {
+			t.Parallel()
+			c := newReviewSubmitCase(t, "gitlab")
+			stored := c.draft(t, false, 3, "From the page.")
+			line := 4
+			legacy := SubmitPRReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "Older client", Comments: []gitops.ReviewLineComment{{Path: "main.go", Body: "From an older client.", Line: &line, Side: "right"}}}
+			first, second := legacy, c.request(false, stored)
+			if !legacyFirst {
+				first, second = second, first
+			}
+			created := func() int {
+				n := 0
+				for _, inv := range c.engine.Invocations(0).Invocations {
+					if inv.Route == "glab api create draft note" {
+						n++
+					}
+				}
+				return n
+			}
+			entered, release := c.gate.hold()
+			defer release()
+			firstDone := make(chan error, 1)
+			go func() {
+				_, err := c.submit(first)
+				firstDone <- err
+			}()
+			<-entered
+			secondDone := make(chan error, 1)
+			go func() {
+				_, err := c.submit(second)
+				secondDone <- err
+			}()
+			deadline := time.Now().Add(10 * time.Second)
+			for c.app.reviewSubmitLocks().Refs(c.pr.Key()) < 2 && created() <= 2 && time.Now().Before(deadline) {
+				time.Sleep(5 * time.Millisecond)
+			}
+			if n := c.app.reviewSubmitLocks().Refs(c.pr.Key()); n != 2 {
+				t.Fatalf("%d submits on the lock while the first published, want 2 (the second waiting)", n)
+			}
+			if n := created(); n != 2 {
+				t.Fatalf("%d draft notes created while the first published, want 2", n)
+			}
+			release()
+			if err := <-firstDone; err != nil {
+				t.Fatal(err)
+			}
+			if err := <-secondDone; err != nil {
+				t.Fatal(err)
+			}
+			if n := c.published(); n != 2 {
+				t.Fatalf("published %d reviews, want 2", n)
+			}
+			if got := c.comment(t, false, stored.ID).Status; got != "sent" {
+				t.Fatalf("stored draft is %q, want sent", got)
+			}
+		})
 	}
 }
 

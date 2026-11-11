@@ -600,6 +600,37 @@ const REVIEW_DRAFT_SUBMIT = 'pr-review-drafts.v1';
 function reviewDraftSubmit(backend: BackendKey): boolean {
   return getTransportHelloFor(backend)?.capabilities.includes(REVIEW_DRAFT_SUBMIT) ?? false;
 }
+// One PR review submit, from its call until a read of its drafts settles
+// it: what it sent, and what its answer was ('lost' until one arrives).
+interface SubmitAttempt {
+  ref: PRRef;
+  source: string;
+  ids: readonly string[];
+  body: string;
+  verdict: 'comment' | 'approve' | 'request-changes';
+  outcome: 'lost' | 'posted' | 'refused' | 'posted-unmarked' | 'failed';
+  /** The answer's own message: a posted review's partial outcome, or a
+   * failure's sentence. */
+  answer: string | null;
+}
+
+function submitOutcomeOf(err: unknown): SubmitAttempt['outcome'] {
+  if (isTransportClassError(err)) return 'lost';
+  if (err instanceof TransportError && err.code === 'review_drafts_not_drafts') return 'refused';
+  if (err instanceof TransportError && err.code === 'review_posted_unmarked') return 'posted-unmarked';
+  return 'failed';
+}
+
+// What the pane says about an attempt before its drafts are read.
+function submitAttemptMessage(attempt: SubmitAttempt): string | null {
+  switch (attempt.outcome) {
+    case 'lost': return REVIEW_ANSWER_LOST;
+    case 'refused': return 'Some of these comments were already sent, so this review and its summary were not posted.';
+    case 'posted-unmarked': return 'The review posted, but some of its comments are not marked sent yet. They will not post again.';
+    default: return attempt.answer;
+  }
+}
+
 const REVIEW_ANSWER_LOST = 'The connection dropped before the forge answered, so the review may already be on the PR. Check the PR before you submit again.';
 
 /** The one place a review subject is built. Structural in the pane so both
@@ -829,9 +860,9 @@ export function createReviewPaneState(
   const contextExpansions = new Map<string, ContextExpansionState>();
   let contextExpansionVersion = $state(0);
   let sendingComments = $state(false);
-  // A PR review submit ran and its drafts were not read since: what it
-  // posted is not known yet (reconcileSubmit).
-  let submitUnreconciled = false;
+  // The PR review submit whose drafts were not read since it ran
+  // (settleSubmit); no submit starts while one is open.
+  let openSubmit: SubmitAttempt | null = null;
   let openEditors: CommentAnchor[] = $state([]);
   // Draft-editor text lives HERE, not in the row component: editor rows
   // are virtualized, so scrolling one out of the render window unmounts
@@ -2098,12 +2129,12 @@ export function createReviewPaneState(
     // wrong lines or hard failures. The UI hides the 'pr' target there;
     // this guard backs it up.
     if (scope !== 'pr' || selectedCommitSHA || !prRef || !sourceKey || sendingComments) return;
-    // The last submit's outcome is not known until its drafts are read
-    // again; nothing is sent before that read succeeds.
-    if (submitUnreconciled) {
+    // The last submit is settled only by a read of its drafts; until one
+    // succeeds, a press reads again and posts nothing.
+    if (openSubmit !== null) {
       sendingComments = true;
       try {
-        await reconcileSubmit(prRef, sourceKey, null);
+        await settleSubmit(openSubmit);
       } finally {
         sendingComments = false;
       }
@@ -2117,31 +2148,35 @@ export function createReviewPaneState(
       submitError = 'No non-orphaned PR comments to submit.';
       return;
     }
-    const ref = prRef;
-    const source = sourceKey;
-    const submitted = submitDrafts.map((comment) => comment.id);
+    const attempt: SubmitAttempt = {
+      ref: prRef,
+      source: sourceKey,
+      ids: submitDrafts.map((comment) => comment.id),
+      body: summaryBody.trim(),
+      verdict,
+      outcome: 'lost',
+      answer: null,
+    };
     sendingComments = true;
-    submitUnreconciled = true;
+    openSubmit = attempt;
     submitError = null;
     let failure: unknown = null;
     try {
       const result = reviewDraftSubmit(backend)
-        ? await submitReviewWithDrafts(ref, submitted)
-        : await submitReviewThenMark(ref, source, submitDrafts);
-      // Through the store: the posted review is now part of the PR, so
-      // every pane looking at it shows the new threads.
-      applyPRThreads(computerPRKey(ref), ((await withBackendTarget(backend, () => ListPRReviewThreads(prReferenceWire(ref)))) ?? []) as ReviewThread[]);
+        ? await submitReviewWithDrafts(attempt)
+        : await submitReviewThenMark(attempt, submitDrafts);
+      attempt.outcome = 'posted';
       if (!result.partialFailure) {
-        summaryBody = '';
+        clearSubmittedSummary(attempt);
         if (!result.editedDraftIds?.length) submitError = null;
       }
-      error = null;
+      attempt.answer = submitError;
     } catch (err) {
       failure = err;
-      submitError = isTransportClassError(err) ? REVIEW_ANSWER_LOST : userFacingError(err);
-      error = submitError;
+      attempt.outcome = submitOutcomeOf(err);
+      attempt.answer = userFacingError(err);
     } finally {
-      await reconcileSubmit(ref, source, failure === null ? null : submitted);
+      await settleSubmit(attempt);
       sendingComments = false;
     }
     if (failure !== null) throw failure;
@@ -2149,12 +2184,12 @@ export function createReviewPaneState(
 
   // A backend with the draft submit posts the drafts it holds and marks
   // the ones the forge received, in one call (SubmitPRReview).
-  async function submitReviewWithDrafts(ref: PRRef, ids: readonly string[]): Promise<SubmitPRReviewResult> {
-    const result = (await withBackendTarget(backend, () => SubmitPRReview(prReferenceWire(ref), {
-      verdict,
-      body: summaryBody.trim(),
+  async function submitReviewWithDrafts(attempt: SubmitAttempt): Promise<SubmitPRReviewResult> {
+    const result = (await withBackendTarget(backend, () => SubmitPRReview(prReferenceWire(attempt.ref), {
+      verdict: attempt.verdict,
+      body: attempt.body,
       comments: [],
-      drafts: { threadId: pinnedDrafts !== null ? undefined : commentThreadId(), ids: [...ids], headSha: loadedPRHeadSHA },
+      drafts: { threadId: pinnedDrafts !== null ? undefined : commentThreadId(), ids: [...attempt.ids], headSha: loadedPRHeadSHA },
     }))) as SubmitPRReviewResult;
     if (result.partialFailurePath) {
       submitError = `The review posted, but its comment on ${result.partialFailurePath} did not. ${result.partialFailure ?? 'Unknown error.'}`;
@@ -2169,10 +2204,10 @@ export function createReviewPaneState(
 
   // A backend without it (an older build on a connected computer) posts
   // the comments it is given; the pane marks the drafts that posted.
-  async function submitReviewThenMark(ref: PRRef, source: string, submitDrafts: readonly DiffReviewComment[]): Promise<SubmitPRReviewResult> {
-    const result = (await withBackendTarget(backend, () => SubmitPRReview(prReferenceWire(ref), {
-      verdict,
-      body: summaryBody.trim(),
+  async function submitReviewThenMark(attempt: SubmitAttempt, submitDrafts: readonly DiffReviewComment[]): Promise<SubmitPRReviewResult> {
+    const result = (await withBackendTarget(backend, () => SubmitPRReview(prReferenceWire(attempt.ref), {
+      verdict: attempt.verdict,
+      body: attempt.body,
       comments: submitDrafts.map(reviewLineCommentForDraft).filter((comment) => comment !== null),
     }))) as SubmitPRReviewResult;
     let sent = submitDrafts;
@@ -2191,38 +2226,74 @@ export function createReviewPaneState(
     forgetDraftEdits(sent);
     if (sent.length > 0) {
       const ids = sent.map((comment) => comment.id);
-      if (pinnedDrafts !== null) await markPRDiffReviewCommentsSent(pinnedDrafts, scope, source, ids);
-      else await MarkDiffReviewCommentsSent(commentThreadId(), scope, source, ids, `pr:${loadedPRHeadSHA}`);
+      if (pinnedDrafts !== null) await markPRDiffReviewCommentsSent(pinnedDrafts, scope, attempt.source, ids);
+      else await MarkDiffReviewCommentsSent(commentThreadId(), scope, attempt.source, ids, `pr:${loadedPRHeadSHA}`);
     }
     return result;
   }
 
+  // The summary a submit posted leaves the box, unless it was changed
+  // since the submit took it.
+  function clearSubmittedSummary(attempt: SubmitAttempt): void {
+    if (summaryBody.trim() === attempt.body) summaryBody = '';
+  }
+
   // Reads the drafts after a submit, whatever its outcome, and only then
-  // lets the next one go. A submit that failed (an answer lost, a refusal)
-  // whose drafts all read as sent now landed after all, it or the submit
-  // that sent them first: it ends as a
-  // success does. One whose answer was lost with nothing to read it from
-  // (a summary alone, or drafts still unsent) keeps its summary and says
-  // the review may be on the PR. A failed read keeps the outcome unknown.
-  async function reconcileSubmit(ref: PRRef, source: string, failedIds: readonly string[] | null): Promise<void> {
+  // closes it; every retry of a failed read runs this on the same attempt.
+  // An answer from the backend is what happened. Only a lost answer is
+  // inferred from the read: drafts that all read as sent mean the review
+  // posted; a summary alone, or drafts still unsent, cannot say, so the
+  // summary stays and the pane says the review may be on the PR.
+  async function settleSubmit(attempt: SubmitAttempt): Promise<void> {
     let read: readonly DiffReviewComment[];
     try {
       read = pinnedDrafts !== null
-        ? await refreshPRDiffReviewComments(pinnedDrafts, scope, source)
-        : await refreshDiffReviewComments(commentThreadId(), scope, source);
+        ? await refreshPRDiffReviewComments(pinnedDrafts, scope, attempt.source)
+        : await refreshDiffReviewComments(commentThreadId(), scope, attempt.source);
     } catch (err) {
-      submitError = `${submitError ? `${submitError} ` : ''}The drafts could not be read again, so the next submit waits for them: ${userFacingError(err)}`;
+      const said = submitAttemptMessage(attempt);
+      submitError = `${said ? `${said} ` : ''}The drafts could not be read again, so the next submit waits for them: ${userFacingError(err)}`;
+      error = submitError;
       return;
     }
-    pruneDraftEdits(source, read);
-    submitUnreconciled = false;
-    if (failedIds === null || failedIds.length === 0) return;
-    if (!failedIds.every((id) => read.some((comment) => comment.id === id && comment.status === 'sent'))) return;
-    summaryBody = '';
-    submitError = null;
-    error = null;
+    if (openSubmit === attempt) openSubmit = null;
+    pruneDraftEdits(attempt.source, read);
+    const allSent = attempt.ids.length > 0
+      && attempt.ids.every((id) => read.some((comment) => comment.id === id && comment.status === 'sent'));
+    switch (attempt.outcome) {
+      case 'posted':
+        // The answer said what happened.
+        submitError = attempt.answer;
+        error = null;
+        break;
+      case 'failed':
+      case 'refused':
+        // Nothing posted: the summary and verdict stay for another submit.
+        submitError = submitAttemptMessage(attempt);
+        error = submitError;
+        return;
+      case 'posted-unmarked':
+        // The forge has the review; its comments read as drafts until the
+        // backend marks them, and it will not post them again.
+        clearSubmittedSummary(attempt);
+        submitError = allSent ? null : submitAttemptMessage(attempt);
+        error = submitError;
+        break;
+      case 'lost':
+        if (!allSent) {
+          submitError = REVIEW_ANSWER_LOST;
+          error = submitError;
+          return;
+        }
+        clearSubmittedSummary(attempt);
+        submitError = null;
+        error = null;
+        break;
+    }
+    // Through the store: the posted review is now part of the PR, so
+    // every pane looking at it shows the new threads.
     try {
-      applyPRThreads(computerPRKey(ref), ((await withBackendTarget(backend, () => ListPRReviewThreads(prReferenceWire(ref)))) ?? []) as ReviewThread[]);
+      applyPRThreads(computerPRKey(attempt.ref), ((await withBackendTarget(backend, () => ListPRReviewThreads(prReferenceWire(attempt.ref)))) ?? []) as ReviewThread[]);
     } catch (err) {
       error = userFacingError(err);
     }

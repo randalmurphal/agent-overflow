@@ -2464,21 +2464,82 @@ describe('reviewPane store — PR scope', () => {
       expect(state.submitError).toContain('may already be on the PR');
     });
 
-    it('drafts another submit sent first are a success, not a failure', async () => {
+    it('a refusal because another tab sent the drafts first keeps this summary and verdict, and says so', async () => {
       installPRMocks();
       const rows = [draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' })];
       threadDraftsBackend(rows);
+      const submit = setBindingMock('SubmitPRReview', async (_wire: unknown, review: { drafts?: { ids: string[] } }) => {
+        if (review.drafts?.ids.length) {
+          // The other tab's submit already sent them.
+          rows[0]!.status = 'sent';
+          throw new TransportError('review_drafts_not_drafts', 'Some of these comments were already sent or removed, so the review was not posted.');
+        }
+        return { postedReview: true, postedFileComments: 0 };
+      });
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+      state.setVerdict('request-changes');
+
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(TransportError);
+
+      expect(state.summaryBody).toBe('overall note');
+      expect(state.verdict).toBe('request-changes');
+      expect(state.submitError).toBe('Some of these comments were already sent, so this review and its summary were not posted.');
+      expect(state.drafts).toEqual([]);
+      // The summary and verdict go on the next submit.
+      await state.submitPRReview();
+      expect(submit.mock.calls[1]?.[1]).toMatchObject({ verdict: 'request-changes', body: 'overall note', drafts: { ids: [] } });
+      expect(state.summaryBody).toBe('');
+      expect(state.submitError).toBeNull();
+    });
+
+    it('a review the forge accepted whose drafts were not marked ends as posted', async () => {
+      installPRMocks();
+      const rows = [draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' })];
+      const { list } = threadDraftsBackend(rows);
       setBindingMock('SubmitPRReview', async () => {
-        rows[0]!.status = 'sent';
-        throw new TransportError('review_drafts_not_drafts', 'Some of these comments were already sent or removed, so the review was not posted.');
+        throw new TransportError('review_posted_unmarked', 'The review posted, but its comments are not marked sent yet.');
       });
       const state = await prScopeWith(rows);
       state.setSummaryBody('overall note');
 
       await expect(state.submitPRReview()).rejects.toBeInstanceOf(TransportError);
-
-      expect(state.submitError).toBeNull();
+      // Still unmarked when the pane reads: the review is on the PR, the
+      // comments wait for the backend.
       expect(state.summaryBody).toBe('');
+      expect(state.submitError).toContain('not marked sent yet');
+
+      // The backend marks them on its next read.
+      rows[0]!.status = 'sent';
+      list.mockClear();
+      await state.reload();
+      await waitLoaded(state);
+      expect(state.drafts).toEqual([]);
+    });
+
+    it('a lost answer whose first read failed settles as posted when a later read shows the drafts sent', async () => {
+      installPRMocks();
+      const rows = [draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' })];
+      const { list } = threadDraftsBackend(rows);
+      const submit = draftSubmit(rows, { answer: 'lost' });
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+      const reads = list.getMockImplementation()!;
+      list.mockImplementation(async () => {
+        throw new Error('read failed');
+      });
+
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
+      expect(state.summaryBody).toBe('overall note');
+      expect(state.submitError).toContain('may already be on the PR');
+      expect(state.submitError).toContain('could not be read again');
+
+      list.mockImplementation(reads);
+      await state.submitPRReview();
+      expect(submit).toHaveBeenCalledTimes(1);
+      expect(state.summaryBody).toBe('');
+      expect(state.submitError).toBeNull();
+      expect(state.drafts).toEqual([]);
     });
 
     it('a draft edited while the review posted stays a draft and is named', async () => {
@@ -2514,11 +2575,15 @@ describe('reviewPane store — PR scope', () => {
       await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
       expect(state.submitError).toContain('could not be read again');
 
-      // The next press reads instead of posting.
+      // The next press reads instead of posting; the drafts are unsent,
+      // so nothing says the review posted and the summary stays.
       list.mockImplementation(reads);
+      state.setSummaryBody('overall note');
       await state.submitPRReview();
       expect(submit).toHaveBeenCalledTimes(1);
       expect(state.drafts.map((comment) => comment.id)).toEqual(['d-1']);
+      expect(state.summaryBody).toBe('overall note');
+      expect(state.submitError).toBe('The connection dropped before the forge answered, so the review may already be on the PR. Check the PR before you submit again.');
       // Then a submit goes.
       await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
       expect(submit).toHaveBeenCalledTimes(2);

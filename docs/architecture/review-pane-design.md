@@ -260,7 +260,8 @@ polling.
   Drafts clear only on confirmed success; failures surface in the pane and
   keep drafts (errors are user-facing state). After every outcome,
   including a lost answer, the pane reads its drafts again before the next
-  submit: drafts that read as sent mean the review posted.
+  submit. An answer is what happened; only after a lost answer do drafts
+  that read as sent mean the review posted.
 - **Agent context rule (deterministic, no toggle).** If the target thread's
   workspace is the diff source (commenting on that agent's own live work),
   keep today's lean prompt. The agent sees the diff in-turn. Otherwise

@@ -25,7 +25,12 @@ import (
 // has this backend, which owns the drafts, do both in one call:
 //
 //   - One submit per PR at a time (reviewSubmitLocks), from reading the
-//     drafts through posting and marking. A draft that is not a draft any
+//     drafts through posting and marking. A request without Drafts holds
+//     the same lock: on GitLab, whose publish takes every pending draft
+//     note of the viewer, an unlocked submit could publish the notes a
+//     locked one is still creating, which that one's cleanup would then
+//     read as removed. Nothing else creates draft notes (replies and
+//     thread actions post notes directly), so nothing else takes it. A draft that is not a draft any
 //     more when the submit reads it (sent by an earlier submit, another
 //     tab or device, or a message) is refused with
 //     ReviewDraftsNotDraftsCode before anything reaches the forge.
@@ -97,6 +102,14 @@ func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review 
 	if err := pr.Validate(); err != nil {
 		return SubmitPRReviewResult{}, err
 	}
+	// Every submit to the PR holds its lock, whatever the request's shape:
+	// on GitLab one submit's publish takes the draft notes another is
+	// still creating.
+	unlock, err := a.reviewSubmitLocks().LockCtx(ctx, pr.Key())
+	if err != nil {
+		return SubmitPRReviewResult{}, err
+	}
+	defer unlock()
 	if review.Drafts == nil {
 		result, err := a.gitCore().SubmitReview(forgeapi.WithInteractive(ctx), pr, gitops.SubmitReviewRequest{Verdict: review.Verdict, Body: review.Body, Comments: review.Comments})
 		mapped, err := mapSubmitPRReviewResult(pr, gitops.ActionReview, result, err)
@@ -112,12 +125,6 @@ func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review 
 		sentTurnID = "pr:" + review.Drafts.HeadSHA
 	}
 	source := prDraftSource(pr)
-
-	unlock, err := a.reviewSubmitLocks().LockCtx(ctx, pr.Key())
-	if err != nil {
-		return SubmitPRReviewResult{}, err
-	}
-	defer unlock()
 	if err := a.reconcilePostedReviewDrafts(owner); err != nil {
 		return SubmitPRReviewResult{}, err
 	}

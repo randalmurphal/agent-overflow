@@ -22,7 +22,7 @@ import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
 import { __seedGitStatusForTest } from './gitStatusStore.svelte';
 import { createThreadPane } from './thread.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
-import { DisconnectedError } from '../transport/wsClient';
+import { DisconnectedError, TransportError } from '../transport/wsClient';
 import { __setTransportHelloForTest } from './transportStatus.svelte';
 import { takePinnedBackend } from '../transport/backends';
 import { composeWorkspaceKey } from '../utils/workspaceKey';
@@ -436,6 +436,30 @@ describe('pinned comments and actions', () => {
       expect(state.drafts).toEqual([]);
       expect(state.summaryBody).toBe('');
       expect(state.submitError).toBeNull();
+    });
+
+    it('a second tab refused because the first sent the drafts keeps its summary and verdict, and says so', async () => {
+      const { drafts: fake } = installPRMocks();
+      const submit = setBindingMock('SubmitPRReview', async (wire: { Number: number }, review: { drafts?: { ids: string[] } }) => {
+        if (!review.drafts?.ids.length) return { postedReview: true, postedFileComments: 0 };
+        // Tab A's submit sent the drafts this tab still shows.
+        for (const row of fake.held.get(wire.Number) ?? []) row.status = 'sent';
+        throw new TransportError('review_drafts_not_drafts', 'Some of these comments were already sent or removed, so the review was not posted.');
+      });
+      const state = pinned(5);
+      await waitLoaded(state);
+      await state.createComment(anchor, 'needs a test');
+      state.setSummaryBody('from tab B');
+      state.setVerdict('request-changes');
+
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(TransportError);
+
+      expect(state.summaryBody).toBe('from tab B');
+      expect(state.verdict).toBe('request-changes');
+      expect(state.submitError).toBe('Some of these comments were already sent, so this review and its summary were not posted.');
+      expect(state.drafts).toEqual([]);
+      await state.submitPRReview();
+      expect(submit.mock.calls[1]?.[1]).toMatchObject({ verdict: 'request-changes', body: 'from tab B', drafts: { ids: [] } });
     });
 
     it('keeps the PR’s drafts and summary when the lost answer left them unsent, and says to check the PR', async () => {
