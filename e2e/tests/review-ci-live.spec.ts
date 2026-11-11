@@ -223,7 +223,7 @@ test('a running GitLab job shows its sections, follows its trace into an open se
 
   // Terminal everywhere: neither the trace nor the pipeline is polled again.
   await expectRouteIdle(harness, 'glab api job trace');
-  await expectRouteIdle(harness, 'glab api pipeline jobs');
+  await expectRouteIdle(harness, 'glab graphql PipelineJobs');
 
   // The saved log is the trace as text, without its section markers.
   await log.getByTestId('review-ci-log-save').click();

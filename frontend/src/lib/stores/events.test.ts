@@ -209,7 +209,7 @@ describe('setupEventListeners', () => {
       pipelineLog: (event, backend) => got.push(`log ${event.pipelineKey} ${event.jobId} ${backend}`),
     });
     try {
-      emitWailsEvent('pulls:updated', { seq: 7, fetchedAt: '', needsYou: 0, projects: [] });
+      emitWailsEvent('pulls:updated', { seq: 7, fetchedAt: '', projects: [] });
       emitWailsEvent('pulls:updated', { seq: 8 });
       emitWailsEvent('ci:pipeline_updated', { key: 'github:o/r:pipeline:41', seq: 9 });
       emitWailsEvent('ci:pipeline_updated', { seq: 10 });

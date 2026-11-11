@@ -10,8 +10,11 @@
 // to the thread pane it belongs to, which is the one replaced; a focused tool
 // pane gives its slot to the other tool. With nothing focused the tool is
 // appended. A new-pane open inserts right of the focused pane and replaces
-// nothing. The reverse direction, a thread opened while a tool pane is
-// focused, is `panes.svelte#focusedOpenTargetPane`.
+// nothing. A tools-row drag drops the tool at a layout slot (`insertIndex`),
+// replacing nothing; an open tool moves to that slot. Every open focuses and
+// reveals the tool and records it as used last. The reverse direction, a
+// thread opened while a tool pane is focused, is
+// `panes.svelte#focusedOpenTargetPane`.
 //
 // panes.svelte.ts must not import this module. It notifies through
 // `addToolPaneReplacedObserver`, armed by `installToolPanes`.
@@ -21,6 +24,7 @@ import {
   averagePaneWidthPx,
   getPaneLayoutItems,
   isToolKind,
+  movePaneLayoutItemToIndex,
   notePaneLayoutMutation,
   paneLayoutKindOf,
   removePaneLayoutItem,
@@ -168,16 +172,40 @@ function focusedBlockLead(): { paneId: string; index: number; widthPx: number } 
   return { paneId, index, widthPx: items[index].widthPx };
 }
 
-export interface OpenToolOptions {
-  /** Insert a new pane right of the focused pane instead of replacing it. */
-  newPane?: boolean;
-}
+export type OpenToolOptions =
+  | {
+    /** Insert a new pane right of the focused pane instead of replacing it. */
+    newPane?: boolean;
+    insertIndex?: never;
+  }
+  | {
+    /**
+     * Place the tool at this slot of the layout as it stands (0..length, a
+     * tools-row drop), replacing nothing; an open tool moves there. A slot
+     * past the end, left by a layout that shrank during the drag, is the
+     * end; anything that is not a non-negative integer throws.
+     */
+    insertIndex: number;
+    newPane?: never;
+  };
 
 export function openTool(kind: ToolPaneKind, options: OpenToolOptions = {}): void {
+  const { insertIndex: slot } = options;
+  if (slot !== undefined && (!Number.isInteger(slot) || slot < 0)) {
+    throw new RangeError(`openTool: insert index ${slot} is not a layout slot`);
+  }
   closeSettingsSurface();
   noteToolUsed(kind);
   const paneId = toolPaneIdFor(kind);
   if (isToolOpen(kind)) {
+    if (slot !== undefined) moveToolToSlot(kind, slot);
+    focusPane(paneId);
+    revealPane(paneId);
+    return;
+  }
+  if (slot !== undefined) {
+    notePaneLayoutMutation();
+    addPaneLayoutItem({ id: paneId, paneId, kind, widthPx: averagePaneWidthPx() }, slot);
     focusPane(paneId);
     revealPane(paneId);
     return;
@@ -198,6 +226,27 @@ export function openTool(kind: ToolPaneKind, options: OpenToolOptions = {}): voi
   addPaneLayoutItem({ id: paneId, paneId, kind, widthPx }, insertIndex);
   focusPane(paneId);
   revealPane(paneId);
+}
+
+function toolIndex(paneId: string): number {
+  return getPaneLayoutItems().findIndex((item) => item.paneId === paneId);
+}
+
+/** The tool is open and `slot` is either side of it, so placing it there
+ * changes nothing. The pane strip shows no drop preview for such a slot. */
+export function isToolAtSlot(kind: ToolPaneKind, slot: number): boolean {
+  const index = toolIndex(toolPaneIdFor(kind));
+  return index >= 0 && (slot === index || slot === index + 1);
+}
+
+// `slot` counts the tool's own item, so a later slot is one less once the
+// item is lifted out.
+function moveToolToSlot(kind: ToolPaneKind, slot: number): void {
+  if (isToolAtSlot(kind, slot)) return;
+  const paneId = toolPaneIdFor(kind);
+  const index = toolIndex(paneId);
+  if (index < 0) return;
+  movePaneLayoutItemToIndex(paneId, slot > index ? slot - 1 : slot);
 }
 
 // The lead and everything after it in its block leave together, so the lead's

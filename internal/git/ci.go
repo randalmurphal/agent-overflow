@@ -226,7 +226,7 @@ func NormalizeCIStatus(status, conclusion string) string {
 		return CIStatusFailed
 	case "running", "in_progress":
 		return CIStatusRunning
-	case "queued", "pending", "created", "waiting_for_resource", "preparing", "scheduled", "requested", "waiting":
+	case "queued", "pending", "created", "waiting_for_resource", "preparing", "scheduled", "requested", "waiting", "waiting_for_callback":
 		return CIStatusPending
 	case "canceled", "cancelled", "canceling":
 		return CIStatusCanceled

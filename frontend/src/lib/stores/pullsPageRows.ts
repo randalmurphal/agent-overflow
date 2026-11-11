@@ -69,7 +69,7 @@ export function listedRows(snapshot: PRListSnapshot | null, backend: BackendKey)
   return out;
 }
 
-function admits(filters: MRFilters, row: PullsListedRow): boolean {
+function admits(filters: Pick<MRFilters, 'filter' | 'projects'>, row: PullsListedRow): boolean {
   if (filters.projects.length > 0 && !filters.projects.includes(row.project.projectId)) return false;
   switch (filters.filter) {
     case 'needs_you':
@@ -129,10 +129,10 @@ function repoOf(item: PRListItem): string {
   return `${item.ref.Host}/${item.ref.Namespace}/${item.ref.Repo}`;
 }
 
-/** The rows the filters admit, grouped needs-you first, each group in the
- * remembered sort across projects. A project picked in the filter lists
- * its rows even where another project lists them too. */
-export function groupRows(snapshot: PRListSnapshot | null, backend: BackendKey, filters: MRFilters): PullsGroup[] {
+/** The rows the filter and project picker admit, each PR once, unsorted.
+ * A project picked in the filter lists its rows even where another
+ * project lists them too. */
+function admittedRows(snapshot: PRListSnapshot | null, backend: BackendKey, filters: Pick<MRFilters, 'filter' | 'projects'>): PullsListedRow[] {
   const admitted: PullsListedRow[] = [];
   const seen = new Set<string>();
   for (const project of snapshot?.projects ?? []) {
@@ -146,6 +146,19 @@ export function groupRows(snapshot: PRListSnapshot | null, backend: BackendKey, 
       admitted.push(row);
     }
   }
+  return admitted;
+}
+
+/** The number of rows the Needs you filter lists for the picked
+ * `projects`, whichever filter and sort are shown. */
+export function needsYouCount(snapshot: PRListSnapshot | null, backend: BackendKey, projects: readonly string[]): number {
+  return admittedRows(snapshot, backend, { filter: 'needs_you', projects }).length;
+}
+
+/** The rows the filters admit, grouped needs-you first, each group in the
+ * remembered sort across projects. */
+export function groupRows(snapshot: PRListSnapshot | null, backend: BackendKey, filters: MRFilters): PullsGroup[] {
+  const admitted = admittedRows(snapshot, backend, filters);
   admitted.sort((a, b) => {
     const ga = a.item.group === 'needs_you';
     const gb = b.item.group === 'needs_you';

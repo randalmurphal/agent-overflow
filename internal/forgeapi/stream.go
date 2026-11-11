@@ -30,6 +30,9 @@ func (c *Client) Stream(ctx context.Context, r Request, dst io.Writer, limit int
 	if limit <= 0 && limit != NoLimit {
 		return nil, errors.New("forgeapi: Stream needs a positive limit or NoLimit")
 	}
+	if r.MaxBodyBytes != 0 {
+		return nil, errors.New("forgeapi: Stream takes its limit as an argument, not Request.MaxBodyBytes")
+	}
 	ctx, cancel := c.withTimeout(ctx, r.Timeout)
 	defer cancel()
 	refreshed := false
@@ -91,5 +94,6 @@ func (c *Client) streamAttempt(ctx context.Context, r Request, dst io.Writer, li
 	if readErr != nil && !errors.Is(readErr, ErrBodyTooLarge) {
 		return nil, false, c.bodyError(ctx, answered, readErr)
 	}
-	return c.settle(ctx, ex, answered, resp, body, refreshed)
+	// Stream never consults the ETag store, so no stored body is bounded here.
+	return c.settle(ctx, ex, answered, resp, body, c.svc.opts.MaxBodyBytes, refreshed)
 }

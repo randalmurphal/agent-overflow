@@ -21,6 +21,7 @@ var gitlabGraphQL = []graphQLOp{
 	{kind: "query", name: "PullsAuthoredActivity", required: []string{"fullPath", "viewer"}, optional: []string{"after"}, run: glabPullsRead("author", gitlabActivityNode)},
 	{kind: "query", name: "PullsReviewingApprovals", required: []string{"fullPath", "viewer"}, optional: []string{"after"}, run: glabPullsRead("reviewer", gitlabApprovalsNode)},
 	{kind: "query", name: "PullsAuthoredApprovals", required: []string{"fullPath", "viewer"}, optional: []string{"after"}, run: glabPullsRead("author", gitlabApprovalsNode)},
+	{kind: "query", name: "PipelineJobs", required: []string{"fullPath", "id"}, optional: []string{"after"}, run: glabPipelineJobs},
 }
 
 // glabPullsRead answers project(fullPath) { mergeRequests(<filter>Username:

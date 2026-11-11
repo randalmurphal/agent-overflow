@@ -184,6 +184,13 @@ export interface ForgeJob {
   synthetic?: ForgeSyntheticLog;
   /** GitHub Actions steps. */
   steps?: ForgeStep[];
+  /** A GitLab row that is not a build: a bridge (trigger job) or an
+   * external commit status (stage "external" by default). Neither has a log. */
+  kind?: 'bridge' | 'external';
+  /** An external status's absolute link. */
+  targetUrl?: string;
+  /** A bridge's downstream pipeline path ("/grp/child/-/pipelines/9"). */
+  downstream?: string;
 }
 
 export interface ForgeSyntheticLog {

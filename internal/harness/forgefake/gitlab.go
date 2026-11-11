@@ -1,12 +1,12 @@
 package forgefake
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -586,44 +586,98 @@ func userNoteCount(p *Pull) int {
 	return n
 }
 
-func glabPipelineJobs(e *Engine, c *call, m []string) response {
-	r, fail, ok := e.glabProject(c, m[1])
-	if !ok {
-		return fail
+// glabPipelineJobs answers PipelineJobs(fullPath, id, after):
+// project { pipeline(id) { stages, jobs(first: 100, after, retried:
+// false) } } with the pipeline's stages in fixture order and its rows
+// newest first, each a build, a bridge or an external commit status as
+// its kind says, spelled as gitlab.com answers them. A project not on the
+// host is a null project, a pipeline it lacks a null pipeline.
+func glabPipelineJobs(e *Engine, c *call, v graphQLVars) response {
+	fullPath, err1 := v.str("fullPath")
+	gid, err2 := v.str("id")
+	offset, err3 := v.cursor("after")
+	if err := firstErr(err1, err2, err3); err != nil {
+		return unhandled("GitLab pipeline jobs read: %v", err)
 	}
-	id, _ := strconv.ParseInt(m[2], 10, 64)
+	digits, ok := strings.CutPrefix(gid, "gid://gitlab/Ci::Pipeline/")
+	id, err := strconv.ParseInt(digits, 10, 64)
+	if !ok || err != nil {
+		return unhandled("GitLab pipeline jobs read: id %q is not a pipeline gid", gid)
+	}
+	r := e.repoOn("gitlab", c.http.host, fullPath)
+	if r == nil {
+		return graphQLData(map[string]any{"project": nil})
+	}
 	pipeline := r.pipeline(id)
 	if pipeline == nil {
-		return glabNotFound("Pipeline")
+		return graphQLData(map[string]any{"project": map[string]any{"pipeline": nil}})
 	}
-	_, perPage, page, err := glabPage(m[3])
-	if err != nil {
-		return unhandled("%v", err)
-	}
-	jobs := make([]map[string]any, 0, len(pipeline.Jobs))
+	stages := []map[string]any{}
+	seen := map[string]bool{}
 	for _, job := range pipeline.Jobs {
-		var startedAt, duration any
-		if job.StartedAt != "" {
-			startedAt = job.StartedAt
-			if seconds, ok := jobSeconds(job); ok {
-				duration = seconds
-			}
+		if !seen[job.Stage] {
+			seen[job.Stage] = true
+			stages = append(stages, map[string]any{"name": job.Stage})
 		}
-		jobs = append(jobs, map[string]any{
-			"id":            job.ID,
-			"name":          job.Name,
-			"stage":         job.Stage,
-			"status":        job.Status,
-			"duration":      duration,
-			"web_url":       fmt.Sprintf("https://%s/%s/-/jobs/%d", r.Host, r.Project, job.ID),
-			"allow_failure": job.AllowFailure,
-			"started_at":    startedAt,
-		})
 	}
-	// The API lists jobs newest first.
-	sort.SliceStable(jobs, func(i, j int) bool { return jobs[i]["id"].(int64) > jobs[j]["id"].(int64) })
-	items, next := paginate(jobs, perPage, page)
-	return glabOK(jsonResponse(items), "X-Next-Page: "+next)
+	jobs := slices.Clone(pipeline.Jobs)
+	// GitLab answers the rows newest first.
+	slices.SortStableFunc(jobs, func(a, b Job) int { return cmp.Compare(b.ID, a.ID) })
+	nodes := make([]map[string]any, 0, len(jobs))
+	for _, job := range jobs {
+		nodes = append(nodes, gitlabJobNode(r, job))
+	}
+	return graphQLData(map[string]any{"project": map[string]any{"pipeline": map[string]any{
+		"stages": map[string]any{"nodes": stages},
+		"jobs":   graphQLConnection(nodes, offset, githubGraphQLPageSize),
+	}}})
+}
+
+// gitlabJobNode is one PipelineJobs row. A build's webPath and
+// detailsPath are its job page. A bridge has no webPath, and its
+// detailsPath and downstreamPipeline are its downstream pipeline once
+// one exists. A commit status has the job webPath GitLab gives one (no
+// page) and its target URL as detailsPath.
+func gitlabJobNode(r *Repo, job Job) map[string]any {
+	var startedAt, duration any
+	if job.StartedAt != "" {
+		startedAt = job.StartedAt
+		if seconds, ok := jobSeconds(job); ok {
+			duration = int(seconds)
+		}
+	}
+	jobPath := fmt.Sprintf("/%s/-/jobs/%d", r.Project, job.ID)
+	node := map[string]any{
+		"name":               job.Name,
+		"status":             strings.ToUpper(job.Status),
+		"allowFailure":       job.AllowFailure,
+		"duration":           duration,
+		"startedAt":          startedAt,
+		"stage":              map[string]any{"name": job.Stage},
+		"downstreamPipeline": nil,
+	}
+	var details any
+	switch job.Kind {
+	case JobKindBridge:
+		node["id"] = fmt.Sprintf("gid://gitlab/Ci::Bridge/%d", job.ID)
+		node["webPath"] = nil
+		if job.Downstream != "" {
+			details = job.Downstream
+			node["downstreamPipeline"] = map[string]any{"path": job.Downstream}
+		}
+	case JobKindExternal:
+		node["id"] = fmt.Sprintf("gid://gitlab/GenericCommitStatus/%d", job.ID)
+		node["webPath"] = jobPath
+		if job.TargetURL != "" {
+			details = job.TargetURL
+		}
+	default:
+		node["id"] = fmt.Sprintf("gid://gitlab/Ci::Build/%d", job.ID)
+		node["webPath"] = jobPath
+		details = jobPath
+	}
+	node["detailedStatus"] = map[string]any{"detailsPath": details}
+	return node
 }
 
 func jobSeconds(job Job) (float64, bool) {
@@ -642,7 +696,8 @@ func glabJobTrace(e *Engine, c *call, m []string) response {
 	}
 	id, _ := strconv.ParseInt(m[2], 10, 64)
 	job := r.job(id)
-	if job == nil || job.StartedAt == "" || job.LogWithheld {
+	// A bridge or a commit status has no trace.
+	if job == nil || job.Kind != "" || job.StartedAt == "" || job.LogWithheld {
 		return glabNotFound("Job")
 	}
 	resp := glabOK(response{ranges: rangeTrace}, "Content-Type: text/plain")

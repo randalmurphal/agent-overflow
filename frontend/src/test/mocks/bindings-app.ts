@@ -775,7 +775,6 @@ export const SubscribePRList = dispatch('SubscribePRList');
 export const SetPRListActive = dispatch('SetPRListActive');
 export const RefreshPRList = dispatch('RefreshPRList');
 export const UnsubscribePRList = dispatch('UnsubscribePRList');
-export const GetPRListNeedsYou = dispatch('GetPRListNeedsYou');
 export const ListThreadsOnPR = dispatch('ListThreadsOnPR');
 export const OpenPRThread = dispatch('OpenPRThread');
 export const ListPRDiffReviewComments = dispatch('ListPRDiffReviewComments');

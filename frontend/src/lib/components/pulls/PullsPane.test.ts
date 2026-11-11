@@ -125,6 +125,31 @@ describe('a detail failure', () => {
   });
 });
 
+describe('the Needs you count', () => {
+  it('follows the project picker', async () => {
+    const other = { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'other' };
+    installPullsPaneMocks(pullsSnapshot([
+      pullsProject([pullItem(5), pullItem(6)]),
+      pullsProject([pullItem(7, { ref: { ...other, Number: 7 } }), pullItem(8, { ref: { ...other, Number: 8 }, state: 'open', group: 'waiting' })], { projectId: 'project-2', name: 'Other', repo: other }),
+      pullsProject([pullItem(9, { ref: { ...other, Number: 9 }, state: 'open', group: 'waiting' })], { projectId: 'project-3', name: 'Quiet', repo: { ...other, Repo: 'quiet' } }),
+    ]));
+    const view = mountPane();
+    await waitFor(() => expect(view.getByTestId('pulls-filter-needs-you-count')).toHaveTextContent('3'));
+
+    // Unticking two projects from every project leaves Other picked.
+    await fireEvent.click(view.getByTestId('pulls-projects-picker'));
+    await fireEvent.click(within(menu()).getByTestId('pulls-project-project-1'));
+    await fireEvent.click(within(menu()).getByTestId('pulls-project-project-3'));
+    await waitFor(() => expect(view.getByTestId('pulls-filter-needs-you-count')).toHaveTextContent('1'));
+    expect(view.getAllByTestId('pull-row')).toHaveLength(1);
+
+    // A project with nothing for the reader shows no count.
+    await fireEvent.click(within(menu()).getByTestId('pulls-project-project-3'));
+    await fireEvent.click(within(menu()).getByTestId('pulls-project-project-2'));
+    await waitFor(() => expect(view.queryByTestId('pulls-filter-needs-you-count')).toBeNull());
+  });
+});
+
 describe('Back on compact', () => {
   it('closes an open pipeline log before the pipeline, with no Back of its own', async () => {
     setCompactLayoutForTest(true);

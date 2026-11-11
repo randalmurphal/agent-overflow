@@ -260,8 +260,9 @@ func (j githubRunJobRaw) steps() []CIStep {
 // answers whether to read the next page.
 func readGitHubRunJobs(ctx context.Context, client *forgeapi.Client, repo RepoReference, runID string, visit func(jobs []githubRunJobRaw, seen, total int) bool) error {
 	request := forgeapi.Request{
-		Path:  githubRepoPath(repo) + "/actions/runs/" + runID + "/jobs",
-		Query: url.Values{"per_page": {strconv.Itoa(githubCIJobsPerPage)}},
+		Path:         githubRepoPath(repo) + "/actions/runs/" + runID + "/jobs",
+		Query:        url.Values{"per_page": {strconv.Itoa(githubCIJobsPerPage)}},
+		MaxBodyBytes: githubRunJobsMaxBody,
 	}
 	seen := 0
 	return client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
@@ -319,7 +320,7 @@ func (f *githubForge) ListPipelines(ctx context.Context, repo RepoReference, fil
 	var raw struct {
 		WorkflowRuns []githubRunRaw `json:"workflow_runs"`
 	}
-	if _, err := client.JSON(ctx, forgeapi.Request{Path: githubRepoPath(repo) + "/actions/runs", Query: query}, &raw); err != nil {
+	if _, err := client.JSON(ctx, forgeapi.Request{Path: githubRepoPath(repo) + "/actions/runs", Query: query, MaxBodyBytes: githubRunsMaxBody}, &raw); err != nil {
 		return nil, err
 	}
 	rows := make([]PipelineSummary, 0, len(raw.WorkflowRuns))

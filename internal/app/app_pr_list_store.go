@@ -13,9 +13,9 @@ import (
 )
 
 // The PR list's stored copy (store.PRListProject, one row per forge
-// repository): what a subscribe and the sidebar badge answer before any
-// forge read, and what the boot prefetch fills so the badge is right
-// before the page is ever opened. Every landed project read replaces its
+// repository): what a subscribe answers before any forge read, and what
+// the boot prefetch fills so the page opens on current rows. Every landed
+// project read replaces its
 // repository's row; a tick or the prefetch deletes the rows of
 // repositories no project names. One writer owns the copy at a time
 // (commitPRListStore): the latest started of the boot prefetch and the
@@ -72,24 +72,6 @@ func (a *App) storedPRListSnapshot(ctx context.Context) (PRListSnapshot, error) 
 	return snapshot, nil
 }
 
-// GetPRListNeedsYou is the sidebar badge before the Pull requests page
-// subscribes: the needs-you rows of the stored copy for the current
-// forge projects, each PR once. It reads no forge; pulls:badge carries
-// the count again whenever the copy is written.
-//
-//ao:scope git:operate
-//ao:route selected
-func (a *App) GetPRListNeedsYou(ctx context.Context) (int, error) {
-	if a.shuttingDown.Load() {
-		return 0, ErrShuttingDown
-	}
-	snapshot, err := a.storedPRListSnapshot(ctx)
-	if err != nil {
-		return 0, err
-	}
-	return snapshot.NeedsYou, nil
-}
-
 // prListWriter is a writer of the stored copy: the generation it took
 // when it started (App.prUpdates.listGen) and, for a pump, the pump.
 type prListWriter struct {
@@ -98,11 +80,12 @@ type prListWriter struct {
 }
 
 // commitPRListStore runs write, a change to the stored copy, if w still
-// owns the copy (its generation is the latest, and a pump still runs),
-// then emits pulls:badge with the stored count when write changed it. It
+// owns the copy (its generation is the latest, and a pump still runs). It
 // reports whether write ran; a superseded or stopped writer's change is
-// dropped. The store lock orders the writes with the badges they emit.
-func (a *App) commitPRListStore(w prListWriter, write func() (bool, error)) (bool, error) {
+// dropped. The store lock holds the ownership check and the write
+// together, so a writer that lost the copy after its check cannot land
+// after the new owner's write.
+func (a *App) commitPRListStore(w prListWriter, write func() error) (bool, error) {
 	if a.prUpdates.listStoreHook != nil {
 		a.prUpdates.listStoreHook("enter")
 	}
@@ -117,31 +100,15 @@ func (a *App) commitPRListStore(w prListWriter, write func() (bool, error)) (boo
 	if a.prUpdates.listStoreHook != nil {
 		a.prUpdates.listStoreHook("owned")
 	}
-	changed, err := write()
-	if err != nil || !changed {
-		return true, err
-	}
-	// The badge counts what was committed, read back with the app's
-	// context: a writer's own context may end with its last subscriber.
-	snapshot, err := a.storedPRListSnapshot(a.lifeCtx())
-	switch {
-	case err != nil && a.lifeCtx().Err() != nil:
-		// Shutting down: the write committed and no client is left to
-		// tell.
-		return true, nil
-	case err != nil:
-		return true, fmt.Errorf("count the badge: %w", err)
-	}
-	a.emitPRListBadge(snapshot.NeedsYou)
-	return true, nil
+	return true, write()
 }
 
 // storePRListRead stores one repository's landed read for writer w,
 // and reports whether it was stored. A failure is logged: the copy is a
 // cache the next read replaces, and the page shows the read either way.
 func (a *App) storePRListRead(w prListWriter, record store.PRListProject) bool {
-	stored, err := a.commitPRListStore(w, func() (bool, error) {
-		return true, a.store.PutPRListProject(record)
+	stored, err := a.commitPRListStore(w, func() error {
+		return a.store.PutPRListProject(record)
 	})
 	if err != nil {
 		log.Printf("pr list: store the read of %s: %v", record.RepoKey, err)
@@ -156,17 +123,18 @@ func (a *App) prunePRListStore(w prListWriter, current map[string]bool) {
 	for key := range current {
 		keep = append(keep, key)
 	}
-	if _, err := a.commitPRListStore(w, func() (bool, error) {
-		deleted, err := a.store.DeletePRListProjectsExcept(keep)
-		return deleted > 0, err
+	if _, err := a.commitPRListStore(w, func() error {
+		_, err := a.store.DeletePRListProjectsExcept(keep)
+		return err
 	}); err != nil {
 		log.Printf("pr list: prune the stored lists: %v", err)
 	}
 }
 
 // startPRListPrefetch reads every forge project once in the background
-// after the first client's reads settled, so the stored copy, and with it
-// the badge, is current before the page opens (prefetchPRList).
+// after the first client's reads settled, so the stored copy is current
+// when the page opens and its subscribe answers fresh rather than stale
+// (prefetchPRList).
 func (a *App) startPRListPrefetch() {
 	a.prUpdates.wg.Go(func() {
 		ctx := a.lifeCtx()

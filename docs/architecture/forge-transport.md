@@ -266,14 +266,17 @@ is cached as an unknown viewer), `Threads` and `Events` its discussions
 `diff_refs.head_sha`; one read serves both, system notes are the events,
 and the merge request's `merged_at`/`closed_at` supply the merge and close
 GitLab records as state events rather than notes), and `CI`
-the jobs of its `head_pipeline` (`per_page=100`, paged by `X-Next-Page`,
-at most `gitlabCIJobsMaxPages` (5) pages). A job's trace is read on
-request (`StreamCIJobLog`, as on GitHub).
+the rows of its `head_pipeline` (GraphQL `PipelineJobs(fullPath, id,
+after)`: its builds, bridges and external commit statuses, which the REST
+jobs list lacks, 100 per page by cursor, at most `gitlabCIJobsMaxPages`
+(5) pages). A build's trace is read on request (`StreamCIJobLog`, as on
+GitHub); a bridge or a commit status has no log and no job id, as a
+GitHub external check.
 
 | Tick | GitLab requests |
 |---|---|
 | Pump (`Detail`, `Threads`, `Events`) | 1 merge request + 1 approvals + 1 discussions page per 100 discussions; + 1 `projects/P` per login and project and 1 `user` per login and host per 10 minutes |
-| CI phase, a head pipeline | 1 merge request + 1 jobs page per 100 jobs |
+| CI phase, a head pipeline | 1 merge request + 1 `PipelineJobs` per 100 rows |
 | CI phase, no head pipeline | 1 merge request |
 | Log follow, a followed running job (every 5s) | 1 trace (304 while unchanged) |
 
@@ -399,8 +402,8 @@ the 1000 most recently updated.
 |---|---|---|
 | Open PRs of a project | 1 `PullsSearch` per 100 PRs | 1 merge request list page per 100 MRs + 6 GraphQL reads, each 1 page per 100 MRs it returns + 2 to 6 `users/ID/events` (two feeds) per host per round; + 1 `user` per login and host per 10 minutes |
 | Pipelines of a project (`ListPipelines`, at most `Limit` rows, 100 when unset or larger) | 1 `GET repos/O/R/actions/runs?per_page=N[&branch=][&status=]` | 1 `GET projects/P/pipelines?per_page=N[&ref=][&status=]`; + `GET projects/P/pipelines?per_page=100&scope=tags[&ref=]` pages, at most `gitlabTagScopeMaxPages` (10): 1 for a ref, 1 or 2 without a status filter, none for a merge request ref or an empty list; + 1 `GET projects/P/pipelines/ID` per row on a tag's ref name whose id the tag scope does not hold, once per pipeline while the repository's listings hold it and shared by concurrent listings, 4 at a time per listing |
-| One pipeline (`ReadPipeline`) | 1 `GET repos/O/R/actions/runs/ID` + 1 jobs page per 100 jobs, at most `githubReadMaxPages` | 1 `GET projects/P/pipelines/ID` + 1 jobs page per 100 jobs, at most `gitlabCIJobsMaxPages` |
-| Stages of 30 unchanged rows (`ReadPipelineStages`) | 30 runs + 30 jobs pages, each a 304 | 30 pipelines + 30 jobs pages, each a 200 with its body |
+| One pipeline (`ReadPipeline`) | 1 `GET repos/O/R/actions/runs/ID` + 1 jobs page per 100 jobs, at most `githubReadMaxPages` | 1 `GET projects/P/pipelines/ID` + 1 `PipelineJobs` per 100 rows, at most `gitlabCIJobsMaxPages` |
+| Stages of 30 unchanged rows (`ReadPipelineStages`) | 30 runs + 30 jobs pages, each a 304 | 30 pipelines + 30 `PipelineJobs`, each a 200 with its body |
 
 `PipelineListFilter.Status` is a normalized status each forge filters by
 its own value: success, failed, running, pending (GitHub `queued`),
@@ -478,8 +481,7 @@ release, a project whose origin cannot be read keeps the repository and
 rows the last tick read beside that error, and a removed project takes
 its rows along, from the pump and the store. Each row's attention state,
 group and reason come from `prAttention` (`app_pr_attention.go`), a pure
-function of the row; `NeedsYou`, the sidebar badge, counts each PR once.
-The last unsubscribe stops the pump, cancels its reads in flight and
+function of the row. The last unsubscribe stops the pump, cancels its reads in flight and
 drops what it held.
 
 The boot prefetch (`app_pr_list_store.go`) runs once after
@@ -493,11 +495,8 @@ started: each pump and the prefetch, which takes its own generation): the
 latest started, and a pump only while it runs. A write or prune of a
 writer that lost the copy, or of a pump that stopped, is dropped, so a
 read that lands after a newer writer's neither replaces it nor undoes a
-prune. `GetPRListNeedsYou` answers the badge from the
-store, and every change to it (a read stored, a repository pruned)
-emits `pulls:badge` `{needsYou}` counted from what the store committed,
-in commit order, so the badge is right before the page opens and after
-a pump stopped mid-write.
+prune. The prefetch is what lets a page opened after boot subscribe to
+a current stored copy rather than a stale one.
 
 | Tick | GitHub | GitLab |
 |---|---|---|
@@ -534,10 +533,11 @@ pipelines, 4 at a time, with `ReadPipeline` and answers each stage's name
 and status, or that pipeline's failure. An unchanged pipeline costs what
 `ReadPipeline` does (the table in "Project lists"): on GitHub the run and
 its jobs list are GETs the ETag store revalidates, a 304 each (the jobs
-list measured free of the limit); on GitLab the jobs list answers 200 to
-`If-None-Match` (measured) and the single pipeline's revalidation is not
-measured, so 30 unchanged rows cost 30 pipeline reads and 30 jobs list
-bodies.
+list measured free of the limit); on GitLab `PipelineJobs` is GraphQL, which
+has no ETag (the REST jobs list it replaced answered 200 to
+`If-None-Match` too), and the single pipeline's revalidation is not
+measured, so 30 unchanged rows cost 30 pipeline reads and 30
+`PipelineJobs` bodies.
 
 ## Merged PR worktree cleanup
 
@@ -591,17 +591,18 @@ type Request struct {
     Method      string
     Path        string        // relative to the REST base, or absolute for a declared attachment fetch
     Query       url.Values
-    Header      http.Header   // Range, If-None-Match, Accept
+    Header      http.Header   // Range, If-None-Match, Accept; any header keeps the call off the ETag store
     Body        any           // JSON-encoded; io.Reader passes through
     Timeout     time.Duration // per call; zero takes Options.ReadTimeout (45s); covers headers and body
     Attachment  bool          // allows an absolute Path
+    MaxBodyBytes int64        // Do, JSON and Pages body bound; zero takes Options.MaxBodyBytes (1 MiB), at most 8 MiB
 }
 // Interactive comes from the context (WithInteractive), not the Request.
 
 type Response struct {
     Status    int
     Header    http.Header
-    Body      []byte          // bounded by Options.MaxBodyBytes (1 MiB) for JSON
+    Body      []byte          // bounded by Request.MaxBodyBytes, else Options.MaxBodyBytes (1 MiB)
     NotModified bool          // 304 answered from the ETag store
     Rate      *RateLimit      // parsed from the pool headers when present
 }
@@ -619,6 +620,13 @@ func (c *Client) CredentialFingerprint(ctx context.Context) (string, error) // s
   refused. Errors in the GraphQL envelope become `*GraphQLError`; data
   beside errors is handed back so a caller can decide what partial data it
   accepts.
+- A body past its bound fails the call with `ErrBodyTooLarge`. A list
+  read whose measured page can pass 1 MiB names its own bound
+  (`internal/git/forge_body_limits.go`, sized in
+  [list page sizes](../references/forge-api-measurements.md#list-page-sizes));
+  a bound below zero or past 8 MiB, a quarter of the ETag store, is
+  refused before anything is sent, so one stored body cannot evict the
+  rest. `Stream` refuses one: its `limit` argument is its bound.
 - `Stream` writes the body to `dst` and fails with `ErrBodyTooLarge` once
   `limit` bytes pass; `NoLimit` streams any size, for a `dst` on disk. A
   `dst` that implements `StreamStarter` is told the status and headers
@@ -762,11 +770,16 @@ method's rate-limited failure (`forge_rate_limited`) carries the same
   holding the ETag and the body it validated, bounded by entry count (256)
   and bytes (32 MiB) with LRU eviction; a host's entries go when its token
   changes. A GET whose key is held
-  sends `If-None-Match`; a 304 returns the stored body with `NotModified`.
+  sends `If-None-Match`; a 304 returns the stored body with `NotModified`,
+  or `ErrBodyTooLarge` when the body is past this request's bound. The key
+  holds no request header, so a request with a header of its own
+  (`Accept`, `Range`, its own `If-None-Match`) does not use the store: the
+  client adds no `If-None-Match` and stores no answer, and a 304 to the
+  caller's `If-None-Match` is `NotModified` with no body.
   GitHub REST 304s are free of the limit; GraphQL (POST) has no ETag, so
   `PullsSearch` is read whole each refresh. GitLab honors `If-None-Match`
   on merge requests, their list and job traces, not on the pipeline jobs
-  list (200 with the same weak ETag).
+  list (200 with the same weak ETag), which the app no longer reads.
 - `Stream` never stores a body; it passes the caller's `If-None-Match`
   through and exposes the response ETag, and follows a redirect with the
   caller's `Range` and `If-None-Match` (a GitHub job log's blob). The CI
