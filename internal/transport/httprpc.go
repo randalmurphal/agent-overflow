@@ -109,7 +109,7 @@ func (s *Server) invokeScoped(r *http.Request, scope CallerScope, frame ClientFr
 		response.Error = frameErr
 		return response
 	}
-	ctx := WithCallerScope(r.Context(), scope)
+	ctx := withServerLifetime(WithCallerScope(r.Context(), scope), s.rootCtx)
 	// isLoopback is true by construction (non-loopback peers were refused
 	// above), so the CLI receives the method's real error text — it is the
 	// only diagnostic a headless caller has.

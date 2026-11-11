@@ -155,6 +155,7 @@ func (a *App) holdReviewDiff(ctx context.Context, diff reviewDiffReader, scope t
 //
 //ao:scope session
 //ao:route home
+//ao:callerbound
 func (a *App) ReadReviewDiff(ctx context.Context, id string, offset int64, maxBytes int) (ReviewDiffChunk, error) {
 	if a.shuttingDown.Load() {
 		return ReviewDiffChunk{}, ErrShuttingDown

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"agent-overflow/internal/forgeapi"
 )
@@ -136,6 +137,7 @@ func (f *gitlabForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitP
 			State           string `json:"state"`
 			ProjectID       int64  `json:"project_id"`
 			SourceProjectID int64  `json:"source_project_id"`
+			TargetBranch    string `json:"target_branch"`
 		}
 		if err := json.Unmarshal(resp.Body, &raw); err != nil {
 			return false, fmt.Errorf("GitLab open merge requests: decode response: %w", err)
@@ -144,7 +146,7 @@ func (f *gitlabForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitP
 			if r.SourceProjectID != r.ProjectID {
 				continue
 			}
-			pulls = append(pulls, GitPR{URL: r.WebURL, Number: r.IID, Title: r.Title, State: NormalizePRState(r.State)})
+			pulls = append(pulls, GitPR{URL: r.WebURL, Number: r.IID, Title: r.Title, State: NormalizePRState(r.State), BaseBranch: r.TargetBranch})
 		}
 		pages++
 		return len(pulls) == 0 && pages < gitlabOpenMRsMaxPages && len(raw) == gitlabPageSize && advanceGitLabPage(resp, &page), nil
@@ -657,19 +659,35 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	diffRefs := mr.diffRefs()
 	notes := gitlabDraftNotes(review)
 	mrPath := gitlabMRPath(ref)
+	bodies := make([]gitlabDraftNoteIn, 0, len(notes))
 	for _, note := range notes {
 		body, err := gitlabDraftNoteBody(note, diffRefs)
 		if err != nil {
 			return SubmitReviewResult{}, err
 		}
-		if _, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/draft_notes", Body: body}, nil); err != nil {
-			return SubmitReviewResult{}, err
+		bodies = append(bodies, body)
+	}
+	// A submit is several requests. One that fails before the drafts are
+	// published removes the drafts this submit created, by the ids GitLab
+	// returned for them, so a retry does not publish them twice.
+	created := make([]int64, 0, len(bodies))
+	for _, body := range bodies {
+		var draft struct {
+			ID int64 `json:"id"`
 		}
+		if _, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/draft_notes", Body: body}, &draft); err != nil {
+			return SubmitReviewResult{}, removeGitLabDrafts(ctx, client, mrPath, created, 0, err)
+		}
+		if draft.ID == 0 {
+			err := errors.New("GitLab created a draft note but did not return its id")
+			return SubmitReviewResult{}, removeGitLabDrafts(ctx, client, mrPath, created, 1, err)
+		}
+		created = append(created, draft.ID)
 	}
 	out := SubmitReviewResult{}
 	if len(notes) > 0 {
 		if _, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/draft_notes/bulk_publish"}, nil); err != nil {
-			return SubmitReviewResult{}, err
+			return SubmitReviewResult{}, removeGitLabDrafts(ctx, client, mrPath, created, 0, err)
 		}
 		out.PostedReview = true
 	}
@@ -716,6 +734,49 @@ type gitlabDraftNoteIn struct {
 	Note     string             `json:"note"`
 	Position *gitlabPositionRaw `json:"position,omitempty"`
 }
+
+// gitlabDraftCleanupTimeout bounds removing a failed submit's drafts.
+const gitlabDraftCleanupTimeout = 30 * time.Second
+
+// removeGitLabDrafts deletes the drafts with ids, the ones a failed submit
+// created, and no other, then returns failure. unknown counts drafts the
+// submit created without learning their ids. A draft already gone (404) is
+// removed. A draft it could not remove is reported as a *DraftsLeftError
+// around failure.
+func removeGitLabDrafts(ctx context.Context, client *forgeapi.Client, mrPath string, ids []int64, unknown int, failure error) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gitlabDraftCleanupTimeout)
+	defer cancel()
+	left := unknown
+	var errs []error
+	for _, id := range ids {
+		request := forgeapi.Request{Method: http.MethodDelete, Path: mrPath + "/draft_notes/" + strconv.FormatInt(id, 10)}
+		if _, err := client.JSON(ctx, request, nil); err != nil && !errors.Is(err, forgeapi.ErrNotFound) {
+			left++
+			errs = append(errs, err)
+		}
+	}
+	if left == 0 {
+		return failure
+	}
+	if unknown > 0 {
+		errs = append(errs, fmt.Errorf("%d draft notes have no id to delete", unknown))
+	}
+	return &DraftsLeftError{Err: failure, Count: left, Cleanup: errors.Join(errs...)}
+}
+
+// DraftsLeftError is a submit that failed after creating draft notes it
+// then could not remove: Count of them may still be pending on the MR.
+type DraftsLeftError struct {
+	Err     error
+	Count   int
+	Cleanup error
+}
+
+func (e *DraftsLeftError) Error() string {
+	return fmt.Sprintf("%v; %d draft notes may remain pending: %v", e.Err, e.Count, e.Cleanup)
+}
+
+func (e *DraftsLeftError) Unwrap() error { return e.Err }
 
 func gitlabDraftNoteBody(comment ReviewLineComment, refs *PRDiffRefs) (gitlabDraftNoteIn, error) {
 	payload := gitlabDraftNoteIn{Note: comment.Body}

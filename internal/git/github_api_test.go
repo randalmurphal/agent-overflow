@@ -972,7 +972,7 @@ func TestGitHubOriginScopedLists(t *testing.T) {
 			// the repository's own.
 			return githubData(`{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[` +
 				`{"url":"https://github.com/acme/repo/pull/7","number":7,"title":"Fork","state":"OPEN","isCrossRepository":true},` +
-				`{"url":"https://github.com/acme/repo/pull/3","number":3,"title":"Fix","state":"OPEN","isCrossRepository":false}]}}}`)
+				`{"url":"https://github.com/acme/repo/pull/3","number":3,"title":"Fix","state":"OPEN","baseRefName":"release","isCrossRepository":false}]}}}`)
 		case "MergedPRs":
 			first := int(call.Vars["first"].(float64))
 			after, _ := call.Vars["after"].(string)
@@ -991,8 +991,11 @@ func TestGitHubOriginScopedLists(t *testing.T) {
 	cwd := t.TempDir()
 	seedForgeCacheGitHubOrigin(t, core, cwd, "git@github.com:Acme/Repo.git")
 	pulls, err := core.ListOpenPRs(t.Context(), cwd, "feature/x")
-	if err != nil || len(pulls) != 1 || pulls[0].Number != 3 || pulls[0].State != "open" {
+	if err != nil || len(pulls) != 1 || pulls[0].Number != 3 || pulls[0].State != "open" || pulls[0].BaseBranch != "release" {
 		t.Fatalf("ListOpenPRs = %+v, %v", pulls, err)
+	}
+	if !strings.Contains(calls.all()[0].Query, "baseRefName") {
+		t.Fatal("OpenPRsByHead does not ask for each PR's base")
 	}
 	heads, err := core.ListMergedPRHeads(t.Context(), cwd, 150)
 	if err != nil || len(heads) != 150 || heads[149].HeadRefName != "b149" {

@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"golang.org/x/sync/singleflight"
 
 	"agent-overflow/internal/appimage"
 	"agent-overflow/internal/forgeapi"
@@ -222,9 +221,9 @@ type Core struct {
 	fetchCacheMu sync.RWMutex
 	fetchCache   map[string]time.Time
 
-	// fetchFlight collapses concurrent background fetches of the same
-	// repository into one subprocess. Keyed like fetchCache.
-	fetchFlight singleflight.Group
+	// fetchFlight collapses concurrent fetches of the same repository into
+	// one subprocess. Keyed like fetchCache.
+	fetchFlight fetchFlights
 
 	// nowFn returns the current time. Production uses time.Now; tests
 	// override to drive TTL expiry deterministically.

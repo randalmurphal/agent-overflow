@@ -118,12 +118,11 @@ func (c *Core) CreateWorktreeFromFreshBase(
 // are no remote-tracking refs worth waiting for. Only a genuine failure
 // returns an error, and only as diagnostics — see WorktreeSeed.FetchErr.
 //
-// Concurrent fetches of one repository share the group FetchRemotesBackground
-// uses, so a worktree cut during a background tick joins that fetch instead
-// of racing a second one into the same ref locks. It waits on the flight
-// through DoChan rather than blocking in Do: joining must not inherit the
-// background cadence's app-lifetime deadline, or a "5 second" bound would
-// silently become a 45 second one.
+// Concurrent fetches of one repository share the flight
+// FetchRemotesBackground uses, so a worktree cut during a background tick
+// joins that fetch instead of racing a second one into the same ref locks.
+// The 5 second bound ends this caller's wait, and the fetch only when no
+// other caller waits for it (fetch_flight.go).
 func (c *Core) fetchOriginForSeed(ctx context.Context, cwd string) (bool, error) {
 	key, err := c.CommonDir(cwd)
 	if err != nil {
@@ -138,29 +137,27 @@ func (c *Core) fetchOriginForSeed(ctx context.Context, cwd string) (bool, error)
 
 	ctx, cancel := context.WithTimeout(ctx, worktreeSeedFetchTimeout)
 	defer cancel()
-	flight := c.fetchFlight.DoChan(key, func() (any, error) {
+	_, err = c.fetchFlight.do(ctx, key, func(ctx context.Context) (bool, error) {
 		// Re-check inside the flight: a caller that queued behind a
 		// just-finished fetch must not spawn a second one.
 		if c.fetchIsFresh(key) {
-			return nil, nil
+			return false, nil
 		}
 		if err := c.fetchFn(ctx, cwd); err != nil {
-			return nil, err
+			return false, err
 		}
 		c.stampFetchCache(key)
-		return nil, nil
-	})
-	select {
-	case result := <-flight:
-		if result.Err != nil {
-			return false, result.Err
-		}
 		return true, nil
-	case <-ctx.Done():
+	})
+	if err != nil && ctx.Err() != nil {
 		// Our own bound, or the caller shutting down. Either way the refs
 		// are unverified and the cut proceeds from the local base.
 		return false, fmt.Errorf("git fetch origin for worktree base: %w", ctx.Err())
 	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // BaseBranchKnown reports whether branch can seed a worktree cut: as a

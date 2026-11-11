@@ -179,6 +179,7 @@ func (t threadToolsApp) acceptSpawn(ctx context.Context, origin threadRequestOri
 	if err != nil {
 		return "", t.failRequest(token, err)
 	}
+	ctx = acceptedRequestContext(ctx)
 	target, fresh, err := t.acceptRequest(origin, token, store.ThreadRequestSpawn, "", func() (store.Thread, error) {
 		return t.createSpawnedThread(ctx, call, create)
 	})
@@ -243,6 +244,7 @@ func (t threadToolsApp) acceptSend(ctx context.Context, origin threadRequestOrig
 		return "", t.failRequest(token, errorsx.Public(threadtools.CodeSelfSend,
 			"A thread cannot send to itself.", nil))
 	}
+	ctx = acceptedRequestContext(ctx)
 	_, fresh, err := t.acceptRequest(origin, token, store.ThreadRequestSend, target.ID, nil)
 	if err != nil {
 		return "", t.failRequest(token, err)
@@ -312,6 +314,7 @@ func (t threadToolsApp) acceptAsk(ctx context.Context, origin threadRequestOrigi
 	if err != nil {
 		return "", t.failRequest(token, err)
 	}
+	ctx = acceptedRequestContext(ctx)
 	target, fresh, err := t.acceptRequest(origin, token, store.ThreadRequestAsk, "", func() (store.Thread, error) {
 		return t.app.forkScratchThread(ctx, source, scratchForkOptions{
 			TitlePrefix: askScratchTitlePrefix,
@@ -334,6 +337,14 @@ func (t threadToolsApp) acceptAsk(ctx context.Context, origin threadRequestOrigi
 		return "", t.failRequest(token, err)
 	}
 	return target, nil
+}
+
+// acceptedRequestContext is the context a request runs on from its receipt
+// on: the caller's values without its cancellation. A retry with the same
+// token never creates or dispatches again, so an accepted request abandoned
+// mid-dispatch would leave its thread without the message for good.
+func acceptedRequestContext(ctx context.Context) context.Context {
+	return context.WithoutCancel(ctx)
 }
 
 // answerRequested is what the footer's wording turns on: the sender waits, or

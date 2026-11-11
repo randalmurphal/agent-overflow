@@ -83,6 +83,9 @@ func (s *Service) CreatePR(ctx context.Context, ref WorkspaceRef, title, body st
 	if err != nil {
 		return gitops.GitActionResult{}, err
 	}
+	// Creating pushes and opens the PR, so from here the caller's
+	// cancellation no longer applies; the lookup below runs to its own bound.
+	ctx = context.WithoutCancel(ctx)
 	url, err := s.core.CreatePR(ctx, workspace, title, body, "", draft)
 	if err != nil {
 		return gitops.GitActionResult{}, err
