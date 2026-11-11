@@ -5,26 +5,19 @@
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import ChevronsDownUp from '@lucide/svelte/icons/chevrons-down-up';
   import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
-  import Circle from '@lucide/svelte/icons/circle';
-  import CircleCheck from '@lucide/svelte/icons/circle-check';
-  import CircleMinus from '@lucide/svelte/icons/circle-minus';
-  import CircleSlash from '@lucide/svelte/icons/circle-slash';
-  import CircleX from '@lucide/svelte/icons/circle-x';
   import Copy from '@lucide/svelte/icons/copy';
-  import Dot from '@lucide/svelte/icons/dot';
   import ExternalLink from '@lucide/svelte/icons/external-link';
   import MessageSquarePlus from '@lucide/svelte/icons/message-square-plus';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Icon from '../primitives/Icon.svelte';
-  import SteppedSpinner from '../primitives/SteppedSpinner.svelte';
   import LongListVirtualizer, { type LongListHandle } from '../virtual/LongListVirtualizer.svelte';
   import ReviewCILogBlockRow from './ReviewCILogBlockRow.svelte';
+  import ReviewCISectionStatusIcon from './ReviewCISectionStatusIcon.svelte';
   import ReviewIconButton from './ReviewIconButton.svelte';
   import { hostedBackReader } from '../panes/hostedBack';
   import { OpenExternalURL } from '../../stores/bindings';
   import { CI_LOG_BLOCK_LINES, CILogBlockCache, type CILogFetch } from '../../stores/ciLogBlocks.svelte';
   import type { PRCILogState } from '../../stores/prReviewCI.svelte';
-  import { getSettings } from '../../stores/settings.svelte';
   import type { CILogView } from '../../stores/ciSubject.svelte';
   import type { CILogSection } from '../../types/models';
   import { ciJobLive, ciStatusDotClass, ciStatusTextClass, formatCIDuration } from '../../utils/ciStatus';
@@ -285,29 +278,7 @@
       copiedTimer = undefined;
     }, 2000);
   }
-
-  const animate = $derived(!getSettings().lowPowerMode);
 </script>
-
-{#snippet statusIcon(status: string)}
-  {#if status === 'success'}
-    <Icon icon={CircleCheck} size={13} class="shrink-0 text-success" />
-  {:else if status === 'failed'}
-    <Icon icon={CircleX} size={13} class="shrink-0 text-error" />
-  {:else if status === 'running'}
-    <SteppedSpinner size={13} class="text-accent" {animate} />
-  {:else if status === 'pending'}
-    <Icon icon={Circle} size={13} class="shrink-0 text-fg-subtle" />
-  {:else if status === 'canceled'}
-    <Icon icon={CircleSlash} size={13} class="shrink-0 text-fg-muted" />
-  {:else if status === 'done'}
-    <Icon icon={CircleCheck} size={13} class="shrink-0 text-fg-subtle" />
-  {:else if status === 'output'}
-    <Icon icon={Dot} size={13} class="shrink-0 text-fg-subtle" />
-  {:else}
-    <Icon icon={CircleMinus} size={13} class="shrink-0 text-fg-muted" />
-  {/if}
-{/snippet}
 
 <div class="flex min-h-0 flex-1 flex-col" data-testid="review-ci-log" data-cached-blocks={blocks.size}>
   <div class="flex items-center gap-2 border-b border-border bg-surface-1 px-3 py-2 text-xs">
@@ -459,7 +430,7 @@
                 onclick={(event) => toggleSection(section, event.currentTarget)}
               >
                 <Icon icon={row.open ? ChevronDown : ChevronRight} size={12} class="shrink-0 text-fg-subtle {lines ? '' : 'invisible'}" />
-                {@render statusIcon(section.status)}
+                <ReviewCISectionStatusIcon status={section.status} />
                 <span class="min-w-0 truncate font-mono {section.status === 'pending' ? 'text-fg-subtle' : 'text-fg'}">{section.name}</span>
                 <span class="min-w-0 flex-1"></span>
                 {#if section.status === 'running' && lines}

@@ -2,7 +2,7 @@
   import { untrack, type Snippet } from 'svelte';
   import LongListVirtualizer, { type LongListHandle } from '../virtual/LongListVirtualizer.svelte';
   import ReviewFileHeaderRow from './ReviewFileHeaderRow.svelte';
-  import ReviewLineBlockRow from './ReviewLineBlockRow.svelte';
+  import ReviewDiffRow from './ReviewDiffRow.svelte';
   import {
     createReviewScrollOwner,
     reviewScrollKey,
@@ -29,7 +29,6 @@
     REVIEW_FILE_GAP_PX,
     REVIEW_FILE_HEADER_BAR_PX,
     REVIEW_OVERVIEW_ROW_KEY,
-    REVIEW_SURFACE_END_PX,
     reviewRowEstimate,
     type CommentAnchor,
     type ReviewLeadRow,
@@ -417,16 +416,6 @@
     if (el && delta !== 0) scroll.applyScrollTarget(Math.max(0, el.scrollTop + delta));
   }
 
-  // Per-file gutter width (ch) from the file's max line number — a
-  // true max over every row, not the last numbered row: a merged
-  // edits-scope file whose sections couldn't be renumbered (overlap
-  // fallback in mergePatchFilesByPath) renders sections in edit order,
-  // where numbering is non-monotonic and the last row can carry a
-  // smaller number than rows above it — sizing from it cramps every
-  // wider number.
-  function gutterChars(file: ReviewFile): number {
-    return Math.max(2, String(file.body.maxLine).length);
-  }
 </script>
 
 <div class="relative h-full min-h-0 min-w-0 flex-1" data-testid="review-diff-body">
@@ -470,58 +459,25 @@
         onscrollend={() => saveReadingPosition(scrollKey, readingAnchor)}
       >
         {#snippet children(row: ReviewRow)}
-          {@const file = files[row.fileIndex]}
-          {@const rowPulse = row === pulseRow && pulse ? pulse.generation : 0}
-          {#if row.kind === 'overview'}
-            {@render overview?.()}
-          {:else if !file}
-            <!-- Build/props raced; the next flush re-renders coherent rows. -->
-          {:else if row.kind === 'file-header'}
-            <ReviewFileHeaderRow
-              {file}
-              collapsed={collapsedPaths.has(file.path)}
-              onToggle={() => onToggleCollapsed(file.path)}
-              first={row.fileIndex === 0}
-            />
-          {:else if row.kind === 'surface-end'}
-            <!-- Closing cap for the last file's slab (exact height:
-                 REVIEW_SURFACE_END_PX; box-border keeps the border
-                 inside it). -->
-            <div style:height="{REVIEW_SURFACE_END_PX}px">
-              <div class="mx-[var(--review-slab-inset)] h-full rounded-b-[var(--radius-control)] border-x border-b border-border-subtle bg-surface-1"></div>
-            </div>
-          {:else if row.kind === 'line-block'}
-            {@const materialized = blockRows.get(file, row)}
-            <ReviewLineBlockRow
-              rows={materialized.rows}
-              splitRows={materialized.splitRows}
-              {file}
-              path={file.path}
-              {spanOwner}
-              {spanContext}
-              {painted}
-              {wordWrap}
-              gutterCh={gutterChars(file)}
-              {onAddComment}
-              {onExpandFold}
-              {onExpandGap}
-            />
-          {:else if row.kind === 'draft-editor'}
-            <!-- The slab inset + border-x + bg-surface-1 keep the file slab
-                 continuous behind the inserted rows (the page behind is
-                 darker surface-0). -->
-            <div class="mx-[var(--review-slab-inset)] border-x border-border-subtle bg-surface-1">
-              {@render draftEditor?.(row.anchor)}
-            </div>
-          {:else if row.kind === 'comment-thread'}
-            <div class="mx-[var(--review-slab-inset)] border-x border-border-subtle bg-surface-1">
-              {@render commentThread?.(row.threadKey, row.anchor, rowPulse)}
-            </div>
-          {:else}
-            <div class="mx-[var(--review-slab-inset)] border-x border-border-subtle bg-surface-1">
-              {@render prThread?.(row.thread, row.anchor, row.collapsed, row.orphaned, rowPulse)}
-            </div>
-          {/if}
+          <ReviewDiffRow
+            {row}
+            file={files[row.fileIndex]}
+            {blockRows}
+            collapsed={collapsedPaths.has(files[row.fileIndex]?.path ?? '')}
+            {onToggleCollapsed}
+            {spanOwner}
+            {spanContext}
+            {painted}
+            {wordWrap}
+            pulse={row === pulseRow && pulse ? pulse.generation : 0}
+            {overview}
+            {draftEditor}
+            {commentThread}
+            {prThread}
+            {onAddComment}
+            {onExpandFold}
+            {onExpandGap}
+          />
         {/snippet}
       </LongListVirtualizer>
     {/key}
