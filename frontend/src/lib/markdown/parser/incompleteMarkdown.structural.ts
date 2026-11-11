@@ -198,7 +198,7 @@ export const structuralPlugins: Plugin[] = [
     },
     {
         name: 'mdx',
-        skipInBlockTypes: ['code', 'math', 'center', 'right'],
+        skipInBlockTypes: ['code', 'math'],
         preprocess: ({ text, state }) => {
             // Track MDX component states across the entire text
             const lines = text.split('\n');

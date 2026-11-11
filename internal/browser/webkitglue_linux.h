@@ -103,8 +103,9 @@ int ao_wk_view_is_loading(void *view);
 int ao_wk_view_can_go(void *view, int forward);
 
 // ao_wk_view_eval evaluates one async-function body and reports the JSON result
-// to aoWebKitEvalDone under call_id.
-void ao_wk_view_eval(void *view, const char *body, uint64_t call_id);
+// to aoWebKitEvalDone under call_id. world names an isolated script world, or
+// is NULL for the page's own.
+void ao_wk_view_eval(void *view, const char *body, const char *world, uint64_t call_id);
 
 // ao_wk_view_snapshot captures the view and reports premultiplied BGRA pixels
 // to aoWebKitSnapshotDone under call_id. Works on a parked (mapped but
@@ -115,6 +116,33 @@ void ao_wk_view_snapshot(void *view, int full_document, uint64_t call_id);
 // drops the reference the delegate took to hold it. Exactly one call per
 // deferred decision.
 void ao_wk_policy_finish(void *decision, int allow);
+
+// ---- find ----------------------------------------------------------------
+
+#define AO_FIND_SEARCH 0
+#define AO_FIND_NEXT 1
+#define AO_FIND_PREVIOUS 2
+
+// ao_wk_view_find runs one find on the view's WebKitFindController: a
+// case-insensitive, wrapping search for text from the start of the document
+// (AO_FIND_SEARCH), or a step from the current match. The outcome reaches
+// aoWebKitFindDone under call_id: found 1 with the match count (G_MAXUINT past
+// max_match_count), found 0 with none, or found -1 when the view has no find.
+void ao_wk_view_find(void *view, int op, const char *text, unsigned int max_match_count,
+                     uint64_t call_id);
+// ao_wk_view_find_finish ends the view's find and unhighlights its matches.
+void ao_wk_view_find_finish(void *view);
+
+// ao_wk_view_offer_escape delivers one Escape press (with Control when ctrl),
+// then its release when release, to the view's own key controller as GTK
+// would, and answers 1 when AO stopped the press, 0 when the page keeps it,
+// -1 for a view without one. It reaches AO's gate, not the page: GTK 4
+// cannot make a real input event. The native smoke's door into the gate.
+int ao_wk_view_offer_escape(void *view, int ctrl, int release);
+
+// ao_wk_view_has_input_method answers whether the view has an input method
+// context, the one the key gate reads a composition from.
+int ao_wk_view_has_input_method(void *view);
 
 // ---- memory --------------------------------------------------------------
 

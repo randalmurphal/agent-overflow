@@ -179,6 +179,27 @@ describe('pane find registry', () => {
     expect(() => stepPaneFind('b', 1)).not.toThrow();
   });
 
+  it('hands the open to a provider with its own find UI and opens no bar', () => {
+    const openNative = vi.fn();
+    const p = provider({ openNative });
+    registerPaneFindProvider('a', p);
+    expect(openPaneFind('a', { seed: 'needle' })).toBe(true);
+    expect(openNative).toHaveBeenCalledWith('needle');
+    expect(openPaneFind('a')).toBe(true);
+    expect(openNative).toHaveBeenLastCalledWith('');
+    expect(getPaneFind('a')?.open ?? false).toBe(false);
+    expect(p.search).not.toHaveBeenCalled();
+  });
+
+  it('never reads a native find UI as open, so a close leaves it alone', () => {
+    const p = provider({ openNative: vi.fn() });
+    registerPaneFindProvider('a', p);
+    openPaneFind('a');
+    expect(isPaneFindOpen('a')).toBe(false);
+    closePaneFind('a');
+    expect(p.clear).not.toHaveBeenCalled();
+  });
+
   it('a stale release does not drop a newer provider', () => {
     const release = registerPaneFindProvider('a', provider());
     registerPaneFindProvider('a', provider());

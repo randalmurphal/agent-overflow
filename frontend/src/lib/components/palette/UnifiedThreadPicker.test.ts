@@ -208,6 +208,19 @@ describe('<UnifiedThreadPicker> — filtering', () => {
     expect(marks[0].textContent).toBe('Release');
   });
 
+  it('highlights by its own filter rule, at the match after a character whose lower case is longer', async () => {
+    await seedThreads([makeThread({ id: 'a', title: 'İzmir ÉCOLE notes' })]);
+    const pane = makePane();
+    const { getByTestId, findByTestId } = render(UnifiedThreadPicker, {
+      open: true,
+      pane,
+      onClose: vi.fn(),
+    });
+    await fireEvent.input(getByTestId('thread-picker-input'), { target: { value: 'école' } });
+    const row = await findByTestId('thread-picker-hit-a');
+    expect([...row.querySelectorAll('mark')].map((mark) => mark.textContent)).toEqual(['ÉCOLE']);
+  });
+
   it('shows the "N more — refine your query" footer when results exceed the cap', async () => {
     const many: Thread[] = [];
     for (let i = 0; i < 55; i += 1) {

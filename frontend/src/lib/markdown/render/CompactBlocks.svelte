@@ -6,7 +6,7 @@
 		acquireDocumentInteraction,
 		type DocumentInteraction
 	} from './documentInteraction';
-	import { lex } from '../parser/index';
+	import { lex, type Alignment } from '../parser/index';
 	import { reconcileParagraphGapsInNodes } from './paragraphSpacing';
 	import { renderStaticTokenHtml } from './staticHtml';
 
@@ -14,11 +14,13 @@
 	type StaticRecord = {
 		kind: 'static';
 		block: string;
+		align: Alignment | 'marker';
 		nodes: ChildNode[];
 	};
 	type ComponentRecord = {
 		kind: 'component';
 		block: string;
+		align: Alignment;
 		start: Comment;
 		end: Comment;
 		instance: Mounted;
@@ -50,11 +52,15 @@
 	let {
 		root,
 		blocks,
+		alignments,
 		revision,
 		id
 	}: {
 		root: HTMLElement | undefined;
 		blocks: string[];
+		/** Parallel to blocks: the alignment in force before each block, or
+		 * `marker` for a marker block, which renders nothing. */
+		alignments: (Alignment | 'marker')[];
 		/** Fresh wrapper published after parseBlocks mutates its stable array. */
 		revision: object;
 		id: string;
@@ -138,7 +144,7 @@
 		};
 	}
 
-	function appendStaticRecord(target: HTMLElement, block: string, html: string): void {
+	function appendStaticRecord(target: HTMLElement, block: string, align: Alignment | 'marker', html: string): void {
 		const { fragment, nodes } = staticNodes(html);
 		try {
 			target.append(fragment);
@@ -147,10 +153,10 @@
 			for (const node of nodes) node.remove();
 			throw error;
 		}
-		records.push({ kind: 'static', block, nodes });
+		records.push({ kind: 'static', block, align, nodes });
 	}
 
-	function appendComponentRecord(target: HTMLElement, block: string): void {
+	function appendComponentRecord(target: HTMLElement, block: string, align: Alignment): void {
 		const start = document.createComment('');
 		const end = document.createComment('');
 		target.append(start, end);
@@ -162,6 +168,7 @@
 				context: contexts,
 				props: {
 					block,
+					align,
 					static: false,
 					compactStaticHtml: false
 				}
@@ -171,12 +178,13 @@
 				nodes.push(node);
 			}
 			reconcileParagraphGapsInNodes(nodes);
-			records.push({ kind: 'component', block, start, end, instance, retryStatic: true });
+			records.push({ kind: 'component', block, align, start, end, instance, retryStatic: true });
 		} catch (error) {
 			if (instance) {
 				removeComponentRecord({
 					kind: 'component',
 					block,
+					align,
 					start,
 					end,
 					instance,
@@ -190,14 +198,19 @@
 		}
 	}
 
-	function appendRecord(target: HTMLElement, block: string, index: number): void {
+	function appendRecord(target: HTMLElement, block: string, align: Alignment | 'marker', index: number): void {
+		if (align === 'marker') {
+			records.push({ kind: 'static', block, align, nodes: [] });
+			return;
+		}
 		const html = renderStaticTokenHtml(
 			lex(block, streamdown.extensions),
 			streamdown,
-			`${id}-${index}`
+			`${id}-${index}`,
+			align
 		);
-		if (html === null) appendComponentRecord(target, block);
-		else appendStaticRecord(target, block, html);
+		if (html === null) appendComponentRecord(target, block, align);
+		else appendStaticRecord(target, block, align, html);
 	}
 
 	function recordHasActiveInteraction(record: ComponentRecord): boolean {
@@ -237,7 +250,8 @@
 			const html = renderStaticTokenHtml(
 				lex(record.block, streamdown.extensions),
 				streamdown,
-				`${id}-${index}`
+				`${id}-${index}`,
+				record.align
 			);
 			if (html === null) {
 				record.retryStatic = false;
@@ -255,7 +269,7 @@
 				throw error;
 			}
 			removeComponentRecord(record);
-			records[index] = { kind: 'static', block: record.block, nodes };
+			records[index] = { kind: 'static', block: record.block, align: record.align, nodes };
 			if (attempts >= limit) return retryCursor < records.length;
 		}
 		return false;
@@ -314,20 +328,24 @@
 		let common = reset ? 0 : Math.min(records.length, blocks.length);
 		if (!reset) {
 			let index = 0;
-			while (index < common && records[index].block === blocks[index]) index++;
+			while (
+				index < common &&
+				records[index].block === blocks[index] &&
+				records[index].align === alignments[index]
+			) index++;
 			common = index;
 		}
 		truncateRecords(common);
 		if (target !== renderedRoot) renderedRoot = target;
 		configuration = nextConfiguration;
 		for (let index = common; index < blocks.length; index++) {
-			appendRecord(target, blocks[index], index);
+			appendRecord(target, blocks[index], alignments[index], index);
 		}
 		scheduleStaticRetry();
 	}
 
 	$effect(() => {
-		revision;
+		void revision;
 		const target = root;
 		const nextConfiguration = readConfiguration();
 		if (!target || destroyed) return;

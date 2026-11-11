@@ -7,7 +7,7 @@
   import { openThreadFromNavigation } from '../../stores/panes.svelte';
   import { getProviderDefinition } from '../../providers/catalog';
   import { asProviderID, type ProviderID } from '../../types/providers';
-  import { computeHighlightSegments } from '../../utils/highlight';
+  import { searchHighlightSegments } from '../../utils/highlight';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { PICKER_TOGGLE_INPUT_EVENT } from '../../stores/eventNames';
 
@@ -29,6 +29,9 @@
   let searchEl: HTMLInputElement | undefined = $state(undefined);
   let listEl: HTMLDivElement | undefined = $state(undefined);
   let hits: ThreadMessageHit[] = $state([]);
+  // The query the backend matched `hits` with; their highlight follows it,
+  // not the input, which may have moved on while the next search waits.
+  let hitsQuery = $state('');
   let loading = $state(false);
   let error: string | null = $state(null);
   let activeIndex = $state(0);
@@ -61,6 +64,7 @@
       // Ignore stale responses — user may have typed more since.
       if (seq !== searchSeq) return;
       hits = result ?? [];
+      hitsQuery = trimmed;
       activeIndex = hits.length > 0 ? 0 : -1;
     } catch (err) {
       if (seq !== searchSeq) return;
@@ -186,7 +190,7 @@
 </script>
 
 {#snippet highlighted(text: string)}
-  {#each computeHighlightSegments(text, query) as seg}
+  {#each searchHighlightSegments(text, hitsQuery) as seg}
     {#if seg.type === 'match'}<mark class="bg-accent/30 text-fg rounded-sm px-0.5">{seg.value}</mark>{:else}{seg.value}{/if}
   {/each}
 {/snippet}
