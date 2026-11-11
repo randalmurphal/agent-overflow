@@ -815,10 +815,12 @@ func TestBrowserCompanionFindRunsOnTheThreadsShownPage(t *testing.T) {
 	}
 }
 
-// The transport can still run a find after its connection closed. The
-// pane mount it names is the connection's, so the connection's cleanup
-// detaches it and ends the search: a step from it then finds nothing, and a
-// start from it is refused.
+// A find still running when its connection closes is not cancelled
+// (BrowserCompanionFind is not caller-bound) and returns before the
+// connection's cleanup runs, which the transport starts only after joining
+// its handlers. The pane mount it names is the connection's, so that
+// cleanup detaches it and ends the search: a step from it then finds
+// nothing, and a start from it is refused.
 func TestBrowserFindRunAfterItsConnectionClosedIsEndedByTheCleanup(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -842,7 +844,8 @@ func TestBrowserFindRunAfterItsConnectionClosedIsEndedByTheCleanup(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The socket is gone; the transport runs the find it was waiting on.
+	// The socket closes while the start runs: the start finishes, then the
+	// cleanup runs.
 	action := BrowserFindAction{Kind: "start", PageID: pageID, Query: "alpha", Mount: mount.ID, Seq: 1}
 	if started, err := app.BrowserCompanionFind(ctx, thread.ID, action); err != nil || !started.Active {
 		t.Fatalf("start after the socket closed = %+v, %v", started, err)

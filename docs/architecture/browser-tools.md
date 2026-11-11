@@ -202,12 +202,13 @@ store's alone; the backend holds only what the engine holds.
   from its checks through its engine calls to the state it publishes:
   `start`, step, `stop`, every end and the engine's cleanup. An action's
   10 s deadline starts before it waits for the lock, and an action whose
-  deadline or caller (its connection closing) ended while it waited is
-  refused before it publishes anything; every engine call under the lock
-  is bounded by the transition's deadline, and a stop that times out stays
-  owed. The transport can still run a `start` whose connection already
-  closed; the connection's cleanup (`DetachPane`) then ends that search
-  and stops the engine's. An end raised where waiting is not allowed (the
+  deadline passed, or whose context ended at server shutdown, while it
+  waited is refused before it publishes anything; every engine call under
+  the lock is bounded by the transition's deadline, and a stop that times
+  out stays owed. `BrowserCompanionFind` is not caller-bound: a `start`
+  still running when its connection closes finishes, and the connection's
+  cleanup, which runs after the transport joins its handlers, detaches the
+  mount (`DetachPane`), which ends that search and stops the engine's. An end raised where waiting is not allowed (the
   engine's UI thread, a presentation change, a mount detaching, a page
   closing outside its lock) is submitted to the page without blocking and
   applied by the next transition, or by a transition of its own when none
