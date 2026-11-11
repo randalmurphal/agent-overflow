@@ -831,7 +831,7 @@ func ghOpenPRsByHead(e *Engine, c *call, v graphQLVars) response {
 		}
 		nodes = append(nodes, map[string]any{
 			"id": p.NodeID, "url": githubPullURL(r, p), "number": p.Number, "title": p.Title, "state": "OPEN",
-			"isCrossRepository": p.HeadRepo != "",
+			"baseRefName": p.BaseRef, "isCrossRepository": p.HeadRepo != "",
 		})
 	}
 	return graphQLData(map[string]any{"repository": map[string]any{"pullRequests": graphQLConnection(nodes, offset, githubGraphQLPageSize)}})

@@ -518,6 +518,15 @@ func NormalizePRState(s string) string {
 // The PR-scoped Core operations validate ref before dispatching, so no
 // caller's precondition decides what reaches a forge.
 
+// forgeWrite is the context a forge write runs on: the caller's values
+// without its cancellation. A write the forge may already have applied must
+// finish and report, because a caller that stopped waiting cannot tell an
+// applied write from one never sent. Each request keeps its own bound
+// (forgeapi's read timeout, the Core command timeout).
+func forgeWrite(ctx context.Context) context.Context {
+	return context.WithoutCancel(ctx)
+}
+
 // ReadPR reads the parts of ref want names in one forge read (see
 // Forge.ReadPR). Asking for no part is an error.
 func (c *Core) ReadPR(ctx context.Context, ref PRReference, want PRReadParts, prev *CIPipeline, stepsFor []string) (PRRead, error) {
@@ -546,21 +555,21 @@ func (c *Core) SubmitReview(ctx context.Context, ref PRReference, review SubmitR
 	if err := ref.Validate(); err != nil {
 		return SubmitReviewResult{}, err
 	}
-	return c.ForgeByID(ref.Forge).SubmitReview(ctx, ref, review)
+	return c.ForgeByID(ref.Forge).SubmitReview(forgeWrite(ctx), ref, review)
 }
 
 func (c *Core) ReplyToThread(ctx context.Context, ref PRReference, threadID string, databaseID int64, body string) error {
 	if err := ref.Validate(); err != nil {
 		return err
 	}
-	return c.ForgeByID(ref.Forge).ReplyToThread(ctx, ref, threadID, databaseID, body)
+	return c.ForgeByID(ref.Forge).ReplyToThread(forgeWrite(ctx), ref, threadID, databaseID, body)
 }
 
 func (c *Core) SetThreadResolved(ctx context.Context, ref PRReference, threadID string, resolved bool) error {
 	if err := ref.Validate(); err != nil {
 		return err
 	}
-	return c.ForgeByID(ref.Forge).SetThreadResolved(ctx, ref, threadID, resolved)
+	return c.ForgeByID(ref.Forge).SetThreadResolved(forgeWrite(ctx), ref, threadID, resolved)
 }
 
 // ListPRCIJobs is ReadPR for the pipeline alone.

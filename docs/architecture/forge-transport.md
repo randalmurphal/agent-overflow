@@ -137,6 +137,11 @@ func (Token) MarshalText() ([]byte, error)
   when that is empty (keyring). A glab login with `is_oauth2` true runs
   `glab api --hostname H version` before every read so glab refreshes an
   expired OAuth2 token first; the source keeps no state about expiry.
+- Read: one read per client at a time, shared by every request that needs
+  it and run on the Service's lifetime with a one-minute bound
+  (`credential.go`). A request that leaves ends only its wait, never the
+  handoff command, which may hold a refreshed login. `Close` ends and
+  joins it.
 - Expiry: GitLab answers an expired or revoked token with a bare 401, so
   the client learns expiry while the token works (`expiry.go`). A glab
   token that is not OAuth2 (`SourceInfo.ExpiryLookup`) costs one

@@ -138,7 +138,9 @@ func (p *cdpPage) drag(ctx context.Context, path []Point, mask int64, mouse func
 		return err
 	}
 	defer func() {
-		_, _ = chromedp.Call(ctx, input.SetInterceptDrags, input.SetInterceptDragsParams{Enabled: false})
+		cleanup, cancel := cdpCleanupContext(ctx)
+		defer cancel()
+		_, _ = chromedp.Call(cleanup, input.SetInterceptDrags, input.SetInterceptDragsParams{Enabled: false})
 	}()
 	if err := mouse(input.DispatchMouseEventParams{Type: chromedp.MouseMoved, X: first.X, Y: first.Y, Button: input.MouseButtonNone}); err != nil {
 		return err

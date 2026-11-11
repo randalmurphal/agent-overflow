@@ -728,3 +728,57 @@ func TestSnapshot_FiltersStale(t *testing.T) {
 		t.Fatalf("expected linear to survive, got %q", snap[0].Name)
 	}
 }
+
+// The caller that started a fetch leaving ends only its wait: the CLI is
+// not cancelled under a caller sharing it, which gets the answer.
+func TestSharedFetchOutlivesTheCallerThatStartedIt(t *testing.T) {
+	k := Key{Provider: ProviderClaude, Name: "github"}
+	for name, call := range map[string]func(c *Cache, ctx context.Context, f Fetcher) error{
+		"GetOrFetch": func(c *Cache, ctx context.Context, f Fetcher) error {
+			_, err := c.GetOrFetch(ctx, k, f, true)
+			return err
+		},
+		"RefreshProvider": func(c *Cache, ctx context.Context, f Fetcher) error {
+			_, err := c.RefreshProvider(ctx, ProviderClaude, f)
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := NewCache(time.Minute, nil)
+			started := make(chan struct{})
+			release := make(chan struct{})
+			var calls atomic.Int32
+			fetcher := fetcherFunc(func(ctx context.Context, _ Provider) ([]ServerStatus, error) {
+				if calls.Add(1) != 1 {
+					return nil, errors.New("a second fetch ran")
+				}
+				close(started)
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+				return []ServerStatus{{Key: k, Status: StatusConnected}}, nil
+			})
+			callerA, leaveA := context.WithCancel(context.Background())
+			aDone := make(chan error, 1)
+			go func() { aDone <- call(c, callerA, fetcher) }()
+			<-started
+			bDone := make(chan error, 1)
+			go func() { bDone <- call(c, context.Background(), fetcher) }()
+			// Let B join the flight, as the single-flight tests above do.
+			time.Sleep(20 * time.Millisecond)
+			leaveA()
+			if err := <-aDone; !errors.Is(err, context.Canceled) {
+				t.Fatalf("caller A after leaving: %v, want context.Canceled", err)
+			}
+			close(release)
+			if err := <-bDone; err != nil {
+				t.Fatalf("caller B, sharing the fetch: %v", err)
+			}
+			if got, ok := c.Get(k); !ok || got.Status != StatusConnected || calls.Load() != 1 {
+				t.Fatalf("cache = %+v, %v after %d fetches, want the shared answer", got, ok, calls.Load())
+			}
+		})
+	}
+}

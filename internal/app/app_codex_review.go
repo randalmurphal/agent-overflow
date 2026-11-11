@@ -84,7 +84,10 @@ func (a *App) StartCodexReview(ctx context.Context, threadID string, target Code
 	}
 	command := codexReviewCommandText(reviewTarget)
 	var started codex.ReviewStarted
-	_, err = a.sendMessageWithOptions(ctx, threadID, command, sendMessageOptions{
+	// On ctx's values, not its cancel, as SendMessageWithOptions: a workflow
+	// thread's takeover runs before the send's lock wait, and a review the
+	// provider was told about must not read as one that never started.
+	_, err = a.sendMessageWithOptions(context.WithoutCancel(ctx), threadID, command, sendMessageOptions{
 		ExpandComposerCommands: true,
 		onCodexReviewStarted: func(observed codex.ReviewStarted) {
 			started = observed
@@ -137,7 +140,9 @@ func (a *App) CompactCodexThread(ctx context.Context, threadID string) error {
 	if err != nil {
 		return err
 	}
-	rpcCtx, cancel := context.WithTimeout(ctx, codexReviewRPCTimeout)
+	// The request starts a compaction turn, so once sent it runs to its own
+	// timeout rather than the caller's.
+	rpcCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), codexReviewRPCTimeout)
 	defer cancel()
 	if err := sess.CompactThread(rpcCtx); err != nil {
 		return fmt.Errorf("app: compact codex thread: %w", err)

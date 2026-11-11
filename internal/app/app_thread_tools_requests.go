@@ -667,7 +667,9 @@ func (t threadToolsApp) cancelRequest(ctx context.Context, caller threadtools.Ca
 		return threadtools.CancelReport{}, err
 	}
 	report := threadtools.CancelReport{Token: token, ThreadID: row.TargetThreadID, ComputerID: row.TargetComputerID}
-	if threadRequestSettled(row) {
+	// A cancelled request may still have work its first cancel did not reach
+	// stopping; a repeat finishes it. Every other settled state is final.
+	if threadRequestSettled(row) && (row.State != store.ThreadRequestCancelled || row.Kind == store.ThreadRequestRemind) {
 		report.State, report.Effect = threadRequestStateWord(row.State), threadtools.EffectNothing
 		return report, nil
 	}

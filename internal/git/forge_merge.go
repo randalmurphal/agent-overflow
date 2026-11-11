@@ -240,7 +240,7 @@ func (c *Core) ApprovePR(ctx context.Context, ref PRReference, headSHA string) e
 	if err := ref.Validate(); err != nil {
 		return err
 	}
-	return c.ForgeByID(ref.Forge).Approve(ctx, ref, headSHA)
+	return c.ForgeByID(ref.Forge).Approve(forgeWrite(ctx), ref, headSHA)
 }
 
 // UnapprovePR withdraws the caller's approval (see ForgeMerger.Unapprove).
@@ -248,7 +248,7 @@ func (c *Core) UnapprovePR(ctx context.Context, ref PRReference) error {
 	if err := ref.Validate(); err != nil {
 		return err
 	}
-	return c.ForgeByID(ref.Forge).Unapprove(ctx, ref)
+	return c.ForgeByID(ref.Forge).Unapprove(forgeWrite(ctx), ref)
 }
 
 // MergePR merges now or arms auto-merge (see ForgeMerger.Merge).
@@ -259,7 +259,7 @@ func (c *Core) MergePR(ctx context.Context, ref PRReference, req MergeRequest) (
 	if err := req.Validate(); err != nil {
 		return MergeOutcome{}, err
 	}
-	return c.ForgeByID(ref.Forge).Merge(ctx, ref, req)
+	return c.ForgeByID(ref.Forge).Merge(forgeWrite(ctx), ref, req)
 }
 
 // CancelPRAutoMerge disarms auto-merge (see ForgeMerger.CancelAutoMerge).
@@ -267,7 +267,7 @@ func (c *Core) CancelPRAutoMerge(ctx context.Context, ref PRReference) error {
 	if err := ref.Validate(); err != nil {
 		return err
 	}
-	return c.ForgeByID(ref.Forge).CancelAutoMerge(ctx, ref)
+	return c.ForgeByID(ref.Forge).CancelAutoMerge(forgeWrite(ctx), ref)
 }
 
 // UpdatePRBranch brings the head up to date with the base (see
@@ -276,7 +276,7 @@ func (c *Core) UpdatePRBranch(ctx context.Context, ref PRReference, headSHA stri
 	if err := ref.Validate(); err != nil {
 		return err
 	}
-	return c.ForgeByID(ref.Forge).UpdateBranch(ctx, ref, headSHA)
+	return c.ForgeByID(ref.Forge).UpdateBranch(forgeWrite(ctx), ref, headSHA)
 }
 
 // MarkPRReady takes the PR out of draft (see ForgeMerger.MarkReady).
@@ -284,5 +284,5 @@ func (c *Core) MarkPRReady(ctx context.Context, ref PRReference) error {
 	if err := ref.Validate(); err != nil {
 		return err
 	}
-	return c.ForgeByID(ref.Forge).MarkReady(ctx, ref)
+	return c.ForgeByID(ref.Forge).MarkReady(forgeWrite(ctx), ref)
 }

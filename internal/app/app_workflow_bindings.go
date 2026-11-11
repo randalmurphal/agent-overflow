@@ -1244,6 +1244,7 @@ const maxWorkflowRunMapMembers = 4096
 //
 //ao:scope threads:read
 //ao:route home
+//ao:callerbound
 func (a *App) WorkflowGetRunMap(ctx context.Context, itemID string) (WorkflowRunMapView, error) {
 	if a.store == nil {
 		return WorkflowRunMapView{}, fmt.Errorf("workflow store unavailable")

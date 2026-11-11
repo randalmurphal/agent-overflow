@@ -146,6 +146,7 @@ const maxCILogSearchMatches = 5000
 //
 //ao:scope git:operate
 //ao:route selected
+//ao:callerbound
 func (a *App) SearchPRCILog(ctx context.Context, repo gitops.RepoReference, jobID, query string, limit int) (cilog.Search, error) {
 	if a.shuttingDown.Load() {
 		return cilog.Search{}, ErrShuttingDown
