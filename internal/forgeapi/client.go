@@ -348,13 +348,15 @@ func (c *Client) attempt(ctx context.Context, r Request, graphQL bool, limit int
 			return nil, false, fmt.Errorf("forge %s %s: %w (limit %d)", ex.req.Method, c.redact(ex.req.URL), ErrBodyTooLarge, limit)
 		}
 	}
-	return c.settle(ctx, ex, ex.req, resp, body, refreshed)
+	return c.settle(ctx, ex, ex.req, resp, body, limit, refreshed)
 }
 
 // settle classifies a read answer, updates the gate and the ETag store and
 // decides whether the call retries after a token refresh, or, for a
-// mutation's second 401, probes the login (probeNeeded).
-func (c *Client) settle(ctx context.Context, ex *exchange, answered *http.Request, resp *http.Response, body []byte, refreshed bool) (*Response, bool, error) {
+// mutation's second 401, probes the login (probeNeeded). limit bounds a
+// stored body a 304 answers with, as it bounds one read off the wire: the
+// request that stored it may have had a larger bound.
+func (c *Client) settle(ctx context.Context, ex *exchange, answered *http.Request, resp *http.Response, body []byte, limit int64, refreshed bool) (*Response, bool, error) {
 	now := c.svc.now()
 	rate := c.observe(ex, resp.Header)
 	c.observeExpiry(ex.key.fingerprint, resp.Header)
@@ -392,6 +394,9 @@ func (c *Client) settle(ctx context.Context, ex *exchange, answered *http.Reques
 		c.svc.gates.succeeded(ex.lease, now)
 		out.NotModified = true
 		out.Body = nil
+		if ex.etag != nil && int64(len(ex.etag.body)) > limit {
+			return nil, false, fmt.Errorf("forge %s %s: %w (limit %d)", ex.req.Method, c.redact(answered.URL), ErrBodyTooLarge, limit)
+		}
 		if ex.etag != nil {
 			out.Body = append([]byte(nil), ex.etag.body...)
 			out.Header = ex.etag.header.Clone()

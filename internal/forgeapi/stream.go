@@ -94,5 +94,6 @@ func (c *Client) streamAttempt(ctx context.Context, r Request, dst io.Writer, li
 	if readErr != nil && !errors.Is(readErr, ErrBodyTooLarge) {
 		return nil, false, c.bodyError(ctx, answered, readErr)
 	}
-	return c.settle(ctx, ex, answered, resp, body, refreshed)
+	// Stream never consults the ETag store, so no stored body is bounded here.
+	return c.settle(ctx, ex, answered, resp, body, c.svc.opts.MaxBodyBytes, refreshed)
 }

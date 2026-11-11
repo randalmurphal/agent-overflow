@@ -115,6 +115,56 @@ func TestRequestBodyLimitIsValidated(t *testing.T) {
 	}
 }
 
+// A 304 answered from the ETag store is held to the current request's
+// bound, not to the bound of the request that stored the body: a body
+// stored under a large bound fails a later read of the same URL at the
+// default or a smaller bound, and a large bound reads it again.
+func TestRequestBodyLimitHoldsForAStoredBody(t *testing.T) {
+	t.Parallel()
+	body := `"` + strings.Repeat("x", 2<<20) + `"`
+	var revalidated atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `W/"big"`)
+		if r.Header.Get("If-None-Match") == `W/"big"` {
+			revalidated.Add(1)
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	gl := isolatedService(t, srv).GitLab("gitlab.com")
+	read := func(limit int64) (*Response, error) {
+		var out string
+		return gl.JSON(t.Context(), Request{Path: "projects/1/items", MaxBodyBytes: limit}, &out)
+	}
+	if resp, err := read(4 << 20); err != nil || resp.NotModified {
+		t.Fatalf("first read = %+v, %v", resp, err)
+	}
+	for _, limit := range []int64{0, 1 << 20, 100} {
+		applied := limit
+		if applied == 0 {
+			applied = defaultMaxBodyBytes
+		}
+		_, err := read(limit)
+		if !errors.Is(err, ErrBodyTooLarge) || !strings.Contains(err.Error(), fmt.Sprintf("(limit %d)", applied)) {
+			t.Errorf("stored body at bound %d = %v, want ErrBodyTooLarge at limit %d", limit, err, applied)
+		}
+	}
+	pages := 0
+	err := gl.Pages(t.Context(), Request{Path: "projects/1/items"}, func(*Response) (bool, error) { pages++; return false, nil })
+	if !errors.Is(err, ErrBodyTooLarge) || pages != 0 {
+		t.Errorf("Pages at the default over a stored body = %d pages, %v", pages, err)
+	}
+	resp, err := read(4 << 20)
+	if err != nil || !resp.NotModified || len(resp.Body) != len(body) {
+		t.Fatalf("stored body at its bound = %+v, %v", resp, err)
+	}
+	if n := revalidated.Load(); n != 5 {
+		t.Fatalf("revalidations = %d, want every read after the first", n)
+	}
+}
+
 // The ceiling keeps one body the ETag store holds to a quarter of the
 // store's byte bound, so a large page cannot evict every other entry.
 func TestRequestBodyCeilingFitsTheETagStore(t *testing.T) {

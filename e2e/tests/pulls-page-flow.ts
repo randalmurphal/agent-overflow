@@ -494,7 +494,15 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       const chips = view.getByTestId('review-ci-chips');
       await expect(chips).not.toContainText('No checks');
       await chips.getByTestId('review-ci-chip').filter({ hasText: 'external' }).click();
-      await expect(page.getByTestId('review-ci-job').filter({ hasText: 'CodeRabbit' })).toBeVisible();
+      // With no target URL the status opens nothing: a row of text, no
+      // button or link icon, and a click leaves the list open.
+      const status = page.getByTestId('review-ci-job').filter({ hasText: 'CodeRabbit' });
+      await expect(status).toBeVisible();
+      await expect(status).toHaveAttribute('data-action', 'none');
+      await expect(page.getByRole('button', { name: /CodeRabbit/ })).toHaveCount(0);
+      await expect(status.getByTestId('review-ci-job-link')).toHaveCount(0);
+      await status.click();
+      await expect(status).toBeVisible();
       await page.keyboard.press('Escape');
       if (compact) {
         await page.getByTestId('pulls-back').click();
