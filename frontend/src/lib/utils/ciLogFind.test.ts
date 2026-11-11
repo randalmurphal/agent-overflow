@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ciLogAnswerHits, ciLogFindHits, findCILogKey, placeCILogLine, resolveCILogHit, type CILogFindHit } from './ciLogFind';
 import { findNeedle } from './findMatch';
 import { countFindMatches } from './reviewFindScan';
+import { ansiShownText } from './ansiText';
 import { CI_LOG_BLOCK_LINES } from '../stores/ciLogBlocks.svelte';
 import type { CILogSection } from '../types/models';
 
@@ -79,12 +80,33 @@ describe('resolveCILogHit', () => {
     expect(resolveCILogHit(sections, shown, needle, hit(400, 0))).toEqual({ kind: 'absent' });
   });
 
+  it('reads each line as the view shows it, escapes hidden', () => {
+    const sections = [section('a', 0, 10)];
+    const text = ['\x1b[31mplain\x1b[0m', 'match', 'nee\x1b[31mdle', 'a\x1b]0;needle\x07b'];
+    const shown = (line: number) => text[line] ?? null;
+    // The colour codes' letters are not text: the match on line 1 is the row's first.
+    expect(resolveCILogHit(sections, shown, findNeedle('m'), hit(1, 0))).toEqual({
+      kind: 'present', at: { sectionKey: 'a', rowFrom: 0, rowKey: findCILogKey(0), occurrence: 0 },
+    });
+    // A needle a colour code splits is one match; a title's text is none.
+    expect(resolveCILogHit(sections, shown, findNeedle('needle'), hit(2, 0))).toMatchObject({ kind: 'present', at: { occurrence: 0 } });
+    expect(resolveCILogHit(sections, shown, findNeedle('needle'), hit(3, 0))).toEqual({ kind: 'absent' });
+  });
+
   // Invariant: resolving an identity against the log shown now answers what
   // a fresh count of that text says: its row and the index the painter
   // gives it there, or absent. Lines are rewritten, the log grows and
   // sections move between draws; the hits are the first draw's.
   it('agrees with a fresh count of the shown text after random rewrites and growth', () => {
-    const words = ['ab', 'x', 'abab', 'AB', 'xab', ''];
+    // Words, and every escape form the view hides or shows as text, some
+    // splitting a needle (ansiShownVectors.json).
+    const words = [
+      'ab', 'x', 'abab', 'AB', 'xab', '',
+      '\x1b[31m', '\x1b[0m', '\x1b[m', 'a\x1b[1;32mb', '\x1b[2K', '\x1b[?25l',
+      '\x1b]0;ab title\x07', '\x1b]8;;https://ab\x1b\\', 'a\x1b]0;t\x07b', '\x1b]unterminated ab',
+      '\x1b_ab\x1b\\', 'a\x1b_p\x1b\\b', '\x1bPab\x1b\\', '\x1b^ab\x1b\\', '\x1b', 'a\x1bb',
+      'a\u009b31mb', '\u009d0;ab\u009c', 'a\x00b',
+    ];
     for (let seed = 1; seed <= 200; seed += 1) {
       const next = random(seed);
       const pick = <T>(items: readonly T[]) => items[Math.floor(next() * items.length)];
@@ -97,7 +119,8 @@ describe('resolveCILogHit', () => {
       };
       const published: CILogFindHit[] = [];
       text.forEach((line, index) => {
-        for (let occurrence = 0; occurrence < countFindMatches(line, needle); occurrence += 1) published.push(hit(index, occurrence));
+        // The backend counts what the view shows (ansiShownVectors.json).
+        for (let occurrence = 0; occurrence < countFindMatches(ansiShownText(line), needle); occurrence += 1) published.push(hit(index, occurrence));
       });
       for (let change = 0; change < 6; change += 1) {
         const rewrites = Math.floor(next() * 20);
@@ -121,11 +144,11 @@ describe('resolveCILogHit', () => {
           } else if (rowLines.some((line) => shown(line) === null)) {
             // Not loaded: only its own line, when shown, may already say absent.
             const own = shown(each.line);
-            expect(got, label).toEqual(own !== null && each.occurrence >= countFindMatches(own, needle) ? { kind: 'absent' } : { kind: 'unknown', sectionKey: placed.sectionKey });
+            expect(got, label).toEqual(own !== null && each.occurrence >= countFindMatches(ansiShownText(own), needle) ? { kind: 'absent' } : { kind: 'unknown', sectionKey: placed.sectionKey });
           } else {
-            // The fresh count: this row's matches in order, line by line.
             const row: string[] = [];
-            for (const line of rowLines) for (let o = 0; o < countFindMatches(text[line], needle); o += 1) row.push(`${line}:${o}`);
+            // The fresh count: the row as the view shows it, line by line.
+            for (const line of rowLines) for (let o = 0; o < countFindMatches(ansiShownText(text[line]), needle); o += 1) row.push(`${line}:${o}`);
             const ordinal = row.indexOf(each.identity);
             expect(got, label).toEqual(ordinal < 0 ? { kind: 'absent' } : {
               kind: 'present', at: { sectionKey: placed.sectionKey, rowFrom: placed.rowFrom, rowKey: findCILogKey(placed.rowFrom), occurrence: ordinal },

@@ -246,11 +246,19 @@
     return within === null ? row.from : Math.min(row.to - 1, row.from + within);
   }
 
-  /** Find: a line's text as the view shows it (a stale block's while its
-   * reload runs); null while its block is not loaded. */
-  export function findShownLine(line: number): string | null {
+  /** Find: a line as its block holds it, escapes and all (a stale block's
+   * while its reload runs); null while its block is not loaded. */
+  export function findLineText(line: number): string | null {
     const block = blocks.block(Math.floor(line / CI_LOG_BLOCK_LINES));
     return block?.lines?.[line % CI_LOG_BLOCK_LINES] ?? null;
+  }
+
+  /** Find: the read of a line's block, for a line it does not hold yet:
+   * running, or failed with its error. Neither while no row asks for it. */
+  export function findLineLoad(line: number): { loading: boolean; error: string | null } {
+    const block = blocks.block(Math.floor(line / CI_LOG_BLOCK_LINES));
+    if (!block || block.lines?.[line % CI_LOG_BLOCK_LINES] !== undefined) return { loading: false, error: null };
+    return { loading: block.loading, error: block.loading ? null : block.error };
   }
 
   /** Find: opens the line's section and scrolls the line a third down the

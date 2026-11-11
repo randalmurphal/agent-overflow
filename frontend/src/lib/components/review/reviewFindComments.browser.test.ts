@@ -141,7 +141,7 @@ describe('review find over a draft open in its editor', () => {
 describe('review find over a comment its projection misreads', () => {
   const diagnostics = installDiagnosticsCapture();
 
-  it('reports the defect and counts the comment from its DOM, never nothing', async () => {
+  it('reports the defect and counts the comment as written', async () => {
     const host = document.createElement('div');
     host.style.width = '700px';
     document.body.appendChild(host);
@@ -169,8 +169,11 @@ describe('review find over a comment its projection misreads', () => {
     // The rendered comment gains a <details> its projection does not have.
     const row = host.querySelector('[data-find-key="pc:p1:2"]')!;
     row.insertAdjacentHTML('beforeend', '<details open><summary>drift</summary><p>extra needle</p></details>');
-    await waitFor(() => expect(find.result.count).toBe(before + 1));
-    expect(await diagnostics.messages()).toContain('review find comment details differ from their projection');
+    await waitFor(async () => expect(await diagnostics.messages()).toContain('review find comment details differ from their projection'));
+    // Its toggles cannot be read against the projection: it counts as written.
+    row.querySelector('details')!.open = true;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect([find.result.count, find.result.pending]).toEqual([before, false]);
   });
 });
 

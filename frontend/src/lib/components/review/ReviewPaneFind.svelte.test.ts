@@ -38,7 +38,7 @@ function mount() {
     props: {
       findKey: KEY, title: 'Review', review, view: 'log', files: [], root,
       diff: () => undefined,
-      log: () => ({ findReadingLine: () => 0, findShownLine: () => null, revealFindLine: async () => {}, scrollFindBy: () => {} }),
+      log: () => ({ findReadingLine: () => 0, findLineText: () => null, findLineLoad: () => ({ loading: false, error: null }), revealFindLine: async () => {}, scrollFindBy: () => {} }),
     },
   });
   const find = getPaneFindProvider(KEY) as ReviewFind<CILogFindHit>;

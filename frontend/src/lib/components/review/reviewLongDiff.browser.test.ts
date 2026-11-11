@@ -918,6 +918,43 @@ describe('review find over the real list', () => {
     }
   });
 
+  it('a step to a match far below wrapped lines answers shown only once its painted match is in view', async () => {
+    const lines = Array.from({ length: 3000 }, (_, i) => (i === 0 ? 'zq first' : i === 2500 ? 'zq target' : `${'w '.repeat(220)}${i}`));
+    const { props, scrollEl, body } = await mountBody(onePatch('src/wrap.ts', '@@ -1,3000 +1,3000 @@', lines), true);
+    const findProps = rawProps({
+      findKey: 'pane-wrap', title: 'Review', view: 'diff' as const, files: props.files, root: mounted.at(-1)!.host as HTMLElement | undefined,
+      review: { drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), wordWrap: true } as unknown as ReviewPaneState,
+      diff: () => body as never, log: () => undefined,
+    });
+    const finder = mount(ReviewPaneFind, { target: document.body, props: findProps });
+    flushSync();
+    try {
+      const find = getPaneFindProvider('pane-wrap') as ReviewFind<ReviewFindHit>;
+      scrollEl.scrollTop = 0;
+      await settle(scrollEl);
+      openPaneFind('pane-wrap');
+      setPaneFindQuery('pane-wrap', 'zq');
+      await waitFor(() => find.result.count === 2 && !find.result.pending, 'the scan', 1200);
+      await waitFor(() => !find.wants(find.selected!), 'the first shown', 600);
+      find.next();
+      expect(find.wants(find.selected!)).toBe(true);
+      await waitFor(() => !find.wants(find.selected!), 'the step answered', 1200);
+      // Answered shown: the painted match is in view then, and stays.
+      const inView = () => {
+        const row = currentRow('pane-wrap');
+        if (!row?.textContent?.includes('zq target')) return false;
+        const box = row.getBoundingClientRect();
+        const view = scrollEl.getBoundingClientRect();
+        return box.top >= view.top && box.bottom <= view.bottom;
+      };
+      expect(inView()).toBe(true);
+      await settle(scrollEl);
+      expect(inView()).toBe(true);
+    } finally {
+      unmount(finder);
+    }
+  });
+
   it('a gap expanded above the selected line during a recount paints and shifts the selected line, not the one inserted above it', async () => {
     const long = (fill: string, tail: string) => `${fill.repeat(300)} ${tail}`;
     const before = readFiles(onePatch('src/c.ts', '@@ -100,2 +100,2 @@', [long('v', 'needle hundred'), 'after']));

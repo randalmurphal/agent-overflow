@@ -30,9 +30,12 @@
 //     view. One owed reveal has at most one host call in flight, and a
 //     reveal that changes content to show its match is in flight until the
 //     host answers. Dropped by a newer query, step or close, or by its
-//     match disappearing, except a step's reveal the host has not shown
-//     and is not running: the reader asked to move and was shown nothing,
-//     so it passes to the match that takes the gone one's place.
+//     match disappearing, except a step's reveal the host has not shown:
+//     the reader asked to move and was shown nothing, so it passes to the
+//     match that takes the gone one's place. When the gone match's host
+//     call is still in flight, the passed reveal waits for it to settle
+//     (shown or not, resolved or rejected) and is asked then, so one call
+//     is in flight.
 // (c) The line the host shifts sideways, derived by the host from (a).
 //
 // `hits` and the current index are a projection of the latest scan and
@@ -107,17 +110,20 @@ export interface ReviewFind<H extends ReviewFindMatch> extends PaneFindProvider 
 }
 
 // The reveal owed: its match (null until a new query chooses its first),
-// whether a step asked for it, whether the host's reveal is running, and
-// whether a publish, swap or content change came while it ran (`seen`).
+// whether a step asked for it, whether the host's reveal is running,
+// whether a publish, swap or content change came while it ran (`seen`),
+// and the reveal it was passed from whose host call is still in flight
+// (`after`), which it is not asked before.
 interface OwedReveal {
   identity: string | null;
   force: boolean;
   running: boolean;
   seen: boolean;
+  after: OwedReveal | null;
 }
 
-function owe(identity: string | null, force: boolean): OwedReveal {
-  return { identity, force, running: false, seen: false };
+function owe(identity: string | null, force: boolean, after: OwedReveal | null = null): OwedReveal {
+  return { identity, force, running: false, seen: false, after };
 }
 
 type Mode = 'query' | 'recount';
@@ -165,11 +171,12 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
     host.paint(query, hits[current] ?? null);
   }
 
-  // Asks the host for the owed reveal, unless its call is in flight.
+  // Asks the host for the owed reveal, unless its call, or the call of
+  // the reveal it was passed from, is in flight.
   function serve(): void {
     const owed = owedReveal;
     if (!owed || owed.identity === null || owed.identity !== selected) return;
-    if (owed.running) {
+    if (owed.running || owed.after) {
       owed.seen = true;
       return;
     }
@@ -183,8 +190,17 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
     if (out === false) return;
     owed.running = true;
     owed.seen = false;
+    // The reveal this one passed to at a swap is asked once this call ends.
+    const handOff = (): boolean => {
+      const heir = owedReveal?.after === owed ? owedReveal : null;
+      if (!heir) return false;
+      owed.running = false;
+      heir.after = null;
+      serve();
+      return true;
+    };
     void out.then((done) => {
-      if (owedReveal !== owed) return;
+      if (handOff() || owedReveal !== owed) return;
       owed.running = false;
       if (done) {
         owedReveal = null;
@@ -197,7 +213,7 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
         serve();
       }
     }, (err: unknown) => {
-      if (owedReveal !== owed) return;
+      if (handOff() || owedReveal !== owed) return;
       owedReveal = null;
       error = errString(err);
     });
@@ -316,12 +332,13 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
     if (current < 0) {
       // The current match is gone, and the nearest survivor is current,
       // painted where it is. Its reveal goes with it, unless a step asked
-      // for it and nothing has shown it yet.
+      // for it and nothing has shown it yet; one whose host call is in
+      // flight is asked of the survivor when that call ends.
       const gone = selected;
       const owed = owedReveal?.identity === gone ? owedReveal : null;
       const near = nearestSurviving(before, before.findIndex((hit) => hit.identity === gone), found);
       selected = near >= 0 ? found[near].identity : null;
-      if (owed) owedReveal = owed.force && !owed.running && selected !== null ? owe(selected, true) : null;
+      if (owed) owedReveal = owed.force && selected !== null ? owe(selected, true, owed.running ? owed : owed.after) : null;
     }
     paint();
     serve();

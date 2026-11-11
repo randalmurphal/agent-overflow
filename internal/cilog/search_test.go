@@ -39,7 +39,7 @@ func TestSearchCountsMatchesAsTheViewShowsLines(t *testing.T) {
 	}
 }
 
-// A NUL in a line is a character like any other: text past it is searched.
+// A NUL in a line is dropped, as the view drops it: text past it is searched.
 func TestSearchMatchesPastAnEmbeddedNUL(t *testing.T) {
 	t.Parallel()
 	s, _, _ := newTestStore(t, CacheBytes)
@@ -131,5 +131,42 @@ func TestSearchMatchesInvalidUTF8AsTheViewReceivesIt(t *testing.T) {
 	got, err := s.Search(t.Context(), key, "a\uFFFD\uFFFDb", 10, 1<<16)
 	if err != nil || got.Matches != 1 {
 		t.Fatalf("Search = %+v, %v; want one match", got, err)
+	}
+}
+
+// The frontend's ansiText tests read the same vectors: a line as the log
+// view shows it, and what a search counts in it.
+func TestSearchHidesWhatTheViewHides(t *testing.T) {
+	t.Parallel()
+	raw, err := os.ReadFile("../../frontend/src/test/fixtures/ansiShownVectors.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shared struct {
+		Vectors []struct {
+			Name  string `json:"name"`
+			Input string `json:"input"`
+			Shown string `json:"shown"`
+			Query string `json:"query"`
+			Count int    `json:"count"`
+		} `json:"vectors"`
+	}
+	if err := json.Unmarshal(raw, &shared); err != nil {
+		t.Fatal(err)
+	}
+	if len(shared.Vectors) == 0 {
+		t.Fatal("no vectors")
+	}
+	s, _, _ := newTestStore(t, CacheBytes)
+	for i, v := range shared.Vectors {
+		if got := hiddenEscapes.ReplaceAllString(v.Input, ""); got != v.Shown {
+			t.Errorf("%s: shown %q, want %q", v.Name, got, v.Shown)
+		}
+		key := githubKey(fmt.Sprint(500 + i))
+		fetchText(t, s, key, v.Input+"\n", `"a"`)
+		got, err := s.Search(t.Context(), key, v.Query, 100, 1<<16)
+		if err != nil || got.Matches != v.Count {
+			t.Errorf("%s: Search(%q) = %d, %v; want %d", v.Name, v.Query, got.Matches, err, v.Count)
+		}
 	}
 }

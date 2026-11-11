@@ -46,14 +46,12 @@
 
   import { getContext, untrack } from 'svelte';
   import {
-    EMBEDDED_HTML_EXTENSIONS,
     Streamdown,
     sanitizeEmbeddedHtmlToken,
-    type ClaimEmbeddedMedia,
-    type Extension,
     type ProvenAppend,
     type Tokens,
   } from '../../markdown';
+  import { chatMarkdownExtensions, chatMarkdownForgeOptions } from './markdown/chatMarkdownOptions';
   import {
     CHAT_MARKDOWN_PRESENCE_CONTEXT,
     CHAT_MARKDOWN_SETTLED_CONTEXT,
@@ -78,12 +76,7 @@
     type PathLinkMode,
   } from '../../utils/pathLinkExtension';
   import { buildPreviewLinkExtension } from '../../utils/previewLinkExtension';
-  import {
-    FORGE_ATTACHMENT_HREF_PREFIX,
-    buildForgeAttachmentHref,
-    isForgeAttachmentHref,
-  } from '../../utils/forgeAttachments';
-  import { buildForgeAttachmentExtension } from '../../utils/forgeAttachmentExtension';
+  import { FORGE_ATTACHMENT_HREF_PREFIX } from '../../utils/forgeAttachments';
   import { CHAT_LINK_PREFIXES } from './markdown/chatLinkPrefixes';
   import {
     FORGE_ATTACHMENT_SOURCE_CONTEXT,
@@ -262,63 +255,40 @@
   const forgeNumber = $derived(forgeSource?.pr.number ?? 0);
   const forgeBackend = $derived(forgeSource?.backend ?? '');
   const forgeWebBase = $derived(forgeSource?.webBase ?? '');
-  const forgeAttachmentExtensions = $derived.by(() => {
-    if (forgeForge !== 'github' && forgeForge !== 'gitlab') return undefined;
-    return buildForgeAttachmentExtension({
-      pr: {
-        forge: forgeForge,
-        host: forgeHost,
-        namespace: forgeNamespace,
-        repo: forgeRepo,
-        number: forgeNumber,
-      },
-      backend: forgeBackend,
-      webBase: forgeWebBase,
+  // The forge attachment extensions, and the same claim for media the
+  // parser never sees as a token: a forge wrapper (`<p align="center"><img
+  // …>`, `<a href><img>`, a screenshot table, a `<details>` body) is ONE
+  // html block, so the sanitizer asks `claimMedia` per
+  // `<img>`/`<video>`/`<source>` and `EmbeddedHtmlHost` mounts a real
+  // attachment host over each claim. Built by chatMarkdownOptions.ts, which
+  // find's projection (markdownFindText.ts) builds its parse from too. The
+  // derivation keys on the scalars above, so the extension and function
+  // identities are stable across renders for one PR: a fresh closure per
+  // render would invalidate the renderer's per-block caches on every frame.
+  const forgeOptions = $derived.by(() =>
+    chatMarkdownForgeOptions(
+      forgeForge === 'github' || forgeForge === 'gitlab'
+        ? {
+            pr: { forge: forgeForge, host: forgeHost, namespace: forgeNamespace, repo: forgeRepo, number: forgeNumber },
+            backend: forgeBackend,
+            webBase: forgeWebBase,
+          }
+        : null,
       embeddedHtml,
-    });
-  });
-
-  // The same claim, for media the parser never sees as a token: a forge
-  // wrapper (`<p align="center"><img …>`, `<a href><img>`, a screenshot
-  // table, a `<details>` body) is ONE html block, so the sanitizer asks this
-  // hook per `<img>`/`<video>`/`<source>` and `EmbeddedHtmlHost` mounts a
-  // real attachment host over each claim. Both derivations key on the same
-  // scalars as the extension above, so the function identity is stable
-  // across renders for one PR — a fresh closure per render would invalidate
-  // the renderer's per-block caches on every frame.
-  const forgeClaimMedia = $derived.by<ClaimEmbeddedMedia | undefined>(() => {
-    if (forgeForge !== 'github' && forgeForge !== 'gitlab') return undefined;
-    const pr = {
-      forge: forgeForge,
-      host: forgeHost,
-      namespace: forgeNamespace,
-      repo: forgeRepo,
-      number: forgeNumber,
-    };
-    const backend = forgeBackend;
-    const webBase = forgeWebBase;
-    return (_tag, src) =>
-      isForgeAttachmentHref(pr.forge, src)
-        ? buildForgeAttachmentHref({ href: src, pr, backend, webBase })
-        : null;
-  });
+    ),
+  );
   const renderEmbeddedHtml = $derived.by(() => {
-    const claimMedia = forgeClaimMedia;
-    const options = claimMedia ? { claimMedia } : undefined;
+    const options = forgeOptions.html;
     return (token: Tokens.HTML | Tokens.Tag) => sanitizeEmbeddedHtmlToken(token, options);
   });
 
-  // Forge attachments first, then preview: both the path-link extension and
-  // the embedded-HTML pair claim starts the forge one needs (`[`, `![`,
-  // `<img`, `<video`), and it returns undefined for everything that is not a
-  // forge-shaped href, so nothing behind it loses a token. Preview then
-  // precedes path links, which claim every remaining `[…](…)`.
   const extensions = $derived.by(() => {
-    const list: Extension[] = [];
-    if (forgeAttachmentExtensions) list.push(...forgeAttachmentExtensions);
-    if (previewLinkExtension) list.push(previewLinkExtension);
-    if (pathLinkExtension) list.push(pathLinkExtension);
-    if (embeddedHtml) list.push(...EMBEDDED_HTML_EXTENSIONS);
+    const list = chatMarkdownExtensions({
+      forge: forgeOptions.extensions,
+      preview: previewLinkExtension,
+      pathLink: pathLinkExtension,
+      embeddedHtml,
+    });
     return list.length > 0 ? list : undefined;
   });
 

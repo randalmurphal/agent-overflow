@@ -5,7 +5,7 @@ import { setBindingMock } from '../../../../test/mocks/bindings-app';
 import ChatMarkdown from '../ChatMarkdown.svelte';
 import { EMPTY_PATH_REFS } from '../../../utils/pathLinkify';
 import { countFindMatches, findNeedle, foldFindText } from '../../../utils/findMatch';
-import { findTextSegments } from '../../../utils/findHighlights';
+import { findTextRuns, findTextSegments } from '../../../utils/findHighlights';
 import { markdownFindText, SHOWS } from './markdownFindText';
 import { EMBEDDED_HTML_EXTENSIONS, lex, parseBlocks } from '../../../markdown';
 import { buildForgeAttachmentExtension } from '../../../utils/forgeAttachmentExtension';
@@ -72,6 +72,8 @@ const CORPUS = [
   '[typed](streamdown:incomplete-link) and [label][ref]\n\n[ref]: https://example.com/ref',
   '- item\n\n  loose paragraph\n\n- next',
   '| Name | Count |\n| --- | --- |\n| apples | 3 |\n| --- | --- |\n| total footer | 3 |',
+  // A claimed video's fallback children, a <details> among them, are dropped.
+  `<div><video src="/uploads/${HEX}/clip.mp4">needle<details><summary>fallback</summary>inner</details></video></div>\n\n<details open><summary>sum</summary>\n\nneedle BODY\n\n</details>\n\nneedle KEEP\n\nneedle NEXT`,
 ];
 
 const TOGGLED = CORPUS.filter((source) => source.includes('<details'));
@@ -222,5 +224,79 @@ describe('markdownFindText', () => {
     const dom = findTextSegments(root);
     const projected = markdownFindText(source, { embeddedHtml: true, forgeSource: FORGE }, open);
     expect(mismatches(source, dom, projected.runs), JSON.stringify({ dom, projected })).toEqual([]);
+  });
+});
+
+// Random review comments of real markdown and HTML, through the real
+// projection and the real renderer: the runs the projection numbers are the
+// rendered comment's, hidden <details> bodies included, as written and with
+// each <details> toggled, and a toggle renumbers no run.
+describe('markdownFindText over generated comments', () => {
+  function random(seed: number): () => number {
+    let state = seed >>> 0;
+    return () => {
+      state = (state + 0x6d2b79f5) >>> 0;
+      let t = state;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function comment(seed: number): string {
+    const next = random(seed);
+    const pick = <T,>(items: readonly T[]): T => items[Math.floor(next() * items.length)];
+    const words = () => Array.from({ length: 1 + Math.floor(next() * 4) }, () => pick(['needle', 'word', 'Needle', 'x', 'needleneedle'])).join(' ');
+    const open = () => (next() < 0.5 ? ' open' : '');
+    const block = (depth: number): string => {
+      const kinds = depth > 2 ? 7 : 11;
+      switch (Math.floor(next() * kinds)) {
+        // Prose, with forge attachments as markdown: chips, neither counted nor painted.
+        case 0: return next() < 0.5 ? words() : `${words()} [${words()}](/uploads/${HEX}/r.pdf) ![${words()}](/uploads/${HEX}/a.png) ${words()}`;
+        case 1: return `> [!${pick(['NOTE', 'WARNING', 'TIP'])}]\n> ${words()}`;
+        case 2: return `| ${words()} | b |\n| --- | --- |\n| ${words()} | \`${words()}\` |`;
+        case 3: return '```\n' + words() + '\n```';
+        case 4: return `<div><video src="/uploads/${HEX}/clip.mp4">${words()}<details><summary>${words()}</summary>${words()}</details></video></div>`;
+        case 5: return `<div><script>${words()}()</script><foo>${words()}</foo><!-- ${words()} --> ${words()}</div>`;
+        case 6: return `<div><video src="https://example.com/v.mp4">${words()}</video> <img src="/uploads/${HEX}/a.png" alt="${words()}"> ${words()}</div>`;
+        case 7: return `<details${open()}><summary>${words()}</summary>\n\n${block(depth + 1)}\n\n</details>`;
+        case 8: return `<details${open()}><summary>${words()}</summary>\n\n${block(depth + 1)}\n\n</details>\n<details${open()}><summary>${words()}</summary>\n\n${words()}\n\n</details>`;
+        case 9: return `<table><tr><td><details${open()}><summary>${words()}</summary>${words()}</details></td><td>${words()}</td></tr></table>`;
+        default: return `- ${words()}\n- ${block(depth + 1).replace(/\n/g, ' ')}`;
+      }
+    };
+    return Array.from({ length: 2 + Math.floor(next() * 4) }, () => block(0)).join('\n\n');
+  }
+
+  const SEEDS = Array.from({ length: 60 }, (_, i) => i + 1);
+
+  it.each(SEEDS)('seed %i', async (seed) => {
+    const source = comment(seed);
+    const root = await mounted(source);
+    const elements = [...root.querySelectorAll('details')];
+    const written = markdownFindText(source, { embeddedHtml: true, forgeSource: FORGE });
+    expect(written.details, `${source}\ndetails`).toEqual(elements.map((details) => details.open));
+    const check = async (label: string) => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const open = elements.map((details) => details.open);
+      const projected = markdownFindText(source, { embeddedHtml: true, forgeSource: FORGE }, open);
+      // Layout whitespace (template spacing beside an island, between
+      // blocks) holds no match: a run of it is dropped and a span of it is
+      // one space, on both sides.
+      const text = (run: string) => foldFindText(run).replace(/\s+/g, ' ').trim();
+      const fold = (runs: readonly { text: string; shown: boolean }[]) =>
+        runs.map((run) => ({ text: text(run.text), shown: run.shown })).filter((run) => run.text !== '');
+      // The rendered comment's runs, in walk order, hidden ones included.
+      expect(fold(projected.all), `${label}\n${source}`).toEqual(fold(findTextRuns(root)));
+      expect(projected.runs.map(text).filter(Boolean), `${label}: shown`).toEqual(findTextSegments(root).map(text).filter(Boolean));
+      // A toggle renumbers nothing: the same runs, in the same places.
+      expect(projected.all.map((run) => run.text), `${label}: numbering`).toEqual(written.all.map((run) => run.text));
+    };
+    await check('as written');
+    for (const [at, details] of elements.entries()) {
+      details.open = !details.open;
+      await check(`details ${at} toggled`);
+      details.open = !details.open;
+    }
   });
 });

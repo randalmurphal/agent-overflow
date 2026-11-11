@@ -101,7 +101,9 @@ islands, footnote popovers, selection preservation, and streamed reveal.
   only decide which source it gets.
 - An island whose text is drawn or fetched after the render (diagram, math,
   attachment chip) carries `data-find-skip` on its root, so find neither
-  counts nor paints it; `markdownFindText.ts` projects the rest and
+  counts nor paints it; `markdownFindText.ts` projects the rest, parsing
+  and sanitizing with the options ChatMarkdown builds
+  (`markdown/chatMarkdownOptions.ts`), and
   `markdownFindText.browser.test.ts` holds the two to the same text.
 
 Use differential tests for both renderer paths and browser tests for DOM

@@ -348,14 +348,15 @@ describe('review find', () => {
       expect(reveals.every(([identity]) => identity === 'q1')).toBe(true);
     });
 
-    it('a step whose reveal is running when its match goes at the swap is dropped, with no second call in flight', async () => {
+    it.each(['shown', 'not shown', 'failed'] as const)('a step whose reveal is running when its match goes at the swap passes to the survivor, asked once that call ends (%s)', async (ending) => {
       let items = ['r1', 'r2', 'r3'];
       const s = source(() => items, { slice: 1 });
-      const running = deferred();
+      let running: { resolve: (done: boolean) => void; reject: (err: Error) => void } | null = null;
       const { h, reveals } = host(() => s.src, {
         reveal: (hit, force) => {
           reveals.push([hit.identity, force]);
-          return force ? running.promise : true;
+          if (!force) return true;
+          return new Promise<boolean>((resolve, reject) => { running = { resolve, reject }; });
         },
       });
       const find = createReviewFind(h, () => 'diff');
@@ -364,13 +365,32 @@ describe('review find', () => {
       await s.release();
       find.next();
       expect(reveals.at(-1)).toEqual(['r2', true]);
+      // r2's evicted text is being read; a refresh removes it and its
+      // recount ends first.
       items = ['r1', 'r3'];
       find.refresh();
       await s.release();
-      expect([find.selected, find.wants('r2'), find.wants('r3')]).toEqual(['r3', false, false]);
-      running.resolve(false);
-      await flush();
+      expect([find.selected, find.wants('r2'), find.wants('r3')]).toEqual(['r3', false, true]);
+      // One call in flight: the survivor is not asked yet.
       expect(reveals.at(-1)).toEqual(['r2', true]);
+      find.refresh();
+      await s.release();
+      expect(reveals.at(-1)).toEqual(['r2', true]);
+      const call = running!;
+      running = null;
+      if (ending === 'failed') call.reject(new Error('read failed'));
+      else call.resolve(ending === 'shown');
+      await flush();
+      // The reader asked to move and the current match is elsewhere.
+      expect(reveals.at(-1)).toEqual(['r3', true]);
+      expect(find.result.error).toBeNull();
+      running!.resolve(true);
+      await flush();
+      expect(find.wants('r3')).toBe(false);
+      const asked = reveals.length;
+      find.refresh();
+      await s.release();
+      expect(reveals.length).toBe(asked);
     });
 
     it('steps wrap during a recount of a completed set, and not over a new query prefix', async () => {

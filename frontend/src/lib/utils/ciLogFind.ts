@@ -9,10 +9,13 @@
 // most one block of one section, ReviewCILogView) and its index among that
 // row's matches are derived against the sections and the line text shown
 // at the moment of use (`resolveCILogHit`), by review find's matching rule
-// (reviewFindScan.ts#findMatchChunk), never from other published matches.
+// (reviewFindScan.ts#findMatchChunk) over each line's text as AnsiText
+// shows it (ansiText.ts#ansiShownText, the escapes the backend's search
+// hides as well), never from other published matches.
 
 import { CI_LOG_BLOCK_LINES } from '../stores/ciLogBlocks.svelte';
 import type { CILogSearch, CILogSection } from '../types/models';
+import { ansiShownText } from './ansiText';
 import { countFindMatches } from './reviewFindScan';
 
 /** `data-find-key` of a row of log lines, by its first line. */
@@ -77,13 +80,17 @@ export type CILogResolution =
 
 /**
  * Whether `hit` is present for `needle` (folded, `findNeedle`) in the log
- * shown now: `sections`, and `shownLine`, a line's text as the view shows
- * it (null when its block is not loaded). Its index in its row counts the
- * matches of the row's earlier lines in that text.
+ * shown now: `sections`, and `lineText`, a line as its block holds it
+ * (null when the block is not loaded), read as AnsiText shows it. Its index
+ * in its row counts the matches of the row's earlier lines in that text.
  */
-export function resolveCILogHit(sections: readonly CILogSection[], shownLine: (line: number) => string | null, needle: string, hit: CILogFindHit): CILogResolution {
+export function resolveCILogHit(sections: readonly CILogSection[], lineText: (line: number) => string | null, needle: string, hit: CILogFindHit): CILogResolution {
   const placed = placeCILogLine(sections, hit.line);
   if (!placed || needle === '') return { kind: 'absent' };
+  const shownLine = (line: number): string | null => {
+    const raw = lineText(line);
+    return raw === null ? null : ansiShownText(raw);
+  };
   const own = shownLine(hit.line);
   if (own === null) return { kind: 'unknown', sectionKey: placed.sectionKey };
   if (hit.occurrence >= countFindMatches(own, needle)) return { kind: 'absent' };

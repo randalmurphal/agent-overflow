@@ -18,7 +18,8 @@
   // A match in a collapsed file, a settled thread or a closed log section
   // opens it; one in a collapsed conflict fold opens the fold first. After
   // the list scrolls to a match's row, the painted range corrects the
-  // landing (wrapped lines). A match is an identity: the painter, the shift
+  // landing (wrapped lines), and the reveal answers shown only once that
+  // range is in view. A match is an identity: the painter, the shift
   // and the reveal each ask whether it is present in the content shown at
   // that moment, and where (`resolveDiff`, `resolveLog`); one not present
   // now is neither painted, shifted nor shown, and its reveal stays owed.
@@ -59,7 +60,8 @@
 
   interface LogSurface {
     findReadingLine(): number;
-    findShownLine(line: number): string | null;
+    findLineText(line: number): string | null;
+    findLineLoad(line: number): { loading: boolean; error: string | null };
     revealFindLine(line: number, sectionKey: string): Promise<void>;
     scrollFindBy(delta: number): void;
   }
@@ -89,15 +91,13 @@
   let highlighter: FindHighlighter | null = null;
   let highlighterRoot: HTMLElement | null = null;
   let paintedQuery = '';
-  // The match a scroll just aimed at; its painted range corrects the landing.
-  let landing: { identity: string; until: number } | null = null;
 
   // PR comments are searched as they render (ReviewThreadComments), with
   // the <details> the reader toggled in mounted rows as they left them.
   // Held while find is open.
   const readForgeSource = getContext<ForgeAttachmentSourceReader | undefined>(FORGE_ATTACHMENT_SOURCE_CONTEXT);
   let texts: ((source: string, open?: readonly boolean[]) => MarkdownFindText) | null = null;
-  const NO_DETAILS: MountedCommentDetails = { toggled: new Map(), recounted: new Map() };
+  const NO_DETAILS: MountedCommentDetails = { toggled: new Map() };
   let details = NO_DETAILS;
   let editing = new Set<string>();
 
@@ -144,7 +144,7 @@
     const conflicts = untrack(() => view) === 'conflicts';
     return {
       ...diffContent(),
-      commentRuns: (body, rowKey) => details.recounted.get(rowKey)?.map((text) => ({ text, shown: true })) ?? commentTexts()(body, details.toggled.get(rowKey)).all,
+      commentRuns: (body, rowKey) => commentTexts()(body, details.toggled.get(rowKey)).all,
       editing,
       foldLines: conflicts ? (path) => untrack(() => review.conflictFoldLines(path)) : undefined,
     };
@@ -158,7 +158,7 @@
   function resolveLog(hit: CILogFindHit): CILogResolution {
     const sections = untrack(() => review.ciLog?.sections) ?? [];
     const surface = log();
-    return resolveCILogHit(sections, (line) => surface?.findShownLine(line) ?? null, findNeedle(paintedQuery), hit);
+    return resolveCILogHit(sections, (line) => surface?.findLineText(line) ?? null, findNeedle(paintedQuery), hit);
   }
 
   // The element and index the highlighter paints as current for `hit`;
@@ -187,7 +187,6 @@
     highlighterRoot = null;
     paintedQuery = '';
     painted = null;
-    landing = null;
     restoreShifted(null);
   }
 
@@ -270,28 +269,54 @@
     return untrack(() => view) === 'log';
   }
 
-  function land(): void {
-    const aim = landing;
-    if (!aim || find.hits[find.result.current]?.identity !== aim.identity) return;
-    const at = placement();
-    if (at === null) {
-      if (performance.now() > aim.until) landing = null;
-      return;
-    }
-    landing = null;
-    if (at.dy !== 0) {
-      if (isLogView()) log()?.scrollFindBy(at.dy);
-      else diff()?.scrollFindBy(at.dy);
-    }
-    // The scroller itself scrolling sideways; a clipped line is syncShift's.
-    const el = scroller();
-    if (at.dx !== 0 && el && at.across === el) el.scrollLeft = Math.max(0, el.scrollLeft + at.dx);
-    syncShift();
-  }
-
-  function aim(hit: Hit): void {
-    landing = { identity: hit.identity, until: performance.now() + 1500 };
-    requestAnimationFrame(() => requestAnimationFrame(land));
+  // After a scroll toward `hit`: each frame, once its rows are built and
+  // its range painted, corrects the landing until the range is in view,
+  // and answers true then. A row the list unmounted again (rows above it
+  // measured taller than estimated) is scrolled to again (`rescroll`).
+  // False once its reveal is no longer wanted (a newer ask, a close, a
+  // swap that passed it on) or it is not present now; a log line whose
+  // block failed to load rejects with that error. Nothing else ends it.
+  function bringIntoView(hit: Hit, rescroll: () => void): Promise<boolean> {
+    return new Promise<boolean>((resolve, reject) => {
+      const frame = () => {
+        if (!find.wants(hit.identity)) return resolve(false);
+        let rowKey: string | null = null;
+        if (isLogHit(hit)) {
+          const resolved = resolveLog(hit);
+          if (resolved.kind === 'absent') return resolve(false);
+          if (resolved.kind === 'unknown') {
+            const load = log()?.findLineLoad(hit.line) ?? { loading: false, error: null };
+            if (load.error !== null) return reject(new Error(load.error));
+            // No row of it is mounted to read its block.
+            if (!load.loading) rescroll();
+          } else {
+            rowKey = resolved.at.rowKey;
+          }
+        } else {
+          const resolved = resolveDiff(hit);
+          if (resolved.kind === 'absent') return resolve(false);
+          if (resolved.kind === 'present') rowKey = resolved.at.rowKey;
+        }
+        if (rowKey !== null && !root?.querySelector(`[data-find-key="${CSS.escape(rowKey)}"]`)) rescroll();
+        const at = rowKey === null ? null : placement();
+        if (at !== null && at.dy === 0 && at.dx === 0) {
+          syncShift();
+          return resolve(true);
+        }
+        if (at !== null) {
+          if (at.dy !== 0) {
+            if (isLogView()) log()?.scrollFindBy(at.dy);
+            else diff()?.scrollFindBy(at.dy);
+          }
+          // The scroller itself scrolling sideways; a clipped line is syncShift's.
+          const el = scroller();
+          if (at.dx !== 0 && el && at.across === el) el.scrollLeft = Math.max(0, el.scrollLeft + at.dx);
+          syncShift();
+        }
+        requestAnimationFrame(frame);
+      };
+      requestAnimationFrame(frame);
+    });
   }
 
   // Opens what hides the match (its file, its settled thread), then
@@ -328,30 +353,19 @@
       resolved = await presentDiff(hit);
     }
     if (resolved.kind !== 'present' || !find.wants(hit.identity)) return false;
-    const shown = diff()?.revealFindPlace(resolved.at) ?? false;
-    if (shown) aim(hit);
-    return shown;
+    const place = resolved.at;
+    if (!(diff()?.revealFindPlace(place) ?? false)) return false;
+    return bringIntoView(hit, () => diff()?.revealFindPlace(place));
   }
 
-  // Frames a reveal waits for a scrolled-to log line's block to load.
-  const LOG_TEXT_FRAMES = 120;
-
-  // Opens and scrolls to a log match present now. A line whose block is not
-  // loaded is scrolled to first and judged once its text shows; one still
-  // not loaded after that is shown as its line, and painted when it loads.
+  // Opens and scrolls to a log match present now, or to the line of one
+  // whose block is not loaded, which is judged once the block shows it.
   async function showLogHit(hit: CILogFindHit, surface: LogSurface): Promise<boolean> {
     const resolved = resolveLog(hit);
     if (resolved.kind === 'absent') return false;
     const sectionKey = resolved.kind === 'present' ? resolved.at.sectionKey : resolved.sectionKey;
     await surface.revealFindLine(hit.line, sectionKey);
-    if (resolved.kind === 'unknown') {
-      for (let frame = 0; frame < LOG_TEXT_FRAMES && resolveLog(hit).kind === 'unknown'; frame += 1) {
-        await new Promise((resolve) => requestAnimationFrame(resolve));
-      }
-      if (resolveLog(hit).kind === 'absent') return false;
-    }
-    aim(hit);
-    return true;
+    return bringIntoView(hit, () => void surface.revealFindLine(hit.line, sectionKey));
   }
 
   // A revision, commit, filter or conflict tree change replaces `files`,
@@ -367,7 +381,7 @@
         drafts: conflicts ? [] : review.drafts,
         prThreads: conflicts ? [] : review.prThreads,
         foldLines: conflicts ? (path: string) => review.conflictFoldLines(path) : undefined,
-        commentText: (body: string, rowKey: string) => details.recounted.get(rowKey)?.map((text) => ({ text, shown: true })) ?? commentTexts()(body, details.toggled.get(rowKey)).all,
+        commentText: (body: string, rowKey: string) => commentTexts()(body, details.toggled.get(rowKey)).all,
         editing,
       }));
       return scanReviewFind(content, query, {
@@ -451,7 +465,6 @@
           onMatches: () => {
             // What shows is read first, so the current match is found in it.
             if (reconcileMounted()) highlighter?.setCurrent(paintedCurrent);
-            land();
             syncShift();
           },
         });

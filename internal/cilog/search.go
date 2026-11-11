@@ -35,9 +35,11 @@ type Search struct {
 // context.
 const searchCheckLines = 1024
 
-// The escapes the log view does not show (AnsiText.svelte): OSC and APC
-// strings and SGR sequences. A search matches the text around them.
-var hiddenEscapes = regexp.MustCompile(`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b_[^\x1b]*\x1b\\|\x1b\[[0-9;]*m`)
+// What the log view does not show of a line (frontend utils/ansiText.ts):
+// OSC and APC strings, SGR sequences, and NUL, which the HTML parser drops.
+// A search matches the text around them. The vectors in
+// frontend/src/test/fixtures/ansiShownVectors.json hold both sides to it.
+var hiddenEscapes = regexp.MustCompile(`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b_[^\x1b]*\x1b\\|\x1b\[[0-9;]*m|\x00`)
 
 // Search counts the matches of query in key's published log as the log
 // view shows each line: its first lineMax bytes, without the escapes the
@@ -75,7 +77,7 @@ func (s *Store) Search(ctx context.Context, key Key, query string, limit, lineMa
 			return Search{}, fmt.Errorf("search CI log: %w", err)
 		}
 		text := line
-		if bytes.IndexByte(text, 0x1b) >= 0 {
+		if bytes.IndexByte(text, 0x1b) >= 0 || bytes.IndexByte(text, 0) >= 0 {
 			text = hiddenEscapes.ReplaceAll(text, nil)
 		}
 		shown := string(text)

@@ -12,7 +12,11 @@
 // attachment reads. So each token kind says what it shows in SHOWS, a
 // record the type check holds to the lexer's whole token union; a kind it
 // does not know renders nothing. Where the renderers decide what a token
-// shows, this asks the same function (`tableCellRenders`, `linkTagText`).
+// shows, this asks the same function (`tableCellRenders`, `linkTagText`),
+// and it parses and sanitizes with the options ChatMarkdown builds
+// (chatMarkdownOptions.ts): the same extensions, and the sanitizer's media
+// claims, which drop a claimed video's fallback children. A review comment
+// has no thread, workspace or path list, so no preview or path links.
 // One walk yields both the text and every <details> in render order: the
 // body of a closed <details> is walked for the elements it renders, with
 // its text held back, so a token the renderer drops hides both. `all`
@@ -27,18 +31,16 @@
 // fetched after the render.
 
 import {
-  EMBEDDED_HTML_EXTENSIONS,
   lex,
   linkTagText,
   parseBlocks,
   sanitizeEmbeddedHtmlToken,
   tableCellRenders,
-  type Extension,
   type StreamdownToken,
 } from '../../../markdown';
 import { CHAT_LINK_PREFIXES } from './chatLinkPrefixes';
+import { chatMarkdownExtensions, chatMarkdownForgeOptions } from './chatMarkdownOptions';
 import { findTextRuns, type FindRun } from '../../../utils/findHighlights';
-import { buildForgeAttachmentExtension } from '../../../utils/forgeAttachmentExtension';
 import type { ForgeAttachmentSource } from '../../../utils/forgeAttachments';
 import { MarkdownFenceUnwrapper } from './unwrapMarkdownFence';
 
@@ -93,16 +95,6 @@ export const SHOWS: Record<StreamdownToken['type'], Shows> = {
   details: 'own', link: 'own', td: 'own', th: 'own', alert: 'own', text: 'own',
 };
 
-function extensionsFor(options: MarkdownFindTextOptions): Extension[] {
-  const list: Extension[] = [];
-  const forge = options.forgeSource;
-  if (forge && (forge.pr.forge === 'github' || forge.pr.forge === 'gitlab')) {
-    list.push(...buildForgeAttachmentExtension({ ...forge, embeddedHtml: options.embeddedHtml }));
-  }
-  if (options.embeddedHtml) list.push(...EMBEDDED_HTML_EXTENSIONS);
-  return list;
-}
-
 /**
  * The runs of text `source` renders as, under ChatMarkdown's options.
  * `open` overrides the open state of each <details> by document order,
@@ -110,7 +102,8 @@ function extensionsFor(options: MarkdownFindTextOptions): Extension[] {
  */
 export function markdownFindText(source: string, options: MarkdownFindTextOptions, open?: readonly boolean[]): MarkdownFindText {
   const shown = new MarkdownFenceUnwrapper().render(source, false);
-  const extensions = extensionsFor(options);
+  const forge = chatMarkdownForgeOptions(options.forgeSource, options.embeddedHtml);
+  const extensions = chatMarkdownExtensions({ forge: forge.extensions, embeddedHtml: options.embeddedHtml });
   const all: FindRun[] = [];
   const details: boolean[] = [];
   let run = '';
@@ -134,7 +127,7 @@ export function markdownFindText(source: string, options: MarkdownFindTextOption
   };
   const html = (token: TokenLike) => {
     if (!options.embeddedHtml) return;
-    const out = sanitizeEmbeddedHtmlToken({ raw: token.raw ?? '', block: token.block });
+    const out = sanitizeEmbeddedHtmlToken({ raw: token.raw ?? '', block: token.block }, forge.html);
     if (out === '') return;
     if (!token.block) {
       // A stray inline tag renders as its own literal text.

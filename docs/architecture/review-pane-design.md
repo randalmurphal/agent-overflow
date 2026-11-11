@@ -301,13 +301,20 @@ polling.
   file index, row, fold and index among the element's painted matches,
   are found in the content shown at each paint, shift and reveal by the
   scan's own matching rule (`utils/reviewFindRows.ts`, `utils/ciLogFind.ts`
-  for a log line, counted from the text shown), so a recount never paints,
-  shifts or reveals a match the content no longer has. Such a recount
-  never scrolls; only a new query's first match and a step bring a match
-  on screen, and that reveal is asked again at every publish, swap and
-  content change until it completes once. A step's reveal that nothing
-  has shown when its match goes at the swap passes to the survivor. Mermaid, math and attachment chips
-  carry `data-find-skip`, so they are neither counted nor painted.
+  for a log line, counted in the text AnsiText shows, `utils/ansiText.ts`,
+  whose escapes the backend's search hides too), so a recount never
+  paints, shifts or reveals a match the content no longer has. Such a
+  recount never scrolls; only a new query's first match and a step bring
+  a match on screen, and that reveal is asked again at every publish, swap
+  and content change until it completes once, which is when the painted
+  match is in view: a log line whose block has not loaded is waited for,
+  and a block that fails to load puts its error in the bar. A step's
+  reveal that nothing has shown when its match goes at the swap passes to
+  the survivor, asked once a host call still in flight ends. A comment is
+  projected with the parse and sanitizer options ChatMarkdown renders it
+  with (`chat/markdown/chatMarkdownOptions.ts`). Mermaid, math and
+  attachment chips carry `data-find-skip`, so they are neither counted nor
+  painted.
 
 ## Edge Cases
 

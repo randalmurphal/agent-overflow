@@ -18,11 +18,13 @@ import { createReviewFind, type ReviewFind, type ReviewFindHost, type ReviewFind
 // close, and did happen when its match survived, unless the host's last
 // answer was that it is not present now and no publish, swap or content
 // change came after. The host answers false for a match not in the content
-// shown. A step's reveal the host has not shown and is not running when its
-// match goes at a swap passes to the survivor; no other ask changes target. One ask never has two host calls in flight, and a
-// reveal that settles unshown while still wanted is asked again exactly
-// once if a publish, swap or content change came while it ran, else not
-// until the next one.
+// shown. A step's reveal the host has not shown when its match goes at a
+// swap passes to the survivor, asked once a call in flight ends; no other
+// ask changes target, and a settled step owes nothing only if the host last
+// showed the current match for it. One ask never has two host calls in
+// flight, and a reveal that settles unshown while still wanted is asked
+// again exactly once if a publish, swap or content change came while it
+// ran, else not until the next one.
 
 interface Hit { identity: string }
 
@@ -33,7 +35,7 @@ const OPS = [
 type Op = typeof OPS[number];
 
 interface Ask { id: number; step: boolean; target: string | null; calls: number; done: number; lastCall: Call | null }
-interface Call { ask: Ask | null; identity: string; answer: 'true' | 'false' | 'deferred'; deferred: boolean; eventsAtCall: number }
+interface Call { ask: Ask | null; identity: string; answer: 'true' | 'false' | 'deferred'; eventsAtCall: number }
 
 async function flush(): Promise<void> {
   for (let i = 0; i < 12; i += 1) await Promise.resolve();
@@ -112,8 +114,7 @@ function harness() {
     readingPosition: () => (hit) => below(hit.identity),
     reveal: (hit) => {
       // Not present in the content shown now: the host cannot show it.
-      const call: Call = { ask, identity: hit.identity, answer: content().includes(hit.identity) ? nextAnswer : 'false', deferred: false, eventsAtCall: events };
-      call.deferred = call.answer === 'deferred';
+      const call: Call = { ask, identity: hit.identity, answer: content().includes(hit.identity) ? nextAnswer : 'false', eventsAtCall: events };
       if (ask && running.some((each) => each.call.ask === ask)) violations.push(`reveal ${hit.identity}: ask ${ask.id} has a call in flight`);
       nextAnswer = 'true';
       if (!ask) violations.push(`reveal ${hit.identity} with no ask (after close)`);
@@ -128,6 +129,7 @@ function harness() {
       }
       if (call.answer === 'true') {
         if (call.ask) call.ask.done += 1;
+        lastShown = { identity: hit.identity, ask: call.ask };
         return true;
       }
       // Not present in the content shown now.
@@ -145,6 +147,9 @@ function harness() {
     asks.push(ask);
   }
 
+  // What the host last showed, and for which ask.
+  let lastShown: { identity: string; ask: Ask | null } | null = null;
+
   // What an unshown settle must lead to, checked once it has run.
   let afterSettle: { ask: Ask; calls: number; again: number } | null = null;
 
@@ -155,10 +160,14 @@ function harness() {
     const wanted = find.wants(next.call.identity) && find.result.current >= 0;
     const shows = done && wanted;
     if (shows && next.call.ask) next.call.ask.done += 1;
+    if (shows) lastShown = { identity: next.call.identity, ask: next.call.ask };
     if (!shows) next.call.answer = 'false';
     if (!shows && next.call.ask) {
       const seenWhileRunning = events > next.call.eventsAtCall;
-      afterSettle = { ask: next.call.ask, calls: next.call.ask.calls, again: wanted && seenWhileRunning ? 1 : 0 };
+      // A step's reveal passed at a swap to the survivor while this call ran
+      // is asked once it ends.
+      const passed = !wanted && next.call.ask.step && find.selected !== null && find.selected !== next.call.identity && find.wants(find.selected);
+      afterSettle = { ask: next.call.ask, calls: next.call.ask.calls, again: passed || (wanted && seenWhileRunning) ? 1 : 0 };
     }
     next.resolve(shows);
   }
@@ -371,11 +380,12 @@ function harness() {
       const excused = last !== null && last.answer === 'false' && events === last.eventsAtCall;
       if (!excused) out.push(`ask ${ask.id} for ${ask.target} was never revealed`);
     }
-    // A step's reveal, never shown and not running, whose match went: it
-    // passed to the survivor now selected.
-    if (ask && ask.step && ask.done === 0 && ask.target !== null && !content().includes(ask.target) && find.selected !== null
-      && find.selected === survivor(ask.target) && ask.lastCall !== null && !ask.lastCall.deferred) {
-      out.push(`step ask ${ask.id} for ${ask.target} did not pass to its survivor ${find.selected}`);
+    // A step's reveal is discharged only by the host showing its match: the
+    // current one, or one shown and gone since. One whose match went before
+    // it was shown passed to its survivor, running or not.
+    if (ask && ask.step && find.selected !== null && !find.wants(find.selected)
+      && (lastShown?.ask !== ask || (lastShown.identity !== find.selected && content().includes(lastShown.identity)))) {
+      out.push(`step ask ${ask.id} owes nothing, but the host last showed ${lastShown ? `${lastShown.identity} for ask ${lastShown.ask?.id}` : 'nothing'} while ${find.selected} is current`);
     }
     return out;
   }
@@ -438,6 +448,15 @@ for (const asked of ['next', 'prev', 'reopen'] as const) {
 // A new query's first reveal unshown, then its match removed.
 SEQUENCES.push(['complete', 'reopen', 'hostFalse', 'publish', 'remove', 'complete']);
 SEQUENCES.push(['complete', 'reopen', 'hostFalse', 'publish', 'complete', 'remove', 'complete']);
+
+// A step's reveal running when its match goes at the swap, settled after
+// the swap: shown, unshown.
+for (const step of ['next', 'prev'] as const) {
+  for (const settled of ['settleTrue', 'settleFalse'] as const) {
+    SEQUENCES.push(['complete', 'hostDeferred', step, 'remove', 'complete', settled]);
+    SEQUENCES.push(['complete', 'hostDeferred', step, 'remove', 'complete', 'refresh', 'complete', settled]);
+  }
+}
 
 describe('review find transitions', () => {
   it.each(SEQUENCES.map((ops) => [ops.join(' > '), ops] as const))('%s', async (_name, ops) => {
