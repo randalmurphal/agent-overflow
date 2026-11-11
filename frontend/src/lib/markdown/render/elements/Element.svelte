@@ -3,7 +3,7 @@
 	import Link from './Link.svelte';
 	import Image from './Image.svelte';
 	import Alert from './Alert.svelte';
-	import type { ProvenAppend, StreamdownToken } from '../../parser/index';
+	import type { GenericToken, ProvenAppend, StreamdownToken } from '../../parser/index';
 	import Slot from './Slot.svelte';
 	import { useStreamdown } from '../context.svelte';
 	import { codespanClass } from '../codespan';
@@ -28,6 +28,12 @@
 	const MathComponent = $derived(streamdown.components?.math);
 
 	const id = $props.id();
+
+	// Compile-time exhaustiveness: a StreamdownToken type with no branch
+	// above fails the type check here instead of rendering nothing.
+	function extensionToken(token: never): GenericToken {
+		return token;
+	}
 </script>
 
 {#snippet sourceText(text: string)}
@@ -77,6 +83,13 @@
 			{@render children()}
 		</p>
 	</Slot>
+{:else if token.type === 'align'}
+	<div
+		data-streamdown-align={id}
+		class={token.align === 'right' ? streamdown.theme.align.right : streamdown.theme.align.center}
+	>
+		{@render children()}
+	</div>
 {:else if token.type === 'blockquote'}
 	<Slot props={{ children, token }} render={streamdown.snippets.blockquote}>
 		<blockquote data-streamdown-blockquote={id} class={streamdown.theme.blockquote.base}>
@@ -353,6 +366,8 @@
 		</Slot>
 	{/if}
 {:else}
-	<!-- For tokens we don't handle specifically, it may certainely be a custom extension to to the children props to handle -->
-	{@render streamdown.children?.({ token, children, streamdown })}
+	<!-- Every StreamdownToken type has a branch above (`extensionToken`
+	     takes `never`); a host extension's own token type reaches the
+	     host's `children` snippet. -->
+	{@render streamdown.children?.({ token: extensionToken(token), children, streamdown })}
 {/if}

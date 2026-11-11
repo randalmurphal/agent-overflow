@@ -295,6 +295,7 @@ export class BoundaryDetector {
       const wasInContainer = tempContext.inContainer
       const wasContainerDepth = tempContext.containerDepth
       const wasInList = tempContext.inList
+      const wasInAlign = tempContext.align !== undefined
 
       // ListContextUpdater clears `inList` while it consumes the first
       // unindented block after a blank line. Running the checker only after
@@ -348,7 +349,7 @@ export class BoundaryDetector {
 
       // 排除 Setext 下划线，因为它应该被视为标题的一部分，而不是独立块边界
       // 排除在列表中的情况，因为这些可能是列表项的内容
-      if (!wasInFencedCode && !wasInContainer && !wasInList && hasExplicitBlockBoundary && !isSetextUnderline) {
+      if (!wasInFencedCode && !wasInContainer && !wasInList && !wasInAlign && hasExplicitBlockBoundary && !isSetextUnderline) {
         // 前一个 block 已完成，可以标记为稳定边界
         stableLine = i - 1
         stableContext = tempContext
@@ -369,7 +370,7 @@ export class BoundaryDetector {
       }
 
       if (wasInFencedCode && !tempContext.inFencedCode) {
-        if (i < lines.length - 1) {
+        if (i < lines.length - 1 && !wasInAlign) {
           stableLine = i
           stableContext = tempContext
         }
@@ -377,6 +378,13 @@ export class BoundaryDetector {
       }
 
       if (tempContext.inFencedCode) {
+        continue
+      }
+
+      // An alignment block commits only after it closes, at the next
+      // boundary the checkers find after its closer line: its opener may
+      // have been a paragraph's lazy continuation rather than a block start.
+      if (wasInAlign || tempContext.align !== undefined) {
         continue
       }
 

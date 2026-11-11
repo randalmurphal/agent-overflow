@@ -100,9 +100,18 @@ export const contextPlugins: Plugin[] = [
                 finalContexts.add('center');
             if (inRightBlock && rightOpenLine < lines.length - 1)
                 finalContexts.add('right');
-            // Return both the text and the updated state
+            // Drop a trailing partial alignment closer (`[/cen`) before
+            // the line completers see it: sealed after it, it renders as
+            // content that vanishes when the real closer lands. The sealed
+            // opener is never the last line.
+            const last = lines[lines.length - 1];
+            const partialCloser = last !== '' &&
+                ((finalContexts.has('center') && last.length < 9 && '[/center]'.startsWith(last)) ||
+                    (finalContexts.has('right') && last.length < 8 && '[/right]'.startsWith(last)));
+            if (partialCloser)
+                lineContexts.pop();
             return {
-                text: text, // Don't modify text in preprocess
+                text: partialCloser ? text.slice(0, text.length - last.length - 1) : text,
                 state: {
                     blockingContexts: finalContexts,
                     lineContexts,

@@ -24,8 +24,8 @@
 // number in walk order whichever <details> are open.
 //
 // Not shown, so not searched: markup, image alt text, link targets and
-// titles, a table cell merged into the one above, an `[align]` block (no
-// renderer handles it), and the body of a <details> that is not open.
+// titles, a table cell merged into the one above, and the body of a
+// <details> that is not open.
 // Neither searched nor painted (`data-find-skip` on their hosts): Mermaid
 // diagrams, math, and forge attachment chips, whose text is drawn or
 // fetched after the render.
@@ -83,10 +83,7 @@ type Shows = 'nothing' | 'inline' | 'block' | 'own';
 export const SHOWS: Record<StreamdownToken['type'], Shows> = {
   // Drawn or fetched after the render, or not text at all.
   image: 'nothing', br: 'nothing', space: 'nothing', def: 'nothing', footnote: 'nothing', math: 'nothing', hr: 'block',
-  // Element.svelte hands an `[align]` block to a children handler
-  // ChatMarkdown does not give, and the static path gives up on it.
-  align: 'nothing',
-  paragraph: 'block', heading: 'block', blockquote: 'block', list: 'block', list_item: 'block',
+  align: 'block', paragraph: 'block', heading: 'block', blockquote: 'block', list: 'block', list_item: 'block',
   table: 'block', thead: 'inline', tbody: 'inline', tfoot: 'inline', tr: 'block',
   descriptionList: 'block', description: 'inline', descriptionTerm: 'block', descriptionDetail: 'block',
   detailsSummary: 'block',

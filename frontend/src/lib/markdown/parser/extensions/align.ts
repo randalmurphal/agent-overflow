@@ -15,12 +15,19 @@ export const parseAlignSource = (
         ? { raw: right[0], text: right[1] ?? '', align: 'right' as const }
         : undefined;
 };
+const OPENER = /^\[(?:center|right)\]\n/;
+// Block splitting only: a block with no closer yet runs to the end of the
+// source, so a streaming tail completes it as one block (the completer
+// seals it) instead of splitting it at a blank line inside it. Lexing the
+// unclosed block still yields what it shows today, plain blocks.
 export const markedAlignBlock: Extension = {
     name: 'align',
     level: 'block',
     tokenizer(src) {
         const source = parseAlignSource(src);
-        return source ? { type: 'align', raw: source.raw } : undefined;
+        if (source)
+            return { type: 'align', raw: source.raw };
+        return src.charCodeAt(0) === 91 && OPENER.test(src) ? { type: 'align', raw: src } : undefined;
     }
 };
 export const markedAlign: Extension = {

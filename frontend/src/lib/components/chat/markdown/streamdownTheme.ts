@@ -120,6 +120,10 @@ export const chatMarkdownTheme: Theme = {
   blockquote: {
     base: 'md-blk border-border-subtle text-md-blockquote border-l-2 pl-3 italic',
   },
+  align: {
+    center: 'md-blk my-(--markdown-block-gap) text-center',
+    right: 'md-blk my-(--markdown-block-gap) text-right',
+  },
   // GFM alerts (`> [!NOTE]` … ). The variant entry lands on the alert
   // container (left border), its `[data-alert-title]` row (via the descendant
   // modifier — the title is a CHILD of the element carrying the class), and

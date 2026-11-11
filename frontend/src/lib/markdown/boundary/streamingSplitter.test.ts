@@ -136,6 +136,12 @@ describe('StreamingBoundarySplitter — equivalence to splitAtBoundary', () => {
     );
   });
 
+  it('matches across alignment blocks (in-align context)', () => {
+    assertEquivalentCharByChar(
+      'Lead.\n\n[center]\none\n\n- item\n\n```\nx\n\n```\n[/center]\n\n[right]\nright\n[/right]\n\nAfter.\n\nTail',
+    );
+  });
+
   it('handles a wholesale shrink by resetting (sliding-window safety)', () => {
     const splitter = new StreamingBoundarySplitter();
     // Grow past a commit point.

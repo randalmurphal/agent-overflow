@@ -272,6 +272,8 @@ describe('md-blk block marker', () => {
   // asserted.
   const BLOCK_KEYS = [
     'alert.base',
+    'align.center',
+    'align.right',
     'blockquote.base',
     'code.base',
     'descriptionList.base',

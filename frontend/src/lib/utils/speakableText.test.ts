@@ -222,15 +222,15 @@ describe('speakableSections', () => {
     expect(rows.map((r) => r.text).join(' ')).toBe(figures);
   });
 
-  it('indexes blocks as rendered: definitions, raw HTML and alignment take none, an MDX container its children', () => {
+  it('indexes blocks as rendered: definitions and raw HTML take none, alignment one, an MDX container its children', () => {
     const markdown = [
       'Zero.', '', '[ref]: https://example.com', '', '<div>raw</div>', '', '[center]', 'Centered.', '[/center]', '',
       '<Aside>', 'One.', '', 'Two.', '</Aside>', '', '```ts', 'x', '```', '', 'Four.',
     ].join('\n');
-    expect(renderedBlocks(lex(markdown)).map((t) => t.type)).toEqual(['paragraph', 'paragraph', 'paragraph', 'code', 'paragraph']);
+    expect(renderedBlocks(lex(markdown)).map((t) => t.type)).toEqual(['paragraph', 'align', 'paragraph', 'paragraph', 'code', 'paragraph']);
     expect(speakableSections(markdown).map((s) => [s.text, s.firstBlock, s.lastBlock])).toEqual([
-      ['Zero.\n\nOne.\n\nTwo.', 0, 2],
-      ['Four.', 4, 4],
+      ['Zero.\n\nCentered.\n\nOne.\n\nTwo.', 0, 3],
+      ['Four.', 5, 5],
     ]);
   });
 });

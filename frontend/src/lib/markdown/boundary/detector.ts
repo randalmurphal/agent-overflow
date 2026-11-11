@@ -440,6 +440,43 @@ class ContainerContextUpdater implements ContextUpdater {
   }
 }
 
+/** The alignment a `[center]` / `[right]` opener line opens, if any. */
+export function detectAlignOpener(line: string): 'center' | 'right' | undefined {
+  const trimmed = line.trim()
+  return trimmed === '[center]' ? 'center' : trimmed === '[right]' ? 'right' : undefined
+}
+
+/** Whether `line` closes the open alignment block: the parser ends the
+ * block at its closer at a line start, inside a fence or not. */
+export function detectAlignCloser(line: string, context: BlockContext): boolean {
+  return context.align !== undefined && line.startsWith(`[/${context.align}]`)
+}
+
+/**
+ * Alignment blocks hold every line until their closer, blank lines
+ * included, the way a container does. An opener inside one starts the
+ * next block (the parser's lookahead). Openers are matched as the
+ * incomplete-markdown completer matches them (trimmed), a superset of the
+ * parser's, so a block the parser opens is never committed half-way.
+ */
+class AlignContextUpdater implements ContextUpdater {
+  update(line: string, context: BlockContext): BlockContext | null {
+    if (context.align !== undefined) {
+      // A fence open here opened inside the block and ends with it.
+      if (detectAlignCloser(line, context)) {
+        return { ...context, align: undefined, inFencedCode: false, fenceChar: undefined, fenceLength: undefined }
+      }
+      if (context.inFencedCode) return null
+      const next = detectAlignOpener(line)
+      if (next !== undefined && next !== context.align) return { ...context, align: next }
+      return context
+    }
+    if (context.inFencedCode) return null
+    const align = detectAlignOpener(line)
+    return align === undefined ? null : { ...context, align }
+  }
+}
+
 /**
  * 脚注上下文更新器
  * 优先级：3
@@ -618,6 +655,7 @@ export function createInitialContext(): BlockContext {
 class ContextManager {
   private readonly updaters: ContextUpdater[] = [
     new CodeContextUpdater(),
+    new AlignContextUpdater(),
     new ContainerContextUpdater(),
     new FootnoteContextUpdater(),
     new ListContextUpdater()

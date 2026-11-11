@@ -112,7 +112,7 @@ type MdToken = {
 // Top-level tokens that render exactly one element in chat
 // (`markdown/render/Element.svelte`, `staticHtml.ts`).
 const ELEMENT_BLOCKS = new Set([
-  'paragraph', 'heading', 'code', 'blockquote', 'alert', 'list', 'table', 'hr', 'math', 'descriptionList', 'details',
+  'paragraph', 'heading', 'code', 'blockquote', 'alert', 'list', 'table', 'hr', 'math', 'descriptionList', 'details', 'align',
 ]);
 
 /**
@@ -121,7 +121,7 @@ const ELEMENT_BLOCKS = new Set([
  * An MDX container renders its blocks in place (chat registers no MDX
  * component), so it contributes its blocks. Everything else renders no
  * element: `space`, `def` and footnote definitions, raw HTML (chat renders
- * none), `[center]` alignment (no renderer), and unknown extensions.
+ * none), and unknown extensions.
  */
 export function renderedBlocks<T extends { type: string; tokens?: unknown }>(tokens: readonly T[]): T[] {
   const out: T[] = [];

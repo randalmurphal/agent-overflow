@@ -40,6 +40,10 @@ function childrenOf(token: StreamdownToken): StreamdownToken[] {
 		: [];
 }
 
+function extensionToken(_token: never): false {
+	return false;
+}
+
 /**
  * Serializes only Streamdown's fixed, synchronous default elements. Every
  * model-authored value is escaped and every tag/attribute name is owned here.
@@ -104,6 +108,16 @@ export function renderStaticTokenHtml(
 					output.push(`<p data-streamdown-paragraph="${dataId}"${attribute('class', streamdown.theme.paragraph.base)}>`);
 					if (!render(children)) return false;
 					output.push('</p>');
+					break;
+
+				case 'align':
+					output.push(
+						`<div data-streamdown-align="${dataId}"` +
+						attribute('class', token.align === 'right' ? streamdown.theme.align.right : streamdown.theme.align.center) +
+						'>',
+					);
+					if (!render(children)) return false;
+					output.push('</div>');
 					break;
 
 				case 'blockquote':
@@ -348,8 +362,21 @@ export function renderStaticTokenHtml(
 				case 'space':
 					break;
 
-				default:
+				// Component-backed: Element.svelte renders these.
+				case 'image':
+				case 'math':
+				case 'alert':
+				case 'footnoteRef':
+				case 'inline-citations':
+				case 'details':
+				case 'detailsSummary':
+				case 'mdx':
 					return false;
+
+				default:
+					// A host extension's own token type; a StreamdownToken type
+					// with no case fails the type check here.
+					return extensionToken(token);
 			}
 		}
 		return true;
