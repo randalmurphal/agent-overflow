@@ -311,7 +311,7 @@ func TestPRCILogFollowRevalidatesWithItsETag(t *testing.T) {
 	f.publish(pipelineWith(gitops.CIStatusSuccess, gitops.CIJob{ID: "7", Name: "unit", Status: gitops.CIStatusSuccess, LogsAvailable: true}), nil)
 	f.setLog("7", "done\n", nil)
 	sub := f.subscribe(t)
-	awaitCIEvent(t, f.ciEvents, "pipeline frame")
+	awaitSettledCIEvent(t, f, "pipeline frame")
 	if _, err := f.app.SetPRCILogFollows(context.Background(), sub.ID, []string{"7"}); err != nil {
 		t.Fatalf("SetPRCILogFollows: %v", err)
 	}

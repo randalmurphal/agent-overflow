@@ -90,6 +90,10 @@ func fakeBackendMain(mode string) {
 	// as it reads the line, and an unhandled SIGTERM would end this process
 	// before it starts its child.
 	var terms chan os.Signal
+	if mode == "ignore-term" {
+		// Outlives the polite stop, so only a kill ends it.
+		signal.Ignore(syscall.SIGTERM)
+	}
 	if mode == "fork-on-term" {
 		terms = make(chan os.Signal, 1)
 		signal.Notify(terms, syscall.SIGTERM)
@@ -114,7 +118,7 @@ func fakeBackendMain(mode string) {
 			_ = os.WriteFile(path, []byte(strconv.Itoa(child.Process.Pid)), 0o600)
 		}
 		os.Exit(0)
-	case "linger", "wrong-pid", "startup-error":
+	case "linger", "ignore-term", "wrong-pid", "startup-error":
 		// Live until the test terminates us. A real backend whose App failed
 		// keeps serving so its logs stay readable, and the launcher must end it.
 		time.Sleep(2 * time.Minute)

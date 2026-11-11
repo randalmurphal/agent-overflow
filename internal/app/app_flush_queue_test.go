@@ -1878,6 +1878,15 @@ func emittedQueueRestored(rec *emitRecorder) []QueueRestoredEvent {
 	return out
 }
 
+// awaitQueueRestored waits for a restore that runs off the test's goroutine
+// to finish and returns what it emitted. provider:queue_restored is the
+// restore's last effect; the draft is written before it.
+func awaitQueueRestored(t *testing.T, rec *emitRecorder) []QueueRestoredEvent {
+	t.Helper()
+	waitForCondition(t, "queue restored event", func() bool { return len(emittedQueueRestored(rec)) > 0 })
+	return emittedQueueRestored(rec)
+}
+
 func (r *emitRecorder) lastQueueState(t *testing.T) QueueStateChangedEvent {
 	t.Helper()
 	calls := r.snapshot()
@@ -2121,9 +2130,7 @@ func TestSessionStatusErrorRestoresQueuedFlushItemsToDraft(t *testing.T) {
 			if app.triage.HasQueuedFlushItems(thread.ID) {
 				t.Fatal("queued flush items still live after handler restore")
 			}
-			// The restore writes the draft before it emits the event.
-			waitForCondition(t, "queue restored event", func() bool { return len(emittedQueueRestored(rec)) > 0 })
-			if restored := emittedQueueRestored(rec); len(restored) != 1 {
+			if restored := awaitQueueRestored(t, rec); len(restored) != 1 {
 				t.Fatalf("queue restored events = %+v, want one", restored)
 			}
 		})
@@ -3693,7 +3700,7 @@ func TestUndeliveredSendReturnsToComposer(t *testing.T) {
 			} else if found {
 				t.Fatal("undelivered send's row still in the timeline")
 			}
-			restored := emittedQueueRestored(rec)
+			restored := awaitQueueRestored(t, rec)
 			if len(restored) != 1 || restored[0].Reason != queueRestoredReasonNotDelivered || strings.Join(restored[0].UserItemIDs, ",") != row.ID {
 				t.Fatalf("queue restored events = %+v, want one not_delivered for %s", restored, row.ID)
 			}
@@ -3746,7 +3753,7 @@ func TestDiscardedSendsRestoreWithTheQueueInOrder(t *testing.T) {
 	if draft.Content != "first\n\nsecond\n\nthird" {
 		t.Fatalf("draft = %q, want queue order", draft.Content)
 	}
-	if restored := emittedQueueRestored(rec); len(restored) != 1 || restored[0].Reason != queueRestoredReasonSessionDied {
+	if restored := awaitQueueRestored(t, rec); len(restored) != 1 || restored[0].Reason != queueRestoredReasonSessionDied {
 		t.Fatalf("queue restored events = %+v, want one session_died batch", restored)
 	}
 }
