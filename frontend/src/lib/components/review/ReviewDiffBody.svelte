@@ -21,7 +21,7 @@
   } from '../../utils/reviewAnchor';
   import { REVIEW_JUMP_PULSE_MS } from '../../utils/reviewJumpPulse';
   import { findLineKeyIndex, findLineKeyPath, type ReviewFindHit } from '../../utils/reviewFindScan';
-  import { findHitRow, findRowPosition } from '../../utils/reviewFindRows';
+  import { findHitRow, findRowPosition, locateReviewFindHit } from '../../utils/reviewFindRows';
   import { reviewDiffKeydown, type ReviewDiffKeysHost } from './reviewDiffKeys';
   import { elementAtEdge } from '../../utils/findReadingEdge';
   import {
@@ -414,10 +414,12 @@
   }
 
   /** Find: scrolls the row showing `hit` so its line sits a third down
-   * the viewport. False when the row model does not show it. */
+   * the viewport. False when it is not present in the files shown or the
+   * row model does not show it. */
   export function revealFindHit(hit: ReviewFindHit): boolean {
     const ref = listRef;
-    const target = ref ? findHitRow(built, files, hit) : null;
+    const at = ref ? locateReviewFindHit({ files, drafts, prThreads }, hit) : null;
+    const target = at ? findHitRow(built, files, at) : null;
     if (!ref || !target) return false;
     ref.scrollToIndex(target.index, { offset: target.within - Math.round(ref.getViewportSize() / 3) });
     return true;

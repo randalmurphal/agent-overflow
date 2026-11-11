@@ -31,6 +31,10 @@ export interface FindMatch {
  */
 export type FindCurrent = { row: string; occurrence?: number } | { match: number } | null;
 
+/** A current match, or how to find it in the content at each paint (an
+ * owner whose content moves under the rows derives the row from it). */
+export type FindCurrentSource = FindCurrent | (() => FindCurrent);
+
 export interface FindHighlighterOptions {
   root: HTMLElement;
   /** From `findHighlightName`; the current match paints as `${name}-current`. */
@@ -45,7 +49,7 @@ export interface FindHighlighterOptions {
 
 export interface FindHighlighter {
   setQuery(query: string): void;
-  setCurrent(current: FindCurrent): void;
+  setCurrent(current: FindCurrentSource): void;
   /** Matches in document order, for the current query. */
   readonly matches: readonly FindMatch[];
   /** The range of the current match when it is mounted; the first of a row. */
@@ -216,7 +220,7 @@ export function createFindHighlighter(options: FindHighlighterOptions): FindHigh
   const currentName = `${name}-current`;
   const paints = findHighlightsSupported();
   let needle = '';
-  let current: FindCurrent = null;
+  let current: FindCurrentSource = null;
   let matches: FindMatch[] = [];
   let observer: MutationObserver | null = null;
   let onToggle: (() => void) | null = null;
@@ -226,9 +230,10 @@ export function createFindHighlighter(options: FindHighlighterOptions): FindHigh
 
   // Indexes of the current matches.
   function currentIndexes(): number[] {
-    if (!current) return [];
-    if ('match' in current) return current.match >= 0 && current.match < matches.length ? [current.match] : [];
-    const { row, occurrence } = current;
+    const now = typeof current === 'function' ? current() : current;
+    if (!now) return [];
+    if ('match' in now) return now.match >= 0 && now.match < matches.length ? [now.match] : [];
+    const { row, occurrence } = now;
     const out: number[] = [];
     let seen = 0;
     for (let index = 0; index < matches.length; index += 1) {
@@ -304,7 +309,7 @@ export function createFindHighlighter(options: FindHighlighterOptions): FindHigh
       else unfollow();
       recompute();
     },
-    setCurrent(next: FindCurrent): void {
+    setCurrent(next: FindCurrentSource): void {
       if (disposed) return;
       current = next;
       paint();

@@ -291,11 +291,17 @@ polling.
   re-runs the query in place and keeps the current match by identity; a
   current match that is gone gives way to the next surviving one, else the
   previous, painted where it is. Only a new query's count grows as it
-  scans; a recount shows the matches it replaces, marked pending, and
-  swaps its result in whole when it ends. Such a recount never scrolls; only a new
-  query's first match and a step bring a match on screen, and that reveal
-  stays outstanding across the rescans it causes (a fold or file it opens)
-  until it completes once. Mermaid, math and attachment chips
+  scans; a recount shows the matches it replaces, marked pending (in words
+  for a screen reader), and swaps its result in whole when it ends. A
+  match is a logical identity: its file's path and its element (a line by
+  side and number, a conflict marker by its place, a draft by id, a thread
+  comment by thread and index) and index there; its file index, row and
+  fold are found in the content shown at each paint, shift and reveal
+  (`utils/reviewFindRows.ts`, `utils/ciLogFind.ts` for a log line), so a
+  recount never paints, shifts or reveals from what the content was. Such
+  a recount never scrolls; only a new query's first match and a step bring
+  a match on screen, and that reveal is asked again at every publish, swap
+  and content change until it completes once. Mermaid, math and attachment chips
   carry `data-find-skip`, so they are neither counted nor painted.
 
 ## Edge Cases

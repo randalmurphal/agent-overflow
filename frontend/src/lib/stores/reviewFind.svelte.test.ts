@@ -3,6 +3,7 @@ import { createReviewFind, REVIEW_FIND_REMOTE_DEBOUNCE_MS, type ReviewFindHost, 
 import { closePaneFind, openPaneFind, registerPaneFindProvider, resetPaneFindForTest, setPaneFindQuery } from './paneFind.svelte';
 import { setPatchTextBudgetForTest } from '../utils/patchMemory.svelte';
 import { scanReviewFind, type ReviewFindHit } from '../utils/reviewFindScan';
+import { locateReviewFindHit } from '../utils/reviewFindRows';
 import { streamPatch } from '../../test/helpers/streamedPatch';
 
 interface Hit { identity: string; at: number }
@@ -81,13 +82,13 @@ function deferred() {
 }
 
 describe('review find', () => {
-  it('a reveal that opened a fold completes after the restart its change causes', async () => {
+  it('a reveal that opens a fold is one host call across the recount its change causes', async () => {
     const s = source(() => ['f0', 'f1', 'f2', 'f3'], { slice: 1 });
-    let opened = false;
     // The reader is past f0 when the query starts; the opened fold moves
     // the reading position above it.
     let readFrom = 1;
     let find: ReturnType<typeof createReviewFind<Hit>>;
+    const shown = deferred();
     const { h, reveals } = host(() => s.src, {
       readingPosition: () => {
         const from = readFrom;
@@ -95,13 +96,11 @@ describe('review find', () => {
       },
       reveal: (hit, force) => {
         reveals.push([hit.identity, force]);
-        if (opened) return true;
-        // The fold opens: the files change, and the pane rescans while
-        // the query is still scanning.
-        opened = true;
+        // The fold opens: the files change and the pane recounts while the
+        // query still scans; the reveal shows the match after.
         readFrom = 0;
         queueMicrotask(() => find.refresh());
-        return false;
+        return shown.promise;
       },
     });
     find = createReviewFind(h, () => 'conflicts');
@@ -113,10 +112,10 @@ describe('review find', () => {
     // reading position moved above f0.
     expect([find.result.current, find.result.count, find.result.pending]).toEqual([1, 2, true]);
     await s.release();
-    expect(find.hits[find.result.current].identity).toBe('f1');
-    expect(reveals).toEqual([['f1', false], ['f1', false]]);
-    expect(find.wants('f1')).toBe(false);
-    expect([find.result.count, find.result.pending]).toEqual([4, false]);
+    expect([find.hits[find.result.current].identity, find.wants('f1')]).toEqual(['f1', true]);
+    shown.resolve(true);
+    await flush();
+    expect([find.wants('f1'), find.result.count, find.result.pending]).toEqual([false, 4, false]);
     // Later recounts and restarts never reveal it again.
     find.refresh();
     await s.release();
@@ -124,7 +123,7 @@ describe('review find', () => {
     await flush();
     find.refresh();
     await s.release();
-    expect(reveals).toEqual([['f1', false], ['f1', false]]);
+    expect(reveals).toEqual([['f1', false]]);
   });
 
   it.each(['the rescan ends first', 'the reveal settles first'] as const)('a reveal waiting on a file that loads is served once its rescan and its settle are both in: %s', async (order) => {
@@ -194,23 +193,37 @@ describe('review find', () => {
     expect(find.wants('l2')).toBe(false);
   });
 
-  it('a reveal that changed the content waits for a later scan, not the one it came from', async () => {
+  it('a reveal of a match not present now is asked again at each publish, swap and content change, once each, until shown', async () => {
     const s = source(() => ['w1', 'w2', 'w3'], { slice: 1 });
+    let present = false;
     const { h, reveals } = host(() => s.src, {
       reveal: (hit, force) => {
         reveals.push([hit.identity, force]);
-        return reveals.length > 1;
+        return present;
       },
     });
-    const find = createReviewFind(h, () => 'conflicts');
+    const find = createReviewFind(h, () => 'diff');
     find.search('w');
     await flush();
+    // The first publish chose w1.
+    expect(reveals.length).toBe(1);
+    await s.step();
+    expect(reveals.length).toBe(2);
+    // The swap.
+    await s.step();
+    expect([reveals.length, find.result.pending]).toEqual([3, false]);
+    // A content change, then its recount's pauses (nothing) and its swap.
+    find.refresh();
+    expect(reveals.length).toBe(4);
+    await s.step();
+    expect(reveals.length).toBe(4);
     await s.release();
-    expect(find.result.pending).toBe(false);
-    expect(reveals).toEqual([['w1', false]]);
+    expect(reveals.length).toBe(5);
+    present = true;
     find.refresh();
     await s.release();
-    expect(reveals).toEqual([['w1', false], ['w1', false]]);
+    expect([reveals.length, find.wants('w1')]).toEqual([6, false]);
+    expect(reveals.every((call) => call[0] === 'w1')).toBe(true);
   });
 
   it('a query that finds nothing while the view loads chooses and reveals its first match once one appears', async () => {
@@ -792,7 +805,7 @@ describe('review find over evicted diff text', () => {
       find.search('line 1999');
       open();
       await vi.waitFor(() => expect(find.result.pending).toBe(false));
-      expect(find.hits.map((hit) => (hit as unknown as ReviewFindHit).line)).toEqual([4 + 1999]);
+      expect(find.hits.map((hit) => locateReviewFindHit({ files, drafts: [], prThreads: [] }, hit as unknown as ReviewFindHit)?.line)).toEqual([4 + 1999]);
     } finally {
       parser.store.dispose();
     }

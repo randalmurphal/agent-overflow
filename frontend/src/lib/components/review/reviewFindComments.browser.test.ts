@@ -10,7 +10,7 @@ import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
 import { createMarkdownFindTextCache } from '../chat/markdown/markdownFindText';
 import { createFindHighlighter, type FindHighlighter } from '../../utils/findHighlights';
 import { parseReviewFiles } from '../../utils/patchStore';
-import { scanReviewFind, type ReviewFindHit } from '../../utils/reviewFindScan';
+import { scanReviewFind, type ReviewFindFileSpot, type ReviewFindHit } from '../../utils/reviewFindScan';
 import type { DiffReviewComment, ReviewThread } from '../../types/models';
 import { installDiagnosticsCapture } from '../../../test/helpers/diagnostics';
 
@@ -72,11 +72,12 @@ describe('review find over comments', () => {
     render(ReviewThreadComments, { target: host, props: { thread: THREAD, findKeys: true } });
     await waitFor(() => expect(host.querySelectorAll('[data-find-key^="pc:"]').length).toBe(3));
 
-    const hits: ReviewFindHit[] = [];
+    // Each hit with where the scan read it.
+    const hits: (ReviewFindHit & ReviewFindFileSpot)[] = [];
     const files = parseReviewFiles(PATCH);
     try {
       await scanReviewFind({ files, drafts: [DRAFT], prThreads: [THREAD], commentText: commentRuns() }, query, {
-        limit: 1000, live: () => true, emit: (hit) => hits.push(hit), pause: async () => {},
+        limit: 1000, live: () => true, emit: (hit, _file, spot) => hits.push({ ...hit, ...spot }), pause: async () => {},
       });
     } finally {
       files[0].body.segments[0].store.dispose();

@@ -5,7 +5,8 @@ import { setPatchTextBudgetForTest } from './patchMemory.svelte';
 import { parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from './patchStore';
 import { createMarkdownFindTextCache } from '../components/chat/markdown/markdownFindText';
 import { streamPatch } from '../../test/helpers/streamedPatch';
-import { scanReviewFind, type ReviewFindContent, type ReviewFindHit } from './reviewFindScan';
+import { scanReviewFind, type ReviewFindContent, type ReviewFindFileSpot, type ReviewFindHit } from './reviewFindScan';
+import { forgetReviewFindSpotsForTest, locateReviewFindHit } from './reviewFindRows';
 import type { DiffReviewComment, ReviewThread } from '../types/models';
 
 const PATCH = [
@@ -36,15 +37,24 @@ function content(over: Partial<ReviewFindContent> = {}): ReviewFindContent {
   return { files: files(), drafts: [], prThreads: [], commentText: (body) => [body], ...over };
 }
 
-async function scan(source: ReviewFindContent, query: string, limit = 1000): Promise<{ hits: ReviewFindHit[]; capped: boolean; pauses: number }> {
-  const hits: ReviewFindHit[] = [];
+type Scanned = ReviewFindHit & ReviewFindFileSpot & { fileIndex: number };
+
+// The scan's hits with where it read each, which the resolver, asked
+// with nothing recorded, must find the same.
+async function scan(source: ReviewFindContent, query: string, limit = 1000): Promise<{ hits: Scanned[]; capped: boolean; pauses: number }> {
+  const hits: Scanned[] = [];
   let pauses = 0;
   const capped = await scanReviewFind(source, query, {
     limit,
     live: () => true,
-    emit: (hit) => hits.push(hit),
+    emit: (hit, file, spot) => hits.push({ ...hit, ...spot, fileIndex: source.files.indexOf(file) }),
     pause: async () => { pauses += 1; },
   });
+  for (const hit of hits) {
+    forgetReviewFindSpotsForTest(source.files[hit.fileIndex]);
+    const at = locateReviewFindHit(source, hit);
+    expect(at, hit.identity).toEqual({ fileIndex: hit.fileIndex, rowKey: hit.rowKey, line: hit.line, place: hit.place });
+  }
   return { hits, capped, pauses };
 }
 

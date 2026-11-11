@@ -8,9 +8,14 @@
 // in memory), the hidden lines of a collapsed conflict fold, and the
 // bodies of the draft comments the diff inserts after their lines, and of
 // its PR thread comments as their markdown renders (`commentText`); never a
-// textarea, nor a draft open in its editor (`editing`). A match names the element
-// that shows it (`data-find-key`, the keys below) and its index among
-// that element's matches, which the highlighter paints as current.
+// textarea, nor a draft open in its editor (`editing`).
+//
+// A match is a logical identity, nothing that goes stale when the content
+// changes: its file's path, what in that file shows it (`ReviewFindAt`) and
+// its index among that element's matches. Where it is now (file index,
+// row, `data-find-key`, fold) is derived against the content shown at the
+// moment of use (reviewFindRows.ts#locateReviewFindHit); the scan hands
+// its own reading of that to `emit` so the owner can seed the resolver.
 //
 // The scan yields to the event loop between slices of work and stops
 // when its owner says it is no longer live. Every unit of work counts
@@ -58,6 +63,28 @@ export function findThreadCommentKey(threadId: string, index: number): string {
   return `pc:${index}:${threadId}`;
 }
 
+/** What in a file shows a match, by fields that survive a content change:
+ * the path (`header`); a code line by its side and line number, `a<new>`,
+ * `d<old>` or `c<old>:<new>` (a conflict fold's hidden line is the context
+ * line it becomes when the fold opens), or a conflict marker line,
+ * `m<old>:<new>:<run>`, by the line numbers in effect and its place in a
+ * run of markers (`line`); a draft by its id; a PR thread comment by its
+ * thread and index in it. */
+export type ReviewFindAt =
+  | { kind: 'header' }
+  | { kind: 'line'; tag: string }
+  | { kind: 'draft'; commentId: string }
+  | { kind: 'thread'; threadId: string; comment: number };
+
+export interface ReviewFindHit {
+  /** `path`, the element `at` names and `occurrence`, as one string. */
+  readonly identity: string;
+  readonly path: string;
+  readonly at: ReviewFindAt;
+  /** Its index among that element's matches. */
+  readonly occurrence: number;
+}
+
 /** What a match's reveal must make visible before it scrolls. */
 export type ReviewFindPlace =
   | { kind: 'header' }
@@ -66,19 +93,38 @@ export type ReviewFindPlace =
   | { kind: 'draft'; commentId: string }
   | { kind: 'thread'; threadId: string };
 
-export interface ReviewFindHit {
-  /** The same text at the same place across a rescan of changed content. */
-  readonly identity: string;
+/** Where a match is in one file as read now; physical, never published. */
+export interface ReviewFindFileSpot {
   /** The `data-find-key` of the element that shows it. */
   readonly rowKey: string;
-  /** Its index among that element's matches. */
-  readonly occurrence: number;
-  readonly fileIndex: number;
-  readonly path: string;
   /** Order within the file: the line index of the row it is in or follows;
    * -2 for the header, -1 above the first row. */
   readonly line: number;
   readonly place: ReviewFindPlace;
+}
+
+/** The key of the element `at` names within its file. */
+export function findElementKey(at: ReviewFindAt): string {
+  if (at.kind === 'header') return 'h';
+  if (at.kind === 'line') return at.tag;
+  if (at.kind === 'draft') return findDraftKey(at.commentId);
+  return findThreadCommentKey(at.threadId, at.comment);
+}
+
+function makeHit(path: string, at: ReviewFindAt, occurrence: number): ReviewFindHit {
+  return { identity: `${path}\u0000${findElementKey(at)}\u0000${occurrence}`, path, at, occurrence };
+}
+
+/** The tag of the code row a `RowWalker` is at (not a marker or gap). */
+export function findRowTag(walker: RowWalker): string {
+  return walker.type === 'add' ? `a${walker.newLine}` : walker.type === 'del' ? `d${walker.oldLine}` : `c${walker.oldLine}:${walker.newLine}`;
+}
+
+/** The line numbers in effect at a marker row; a conflict file numbers
+ * from 1 before its first hunk header. */
+export function findMarkerLines(walker: RowWalker): { oldAt: number; newAt: number } {
+  const at = walker.snapshot();
+  return { oldAt: at.sawHunk ? at.oldLine : 1, newAt: at.sawHunk ? at.newLine : 1 };
 }
 
 export interface ReviewFindContent {
@@ -99,8 +145,9 @@ export interface ReviewFindScanOptions {
   /** False once a newer scan or a close replaced this one. Asked at
    * every pause, before and after it. */
   live(): boolean;
-  /** Called with each match, in document order. */
-  emit(hit: ReviewFindHit): void;
+  /** Called with each match, in document order, and where it is in the
+   * file the scan read. */
+  emit(hit: ReviewFindHit, file: ReviewFile, spot: ReviewFindFileSpot): void;
   /** Gives the event loop a turn; the scan calls it between slices. */
   pause(): Promise<void>;
   /** Milliseconds of work between pauses. */
@@ -175,14 +222,14 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
 
   // Emits the matches of one element's text, given whole or as the runs
   // a match cannot cross; true once the limit is hit.
-  async function emitText(text: string | readonly string[], make: (occurrence: number) => ReviewFindHit): Promise<boolean> {
+  async function emitText(text: string | readonly string[], file: ReviewFile, at: ReviewFindAt, spot: ReviewFindFileSpot): Promise<boolean> {
     let occurrence = 0;
     const runs = typeof text === 'string' ? [text] : text;
     for (let i = 0; i < runs.length; i += 1) {
       const run = runs[i];
       if (i > 0) await tick();
       if (await eachMatch(run, () => {
-        options.emit(make(occurrence));
+        options.emit(makeHit(file.path, at, occurrence), file, spot);
         occurrence += 1;
         emitted += 1;
         return emitted >= options.limit;
@@ -207,10 +254,7 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
       await tick();
       const file = content.files[fileIndex];
       const path = file.path;
-      const base = { fileIndex, path };
-      if (await emitText(path, (occurrence) => ({
-        ...base, identity: `${path}\u0000h\u0000${occurrence}`, rowKey: findHeaderKey(path), occurrence, line: -2, place: { kind: 'header' },
-      }))) return true;
+      if (await emitText(path, file, { kind: 'header' }, { rowKey: findHeaderKey(path), line: -2, place: { kind: 'header' } })) return true;
 
       const fileInserts = inserts.get(path);
       const emitInserts = async (bucket: readonly InsertRow[] | undefined, line: number): Promise<boolean> => {
@@ -226,9 +270,7 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
           if (!draft) return false;
           const rowKey = findDraftKey(draft.id);
           if (content.editing?.has(rowKey)) return false;
-          return await emitText(draft.body, (occurrence) => ({
-            ...base, identity: `${path}\u0000${rowKey}\u0000${occurrence}`, rowKey, occurrence, line, place: { kind: 'draft', commentId: draft.id },
-          }));
+          return await emitText(draft.body, file, { kind: 'draft', commentId: draft.id }, { rowKey, line, place: { kind: 'draft', commentId: draft.id } });
         }
         if (insert.kind !== 'pr-thread') return false;
         const thread = insert.thread;
@@ -236,9 +278,9 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
           const rowKey = findThreadCommentKey(thread.id, index);
           await tick();
           const shown = visibleBody(thread.comments[index].body);
-          if (shown !== '' && await emitText(content.commentText(shown, rowKey), (occurrence) => ({
-            ...base, identity: `${path}\u0000${rowKey}\u0000${occurrence}`, rowKey, occurrence, line, place: { kind: 'thread', threadId: thread.id },
-          }))) return true;
+          if (shown !== '' && await emitText(content.commentText(shown, rowKey), file, { kind: 'thread', threadId: thread.id, comment: index }, {
+            rowKey, line, place: { kind: 'thread', threadId: thread.id },
+          })) return true;
         }
         return false;
       };
@@ -256,43 +298,29 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
         if (walker.type === 'gap') continue;
         const lineIndex = walker.lineIndex;
         lastLine = lineIndex;
+        const lineSpot: ReviewFindFileSpot = { rowKey: findLineKey(path, lineIndex), line: lineIndex, place: { kind: 'line', lineIndex } };
         if (walker.type === 'marker') {
           const fold = body.fold(lineIndex);
-          // The line numbers in effect at the row; a conflict file numbers
-          // from 1 before its first hunk header.
-          const at = walker.snapshot();
-          const oldAt = at.sawHunk ? at.oldLine : 1;
-          const newAt = at.sawHunk ? at.newLine : 1;
+          const { oldAt, newAt } = findMarkerLines(walker);
           if (fold) {
             markerRun = 0;
             const hidden = folds?.get(fold.id) ?? [];
+            const foldSpot: ReviewFindFileSpot = { rowKey: lineSpot.rowKey, line: lineIndex, place: { kind: 'fold', foldId: fold.id } };
             for (let h = 0; h < hidden.length; h += 1) {
               await tick();
-              if (await emitText(hidden[h], (occurrence) => ({
-                ...base,
-                identity: `${path}\u0000c${oldAt + h}:${newAt + h}\u0000${occurrence}`,
-                rowKey: findLineKey(path, lineIndex),
-                occurrence,
-                line: lineIndex,
-                place: { kind: 'fold', foldId: fold.id },
-              }))) return true;
+              if (await emitText(hidden[h], file, { kind: 'line', tag: `c${oldAt + h}:${newAt + h}` }, foldSpot)) return true;
             }
           } else {
             const tag = `m${oldAt}:${newAt}:${markerRun}`;
             markerRun += 1;
             const text = await lineText(file, lineIndex);
-            if (await emitText(text, (occurrence) => ({
-              ...base, identity: `${path}\u0000${tag}\u0000${occurrence}`, rowKey: findLineKey(path, lineIndex), occurrence, line: lineIndex, place: { kind: 'line', lineIndex },
-            }))) return true;
+            if (await emitText(text, file, { kind: 'line', tag }, lineSpot)) return true;
           }
         } else {
           markerRun = 0;
-          const tag = walker.type === 'add' ? `a${walker.newLine}` : walker.type === 'del' ? `d${walker.oldLine}` : `c${walker.oldLine}:${walker.newLine}`;
           // Code text: the +/- or context prefix is the gutter's.
           const text = (await lineText(file, lineIndex)).slice(1);
-          if (await emitText(text, (occurrence) => ({
-            ...base, identity: `${path}\u0000${tag}\u0000${occurrence}`, rowKey: findLineKey(path, lineIndex), occurrence, line: lineIndex, place: { kind: 'line', lineIndex },
-          }))) return true;
+          if (await emitText(text, file, { kind: 'line', tag: findRowTag(walker) }, lineSpot)) return true;
         }
         const anchor = walker.anchorLine();
         const bucket = fileInserts?.get(anchor);

@@ -11,7 +11,7 @@ import { conflictPatchFile } from '../../utils/conflictFile';
 import { createFindHighlighter, type FindHighlighter } from '../../utils/findHighlights';
 import { countFindMatches } from '../../utils/findMatch';
 import { parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from '../../utils/patchStore';
-import { scanReviewFind, type ReviewFindHit } from '../../utils/reviewFindScan';
+import { scanReviewFind, type ReviewFindFileSpot, type ReviewFindHit } from '../../utils/reviewFindScan';
 import type { CommentAnchor } from '../../utils/reviewRows';
 import type { DiffReviewComment, ReviewThread } from '../../types/models';
 import { waitFor } from '../../../test/helpers/browserFrames';
@@ -148,9 +148,10 @@ async function mountDiff(files: ReviewFile[], drafts: DiffReviewComment[], prThr
 
 async function counted(files: ReviewFile[], drafts: DiffReviewComment[], prThreads: ReviewThread[], query: string, foldLines?: (path: string) => ReadonlyMap<number, readonly string[]> | null): Promise<string[]> {
   const texts = createMarkdownFindTextCache({ embeddedHtml: true });
-  const hits: ReviewFindHit[] = [];
+  // Each hit with where the scan read it.
+  const hits: (ReviewFindHit & ReviewFindFileSpot)[] = [];
   await scanReviewFind({ files, drafts, prThreads, foldLines, commentText: (body) => texts(body).runs }, query, {
-    limit: 1000, live: () => true, emit: (hit) => hits.push(hit), pause: async () => {},
+    limit: 1000, live: () => true, emit: (hit, _file, spot) => hits.push({ ...hit, ...spot }), pause: async () => {},
   });
   return hits.map((hit) => hit.rowKey);
 }

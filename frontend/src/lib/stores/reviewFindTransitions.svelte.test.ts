@@ -8,32 +8,43 @@ import { createReviewFind, type ReviewFind, type ReviewFindHost, type ReviewFind
 // The table keeps its own model of the published matches, from the
 // source's scans and the contract's rule (a query publishes at each pause,
 // any scan publishes its whole result when it completes, a superseded one
-// nothing), and of the reading position (matches from n3 on). After each
-// operation the published matches are the model's and `selected` changes
-// only as the contract says; after the sequence settles, the index points
-// at `selected`, a reveal happened only for an ask, at most once per ask,
-// never after close, and did happen when its match survived and the
-// content is stable.
+// nothing), and of the reading position (matches from n3 on). The content
+// is two files, A then B; an operation may change it (add, remove the
+// selected match, insert a match above it, reorder the files, hide A).
+// After each operation the published matches are the model's, `selected`
+// changes only as the contract says and what is painted is the selected
+// match; after the sequence settles, the index points at `selected`, a
+// reveal happened only for an ask, at most once per ask, never after
+// close, and did happen when its match survived, unless the host's last
+// answer was that it is not present now and no publish, swap or content
+// change came after.
 
 interface Hit { identity: string }
 
 const OPS = [
-  'query', 'next', 'prev', 'refresh', 'keep', 'remove', 'publish', 'complete',
+  'query', 'next', 'prev', 'refresh', 'keep', 'remove', 'move', 'reorder', 'hide', 'publish', 'complete',
   'hostTrue', 'hostFalse', 'hostDeferred', 'settleTrue', 'settleFalse', 'close', 'reopen',
 ] as const;
 type Op = typeof OPS[number];
 
 interface Ask { id: number; target: string | null; calls: number; done: number; lastCall: Call | null }
-interface Call { ask: Ask | null; identity: string; answer: 'true' | 'false' | 'deferred'; scansAtCall: number; settled?: boolean }
+interface Call { ask: Ask | null; identity: string; answer: 'true' | 'false' | 'deferred'; eventsAtCall: number }
 
 async function flush(): Promise<void> {
   for (let i = 0; i < 12; i += 1) await Promise.resolve();
 }
 
 function harness() {
-  let content = ['n1', 'n2', 'n3', 'n4', 'n5', 'n6'];
+  type File = 'A' | 'B';
+  let items: { id: string; file: File }[] = ['n1', 'n2', 'n3', 'n4', 'n5', 'n6'].map((id, i) => ({ id, file: i < 3 ? 'A' : 'B' }));
+  let order: File[] = ['A', 'B'];
+  let hidden = false;
+  // The content shown, in document order.
+  const content = () => order.flatMap((file) => (hidden && file === 'A' ? [] : items.filter((item) => item.file === file).map((item) => item.id)));
   let added = 0;
   let scans = 0;
+  // Publishes, swaps and content changes: each asks an owed reveal again.
+  let events = 0;
   const gates: (() => void)[] = [];
   const violations: string[] = [];
   const asks: Ask[] = [];
@@ -55,6 +66,7 @@ function harness() {
   const modelPublish = (list: string[], whole: boolean) => {
     published = list;
     publishedComplete = whole;
+    events += 1;
     for (const id of list) seen.set(id, list);
   };
   // The reader is at n3: a new query's first match is the first from n3 on.
@@ -70,7 +82,7 @@ function harness() {
       liveScan = id;
       liveRunning = true;
       if (kind === 'query') modelPublish([], false);
-      const all = content.filter((item) => item.includes(query));
+      const all = content().filter((item) => item.includes(query));
       const found: string[] = [];
       for (let i = 0; i < all.length; i += 1) {
         if (i > 0 && i % 2 === 0) {
@@ -94,7 +106,7 @@ function harness() {
     source: () => src,
     readingPosition: () => (hit) => below(hit.identity),
     reveal: (hit) => {
-      const call: Call = { ask, identity: hit.identity, answer: nextAnswer, scansAtCall: scans };
+      const call: Call = { ask, identity: hit.identity, answer: nextAnswer, eventsAtCall: events };
       nextAnswer = 'true';
       if (!ask) violations.push(`reveal ${hit.identity} with no ask (after close)`);
       else {
@@ -109,14 +121,13 @@ function harness() {
         if (call.ask) call.ask.done += 1;
         return true;
       }
-      if (call.answer === 'false') {
-        // The host opened something to show it: the pane rescans.
-        queueMicrotask(() => find.refresh());
-        return false;
-      }
+      // Not present in the content shown now.
+      if (call.answer === 'false') return false;
       return new Promise<boolean>((resolve) => running.push({ call, resolve }));
     },
-    paint: () => {},
+    paint: (_query, current) => {
+      if (current !== null && current.identity !== find.selected) violations.push(`painted ${current.identity} while ${find.selected} is selected`);
+    },
   };
   find = createReviewFind(host, () => 'diff');
 
@@ -128,7 +139,6 @@ function harness() {
   function settle(done: boolean): void {
     const next = running.shift();
     if (!next) return;
-    next.call.settled = true;
     // A reveal finishing for a match no longer wanted does not scroll.
     const shows = done && find.wants(next.call.identity);
     if (shows && next.call.ask) next.call.ask.done += 1;
@@ -158,9 +168,16 @@ function harness() {
   function survivor(gone: string): string | null {
     const before = seen.get(gone) ?? [];
     const at = before.indexOf(gone);
-    for (let i = at + 1; i < before.length; i += 1) if (content.includes(before[i])) return before[i];
-    for (let i = at - 1; i >= 0; i -= 1) if (content.includes(before[i])) return before[i];
+    const now = content();
+    for (let i = at + 1; i < before.length; i += 1) if (now.includes(before[i])) return before[i];
+    for (let i = at - 1; i >= 0; i -= 1) if (now.includes(before[i])) return before[i];
     return null;
+  }
+
+  // The content changed: the pane reports it.
+  function changed(): void {
+    events += 1;
+    find.refresh();
   }
 
   async function apply(op: Op): Promise<void> {
@@ -196,16 +213,34 @@ function harness() {
         break;
       }
       case 'refresh':
-        find.refresh();
+        changed();
         break;
       case 'keep':
         added += 1;
-        content = [...content, `n${100 + added}`];
-        find.refresh();
+        items = [...items, { id: `n${100 + added}`, file: 'B' }];
+        changed();
         break;
       case 'remove':
-        if (was !== null) content = content.filter((item) => item !== was);
-        find.refresh();
+        if (was !== null) items = items.filter((item) => item.id !== was);
+        changed();
+        break;
+      case 'move': {
+        // A match inserted above the selected one (a gap expanded): the
+        // selected match's row moves; its identity does not.
+        added += 1;
+        const at = Math.max(0, items.findIndex((item) => item.id === was));
+        items = [...items.slice(0, at), { id: `n${100 + added}`, file: items[at]?.file ?? 'A' }, ...items.slice(at)];
+        changed();
+        break;
+      }
+      case 'reorder':
+        order = [...order].reverse();
+        changed();
+        break;
+      case 'hide':
+        // A filter (Hide tests) hides or shows file A again.
+        hidden = !hidden;
+        changed();
         break;
       case 'publish':
         gates.shift()?.();
@@ -262,11 +297,12 @@ function harness() {
     const now = find.selected;
     const allowed = new Set<string | null>([expected]);
     if (unchosen) allowed.add(firstChoice());
-    if (expected !== null && !content.includes(expected)) allowed.add(survivor(expected));
+    const shownNow = content();
+    if (expected !== null && !shownNow.includes(expected)) allowed.add(survivor(expected));
     // A query chooses its first match, which can be gone already too.
     // A copy: the loop adds to the set.
     const candidates = Array.from(allowed);
-    for (const id of candidates) if (id !== null && !content.includes(id)) allowed.add(survivor(id));
+    for (const id of candidates) if (id !== null && !shownNow.includes(id)) allowed.add(survivor(id));
     if (!allowed.has(now)) violations.push(`${op}: selected ${now}, contract allows ${[...allowed].join(' or ')}`);
   }
 
@@ -298,15 +334,15 @@ function harness() {
     if (find.selected !== null && index < 0) out.push(`selected ${find.selected} is not in the matches`);
     for (const each of asks) if (each.done > 1) out.push(`ask ${each.id} revealed ${each.done} times`);
     // A reveal is owed only for the selected match of an open ask.
-    for (const id of new Set([...content, ...seen.keys()])) {
+    for (const id of new Set([...content(), ...seen.keys()])) {
       if (find.wants(id) && (id !== find.selected || !ask)) out.push(`a reveal of ${id} is owed while ${find.selected} is selected`);
     }
     // The latest ask, still open, whose match survived: it was revealed,
-    // unless the host's last answer was that it could not show it yet and
-    // nothing has been rescanned since it was asked.
+    // unless the host's last answer was that it is not present now and no
+    // publish, swap or content change has come since it was asked.
     if (ask && ask.target !== null && find.selected === ask.target && ask.done === 0) {
       const last = ask.lastCall;
-      const excused = last !== null && last.answer === 'false' && last.settled === true && scans === last.scansAtCall;
+      const excused = last !== null && last.answer === 'false' && events === last.eventsAtCall;
       if (!excused) out.push(`ask ${ask.id} for ${ask.target} was never revealed`);
     }
     return out;
@@ -351,6 +387,14 @@ for (const step of ['next', 'prev'] as const) {
   SEQUENCES.push(['publish', step, 'refresh', 'remove', 'refresh', 'complete']);
   SEQUENCES.push(['publish', 'publish', step, 'refresh', 'remove', 'refresh', 'complete']);
 }
+
+// Codex round 6: a step during the recount a filter started, which the
+// host could not show from what the step read (a stale file index); the
+// recount's swap asks again. And a match inserted above the selected one
+// during a recount held open: the selected match stays painted.
+SEQUENCES.push(['complete', 'hide', 'hostFalse', 'next', 'complete']);
+SEQUENCES.push(['complete', 'next', 'refresh', 'move', 'complete']);
+SEQUENCES.push(['complete', 'reorder', 'hostFalse', 'next', 'complete']);
 
 describe('review find transitions', () => {
   it.each(SEQUENCES.map((ops) => [ops.join(' > '), ops] as const))('%s', async (_name, ops) => {

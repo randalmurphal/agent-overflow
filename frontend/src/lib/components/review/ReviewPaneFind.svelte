@@ -16,16 +16,19 @@
   // Another job's log starts over, and a log answer applies only to the
   // job and log version it was read from.
   // A match in a collapsed file, a settled thread or a closed log section
-  // opens it; one in a collapsed conflict fold opens the fold, and the
-  // rescan that follows brings it on screen. After the list scrolls to a
-  // match's row, the painted range corrects the landing (wrapped lines).
+  // opens it; one in a collapsed conflict fold opens the fold first. After
+  // the list scrolls to a match's row, the painted range corrects the
+  // landing (wrapped lines). A match is an identity: the painter, the shift,
+  // the reveal and the reading position each find it in the content shown
+  // at that moment (`locateDiff`, `locateLog`), and one not present now is
+  // neither painted, shifted nor shown.
   import { getContext, tick, untrack } from 'svelte';
   import PaneFindBar from '../panes/PaneFindBar.svelte';
   import { registerPaneFindProvider } from '../../stores/paneFind.svelte';
   import { createReviewFind, REVIEW_FIND_LIMIT, type ReviewFindSource } from '../../stores/reviewFind.svelte';
   import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
-  import { ciLogAnswerHits, type CILogFindHit, type CILogFindShown } from '../../utils/ciLogFind';
-  import { createFindHighlighter, findHighlightName, type FindHighlighter } from '../../utils/findHighlights';
+  import { ciLogAnswerHits, locateCILogHit, type CILogFindHit, type CILogFindLocation, type CILogFindShown } from '../../utils/ciLogFind';
+  import { createFindHighlighter, findHighlightName, type FindCurrent, type FindHighlighter } from '../../utils/findHighlights';
   import type { ReviewFile } from '../../utils/patchStore';
   import { createRefreshScheduler } from '../../utils/refreshScheduler';
   import { createMarkdownFindTextCache, type MarkdownFindText } from '../chat/markdown/markdownFindText';
@@ -33,7 +36,7 @@
   import { visibleBody } from '../../utils/reviewComments';
   import { commentOfRowKey, editingDrafts, readCommentDetails, sameCommentDetails, sameKeys, type MountedCommentDetails } from '../../utils/reviewFindDetails';
   import { scanReviewFind, type ReviewFindHit } from '../../utils/reviewFindScan';
-  import { findHitAtOrBelow } from '../../utils/reviewFindRows';
+  import { findHitAtOrBelow, locateReviewFindHit, seedReviewFindSpot, type ReviewFindLocation } from '../../utils/reviewFindRows';
   import { REVIEW_FILE_HEADER_BAR_PX } from '../../utils/reviewRows';
 
   type Hit = ReviewFindHit | CILogFindHit;
@@ -65,7 +68,7 @@
 
   let { findKey, title, review, view, files, root, diff, log }: Props = $props();
 
-  const isLogHit = (hit: Hit): hit is CILogFindHit => 'sectionKey' in hit;
+  const isLogHit = (hit: Hit): hit is CILogFindHit => !('at' in hit);
   const pause = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
   function scroller(): HTMLElement | null {
@@ -115,6 +118,36 @@
     find.refresh();
   }
 
+  // Where a match is in what the view shows now; null when it is not
+  // present (its file filtered out, its line or comment gone).
+  function locateDiff(hit: ReviewFindHit): ReviewFindLocation | null {
+    return untrack(() => {
+      const conflicts = view === 'conflicts';
+      return locateReviewFindHit({ files, drafts: conflicts ? [] : review.drafts, prThreads: conflicts ? [] : review.prThreads }, hit);
+    });
+  }
+
+  function locateLog(hit: CILogFindHit): CILogFindLocation | null {
+    const sections = untrack(() => review.ciLog?.sections) ?? [];
+    return locateCILogHit(sections, find.hits as readonly CILogFindHit[], hit);
+  }
+
+  // The element and index the highlighter paints as current for `hit`.
+  function currentOf(hit: Hit): FindCurrent {
+    if (isLogHit(hit)) {
+      const at = locateLog(hit);
+      return at ? { row: at.rowKey, occurrence: at.occurrence } : null;
+    }
+    const at = locateDiff(hit);
+    return at ? { row: at.rowKey, occurrence: hit.occurrence } : null;
+  }
+
+  // The painted match: re-found at every paint, including the recompute
+  // after the rows change, so content that moved under them (a gap
+  // expanded above it, a filter) paints and shifts its new row.
+  let painted: Hit | null = null;
+  const paintedCurrent = (): FindCurrent => (painted ? currentOf(painted) : null);
+
   function releaseHighlighter(): void {
     texts = null;
     details = NO_DETAILS;
@@ -123,6 +156,7 @@
     highlighter = null;
     highlighterRoot = null;
     paintedQuery = '';
+    painted = null;
     landing = null;
     restoreShifted(null);
   }
@@ -233,16 +267,24 @@
   // Opens what hides the match (its file, its settled thread), then
   // scrolls once the rows are built, if its reveal is still wanted (a
   // rescan that restarts the query while the rows build keeps it).
+  // One host call from asking to the answer: a fold it opens changes the
+  // content, and the reveal finds the match in what that shows.
   async function showDiffHit(hit: ReviewFindHit): Promise<boolean> {
     const conflicts = untrack(() => view) === 'conflicts';
     if (conflicts && review.conflictCollapsedPaths.has(hit.path)) await review.toggleConflictCollapsed(hit.path);
     else if (!conflicts && review.collapsedPaths.has(hit.path)) review.toggleCollapsed(hit.path);
-    const place = hit.place;
-    if (place.kind === 'thread') {
-      const thread = review.prThreads.find((t) => t.id === place.threadId);
+    const at = hit.at;
+    if (at.kind === 'thread') {
+      const thread = review.prThreads.find((t) => t.id === at.threadId);
       if (thread?.isResolved && !review.expandedPRThreadIds.has(thread.id)) review.togglePRThread(thread.id);
     }
     await tick();
+    const place = locateDiff(hit)?.place;
+    if (place?.kind === 'fold') {
+      if (!find.wants(hit.identity)) return false;
+      review.expandConflictFold(hit.path, place.foldId);
+      await tick();
+    }
     if (!find.wants(hit.identity)) return false;
     const shown = diff()?.revealFindHit(hit) ?? false;
     if (shown) aim(hit);
@@ -265,7 +307,15 @@
         commentText: (body: string, rowKey: string) => details.recounted.get(rowKey) ?? commentTexts()(body, details.toggled.get(rowKey)).runs,
         editing,
       }));
-      return scanReviewFind(content, query, { limit: REVIEW_FIND_LIMIT, live: context.live, emit: context.emit, pause });
+      return scanReviewFind(content, query, {
+        limit: REVIEW_FIND_LIMIT,
+        live: context.live,
+        emit: (hit, file, spot) => {
+          seedReviewFindSpot(file, hit, spot);
+          context.emit(hit);
+        },
+        pause,
+      });
     },
   };
 
@@ -308,22 +358,18 @@
         return (hit) => isLogHit(hit) && hit.line >= line;
       }
       const position = diff()?.findReadingPosition() ?? null;
-      return (hit) => !isLogHit(hit) && findHitAtOrBelow(hit, position);
+      return (hit) => !isLogHit(hit) && findHitAtOrBelow(locateDiff(hit), position);
     },
     reveal: (hit, force) => {
       if (!force && inView()) return true;
       if (isLogHit(hit)) {
         const surface = log();
-        if (!surface) return false;
-        return surface.revealFindLine(hit.line, hit.sectionKey).then(() => {
+        const at = locateLog(hit);
+        if (!surface || !at) return false;
+        return surface.revealFindLine(hit.line, at.sectionKey).then(() => {
           aim(hit);
           return true;
         });
-      }
-      const place = hit.place;
-      if (place.kind === 'fold') {
-        review.expandConflictFold(hit.path, place.foldId);
-        return false;
       }
       return showDiffHit(hit);
     },
@@ -354,7 +400,8 @@
         paintedQuery = query;
         highlighter!.setQuery(query);
       }
-      highlighter!.setCurrent(current ? { row: current.rowKey, occurrence: current.occurrence } : null);
+      painted = current;
+      highlighter!.setCurrent(paintedCurrent);
       syncShift();
     },
   }, () => (view === 'log' ? 'log' : view === 'conflicts' ? 'conflicts' : 'diff'));
@@ -398,11 +445,10 @@
         seenView = scope;
         logRefreshes.reset();
         find.rescope();
-      } else if (shown === 'log') {
-        logRefreshes.request();
-      } else {
-        find.refresh();
+        return;
       }
+      if (shown === 'log') logRefreshes.request();
+      else find.refresh();
     });
   });
 </script>

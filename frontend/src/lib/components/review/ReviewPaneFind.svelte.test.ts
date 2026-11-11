@@ -8,7 +8,7 @@ import ReviewPaneFind from './ReviewPaneFind.svelte';
 import { getPaneFindProvider, openPaneFind, resetPaneFindForTest, setPaneFindQuery } from '../../stores/paneFind.svelte';
 import { REVIEW_FIND_REMOTE_DEBOUNCE_MS, type ReviewFind } from '../../stores/reviewFind.svelte';
 import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
-import type { CILogFindHit } from '../../utils/ciLogFind';
+import { locateCILogHit, type CILogFindHit } from '../../utils/ciLogFind';
 import type { CILogSearch, CILogSection } from '../../types/models';
 
 const KEY = 'pane-find-log';
@@ -42,7 +42,7 @@ function mount() {
     },
   });
   const find = getPaneFindProvider(KEY) as ReviewFind<CILogFindHit>;
-  const lines = () => find.hits.map((hit) => `${hit.sectionKey}:${hit.line}`);
+  const lines = () => find.hits.map((hit) => `${locateCILogHit(state.sections, find.hits, hit)?.sectionKey}:${hit.line}`);
   return { state, asked, find, lines };
 }
 

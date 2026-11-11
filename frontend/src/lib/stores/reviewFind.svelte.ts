@@ -22,17 +22,22 @@
 //     completed reveal.
 // (b) `owedReveal`, the match to bring into view. Set only by a new query
 //     (its first match, once chosen) or a step. It survives restarts,
-//     content changes and a running host reveal; it is served when its
-//     match is selected and published, by a scan that started after the
-//     last host answer that it could not show it yet, and completes once,
-//     when the host answers that the match is in view. A content change
-//     that ends while the host's reveal runs is served when the reveal
-//     settles. Dropped by a newer query, step or close, or by its match
-//     disappearing.
+//     content changes and a running host reveal. While its match is
+//     selected and published it is asked of the host when set, at every
+//     publish and swap, at every content change the host reports, and when
+//     a host reveal settles unshown after one of those happened while it
+//     ran; it completes once, when the host answers that the match is in
+//     view. One owed reveal has at most one host call in flight, and a
+//     reveal that changes content to show its match is in flight until the
+//     host answers. Dropped by a newer query, step or close, or by its
+//     match disappearing.
 // (c) The line the host shifts sideways, derived by the host from (a).
 //
 // `hits` and the current index are a projection of the latest scan and
-// never the source of (a) or (b).
+// never the source of (a) or (b). A hit is a logical identity of a match
+// (its element and index in the content, nothing physical); the host
+// finds it in the content shown at each use, and one not present now is
+// not painted and cannot be shown yet.
 //
 // Only a new query publishes progressively, from empty. A recount scans
 // into a private result and swaps it in whole when it completes; until
@@ -76,9 +81,9 @@ export interface ReviewFindHost<H extends ReviewFindMatch> {
   /** A predicate true for matches at or below the current reading position. */
   readingPosition(): (hit: H) => boolean;
   /** Brings the match on screen (`force`), or only when it is off screen.
-   * Answers true when done; false when it changed the content to show it
-   * (a fold opened) or cannot show it yet, so the rescan that follows
-   * reveals it again; or a promise of either when it finishes later. */
+   * Answers true when done; false when it cannot show it yet (not present
+   * in the content shown now); or a promise of either when it finishes
+   * later, which it must be when it changes the content to show it. */
   reveal(hit: H, force: boolean): boolean | Promise<boolean>;
   paint(query: string, current: H | null): void;
 }
@@ -86,7 +91,8 @@ export interface ReviewFindHost<H extends ReviewFindMatch> {
 export interface ReviewFind<H extends ReviewFindMatch> extends PaneFindProvider {
   next(): void;
   previous(): void;
-  /** The view's content changed: rescan in place. */
+  /** The view's content changed: rescan in place, and ask the owed reveal
+   * again of the content shown now. */
   refresh(): void;
   /** The pane shows another view: start the query over. */
   rescope(): void;
@@ -99,19 +105,17 @@ export interface ReviewFind<H extends ReviewFindMatch> extends PaneFindProvider 
 }
 
 // The reveal owed: its match (null until a new query chooses its first),
-// whether a step asked for it, whether the host's reveal is running and a
-// scan started after it ended meanwhile (`seen`), and the scan number a
-// later answer must come from (`barrier`).
+// whether a step asked for it, whether the host's reveal is running, and
+// whether a publish, swap or content change came while it ran (`seen`).
 interface OwedReveal {
   identity: string | null;
   force: boolean;
   running: boolean;
   seen: boolean;
-  barrier: number;
 }
 
 function owe(identity: string | null, force: boolean): OwedReveal {
-  return { identity, force, running: false, seen: false, barrier: -1 };
+  return { identity, force, running: false, seen: false };
 }
 
 type Mode = 'query' | 'recount';
@@ -159,19 +163,16 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
     host.paint(query, hits[current] ?? null);
   }
 
-  // Serves the owed reveal for scan number `scanned` (a step or a settled
-  // host reveal passes Infinity).
-  function serve(scanned: number): void {
+  // Asks the host for the owed reveal, unless its call is in flight.
+  function serve(): void {
     const owed = owedReveal;
     if (!owed || owed.identity === null || owed.identity !== selected) return;
     if (owed.running) {
-      if (scanned > owed.barrier) owed.seen = true;
+      owed.seen = true;
       return;
     }
     const hit = hits[current];
-    if (!hit || scanned <= owed.barrier) return;
-    // A scan started from here on reads what this reveal may change.
-    owed.barrier = seq;
+    if (!hit) return;
     const out = host.reveal(hit, owed.force);
     if (out === true) {
       if (owedReveal === owed) owedReveal = null;
@@ -187,9 +188,11 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
         owedReveal = null;
         return;
       }
+      // Unshown with nothing new since it was asked: the next publish,
+      // swap or content change asks again.
       if (owed.seen) {
         owed.seen = false;
-        serve(Infinity);
+        serve();
       }
     }, (err: unknown) => {
       if (owedReveal !== owed) return;
@@ -264,7 +267,7 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
         if (at >= 0) chooseFirst(at);
       }
       paint();
-      serve(mine);
+      serve();
     };
     let wasCapped: boolean | null;
     try {
@@ -305,7 +308,7 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
         chooseFirst(at >= 0 ? at : found.length - 1);
       }
       paint();
-      serve(mine);
+      serve();
       return;
     }
     if (current < 0) {
@@ -317,7 +320,7 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
       selected = near >= 0 ? found[near].identity : null;
     }
     paint();
-    serve(mine);
+    serve();
   }
 
   function step(delta: 1 | -1): void {
@@ -332,7 +335,7 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
     selected = hits[next].identity;
     owedReveal = owe(selected, true);
     paint();
-    serve(Infinity);
+    serve();
   }
 
   function newQuery(): void {
@@ -354,7 +357,9 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
     next: () => step(1),
     previous: () => step(-1),
     refresh(): void {
-      if (query) start('recount');
+      if (!query) return;
+      start('recount');
+      serve();
     },
     rescope(): void {
       if (query) newQuery();
