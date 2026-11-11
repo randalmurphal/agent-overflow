@@ -48,12 +48,12 @@
 
   function setScope(value: ReviewScope): void {
     if (!review) return;
-    void review.setScope(value);
+    void review.setScope(value, { userInitiated: true });
   }
 
   function setBaseBranch(value: string): void {
     if (!review) return;
-    void review.setScope('branch', { baseBranch: value });
+    void review.setScope('branch', { baseBranch: value, userInitiated: true });
   }
 
   function closeMore(reason?: PopoverCloseReason): void {
@@ -95,7 +95,7 @@
 
   function setEdit(value: string): void {
     if (!review) return;
-    void review.selectEdit(value || null);
+    void review.selectEdit(value || null, { userInitiated: true });
   }
 
   // Edits selector groups: ascending turn order; each group offers the
@@ -223,7 +223,7 @@
       commits={review.commits}
       selectedSha={review.selectedCommitSHA}
       disabled={review.loading}
-      onSelect={(sha) => { void review?.selectCommit(sha); }}
+      onSelect={(sha) => { void review?.selectCommit(sha, { userInitiated: true }); }}
     />
   {/if}
 
@@ -312,7 +312,7 @@
           disabled={!review.canIgnoreWhitespace || review.loading}
           title={!review.canIgnoreWhitespace ? 'Not available for this diff' : undefined}
           testId="review-ignore-whitespace-toggle"
-          onSelect={() => pickViewOption(() => { void review?.setIgnoreWhitespace(!review.ignoreWhitespace); })}
+          onSelect={() => pickViewOption(() => { void review?.setIgnoreWhitespace(!review.ignoreWhitespace, { userInitiated: true }); })}
         />
         <MenuItem
           label="Word wrap"
@@ -340,7 +340,7 @@
     data-testid="review-reload"
     data-stale={diffStale ? 'true' : undefined}
     disabled={!review || review.loading}
-    onclick={() => { void review?.reload(); }}
+    onclick={() => { void review?.reload({ userInitiated: true }); }}
   >
     <Icon icon={RefreshCw} size={14} class={review?.loading ? 'animate-spin' : ''} />
     {#if diffStale}

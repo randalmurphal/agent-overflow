@@ -20,16 +20,36 @@ type PRMergeConflictsResult struct {
 	Messages []string `json:"messages"`
 }
 
-// GetPRMergeConflicts merges the PR at rev in the referenced clone and
-// reports the conflicts.
+// GetPRMergeConflicts merges rev's head with the tip rev.BaseRef has on
+// origin now, read by this call and fetched when the clone lacks it, in the referenced clone and reports the
+// conflicts. rev.BaseSHA is not merged: it is the base the forge recorded,
+// which the head usually contains, so merging with it never conflicts.
+//
+// userInitiated is true when a person opened the conflict view and false
+// for the view's automatic re-reads (a forge poll that changed what the
+// merge depends on, a retry after a failed read). Only a user-initiated
+// read may ask for git credentials or arm the PR pump's retry after a
+// failure; an automatic read fails fast and reports the failure.
 //
 //ao:scope git:operate
-func (a *App) GetPRMergeConflicts(ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, headRefName string) (PRMergeConflictsResult, error) {
-	workspace, err := a.prRevisionWorkspace("get PR merge conflicts", ws, pr, rev)
+func (a *App) GetPRMergeConflicts(ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, headRefName string, userInitiated bool) (PRMergeConflictsResult, error) {
+	const action = "get PR merge conflicts"
+	workspace, err := a.prRevisionWorkspace(action, ws, pr, rev, userInitiated)
 	if err != nil {
 		return PRMergeConflictsResult{}, err
 	}
-	result, err := a.gitCore().MergeTreeConflicts(workspace, rev.BaseSHA, rev.HeadSHA)
+	remoteBranchTip := a.gitCore().RemoteBranchTipUnattended
+	if userInitiated {
+		remoteBranchTip = a.gitCore().RemoteBranchTip
+	}
+	baseTip, err := remoteBranchTip(workspace, rev.BaseRef)
+	if err != nil {
+		if userInitiated {
+			a.notePRReadFailed(pr)
+		}
+		return PRMergeConflictsResult{}, fmt.Errorf("%s: %w", action, err)
+	}
+	result, err := a.gitCore().MergeTreeConflicts(workspace, baseTip, rev.HeadSHA)
 	if err != nil {
 		return PRMergeConflictsResult{}, err
 	}

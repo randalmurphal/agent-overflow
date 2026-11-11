@@ -778,9 +778,11 @@ export class PRDetail {
     "baseRefName": string;
 
     /**
-     * BaseRefSHA is the base branch's tip the forge compares the PR
-     * against: GitHub's baseRefOid, GitLab's diff_refs.start_sha. Empty
-     * while GitLab is still preparing the merge request's diff.
+     * BaseRefSHA is the base commit the forge recorded for the PR's diff:
+     * GitHub's baseRefOid, GitLab's diff_refs.start_sha. It does not follow
+     * the base branch, so it is not the branch's current tip (see
+     * PRRevision.BaseSHA). Empty while GitLab is still preparing the merge
+     * request's diff.
      */
     "baseRefSHA": string;
     "headSHA": string;
@@ -1041,15 +1043,21 @@ export class PRReference {
 
 /**
  * PRRevision is the pull request state a local read is computed at, as the
- * forge last reported it: the head commit and the base branch's tip. Every
- * PR read of one snapshot (diff, commit list, merge conflicts) uses the
- * same pair, so they agree with each other and with the forge.
+ * forge last reported it: the head commit and the base commit the forge
+ * recorded for the PR. The diff and the commit list of one snapshot use the
+ * same pair, so they agree with each other and with the forge. The merge
+ * conflict read merges the head with the base branch's live tip instead
+ * (RemoteBranchTip), because the recorded base does not follow the branch.
  */
 export class PRRevision {
     "baseRef": string;
 
     /**
-     * BaseSHA is the base branch's tip (PRDetail.BaseRefSHA).
+     * BaseSHA is the base commit the forge recorded for the PR
+     * (PRDetail.BaseRefSHA). It is not the base branch's current tip:
+     * GitLab's start_sha is the target tip when the diff was last
+     * computed, usually the merge base, and GitHub's baseRefOid can lag
+     * the branch by several merges.
      */
     "baseSHA": string;
     "headSHA": string;

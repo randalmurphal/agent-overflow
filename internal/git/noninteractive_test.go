@@ -33,6 +33,7 @@ case "$1 $2" in
   "rev-parse --abbrev-ref") echo "origin/feature" ;;
   "remote ") echo "origin" ;;
   "cat-file --batch-check") while read -r object; do echo "$object missing"; done ;;
+  "ls-remote origin") printf '%s\trefs/heads/main\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ;;
 esac
 exit 0
 `
@@ -158,6 +159,61 @@ func TestCredentialPromptsBlockedUnlessUserInitiated(t *testing.T) {
 		}
 		if got != wantInherited {
 			t.Errorf("`git %s` ran with credential env %q, want %q", argv, got, wantInherited)
+		}
+	}
+}
+
+// TestPRReadNetworkPromptsFollowTheirIntent pins the PR read's two network
+// steps (the commits the clone lacks, the base branch's live tip) to the
+// intent of the read: an automatic re-read (a reconcile on a forge poll, a
+// retry after a failed read) runs with every prompt channel closed, and a
+// read the user asked for leaves the user's configuration intact. Both
+// intents run the same argv, so each runs against its own log.
+func TestPRReadNetworkPromptsFollowTheirIntent(t *testing.T) {
+	logPath := installMockGit(t, credentialProbeGit)
+	wantInherited := pinUserCredentialEnv(t)
+	core := NewCore()
+	cwd := t.TempDir()
+	sha := strings.Repeat("a", 40)
+	rev := PRRevision{BaseRef: "main", BaseSHA: sha, HeadSHA: sha}
+	argvs := []string{"fetch origin pull/5/head main", "ls-remote origin refs/heads/main", "fetch origin refs/heads/main"}
+
+	for _, tc := range []struct {
+		name string
+		run  func()
+		want string
+	}{
+		{"automatic", func() {
+			// The mock never produces the commits, so both report them missing.
+			if err := core.EnsurePRObjectsUnattended(cwd, prRevisionPR, rev); err == nil {
+				t.Fatal("EnsurePRObjectsUnattended: expected the commits reported missing")
+			}
+			if _, err := core.RemoteBranchTipUnattended(cwd, "main"); err == nil {
+				t.Fatal("RemoteBranchTipUnattended: expected the tip reported missing")
+			}
+		}, blockedEnv},
+		{"user-initiated", func() {
+			if err := core.EnsurePRObjects(cwd, prRevisionPR, rev); err == nil {
+				t.Fatal("EnsurePRObjects: expected the commits reported missing")
+			}
+			if _, err := core.RemoteBranchTip(cwd, "main"); err == nil {
+				t.Fatal("RemoteBranchTip: expected the tip reported missing")
+			}
+		}, wantInherited},
+	} {
+		if err := os.WriteFile(logPath, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		tc.run()
+		env := commandCredentialEnv(t, logPath)
+		for _, argv := range argvs {
+			got, ok := env[argv]
+			if !ok {
+				t.Fatalf("%s: mock git never saw %q; log:\n%s", tc.name, argv, readFile(t, logPath))
+			}
+			if got != tc.want {
+				t.Errorf("%s: `git %s` ran with credential env %q, want %q", tc.name, argv, got, tc.want)
+			}
 		}
 	}
 }

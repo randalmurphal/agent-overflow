@@ -237,15 +237,164 @@ describe('<ReviewFileTree> hide tests', () => {
 
   it('"Clear filters" also turns hide tests off', async () => {
     const onHideTestsChange = vi.fn();
+    const onFilterSelectionChange = vi.fn();
     const view = render(ReviewFileTree, {
       files: WITH_TESTS,
       onSelectFile: () => {},
       hideTests: true,
       onHideTestsChange,
+      onFilterSelectionChange,
     });
     await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
     await fireEvent.click(view.getByText('Clear filters'));
     expect(onHideTestsChange).toHaveBeenCalledWith(false);
+    // A changed selection ends the reveals a jump made.
+    expect(onFilterSelectionChange).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('<ReviewFileTree> filter menu while a filter is active', () => {
+  const labelOf = (el: Element) => el.textContent!.replace(/[\s\d✓]+$/, '').trim();
+
+  // A type picked on one file list survives a switch to a list without
+  // that type (a commit picked): the menu stays reachable and lists the
+  // picked type, with no files, so it can be unchecked.
+  it('keeps the menu, and the picked type, when the new file list lacks that type', async () => {
+    const view = render(ReviewFileTree, {
+      files: [file('src/app.ts'), file('cmd/main.go')],
+      onSelectFile: () => {},
+      onHideTestsChange: () => {},
+    });
+    await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
+    await fireEvent.click(view.getByRole('menuitem', { name: /^\.ts/ }));
+    await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
+
+    await view.rerender({ files: [file('cmd/main.go')] });
+    expect(view.queryAllByTestId('review-tree-file')).toHaveLength(0);
+    const trigger = view.getByTestId('review-tree-ext-trigger');
+    expect(trigger.textContent).toContain('1');
+    await fireEvent.click(trigger);
+    expect(view.getAllByRole('menuitem').map(labelOf)).toEqual(['.go', '.ts', 'Clear filters']);
+    const picked = view.getByRole('menuitem', { name: /^\.ts/ });
+    expect(picked).toHaveTextContent('✓');
+    expect(picked).toHaveTextContent('0');
+
+    await fireEvent.click(picked);
+    expect(view.getAllByTestId('review-tree-file').map((node) => node.getAttribute('data-file-path'))).toEqual(['cmd/main.go']);
+    // Nothing active and one type: nothing to choose, so no menu.
+    await fireEvent.click(document.body);
+    await view.rerender({ files: [file('cmd/main.go')] });
+    expect(view.queryByTestId('review-tree-ext-trigger')).toBeNull();
+  });
+
+  it('keeps "Hide tests" reachable while it is on and the list has no tests', async () => {
+    const onHideTestsChange = vi.fn();
+    const view = render(ReviewFileTree, {
+      files: [file('cmd/main.go')],
+      onSelectFile: () => {},
+      hideTests: true,
+      onHideTestsChange,
+    });
+    await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
+    const item = view.getByTestId('review-tree-hide-tests');
+    expect(item).toHaveTextContent('✓');
+    await fireEvent.click(item);
+    expect(onHideTestsChange).toHaveBeenCalledWith(false);
+  });
+});
+
+describe('<ReviewFileTree> folder collapse under filters', () => {
+  const FILES_WITH_TESTS = [
+    file('src/app.ts'),
+    file('src/app.test.ts'),
+    file('docs/guide.md'),
+    file('internal/git/forge_test.go'),
+    file('internal/git/forge.go'),
+  ];
+  interface TreeView {
+    queryAllByTestId(id: string): HTMLElement[];
+    getByTestId(id: string): HTMLElement;
+    getByText(text: string): HTMLElement;
+  }
+  const filePaths = (view: TreeView) =>
+    view.queryAllByTestId('review-tree-file').map((node) => node.getAttribute('data-file-path'));
+  const dir = (view: TreeView, name: string) => view.getByText(name).closest('button')!;
+  const search = (view: TreeView, value: string) =>
+    fireEvent.input(view.getByTestId('review-tree-search'), { target: { value } });
+
+  it('collapses a folder while a type filter is on', async () => {
+    const view = render(ReviewFileTree, { files: FILES_WITH_TESTS, onSelectFile: () => {} });
+    await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
+    await fireEvent.click(view.getByRole('menuitem', { name: /^\.ts/ }));
+    expect(filePaths(view)).toEqual(['src/app.test.ts', 'src/app.ts']);
+
+    await fireEvent.click(dir(view, 'src'));
+    expect(filePaths(view)).toEqual([]);
+    expect(dir(view, 'src').getAttribute('aria-expanded')).toBe('false');
+
+    // The collapse is the user's, so it holds once the filter is cleared.
+    await fireEvent.click(view.getByRole('menuitem', { name: /^\.ts/ }));
+    expect(filePaths(view)).not.toContain('src/app.ts');
+    expect(filePaths(view)).toContain('docs/guide.md');
+  });
+
+  it('collapses a folder while hide tests is on', async () => {
+    const view = render(ReviewFileTree, {
+      files: FILES_WITH_TESTS,
+      onSelectFile: () => {},
+      hideTests: false,
+      onHideTestsChange: () => {},
+    });
+    await view.rerender({ hideTests: true });
+    expect(filePaths(view)).toEqual(['docs/guide.md', 'internal/git/forge.go', 'src/app.ts']);
+
+    await fireEvent.click(dir(view, 'internal/git'));
+    expect(filePaths(view)).toEqual(['docs/guide.md', 'src/app.ts']);
+    expect(dir(view, 'internal/git').getAttribute('aria-expanded')).toBe('false');
+
+    await fireEvent.click(dir(view, 'internal/git'));
+    expect(filePaths(view)).toEqual(['docs/guide.md', 'internal/git/forge.go', 'src/app.ts']);
+    expect(dir(view, 'internal/git').getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('a typed query shows its matches inside a folder collapsed before it', async () => {
+    const view = render(ReviewFileTree, { files: FILES_WITH_TESTS, onSelectFile: () => {} });
+    await fireEvent.click(dir(view, 'src'));
+    expect(filePaths(view)).not.toContain('src/app.ts');
+
+    await search(view, 'app');
+    expect(filePaths(view)).toEqual(['src/app.test.ts', 'src/app.ts']);
+    expect(dir(view, 'src').getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('collapses during a query, resets those collapses when the query is edited, and restores the earlier ones when it is cleared', async () => {
+    const view = render(ReviewFileTree, { files: FILES_WITH_TESTS, onSelectFile: () => {} });
+    // Collapsed before the search.
+    await fireEvent.click(dir(view, 'docs'));
+    expect(filePaths(view)).not.toContain('docs/guide.md');
+
+    await search(view, 'g');
+    expect(filePaths(view)).toEqual(['docs/guide.md', 'internal/git/forge_test.go', 'internal/git/forge.go']);
+
+    // Collapse during the query.
+    await fireEvent.click(dir(view, 'internal/git'));
+    expect(filePaths(view)).toEqual(['docs/guide.md']);
+    expect(dir(view, 'internal/git').getAttribute('aria-expanded')).toBe('false');
+
+    // An edit of the query starts its collapses over.
+    await search(view, 'go');
+    expect(filePaths(view)).toEqual(['internal/git/forge_test.go', 'internal/git/forge.go']);
+    expect(dir(view, 'internal/git').getAttribute('aria-expanded')).toBe('true');
+
+    await fireEvent.click(dir(view, 'internal/git'));
+    expect(filePaths(view)).toEqual([]);
+
+    // Clearing the query brings back the collapses made before it, and
+    // none made during it.
+    await search(view, '');
+    expect(dir(view, 'docs').getAttribute('aria-expanded')).toBe('false');
+    expect(dir(view, 'internal/git').getAttribute('aria-expanded')).toBe('true');
+    expect(filePaths(view)).toEqual(['internal/git/forge_test.go', 'internal/git/forge.go', 'src/app.test.ts', 'src/app.ts']);
   });
 });
 

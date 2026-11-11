@@ -189,6 +189,12 @@ describe('<ReviewMergeSection>', () => {
     });
     expect(getToasts().at(-1)?.action?.label).toBe('Reload');
     expect(view.getByTestId('review-merge-trigger')).toBeEnabled();
+    // Pressing it is a person's reload, which may ask for git credentials.
+    const diff = getBindingMock('OpenPRDiff')!;
+    const calls = diff.mock.calls.length;
+    getToasts().at(-1)!.action!.run();
+    await waitFor(() => expect(diff.mock.calls.length).toBe(calls + 1));
+    expect(diff.mock.calls.at(-1)?.at(-1)).toBe(true);
   });
 
   it('arms auto-merge from a blocked PR and shows the armed request with its cancel', async () => {
@@ -455,7 +461,7 @@ describe('<ReviewMergeSection> guards', () => {
     ].join('\n'));
     const view = await mountReviewPanePR(blocked());
     await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
-    await fireEvent.click(await waitFor(() => view.getByTestId('review-tree-filter-diff')));
+    // The filter narrows the diff by default.
     await fireEvent.click(await waitFor(() => view.getByTestId('review-tree-hide-tests')));
     await waitFor(() => {
       expect(view.getByTestId('review-filter-empty')).toBeInTheDocument();

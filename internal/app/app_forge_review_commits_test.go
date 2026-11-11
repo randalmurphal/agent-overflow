@@ -62,7 +62,7 @@ func TestListPRCommitsFromLocalClone(t *testing.T) {
 	app := newTestAppWithStore(t)
 	ref, clone, prSHAs := prCloneFixture(t, app)
 
-	commits, err := app.ListPRCommits(ref, prRef(), prRev(t, clone, prSHAs[0]))
+	commits, err := app.ListPRCommits(ref, prRef(), prRev(t, clone, prSHAs[0]), true)
 	if err != nil {
 		t.Fatalf("ListPRCommits() error = %v", err)
 	}
@@ -83,7 +83,7 @@ func TestListPRCommitsWithoutCloneErrors(t *testing.T) {
 	noClone := testWorkspaceRef(t, app, t.TempDir()) // not a git repo
 	sha := strings.Repeat("a", 40)
 
-	_, err := app.ListPRCommits(noClone, prRef(), gitops.PRRevision{BaseRef: "main", BaseSHA: sha, HeadSHA: sha})
+	_, err := app.ListPRCommits(noClone, prRef(), gitops.PRRevision{BaseRef: "main", BaseSHA: sha, HeadSHA: sha}, true)
 	if err == nil || !strings.Contains(err.Error(), "workspace is not a git repository") {
 		t.Fatalf("ListPRCommits() error = %v, want the not-a-repository refusal", err)
 	}
@@ -98,7 +98,7 @@ func TestPRReadsSkipTheNetworkWhenCommitsAreLocal(t *testing.T) {
 	rev := prRev(t, clone, prSHAs[0])
 	testutil.RunGit(t, clone, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone"))
 
-	commits, err := app.ListPRCommits(ref, prRef(), rev)
+	commits, err := app.ListPRCommits(ref, prRef(), rev, true)
 	if err != nil {
 		t.Fatalf("ListPRCommits() error = %v", err)
 	}
@@ -113,7 +113,7 @@ func TestPRReadsSkipTheNetworkWhenCommitsAreLocal(t *testing.T) {
 		t.Fatalf("expected the commit diff from local objects, got:\n%s", patch)
 	}
 	ctx, _ := reviewDiffConn(t)
-	if _, err := app.OpenPRDiff(ctx, ref, prRef(), rev, false); err != nil {
+	if _, err := app.OpenPRDiff(ctx, ref, prRef(), rev, false, true); err != nil {
 		t.Fatalf("OpenPRDiff() error = %v", err)
 	}
 }
@@ -129,10 +129,10 @@ func TestPRReadsRefuseAnInvalidRevision(t *testing.T) {
 		"no base commit": {BaseRef: "main", HeadSHA: valid.HeadSHA},
 		"short head":     {BaseRef: "main", BaseSHA: valid.BaseSHA, HeadSHA: prSHAs[0][:12]},
 	} {
-		if _, err := app.ListPRCommits(ref, prRef(), rev); err == nil {
+		if _, err := app.ListPRCommits(ref, prRef(), rev, true); err == nil {
 			t.Errorf("%s: ListPRCommits accepted %+v", name, rev)
 		}
-		if _, err := app.OpenPRDiff(ctx, ref, prRef(), rev, false); err == nil {
+		if _, err := app.OpenPRDiff(ctx, ref, prRef(), rev, false, true); err == nil {
 			t.Errorf("%s: OpenPRDiff accepted %+v", name, rev)
 		}
 	}
@@ -193,7 +193,7 @@ func TestFailedPRReadMakesTheNextUnchangedPollEmit(t *testing.T) {
 	ref, clone, prSHAs := prCloneFixture(t, app)
 	testutil.RunGit(t, clone, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone"))
 	missing := gitops.PRRevision{BaseRef: "main", BaseSHA: strings.Repeat("d", 40), HeadSHA: prSHAs[0]}
-	if _, err := app.ListPRCommits(ref, prRef(), missing); err == nil {
+	if _, err := app.ListPRCommits(ref, prRef(), missing, true); err == nil {
 		t.Fatal("ListPRCommits succeeded without its base commit")
 	}
 

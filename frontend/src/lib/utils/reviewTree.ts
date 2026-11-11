@@ -177,19 +177,26 @@ export interface FilteredReviewFiles<T extends DiffFileSummary = DiffFileSummary
 }
 
 /** Case-insensitive path substring + extension-chip filter for the tree;
- * `hideTests` also drops files `isTestPath` matches. */
+ * `hideTests` also drops files `isTestPath` matches. `revealed` are paths
+ * an explicit jump brought into view: the type filter and hide-tests keep
+ * them (the query still applies), so the tree and the diff, which both
+ * filter here, agree on them. */
+const EMPTY_PATHS: ReadonlySet<string> = new Set();
+
 export function filterReviewFiles<T extends DiffFileSummary>(
   files: readonly T[],
   query: string,
   extensions: ReadonlySet<string>,
   hideTests = false,
+  revealed: ReadonlySet<string> = EMPTY_PATHS,
 ): FilteredReviewFiles<T> {
   const needle = query.trim().toLowerCase();
   const out: FilteredReviewFiles<T> = { files: [], fileIndexes: [] };
   files.forEach((file, index) => {
     if (needle && !file.path.toLowerCase().includes(needle)) return;
-    if (extensions.size > 0 && !extensions.has(fileExtensionLabel(file.path))) return;
-    if (hideTests && isTestPath(file.path)) return;
+    const kept = revealed.has(file.path);
+    if (!kept && extensions.size > 0 && !extensions.has(fileExtensionLabel(file.path))) return;
+    if (!kept && hideTests && isTestPath(file.path)) return;
     out.files.push(file);
     out.fileIndexes.push(index);
   });

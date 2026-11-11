@@ -398,6 +398,13 @@ func (c *Core) executeInteractive(cwd string, args ...string) (stdout, stderr st
 	return c.executeSpec(commandSpec{binary: "git", cwd: cwd, allowCredentialPrompt: true, args: args})
 }
 
+// executeNetwork is Execute for a network command whose caller decides
+// whether a credential prompt may appear: Execute when it may not,
+// executeInteractive when it may.
+func (c *Core) executeNetwork(cwd string, allowCredentialPrompt bool, args ...string) (stdout, stderr string, err error) {
+	return c.executeSpec(commandSpec{binary: "git", cwd: cwd, allowCredentialPrompt: allowCredentialPrompt, args: args})
+}
+
 // runBinaryInteractive runs a forge-CLI command under ctx, the forge
 // operation's owner, for a command that shells out to `git push` on the
 // user's behalf (`gh pr create`, `glab mr create`).
@@ -782,9 +789,11 @@ type commandSpec struct {
 	//
 	// Set it ONLY for commands a human just asked for and is waiting on:
 	// push, pull, explicit fetch/prune, the commits an open review pane's
-	// PR read lacks (EnsurePRObjects), and the forge CLIs' create paths
-	// (which shell out to `git push` themselves). Never for anything on a
-	// timer, a watcher edge, or a picker's opportunistic warm-up.
+	// PR read lacks (EnsurePRObjects), the base tip an opened conflict view
+	// reads (RemoteBranchTip), and the forge CLIs' create paths (which
+	// shell out to `git push` themselves). Never for anything on a timer, a
+	// watcher edge, a forge poll's reconcile, or a picker's opportunistic
+	// warm-up (the Unattended variants).
 	allowCredentialPrompt bool
 	// updatesRemoteRefs takes the repository's remote-refs lock for a
 	// command lockRemoteRefs cannot recognize from its argv: a forge CLI

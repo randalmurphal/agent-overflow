@@ -28,6 +28,11 @@ export type CompactScreen = 'list' | 'thread';
 
 let compact = $state(false);
 let screen: CompactScreen = $state('list');
+// The pane the compact strip shows, held reactively so readers need no
+// geometry. A measurement, never an intention: only PaneHost writes it,
+// from the strip's position each time that position is published or
+// settles, and clears it when compact ends or the strip unmounts.
+let shownPaneId: string | null = $state(null);
 
 export function isCompactLayout(): boolean {
   return compact;
@@ -45,6 +50,34 @@ export function showCompactList(): void {
 export function showCompactThread(): void {
   screen = 'thread';
   stamp();
+}
+
+/** PaneHost only: the compact strip's centre is over `paneId` (null: no
+ * strip, or no pane under it). */
+export function noteCompactPaneShown(paneId: string | null): void {
+  shownPaneId = paneId;
+}
+
+/** The pane the compact strip shows (reactive; null off compact). */
+export function compactShownPaneId(): string | null {
+  return shownPaneId;
+}
+
+/**
+ * Reactive: whether the person can see the mounted pane `paneId` now.
+ * The one answer for work that should run only while its pane is seen.
+ * - Desktop: true for every mounted pane (the strip shows them side by
+ *   side; scrolled partly out of view still counts).
+ * - Compact: true only on the thread screen, and only for the one pane the
+ *   strip shows (its section holds the strip's centre). During a reveal's
+ *   glide that changes once the glide passes halfway, not at the reveal.
+ * False for a pane id that is not mounted on compact. Re-evaluates when
+ * the mode, the compact screen or the shown pane changes; read it inside
+ * an effect or `$derived` to follow it.
+ */
+export function isPaneOnScreen(paneId: string): boolean {
+  if (!compact) return true;
+  return screen === 'thread' && shownPaneId === paneId;
 }
 
 /**
@@ -100,5 +133,6 @@ export function installLayoutMode(): () => void {
 export function setCompactLayoutForTest(next: boolean): void {
   compact = next;
   screen = 'list';
+  shownPaneId = null;
   stamp();
 }

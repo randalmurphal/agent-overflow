@@ -146,8 +146,10 @@ type Pull struct {
 	CommittedAt string `json:"committedAt,omitempty"`
 	Commits     int    `json:"commits,omitempty"`
 	// HeadSHA, BaseSHA and StartSHA are generated when omitted. StartSHA is
-	// the base branch's tip (GitHub baseRefOid, GitLab start_sha); BaseSHA
-	// is GitLab's merge base.
+	// the base the forge recorded for the diff (GitHub baseRefOid, GitLab
+	// start_sha) and defaults to BaseSHA, GitLab's merge base, as GitLab
+	// reports an open merge request. Neither follows the base branch's tip
+	// in the repository behind the fake.
 	HeadSHA  string `json:"headSha,omitempty"`
 	BaseSHA  string `json:"baseSha,omitempty"`
 	StartSHA string `json:"startSha,omitempty"`

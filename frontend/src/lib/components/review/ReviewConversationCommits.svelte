@@ -52,7 +52,7 @@
           type="button"
           class="flex w-full min-w-0 items-baseline gap-2 rounded-[var(--radius-field)] px-1.5 py-0.5 text-left text-[0.75rem] hover:bg-surface-2"
           title="Show this commit's diff"
-          onclick={() => { void review.selectCommit(commit.sha); }}
+          onclick={() => { void review.selectCommit(commit.sha, { userInitiated: true }); }}
         >
           <span class="shrink-0 font-mono text-[0.6875rem] text-accent">{commit.shortSha}</span>
           <span class="min-w-0 truncate text-fg-muted">{commit.subject}</span>

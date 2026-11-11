@@ -72,8 +72,11 @@ export interface ForgePull {
   headSha?: string;
   /** GitLab's merge base. */
   baseSha?: string;
-  /** The base branch's tip: GitHub baseRefOid, GitLab start_sha. */
+  /** The base the forge recorded for the diff (GitHub baseRefOid, GitLab
+   * start_sha); defaults to baseSha. It does not follow the base branch. */
   startSha?: string;
+  /** Default clean; conflicts is GitHub CONFLICTING, GitLab has_conflicts. */
+  mergeable?: 'clean' | 'conflicts' | 'checking';
   /** GitLab only: the merge request's diff is not computed yet, so
    * diff_refs reads null. */
   diffPending?: boolean;

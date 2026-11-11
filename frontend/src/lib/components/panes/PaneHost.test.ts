@@ -342,6 +342,9 @@ describe('PaneHost', () => {
     }
   });
 
+  // Compact shows the pane last revealed. A shown pane that leaves the
+  // strip with no reveal naming the next one is not left on record: the
+  // strip measures what reflowed under it (jsdom has no geometry, so none).
   it('renders a plan companion layout item through CompanionPane', async () => {
     registerPaneForTest('source', createThreadPane({ paneId: 'source' }));
     setPaneLayoutItemsForTest([

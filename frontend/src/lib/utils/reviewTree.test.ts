@@ -187,6 +187,17 @@ describe('filterReviewFiles', () => {
     expect(nameAsType.fileIndexes).toEqual([3]);
   });
 
+  it('keeps revealed paths through the type filter and hide-tests, not through the query', () => {
+    const mixed = [...files, file('src/app.test.ts')];
+    const revealed = new Set(['docs/readme.md', 'src/app.test.ts']);
+    const kept = filterReviewFiles(mixed, '', new Set(['.svelte']), true, revealed);
+    expect(kept.files.map((f) => f.path)).toEqual(['src/App.svelte', 'docs/readme.md', 'src/app.test.ts']);
+    expect(kept.fileIndexes).toEqual([1, 2, 4]);
+
+    const queried = filterReviewFiles(mixed, 'svelte', new Set(['.svelte']), true, revealed);
+    expect(queried.files.map((f) => f.path)).toEqual(['src/App.svelte']);
+  });
+
   it('passes everything through when no filter is active', () => {
     const result = filterReviewFiles(files, '  ', new Set());
     expect(result.files).toHaveLength(4);

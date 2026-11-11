@@ -18,6 +18,7 @@ import {
   type PRDraftsTarget,
 } from './prDiffReviewComments.svelte';
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+import { isPaneOnScreen } from './layoutMode.svelte';
 import { untrack } from 'svelte';
 import {
   ApprovePR,
@@ -213,7 +214,15 @@ export interface ReviewPaneState {
   /** Edit tool call to select on the next edits-scope load — set by
    * the inline-diff affordance before setScope('edits'). */
   pendingEditItemID: string | null;
-  pendingJumpFilePath: string | null;
+  readonly pendingJumpFilePath: string | null;
+  /** Paths an explicit jump revealed: the file filter keeps them despite
+   * the type filter and hide-tests (`filterReviewFiles`). Emptied when the
+   * filter selection changes (`clearRevealedPaths`) and when the diff is
+   * replaced by a different one. */
+  readonly revealedPaths: ReadonlySet<string>;
+  /** Jump to a file's header, revealing it if the filter hides it. */
+  requestFileJump(path: string): void;
+  clearRevealedPaths(): void;
   /** Diff row key to jump to (a card's file:line, the unresolved
    * stepper, the title bar's peek controls); consumed by the diff body. */
   readonly pendingJumpRowKey: string | null;
@@ -322,13 +331,13 @@ export interface ReviewPaneState {
   /** Whether the current diff source can honor `ignoreWhitespace` — only
    * the gitdiff-backed patches can. See supportsIgnoreWhitespace. */
   readonly canIgnoreWhitespace: boolean;
-  setScope(scope: ReviewScope, opts?: { baseBranch?: string }): Promise<void>;
+  setScope(scope: ReviewScope, opts?: { baseBranch?: string } & ReadIntent): Promise<void>;
   /** Switch the loaded diff to a single commit (null → full range). */
-  selectCommit(sha: string | null): Promise<void>;
+  selectCommit(sha: string | null, opts?: ReadIntent): Promise<void>;
   /** Switch the edits-scope diff (selector value encoding: `item:<id>`
    * or `turn:<n>`; null → default, the latest turn). */
-  selectEdit(key: string | null): Promise<void>;
-  reload(): Promise<void>;
+  selectEdit(key: string | null, opts?: ReadIntent): Promise<void>;
+  reload(opts?: ReadIntent): Promise<void>;
   consumePendingJumpFilePath(): void;
   consumePendingJumpRowKey(): void;
   openDraftEditor(anchor: CommentAnchor): void;
@@ -431,6 +440,10 @@ export interface ReviewPaneState {
   refreshPRThreads(): Promise<void>;
   openConflictView(): Promise<void>;
   closeConflictView(): void;
+  /** A pane rendering this state is mounted in layout pane `paneId`;
+   * returns the detach. The conflict view's reconcile permit is held only
+   * while such a pane is on screen, so a state off screen reads no merges. */
+  attachSurface(paneId: string): () => void;
   toggleConflictCollapsed(path: string): Promise<void>;
   expandConflictFold(path: string, foldId: number): void;
   /** Has the PR's pump poll the pipeline now. */
@@ -462,8 +475,18 @@ export interface ReviewPaneState {
   setWordWrap(wrap: boolean): void;
   /** Flips `-w` and re-requests the diff (the patch itself changes, so
    * this is a full reload, not a view toggle). */
-  setIgnoreWhitespace(ignore: boolean): Promise<void>;
+  setIgnoreWhitespace(ignore: boolean, opts?: ReadIntent): Promise<void>;
   dispose(): void;
+}
+
+/**
+ * Whether a person asked for a load: a pr-scope read that may fetch from
+ * origin may ask for git credentials, and its failure arms the PR pump's
+ * retry, only then. Every entry point defaults to unattended, so a load
+ * nobody asked for cannot prompt by omission; a user action says so.
+ */
+export interface ReadIntent {
+  userInitiated?: boolean;
 }
 
 const CI_RESULT_STATUSES = new Set(['success', 'failed', 'running', 'pending', 'canceled', 'skipped', 'manual']);
@@ -569,7 +592,7 @@ export function reviewSubjectForPane(pane: {
 export function reviewStateForPane(
   sourcePaneId: string,
   subject: ReviewSubject,
-  opts: { deferInitialLoad?: boolean } = {},
+  opts: { deferInitialLoad?: boolean } & ReadIntent = {},
 ): ReviewPaneState {
   // A pinned review belongs to its page's retention, not a companion slot.
   if (subject.pinned) throw new Error('A pull request review is held by reviewStateForPR.');
@@ -581,7 +604,7 @@ export function reviewStateForPane(
   // The replaced state may own a live PR-update subscription; drop it or
   // the Go-side poll pump outlives the state that could unsubscribe it.
   existing?.dispose();
-  const state = createReviewPaneState(sourcePaneId, subject, opts.deferInitialLoad ?? false);
+  const state = createReviewPaneState(sourcePaneId, subject, opts.deferInitialLoad ?? false, opts.userInitiated ?? false);
   statesBySourcePane.set(sourcePaneId, state);
   return state;
 }
@@ -606,25 +629,26 @@ export async function openReviewCompanion(
     filePath?: string;
     /** Edits scope: the edit tool call to pin on load. */
     editItemId?: string;
-  } = {},
+  } & ReadIntent = {},
 ): Promise<ReviewPaneState | null> {
   const companion = openCompanion(sourcePaneId, 'review');
   if (!companion) return null;
   const hasExplicitSelection = opts.scope !== undefined || opts.editItemId !== undefined;
-  const state = reviewStateForPane(sourcePaneId, subject, { deferInitialLoad: hasExplicitSelection });
-  if (opts.filePath) {
-    state.pendingJumpFilePath = opts.filePath;
-  }
+  const userInitiated = opts.userInitiated ?? false;
+  const state = reviewStateForPane(sourcePaneId, subject, { deferInitialLoad: hasExplicitSelection, userInitiated });
   if (opts.editItemId) {
     state.pendingEditItemID = opts.editItemId;
   }
   if (opts.scope) {
-    await state.setScope(opts.scope);
+    await state.setScope(opts.scope, { userInitiated });
   } else if (opts.editItemId) {
     // A pinned edit implies edits scope; setScope reloads even when the
     // pane already sits there, which is what consumes the pending pin.
-    await state.setScope('edits');
+    await state.setScope('edits', { userInitiated });
   }
+  // After the scope switch, which retires the previous diff and the reveals
+  // that came with it.
+  if (opts.filePath) state.requestFileJump(opts.filePath);
   return state;
 }
 
@@ -637,6 +661,8 @@ export function createReviewPaneState(
   sourcePaneId: string,
   subject: ReviewSubject,
   deferInitialLoad: boolean,
+  // Whether a person opened the pane, which the first load carries.
+  initialUserInitiated = false,
 ): ReviewPaneState {
   installHeldPRObservers();
   const { identity, threadId, rowId, workspace } = subject;
@@ -682,9 +708,15 @@ export function createReviewPaneState(
   let prAttachment: PRAttachment | null = null;
   let conflictView = $state(false);
   // The conflict view's reconcile permit, held for exactly as long as the
-  // surface is on screen: a head move recomputes the merged tree only for
-  // a view somebody is looking at (see prReviewConflicts.svelte.ts).
-  let conflictReconcilePermit: (() => void) | null = null;
+  // view is open AND a mounted pane that renders this state is on screen
+  // (`isPaneOnScreen`: every mounted pane on the desktop, the one compact
+  // shows): a head move recomputes the merged tree only for a view
+  // somebody is looking at (see prReviewConflicts.svelte.ts). A retained
+  // state off screen (a pinned review the page keeps for a step back, a
+  // companion compact navigated away from) holds none.
+  let conflictReconcilePermit: { key: string; release: () => void } | null = null;
+  // Mounted surfaces by the layout pane that hosts them.
+  const surfacePanes = new SvelteMap<string, number>();
   let conflictCollapsedPaths: SvelteSet<string> = $state(new SvelteSet<string>());
   // Expanded fold ids per path. Entries are replaced wholesale on expand
   // so the SvelteMap write re-derives conflictFiles.
@@ -739,6 +771,19 @@ export function createReviewPaneState(
   );
   let pendingJumpFilePath: string | null = $state(null);
   let pendingJumpRowKey: string | null = $state(null);
+  const revealedPaths = new SvelteSet<string>();
+
+  // Every jump that targets a file in the diff comes through here, so a
+  // file the filter hides is shown before the row is requested: the diff
+  // body consumes a request for a row it does not render.
+  function revealFile(path: string): void {
+    if (path !== '') revealedPaths.add(path);
+  }
+
+  function requestFileJump(path: string): void {
+    revealFile(path);
+    pendingJumpFilePath = path;
+  }
   // The loaded diff's files, tree-sorted (edits: merged by path), and the
   // content key of the whole patch for the scopes that key comments by
   // content. The key is set once the patch is complete.
@@ -1131,6 +1176,11 @@ export function createReviewPaneState(
   // frame arrives.
   let failedPRLoad = $state<{ snapshot: PRSnapshot; headSHA: string } | null>(null);
   const awaitingPR = $derived(awaitingPRDetail || awaitingPRStatus);
+  // The intent of the load that is waiting on the status or the snapshot:
+  // no PR read has run for it yet, so the load the wait ends is still the
+  // one a person may have asked for. Every load resets it, so a PR that
+  // appears after the status answered "none" reads unattended.
+  let awaitedUserInitiated = false;
   function workspacePRLookupSettled(): boolean {
     if (pinned) return true;
     const key = workspaceKeyForThread(getPane(sourcePaneId)?.thread ?? null);
@@ -1139,14 +1189,18 @@ export function createReviewPaneState(
     return peekGitStatusError(key) !== null;
   }
   const disposePRRefWatch = $effect.root(() => {
+    // The screen moving (compact navigation) takes or releases the permit.
+    $effect(() => syncConflictPermit());
     $effect(() => {
       if (!awaitingPRRef || prRef === null) return;
       awaitingPRRef = false;
-      void reload();
+      void reload({ userInitiated: awaitedUserInitiated });
     });
     $effect(() => {
       // Status landed, with or without a PR: the load runs now, so a
       // workspace with no PR answers "no PR" instead of waiting forever.
+      // A status that names a PR resolves the ref too, and the watcher
+      // above, which runs first, carries the waiting load's intent.
       if (!awaitingPRStatus || !workspacePRLookupSettled()) return;
       awaitingPRStatus = false;
       void reload();
@@ -1154,13 +1208,14 @@ export function createReviewPaneState(
     $effect(() => {
       if (!awaitingPRDetail || !prRevision(prSnapshot?.detail, prSnapshot?.headSHA)) return;
       awaitingPRDetail = false;
-      void reload();
+      void reload({ userInitiated: awaitedUserInitiated });
     });
     $effect(() => {
       // A failed pr-scope load retries on the next frame the pump delivers:
       // the backend has the pump emit its next successful poll after a
       // failed read, so this is "once the forge answers again", not a
-      // timer. A diff still on screen of a PR whose head has since moved is
+      // timer. The retry reads unattended, so its failure arms no further
+      // emit. A diff still on screen of a PR whose head has since moved is
       // the stale banner's to reload (it measures the head alone).
       const failed = failedPRLoad;
       const live = prSnapshot;
@@ -1225,12 +1280,41 @@ export function createReviewPaneState(
   // recomputing merge trees for a surface nobody closed, and a missing one
   // leaves an open view rendering the previous head's merge.
   function setConflictView(open: boolean): void {
-    conflictReconcilePermit?.();
-    conflictReconcilePermit = null;
     conflictView = open;
-    if (!open) return;
-    const key = prEntityKey;
-    if (key) conflictReconcilePermit = permitPRConflictReconcile(key, workspace);
+    untrack(syncConflictPermit);
+  }
+
+  // The one writer of the permit.
+  function syncConflictPermit(): void {
+    // Tracked only by the watcher in the effect root (the screen moving
+    // re-decides); every other caller runs it untracked, so a component
+    // effect that attaches a surface never depends on what it writes.
+    const shown = conflictView && [...surfacePanes.keys()].some(isPaneOnScreen);
+    untrack(() => {
+      const key = shown && !disposed ? prEntityKey : null;
+      if (conflictReconcilePermit?.key === key) return;
+      conflictReconcilePermit?.release();
+      conflictReconcilePermit = null;
+      if (key) conflictReconcilePermit = { key, release: permitPRConflictReconcile(key, workspace) };
+    });
+  }
+
+  function attachSurface(paneId: string): () => void {
+    untrack(() => {
+      surfacePanes.set(paneId, (surfacePanes.get(paneId) ?? 0) + 1);
+      syncConflictPermit();
+    });
+    let attached = true;
+    return () => {
+      if (!attached) return;
+      attached = false;
+      untrack(() => {
+        const remaining = (surfacePanes.get(paneId) ?? 1) - 1;
+        if (remaining > 0) surfacePanes.set(paneId, remaining);
+        else surfacePanes.delete(paneId);
+        syncConflictPermit();
+      });
+    };
   }
 
   // Only the pane's VIEW of the conflicts resets on a scope switch: the
@@ -1242,7 +1326,7 @@ export function createReviewPaneState(
     conflictExpandedFolds.clear();
   }
 
-  async function setScope(nextScope: ReviewScope, opts?: { baseBranch?: string }): Promise<void> {
+  async function setScope(nextScope: ReviewScope, opts?: { baseBranch?: string } & ReadIntent): Promise<void> {
     if (pinned && nextScope !== 'pr') {
       throw new Error('A pull request review shows only its pull request.');
     }
@@ -1274,10 +1358,10 @@ export function createReviewPaneState(
     draftBodies.clear();
     collapseOverrides.clear();
     if (threadId !== null) persistScope(threadId, scope, baseBranch);
-    await reload();
+    await reload({ userInitiated: opts?.userInitiated });
   }
 
-  async function selectCommit(sha: string | null): Promise<void> {
+  async function selectCommit(sha: string | null, opts?: ReadIntent): Promise<void> {
     if (sha === selectedCommitSHA) return;
     navigationSeq++;
     retireDiffSubject();
@@ -1285,10 +1369,10 @@ export function createReviewPaneState(
     openEditors = [];
     draftBodies.clear();
     collapseOverrides.clear();
-    await reload({ selectionOnly: true });
+    await reload({ selectionOnly: true, userInitiated: opts?.userInitiated });
   }
 
-  async function setIgnoreWhitespace(ignore: boolean): Promise<void> {
+  async function setIgnoreWhitespace(ignore: boolean, opts?: ReadIntent): Promise<void> {
     if (ignore === ignoreWhitespace) return;
     ignoreWhitespace = ignore;
     // THIS IS A FULL DIFF RE-REQUEST, NOT A RENDER TOGGLE, and that cost
@@ -1304,10 +1388,10 @@ export function createReviewPaneState(
     // Collapse overrides deliberately SURVIVE, unlike selectCommit/selectEdit:
     // those switch which change is under review, whereas this shows the same
     // change with less noise. A file the user opened stays open.
-    await reload({ selectionOnly: true });
+    await reload({ selectionOnly: true, userInitiated: opts?.userInitiated });
   }
 
-  async function selectEdit(key: string | null): Promise<void> {
+  async function selectEdit(key: string | null, opts?: ReadIntent): Promise<void> {
     const next = editSelectionFromKey(key, edits);
     if (editSelectionKey(next) === editSelectionKey(selectedEdit)) return;
     navigationSeq++;
@@ -1316,19 +1400,22 @@ export function createReviewPaneState(
     openEditors = [];
     draftBodies.clear();
     collapseOverrides.clear();
-    await reload({ selectionOnly: true });
+    await reload({ selectionOnly: true, userInitiated: opts?.userInitiated });
   }
 
   // A new subject cannot reuse the previous patch under its new scope,
   // anchors or span context. Same-subject refreshes intentionally retain it.
   function retireDiffSubject(): void {
+    revealedPaths.clear();
     loadedFiles = [];
     showRead(null);
     patchKey = '';
     clearContextExpansions();
   }
 
-  async function reload(opts?: { selectionOnly?: boolean }): Promise<void> {
+  async function reload(opts?: { selectionOnly?: boolean } & ReadIntent): Promise<void> {
+    const userInitiated = opts?.userInitiated ?? false;
+    awaitedUserInitiated = false;
     // A commit/edit selection changes only which diff is shown — the
     // selector list and the PR snapshot are still valid, so reuse them and
     // fetch just the diff. Only when a previous full load actually
@@ -1375,6 +1462,7 @@ export function createReviewPaneState(
           // says why (or GitLab is still preparing the merge request's
           // diff), and the watcher above reloads when one lands.
           awaitingPRDetail = true;
+          awaitedUserInitiated = userInitiated;
           return;
         }
         awaitingPRDetail = false;
@@ -1393,6 +1481,7 @@ export function createReviewPaneState(
         awaitingPRRef = true;
         if (!workspacePRLookupSettled()) {
           awaitingPRStatus = true;
+          awaitedUserInitiated = userInitiated;
           return;
         }
         awaitingPRStatus = false;
@@ -1410,6 +1499,7 @@ export function createReviewPaneState(
         // anyway would make the button's state a lie.
         ignoreWhitespace && canIgnoreWhitespace,
         selectionOnly ? { commits, edits, editTurnLabels, prRevision: loadedPRRevision } : undefined,
+        userInitiated,
       );
       if (seq !== loadSeq || disposed) {
         loaded.patch?.abandon();
@@ -1498,6 +1588,7 @@ export function createReviewPaneState(
         return;
       }
       clearContextExpansions();
+      revealedPaths.clear();
       loadedFiles = [];
       showRead(null);
       patchKey = '';
@@ -1604,7 +1695,7 @@ export function createReviewPaneState(
     return { files: view(read.parser.files), read, patchKey: read.parser.sourceKey() };
   }
 
-  if (!deferInitialLoad) void reload();
+  if (!deferInitialLoad) void reload({ userInitiated: initialUserInitiated });
 
   function clearContextExpansions(): void {
     unexpandableEditPaths.clear();
@@ -1994,12 +2085,32 @@ export function createReviewPaneState(
   // or re-renders the patch). Applied through the store, so a head that
   // moved raises the stale banner on every pane whose diff predates it —
   // and on none whose diff doesn't. The diff never swaps mid-read.
+  // A refresh asked for while one runs is owed, not dropped: the running
+  // read may predate what the later ask wants to see (a merge failure
+  // during a manual refresh). One read at a time; the owed one runs next.
+  let refreshPRDataOwed = false;
   async function refreshPRThreads(): Promise<void> {
-    if (scope !== 'pr' || !prRef || refreshingPRData) return;
-    const key = computerPRKey(prRef);
+    if (scope !== 'pr' || !prRef) return;
+    if (refreshingPRData) {
+      refreshPRDataOwed = true;
+      return;
+    }
     refreshingPRData = true;
     try {
-      const pr = prReferenceWire(prRef);
+      do {
+        refreshPRDataOwed = false;
+        await readPRThreads(prRef);
+      } while (refreshPRDataOwed && !disposed && scope === 'pr' && prRef !== null);
+    } finally {
+      refreshPRDataOwed = false;
+      refreshingPRData = false;
+    }
+  }
+
+  async function readPRThreads(ref: PRRef): Promise<void> {
+    const key = computerPRKey(ref);
+    try {
+      const pr = prReferenceWire(ref);
       const [detail, threads] = await Promise.all([
         withBackendTarget(backend, () => GetPRDetail(pr)) as Promise<PRDetail>,
         withBackendTarget(backend, () => ListPRReviewThreads(pr)) as Promise<ReviewThread[] | null>,
@@ -2014,8 +2125,6 @@ export function createReviewPaneState(
     } catch (err) {
       if (disposed) return;
       error = userFacingError(err);
-    } finally {
-      refreshingPRData = false;
     }
   }
 
@@ -2109,7 +2218,7 @@ export function createReviewPaneState(
   // the backend names that case by its code (git.ForgeErrorStaleHead).
   function mergeFailureAction(err: unknown): { label: string; run: () => void } | undefined {
     if (err instanceof TransportError && err.code === 'forge_stale_head') {
-      return { label: 'Reload', run: () => { void reload(); } };
+      return { label: 'Reload', run: () => { void reload({ userInitiated: true }); } };
     }
     return undefined;
   }
@@ -2257,6 +2366,7 @@ export function createReviewPaneState(
     closeConflictView();
     collapsedPaths.delete(thread.path);
     expandedPRThreadIds.add(thread.id);
+    revealFile(thread.path);
     pendingJumpRowKey = `pt:${thread.id}`;
   }
 
@@ -2282,9 +2392,10 @@ export function createReviewPaneState(
   }
 
   // The merged tree and every conflicted file's content belong to the PR
-  // in this checkout (one merge-tree run serves every pane there); what
-  // this pane owns is whether the surface is showing and which files it
-  // has collapsed.
+  // in this checkout (every pane there shows the latest read, and each
+  // open reads again against the base branch's live tip); what this pane
+  // owns is whether the surface is showing and which files it has
+  // collapsed.
   async function openConflictView(): Promise<void> {
     const detail = prSnapshot?.detail;
     const key = prEntityKey;
@@ -2296,9 +2407,13 @@ export function createReviewPaneState(
       return;
     }
     closeCILogView();
+    // The open is recorded before the permit: a permit wakes the runner,
+    // which would otherwise start this read unattended for the person
+    // asking for it.
+    const opening = openPRConflicts(key, workspace, prRef, detail);
     setConflictView(true);
     conflictExpandedFolds.clear();
-    await openPRConflicts(key, workspace, prRef, detail);
+    await opening;
     if (disposed) return;
     // Everything the store could show opens expanded, like the regular
     // diff. A file whose content read failed and that carries no notes has
@@ -2507,7 +2622,9 @@ export function createReviewPaneState(
     get pendingEditItemID() { return pendingEditItemID; },
     set pendingEditItemID(value: string | null) { pendingEditItemID = value; },
     get pendingJumpFilePath() { return pendingJumpFilePath; },
-    set pendingJumpFilePath(value: string | null) { pendingJumpFilePath = value; },
+    get revealedPaths() { return revealedPaths; },
+    requestFileJump,
+    clearRevealedPaths(): void { revealedPaths.clear(); },
     get pendingJumpRowKey() { return pendingJumpRowKey; },
     get loading() { return loading; },
     get error() { return error; },
@@ -2672,6 +2789,7 @@ export function createReviewPaneState(
     },
     openConflictView,
     closeConflictView,
+    attachSurface,
     toggleConflictCollapsed,
     expandConflictFold,
     refreshCI,
