@@ -66,12 +66,14 @@ describe('roleButtonKeys', () => {
     expect(activate).not.toHaveBeenCalled();
   });
 
-  it('leaves Space on a control inside it to that control', () => {
+  it('leaves every key on a control inside it to that control', () => {
     const { el, activate } = control();
     const inner = el.querySelector('button')!;
     inner.focus();
-    expect(key(inner, 'keydown', ' ').defaultPrevented).toBe(false);
-    key(inner, 'keyup', ' ');
+    for (const name of ['Enter', ' ']) {
+      expect(key(inner, 'keydown', name).defaultPrevented, name).toBe(false);
+      key(inner, 'keyup', name);
+    }
     expect(activate).not.toHaveBeenCalled();
   });
 

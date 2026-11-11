@@ -654,6 +654,34 @@ describe('<ThreadRow> keyboard activation', () => {
     expect(pane.threadId).toBe('space-row');
   });
 
+  it('leaves Enter and Space on its pin and compact menu buttons to those buttons', async () => {
+    const thread = makeThread({ id: 'nested-row', pinnedAt: 1 });
+    installThreadSwitchMocks(thread);
+    setBindingMock('ListThreads', async () => [thread]);
+    await refreshThreads();
+    setCompactLayoutForTest(true);
+    try {
+      const pane = createThreadPane();
+      const view = render(ThreadRow, { props: { thread, pane } });
+      const row = view.getByTestId('thread-row');
+      for (const id of ['thread-row-pin', 'thread-row-menu']) {
+        const control = view.getByTestId(id);
+        expect(row.contains(control)).toBe(true);
+        control.focus();
+        for (const key of ['Enter', ' ']) {
+          const down = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+          control.dispatchEvent(down);
+          control.dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true, cancelable: true }));
+          expect(down.defaultPrevented, `${key} on ${id}`).toBe(false);
+        }
+      }
+      await settle();
+      expect(pane.threadId).not.toBe('nested-row');
+    } finally {
+      setCompactLayoutForTest(false);
+    }
+  });
+
   it('opens nothing for a Space released after focus left, or for an Enter repeat', async () => {
     const thread = makeThread({ id: 'held-row' });
     installThreadSwitchMocks(thread);
