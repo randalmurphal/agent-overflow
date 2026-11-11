@@ -96,6 +96,14 @@ export const transformUrl = (
  * - `blocked`: an absolute URL the policy refused (a denied scheme, or a
  *   prefix list without `*` that it did not match). Renders tagged.
  */
+/** The text a blocked link's span shows after the link text. */
+export const BLOCKED_LINK_SUFFIX = ' [blocked]';
+
+/** Whether a table cell renders: a cell another merged up into (rowspan
+ * 0, extensions/table.ts) does not. Both renderers and find's
+ * projection ask this. */
+export const tableCellRenders = (cell: { rowspan: number }): boolean => cell.rowspan > 0;
+
 export type LinkHrefClass =
     | { kind: 'anchor'; href: string }
     | { kind: 'reference'; title: string }

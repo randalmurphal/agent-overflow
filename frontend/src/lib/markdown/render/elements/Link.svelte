@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { useStreamdown } from '../context.svelte';
-	import { classifyLinkHref } from './url';
+	import { BLOCKED_LINK_SUFFIX, classifyLinkHref } from './url';
 	import {
 		PREVIEW_ALLOW_CLASS,
 		PREVIEW_ALLOW_LABEL,
@@ -90,6 +90,6 @@
 		class={streamdown.theme.link.blocked}
 		title={linkClass.kind === 'anchor' ? undefined : linkClass.title}
 	>
-		{@render children()}{#if linkClass.kind === 'blocked'}{' '}[blocked]{/if}
+		{@render children()}{#if linkClass.kind === 'blocked'}{BLOCKED_LINK_SUFFIX}{/if}
 	</span>
 {/if}

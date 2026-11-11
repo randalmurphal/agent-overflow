@@ -74,7 +74,6 @@
   } from '../../utils/markdownEnhance';
   import {
     LOCAL_IMAGE_HREF_PREFIX,
-    PATH_LINK_HREF_PREFIX,
     buildPathLinkExtension,
     type PathLinkMode,
   } from '../../utils/pathLinkExtension';
@@ -85,6 +84,7 @@
     isForgeAttachmentHref,
   } from '../../utils/forgeAttachments';
   import { buildForgeAttachmentExtension } from '../../utils/forgeAttachmentExtension';
+  import { CHAT_LINK_PREFIXES } from './markdown/chatLinkPrefixes';
   import {
     FORGE_ATTACHMENT_SOURCE_CONTEXT,
     type ForgeAttachmentSourceReader,
@@ -332,7 +332,7 @@
   // rendered.
   // `data:` is a denied LINK scheme (it is a document the webview would
   // evaluate), but an inline `data:image/…` src is just bytes for an <img>.
-  const allowedLinkPrefixes = ['*', PATH_LINK_HREF_PREFIX, FORGE_ATTACHMENT_HREF_PREFIX];
+  const allowedLinkPrefixes = [...CHAT_LINK_PREFIXES];
   const allowedImagePrefixes = [
     '*',
     LOCAL_IMAGE_HREF_PREFIX,

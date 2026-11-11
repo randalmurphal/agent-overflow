@@ -58,3 +58,6 @@ export type {
   StreamdownLiteralHostHandle,
 } from './render/literalHost';
 export { DENIED_LINK_SCHEMES, isOpenableScheme, urlScheme } from './render/elements/urlSchemes';
+// The renderers' own decisions about what text a token shows, for find's
+// projection of rendered markdown (chat/markdown/markdownFindText.ts).
+export { BLOCKED_LINK_SUFFIX, classifyLinkHref, tableCellRenders } from './render/elements/url';

@@ -2,7 +2,7 @@ import type { StreamdownContext } from './context.svelte';
 import type { StreamdownToken } from '../parser/index';
 import type { Tokens } from '../parser/engine';
 import { codespanClass } from './codespan';
-import { classifyLinkHref } from './elements/url';
+import { BLOCKED_LINK_SUFFIX, classifyLinkHref, tableCellRenders } from './elements/url';
 import {
 	PREVIEW_ALLOW_CLASS,
 	PREVIEW_ALLOW_LABEL,
@@ -201,7 +201,7 @@ export function renderStaticTokenHtml(
 				case 'td':
 				case 'th': {
 					if (streamdown.snippets[token.type]) return false;
-					if (token.rowspan <= 0) break;
+					if (!tableCellRenders(token)) break;
 					const align = token.align && ['left', 'center', 'right', 'justify', 'char'].includes(token.align)
 						? token.align
 						: 'left';
@@ -270,7 +270,7 @@ export function renderStaticTokenHtml(
 							'>',
 						);
 						if (!render(children)) return false;
-						if (linkClass.kind === 'blocked') output.push(' [blocked]');
+						if (linkClass.kind === 'blocked') output.push(escapeHtml(BLOCKED_LINK_SUFFIX));
 						output.push('</span>');
 					}
 					break;

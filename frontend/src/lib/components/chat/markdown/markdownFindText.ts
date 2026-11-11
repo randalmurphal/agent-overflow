@@ -5,18 +5,25 @@
 // and the highlighter paints. markdownFindText.browser.test.ts holds it to
 // the rendered DOM.
 //
-// Not shown, so not searched: markup, image alt text, link targets and the
-// body of a <details> that is not open. Neither searched nor painted
+// Not shown, so not searched: markup, image alt text, link targets and
+// titles, a table cell merged into the one above, and the body of a
+// <details> that is not open. A blocked link shows its tag. Where the
+// renderers decide what a token shows, this asks the same function
+// (`tableCellRenders`, `classifyLinkHref`). Neither searched nor painted
 // (`data-find-skip` on their hosts): Mermaid diagrams, math, and forge
 // attachment chips, whose text is drawn or fetched after the render.
 
 import {
+  BLOCKED_LINK_SUFFIX,
   EMBEDDED_HTML_EXTENSIONS,
+  classifyLinkHref,
   lex,
   parseBlocks,
   sanitizeEmbeddedHtmlToken,
+  tableCellRenders,
   type Extension,
 } from '../../../markdown';
+import { CHAT_LINK_PREFIXES } from './chatLinkPrefixes';
 import { findTextSegments } from '../../../utils/findHighlights';
 import { buildForgeAttachmentExtension } from '../../../utils/forgeAttachmentExtension';
 import type { ForgeAttachmentSource } from '../../../utils/forgeAttachments';
@@ -52,6 +59,8 @@ interface TokenLike {
   open?: boolean;
   lang?: string;
   label?: string;
+  href?: string;
+  rowspan?: number;
   tokens?: TokenLike[];
 }
 
@@ -134,6 +143,14 @@ export function markdownFindText(source: string, options: MarkdownFindTextOption
         flush();
         return;
       }
+      case 'link':
+        walk(token.tokens);
+        if (classifyLinkHref(token.href, [...CHAT_LINK_PREFIXES]).kind === 'blocked') run += BLOCKED_LINK_SUFFIX;
+        return;
+      case 'td':
+      case 'th':
+        if (!tableCellRenders({ rowspan: token.rowspan ?? 1 })) return;
+        break;
       case 'alert':
         flush();
         // The title shows the variant (ChatMarkdown passes no translations).

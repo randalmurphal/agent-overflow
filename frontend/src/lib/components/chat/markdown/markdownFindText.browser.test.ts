@@ -54,6 +54,18 @@ const CORPUS = [
   `See ![shot alt](/uploads/${HEX}/shot.png) and [report.pdf](/uploads/${HEX}/report.pdf) here.`,
   `<img src="/uploads/${HEX}/embedded.png" alt="embedded alt"> after the embed`,
   '<table><tr><td><details><summary>cell sum</summary>inner cell words</details></td></tr></table>',
+  // Every place the renderers drop, replace or reorder what the source says.
+  '| Head | Other |\n| --- | --- |\n| top | x |\n| merged ^ | y |\n| below | z |',
+  '| Head | Other |\n| --- | --- |\n| wide cell ||\n| a | b |',
+  '[titled link](https://example.com "the title words") and [bad link](javascript:alert(1)) end',
+  '[a file](src/a.ts), [an anchor](#frag) and [mail](mailto:x@example.com).',
+  'Visit https://example.com/bare and www.example.org today.',
+  'H~2~O and x^2^ power, ~5~10 approx',
+  ': term words : detail words\n: second term : second detail',
+  'Cites [1] [ref two] here.',
+  'Open http://localhost:5173/app now.',
+  '<Note kind="x">mdx child words</Note> after',
+  'Copy &nbsp;non&#8209;breaking &#x41; and \\backslash',
 ];
 
 const TOGGLED = CORPUS.filter((source) => source.includes('<details'));

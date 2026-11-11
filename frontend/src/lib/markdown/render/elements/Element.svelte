@@ -8,6 +8,7 @@
 	import { useStreamdown } from '../context.svelte';
 	import { codespanClass } from '../codespan';
 	import FootnoteRef from './FootnoteRef.svelte';
+	import { tableCellRenders } from './url';
 	let {
 		token,
 		children,
@@ -183,7 +184,7 @@
 		</tr>
 	</Slot>
 {:else if token.type === 'td'}
-	{#if token.rowspan > 0}
+	{#if tableCellRenders(token)}
 		<Slot props={{ children, token }} render={streamdown.snippets.td}>
 			<td
 				data-streamdown-td={id}
@@ -199,7 +200,7 @@
 		</Slot>
 	{/if}
 {:else if token.type === 'th'}
-	{#if token.rowspan > 0}
+	{#if tableCellRenders(token)}
 		<Slot props={{ children, token }} render={streamdown.snippets.th}>
 			<th
 				data-streamdown-th={id}
