@@ -1,6 +1,7 @@
 // The section layer over a reply being read (ReadAloudSections): nothing for
 // an idle reply, the marker on the current section's blocks, "read from
-// here" on every other section, revealed by the pointer over that section,
+// here" on every other section (one for a block split for length),
+// revealed by the pointer over that section,
 // nothing drawn (and one report) when the rendered blocks do not match,
 // and every listener and observer gone when the reading stops or the row
 // unmounts. Real geometry is in e2e/tests/read-aloud-sections.spec.ts.
@@ -21,6 +22,7 @@ import {
 } from '../../stores/readAloud.svelte';
 import { reloadReadAloudPreferencesForTest, setReadAloudPreference } from '../../stores/readAloudPreferences.svelte';
 import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
+import { speakableSections } from '../../utils/speakableText';
 
 vi.mock('../../utils/frontendErrorCapture', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../utils/frontendErrorCapture')>()),
@@ -96,12 +98,12 @@ describe('<ReadAloudSections>', () => {
     vi.unstubAllGlobals();
   });
 
-  async function mount() {
-    const view = render(AssistantMessage, { props: { item: makeItem({ id: 'r1', summary: REPLY }) } });
+  async function mount(reply = REPLY, blockCount = 5) {
+    const view = render(AssistantMessage, { props: { item: makeItem({ id: 'r1', summary: reply }) } });
     const play = await waitFor(() => view.getByTestId('assistant-message-read-aloud'));
     const blocks = (): HTMLElement[] =>
       Array.from(view.container.querySelector('.markdown-body > .md-committed')!.children) as HTMLElement[];
-    expect(blocks()).toHaveLength(5);
+    expect(blocks()).toHaveLength(blockCount);
     const layer = () => view.queryByTestId('assistant-message-read-aloud-sections');
     const marker = () => view.queryByTestId('assistant-message-read-aloud-marker');
     const fromSections = () =>
@@ -203,6 +205,34 @@ describe('<ReadAloudSections>', () => {
     await fireEvent.pointerOver(blocks()[3]);
     await fireEvent.pointerLeave(body);
     expect(reveal(2).classList.contains('opacity-0')).toBe(true);
+  });
+
+  it('gives a block split for length one button, at its start, for its first part', async () => {
+    const long = Array.from({ length: 90 }, () => 'The word goes on here.').join(' ');
+    const reply = `A line that is long enough to stand as its own section, well past the short limit.\n\n${long}\n\nTail.`;
+    // Sections: the opener (block 0), three parts of block 1, the tail (block 2).
+    const sections = speakableSections(reply);
+    expect(sections.map((s) => s.firstBlock)).toEqual([0, 1, 1, 1, 2]);
+    const firstPiece = (section: number) => sections.slice(0, section).reduce((n, s) => n + s.sentences.length, 0);
+
+    const { view, play, blocks, marker, fromSections, reveal } = await mount(reply, 3);
+    await fireEvent.click(play);
+    await settle();
+    expect(fromSections()).toEqual([1, 4]);
+
+    // Reading the block's second part: its button reads the block from its start.
+    device.playbacks[0].onPiece(firstPiece(2));
+    await settle();
+    expect(marker()!.dataset.section).toBe('2');
+    expect(fromSections()).toEqual([0, 1, 4]);
+    await fireEvent.pointerOver(blocks()[1]);
+    expect(reveal(1).classList.contains('opacity-100')).toBe(true);
+    await fireEvent.click(view.getAllByTestId('assistant-message-read-aloud-from')[1]);
+    await settle();
+    expect(device.playbacks.at(-1)!.from).toBe(firstPiece(1));
+    // Reading its first part, the block has no button.
+    expect(marker()!.dataset.section).toBe('1');
+    expect(fromSections()).toEqual([0, 4]);
   });
 
   it('draws nothing and reports once when the rendered blocks do not match', async () => {

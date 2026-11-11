@@ -230,6 +230,26 @@ describe('clip engine controls', () => {
     expectReleased(t);
   });
 
+  it('skipTo while a clip is starting holds the element until the target plays', async () => {
+    const t = setupClipEngine();
+    const playback = t.speak(SECTIONS);
+    await t.fetcher.of('One.').resolve();
+    // One's play() is called and has not resolved.
+    expect(t.element.audio).toMatchObject({ src: t.urls.urlOf(t.fetcher.of('One.').blob), paused: false });
+    playback.skipTo!(2);
+    expect(t.element.audio.paused).toBe(true);
+    // The overtaken play resolving or rejecting changes nothing.
+    await t.element.startLatest();
+    expect(t.element.audio.paused).toBe(true);
+    expect(t.pieces).toEqual([]);
+    await t.fetcher.of('Three.').resolve();
+    await t.element.startLatest();
+    expect(t.element.audio.paused).toBe(false);
+    expect(t.pieces).toEqual([2]);
+    playback.stop();
+    expectReleased(t);
+  });
+
   it('skipTo past the end ends the playback; a negative index starts from the first', async () => {
     const t = setupClipEngine();
     const playback = await sounding(t);

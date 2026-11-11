@@ -9,6 +9,7 @@ import {
   renderedBlocks,
   speakableSections,
   splitSentences,
+  spokenLength,
 } from './speakableText';
 
 /** Every sentence a device voice reads, in order. */
@@ -190,6 +191,37 @@ describe('speakableSections', () => {
     expect(sections.map((s) => s.text).join(' ')).toBe(long);
   });
 
+  it('packs and splits by spoken length, so dense scripts and numbers get shorter sections', () => {
+    // 61 characters, said in about as long as 241 letters.
+    const zh = `${'这是一个用来测试朗读长度的句子'.repeat(4)}。`;
+    expect(zh).toHaveLength(61);
+    expect(spokenLength(zh)).toBe(241);
+    // Two fit SECTION_CHARS as characters; as speech they do not.
+    expect(speakableSections(`${zh}\n\n${zh}`).map((s) => [s.firstBlock, s.lastBlock])).toEqual([[0, 0], [1, 1]]);
+
+    // One 700-character paragraph is under MAX_SECTION_CHARS as characters.
+    const sentence = '我们今天把所有的测试都重新运行了一遍，结果全部通过。';
+    const long = sentence.repeat(Math.ceil(700 / sentence.length));
+    expect(long.length).toBeLessThan(MAX_SECTION_CHARS);
+    const parts = speakableSections(long);
+    expect(parts.length).toBeGreaterThanOrEqual(4);
+    for (const part of parts) {
+      expect(spokenLength(part.text)).toBeLessThanOrEqual(MAX_SECTION_CHARS);
+      expect(part.text.endsWith('。')).toBe(true);
+      for (const piece of part.sentences) expect(spokenLength(piece)).toBeLessThanOrEqual(MAX_PIECE_CHARS);
+      expect([part.firstBlock, part.lastBlock]).toEqual([0, 0]);
+    }
+    // Sentences inside a part are joined by a space.
+    expect(parts.map((p) => p.text.replaceAll(' ', '')).join('')).toBe(long);
+
+    const figures = Array.from({ length: 60 }, (_, i) => `Row ${i + 1} holds ${123456 + i}.`).join(' ');
+    expect(figures.length).toBeLessThan(MAX_SECTION_CHARS * 2);
+    const rows = speakableSections(figures);
+    expect(rows.length).toBeGreaterThan(4);
+    for (const row of rows) expect(spokenLength(row.text)).toBeLessThanOrEqual(MAX_SECTION_CHARS);
+    expect(rows.map((r) => r.text).join(' ')).toBe(figures);
+  });
+
   it('indexes blocks as rendered: definitions, raw HTML and alignment take none, an MDX container its children', () => {
     const markdown = [
       'Zero.', '', '[ref]: https://example.com', '', '<div>raw</div>', '', '[center]', 'Centered.', '[/center]', '',
@@ -219,5 +251,30 @@ describe('capPiece', () => {
   it('cuts an unbroken run at the limit, the default or a given one', () => {
     expect(capPiece('x'.repeat(MAX_PIECE_CHARS * 2 + 5)).map((p) => p.length)).toEqual([MAX_PIECE_CHARS, MAX_PIECE_CHARS, 5]);
     expect(capPiece('x'.repeat(25), 10).map((p) => p.length)).toEqual([10, 10, 5]);
+  });
+
+  it('measures the limit as spoken length and cuts after wide clause punctuation', () => {
+    // 4 a character: 20 fits five.
+    expect(capPiece('天'.repeat(12), 20)).toEqual(['天天天天天', '天天天天天', '天天']);
+    expect(capPiece('一二三，四五六七八九', 20)).toEqual(['一二三，', '四五六七八', '九']);
+    expect(capPiece('12345 6789', 40)).toEqual(['12345', '6789']);
+    // A character past the basic plane is never cut in half, and one that
+    // alone passes the limit is still a piece.
+    expect(capPiece('𠀀𠀁𠀂', 14)).toEqual(['𠀀𠀁', '𠀂']);
+    expect(capPiece('𠀀𠀁', 3)).toEqual(['𠀀', '𠀁']);
+    expect(capPiece('77', 3)).toEqual(['7', '7']);
+  });
+});
+
+describe('spokenLength', () => {
+  it('counts letters once, and digits and dense scripts by how long they take to say', () => {
+    expect(spokenLength('Plain words, here.')).toBe(18);
+    expect(spokenLength('2026')).toBe(32);
+    expect(spokenLength('２０')).toBe(16);
+    expect(spokenLength('中文')).toBe(8);
+    expect(spokenLength('𠀀')).toBe(5);
+    expect(spokenLength('한국')).toBe(6);
+    expect(spokenLength('かなカナ')).toBe(8);
+    expect(spokenLength('ไทย')).toBe(3);
   });
 });

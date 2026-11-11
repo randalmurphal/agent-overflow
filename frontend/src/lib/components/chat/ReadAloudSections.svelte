@@ -1,9 +1,11 @@
 <script lang="ts">
   // The reply being read: a rule in the dead gutter left of the section
   // being read, and a "read from here" button in the right gutter beside the
-  // first line of every other section. AssistantMessage mounts it only while
-  // its reply is being read or paused, so an idle reply has no layer, no
-  // listener and no observer.
+  // first line of every other section. A block split for length is several
+  // sections with one place on screen, so it has one button, at its start,
+  // for its first part; the rule spans the block while any part is read.
+  // AssistantMessage mounts it only while its reply is being read or paused,
+  // so an idle reply has no layer, no listener and no observer.
   //
   // Both are drawn in a zero-height layer after the body, positioned from the
   // geometry of the reply's top-level blocks (the children of the Markdown
@@ -44,6 +46,9 @@
     /** The first line of its first block. */
     lineTop: number;
     lineHeight: number;
+    /** Whether it starts at the start of a block: false for the later
+     *  parts of a block split for length. */
+    opens: boolean;
   }
 
   const position = $derived(readAloudPosition(readingKey));
@@ -54,7 +59,7 @@
   let layer: HTMLElement;
   let bands = $state.raw<Band[] | null>(null);
   let hovered = $state<number | null>(null);
-  // Each measured block element and the section it belongs to.
+  // Each measured block element and the section whose button it reveals.
   let sectionOfBlock = new Map<Element, number>();
   let reported = false;
   let tailWatch: MutationObserver | null = null;
@@ -115,7 +120,8 @@
     const origin = layer.getBoundingClientRect().top;
     const map = new Map<Element, number>();
     bands = sections.map((section, index) => {
-      for (let i = section.first; i <= section.last; i += 1) map.set(blocks[i], index);
+      const opens = index === 0 || sections[index - 1].first !== section.first;
+      if (opens) for (let i = section.first; i <= section.last; i += 1) map.set(blocks[i], index);
       const first = blocks[section.first].getBoundingClientRect();
       const last = blocks[section.last].getBoundingClientRect();
       const line = firstLine(blocks[section.first], first.top);
@@ -124,6 +130,7 @@
         bottom: last.bottom - origin,
         lineTop: line.top - origin,
         lineHeight: line.height,
+        opens,
       };
     });
     sectionOfBlock = map;
@@ -182,7 +189,7 @@
   {/if}
   {#if bands && position}
     {#each bands as band, index (index)}
-      {#if index !== position.section}
+      {#if band.opens && index !== position.section}
         <div
           class="pointer-events-auto absolute left-full flex w-[26px] items-center justify-center transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100 compact:opacity-100 {hovered === index ? 'opacity-100' : 'opacity-0'}"
           style="top: {band.lineTop}px; height: {band.lineHeight}px"

@@ -15,6 +15,10 @@
 // utterance start. A sentence past a limit is cut at clause punctuation,
 // then at whitespace.
 //
+// Every limit is a spoken length (`spokenLength`), not a character count:
+// a request is capped by its audio's duration, and a digit or a Chinese
+// character takes several times as long to say as a letter.
+//
 // Packing: a section takes following blocks while its text stays within
 // SECTION_CHARS. A heading always starts a section. A section under
 // MIN_SECTION_CHARS takes the next block up to MAX_SECTION_CHARS, so a
@@ -30,14 +34,58 @@
 
 import { lex } from '../markdown';
 
-/** The longest piece handed to a device voice. */
+/** The longest piece handed to a device voice, as a spoken length. */
 export const MAX_PIECE_CHARS = 280;
-/** The length a section fills up to with whole blocks. */
+/** The spoken length a section fills up to with whole blocks. */
 export const SECTION_CHARS = 400;
 /** A section shorter than this takes the next block past SECTION_CHARS. */
 export const MIN_SECTION_CHARS = 80;
-/** The longest section; a longer block is split. */
+/** The longest section; a longer block is split. About 50 seconds of
+ *  audio, against the 90 a request may run (`openai.MaxSpeechSeconds`). */
 export const MAX_SECTION_CHARS = 800;
+
+/**
+ * How long `text` takes to say, in letters of English prose (about 0.064 s
+ * each in an OpenAI voice). A digit counts 8: "123,456" is said as fifty-odd
+ * letters. A Chinese character counts 4, a Hangul syllable 3 and a kana 2,
+ * from the syllables a second those languages are spoken at. Never less
+ * than `text.length`.
+ */
+export function spokenLength(text: string): number {
+  let length = 0;
+  for (let i = 0; i < text.length; i += 1) length += unitLength(text.charCodeAt(i));
+  return length;
+}
+
+function unitLength(code: number): number {
+  if (code < 0x30) return 1;
+  if (code <= 0x39) return 8;
+  if (code < 0x3040) return 1;
+  if (code <= 0x30ff) return 2;
+  if (code >= 0x3400 && code <= 0x9fff) return 4;
+  if (code >= 0xac00 && code <= 0xd7a3) return 3;
+  // The lead surrogate of a Chinese character past the basic plane.
+  if (code >= 0xd840 && code <= 0xd87f) return 4;
+  if (code >= 0xf900 && code <= 0xfaff) return 4;
+  if (code >= 0xff10 && code <= 0xff19) return 8;
+  return 1;
+}
+
+// The longest prefix of `text` within `max` spoken length: whole
+// characters (never half a surrogate pair), and at least one.
+function prefixWithin(text: string, max: number): number {
+  const leads = (at: number): boolean => at >= 0 && text.charCodeAt(at) >= 0xd800 && text.charCodeAt(at) <= 0xdbff;
+  let length = 0;
+  let end = 0;
+  while (end < text.length) {
+    length += unitLength(text.charCodeAt(end));
+    if (length > max) break;
+    end += 1;
+  }
+  if (leads(end - 1)) end -= 1;
+  if (end === 0) end = leads(0) ? 2 : 1;
+  return end;
+}
 
 export interface SpeakableSection {
   /** What an OpenAI voice reads in one request. */
@@ -87,6 +135,8 @@ export function speakableSections(markdown: string): SpeakableSection[] {
   const blocks = renderedBlocks(lex(markdown) as unknown as MdToken[]);
   const sections: SpeakableSection[] = [];
   let open: SpeakableSection | null = null;
+  // The open section's spoken length.
+  let openLength = 0;
   blocks.forEach((token, index) => {
     const parts: string[] = [];
     collectBlocks([token], parts);
@@ -95,21 +145,24 @@ export function speakableSections(markdown: string): SpeakableSection[] {
       open = null;
       return;
     }
-    if (text.length > MAX_SECTION_CHARS) {
+    const length = spokenLength(text);
+    if (length > MAX_SECTION_CHARS) {
       open = null;
       for (const part of splitBlock(parts)) sections.push({ ...part, firstBlock: index, lastBlock: index });
       return;
     }
     if (open && token.type !== 'heading') {
-      const joined = open.text.length + 2 + text.length;
-      if (joined <= SECTION_CHARS || (open.text.length < MIN_SECTION_CHARS && joined <= MAX_SECTION_CHARS)) {
+      const joined = openLength + 2 + length;
+      if (joined <= SECTION_CHARS || (openLength < MIN_SECTION_CHARS && joined <= MAX_SECTION_CHARS)) {
         open.text += `\n\n${text}`;
         open.sentences.push(...sentencesOf(parts));
         open.lastBlock = index;
+        openLength = joined;
         return;
       }
     }
     open = { text, sentences: sentencesOf(parts), firstBlock: index, lastBlock: index };
+    openLength = length;
     sections.push(open);
   });
   return sections;
@@ -122,28 +175,30 @@ function sentencesOf(parts: string[]): string[] {
 // One block past MAX_SECTION_CHARS as parts of about equal length, cut
 // between sentences (or inside one longer than the cap).
 function splitBlock(parts: string[]): Array<{ text: string; sentences: string[] }> {
-  const units: Array<{ text: string; separator: string }> = [];
+  const units: Array<{ text: string; length: number; separator: string }> = [];
   parts.forEach((part, at) => {
     splitSentences(part).flatMap((sentence) => capPiece(sentence, MAX_SECTION_CHARS)).forEach((text, i) => {
-      units.push({ text, separator: at > 0 && i === 0 ? '\n' : ' ' });
+      units.push({ text, length: spokenLength(text), separator: at > 0 && i === 0 ? '\n' : ' ' });
     });
   });
-  const total = parts.join('\n').length;
+  const total = spokenLength(parts.join('\n'));
   const target = total / Math.ceil(total / MAX_SECTION_CHARS);
   const out: Array<{ text: string; sentences: string[] }> = [];
   let text = '';
+  let length = 0;
   let sentences: string[] = [];
   for (const unit of units) {
     if (text !== '') {
-      const grown = text.length + unit.separator.length + unit.text.length;
       // Cut where the unit's middle would pass the target, so parts come
       // out near it on either side.
-      if (grown > MAX_SECTION_CHARS || text.length + unit.separator.length + unit.text.length / 2 > target) {
+      if (length + 1 + unit.length > MAX_SECTION_CHARS || length + 1 + unit.length / 2 > target) {
         out.push({ text, sentences });
         text = '';
+        length = 0;
         sentences = [];
       }
     }
+    length = text === '' ? unit.length : length + 1 + unit.length;
     text = text === '' ? unit.text : `${text}${unit.separator}${unit.text}`;
     sentences.push(...capPiece(unit.text));
   }
@@ -250,17 +305,26 @@ export function splitSentences(text: string): string[] {
   return sentences.map((s) => s.trim()).filter((s) => s !== '');
 }
 
-/** One sentence as pieces no longer than `max`: cut after clause
+// Clause punctuation written without a following space.
+const WIDE_CLAUSE = /[，、；：]/;
+
+/** One sentence as pieces of spoken length at most `max`: cut after clause
  * punctuation where it can be, otherwise at whitespace, otherwise
  * anywhere. */
 export function capPiece(sentence: string, max = MAX_PIECE_CHARS): string[] {
   const pieces: string[] = [];
   let rest = sentence;
-  while (rest.length > max) {
-    const window = rest.slice(0, max + 1);
-    const clause = Math.max(window.lastIndexOf('; '), window.lastIndexOf(': '), window.lastIndexOf(', '));
+  while (spokenLength(rest) > max) {
+    const limit = prefixWithin(rest, max);
+    // A cut after rest[i] keeps i + 1 characters, so i is below the limit;
+    // the space after spaced punctuation may sit on it.
+    const window = rest.slice(0, limit + 1);
+    let clause = Math.max(window.lastIndexOf('; '), window.lastIndexOf(': '), window.lastIndexOf(', '));
+    for (let i = limit - 1; i > clause; i -= 1) {
+      if (WIDE_CLAUSE.test(rest[i])) clause = i;
+    }
     const space = window.lastIndexOf(' ');
-    const cut = clause > 0 ? clause + 1 : space > 0 ? space : max;
+    const cut = clause > 0 ? clause + 1 : space > 0 ? space : limit;
     pieces.push(rest.slice(0, cut).trim());
     rest = rest.slice(cut).trim();
   }

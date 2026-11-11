@@ -302,10 +302,10 @@ export function clipSpeechEngine(options: ClipSpeechOptions): SpeechEngine {
           clearTimer();
           turn += 1;
           paused = false;
-          if (sounding >= 0) {
-            audio.pause();
-            sounding = -1;
-          }
+          // Also a clip whose play() has not resolved: it would start
+          // sounding while the destination is fetched.
+          audio.pause();
+          sounding = -1;
           for (const held of Array.from(clips.keys())) if (held !== target && held !== target + 1) dropClip(held);
           pending = target;
           fetchFrom(target);

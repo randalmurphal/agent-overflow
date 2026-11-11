@@ -6,7 +6,8 @@
 // and "read from here" move the reading; the "read from here" buttons sit
 // in the right gutter and exist only on the reply being read, each shown
 // only while the pointer is over its section; a device voice moves by
-// section and repeats its sentence; and starting, moving, pausing and
+// section and repeats its sentence; a paragraph split for length has one
+// "read from here" button; and starting, moving, pausing and
 // stopping a reading changes neither the reply row's height nor the scroll
 // position.
 
@@ -209,6 +210,42 @@ test('a device voice moves by section and repeats its sentence', async ({ harnes
   await reply.control('').click();
   await expect(reply.slot).toHaveAttribute('data-phase', 'paused');
   await expect(back).toBeDisabled();
+});
+
+test('a paragraph split for length has one read from here button, at its start', async ({ harness, page }) => {
+  // Three blocks; the middle one is read as three sections.
+  const long = `Part one starts here. ${Array.from({ length: 88 }, () => 'The word goes on here.').join(' ')}`;
+  const opener = 'An opening paragraph that is long enough to be read as a section of its own, on its own.';
+  await installSpeechStub(page, { enabled: true });
+  await seedSectionReplies(harness, 0, `${opener}\n\n${long}\n\nA closing line.`);
+  await openThread(harness, page);
+  const reply = replyParts(page, 'An opening paragraph');
+  const said = async () => (await spoken(page)).map((u) => u.text);
+  const offered = () => reply.from.evaluateAll((els) => els.map((el) => Number((el.parentElement as HTMLElement).dataset.section)));
+
+  await reply.control('').click();
+  await expect(reply.marker).toHaveAttribute('data-section', '0');
+  expect(await offered()).toEqual([1, 4]);
+
+  // The paragraph's second part: the rule spans the paragraph, and its one
+  // button reads it from its start.
+  await reply.control('-next').click();
+  await reply.control('-next').click();
+  await expect(reply.marker).toHaveAttribute('data-section', '2');
+  expect(await offered()).toEqual([0, 1, 4]);
+  const rule = (await reply.marker.boundingBox())!;
+  const paragraph = (await reply.blocks.nth(1).boundingBox())!;
+  expect(Math.abs(rule.y - paragraph.y)).toBeLessThanOrEqual(0.5);
+  expect(Math.abs(rule.height - paragraph.height)).toBeLessThanOrEqual(0.5);
+  const tops = await reply.from.evaluateAll((els) => els.map((el) => el.getBoundingClientRect().top));
+  expect(new Set(tops).size, 'no two buttons share a line').toBe(tops.length);
+
+  await reply.blocks.nth(1).hover();
+  await expect.poll(async () => (await fromOpacities(reply))[1]).toBe('1');
+  await reply.fromSection(1).click();
+  await expect.poll(async () => (await said()).at(-1)).toBe('Part one starts here.');
+  await expect(reply.marker).toHaveAttribute('data-section', '1');
+  expect(await offered()).toEqual([0, 4]);
 });
 
 test('starting, moving, pausing and stopping a reading keeps the row height and the scroll position', async ({ harness, page }) => {

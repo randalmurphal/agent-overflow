@@ -276,8 +276,8 @@ export const SECTION_SENTENCES = [
 /** The pause between two OpenAI sections at normal speed (native/clipSpeech.ts). */
 export const SECTION_PAUSE_MS = 850;
 
-/** A thread with `filler` short turns, then SECTIONS_REPLY, then SECOND_REPLY. */
-export async function seedSectionReplies(harness: HarnessApp, filler = 0): Promise<void> {
+/** A thread with `filler` short turns, then `reply`, then SECOND_REPLY. */
+export async function seedSectionReplies(harness: HarnessApp, filler = 0, reply = SECTIONS_REPLY): Promise<void> {
   const fillers = Array.from({ length: filler }, (_, i) => ({
     userText: `Filler ${i}?`,
     items: [{ kind: 'assistant_text', summary: `Filler answer ${i}.\n\nWith a second paragraph to take up room.` }],
@@ -290,7 +290,7 @@ export async function seedSectionReplies(harness: HarnessApp, filler = 0): Promi
         title: 'Read this by section',
         turns: [
           ...fillers,
-          { userText: 'Sections?', items: [{ kind: 'assistant_text', summary: SECTIONS_REPLY }] },
+          { userText: 'Sections?', items: [{ kind: 'assistant_text', summary: reply }] },
           { userText: 'Second?', items: [{ kind: 'assistant_text', summary: SECOND_REPLY }] },
         ],
       }],

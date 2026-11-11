@@ -146,6 +146,12 @@ offers),
   takes the next block up to 800, a block with nothing to say (code, a
   table, a rule, an image) ends one, and a block over 800 characters is
   split at sentences into parts of about equal length.
+- These lengths are spoken lengths (`spokenLength` in
+  `utils/speakableText.ts`), because a request is capped by its audio's
+  duration: a letter counts 1, a digit 8, a Chinese character 4, a Hangul
+  syllable 3 and a kana 2. 800 is about 50 seconds in an OpenAI voice,
+  against the 90 a request may run. The weights for digits and the three
+  scripts are estimates from speaking rates, not measured against OpenAI.
 - A device voice reads a section as its sentences, each one utterance
   capped at 280 characters (cut at clause punctuation, then whitespace), so
   no engine stalls on a long one. Pause stops the voice and keeps the
@@ -160,7 +166,9 @@ offers),
   button in the right gutter beside every other section: on hover of that
   section with a mouse, always on the compact layout. Both are drawn over
   the reply from its blocks' geometry, so the row's height does not change.
-  A reply that is not being read shows neither.
+  A block split for length has one button, at its start, for its first
+  part; the rule spans the block while any part is read. A reply that is
+  not being read shows neither.
 - Browsers and the desktop webviews speak through `speechSynthesis`.
   Android System WebView has none (reports through WebView 138), so the
   shell speaks through Android's TextToSpeech, queueing every sentence at
