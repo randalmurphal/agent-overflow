@@ -834,20 +834,29 @@ func TestFindEveryOrderedTripleKeepsTheInvariants(t *testing.T) {
 			ops = append(ops, op)
 		}
 	}
+	// Each sequence has a Manager of its own, so they run in parallel; the
+	// group returns once all have.
+	var mu sync.Mutex
 	var scripts []findScript
-	for _, first := range ops {
-		for _, second := range ops {
-			for _, third := range ops {
-				name := fmt.Sprintf("%s, %s, %s", first.name, second.name, third.name)
-				t.Run(name, func(t *testing.T) {
-					e := newFindTableEnv(t, "search")
-					runFindSequence(t, e, []findTableOp{first, second, third})
-					e.check(t, name)
-					scripts = append(scripts, e.scripts(t, name)...)
-				})
+	t.Run("sequences", func(t *testing.T) {
+		for _, first := range ops {
+			for _, second := range ops {
+				for _, third := range ops {
+					name := fmt.Sprintf("%s, %s, %s", first.name, second.name, third.name)
+					t.Run(name, func(t *testing.T) {
+						t.Parallel()
+						e := newFindTableEnv(t, "search")
+						runFindSequence(t, e, []findTableOp{first, second, third})
+						e.check(t, name)
+						recorded := e.scripts(t, name)
+						mu.Lock()
+						scripts = append(scripts, recorded...)
+						mu.Unlock()
+					})
+				}
 			}
 		}
-	}
+	})
 	checkFindScripts(t, "triples.json", scripts)
 }
 
@@ -1019,6 +1028,9 @@ func TestFindEndInsideAnActionLandsAfterIt(t *testing.T) {
 // or rewrites it with AO_UPDATE_FIND_SCRIPTS=1.
 func checkFindScripts(t *testing.T, file string, scripts []findScript) {
 	t.Helper()
+	// Sorted first, so the name kept for scripts alike does not depend on
+	// the order the sequences ran in.
+	sort.SliceStable(scripts, func(i, j int) bool { return scripts[i].Name < scripts[j].Name })
 	seen := map[string]bool{}
 	var unique []findScript
 	for _, script := range scripts {

@@ -303,6 +303,17 @@
   "bar": false
  },
  {
+  "name": "close answer late, then close switch / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "shown": "page-2"
+   }
+  ],
+  "bar": false
+ },
+ {
   "name": "close answer late, then reopen close / A",
   "mount": "mount-A",
   "page": "page-1",
@@ -1165,6 +1176,20 @@
   "bar": false
  },
  {
+  "name": "close answer late, then switch switch / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "shown": "page-2"
+   },
+   {
+    "shown": "page-1"
+   }
+  ],
+  "bar": false
+ },
+ {
   "name": "close arrive late, then close switch / A",
   "mount": "mount-A",
   "page": "page-1",
@@ -1271,6 +1296,34 @@
      "current": -1,
      "capped": false
     }
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "close arrive late, then close switch / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "event": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "open": "A1",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-2"
    }
   ],
   "bar": false
@@ -1647,6 +1700,37 @@
      "current": -1,
      "capped": false
     }
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "close arrive late, then switch switch / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "event": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "open": "A1",
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-2"
+   },
+   {
+    "shown": "page-1"
    }
   ],
   "bar": false
@@ -2048,6 +2132,34 @@
      "current": -1,
      "capped": false
     }
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "empty answer late, then close switch / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "event": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "open": "A1",
+     "document": 1,
+     "session": 4,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-2"
    }
   ],
   "bar": false
@@ -3904,6 +4016,37 @@
      "current": -1,
      "capped": false
     }
+   }
+  ],
+  "bar": false
+ },
+ {
+  "name": "empty answer late, then switch switch / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "event": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "open": "A1",
+     "document": 1,
+     "session": 4,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-2"
+   },
+   {
+    "shown": "page-1"
    }
   ],
   "bar": false
@@ -7375,17 +7518,6 @@
   "bar": false
  },
  {
-  "name": "open arrive late, then close switch / B",
-  "mount": "mount-B",
-  "page": "page-1",
-  "steps": [
-   {
-    "shown": "page-2"
-   }
-  ],
-  "bar": false
- },
- {
   "name": "open arrive late, then reopen switch / A",
   "mount": "mount-A",
   "page": "page-1",
@@ -7696,20 +7828,6 @@
    }
   ],
   "bar": true
- },
- {
-  "name": "open arrive late, then switch switch / B",
-  "mount": "mount-B",
-  "page": "page-1",
-  "steps": [
-   {
-    "shown": "page-2"
-   },
-   {
-    "shown": "page-1"
-   }
-  ],
-  "bar": false
  },
  {
   "name": "open arrive late, then switch type / A",
@@ -12138,34 +12256,6 @@
   "bar": false
  },
  {
-  "name": "type answer late, then close switch / B",
-  "mount": "mount-B",
-  "page": "page-1",
-  "steps": [
-   {
-    "event": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "mount-A",
-     "open": "A1",
-     "document": 1,
-     "session": 4,
-     "foreign": false,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
-   },
-   {
-    "shown": "page-2"
-   }
-  ],
-  "bar": false
- },
- {
   "name": "type answer late, then reopen close / A",
   "mount": "mount-A",
   "page": "page-1",
@@ -14050,37 +14140,6 @@
   "bar": false
  },
  {
-  "name": "type answer late, then switch switch / B",
-  "mount": "mount-B",
-  "page": "page-1",
-  "steps": [
-   {
-    "event": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "mount-A",
-     "open": "A1",
-     "document": 1,
-     "session": 4,
-     "foreign": false,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
-   },
-   {
-    "shown": "page-2"
-   },
-   {
-    "shown": "page-1"
-   }
-  ],
-  "bar": false
- },
- {
   "name": "type answer late, then type / A",
   "mount": "mount-A",
   "page": "page-1",
@@ -14986,34 +15045,6 @@
   "bar": false
  },
  {
-  "name": "type arrive late, then close switch / B",
-  "mount": "mount-B",
-  "page": "page-1",
-  "steps": [
-   {
-    "event": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "mount-A",
-     "open": "A1",
-     "document": 1,
-     "session": 3,
-     "foreign": false,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
-   },
-   {
-    "shown": "page-2"
-   }
-  ],
-  "bar": false
- },
- {
   "name": "type arrive late, then reopen switch / A",
   "mount": "mount-A",
   "page": "page-1",
@@ -15647,37 +15678,6 @@
      "current": -1,
      "capped": false
     }
-   }
-  ],
-  "bar": false
- },
- {
-  "name": "type arrive late, then switch switch / B",
-  "mount": "mount-B",
-  "page": "page-1",
-  "steps": [
-   {
-    "event": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "mount-A",
-     "open": "A1",
-     "document": 1,
-     "session": 3,
-     "foreign": false,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
-   },
-   {
-    "shown": "page-2"
-   },
-   {
-    "shown": "page-1"
    }
   ],
   "bar": false
