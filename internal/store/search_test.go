@@ -242,8 +242,9 @@ func TestSearchThreadItemsMatchesTheSharedFindVectors(t *testing.T) {
 			t.Errorf("thread find of %q in %q found %v, want %v", v.Query, v.Text, got, v.Count > 0)
 		}
 	}
-	// The cross-thread search keeps its own rule: the query lower cased
-	// in Go, the text by SQLite LOWER, which folds ASCII only.
+	// The cross-thread search keeps its own rule: ASCII letters fold on
+	// both sides, every other character matches exactly
+	// (TestSearchThreadMessagesMatchesTheSharedSearchVectors).
 	mustCreateThreadForSearch(t, s, "accent", "HAUTE ÉCOLE")
 	hits, err := s.SearchThreadMessages("haute école", 10)
 	if err != nil {

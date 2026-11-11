@@ -118,7 +118,7 @@ describe('<MessageSearch> — search behavior', () => {
     expect(getByTestId('message-search-hit-t2-i9').textContent).toContain('hit body');
   });
 
-  it('marks what the search matched: ASCII folded in the text, the query lower cased', async () => {
+  it('marks what the search matched: ASCII letters folded on both sides, other characters exact', async () => {
     setBindingMock('SearchThreadMessages', async () => [
       hit({ threadId: 't1', threadTitle: 'İx ÉCOLE École école', matchType: 'item', itemId: 'i1', summary: 'Kelvin Kelvin' }),
     ]);
@@ -126,7 +126,7 @@ describe('<MessageSearch> — search behavior', () => {
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
     await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'ÉCOLE' } });
     const row = await findByTestId('message-search-hit-t1-i1');
-    expect([...row.querySelectorAll('mark')].map((mark) => mark.textContent)).toEqual(['école']);
+    expect([...row.querySelectorAll('mark')].map((mark) => mark.textContent)).toEqual(['ÉCOLE', 'École']);
   });
 
   it('marks the rows by the query that found them while the next search waits', async () => {

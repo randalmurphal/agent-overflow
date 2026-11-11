@@ -36,10 +36,10 @@ type ThreadMessageHit struct {
 // SearchThreadMessages returns hits that match the query across thread titles
 // and item summaries. Matching is case-insensitive substring via SQLite's
 // LOWER + LIKE — intentionally simple for now; a future migration can swap
-// to an FTS5 virtual table without changing the return shape. The query is
-// lower cased in Go (Unicode) and the text by SQLite (ASCII only); the
-// search modal highlights by that rule (frontend utils/highlight.ts
-// searchHighlightSegments), held to it by searchVectors.json.
+// to an FTS5 virtual table without changing the return shape. The search
+// modal highlights by the same rule (likePattern; frontend
+// utils/highlight.ts searchHighlightSegments), held to it by
+// searchVectors.json.
 //
 // limit caps the total number of hits returned. Zero or negative is treated
 // as an unbounded search (callers should always pass a small positive int
@@ -257,11 +257,23 @@ func scanItemHits(rows *sql.Rows) ([]ThreadMessageHit, error) {
 	return hits, rows.Err()
 }
 
-// likePattern lowercases the query and wraps it in substring wildcards, with
-// the user's own %, _, and \ escaped so they are matched literally (paired
-// with the ESCAPE '\' clause in every query above).
+// likePattern folds the query as SQLite LOWER folds the text and wraps it
+// in substring wildcards, with the user's own %, _, and \ escaped so they
+// are matched literally (paired with the ESCAPE '\' clause in every query
+// above).
 func likePattern(query string) string {
-	return "%" + escapeLike(strings.ToLower(query)) + "%"
+	// Matching is case-insensitive for ASCII letters and exact for every other character, on both sides.
+	return "%" + escapeLike(asciiLower(query)) + "%"
+}
+
+// asciiLower lowers ASCII capitals only, as SQLite's built-in LOWER does.
+func asciiLower(s string) string {
+	return strings.Map(func(r rune) rune {
+		if 'A' <= r && r <= 'Z' {
+			return r + 'a' - 'A'
+		}
+		return r
+	}, s)
 }
 
 // limitSuffix renders an optional "LIMIT n" clause; non-positive means none.

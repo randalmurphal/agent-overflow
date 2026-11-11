@@ -4,8 +4,6 @@
 // what produced the row: every non-overlapping occurrence, left to right,
 // at its offsets in the original text. A blank query marks nothing.
 
-import { foldFindText } from './findMatch';
-
 export type HighlightSegment =
   | { type: 'text'; value: string }
   | { type: 'match'; value: string };
@@ -15,18 +13,18 @@ export type HighlightSegment =
 const GO_SPACE = /^[\t\n\v\f\r \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+|[\t\n\v\f\r \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$/g;
 const ASCII_CAPITAL = /[A-Z]/g;
 
+const asciiLower = (s: string) => s.replace(ASCII_CAPITAL, (c) => String.fromCharCode(c.charCodeAt(0) + 32));
+
 /**
- * The cross-thread search's rule (store SearchThreadMessages): the query
- * trimmed by Go's strings.TrimSpace and lower cased by Go's
- * strings.ToLower, which is the find fold table's per-code-point simple
- * lower case (stringsx TestFindFoldTableIsUnicodeToLower), matched as a
- * literal substring of the text with ASCII letters folded only (SQLite
- * LOWER and LIKE). Folding keeps lengths, so offsets are the text's.
+ * The cross-thread search's rule (store SearchThreadMessages, likePattern):
+ * the query trimmed by Go's strings.TrimSpace, then a literal substring,
+ * case-insensitive for ASCII letters and exact for every other character,
+ * on both sides. Folding keeps lengths, so offsets are the text's.
  * src/test/fixtures/searchVectors.json holds this to the SQL.
  */
 export function searchHighlightSegments(text: string, query: string): HighlightSegment[] {
-  const needle = foldFindText(query.replace(GO_SPACE, ''));
-  const folded = text.replace(ASCII_CAPITAL, (c) => String.fromCharCode(c.charCodeAt(0) + 32));
+  const needle = asciiLower(query.replace(GO_SPACE, ''));
+  const folded = asciiLower(text);
   const ranges: Array<[number, number]> = [];
   if (needle !== '') {
     for (let at = folded.indexOf(needle); at >= 0; at = folded.indexOf(needle, at + needle.length)) {
