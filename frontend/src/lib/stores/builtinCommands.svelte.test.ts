@@ -43,8 +43,14 @@ import {
 } from './messageSearch.svelte';
 import { getToasts } from './toast.svelte';
 import {
+  PANE_FIND_DETAIL_REGION,
+  PANE_FIND_LIST_REGION,
+  activatePaneFindRegion,
+  declarePaneFindRegions,
   getPaneFind,
   openPaneFind,
+  paneFindDetailKey,
+  paneFindListKey,
   registerPaneFindProvider,
   resetPaneFindForTest,
   type PaneFindProvider,
@@ -77,7 +83,8 @@ import {
   pushWorkflowRunDetail,
   resetWorkflowsOverlayForTest,
 } from './workflowsOverlay.svelte';
-import { isToolOpen, openTool, resetToolPanesForTest } from './toolPanes.svelte';
+import { isToolOpen, openTool, registerToolDetailProbe, resetToolPanesForTest } from './toolPanes.svelte';
+import { registerPullsBackHandler } from './pullsCommands.svelte';
 import {
   getSettingsSection,
   isSettingsOpen,
@@ -1234,6 +1241,125 @@ describe('find.in-pane command', () => {
     dialog();
     palette();
     closePalette();
+  });
+});
+
+// A pane with regions (the Pull requests page's list beside its detail):
+// find acts on the region last focused or clicked, or the one on screen
+// under compact, and an open find closes before the detail's own Escape.
+describe('find.in-pane over pane regions', () => {
+  const PULLS = 'tool-pulls';
+  const providerFor = (): PaneFindProvider => ({
+    noun: 'merge requests',
+    result: { count: 0, current: -1, pending: false },
+    search: vi.fn(),
+    clear: vi.fn(),
+  });
+  let releases: (() => void)[] = [];
+
+  beforeEach(() => {
+    clearCommandRegistry();
+    resetPaneFindForTest();
+    resetPanesForTest();
+    resetToolPanesForTest();
+    setPaneLayoutItemsForTest([{ id: PULLS, paneId: PULLS, kind: 'pulls', widthPx: 900 }]);
+    setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
+  });
+
+  afterEach(() => {
+    for (const release of releases) release();
+    releases = [];
+    setCompactLayoutForTest(false);
+    showCompactList();
+    resetPaneFindForTest();
+    resetPaneLayoutForTest();
+    resetKeybindingsStore();
+    document.body.replaceChildren();
+  });
+
+  function escape(): boolean {
+    const event = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true });
+    Object.defineProperty(event, 'target', { value: document.body });
+    return dispatchKey(event, makeCommandContext(null, {}) as CommandContext, { isMac: false });
+  }
+
+  it('opens the active region\'s bar; a detail with no find falls through; Escape closes the list find before the detail', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    const back = vi.fn(() => true);
+    releases.push(registerPullsBackHandler(back));
+    releases.push(registerToolDetailProbe('pulls', () => true));
+    releases.push(declarePaneFindRegions(PULLS, { initial: PANE_FIND_LIST_REGION }));
+    const list = paneFindListKey(PULLS);
+    const detail = paneFindDetailKey(PULLS);
+    const listProvider = providerFor();
+    releases.push(registerPaneFindProvider(list, listProvider));
+    focusPane(PULLS);
+
+    let ctx = makeCommandContext(null, {}) as CommandContext;
+    expect(ctx.flags.paneFindAvailable).toBe(true);
+    expect(runCommand('find.in-pane', ctx)).toBe(true);
+    expect(getPaneFind(list)?.open).toBe(true);
+    expect(getPaneFind(PULLS)).toBeNull();
+
+    // The reader clicked into the detail, which has no find yet.
+    activatePaneFindRegion(detail);
+    ctx = makeCommandContext(null, {}) as CommandContext;
+    expect(ctx.flags.paneFindAvailable).toBe(false);
+    expect(ctx.flags.paneFindOpen).toBe(false);
+    expect(runCommand('find.in-pane', ctx)).toBe(false);
+    // Escape there is the detail's: the list's find stays open.
+    expect(escape()).toBe(true);
+    expect(back).toHaveBeenCalledTimes(1);
+    expect(getPaneFind(list)?.open).toBe(true);
+
+    // A detail find, once registered, opens under its own key.
+    const detailProvider = providerFor();
+    releases.push(registerPaneFindProvider(detail, detailProvider));
+    expect(runCommand('find.in-pane', makeCommandContext(null, {}) as CommandContext)).toBe(true);
+    expect(getPaneFind(detail)?.open).toBe(true);
+
+    // Back in the list: Escape closes the list find first, then the detail.
+    activatePaneFindRegion(list);
+    expect(escape()).toBe(true);
+    expect(getPaneFind(list)?.open).toBe(false);
+    expect(listProvider.clear).toHaveBeenCalledTimes(1);
+    expect(getPaneFind(detail)?.open).toBe(true);
+    expect(back).toHaveBeenCalledTimes(1);
+    expect(escape()).toBe(true);
+    expect(back).toHaveBeenCalledTimes(2);
+  });
+
+  it('under compact targets the region on screen', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    let shown = PANE_FIND_LIST_REGION;
+    releases.push(declarePaneFindRegions(PULLS, { initial: PANE_FIND_LIST_REGION, shown: () => shown }));
+    releases.push(registerPaneFindProvider(paneFindListKey(PULLS), providerFor()));
+    focusPane(PULLS);
+    setCompactLayoutForTest(true);
+    showCompactThread();
+    const strip = document.createElement('div');
+    strip.className = 'compact-screen-thread';
+    const rect = { left: 0, right: 412, top: 0, bottom: 800, width: 412, height: 800, x: 0, y: 0, toJSON: () => ({}) };
+    strip.getBoundingClientRect = () => rect;
+    const section = document.createElement('section');
+    section.dataset.paneId = PULLS;
+    section.getBoundingClientRect = () => rect;
+    strip.appendChild(section);
+    document.body.appendChild(strip);
+
+    // The reader last touched the detail, but the list is on screen.
+    activatePaneFindRegion(paneFindDetailKey(PULLS));
+    let ctx = makeCommandContext(null, {}) as CommandContext;
+    expect(ctx.flags.paneFindAvailable).toBe(true);
+    expect(runCommand('find.in-pane', ctx)).toBe(true);
+    expect(getPaneFind(paneFindListKey(PULLS))?.open).toBe(true);
+    // The detail replaced the list: its find is the target, and it has none.
+    shown = PANE_FIND_DETAIL_REGION;
+    ctx = makeCommandContext(null, {}) as CommandContext;
+    expect(ctx.flags.paneFindAvailable).toBe(false);
+    expect(ctx.flags.paneFindOpen).toBe(false);
   });
 });
 

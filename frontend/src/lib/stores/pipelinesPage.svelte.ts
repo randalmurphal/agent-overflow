@@ -30,6 +30,7 @@ import { createCISubjectState, ciKeyFor, type CISubjectState } from './ciSubject
 import { attachPipelineCI, type PipelineCIAttachment } from './pipelineCI.svelte';
 import { installPullsReceiver } from './pullsPage.svelte';
 import { ensurePullsFilters, pipelineFilters, setPipelineFilters, type PipelineFilters } from './pullsPageFilters.svelte';
+import { pipelineRowMatches } from './pullsPageRows';
 import { getTransportStatusFor } from './transportStatus.svelte';
 import { shortSHA, type PipelineRowView, type PipelineStageView } from '../components/pulls/pipelineRowView';
 import type { BackendKey } from '../transport/backendKey';
@@ -39,6 +40,7 @@ import { presentScope, scopeRefusalMessage } from '../transport/scopeRefusal';
 import { hasScope, pageGrantsKnown, pageGrantsKnownTracked } from '../transport/scopes';
 import { TransportError } from '../transport/wsClient';
 import { errString } from '../utils/errors';
+import { findNeedle } from '../utils/findMatch';
 import { forgeFailureFrom, type ForgeFailure } from '../utils/forgeFailure';
 import { relativeTime } from '../utils/format';
 import { documentHidden } from '../utils/pageVisibility';
@@ -240,6 +242,7 @@ class PipelinesPageBackend {
       refKind: summary.refKind,
       mrNumber: summary.mrNumber ?? 0,
       forge: pipeline.repo.forge,
+      sha: summary.sha,
       shortSHA: shortSHA(summary.sha),
       title: summary.title ?? '',
       projectName: pipeline.projectName,
@@ -476,6 +479,15 @@ class PipelineSelection {
 class PaneEntry {
   selection = $state.raw<PipelineSelection | null>(null);
   onScreen: ReadonlySet<string> = new Set();
+  /** The list find's query (paneFind.svelte.ts); '' while find is closed. */
+  query = $state('');
+  readonly needle = $derived(findNeedle(this.query));
+  /** The page's rows the find query admits (`pipelineRowMatches`). */
+  readonly rows: readonly PipelineRowView[] = $derived.by(() => {
+    const rows = pages.get(this.backend)?.rows ?? [];
+    const needle = this.needle;
+    return needle ? rows.filter((row) => pipelineRowMatches(row, needle)) : rows;
+  });
   constructor(readonly backend: BackendKey) {}
 }
 
@@ -556,8 +568,23 @@ export function setPipelinesFilters(paneId: string, next: Partial<PipelineFilter
   });
 }
 
+/** The rows the tab lists: the ref kind filter, then the find query. */
 export function pipelinesRows(paneId: string): readonly PipelineRowView[] {
-  return pageOf(paneId)?.rows ?? [];
+  return paneEntries.get(paneId)?.rows ?? [];
+}
+
+/** Reactive: the list find's query narrowing the tab. */
+export function pipelinesQuery(paneId: string): string {
+  return paneEntries.get(paneId)?.query ?? '';
+}
+
+/** The list find narrows the tab to rows matching `query`; '' lists every
+ * row. Ignored while the tab is not attached. */
+export function setPipelinesQuery(paneId: string, query: string): void {
+  untrack(() => {
+    const entry = paneEntries.get(paneId);
+    if (entry && entry.query !== query) entry.query = query;
+  });
 }
 
 /** Reactive: the first list read has not answered. */

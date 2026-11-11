@@ -111,7 +111,7 @@ interface Seeded {
   gitlabPath: string;
 }
 
-async function seedProjects(harness: HarnessApp): Promise<Seeded> {
+export async function seedProjects(harness: HarnessApp): Promise<Seeded> {
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [
       { name: 'widgets', repo: { commits: [{ message: 'init', files: { 'README.md': '# Widgets\n' } }] }, threads: [] },
@@ -139,7 +139,7 @@ export function launchPullsHarness(): Promise<HarnessApp> {
   return launchHarness({ env: { AO_HARNESS_TIMING: [...HARNESS_TIMING.split(','), 'pr-update=1s'].join(',') } });
 }
 
-function row(page: Page, number: number): Locator {
+export function row(page: Page, number: number): Locator {
   // The row key ends in the PR number; the numbers here are distinct.
   return page.locator(`[data-testid="pull-row"][data-pr-key$=":${number}"]`);
 }
@@ -149,7 +149,7 @@ function rowState(page: Page, number: number): Locator {
 }
 
 /** Picks a filter from the toolbar's filter menu. */
-async function pickFilter(page: Page, pane: Locator, value: 'needs_you' | 'mine' | 'reviewing' | 'all'): Promise<void> {
+export async function pickFilter(page: Page, pane: Locator, value: 'needs_you' | 'mine' | 'reviewing' | 'all'): Promise<void> {
   await pane.getByTestId('pulls-filter').click();
   await page.getByTestId(`pulls-filter-${value}`).click();
   await expect(pane.getByTestId('pulls-filter')).toHaveAttribute('data-filter', value);
@@ -164,7 +164,7 @@ async function shoot(target: Page | Locator, testInfo: TestInfo, name: string): 
   await target.screenshot({ path: testInfo.outputPath(`${name}.png`) });
 }
 
-async function openPage(page: Page): Promise<Locator> {
+export async function openPage(page: Page): Promise<Locator> {
   await page.getByTestId('sidebar-tool-pulls').click();
   const pane = page.getByTestId('pulls-pane');
   await expect(pane).toBeVisible();

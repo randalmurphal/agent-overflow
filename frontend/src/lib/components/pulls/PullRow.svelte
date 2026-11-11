@@ -48,6 +48,7 @@
     {selected ? 'bg-accent/8' : 'hover:bg-surface-1/60'}"
   data-testid="pull-row"
   data-pr-key={row.key}
+  data-list-row-key={row.key}
   data-pull-state={row.state}
   data-selected={selected ? 'true' : undefined}
 >

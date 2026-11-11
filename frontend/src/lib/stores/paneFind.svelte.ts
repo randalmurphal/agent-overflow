@@ -2,10 +2,15 @@
 //
 // A pane body registers a provider while it is mounted; `find.in-pane`
 // opens the bar of the focused layout pane, and a pane with no provider has
-// no find. State (open, query, the focus to return) is keyed by layout pane
-// id and outlives a body remount, so a thread switch or a reopened bar keeps
-// the query. It is dropped when the pane leaves the layout, whatever body
-// it last showed.
+// no find. Everything here is keyed by a find key: a layout pane id, or a
+// region key (`paneFindRegionKey`) for a pane whose body declares regions
+// (`declarePaneFindRegions`), such as a list beside a detail. Each region
+// has its own provider, state and bar; the commands act on the pane's
+// target region (`paneFindTarget`): the one on screen when only one is,
+// else the one last focused or clicked, else the declared initial one.
+// State (open, query, the focus to return) outlives a body remount, so a
+// thread switch or a reopened bar keeps the query. It is dropped when the
+// pane leaves the layout, whatever body it last showed.
 
 import { SvelteMap } from 'svelte/reactivity';
 import { onPaneLayoutItemsRemoved } from './paneLayout.svelte';
@@ -38,15 +43,22 @@ export interface PaneFindResult {
  * Escape to the UI; another open seeds it again.
  */
 export interface PaneFindProvider {
-  /** Completes the placeholder: "Find in {noun}". */
+  /** Completes the placeholder: "Find in {noun}", or "Filter {noun}" for a filter. */
   readonly noun: string;
   /** Reactive. */
   readonly result: PaneFindResult;
   search(query: string): void;
   next?(): void;
   previous?(): void;
+  /** A filter's Enter: focus its first result. False when there is none. */
+  focusFirst?(): Promise<boolean> | boolean;
   clear(): void;
   openNative?(seed: string): void;
+}
+
+/** True for a provider that steps through matches rather than filtering. */
+export function isSteppingFind(provider: PaneFindProvider): boolean {
+  return provider.next !== undefined || provider.previous !== undefined;
 }
 
 interface PaneFindState {
@@ -62,6 +74,93 @@ export type PaneFindView = Readonly<PaneFindState>;
 
 const providers = new SvelteMap<string, PaneFindProvider>();
 const states = new SvelteMap<string, PaneFindState>();
+
+// ---- Regions ----------------------------------------------------------------
+
+const REGION_SEPARATOR = '#';
+
+/** The region named in every list-beside-detail pane. */
+export const PANE_FIND_LIST_REGION = 'list';
+export const PANE_FIND_DETAIL_REGION = 'detail';
+
+/** The find key of a named region of a layout pane. */
+export function paneFindRegionKey(paneId: string, region: string): string {
+  return `${paneId}${REGION_SEPARATOR}${region}`;
+}
+
+/** The find key a pane's detail region registers, mounts its bar and
+ * names its highlights under. */
+export function paneFindDetailKey(paneId: string): string {
+  return paneFindRegionKey(paneId, PANE_FIND_DETAIL_REGION);
+}
+
+export function paneFindListKey(paneId: string): string {
+  return paneFindRegionKey(paneId, PANE_FIND_LIST_REGION);
+}
+
+/** The layout pane a find key belongs to. */
+export function paneOfFindKey(key: string): string {
+  const at = key.indexOf(REGION_SEPARATOR);
+  return at < 0 ? key : key.slice(0, at);
+}
+
+export interface PaneFindRegions {
+  /** The region find targets before the reader focused or clicked one. */
+  initial: string;
+  /** The region on screen when only one is (compact), else null. */
+  shown?: () => string | null;
+}
+
+interface RegionDeclaration extends PaneFindRegions {
+  /** The region last focused or clicked; null until one is. */
+  active: string | null;
+}
+
+const regions = new SvelteMap<string, RegionDeclaration>();
+const regionElements = new Map<string, HTMLElement>();
+
+/** Declares that the pane's find acts per region; returns its release.
+ * A later declaration for the same pane replaces this one. */
+export function declarePaneFindRegions(paneId: string, declaration: PaneFindRegions): () => void {
+  const entry: RegionDeclaration = $state({ ...declaration, active: null });
+  regions.set(paneId, entry);
+  return () => {
+    if (regions.get(paneId) === entry) regions.delete(paneId);
+  };
+}
+
+/** The reader focused or clicked inside the region `key` names. Ignored
+ * for a pane that declares no regions. */
+export function activatePaneFindRegion(key: string): void {
+  const at = key.indexOf(REGION_SEPARATOR);
+  if (at < 0) return;
+  const entry = regions.get(key.slice(0, at));
+  const region = key.slice(at + 1);
+  if (entry && entry.active !== region) entry.active = region;
+}
+
+/** Records the region's element, the root the find command reads a seed
+ * selection from; returns its release. */
+export function setPaneFindRegionElement(key: string, element: HTMLElement): () => void {
+  regionElements.set(key, element);
+  return () => {
+    if (regionElements.get(key) === element) regionElements.delete(key);
+  };
+}
+
+export function paneFindRegionElement(key: string): HTMLElement | null {
+  return regionElements.get(key) ?? null;
+}
+
+/** The find key the commands act on for a layout pane: the pane itself,
+ * or its target region. Reactive. */
+export function paneFindTarget(paneId: string | null): string | null {
+  if (paneId === null) return null;
+  const entry = regions.get(paneId);
+  if (!entry) return paneId;
+  const region = entry.shown?.() ?? entry.active ?? entry.initial;
+  return paneFindRegionKey(paneId, region);
+}
 
 /**
  * A pane's find reads: one in flight, at most one waiting. Keyed by layout
@@ -115,10 +214,10 @@ export function paneFindReads(paneId: string): PaneFindReads {
 }
 
 onPaneLayoutItemsRemoved((paneIds) => {
-  for (const paneId of paneIds) {
-    states.delete(paneId);
-    readSlots.delete(paneId);
-  }
+  const removed = new Set(paneIds);
+  for (const key of states.keys()) if (removed.has(paneOfFindKey(key))) states.delete(key);
+  for (const key of readSlots.keys()) if (removed.has(paneOfFindKey(key))) readSlots.delete(key);
+  for (const paneId of removed) regions.delete(paneId);
 });
 
 /** Registers `provider` for the layout pane; returns its release. */
@@ -196,6 +295,14 @@ export function stepPaneFind(paneId: string, direction: 1 | -1): void {
   else provider?.previous?.();
 }
 
+/** A filter's Enter: focus its first result. False when it has none. */
+export async function focusFirstPaneFindResult(paneId: string): Promise<boolean> {
+  if (!states.get(paneId)?.open) return false;
+  const provider = providers.get(paneId);
+  if (!provider?.focusFirst) return false;
+  return provider.focusFirst();
+}
+
 /** Closes the bar and clears its highlights. The query stays for a reopen. */
 export function closePaneFind(paneId: string): void {
   const state = states.get(paneId);
@@ -217,4 +324,6 @@ export function resetPaneFindForTest(): void {
   providers.clear();
   states.clear();
   readSlots.clear();
+  regions.clear();
+  regionElements.clear();
 }

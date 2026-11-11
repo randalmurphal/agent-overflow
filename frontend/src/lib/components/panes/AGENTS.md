@@ -47,8 +47,26 @@ the engine's to paint; a provider that cannot count reports `count: null`,
 and one with `openNative` opens its engine's own find UI instead of the bar,
 which never reads as open, so its Escape stays the engine's
 ([browser-tools.md](../../../../../docs/architecture/browser-tools.md#find)).
-Review, terminal, discussion and tool panes have no provider yet, so mod+f
-falls through there.
+Review, terminal and discussion panes have no provider yet, so mod+f falls
+through there.
+
+A pane whose body holds a list beside a detail declares find regions
+(`declarePaneFindRegions`) and keys each region's provider, bar, reads
+and highlights by its region key (`paneFindListKey`, `paneFindDetailKey`)
+instead of the layout pane id. Find acts on one region at a time
+(`paneFindTarget`): the one on screen when only one is (compact, a stacked
+level), else the one last focused or pressed (`paneFindRegion.ts` on the
+region's element), else the declared initial one. Each region's state is
+its own, so both bars may be open; a region with no provider has no find
+and mod+f falls through. Everything the store does per pane (open, close,
+focus return, `paneFindAvailable`, drop on layout removal) holds per
+region. A list region's provider is a filter: it has no `next` or
+`previous`, the bar shows the matching row count and Enter calls
+`focusFirst`, and its query narrows the rows in the page's store so every
+count follows one source. Matching uses `utils/findMatch.ts`, the rule
+thread find paints with. The Pull requests page
+(`pulls/pullsPaneFind.svelte.ts`) and Workflows home
+(`workflows/workflowsPaneFind.svelte.ts`) filter this way.
 
 Timeline scroll ownership belongs to
 [`components/chat/`](../chat/AGENTS.md). Generic virtualization belongs to

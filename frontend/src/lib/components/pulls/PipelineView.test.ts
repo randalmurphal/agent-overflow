@@ -23,6 +23,7 @@ const ROW: PipelineRowView = {
   refKind: 'merge_request',
   mrNumber: 12,
   forge: 'gitlab',
+  sha: 'abcdef1234567890abcd',
   shortSHA: 'abcdef1',
   title: 'Fix the parser',
   projectName: 'App',

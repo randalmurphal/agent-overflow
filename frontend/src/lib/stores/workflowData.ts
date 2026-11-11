@@ -9,11 +9,14 @@
 
 import type {
   WorkItem,
+  WorkflowAutomationView,
   WorkflowDefinitionListing,
   WorkflowItemStateEvent,
   WorkflowResolvedReceipt,
 } from '../types/workflow';
 import { parseWorkflowDisposition } from '../types/workflow';
+import { textsMatchNeedle } from '../utils/findMatch';
+import { workflowRunSignal } from '../utils/workflowRunSignal';
 
 export function workflowDefinitionMeta(definition: WorkflowDefinitionListing): string {
   const phases = `${definition.phaseCount} ${definition.phaseCount === 1 ? 'phase' : 'phases'}`;
@@ -194,6 +197,83 @@ export function groupWorkflowRunsByProject(
   }
   return [...groups.values()].sort((left, right) =>
     left.projectName.localeCompare(right.projectName) || left.projectId.localeCompare(right.projectId));
+}
+
+/** A definition on home with the automations that render under it. */
+export interface WorkflowHomeDefinition {
+  definition: WorkflowDefinitionListing;
+  automations: readonly WorkflowAutomationView[];
+}
+
+/** One project's group as home lists it. */
+export interface WorkflowHomeGroup extends WorkflowProjectGroup {
+  definitions: WorkflowHomeDefinition[];
+}
+
+export interface WorkflowHomeSource {
+  runs: readonly WorkItem[];
+  projectNames: ReadonlyMap<string, string>;
+  projectFilter: string;
+  definitionsOf(projectId: string): readonly WorkflowDefinitionListing[];
+  automationsOf(projectId: string): readonly WorkflowAutomationView[];
+}
+
+/** A run row matches `needle` (utils/findMatch.ts) on what it shows: its
+ * title (goal, else workflow id), its workflow, its state word and its
+ * project. */
+export function workflowRunMatches(run: WorkItem, projectName: string, needle: string): boolean {
+  return textsMatchNeedle(needle, [run.goal, run.workflowId, workflowRunSignal(run.state, run.reason).label, projectName]);
+}
+
+/** A definition row matches on its name, id, phase chain, its automations'
+ * names and its project. */
+export function workflowDefinitionMatches(entry: WorkflowHomeDefinition, projectName: string, needle: string): boolean {
+  const { definition } = entry;
+  return textsMatchNeedle(needle, [
+    definition.name,
+    definition.id,
+    workflowChainSummary(definition) || workflowDefinitionMeta(definition),
+    ...entry.automations.map((automation) => automation.name),
+    projectName,
+  ]);
+}
+
+/**
+ * Home's groups (§3.2) after the project filter and the find needle: a
+ * project lists while it has runs, definitions or automations; with a
+ * needle, only its matching rows, and only while one matches.
+ */
+export function workflowHomeGroups(source: WorkflowHomeSource, needle = ''): WorkflowHomeGroup[] {
+  const out: WorkflowHomeGroup[] = [];
+  for (const group of groupWorkflowRunsByProject(source.runs, source.projectNames, source.projectFilter)) {
+    const automations = source.automationsOf(group.projectId);
+    const definitions = source.definitionsOf(group.projectId).map((definition) => ({
+      definition,
+      automations: automations.filter((automation) => automation.workflowId === definition.id),
+    }));
+    if (!needle) {
+      const listed = group.attention.length + group.running.length + group.recent.length + definitions.length + automations.length;
+      if (listed > 0) out.push({ ...group, definitions });
+      continue;
+    }
+    const name = group.projectName;
+    const matched: WorkflowHomeGroup = {
+      ...group,
+      attention: group.attention.filter((run) => workflowRunMatches(run, name, needle)),
+      running: group.running.filter((run) => workflowRunMatches(run, name, needle)),
+      recent: group.recent.filter((run) => workflowRunMatches(run, name, needle)),
+      definitions: definitions.filter((entry) => workflowDefinitionMatches(entry, name, needle)),
+    };
+    if (workflowHomeRowCount([matched]) > 0) out.push(matched);
+  }
+  return out;
+}
+
+/** The rows `groups` list: runs and definitions. */
+export function workflowHomeRowCount(groups: readonly WorkflowHomeGroup[]): number {
+  let count = 0;
+  for (const group of groups) count += group.attention.length + group.running.length + group.recent.length + group.definitions.length;
+  return count;
 }
 
 /**

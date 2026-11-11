@@ -8,13 +8,14 @@
 //
 // The walk covers only what is mounted under `root` (a virtualized list
 // mounts its visible rows) and reruns when that DOM changes, coalesced
-// through the refresh scheduler. Text is matched case-insensitively within a
+// through the refresh scheduler. Text is matched by `findMatch.ts` within a
 // block, across inline markup. Where the API is missing the matches are
 // still computed, for providers that count or step through them, and
 // nothing paints. An empty query or `dispose` releases every range, the
 // observer and the names.
 
 import { createRefreshScheduler, type RefreshScheduler } from './refreshScheduler';
+import { findNeedle, lowerPreservingLength } from './findMatch';
 
 export interface FindMatch {
   readonly range: Range;
@@ -115,11 +116,6 @@ interface Segment {
   starts: number[];
   text: string;
   block: Element | null;
-}
-
-function lowerPreservingLength(value: string): string {
-  const lower = value.toLowerCase();
-  return lower.length === value.length ? lower : value;
 }
 
 function collectSegments(root: HTMLElement): Segment[] {
@@ -250,7 +246,7 @@ export function createFindHighlighter(options: FindHighlighterOptions): FindHigh
   return {
     setQuery(query: string): void {
       if (disposed) return;
-      needle = lowerPreservingLength(query.trim());
+      needle = findNeedle(query);
       if (needle) follow();
       else unfollow();
       recompute();
