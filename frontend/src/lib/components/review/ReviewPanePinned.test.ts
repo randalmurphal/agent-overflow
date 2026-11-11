@@ -183,20 +183,20 @@ describe('<ReviewPane> pinned to a PR with no thread', () => {
 
     const keyed = render(ReviewPane, {
       pr: { ownerPaneId: OWNER, backend: HOME_BACKEND, projectId: 'project-1', pr: PR },
-      findKey: 'pulls-detail',
+      findKey: 'tool-pulls#detail',
     });
     await waitFor(() => {
       expect(keyed.getAllByTestId('review-line-block').length).toBeGreaterThan(0);
     });
-    expect(hasPaneFindProvider('pulls-detail')).toBe(true);
-    expect(openPaneFind('pulls-detail')).toBe(true);
-    setPaneFindQuery('pulls-detail', 'NEW');
+    expect(hasPaneFindProvider('tool-pulls#detail')).toBe(true);
+    expect(openPaneFind('tool-pulls#detail')).toBe(true);
+    setPaneFindQuery('tool-pulls#detail', 'NEW');
     await waitFor(() => {
       expect(keyed.getByTestId('pane-find-count')).toHaveTextContent('1/1');
     });
-    expect(getPaneFindProvider('pulls-detail')?.result.count).toBe(1);
+    expect(getPaneFindProvider('tool-pulls#detail')?.result.count).toBe(1);
     keyed.unmount();
-    expect(hasPaneFindProvider('pulls-detail')).toBe(false);
+    expect(hasPaneFindProvider('tool-pulls#detail')).toBe(false);
     resetPaneFindForTest();
   });
 
