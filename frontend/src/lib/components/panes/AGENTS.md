@@ -41,7 +41,10 @@ it asked, updates in place on a content change without moving the view,
 and withdraws any jump it requested when its query changes or it closes.
 Find acts on the focused pane, or under compact on the pane on screen, and
 on no overlay above it; the store drops a pane's state and reads when the
-pane leaves the layout. The browser pane uses
+pane leaves the layout. Review panes use `review/ReviewPaneFind.svelte`
+over `stores/reviewFind.svelte.ts`, keyed by `ReviewPane`'s `findKey`: its
+layout pane id as a companion, the detail region key on the Pull requests
+page; a review hosted without a key registers nothing. The browser pane uses
 `stores/browserFind.svelte.ts`, where the engine searches and matches are
 the engine's to paint; its calls run on its own queue, not
 `paneFindReads`, because a queued stop is backend cleanup that no other
@@ -49,8 +52,8 @@ read may replace. A provider that cannot count reports `count: null`,
 and one with `openNative` opens its engine's own find UI instead of the bar,
 which never reads as open, so its Escape stays the engine's
 ([browser-tools.md](../../../../../docs/architecture/browser-tools.md#find)).
-Review, terminal and discussion panes have no provider yet, so mod+f falls
-through there.
+Terminal and discussion panes have no provider yet, so mod+f falls through
+there.
 
 A pane whose body holds a list beside a detail declares find regions
 (`declarePaneFindRegions`) and keys each region's provider, bar, reads
@@ -65,8 +68,8 @@ focus return, `paneFindAvailable`, drop on layout removal) holds per
 region. A list region's provider is a filter: it has no `next` or
 `previous`, the bar shows the matching row count and Enter calls
 `focusFirst`, and its query narrows the rows in the page's store so every
-count follows one source. Matching uses `utils/findMatch.ts`, the rule
-thread find paints with. The Pull requests page
+count follows one source. Every find, filter and highlighter matches by
+`utils/findMatch.ts`. The Pull requests page
 (`pulls/pullsPaneFind.svelte.ts`) and Workflows home
 (`workflows/workflowsPaneFind.svelte.ts`) filter this way.
 

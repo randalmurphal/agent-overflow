@@ -9,6 +9,9 @@
   // has no step buttons, and Enter moves focus to the first result. Escape is not the
   // bar's: it bubbles to `find.close`, which decides which pane's find may
   // be dismissed (the focused pane, or the one on screen under compact).
+  // While a count is pending the status says so in words for a screen
+  // reader (the spinner is decorative); the words depend only on whether a
+  // count shows, so a restart of the same count announces nothing new.
   import { tick, untrack } from 'svelte';
   import Search from '@lucide/svelte/icons/search';
   import ChevronUp from '@lucide/svelte/icons/chevron-up';
@@ -53,14 +56,25 @@
   let query = $derived(find?.query ?? '');
   let result = $derived(provider?.result ?? null);
   let count = $derived(result ? result.count : 0);
+  let error = $derived(result?.error ?? null);
+  // A progressive provider's count shows beside the spinner while it grows.
+  let showCount = $derived(!result?.pending || (result.progressive === true && count !== null && count > 0));
   let stepping = $derived(provider !== null && isSteppingFind(provider));
   let countText = $derived.by(() => {
     if (!query.trim() || !result) return '';
+    // A provider that cannot count reports a match without a number.
     if (count === null) return 'Found';
-    if (!stepping) return count === 0 ? 'No matches' : `${count} ${count === 1 ? 'match' : 'matches'}`;
-    if (count === 0) return 'No results';
-    const total = `${count}${result.capped ? '+' : ''}`;
-    return result.current < 0 ? total : `${result.current + 1}/${total}`;
+    if (!stepping) {
+      if (count === 0) return result.pending ? '' : 'No matches';
+      return `${count}${result.capped ? '+' : ''} ${count === 1 ? 'match' : 'matches'}`;
+    }
+    if (count === 0) return result.pending ? '' : 'No results';
+    const at = result.current >= 0 ? `${result.current + 1}/` : '';
+    return `${at}${count}${result.capped ? '+' : ''}`;
+  });
+  let pendingText = $derived.by(() => {
+    if (!result?.pending || !query.trim() || (error && query.trim())) return '';
+    return showCount && countText ? ', updating' : 'Searching';
   });
   let placeholder = $derived(stepping || !provider ? `Find in ${provider?.noun ?? 'pane'}` : `Filter ${provider.noun}`);
 
@@ -157,10 +171,13 @@
       class="flex shrink-0 items-center px-1 text-[0.75rem] tabular-nums text-fg-subtle"
       data-testid="pane-find-count"
     >
-      {#if result?.pending}
-        <span data-testid="pane-find-spinner" class="flex items-center"><SteppedSpinner size={11} /></span>
+      {#if error && query.trim()}
+        <span class="max-w-40 truncate text-error" title={error} role="alert" data-testid="pane-find-error">Find failed: {error}</span>
       {:else}
-        {countText}
+        {#if result?.pending}
+          <span data-testid="pane-find-spinner" class="flex items-center {showCount && countText ? 'pr-1' : ''}"><SteppedSpinner size={11} /></span>
+        {/if}
+        {#if showCount}{countText}{/if}{#if pendingText}<span class="sr-only" data-testid="pane-find-pending">{pendingText}</span>{/if}
       {/if}
     </span>
     {#if stepping}

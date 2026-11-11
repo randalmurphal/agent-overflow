@@ -21,6 +21,7 @@
   } from '../../utils/reviewThreadStyle';
   import { relativeTime } from '../../utils/format';
   import { jumpPulse } from '../../utils/reviewJumpPulse';
+  import { findThreadCommentKey, reviewCommentKey } from '../../utils/reviewFindScan';
   import type { ReviewThread } from '../../types/models';
   import type { CommentAnchor } from '../../stores/reviewPane.svelte';
 
@@ -155,13 +156,13 @@
 
     <div class={threadBodyClass(threadState)}>
       {#if !collapsed && firstBody !== ''}
-        <div class="px-3 py-2.5">
+        <div class="px-3 py-2.5" data-find-key={first ? findThreadCommentKey(thread.id, reviewCommentKey(first)) : undefined}>
           <ChatMarkdown source={firstBody} pathRefs={EMPTY_PATH_REFS} embeddedHtml class="review-prose" />
         </div>
       {/if}
 
       {#if !collapsed && replyCount > 0}
-        <ReviewThreadComments {thread} skipFirst avatarSize={18} />
+        <ReviewThreadComments {thread} skipFirst avatarSize={18} findKeys />
       {/if}
 
       {#if !collapsed || replying}

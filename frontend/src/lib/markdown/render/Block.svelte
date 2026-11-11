@@ -44,6 +44,7 @@
 	import LiteralHost from './LiteralHost.svelte';
 	import { useStreamdown } from './context.svelte';
 	import { renderStaticTokenHtml } from './staticHtml';
+	import { tableCellRenders } from './elements/url';
 
 	let {
 		block,
@@ -210,7 +211,7 @@
 				<tr data-streamdown-tr={id} class={streamdown.theme.tr.base}>
 					{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 				</tr>
-			{:else if token.type === 'td' && token.rowspan > 0 && !streamdown.snippets.td}
+			{:else if token.type === 'td' && tableCellRenders(token) && !streamdown.snippets.td}
 				<td
 					data-streamdown-td={id}
 					class={streamdown.theme.td.base}
@@ -222,7 +223,7 @@
 				>
 					{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 				</td>
-			{:else if token.type === 'th' && token.rowspan > 0 && !streamdown.snippets.th}
+			{:else if token.type === 'th' && tableCellRenders(token) && !streamdown.snippets.th}
 				<th
 					data-streamdown-th={id}
 					class={streamdown.theme.th.base}

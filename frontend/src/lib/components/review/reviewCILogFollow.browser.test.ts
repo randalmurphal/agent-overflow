@@ -301,3 +301,51 @@ describe('ReviewCILogView tail follow', () => {
     expect(scroll.textContent).toContain('s27 line 1\n');
   });
 });
+
+describe('ReviewCILogView find reading line', () => {
+  // The line laid out across y, read from the line's own text range: the
+  // oracle shares nothing with the caret the view reads.
+  function lineAcross(scroll: HTMLElement, y: number): number {
+    for (const row of scroll.querySelectorAll<HTMLElement>('[data-find-key^="cl:"]')) {
+      const from = Number(row.dataset.findKey!.slice(3));
+      const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+      let line = 0;
+      let start: { node: Text; offset: number } | null = null;
+      for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+        for (let i = 0; i <= node.data.length; i += 1) {
+          if (start === null) start = { node, offset: i };
+          if (i < node.data.length && node.data[i] !== '\n') continue;
+          if (i === node.data.length && walker.nextNode() && walker.previousNode()) continue;
+          const range = document.createRange();
+          range.setStart(start.node, start.offset);
+          range.setEnd(node, i);
+          const rects = [...range.getClientRects()];
+          if (rects.length > 0 && Math.min(...rects.map((r) => r.top)) <= y && y < Math.max(...rects.map((r) => r.bottom))) return from + line;
+          line += 1;
+          start = null;
+        }
+      }
+    }
+    throw new Error(`no log line across y=${y}`);
+  }
+
+  it('is the line at the top of the view inside a block, wrapped lines included', async () => {
+    // Every seventh line wraps over several rows.
+    const lines = Array.from({ length: FIRST_LINES }, (_, i) => (i % 7 === 3 ? `line ${i + 1} ${'wrapping '.repeat(40)}` : `line ${i + 1}`));
+    const app = mountLog(new FakeCILog(lines));
+    const { scroll } = app;
+    await waitFor(() => scroll.textContent?.includes(`line ${FIRST_LINES}`) === true, 'the last block');
+    await settledAtBottom(scroll, 'the opened log at its tail');
+    const view = mounted.at(-1)!.app as { findReadingLine(): number };
+    scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
+    for (const offset of [900, 1333, 2011, 2500]) {
+      scroll.scrollTop = offset;
+      for (let i = 0; i < 4; i += 1) await raf();
+      const top = scroll.getBoundingClientRect().top;
+      const expected = lineAcross(scroll, top + 0.5);
+      // Inside a block of 200 lines, not its first.
+      expect(expected % 200).not.toBe(0);
+      expect(view.findReadingLine(), `scrollTop ${offset}`).toBe(expected);
+    }
+  });
+});

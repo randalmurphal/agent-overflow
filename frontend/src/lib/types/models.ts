@@ -683,6 +683,16 @@ export interface CILogLines {
   version: number;
 }
 
+/** A find over a cached CI log, as internal/cilog Search: the lines
+ * holding matches, in line order, with how many each holds. */
+export interface CILogSearch {
+  version: number;
+  totalLines: number;
+  hits: { line: number; count: number }[];
+  matches: number;
+  capped: boolean;
+}
+
 /** One PR discussion: a file-anchored review thread (path set) or a
  * PR-level conversation thread (path empty). */
 export interface ReviewThread {

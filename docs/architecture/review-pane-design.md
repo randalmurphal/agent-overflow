@@ -268,6 +268,53 @@ polling.
 - **Transport classification.** Every new App method that reaches a forge
   or runs `glab`/`git` annotates `//ao:scope git:operate`, so only a
   session granted that scope reaches it.
+- **Find searches the view on screen.** `ReviewPaneFind.svelte` registers
+  the pane's find provider under `ReviewPane`'s `findKey`: the companion's
+  layout pane id, or the Pull requests page's detail region key. The diff
+  and the conflict view are scanned in memory by `utils/reviewFindScan.ts`
+  in slices that yield, with the count growing while `pending`; it covers
+  header paths, line text without the gutter, expanded hunk-gap lines,
+  folded conflict lines, draft bodies, and PR thread comments as their
+  markdown renders (`chat/markdown/markdownFindText.ts`), in row order.
+  Text the patch budget evicted is read back through `whenResident`. A CI
+  log is searched by `SearchPRCILog` (`cilog.Store.Search`, bounded and
+  cancellable). Matching is `utils/findMatch.ts` everywhere (trimmed
+  literal, each code point folded to its simple lower case);
+  `stringsx.FoldForFind` folds the same for the CI log and thread find, held by
+  shared vectors. A step expands what hides its match (a collapsed file, a
+  resolved thread, a conflict fold, a closed log step). A match is in view
+  only inside the scroller on both axes. With wrap off, the one line
+  shifted sideways is the line that clips the current match, derived from
+  it; every other line, and every line once there is no current match,
+  reads from its start. A content, filter
+  or view change, or a `<details>` in a comment opened or closed by hand,
+  re-runs the query in place and keeps the current match by identity; a
+  current match that is gone gives way to the next surviving one, else the
+  previous, painted where it is. Only a new query's count grows as it
+  scans; a recount shows the matches it replaces, marked pending (in words
+  for a screen reader), and swaps its result in whole when it ends. A
+  match is a logical identity: its file's path, its element (a line by
+  side and number, a conflict marker by its place, a draft by id, a thread
+  comment by thread and forge id), the run of the element's text it is in
+  (a comment's runs numbered in walk order, a closed `<details>` body's
+  included) and its index in that run. Whether it is present now, and its
+  file index, row, fold and index among the element's painted matches,
+  are found in the content shown at each paint, shift and reveal by the
+  scan's own matching rule (`utils/reviewFindRows.ts`, `utils/ciLogFind.ts`
+  for a log line, counted in the text AnsiText shows, `utils/ansiText.ts`,
+  whose escapes the backend's search hides too), so a recount never
+  paints, shifts or reveals a match the content no longer has. Such a
+  recount never scrolls; only a new query's first match and a step bring
+  a match on screen, and that reveal is asked again at every publish, swap
+  and content change until it completes once, which is when the painted
+  match is in view: a log line whose block has not loaded is waited for,
+  and a block that fails to load puts its error in the bar. A step's
+  reveal that nothing has shown when its match goes at the swap passes to
+  the survivor, asked once a host call still in flight ends. A comment is
+  projected with the parse and sanitizer options ChatMarkdown renders it
+  with (`chat/markdown/chatMarkdownOptions.ts`). Mermaid, math and
+  attachment chips carry `data-find-skip`, so they are neither counted nor
+  painted.
 
 ## Edge Cases
 

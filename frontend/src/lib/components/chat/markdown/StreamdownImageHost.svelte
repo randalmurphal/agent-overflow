@@ -97,6 +97,7 @@
 {:else if error}
   <span
     data-streamdown-image-error
+    data-find-skip
     class="inline-block rounded border border-error/40 bg-error/10 px-2 py-1 text-xs text-error"
     title={error}
   >

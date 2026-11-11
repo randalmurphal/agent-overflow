@@ -543,6 +543,8 @@ export {
   // A window of a followed CI job log, read from the backend cache by the
   // log view's block cache (ciLogBlocks.svelte.ts).
   GetPRCILogLines,
+  // The review pane's find over a CI job log, on the backend cache.
+  SearchPRCILog,
   // Forge-hosted attachments referenced by PR/MR content: one mints a
   // single-use ticketed URL for the bytes, the other writes the file into
   // the owning computer's Downloads folder.

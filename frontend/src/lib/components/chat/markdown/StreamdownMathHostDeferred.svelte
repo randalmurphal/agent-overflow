@@ -33,9 +33,9 @@
 </script>
 
 {#if token.isInline}
-  <span class={hostClass} data-math-source={token.text}>{token.text}</span>
+  <span class={hostClass} data-math-source={token.text} data-find-skip>{token.text}</span>
 {:else}
-  <div class={hostClass} data-math-source={token.text}>
+  <div class={hostClass} data-math-source={token.text} data-find-skip>
     <pre class="math-source-fallback">{token.text}</pre>
   </div>
 {/if}
