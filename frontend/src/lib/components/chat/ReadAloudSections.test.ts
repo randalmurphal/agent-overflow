@@ -151,6 +151,19 @@ describe('<ReadAloudSections>', () => {
     expect(fromSections()).toEqual([0, 1]);
   });
 
+  it.each([
+    ['[center]\n<Aside>\nFirst paragraph.\n\nSecond paragraph.\n</Aside>\n[/center]', 2, []],
+    [`[right]\n<Aside>\n${REPLY}\n</Aside>`, 5, [1, 2]],
+  ])('keeps its bands over aligned MDX blocks: %j', async (reply, count, others) => {
+    const { play, layer, marker, fromSections } = await mount(reply, count);
+    await fireEvent.click(play);
+    await settle();
+    expect(layer()!.dataset.drawn).toBe('true');
+    expect(marker()!.dataset.section).toBe('0');
+    expect(fromSections()).toEqual(others);
+    expect(reportFrontendDiagnostic).not.toHaveBeenCalled();
+  });
+
   it('draws on a row mounted while its reply is being read', async () => {
     const first = await mount();
     await fireEvent.click(first.play);

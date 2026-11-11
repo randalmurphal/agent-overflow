@@ -191,6 +191,19 @@ func webkitScrollScript(selector string, x, y float64) string {
 	return fmt.Sprintf(`const s=%s;const el=s?document.querySelector(s):window;if(!el)throw new Error("selector not found");el.scrollBy({left:%f,top:%f,behavior:"instant"});return true;`, jsonString(strings.TrimSpace(selector)), x, y)
 }
 
+// webkitFindWorld is the isolated script world the find's selection
+// housekeeping runs in, so nothing the page defines (an overridden
+// getSelection or removeAllRanges) reaches it.
+const webkitFindWorld = "ao-find"
+
+// webkitClearSelectionScript drops the selection of the page and of every
+// same-origin frame inside it, walking window.frames recursively; WKWebView's
+// find starts at the selection and both engines mark the match with it. It
+// runs in webkitFindWorld. Each frame is tried on its own: a cross-origin
+// frame cannot be reached (a SecurityError) and keeps its selection, and any
+// other failure fails the script, so the stop it serves fails and stays owed.
+const webkitClearSelectionScript = `const failures=[];const reachable=(e)=>{if(e&&e.name==="SecurityError")return false;failures.push(String(e&&e.message||e));return false;};const clear=(w)=>{let s,n=0;try{s=w.getSelection();}catch(e){return reachable(e);}try{if(s)s.removeAllRanges();}catch(e){failures.push(String(e&&e.message||e));}try{n=w.frames.length;}catch(e){return reachable(e);}for(let i=0;i<n;i++){let f;try{f=w.frames[i];}catch(e){reachable(e);continue;}if(f)clear(f);}return true;};clear(window);if(failures.length)throw new Error("browser: clear the selection: "+failures.join("; "));return null;`
+
 // webkitSelectionTextScript reads the page's current selection for the copy
 // chord, matching the CDP driver's expression exactly.
 const webkitSelectionTextScript = `const a=document.activeElement;if(a&&(a instanceof HTMLInputElement||a instanceof HTMLTextAreaElement)&&a.selectionStart!==null)return a.value.slice(a.selectionStart,a.selectionEnd);return String(getSelection()||"");`

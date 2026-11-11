@@ -138,7 +138,12 @@ int ao_wkv_view_can_go(void *view, int forward);
 
 // ao_wkv_view_eval evaluates one async-function body and reports the JSON
 // result to aoWKVEvalDone under call_id.
-void ao_wkv_view_eval(void *view, const char *body, uint64_t call_id);
+void ao_wkv_view_eval(void *view, const char *body, const char *world, uint64_t call_id);
+
+// ao_wkv_view_find searches from the current selection, forward or backwards,
+// selecting the match, and reports to aoWKVFindDone under call_id: found 1,
+// 0 for none, -1 when the view or text is unusable.
+void ao_wkv_view_find(void *view, const char *text, int backwards, uint64_t call_id);
 
 // ao_wkv_view_snapshot captures the view's CURRENT size and reports
 // premultiplied BGRA pixels to aoWKVSnapshotDone under call_id, one image pixel

@@ -71,6 +71,26 @@ async function boxOf(locator: Locator): Promise<Box> {
 const centerX = (b: Box) => b.x + b.width / 2;
 const centerY = (b: Box) => b.y + b.height / 2;
 
+/**
+ * Waits for the toolbar's density ladder to settle at the current width.
+ * The ladder re-measures a frame after a resize (densityLadder.ts
+ * watchDensity), so until then a narrowed toolbar keeps its roomier rung
+ * and its controls run into the end padding. scrollWidth does not see
+ * that: at 320px the minimal rung reads 1px of overflow while Send sits
+ * 11px off its column. This is the ladder's own fit check: every child
+ * ends inside the content box.
+ */
+async function waitForToolbarFit(page: Page): Promise<void> {
+  await expect.poll(() => page.getByTestId('composer-toolbar').evaluate((el) => {
+    const box = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    const contentEnd = box.right - parseFloat(style.paddingRight) - parseFloat(style.borderRightWidth);
+    let childrenEnd = box.left;
+    for (const child of el.children) childrenEnd = Math.max(childrenEnd, child.getBoundingClientRect().right);
+    return Math.max(el.scrollWidth - el.clientWidth, childrenEnd - contentEnd);
+  }), { message: 'the composer toolbar\'s controls must end inside its content box' }).toBeLessThanOrEqual(1);
+}
+
 function expectClose(actual: number, expected: number, what: string): void {
   // Soft, so one run reports every misaligned edge rather than the first.
   expect.soft(Math.abs(actual - expected), `${what}: ${actual} vs ${expected}`).toBeLessThanOrEqual(TOLERANCE);
@@ -83,6 +103,7 @@ function expectClose(actual: number, expected: number, what: string): void {
  * column ends before them.
  */
 export async function expectPhoneMicAligned(page: Page): Promise<void> {
+  await waitForToolbarFit(page);
   const input = page.getByLabel('Message Input');
   const mic = await boxOf(page.getByTestId('composer-dictate'));
   const send = await boxOf(page.getByTestId('composer-send'));
@@ -113,6 +134,7 @@ export async function expectPhoneMicAligned(page: Page): Promise<void> {
 export async function expectDesktopMicAligned(page: Page): Promise<void> {
   const micLocator = page.getByTestId('composer-dictate');
   await expect(micLocator).toHaveCount(1);
+  await waitForToolbarFit(page);
   const mic = await boxOf(micLocator);
   const send = await boxOf(page.getByTestId('composer-send'));
   const clip = await boxOf(page.getByTestId('composer-attach'));
@@ -150,6 +172,7 @@ export interface ComposerBoxes {
 }
 
 export async function composerBoxes(page: Page): Promise<ComposerBoxes> {
+  await waitForToolbarFit(page);
   return {
     input: await boxOf(page.getByLabel('Message Input')),
     toolbar: await boxOf(page.getByTestId('composer-toolbar')),

@@ -41,6 +41,59 @@ type CompanionEvent struct {
 	// while the thread's page view held keyboard focus, for the frontend to
 	// dispatch as if the SPA had received it.
 	Accelerator *keybindings.Accelerator `json:"accelerator,omitempty"`
+	// FindMode rides a Kind "state" event: how the active page's find is
+	// presented (FindModeBar or FindModeEngine), empty when it has none.
+	FindMode string `json:"findMode,omitempty"`
+	// Find rides a Kind "find" event: a page's search ended without its
+	// owner asking (navigation, a tab switch, a hidden pane, the page
+	// closing, another owner's start), so a find bar showing it closes.
+	// A Kind "escape" event names only ThreadID and PageID: a bare Escape
+	// was pressed in that page while a pane showed it, and the page kept it.
+	Find *FindState `json:"find,omitempty"`
+}
+
+// The find modes a page reports (pageFind.FindMode).
+const (
+	// FindModeBar: AO's find bar drives the engine's find and shows its answer.
+	FindModeBar = "bar"
+	// FindModeEngine: the engine shows its own find bar, opened by a start.
+	FindModeEngine = "engine"
+)
+
+// FindState is a page's search as the find bar shows it, with the search's
+// identity (find.go): the page and its incarnation, the pane mount and
+// sequence that own it, the document it started on, and the generation of
+// the action that answered or of the end.
+type FindState struct {
+	PageID string `json:"pageId"`
+	// Incarnation tells apart pages that share PageID: a restored page
+	// reuses its id.
+	Incarnation uint64 `json:"incarnation"`
+	// Mount is the pane mount that owns the search, "" for none.
+	Mount string `json:"mount"`
+	// Seq is the sequence of the start that made the search, 0 for none.
+	Seq uint64 `json:"seq"`
+	// Document is the epoch of the document the search started on.
+	Document uint64 `json:"document"`
+	// Session is the generation: it increases with every find action and
+	// end across the Manager, so an answer older than an end is
+	// recognizably stale.
+	Session uint64 `json:"session"`
+	// Foreign marks an answer for an action that changed nothing because
+	// the search it named is gone or another owner's; Mount and Seq then
+	// name the search's real owner, and the answer acknowledges nothing of
+	// the asker's.
+	Foreign bool   `json:"foreign"`
+	Active  bool   `json:"active"`
+	Query   string `json:"query"`
+	Found   bool   `json:"found"`
+	// Matches is the engine's count, -1 when the engine reports only whether
+	// there is a match.
+	Matches int `json:"matches"`
+	// Current is the 0-based current match, -1 when there is none or the
+	// engine cannot place it.
+	Current int  `json:"current"`
+	Capped  bool `json:"capped"`
 }
 
 // CompanionSubscription is what mounting a pane answers: the mount id the

@@ -66,7 +66,25 @@ type Manager struct {
 	// accelerators is ManagerOptions.Accelerators; read per keypress on the
 	// engine's UI thread by keyChord.
 	accelerators func() keybindings.AcceleratorSet
-	profileDir   string
+	// findGen numbers every find action and end across all pages, so the
+	// order survives a page's suspend and restore (find.go).
+	findGen atomic.Uint64
+	// findPointHook, when set by a test, runs at the points inside a find
+	// transition named by findPoint.
+	findPointHook atomic.Pointer[func(point string)]
+	// findWaitHook, when set by a test, runs with a find action's context
+	// just before the action waits for the page lock, so a test can hold
+	// the lock until the action is waiting on it or past its deadline.
+	findWaitHook atomic.Pointer[func(ctx context.Context)]
+	// findWork joins the goroutines that apply submitted find ends. Each is
+	// admitted under findGate unless findClosed, which Close sets under it
+	// before it waits, so no Add follows the Wait.
+	findWork   sync.WaitGroup
+	findGate   sync.Mutex
+	findClosed bool
+	// findTimeout is findActionTimeout; a test shortens it.
+	findTimeout time.Duration
+	profileDir  string
 
 	startMu sync.Mutex
 	mu      sync.Mutex
@@ -93,7 +111,11 @@ type Manager struct {
 	panes     map[string]paneMount
 	sessions  map[string]SessionInfo
 	// viewportSyncs serializes viewport application per thread (viewport.go).
-	viewportSyncs  map[string]*viewportSync
+	viewportSyncs map[string]*viewportSync
+	// presenting holds, per thread, whether a presentation pass runs and
+	// whether another was asked for during it (syncPanePresentation); made
+	// on first use, and an idle thread's entry is removed.
+	presenting     map[string]*presentSync
 	artifactRoot   string
 	artifactInitMu sync.Mutex
 	artifactReady  bool
@@ -217,7 +239,23 @@ type managedPage struct {
 	nodeMu       sync.Mutex
 	nodeRefs     map[string]nodeReference
 	nodeOrder    []string
+	// find is written only by a find transition, which holds mu (find.go);
+	// findMu guards it for readers. findMu may be held around the Manager's
+	// mu, never taken inside it. ends are the find ends submitted and not
+	// yet applied; findBusy is whether a find transition is running.
+	findMu   sync.Mutex
+	find     findSession
+	ends     findEnds
+	findBusy atomic.Bool
+	// incarnation tells this page apart from another under the same id: a
+	// restored page reuses its id. docEpoch counts the documents its main
+	// frame committed, stamped on the engine's own thread (find.go).
+	incarnation uint64
+	docEpoch    atomic.Uint64
 }
+
+// pageIncarnations numbers every page the process creates or restores.
+var pageIncarnations atomic.Uint64
 
 // newManagedPage allocates the AO-owned half of a page. Its driver is attached
 // once the engine has produced one, so the driver's own event handlers can
@@ -227,7 +265,8 @@ func newManagedPage(access Access) *managedPage {
 		id: uuid.NewString(), owner: access.ThreadID, access: access,
 		createdAt:    time.Now().UnixNano(),
 		downloadWait: make(chan struct{}), inventories: make(map[string]AssetInventory),
-		nodeRefs: make(map[string]nodeReference),
+		nodeRefs:    make(map[string]nodeReference),
+		incarnation: pageIncarnations.Add(1),
 	}
 	p.tabOrder.Store(p.createdAt)
 	return p
@@ -249,6 +288,7 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		sessions:      make(map[string]SessionInfo),
 		viewportSyncs: make(map[string]*viewportSync),
 		artifactRoot:  filepath.Join(configDir, "browser-artifacts"),
+		findTimeout:   findActionTimeout,
 	}
 	m.accelerators = opts.Accelerators
 	m.engine = selectEngine(configDir, opts, engineEvents{
@@ -466,6 +506,7 @@ func (m *Manager) closeFoundPage(ctx context.Context, access Access, p *managedP
 	}
 	m.cancelPageDownloads(p, scope)
 	p.driver.Close()
+	m.endFindLocked(p)
 	p.mu.Unlock()
 	m.mu.Lock()
 	delete(scope.pages, p.id)
@@ -545,7 +586,14 @@ func (m *Manager) Close() error {
 	m.mu.Lock()
 	m.closed = true
 	m.mu.Unlock()
-	return errors.Join(m.saveOpenPages(), m.closeBrowser(context.Background()))
+	err := errors.Join(m.saveOpenPages(), m.closeBrowser(context.Background()))
+	// The browser's close submitted the end of every page's find; what an
+	// engine reports after it has no page left to end a find on.
+	m.findGate.Lock()
+	m.findClosed = true
+	m.findGate.Unlock()
+	m.findWork.Wait()
+	return err
 }
 
 // pageForOpen answers the page an open navigates: the requested one, or a new
@@ -695,9 +743,10 @@ func (m *Manager) newPage(ctx context.Context, scope *workspaceScope, p *managed
 // reports. Nothing here decides ownership or limits.
 func (m *Manager) pageHooks(p *managedPage) pageHooks {
 	return pageHooks{
-		Console: p.appendLog,
-		PageURL: func() string { return p.cachedInfo().URL },
-		Allow:   func(rawURL string) bool { return m.navigationAllowed(p.access, rawURL) },
+		Console:           p.appendLog,
+		PageURL:           func() string { return p.cachedInfo().URL },
+		Allow:             func(rawURL string) bool { return m.navigationAllowed(p.access, rawURL) },
+		DocumentCommitted: func() func() { return m.documentCommitted(p) },
 	}
 }
 
@@ -816,10 +865,11 @@ func pageWithHandle(scope *workspaceScope, handle string) *managedPage {
 func (m *Manager) removeClosedPage(handle string) {
 	m.mu.Lock()
 	var owner string
+	var closed *managedPage
 	var released *workspaceScope
 	for _, scope := range m.scopes {
 		if p := pageWithHandle(scope, handle); p != nil {
-			owner = p.owner
+			owner, closed = p.owner, p
 			delete(scope.pages, p.id)
 			if m.releaseScopeLocked(scope) {
 				released = scope
@@ -828,6 +878,9 @@ func (m *Manager) removeClosedPage(handle string) {
 		}
 	}
 	m.mu.Unlock()
+	if closed != nil {
+		m.endFind(closed)
+	}
 	if owner != "" {
 		m.repairActivePage(owner)
 		m.emitThreadState(owner)
@@ -898,10 +951,12 @@ func (m *Manager) closeBrowserLocked(caller context.Context) error {
 	m.mu.Lock()
 	scopes := make([]*workspaceScope, 0, len(m.scopes))
 	owners := make(map[string]struct{})
+	var pages []*managedPage
 	for _, scope := range m.scopes {
 		scopes = append(scopes, scope)
 		for _, p := range scope.pages {
 			owners[p.owner] = struct{}{}
+			pages = append(pages, p)
 		}
 	}
 	m.scopes = make(map[string]*workspaceScope)
@@ -917,6 +972,9 @@ func (m *Manager) closeBrowserLocked(caller context.Context) error {
 		m.idleTimer = nil
 	}
 	m.mu.Unlock()
+	for _, p := range pages {
+		m.endFind(p)
+	}
 	for owner := range owners {
 		m.emitThreadState(owner)
 	}

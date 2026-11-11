@@ -64,6 +64,11 @@ export interface Theme {
     blockquote: {
         base: string;
     };
+    /** A `[center]` or `[right]` block, by its alignment. */
+    align: {
+        center: string;
+        right: string;
+    };
     alert: {
         base: string;
         title: string;

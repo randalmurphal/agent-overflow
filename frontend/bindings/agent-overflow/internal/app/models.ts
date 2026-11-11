@@ -850,6 +850,49 @@ export class BrowserCompanionAction {
 }
 
 /**
+ * BrowserFindAction is one request of the browser pane's find: start (the
+ * query; empty ends the search, or opens an engine's own find bar empty),
+ * next, previous or stop. Mount is the pane mount the find belongs to and
+ * Seq the provider's sequence: a start's own, increasing with every start
+ * the provider makes; the one a step steps; for a stop, the highest the
+ * provider made, and the stop ends the mount's search at or below it. A step
+ * or stop for a search another owner holds changes nothing.
+ */
+export class BrowserFindAction {
+    "kind": string;
+    "pageId": string;
+    "query"?: string;
+    "mount": string;
+    "seq": number;
+
+    /** Creates a new BrowserFindAction instance. */
+    constructor($$source: Partial<BrowserFindAction> = {}) {
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("pageId" in $$source)) {
+            this["pageId"] = "";
+        }
+        if (!("mount" in $$source)) {
+            this["mount"] = "";
+        }
+        if (!("seq" in $$source)) {
+            this["seq"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new BrowserFindAction instance from a string or object.
+     */
+    static createFrom($$source: any = {}): BrowserFindAction {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new BrowserFindAction($$parsedSource as Partial<BrowserFindAction>);
+    }
+}
+
+/**
  * BusyThread is one thread's contribution to WorkspaceActivity. At least one
  * leg is set; idle threads are not listed.
  */

@@ -140,6 +140,16 @@ describe('find highlights', () => {
     expect(h.matches).toHaveLength(1);
   });
 
+  it('matches loose text in a box-less wrapper, unless the wrapper is hidden', () => {
+    const root = mount(`
+      <div data-item-id="r1"><div style="display:contents"><p>one needle</p>loose needle</div></div>
+      <div data-item-id="r2" style="display:none"><div style="display:contents">hidden needle</div></div>
+    `);
+    const h = highlighter(root, 'pane-a');
+    h.setQuery('needle');
+    expect(h.matches.map((m) => m.rowKey)).toEqual(['r1', 'r1']);
+  });
+
   it('with rowsOnly matches text inside rows only, a row boundary ending a block', () => {
     const root = mount(`
       <div class="line"><span>12 13</span><span data-find-key="l1"><span data-find-skip>+</span>needle ne</span><span data-find-key="l2">edle</span></div>

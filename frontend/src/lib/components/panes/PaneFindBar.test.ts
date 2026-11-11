@@ -87,6 +87,34 @@ describe('<PaneFindBar>', () => {
     expect(count.textContent?.trim()).toBe('No results');
   });
 
+  it('says found without numbers for a provider that cannot count, and steps through it', async () => {
+    const { getByTestId } = renderBar();
+    await openBar();
+    await fireEvent.input(getByTestId('pane-find-input'), { target: { value: 'needle' } });
+    const count = getByTestId('pane-find-count');
+    const next = getByTestId('pane-find-next') as HTMLButtonElement;
+    provider.set({ count: null, current: -1 });
+    await tick();
+    expect(count.textContent?.trim()).toBe('Found');
+    expect(next.disabled).toBe(false);
+    await fireEvent.keyDown(getByTestId('pane-find-input'), { key: 'Enter' });
+    expect(provider.next).toHaveBeenCalledTimes(1);
+
+    provider.set({ count: 0 });
+    await tick();
+    expect(count.textContent?.trim()).toBe('No results');
+    expect(next.disabled).toBe(true);
+  });
+
+  it('shows only the count when the position is unknown past a capped count', async () => {
+    const { getByTestId } = renderBar();
+    await openBar();
+    await fireEvent.input(getByTestId('pane-find-input'), { target: { value: 'needle' } });
+    provider.set({ count: 1000, current: -1, capped: true });
+    await tick();
+    expect(getByTestId('pane-find-count').textContent?.trim()).toBe('1000+');
+  });
+
   it('shows a progressive count beside the spinner while it grows, and a failure in place of the count', async () => {
     const { getByTestId, queryByTestId } = renderBar();
     await openBar();

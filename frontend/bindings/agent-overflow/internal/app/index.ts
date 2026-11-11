@@ -21,6 +21,7 @@ export {
     BranchPruneResult,
     BranchPruneSelection,
     BrowserCompanionAction,
+    BrowserFindAction,
     BusyThread,
     ChannelParticipantState,
     ChannelStatePayload,

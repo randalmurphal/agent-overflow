@@ -47,7 +47,11 @@
   import { getContext, untrack } from 'svelte';
   import {
     Streamdown,
+    alignmentAtEnd,
+    createParseBlocksCache,
+    parseBlocks,
     sanitizeEmbeddedHtmlToken,
+    type Alignment,
     type ProvenAppend,
     type Tokens,
   } from '../../markdown';
@@ -378,6 +382,21 @@
     };
   });
 
+  // The volatile tail continues the committed prefix, so it starts under
+  // the `[center]`/`[right]` alignment in force at the prefix's end. The
+  // prefix only grows while streaming; its append proof keeps this fold
+  // proportional to the newly committed bytes.
+  let prefixAlignmentCache = createParseBlocksCache();
+  const tailAlignStart = $derived.by((): Alignment => {
+    if (!streaming) {
+      prefixAlignmentCache = createParseBlocksCache();
+      return null;
+    }
+    const { prefix, prefixAppend } = splitDerived;
+    parseBlocks(prefix, extensions, prefixAlignmentCache, prefixAppend);
+    return alignmentAtEnd(prefixAlignmentCache);
+  });
+
   // A stable block migrates from the volatile Streamdown to the committed
   // owner. Both render identical DOM, but they cannot share node identity.
   // Capture against the stable message root before Svelte replaces that
@@ -490,11 +509,13 @@
   contentAppend?: ProvenAppend,
   trimFirstBlockMargin = false,
   trimLastBlockMargin = false,
+  alignStart: Alignment = null,
 )}
   <Streamdown
     class={wrapperClass}
     {content}
     {contentAppend}
+    {alignStart}
     {parseIncompleteMarkdown}
     isolatedVolatileTail={parseIncompleteMarkdown}
     {diagnostics}
@@ -546,6 +567,7 @@
       splitDerived.tailAppend,
       !splitDerived.prefix,
       true,
+      tailAlignStart,
     )}
   {/if}
 </div>
