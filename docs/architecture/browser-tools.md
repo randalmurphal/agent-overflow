@@ -148,11 +148,14 @@ so AO's chords have to be taken back at the engine:
   has no keyboard focus, which the command context's `terminalFocus` reads.
 - A bare Escape is never AO's in the page: WebKitGTK and WKWebView offer it
   to the gate, which always lets it through, and while a pane shows the
-  page the Manager announces each press (not a key held down: WKWebView's
-  `isARepeat`, and on GTK 4, which reports no repeat, a press while the
-  view has not seen its release or lost focus) as an `escape` event (thread
-  and page id) on `browser:companion-state` for the pane's find (see Find).
-  An Escape with a modifier is an ordinary chord.
+  page the Manager announces each press as an `escape` event (thread and
+  page id) on `browser:companion-state` for the pane's find (see Find),
+  except a key held down (WKWebView's `isARepeat`; on GTK 4, which reports
+  no repeat, a press while the view has not seen its release or lost
+  focus) and a press during an input method composition (the view's
+  preedit on GTK, the responder's `hasMarkedText` on macOS). The native
+  code only gathers those facts; `pageEscapeAnnounced` decides. An Escape
+  with a modifier is an ordinary chord.
 
 ## Find
 
@@ -173,15 +176,16 @@ store's alone; the backend holds only what the engine holds.
   `find` event on `browser:companion-state`, the bar showing the search
   closes, and the engine's search is stopped with it. `stop` never
   restores a suspended page and answers for a gone page as for no search.
-- A search's owner is a pane mount and a find id: the id the mount's
-  provider makes the first time a bar's query searches (or for each open
-  of the engine's own find, in "engine" mode) and names on every action of
-  that bar (`findId` on `BrowserFindAction`). Every answer and end carries
+- A search's owner is a pane mount and a find id: a new id the mount's
+  provider makes for every `start` (each search of a bar's query, each open
+  of the engine's own find in "engine" mode), which that search's steps and
+  `stop` name (`findId` on `BrowserFindAction`), so a stop sent for one
+  search never ends a later one. Every answer and end carries
   the owner with the page (id and incarnation), the document the search
   started on and a generation (`FindState`). A `start` from another owner
   (another mount, or another bar of the same one) replaces the search: the
   old owner gets an end, and the engine's search is replaced rather than
-  stopped. A step or `stop` that finds no search of its owner's (it ended,
+  stopped; a start under a new id from the same mount is such a start. A step or `stop` that finds no search of its owner's (it ended,
   or another owner took it) changes nothing, and its answer is marked
   `foreign` and names the search's real owner, "" for none, so the
   provider never takes it as an acknowledgement. Generations come from one
@@ -219,7 +223,8 @@ store's alone; the backend holds only what the engine holds.
   failed start or step. A search the engine holds that no session wants is
   state every transition settles first and last, retrying a stop that
   failed before, whoever owns the search; a `stop` reports each failure of
-  that stop.
+  that stop. A page that holds neither a search nor an owed engine stop is
+  the only one a presentation change skips (`findSession.settled`).
 - A new document is each engine's commit signal, so a reload ends the
   search and a same-document navigation (a fragment, the History API)
   keeps it: WebKitGTK `load-changed` with `WEBKIT_LOAD_COMMITTED`,
@@ -246,20 +251,22 @@ store's alone; the backend holds only what the engine holds.
   query and `stop` when the query empties, the bar closes or the pane
   unmounts. A queued start is dropped when the query changes, an answer
   shows only under its own generation, and an end or a foreign answer is
-  taken only for the search it holds (page, mount and id) and only when
-  newer than the answers it took; taking it closes the bar. An answer
+  taken only for the search it holds (page, mount and id); taking it
+  closes the bar. An answer
   showing a search the provider no longer holds is followed by that
   search's stop. A queued stop is removed only by running. A stop that
   fails is reported on the pane and sent again on the provider's own
-  timer, at most three times in all, until one answers; a new start of
-  that search clears the retry waiting for it. A stop that never succeeds leaves the
+  timer, at most three times in all, until one answers; a retry names only
+  the search it was sent for. A stop that never succeeds leaves the
   page's highlights until the next start, a navigation, a page switch or
   the pane unmounting, each of which ends the engine's search. A start or
   step whose outcome is unknown (a timeout, or the connection lost while
   it was out) is followed by its search's stop. The Go find tables run
   each sequence against a port of the provider, including calls left
   outstanding across later reader actions and the stop retries, and
-  record each provider's view of it; the frontend replays those scripts
+  record each provider's view of it, checking after every sequence that a
+  provider shows counts exactly when the Manager holds a search for it; the
+  frontend replays those scripts
   against the real provider and pane-find store
   (`frontend/src/test/fixtures/browserFind/`, regenerated with
   `AO_UPDATE_FIND_SCRIPTS=1` on the tables in `find_pairs_test.go`).
@@ -267,13 +274,17 @@ store's alone; the backend holds only what the engine holds.
   `WebKitFindController`: a case-insensitive, wrapping search that counts up
   to 1000 matches (past that the count shows as `1000+` and the position as
   unknown), `search_next`/`search_previous` for Enter and Shift+Enter, and
-  `search_finish` on stop. The engine reports no match index, so the
+  `search_finish` on stop, which clears only the highlights, so a stop also
+  drops the selection that marks the match, as WKWebView does. The engine reports no match
+  index, so the
   Manager counts the steps.
 - WKWebView ("bar") uses `findString:withConfiguration:completionHandler:`.
   It reports only whether a match was found, so the bar shows "Found" or "No
   results" without numbers. A search starts from the selection, so a start
   drops the selection first, and a stop drops the selection that marks the
-  match.
+  match. Both clear the page and its same-origin frames
+  (`webkitClearSelectionScript`); a match selected in a cross-origin frame
+  stays selected.
 - Hosted WebView2 ("engine") opens the engine's own find bar
   (`ICoreWebView2Find` with the default dialog left on), seeded with the
   SPA's selection or else the page's, and moves keyboard focus into the page.
