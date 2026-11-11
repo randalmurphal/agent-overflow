@@ -237,14 +237,68 @@ describe('<ReviewFileTree> hide tests', () => {
 
   it('"Clear filters" also turns hide tests off', async () => {
     const onHideTestsChange = vi.fn();
+    const onFilterSelectionChange = vi.fn();
     const view = render(ReviewFileTree, {
       files: WITH_TESTS,
       onSelectFile: () => {},
       hideTests: true,
       onHideTestsChange,
+      onFilterSelectionChange,
     });
     await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
     await fireEvent.click(view.getByText('Clear filters'));
+    expect(onHideTestsChange).toHaveBeenCalledWith(false);
+    // A changed selection ends the reveals a jump made.
+    expect(onFilterSelectionChange).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('<ReviewFileTree> filter menu while a filter is active', () => {
+  const labelOf = (el: Element) => el.textContent!.replace(/[\s\d✓]+$/, '').trim();
+
+  // A type picked on one file list survives a switch to a list without
+  // that type (a commit picked): the menu stays reachable and lists the
+  // picked type, with no files, so it can be unchecked.
+  it('keeps the menu, and the picked type, when the new file list lacks that type', async () => {
+    const view = render(ReviewFileTree, {
+      files: [file('src/app.ts'), file('cmd/main.go')],
+      onSelectFile: () => {},
+      onHideTestsChange: () => {},
+    });
+    await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
+    await fireEvent.click(view.getByRole('menuitem', { name: /^\.ts/ }));
+    await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
+
+    await view.rerender({ files: [file('cmd/main.go')] });
+    expect(view.queryAllByTestId('review-tree-file')).toHaveLength(0);
+    const trigger = view.getByTestId('review-tree-ext-trigger');
+    expect(trigger.textContent).toContain('1');
+    await fireEvent.click(trigger);
+    expect(view.getAllByRole('menuitem').map(labelOf)).toEqual(['.go', '.ts', 'Clear filters']);
+    const picked = view.getByRole('menuitem', { name: /^\.ts/ });
+    expect(picked).toHaveTextContent('✓');
+    expect(picked).toHaveTextContent('0');
+
+    await fireEvent.click(picked);
+    expect(view.getAllByTestId('review-tree-file').map((node) => node.getAttribute('data-file-path'))).toEqual(['cmd/main.go']);
+    // Nothing active and one type: nothing to choose, so no menu.
+    await fireEvent.click(document.body);
+    await view.rerender({ files: [file('cmd/main.go')] });
+    expect(view.queryByTestId('review-tree-ext-trigger')).toBeNull();
+  });
+
+  it('keeps "Hide tests" reachable while it is on and the list has no tests', async () => {
+    const onHideTestsChange = vi.fn();
+    const view = render(ReviewFileTree, {
+      files: [file('cmd/main.go')],
+      onSelectFile: () => {},
+      hideTests: true,
+      onHideTestsChange,
+    });
+    await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
+    const item = view.getByTestId('review-tree-hide-tests');
+    expect(item).toHaveTextContent('✓');
+    await fireEvent.click(item);
     expect(onHideTestsChange).toHaveBeenCalledWith(false);
   });
 });

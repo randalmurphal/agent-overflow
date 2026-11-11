@@ -38,6 +38,8 @@
     onHideTestsChange?: (value: boolean) => void;
     filterDiff?: boolean;
     onFilterDiffChange?: (value: boolean) => void;
+    revealedPaths?: ReadonlySet<string>;
+    onFilterSelectionChange?: () => void;
   }
 
   let {
@@ -52,6 +54,8 @@
     onHideTestsChange,
     filterDiff = true,
     onFilterDiffChange,
+    revealedPaths,
+    onFilterSelectionChange,
   }: Props = $props();
 
   const RAIL_MIN_PX = 180;
@@ -127,6 +131,8 @@
       {onHideTestsChange}
       {filterDiff}
       {onFilterDiffChange}
+      {revealedPaths}
+      {onFilterSelectionChange}
     />
 
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->

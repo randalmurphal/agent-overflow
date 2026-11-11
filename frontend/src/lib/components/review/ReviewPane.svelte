@@ -113,7 +113,7 @@
   const diffFiles = $derived.by(() => {
     const files = review?.files ?? [];
     if (!filterDiff || (activeExtensions.size === 0 && !hideTests)) return files;
-    return filterReviewFiles(files, '', activeExtensions, hideTests).files;
+    return filterReviewFiles(files, '', activeExtensions, hideTests, review?.revealedPaths).files;
   });
   // The tree highlights by index into the FULL file list; the diff body
   // reports indexes into diffFiles — map through the path.
@@ -419,6 +419,8 @@
             onHideTestsChange={(value) => { hideTests = value; }}
             {filterDiff}
             onFilterDiffChange={(value) => { filterDiff = value; }}
+            revealedPaths={review.revealedPaths}
+            onFilterSelectionChange={() => review?.clearRevealedPaths()}
           />
         {/if}
         {#snippet leadRowContent()}

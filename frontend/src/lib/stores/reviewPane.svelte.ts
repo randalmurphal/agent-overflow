@@ -213,7 +213,15 @@ export interface ReviewPaneState {
   /** Edit tool call to select on the next edits-scope load — set by
    * the inline-diff affordance before setScope('edits'). */
   pendingEditItemID: string | null;
-  pendingJumpFilePath: string | null;
+  readonly pendingJumpFilePath: string | null;
+  /** Paths an explicit jump revealed: the file filter keeps them despite
+   * the type filter and hide-tests (`filterReviewFiles`). Emptied when the
+   * filter selection changes (`clearRevealedPaths`) and when the diff is
+   * replaced by a different one. */
+  readonly revealedPaths: ReadonlySet<string>;
+  /** Jump to a file's header, revealing it if the filter hides it. */
+  requestFileJump(path: string): void;
+  clearRevealedPaths(): void;
   /** Diff row key to jump to (a card's file:line, the unresolved
    * stepper, the title bar's peek controls); consumed by the diff body. */
   readonly pendingJumpRowKey: string | null;
@@ -612,9 +620,6 @@ export async function openReviewCompanion(
   if (!companion) return null;
   const hasExplicitSelection = opts.scope !== undefined || opts.editItemId !== undefined;
   const state = reviewStateForPane(sourcePaneId, subject, { deferInitialLoad: hasExplicitSelection });
-  if (opts.filePath) {
-    state.pendingJumpFilePath = opts.filePath;
-  }
   if (opts.editItemId) {
     state.pendingEditItemID = opts.editItemId;
   }
@@ -625,6 +630,9 @@ export async function openReviewCompanion(
     // pane already sits there, which is what consumes the pending pin.
     await state.setScope('edits');
   }
+  // After the scope switch, which retires the previous diff and the reveals
+  // that came with it.
+  if (opts.filePath) state.requestFileJump(opts.filePath);
   return state;
 }
 
@@ -739,6 +747,19 @@ export function createReviewPaneState(
   );
   let pendingJumpFilePath: string | null = $state(null);
   let pendingJumpRowKey: string | null = $state(null);
+  const revealedPaths = new SvelteSet<string>();
+
+  // Every jump that targets a file in the diff comes through here, so a
+  // file the filter hides is shown before the row is requested: the diff
+  // body consumes a request for a row it does not render.
+  function revealFile(path: string): void {
+    if (path !== '') revealedPaths.add(path);
+  }
+
+  function requestFileJump(path: string): void {
+    revealFile(path);
+    pendingJumpFilePath = path;
+  }
   // The loaded diff's files, tree-sorted (edits: merged by path), and the
   // content key of the whole patch for the scopes that key comments by
   // content. The key is set once the patch is complete.
@@ -1322,6 +1343,7 @@ export function createReviewPaneState(
   // A new subject cannot reuse the previous patch under its new scope,
   // anchors or span context. Same-subject refreshes intentionally retain it.
   function retireDiffSubject(): void {
+    revealedPaths.clear();
     loadedFiles = [];
     showRead(null);
     patchKey = '';
@@ -1498,6 +1520,7 @@ export function createReviewPaneState(
         return;
       }
       clearContextExpansions();
+      revealedPaths.clear();
       loadedFiles = [];
       showRead(null);
       patchKey = '';
@@ -2257,6 +2280,7 @@ export function createReviewPaneState(
     closeConflictView();
     collapsedPaths.delete(thread.path);
     expandedPRThreadIds.add(thread.id);
+    revealFile(thread.path);
     pendingJumpRowKey = `pt:${thread.id}`;
   }
 
@@ -2508,7 +2532,9 @@ export function createReviewPaneState(
     get pendingEditItemID() { return pendingEditItemID; },
     set pendingEditItemID(value: string | null) { pendingEditItemID = value; },
     get pendingJumpFilePath() { return pendingJumpFilePath; },
-    set pendingJumpFilePath(value: string | null) { pendingJumpFilePath = value; },
+    get revealedPaths() { return revealedPaths; },
+    requestFileJump,
+    clearRevealedPaths(): void { revealedPaths.clear(); },
     get pendingJumpRowKey() { return pendingJumpRowKey; },
     get loading() { return loading; },
     get error() { return error; },

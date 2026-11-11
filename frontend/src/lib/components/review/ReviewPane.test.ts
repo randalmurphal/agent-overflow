@@ -388,6 +388,92 @@ describe('<ReviewPane>', () => {
     expect(again.headerPaths()).toEqual(['src/app.ts']);
   });
 
+  // An explicit jump reveals its target: a thread's location in the
+  // Conversation on a file the filter hides shows that file in the diff
+  // and the tree, until the filter selection changes.
+  it('a Conversation location jump reveals a file hidden by hide tests or a type filter', async () => {
+    const filePatch = (path: string) => [
+      `diff --git a/${path} b/${path}`,
+      'index 1111111..2222222 100644',
+      `--- a/${path}`,
+      `+++ b/${path}`,
+      '@@ -1 +1 @@',
+      '-old',
+      '+new',
+    ];
+    const detail: PRDetail = {
+      number: 5, title: 'Add feature', body: '', authorLogin: 'octocat', state: 'open', draft: false,
+      headRefName: 'feature', baseRefName: 'main', baseRefSHA: 'base-main', headSHA: 'sha-a',
+      url: 'https://github.com/owner/repo/pull/5', additions: 3, deletions: 3, changedFiles: 3,
+      viewerIsAuthor: false, reviewDecision: '', latestReviews: [],
+      checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
+      mergeability: 'clean', readiness: { state: 'ready', blockers: [], settled: [] },
+      merge: { methods: ['merge'], deleteBranchOffered: false, deleteBranchDefault: false, autoMergeAvailable: false, viewerCanMerge: false, viewerCanApprove: false, viewerApproved: false },
+    };
+    const thread = (id: string, path: string): ReviewThread => ({
+      id, path, line: 1, side: 'right', isResolvable: true, isResolved: false, isOutdated: false,
+      comments: [{ authorLogin: 'alice', body: `About ${path}.`, createdAt: '2026-01-01T00:00:00Z', databaseID: Number(id.slice(2)) }],
+    });
+    const threads = [thread('t-1', 'src/app.test.ts'), thread('t-2', 'docs/notes.md')];
+    setBindingMock('SubscribePRUpdates', async () => ({ id: 'sub-1', prKey: 'github:owner/repo:5', detail, threads, headSHA: 'sha-a' }));
+    setBindingMock('UnsubscribePRUpdates', async () => undefined);
+    setReviewDiffMock('OpenPRDiff', async () =>
+      [...filePatch('src/app.ts'), ...filePatch('src/app.test.ts'), ...filePatch('docs/notes.md')].join('\n'));
+    setBindingMock('ListPRReviewThreads', async () => threads);
+
+    seedSourcePanePR();
+    const view = render(ReviewPane, { ctx: makeCtx() });
+    await waitFor(() => expect(view.getByTestId('review-diff-stats')).toBeInTheDocument());
+    await pickScope(view, 'pr');
+    const headerPaths = () =>
+      [...new Set(view.queryAllByTestId('review-file-header').map((node) => node.getAttribute('data-path')))];
+    const treePaths = () =>
+      view.queryAllByTestId('review-tree-file').map((node) => node.getAttribute('data-file-path'));
+    await waitFor(() => expect(headerPaths()).toHaveLength(3));
+    const jumpTo = async (path: string) => {
+      const conversation = view.getByTestId('review-pr-conversation');
+      if (conversation.getAttribute('data-open') !== 'true') await fireEvent.click(conversation.querySelector('button')!);
+      const card = await waitFor(() => {
+        const found = view.getAllByTestId('review-conversation-thread').find((node) => node.textContent?.includes(`About ${path}.`));
+        expect(found).toBeDefined();
+        return found!;
+      });
+      await fireEvent.click(within(card).getByTestId('review-conversation-jump-diff'));
+    };
+    const filterItem = async (testIdOrName: string | RegExp) => {
+      if (view.queryByTestId('review-tree-filter-diff') === null) await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
+      const item = typeof testIdOrName === 'string'
+        ? view.getByTestId(testIdOrName)
+        : view.getByRole('menuitem', { name: testIdOrName });
+      await fireEvent.click(item);
+    };
+
+    // Hide tests: the jump brings the test file into the diff and the tree.
+    await filterItem('review-tree-hide-tests');
+    expect(headerPaths()).not.toContain('src/app.test.ts');
+    expect(treePaths()).not.toContain('src/app.test.ts');
+    await jumpTo('src/app.test.ts');
+    await waitFor(() => expect(headerPaths()).toContain('src/app.test.ts'));
+    expect(treePaths()).toContain('src/app.test.ts');
+    // Changing the filter hides it again.
+    await filterItem('review-tree-hide-tests');
+    await filterItem('review-tree-hide-tests');
+    expect(headerPaths()).not.toContain('src/app.test.ts');
+    expect(treePaths()).not.toContain('src/app.test.ts');
+    await filterItem('review-tree-hide-tests');
+
+    // A type filter: the same for a file of another type.
+    await filterItem(/^\.ts/);
+    expect(headerPaths()).toEqual(['src/app.test.ts', 'src/app.ts']);
+    await jumpTo('docs/notes.md');
+    await waitFor(() => expect(headerPaths()).toContain('docs/notes.md'));
+    expect(treePaths()).toContain('docs/notes.md');
+    await filterItem(/^\.ts/);
+    await filterItem(/^\.ts/);
+    expect(headerPaths()).not.toContain('docs/notes.md');
+    expect(treePaths()).not.toContain('docs/notes.md');
+  });
+
   it('toggles hide-whitespace from the toolbar and re-requests the diff', async () => {
     const calls: boolean[] = [];
     setReviewDiffMock('OpenWorkspaceDiff', async (...args: never[]) => {

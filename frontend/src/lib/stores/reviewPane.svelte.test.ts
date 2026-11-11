@@ -407,6 +407,8 @@ describe('reviewPane store', () => {
     await waitLoaded(state!);
     expect(state!.scope).toBe('branch');
     expect(state!.pendingJumpFilePath).toBe('src/app.ts');
+    // A jump to a file shows it even when the file filter hides it.
+    expect([...state!.revealedPaths]).toEqual(['src/app.ts']);
 
     const same = reviewStateForPane('pane-1', subjectFor());
     expect(same.pendingJumpFilePath).toBe('src/app.ts');
@@ -445,6 +447,7 @@ describe('reviewPane store', () => {
     expect(state.collapsedPaths.has('pnpm-lock.yaml')).toBe(false);
     expect(state.expandedPRThreadIds.has('thread-9')).toBe(true);
     expect(state.pendingJumpRowKey).toBe('pt:thread-9');
+    expect([...state.revealedPaths]).toEqual(['pnpm-lock.yaml']);
 
     state.consumePendingJumpRowKey();
     expect(state.pendingJumpRowKey).toBeNull();
@@ -452,6 +455,28 @@ describe('reviewPane store', () => {
     // A PR-level conversation thread has no row to jump to.
     state.jumpToDiffThread({ ...reviewThreadStub('thread-10'), path: '' });
     expect(state.pendingJumpRowKey).toBeNull();
+    expect([...state.revealedPaths]).toEqual(['pnpm-lock.yaml']);
+
+    // A filter change ends the reveals.
+    state.clearRevealedPaths();
+    expect(state.revealedPaths.size).toBe(0);
+  });
+
+  it('a different diff ends the reveals; a refresh of the same diff keeps them', async () => {
+    const patch = [patchFor('src/small.ts', 2), patchFor('src/small.test.ts', 2)].join('\n');
+    setReviewDiffMock('OpenWorkspaceDiff', async () => patch);
+    setReviewDiffMock('OpenBranchBaseDiff', async () => patch);
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+
+    state.jumpToDiffThread({ ...reviewThreadStub('thread-9'), path: 'src/small.test.ts' });
+    await state.reload();
+    await waitLoaded(state);
+    expect([...state.revealedPaths]).toEqual(['src/small.test.ts']);
+
+    await state.setScope('branch');
+    await waitLoaded(state);
+    expect(state.revealedPaths.size).toBe(0);
   });
 
   it('toggleCollapseAll flips every file and allCollapsed tracks the set', async () => {
@@ -3692,6 +3717,8 @@ describe('reviewPane store — conversation section and resolve', () => {
     expect(state.unresolvedCursor).toBe('t-in');
     expect(state.pendingJumpRowKey).toBe('pt:t-in');
     expect(state.expandedPRThreadIds.has('t-in')).toBe(true);
+    // The row it jumps to shows even when the file filter hides its file.
+    expect([...state.revealedPaths]).toEqual(['src/app.ts']);
     state.consumePendingJumpRowKey();
 
     // Next: outside the diff, so its card in the overview.
