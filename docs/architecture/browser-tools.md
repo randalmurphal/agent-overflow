@@ -245,7 +245,10 @@ the accelerator path above.
   is queued: a query never goes to another page, and an explicit open on
   another page queues the close of the find before. The bar it shows is
   the backend's bar for its open or none: a foreign answer to anything but
-  a close, or an open the backend refused, closes it. The Go find tables run
+  a close, or an open the backend refused, closes it. An action whose
+  outcome is unknown (a timeout, or the connection lost while it was out)
+  ends the open in the provider and owes its close, which is retried with
+  backoff, through dispose, until an answer arrives. The Go find tables run
   each sequence against a port of the provider, including calls left
   outstanding across later reader actions, and record each provider's view
   of it; the frontend replays those scripts against the real provider

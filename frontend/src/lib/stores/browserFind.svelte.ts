@@ -27,6 +27,11 @@
 // shown only if its intent's generation is still current. A queued close is
 // cleanup the backend still needs, so nothing but its own run removes it.
 //
+// An action whose outcome is unknown (the call timed out, or the connection
+// went while it was out) may have left the backend holding a bar or a search
+// this provider does not know of: the open is ended here and its close is
+// owed, retried with backoff until an answer arrives, through dispose too.
+//
 // State: `seq` (display generation), `queue` (intents), `held` (the open this
 // provider is bound to: its page, mount and id, and whether the bar and a
 // search are open there), and the debounce timer.
@@ -50,6 +55,8 @@
 // | failed open of the held open   | shown as an error if its seq is current; bar closes       |
 // | other failure                  | shown as an error if its seq is current; the backend's    |
 // |                                | bar stays, and so does this one                           |
+// | unknown outcome                | shown as an error if its seq is current; the held open    |
+// |                                | ends here (bar closes); its close is owed and retried     |
 // | end event for the held open    | seq++, drop the queue but its closes, nothing held,       |
 // |                                | onEnded (the bar closes)                                  |
 
@@ -60,10 +67,15 @@ import {
   type BrowserFindState,
 } from './bindings';
 import { paneFindReads, type PaneFindProvider, type PaneFindResult } from './paneFind.svelte';
+import { DisconnectedError, TransportError } from '../transport/wsClient';
 import { errString } from '../utils/errors';
 import { randomId } from '../utils/randomId';
 
 export const BROWSER_FIND_DEBOUNCE_MS = 150;
+/** The first retry of an owed close; each next one waits twice as long. */
+export const BROWSER_FIND_CLOSE_RETRY_MS = 500;
+/** The longest wait between retries of an owed close. */
+export const BROWSER_FIND_CLOSE_RETRY_MAX_MS = 15_000;
 
 /** "bar": the shared find bar drives the engine. "engine": its own find UI. */
 export type BrowserFindMode = 'bar' | 'engine';
@@ -95,6 +107,8 @@ interface Intent {
   query: string;
   /** The display generation the intent was made under. */
   seq: number;
+  /** How many times an owed close was sent without an answer. */
+  attempt: number;
 }
 
 interface LiveFind {
@@ -108,6 +122,18 @@ export function applyBrowserFindEvent(event: BrowserCompanionEvent): void {
   const state = event.find;
   if (!state || state.active) return;
   for (const find of live.get(event.threadId) ?? []) find.ended(state);
+}
+
+/**
+ * Whether a call's failure leaves unknown whether the backend ran it: a
+ * timeout or a lost connection may come after the backend acted, and an
+ * error that is not the transport's says nothing either. Any other
+ * transport error is the backend's answer, or a refusal before it ran.
+ */
+function outcomeUnknown(err: unknown): boolean {
+  if (err instanceof DisconnectedError) return true;
+  if (err instanceof TransportError) return err.code === 'timeout';
+  return true;
 }
 
 export type BrowserFind = PaneFindProvider & { dispose(): void };
@@ -160,15 +186,25 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
   }
 
   function enqueue(kind: IntentKind, query = ''): void {
-    queue.push({ kind, pageId: held.pageId, mount: held.mount, open: held.open, query, seq });
+    queue.push({ kind, pageId: held.pageId, mount: held.mount, open: held.open, query, seq, attempt: 0 });
     reads.request(drain);
   }
 
   /** Queues the close of an open, unless one for it is queued already. */
   function enqueueClose(of: { pageId: string; mount: string; open: string }): void {
     if (queue.some((intent) => intent.kind === 'close' && intent.open === of.open)) return;
-    queue.push({ kind: 'close', pageId: of.pageId, mount: of.mount, open: of.open, query: '', seq });
+    queue.push({ kind: 'close', pageId: of.pageId, mount: of.mount, open: of.open, query: '', seq, attempt: 0 });
     reads.request(drain);
+  }
+
+  /** Sends an owed close again after its backoff. */
+  function retryClose(intent: Intent): void {
+    const wait = Math.min(BROWSER_FIND_CLOSE_RETRY_MS * 2 ** intent.attempt, BROWSER_FIND_CLOSE_RETRY_MAX_MS);
+    setTimeout(() => {
+      if (queue.some((queued) => queued.kind === 'close' && queued.open === intent.open)) return;
+      queue.push({ ...intent, attempt: intent.attempt + 1 });
+      reads.request(drain);
+    }, wait);
   }
 
   /**
@@ -214,8 +250,17 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
           reset();
           options.onError(errString(err));
         }
-        // A bar the backend would not open is not shown.
-        if (intent.kind === 'open' && holds(intent)) accept();
+        if (outcomeUnknown(err)) {
+          if (intent.kind === 'close') {
+            retryClose(intent);
+          } else {
+            if (holds(intent)) accept();
+            enqueueClose(intent);
+          }
+        } else if (intent.kind === 'open' && holds(intent)) {
+          // A bar the backend would not open is not shown.
+          accept();
+        }
       }
     }
   }

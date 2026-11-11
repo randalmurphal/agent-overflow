@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   applyBrowserFindEvent,
+  BROWSER_FIND_CLOSE_RETRY_MAX_MS,
+  BROWSER_FIND_CLOSE_RETRY_MS,
   BROWSER_FIND_DEBOUNCE_MS,
   createBrowserFind,
   resetBrowserFindForTest,
@@ -8,7 +10,7 @@ import {
 } from './browserFind.svelte';
 import { BrowserCompanionEvent, BrowserFindState } from './bindings';
 import { setBindingMock } from '../../test/mocks/bindings-app';
-import { TransportError } from '../transport/wsClient';
+import { DisconnectedError, TransportError } from '../transport/wsClient';
 import { closePaneFind, isPaneFindOpen, openPaneFind, registerPaneFindProvider, resetPaneFindForTest } from './paneFind.svelte';
 
 interface Call {
@@ -721,5 +723,106 @@ describe('browser find provider', () => {
     ended(50);
     expect(onEnded).not.toHaveBeenCalled();
     expect(calls.at(-1)?.kind).toBe('close');
+  });
+
+  // Row: unknown outcome. The backend may hold a bar or a search this
+  // provider does not know of: the open ends here and its close is sent.
+  const unknowns: Array<[string, () => Error]> = [
+    ['a lost connection', () => new DisconnectedError()],
+    ['a timeout', () => new TransportError('timeout', 'the call timed out')],
+    ['an error that is not the transport\'s', () => new Error('broken')],
+  ];
+  for (const kind of ['open', 'start', 'next', 'stop'] as const) {
+    for (const [why, error] of unknowns) {
+      it(`ends the open and closes it after ${why} on a ${kind}`, async () => {
+        const { find, onEnded, onError } = setup();
+        const failing = answer;
+        answer = (call) => call.kind === kind ? Promise.reject(error()) : failing(call);
+        find.opened?.();
+        if (kind !== 'open') {
+          find.search('alpha');
+          await settle();
+        }
+        if (kind === 'next') find.next?.();
+        if (kind === 'stop') find.search('');
+        await settle(0);
+        expect(onEnded).toHaveBeenCalledTimes(1);
+        expect(onError).toHaveBeenCalledTimes(1);
+        expect(calls.at(-2)?.kind).toBe(kind);
+        expect(calls.at(-1)).toMatchObject({ kind: 'close', open: calls.at(-2)?.open });
+        find.search('beta');
+        await settle();
+        expect(calls.at(-1)?.kind).toBe('close');
+      });
+    }
+  }
+
+  it('leaves the open alone after a refusal the backend answered', async () => {
+    const { find, onEnded } = await setupOpen();
+    answer = async () => { throw refused('fake engine: find start failed'); };
+    find.search('alpha');
+    await settle();
+    expect(onEnded).not.toHaveBeenCalled();
+    expect(kinds()).toEqual(['start']);
+  });
+
+  // An owed close is retried, each wait twice the last up to the bound,
+  // until an answer arrives, the provider's dispose notwithstanding.
+  it('retries a close of unknown outcome with backoff until it is answered, through dispose', async () => {
+    const { find } = await setupOpen();
+    let failures = 7;
+    answer = async (call) => {
+      if (call.kind === 'close' && failures > 0) {
+        failures -= 1;
+        throw new DisconnectedError();
+      }
+      return state({ open: call.open, session: 9, active: false });
+    };
+    find.clear();
+    find.dispose();
+    await settle(0);
+    expect(kinds()).toEqual(['close']);
+    let wait = BROWSER_FIND_CLOSE_RETRY_MS;
+    for (let attempt = 1; attempt <= 7; attempt++) {
+      await settle(wait - 1);
+      expect(kinds(), `attempt ${attempt} waits ${wait} ms`).toHaveLength(attempt);
+      await settle(1);
+      expect(kinds()).toHaveLength(attempt + 1);
+      wait = Math.min(wait * 2, BROWSER_FIND_CLOSE_RETRY_MAX_MS);
+    }
+    await settle(BROWSER_FIND_CLOSE_RETRY_MAX_MS * 2);
+    expect(kinds()).toEqual(Array(8).fill('close'));
+    expect(new Set(calls.map((call) => call.open)).size).toBe(1);
+  });
+
+  it('does not retry a close the backend refused', async () => {
+    const { find } = await setupOpen();
+    answer = async () => { throw refused('browser: page id is required'); };
+    find.clear();
+    await settle(BROWSER_FIND_CLOSE_RETRY_MAX_MS * 2);
+    expect(kinds()).toEqual(['close']);
+  });
+
+  // The retried close names the open it is owed for: a bar reopened
+  // meanwhile is another open, which the retry never closes.
+  it('retries an owed close for its own open, never a reopened one', async () => {
+    const { find, onEnded } = await setupOpen();
+    let failed = false;
+    answer = async (call) => {
+      if (call.kind === 'close' && !failed) {
+        failed = true;
+        throw new TransportError('timeout', 'the call timed out');
+      }
+      return state({ open: call.open, session: 9, active: false });
+    };
+    find.clear();
+    await settle(0);
+    find.opened?.();
+    await settle(0);
+    await settle(BROWSER_FIND_CLOSE_RETRY_MS);
+    expect(kinds()).toEqual(['close', 'open', 'close']);
+    expect(calls[2].open).toBe(calls[0].open);
+    expect(calls[1].open).not.toBe(calls[0].open);
+    expect(onEnded).not.toHaveBeenCalled();
   });
 });
