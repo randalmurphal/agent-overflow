@@ -28,6 +28,14 @@ const FORGE: ForgeAttachmentSource = {
   webBase: 'https://gitlab.com/group/widget/-/merge_requests/3',
 };
 
+// A GitHub PR's: the one source whose extension turns text the parser
+// would show (a bare attachment URL, an autolink) into an embed.
+const GITHUB_FORGE: ForgeAttachmentSource = {
+  pr: { forge: 'github', host: 'github.com', namespace: 'acme', repo: 'widget', number: 4 },
+  backend: 'home',
+  webBase: 'https://github.com/acme/widget/pull/4',
+};
+
 const CORPUS = [
   'Plain words, and a sentence.',
   'Use **bold**, _em_, ~~gone~~ and `code_span()` here.',
@@ -121,14 +129,14 @@ function count(runs: readonly string[], query: string): number {
   return runs.reduce((total, run) => total + countFindMatches(foldFindText(run), needle), 0);
 }
 
-async function mounted(source: string): Promise<Element> {
+async function mounted(source: string, forge: ForgeAttachmentSource = FORGE): Promise<Element> {
   const host = document.createElement('div');
   host.style.width = '600px';
   document.body.appendChild(host);
   const { container } = render(ChatMarkdown, {
     target: host,
     props: { source, pathRefs: EMPTY_PATH_REFS, embeddedHtml: true, class: 'review-prose' },
-    context: new Map([[FORGE_ATTACHMENT_SOURCE_CONTEXT, () => FORGE]]),
+    context: new Map([[FORGE_ATTACHMENT_SOURCE_CONTEXT, () => forge]]),
   });
   await waitFor(() => expect(container.querySelector('.markdown-body')?.textContent?.trim()).toBeTruthy());
   // Let deferred islands (diagrams, formulas, attachments) settle.
@@ -194,6 +202,18 @@ describe('markdownFindText', () => {
     const dom = findTextSegments(root);
     expect(dom.join('\n')).not.toContain('pending');
     expect(mismatches(source, dom, markdownFindText(source, { embeddedHtml: true, forgeSource: FORGE }).runs)).toEqual([]);
+  });
+
+  it('a bare GitHub attachment URL renders as an embed, not as its URL, and is not counted', async () => {
+    setBindingMock('FetchForgeAttachment', () => new Promise(() => {}));
+    const url = 'https://github.com/user-attachments/assets/01234567-89ab-cdef-0123-456789abcdef';
+    const source = `Before ${url} after.`;
+    const root = await mounted(source, GITHUB_FORGE);
+    const dom = findTextSegments(root);
+    expect(dom.join('\n')).not.toContain('user-attachments');
+    const projected = markdownFindText(source, { embeddedHtml: true, forgeSource: GITHUB_FORGE }).runs;
+    expect(count(projected, 'user-attachments')).toBe(0);
+    expect(mismatches(source, dom, projected)).toEqual([]);
   });
 
   it.each(NESTED)('finds every <details> and counts what shows, as written and with each toggled: %s', async (_name, source) => {
