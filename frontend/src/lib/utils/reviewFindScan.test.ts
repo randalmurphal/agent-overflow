@@ -165,6 +165,63 @@ describe('scanReviewFind', () => {
     expect(some.length).toBeLessThan(5000);
   });
 
+  // A scan on a clock that spends a slice per read, which its owner stops
+  // at the first pause: the matches it reached first.
+  async function stopsInside(source: ReviewFindContent, query: string): Promise<{ pauses: number; found: number }> {
+    let live = true;
+    let pauses = 0;
+    let clock = 0;
+    let found = 0;
+    await scanReviewFind(source, query, {
+      limit: 1_000_000, live: () => live, emit: () => { found += 1; },
+      pause: async () => { pauses += 1; live = false; }, now: () => (clock += 1), sliceMs: 0,
+    });
+    return { pauses, found };
+  }
+
+  it('one huge unit of work still pauses and stops inside it', async () => {
+    // A conflict fold of many unchanged lines.
+    const merged = [...Array.from({ length: 300_000 }, (_, i) => `same ${i}`), '<<<<<<< ours', 'a', '=======', 'b', '>>>>>>> theirs', ''].join('\n');
+    const folded = reviewFileFromPatchFile(conflictPatchFile('m.go', merged));
+    const folds = new Map<number, readonly string[]>();
+    conflictPatchFile('m.go', merged, { onFold: (id, hidden) => folds.set(id, hidden) });
+    expect([...folds.values()][0].length).toBeGreaterThan(299_000);
+    const fold = await stopsInside({ files: [folded], drafts: [], prThreads: [], commentText: (body) => [body], foldLines: () => folds }, 'same');
+    expect(fold.pauses).toBe(1);
+    expect(fold.found).toBeLessThan(1000);
+
+    // One line of 8 MB with a match every kilobyte.
+    const line = `${'x'.repeat(994)}needle`.repeat(8000);
+    const long = files(['diff --git a/min.js b/min.js', '--- a/min.js', '+++ b/min.js', '@@ -0,0 +1,1 @@', `+${line}`, ''].join('\n'));
+    const minified = await stopsInside({ files: long, drafts: [], prThreads: [], commentText: (body) => [body] }, 'needle');
+    expect(minified.pauses).toBe(1);
+    expect(minified.found).toBeLessThan(100);
+
+    // A comment of many blocks.
+    const runs = Array.from({ length: 5000 }, (_, i) => `paragraph ${i}`);
+    const comment = await stopsInside(content({ prThreads: [thread('p1', 2, ['body'])], commentText: () => runs }), 'paragraph');
+    expect(comment.pauses).toBe(1);
+    expect(comment.found).toBeLessThan(1000);
+
+    // Many files with no rows: only their headers.
+    const headers = Array.from({ length: 5000 }, (_, i) => reviewFileFromPatchFile({ path: `f${i}.ts`, kind: 'conflict', additions: 0, deletions: 0, lines: [] }));
+    const listed = await stopsInside({ files: headers, drafts: [], prThreads: [], commentText: (body) => [body] }, '.ts');
+    expect(listed.pauses).toBe(1);
+    expect(listed.found).toBeLessThan(1000);
+  });
+
+  it('a long line searched a slice at a time finds what a whole search finds, across slice edges', async () => {
+    // Matches straddle the edges at 16384 and 32768; astral pairs sit on
+    // the later ones.
+    const body = 'x'.repeat(16_381) + 'NEEDLE' + 'y'.repeat(16_378) + 'needleneedle' + '\u{10400}'.repeat(20_000) + 'needle';
+    const long = files(['diff --git a/l b/l', '--- a/l', '+++ b/l', '@@ -0,0 +1,1 @@', `+${body}`, ''].join('\n'));
+    const { hits } = await scan({ files: long, drafts: [], prThreads: [], commentText: (b) => [b] }, 'needle');
+    expect(hits.map((hit) => hit.occurrence)).toEqual([0, 1, 2, 3]);
+    // Overlapping candidates count left to right without overlap.
+    const repeat = files(['diff --git a/r b/r', '--- a/r', '+++ b/r', '@@ -0,0 +1,1 @@', `+b${'a'.repeat(40_001)}`, ''].join('\n'));
+    expect((await scan({ files: repeat, drafts: [], prThreads: [], commentText: (b) => [b] }, 'aa', 100_000)).hits).toHaveLength(20_000);
+  });
+
   it('searches a PR comment as its markdown renders, never its markup', async () => {
     const source = content({
       prThreads: [thread('p1', 2, ['**nee**dle in `code`', 'plain [linked](https://example.com/needle) words'])],
