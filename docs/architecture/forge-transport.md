@@ -595,7 +595,7 @@ type Request struct {
     Method      string
     Path        string        // relative to the REST base, or absolute for a declared attachment fetch
     Query       url.Values
-    Header      http.Header   // Range, If-None-Match, Accept
+    Header      http.Header   // Range, If-None-Match, Accept; any header keeps the call off the ETag store
     Body        any           // JSON-encoded; io.Reader passes through
     Timeout     time.Duration // per call; zero takes Options.ReadTimeout (45s); covers headers and body
     Attachment  bool          // allows an absolute Path
@@ -774,7 +774,12 @@ method's rate-limited failure (`forge_rate_limited`) carries the same
   holding the ETag and the body it validated, bounded by entry count (256)
   and bytes (32 MiB) with LRU eviction; a host's entries go when its token
   changes. A GET whose key is held
-  sends `If-None-Match`; a 304 returns the stored body with `NotModified`.
+  sends `If-None-Match`; a 304 returns the stored body with `NotModified`,
+  or `ErrBodyTooLarge` when the body is past this request's bound. The key
+  holds no request header, so a request with a header of its own
+  (`Accept`, `Range`, its own `If-None-Match`) does not use the store: the
+  client adds no `If-None-Match` and stores no answer, and a 304 to the
+  caller's `If-None-Match` is `NotModified` with no body.
   GitHub REST 304s are free of the limit; GraphQL (POST) has no ETag, so
   `PullsSearch` is read whole each refresh. GitLab honors `If-None-Match`
   on merge requests, their list and job traces, not on the pipeline jobs

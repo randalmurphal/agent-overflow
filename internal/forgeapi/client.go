@@ -22,7 +22,10 @@ type Request struct {
 	Path  string
 	Query url.Values
 	// Header carries Range, If-None-Match and Accept. Authorization,
-	// Private-Token and Host are refused.
+	// Private-Token and Host are refused. A request with a header of its
+	// own does not use the ETag store: the client adds no If-None-Match
+	// and stores no answer, and a 304 to the caller's own If-None-Match
+	// is NotModified with no body.
 	Header http.Header
 	// Body is JSON-encoded; an io.Reader passes through.
 	Body any
@@ -52,8 +55,9 @@ type Response struct {
 	// Body is the response body for Do, JSON and GraphQL, bounded by
 	// Request.MaxBodyBytes or Options.MaxBodyBytes; nil for Stream.
 	Body []byte
-	// NotModified is a 304. Do and JSON answer it from the ETag store with
-	// the stored body and the headers it came with.
+	// NotModified is a 304. Do and JSON answer one the store revalidated
+	// with the stored body and the headers it came with; a 304 to the
+	// caller's own If-None-Match has no body.
 	NotModified bool
 	// Credential is the fingerprint of the token that was sent for this answer
 	// (CredentialFingerprint names the one the next request sends). A call
@@ -98,9 +102,9 @@ type Client struct {
 	expiry expiryState
 }
 
-// Do sends r and returns the answer read whole. A GET whose URL the ETag
-// store holds is sent conditionally; a 304 returns the stored body with
-// NotModified. Errors follow the table in
+// Do sends r and returns the answer read whole. A GET with no header of
+// its own whose URL the ETag store holds is sent conditionally; a 304
+// returns the stored body with NotModified. Errors follow the table in
 // docs/architecture/forge-transport.md#errors.
 func (c *Client) Do(ctx context.Context, r Request) (*Response, error) {
 	return c.call(ctx, r, false)
@@ -255,6 +259,8 @@ type exchange struct {
 	lease   lease
 	graphQL bool
 	etag    *etagEntry
+	// etagKey is the request's ETag store key, zero for a request that
+	// does not use the store (prepare).
 	etagKey etagKey
 	body    bool // carries a body that cannot be resent
 	// noRefresh returns a 401 as is (Request.expiryLookup).
@@ -322,8 +328,7 @@ func (c *Client) attempt(ctx context.Context, r Request, graphQL bool, limit int
 	if err != nil {
 		return nil, false, err
 	}
-	if ex.req.Method == http.MethodGet && ex.req.Header.Get("If-None-Match") == "" {
-		ex.etagKey = etagKey{host: c.host, fingerprint: ex.key.fingerprint, method: http.MethodGet, url: ex.req.URL.String()}
+	if ex.etagKey.url != "" {
 		if entry, ok := c.svc.etags.lookup(ex.etagKey); ok {
 			ex.etag = entry
 			ex.req.Header.Set("If-None-Match", entry.etag)
