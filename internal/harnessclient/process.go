@@ -2,6 +2,7 @@ package harnessclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -52,6 +53,11 @@ func verifyProcessIfAlive(pid int, expected instanceinfo.ProcessIdentity) (bool,
 	return true, nil
 }
 
+// processDone reports a signal refused because the process it was sent
+// to has exited: proof of exit for that process, whatever a pid probe
+// says afterwards about a process that may since hold the pid.
+func processDone(err error) bool { return errors.Is(err, os.ErrProcessDone) }
+
 // WaitForExit confirms a process actually disappeared after an authenticated
 // shutdown request. A successful RPC only proves the intended backend heard
 // the request, not that its cleanup has finished.
@@ -85,7 +91,7 @@ func TerminateProcess(ctx context.Context, pid int, grace time.Duration) error {
 		return fmt.Errorf("terminate %d: %w", pid, err)
 	}
 	if err := requestStop(proc); err != nil {
-		if !processAlive(pid) {
+		if processDone(err) || !processAlive(pid) {
 			// It died between the liveness check the caller made and this
 			// signal. Nothing to do, and nothing went wrong.
 			return nil
@@ -104,7 +110,9 @@ func TerminateProcess(ctx context.Context, pid int, grace time.Duration) error {
 		case <-time.After(pollInterval):
 		}
 	}
-	if err := requestKill(proc); err != nil && processAlive(pid) {
+	if err := requestKill(proc); processDone(err) {
+		return nil
+	} else if err != nil && processAlive(pid) {
 		return fmt.Errorf("kill %d after %s grace: %w", pid, grace, err)
 	}
 	// A successful Kill() is a signal DELIVERED, not a process gone: an
@@ -157,7 +165,7 @@ func TerminateProcessVerified(ctx context.Context, pid int, expected instanceinf
 		return nil
 	}
 	if err := requestStop(proc); err != nil {
-		if !processAlive(pid) {
+		if processDone(err) || !processAlive(pid) {
 			return nil
 		}
 		return fmt.Errorf("terminate %d: %w", pid, err)
@@ -185,7 +193,9 @@ func TerminateProcessVerified(ctx context.Context, pid int, expected instanceinf
 	if !alive {
 		return nil
 	}
-	if err := requestKill(proc); err != nil && processAlive(pid) {
+	if err := requestKill(proc); processDone(err) {
+		return nil
+	} else if err != nil && processAlive(pid) {
 		return fmt.Errorf("kill %d after %s grace: %w", pid, grace, err)
 	}
 	killDeadline := time.Now().Add(KillConfirmWindow)

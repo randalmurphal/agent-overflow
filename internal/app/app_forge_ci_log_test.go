@@ -234,8 +234,22 @@ func TestPRCILogFinalFetchFailureSurfacesAfterTheQuickTries(t *testing.T) {
 	}
 	awaitLogEvent(t, f.logEvents, "first log frame")
 
+	// The live follow re-fetches at the follow cadence. Paused, and past a
+	// request the pump serves only between turns, it fetches nothing, so
+	// the job fails and completes between two turns and every fetch after
+	// the resume is a final one.
+	if err := f.app.SetPRUpdatesActive(sub.ID, false); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	if err := f.app.RefreshPRCI(context.Background(), sub.ID); err != nil {
+		t.Fatalf("RefreshPRCI: %v", err)
+	}
 	f.setLog("7", "", errors.New("glab: 500"))
 	f.publish(pipelineWith(gitops.CIStatusFailed, gitops.CIJob{ID: "7", Name: "unit", Status: gitops.CIStatusFailed, LogsAvailable: true}), nil)
+	before := f.logFetches.Load()
+	if err := f.app.SetPRUpdatesActive(sub.ID, true); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
 	awaitCIEvent(t, f.ciEvents, "terminal pipeline frame")
 	frame := awaitLogEvent(t, f.logEvents, "error frame after the quick tries ran out")
 	// The wire error names a correlation id, a hex string that can contain
@@ -243,8 +257,8 @@ func TestPRCILogFinalFetchFailureSurfacesAfterTheQuickTries(t *testing.T) {
 	if frame.Error == "" || strings.Contains(frame.Error, "glab: 500") || frame.Version != 1 || frame.TotalLines != 1 || !frame.Available {
 		t.Fatalf("error frame = %+v, want the failure over the held version", frame)
 	}
-	if n := f.logFetches.Load(); n != 1+prCILogFinalAttempts {
-		t.Fatalf("final fetch attempted %d times, want %d", n-1, prCILogFinalAttempts)
+	if n := f.logFetches.Load() - before; n != prCILogFinalAttempts {
+		t.Fatalf("final fetch attempted %d times, want %d", n, prCILogFinalAttempts)
 	}
 	if got := f.lines(t, "7"); !slices.Equal(got, []string{"partial"}) {
 		t.Fatalf("the held version is not readable under the failure: %q", got)
@@ -317,7 +331,7 @@ func TestPRCILogCutDownloadResumes(t *testing.T) {
 	f.cutLog("7", 10000)
 	resume := f.holdLaterLogs(t)
 	sub := f.subscribe(t)
-	awaitCIEvent(t, f.ciEvents, "pipeline frame")
+	awaitSettledCIEvent(t, f, "pipeline frame")
 	result, err := f.app.SetPRCILogFollows(context.Background(), sub.ID, []string{"7"})
 	if err != nil {
 		t.Fatalf("SetPRCILogFollows: %v", err)
@@ -346,7 +360,7 @@ func TestPRCILogDeletedCacheIsDownloadedAgain(t *testing.T) {
 	f.publish(pipelineWith(gitops.CIStatusSuccess, gitops.CIJob{ID: "7", Name: "unit", Status: gitops.CIStatusSuccess, LogsAvailable: true}), nil)
 	f.setLog("7", "a\nb\n", nil)
 	sub := f.subscribe(t)
-	awaitCIEvent(t, f.ciEvents, "pipeline frame")
+	awaitSettledCIEvent(t, f, "pipeline frame")
 	if _, err := f.app.SetPRCILogFollows(context.Background(), sub.ID, []string{"7"}); err != nil {
 		t.Fatalf("SetPRCILogFollows: %v", err)
 	}
@@ -562,7 +576,7 @@ func TestPRCILogRefusedResumeStartsOver(t *testing.T) {
 	f.cutLog("7", len(body))
 	resume := f.holdLaterLogs(t)
 	sub := f.subscribe(t)
-	awaitCIEvent(t, f.ciEvents, "pipeline frame")
+	awaitSettledCIEvent(t, f, "pipeline frame")
 	result, err := f.app.SetPRCILogFollows(context.Background(), sub.ID, []string{"7"})
 	if err != nil {
 		t.Fatalf("SetPRCILogFollows: %v", err)
