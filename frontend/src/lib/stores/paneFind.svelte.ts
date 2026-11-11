@@ -22,6 +22,10 @@ export interface PaneFindResult {
   readonly pending: boolean;
   /** True when `count` stops at the provider's limit. */
   readonly capped?: boolean;
+  /** True when `count` grows while `pending`; the bar shows it then. */
+  readonly progressive?: boolean;
+  /** Why the current query has no answer; the bar shows it. */
+  readonly error?: string | null;
 }
 
 /**

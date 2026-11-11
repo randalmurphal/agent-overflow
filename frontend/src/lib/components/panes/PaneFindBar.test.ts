@@ -80,6 +80,32 @@ describe('<PaneFindBar>', () => {
     expect(count.textContent?.trim()).toBe('No results');
   });
 
+  it('shows a progressive count beside the spinner while it grows, and a failure in place of the count', async () => {
+    const { getByTestId, queryByTestId } = renderBar();
+    await openBar();
+    const count = getByTestId('pane-find-count');
+    await fireEvent.input(getByTestId('pane-find-input'), { target: { value: 'needle' } });
+    provider.set({ pending: true, count: 7, current: -1 });
+    await tick();
+    // A provider that does not grow its count shows the spinner alone.
+    expect(count.textContent?.trim()).toBe('');
+    provider.set({ progressive: true });
+    await tick();
+    expect(count.querySelector('[data-testid="pane-find-spinner"]')).not.toBeNull();
+    expect(count.textContent?.trim()).toBe('7');
+    provider.set({ current: 2 });
+    await tick();
+    expect(count.textContent?.trim()).toBe('3/7');
+    provider.set({ pending: false, count: 0, current: -1, error: 'the log is gone' });
+    await tick();
+    expect(getByTestId('pane-find-error').textContent).toBe('Find failed: the log is gone');
+    expect(getByTestId('pane-find-error').getAttribute('role')).toBe('alert');
+    provider.set({ error: null, count: 1, current: 0 });
+    await tick();
+    expect(queryByTestId('pane-find-error')).toBeNull();
+    expect(count.textContent?.trim()).toBe('1/1');
+  });
+
   it('disables stepping at zero results and steps with the buttons', async () => {
     const { getByTestId } = renderBar();
     await openBar();

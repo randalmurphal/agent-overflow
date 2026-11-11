@@ -8,13 +8,15 @@
 //
 // The walk covers only what is mounted under `root` (a virtualized list
 // mounts its visible rows) and reruns when that DOM changes, coalesced
-// through the refresh scheduler. Text is matched case-insensitively within a
-// block, across inline markup. Where the API is missing the matches are
+// through the refresh scheduler. Text is matched by the find rule
+// (`findMatch.ts`) within a block, across inline markup; with `rowsOnly`,
+// only text inside a row is matched, and a row boundary ends a block. Where the API is missing the matches are
 // still computed, for providers that count or step through them, and
 // nothing paints. An empty query or `dispose` releases every range, the
 // observer and the names.
 
 import { createRefreshScheduler, type RefreshScheduler } from './refreshScheduler';
+import { findNeedle, foldFindText } from './findMatch';
 
 export interface FindMatch {
   readonly range: Range;
@@ -22,8 +24,11 @@ export interface FindMatch {
   readonly rowKey: string | null;
 }
 
-/** The current match: every match in one row, or one match by index. */
-export type FindCurrent = { row: string } | { match: number } | null;
+/**
+ * The current match: every match in one row, the `occurrence`-th match in
+ * one row (counted in document order), or one match by index.
+ */
+export type FindCurrent = { row: string; occurrence?: number } | { match: number } | null;
 
 export interface FindHighlighterOptions {
   root: HTMLElement;
@@ -31,6 +36,8 @@ export interface FindHighlighterOptions {
   name: string;
   rowSelector?: string;
   rowKeyAttribute?: string;
+  /** Match only text inside a `rowSelector` element. */
+  rowsOnly?: boolean;
   /** Called after every recompute with the new matches. */
   onMatches?(matches: readonly FindMatch[]): void;
 }
@@ -40,6 +47,8 @@ export interface FindHighlighter {
   setCurrent(current: FindCurrent): void;
   /** Matches in document order, for the current query. */
   readonly matches: readonly FindMatch[];
+  /** The range of the current match when it is mounted; the first of a row. */
+  currentRange(): Range | null;
   dispose(): void;
 }
 
@@ -115,14 +124,10 @@ interface Segment {
   starts: number[];
   text: string;
   block: Element | null;
+  row: Element | null;
 }
 
-function lowerPreservingLength(value: string): string {
-  const lower = value.toLowerCase();
-  return lower.length === value.length ? lower : value;
-}
-
-function collectSegments(root: HTMLElement): Segment[] {
+function collectSegments(root: HTMLElement, rowSelector: string | undefined, rowsOnly: boolean): Segment[] {
   const visible = new Map<Element, boolean>();
   const isVisible = (element: Element): boolean => {
     let answer = visible.get(element);
@@ -139,14 +144,16 @@ function collectSegments(root: HTMLElement): Segment[] {
     const parent = node.parentElement;
     if (!parent || node.data.length === 0) continue;
     if (parent.closest(SKIP_SELECTOR) || !isVisible(parent)) continue;
+    const row = rowsOnly && rowSelector ? parent.closest(rowSelector) : null;
+    if (rowsOnly && (!row || !root.contains(row))) continue;
     const block = parent.closest(BLOCK_SELECTOR);
-    if (!current || current.block !== block) {
-      current = { nodes: [], starts: [], text: '', block };
+    if (!current || current.block !== block || current.row !== row) {
+      current = { nodes: [], starts: [], text: '', block, row };
       segments.push(current);
     }
     current.starts.push(current.text.length);
     current.nodes.push(node);
-    current.text += lowerPreservingLength(node.data);
+    current.text += foldFindText(node.data);
   }
   return segments;
 }
@@ -157,12 +164,12 @@ function pointAt(segment: Segment, offset: number, end: boolean): [Text, number]
   return [segment.nodes[index], offset - segment.starts[index]];
 }
 
-function collectMatches(root: HTMLElement, needle: string, rowSelector?: string, rowKeyAttribute?: string): FindMatch[] {
+function collectMatches(root: HTMLElement, needle: string, rowSelector: string | undefined, rowKeyAttribute: string | undefined, rowsOnly: boolean): FindMatch[] {
   const matches: FindMatch[] = [];
-  for (const segment of collectSegments(root)) {
+  for (const segment of collectSegments(root, rowSelector, rowsOnly)) {
     let at = segment.text.indexOf(needle);
     if (at < 0) continue;
-    const row = rowSelector ? segment.nodes[0].parentElement?.closest(rowSelector) : null;
+    const row = segment.row ?? (rowSelector ? segment.nodes[0].parentElement?.closest(rowSelector) : null);
     const rowKey = row && rowKeyAttribute ? row.getAttribute(rowKeyAttribute) : null;
     while (at >= 0) {
       const range = document.createRange();
@@ -182,6 +189,7 @@ function collectMatches(root: HTMLElement, needle: string, rowSelector?: string,
 
 export function createFindHighlighter(options: FindHighlighterOptions): FindHighlighter {
   const { root, name, rowSelector, rowKeyAttribute } = options;
+  const rowsOnly = options.rowsOnly === true;
   const currentName = `${name}-current`;
   const paints = findHighlightsSupported();
   let needle = '';
@@ -192,9 +200,20 @@ export function createFindHighlighter(options: FindHighlighterOptions): FindHigh
   let rulesHeld = false;
   let disposed = false;
 
-  function isCurrent(match: FindMatch, index: number): boolean {
-    if (!current) return false;
-    return 'row' in current ? match.rowKey === current.row : index === current.match;
+  // Indexes of the current matches.
+  function currentIndexes(): number[] {
+    if (!current) return [];
+    if ('match' in current) return current.match >= 0 && current.match < matches.length ? [current.match] : [];
+    const { row, occurrence } = current;
+    const out: number[] = [];
+    let seen = 0;
+    for (let index = 0; index < matches.length; index += 1) {
+      if (matches[index].rowKey !== row) continue;
+      if (occurrence === undefined || seen === occurrence) out.push(index);
+      seen += 1;
+      if (occurrence !== undefined && seen > occurrence) break;
+    }
+    return out;
   }
 
   function paint(): void {
@@ -207,14 +226,15 @@ export function createFindHighlighter(options: FindHighlighterOptions): FindHigh
     const all = new Highlight();
     const focused = new Highlight();
     focused.priority = 1;
-    matches.forEach((match, index) => (isCurrent(match, index) ? focused : all).add(match.range));
+    const currentSet = new Set(currentIndexes());
+    matches.forEach((match, index) => (currentSet.has(index) ? focused : all).add(match.range));
     CSS.highlights.set(name, all);
     CSS.highlights.set(currentName, focused);
   }
 
   function recompute(): void {
     if (disposed) return;
-    matches = needle ? collectMatches(root, needle, rowSelector, rowKeyAttribute) : [];
+    matches = needle ? collectMatches(root, needle, rowSelector, rowKeyAttribute, rowsOnly) : [];
     paint();
     options.onMatches?.(matches);
   }
@@ -250,7 +270,7 @@ export function createFindHighlighter(options: FindHighlighterOptions): FindHigh
   return {
     setQuery(query: string): void {
       if (disposed) return;
-      needle = lowerPreservingLength(query.trim());
+      needle = findNeedle(query);
       if (needle) follow();
       else unfollow();
       recompute();
@@ -262,6 +282,10 @@ export function createFindHighlighter(options: FindHighlighterOptions): FindHigh
     },
     get matches() {
       return matches;
+    },
+    currentRange(): Range | null {
+      const first = currentIndexes()[0];
+      return first === undefined ? null : matches[first].range;
     },
     dispose(): void {
       if (disposed) return;

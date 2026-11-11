@@ -48,10 +48,14 @@
   let query = $derived(find?.query ?? '');
   let result = $derived(provider?.result ?? null);
   let count = $derived(result?.count ?? 0);
+  let error = $derived(result?.error ?? null);
+  // A progressive provider's count shows beside the spinner while it grows.
+  let showCount = $derived(!result?.pending || (result.progressive === true && count > 0));
   let countText = $derived.by(() => {
     if (!query.trim() || !result) return '';
-    if (count === 0) return 'No results';
-    return `${result.current + 1}/${count}${result.capped ? '+' : ''}`;
+    if (count === 0) return result.pending ? '' : 'No results';
+    const at = result.current >= 0 ? `${result.current + 1}/` : '';
+    return `${at}${count}${result.capped ? '+' : ''}`;
   });
   let placeholder = $derived(`Find in ${provider?.noun ?? 'pane'}`);
 
@@ -141,10 +145,13 @@
       class="flex shrink-0 items-center px-1 text-[0.75rem] tabular-nums text-fg-subtle"
       data-testid="pane-find-count"
     >
-      {#if result?.pending}
-        <span data-testid="pane-find-spinner" class="flex items-center"><SteppedSpinner size={11} /></span>
+      {#if error && query.trim()}
+        <span class="max-w-40 truncate text-error" title={error} role="alert" data-testid="pane-find-error">Find failed: {error}</span>
       {:else}
-        {countText}
+        {#if result?.pending}
+          <span data-testid="pane-find-spinner" class="flex items-center {showCount && countText ? 'pr-1' : ''}"><SteppedSpinner size={11} /></span>
+        {/if}
+        {#if showCount}{countText}{/if}
       {/if}
     </span>
     <IconButton size="xs" label="Previous match" testId="pane-find-previous" disabled={count === 0} onClick={() => stepPaneFind(paneId, -1)}>
