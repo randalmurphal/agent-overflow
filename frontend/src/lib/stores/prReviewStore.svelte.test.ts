@@ -924,6 +924,8 @@ describe('prReviewStore — merge conflicts follow the PR', () => {
     expect(peekPRConflicts(KEY, CONFLICT_WS).state?.treeOID).toBe('tree-1');
     await first;
     expect(conflicts).toHaveBeenCalledTimes(1);
+    // The user opened the view, so the read may prompt for credentials.
+    expect(conflicts.mock.calls[0][4]).toBe(true);
     expect(file).toHaveBeenCalledTimes(1);
     expect(peekPRConflicts(KEY, CONFLICT_WS).contentByPath.get('main.go')).toBe('merged content');
 
@@ -936,6 +938,83 @@ describe('prReviewStore — merge conflicts follow the PR', () => {
     expect(peekPRConflicts(KEY, CONFLICT_WS).state?.treeOID).toBe('tree-clean');
     expect(peekPRConflicts(KEY, CONFLICT_WS).state?.paths).toEqual([]);
     expect(peekPRConflicts(KEY, CONFLICT_WS).contentByPath.size).toBe(0);
+    a.release();
+  });
+
+  // Close the view while a read runs, let the PR move with no view open
+  // (no reconcile), and reopen before the read ends: the reopen joins the
+  // read in flight, which answers for the old head. It must settle only
+  // after the snapshot it was handed has been read.
+  it('a reopen handed a newer snapshot than the read in flight reads that snapshot', async () => {
+    installSubscribeMock();
+    let releaseFirst!: () => void;
+    const held = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const conflicts = setBindingMock('GetPRMergeConflicts', async (_ws: unknown, _ref: unknown, rev: { headSHA: string }) => {
+      if (rev.headSHA === 'sha-a') await held;
+      return { conflicted: true, treeOID: `tree-${rev.headSHA}`, baseLabel: 'origin/main', headLabel: 'feature', paths: ['main.go'], notes: {}, messages: [] };
+    });
+    setBindingMock('GetMergeConflictFile', async (_ws: unknown, tree: unknown) => `content of ${String(tree)}`);
+    const a = attachPR(KEY, { ref: REF });
+    await flush();
+
+    const viewingA = permitPRConflictReconcile(KEY, CONFLICT_WS);
+    const first = openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
+    await flush();
+    viewingA();
+    applyPRUpdatedEvent({ prKey: KEY, detail: detailStub({ headSHA: 'sha-b' }), threads: [], headSHA: 'sha-b' });
+    await flush();
+    expect(conflicts).toHaveBeenCalledTimes(1);
+
+    const viewingB = permitPRConflictReconcile(KEY, CONFLICT_WS);
+    let reopened = false;
+    const reopen = openPRConflicts(KEY, CONFLICT_WS, REF, detailStub({ headSHA: 'sha-b' })).then(() => {
+      reopened = true;
+    });
+    await flush();
+    releaseFirst();
+    await first;
+    await reopen;
+    expect(reopened).toBe(true);
+    expect(conflicts).toHaveBeenCalledTimes(2);
+    expect(conflicts.mock.calls[1][2]).toEqual({ baseRef: 'main', baseSHA: 'base-main', headSHA: 'sha-b' });
+    // The read runs for the reopen, which a person asked for.
+    expect(conflicts.mock.calls[1][4]).toBe(true);
+    const view = peekPRConflicts(KEY, CONFLICT_WS);
+    expect(view.state?.revision.headSHA).toBe('sha-b');
+    expect(view.contentByPath.get('main.go')).toBe('content of tree-sha-b');
+    expect(view.loading).toBe(false);
+    viewingB();
+    a.release();
+  });
+
+  // A file expanded while the tree is being read again has no tree to read
+  // from yet; the read in flight fetches it with the rest.
+  it('a file read asked for during a tree read waits for that tree', async () => {
+    installSubscribeMock();
+    let releaseTree!: () => void;
+    const held = new Promise<void>((resolve) => {
+      releaseTree = resolve;
+    });
+    setBindingMock('GetPRMergeConflicts', async () => {
+      await held;
+      return { conflicted: true, treeOID: 'tree-1', baseLabel: 'origin/main', headLabel: 'feature', paths: ['main.go'], notes: {}, messages: [] };
+    });
+    const file = setBindingMock('GetMergeConflictFile', async (_ws: unknown, tree: unknown) => `content of ${String(tree)}`);
+    const a = attachPR(KEY, { ref: REF });
+    await flush();
+    const opening = openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
+    await flush();
+
+    await ensurePRConflictFile(KEY, CONFLICT_WS, 'main.go');
+    expect(file).not.toHaveBeenCalled();
+    expect(peekPRConflicts(KEY, CONFLICT_WS).error).toBeNull();
+
+    releaseTree();
+    await opening;
+    expect(file.mock.calls.map((call) => call[1])).toEqual(['tree-1']);
+    expect(peekPRConflicts(KEY, CONFLICT_WS).contentByPath.get('main.go')).toBe('content of tree-1');
     a.release();
   });
 
@@ -955,6 +1034,8 @@ describe('prReviewStore — merge conflicts follow the PR', () => {
     await flush();
 
     expect(recompute).toHaveBeenCalledTimes(1);
+    // A re-read nobody asked for at that moment may not prompt for credentials.
+    expect(recompute.mock.calls[0][4]).toBe(false);
     expect(peekPRConflicts(KEY, CONFLICT_WS).state?.paths).toEqual(['main.go']);
     expect(peekPRConflicts(KEY, CONFLICT_WS).contentByPath.get('main.go')).toBe('merged content');
 

@@ -1786,9 +1786,15 @@ export function GetPRListNeedsYou(): $CancellablePromise<number> {
  * origin now, read by this call and fetched when the clone lacks it, in the referenced clone and reports the
  * conflicts. rev.BaseSHA is not merged: it is the base the forge recorded,
  * which the head usually contains, so merging with it never conflicts.
+ * 
+ * userInitiated is true when a person opened the conflict view and false
+ * for the view's automatic re-reads (a forge poll that changed what the
+ * merge depends on, a retry after a failed read). Only a user-initiated
+ * read may ask for git credentials or arm the PR pump's retry after a
+ * failure; an automatic read fails fast and reports the failure.
  */
-export function GetPRMergeConflicts(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: git$0.PRRevision, headRefName: string): $CancellablePromise<app$0.PRMergeConflictsResult> {
-    return $Call.ByID(106351482, ws, pr, rev, headRefName).then(($result: any) => {
+export function GetPRMergeConflicts(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: git$0.PRRevision, headRefName: string, userInitiated: boolean): $CancellablePromise<app$0.PRMergeConflictsResult> {
+    return $Call.ByID(106351482, ws, pr, rev, headRefName, userInitiated).then(($result: any) => {
         return $$createType65($result);
     });
 }

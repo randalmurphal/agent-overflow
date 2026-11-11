@@ -50,7 +50,22 @@ func (r PRRevision) Validate() error {
 // another git process still did its job. A fetch failure is returned only
 // when a commit is still missing, and a commit origin does not have (the
 // PR moved after the snapshot) is reported as such.
+//
+// EnsurePRObjects is for a read the user asked for, so the fetch may ask
+// for credentials; EnsurePRObjectsUnattended is the same read run
+// automatically.
 func (c *Core) EnsurePRObjects(cwd string, pr PRReference, rev PRRevision) error {
+	return c.ensurePRObjects(cwd, pr, rev, true)
+}
+
+// EnsurePRObjectsUnattended is EnsurePRObjects for a read nobody asked for
+// at that moment (a reconcile on a forge poll, a retry after a failed
+// read): a credential prompt fails fast instead of opening a dialog.
+func (c *Core) EnsurePRObjectsUnattended(cwd string, pr PRReference, rev PRRevision) error {
+	return c.ensurePRObjects(cwd, pr, rev, false)
+}
+
+func (c *Core) ensurePRObjects(cwd string, pr PRReference, rev PRRevision, allowCredentialPrompt bool) error {
 	if err := rev.Validate(); err != nil {
 		return err
 	}
@@ -62,7 +77,7 @@ func (c *Core) EnsurePRObjects(cwd string, pr PRReference, rev PRRevision) error
 	if err != nil {
 		return err
 	}
-	_, _, fetchErr := c.executeInteractive(cwd, "fetch", "origin", headRef, rev.BaseRef)
+	_, _, fetchErr := c.executeNetwork(cwd, allowCredentialPrompt, "fetch", "origin", headRef, rev.BaseRef)
 	missing, err = c.missingCommits(cwd, missing...)
 	if err != nil || len(missing) == 0 {
 		return err
@@ -82,12 +97,26 @@ func (c *Core) EnsurePRObjects(cwd string, pr PRReference, rev PRRevision) error
 // origin/<branch>. Success is the commit being present afterwards, not the
 // fetch's exit status. A tip still missing after a successful fetch means
 // the branch moved between the two calls; that is an error, not a retry.
+//
+// RemoteBranchTip is for a read the user asked for, so both network steps
+// may ask for credentials; RemoteBranchTipUnattended is the same read run
+// automatically.
 func (c *Core) RemoteBranchTip(cwd, branch string) (string, error) {
+	return c.remoteBranchTip(cwd, branch, true)
+}
+
+// RemoteBranchTipUnattended is RemoteBranchTip for an automatic read: a
+// credential prompt fails fast instead of opening a dialog.
+func (c *Core) RemoteBranchTipUnattended(cwd, branch string) (string, error) {
+	return c.remoteBranchTip(cwd, branch, false)
+}
+
+func (c *Core) remoteBranchTip(cwd, branch string, allowCredentialPrompt bool) (string, error) {
 	if err := ValidateBranchName(branch); err != nil {
 		return "", err
 	}
 	ref := "refs/heads/" + branch
-	stdout, _, err := c.executeInteractive(cwd, "ls-remote", "origin", ref)
+	stdout, _, err := c.executeNetwork(cwd, allowCredentialPrompt, "ls-remote", "origin", ref)
 	if err != nil {
 		return "", fmt.Errorf("read %s on origin: %w", branch, err)
 	}
@@ -99,7 +128,7 @@ func (c *Core) RemoteBranchTip(cwd, branch string) (string, error) {
 	if err != nil || len(missing) == 0 {
 		return tip, err
 	}
-	_, _, fetchErr := c.executeInteractive(cwd, "fetch", "origin", ref)
+	_, _, fetchErr := c.executeNetwork(cwd, allowCredentialPrompt, "fetch", "origin", ref)
 	missing, err = c.missingCommits(cwd, tip)
 	if err != nil {
 		return "", err

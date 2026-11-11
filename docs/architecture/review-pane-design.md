@@ -29,7 +29,11 @@ not follow the base branch (GitLab's `start_sha` is usually the merge
 base), so the conflict read merges the head with the base branch's tip,
 read from origin on every read and fetched when the clone lacks it
 (`Core.RemoteBranchTip`); a failed read
-is the view's error, never "no conflicts". A failed refresh keeps
+is the view's error, never "no conflicts". An open of the view may ask for
+git credentials; its automatic re-reads (a poll that changed the snapshot,
+a retry) may not, and their failures do not arm the pump's emit after a
+failed read, so a failed open is retried once by the pump and then only
+on a forge change or a reopen. A failed refresh keeps
 the diff on screen under its error; a failed read retries on the next
 frame of the PR's poll pump, which emits once after a failed read even
 when nothing changed. Diffs of every scope are read in chunks with no
