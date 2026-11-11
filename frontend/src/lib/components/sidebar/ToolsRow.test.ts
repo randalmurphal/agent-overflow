@@ -177,25 +177,68 @@ describe('ToolsRow', () => {
     }
   });
 
-  it('opens on Enter and Space like a click, and in a new pane with ctrl or cmd', async () => {
+  it('opens on Enter keydown and Space keyup like a button, and in a new pane with ctrl or cmd', async () => {
     await hydrate([]);
     const view = render(ToolsRow);
     const workflows = view.getByTestId('sidebar-tool-workflows');
+    const pulls = view.getByTestId('sidebar-tool-pulls');
     expect(workflows).toHaveAttribute('aria-pressed', 'false');
+    workflows.focus();
     await fireEvent.keyDown(workflows, { key: 'Enter' });
     expect(layoutIds()).toEqual(['tool-workflows']);
     expect(workflows).toHaveAttribute('aria-pressed', 'true');
     expect(workflows.className).toContain('ring-inset');
 
-    await fireEvent.keyDown(view.getByTestId('sidebar-tool-pulls'), { key: ' ' });
+    pulls.focus();
+    await fireEvent.keyDown(pulls, { key: ' ' });
+    expect(layoutIds()).toEqual(['tool-workflows']);
+    await fireEvent.keyUp(pulls, { key: ' ' });
     expect(layoutIds()).toEqual(['tool-pulls']);
     expect(workflows).toHaveAttribute('aria-pressed', 'false');
 
+    workflows.focus();
     await fireEvent.keyDown(workflows, { key: 'Enter', ctrlKey: true });
     expect(layoutIds()).toEqual(['tool-pulls', 'tool-workflows']);
     // Other keys do nothing.
-    await fireEvent.keyDown(view.getByTestId('sidebar-tool-pulls'), { key: 'a' });
+    await fireEvent.keyDown(pulls, { key: 'a' });
     expect(layoutIds()).toEqual(['tool-pulls', 'tool-workflows']);
+  });
+
+  it('opens once for a held Enter or Space, and not at all when focus leaves a held Space', async () => {
+    await hydrate([]);
+    const view = render(ToolsRow);
+    const workflows = view.getByTestId('sidebar-tool-workflows');
+    const pulls = view.getByTestId('sidebar-tool-pulls');
+    // An open of a tool already open focuses it, so a repeat that opened
+    // would move focus off the pane focused after the first.
+    workflows.focus();
+    await fireEvent.keyDown(workflows, { key: 'Enter', ctrlKey: true });
+    expect(layoutIds()).toEqual(['main', 'tool-workflows']);
+    focusPane('main');
+    await fireEvent.keyDown(workflows, { key: 'Enter', ctrlKey: true, repeat: true });
+    await fireEvent.keyDown(workflows, { key: 'Enter', ctrlKey: true, repeat: true });
+    // A repeat opened nothing, so focus stayed where it was put.
+    expect(getFocusedPaneId()).toBe('main');
+
+    // Space held then Tab away: nothing opens.
+    pulls.focus();
+    await fireEvent.keyDown(pulls, { key: ' ' });
+    await fireEvent.keyDown(pulls, { key: ' ', repeat: true });
+    workflows.focus();
+    await fireEvent.keyUp(pulls, { key: ' ' });
+    expect(isToolOpen('pulls')).toBe(false);
+
+    // Space held with repeats opens once, on release.
+    pulls.focus();
+    await fireEvent.keyDown(pulls, { key: ' ', ctrlKey: true });
+    await fireEvent.keyDown(pulls, { key: ' ', ctrlKey: true, repeat: true });
+    await fireEvent.keyDown(pulls, { key: ' ', ctrlKey: true, repeat: true });
+    expect(isToolOpen('pulls')).toBe(false);
+    // New pane right of the focused main pane.
+    await fireEvent.keyUp(pulls, { key: ' ', ctrlKey: true });
+    expect(layoutIds()).toEqual(['main', 'tool-pulls', 'tool-workflows']);
+    await fireEvent.keyUp(pulls, { key: ' ', ctrlKey: true });
+    expect(layoutIds()).toEqual(['main', 'tool-pulls', 'tool-workflows']);
   });
 
   it('wears the Button primitive\'s ghost look, focus ring and compact hit target', async () => {

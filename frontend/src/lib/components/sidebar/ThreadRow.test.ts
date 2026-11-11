@@ -30,7 +30,7 @@ import type { Thread } from '../../types/models';
 import type { Settings } from '../../types/settings';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
-import { emitItemEventUpsert } from '../../../test/helpers/chat';
+import { emitItemEventUpsert, installThreadSwitchMocks } from '../../../test/helpers/chat';
 import { THREAD_ROW_DRAG_MIME } from '../../utils/threadDragPayload';
 import {
   REMOTE_BACKEND_UUID,
@@ -618,6 +618,67 @@ describe('<ThreadRow> fork lineage affordance', () => {
     expect(rowSelectCalled).toBe(0);
     // Pane should be on the PARENT (not the forked thread we rendered).
     expect(pane.threadId).toBe('parent');
+  });
+});
+
+// The row is a role="button" and opens from the keyboard as a native button
+// does: Enter on keydown and not on repeat, Space on keyup.
+describe('<ThreadRow> keyboard activation', () => {
+  beforeEach(async () => {
+    resetPanesForTest();
+    resetPaneLayoutForTest();
+    await primeSettings();
+    setBindingMock('SwitchThread', async () => {});
+    setBindingMock('ListItems', async () => []);
+  });
+
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+  }
+
+  it('opens on Space release, not on its press', async () => {
+    const thread = makeThread({ id: 'space-row' });
+    installThreadSwitchMocks(thread);
+    setBindingMock('ListThreads', async () => [thread]);
+    await refreshThreads();
+    const pane = createThreadPane();
+    const view = render(ThreadRow, { props: { thread, pane } });
+    const row = view.getByTestId('thread-row');
+    row.focus();
+    await fireEvent.keyDown(row, { key: ' ' });
+    await fireEvent.keyDown(row, { key: ' ', repeat: true });
+    await settle();
+    expect(pane.threadId).not.toBe('space-row');
+    await fireEvent.keyUp(row, { key: ' ' });
+    await settle();
+    expect(pane.threadId).toBe('space-row');
+  });
+
+  it('opens nothing for a Space released after focus left, or for an Enter repeat', async () => {
+    const thread = makeThread({ id: 'held-row' });
+    installThreadSwitchMocks(thread);
+    setBindingMock('ListThreads', async () => [thread]);
+    await refreshThreads();
+    const pane = createThreadPane();
+    const view = render(ThreadRow, { props: { thread, pane } });
+    const row = view.getByTestId('thread-row');
+    const elsewhere = document.createElement('button');
+    document.body.append(elsewhere);
+    try {
+      row.focus();
+      await fireEvent.keyDown(row, { key: ' ' });
+      elsewhere.focus();
+      row.focus();
+      await fireEvent.keyUp(row, { key: ' ' });
+      await fireEvent.keyDown(row, { key: 'Enter', repeat: true });
+      await settle();
+      expect(pane.threadId).not.toBe('held-row');
+      await fireEvent.keyDown(row, { key: 'Enter' });
+      await settle();
+      expect(pane.threadId).toBe('held-row');
+    } finally {
+      elsewhere.remove();
+    }
   });
 });
 

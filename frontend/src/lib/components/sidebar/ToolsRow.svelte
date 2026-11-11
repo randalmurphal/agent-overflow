@@ -5,8 +5,9 @@
   // icon and label and takes the row's spare width; the others show their
   // icon, with the name as hover text.
   //
-  // A click, Enter or Space opens the tool in the focused pane like a
-  // thread; with ctrl/cmd it opens in a new pane beside the focused one.
+  // A click, Enter or Space (`roleButtonKeys`, a native button's timing)
+  // opens the tool in the focused pane like a thread; with ctrl/cmd it opens
+  // in a new pane beside the focused one.
   // Off compact a control drags like a thread row: the pane strip previews
   // the slot and the drop places the tool there (`openTool` with
   // `insertIndex`), moving it when open. Each control is a `role="button"`
@@ -26,6 +27,7 @@
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import type { ToolPaneKind } from '../../stores/paneLayout.svelte';
   import { isModClick } from '../../utils/modClick';
+  import { roleButtonKeys, type RoleButtonKeys } from '../../utils/roleButtonKeys';
   import {
     beginToolPaneDrag,
     encodeToolDragPayload,
@@ -42,11 +44,9 @@
     return `${title} · ${workflowsCount} ${workflowsCount === 1 ? 'needs' : 'need'} you`;
   }
 
-  function handleKeydown(event: KeyboardEvent, kind: ToolPaneKind): void {
-    if (event.key !== 'Enter' && event.key !== ' ') return;
-    event.preventDefault();
-    openTool(kind, { newPane: isModClick(event) });
-  }
+  const keys = Object.fromEntries(
+    TOOL_PANES.map((tool) => [tool.kind, roleButtonKeys((event) => openTool(tool.kind, { newPane: isModClick(event) }))]),
+  ) as Record<ToolPaneKind, RoleButtonKeys>;
 
   function handleDragStart(event: DragEvent, kind: ToolPaneKind): void {
     if (compact || !event.dataTransfer) {
@@ -81,7 +81,9 @@
         class: `compact:select-none ${isActive ? 'min-w-0 flex-1 justify-start' : 'shrink-0 justify-center px-2'}`,
       })}
       onclick={(event) => openTool(tool.kind, { newPane: isModClick(event) })}
-      onkeydown={(event) => handleKeydown(event, tool.kind)}
+      onkeydown={(event) => keys[tool.kind].keydown(event)}
+      onkeyup={(event) => keys[tool.kind].keyup(event)}
+      onblur={() => keys[tool.kind].blur()}
       ondragstart={(event) => handleDragStart(event, tool.kind)}
       ondragend={endToolPaneDrag}
     >

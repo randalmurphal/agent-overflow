@@ -52,6 +52,11 @@ export interface PaneThreadDragOptions {
   getPaneMeasuredWidth(paneId: string): number;
 }
 
+interface SlotNeighbours {
+  before: string | null;
+  after: string | null;
+}
+
 export function createPaneThreadDrag(options: PaneThreadDragOptions) {
   let draggingPaneId = $state<string | null>(null);
   let duplicateDropPaneId = $state<string | null>(null);
@@ -59,8 +64,45 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
   let dropPreviewLeft = $state(0);
   let dropPreviewWidth = $state(0);
 
+  // The panes either side of `dropTarget` when it was resolved: a drop that
+  // resolves no slot of its own falls back to it only while they stand.
+  let dropAnchor: SlotNeighbours | null = null;
+
   let autoScrollFrame: number | null = null;
   let autoScrollVelocity = 0;
+
+  function neighboursOf(insertIndex: number): SlotNeighbours {
+    const items = options.getLayoutItems();
+    return { before: items[insertIndex - 1]?.paneId ?? null, after: items[insertIndex]?.paneId ?? null };
+  }
+
+  function setDropTarget(target: PaneDropTarget | null): void {
+    dropTarget = target;
+    dropAnchor = target ? neighboursOf(target.insertIndex) : null;
+  }
+
+  // A drop resolves its slot from its own event against the layout as it is
+  // now; the last dragover's slot answers only when the event resolves none
+  // and the panes it was computed between are still its neighbours.
+  function dropSlot(event: DragEvent): PaneDropTarget | null {
+    const resolved = resolvePaneDropTarget(event);
+    if (resolved || !dropTarget || !dropAnchor) return resolved;
+    const now = neighboursOf(dropTarget.insertIndex);
+    return now.before === dropAnchor.before && now.after === dropAnchor.after ? dropTarget : null;
+  }
+
+  // Every sidebar drag ends here, wherever it ends: a dragend at its source
+  // (a drop, Escape, a drop outside the window) or a drop that bubbles to
+  // the document. A source that unmounted mid-drag gets no dragend; leaving
+  // the strip (onHostDragLeave) still clears the preview then.
+  function onDocumentDragEnd(): void {
+    draggingPaneId = null;
+    clearDropState();
+    endThreadRowDrag();
+    endToolPaneDrag();
+  }
+  document.addEventListener('dragend', onDocumentDragEnd, true);
+  document.addEventListener('drop', onDocumentDragEnd);
 
   function isThreadDrag(event: DragEvent): boolean {
     return event.dataTransfer?.types.includes(THREAD_ROW_DRAG_MIME) ?? false;
@@ -172,19 +214,19 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
   function updateThreadDropTarget(event: DragEvent): void {
     const threadId = threadDragPayloadForEvent(event)?.threadId;
     if (!threadId) {
-      dropTarget = null;
+      setDropTarget(null);
       duplicateDropPaneId = null;
       return;
     }
     const existing = findPaneShowingThread(threadId);
     duplicateDropPaneId = existing?.paneId ?? null;
     if (existing) {
-      dropTarget = null;
+      setDropTarget(null);
       return;
     }
 
     const target = resolvePaneDropTarget(event);
-    dropTarget = target;
+    setDropTarget(target);
     if (target) publishDropPreview(target);
   }
 
@@ -194,7 +236,7 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
     duplicateDropPaneId = null;
     const kind = toolDragPayloadForEvent(event)?.kind;
     const target = kind ? resolvePaneDropTarget(event) : null;
-    dropTarget = target && kind && !isToolAtSlot(kind, target.insertIndex) ? target : null;
+    setDropTarget(target && kind && !isToolAtSlot(kind, target.insertIndex) ? target : null);
     if (!dropTarget || !kind) return;
     const paneId = toolPaneIdFor(kind);
     const open = options.getLayoutItems().some((item) => item.paneId === paneId);
@@ -238,14 +280,14 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
 
   function clearDropState(): void {
     duplicateDropPaneId = null;
-    dropTarget = null;
+    setDropTarget(null);
     stopDragAutoScroll();
   }
 
   async function handleThreadDrop(event: DragEvent): Promise<void> {
     event.preventDefault();
     const threadId = threadDragPayloadForEvent(event)?.threadId;
-    const target = dropTarget ?? resolvePaneDropTarget(event);
+    const target = dropSlot(event);
     clearDropState();
     // The sidebar's in-flight record: no dragend is guaranteed when the
     // source row unmounted mid-drag, so every drop target clears it.
@@ -266,7 +308,7 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
   function handleToolDrop(event: DragEvent): void {
     event.preventDefault();
     const kind = toolDragPayloadForEvent(event)?.kind;
-    const target = dropTarget ?? resolvePaneDropTarget(event);
+    const target = dropSlot(event);
     clearDropState();
     endToolPaneDrag();
     if (!kind || !target) return;
@@ -343,12 +385,20 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
     else if (isToolDrag(event)) handleToolDrop(event);
   }
 
+  // A dragleave bubbles from every child the pointer leaves; the drag left
+  // the strip only when it enters nothing inside it. A cancel and a drop
+  // outside the window leave with no related target.
   function onHostDragLeave(event: DragEvent): void {
-    if (event.currentTarget === event.target) clearDropState();
+    const next = event.relatedTarget;
+    const host = options.getHostEl();
+    if (next instanceof Node && host?.contains(next)) return;
+    clearDropState();
   }
 
   function destroy(): void {
     stopDragAutoScroll();
+    document.removeEventListener('dragend', onDocumentDragEnd, true);
+    document.removeEventListener('drop', onDocumentDragEnd);
   }
 
   return {
