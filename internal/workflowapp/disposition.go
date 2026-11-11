@@ -28,7 +28,8 @@ const (
 
 // The disposition entry points take the context of their owner: the
 // caller's for a person's action, the service's lifetime for AutoDispose.
-// It bounds the forge calls a PR disposition makes.
+// Its values reach the forge calls a PR disposition makes; its cancellation
+// stops nothing once the branch is pushed.
 
 func (s *Service) MergeItem(ctx context.Context, itemID string) (DispositionReceipt, error) {
 	return s.runDisposition(ctx, itemID, dispositionMerge, dispositionManual)
@@ -231,12 +232,21 @@ func (s *Service) landDisposition(ctx context.Context, receipt *DispositionRecei
 		if err := client.PushUnattended(item.WorktreePath); err != nil {
 			return fmt.Errorf("workflow disposition %s push: %w", item.ID, err)
 		}
+		// The push is the first remote effect: from here the PR is opened
+		// and recorded whether or not the caller still waits.
+		ctx = context.WithoutCancel(ctx)
 		prRef, err := client.CreatePR(
 			ctx, item.WorktreePath, item.Goal,
 			fmt.Sprintf("Created from Agent Overflow workflow %s.", item.WorkflowID), base, false,
 		)
 		if err != nil {
-			return fmt.Errorf("workflow disposition %s create PR: %w", item.ID, err)
+			// An earlier attempt can have opened the PR and stopped before
+			// its receipt was written. The branch's own open PR is that one.
+			existing, lookupErr := client.ListOpenPRs(ctx, item.WorktreePath, item.Branch)
+			if lookupErr != nil || len(existing) != 1 {
+				return errors.Join(fmt.Errorf("workflow disposition %s create PR: %w", item.ID, err), lookupErr)
+			}
+			prRef = existing[0].URL
 		}
 		receipt.PRRef, receipt.SHA = prRef, sha
 		return nil

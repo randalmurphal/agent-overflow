@@ -60,6 +60,12 @@ A leading `context.Context` gives a bound method access to the connection
 principal and is omitted from generated TypeScript signatures. Regenerate both
 binding sets after adding it.
 
+That context is cancelled when the caller's connection ends. It may bound only
+the reads and waits before the method's first durable, provider-visible or
+remote effect; from there the work runs on `context.WithoutCancel(ctx)`, or
+`ctxutil.Detach` onto its owner's lifetime, under its own timeout. Declare the
+method's class in `TestEveryContextTakingBoundMethodDeclaresItsCancellationClass`.
+
 Per-screen settings must be obtained through `settingsCaller(ctx)` so bucket
 and device class come from one derivation. Backend work for the local screen
 uses `settings.Service.BackendScreen()`. A direct `ui_state` write outside

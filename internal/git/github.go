@@ -459,9 +459,10 @@ func splitGitHubProject(project string) (string, string, error) {
 
 // CreatePR is a thin wrapper that dispatches to the forge detected for
 // cwd. Returns ErrUnsupportedForge (via nullForge) when the origin
-// remote is missing or its host is not a recognised forge.
+// remote is missing or its host is not a recognised forge. The CLI pushes
+// before it opens the PR, so it runs to its own timeout once started.
 func (c *Core) CreatePR(ctx context.Context, cwd, title, body, base string, draft bool) (string, error) {
-	return c.forgeFor(cwd).CreatePR(ctx, cwd, title, body, base, draft)
+	return c.forgeFor(cwd).CreatePR(forgeWrite(ctx), cwd, title, body, base, draft)
 }
 
 // ListOpenPRs is a thin wrapper that dispatches to the forge detected

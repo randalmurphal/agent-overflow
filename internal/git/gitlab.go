@@ -657,10 +657,28 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	diffRefs := mr.diffRefs()
 	notes := gitlabDraftNotes(review)
 	mrPath := gitlabMRPath(ref)
+	bodies := make([]gitlabDraftNoteIn, 0, len(notes))
 	for _, note := range notes {
 		body, err := gitlabDraftNoteBody(note, diffRefs)
 		if err != nil {
 			return SubmitReviewResult{}, err
+		}
+		bodies = append(bodies, body)
+	}
+	// A submit is several requests. One that stopped after creating some
+	// drafts left them pending on the MR, and bulk_publish publishes every
+	// pending draft, so a repeat posts only the drafts not already pending.
+	var pending map[string]int
+	if len(bodies) > 0 {
+		if pending, err = gitlabPendingDraftNotes(ctx, client, mrPath); err != nil {
+			return SubmitReviewResult{}, err
+		}
+	}
+	for _, body := range bodies {
+		key := body.key()
+		if pending[key] > 0 {
+			pending[key]--
+			continue
 		}
 		if _, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/draft_notes", Body: body}, nil); err != nil {
 			return SubmitReviewResult{}, err
@@ -715,6 +733,53 @@ func gitlabDraftNotes(review SubmitReviewRequest) []ReviewLineComment {
 type gitlabDraftNoteIn struct {
 	Note     string             `json:"note"`
 	Position *gitlabPositionRaw `json:"position,omitempty"`
+}
+
+// key identifies a draft note by its text and its anchor, the parts GitLab
+// echoes back when it lists pending drafts. Line codes are left out: GitLab
+// may compute its own.
+func (n gitlabDraftNoteIn) key() string {
+	line := func(v *int) string {
+		if v == nil {
+			return "-"
+		}
+		return strconv.Itoa(*v)
+	}
+	p := n.Position
+	if p == nil {
+		return fmt.Sprintf("%q", n.Note)
+	}
+	lines := line(p.OldLine) + " " + line(p.NewLine)
+	if r := p.LineRange; r != nil {
+		lines += " " + line(r.Start.OldLine) + " " + line(r.Start.NewLine) + " " + line(r.End.OldLine) + " " + line(r.End.NewLine)
+	}
+	return fmt.Sprintf("%q %q %q %q %q %q %q %s", n.Note, p.BaseSHA, p.StartSHA, p.HeadSHA, p.OldPath, p.NewPath, p.PositionType, lines)
+}
+
+// gitlabPendingDraftNotes counts the caller's pending draft notes on the MR
+// by key.
+func gitlabPendingDraftNotes(ctx context.Context, client *forgeapi.Client, mrPath string) (map[string]int, error) {
+	request := forgeapi.Request{
+		Path:         mrPath + "/draft_notes",
+		Query:        url.Values{"per_page": {strconv.Itoa(gitlabPageSize)}},
+		MaxBodyBytes: gitlabDiscussionsMaxBody,
+	}
+	pending := map[string]int{}
+	page := 1
+	err := client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
+		var drafts []gitlabDraftNoteIn
+		if err := json.Unmarshal(resp.Body, &drafts); err != nil {
+			return false, fmt.Errorf("GitLab draft notes: decode response: %w", err)
+		}
+		for _, draft := range drafts {
+			pending[draft.key()]++
+		}
+		return advanceGitLabPage(resp, &page), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return pending, nil
 }
 
 func gitlabDraftNoteBody(comment ReviewLineComment, refs *PRDiffRefs) (gitlabDraftNoteIn, error) {

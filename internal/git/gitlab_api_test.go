@@ -260,6 +260,8 @@ func TestGitLabSubmitReview(t *testing.T) {
 		switch call.Method + " " + call.Path {
 		case "GET " + mr:
 			return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
+		case "GET " + mr + "/draft_notes?per_page=100":
+			return forgeAPIAnswer{Body: `[]`}
 		case "POST " + mr + "/draft_notes":
 			return forgeAPIAnswer{Status: http.StatusCreated, Body: `{"id":1}`}
 		case "POST " + mr + "/draft_notes/bulk_publish":
@@ -281,7 +283,7 @@ func TestGitLabSubmitReview(t *testing.T) {
 	if err != nil || !result.PostedReview {
 		t.Fatalf("SubmitReview = %+v, %v", result, err)
 	}
-	want := []string{"GET " + mr, "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/approve"}
+	want := []string{"GET " + mr, "GET " + mr + "/draft_notes?per_page=100", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/approve"}
 	if got := gitlabPaths(calls); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("requests = %q, want %q", got, want)
 	}
@@ -290,28 +292,28 @@ func TestGitLabSubmitReview(t *testing.T) {
 		Note     string             `json:"note"`
 		Position *gitlabPositionRaw `json:"position"`
 	}
-	if err := json.Unmarshal(sent[1].Body, &summary); err != nil || summary.Note != "Looks good" || summary.Position != nil {
-		t.Fatalf("summary note body = %s (%v)", sent[1].Body, err)
+	if err := json.Unmarshal(sent[2].Body, &summary); err != nil || summary.Note != "Looks good" || summary.Position != nil {
+		t.Fatalf("summary note body = %s (%v)", sent[2].Body, err)
 	}
-	if err := json.Unmarshal(sent[2].Body, &right); err != nil || right.Note != "nit" || right.Position == nil || right.Position.PositionType != "text" ||
+	if err := json.Unmarshal(sent[3].Body, &right); err != nil || right.Note != "nit" || right.Position == nil || right.Position.PositionType != "text" ||
 		right.Position.HeadSHA != "head2" || right.Position.BaseSHA != "base" || right.Position.StartSHA != "start" ||
 		right.Position.NewLine == nil || *right.Position.NewLine != 4 || right.Position.OldLine != nil {
-		t.Fatalf("right-side note body = %s (%v)", sent[2].Body, err)
+		t.Fatalf("right-side note body = %s (%v)", sent[3].Body, err)
 	}
-	if err := json.Unmarshal(sent[3].Body, &left); err != nil || left.Position == nil || left.Position.OldLine == nil || *left.Position.OldLine != 9 || left.Position.NewLine != nil {
-		t.Fatalf("left-side note body = %s (%v)", sent[3].Body, err)
+	if err := json.Unmarshal(sent[4].Body, &left); err != nil || left.Position == nil || left.Position.OldLine == nil || *left.Position.OldLine != 9 || left.Position.NewLine != nil {
+		t.Fatalf("left-side note body = %s (%v)", sent[4].Body, err)
 	}
-	for _, call := range sent[1:4] {
+	for _, call := range sent[2:5] {
 		if call.Header.Get("Content-Type") != "application/json" {
 			t.Fatalf("draft note Content-Type = %q", call.Header.Get("Content-Type"))
 		}
 	}
-	if len(sent[4].Body) != 0 {
-		t.Fatalf("bulk publish body = %q, want none", sent[4].Body)
+	if len(sent[5].Body) != 0 {
+		t.Fatalf("bulk publish body = %q, want none", sent[5].Body)
 	}
 	var approve map[string]string
-	if err := json.Unmarshal(sent[5].Body, &approve); err != nil || len(approve) != 1 || approve["sha"] != "head2" {
-		t.Fatalf("approve body = %s (%v), want the head the MR read named", sent[5].Body, err)
+	if err := json.Unmarshal(sent[6].Body, &approve); err != nil || len(approve) != 1 || approve["sha"] != "head2" {
+		t.Fatalf("approve body = %s (%v), want the head the MR read named", sent[6].Body, err)
 	}
 
 	failApprove.Store(true)
