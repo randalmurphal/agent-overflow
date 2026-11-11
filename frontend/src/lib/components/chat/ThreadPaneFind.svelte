@@ -59,6 +59,7 @@
       : null);
 
   const find = createThreadFind({
+    paneId: () => paneId,
     scope: () => findScope,
     pane: () => timeline,
     // The position the timeline last recorded through its virtualizer
@@ -133,7 +134,13 @@
   });
 
   // Rows the transcript gains or whose text changes (streaming included)
-  // can change the hits: re-read, rate-bounded. Tracked only while open.
+  // can change the hits: re-read, rate-bounded. Tracked only while open,
+  // and only then does the timeline count events for rows it does not hold.
+  $effect(() => {
+    if (getPaneFind(paneId)?.open !== true || !timeline) return;
+    const surface = timeline;
+    return untrack(() => surface.watchSearchableEvents());
+  });
   let seen: { timeline: ThreadPane; revision: number } | null = null;
   $effect(() => {
     if (getPaneFind(paneId)?.open !== true || !timeline) {

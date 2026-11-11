@@ -403,7 +403,7 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
    * pane holds the row afterwards; false when no held run covers it, and
    * when the fetch failed (already reported).
    */
-  loadUnshippedMember(item: Item): Promise<boolean>;
+  loadUnshippedMember(item: Item, live?: () => boolean): Promise<boolean>;
   /**
    * What the header needs of the run's members the pane does NOT hold:
    * the stub's aggregate and the shed rows (`stubFacts`), or null for a
@@ -966,7 +966,7 @@ export function createThreadActivityRuns(
       changed = true;
     }
 
-    for (const [key, record] of [...records]) {
+    for (const [key, record] of Array.from(records)) {
       const span = resolvedSpans.has(key)
         ? resolvedSpans.get(key)!
         : spanOfRecord(spansById, record);
@@ -1077,7 +1077,7 @@ export function createThreadActivityRuns(
     const previousSpans = projectRunSpans(previousItems, bounds).spansById;
     const nextSpans = projectRunSpans(nextItems, bounds).spansById;
     let changed = false;
-    for (const [key, record] of [...records]) {
+    for (const [key, record] of records) {
       const before = spanOfRecord(previousSpans, record);
       const after = spanOfRecord(nextSpans, record);
       if (!before) continue;
@@ -1580,7 +1580,7 @@ export function createThreadActivityRuns(
   }
 
   function threadDefaultCollapsed(): boolean {
-    revision;
+    void revision;
     return bulkCollapsed ?? options.defaultCollapsed();
   }
 
@@ -1838,13 +1838,14 @@ export function createThreadActivityRuns(
       if (key === null || key === undefined) return Promise.resolve([]);
       return memberFetch.fetch(key, request);
     },
-    loadUnshippedMember: async (item) => {
+    loadUnshippedMember: async (item, live) => {
       const key = runHoldingUnshipped(item);
       if (key === null) return false;
       const held = await memberFetch.fetch(key, {
         direction: 'around',
         aroundItemId: item.id,
         limit: options.windowRows(),
+        live,
       });
       return held.includes(item.id);
     },

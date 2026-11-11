@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { __setTransportHelloForTest } from './transportStatus.svelte';
+import { resetPaneFindForTest } from './paneFind.svelte';
 import {
   THREAD_FIND_DEBOUNCE_MS,
   THREAD_FIND_LIMIT,
@@ -27,6 +28,7 @@ function host(overrides: Partial<ThreadFindHost> = {}) {
   const withdrawScrollToItem = vi.fn();
   const paint = vi.fn();
   const value: ThreadFindHost = {
+    paneId: () => 'p1',
     scope: () => ({ threadId: 't1', backend: 'home', generation: 0 }),
     pane: () => ({ requestScrollToItem, withdrawScrollToItem }),
     readingPosition: () => null,
@@ -50,6 +52,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetPaneFindForTest();
   vi.useRealTimers();
   __setTransportHelloForTest(null);
 });
@@ -134,6 +137,27 @@ describe('thread find', () => {
     expect(search).toHaveBeenCalledTimes(2);
     expect(find.result).toMatchObject({ count: 1, pending: false });
     find.clear();
+  });
+
+  it('a remounted find on the same pane queues behind the read the old one left out', async () => {
+    const answers: Array<(hits: unknown[]) => void> = [];
+    const search = setBindingMock('SearchThreadItems', () => new Promise((resolve) => answers.push(resolve)));
+    const before = createThreadFind(host().value);
+    before.search('needle');
+    await settle();
+    before.clear();
+    const after = createThreadFind(host().value);
+    after.search('needle');
+    await settle();
+    expect(search).toHaveBeenCalledTimes(1);
+    answers[0]([wireHit(hit('a', 1))]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(search).toHaveBeenCalledTimes(2);
+    answers[1]([wireHit(hit('a', 1))]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(after.result).toMatchObject({ count: 1, pending: false });
+    expect(before.result.count).toBe(0);
+    after.clear();
   });
 
   it('a close drops the waiting read', async () => {

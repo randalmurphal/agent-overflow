@@ -500,15 +500,53 @@ func chmodSensitiveFile(path string) error {
 // normalizeUserEntries canonicalises a user override list before it is
 // merged or written: `Key` is trimmed, so a whitespace-only chord from
 // a hand-edited file collapses onto the Unbound sentinel instead of
-// reaching the frontend as an unparseable chord. Copies — the caller's
-// slice is never mutated.
-func normalizeUserEntries(user []Keybinding) []Keybinding {
-	out := make([]Keybinding, len(user))
-	for i, u := range user {
+// reaching the frontend as an unparseable chord, and an override of a
+// renamed default takes its current identity (defaultRenames). An
+// override migrated that way yields to one stored for the current
+// identity of the same default row, whatever their order, so the result
+// is stable across loads. Copies — the caller's slice is never mutated.
+func normalizeUserEntries(defaults, user []Keybinding) []Keybinding {
+	out := make([]Keybinding, 0, len(user))
+	migrated := make([]bool, 0, len(user))
+	current := make(map[string]bool, len(user))
+	for _, u := range user {
 		u.Key = strings.TrimSpace(u.Key)
-		out[i] = renamed(u)
+		next := renamed(u)
+		moved := next != u
+		if row := targetDefaultID(defaults, next); row != "" && !moved {
+			current[row] = true
+		}
+		out = append(out, next)
+		migrated = append(migrated, moved)
 	}
-	return out
+	kept := out[:0]
+	for i, u := range out {
+		if migrated[i] && current[targetDefaultID(defaults, u)] {
+			continue
+		}
+		kept = append(kept, u)
+	}
+	return kept
+}
+
+// targetDefaultID is the id of the default row an override replaces, by
+// the identity Merge matches it with; "" when it replaces none.
+func targetDefaultID(defaults []Keybinding, u Keybinding) string {
+	for _, d := range defaults {
+		switch {
+		case u.DefaultID != "":
+			if d.DefaultID == u.DefaultID {
+				return d.DefaultID
+			}
+		case u.DefaultKey != "":
+			if d.Command == u.Command && d.When == u.When && d.Key == u.DefaultKey {
+				return d.DefaultID
+			}
+		case d.Command == u.Command && d.When == u.When:
+			return d.DefaultID
+		}
+	}
+	return ""
 }
 
 // defaultRename records a shipped row whose command, default id or `when`
@@ -580,7 +618,7 @@ func renamed(u Keybinding) Keybinding {
 // nothing (the default it named is gone from this release), so keeping
 // it would only render a chordless ghost row nothing can restore.
 func Merge(defaults, user []Keybinding) []Keybinding {
-	user = normalizeUserEntries(user)
+	user = normalizeUserEntries(defaults, user)
 	type defaultID string
 	type defaultKey struct{ command, when, originalKey string }
 	type legacyKey struct{ command, when string }

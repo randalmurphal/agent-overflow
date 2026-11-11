@@ -8,6 +8,7 @@ import ThreadPaneFind from './ThreadPaneFind.svelte';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import {
+  closePaneFind,
   getPaneFindProvider,
   hasPaneFindProvider,
   openPaneFind,
@@ -79,6 +80,29 @@ it('re-reads the open find when a row text changes without a structural change',
   expect(pane.timelineRevision).toBe(structural);
   await waitFor(() => expect(search).toHaveBeenCalledTimes(2), { timeout: 3000 });
   await waitFor(() => expect(getPaneFindProvider('main')?.result.count).toBe(1));
+});
+
+it('re-reads the open find for a row the window refuses, and counts nothing once closed', async () => {
+  hello(['timeline.scopes.v1', 'thread-find.v1']);
+  const loaded = makeItem({ id: 'loaded', threadId: 'thread-1', turnIndex: 5 });
+  const pane = await buildPane(makeThread({ id: 'thread-1' }), [loaded]);
+  const search = setBindingMock('SearchThreadItems', async () => []);
+  mount(pane);
+  openPaneFind('main');
+  setPaneFindQuery('main', 'needle');
+  await waitFor(() => expect(search).toHaveBeenCalledTimes(1));
+
+  // Below the loaded window's floor: the row is real but not held here.
+  const refused = makeItem({ id: 'early', threadId: 'thread-1', turnIndex: 0, summary: 'needle' });
+  expect(pane.applyProviderItemUpserts([refused])).toBeNull();
+  expect(pane.items.map((item) => item.id)).toEqual(['loaded']);
+  await waitFor(() => expect(search).toHaveBeenCalledTimes(2), { timeout: 3000 });
+
+  closePaneFind('main');
+  flushSync();
+  const revision = pane.searchRevision;
+  pane.applyProviderItemUpserts([{ ...refused, summary: 'needle again', updatedAt: refused.updatedAt + 1 }]);
+  expect(pane.searchRevision).toBe(revision);
 });
 
 it('a same-thread reload drops the hits and searches again', async () => {

@@ -668,6 +668,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     confirmSend,
     awaitedSendId: () => awaitedSendId,
     timelineWindow,
+    noteSearchableEvent: itemWindow.noteSearchableEvent,
     streamingReveal,
     activityRuns,
   });
@@ -838,6 +839,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
     get historyRevision() { return itemWindow.historyRevision; },
     get searchRevision() { return itemWindow.searchRevision; },
+    watchSearchableEvents: itemWindow.watchSearchableEvents,
     get timelineRevision() {
       return itemWindow.timelineRevision;
     },
@@ -1128,8 +1130,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
 
     /** Ensure `itemID` is present in the loaded window. See threadTimelineWindow.svelte.ts. */
-    loadUntilItem(itemID: string): Promise<LoadUntilItemResult> {
-      return timelineWindow.loadUntilItem(itemID);
+    loadUntilItem(itemID: string, live?: () => boolean): Promise<LoadUntilItemResult> {
+      return timelineWindow.loadUntilItem(itemID, live);
     },
 
     /** Fetch the next batch of newer turns and append them to the window. See threadTimelineWindow.svelte.ts. */
@@ -1229,6 +1231,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      */
     removeItemById(itemId: string, expectedThreadId: string): Item | null {
       if (!thread || thread.id !== expectedThreadId) return null;
+      itemWindow.noteSearchableEvent();
       // The index answers "is it here?" in O(1); the removal itself goes
       // through the same core as the truncation paths so a one-row drop
       // cannot diverge from a bulk one. The predicate walk replaces the
@@ -1271,6 +1274,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      */
     removeRevertedItems(turnIndex: number, keptAnchorTurnItemIds: string[]): Item[] {
       if (!Number.isFinite(turnIndex)) return [];
+      itemWindow.noteSearchableEvent();
       const boundaryWasLoaded = getItems().some((item) => item.turnIndex >= turnIndex);
       const kept = new Set(keptAnchorTurnItemIds);
       const removed = removeMatchedItems(

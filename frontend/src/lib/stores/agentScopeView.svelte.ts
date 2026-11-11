@@ -148,6 +148,7 @@ export function createAgentScopeView(
     get showLoadingSpinner() { return owner.loading && scopedItems.length === 0; },
     get historyRevision() { return itemWindow.historyRevision; },
     get searchRevision() { return itemWindow.searchRevision; },
+    watchSearchableEvents: itemWindow.watchSearchableEvents,
     get timelineRevision() { return itemWindow.timelineRevision; },
     get rowUiRetentionRevision() { return itemWindow.rowUiRetentionRevision; },
     get switchGeneration() { return owner.generation; },

@@ -4,6 +4,7 @@ import {
   getPaneFind,
   hasPaneFindProvider,
   openPaneFind,
+  paneFindReads,
   registerPaneFindProvider,
   resetPaneFindForTest,
   setPaneFindQuery,
@@ -168,5 +169,43 @@ describe('pane find registry', () => {
     registerPaneFindProvider('a', provider());
     release();
     expect(hasPaneFindProvider('a')).toBe(true);
+  });
+});
+
+describe('pane find reads', () => {
+  function gate() {
+    let open!: () => void;
+    const done = new Promise<void>((resolve) => { open = resolve; });
+    return { done, open };
+  }
+
+  it('runs one read per pane at a time and only the newest waiting one', async () => {
+    const first = gate();
+    const ran: string[] = [];
+    const read = (name: string, wait?: Promise<void>) => async () => { ran.push(name); await wait; };
+    paneFindReads('a').request(read('first', first.done));
+    paneFindReads('a').request(read('stale'));
+    // A remounted body's provider queues behind the read still out.
+    paneFindReads('a').request(read('newest'));
+    paneFindReads('b').request(read('other pane'));
+    expect(ran).toEqual(['first', 'other pane']);
+    first.open();
+    await vi.waitFor(() => expect(ran).toEqual(['first', 'other pane', 'newest']));
+  });
+
+  it('releases the pane\'s reads when it leaves the layout', async () => {
+    const first = gate();
+    const ran: string[] = [];
+    paneFindReads('a').request(async () => { ran.push('first'); await first.done; });
+    paneFindReads('a').request(async () => { ran.push('waiting'); });
+    removePaneLayoutItem('a', { persist: false });
+    paneFindReads('a').request(async () => { ran.push('recreated'); });
+    // A pane recreated under the same id does not wait on the removed pane's read.
+    expect(ran).toEqual(['first', 'recreated']);
+    first.open();
+    await first.done;
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(ran).toEqual(['first', 'recreated']);
   });
 });

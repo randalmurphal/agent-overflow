@@ -10,7 +10,8 @@
 // transcript and the thread pane's only its top-level rows. During a live
 // turn the count follows streamed text, and Escape from the transcript or
 // the composer closes the find before a further Escape interrupts. mod+f
-// opens nothing behind the settings overlay. mod+shift+f still opens the
+// opens nothing behind the settings overlay or the command palette, and the
+// palette's Find in Pane opens the bar. mod+shift+f still opens the
 // dialog, which has no thread mode. Compact Back: compact-pane-find.spec.ts. Unit and component coverage: paneFind.svelte.test.ts,
 // threadFind.svelte.test.ts, PaneFindBar.test.ts, findHighlights.browser.test.ts.
 import type { Page } from '@playwright/test';
@@ -248,6 +249,28 @@ test('mod+f opens no find behind the settings overlay', async ({ harness, page }
   await page.getByLabel('Message Input').click();
   await page.keyboard.press('ControlOrMeta+f');
   await expect(page.getByTestId('pane-find-bar')).toBeVisible();
+});
+
+test('mod+f in the command palette opens no find behind it; picking Find in Pane opens the bar', async ({ harness, page }) => {
+  await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [{ name: 'pane-find-palette', repo: {}, threads: [
+      { title: 'Palette thread', provider: 'claude', turns: [{ userText: 'Hello', items: [{ kind: 'assistant_text', summary: 'palette-needle answer' }] }] },
+    ] }],
+  });
+  await harness.open(page);
+  await page.getByText('Palette thread', { exact: true }).click();
+  await page.getByLabel('Message Input').click();
+  await page.keyboard.press('ControlOrMeta+Shift+K');
+  const input = page.getByTestId('command-palette-input');
+  await expect(input).toBeVisible();
+  await input.fill('Find in Pane');
+  await input.press('ControlOrMeta+f');
+  await expect(page.getByTestId('pane-find-bar')).toHaveCount(0);
+  await expect(input).toBeVisible();
+  await page.getByRole('option', { name: /Find in Pane/ }).click();
+  await expect(input).toHaveCount(0);
+  await expect(page.getByTestId('pane-find-bar')).toBeVisible();
+  await expect(page.getByTestId('pane-find-input')).toBeFocused();
 });
 
 test('mod+shift+f still opens the cross-thread search dialog, with no thread mode', async ({ harness, page }) => {

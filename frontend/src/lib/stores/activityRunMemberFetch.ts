@@ -92,6 +92,8 @@ export interface FetchMembersRequest {
   limit: number;
   /** Required for `around`: the member the replacement span centers on. */
   aroundItemId?: string;
+  /** The asking navigation's lifetime: once false, the answer mounts nothing. */
+  live?: () => boolean;
 }
 
 export interface ActivityRunMemberFetch {
@@ -213,7 +215,8 @@ export function createActivityRunMemberFetch(
       && options.threadId() === threadId && threadBackend(threadId) === ownership
       && options.records().get(runKey) === record
       && (record.stubVersion === stubVersion || (!silent && sameRequestedEdge()))
-      && record.cutVersion === cutVersion;
+      && record.cutVersion === cutVersion
+      && (request.live?.() ?? true);
     inFlight.set(runKey, claim);
     try {
       const answer = await ListActivityRunMembers(threadId, {

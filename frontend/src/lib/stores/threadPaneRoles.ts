@@ -158,6 +158,12 @@ export interface TimelineSource {
   readonly historyRevision: number;
   /** Advances when loaded rows' text may have changed; read only by find. */
   readonly searchRevision: number;
+  /**
+   * While watched, `searchRevision` also advances for upserts, deltas,
+   * patches and removals of rows the window refuses or does not hold.
+   * Returns the stop; a find watches only while open.
+   */
+  watchSearchableEvents(): () => void;
   readonly rowUiRetentionRevision: number;
   readonly activityRuns: ThreadActivityRuns;
   /**
@@ -191,7 +197,7 @@ export interface TimelineWindow {
   readonly loadOlder: () => Promise<LoadOlderResult>;
   readonly loadNewer: () => Promise<LoadOlderResult>;
   readonly loadRecentTail: () => Promise<boolean>;
-  readonly loadUntilItem: (itemID: string) => Promise<LoadUntilItemResult>;
+  readonly loadUntilItem: (itemID: string, live?: () => boolean) => Promise<LoadUntilItemResult>;
   /** Set when a wire settle deferred its window prune to visual quiet. */
   readonly hasDeferredRecentWindowPrune: boolean;
   readonly retryDeferredRecentWindowPrune: () => void;

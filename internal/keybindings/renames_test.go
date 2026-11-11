@@ -141,3 +141,41 @@ func TestEscapeClosesFindBeforeInterrupt(t *testing.T) {
 		t.Fatalf("thread.interrupt when = %q", interrupt.When)
 	}
 }
+
+// A choice stored under the current id beats one migrated from an alias,
+// whichever comes first in the file and in every override format, and
+// loading the migrated result again changes nothing.
+func TestCurrentChoiceBeatsMigratedAlias(t *testing.T) {
+	find := defaultRow(t, "find.in-pane")
+	cases := []struct {
+		name           string
+		current, alias Keybinding
+	}{
+		{"default id",
+			Keybinding{Key: Unbound, Command: "find.in-pane", When: find.When, DefaultID: "find.in-pane", DefaultKey: "mod+f"},
+			Keybinding{Key: "mod+alt+f", Command: "search.in-thread", When: oldFindWhen, DefaultID: "search.in-thread", DefaultKey: "mod+f"}},
+		{"default key",
+			Keybinding{Key: Unbound, Command: "find.in-pane", When: find.When, DefaultKey: "mod+f"},
+			Keybinding{Key: "mod+alt+f", Command: "search.in-thread", When: oldFindWhen, DefaultKey: "mod+f"}},
+		{"command and when",
+			Keybinding{Key: "mod+shift+alt+f", Command: "find.in-pane", When: find.When},
+			Keybinding{Key: "mod+alt+f", Command: "search.in-thread", When: oldFindWhen}},
+		{"mixed formats",
+			Keybinding{Key: Unbound, Command: "find.in-pane", When: find.When, DefaultID: "find.in-pane", DefaultKey: "mod+f"},
+			Keybinding{Key: "mod+alt+f", Command: "search.in-thread", When: oldFindWhen}},
+	}
+	for _, tc := range cases {
+		for _, order := range [][]Keybinding{{tc.current, tc.alias}, {tc.alias, tc.current}} {
+			t.Run(tc.name, func(t *testing.T) {
+				first := rowsFor(loadOverrides(t, order), "find.in-pane")
+				if len(first) != 1 || first[0].Key != tc.current.Key {
+					t.Fatalf("order %+v: find rows = %+v, want the current choice %q", order, first, tc.current.Key)
+				}
+				again := rowsFor(loadOverrides(t, first), "find.in-pane")
+				if len(again) != 1 || again[0] != first[0] {
+					t.Fatalf("second load = %+v, want %+v", again, first)
+				}
+			})
+		}
+	}
+}

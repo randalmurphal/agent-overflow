@@ -58,16 +58,20 @@ export interface CommandFlags {
   /** True while the settings overlay is mounted over the pane strip. */
   settingsOpen: boolean;
   /**
-   * True while an overlay surface other than the command palette sits above
-   * the panes: the airspace registry holds every mounted overlay (settings,
-   * dialogs, popovers). A pane surface's keyboard and Back commands gate on
-   * it so they never act behind what the reader sees. The palette is left
-   * out because a command picked there runs after it closes.
+   * True while an overlay surface sits above the panes: the airspace
+   * registry holds every mounted overlay (settings, dialogs, popovers, the
+   * palette). A pane surface's keyboard and Back commands gate on it so they
+   * never act behind what the reader sees. The palette's own list leaves the
+   * palette out (`overlayBesidePalette`) because a command picked there runs
+   * after it closes.
    */
   overlayOpen: boolean;
-  /** True while the raw focused pane has a find provider (stores/paneFind.svelte.ts). */
+  /**
+   * True while the find target has a provider (stores/paneFind.svelte.ts):
+   * the raw focused pane, or under compact the pane on the thread screen.
+   */
   paneFindAvailable: boolean;
-  /** True while the raw focused pane's find bar is open. */
+  /** True while the find target's bar is open. */
   paneFindOpen: boolean;
   /** True while the raw focused pane is a tool pane (Pull requests, Workflows). */
   toolPaneFocused: boolean;

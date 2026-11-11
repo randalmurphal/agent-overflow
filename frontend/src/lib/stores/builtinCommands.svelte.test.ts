@@ -10,14 +10,16 @@ import {
   setSidebarCollapsed,
 } from './sidebarLayout.svelte';
 import { resetSidebarCursorStore, setSidebarCursorForTest } from './sidebarCursor.svelte';
-import { setCompactLayoutForTest } from './layoutMode.svelte';
+import { getCompactScreen, setCompactLayoutForTest, showCompactList, showCompactThread } from './layoutMode.svelte';
+import { installCompanionPanes, isCompanionOpen, openCompanion, resetCompanionPanesForTest } from './companionPanes.svelte';
+import { stepBack } from '../utils/stepBack';
 import { resetAppStorageForTest } from './appStorage';
 import {
   getActiveTurn,
   projectSendStarted,
   resetForTest as resetThreadStatuses,
 } from './threadStatuses.svelte';
-import { makeCommandContext, registerBuiltinCommands } from './builtinCommands.svelte';
+import { makeCommandContext, overlayBesidePalette, registerBuiltinCommands } from './builtinCommands.svelte';
 import { pairViewOnly, resetToLocalPage } from '../../test/helpers/scopes';
 import {
   clearCommandRegistry,
@@ -47,7 +49,7 @@ import {
 } from './paneFind.svelte';
 import { dispatchKey, eventMatchesKeybindingCommand, resetKeybindingsStore, setKeybindingsForTest } from './keybindings.svelte';
 import { KEYBINDING_DEFAULTS } from '../generated/keybindingDefaults';
-import { createSurfaceDismissalEvent } from '../utils/surfaceDismissal';
+import { createSurfaceDismissalEvent, isSurfaceDismissalEvent } from '../utils/surfaceDismissal';
 import {
   closeThreadPicker,
   isThreadPickerOpen,
@@ -1090,7 +1092,8 @@ describe('find.in-pane command', () => {
 
   // An overlay (settings, a dialog) is on top of the pane: mod+f does not
   // open a bar behind it and Back closes the overlay, not the hidden bar.
-  // The palette is the exception: a command picked there runs after it closes.
+  // The palette counts for a key pressed in it; the palette's own list
+  // does not count it, because a command picked there runs after it closes.
   it('yields to an overlay above the panes, keyboard and Back alike', () => {
     const pane = readyPane();
     registerFixtureCommands(pane);
@@ -1117,9 +1120,117 @@ describe('find.in-pane command', () => {
 
     openPalette();
     const palette = registerAirspaceSurface(document.createElement('div'));
-    expect(isCommandEnabled('find.in-pane', makeCommandContext(pane, {}) as CommandContext)).toBe(true);
+    const keyboard = makeCommandContext(pane, {}) as CommandContext;
+    expect(keyboard.flags.overlayOpen).toBe(true);
+    expect(runCommand('find.in-pane', keyboard)).toBe(false);
+    expect(getPaneFind('a')?.open).toBe(false);
+    const listed = makeCommandContext(pane, { overlayOpen: overlayBesidePalette() }) as CommandContext;
+    expect(isCommandEnabled('find.in-pane', listed)).toBe(true);
+    const dialog = registerAirspaceSurface(document.createElement('div'));
+    expect(overlayBesidePalette()).toBe(true);
+    dialog();
     palette();
     closePalette();
+  });
+});
+
+// Compact shows one pane, and opening a companion leaves focus on its
+// source thread: find commands act on the pane on screen, so Back never
+// closes a find nobody can see.
+describe('pane find under compact', () => {
+  const providerFor = (): PaneFindProvider => ({
+    noun: 'thread',
+    result: { count: 0, current: -1, pending: false },
+    search: vi.fn(),
+    clear: vi.fn(),
+  });
+  let release: (() => void) | null = null;
+
+  function mountStrip(onScreen: string, paneIds: string[]): void {
+    document.body.replaceChildren();
+    const rect = (left: number) => ({ left, right: left + 412, top: 0, bottom: 800, width: 412, height: 800, x: left, y: 0, toJSON: () => ({}) });
+    const strip = document.createElement('div');
+    strip.className = 'compact-screen-thread';
+    strip.getBoundingClientRect = () => rect(0);
+    for (const paneId of paneIds) {
+      const section = document.createElement('section');
+      section.dataset.paneId = paneId;
+      section.getBoundingClientRect = () => rect(paneId === onScreen ? 0 : 412);
+      strip.appendChild(section);
+    }
+    document.body.appendChild(strip);
+  }
+
+  beforeEach(() => {
+    clearCommandRegistry();
+    resetPaneFindForTest();
+    resetPanesForTest();
+    resetCompanionPanesForTest();
+    installCompanionPanes();
+    setPaneLayoutItemsForTest([{ id: 'a', paneId: 'a', kind: 'thread', widthPx: 412 }]);
+    setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
+  });
+
+  afterEach(() => {
+    release?.();
+    release = null;
+    setCompactLayoutForTest(false);
+    showCompactList();
+    resetCompanionPanesForTest();
+    resetPaneFindForTest();
+    resetPaneLayoutForTest();
+    resetKeybindingsStore();
+    document.body.replaceChildren();
+  });
+
+  it('acts on the pane on screen: Back closes its find and leaves an off-screen one', () => {
+    const pane = readyPane();
+    registerPaneForTest('a', pane);
+    registerFixtureCommands(pane);
+    focusPane('a');
+    registerPaneFindProvider('a', providerFor());
+    const plan = openCompanion('a', 'plan')!;
+    registerPaneFindProvider(plan.paneId, providerFor());
+    focusPane('a');
+    setCompactLayoutForTest(true);
+    showCompactThread();
+    // The app's window handler: Back's Escape reaches dispatch with a fresh context.
+    const onKey = (event: KeyboardEvent) => {
+      if (isSurfaceDismissalEvent(event) && dispatchKey(event, makeCommandContext(pane, {}) as CommandContext)) event.preventDefault();
+    };
+    window.addEventListener('keydown', onKey);
+    release = () => window.removeEventListener('keydown', onKey);
+
+    // The source's find is open; the plan is on screen with focus left on the source.
+    openPaneFind('a');
+    mountStrip(plan.paneId, ['a', plan.paneId]);
+    let ctx = makeCommandContext(pane, {}) as CommandContext;
+    expect(ctx.flags.paneFindOpen).toBe(false);
+    expect(runCommand('find.in-pane', ctx)).toBe(true);
+    expect(getPaneFind(plan.paneId)?.open).toBe(true);
+
+    // Back closes the plan's find, then the plan; the source's find stays.
+    expect(stepBack()).toBe(true);
+    expect(getPaneFind(plan.paneId)?.open).toBe(false);
+    expect(isCompanionOpen('a', 'plan')).toBe(true);
+    expect(stepBack()).toBe(true);
+    expect(isCompanionOpen('a', 'plan')).toBe(false);
+    expect(getPaneFind('a')?.open).toBe(true);
+
+    // Back on the source closes its own find, then leaves for the list.
+    mountStrip('a', ['a']);
+    ctx = makeCommandContext(pane, {}) as CommandContext;
+    expect(ctx.flags.paneFindOpen).toBe(true);
+    expect(stepBack()).toBe(true);
+    expect(getPaneFind('a')?.open).toBe(false);
+    expect(stepBack()).toBe(true);
+    expect(getCompactScreen()).toBe('list');
+
+    // The list screen shows no pane: no find to open or close.
+    openPaneFind('a');
+    ctx = makeCommandContext(pane, {}) as CommandContext;
+    expect(ctx.flags.paneFindOpen).toBe(false);
+    expect(ctx.flags.paneFindAvailable).toBe(false);
   });
 });
 

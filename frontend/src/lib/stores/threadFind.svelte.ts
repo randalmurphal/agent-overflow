@@ -17,7 +17,7 @@
 // work (reading position, highlights) belongs to the host.
 
 import { SearchThreadItems, type ThreadMessageHit } from './bindings';
-import type { PaneFindProvider, PaneFindResult } from './paneFind.svelte';
+import { paneFindReads, type PaneFindProvider, type PaneFindResult } from './paneFind.svelte';
 import type { ScrollToItemOptions } from './threadPaneShared';
 import type { BackendKey } from '../transport/backends';
 import { addErrorToast } from './toast.svelte';
@@ -47,6 +47,8 @@ export interface ThreadFindScope {
 }
 
 export interface ThreadFindHost {
+  /** The layout pane whose read slot this find's reads share. */
+  paneId(): string;
   /** The transcript searched; null while the pane has no thread. */
   scope(): ThreadFindScope | null;
   /** The pane (or scoped view) whose timeline takes the reveal. */
@@ -100,8 +102,10 @@ export function createThreadFind(host: ThreadFindHost, noun: () => string = () =
   // Moves on every query change, rescope and close; an answer must match it.
   let seq = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let inFlight = false;
-  let waiting: 'query' | 'refresh' | null = null;
+  // The read this find has asked the pane's slot for and not yet started.
+  let queued: 'query' | 'refresh' | null = null;
+  // True from a read's start until it settles.
+  let reading = false;
   // Identifies this find's scroll-to-item requests for withdrawal.
   const owner = {};
 
@@ -141,22 +145,25 @@ export function createThreadFind(host: ThreadFindHost, noun: () => string = () =
   function supersede(): void {
     cancelTimer();
     refreshes.reset();
-    waiting = null;
+    queued = null;
     seq += 1;
     host.pane()?.withdrawScrollToItem(owner);
   }
 
+  // A waiting query covers a refresh: it reads the changed transcript.
   function enqueue(mode: 'query' | 'refresh'): void {
-    if (inFlight) {
-      if (waiting !== 'query') waiting = mode;
-      return;
-    }
-    inFlight = true;
-    void read(mode).finally(() => {
-      inFlight = false;
-      const next = waiting;
-      waiting = null;
-      if (next && query) enqueue(next);
+    if (queued === 'query') return;
+    queued = mode;
+    paneFindReads(host.paneId()).request(async () => {
+      const next = queued;
+      queued = null;
+      if (!next || !query) return;
+      reading = true;
+      try {
+        await read(next);
+      } finally {
+        reading = false;
+      }
     });
   }
 
@@ -207,7 +214,7 @@ export function createThreadFind(host: ThreadFindHost, noun: () => string = () =
     delayMs: REFRESH_DELAY_MS,
     maxWaitMs: REFRESH_MAX_WAIT_MS,
     run: (token) => {
-      if (!token.isCurrent() || !query || (pending && !inFlight)) return;
+      if (!token.isCurrent() || !query || (pending && !reading && queued === null)) return;
       enqueue('refresh');
     },
   });

@@ -400,7 +400,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     await tick();
     await tick();
 
-    expect(loadUntilItem).toHaveBeenCalledWith('pinned-item');
+    expect(loadUntilItem).toHaveBeenCalledWith('pinned-item', expect.any(Function));
   });
 
   it('bottom-snapshot restore leaves the controller sticky and not escaped', async () => {
@@ -486,7 +486,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
 
     const { container } = render(MessageTimeline, { props: { pane } });
 
-    await waitFor(() => expect(loadUntilItem).toHaveBeenCalledWith(target.id));
+    await waitFor(() => expect(loadUntilItem).toHaveBeenCalledWith(target.id, expect.any(Function)));
     await waitFor(() => {
       expect(container.querySelector(`[data-item-id="${target.id}"]`)).not.toBeNull();
     });
@@ -593,7 +593,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     await tick();
     await tick();
 
-    expect(loadUntilItem).toHaveBeenCalledWith('gone-from-history');
+    expect(loadUntilItem).toHaveBeenCalledWith('gone-from-history', expect.any(Function));
   });
 
   it('falls back to restoreToBottom when loadUntilItem reports the anchor missing (controller ends sticky+not-escaped)', async () => {
@@ -720,7 +720,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     await tick();
     await tick();
 
-    expect(loadUntilItem).toHaveBeenCalledWith('anchor-row');
+    expect(loadUntilItem).toHaveBeenCalledWith('anchor-row', expect.any(Function));
   });
 
 });
@@ -795,7 +795,7 @@ describe('scroll integration — scroll to item', () => {
     await tick();
     await tick();
 
-    expect(loadUntilItem).toHaveBeenCalledWith('visible');
+    expect(loadUntilItem).toHaveBeenCalledWith('visible', expect.any(Function));
   });
 
   it('emits a warning toast when the requested item is gone from history', async () => {
@@ -934,7 +934,7 @@ describe('scroll integration — scroll-to-item requests', () => {
     expect(loadUntilItem).not.toHaveBeenCalled();
     finishSwitch();
     await reload;
-    await waitFor(() => expect(loadUntilItem).toHaveBeenCalledWith('visible'));
+    await waitFor(() => expect(loadUntilItem).toHaveBeenCalledWith('visible', expect.any(Function)));
   });
 
   it('a viewport hold during the lookup does not cancel the jump', async () => {
@@ -992,6 +992,35 @@ describe('scroll integration — scroll-to-item requests', () => {
     pane.withdrawScrollToItem({});
     finishLookup!('loaded');
     await waitFor(() => expect(escaped, 'the jump must land').toHaveBeenCalled());
+  });
+
+  it('a withdrawn jump leaves the loaded window alone when its slice lands', async () => {
+    const held = makeItem({ id: 'held', turnIndex: 50, kind: 'assistant_text', role: 'assistant', summary: 'held' });
+    const target = makeItem({ id: 'far', turnIndex: 2, kind: 'assistant_text', role: 'assistant', summary: 'far' });
+    const pane = await buildPane(undefined, [held]);
+    setBindingMock('GetThreadItem', async () => target);
+    let answer!: (page: unknown) => void;
+    const slice = vi.fn(() => new Promise((resolve) => { answer = resolve; }));
+    setBindingMock('ListThreadSliceAround', slice);
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+    const owner = {};
+    pane.requestScrollToItem('far', { mark: true, owner });
+    await waitFor(() => expect(slice).toHaveBeenCalled());
+    pane.withdrawScrollToItem(owner);
+    await tick();
+    answer({
+      items: [target],
+      oldestCursor: { turnIndex: 2, itemIndex: 0, itemId: 'far' },
+      newestCursor: { turnIndex: 2, itemIndex: 0, itemId: 'far' },
+      oldestTurnIndex: 2,
+      newestTurnIndex: 2,
+      hasMore: true,
+      hasMoreNewer: true,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(pane.items.map((item) => item.id)).toEqual(['held']);
+    expect(pane.hasMoreNewer).toBe(false);
   });
 
   it('lands a hidden bell on the completion that hides it', async () => {

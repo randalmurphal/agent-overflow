@@ -542,7 +542,7 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
         return;
       }
 
-      const loaded = await pane.loadUntilItem(snap.itemId);
+      const loaded = await pane.loadUntilItem(snap.itemId, () => token === navigationToken);
       if (isUiRenderTraceEnabled()) {
         recordUiTrace('timeline.restore.anchor.loaded', {
           threadId,
@@ -638,7 +638,7 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
     // while this navigation still owns the viewport; only those retry.
     let loaded: LoadUntilItemResult = 'superseded';
     for (let attempt = 0; attempt < JUMP_LOOKUP_ATTEMPTS && loaded === 'superseded'; attempt++) {
-      loaded = await pane.loadUntilItem(id);
+      loaded = await pane.loadUntilItem(id, () => interruption() === null);
       const interrupted = interruption();
       if (interrupted) return finishJump(id, interrupted);
     }

@@ -9,6 +9,8 @@
 
 import { SvelteMap } from 'svelte/reactivity';
 import { onPaneLayoutItemsRemoved } from './paneLayout.svelte';
+import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
+import { errString } from '../utils/errors';
 
 /** What a provider reports about the current query. */
 export interface PaneFindResult {
@@ -53,8 +55,62 @@ export type PaneFindView = Readonly<PaneFindState>;
 const providers = new SvelteMap<string, PaneFindProvider>();
 const states = new SvelteMap<string, PaneFindState>();
 
+/**
+ * A pane's find reads: one in flight, at most one waiting. Keyed by layout
+ * pane id rather than by provider, so a read a body left out when it
+ * unmounted still holds the pane's slot and a remounted body's provider
+ * queues behind it.
+ */
+export interface PaneFindReads {
+  /** Run `read` once the pane has none in flight; it replaces a waiting one. */
+  request(read: () => Promise<void>): void;
+}
+
+interface ReadSlot {
+  busy: boolean;
+  waiting: (() => Promise<void>) | null;
+}
+
+const readSlots = new Map<string, ReadSlot>();
+
+function runRead(paneId: string, slot: ReadSlot, read: () => Promise<void>): void {
+  slot.busy = true;
+  let running: Promise<void>;
+  try {
+    running = read();
+  } catch (err) {
+    running = Promise.reject(err);
+  }
+  void running
+    .catch((err: unknown) => reportFrontendDiagnostic('pane find read failed', errString(err)))
+    .finally(() => {
+      slot.busy = false;
+      if (readSlots.get(paneId) !== slot) return;
+      const next = slot.waiting;
+      slot.waiting = null;
+      if (next) runRead(paneId, slot, next);
+    });
+}
+
+export function paneFindReads(paneId: string): PaneFindReads {
+  return {
+    request(read) {
+      let slot = readSlots.get(paneId);
+      if (!slot) {
+        slot = { busy: false, waiting: null };
+        readSlots.set(paneId, slot);
+      }
+      if (slot.busy) slot.waiting = read;
+      else runRead(paneId, slot, read);
+    },
+  };
+}
+
 onPaneLayoutItemsRemoved((paneIds) => {
-  for (const paneId of paneIds) states.delete(paneId);
+  for (const paneId of paneIds) {
+    states.delete(paneId);
+    readSlots.delete(paneId);
+  }
 });
 
 /** Registers `provider` for the layout pane; returns its release. */
@@ -148,4 +204,5 @@ export function takePaneFindReturnFocus(paneId: string): HTMLElement | null {
 export function resetPaneFindForTest(): void {
   providers.clear();
   states.clear();
+  readSlots.clear();
 }

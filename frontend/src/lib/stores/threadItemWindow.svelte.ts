@@ -93,6 +93,9 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
   // change. A find re-reads its count off it; nothing else should read it,
   // because it advances at reveal cadence.
   let searchRevision = $state(0);
+  // Finds watching events for rows the window does not hold. Zero leaves
+  // each such event at one comparison.
+  let searchWatchers = 0;
   // Revision of the item-side inputs to offscreen row-UI-state retention
   // (`utils/rowUiRetention.ts`): bumped by an items write only when it
   // changed which rows the prune retains unconditionally, or what it
@@ -609,6 +612,23 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     get historyRevision() { return historyRevision; },
     /** Advances whenever loaded rows' searchable text may have changed. */
     get searchRevision() { return searchRevision; },
+    /**
+     * Count events that change the transcript's searchable text into
+     * `searchRevision`, held rows or not, until the returned stop runs.
+     */
+    watchSearchableEvents(): () => void {
+      searchWatchers += 1;
+      let watching = true;
+      return () => {
+        if (!watching) return;
+        watching = false;
+        searchWatchers -= 1;
+      };
+    },
+    /** A searchable event reached this window's thread or scope. */
+    noteSearchableEvent(): void {
+      if (searchWatchers > 0) searchRevision += 1;
+    },
     get timelineRevision() {
       return timelineRevision;
     },

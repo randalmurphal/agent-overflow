@@ -155,7 +155,11 @@ export interface ThreadTimelineWindow {
    */
   settleRecentWindowPrune(): void;
   loadOlder(): Promise<LoadOlderResult>;
-  loadUntilItem(itemID: string): Promise<LoadUntilItemResult>;
+  /**
+   * `live` is the asking navigation's lifetime: once it answers false the
+   * load commits nothing (no slice, no run members) and is `superseded`.
+   */
+  loadUntilItem(itemID: string, live?: () => boolean): Promise<LoadUntilItemResult>;
   loadNewer(): Promise<LoadOlderResult>;
   loadRecentTail(): Promise<boolean>;
 }
@@ -945,7 +949,7 @@ export function createThreadTimelineWindow(
    * flight it holds both paging edges, so automatic paging waits for it
    * instead of superseding it.
    */
-  async function loadUntilItem(itemID: string): Promise<LoadUntilItemResult> {
+  async function loadUntilItem(itemID: string, live: () => boolean = () => true): Promise<LoadUntilItemResult> {
     const currentThread = options.getThread();
     if (!currentThread || !itemID) return 'missing';
     if (windowHolds(itemID)) {
@@ -957,7 +961,8 @@ export function createThreadTimelineWindow(
     const gen = options.getSwitchGeneration();
     const pageGen = beginPageLoad();
     const superseded = (): boolean =>
-      gen !== options.getSwitchGeneration() || threadBackend(currentThread.id) !== ownership || pageGen !== pagingGeneration;
+      gen !== options.getSwitchGeneration() || threadBackend(currentThread.id) !== ownership || pageGen !== pagingGeneration
+      || !live();
     loadingOlder = pageGen;
     loadingNewer = pageGen;
     try {
@@ -1015,7 +1020,7 @@ export function createThreadTimelineWindow(
     // window stays exactly where the reader left it. A covering run that
     // cannot produce the row (a failed fetch, already reported) falls
     // through to the whole-window slice below.
-    if (await options.activityRuns().loadUnshippedMember(fetched)) {
+    if (await options.activityRuns().loadUnshippedMember(fetched, () => !superseded())) {
       if (superseded()) return 'superseded';
       if (windowHolds(itemID)) return 'loaded';
     }
