@@ -22,8 +22,10 @@ export function spyScheduling(file: string, except: readonly string[] = []): Sch
     const at = frames[0] ?? '';
     if (!at.includes(file)) return;
     // The caller is an arrow inside a named function of the file (a
-    // promise executor): the name is on a frame within the file.
-    const named = frames.slice(0, 3).filter((line) => line.includes(file)).map((line) => /^at (\S+) \(/.exec(line)?.[1] ?? '');
+    // promise executor): the name is on a frame within the file. V8
+    // prefixes it with the receiver's type when the function is called as
+    // a property ("Object.pause"), so the name is the last segment.
+    const named = frames.slice(0, 3).filter((line) => line.includes(file)).map((line) => /^at (?:async )?(?:\S+\.)?([^\s.]+) \(/.exec(line)?.[1] ?? '');
     if (named.some((name) => except.includes(name))) return;
     calls.push(`${kind} ${at}`);
   };
