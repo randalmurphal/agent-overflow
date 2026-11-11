@@ -198,32 +198,53 @@ const webkitFindWorld = "ao-find"
 
 // webkitFrameClearJS is the selection clearing both webkitClearSelectionScript
 // and webkitFindFrameScript run, in webkitFindWorld. aoClear(w) drops w's
-// selection and walks its frames: a frame it can reach (same origin) is
-// cleared directly; one it cannot (a SecurityError) is told to clear itself
-// with the message {"ao-find": "clear-selection"} through postMessage, which
-// crosses origins, and
-// webkitFindFrameScript in that frame does so and passes it on to its own
-// frames. A failure other than an unreachable frame goes to aoFailures.
-const webkitFrameClearJS = `const aoFailures=[];const aoPost=(f)=>{try{f.postMessage({"ao-find":"clear-selection"},"*");}catch(e){}};const aoReachable=(e)=>{if(e&&e.name==="SecurityError")return false;aoFailures.push(String(e&&e.message||e));return false;};const aoClear=(w)=>{let s,n=0;try{s=w.getSelection();}catch(e){return aoReachable(e);}try{if(s)s.removeAllRanges();}catch(e){aoFailures.push(String(e&&e.message||e));}try{n=w.frames.length;}catch(e){return aoReachable(e);}for(let i=0;i<n;i++){let f;try{f=w.frames[i];}catch(e){aoReachable(e);continue;}if(f&&!aoClear(f))aoPost(f);}return true;};`
+// selection and that of every frame in w.frames it can reach (same origin),
+// recursively; a frame it cannot reach (a SecurityError) is left to the
+// messages (webkitFindFrameScript). A failure other than an unreachable
+// frame goes to aoFailures.
+const webkitFrameClearJS = `const aoFailures=[];const aoReachable=(e)=>{if(e&&e.name==="SecurityError")return false;aoFailures.push(String(e&&e.message||e));return false;};const aoClear=(w)=>{let s,n=0;try{s=w.getSelection();}catch(e){return aoReachable(e);}try{if(s)s.removeAllRanges();}catch(e){aoFailures.push(String(e&&e.message||e));}try{n=w.frames.length;}catch(e){return aoReachable(e);}for(let i=0;i<n;i++){let f;try{f=w.frames[i];}catch(e){aoReachable(e);continue;}if(f)aoClear(f);}return true;};`
 
-// webkitClearSelectionScript drops the selection of the page and of every
-// frame inside it (webkitFrameClearJS); WKWebView's find starts at the
-// selection and both engines mark the match with it. It runs in
-// webkitFindWorld. A failure in the page or a frame it reaches fails the
-// script, so the stop it serves fails and stays owed. A cross-origin frame
-// is told to clear and not waited for: it answers nothing, so it cannot fail
-// the stop, and a frame without webkitFindFrameScript keeps its selection.
-const webkitClearSelectionScript = webkitFrameClearJS + `aoClear(window);if(aoFailures.length)throw new Error("browser: clear the selection: "+aoFailures.join("; "));return null;`
+// webkitClearSelectionScript drops the selection that marks a find's match
+// in the page and its frames; WKWebView's find starts at the selection and
+// both engines mark the match with it. It runs in webkitFindWorld, in the
+// top frame. The page and every frame it reaches through window.frames are
+// cleared in the call, and any failure there fails the script, so the stop
+// it serves fails and stays owed. Then every frame that announced itself to
+// the top frame (webkitFindFrameScript) is told to clear, and each tells its
+// own. Those are cleared in later tasks, not waited for, and answer nothing,
+// so they cannot fail the stop. A late clear can only remove a new search's
+// match in such a frame if that match is selected before the frame runs a
+// task already queued when the stop answered, which the round trip of the
+// next start leaves to timing below a single task; the clears are not
+// ordered against it. Without the frame script (an engine that refused it)
+// such a frame keeps its selection.
+const webkitClearSelectionScript = webkitFrameClearJS + `aoClear(window);const aoTell=globalThis.aoFindTellChildren;if(typeof aoTell==="function")aoTell();if(aoFailures.length)throw new Error("browser: clear the selection: "+aoFailures.join("; "));return null;`
 
 // webkitFindFrameScript is installed in every frame at document start, in
 // webkitFindWorld, so it exists in a frame added or navigated after the page
-// loaded and nothing the page defines reaches it. On the clear message it
-// clears its frame's selection and passes the message on
-// (webkitFrameClearJS). Any window may post the message, the page's own
-// scripts included, and every frame's page sees it: all it can cause is a
-// cleared selection. A frame whose scripts are disabled (sandboxed without
-// allow-scripts) may not run it, and keeps its selection.
-const webkitFindFrameScript = `(()=>{` + webkitFrameClearJS + `addEventListener("message",(e)=>{const d=e.data;if(d&&typeof d==="object"&&d["ao-find"]==="clear-selection")aoClear(window);});})();`
+// loaded and nothing the page defines reaches it.
+//
+// Frames are not enumerated: window.frames misses an iframe in a shadow
+// root. Each frame below the top announces itself to its parent
+// ({"ao-find": "child"}), and the parent keeps an announcing window only
+// while it is its own direct child (source.parent === window) and not
+// closed, once, and at most 256; the list is pruned whenever it is used. A
+// frame obeys a clear ({"ao-find": "clear-selection"}) only from its
+// parent: it clears itself and the frames it reaches (webkitFrameClearJS)
+// and passes the clear to its own announced children. The top frame obeys
+// no message; the stop script clears it and starts the chain
+// (aoFindTellChildren). A clear so only travels down and cannot cycle, and
+// a frame can clear nothing above or beside it.
+//
+// The listener is in the capture phase and added before any page script in
+// the document runs, and WebKit calls a target's listeners in the order they
+// were added whatever their world, so a page listener cannot run before it;
+// it stops its own two message kinds from reaching the page. The exception
+// is a listener a same-origin parent added to a frame's initial about:blank
+// window that the frame's first document then reuses. A frame that runs no
+// script (sandboxed without allow-scripts) cannot take part, and keeps its
+// selection.
+const webkitFindFrameScript = `(()=>{` + webkitFrameClearJS + `const aoMax=256;const aoKids=[];const aoMine=(w)=>{try{return !!w&&!w.closed&&w.parent===window;}catch(e){return false;}};const aoPrune=()=>{for(let i=aoKids.length-1;i>=0;i--)if(!aoMine(aoKids[i]))aoKids.splice(i,1);};const aoTell=()=>{aoPrune();for(const w of aoKids){try{w.postMessage({"ao-find":"clear-selection"},"*");}catch(e){}}};Object.defineProperty(globalThis,"aoFindTellChildren",{value:aoTell});Object.defineProperty(globalThis,"aoFindChildCount",{value:()=>{aoPrune();return aoKids.length;}});addEventListener("message",(e)=>{const d=e.data;if(!d||typeof d!=="object")return;const kind=d["ao-find"];if(kind!=="child"&&kind!=="clear-selection")return;e.stopImmediatePropagation();const w=e.source;if(kind==="child"){if(!aoMine(w)||aoKids.includes(w))return;aoPrune();if(aoKids.length<aoMax)aoKids.push(w);return;}if(window.parent===window||w!==window.parent)return;aoClear(window);aoTell();},true);if(window.parent!==window){try{window.parent.postMessage({"ao-find":"child"},"*");}catch(e){}}})();`
 
 // webkitSelectionTextScript reads the page's current selection for the copy
 // chord, matching the CDP driver's expression exactly.

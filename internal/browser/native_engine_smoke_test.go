@@ -457,11 +457,18 @@ func TestNativeEngineRealFind(t *testing.T) {
 }
 
 // TestNativeEngineRealFindClearsFrameSelections stops a search on a page
-// with a selection in the page, in a same-origin frame and in a frame inside
-// that one: every selection goes. Then the page overrides getSelection and
-// removeAllRanges to throw, and a search's stop still clears its match,
-// since the clearing runs in an isolated world; run in the page's own world,
-// the same clearing fails rather than reporting a stop that cleared nothing.
+// with a selection in the page and in frames of every kind a page builds:
+// same-origin frames two levels deep, cross-origin frames (a data: frame
+// with one of its own, a sandboxed srcdoc frame), frames in an open and a
+// closed shadow root, a frame whose page swallows every message in the
+// capture phase and one nested behind it, a frame added after load and one
+// navigated after load. Every selection goes. Then the page and each frame
+// override getSelection and removeAllRanges to throw, and a stop still
+// clears them, since the clearing runs in an isolated world; run in the
+// page's own world, the same clearing fails rather than reporting a stop
+// that cleared nothing. A frame posting the clear itself, to its parent or
+// to the top, clears nothing; a frame announcing itself again and again, or
+// removed, does not grow the top frame's list of children.
 func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 	window := nativeSmokeWindow.Load()
 	if window == nil {
@@ -504,47 +511,103 @@ func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 		}
 		return value
 	}
-	// An about:blank frame is same-origin and ready at once: two levels. A
-	// data: frame is cross-origin, with a data: frame of its own, and so is
-	// a sandboxed srcdoc frame: the page's world cannot reach into them, so
-	// each runs a responder the test asks over postMessage to select, to
-	// override the selection API, or to say whether it holds a selection.
+	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	if err != nil {
+		t.Fatalf("look the page up: %v", err)
+	}
+	isolated, ok := p.driver.(interface {
+		evalIn(context.Context, string, string) (json.RawMessage, error)
+	})
+	if !ok {
+		t.Fatalf("the page driver %T has no evalIn", p.driver)
+	}
+	// children answers how many frames the top frame's find script holds.
+	children := func(what string) int {
+		t.Helper()
+		raw, err := isolated.evalIn(ctx, webkitFindWorld, `return globalThis.aoFindChildCount();`)
+		if err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+		var n int
+		if err := json.Unmarshal(raw, &n); err != nil {
+			t.Fatalf("%s: %s: %v", what, raw, err)
+		}
+		return n
+	}
+
+	// An about:blank frame is same-origin and ready at once: two levels. The
+	// page's world cannot reach into the others, so each runs a responder,
+	// listening in the capture phase ahead of the page's own scripts, that
+	// the test asks over postMessage to select, to override the selection
+	// API, to post a message of the find's own, or to say whether it holds
+	// a selection. aoFrames names each one's window, and aoFrame adds or
+	// navigates one.
 	eval("build the frames", `(async () => {
 		const add = (doc, text) => { const f = doc.createElement("iframe"); doc.body.appendChild(f); f.contentDocument.body.innerHTML = "<p>" + text + "</p>"; return f.contentDocument; };
 		add(add(document, "alpha in a frame"), "alpha in a nested frame");
-		const responder = "<scr" + "ipt>addEventListener('message', (e) => { const d = e.data; if (!d || !d.probe) return; const reply = (v) => e.source.postMessage({ probeReply: d.id, value: v }, '*'); if (d.path && d.path.length) { const on = (r) => { if (r.data && r.data.probeReply === d.id) { removeEventListener('message', on); reply(r.data.value); } }; addEventListener('message', on); frames[d.path[0]].postMessage({ probe: d.probe, id: d.id, path: d.path.slice(1) }, '*'); return; } const s = Document.prototype.getSelection.call(document); if (d.probe === 'select') { s.selectAllChildren(document.body); reply(true); } else if (d.probe === 'override') { window.getSelection = () => { throw new Error('the page getSelection'); }; Selection.prototype.removeAllRanges = function () { throw new Error('the page removeAllRanges'); }; reply(true); } else reply(s.rangeCount > 0 && !s.isCollapsed); });</scr" + "ipt>";
-		const inner = "<p>alpha in a nested cross-origin frame</p>" + responder;
-		const frame = (set) => new Promise((resolve) => { const f = document.createElement("iframe"); set(f); f.onload = () => resolve(f.contentWindow); document.body.appendChild(f); });
-		window.aoCrossOrigin = await frame((f) => { f.src = "data:text/html," + encodeURIComponent("<p>alpha in a cross-origin frame</p>" + responder + "<iframe src=\"data:text/html," + encodeURIComponent(inner) + "\"></iframe>"); });
-		window.aoSandboxed = await frame((f) => { f.sandbox = "allow-scripts"; f.srcdoc = "<p>alpha in a sandboxed frame</p>" + responder; });
+		const responder = "<scr" + "ipt>let aoSeen = 0; addEventListener('message', (e) => { if (e.data && e.data['ao-find']) aoSeen++; }); addEventListener('message', (e) => { const d = e.data; if (!d || !d.probe) return; const reply = (v) => e.source.postMessage({ probeReply: d.id, value: v }, '*'); if (d.path && d.path.length) { const on = (r) => { if (r.data && r.data.probeReply === d.id) { removeEventListener('message', on, true); reply(r.data.value); } }; addEventListener('message', on, true); frames[d.path[0]].postMessage({ probe: d.probe, id: d.id, path: d.path.slice(1) }, '*'); return; } const s = Document.prototype.getSelection.call(document); if (d.probe === 'select') { s.selectAllChildren(document.body); reply(true); } else if (d.probe === 'override') { window.getSelection = () => { throw new Error('the page getSelection'); }; Selection.prototype.removeAllRanges = function () { throw new Error('the page removeAllRanges'); }; reply(true); } else if (d.probe === 'attack') { parent.postMessage({ 'ao-find': 'clear-selection' }, '*'); top.postMessage({ 'ao-find': 'clear-selection' }, '*'); reply(true); } else if (d.probe === 'seen') { reply(aoSeen); } else if (d.probe === 'flood') { for (let i = 0; i < 300; i++) parent.postMessage({ 'ao-find': 'child' }, '*'); reply(true); } else reply(s.rangeCount > 0 && !s.isCollapsed); }, true);</scr" + "ipt>";
+		const swallow = "<scr" + "ipt>addEventListener('message', (e) => { if (!e.data || !(e.data.probe || e.data.probeReply)) e.stopImmediatePropagation(); }, true);</scr" + "ipt>";
+		const data = (html) => "data:text/html," + encodeURIComponent(html);
+		const nested = (text, before) => data("<p>" + text + "</p>" + responder + (before || "") + "<iframe src=\"" + data("<p>alpha behind it</p>" + responder) + "\"></iframe>");
+		const loaded = (f) => new Promise((resolve) => { f.onload = () => resolve(f.contentWindow); });
+		window.aoFrames = {};
+		window.aoFrame = async (name, set, parentNode) => {
+			let f = window.aoFrames[name] && window.aoFrames[name].element;
+			if (!f) { f = document.createElement("iframe"); set(f); const ready = loaded(f); (parentNode || document.body).appendChild(f); window.aoFrames[name] = { element: f, window: await ready }; return 1; }
+			const ready = loaded(f); set(f); window.aoFrames[name].window = await ready; return 1;
+		};
+		window.aoData = data; window.aoResponder = responder;
+		await aoFrame("cross", (f) => { f.src = nested("alpha in a cross-origin frame"); });
+		await aoFrame("sandboxed", (f) => { f.sandbox = "allow-scripts"; f.srcdoc = "<p>alpha in a sandboxed frame</p>" + responder; });
+		const host = (mode) => { const h = document.createElement("div"); document.body.appendChild(h); return h.attachShadow({ mode }); };
+		await aoFrame("open", (f) => { f.src = data("<p>alpha in an open shadow root</p>" + responder); }, host("open"));
+		await aoFrame("closed", (f) => { f.src = data("<p>alpha in a closed shadow root</p>" + responder); }, host("closed"));
+		await aoFrame("swallowing", (f) => { f.src = nested("alpha in a frame that swallows messages", swallow); });
 		return 1; })()`)
-	// probe asks one cross-origin frame (the window named, then the frame
-	// path below it) and answers what it replied.
+	// probe asks one frame (by name, then the frame path below it) and
+	// answers its reply. Messages from one window to another arrive in
+	// order, so a probe sent after the stop reaches a frame after the stop's
+	// clear did, and a frame's reply comes after any message it posted
+	// first.
 	probe := func(what, frame, op string, path ...int) any {
 		t.Helper()
 		pathJSON, _ := json.Marshal(append([]int{}, path...))
-		return eval(what, `new Promise((resolve) => { const id = Math.random(); const on = (e) => { if (e.data && e.data.probeReply === id) { removeEventListener("message", on); resolve(e.data.value); } }; addEventListener("message", on); window.`+frame+`.postMessage({ probe: "`+op+`", id, path: `+string(pathJSON)+` }, "*"); })`)
+		return eval(what, `new Promise((resolve) => { const id = Math.random(); const on = (e) => { if (e.data && e.data.probeReply === id) { removeEventListener("message", on, true); resolve(e.data.value); } }; addEventListener("message", on, true); aoFrames["`+frame+`"].window.postMessage({ probe: "`+op+`", id, path: `+string(pathJSON)+` }, "*"); })`)
 	}
-	crossOrigin := []struct {
+	type frame struct {
 		name, frame string
 		path        []int
-	}{
-		{"the cross-origin frame", "aoCrossOrigin", nil},
-		{"the nested cross-origin frame", "aoCrossOrigin", []int{0}},
-		{"the sandboxed srcdoc frame", "aoSandboxed", nil},
 	}
-	crossSelected := func(state string, want bool) {
+	frames := []frame{
+		{"the cross-origin frame", "cross", nil},
+		{"the frame nested in it", "cross", []int{0}},
+		{"the sandboxed srcdoc frame", "sandboxed", nil},
+		{"the frame in an open shadow root", "open", nil},
+		{"the frame in a closed shadow root", "closed", nil},
+		{"the frame that swallows messages", "swallowing", nil},
+		{"the frame behind it", "swallowing", []int{0}},
+	}
+	each := func(op string, list []frame) {
 		t.Helper()
-		for _, f := range crossOrigin {
+		for _, f := range list {
+			probe(op+" in "+f.name, f.frame, op, f.path...)
+		}
+	}
+	selected := func(state string, list []frame, want bool) {
+		t.Helper()
+		for _, f := range list {
 			if got := probe(state+": "+f.name, f.frame, "count", f.path...); got != want {
 				t.Errorf("%s: %s holds a selection %v, want %v", state, f.name, got, want)
 			}
 		}
 	}
-	// selections counts the windows, the page and its frames, holding a
-	// selection, through the document's getSelection, which the page leaves
-	// alone.
+	// selections counts the windows, the page and its same-origin frames,
+	// holding a selection, through the document's getSelection, which the
+	// page leaves alone.
 	const selections = `(() => { let n = 0; const walk = (w) => { let s; try { s = w.Document.prototype.getSelection.call(w.document); } catch (e) { return; } if (s && s.rangeCount && !s.isCollapsed) n++; for (let i = 0; i < w.frames.length; i++) walk(w.frames[i]); }; walk(window); return n; })()`
+	const selectSameOrigin = `(() => {
+		const walk = (w) => { try { w.getSelection().selectAllChildren(w.document.body); } catch (e) { return; } for (let i = 0; i < w.frames.length; i++) walk(w.frames[i]); };
+		walk(window); return 1; })()`
 	// seq numbers the starts, as the pane's provider does.
 	var seq uint64
 	find := func(kind, query string) FindState {
@@ -562,25 +625,59 @@ func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 	if state := find(FindStart, "alpha"); !state.Found {
 		t.Fatalf("start = %+v", state)
 	}
-	eval("select in every window", `(() => {
-		const walk = (w) => { try { w.getSelection().selectAllChildren(w.document.body); } catch (e) { return; } for (let i = 0; i < w.frames.length; i++) walk(w.frames[i]); };
-		walk(window); return 1; })()`)
-	for _, f := range crossOrigin {
-		probe("select in "+f.name, f.frame, "select", f.path...)
-	}
+	eval("select in every same-origin window", selectSameOrigin)
+	each("select", frames)
 	if n := eval("count the selections", selections); n != float64(3) {
 		t.Fatalf("selected in %v windows, want 3", n)
 	}
-	crossSelected("selected", true)
+	selected("selected", frames, true)
 	find(FindStop, "")
 	if n := eval("count the selections", selections); n != float64(0) {
 		t.Fatalf("%v selections left after the search stopped", n)
 	}
-	// The stop told the cross-origin frames to clear before the probes,
-	// which reach each frame after the message did.
-	crossSelected("stopped", false)
+	selected("stopped", frames, false)
+	// The find's messages are its own: the frames' pages never see them.
+	for _, f := range frames {
+		if n := probe("messages seen in "+f.name, f.frame, "seen", f.path...); n != float64(0) {
+			t.Errorf("%s's page saw %v of the find's messages", f.name, n)
+		}
+	}
 
-	// The page shadows what the clearing calls, in every window.
+	// A frame added after load, and one navigated after load.
+	eval("add a frame", `aoFrame("added", (f) => { f.src = aoData("<p>alpha in a frame added later</p>" + aoResponder); })`)
+	eval("navigate a frame", `aoFrame("open", (f) => { f.src = aoData("<p>alpha in a navigated frame</p>" + aoResponder); })`)
+	later := []frame{{"the frame added after load", "added", nil}, {"the frame navigated after load", "open", nil}}
+	find(FindStart, "alpha")
+	each("select", later)
+	selected("selected later", later, true)
+	find(FindStop, "")
+	selected("stopped later", later, false)
+
+	// A frame posting the find's own clear clears nothing above it: not its
+	// parent, not the top frame.
+	eval("select in every same-origin window", selectSameOrigin)
+	each("select", frames[:2])
+	probe("the nested frame attacks", "cross", "attack", 0)
+	probe("the cross-origin frame attacks", "cross", "attack")
+	if n := eval("count the selections", selections); n != float64(3) {
+		t.Fatalf("a frame's own clear message left %v selected windows of 3", n)
+	}
+	selected("after the frames' own clear messages", frames[:1], true)
+
+	// Announcing again and again does not grow the list; a removed frame
+	// leaves it.
+	before := children("count the children")
+	probe("the cross-origin frame floods", "cross", "flood")
+	if n := children("count the children after a flood"); n != before {
+		t.Fatalf("a frame announcing itself 300 times took the children from %d to %d", before, n)
+	}
+	eval("remove a frame", `(() => { aoFrames.added.element.remove(); delete aoFrames.added; return 1; })()`)
+	if n := children("count the children after a removal"); n != before-1 {
+		t.Fatalf("removing a frame took the children from %d to %d, want %d", before, n, before-1)
+	}
+	find(FindStop, "")
+
+	// The page and every frame shadow what the clearing calls.
 	eval("override the selection API", `(() => {
 		const walk = (w) => {
 			try { w.document; } catch (e) { return; }
@@ -589,23 +686,19 @@ func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 			for (let i = 0; i < w.frames.length; i++) walk(w.frames[i]);
 		};
 		walk(window); return 1; })()`)
-	for _, f := range crossOrigin {
-		probe("override in "+f.name, f.frame, "override", f.path...)
-	}
+	each("override", frames)
 	if state := find(FindStart, "alpha"); !state.Found {
 		t.Fatalf("start under the overrides = %+v", state)
 	}
 	if n := eval("count the selections", selections); n == float64(0) {
 		t.Fatal("the search selected no match")
 	}
-	for _, f := range crossOrigin {
-		probe("select in "+f.name, f.frame, "select", f.path...)
-	}
+	each("select", frames)
 	find(FindStop, "")
 	if n := eval("count the selections", selections); n != float64(0) {
 		t.Fatalf("%v selections left after the search stopped under the page's overrides", n)
 	}
-	crossSelected("stopped under the overrides", false)
+	selected("stopped under the overrides", frames, false)
 	// In the page's own world the overrides reach the clearing: it fails.
 	if _, _, err := manager.Evaluate(ctx, access, page.ID, "(async () => {"+webkitClearSelectionScript+"})()", nil); err == nil || !strings.Contains(err.Error(), "clear the selection") {
 		t.Fatalf("the clearing in the page's world under its overrides = %v, want a failure", err)

@@ -438,10 +438,10 @@ func (p *wkPage) FindStep(ctx context.Context, backwards bool) (findResult, erro
 }
 
 // FindStop drops the selection that marks the match, from an isolated
-// world (webkitClearSelectionScript): same-origin frames in the call, a
-// cross-origin frame told to clear itself and not waited for. If WebKit
-// refuses the frame script (ao_add_find_frame_script), such a frame keeps
-// its selection.
+// world (webkitClearSelectionScript): frames window.frames reaches in the
+// call, and every frame told to clear, down from the top, and not waited
+// for. If WebKit refuses the frame script (ao_add_find_frame_script), a
+// frame the call cannot reach keeps its selection.
 func (p *wkPage) FindStop(ctx context.Context) error {
 	p.mu.Lock()
 	p.findQuery = ""

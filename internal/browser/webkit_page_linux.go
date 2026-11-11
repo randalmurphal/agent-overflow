@@ -406,8 +406,9 @@ func (p *webkitPage) FindStep(ctx context.Context, backwards bool) (findResult, 
 
 // FindStop ends the search and drops the selection that marks its match,
 // from an isolated world (webkitClearSelectionScript): search_finish clears
-// only the highlights. Same-origin frames are cleared in the call; a
-// cross-origin frame is told to clear itself and not waited for.
+// only the highlights. Frames window.frames reaches are cleared in the
+// call; every frame is also told to clear, down from the top, and not
+// waited for.
 func (p *webkitPage) FindStop(ctx context.Context) error {
 	if err := gtkFindFinish(p.liveView()); err != nil {
 		return err
