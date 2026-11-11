@@ -39,6 +39,18 @@ func TestSearchCountsMatchesAsTheViewShowsLines(t *testing.T) {
 	}
 }
 
+// A NUL in a line is a character like any other: text past it is searched.
+func TestSearchMatchesPastAnEmbeddedNUL(t *testing.T) {
+	t.Parallel()
+	s, _, _ := newTestStore(t, CacheBytes)
+	key := githubKey("1")
+	fetchText(t, s, key, "lead\x00tail NEEDLE\nnone\n", `"a"`)
+	got, err := s.Search(t.Context(), key, "needle", 100, 1<<16)
+	if err != nil || !slices.Equal(got.Hits, []SearchHit{{Line: 0, Count: 1}}) {
+		t.Fatalf("search = %+v, %v", got, err)
+	}
+}
+
 func TestSearchStopsAtItsLimitAndTheLineBound(t *testing.T) {
 	t.Parallel()
 	s, _, _ := newTestStore(t, CacheBytes)

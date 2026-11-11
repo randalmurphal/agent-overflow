@@ -15,20 +15,32 @@ import (
 // uses it, on rows an index already narrowed to one thread
 // (threadFindSelection); the cross-thread search keeps LOWER and LIKE.
 // Registered on the driver before any connection opens; NULL stays NULL.
+//
+// VolatileArgs is what keeps a TEXT argument's byte length: without it the
+// driver reads TEXT as a C string (libc.GoString), cut at the first NUL.
+// The arguments are then views of SQLite's memory, valid only during the
+// call; the result may be one (FoldForFind returns unchanged text as it
+// is), which the driver copies (sqlite3_result_text, SQLITE_TRANSIENT)
+// before the call returns to SQLite.
 func init() {
-	sqlite.MustRegisterDeterministicScalarFunction("find_fold", 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
-		switch v := args[0].(type) {
-		case nil:
-			return nil, nil
-		case string:
-			return stringsx.FoldForFind(v), nil
-		case []byte:
-			return stringsx.FoldForFind(string(v)), nil
-		case int64, float64:
-			return v, nil
-		default:
-			return nil, fmt.Errorf("find_fold: %T is not text", v)
-		}
+	sqlite.MustRegisterFunction("find_fold", &sqlite.FunctionImpl{
+		NArgs:         1,
+		Deterministic: true,
+		VolatileArgs:  true,
+		Scalar: func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+			switch v := args[0].(type) {
+			case nil:
+				return nil, nil
+			case string:
+				return stringsx.FoldForFind(v), nil
+			case []byte:
+				return stringsx.FoldForFind(string(v)), nil
+			case int64, float64:
+				return v, nil
+			default:
+				return nil, fmt.Errorf("find_fold: %T is not text", v)
+			}
+		},
 	})
 }
 
