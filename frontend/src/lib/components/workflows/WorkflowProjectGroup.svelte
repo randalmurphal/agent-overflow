@@ -4,18 +4,19 @@
 
   import WorkflowRunRow from './WorkflowRunRow.svelte';
   import WorkflowDefinitionRow from './WorkflowDefinitionRow.svelte';
-  import type { WorkflowProjectGroup } from '../../stores/workflowData';
-  import { getWorkflowAutomations, getWorkflowCatalog } from '../../stores/workflowRuns.svelte';
+  import type { WorkflowHomeGroup } from '../../stores/workflowData';
   import { pushWorkflowRunDetail } from '../../stores/workflowsOverlay.svelte';
   import { enterWorkflowSweep } from '../../stores/workflowSweep';
 
-  interface Props { group: WorkflowProjectGroup }
-  let { group }: Props = $props();
+  interface Props {
+    group: WorkflowHomeGroup;
+    /** The list find narrows the rows: Recent shows its matches open. */
+    filtering?: boolean;
+  }
+  let { group, filtering = false }: Props = $props();
 
-  let catalog = $derived(getWorkflowCatalog(group.projectId));
-  let definitions = $derived(catalog?.workflows ?? []);
-  let automations = $derived(getWorkflowAutomations(group.projectId));
   let recentOpen = $state(false);
+  let recentShown = $derived(recentOpen || filtering);
 </script>
 
 <section class="px-4 py-3" data-testid="workflow-project-group" data-project-id={group.projectId}>
@@ -37,13 +38,10 @@
     </div>
   {/if}
 
-  {#if definitions.length > 0}
+  {#if group.definitions.length > 0}
     <div class="mt-2 space-y-0.5" data-testid="workflow-definition-list">
-      {#each definitions as definition (definition.scope + ':' + definition.id)}
-        <WorkflowDefinitionRow
-          {definition}
-          automations={automations.filter((automation) => automation.workflowId === definition.id)}
-        />
+      {#each group.definitions as entry (entry.definition.scope + ':' + entry.definition.id)}
+        <WorkflowDefinitionRow definition={entry.definition} automations={entry.automations} />
       {/each}
     </div>
   {/if}
@@ -54,9 +52,10 @@
         class="text-[0.6875rem] text-fg-muted hover:text-fg"
         onclick={() => (recentOpen = !recentOpen)}
         data-testid="workflow-recent-toggle"
-        aria-expanded={recentOpen}
-      >{recentOpen ? '▼' : '▶'} Recent · {group.recent.length}</button>
-      {#if recentOpen}
+        aria-expanded={recentShown}
+        disabled={filtering}
+      >{recentShown ? '▼' : '▶'} Recent · {group.recent.length}</button>
+      {#if recentShown}
         <div class="mt-0.5 space-y-0.5" data-testid="workflow-recent-list">
           {#each group.recent as run (run.id)}
             <WorkflowRunRow {run} onOpen={(id) => pushWorkflowRunDetail(id)} />
