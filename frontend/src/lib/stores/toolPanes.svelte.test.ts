@@ -230,6 +230,91 @@ describe('opening a tool', () => {
   });
 });
 
+// A tools-row drop names the slot: the gap index in the layout as it stands,
+// so with N items it is 0..N.
+describe('placing a tool at an insert index', () => {
+  function revealsOf(run: () => void): string[] {
+    const reveals: string[] = [];
+    const onReveal = (event: Event) => reveals.push((event as CustomEvent<{ paneId: string }>).detail.paneId);
+    window.addEventListener(REVEAL_PANE_EVENT, onReveal);
+    try {
+      run();
+    } finally {
+      window.removeEventListener(REVEAL_PANE_EVENT, onReveal);
+    }
+    return reveals;
+  }
+
+  it('inserts a tool that is not open at the slot, replacing nothing, focused, revealed and used last', () => {
+    threadLayout([threadItem('a'), threadItem('b'), threadItem('c')], 'a');
+    noteToolUsed('pulls');
+    const reveals = revealsOf(() => openTool('workflows', { insertIndex: 1 }));
+    expect(layoutIds()).toEqual(['a', 'tool-workflows', 'b', 'c']);
+    expect(getPane('a')).toBeDefined();
+    expect(getFocusedPaneId()).toBe('tool-workflows');
+    expect(reveals).toEqual(['tool-workflows']);
+    expect(lastToolKind()).toBe('workflows');
+    openTool('pulls', { insertIndex: 4 });
+    expect(layoutIds()).toEqual(['a', 'tool-workflows', 'b', 'c', 'tool-pulls']);
+    openTool('pulls', { insertIndex: 0 });
+    expect(layoutIds()).toEqual(['tool-pulls', 'a', 'tool-workflows', 'b', 'c']);
+  });
+
+  it('opens the first pane of an empty strip', () => {
+    openTool('pulls', { insertIndex: 0 });
+    expect(layoutIds()).toEqual(['tool-pulls']);
+    expect(getFocusedPaneId()).toBe('tool-pulls');
+  });
+
+  it('moves an open tool to a slot before its own', () => {
+    threadLayout([threadItem('a'), threadItem('b'), toolItem('pulls', 820), threadItem('c')], 'c');
+    const reveals = revealsOf(() => openTool('pulls', { insertIndex: 0 }));
+    expect(layoutIds()).toEqual(['tool-pulls', 'a', 'b', 'c']);
+    expect(getPaneLayoutItems()[0].widthPx).toBe(820);
+    expect(getFocusedPaneId()).toBe('tool-pulls');
+    expect(reveals).toEqual(['tool-pulls']);
+    expect(lastToolKind()).toBe('pulls');
+  });
+
+  it('moves an open tool to a slot after its own, the end included', () => {
+    threadLayout([threadItem('a'), toolItem('workflows'), threadItem('b'), threadItem('c')], 'a');
+    openTool('workflows', { insertIndex: 3 });
+    expect(layoutIds()).toEqual(['a', 'b', 'tool-workflows', 'c']);
+    openTool('workflows', { insertIndex: 4 });
+    expect(layoutIds()).toEqual(['a', 'b', 'c', 'tool-workflows']);
+    expect(getFocusedPaneId()).toBe('tool-workflows');
+  });
+
+  it('leaves an open tool dropped on its own slot where it is, still focusing it', () => {
+    threadLayout([threadItem('a'), toolItem('pulls'), threadItem('b')], 'b');
+    for (const insertIndex of [1, 2]) {
+      const before = getPaneLayoutItems();
+      openTool('pulls', { insertIndex });
+      expect(getPaneLayoutItems()).toBe(before);
+      expect(getFocusedPaneId()).toBe('tool-pulls');
+      focusPane('b');
+    }
+  });
+
+  it('lands a slot inside a thread\'s block after the block', () => {
+    threadLayout([threadItem('a'), threadItem('b')], 'b');
+    openCompanion('a', 'review', { reveal: false });
+    openTool('pulls', { insertIndex: 1 });
+    expect(layoutIds()).toEqual(['a', 'review-a', 'tool-pulls', 'b']);
+  });
+
+  it('clamps a slot past the end of a layout that shrank, and refuses one that is not a slot', () => {
+    threadLayout([threadItem('a')], 'a');
+    openTool('pulls', { insertIndex: 5 });
+    expect(layoutIds()).toEqual(['a', 'tool-pulls']);
+    expect(() => openTool('workflows', { insertIndex: 0.5 })).toThrow(RangeError);
+    expect(() => openTool('workflows', { insertIndex: Number.NaN })).toThrow(RangeError);
+    expect(() => openTool('workflows', { insertIndex: -1 })).toThrow(RangeError);
+    expect(layoutIds()).toEqual(['a', 'tool-pulls']);
+    expect(getFocusedPaneId()).toBe('tool-pulls');
+  });
+});
+
 describe('closing a tool', () => {
   it('removes the item and moves focus to the pane on its left', () => {
     threadLayout([threadItem('left'), toolItem('workflows'), threadItem('right')], 'tool-workflows');

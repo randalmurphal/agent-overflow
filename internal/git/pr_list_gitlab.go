@@ -271,6 +271,7 @@ func readGitLabMRList(ctx context.Context, client *forgeapi.Client, repo RepoRef
 			"state": {"opened"}, "per_page": {strconv.Itoa(gitlabPageSize)},
 			"order_by": {"updated_at"}, "sort": {"desc"},
 		},
+		MaxBodyBytes: gitlabMRListMaxBody,
 	}
 	var raw []gitlabListMRRaw
 	page, pages := 1, 0
@@ -449,6 +450,7 @@ func readGitLabEvents(ctx context.Context, client *forgeapi.Client, viewer gitla
 			"per_page": {strconv.Itoa(gitlabPageSize)},
 			"after":    {after.Format(time.DateOnly)},
 		},
+		MaxBodyBytes: gitlabEventsMaxBody,
 	}
 	out := map[gitlabMRKey]string{}
 	oldest, cut := "", false

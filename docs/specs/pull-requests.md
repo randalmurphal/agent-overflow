@@ -67,8 +67,8 @@ later Issues) are pane kinds behind one sidebar row.
       MR's branch, with the MR linked, or hands the MR to a thread already
       on it.
 - [x] Tools are pane kinds: a sidebar tools row with the active tool
-      labelled and the rest as icons with badges; ctrl+click opens a tool
-      in a new pane.
+      labelled and the rest as icons; ctrl+click opens a tool in a new
+      pane, and a drag places it in the pane strip like a thread row.
 
 ## Key decisions
 
@@ -264,7 +264,8 @@ or only activity older than the floor, takes the floor as your activity.
 A head commit after it is a push since your review, an update after it
 (past the slack) a reply, and neither keeps `Approved by you` or
 `Reviewed by you`. The toolbar's three
-menu buttons, the filter (`Needs you` with its count, `Mine`,
+menu buttons, the filter (`Needs you` with its count, the rows that
+filter lists for the picked projects whichever filter and sort show, `Mine`,
 `Reviewing`, `All open`), the projects and the sort (`Updated` newest
 first by default, `Created`, `Title`, `Author`, `Attention`; the same
 key again turns the order around) persist in appStorage per computer;
@@ -292,8 +293,8 @@ Each project's read is stored (`pr_list_projects`), so the page opens on
 the stored list, marked stale while it is older than the PR-update
 interval, and each project replaces its rows as its read lands. The
 backend reads once after boot every forge project whose stored read is
-missing or older than the interval, so the list and the badge are current
-before the page opens. The page refreshes on open, on its own refresh
+missing or older than the interval, so the page opens on a current list
+rather than a stale one. The page refreshes on open, on its own refresh
 button and every PR-update interval while visible; hidden, it reads
 nothing.
 
@@ -313,16 +314,20 @@ A failed refresh shows under the page header with "Details".
 ### Tools row (phase 2)
 
 The sidebar's Workflows row becomes a tools row above Settings: the
-active tool shows its icon and label with its badge, the others show
-their icon and badge with hover text (`git-pull-request-arrow`,
-`workflow`, `circle-dot`). The badge is the tool's "needs you" count:
-MRs in `Your turn` + `Pipeline failed` + `Ready to merge` (from the
-stored list until the page reads, `pulls:badge` on every store write), running
-workflows, assigned issues. The label follows the focused pane when it is
-a tool, else the tool used last. A click opens the tool in the focused
-pane like a thread; ctrl+click opens a new pane. Workflows becomes the
-`workflows` pane kind with the same shell (tabs, remembered filters, list,
-detail beside it) and loses its modal.
+active tool shows its icon and label, the others show their icon with
+hover text (`git-pull-request-arrow`, `workflow`, `circle-dot`). Only
+Workflows carries a badge, the workflow runs that need you, also in its
+hover text; Pull requests shows no count in the sidebar, the page's
+`Needs you` count being the one place it is read. The label follows the
+focused pane when it is a tool, else the tool used last. A click opens
+the tool in the focused pane like a thread; ctrl+click opens a new pane.
+Off compact a tool's button drags into the pane strip like a thread row,
+with the same drop slots and preview; the drop places the tool as its
+own pane at that slot, replacing nothing, or moves it there when it is
+already open (one pane per tool; its own slot shows no preview). The
+dropped tool is focused, revealed and counts as used last. Workflows
+becomes the `workflows` pane kind with the same shell (tabs, remembered
+filters, list, detail beside it) and loses its modal.
 
 ### Pipelines tab (phase 3)
 
@@ -336,7 +341,9 @@ log view beside the list; on compact the page header's Back is the one
 Back, for a pipeline as for an MR, and closes an open log first;
 the CI model is keyed by `(repository, pipeline id)`, the MR's head
 pipeline being one case. GitLab `projects/P/pipelines`, GitHub
-`actions/runs`. The review pane's CI line stays the head pipeline only.
+`actions/runs`. A GitLab pipeline's stages hold its builds, bridges and
+external commit statuses (an external pipeline holds only those); a
+bridge or status links out, as a GitHub external check does. The review pane's CI line stays the head pipeline only.
 The tab reads its list on open, on its refresh button and every
 PR-update interval while visible. Hidden, the interval, a reconnect and
 a regained grant read neither the list nor the stages; the one read they

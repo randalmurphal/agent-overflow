@@ -168,8 +168,8 @@ func scopeList(value string) []string {
 // see the error table in docs/architecture/forge-transport.md.
 var ErrNotFound = errors.New("forge: not found")
 
-// ErrBodyTooLarge is a response body over the caller's limit (Stream) or
-// Options.MaxBodyBytes (Do, JSON, GraphQL).
+// ErrBodyTooLarge is a response body over the caller's limit (Stream),
+// Request.MaxBodyBytes or Options.MaxBodyBytes (Do, JSON, GraphQL).
 var ErrBodyTooLarge = errors.New("forge: response body exceeds the limit")
 
 // ErrAbsoluteURL is a Request.Path that is an absolute URL on a request

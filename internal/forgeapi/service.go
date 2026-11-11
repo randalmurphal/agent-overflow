@@ -16,6 +16,9 @@ import (
 const (
 	defaultReadTimeout  = 45 * time.Second
 	defaultMaxBodyBytes = 1 << 20
+	// maxRequestBodyBytes caps Request.MaxBodyBytes at a quarter of the
+	// ETag store's byte bound, so one stored body cannot evict the rest.
+	maxRequestBodyBytes = etagMaxBytes / 4
 	hostConcurrency     = 8
 	tokenRereadAfter    = 5 * time.Minute
 	tokenFailureTTL     = 5 * time.Second
@@ -37,8 +40,8 @@ type Options struct {
 	// ReadTimeout bounds a call whose Request.Timeout is zero; zero means
 	// 45s.
 	ReadTimeout time.Duration
-	// MaxBodyBytes bounds a body Do, JSON and GraphQL read; zero means
-	// 1 MiB.
+	// MaxBodyBytes bounds a body Do, JSON and GraphQL read unless the
+	// request names its own (Request.MaxBodyBytes); zero means 1 MiB.
 	MaxBodyBytes int64
 }
 

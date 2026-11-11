@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -373,7 +374,24 @@ type Job struct {
 	// SyntheticLog), for a log of many megabytes.
 	Synthetic *SyntheticLog `json:"synthetic,omitempty"`
 	Steps     []Step        `json:"steps,omitempty"`
+	// Kind is what a GitLab pipeline row is: a build (empty), a bridge
+	// (JobKindBridge, a trigger job) or an external commit status
+	// (JobKindExternal, stage "external" by default). Neither of the last
+	// two has a log. GitHub pipelines hold builds only.
+	Kind string `json:"kind,omitempty"`
+	// TargetURL is an external status's absolute link; empty answers
+	// none.
+	TargetURL string `json:"targetUrl,omitempty"`
+	// Downstream is a bridge's downstream pipeline path on the forge
+	// ("/grp/child/-/pipelines/9"); empty answers none yet.
+	Downstream string `json:"downstream,omitempty"`
 }
+
+// The GitLab pipeline row kinds past a build (Job.Kind).
+const (
+	JobKindBridge   = "bridge"
+	JobKindExternal = "external"
+)
 
 // Step is one GitHub Actions job step.
 type Step struct {
@@ -936,10 +954,17 @@ func (p *Pipeline) normalize(ids *idSource) error {
 				return fmt.Errorf("jobs[%d]: %w", i, err)
 			}
 		}
+		if err := job.normalizeKind(); err != nil {
+			return fmt.Errorf("jobs[%d]: %w", i, err)
+		}
 		if job.ID == 0 {
 			job.ID = ids.next()
 		}
-		job.Stage = defaultString(job.Stage, "test")
+		stage := "test"
+		if job.Kind == JobKindExternal {
+			stage = "external"
+		}
+		job.Stage = defaultString(job.Stage, stage)
 		if job.StartedAt == "" && job.Status != "pending" && job.Status != "skipped" {
 			job.StartedAt = "2026-01-01T00:00:00Z"
 		}
@@ -951,6 +976,30 @@ func (p *Pipeline) normalize(ids *idSource) error {
 		p.Status = aggregateJobStatus(p.Jobs)
 	} else if !jobStatuses[p.Status] {
 		return fmt.Errorf("status %q is not a job status", p.Status)
+	}
+	return nil
+}
+
+// normalizeKind validates a job's kind and the fields only one kind has:
+// a bridge's downstream path, an external status's target URL, and the
+// log and steps only a build has.
+func (job *Job) normalizeKind() error {
+	switch job.Kind {
+	case "", JobKindBridge, JobKindExternal:
+	default:
+		return fmt.Errorf("kind %q is not empty (a build), bridge or external", job.Kind)
+	}
+	if job.Kind != "" && (job.Log != "" || job.Synthetic != nil || job.LogWithheld || len(job.Steps) > 0) {
+		return fmt.Errorf("a %s has no log or steps", job.Kind)
+	}
+	if job.Downstream != "" && (job.Kind != JobKindBridge || !strings.HasPrefix(job.Downstream, "/")) {
+		return errors.New("downstream is a bridge's pipeline path, starting with /")
+	}
+	if job.TargetURL != "" {
+		target, err := url.Parse(job.TargetURL)
+		if job.Kind != JobKindExternal || err != nil || (target.Scheme != "https" && target.Scheme != "http") || target.Host == "" {
+			return errors.New("targetUrl is an external status's absolute http(s) URL")
+		}
 	}
 	return nil
 }

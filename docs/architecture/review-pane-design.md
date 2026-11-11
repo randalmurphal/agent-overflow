@@ -122,7 +122,7 @@ polling.
   `unresolveReviewThread` behind `@include` / `@skip`; review submission,
   file comments and replies are REST POSTs. GitLab: one merge request
   read per tick, with its approvals, discussions with position objects and
-  head pipeline jobs as the parts ask; a `PUT` on the discussion itself
+  head pipeline rows (GraphQL `PipelineJobs`) as the parts ask; a `PUT` on the discussion itself
   with a JSON `resolved` body.
   Provider specifics stay in `github.go` / `gitlab.go`; the normalized
   types are ours (the same pattern `forge.go` already uses, not the
@@ -171,7 +171,8 @@ polling.
   every job from the rollup (a `PRTick` that asks for the checks alone) and steps, which only
   the open log view shows, from one REST jobs list per run holding a
   followed job whose steps can still change; GitLab reads the MR view and
-  the jobs list. `SetPRCILogFollows` names the jobs a subscription watches:
+  the pipeline's rows (`PipelineJobs`: builds, bridges and external
+  commit statuses; only a build has a log). `SetPRCILogFollows` names the jobs a subscription watches:
   the pump downloads each into the backend's log cache (`internal/cilog`,
   a disk store bounded at 512 MiB, least recently used out, a followed
   log pinned) and sends its index on `pr:ci_log` whenever it moves: the

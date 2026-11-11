@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/transport"
@@ -29,9 +28,8 @@ import (
 var ErrTooManyPRListSubscriptions = errors.New("pr list: too many active subscriptions")
 
 // PRListSnapshot is the pulls:updated frame and SubscribePRList's
-// snapshot: every forge project's rows, the needs-you count (the sidebar
-// badge, each PR once), and Error when the projects themselves could not
-// be read. Seq orders frames against a subscribe's snapshot; FetchedAt
+// snapshot: every forge project's rows, and Error when the projects
+// themselves could not be read. Seq orders frames against a subscribe's snapshot; FetchedAt
 // (RFC 3339) is when it was assembled. Stale is a snapshot served from the
 // stored copy while a refresh runs: a subscribe's answer when a project's
 // stored read is older than the PR update interval or missing, and the
@@ -39,7 +37,6 @@ var ErrTooManyPRListSubscriptions = errors.New("pr list: too many active subscri
 type PRListSnapshot struct {
 	Seq       uint64          `json:"seq"`
 	FetchedAt string          `json:"fetchedAt"`
-	NeedsYou  int             `json:"needsYou"`
 	Stale     bool            `json:"stale"`
 	Error     string          `json:"error,omitempty"`
 	Projects  []ProjectPRList `json:"projects"`
@@ -88,12 +85,6 @@ type PRListItem struct {
 type PRApprovals struct {
 	Given    int `json:"given"`
 	Required int `json:"required"`
-}
-
-// PRListBadge is the pulls:badge frame: the needs-you count of the stored
-// snapshot, emitted whenever the store is written.
-type PRListBadge struct {
-	NeedsYou int `json:"needsYou"`
 }
 
 // PRListSubscriptionResult answers SubscribePRList.
@@ -364,9 +355,4 @@ func (a *App) pumpPRList(pump *prListPump) {
 			tick(pump.ctx)
 		}
 	}
-}
-
-// emitPRListBadge emits the needs-you count of the stored copy.
-func (a *App) emitPRListBadge(needsYou int) {
-	a.emit(eventchan.PullsBadge, PRListBadge{NeedsYou: needsYou})
 }

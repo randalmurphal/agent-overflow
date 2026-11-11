@@ -497,7 +497,7 @@ func TestGitLabReadsParseThroughTheAppsForgeCode(t *testing.T) {
 		}
 		routes[inv.Route]++
 	}
-	if want := map[string]int{"glab api merge request": 1, "glab api approvals": 1, "glab api discussions": 1, "glab api pipeline jobs": 1}; !maps.Equal(routes, want) {
+	if want := map[string]int{"glab api merge request": 1, "glab api approvals": 1, "glab api discussions": 1, "glab graphql PipelineJobs": 1}; !maps.Equal(routes, want) {
 		t.Fatalf("ReadPR requests = %v, want %v", routes, want)
 	}
 

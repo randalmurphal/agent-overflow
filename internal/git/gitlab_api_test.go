@@ -44,18 +44,25 @@ func gitlabDiscussion(id, headSHA string) string {
 		"author":{"username":"rev","name":"Rev"},"position":{"head_sha":%q,"new_path":"a.go","old_path":"a.go","position_type":"text","new_line":4}}]}`, id, id, headSHA)
 }
 
-func gitlabJobs(from, n int) string {
+// gitlabJobs is a PipelineJobs answer of n started builds in stage test,
+// ids from on.
+func gitlabJobs(from, n int) forgeAPIAnswer {
 	jobs := make([]string, 0, n)
 	for i := from; i < from+n; i++ {
-		jobs = append(jobs, fmt.Sprintf(`{"id":%d,"name":"job%d","stage":"test","status":"success","started_at":"2026-01-01T00:00:00Z"}`, i, i))
+		jobs = append(jobs, gitlabJobNode("Ci::Build", int64(i), fmt.Sprintf("job%d", i), "test", "SUCCESS", `"startedAt":"2026-01-01T00:00:00Z"`))
 	}
-	return "[" + strings.Join(jobs, ",") + "]"
+	return gitlabJobsPage([]string{"test"}, "", jobs...)
 }
 
-// gitlabPaths lists the method and path of every request.
+// gitlabPaths lists the method and path of every REST request and the
+// operation of every GraphQL one ("GRAPHQL PipelineJobs").
 func gitlabPaths(calls *forgeAPICalls) []string {
 	var out []string
 	for _, call := range calls.all() {
+		if call.Op != "" {
+			out = append(out, "GRAPHQL "+call.Op)
+			continue
+		}
 		out = append(out, call.Method+" "+call.Path)
 	}
 	return out
@@ -79,6 +86,9 @@ func TestGitLabReadPRReadsTheMergeRequestOnce(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Op == "PipelineJobs" {
+			return gitlabJobs(1, 3)
+		}
 		switch call.Path {
 		case mr:
 			return forgeAPIAnswer{Body: gitlabTestMR(7, 77)}
@@ -88,8 +98,6 @@ func TestGitLabReadPRReadsTheMergeRequestOnce(t *testing.T) {
 			return forgeAPIAnswer{Body: "[" + gitlabDiscussion("d1", "head2") + "]", Header: http.Header{"X-Next-Page": {"2"}}}
 		case mr + "/discussions?page=2&per_page=100":
 			return forgeAPIAnswer{Body: "[" + gitlabDiscussion("d2", "head1") + "]", Header: http.Header{"X-Next-Page": {""}}}
-		case gitlabTestProject + "/pipelines/77/jobs?per_page=100":
-			return forgeAPIAnswer{Body: gitlabJobs(1, 3)}
 		case gitlabTestProject:
 			return forgeAPIAnswer{Body: gitlabTestProjectSettings}
 		case "user":
@@ -103,7 +111,7 @@ func TestGitLabReadPRReadsTheMergeRequestOnce(t *testing.T) {
 	}
 	paths := gitlabPaths(calls)
 	if countPrefix(paths, "GET "+mr) != 1 || len(paths) != 7 {
-		t.Fatalf("requests = %q, want one MR read, the approvals, the project, the viewer, two discussion pages and one jobs page", paths)
+		t.Fatalf("requests = %q, want one MR read, the approvals, the project, the viewer, two discussion pages and one PipelineJobs page", paths)
 	}
 	for _, call := range calls.all() {
 		if call.Host != testForgeHost || call.Header.Get("Private-Token") != "test-token" {
@@ -139,8 +147,8 @@ func TestGitLabReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 			return forgeAPIAnswer{Body: `{"approved_by":[]}`}
 		case strings.HasPrefix(call.Path, mr+"/discussions?"):
 			return forgeAPIAnswer{Body: `[]`}
-		case strings.HasPrefix(call.Path, gitlabTestProject+"/pipelines/77/jobs?"):
-			return forgeAPIAnswer{Body: gitlabJobs(1, 1)}
+		case call.Op == "PipelineJobs":
+			return gitlabJobs(1, 1)
 		case call.Path == gitlabTestProject:
 			return forgeAPIAnswer{Body: gitlabTestProjectSettings}
 		case call.Path == "user":
@@ -158,7 +166,7 @@ func TestGitLabReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 		{PRReadParts{Threads: true}, 77, []string{"GET " + mr, "GET " + mr + "/discussions?per_page=100"}},
 		{PRReadParts{Events: true}, 77, []string{"GET " + mr, "GET " + mr + "/discussions?per_page=100"}},
 		{PRReadParts{Threads: true, Events: true}, 77, []string{"GET " + mr, "GET " + mr + "/discussions?per_page=100"}},
-		{PRReadParts{CI: true}, 77, []string{"GET " + mr, "GET " + gitlabTestProject + "/pipelines/77/jobs?per_page=100"}},
+		{PRReadParts{CI: true}, 77, []string{"GET " + mr, "GRAPHQL PipelineJobs"}},
 		{PRReadParts{CI: true}, 0, []string{"GET " + mr}},
 	}
 	seen := 0
@@ -202,48 +210,6 @@ func TestGitLabThreadsStopOnANextPageThatDoesNotAdvance(t *testing.T) {
 	}
 	if n := len(calls.all()); n != 2 {
 		t.Fatalf("requests = %q, want the MR and one discussions page", gitlabPaths(calls))
-	}
-}
-
-// The pipeline's jobs are paged by X-Next-Page until a short page, and at
-// most gitlabCIJobsMaxPages pages are read.
-func TestGitLabPipelineJobsPageToTheCap(t *testing.T) {
-	t.Parallel()
-	mr := gitlabTestProject + "/merge_requests/7"
-	var short atomic.Bool
-	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-		if call.Path == mr {
-			return forgeAPIAnswer{Body: gitlabTestMR(7, 77)}
-		}
-		u, err := url.Parse(call.Path)
-		if err != nil || u.EscapedPath() != gitlabTestProject+"/pipelines/77/jobs" {
-			return forgeUnexpected(t, call)
-		}
-		page, _ := strconv.Atoi(u.Query().Get("page"))
-		page = max(page, 1)
-		if short.Load() && page == 2 {
-			return forgeAPIAnswer{Body: gitlabJobs(5000, 10)}
-		}
-		return forgeAPIAnswer{Body: gitlabJobs(page*1000, gitlabPageSize), Header: http.Header{"X-Next-Page": {strconv.Itoa(page + 1)}}}
-	})
-	pipeline, err := core.ListPRCIJobs(t.Context(), gitlabTestRef(7), nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n := len(pipeline.Stages[0].Jobs); n != gitlabCIJobsMaxPages*gitlabPageSize {
-		t.Fatalf("jobs = %d, want %d", n, gitlabCIJobsMaxPages*gitlabPageSize)
-	}
-	if n := countPrefix(gitlabPaths(calls), "GET "+gitlabTestProject+"/pipelines/77/jobs"); n != gitlabCIJobsMaxPages {
-		t.Fatalf("jobs pages = %d, want %d", n, gitlabCIJobsMaxPages)
-	}
-	short.Store(true)
-	before := len(calls.all())
-	pipeline, err = core.ListPRCIJobs(t.Context(), gitlabTestRef(7), nil, nil)
-	if err != nil || len(pipeline.Stages[0].Jobs) != gitlabPageSize+10 {
-		t.Fatalf("short second page: %v, %v", pipeline, err)
-	}
-	if n := len(calls.all()) - before; n != 3 {
-		t.Fatalf("requests = %d, want the MR and two jobs pages", n)
 	}
 }
 

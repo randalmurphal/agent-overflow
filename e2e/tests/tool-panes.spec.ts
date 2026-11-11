@@ -168,10 +168,10 @@ test('captures the tools row and a workflows pane beside a thread', async ({ har
     await dragSidebarTo(page, width);
     await expect.poll(async () => Math.round((await page.getByTestId('sidebar').boundingBox())?.width ?? 0)).toBe(width);
     // Every control stays on one line inside the row at the narrowest width.
-    const heights = await row.locator('button').evaluateAll((els) => els.map((el) => el.getBoundingClientRect().height));
+    const heights = await row.locator('[role="button"]').evaluateAll((els) => els.map((el) => el.getBoundingClientRect().height));
     const rowBox = await row.boundingBox();
     expect(new Set(heights).size).toBe(1);
-    for (const button of await row.locator('button').all()) {
+    for (const button of await row.locator('[role="button"]').all()) {
       const box = await button.boundingBox();
       expect(box!.x + box!.width).toBeLessThanOrEqual(rowBox!.x + rowBox!.width);
     }

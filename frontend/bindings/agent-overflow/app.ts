@@ -1772,16 +1772,6 @@ export function GetPRDetail(pr: git$0.PRReference): $CancellablePromise<git$0.PR
 }
 
 /**
- * GetPRListNeedsYou is the sidebar badge before the Pull requests page
- * subscribes: the needs-you rows of the stored copy for the current
- * forge projects, each PR once. It reads no forge; pulls:badge carries
- * the count again whenever the copy is written.
- */
-export function GetPRListNeedsYou(): $CancellablePromise<number> {
-    return $Call.ByID(3288121945);
-}
-
-/**
  * GetPRMergeConflicts merges the PR at rev in the referenced clone and
  * reports the conflicts.
  */
