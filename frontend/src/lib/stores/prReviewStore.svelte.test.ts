@@ -1332,7 +1332,13 @@ describe('prReviewStore — merge conflicts follow the PR', () => {
     await flush();
 
     expect(conflicts).toHaveBeenCalledTimes(1);
+    // The open that had no revision to read carries its ask to this read.
+    expect(conflicts.mock.calls[0][4]).toBe(true);
     expect(peekPRConflicts(KEY, CONFLICT_WS).state?.treeOID).toBe('tree-1');
+    // …and to that read only.
+    applyPRUpdatedEvent({ prKey: KEY, detail: detailStub({ headSHA: 'sha-b' }), threads: [], headSHA: 'sha-b' });
+    await flush();
+    expect(conflicts.mock.calls.map((call) => call[4])).toEqual([true, false]);
     viewing();
     a.release();
   });
@@ -1580,6 +1586,34 @@ describe('prReviewStore — merge conflicts follow the PR', () => {
     await reopen;
     expect(conflicts.mock.calls.map((call) => [(call[2] as { headSHA: string }).headSHA, call[4]])).toEqual([['sha-a', true], ['sha-b', true]]);
     expect(peekPRConflicts(KEY, CONFLICT_WS).state?.revision.headSHA).toBe('sha-b');
+    a.release();
+  });
+
+  // A person's ask belongs to the open waiting on it. Superseded opens
+  // leave no intent behind once they settle.
+  it('a superseded open leaves no user intent for a later automatic read', async () => {
+    installSubscribeMock();
+    let releaseA!: () => void;
+    const held = new Promise<void>((resolve) => { releaseA = resolve; });
+    const conflicts = setBindingMock('GetPRMergeConflicts', async (_ws: unknown, _ref: unknown, rev: { headSHA: string }) => {
+      if (rev.headSHA === 'sha-a') await held;
+      return { conflicted: false, treeOID: `tree-${rev.headSHA}`, baseLabel: 'origin/main', headLabel: 'feature', paths: [], notes: {}, messages: [] };
+    });
+    const a = attachPR(KEY, { ref: REF });
+    await flush();
+    const viewing = permitPRConflictReconcile(KEY, CONFLICT_WS);
+    const openA = openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
+    await flush();
+    const openB = openPRConflicts(KEY, CONFLICT_WS, REF, detailStub({ headSHA: 'sha-b' }));
+    const openAgain = openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
+    releaseA();
+    await Promise.all([openA, openB, openAgain]);
+    await flush();
+
+    applyPRUpdatedEvent({ prKey: KEY, detail: detailStub({ headSHA: 'sha-c' }), threads: [], headSHA: 'sha-c', seq: 20 });
+    await flush();
+    expect(conflicts.mock.calls.map((call) => [(call[2] as { headSHA: string }).headSHA, call[4]])).toEqual([['sha-a', true], ['sha-c', false]]);
+    viewing();
     a.release();
   });
 

@@ -84,6 +84,9 @@
     return subject.pinned ? reviewStateForPR(sourcePaneId, subject, { userInitiated }) : reviewStateForPane(sourcePaneId, subject);
   }
   const review = initialState();
+  // The conflict view's reconcile permit follows this mount, not how long
+  // the state is retained.
+  $effect(() => review?.attachSurface());
   // The conflict view's Back, unless the host's header owns Back.
   const hostOwnsBack = hostedBackReader();
   // Forge attachments in every ChatMarkdown under this pane — the PR body,

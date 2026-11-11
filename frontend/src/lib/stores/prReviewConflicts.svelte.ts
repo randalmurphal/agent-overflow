@@ -63,6 +63,9 @@ function entryKey(prKey: string, workspace: WorkspaceRef): string {
 export function permitPRConflictReconcile(key: string, workspace: WorkspaceRef): () => void {
   const holdKey = entryKey(key, workspace);
   viewHolds.set(holdKey, (viewHolds.get(holdKey) ?? 0) + 1);
+  // A view shown again reads what it missed while it was off screen; the
+  // runner decides whether anything is owed.
+  conflictsByKey.get(holdKey)?.kick();
   let released = false;
   return () => {
     if (released) return;

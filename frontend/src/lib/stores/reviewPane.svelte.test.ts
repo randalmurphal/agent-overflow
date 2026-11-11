@@ -3846,6 +3846,8 @@ describe('reviewPane store: painted span retention', () => {
     setBindingMock('GetPRMergeConflicts', async () => tree);
     setBindingMock('GetMergeConflictFile', async () => ['<<<<<<< ours', 'left', '=======', 'right', '>>>>>>> theirs'].join('\n'));
     const state = reviewStateForPane('pane-1', prSubject());
+    // The mounted pane: a push recomputes only a view on screen.
+    state.attachSurface();
     await waitLoaded(state);
     await state.setScope('pr');
     const [a, b] = state.files;
@@ -4252,5 +4254,53 @@ describe('reviewPane store — PR read intent', () => {
     const unsaid = await openReviewCompanion('pane-1', prSubject(), { scope: 'pr' });
     await waitLoaded(unsaid!);
     expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, false);
+  });
+});
+
+describe('reviewPane store — the conflict view\'s permit follows the mounted pane', () => {
+  function installConflictTree() {
+    return setBindingMock('GetPRMergeConflicts', async (_ws: unknown, _ref: unknown, rev: { headSHA: string }) => ({
+      conflicted: false, treeOID: `tree-${rev.headSHA}`, baseLabel: 'origin/main', headLabel: 'feature', paths: [], messages: [],
+    }));
+  }
+  const heads = (mock: { mock: { calls: unknown[][] } }) => mock.mock.calls.map((call) => [(call[2] as { headSHA: string }).headSHA, call[4]]);
+
+  it('reads nothing for an open view no mounted pane renders, and catches up once one does', async () => {
+    installPRMocks();
+    const conflicts = installConflictTree();
+    const state = reviewStateForPane('pane-1', prSubject());
+    const detach = state.attachSurface();
+    await waitLoaded(state);
+    await state.setScope('pr');
+    await state.openConflictView();
+    expect(heads(conflicts)).toEqual([['sha-a', true]]);
+
+    detach();
+    applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub({ headSHA: 'sha-b' }), threads: [], headSHA: 'sha-b', seq: 30 });
+    await flushPane();
+    expect(conflicts).toHaveBeenCalledTimes(1);
+
+    const reattach = state.attachSurface();
+    await vi.waitFor(() => expect(conflicts).toHaveBeenCalledTimes(2));
+    expect(heads(conflicts)[1]).toEqual(['sha-b', false]);
+    expect(state.conflictView).toBe(true);
+    reattach();
+  });
+
+  it('a reopen of a PR that moved while the view was closed is the person\'s read', async () => {
+    installPRMocks();
+    const conflicts = installConflictTree();
+    const state = reviewStateForPane('pane-1', prSubject());
+    state.attachSurface();
+    await waitLoaded(state);
+    await state.setScope('pr');
+    await state.openConflictView();
+    state.closeConflictView();
+    applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub({ headSHA: 'sha-b' }), threads: [], headSHA: 'sha-b', seq: 31 });
+    await flushPane();
+    expect(conflicts).toHaveBeenCalledTimes(1);
+
+    await state.openConflictView();
+    expect(heads(conflicts)).toEqual([['sha-a', true], ['sha-b', true]]);
   });
 });

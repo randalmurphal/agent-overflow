@@ -439,6 +439,10 @@ export interface ReviewPaneState {
   refreshPRThreads(): Promise<void>;
   openConflictView(): Promise<void>;
   closeConflictView(): void;
+  /** The pane rendering this state is mounted; returns the detach. The
+   * conflict view's reconcile permit is held only while one is, so a
+   * retained state off screen reads no merges. */
+  attachSurface(): () => void;
   toggleConflictCollapsed(path: string): Promise<void>;
   expandConflictFold(path: string, foldId: number): void;
   /** Has the PR's pump poll the pipeline now. */
@@ -703,9 +707,12 @@ export function createReviewPaneState(
   let prAttachment: PRAttachment | null = null;
   let conflictView = $state(false);
   // The conflict view's reconcile permit, held for exactly as long as the
-  // surface is on screen: a head move recomputes the merged tree only for
-  // a view somebody is looking at (see prReviewConflicts.svelte.ts).
-  let conflictReconcilePermit: (() => void) | null = null;
+  // view is open AND a mounted pane renders this state: a head move
+  // recomputes the merged tree only for a view somebody is looking at (see
+  // prReviewConflicts.svelte.ts). A retained state off screen (a pinned
+  // review the page keeps for a step back) holds none.
+  let conflictReconcilePermit: { key: string; release: () => void } | null = null;
+  let mountedSurfaces = 0;
   let conflictCollapsedPaths: SvelteSet<string> = $state(new SvelteSet<string>());
   // Expanded fold ids per path. Entries are replaced wholesale on expand
   // so the SvelteMap write re-derives conflictFiles.
@@ -1267,12 +1274,31 @@ export function createReviewPaneState(
   // recomputing merge trees for a surface nobody closed, and a missing one
   // leaves an open view rendering the previous head's merge.
   function setConflictView(open: boolean): void {
-    conflictReconcilePermit?.();
-    conflictReconcilePermit = null;
     conflictView = open;
-    if (!open) return;
-    const key = prEntityKey;
-    if (key) conflictReconcilePermit = permitPRConflictReconcile(key, workspace);
+    syncConflictPermit();
+  }
+
+  // The one writer of the permit.
+  function syncConflictPermit(): void {
+    untrack(() => {
+      const key = conflictView && mountedSurfaces > 0 && !disposed ? prEntityKey : null;
+      if (conflictReconcilePermit?.key === key) return;
+      conflictReconcilePermit?.release();
+      conflictReconcilePermit = null;
+      if (key) conflictReconcilePermit = { key, release: permitPRConflictReconcile(key, workspace) };
+    });
+  }
+
+  function attachSurface(): () => void {
+    mountedSurfaces += 1;
+    syncConflictPermit();
+    let attached = true;
+    return () => {
+      if (!attached) return;
+      attached = false;
+      mountedSurfaces -= 1;
+      syncConflictPermit();
+    };
   }
 
   // Only the pane's VIEW of the conflicts resets on a scope switch: the
@@ -2365,9 +2391,13 @@ export function createReviewPaneState(
       return;
     }
     closeCILogView();
+    // The open is recorded before the permit: a permit wakes the runner,
+    // which would otherwise start this read unattended for the person
+    // asking for it.
+    const opening = openPRConflicts(key, workspace, prRef, detail);
     setConflictView(true);
     conflictExpandedFolds.clear();
-    await openPRConflicts(key, workspace, prRef, detail);
+    await opening;
     if (disposed) return;
     // Everything the store could show opens expanded, like the regular
     // diff. A file whose content read failed and that carries no notes has
@@ -2743,6 +2773,7 @@ export function createReviewPaneState(
     },
     openConflictView,
     closeConflictView,
+    attachSurface,
     toggleConflictCollapsed,
     expandConflictFold,
     refreshCI,

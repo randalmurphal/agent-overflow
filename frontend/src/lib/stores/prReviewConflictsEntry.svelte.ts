@@ -58,8 +58,9 @@ interface Observation {
 /** One read the runner runs: the observation it answers and its intent. */
 export interface ConflictRead extends Observation {
   revision: PRRevision;
-  /** A person's ask that no read has started for yet: the read may prompt
-   * for git credentials, and its failure arms the pump's retry. */
+  /** A person's open is waiting on this read (or one that had no revision
+   * to read handed its ask on): the read may prompt for git credentials,
+   * and its failure arms the pump's retry. */
   userInitiated: boolean;
 }
 
@@ -109,10 +110,9 @@ export class PRConflictEntry {
 
   private wanted: Observation | null = null;
   private observed = 0;
-  /** The observation a person last asked about, and the last one a read
-   * started for: a read is the person's while the first is newer. */
-  private userSeq = 0;
-  private startedSeq = 0;
+  /** An open that had no revision to read settled at once; the first read
+   * a later revision allows carries its ask. Cleared by every read. */
+  private askAwaitingRevision = false;
   /** A read must have started at or after this observation (an open). */
   private forceSeq = 0;
   /** A failed read is answered only once a read started at or after this
@@ -149,6 +149,11 @@ export class PRConflictEntry {
     void this.run();
   }
 
+  /** A view came on screen: read what is wanted if it is owed. */
+  kick(): void {
+    void this.run();
+  }
+
   /** Overwrite what is wanted with the latest observation. */
   private record(kind: ObservationKind, ref: PRRef, detail: PRDetail, revision: PRRevision | null): number {
     const seq = ++this.observed;
@@ -161,7 +166,7 @@ export class PRConflictEntry {
       this.forceSeq = this.current.seq;
     } else {
       this.forceSeq = seq;
-      this.userSeq = seq;
+      this.askAwaitingRevision = revision === null;
     }
     return seq;
   }
@@ -182,7 +187,9 @@ export class PRConflictEntry {
     if (!this.viewOpen() && this.waiters.length === 0) return null;
     const last = this.settled;
     if (last && last.key === wanted.key && last.seq >= this.forceSeq && (last.ok || last.seq >= this.retrySeq)) return null;
-    return { ...wanted, revision: wanted.revision, userInitiated: this.userSeq > this.startedSeq };
+    // A read is a person's while their open waits on it (only opens wait),
+    // so no intent outlives the opens it belonged to.
+    return { ...wanted, revision: wanted.revision, userInitiated: this.waiters.length > 0 || this.askAwaitingRevision };
   }
 
   private async run(): Promise<void> {
@@ -191,7 +198,7 @@ export class PRConflictEntry {
     try {
       for (let read = this.next(); read !== null; read = this.next()) {
         this.current = read;
-        this.startedSeq = read.seq;
+        this.askAwaitingRevision = false;
         this.loading = true;
         const ok = await this.readTree(this, read);
         this.current = null;

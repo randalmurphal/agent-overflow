@@ -11,7 +11,8 @@ import { stepPullsBack } from '../../stores/pullsCommands.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { TransportError } from '../../transport/wsClient';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
-import { PULLS_PANE, installPullsPaneMocks, pullItem, pullRowKey, pullsProject, pullsSnapshot, resetPullsPane } from '../../../test/helpers/pullsPane';
+import { PULLS_PANE, installPullsPaneMocks, prDetail, pullItem, pullRowKey, pullsProject, pullsSnapshot, resetPullsPane } from '../../../test/helpers/pullsPane';
+import { applyPRReviewUpdated } from '../../stores/eventsPRReview';
 
 function mountPane() {
   return render(PullsPane, { paneId: PULLS_PANE });
@@ -221,5 +222,46 @@ describe('the pinned review', () => {
     expect(selectPR(PULLS_PANE, pullRowKey(6))).toBe(true);
     await waitFor(() => expect(diff.mock.calls.length).toBe(calls + 1));
     expect(diff.mock.calls.at(-1)?.at(-1)).toBe(false);
+  });
+});
+
+describe('a retained review off screen', () => {
+  // A review the page keeps for a step back holds no conflict permit while
+  // it is not on screen: a frame for it computes no merge nobody sees.
+  it('reads no conflicts while its PR is not shown, and catches up when shown again', async () => {
+    installPullsPaneMocks();
+    const conflicts = getBindingMock('GetPRMergeConflicts')!;
+    const frame = (headSHA: string, seq: number) => applyPRReviewUpdated({
+      prKey: 'github:owner/repo:5', detail: { ...prDetail(5), headSHA }, threads: [], headSHA, seq,
+    });
+    const view = mountPane();
+    await rowsListed(view);
+    await fireEvent.click(rowOf(view, 5).querySelector('button')!);
+    await fireEvent.click(await waitFor(() => view.getByRole('button', { name: 'View conflicts' })));
+    await waitFor(() => expect(view.getByTestId('review-conflicts-empty')).toBeInTheDocument());
+    expect(conflicts).toHaveBeenCalledTimes(1);
+
+    // Another MR selected: PR 5's state is retained, its surface is not.
+    await fireEvent.click(rowOf(view, 6).querySelector('button')!);
+    await waitFor(() => expect(selectedPR(PULLS_PANE)?.key).toBe(pullRowKey(6)));
+    frame('sha-5b', 10);
+    await waitFor(() => expect(view.getByTestId('review-pane')).toBeInTheDocument());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(conflicts).toHaveBeenCalledTimes(1);
+
+    // Shown again: the snapshot moved meanwhile, so it reads.
+    await fireEvent.click(rowOf(view, 5).querySelector('button')!);
+    await waitFor(() => expect(conflicts).toHaveBeenCalledTimes(2));
+    expect((conflicts.mock.calls[1][2] as { headSHA: string }).headSHA).toBe('sha-5b');
+
+    // The Pipelines tab hides it the same way.
+    await fireEvent.click(view.getByRole('radio', { name: 'Pipelines' }));
+    await waitFor(() => expect(view.queryByTestId('review-pane')).toBeNull());
+    frame('sha-5c', 11);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(conflicts).toHaveBeenCalledTimes(2);
+    await fireEvent.click(view.getByRole('radio', { name: 'Merge requests' }));
+    await waitFor(() => expect(conflicts).toHaveBeenCalledTimes(3));
+    expect((conflicts.mock.calls[2][2] as { headSHA: string }).headSHA).toBe('sha-5c');
   });
 });
