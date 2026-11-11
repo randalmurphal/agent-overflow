@@ -3,22 +3,34 @@
 // source finds every match in document order; this owns the session.
 //
 // A query scans the whole view and the count grows as the scan goes
-// (`pending` until it ends). The first match at or below the reading
-// position becomes current as soon as the scan reaches it (the last match
-// when none is below), and the view moves only when it is off screen.
-// Steps wrap once the scan is done and always move; a step taken while a
-// scan runs is still current when it ends. A content change in
-// the same view (a commit, a filter, a revision, a live log growing)
-// rescans in place: the old matches stay until the new ones are in, the
-// current match is kept when it is still there, and when it is gone the
-// first surviving match after it (else the last before it) is current. A
-// rescan never scrolls on its own: the view moves only for an explicit
-// reveal (a new query's first match, a step), which stays outstanding
-// across rescans and restarts until the host completes it, its match is
-// gone, or a newer query, step or close replaces it. A view change starts over. Only the latest scan applies;
-// a newer query, a rescan or a close stops the one running. A failed scan
-// is the result's `error`. DOM work (painting, scrolling, expanding)
-// belongs to the host.
+// (`pending` until it ends). Steps wrap once the scan is done. A content
+// change in the same view (a commit, a filter, a revision, a live log
+// growing) rescans in place; one that lands while a query still scans
+// restarts it. A view change starts over. Only the latest scan applies; a
+// newer query, a rescan or a close stops the one running. A failed scan
+// is the result's `error`. DOM work (painting, scrolling, expanding,
+// shifting a clipped line sideways) belongs to the host.
+//
+// The contract is three facts, each with its own rules:
+//
+// (a) `selected`, the identity of the current match. Changed only by a new
+//     query (its first match at or below the reading position, else its
+//     last), a step, or its match disappearing (the first surviving match
+//     after it, else the last before it, else none). Never by a restart, a
+//     background recount or a completed reveal.
+// (b) `owedReveal`, the match to bring into view. Set only by a new query
+//     (its first match, once chosen) or a step. It survives restarts,
+//     content changes and a running host reveal; it is served when its
+//     match is selected and published, by a scan that started after the
+//     last host answer that it could not show it yet, and completes once,
+//     when the host answers that the match is in view. A content change
+//     that ends while the host's reveal runs is served when the reveal
+//     settles. Dropped by a newer query, step or close, or by its match
+//     disappearing.
+// (c) The line the host shifts sideways, derived by the host from (a).
+//
+// `hits` and the current index are a projection of the latest scan and
+// never the source of (a) or (b).
 
 import { paneFindReads, type PaneFindProvider, type PaneFindResult } from './paneFind.svelte';
 import { errString } from '../utils/errors';
@@ -72,23 +84,26 @@ export interface ReviewFind<H extends ReviewFindMatch> extends PaneFindProvider 
   rescope(): void;
   /** The current matches, for tests and the host. */
   readonly hits: readonly H[];
+  /** The identity of the current match; null for none. */
+  readonly selected: string | null;
   /** Whether an explicit reveal of this match is outstanding. */
   wants(identity: string): boolean;
 }
 
-// The explicit reveal outstanding: its match (null until a new query
-// chooses its first one), whether it was a step, and what it waits for:
-// the host's reveal running (`inFlight`), or a scan started after the
-// host changed the content (one numbered above `after`).
-interface PendingReveal {
+// The reveal owed: its match (null until a new query chooses its first),
+// whether a step asked for it, whether the host's reveal is running and a
+// scan started after it ended meanwhile (`seen`), and the scan number a
+// later answer must come from (`barrier`).
+interface OwedReveal {
   identity: string | null;
   force: boolean;
-  inFlight: boolean;
-  after: number;
+  running: boolean;
+  seen: boolean;
+  barrier: number;
 }
 
-function pendingReveal(identity: string | null, force: boolean): PendingReveal {
-  return { identity, force, inFlight: false, after: -1 };
+function owe(identity: string | null, force: boolean): OwedReveal {
+  return { identity, force, running: false, seen: false, barrier: -1 };
 }
 
 type Mode = 'query' | 'refresh';
@@ -111,15 +126,17 @@ function nearestSurviving<H extends ReviewFindMatch>(before: readonly H[], at: n
 export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost<H>, noun: () => string): ReviewFind<H> {
   let query = '';
   let hits = $state.raw<H[]>([]);
-  let current = $state(-1);
+  let selected = $state<string | null>(null);
+  const current = $derived(selected === null ? -1 : hits.findIndex((hit) => hit.identity === selected));
   let pending = $state(false);
   let capped = $state(false);
   let error = $state<string | null>(null);
   let seq = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
-  // Set only by a query and a step; cleared only by completing, by its
-  // match being gone, or by a newer query, step or close.
-  let want: PendingReveal | null = null;
+  let owedReveal: OwedReveal | null = null;
+  // The latest published matches holding `selected`, for the nearest
+  // survivor when it disappears.
+  let basis: readonly H[] = [];
 
   const result: PaneFindResult = {
     get count() { return hits.length; },
@@ -134,54 +151,59 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
     host.paint(query, hits[current] ?? null);
   }
 
-  // Runs the outstanding reveal when its match is current, from scan
-  // number `scanned` (a step passes the latest).
-  function revealWanted(scanned: number): void {
-    const w = want;
+  function publishHits(next: H[]): void {
+    hits = next;
+    if (selected !== null && next.some((hit) => hit.identity === selected)) basis = next;
+  }
+
+  function select(identity: string | null): void {
+    selected = identity;
+    if (identity !== null) basis = hits;
+  }
+
+  // Serves the owed reveal for scan number `scanned` (a step or a settled
+  // host reveal passes Infinity).
+  function serve(scanned: number): void {
+    const owed = owedReveal;
+    if (!owed || owed.identity === null || owed.identity !== selected) return;
+    if (owed.running) {
+      if (scanned > owed.barrier) owed.seen = true;
+      return;
+    }
     const hit = hits[current];
-    if (!w || w.inFlight || !hit || hit.identity !== w.identity || scanned <= w.after) return;
-    const out = host.reveal(hit, w.force);
+    if (!hit || scanned <= owed.barrier) return;
+    // A scan started from here on reads what this reveal may change.
+    owed.barrier = seq;
+    const out = host.reveal(hit, owed.force);
     if (out === true) {
-      want = null;
+      if (owedReveal === owed) owedReveal = null;
       return;
     }
-    if (out === false) {
-      w.after = seq;
-      return;
-    }
-    w.inFlight = true;
+    if (out === false) return;
+    owed.running = true;
+    owed.seen = false;
     void out.then((done) => {
-      if (want !== w) return;
-      w.inFlight = false;
+      if (owedReveal !== owed) return;
+      owed.running = false;
       if (done) {
-        want = null;
+        owedReveal = null;
         return;
       }
-      // A scan started from now on retries.
-      w.after = seq;
+      if (owed.seen) {
+        owed.seen = false;
+        serve(Infinity);
+      }
     }, (err: unknown) => {
-      if (want !== w) return;
-      want = null;
+      if (owedReveal !== owed) return;
+      owedReveal = null;
       error = errString(err);
     });
   }
 
-  // A scan's matches are in: the outstanding reveal's match, or null when
-  // it is gone (the reveal is dropped) or not chosen yet.
-  function wantedIndex(found: readonly H[], final: boolean): number {
-    const w = want;
-    if (!w || w.identity === null) return -1;
-    const at = found.findIndex((hit) => hit.identity === w.identity);
-    if (at < 0 && final) want = null;
-    return at;
-  }
-
   // A new query's first match is chosen: it is the reveal's match.
-  function chooseFirst(at: number, scanned: number): void {
-    current = at;
-    if (want && want.identity === null) want.identity = hits[at].identity;
-    paint();
-    revealWanted(scanned);
+  function chooseFirst(at: number): void {
+    select(hits[at].identity);
+    if (owedReveal && owedReveal.identity === null) owedReveal.identity = selected;
   }
 
   function stop(): void {
@@ -190,25 +212,26 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
     timer = null;
   }
 
-  function reset(): void {
-    hits = [];
-    current = -1;
-    capped = false;
-    error = null;
-  }
-
   function start(mode: Mode): void {
     stop();
     const mine = seq;
     const source = host.source();
     if (!query || !source) {
       pending = false;
-      if (mode === 'query') reset();
+      if (mode === 'query') {
+        hits = [];
+        capped = false;
+        error = null;
+      }
       paint();
       return;
     }
     if (mode === 'query') {
-      reset();
+      // A restart keeps `selected` and the owed reveal; the matches are
+      // the new scan's as it publishes them.
+      hits = [];
+      capped = false;
+      error = null;
       pending = true;
       paint();
     }
@@ -235,16 +258,13 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
     const publish = () => {
       if (mode !== 'query' || found.length === shown) return;
       shown = found.length;
-      hits = found.slice();
-      if (current < 0) {
-        // A restart shows the match its reveal waits for, once found.
-        const at = want && want.identity !== null ? wantedIndex(found, false) : found.findIndex(below);
-        if (at >= 0) {
-          chooseFirst(at, mine);
-          return;
-        }
+      publishHits(found.slice());
+      if (selected === null) {
+        const at = found.findIndex(below);
+        if (at >= 0) chooseFirst(at);
       }
       paint();
+      serve(mine);
     };
     let wasCapped: boolean | null;
     try {
@@ -260,7 +280,6 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
     } catch (err) {
       if (!live()) return;
       hits = [];
-      current = -1;
       capped = false;
       pending = false;
       error = errString(err);
@@ -269,43 +288,34 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
     }
     if (!live()) return;
     if (wasCapped === null) return;
-    // What is current now, after any step taken while the scan ran.
-    const keep = mode === 'refresh' ? (hits[current]?.identity ?? null) : null;
-    const before = hits;
-    const was = current;
+    const before = basis;
     error = null;
     capped = wasCapped;
     pending = false;
-    hits = found;
-    if (mode === 'query') {
-      if (current >= 0) {
-        paint();
-        revealWanted(mine);
-        return;
+    publishHits(found);
+    if (selected === null) {
+      // Only a new query that has not chosen yet picks a match here.
+      if (owedReveal && owedReveal.identity === null) {
+        if (found.length === 0) owedReveal = null;
+        else {
+          const at = found.findIndex(below);
+          chooseFirst(at >= 0 ? at : found.length - 1);
+        }
       }
-      const wanted = wantedIndex(found, true);
-      const at = wanted >= 0 ? wanted : found.findIndex(below);
-      if (found.length > 0) chooseFirst(at >= 0 ? at : found.length - 1, mine);
-      else {
-        want = null;
-        paint();
-      }
-      return;
-    }
-    const kept = keep === null ? -1 : found.findIndex((hit) => hit.identity === keep);
-    if (kept >= 0) {
-      current = kept;
       paint();
-      revealWanted(mine);
+      serve(mine);
       return;
     }
-    // The current match is gone: the nearest surviving one is current,
-    // painted where it is and not brought on screen.
-    wantedIndex(found, true);
-    const near = keep === null ? -1 : nearestSurviving(before, was, found);
-    const at = near >= 0 ? near : found.findIndex(below);
-    current = at >= 0 ? at : found.length - 1;
+    if (current < 0) {
+      // The current match is gone: its reveal with it, and the nearest
+      // survivor is current, painted where it is.
+      const gone = selected;
+      if (owedReveal?.identity === gone) owedReveal = null;
+      const near = nearestSurviving(before, before.findIndex((hit) => hit.identity === gone), found);
+      select(near >= 0 ? found[near].identity : null);
+    }
     paint();
+    serve(mine);
   }
 
   function step(delta: 1 | -1): void {
@@ -317,21 +327,28 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
       if (pending) return;
       next = (next + count) % count;
     }
-    current = next;
-    want = pendingReveal(hits[next].identity, true);
+    select(hits[next].identity);
+    owedReveal = owe(selected, true);
     paint();
-    revealWanted(seq);
+    serve(Infinity);
+  }
+
+  function newQuery(): void {
+    select(null);
+    basis = [];
+    owedReveal = owe(null, false);
+    start('query');
   }
 
   return {
     get noun() { return noun(); },
     result,
     get hits() { return hits; },
-    wants: (identity) => want?.identity === identity,
+    get selected() { return selected; },
+    wants: (identity) => owedReveal?.identity === identity,
     search(next: string): void {
       query = next.trim();
-      want = pendingReveal(null, false);
-      start('query');
+      newQuery();
     },
     next: () => step(1),
     previous: () => step(-1),
@@ -339,14 +356,18 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
       if (query) start(pending ? 'query' : 'refresh');
     },
     rescope(): void {
-      want = pendingReveal(null, false);
-      if (query) start('query');
+      if (query) newQuery();
+      else owedReveal = null;
     },
     clear(): void {
       stop();
       query = '';
-      want = null;
-      reset();
+      select(null);
+      basis = [];
+      owedReveal = null;
+      hits = [];
+      capped = false;
+      error = null;
       pending = false;
       host.paint('', null);
     },

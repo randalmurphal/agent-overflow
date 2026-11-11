@@ -130,36 +130,43 @@ describe('review find', () => {
     expect(reveals).toEqual([['f1', false], ['f1', false]]);
   });
 
-  it('a reveal waiting on a file that loads survives the restarts and completes once', async () => {
-    const s = source(() => ['g1', 'g2', 'g3'], { slice: 1 });
+  it.each(['the rescan ends first', 'the reveal settles first'] as const)('a reveal waiting on a file that loads is served once its rescan and its settle are both in: %s', async (order) => {
+    let items = ['g1', 'g2'];
+    const s = source(() => items);
     const first = deferred();
+    let steps = 0;
     const { h, reveals } = host(() => s.src, {
+      // The step's first reveal is the one still running.
       reveal: (hit, force) => {
         reveals.push([hit.identity, force]);
-        return reveals.length === 1 ? first.promise : true;
+        return force && ++steps === 1 ? first.promise : true;
       },
     });
     const find = createReviewFind(h, () => 'diff');
     find.search('g');
     await flush();
-    expect(reveals).toEqual([['g1', false]]);
-    expect(find.wants('g1')).toBe(true);
-    // The file starts loading: a restart while the reveal runs does not
-    // start a second one.
-    find.refresh();
-    await s.step();
-    expect(reveals).toEqual([['g1', false]]);
-    // The reveal could not show it yet; the load's rescan does.
-    first.resolve(false);
-    await flush();
-    expect(find.wants('g1')).toBe(true);
-    find.refresh();
-    await s.step();
-    expect(reveals).toEqual([['g1', false], ['g1', false]]);
-    expect(find.wants('g1')).toBe(false);
-    find.refresh();
-    await s.release();
-    expect(reveals).toEqual([['g1', false], ['g1', false]]);
+    find.next();
+    reveals.length = 0;
+    reveals.push(['g2', true]);
+    expect(find.wants('g2')).toBe(true);
+    // The file loads: the content changes and one rescan runs; the host
+    // answers that it could not show the match yet.
+    items = ['g0', 'g1', 'g2'];
+    if (order === 'the rescan ends first') {
+      find.refresh();
+      await flush();
+      expect(reveals).toEqual([['g2', true]]);
+      first.resolve(false);
+      await flush();
+    } else {
+      first.resolve(false);
+      await flush();
+      expect(reveals).toEqual([['g2', true]]);
+      find.refresh();
+      await flush();
+    }
+    expect(reveals).toEqual([['g2', true], ['g2', true]]);
+    expect([find.selected, find.wants('g2')]).toEqual(['g2', false]);
   });
 
   it('a step whose reveal is running when a live log grows reveals once', async () => {
@@ -334,6 +341,9 @@ describe('review find', () => {
     await s.release();
     expect([find.result.count, find.result.pending]).toEqual([4, false]);
     expect(reveals).toEqual([['q1', false]]);
+    // The restart keeps the match that was current, though q0 now comes
+    // first at the reading position.
+    expect([find.selected, find.result.current]).toEqual(['q1', 1]);
     // A new query reveals its first match again.
     find.search('q3');
     await flush();
