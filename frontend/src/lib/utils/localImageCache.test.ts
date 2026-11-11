@@ -64,8 +64,8 @@ describe('the local image cache', () => {
     await acquireLocalImage('gpu', '/workspace/shot.png', '/workspace', 720).value;
     expect(rpc.mock.calls.map((call) => call[2])).toEqual([720, 1440, 0]);
     expect([small.width, large.width, original.width]).toEqual([720, 1440, 2000]);
-    expect(localImageCacheKey('gpu', '/workspace/shot.png', '/workspace'))
-      .toBe(JSON.stringify(['local', 'gpu', '/workspace', '/workspace/shot.png']));
+    expect(localImageCacheKey('gpu', 'shots/a.png', '/workspace'))
+      .toBe(JSON.stringify(['local', 'gpu', '/workspace', 'shots/a.png']));
   });
 
   it("carries the backend's description of what it served", async () => {
@@ -78,12 +78,48 @@ describe('the local image cache', () => {
     });
   });
 
-  it('keys by computer and workspace: the same path elsewhere is another file', async () => {
+  it('keys by computer: the same path on another machine is another file', async () => {
     const rpc = mockLocalImage();
     await acquireLocalImage('gpu', '/workspace/shot.png', '/workspace', 720).value;
     await acquireLocalImage('laptop', '/workspace/shot.png', '/workspace', 720).value;
-    await acquireLocalImage('gpu', '/workspace/shot.png', '/other', 720).value;
-    expect(rpc).toHaveBeenCalledTimes(3);
+    expect(rpc).toHaveBeenCalledTimes(2);
+  });
+
+  // A thread's workspace moves under mounted rows when its agent enters a
+  // worktree. A path the backend resolves without the workspace names the
+  // same file afterwards, so the image keeps its identity and its bytes.
+  it.each([
+    ['/shots/overview.png'],
+    ['~/shots/overview.png'],
+    ['~'],
+  ])('keeps one entry for %s when the workspace moves', async (path) => {
+    const rpc = mockLocalImage();
+    const before = acquireLocalImage('gpu', path, '/repo', 720);
+    await before.value;
+    const after = acquireLocalImage('gpu', path, '/repo/.claude/worktrees/build', 720);
+    expect(after.settled).toBe(before.settled);
+    expect(after.settled).toBeDefined();
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(localImageCacheKey('gpu', path, '/repo/.claude/worktrees/build'))
+      .toBe(localImageCacheKey('gpu', path, '/repo'));
+    before.release();
+    after.release();
+  });
+
+  // Joined to the workspace by the backend, so another workspace is another
+  // file. `~user` and a drive path are not expanded there and stay joined.
+  it.each([
+    ['shots/overview.png'],
+    ['./overview.png'],
+    ['~user/overview.png'],
+    ['C:/shots/overview.png'],
+  ])('keeps %s in another workspace as another file', async (path) => {
+    const rpc = mockLocalImage();
+    await acquireLocalImage('gpu', path, '/repo', 720).value;
+    await acquireLocalImage('gpu', path, '/repo/.claude/worktrees/build', 720).value;
+    expect(rpc).toHaveBeenCalledTimes(2);
+    expect(localImageCacheKey('gpu', path, '/repo/.claude/worktrees/build'))
+      .not.toBe(localImageCacheKey('gpu', path, '/repo'));
   });
 
   it('serves SVG as a data URL, never a same-origin blob URL', async () => {
