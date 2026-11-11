@@ -1,13 +1,17 @@
 // The Merge requests tab's projections of the list pump's snapshot: rows
-// as PullRowView, the groups after the filters and the sort, the project
-// choices and failures. Pure, so the page store derives them and the
-// tests pin each rule.
+// as PullRowView, the groups after the filters, the find query and the
+// sort, the project choices and failures; and the Pipelines tab's find
+// match. Pure, so the page stores derive them and the tests pin each rule.
+// A find query is a needle from `utils/findMatch.ts`; '' admits every row.
 
 import type { PRListItem, PRListSnapshot, ProjectPRList } from './bindings';
 import type { MRFilters, PullsSort } from './pullsPageFilters.svelte';
-import type { PullRowView } from '../components/pulls/pullRowView';
+import { pullNumberLabel, type PullRowView } from '../components/pulls/pullRowView';
+import type { PipelineRowView } from '../components/pulls/pipelineRowView';
 import type { BackendKey } from '../transport/backendKey';
 import { TransportError } from '../transport/wsClient';
+import { ciStatusText } from '../utils/ciStatus';
+import { textsMatchNeedle } from '../utils/findMatch';
 import { forgeFailureFrom, type ForgeFailure } from '../utils/forgeFailure';
 import { relativeTime } from '../utils/format';
 import { prKey, prRefFromWire, type PRRef } from '../utils/prReference';
@@ -69,8 +73,47 @@ export function listedRows(snapshot: PRListSnapshot | null, backend: BackendKey)
   return out;
 }
 
-function admits(filters: Pick<MRFilters, 'filter' | 'projects'>, row: PullsListedRow): boolean {
+/** The filters a row passes: the toolbar's, and the find needle. */
+export type PullsRowFilters = Pick<MRFilters, 'filter' | 'projects'> & { needle: string };
+
+/** A merge request row matches `needle` on what the row shows or names:
+ * its title, number (`#123`, GitLab's `!123`, `123`), source branch,
+ * author (name, login, or "you"), project and state label. */
+export function pullRowMatches(row: PullsListedRow, needle: string): boolean {
+  const { item, pr, project } = row;
+  return textsMatchNeedle(needle, [
+    item.title,
+    pullNumberLabel(pr.forge, pr.number),
+    `#${pr.number}`,
+    item.headRefName,
+    item.author.name,
+    item.author.login,
+    item.viewerIsAuthor ? 'you' : '',
+    project.name,
+    pullStateText(item.state, item.reason),
+  ]);
+}
+
+/** A pipeline row matches `needle` on what the row shows: its id (`#9001`),
+ * ref (or `!N` for a merge request ref), workflow name, commit title, a
+ * prefix of its commit sha, its status in words and its project. */
+export function pipelineRowMatches(row: PipelineRowView, needle: string): boolean {
+  if (!needle) return true;
+  if (row.sha.toLowerCase().startsWith(needle)) return true;
+  return textsMatchNeedle(needle, [
+    `#${row.id}`,
+    row.ref,
+    row.refKind === 'merge_request' && row.mrNumber > 0 ? pullNumberLabel(row.forge, row.mrNumber) : '',
+    row.name,
+    row.title,
+    ciStatusText(row.status),
+    row.projectName,
+  ]);
+}
+
+function admits(filters: PullsRowFilters, row: PullsListedRow): boolean {
   if (filters.projects.length > 0 && !filters.projects.includes(row.project.projectId)) return false;
+  if (!pullRowMatches(row, filters.needle)) return false;
   switch (filters.filter) {
     case 'needs_you':
       return row.item.group === 'needs_you';
@@ -129,10 +172,10 @@ function repoOf(item: PRListItem): string {
   return `${item.ref.Host}/${item.ref.Namespace}/${item.ref.Repo}`;
 }
 
-/** The rows the filter and project picker admit, each PR once, unsorted.
- * A project picked in the filter lists its rows even where another
- * project lists them too. */
-function admittedRows(snapshot: PRListSnapshot | null, backend: BackendKey, filters: Pick<MRFilters, 'filter' | 'projects'>): PullsListedRow[] {
+/** The rows the filter, project picker and find needle admit, each PR
+ * once, unsorted. A project picked in the filter lists its rows even where
+ * another project lists them too. */
+function admittedRows(snapshot: PRListSnapshot | null, backend: BackendKey, filters: PullsRowFilters): PullsListedRow[] {
   const admitted: PullsListedRow[] = [];
   const seen = new Set<string>();
   for (const project of snapshot?.projects ?? []) {
@@ -150,15 +193,15 @@ function admittedRows(snapshot: PRListSnapshot | null, backend: BackendKey, filt
 }
 
 /** The number of rows the Needs you filter lists for the picked
- * `projects`, whichever filter and sort are shown. */
-export function needsYouCount(snapshot: PRListSnapshot | null, backend: BackendKey, projects: readonly string[]): number {
-  return admittedRows(snapshot, backend, { filter: 'needs_you', projects }).length;
+ * `projects` and the find needle, whichever filter and sort are shown. */
+export function needsYouCount(snapshot: PRListSnapshot | null, backend: BackendKey, projects: readonly string[], needle = ''): number {
+  return admittedRows(snapshot, backend, { filter: 'needs_you', projects, needle }).length;
 }
 
-/** The rows the filters admit, grouped needs-you first, each group in the
- * remembered sort across projects. */
-export function groupRows(snapshot: PRListSnapshot | null, backend: BackendKey, filters: MRFilters): PullsGroup[] {
-  const admitted = admittedRows(snapshot, backend, filters);
+/** The rows the filters and the find needle admit, grouped needs-you
+ * first, each group in the remembered sort across projects. */
+export function groupRows(snapshot: PRListSnapshot | null, backend: BackendKey, filters: MRFilters, needle = ''): PullsGroup[] {
+  const admitted = admittedRows(snapshot, backend, { filter: filters.filter, projects: filters.projects, needle });
   admitted.sort((a, b) => {
     const ga = a.item.group === 'needs_you';
     const gb = b.item.group === 'needs_you';

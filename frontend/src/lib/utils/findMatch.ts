@@ -1,21 +1,17 @@
-// The matching rule of every in-pane find: the query trimmed, matched
-// literally and case-insensitively, matches counted left to right without
-// overlap. Folding is per character, so text folds the same whether it is
-// read whole or node by node: a character takes its lowercase form when
-// that is one character of the same UTF-16 length, else it is kept. The
-// CI log search folds the same way on the backend (cilog.FoldForFind).
+// The match rule of every find and row filter: the query trimmed, matched
+// literally as a substring, with ASCII letters folded to lower case and
+// every other character compared as is; matches are counted left to right
+// without overlap. Folding keeps the text's length, so an offset in folded
+// text is an offset in the original (findHighlights.ts paints from it), and
+// text folds the same whole or node by node. Thread find's SQLite LOWER and
+// the CI log search (cilog.FoldForFind) fold the same; the vectors in
+// src/test/fixtures/findVectors.json, read by both tests, hold them to it.
 
-const NON_ASCII = /[^\p{ASCII}]/u;
+const ASCII_UPPER = /[A-Z]/g;
 
 /** `text` folded for matching; the same length as `text`. */
 export function foldFindText(text: string): string {
-  if (!NON_ASCII.test(text)) return text.toLowerCase();
-  let out = '';
-  for (const char of text) {
-    const lower = char.toLowerCase();
-    out += lower.length === char.length && [...lower].length === 1 ? lower : char;
-  }
-  return out;
+  return text.replace(ASCII_UPPER, (char) => String.fromCharCode(char.charCodeAt(0) + 32));
 }
 
 /** The folded needle for a query; '' when the query is blank. */
@@ -34,4 +30,14 @@ export function countFindMatches(folded: string, needle: string): number {
   let count = 0;
   forEachFindMatch(folded, needle, () => { count += 1; });
   return count;
+}
+
+/** True when any of `texts` contains `needle` (from `findNeedle`). An empty
+ * needle matches everything. */
+export function textsMatchNeedle(needle: string, texts: readonly (string | null | undefined)[]): boolean {
+  if (!needle) return true;
+  for (const text of texts) {
+    if (text && foldFindText(text).includes(needle)) return true;
+  }
+  return false;
 }

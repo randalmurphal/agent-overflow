@@ -31,6 +31,7 @@
   class="relative flex items-stretch border-b border-border-subtle transition-colors {selected ? 'bg-accent/8' : 'hover:bg-surface-1/60'}"
   data-testid="pipeline-row"
   data-pipeline-key={row.key}
+  data-list-row-key={row.key}
   data-selected={selected ? 'true' : undefined}
 >
   {#if selected}

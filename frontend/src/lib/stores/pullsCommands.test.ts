@@ -46,6 +46,8 @@ describe('pulls commands', () => {
     expect(evaluateWhen(when, ctx({ pullsPaneFocused: false }).flags)).toBe(false);
     // Settings or a dialog above the pane takes Escape and Back first.
     expect(evaluateWhen(when, ctx({ overlayOpen: true }).flags)).toBe(false);
+    // An open find in the target region closes first.
+    expect(evaluateWhen(when, ctx({ paneFindOpen: true }).flags)).toBe(false);
   });
 
   it('pulls.escape runs the pane\'s back handler, and the handler can be restored', () => {

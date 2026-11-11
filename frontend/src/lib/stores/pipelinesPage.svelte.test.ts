@@ -19,12 +19,14 @@ import {
   pipelinesError,
   pipelinesLoading,
   pipelinesProjectErrors,
+  pipelinesQuery,
   pipelinesReading,
   pipelinesRows,
   refreshPipelinesPage,
   selectedPipeline,
   selectPipeline,
   setPipelinesFilters,
+  setPipelinesQuery,
   setVisiblePipelines,
 } from './pipelinesPage.svelte';
 import { DEFAULT_RETRY } from './entityStore.svelte';
@@ -630,5 +632,36 @@ describe('selection', () => {
     detachPipelinesPage(PANE);
     await settle();
     expect(unsubscribe).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('the list find query', () => {
+  it('narrows the rows per pane over the ref kind filter, keeps a hidden selection, and resets on reattach', async () => {
+    stageBackend();
+    await grantBackendScopes('laptop', ['git:operate']);
+    installMocks({ p1: [summary(1), summary(3, { refKind: 'tag', ref: 'v1' })], p2: [summary(2, { ref: 'release-train' })] });
+    attachPipelinesPage(PANE, 'laptop');
+    attachPipelinesPage('tools-other', 'laptop');
+    await settle();
+    setPipelinesQuery(PANE, 'RELEASE');
+    expect(pipelinesQuery(PANE)).toBe('RELEASE');
+    expect(pipelinesRows(PANE).map((row) => row.id)).toEqual(['2']);
+    expect(pipelinesRows('tools-other').map((row) => row.id)).toEqual(['3', '2', '1']);
+    setPipelinesQuery(PANE, 'main');
+    expect(pipelinesRows(PANE).map((row) => row.id)).toEqual(['1']);
+    setPipelinesFilters(PANE, { refKind: 'tag' });
+    expect(pipelinesRows(PANE)).toEqual([]);
+    setPipelinesFilters(PANE, { refKind: '' });
+
+    const key = pipelinesRows('tools-other').find((row) => row.id === '3')!.key;
+    expect(selectPipeline(PANE, key)).toBe(true);
+    expect(pipelinesRows(PANE).map((row) => row.key)).not.toContain(key);
+    expect(selectedPipeline(PANE)?.key).toBe(key);
+
+    detachPipelinesPage(PANE);
+    attachPipelinesPage(PANE, 'laptop');
+    await settle();
+    expect(pipelinesQuery(PANE)).toBe('');
+    expect(pipelinesRows(PANE)).toHaveLength(3);
   });
 });

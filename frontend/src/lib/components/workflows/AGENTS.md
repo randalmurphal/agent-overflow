@@ -17,6 +17,11 @@ context value must remain a getter because the bound element arrives after
 first render. Fail at mount when the provider is absent instead of searching
 ancestors.
 
+Home is the pane's list find region (`workflowsPaneFind.svelte.ts`): its
+find filters home's rows through `stores/workflowsHome.svelte.ts`, which
+is the one source of the groups, the Recent counts and the empty state; a
+run detail or all-clear is the detail region and has no find.
+
 A detail step (run detail, all-clear, a dialog, an armed confirm) reports
 itself through the tool's `toolDetailOpen` probe, which gates
 `workflows.escape`. At home the gate is closed, so Escape and the phone's Back

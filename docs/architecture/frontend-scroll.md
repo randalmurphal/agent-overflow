@@ -1711,7 +1711,9 @@ Find inside one pane (`find.in-pane`, mod+f) is that pane's find bar, never
 the dialog. A pane body registers a provider (`stores/paneFind.svelte.ts`)
 while it is mounted; the command opens the target pane's bar: the focused
 layout pane, or under compact the pane on the thread screen, since opening a
-companion leaves focus on its source. It is disabled for a pane with no
+companion leaves focus on its source. In a pane with find regions it is the
+target region's bar
+([panes guide](../../frontend/src/lib/components/panes/AGENTS.md#find)). It is disabled for a pane with no
 provider or under an overlay (`overlayOpen`, the airspace registry,
 palette included; the palette's own list leaves the palette out through
 `overlayBesidePalette` because its command runs after it closes). Escape

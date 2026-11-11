@@ -64,7 +64,8 @@
   }
 </script>
 
-<div class="rounded-md px-2 py-1.5 hover:bg-surface-2/40" data-testid="workflow-definition-row" data-workflow-id={definition.id}>
+<!-- Focusable by script only: the list find's Enter lands on the first row. -->
+<div class="rounded-md px-2 py-1.5 hover:bg-surface-2/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" tabindex="-1" data-find-row data-testid="workflow-definition-row" data-workflow-id={definition.id}>
   <div class="flex min-w-0 items-baseline gap-2">
     <span class="shrink-0 text-sm text-fg">{definition.name || definition.id}</span>
     {#if definition.scope === 'shared'}

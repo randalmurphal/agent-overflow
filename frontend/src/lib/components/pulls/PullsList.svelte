@@ -14,6 +14,8 @@
     projectErrors: readonly PullsListProjectError[];
     selectedKey: string | null;
     filter: PullsFilter;
+    /** The list find's query; non-empty while it narrows the rows. */
+    query: string;
     /** The remembered sort, as a key: a change scrolls the list to its top. */
     orderKey: string;
     /** No project on the computer has a forge origin. */
@@ -27,7 +29,7 @@
     onRetry: () => void;
   }
 
-  let { groups, projectErrors, selectedKey, filter, orderKey, noProjects, error, loading, retrying, shown, onOpen, onMenu, onRetry }: Props = $props();
+  let { groups, projectErrors, selectedKey, filter, query, orderKey, noProjects, error, loading, retrying, shown, onOpen, onMenu, onRetry }: Props = $props();
 
   const items = $derived(
     pullsListItems(
@@ -43,8 +45,19 @@
   const rowCount = $derived(groups.reduce((sum, group) => sum + group.rows.length, 0));
   const failedLists = $derived(projectErrors.filter((error) => !error.partial).length);
 
+  let body: PullsListBody<PullRowView> | undefined = $state(undefined);
+
+  export function focusFirstRow(): Promise<boolean> {
+    return body?.focusFirstRow() ?? Promise.resolve(false);
+  }
+
+  export function scroller(): HTMLElement | null {
+    return body?.scroller() ?? null;
+  }
+
   const emptyText = $derived.by(() => {
     if (noProjects) return 'No project on this computer has a GitHub or GitLab origin.';
+    if (query.trim()) return `No merge requests match "${query.trim()}".`;
     switch (filter) {
       case 'needs_you':
         return 'Nothing needs you right now.';
@@ -58,7 +71,7 @@
   });
 </script>
 
-<PullsListBody testid="pulls-list" {items} rowEstimatePx={84} {shown} {orderKey} {onRetry} {retrying}>
+<PullsListBody bind:this={body} testid="pulls-list" {items} rowEstimatePx={84} {shown} {orderKey} {onRetry} {retrying}>
   {#snippet row(view: PullRowView)}
     <PullRow row={view} selected={selectedKey === view.key} {onOpen} {onMenu} />
   {/snippet}

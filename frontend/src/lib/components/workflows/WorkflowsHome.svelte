@@ -5,43 +5,28 @@
 
   import WorkflowsHomeControls from './WorkflowsHomeControls.svelte';
   import WorkflowProjectGroup from './WorkflowProjectGroup.svelte';
-  import { getProjectLabelText, getProjects } from '../../stores/projects.svelte';
-  import {
-    getWorkflowAutomations,
-    getWorkflowCatalog,
-    getWorkflowRuns,
-  } from '../../stores/workflowRuns.svelte';
-  import { groupWorkflowRunsByProject } from '../../stores/workflowData';
-  import { getWorkflowProjectFilter } from '../../stores/workflowsOverlay.svelte';
+  import { getWorkflowsHomeGroups, getWorkflowsHomeQuery } from '../../stores/workflowsHome.svelte';
 
-  let projectNames = $derived(
-    new Map(
-      getProjects().map(
-        (entry) => [entry.project.id, getProjectLabelText(entry.project.id)] as const,
-      ),
-    ),
-  );
-  let groups = $derived(
-    groupWorkflowRunsByProject(getWorkflowRuns(), projectNames, getWorkflowProjectFilter())
-      .filter((group) =>
-        group.attention.length > 0
-        || group.running.length > 0
-        || group.recent.length > 0
-        || (getWorkflowCatalog(group.projectId)?.workflows.length ?? 0) > 0
-        || getWorkflowAutomations(group.projectId).length > 0),
-  );
+  // The groups after the project filter and the list find's query
+  // (stores/workflowsHome.svelte.ts).
+  let groups = $derived(getWorkflowsHomeGroups());
+  let query = $derived(getWorkflowsHomeQuery().trim());
 </script>
 
 <WorkflowsHomeControls />
 
-{#if groups.length === 0}
+{#if groups.length === 0 && query}
+  <div class="flex flex-col items-center gap-3 px-4 py-16 text-center" data-testid="workflows-no-match">
+    <p class="text-sm text-fg-muted">No workflows match "{query}".</p>
+  </div>
+{:else if groups.length === 0}
   <div class="flex flex-col items-center gap-3 px-4 py-16 text-center" data-testid="workflows-empty">
     <p class="text-sm text-fg-muted">No workflows yet. A workflow is a chain of phases you can start, schedule, or hand to an agent.</p>
   </div>
 {:else}
   <div class="divide-y divide-border-subtle" data-testid="workflows-home">
     {#each groups as group (group.projectId)}
-      <WorkflowProjectGroup {group} />
+      <WorkflowProjectGroup {group} filtering={query !== ''} />
     {/each}
   </div>
 {/if}
