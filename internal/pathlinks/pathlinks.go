@@ -37,9 +37,11 @@ package pathlinks
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -48,6 +50,53 @@ import (
 // frontend's getPathRefsFromMeta reads the same key — keep them in
 // sync.
 const MetaKey = "pathRefs"
+
+// WorkspaceMetaKey is the JSON object key under which a row records the
+// workspace its prose was written in. A relative image destination in that
+// prose resolves against it, so it names the same file after the thread
+// moves to another checkout. The frontend's getAuthoredWorkspaceFromMeta
+// reads the same key.
+const WorkspaceMetaKey = "authoredWorkspace"
+
+var markdownImageRe = regexp.MustCompile(`!\[[^\]]*\][(\[]`)
+
+// HasMarkdownImage reports whether text holds a markdown image, inline or
+// reference style. It does not judge the destination: which destinations
+// are files, and which of those resolve against a workspace, is the
+// renderer's rule.
+func HasMarkdownImage(text string) bool {
+	return strings.Contains(text, "![") && markdownImageRe.MatchString(text)
+}
+
+// RecordWorkspace returns meta, a JSON object or empty, with
+// WorkspaceMetaKey set to workspacePath when any of texts holds a markdown
+// image, and meta unchanged otherwise. Other keys are kept as they are.
+// Centralised so triage and discussion record the same shape under the
+// same condition.
+func RecordWorkspace(meta, workspacePath string, texts ...string) (string, error) {
+	if !slices.ContainsFunc(texts, HasMarkdownImage) {
+		return meta, nil
+	}
+	obj := map[string]json.RawMessage{}
+	if strings.TrimSpace(meta) != "" {
+		if err := json.Unmarshal([]byte(meta), &obj); err != nil {
+			return "", fmt.Errorf("meta is not a JSON object: %w", err)
+		}
+	}
+	encoded, err := json.Marshal(workspacePath)
+	if err != nil {
+		return "", err
+	}
+	if obj == nil {
+		obj = map[string]json.RawMessage{}
+	}
+	obj[WorkspaceMetaKey] = encoded
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
 
 // MarshalRefsJSON returns `{"pathRefs":[...]}` for the given refs.
 // Centralised so triage and discussion can't drift on the wire shape

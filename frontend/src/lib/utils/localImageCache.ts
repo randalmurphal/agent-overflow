@@ -1,7 +1,7 @@
-// One fetch per (computer, workspace, path, tier) for the `![x](/abs/path.png)`
-// an agent writes, shared by every mount of that markdown: the thread and
-// the side chat forked from it, and a remount of the row after a scroll
-// away and back (mediaBlobCache.ts owns retention, the byte budget and
+// One fetch per (computer, file, tier) for the `![x](/abs/path.png)` an
+// agent writes, shared by every mount of that markdown: the thread and the
+// side chat forked from it, and a remount of the row after a scroll away
+// and back (mediaBlobCache.ts owns retention, the byte budget and
 // revocation).
 //
 // The bytes come from the thread's computer: GetLocalImage, pinned by the
@@ -39,7 +39,26 @@ export interface LocalImage extends MediaBytes, ImageSize {
 export type LocalImageHandle = MediaHandle<LocalImage>;
 
 /**
- * One local image's identity: computer, workspace and path. The tier is not
+ * Whether the thread's computer resolves `path` without the workspace. It
+ * expands a home path and takes an absolute one as written, and joins every
+ * other shape to the workspace (`internal/editor` `ResolvePath`). A shape
+ * this does not recognize is treated as joined: that costs a second fetch,
+ * where the opposite mistake would paint another workspace's file.
+ */
+function resolvesWithoutWorkspace(path: string): boolean {
+  return path.startsWith('/') || path === '~' || path.startsWith('~/');
+}
+
+// The file an image reference names: the workspace is part of it only when
+// the path is resolved against one. A thread's workspace moves while its
+// rows stay mounted (an agent entering a worktree), and an absolute path
+// names the same file before and after.
+function localImageFile(backend: BackendKey, path: string, workspacePath: string): string[] {
+  return ['local', backend, resolvesWithoutWorkspace(path) ? '' : workspacePath, path];
+}
+
+/**
+ * One local image's identity: the computer and the file. The tier is not
  * part of it, so the tier memo and the lightbox key on the image, not on
  * one of its sizes.
  */
@@ -48,7 +67,7 @@ export function localImageCacheKey(
   path: string,
   workspacePath: string,
 ): string {
-  return JSON.stringify(['local', backend, workspacePath, path]);
+  return JSON.stringify(localImageFile(backend, path, workspacePath));
 }
 
 /**
@@ -64,7 +83,7 @@ export function acquireLocalImage(
   tier: number,
 ): LocalImageHandle {
   return acquireMediaBlob(
-    JSON.stringify(['local', backend, workspacePath, path, tier]),
+    JSON.stringify([...localImageFile(backend, path, workspacePath), tier]),
     () => loadLocalImage(backend, path, workspacePath, tier),
   );
 }

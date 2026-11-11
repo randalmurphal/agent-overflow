@@ -116,6 +116,7 @@
     sourceAppend,
     streaming = false,
     workspacePath = '',
+    imageWorkspacePath,
     pathRefs,
     threadId = '',
     liveCodeRow,
@@ -135,6 +136,11 @@
      *  gets no href rewriting at all, so third-party
      *  root-relative links can never become editor links there. */
     workspacePath?: string;
+    /** The workspace this prose was written in, when its row recorded one
+     *  (`getAuthoredWorkspaceFromMeta(item.meta)`): relative image paths
+     *  resolve against it instead of `workspacePath`, so an image stays
+     *  the same file after the thread moves to another checkout. */
+    imageWorkspacePath?: string;
     /** Server-validated allowlist of file paths to linkify in prose.
      *  Only paths in this list get the prose `agent-overflow:` link
      *  treatment — this component never invents prose links. Choosing
@@ -217,8 +223,11 @@
   const pathLinkMode = $derived<PathLinkMode>(
     noHost ? (filePreview ? 'html' : 'off') : filePreview ? 'files' : 'editor',
   );
+  // A string, so a row whose recorded workspace equals the thread's does
+  // not rebuild the extension when the record arrives at settle.
+  const imageWorkspace = $derived(imageWorkspacePath || workspacePath);
   const pathLinkExtension = $derived(
-    buildPathLinkExtension(pathRefs ?? EMPTY_PATH_REFS, workspacePath, pathLinkMode),
+    buildPathLinkExtension(pathRefs ?? EMPTY_PATH_REFS, workspacePath, pathLinkMode, imageWorkspace),
   );
 
   // `localhost:<port>` rewriting, for prose about a machine that is not the

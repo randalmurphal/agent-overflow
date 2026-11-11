@@ -15,7 +15,7 @@
     shouldCapProposedPlanBody,
   } from '../../utils/proposedPlan';
   import { createPlanSaveDialog } from '../../utils/planSaveDialog.svelte';
-  import { EMPTY_PATH_REFS, getPathRefsFromMeta } from '../../utils/pathLinkify';
+  import { EMPTY_PATH_REFS, getAuthoredWorkspaceFromMeta, getPathRefsFromMeta } from '../../utils/pathLinkify';
   import ProposedPlanActions from './ProposedPlanActions.svelte';
   import ProposedPlanBody from './ProposedPlanBody.svelte';
   import ProposedPlanSaveModal from './ProposedPlanSaveModal.svelte';
@@ -112,6 +112,7 @@
       error={expansion.error}
       threadId={item.threadId}
       workspacePath={paneWorkspacePath(pane)}
+      imageWorkspacePath={getAuthoredWorkspaceFromMeta(item.meta)}
       {pathRefs}
     />
   </div>

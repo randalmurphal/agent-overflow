@@ -600,7 +600,9 @@ func (r *Router) dispatch(evt provider.ProviderEvent) error {
 		// A provider-initiated workspace move. The tool row is already the
 		// timeline record; the thread's workspace columns are owned by the
 		// app's worktree transactions (app_worktree_follow.go), which the
-		// session event handler dispatches to. Nothing to persist here.
+		// session event handler dispatches to. Nothing to persist here;
+		// the rows that settle from now on were written in the new directory.
+		r.followWorkspaceChange(evt)
 		return nil
 	case provider.EventPermissionModeChanged:
 		// The thread's runtime mode is a thread-row column the app owns

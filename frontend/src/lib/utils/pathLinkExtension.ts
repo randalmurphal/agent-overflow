@@ -168,11 +168,18 @@ export type PathLinkMode = 'editor' | 'files' | 'html' | 'off';
  * `workspacePath` is encoded into each emitted href so a click after
  * the surface unmounts can still resolve relative paths — same trick
  * the legacy walker used with `data-workspace-path`.
+ *
+ * `imageWorkspacePath` is the workspace relative IMAGE paths resolve
+ * against: the one the prose was written in, when its row recorded it
+ * (getAuthoredWorkspaceFromMeta). Links keep the thread's workspace. It
+ * never enables rewriting on its own: a surface with no `workspacePath`
+ * stays inert.
  */
 export function buildPathLinkExtension(
   pathRefs: readonly PathRef[],
   workspacePath: string,
   mode: PathLinkMode = 'editor',
+  imageWorkspacePath: string = workspacePath,
 ): PathLinkExtension | undefined {
   // Dedupe by path (multiple refs for the same file may exist when
   // the same file is mentioned with different :line:col suffixes —
@@ -276,7 +283,14 @@ export function buildPathLinkExtension(
       if (isInsideMarkdownLinkLabel(this)) return undefined;
 
       if (src.startsWith('[') || src.startsWith('![')) {
-        return markdownLocalResourceToken(src, this, parseAllowlistedTarget, workspacePath, mode);
+        return markdownLocalResourceToken(
+          src,
+          this,
+          parseAllowlistedTarget,
+          workspacePath,
+          imageWorkspacePath || workspacePath,
+          mode,
+        );
       }
       if (!bareRe || !wrappedRe) return undefined;
 
@@ -480,6 +494,7 @@ function markdownLocalResourceToken(
   ctx: unknown,
   parseAllowlistedTarget: (target: string) => ParsedPathTarget | null,
   workspacePath: string,
+  imageWorkspacePath: string,
   mode: PathLinkMode,
 ): GenericLinkToken | GenericImageToken | undefined {
   const tokenizerContext = ctx as PathLinkTokenizerContext;
@@ -494,7 +509,7 @@ function markdownLocalResourceToken(
     if (path === null) return token as GenericImageToken;
     return {
       ...token,
-      href: buildLocalImageHref(path, workspacePath, token.href),
+      href: buildLocalImageHref(path, imageWorkspacePath, token.href),
     } as GenericImageToken;
   }
   if (mode === 'off') return token;

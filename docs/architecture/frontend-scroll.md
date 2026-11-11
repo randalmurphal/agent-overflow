@@ -1672,9 +1672,14 @@ mermaid/math rendered-height caches; the media blob cache behind forge
 attachments and local images, whose settled bytes at the image's last
 display tier (`utils/imageTiers.ts`) a remount reads synchronously; the
 `<img>` carries the original's pixel size whichever tier is painted, so its
-box is reserved in the frame it mounts and a sharper tier never changes it),
-and `remountReturn.browser.test.ts` and
-`e2e/tests/local-image-pane-stability.spec.ts` pin the outcomes. Two pieces
+box is reserved in the frame it mounts and a sharper tier never changes it;
+a local image is keyed by the file it names, and a relative path names it
+in the workspace its row recorded at settle (`items.meta.authoredWorkspace`),
+so a thread whose workspace moves under its mounted rows keeps the images
+it painted),
+and `remountReturn.browser.test.ts`,
+`e2e/tests/local-image-pane-stability.spec.ts` and
+`e2e/tests/worktree-entry-image-stability.spec.ts` pin the outcomes. Two pieces
 survive the deletion:
 
 - The scroll surface width signal: the **content-box** width, observed

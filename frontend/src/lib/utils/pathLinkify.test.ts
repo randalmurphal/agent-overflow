@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { findPathRanges, getPathRefsFromMeta } from './pathLinkify';
+import { findPathRanges, getAuthoredWorkspaceFromMeta, getPathRefsFromMeta } from './pathLinkify';
 import { __resetParseJsonObjectCacheForTest } from './parseJsonObject';
 
 describe('findPathRanges', () => {
@@ -247,5 +247,19 @@ describe('getPathRefsFromMeta', () => {
       { path: 'src/a.ts' },
       { path: 'src/b.ts' },
     ]);
+  });
+});
+
+describe('getAuthoredWorkspaceFromMeta', () => {
+  it('reads the workspace a row recorded beside its other meta', () => {
+    expect(
+      getAuthoredWorkspaceFromMeta('{"pathRefs":[{"path":"src/a.ts"}],"authoredWorkspace":"/repo/.claude/worktrees/x"}'),
+    ).toBe('/repo/.claude/worktrees/x');
+  });
+
+  it('is undefined for a row that recorded none', () => {
+    for (const meta of [undefined, null, '', '{', '{"pathRefs":[]}', '{"authoredWorkspace":""}', '{"authoredWorkspace":7}']) {
+      expect(getAuthoredWorkspaceFromMeta(meta), String(meta)).toBeUndefined();
+    }
   });
 });

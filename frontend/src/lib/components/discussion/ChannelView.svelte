@@ -19,7 +19,7 @@
   import ChannelHeader from './ChannelHeader.svelte';
   import ChannelMessageCard from './ChannelMessageCard.svelte';
   import ScrollToBottomButton from '../chat/ScrollToBottomButton.svelte';
-  import { EMPTY_PATH_REFS, getPathRefsFromMeta } from '../../utils/pathLinkify';
+  import { EMPTY_PATH_REFS, getAuthoredWorkspaceFromMeta, getPathRefsFromMeta } from '../../utils/pathLinkify';
   import { isImeComposingEvent } from '../../utils/imeComposition';
 
   let {
@@ -63,8 +63,8 @@
   });
 
   $effect(() => {
-    pane.threadId;
-    channelId;
+    void pane.threadId;
+    void channelId;
     return installTimelineReconnect({ pane, stick });
   });
 
@@ -364,6 +364,7 @@
               timestampLabel={relativeTime(msg.createdAt, getSettings().timestampFormat, threadBackend(pane.threadId ?? '') ?? HOME_BACKEND)}
               content={msg.content}
               pathRefs={getPathRefsFromMeta(msg.meta) ?? EMPTY_PATH_REFS}
+              imageWorkspacePath={getAuthoredWorkspaceFromMeta(msg.meta)}
             />
           {/each}
           {#if showLiveTail && liveTail}

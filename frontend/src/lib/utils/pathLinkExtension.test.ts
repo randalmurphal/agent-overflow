@@ -698,6 +698,35 @@ describe('buildPathLinkExtension', () => {
     expect(images[0].href).toBe('/uploads/abc/image.png');
   });
 
+  it('resolves images against the workspace the prose was written in, and links against the thread', () => {
+    const ext = buildPathLinkExtension([{ path: 'src/foo.ts' }] as never, '/thread', 'editor', '/written-in');
+    const tokens = lex('![shot](shots/a.png) ![abs](/tmp/b.png) [doc](docs/a.md) src/foo.ts', ext);
+    expect(findImages(tokens).map(image => parseLocalImageHref(image.href))).toEqual([
+      { path: 'shots/a.png', workspacePath: '/written-in', sourceHref: 'shots/a.png' },
+      { path: '/tmp/b.png', workspacePath: '/written-in', sourceHref: '/tmp/b.png' },
+    ]);
+    const links = findLinks(tokens).map(link => parsePathLinkHref(link.href));
+    expect(links.map(link => link?.path)).toEqual(['docs/a.md', 'src/foo.ts']);
+    expect(links.map(link => link?.workspacePath)).toEqual(['/thread', '/thread']);
+  });
+
+  it('resolves images against the thread workspace when the prose recorded none', () => {
+    for (const ext of [
+      buildPathLinkExtension([], '/thread', 'editor'),
+      buildPathLinkExtension([], '/thread', 'editor', ''),
+    ]) {
+      const images = findImages(lex('![shot](shots/a.png)', ext));
+      expect(parseLocalImageHref(images[0].href)?.workspacePath).toBe('/thread');
+    }
+  });
+
+  it('does not rewrite an image on a surface with no workspace, whatever the prose recorded', () => {
+    const ext = buildPathLinkExtension([{ path: 'main.ts' }] as never, '', 'editor', '/written-in');
+    const images = findImages(lex('![x](shots/a.png)', ext));
+    expect(images[0].href).toBe('shots/a.png');
+    expect(buildPathLinkExtension([], '', 'editor', '/written-in')).toBeUndefined();
+  });
+
   it('in off mode rewrites no link and linkifies no prose, images aside', () => {
     const ext = buildPathLinkExtension([{ path: 'src/foo.ts' }] as never, '/workspace', 'off');
     const tokens = lex('see src/foo.ts and [x](/workspace/a.md) and ![s](/tmp/s.png)', ext);

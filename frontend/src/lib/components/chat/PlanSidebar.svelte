@@ -26,7 +26,7 @@
     parseProposedPlanPayloadMeta,
   } from '../../utils/proposedPlan';
   import { createPlanSaveDialog } from '../../utils/planSaveDialog.svelte';
-  import { EMPTY_PATH_REFS, getPathRefsFromMeta } from '../../utils/pathLinkify';
+  import { EMPTY_PATH_REFS, getAuthoredWorkspaceFromMeta, getPathRefsFromMeta } from '../../utils/pathLinkify';
   import { isUiRenderTraceEnabled, recordUiTrace, scheduleDomUiTrace } from '../../utils/uiRenderTrace';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
@@ -264,6 +264,7 @@
               markdown={normalizedMarkdown}
               {comments}
               workspacePath={ctx.workspacePath}
+              imageWorkspacePath={getAuthoredWorkspaceFromMeta(currentPlan.meta)}
               {pathRefs}
               onRefresh={() => refreshPlanComments(threadId, planKey)}
             />

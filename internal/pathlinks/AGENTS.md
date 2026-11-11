@@ -18,6 +18,13 @@ triage and discussions. Keep `MetaKey`, `PathRef` JSON fields, candidate
 bounds, and the frontend reader in
 `frontend/src/lib/utils/pathLinkify.ts` synchronized.
 
+`WorkspaceMetaKey` (`items.meta.authoredWorkspace`) is the workspace a row's
+prose was written in. Triage records it on rows whose prose holds a markdown
+image (`HasMarkdownImage`), and the frontend resolves that row's relative
+image paths against it (`getAuthoredWorkspaceFromMeta` in the same file)
+so they survive the thread moving to another checkout. Links keep the
+thread's current workspace.
+
 Do not broaden this allowlist because `editor.ResolvePath` permits an explicit
 clicked link outside the workspace. Passive linkification has a stricter
 boundary than a user-selected destination.
