@@ -1091,10 +1091,10 @@ describe('find.in-pane command', () => {
     }
   });
 
-  // The page's Escape is replayed as a bare window keydown with the
-  // companion focused; it reaches find.close for the shared bar. An engine's
-  // own find UI closes without telling AO, so after an open of it Escape is
-  // never find.close's: it stays with the page and the engine.
+  // Escape pressed in the SPA with the browser companion focused reaches
+  // find.close for the shared bar. An engine's own find UI closes without
+  // telling AO, so after an open of it Escape is never find.close's: it
+  // stays with the page and the engine.
   it('Escape closes a focused browser companion\'s bar and is never taken for an engine UI', () => {
     const pane = readyPane();
     registerFixtureCommands(pane);

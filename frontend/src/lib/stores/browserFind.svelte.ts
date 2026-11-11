@@ -1,64 +1,71 @@
 // Find in the browser pane (docs/architecture/browser-tools.md, "Find"). The
-// backend's engine searches the page the pane shows and the backend owns the
-// page's find: AO's bar open on it, the search, and when they end. This
-// provider drives it from the pane's find bar, or for an engine with its own
+// backend's engine searches the page the pane shows; the backend holds what
+// the engine holds (whether a search runs, and its owner) and decides when it
+// ends. Whether the bar is open is the pane-find store's alone. This provider
+// drives the search from the pane's find bar, or for an engine with its own
 // find UI opens that instead. An end the backend decides on its own (the page
-// committed another document, the tab changed, the page closed, the pane
-// unmounted) arrives as a `find` companion event and closes the bar.
+// committed another document, the tab changed, another bar's start took the
+// page over, the pane unmounted) arrives as a `find` companion event and
+// closes the bar. A bare Escape pressed in the page stays the page's; the
+// backend announces it as an `escape` companion event, and the provider
+// closes its bar if it is open on that page.
 //
-// A find's identity is its page and its open: the id this provider makes for
-// each explicit open (the bar opened, the engine's find opened) and carries
-// on every action of that open. The backend stores it with the pane mount as
-// the find's owner and echoes it on every answer and end, and every
-// acceptance here compares it: an answer or an end for an earlier open
-// changes nothing of a later one, and a close for an earlier open never
-// closes a later one. An open's find, once ended, never comes back, so an
-// end for the held open is taken whenever it arrives.
+// A find's identity is its page, its pane mount and its find id: the id this
+// provider makes the first time a bar's query searches (after the bar opened,
+// or the engine's find opened) and carries on every action of that bar. The
+// backend echoes all three on every answer and end. An end applies to the
+// held search only if it names its page, mount and id and is newer (its
+// `session`) than every answer taken for it, so a late end of an earlier
+// search never closes the bar over a later one.
 //
-// An answer for an action that changed nothing because its find is gone or
-// another open's is marked Foreign: it acknowledges nothing of the asking
-// open's.
+// An answer for an action that changed nothing because its search is gone or
+// another find's is marked Foreign: it acknowledges nothing of the asking
+// find's.
 //
-// Every request is an intent object made when the reader acts and carried to
-// its answer: open, start (its query), step (its direction), stop (the
-// search) and close (the bar). Each records the page, mount and open it is
-// for and the display generation (`seq`) it was made under. Intents run one
-// at a time, in order, through the pane's `paneFindReads` slot; an answer is
-// shown only if its intent's generation is still current. A queued close is
-// cleanup the backend still needs, so nothing but its own run removes it.
+// Every request is an intent made when the reader acts and carried to its
+// answer: start (its query), next, previous or stop. Each records the page,
+// mount and find id it is for and the display generation (`seq`) it was made
+// under. Intents run one at a time, in order, on this provider's own queue;
+// an answer is shown only if its intent's generation is still current. A
+// queued stop is cleanup the backend still needs, so nothing but its own run
+// removes it.
 //
-// An action whose outcome is unknown (the call timed out, or the connection
-// went while it was out) may have left the backend holding a bar or a search
-// this provider does not know of: the open is ended here and its close is
-// owed, retried with backoff until an answer arrives, through dispose too.
+// A stop that fails is reported and sent again on this provider's own timer,
+// at most BROWSER_FIND_STOP_ATTEMPTS times in all, until one answers; a new
+// start of that find clears the retry waiting for it. A stop that never
+// succeeds leaves the page's highlights until the next start, navigation,
+// page switch or pane unmount, each of which ends the engine's search.
 //
-// State: `seq` (display generation), `queue` (intents), `held` (the open this
-// provider is bound to: its page, mount and id, and whether the bar and a
-// search are open there), and the debounce timer.
+// State: `seq` (display generation), `queue` (intents), `held` (the search
+// this provider is bound to: its page, mount, id, whether a search is held,
+// and the newest session answered for it), the debounce timer and the stop
+// retry timers.
 //
 // | Event                          | Effect                                                    |
 // |--------------------------------|-----------------------------------------------------------|
-// | bar opened (`opened`)          | seq++; a find held on another page is closed first; a new |
-// |                                | open on the shown page and mount; queue open; held.bar    |
-// | query typed                    | seq++; drop queued starts and steps; with a bar held,     |
-// |                                | debounce, then queue start(query) for it; held.search     |
+// | query typed                    | seq++; drop queued starts and steps; debounce, then bind  |
+// |                                | the shown page and mount, a find id if none, and queue    |
+// |                                | start(query); held.search                                 |
 // | query emptied                  | seq++; drop queued starts and steps; queue stop if a      |
 // |                                | search is held                                            |
 // | Enter / Shift+Enter            | queue a step, or cancel a queued opposite one             |
-// | bar closed (`clear`, dispose)  | seq++; drop the queue but its closes; queue close if      |
-// |                                | anything is held                                          |
-// | engine find opened             | as bar opened, queueing start(seed) and holding a search  |
-// | answer (not foreign)           | shown if its seq is current                               |
-// | foreign answer to open, start, | the open's find is gone: taken as its end (bar closes)    |
-// | step or stop of the held open  |                                                           |
-// | foreign answer to a close      | nothing: the bar is closed already                        |
-// | failed open of the held open   | shown as an error if its seq is current; bar closes       |
-// | other failure                  | shown as an error if its seq is current; the backend's    |
-// |                                | bar stays, and so does this one                           |
-// | unknown outcome                | shown as an error if its seq is current; the held open    |
-// |                                | ends here (bar closes); its close is owed and retried     |
-// | end event for the held open    | seq++, drop the queue but its closes, nothing held,       |
-// |                                | onEnded (the bar closes)                                  |
+// | bar closed (`clear`, dispose)  | seq++; drop queued starts and steps; queue stop if a      |
+// |                                | search is held; the find id goes                          |
+// | engine find opened             | a new find id; start(seed) as for a typed query           |
+// | answer for the held search     | shown if its seq is current                               |
+// | active answer for a search no  | queue its stop: nothing shows it                          |
+// | longer held                    |                                                           |
+// | foreign answer to start/step   | the search is gone: taken as its end (bar closes)         |
+// | of the held search             |                                                           |
+// | foreign answer to a stop       | nothing: the search is gone already                       |
+// | failed start or step           | shown as an error if its seq is current, when the held    |
+// |                                | search ends here; an unknown outcome queues its stop      |
+// | failed stop                    | shown as an error; sent again after the retry wait while  |
+// |                                | attempts remain                                           |
+// | end event for the held search  | seq++, drop queued starts and steps, nothing held, the    |
+// |                                | bar closes                                                |
+// | escape event for the shown     | the bar closes, if it is open                             |
+// | page                           |                                                           |
 
 import {
   BrowserCompanionFind,
@@ -66,16 +73,16 @@ import {
   type BrowserCompanionEvent,
   type BrowserFindState,
 } from './bindings';
-import { paneFindReads, type PaneFindProvider, type PaneFindResult } from './paneFind.svelte';
+import { isPaneFindOpen, type PaneFindProvider, type PaneFindResult } from './paneFind.svelte';
 import { DisconnectedError, TransportError } from '../transport/wsClient';
 import { errString } from '../utils/errors';
 import { randomId } from '../utils/randomId';
 
 export const BROWSER_FIND_DEBOUNCE_MS = 150;
-/** The first retry of an owed close; each next one waits twice as long. */
-export const BROWSER_FIND_CLOSE_RETRY_MS = 500;
-/** The longest wait between retries of an owed close. */
-export const BROWSER_FIND_CLOSE_RETRY_MAX_MS = 15_000;
+/** The wait before a failed stop is sent again. */
+export const BROWSER_FIND_STOP_RETRY_MS = 2_000;
+/** How many times a stop is sent at most, the first time included. */
+export const BROWSER_FIND_STOP_ATTEMPTS = 3;
 
 /** "bar": the shared find bar drives the engine. "engine": its own find UI. */
 export type BrowserFindMode = 'bar' | 'engine';
@@ -89,39 +96,46 @@ export interface BrowserFindOptions {
   pageId: () => string;
   /** The backend's id of the pane mount the bar shows in, null before it has one. */
   mount: () => string | null;
-  /** The backend ended the find; the pane closes its bar. */
-  onEnded: () => void;
+  /** Closes the pane's bar, as `find.close` does. */
+  closeBar: () => void;
   /** A find request failed; the pane shows why. */
   onError: (message: string) => void;
 }
 
-type IntentKind = 'open' | 'start' | 'next' | 'previous' | 'stop' | 'close';
+type IntentKind = 'start' | 'next' | 'previous' | 'stop';
 
 interface Intent {
   kind: IntentKind;
   pageId: string;
   /** The pane mount the find belongs to. */
   mount: string;
-  /** The explicit open the intent belongs to. */
-  open: string;
+  /** The find id the intent belongs to. */
+  id: string;
   query: string;
   /** The display generation the intent was made under. */
   seq: number;
-  /** How many times an owed close was sent without an answer. */
+  /** How many times this stop was sent before. */
   attempt: number;
 }
 
 interface LiveFind {
   ended(state: BrowserFindState): void;
+  escaped(pageId: string): void;
 }
 
 const live = new Map<string, Set<LiveFind>>();
 
-/** Routes a `find` companion event to the thread's providers. */
+/** Routes a `find` or `escape` companion event to the thread's providers. */
 export function applyBrowserFindEvent(event: BrowserCompanionEvent): void {
+  const finds = live.get(event.threadId);
+  if (!finds) return;
+  if (event.kind === 'escape') {
+    for (const find of finds) find.escaped(event.pageId ?? '');
+    return;
+  }
   const state = event.find;
   if (!state || state.active) return;
-  for (const find of live.get(event.threadId) ?? []) find.ended(state);
+  for (const find of finds) find.ended(state);
 }
 
 /**
@@ -136,16 +150,21 @@ function outcomeUnknown(err: unknown): boolean {
   return true;
 }
 
+function retryKey(of: { pageId: string; id: string }): string {
+  return `${of.pageId}\n${of.id}`;
+}
+
 export type BrowserFind = PaneFindProvider & { dispose(): void };
 
 export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
   const { threadId, mode } = options;
-  const reads = paneFindReads(options.paneId);
   const view = $state({ count: 0 as number | null, current: -1, pending: false, capped: false });
   let seq = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const queue: Intent[] = [];
-  const held = { pageId: '', mount: '', open: '', bar: false, search: false };
+  let running = false;
+  const held = { pageId: '', mount: '', id: '', search: false, session: 0 };
+  const retries = new Map<string, ReturnType<typeof setTimeout>>();
   let disposed = false;
 
   const result: PaneFindResult = {
@@ -178,6 +197,14 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
     timer = null;
   }
 
+  function cancelRetry(of: { pageId: string; id: string }): void {
+    const key = retryKey(of);
+    const waiting = retries.get(key);
+    if (waiting === undefined) return;
+    clearTimeout(waiting);
+    retries.delete(key);
+  }
+
   /** Drops queued intents of the given kinds; the one in flight runs on. */
   function drop(kinds: readonly IntentKind[]): void {
     for (let i = queue.length - 1; i >= 0; i--) {
@@ -185,113 +212,139 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
     }
   }
 
-  function enqueue(kind: IntentKind, query = ''): void {
-    queue.push({ kind, pageId: held.pageId, mount: held.mount, open: held.open, query, seq, attempt: 0 });
-    reads.request(drain);
+  function enqueue(intent: Intent): void {
+    queue.push(intent);
+    if (!running) void drain();
   }
 
-  /** Queues the close of an open, unless one for it is queued already. */
-  function enqueueClose(of: { pageId: string; mount: string; open: string }): void {
-    if (queue.some((intent) => intent.kind === 'close' && intent.open === of.open)) return;
-    queue.push({ kind: 'close', pageId: of.pageId, mount: of.mount, open: of.open, query: '', seq, attempt: 0 });
-    reads.request(drain);
+  function heldIntent(kind: IntentKind, query = ''): Intent {
+    return { kind, pageId: held.pageId, mount: held.mount, id: held.id, query, seq, attempt: 0 };
   }
 
-  /** Sends an owed close again after its backoff. */
-  function retryClose(intent: Intent): void {
-    const wait = Math.min(BROWSER_FIND_CLOSE_RETRY_MS * 2 ** intent.attempt, BROWSER_FIND_CLOSE_RETRY_MAX_MS);
-    setTimeout(() => {
-      if (queue.some((queued) => queued.kind === 'close' && queued.open === intent.open)) return;
-      queue.push({ ...intent, attempt: intent.attempt + 1 });
-      reads.request(drain);
-    }, wait);
+  /** Queues the stop of a find, unless one for it is queued already. */
+  function enqueueStop(of: Intent): void {
+    if (queue.some((intent) => intent.kind === 'stop' && intent.pageId === of.pageId && intent.id === of.id)) return;
+    enqueue({ ...of, kind: 'stop', query: '', seq, attempt: 0 });
   }
 
-  /**
-   * Binds the provider to a new open on the shown page and the pane's mount.
-   * A find held on another page is closed first; one on this page the new
-   * open takes over on the backend.
-   */
-  function holdShown(): void {
-    const pageId = options.pageId();
-    if ((held.bar || held.search) && held.pageId !== pageId) enqueueClose(held);
-    held.bar = false;
-    held.search = false;
-    held.pageId = pageId;
-    held.mount = options.mount() ?? '';
-    held.open = randomId();
+  /** Sends a failed stop again after the retry wait, while attempts remain. */
+  function retryStop(intent: Intent): void {
+    cancelRetry(intent);
+    if (intent.attempt + 1 >= BROWSER_FIND_STOP_ATTEMPTS) return;
+    const key = retryKey(intent);
+    retries.set(key, setTimeout(() => {
+      retries.delete(key);
+      enqueue({ ...intent, seq, attempt: intent.attempt + 1 });
+    }, BROWSER_FIND_STOP_RETRY_MS));
   }
 
-  /** Whether an intent belongs to the open the provider holds a find of. */
-  function holds(intent: Intent): boolean {
-    return intent.open === held.open && (held.bar || held.search);
+  /** Whether an intent belongs to the search the provider holds. */
+  function isHeld(intent: Intent): boolean {
+    return held.search && intent.pageId === held.pageId && intent.mount === held.mount && intent.id === held.id;
   }
 
   function call(intent: Intent): Promise<BrowserFindState> {
     return BrowserCompanionFind(threadId, new BrowserFindAction({
-      kind: intent.kind, pageId: intent.pageId, query: intent.query, mount: intent.mount, open: intent.open,
+      kind: intent.kind, pageId: intent.pageId, query: intent.query, mount: intent.mount, findId: intent.id,
     }));
   }
 
   async function drain(): Promise<void> {
-    while (queue.length > 0) {
-      const intent = queue.shift()!;
-      try {
-        const answer = await call(intent);
-        if (answer.foreign) {
-          // The open's find is gone, or another open's: nothing of it is
-          // left to show, and a close needs nothing more.
-          if (intent.kind !== 'close' && holds(intent)) accept();
-        } else if (intent.seq === seq && (intent.kind === 'start' || intent.kind === 'next' || intent.kind === 'previous')) {
-          show(answer);
-        }
-      } catch (err) {
-        if (intent.seq === seq) {
-          reset();
-          options.onError(errString(err));
-        }
-        if (outcomeUnknown(err)) {
-          if (intent.kind === 'close') {
-            retryClose(intent);
+    running = true;
+    try {
+      while (queue.length > 0) {
+        const intent = queue.shift()!;
+        try {
+          const answer = await call(intent);
+          if (intent.kind === 'stop') {
+            // Answered: no retry follows, and a foreign answer is a search
+            // already gone.
+          } else if (answer.foreign) {
+            // The search is gone, or another find's: nothing of it is left
+            // to show.
+            if (isHeld(intent)) accept();
+          } else if (!isHeld(intent)) {
+            // A search nothing here shows any more.
+            if (answer.active) enqueueStop(intent);
           } else {
-            if (holds(intent)) accept();
-            enqueueClose(intent);
+            held.session = Math.max(held.session, answer.session);
+            if (intent.seq === seq) show(answer);
           }
-        } else if (intent.kind === 'open' && holds(intent)) {
-          // A bar the backend would not open is not shown.
-          accept();
+        } catch (err) {
+          if (intent.seq === seq) reset();
+          if (intent.kind === 'stop') {
+            options.onError(errString(err));
+            retryStop(intent);
+            continue;
+          }
+          if (intent.seq === seq) {
+            options.onError(errString(err));
+            // The backend ended its search, or may have: nothing is held.
+            if (isHeld(intent)) {
+              held.search = false;
+              drop(['next', 'previous']);
+            }
+          }
+          if (outcomeUnknown(err) && !isHeld(intent)) enqueueStop(intent);
         }
       }
+    } finally {
+      running = false;
     }
   }
 
   function ended(state: BrowserFindState): void {
-    if ((held.bar || held.search) && state.open === held.open) accept();
+    if (!held.search || state.pageId !== held.pageId || state.mount !== held.mount || state.findId !== held.id) return;
+    if (state.session <= held.session) return;
+    accept();
   }
 
-  /** The held open's find ended: nothing is held, and nothing to stop. */
+  /**
+   * A bare Escape in a page: the bar closes. Only a "bar" provider has one;
+   * an engine's own find UI keeps the Escape, whatever the store kept open
+   * from a provider before it.
+   */
+  function escaped(pageId: string): void {
+    if (mode !== 'bar' || pageId !== options.pageId()) return;
+    if (isPaneFindOpen(options.paneId)) options.closeBar();
+  }
+
+  /** The held search ended: nothing is held, nothing to stop, the bar closes. */
   function accept(): void {
     seq += 1;
     cancelTimer();
-    drop(['open', 'start', 'next', 'previous', 'stop']);
-    held.bar = false;
+    drop(['start', 'next', 'previous']);
     held.search = false;
+    held.id = '';
     reset();
-    options.onEnded();
+    options.closeBar();
   }
 
-  /** The bar closed: the backend's bar and search go with it. */
+  /** The bar closed: the backend's search goes with it. */
   function close(): void {
     seq += 1;
     cancelTimer();
-    drop(['open', 'start', 'next', 'previous', 'stop']);
+    drop(['start', 'next', 'previous']);
     reset();
-    if (held.bar || held.search) enqueueClose(held);
-    held.bar = false;
+    if (held.search) enqueueStop(heldIntent('stop'));
     held.search = false;
+    held.id = '';
   }
 
-  const handle: LiveFind = { ended };
+  /** Binds the shown page and mount and starts the query there. */
+  function begin(query: string): void {
+    held.pageId = options.pageId();
+    held.mount = options.mount() ?? '';
+    if (!held.id) {
+      held.id = randomId();
+      held.session = 0;
+    }
+    held.search = true;
+    cancelRetry(held);
+    enqueue(heldIntent('start', query));
+  }
+
+  const handle: LiveFind = { ended, escaped };
   let threadFinds = live.get(threadId);
   if (!threadFinds) {
     threadFinds = new Set();
@@ -307,20 +360,12 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
       queue.pop();
       return;
     }
-    enqueue(kind);
+    enqueue(heldIntent(kind));
   }
 
   const provider: BrowserFind = {
     noun: 'page',
     result,
-    opened(): void {
-      if (mode === 'engine' || disposed) return;
-      seq += 1;
-      reset();
-      holdShown();
-      held.bar = true;
-      enqueue('open');
-    },
     search(query: string): void {
       if (mode === 'engine' || disposed) return;
       cancelTimer();
@@ -328,21 +373,14 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
       drop(['start', 'next', 'previous']);
       if (!query.trim()) {
         reset();
-        if (held.search) enqueue('stop');
+        if (held.search) enqueueStop(heldIntent('stop'));
         held.search = false;
-        return;
-      }
-      // A query searches in the bar of the held open, and nowhere else.
-      if (!held.bar) {
-        reset();
         return;
       }
       view.pending = true;
       timer = setTimeout(() => {
         timer = null;
-        if (!held.bar) return;
-        held.search = true;
-        enqueue('start', query);
+        begin(query);
       }, BROWSER_FIND_DEBOUNCE_MS);
     },
     next: () => step('next'),
@@ -361,9 +399,9 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
       cancelTimer();
       seq += 1;
       drop(['start']);
-      holdShown();
-      held.search = true;
-      enqueue('start', seed);
+      // Each open of the engine's find is a find of its own.
+      held.id = '';
+      begin(seed);
     };
   }
   return provider;

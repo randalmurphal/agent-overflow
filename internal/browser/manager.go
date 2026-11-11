@@ -66,9 +66,6 @@ type Manager struct {
 	// accelerators is ManagerOptions.Accelerators; read per keypress on the
 	// engine's UI thread by keyChord.
 	accelerators func() keybindings.AcceleratorSet
-	// finding holds the driver handle of every page with AO's find bar open,
-	// so keyChord can claim the page's Escape without taking m.mu.
-	finding sync.Map
 	// findGen numbers every find action and end across all pages, so the
 	// order survives a page's suspend and restore (find.go).
 	findGen atomic.Uint64

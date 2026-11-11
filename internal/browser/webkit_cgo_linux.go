@@ -245,17 +245,17 @@ func aoWebKitDocumentCommitted(pageID C.uint64_t) {
 
 // aoWebKitKeyChord runs ON the GTK thread, inside the key event's delivery,
 // and answers synchronously: it is a set lookup in the Manager and nothing
-// that waits. The routing that follows a claim leaves the thread on a
-// goroutine.
+// that waits. The routing that follows a claim, or an Escape's
+// announcement, leaves the thread on a goroutine.
 //
 //export aoWebKitKeyChord
-func aoWebKitKeyChord(pageID C.uint64_t, key *C.char, ctrl, meta, alt, shift C.int) C.int {
+func aoWebKitKeyChord(pageID C.uint64_t, key *C.char, ctrl, meta, alt, shift, repeat C.int) C.int {
 	page := webkitLookupPage(uint64(pageID))
 	if page == nil || page.engine.events.KeyChord == nil {
 		return 0
 	}
 	pressed := keybindings.Accelerator{Key: C.GoString(key), Ctrl: ctrl != 0, Meta: meta != 0, Alt: alt != 0, Shift: shift != 0}
-	if page.engine.events.KeyChord(page.handle, pressed) {
+	if page.engine.events.KeyChord(page.handle, pressed, repeat != 0) {
 		return 1
 	}
 	return 0
@@ -597,6 +597,30 @@ func gtkFind(ctx context.Context, view webkitView, op int, text string, maxMatch
 		webkitCallByID.Delete(id)
 		return webkitCallResult{}, ctx.Err()
 	}
+}
+
+// offerEscape hands the page's key gate one Escape press, with Control when
+// ctrl and followed by its release when release, and answers whether AO
+// stopped it (ao_wk_view_offer_escape). For the native smoke.
+func (p *webkitPage) offerEscape(ctrl, release bool) (bool, error) {
+	handled := C.int(0)
+	err := p.liveView().do(func(view unsafe.Pointer) {
+		handled = C.ao_wk_view_offer_escape(view, flagInt(ctrl), flagInt(release))
+	})
+	if err != nil {
+		return false, err
+	}
+	if handled < 0 {
+		return false, fmt.Errorf("browser: page %d has no key controller", p.id)
+	}
+	return handled == 1, nil
+}
+
+func flagInt(on bool) C.int {
+	if on {
+		return 1
+	}
+	return 0
 }
 
 // gtkFindFinish ends the view's find and clears its highlight.

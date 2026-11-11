@@ -2,11 +2,14 @@
 //
 // Coverage: mod+f in the browser pane opens the shared find bar under its
 // header; a query runs on the page the pane shows and reports its position,
-// Enter and Shift+Enter step with wrap, a miss reads No results, Escape closes
-// it. A navigation to another document ends the find on the backend, which
-// closes the bar, and closing the pane ends it, twice. The harness runs the fake engine, whose find searches the
-// page title (fake_engine.go); real engines are covered by the
-// AO_NATIVE_BROWSER_SMOKE gate. Unit and component coverage:
+// Enter and Shift+Enter step with wrap, a miss reads No results, Escape in the
+// bar closes it. A navigation to another document ends the search on the
+// backend, which closes the bar, and closing the pane ends it, twice. The
+// harness runs the fake engine, whose find searches the page title
+// (fake_engine.go) and which has no native key gate: an Escape pressed in a
+// real page, and the escape event it raises, are covered by the
+// AO_NATIVE_BROWSER_SMOKE gate and the unit tests. Unit and component
+// coverage:
 // browserFind.svelte.test.ts, BrowserPane.test.ts, PaneFindBar.test.ts,
 // internal/browser/find_test.go.
 import { test, expect, type SeedResult } from './fixtures.js';
@@ -20,18 +23,18 @@ interface BrowserState {
 }
 
 test('mod+f finds in the shown browser page and closes when the page navigates away', async ({ harness, page }) => {
-  // The pane mount and open each find action names: a find belongs to its
-  // mount's open, so only that open can see whether the pane's find is
-  // still there.
+  // The pane mount and find id each find action names: a search belongs to
+  // its mount's find, so only that find can see whether the pane's search
+  // is still there.
   let findMount = '';
-  let findOpen = '';
+  let findId = '';
   await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
     const server = socket.connectToServer();
     socket.onMessage((message) => {
       const frame = JSON.parse(String(message));
       if (frame.type === 'rpc' && frame.methodId === FIND_METHOD_ID && frame.params?.[1]?.mount) {
         findMount = frame.params[1].mount;
-        findOpen = frame.params[1].open;
+        findId = frame.params[1].findId;
       }
       server.send(message);
     });
@@ -97,7 +100,7 @@ test('mod+f finds in the shown browser page and closes when the page navigates a
   await expect(bar).toHaveCount(0);
 
   // Reopened, the query runs again; the page then leaves the document and
-  // the backend ends the find, which closes the bar.
+  // the backend ends the search, which closes the bar.
   await address.focus();
   await address.press('ControlOrMeta+f');
   await expect(bar).toBeVisible();
@@ -106,21 +109,21 @@ test('mod+f finds in the shown browser page and closes when the page navigates a
   await harness.rpc('BrowserCompanionDo', threadId, { kind: 'navigate', pageId, address: second });
   await expect(bar).toHaveCount(0);
 
-  // Closing the pane ends the find on the backend, each time.
+  // Closing the pane ends the search on the backend, each time.
   for (let round = 0; round < 2; round++) {
     await address.focus();
     await address.press('ControlOrMeta+f');
     await bar.getByTestId('pane-find-input').fill('gamma');
     await expect(count).toHaveText('1/1');
     const mount = findMount;
-    const open = findOpen;
+    const id = findId;
     expect(mount).not.toBe('');
-    expect(open).not.toBe('');
+    expect(id).not.toBe('');
     await pane.getByRole('button', { name: 'Close browser' }).click();
     await expect(pane).toHaveCount(0);
-    // The pane's find is gone: a step from its open changes nothing and
-    // says the find is not its own.
-    const step = await harness.rpc<{ foreign: boolean; active: boolean }>('BrowserCompanionFind', threadId, { kind: 'next', pageId, mount, open });
+    // The pane's search is gone: a step from its find changes nothing and
+    // says the search is not its own.
+    const step = await harness.rpc<{ foreign: boolean; active: boolean }>('BrowserCompanionFind', threadId, { kind: 'next', pageId, mount, findId: id });
     expect(step).toMatchObject({ foreign: true, active: false });
     await harness.rpc('BrowserCompanionDo', threadId, { kind: 'show', pageId });
     await expect(pane).toBeVisible();

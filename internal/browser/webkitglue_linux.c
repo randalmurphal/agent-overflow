@@ -25,7 +25,7 @@ extern void aoWebKitDownloadStarted(uint64_t profile_id, uint64_t page_id,
 extern void aoWebKitDownloadProgress(uint64_t download_id, double received,
                                      int state, char *path);
 extern int aoWebKitKeyChord(uint64_t page_id, const char *key, int ctrl, int meta,
-                            int alt, int shift);
+                            int alt, int shift, int repeat);
 extern void aoWebKitFindDone(uint64_t call_id, int found, unsigned int match_count);
 
 // The download state vocabulary the Go seam uses (driver.go).
@@ -675,8 +675,17 @@ static void ao_script_message(WebKitUserContentManager *manager, JSCValue *value
 // included. A capture-phase key controller on the view offers modifier chords
 // to Go first (aoWebKitKeyChord, a synchronous set lookup); a chord AO binds
 // is stopped here and dispatched by the SPA, everything else reaches the page.
+// A bare Escape is offered too, and always reaches the page: Go only observes
+// it. GTK 4 reports no key repeat, so a held Escape is told apart here: it is
+// down from its press until its release or the view losing focus.
 // The controller sits on the view, so it only ever sees events targeted at
 // the page — a chord typed into the SPA never passes through it.
+
+#define AO_ESCAPE_DOWN_KEY "ao-escape-down"
+
+static void ao_escape_up(GtkWidget *view) {
+  g_object_set_data(G_OBJECT(view), AO_ESCAPE_DOWN_KEY, NULL);
+}
 // ---------------------------------------------------------------------------
 
 // ao_key_name spells a keyval the way KeyboardEvent.key does, which is the
@@ -721,8 +730,6 @@ static gboolean ao_key_pressed(GtkEventControllerKey *controller, guint keyval, 
   int meta = (state & (GDK_META_MASK | GDK_SUPER_MASK)) != 0;
   int alt = (state & GDK_ALT_MASK) != 0;
   int shift = (state & GDK_SHIFT_MASK) != 0;
-  // A bare Escape is offered too: Go claims it only while the page has a
-  // find, which it then closes.
   if (!ctrl && !meta && !alt && keyval != GDK_KEY_Escape) {
     return FALSE;
   }
@@ -732,7 +739,41 @@ static gboolean ao_key_pressed(GtkEventControllerKey *controller, guint keyval, 
     return FALSE;
   }
   GtkWidget *view = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller));
-  return aoWebKitKeyChord(ao_view_page_id(view), key, ctrl, meta, alt, shift) == 1;
+  int repeat = 0;
+  if (keyval == GDK_KEY_Escape) {
+    repeat = g_object_get_data(G_OBJECT(view), AO_ESCAPE_DOWN_KEY) != NULL;
+    g_object_set_data(G_OBJECT(view), AO_ESCAPE_DOWN_KEY, GINT_TO_POINTER(1));
+  }
+  return aoWebKitKeyChord(ao_view_page_id(view), key, ctrl, meta, alt, shift, repeat) == 1;
+}
+
+static void ao_key_released(GtkEventControllerKey *controller, guint keyval, guint keycode,
+                            GdkModifierType state, gpointer data) {
+  (void)keycode;
+  (void)state;
+  (void)data;
+  if (keyval == GDK_KEY_Escape) {
+    ao_escape_up(gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller)));
+  }
+}
+
+static void ao_focus_left(GtkEventControllerFocus *controller, gpointer data) {
+  (void)data;
+  ao_escape_up(gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller)));
+}
+
+int ao_wk_view_offer_escape(void *view, int ctrl, int release) {
+  GtkEventController *keys = g_object_get_data(G_OBJECT(view), "ao-key-controller");
+  if (keys == NULL) {
+    return -1;
+  }
+  GdkModifierType state = ctrl ? GDK_CONTROL_MASK : 0;
+  gboolean handled = FALSE;
+  g_signal_emit_by_name(keys, "key-pressed", (guint)GDK_KEY_Escape, 0u, state, &handled);
+  if (release) {
+    g_signal_emit_by_name(keys, "key-released", (guint)GDK_KEY_Escape, 0u, state);
+  }
+  return handled ? 1 : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -808,7 +849,12 @@ static void ao_connect_view(WebKitWebView *view, uint64_t page_id, const char *u
   GtkEventController *keys = gtk_event_controller_key_new();
   gtk_event_controller_set_propagation_phase(keys, GTK_PHASE_CAPTURE);
   g_signal_connect(keys, "key-pressed", G_CALLBACK(ao_key_pressed), NULL);
+  g_signal_connect(keys, "key-released", G_CALLBACK(ao_key_released), NULL);
   gtk_widget_add_controller(GTK_WIDGET(view), keys);
+  g_object_set_data(G_OBJECT(view), "ao-key-controller", keys);
+  GtkEventController *focus = gtk_event_controller_focus_new();
+  g_signal_connect(focus, "leave", G_CALLBACK(ao_focus_left), NULL);
+  gtk_widget_add_controller(GTK_WIDGET(view), focus);
   WebKitSettings *settings = webkit_web_view_get_settings(view);
   webkit_settings_set_enable_developer_extras(settings, TRUE);
   webkit_settings_set_javascript_can_open_windows_automatically(settings, TRUE);

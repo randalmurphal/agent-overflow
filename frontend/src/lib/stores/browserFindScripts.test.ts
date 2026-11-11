@@ -1,21 +1,27 @@
 // Replays the browser find scripts the Go tables record
-// (internal/browser/find_pairs_test.go) against the real provider. Each
-// script is one provider's view of a sequence the Manager ran, in order:
-// what the reader did, the page the pane shows, each call the provider sent,
-// the answer to its oldest unanswered call (which can come several reader
-// actions later), and each end the thread's providers were told of. The
-// provider must send exactly those calls, and end with its bar shown
-// exactly when the Manager holds a bar for its open. The Go side checks the
-// Manager against the same sequences and models the provider by a port of
-// it, so the two cannot drift apart.
+// (internal/browser/find_pairs_test.go) against the real provider,
+// registered with the real pane-find store as the browser pane registers it.
+// Each script is one provider's view of a sequence the Manager ran, in
+// order: what the reader did, the page the pane shows, each call the
+// provider sent, the answer to its oldest unanswered call (which can come
+// several reader actions later), each end the thread's providers were told
+// of, and the provider's stop retry wait running out. The provider must send
+// exactly those calls, leave no timer behind, and end with its bar open
+// exactly as the port left it. The Go side checks the Manager against the
+// same sequences and models the provider by a port of it, so the two cannot
+// drift apart.
 //
-// Open ids are the provider's own: a script names them by label (A1, B2),
+// Find ids are the provider's own: a script names them by label (A1, B2),
 // and the replay binds each label to the id the provider sent with it first.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyBrowserFindEvent, BROWSER_FIND_DEBOUNCE_MS, createBrowserFind, resetBrowserFindForTest } from './browserFind.svelte';
+import {
+  applyBrowserFindEvent, BROWSER_FIND_DEBOUNCE_MS, BROWSER_FIND_STOP_RETRY_MS, createBrowserFind, resetBrowserFindForTest,
+} from './browserFind.svelte';
 import { BrowserCompanionEvent, BrowserFindState } from './bindings';
 import { setBindingMock } from '../../test/mocks/bindings-app';
-import { resetPaneFindForTest } from './paneFind.svelte';
+import {
+  closePaneFind, isPaneFindOpen, openPaneFind, registerPaneFindProvider, resetPaneFindForTest, setPaneFindQuery, stepPaneFind,
+} from './paneFind.svelte';
 import { TransportError } from '../transport/wsClient';
 import pairs from '../../test/fixtures/browserFind/pairs.json';
 import triples from '../../test/fixtures/browserFind/triples.json';
@@ -25,18 +31,19 @@ import outstanding from '../../test/fixtures/browserFind/outstanding.json';
 interface ScriptCall {
   kind: string;
   page: string;
-  open: string;
+  id: string;
   query?: string;
 }
 
 interface ScriptStep {
-  ui?: 'opened' | 'search' | 'next' | 'clear' | 'dispose';
+  ui?: 'open' | 'search' | 'next' | 'clear' | 'dispose';
   query?: string;
   shown?: string;
   send?: ScriptCall;
   answer?: Record<string, unknown>;
   error?: boolean;
   event?: Record<string, unknown>;
+  retry?: boolean;
 }
 
 interface Script {
@@ -50,11 +57,12 @@ interface Script {
 interface SentCall {
   kind: string;
   pageId: string;
-  open: string;
+  findId: string;
   query?: string;
 }
 
 const THREAD = 'thread';
+const PANE = 'browser-main';
 
 async function replay(script: Script): Promise<void> {
   const replies: Array<{ resolve: (s: BrowserFindState) => void; reject: (e: Error) => void }> = [];
@@ -63,61 +71,61 @@ async function replay(script: Script): Promise<void> {
     sent.push(action);
     return new Promise<BrowserFindState>((resolve, reject) => { replies.push({ resolve, reject }); });
   });
-  const opens = new Map<string, string>();
-  // An open the provider never sent (another provider's) stays as named.
+  const ids = new Map<string, string>();
+  // An id the provider never sent (another provider's) stays as named.
   const translate = (state: Record<string, unknown>) => {
-    const open = String(state.open ?? '');
-    return new BrowserFindState({ ...(state as Partial<BrowserFindState>), open: opens.get(open) ?? open });
+    const id = String(state.findId ?? '');
+    return new BrowserFindState({ ...(state as Partial<BrowserFindState>), findId: ids.get(id) ?? id });
   };
   let page = script.page;
-  let shown = false;
   let disposed = false;
   let checked = 0;
   const find = createBrowserFind({
-    threadId: THREAD, paneId: 'browser-main', mode: 'bar', pageId: () => page, mount: () => script.mount,
-    onEnded: () => { shown = false; }, onError: () => {},
+    threadId: THREAD, paneId: PANE, mode: 'bar', pageId: () => page, mount: () => script.mount,
+    closeBar: () => closePaneFind(PANE), onError: () => {},
   });
+  const release = registerPaneFindProvider(PANE, find);
   try {
     for (const [index, step] of script.steps.entries()) {
       const at = `step ${index}`;
       if (step.ui) {
         switch (step.ui) {
-          case 'opened':
-            shown = true;
-            find.opened?.();
+          case 'open':
+            openPaneFind(PANE);
             break;
           case 'search':
-            find.search(step.query ?? '');
+            setPaneFindQuery(PANE, step.query ?? '');
             break;
           case 'next':
-            find.next?.();
+            stepPaneFind(PANE, 1);
             break;
           case 'clear':
-            shown = false;
-            find.clear();
+            closePaneFind(PANE);
             break;
           case 'dispose':
-            shown = false;
             disposed = true;
+            release();
             find.dispose();
             break;
         }
-        await vi.advanceTimersByTimeAsync(step.ui === 'search' ? BROWSER_FIND_DEBOUNCE_MS : 0);
+        await vi.advanceTimersByTimeAsync(step.ui === 'search' || step.ui === 'open' ? BROWSER_FIND_DEBOUNCE_MS : 0);
       } else if (step.shown) {
         page = step.shown;
+      } else if (step.retry) {
+        await vi.advanceTimersByTimeAsync(BROWSER_FIND_STOP_RETRY_MS);
       } else if (step.send) {
         const want = step.send;
         expect(sent.length, `${at}: the provider sent ${want.kind}`).toBeGreaterThan(checked);
         const got = sent[checked++];
         expect({ kind: got.kind, page: got.pageId, query: got.query ?? '' }, `${at}: the call`)
           .toEqual({ kind: want.kind, page: want.page, query: want.query ?? '' });
-        const bound = opens.get(want.open);
+        const bound = ids.get(want.id);
         if (bound === undefined) {
-          expect([...opens.values()], `${at}: open ${want.open} is a new open`).not.toContain(got.open);
-          expect(got.open, `${at}: open ${want.open} has an id`).not.toBe('');
-          opens.set(want.open, got.open);
+          expect([...ids.values()], `${at}: find ${want.id} is a new find`).not.toContain(got.findId);
+          expect(got.findId, `${at}: find ${want.id} has an id`).not.toBe('');
+          ids.set(want.id, got.findId);
         } else {
-          expect(got.open, `${at}: the call names open ${want.open}`).toBe(bound);
+          expect(got.findId, `${at}: the call names find ${want.id}`).toBe(bound);
         }
       } else if (step.event) {
         const state = translate(step.event);
@@ -134,9 +142,13 @@ async function replay(script: Script): Promise<void> {
     await vi.advanceTimersByTimeAsync(BROWSER_FIND_DEBOUNCE_MS);
     expect(sent.length, 'the provider sent nothing the script did not').toBe(checked);
     expect(replies.length, 'every call the provider sent was answered').toBe(0);
-    expect(shown, 'the bar is shown exactly when the Manager holds one for this open').toBe(script.bar);
+    expect(vi.getTimerCount(), 'no timer of the provider outlives what it serves').toBe(0);
+    expect(isPaneFindOpen(PANE), 'the bar is open exactly as the port left it').toBe(script.bar);
   } finally {
-    if (!disposed) find.dispose();
+    if (!disposed) {
+      release();
+      find.dispose();
+    }
   }
 }
 

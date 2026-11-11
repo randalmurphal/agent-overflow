@@ -53,9 +53,11 @@ export class CompanionEvent {
     "findMode"?: string;
 
     /**
-     * Find rides a Kind "find" event: a page's find session ended without
-     * being asked to (navigation, a tab switch, a hidden pane, the page
-     * closing), so a find bar showing it closes.
+     * Find rides a Kind "find" event: a page's search ended without its
+     * owner asking (navigation, a tab switch, a hidden pane, the page
+     * closing, another owner's start), so a find bar showing it closes.
+     * A Kind "escape" event names only ThreadID and PageID: a bare Escape
+     * was pressed in that page while a pane showed it, and the page kept it.
      */
     "find"?: FindState | null;
 
@@ -127,9 +129,9 @@ export class CompanionSubscription {
 }
 
 /**
- * FindState is a page's find session as the find bar shows it, with the
- * find's identity (find.go): the page and its incarnation, the pane mount
- * that owns it, the document it was opened on, and the generation of the
+ * FindState is a page's search as the find bar shows it, with the search's
+ * identity (find.go): the page and its incarnation, the pane mount and find
+ * id that own it, the document it started on, and the generation of the
  * action that answered or of the end.
  */
 export class FindState {
@@ -142,18 +144,18 @@ export class FindState {
     "incarnation": number;
 
     /**
-     * Mount is the pane mount that owns the find, "" for none.
+     * Mount is the pane mount that owns the search, "" for none.
      */
     "mount": string;
 
     /**
-     * Open is the id the owning mount's provider gave the explicit open the
-     * find belongs to, "" for none.
+     * FindID is the id the owning mount's provider made for its bar,
+     * "" for none.
      */
-    "open": string;
+    "findId": string;
 
     /**
-     * Document is the epoch of the document the find was opened on.
+     * Document is the epoch of the document the search started on.
      */
     "document": number;
 
@@ -166,9 +168,9 @@ export class FindState {
 
     /**
      * Foreign marks an answer for an action that changed nothing because
-     * the find it named is gone or another open's; Mount and Open then name
-     * the find's real owner, and the answer acknowledges nothing of the
-     * asker's.
+     * the search it named is gone or another owner's; Mount and FindID then
+     * name the search's real owner, and the answer acknowledges nothing of
+     * the asker's.
      */
     "foreign": boolean;
     "active": boolean;
@@ -199,8 +201,8 @@ export class FindState {
         if (!("mount" in $$source)) {
             this["mount"] = "";
         }
-        if (!("open" in $$source)) {
-            this["open"] = "";
+        if (!("findId" in $$source)) {
+            this["findId"] = "";
         }
         if (!("document" in $$source)) {
             this["document"] = 0;

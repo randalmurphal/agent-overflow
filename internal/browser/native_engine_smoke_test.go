@@ -316,7 +316,7 @@ func TestNativeEngineRealFind(t *testing.T) {
 	t.Cleanup(func() { manager.DetachPane(mount.ID) })
 	find := func(kind, query string) FindState {
 		t.Helper()
-		state, err := manager.Find(ctx, access, page.ID, kind, query, mount.ID, "smoke-open")
+		state, err := manager.Find(ctx, access, page.ID, kind, query, mount.ID, "smoke-find")
 		if err != nil {
 			t.Fatalf("find %s %q: %v", kind, query, err)
 		}
@@ -350,8 +350,6 @@ func TestNativeEngineRealFind(t *testing.T) {
 		}
 	}
 
-	// The search runs in the pane's open bar.
-	find("open", "")
 	position(find("start", "alpha"), 0)
 	position(find("next", ""), 1)
 	position(find("next", ""), 2)
@@ -365,9 +363,9 @@ func TestNativeEngineRealFind(t *testing.T) {
 	if stopped := find("stop", ""); stopped.Active {
 		t.Fatalf("stopped find = %+v", stopped)
 	}
-	// The bar stays open with no search: a step answers so without the
-	// engine moving the selection.
-	if state := find("next", ""); state.Active || state.Foreign {
+	// No search runs: a step answers so without the engine moving the
+	// selection.
+	if state := find("next", ""); state.Active || !state.Foreign {
 		t.Fatalf("a step after stop = %+v", state)
 	}
 	position(find("start", "ALPHA"), 0)

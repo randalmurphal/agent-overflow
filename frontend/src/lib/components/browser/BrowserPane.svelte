@@ -108,7 +108,7 @@
         mode,
         pageId: () => activePageId,
         mount: () => browserPaneMountId(threadId),
-        onEnded: () => closePaneFind(paneId),
+        closeBar: () => closePaneFind(paneId),
         onError: (message) => noteBrowserActionError(threadId, message),
       });
       const release = registerPaneFindProvider(paneId, find);

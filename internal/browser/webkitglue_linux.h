@@ -132,6 +132,13 @@ void ao_wk_view_find(void *view, int op, const char *text, unsigned int max_matc
 // ao_wk_view_find_finish ends the view's find and unhighlights its matches.
 void ao_wk_view_find_finish(void *view);
 
+// ao_wk_view_offer_escape delivers one Escape press (with Control when ctrl),
+// then its release when release, to the view's own key controller as GTK
+// would, and answers 1 when AO stopped the press, 0 when the page keeps it,
+// -1 for a view without one. It reaches AO's gate, not the page: GTK 4
+// cannot make a real input event. The native smoke's door into the gate.
+int ao_wk_view_offer_escape(void *view, int ctrl, int release);
+
 // ---- memory --------------------------------------------------------------
 
 // ao_wk_free releases memory the C half allocated for the Go half. GLib's

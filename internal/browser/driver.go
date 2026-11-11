@@ -370,12 +370,14 @@ type engineEvents struct {
 	// cancels one it answers false for.
 	DownloadStarted  func(downloadStart) bool
 	DownloadProgress func(downloadProgress)
-	// KeyChord is the one SYNCHRONOUS question on this seam: a modifier chord
-	// was pressed while the page's native view held keyboard focus — does AO
-	// own it? True means the engine swallows the event and AO dispatches the
-	// chord; false means the page keeps it. It runs on the engine's UI
+	// KeyChord is the one SYNCHRONOUS question on this seam: a modifier chord,
+	// or a bare Escape, was pressed while the page's native view held
+	// keyboard focus — does AO own it? True means the engine swallows the
+	// event and AO dispatches the chord; false means the page keeps it. A
+	// bare Escape is always the page's; repeat says the key is held down,
+	// which in-process engines report for it. It runs on the engine's UI
 	// thread, so the answer must be a set lookup and nothing that waits.
-	KeyChord func(handle string, pressed keybindings.Accelerator) bool
+	KeyChord func(handle string, pressed keybindings.Accelerator, repeat bool) bool
 }
 
 // matchStatus reports whether a sampled page state satisfies a wait condition.

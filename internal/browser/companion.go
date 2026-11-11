@@ -212,19 +212,22 @@ func (m *Manager) pageByHandleLocked(handle string) *managedPage {
 	return nil
 }
 
+// pageEscape is the key the page always keeps: a bare Escape, which AO only
+// observes (keyChord).
+var pageEscape = keybindings.Accelerator{Key: "escape"}
+
 // keyChord is engineEvents.KeyChord: it answers on the engine's UI thread, so
 // it is one set lookup, and the routing that takes m.mu happens off it.
 //
-// A bare Escape is claimed only from a page whose find runs in AO's bar, so
-// the bar closes through `find.close` while keyboard focus is in the page;
-// otherwise the page keeps it.
-func (m *Manager) keyChord(handle string, pressed keybindings.Accelerator) bool {
-	if pressed == findEscape {
-		if _, finding := m.finding.Load(handle); !finding {
-			return false
+// A bare Escape is never AO's: the page has it exactly as if AO were not
+// there. Pressed, not held, it is announced (emitEscape) so a find bar the
+// pane shows over the page can close.
+func (m *Manager) keyChord(handle string, pressed keybindings.Accelerator, repeat bool) bool {
+	if pressed == pageEscape {
+		if !repeat {
+			go m.emitEscape(handle)
 		}
-		go m.emitAccelerator(handle, pressed)
-		return true
+		return false
 	}
 	if m.accelerators == nil {
 		return false
@@ -235,6 +238,18 @@ func (m *Manager) keyChord(handle string, pressed keybindings.Accelerator) bool 
 	}
 	go m.emitAccelerator(handle, bound)
 	return true
+}
+
+// emitEscape announces a bare Escape pressed in a page a pane shows, as a
+// Kind "escape" event naming the thread and the page.
+func (m *Manager) emitEscape(handle string) {
+	m.mu.Lock()
+	p := m.pageByHandleLocked(handle)
+	m.mu.Unlock()
+	if p == nil || !m.pageShown(p.owner, p.id) {
+		return
+	}
+	m.emit(CompanionEvent{Kind: "escape", ThreadID: p.owner, PageID: p.id})
 }
 
 func (m *Manager) emitAccelerator(handle string, bound keybindings.Accelerator) {

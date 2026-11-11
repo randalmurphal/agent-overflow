@@ -140,7 +140,7 @@ export function applyBrowserCompanionState(event: BrowserCompanionEvent): void {
     replayBrowserAccelerator(event);
     return;
   }
-  if (event.kind === 'find') {
+  if (event.kind === 'find' || event.kind === 'escape') {
     applyBrowserFindEvent(event);
     return;
   }

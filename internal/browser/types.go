@@ -44,9 +44,11 @@ type CompanionEvent struct {
 	// FindMode rides a Kind "state" event: how the active page's find is
 	// presented (FindModeBar or FindModeEngine), empty when it has none.
 	FindMode string `json:"findMode,omitempty"`
-	// Find rides a Kind "find" event: a page's find session ended without
-	// being asked to (navigation, a tab switch, a hidden pane, the page
-	// closing), so a find bar showing it closes.
+	// Find rides a Kind "find" event: a page's search ended without its
+	// owner asking (navigation, a tab switch, a hidden pane, the page
+	// closing, another owner's start), so a find bar showing it closes.
+	// A Kind "escape" event names only ThreadID and PageID: a bare Escape
+	// was pressed in that page while a pane showed it, and the page kept it.
 	Find *FindState `json:"find,omitempty"`
 }
 
@@ -58,30 +60,30 @@ const (
 	FindModeEngine = "engine"
 )
 
-// FindState is a page's find session as the find bar shows it, with the
-// find's identity (find.go): the page and its incarnation, the pane mount
-// that owns it, the document it was opened on, and the generation of the
+// FindState is a page's search as the find bar shows it, with the search's
+// identity (find.go): the page and its incarnation, the pane mount and find
+// id that own it, the document it started on, and the generation of the
 // action that answered or of the end.
 type FindState struct {
 	PageID string `json:"pageId"`
 	// Incarnation tells apart pages that share PageID: a restored page
 	// reuses its id.
 	Incarnation uint64 `json:"incarnation"`
-	// Mount is the pane mount that owns the find, "" for none.
+	// Mount is the pane mount that owns the search, "" for none.
 	Mount string `json:"mount"`
-	// Open is the id the owning mount's provider gave the explicit open the
-	// find belongs to, "" for none.
-	Open string `json:"open"`
-	// Document is the epoch of the document the find was opened on.
+	// FindID is the id the owning mount's provider made for its bar,
+	// "" for none.
+	FindID string `json:"findId"`
+	// Document is the epoch of the document the search started on.
 	Document uint64 `json:"document"`
 	// Session is the generation: it increases with every find action and
 	// end across the Manager, so an answer older than an end is
 	// recognizably stale.
 	Session uint64 `json:"session"`
 	// Foreign marks an answer for an action that changed nothing because
-	// the find it named is gone or another open's; Mount and Open then name
-	// the find's real owner, and the answer acknowledges nothing of the
-	// asker's.
+	// the search it named is gone or another owner's; Mount and FindID then
+	// name the search's real owner, and the answer acknowledges nothing of
+	// the asker's.
 	Foreign bool   `json:"foreign"`
 	Active  bool   `json:"active"`
 	Query   string `json:"query"`

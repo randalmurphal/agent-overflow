@@ -664,7 +664,7 @@ func (e *hostedEngine) Report(pageID string, kind webview2host.ReportKind, detai
 			e.logf("browser: pane host accelerator for page %s is unreadable: %v", pageID, err)
 			return
 		}
-		e.events.KeyChord(pageID, pressed)
+		e.events.KeyChord(pageID, pressed, false)
 	case webview2host.ReportFindUnavailable:
 		e.noteFindUnavailable(pageID)
 	case webview2host.ReportCleared, webview2host.ReportClearFailed:

@@ -25,7 +25,7 @@ extern void aoWKVDownloadStarted(uint64_t profile_id, uint64_t page_id, uint64_t
                                  void *download, char *uri, char *suggested);
 extern void aoWKVDownloadFinished(uint64_t download_id, double received, int state, char *path);
 extern void aoWKVClearDone(uint64_t call_id, char *err);
-extern int aoWKVKeyChord(uint64_t page_id, const char *key, int ctrl, int meta, int alt, int shift);
+extern int aoWKVKeyChord(uint64_t page_id, const char *key, int ctrl, int meta, int alt, int shift, int repeat);
 extern void aoWKVFindDone(uint64_t call_id, int found);
 
 // The download state vocabulary the Go seam uses (driver.go).
@@ -76,8 +76,10 @@ static uint64_t ao_view_profile_id(id view) {
 // goes to WebKit — Cmd+W included, which WebKit does not handle and this app
 // has no menu to catch. AOWebView is WKWebView with one addition: modifier
 // chords are offered to Go first (aoWKVKeyChord, a synchronous set lookup),
-// and a chord AO binds is swallowed here and dispatched by the SPA. Plain
-// typing never crosses; the page keeps every chord AO does not bind.
+// and a chord AO binds is swallowed here and dispatched by the SPA. A bare
+// Escape is offered too, with whether it repeats, and always reaches the
+// page: Go only observes it. Plain typing never crosses; the page keeps
+// every chord AO does not bind.
 // ---------------------------------------------------------------------------
 
 @interface AOWebView : WKWebView
@@ -137,12 +139,11 @@ static BOOL ao_claim_chord(WKWebView *view, NSEvent *event) {
   if (key == nil) {
     return NO;
   }
-  // A bare Escape is offered too: Go claims it only while the page has a
-  // find, which it then closes.
   if (!ctrl && !meta && !alt && ![key isEqualToString:@"escape"]) {
     return NO;
   }
-  return aoWKVKeyChord(ao_view_page_id(view), [key UTF8String], ctrl, meta, alt, shift) == 1;
+  int repeat = [event isARepeat] ? 1 : 0;
+  return aoWKVKeyChord(ao_view_page_id(view), [key UTF8String], ctrl, meta, alt, shift, repeat) == 1;
 }
 
 @implementation AOWebView

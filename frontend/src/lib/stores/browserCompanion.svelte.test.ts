@@ -334,17 +334,16 @@ describe('accelerators from the native page view', () => {
 
   it('routes the end of a find to the thread and leaves the pane state alone', async () => {
     vi.useFakeTimers();
-    let open = '';
-    setBindingMock('BrowserCompanionFind', async (_thread: string, action: { open: string }) => {
-      open = action.open;
-      return { pageId: 'page-1', incarnation: 1, mount: 'mount-1', open, document: 1, session: 1, active: true, query: 'alpha', found: true, matches: 2, current: 0, capped: false };
+    let findId = '';
+    setBindingMock('BrowserCompanionFind', async (_thread: string, action: { findId: string }) => {
+      findId = action.findId;
+      return { pageId: 'page-1', incarnation: 1, mount: 'mount-1', findId, document: 1, session: 1, active: true, query: 'alpha', found: true, matches: 2, current: 0, capped: false };
     });
-    const onEnded = vi.fn();
+    const closeBar = vi.fn();
     const find = createBrowserFind({
-      threadId: 'thread-browser', paneId: 'browser-main', mode: 'bar', pageId: () => 'page-1', mount: () => 'mount-1', onEnded, onError: vi.fn(),
+      threadId: 'thread-browser', paneId: 'browser-main', mode: 'bar', pageId: () => 'page-1', mount: () => 'mount-1', closeBar, onError: vi.fn(),
     });
     try {
-      find.opened?.();
       find.search('alpha');
       await vi.advanceTimersByTimeAsync(BROWSER_FIND_DEBOUNCE_MS);
       expect(find.result.count).toBe(2);
@@ -352,9 +351,9 @@ describe('accelerators from the native page view', () => {
         kind: 'find',
         threadId: 'thread-browser',
         pageId: 'page-1',
-        find: { pageId: 'page-1', incarnation: 1, mount: 'mount-1', open, document: 1, session: 2, foreign: false, active: false, query: '', found: false, matches: 0, current: -1, capped: false },
+        find: { pageId: 'page-1', incarnation: 1, mount: 'mount-1', findId, document: 1, session: 2, foreign: false, active: false, query: '', found: false, matches: 0, current: -1, capped: false },
       });
-      expect(onEnded).toHaveBeenCalledTimes(1);
+      expect(closeBar).toHaveBeenCalledTimes(1);
       expect(companionForSource('main', 'browser')).not.toBeNull();
     } finally {
       find.dispose();
