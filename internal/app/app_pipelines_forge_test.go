@@ -194,7 +194,7 @@ func TestPipelineStagesRereadCostsWhatEachForgeCharges(t *testing.T) {
 		want string
 	}{
 		{gitops.RepoReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "pipes"}, "200", "gh api run:304 gh api run jobs:304"},
-		{gitops.RepoReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "pipes"}, "20", "glab api pipeline:200 glab api pipeline jobs:200"},
+		{gitops.RepoReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "pipes"}, "20", "glab api pipeline:200 glab graphql PipelineJobs:200"},
 	} {
 		for read := range 2 {
 			since := len(engine.Invocations(0).Invocations)

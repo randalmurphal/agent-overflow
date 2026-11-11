@@ -74,12 +74,25 @@
     openStageIndex = openStageIndex === index ? null : index;
   }
 
-  function pickJob(stageName: string, job: CIJob): void {
+  type JobAction = { kind: 'log' } | { kind: 'link'; url: string } | { kind: 'none' };
+
+  // What a job row does, the one decision the row's markup and its click
+  // both read: open its fetchable log, open its forge URL (an external
+  // check, a bridge's downstream pipeline), or nothing (a status with no
+  // target URL, a bridge with no downstream pipeline yet).
+  function jobAction(job: CIJob): JobAction {
+    if (job.logsAvailable && job.id) return { kind: 'log' };
+    if (job.url) return { kind: 'link', url: job.url };
+    return { kind: 'none' };
+  }
+
+  function pickJob(stageName: string, job: CIJob, action: JobAction): void {
+    if (action.kind === 'none') return;
     openStageIndex = null;
-    if (job.logsAvailable && job.id) {
+    if (action.kind === 'log') {
       onOpenJob(stageName, job);
-    } else if (job.url) {
-      void OpenExternalURL(job.url);
+    } else {
+      void OpenExternalURL(action.url);
     }
   }
 </script>
@@ -150,12 +163,8 @@
       data-testid="review-ci-jobs"
     >
       {#each openStage.jobs as job, jobIndex (openStageJobKeys[jobIndex] ?? jobIndex)}
-        <button
-          type="button"
-          class="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-surface-2/60"
-          data-testid="review-ci-job"
-          onclick={() => pickJob(stageName, job)}
-        >
+        {@const action = jobAction(job)}
+        {#snippet jobLine()}
           <span class="h-2 w-2 shrink-0 rounded-full {ciStatusDotClass(job.status)}"></span>
           <span class="min-w-0 flex-1 truncate">{job.name}</span>
           {#if job.allowFailure && job.status === 'failed'}
@@ -165,10 +174,27 @@
             <span class="shrink-0 tabular-nums text-fg-subtle">{formatCIDuration(job.durationSeconds)}</span>
           {/if}
           <span class="shrink-0 {ciStatusTextClass(job.status)}">{job.status}</span>
-          {#if !job.logsAvailable || !job.id}
-            <Icon icon={ExternalLink} size={11} class="shrink-0 text-fg-subtle" />
+          {#if action.kind === 'link'}
+            <span class="inline-flex shrink-0" data-testid="review-ci-job-link" aria-hidden="true">
+              <Icon icon={ExternalLink} size={11} class="shrink-0 text-fg-subtle" />
+            </span>
           {/if}
-        </button>
+        {/snippet}
+        {#if action.kind === 'none'}
+          <div class="flex w-full items-center gap-2 px-3 py-1.5 text-left" data-testid="review-ci-job" data-action="none">
+            {@render jobLine()}
+          </div>
+        {:else}
+          <button
+            type="button"
+            class="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-surface-2/60"
+            data-testid="review-ci-job"
+            data-action={action.kind}
+            onclick={() => pickJob(stageName, job, action)}
+          >
+            {@render jobLine()}
+          </button>
+        {/if}
       {/each}
     </div>
   {/if}
