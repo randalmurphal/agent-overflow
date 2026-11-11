@@ -120,6 +120,16 @@ describe('terminal find on a real xterm', () => {
     expect(result().current).toBe(1);
   });
 
+  it('a changed query starts again at the newest match, not at the one stepped to', () => {
+    setPaneFindQuery(KEY, 'needle');
+    stepPaneFind(KEY, 1);
+    expect(term.getSelectionPosition()?.start.y).toBe(NEEDLE_ROWS[0]);
+    setPaneFindQuery(KEY, 'needl');
+    expect(result()).toMatchObject({ count: 2, current: 1 });
+    expect(term.getSelectionPosition()?.start.y).toBe(NEEDLE_ROWS[1]);
+    expect(inView(NEEDLE_ROWS[1])).toBe(true);
+  });
+
   it('reports no match and selects nothing', () => {
     setPaneFindQuery(KEY, 'absent');
     expect(result()).toMatchObject({ count: 0, current: -1 });

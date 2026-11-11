@@ -12,6 +12,7 @@ import { copyToClipboard } from '../../utils/clipboard';
 import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import { applySettingsSnapshot, resetSettingsForTest } from '../../stores/settings.svelte';
 import { terminalFindKey } from './terminalFind.svelte';
+import { setResolvedThemeForTest } from '../../../test/mocks/resolvedThemeMock.svelte';
 import {
   getPaneFindProvider,
   openPaneFind,
@@ -169,6 +170,11 @@ vi.mock('../../stores/keybindings.svelte', () => ({
 vi.mock('@xterm/xterm', () => ({ Terminal: mocks.FakeTerminal }));
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} } }));
 vi.mock('@xterm/addon-search', () => ({ SearchAddon: mocks.FakeSearchAddon }));
+// A theme a test can flip, to drive the body's palette effect.
+vi.mock('../../stores/themeMode.svelte', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../stores/themeMode.svelte')>()),
+  getResolvedTheme: (await import('../../../test/mocks/resolvedThemeMock.svelte')).getResolvedThemeMock,
+}));
 vi.mock('@xterm/addon-unicode11', () => ({ Unicode11Addon: class {} }));
 vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class {} }));
 vi.mock('@xterm/addon-webgl', () => ({
@@ -425,6 +431,23 @@ describe('TerminalBody find', () => {
     expect(getPaneFindProvider(key)?.noun).toBe('terminal');
     expect(mocks.timeline).toEqual(['resize:80x24', 'write:REPLAY', 'findPrevious:needle']);
     expect(getPaneFindProvider(key)?.result).toMatchObject({ count: 1, current: 0 });
+  });
+
+  it('repaints its matches when the theme changes', async () => {
+    const key = findKeyFor('t-find-theme');
+    const { resolveReplay } = await mountWithPendingReplay('t-find-theme');
+    resolveReplay({ data: '', fromSequence: 0, throughSequence: 0 });
+    await settle();
+    openPaneFind(key);
+    setPaneFindQuery(key, 'needle');
+    mocks.timeline.length = 0;
+    try {
+      setResolvedThemeForTest('light');
+      await settle();
+      expect(mocks.timeline).toEqual(['clearDecorations', 'findPrevious:needle']);
+    } finally {
+      setResolvedThemeForTest('dark');
+    }
   });
 
   it('clears its matches and unregisters before the xterm is disposed', async () => {

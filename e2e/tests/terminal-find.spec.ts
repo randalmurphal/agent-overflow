@@ -55,7 +55,7 @@ test('the terminal finds from its button, and ctrl+f stays the shell\'s', async 
     // Output while the bar is open: the count follows it.
     const [shell] = await host.rpc<Array<{ terminalID: string }>>('ListTerminals', threadId);
     await host.rpc('WriteTerminal', shell.terminalID, Buffer.from("printf '%s-%s\\n' tango w\n").toString('base64'));
-    await expect(count).toHaveText(/^\d\/4$/);
+    await expect(count).toHaveText(/(^|\s)\d\/4$/);
     await expect(input).toBeFocused();
 
     await page.keyboard.press('Escape');
@@ -66,7 +66,7 @@ test('the terminal finds from its button, and ctrl+f stays the shell\'s', async 
     // A second tab has its own find; the first tab's comes back with it.
     await page.getByTestId('terminal-find').click();
     await expect(input).toHaveValue(QUERY);
-    await expect(count).toHaveText(/^\d\/4$/);
+    await expect(count).toHaveText(/(^|\s)\d\/4$/);
     await page.getByTestId('terminal-open').click();
     await expect(terminalTabs(page)).toHaveCount(2);
     await expect(drawer(page).getByTestId('pane-find-bar')).toHaveCount(0);
@@ -74,16 +74,20 @@ test('the terminal finds from its button, and ctrl+f stays the shell\'s', async 
     await terminalTabs(page).first().click();
     await expect(bar).toBeVisible();
     await expect(input).toHaveValue(QUERY);
-    await expect(count).toHaveText(/^\d\/4$/);
+    await expect(count).toHaveText(/(^|\s)\d\/4$/);
 
-    // Hidden and reopened, the drawer's open bar is the same terminal's.
+    // Hidden and reopened, the drawer's open bar is the same terminal's. A
+    // reopen activates the newest tab, which has no find open.
     await page.getByTestId('terminal-collapse').click();
     await expect(drawer(page)).toHaveCount(0);
     await page.getByTestId('terminal-toggle').click();
     await expect(terminalTabs(page)).toHaveCount(2);
+    await expect(terminalTabs(page).last()).toHaveAttribute('aria-selected', 'true');
+    await expect(drawer(page).getByTestId('pane-find-bar')).toHaveCount(0);
+    await terminalTabs(page).first().click();
     await expect(bar).toBeVisible();
     await expect(input).toHaveValue(QUERY);
-    await expect(count).toHaveText(/^\d\/4$/);
+    await expect(count).toHaveText(/(^|\s)\d\/4$/);
     await expect.poll(() => decorations(page).count()).toBeGreaterThan(0);
   } finally {
     await setup.host.close();

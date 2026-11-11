@@ -193,7 +193,8 @@
   // Each tab has its own find (terminalFind.svelte.ts). The pane's find
   // commands reach the active tab's through the surface declaration; the
   // tab strip's button is the keyboard-free entry, since mod+f inside the
-  // xterm belongs to the shell. A close returns focus to the terminal.
+  // xterm belongs to the shell. A close from the bar returns focus to the
+  // terminal (the bar's fallback focus).
   function activeFindKey(): string | null {
     const terminalID = handle.activeTerminalID;
     return terminalID ? terminalFindKey(surface.paneId, terminalID) : null;
@@ -201,7 +202,7 @@
 
   function openFind() {
     const key = activeFindKey();
-    if (key) openPaneFind(key, { returnFocus: bodyEl?.focusTarget() ?? null });
+    if (key) openPaneFind(key);
   }
 
   // A closed tab's find state goes with it.

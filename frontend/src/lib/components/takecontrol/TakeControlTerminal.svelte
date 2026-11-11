@@ -297,9 +297,9 @@
     }
   }
 
-  // A close returns focus to the mirror.
+  // A close from the bar returns focus to the mirror (the bar's fallback).
   function openFind(): void {
-    openPaneFind(paneId, { returnFocus: term?.textarea ?? null });
+    openPaneFind(paneId);
   }
 
   onMount(() => {

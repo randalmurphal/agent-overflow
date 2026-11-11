@@ -172,7 +172,8 @@ describe('createTerminalFind', () => {
     addon.answer(1, 2);
     find.search('needle');
     addon.writes.fire();
-    expect(find.result).toMatchObject({ count: 2, pending: true });
+    // Progressive: the bar keeps showing the last count beside the spinner.
+    expect(find.result).toMatchObject({ count: 2, pending: true, progressive: true });
     // The addon's own re-search after the writes.
     addon.results.fire({ resultIndex: 1, resultCount: 5 });
     expect(find.result).toMatchObject({ count: 5, current: 1, pending: false });

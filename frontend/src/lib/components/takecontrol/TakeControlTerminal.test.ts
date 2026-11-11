@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import TakeControlTerminal from './TakeControlTerminal.svelte';
 import { encodeTerminalInput } from '../../types/terminal';
 import { isPaneFindOpen, resetPaneFindForTest } from '../../stores/paneFind.svelte';
+import { setResolvedThemeForTest } from '../../../test/mocks/resolvedThemeMock.svelte';
 
 // xterm can't render under happy-dom, and these tests need to observe the exact
 // sequence of write() calls (to prove the replay/live dedup), so swap in a fake
@@ -149,7 +150,10 @@ vi.mock('../terminal/terminalTheme', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../terminal/terminalTheme')>()),
   getXtermTheme: () => ({}),
 }));
-vi.mock('../../stores/themeMode.svelte', () => ({ getResolvedTheme: () => 'dark' }));
+// A theme a test can flip, to drive the palette effect.
+vi.mock('../../stores/themeMode.svelte', async () => ({
+  getResolvedTheme: (await import('../../../test/mocks/resolvedThemeMock.svelte')).getResolvedThemeMock,
+}));
 vi.mock('../terminal/terminalStore.svelte', () => ({
   notifyTerminalFocus: mocks.notifyTerminalFocus,
 }));
@@ -567,11 +571,21 @@ describe('<TakeControlTerminal>', () => {
     await waitFor(() => expect(document.activeElement).toBe(mocks.getLastTerminal()!.textarea));
     expect(isPaneFindOpen('tc-find')).toBe(false);
 
-    mocks.searches.length = 0;
+    // A theme change repaints the open query's matches.
     await fireEvent.click(getByTestId('take-control-find'));
+    mocks.searches.length = 0;
+    try {
+      setResolvedThemeForTest('light');
+      await waitFor(() => expect(mocks.searches).toEqual(['clear', 'previous:needle']));
+      setResolvedThemeForTest('dark');
+      await waitFor(() => expect(mocks.searches).toEqual(['clear', 'previous:needle', 'clear', 'previous:needle']));
+    } finally {
+      setResolvedThemeForTest('dark');
+    }
+    mocks.searches.length = 0;
     unmount();
-    // The query was kept; the unmount clears its matches.
-    expect(mocks.searches).toEqual(['previous:needle', 'clear']);
+    // The unmount clears its matches.
+    expect(mocks.searches).toEqual(['clear']);
     resetPaneFindForTest();
   });
 });

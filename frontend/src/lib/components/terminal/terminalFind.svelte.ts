@@ -10,7 +10,7 @@
 //   reported as capped.
 // - New output or a resize while a query is set makes the addon search again
 //   once writes pause; until its answer the result is pending, so the bar
-//   never shows a count the buffer has moved past.
+//   marks the count it shows as updating.
 // - `clear` removes the decorations and the match selection.
 
 import type { IDisposable, IEvent } from '@xterm/xterm';
@@ -118,6 +118,9 @@ export function createTerminalFind(options: TerminalFindOptions): TerminalFind {
     get current() { return current; },
     get pending() { return pending; },
     get capped() { return count >= TERMINAL_FIND_HIGHLIGHT_LIMIT; },
+    // The last count stays beside the spinner while output streams, rather
+    // than blinking out on every write.
+    progressive: true,
     get error() { return error; },
   };
 
