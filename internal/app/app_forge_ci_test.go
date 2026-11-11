@@ -260,6 +260,39 @@ func expectCountHolds(t *testing.T, counter *atomic.Int32, why string) {
 	}
 }
 
+// awaitSettledCIEvent awaits a pipeline frame and the end of the turn
+// that emitted it. A turn emits its pipeline frame before it polls the
+// followed logs, so a follow set right after the frame is otherwise
+// fetched by that turn as well as by the follow's own request.
+func awaitSettledCIEvent(t *testing.T, f *prCIFixture, why string) PRCIUpdatedEvent {
+	t.Helper()
+	evt := awaitCIEvent(t, f.ciEvents, why)
+	settlePumps(t, f.app)
+	return evt
+}
+
+// settlePumps returns once every PR and pipeline pump of app served an
+// empty request. A pump takes a request only between turns, so no turn
+// that began before the call is still running.
+func settlePumps(t *testing.T, app *App) {
+	t.Helper()
+	app.prUpdates.mu.Lock()
+	cores := make([]*pumpCore, 0, len(app.prUpdates.pumps)+len(app.prUpdates.pipelines))
+	for _, pump := range app.prUpdates.pumps {
+		cores = append(cores, &pump.pumpCore)
+	}
+	for _, pump := range app.prUpdates.pipelines {
+		cores = append(cores, &pump.pumpCore)
+	}
+	app.prUpdates.mu.Unlock()
+	for _, core := range cores {
+		// A pump that stopped runs no turn.
+		if err := app.requestPump(t.Context(), core, &prPumpRequest{}); err != nil && !errors.Is(err, errPRUpdatesUnknownSubscription) {
+			t.Fatalf("settle the pumps: %v", err)
+		}
+	}
+}
+
 func pipelineWith(status string, jobs ...gitops.CIJob) gitops.CIPipeline {
 	return gitops.CIPipeline{Status: status, Stages: []gitops.CIStage{{Name: "test", Status: status, Jobs: jobs}}}
 }

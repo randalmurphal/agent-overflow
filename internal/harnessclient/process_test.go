@@ -55,7 +55,8 @@ func TestTerminateRefusesANonPID(t *testing.T) {
 // asked to survive SIGKILL on demand.
 func TestTerminateReportsAProcessThatSurvivedSIGKILL(t *testing.T) {
 	dataRoot := t.TempDir()
-	launched, err := Launch(context.Background(), fakeBackendOpts(t, "linger", dataRoot))
+	// The backend ignores SIGTERM, so the kill reaches a running process.
+	launched, err := Launch(context.Background(), fakeBackendOpts(t, "ignore-term", dataRoot))
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
@@ -79,5 +80,47 @@ func TestTerminateReportsAProcessThatSurvivedSIGKILL(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "survived SIGKILL") {
 		t.Fatalf("error does not name what happened: %v", err)
+	}
+}
+
+// A kill refused because the process already exited proves it gone, even
+// when a probe of its pid, which another process may since hold, says
+// alive. The probe blocks until the backend exited from the polite stop
+// and was reaped, so the kill that follows the grace finds it done.
+func TestTerminateTreatsAKillOfAFinishedProcessAsStopped(t *testing.T) {
+	launched, err := Launch(context.Background(), fakeBackendOpts(t, "linger", t.TempDir()))
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	exited := launched.startWaiter()
+	restoreProbe := processAlive
+	processAlive = func(int) bool {
+		<-exited
+		return true
+	}
+	t.Cleanup(func() { processAlive = restoreProbe })
+
+	if err := TerminateProcess(context.Background(), launched.Bootstrap.PID, time.Second); err != nil {
+		t.Fatalf("terminate of a process that exited = %v, want success", err)
+	}
+}
+
+// A polite stop refused because the process already exited is a stop.
+func TestTerminateTreatsAStopOfAFinishedProcessAsStopped(t *testing.T) {
+	launched, err := Launch(context.Background(), fakeBackendOpts(t, "linger", t.TempDir()))
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	pid := launched.Bootstrap.PID
+	if err := TerminateProcess(context.Background(), pid, time.Second); err != nil {
+		t.Fatalf("first terminate: %v", err)
+	}
+	<-launched.startWaiter()
+	restoreProbe := processAlive
+	processAlive = func(int) bool { return true }
+	t.Cleanup(func() { processAlive = restoreProbe })
+
+	if err := TerminateProcess(context.Background(), pid, time.Second); err != nil {
+		t.Fatalf("terminate of a reaped process = %v, want success", err)
 	}
 }
