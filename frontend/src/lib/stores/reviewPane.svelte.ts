@@ -2043,12 +2043,32 @@ export function createReviewPaneState(
   // or re-renders the patch). Applied through the store, so a head that
   // moved raises the stale banner on every pane whose diff predates it —
   // and on none whose diff doesn't. The diff never swaps mid-read.
+  // A refresh asked for while one runs is owed, not dropped: the running
+  // read may predate what the later ask wants to see (a merge failure
+  // during a manual refresh). One read at a time; the owed one runs next.
+  let refreshPRDataOwed = false;
   async function refreshPRThreads(): Promise<void> {
-    if (scope !== 'pr' || !prRef || refreshingPRData) return;
-    const key = computerPRKey(prRef);
+    if (scope !== 'pr' || !prRef) return;
+    if (refreshingPRData) {
+      refreshPRDataOwed = true;
+      return;
+    }
     refreshingPRData = true;
     try {
-      const pr = prReferenceWire(prRef);
+      do {
+        refreshPRDataOwed = false;
+        await readPRThreads(prRef);
+      } while (refreshPRDataOwed && !disposed && scope === 'pr' && prRef !== null);
+    } finally {
+      refreshPRDataOwed = false;
+      refreshingPRData = false;
+    }
+  }
+
+  async function readPRThreads(ref: PRRef): Promise<void> {
+    const key = computerPRKey(ref);
+    try {
+      const pr = prReferenceWire(ref);
       const [detail, threads] = await Promise.all([
         withBackendTarget(backend, () => GetPRDetail(pr)) as Promise<PRDetail>,
         withBackendTarget(backend, () => ListPRReviewThreads(pr)) as Promise<ReviewThread[] | null>,
@@ -2063,8 +2083,6 @@ export function createReviewPaneState(
     } catch (err) {
       if (disposed) return;
       error = userFacingError(err);
-    } finally {
-      refreshingPRData = false;
     }
   }
 

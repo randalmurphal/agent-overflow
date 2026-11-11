@@ -1447,6 +1447,142 @@ describe('prReviewStore — merge conflicts follow the PR', () => {
     a.release();
   });
 
+  // The open's wait is bounded in microtasks, not timers: a wait that spins
+  // on an already-resolved promise starves every timer, so only this can
+  // fail instead of hanging.
+  async function settlesWithin(done: Promise<unknown>, turns = 2000): Promise<boolean> {
+    let settled = false;
+    void done.then(() => { settled = true; }, () => { settled = true; });
+    for (let i = 0; i < turns && !settled; i += 1) await Promise.resolve();
+    return settled;
+  }
+
+  it('an open whose PR is dropped during the read settles, and nothing reads again', async () => {
+    installSubscribeMock();
+    let releaseTree!: () => void;
+    const held = new Promise<void>((resolve) => { releaseTree = resolve; });
+    const conflicts = setBindingMock('GetPRMergeConflicts', async () => {
+      await held;
+      return { conflicted: true, treeOID: 'tree-1', baseLabel: 'origin/main', headLabel: 'feature', paths: ['main.go'], notes: {}, messages: [] };
+    });
+    const file = setBindingMock('GetMergeConflictFile', async () => 'merged content');
+    const a = attachPR(KEY, { ref: REF });
+    await flush();
+    const viewing = permitPRConflictReconcile(KEY, CONFLICT_WS);
+    const opening = openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
+    await flush();
+    // A newer snapshot is wanted, and the view's permit is still held.
+    applyPRUpdatedEvent({ prKey: KEY, detail: detailStub({ headSHA: 'sha-b' }), threads: [], headSHA: 'sha-b', seq: 10 });
+    await flush();
+
+    // The last holder leaves (scope switch, companion closed) mid-read:
+    // the open settles at once, before the read in flight answers.
+    a.release();
+    expect(await settlesWithin(opening)).toBe(true);
+    releaseTree();
+    await flush();
+    viewing();
+    expect(conflicts).toHaveBeenCalledTimes(1);
+    expect(file).not.toHaveBeenCalled();
+    expect(peekPRConflicts(KEY, CONFLICT_WS).state).toBeNull();
+  });
+
+  // The forge moves to B and back to A while A's read is in flight: what
+  // is wanted is A again, which that read answers.
+  it('a snapshot that returns to the one in flight leaves nothing queued', async () => {
+    installSubscribeMock();
+    let releaseTree!: () => void;
+    const held = new Promise<void>((resolve) => { releaseTree = resolve; });
+    const conflicts = setBindingMock('GetPRMergeConflicts', async (_ws: unknown, _ref: unknown, rev: { headSHA: string }) => {
+      if (rev.headSHA === 'sha-a') await held;
+      return { conflicted: true, treeOID: `tree-${rev.headSHA}`, baseLabel: 'origin/main', headLabel: 'feature', paths: ['main.go'], notes: {}, messages: [] };
+    });
+    setBindingMock('GetMergeConflictFile', async (_ws: unknown, tree: unknown) => `content of ${String(tree)}`);
+    const a = attachPR(KEY, { ref: REF });
+    await flush();
+    const viewing = permitPRConflictReconcile(KEY, CONFLICT_WS);
+    const opening = openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
+    await flush();
+
+    applyPRUpdatedEvent({ prKey: KEY, detail: detailStub({ headSHA: 'sha-b' }), threads: [], headSHA: 'sha-b', seq: 10 });
+    applyPRUpdatedEvent({ prKey: KEY, detail: detailStub(), threads: [], headSHA: 'sha-a', seq: 11 });
+    await flush();
+    releaseTree();
+    await opening;
+    await flush();
+
+    expect(conflicts.mock.calls.map((call) => (call[2] as { headSHA: string }).headSHA)).toEqual(['sha-a']);
+    expect(peekPRConflicts(KEY, CONFLICT_WS).state?.revision.headSHA).toBe('sha-a');
+    expect(peekPRConflicts(KEY, CONFLICT_WS).contentByPath.get('main.go')).toBe('content of tree-sha-a');
+    viewing();
+    a.release();
+  });
+
+  // The pump's forced emit after the failed user read can land before the
+  // frontend sees the failure. It still asks for the one retry, which runs
+  // unattended; that retry's failure asks for nothing more.
+  it('a retry frame that arrives before the failing read settles still retries once', async () => {
+    installSubscribeMock();
+    let failTree!: (err: unknown) => void;
+    const held = new Promise<void>((_resolve, reject) => { failTree = reject; });
+    let calls = 0;
+    const conflicts = setBindingMock('GetPRMergeConflicts', async () => {
+      calls += 1;
+      if (calls === 1) await held;
+      // A read past the one retry never answers, so a loop shows as a
+      // third call instead of spinning.
+      if (calls > 2) await new Promise(() => {});
+      throw new Error('fetch pull request commits: exited with code 128');
+    });
+    const a = attachPR(KEY, { ref: REF });
+    await flush();
+    const viewing = permitPRConflictReconcile(KEY, CONFLICT_WS);
+    const opening = openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
+    await flush();
+
+    applyPRUpdatedEvent({ prKey: KEY, detail: detailStub(), threads: [], headSHA: 'sha-a', seq: 90 });
+    await flush();
+    failTree(new Error('fetch pull request commits: exited with code 128'));
+    await opening;
+    await flush();
+
+    expect(conflicts.mock.calls.map((call) => call[4])).toEqual([true, false]);
+    expect(peekPRConflicts(KEY, CONFLICT_WS).error).toContain('code 128');
+    expect(peekPRConflicts(KEY, CONFLICT_WS).loading).toBe(false);
+    viewing();
+    a.release();
+  });
+
+  // The reopen waits on its snapshot, so it reads with no view holding a
+  // permit (the pane takes its permit after the open in some orders).
+  it('a reopen handed a newer snapshot reads it with no reconcile permit held', async () => {
+    installSubscribeMock();
+    let releaseFirst!: () => void;
+    const held = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let releaseSecond!: () => void;
+    const heldSecond = new Promise<void>((resolve) => { releaseSecond = resolve; });
+    const conflicts = setBindingMock('GetPRMergeConflicts', async (_ws: unknown, _ref: unknown, rev: { headSHA: string }) => {
+      await (rev.headSHA === 'sha-a' ? held : heldSecond);
+      return { conflicted: true, treeOID: `tree-${rev.headSHA}`, baseLabel: 'origin/main', headLabel: 'feature', paths: [], notes: {}, messages: [] };
+    });
+    const a = attachPR(KEY, { ref: REF });
+    await flush();
+    const first = openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
+    await flush();
+    const reopen = openPRConflicts(KEY, CONFLICT_WS, REF, detailStub({ headSHA: 'sha-b' }));
+    await flush();
+    releaseFirst();
+    // The first open settles with its own snapshot's read, while the
+    // reopen's is still running.
+    expect(await settlesWithin(first)).toBe(true);
+    expect(await settlesWithin(reopen, 200)).toBe(false);
+    releaseSecond();
+    await reopen;
+    expect(conflicts.mock.calls.map((call) => [(call[2] as { headSHA: string }).headSHA, call[4]])).toEqual([['sha-a', true], ['sha-b', true]]);
+    expect(peekPRConflicts(KEY, CONFLICT_WS).state?.revision.headSHA).toBe('sha-b');
+    a.release();
+  });
+
   it('drops conflict state when the last holder leaves', async () => {
     installSubscribeMock();
     installConflictMocks();

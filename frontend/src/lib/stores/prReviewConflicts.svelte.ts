@@ -14,112 +14,14 @@ import { workspaceKeyBackend } from '../utils/workspaceKey';
 
 import { SvelteMap } from 'svelte/reactivity';
 import { GetMergeConflictFile, GetPRMergeConflicts } from './bindings';
+import { PRConflictEntry, type ConflictRead, type PRConflicts } from './prReviewConflictsEntry.svelte';
 import { errString } from '../utils/errors';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
 import type { WorkspaceRef } from '../types/git';
 import type { PRDetail } from '../types/models';
-import { prRevision, prRevisionKey, type PRRevision } from '../utils/prRevision';
+import { prRevision } from '../utils/prRevision';
 
-export interface PRConflicts {
-  treeOID: string;
-  baseLabel: string;
-  headLabel: string;
-  paths: string[];
-  /** Per-path merge-tree messages — the only signal for non-textual
-   * conflicts (modify/delete, rename/rename, …); rendered as marker
-   * rows at the top of that file's body. */
-  notes: Partial<Record<string, string[]>>;
-  /** Fallback strip: messages that name no conflicted path (rare). */
-  messages: string[];
-  /** The revision the read was asked at. The backend merges its head with
-   * the base branch's tip as origin has it during the read, not with
-   * `revision.baseSHA` (the base the forge recorded, which does not follow
-   * the branch). A head or base-branch move makes the tree answer for a
-   * merge nobody asked about. */
-  revision: PRRevision;
-}
-
-/** A snapshot parked to be read after the read in flight. */
-interface PendingRead {
-  ref: PRRef;
-  detail: PRDetail;
-  /** A person asked for this read (an open), so it may prompt for git
-   * credentials; a reconcile's read may not. */
-  userInitiated: boolean;
-}
-
-/**
- * What a read answers for: the revision and the forge's mergeability. A
- * base branch that moves changes no revision field, but the forge reports
- * what the move did to the merge in its mergeability. Two snapshots with
- * one key are answered by one read; this is the only comparison an open
- * or a reconcile makes against the read in flight or the one on screen.
- */
-function conflictReadKey(revision: PRRevision, detail: PRDetail): string {
-  return `${prRevisionKey(revision)}\n${String(detail.mergeability ?? '')}`;
-}
-
-class PRConflictEntry {
-  constructor(
-    readonly prKey: string,
-    /** The checkout that computes the tree. merge-tree needs a local clone,
-     * and a head move recomputes without an attacher present to supply one. */
-    readonly workspace: WorkspaceRef,
-  ) {}
-
-  state = $state<PRConflicts | null>(null);
-  loading = $state(false);
-  /** The merge-tree computation's own failure. */
-  treeError = $state<string | null>(null);
-  /** Per-path content-read failures. Per PATH because the reads run in
-   * PARALLEL: one shared slot let a later file's success clear an earlier
-   * file's banner while that file was still contentless, so the pane
-   * reported a healthy conflict view with a hole in it. */
-  readonly errorByPath = new SvelteMap<string, string>();
-  readonly contentByPath = new SvelteMap<string, string>();
-  /** In-flight per-path content loads, so N panes expanding the same file
-   * share one read. */
-  readonly inFlight = new Map<string, Promise<void>>();
-  /** The tree read in flight, so an open during it settles with its answer. */
-  load: Promise<void> | null = null;
-  /** conflictReadKey of the read in flight, else of the last read. */
-  readKey = '';
-  /** The revision that moved WHILE a load was running, or that a view
-   * opened before the forge reported one (GitLab preparing the diff). The
-   * view is open, so it has to converge on it — dropping it left the pane
-   * pinned to a superseded merge forever, because the poll only fires on
-   * CHANGE and no later event re-states the revision. */
-  pending: PendingRead | null = null;
-  seq = 0;
-
-  /** Read the parked pair and clear it. A method rather than an inline
-   * read-and-null in the load's `finally`: `pending` is written by a
-   * reconcile that lands DURING the awaited load, which TypeScript's
-   * assignment narrowing does not model — an inline read after the
-   * `pending = null` at the load's start narrows to `null` and the replay
-   * becomes unreachable code the compiler rejects. */
-  takePending(): PendingRead | null {
-    const pending = this.pending;
-    this.pending = null;
-    return pending;
-  }
-
-  /** Park a snapshot to read after the read in flight. The newest snapshot
-   * wins, and a person's ask survives a later automatic one. */
-  park(ref: PRRef, detail: PRDetail, userInitiated: boolean): void {
-    this.pending = { ref, detail, userInitiated: userInitiated || (this.pending?.userInitiated ?? false) };
-  }
-
-  /** One banner for the surface: the tree failure if there is one, else the
-   * first file that could not be read (named, since its body is missing). */
-  get error(): string | null {
-    if (this.treeError !== null) return this.treeError;
-    const first = this.errorByPath.entries().next();
-    if (first.done) return null;
-    const [path, message] = first.value;
-    return `${path}: ${message}`;
-  }
-}
+export type { PRConflicts };
 
 export interface PRConflictsView {
   readonly state: PRConflicts | null;
@@ -175,7 +77,7 @@ function ensureConflicts(key: string, workspace: WorkspaceRef): PRConflictEntry 
   const id = entryKey(key, workspace);
   let entry = conflictsByKey.get(id);
   if (!entry) {
-    entry = new PRConflictEntry(key, workspace);
+    entry = new PRConflictEntry(key, workspace, () => viewHolds.has(id), readConflictTree);
     conflictsByKey.set(id, entry);
   }
   return entry;
@@ -193,72 +95,39 @@ export function peekPRConflicts(key: string | null, workspace: WorkspaceRef): PR
  * file's content. Every open reads again: the merge is against the base
  * branch's live tip, which can move without any change to the revision the
  * pane holds. An open while a read of the same snapshot is in flight shares
- * that read; an open handed another snapshot parks it to read next. Either
- * way the open settles only once the snapshot it was handed (or a newer
- * one) has been read.
+ * that read. The open settles once a read that covers its snapshot (or a
+ * newer one) has settled, or the PR's last holder has left.
  */
-export async function openPRConflicts(
+export function openPRConflicts(
   key: string,
   workspace: WorkspaceRef,
   ref: PRRef,
   detail: PRDetail,
 ): Promise<void> {
-  const entry = ensureConflicts(key, workspace);
-  const revision = prRevision(detail);
-  if (revision === null) {
-    // Nothing to merge yet; the snapshot that carries a revision reconciles.
-    entry.park(ref, detail, true);
-    return;
-  }
-  if (entry.load === null) {
-    void startPRConflictsLoad(entry, ref, revision, detail, true);
-  } else if (conflictReadKey(revision, detail) !== entry.readKey) {
-    entry.park(ref, detail, true);
-  }
-  // The load's finally starts the parked read before it clears, so this
-  // waits through it.
-  while (entry.load) await entry.load;
+  return ensureConflicts(key, workspace).open(ref, detail, prRevision(detail));
 }
 
-function startPRConflictsLoad(
-  entry: PRConflictEntry,
-  ref: PRRef,
-  revision: PRRevision,
-  detail: PRDetail,
-  userInitiated: boolean,
-): Promise<void> {
-  const load = loadPRConflicts(entry, ref, revision, detail, userInitiated);
-  entry.load = load;
-  return load;
-}
-
-async function loadPRConflicts(
-  entry: PRConflictEntry,
-  ref: PRRef,
-  revision: PRRevision,
-  detail: PRDetail,
-  userInitiated: boolean,
-): Promise<void> {
+/** The runner's one read: the tree, then every conflicted file. Never
+ * rejects; true when the tree was read. */
+async function readConflictTree(entry: PRConflictEntry, read: ConflictRead): Promise<boolean> {
   const { prKey, workspace } = entry;
+  const { revision, detail } = read;
   const headRefName = detail.headRefName;
-  const seq = ++entry.seq;
-  entry.readKey = conflictReadKey(revision, detail);
-  entry.loading = true;
+  const epoch = ++entry.epoch;
   entry.treeError = null;
   entry.errorByPath.clear();
   entry.state = null;
-  entry.pending = null;
   entry.contentByPath.clear();
   entry.inFlight.clear();
   try {
     const result = await withBackendTarget(workspaceKeyBackend(prKey), () => GetPRMergeConflicts(
       workspace,
-      prReferenceWire(ref),
+      prReferenceWire(read.ref),
       revision,
       headRefName,
-      userInitiated,
+      read.userInitiated,
     ));
-    if (seq !== entry.seq) return;
+    if (epoch !== entry.epoch) return true;
     entry.state = {
       treeOID: String(result.treeOID ?? ''),
       baseLabel: String(result.baseLabel ?? `origin/${revision.baseRef}`),
@@ -268,25 +137,14 @@ async function loadPRConflicts(
       messages: result.conflicted ? [...(result.messages ?? [])] : [],
       revision,
     };
-    entry.treeError = null;
     // Conflict files render expanded, so their content is fetched here
     // (one local git read per file, in parallel). A file whose read fails
     // keeps its error and is the one thing a pane leaves collapsed.
     await Promise.all(entry.state.paths.map((path) => loadConflictFile(entry, path)));
+    return true;
   } catch (err) {
-    if (seq !== entry.seq) return;
-    entry.treeError = errString(err);
-  } finally {
-    if (seq === entry.seq) {
-      entry.loading = false;
-      entry.load = null;
-      // A snapshot parked while this load ran is not a lost update: read it
-      // now. An open's snapshot reads whether or not a view still holds the
-      // entry, since the open is waiting on it; a reconcile's re-checks the
-      // hold. Both skip a snapshot this load already answered.
-      const pending = entry.takePending();
-      if (pending) readParked(entry, pending);
-    }
+    if (epoch === entry.epoch) entry.treeError = errString(err);
+    return false;
   }
 }
 
@@ -306,20 +164,20 @@ async function loadConflictFile(entry: PRConflictEntry, path: string): Promise<v
     await inFlight;
     return;
   }
-  const seq = entry.seq;
-  const treeOID = entry.state?.treeOID ?? '';
+  const epoch = entry.epoch;
+  const treeOID = entry.state.treeOID;
   const { prKey, workspace } = entry;
   const load = (async () => {
     try {
       const content = await withBackendTarget(workspaceKeyBackend(prKey), () => GetMergeConflictFile(workspace, treeOID, path));
-      if (seq !== entry.seq) return;
+      if (epoch !== entry.epoch) return;
       entry.contentByPath.set(path, String(content ?? ''));
       // Only THIS path's failure is resolved. The reads run in parallel, so
       // clearing a shared slot here dismissed a sibling's banner while that
       // sibling still had no body to render.
       entry.errorByPath.delete(path);
     } catch (err) {
-      if (seq !== entry.seq) return;
+      if (epoch !== entry.epoch) return;
       entry.errorByPath.set(path, errString(err));
     } finally {
       entry.inFlight.delete(path);
@@ -350,69 +208,21 @@ export function reconcileConflictsWithHead(
   liveHeadSHA: string,
 ): void {
   if (!detail || !ref) return;
-  for (const entry of conflictsByKey.values()) {
-    if (entry.prKey === key) reconcileEntryWithHead(entry, ref, detail, liveHeadSHA);
-  }
-}
-
-function readParked(entry: PRConflictEntry, pending: PendingRead): void {
-  const { ref, detail, userInitiated } = pending;
-  if (!userInitiated) {
-    reconcileEntryWithHead(entry, ref, detail, String(detail.headSHA ?? ''));
-    return;
-  }
-  const revision = prRevision(detail);
-  if (revision === null) return;
-  if (entry.treeError === null && conflictReadKey(revision, detail) === entry.readKey) return;
-  void startPRConflictsLoad(entry, ref, revision, detail, true);
-}
-
-function reconcileEntryWithHead(
-  entry: PRConflictEntry,
-  ref: PRRef,
-  detail: PRDetail,
-  liveHeadSHA: string,
-): void {
-  if (!viewHolds.has(entryKey(entry.prKey, entry.workspace))) return;
   const revision = prRevision(detail, liveHeadSHA);
-  if (revision === null) return;
-  const key = conflictReadKey(revision, detail);
-  if (entry.loading) {
-    // The snapshot moved while the merge-tree run (and its per-file reads)
-    // were still going. Park it: the load in flight answers for a merge
-    // nobody asked about any more, and dropping the new snapshot left the
-    // open view on it forever (later polls dedup to nothing, so no event
-    // re-states it).
-    if (key !== entry.readKey) entry.park(ref, detail, false);
-    return;
+  for (const entry of conflictsByKey.values()) {
+    if (entry.prKey === key) entry.frame(ref, detail, revision);
   }
-  // Compared against the read recorded ON the entry, not the previous
-  // snapshot: after a reconnect there is no previous snapshot, and the
-  // tree is stale all the same.
-  if (!entry.state) {
-    // A FAILED load is not a settled answer about the snapshot: the next
-    // frame retries it. A view parked waiting for a revision loads now.
-    // Only a view that never loaded at all (no state, no error, nothing
-    // parked) has nothing here to reconcile.
-    const parked = entry.takePending();
-    if (entry.treeError === null && parked === null) return;
-    // A parked open keeps its ask through the reconcile that runs it.
-    void startPRConflictsLoad(entry, ref, revision, detail, parked?.userInitiated ?? false);
-    return;
-  }
-  if (key === entry.readKey) return;
-  void startPRConflictsLoad(entry, ref, revision, detail, false);
 }
 
 /**
- * Drop a PR's conflict state in every checkout. The token is bumped BEFORE
- * the delete so in-flight loads drop their results instead of resurrecting
- * an entry nobody holds.
+ * Drop a PR's conflict state in every checkout. A retired entry stops its
+ * runner, releases every open waiting on it, and drops the answers of
+ * reads still in flight instead of resurrecting an entry nobody holds.
  */
 export function dropPRConflicts(key: string): void {
   for (const [id, entry] of conflictsByKey) {
     if (entry.prKey !== key) continue;
-    entry.seq += 1;
+    entry.retire();
     conflictsByKey.delete(id);
   }
 }

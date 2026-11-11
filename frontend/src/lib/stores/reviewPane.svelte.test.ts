@@ -2729,6 +2729,35 @@ describe('comments-only PR refresh', () => {
     expect(diff).toHaveBeenCalledTimes(1);
   });
 
+  // A refresh asked for while one is running (a merge failure during a
+  // manual refresh) is not dropped: the running one may predate what the
+  // later ask wants to see.
+  it('runs a refresh asked for during one in flight once it ends', async () => {
+    installPRMocks();
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    let releaseFirst!: () => void;
+    const held = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let calls = 0;
+    const detail = setBindingMock('GetPRDetail', async () => {
+      calls += 1;
+      if (calls === 1) await held;
+      return prDetailStub({ title: `read ${calls}` });
+    });
+
+    const first = state.refreshPRThreads();
+    await flushPane();
+    void state.refreshPRThreads();
+    void state.refreshPRThreads();
+    releaseFirst();
+    await first;
+    await flushPane();
+    expect(detail).toHaveBeenCalledTimes(2);
+    expect(state.prDetail?.title).toBe('read 2');
+    expect(state.refreshingPRData).toBe(false);
+  });
+
   it('is a no-op outside pr scope', async () => {
     const detail = setBindingMock('GetPRDetail', async () => prDetailStub());
     const state = reviewStateForPane('pane-1', subjectFor());
