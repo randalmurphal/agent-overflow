@@ -826,8 +826,18 @@ export function createReviewPaneState(
   // are virtualized, so scrolling one out of the render window unmounts
   // it — row-local state would silently drop the user's typed text.
   const draftBodies = new SvelteMap<string, string>();
-  // The same for a saved draft open in its editor, by comment id.
-  const draftEditBodies = new SvelteMap<string, string>();
+  // The same for a saved draft open in its editor, by comment id, under
+  // the comment source the draft belongs to. Anchors do not key it, so a
+  // new view of the same subject (whitespace, a commit, an edit) keeps
+  // it; it goes with its draft: saved, sent, deleted or missing from a
+  // read of its source (pruneDraftEdits), and with the subject (setScope).
+  const draftEditBodies = new SvelteMap<string, { sourceKey: string; body: string }>();
+  function pruneDraftEdits(source: string, read: readonly DiffReviewComment[]): void {
+    const live = new Set(read.filter((comment) => comment.status === 'draft').map((comment) => comment.id));
+    for (const [id, edit] of draftEditBodies) {
+      if (edit.sourceKey === source && !live.has(id)) draftEditBodies.delete(id);
+    }
+  }
   // One-shot focus request, set on user-initiated open and consumed by
   // the editor's mount effect. Without it, an editor row remounting as
   // it re-enters the render buffer would steal focus mid-scroll.
@@ -1406,7 +1416,6 @@ export function createReviewPaneState(
     selectedCommitSHA = sha;
     openEditors = [];
     draftBodies.clear();
-    draftEditBodies.clear();
     collapseOverrides.clear();
     await reload({ selectionOnly: true, userInitiated: opts?.userInitiated });
   }
@@ -1424,7 +1433,6 @@ export function createReviewPaneState(
     // and the PR subscription describe the same subject either way.
     openEditors = [];
     draftBodies.clear();
-    draftEditBodies.clear();
     // Collapse overrides deliberately SURVIVE, unlike selectCommit/selectEdit:
     // those switch which change is under review, whereas this shows the same
     // change with less noise. A file the user opened stays open.
@@ -1439,7 +1447,6 @@ export function createReviewPaneState(
     selectedEdit = next;
     openEditors = [];
     draftBodies.clear();
-    draftEditBodies.clear();
     collapseOverrides.clear();
     await reload({ selectionOnly: true, userInitiated: opts?.userInitiated });
   }
@@ -1584,7 +1591,8 @@ export function createReviewPaneState(
       const nextSourceKey = sourceKey;
       if (pinnedDrafts !== null && nextSourceKey) {
         try {
-          await refreshPRDiffReviewComments(pinnedDrafts, scope, nextSourceKey);
+          const read = await refreshPRDiffReviewComments(pinnedDrafts, scope, nextSourceKey);
+          pruneDraftEdits(nextSourceKey, read);
           if (seq !== loadSeq) return;
           error = null;
         } catch (err) {
@@ -1601,13 +1609,12 @@ export function createReviewPaneState(
       if (!nextSourceKey) {
         openEditors = [];
         draftBodies.clear();
-        draftEditBodies.clear();
         setActiveDiffReviewSource(threadId, null);
         error = null;
         return;
       }
       try {
-        await refreshDiffReviewComments(threadId, scope, nextSourceKey);
+        pruneDraftEdits(nextSourceKey, await refreshDiffReviewComments(threadId, scope, nextSourceKey));
         if (seq !== loadSeq) return;
         setActiveDiffReviewSource(threadId, scope, nextSourceKey);
         error = null;
@@ -1636,7 +1643,6 @@ export function createReviewPaneState(
       patchKey = '';
       openEditors = [];
       draftBodies.clear();
-      draftEditBodies.clear();
       collapsedPaths = new SvelteSet<string>();
       if (threadId !== null) setActiveDiffReviewSource(threadId, null);
     } finally {
@@ -2023,7 +2029,7 @@ export function createReviewPaneState(
       const pr = await prSendContext(sendScope, sending);
       await SendDiffReviewComments(thread, sendScope, key, sending.map((comment) => comment.id), { pr });
       forgetDraftEdits(sending);
-      await refreshDiffReviewComments(commentThreadId(), scope, sourceKey);
+      pruneDraftEdits(sourceKey, await refreshDiffReviewComments(commentThreadId(), scope, sourceKey));
       error = null;
     } catch (err) {
       error = userFacingError(err);
@@ -2114,7 +2120,7 @@ export function createReviewPaneState(
         if (sent.length > 0) {
           await MarkDiffReviewCommentsSent(commentThreadId(), scope, sourceKey, sent.map((comment) => comment.id), `pr:${loadedPRHeadSHA}`);
         }
-        await refreshDiffReviewComments(commentThreadId(), scope, sourceKey);
+        pruneDraftEdits(sourceKey, await refreshDiffReviewComments(commentThreadId(), scope, sourceKey));
       }
       // Through the store: the posted review is now part of the PR, so
       // every pane looking at it shows the new threads.
@@ -2769,11 +2775,11 @@ export function createReviewPaneState(
     },
     createComment,
     draftEditBodyFor(commentId: string): string | null {
-      return draftEditBodies.get(commentId) ?? null;
+      return draftEditBodies.get(commentId)?.body ?? null;
     },
     setDraftEditBody(commentId: string, body: string | null): void {
       if (body === null) draftEditBodies.delete(commentId);
-      else draftEditBodies.set(commentId, body);
+      else draftEditBodies.set(commentId, { sourceKey, body });
     },
     updateComment,
     deleteComment,

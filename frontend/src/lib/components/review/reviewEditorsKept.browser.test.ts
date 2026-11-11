@@ -4,14 +4,16 @@
 // open state across that unmount, across a reload of the diff, on a
 // thread's companion review and on a review pinned to a PR. Cancel ends
 // a new comment or an edit and keeps nothing, as Save does; Cancel on a
-// reply closes it and keeps its text until the reply sends.
+// reply closes it and keeps its text until the reply sends. A draft's
+// edit stays through other views of the same subject (whitespace, a
+// commit and back) and goes with its draft or with the subject.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, tick, unmount } from 'svelte';
 import '../../../app.css';
 import ReviewPane from './ReviewPane.svelte';
-import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
-import { __resetPinnedReviewStatesForTest, disposePRReviewStates } from '../../stores/reviewPanePinned.svelte';
+import { __resetReviewPaneStateForTest, reviewStateForPane, reviewSubjectForPane } from '../../stores/reviewPane.svelte';
+import { __resetPinnedReviewStatesForTest, currentPinnedReviewState, disposePRReviewStates } from '../../stores/reviewPanePinned.svelte';
 import { resetAppStorageForTest } from '../../stores/appStorage';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { __setTransportStatusForTest } from '../../stores/transportStatus.svelte';
@@ -287,5 +289,73 @@ describe('open comment editors across a row unmount', () => {
     button(q('[data-testid="review-thread-composer"]')!, 'Reply').click();
     await vi.waitFor(() => expect(sent).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(replyComposer()?.value ?? '').toBe(''));
+  });
+
+  it('keep a draft edit across whitespace and commit views of the same PR, and drop it with its draft', async () => {
+    setBindingMock('SubscribePRUpdates', async () => ({
+      id: 'sub-1', prKey: 'github:owner/repo:5', detail: detail(), threads: [], headSHA: 'sha-a', seq: 1,
+    }));
+    setBindingMock('UnsubscribePRUpdates', async () => undefined);
+    setReviewDiffMock('OpenPRDiff', async () => patch());
+    setReviewDiffMock('OpenPRCommitDiff', async () => patch());
+    const commit = 'c'.repeat(40);
+    setBindingMock('ListPRCommits', async () => [{ sha: commit, shortSha: 'ccccccc', subject: 'One', author: 'octocat', authoredAt: 1 }]);
+    setBindingMock('ListPRReviewThreads', async () => []);
+    setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
+    const fake = installPRDraftsFake();
+    let sourceKey = '';
+    setBindingMock('ListPRDiffReviewComments', async (_wire: unknown, scope: string, key: string) => {
+      if (key.startsWith('pr:')) sourceKey = key;
+      return (fake.held.get(5) ?? []).filter((each) => each.scope === scope && each.sourceKey === key).map((each) => ({ ...each }));
+    });
+    app = mount(ReviewPane, { target, props: { pr: { ownerPaneId: OWNER, backend: HOME_BACKEND, projectId: 'project-1', pr: PR } } });
+    await lineBlock();
+    await vi.waitFor(() => expect(sourceKey).not.toBe(''));
+    fake.held.set(5, [draft('pr', sourceKey)]);
+    q<HTMLButtonElement>('[data-testid="review-reload"]')!.click();
+    await startEdit();
+    type(editing()!, 'kept edit');
+    const review = currentPinnedReviewState(OWNER)!;
+
+    // Hide whitespace is a new view of the same drafts: the edit stays open.
+    await review.setIgnoreWhitespace(true);
+    await vi.waitFor(() => expect(editing()?.value).toBe('kept edit'));
+
+    // A commit's view has other drafts; back on the PR the edit is there.
+    await review.selectCommit(commit);
+    await vi.waitFor(() => expect(editing()).toBeNull());
+    await review.selectCommit(null);
+    await vi.waitFor(() => expect(editing()?.value).toBe('kept edit'));
+
+    // A read of the drafts without it drops the edit with the draft.
+    fake.held.set(5, []);
+    await review.reload();
+    await vi.waitFor(() => expect(q('[data-testid="review-comment-thread"]')).toBeNull());
+    fake.held.set(5, [draft('pr', sourceKey)]);
+    await review.reload();
+    await startEdit();
+    expect(editing()!.value).toBe('saved body');
+  });
+
+  it('drop a draft edit when the review moves to another subject', async () => {
+    const held = [draft('workspace', '')];
+    setBindingMock('GetThread', async () => ({ id: 'thread-1', workspacePath: '/repo' }));
+    setBindingMock('GetGitStatus', async () => ({}));
+    setReviewDiffMock('OpenWorkspaceDiff', async () => patch());
+    setReviewDiffMock('OpenBranchBaseDiff', async () => patch());
+    setBindingMock('ListBranchCommits', async () => []);
+    setBindingMock('GitListBranches', async () => [{ name: 'main', isCurrent: true, isDefault: true }]);
+    setBindingMock('ListDiffReviewComments', async (_thread: string, scope: string, sourceKey: string) =>
+      held.map((comment) => ({ ...comment, scope, sourceKey })));
+    const ctx = makeStubPanelContext();
+    app = mount(ReviewPane, { target, props: { ctx } });
+    await startEdit();
+    type(editing()!, 'kept edit');
+    const review = reviewStateForPane(ctx.paneId, reviewSubjectForPane(ctx)!);
+
+    await review.setScope('branch');
+    await review.setScope('workspace');
+    await startEdit();
+    expect(editing()!.value).toBe('saved body');
   });
 });
