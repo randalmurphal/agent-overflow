@@ -317,6 +317,80 @@ describe('review find', () => {
       expect(find.selected).toBe('e1');
     });
 
+    it.each(['a newer recount', 'a new query', 'close', 'unmount'] as const)('a recount stopped by %s stops at its next liveness check and leaves nothing it found', async (by) => {
+      interface Run { live: () => boolean; emit: (hit: Hit) => void; reads: number; done: boolean; emitted: Hit[] }
+      const runs: Run[] = [];
+      const gates: (() => void)[] = [];
+      const items = ['r1', 'r2', 'r3', 'r4', 'r5', 'r6'];
+      const src: ReviewFindSource<Hit> = {
+        remote: false,
+        run: async (query, context) => {
+          const run: Run = { live: context.live, emit: context.emit, reads: 0, done: false, emitted: [] };
+          runs.push(run);
+          try {
+            for (let i = 0; i < items.length; i += 1) {
+              if (i > 0 && i % 2 === 0) {
+                if (!context.live()) return false;
+                await new Promise<void>((resolve) => gates.push(resolve));
+                if (!context.live()) return false;
+              }
+              run.reads += 1;
+              if (!items[i].includes(query)) continue;
+              const hit = { identity: items[i], at: i };
+              run.emitted.push(hit);
+              context.emit(hit);
+            }
+            return false;
+          } finally {
+            run.done = true;
+          }
+        },
+      };
+      const releaseAll = async () => {
+        while (gates.length > 0) {
+          gates.shift()!();
+          await flush();
+        }
+      };
+      const { h, paints } = host(() => src);
+      const find = createReviewFind(h, () => 'diff');
+      const unregister = registerPaneFindProvider('pane-r', find);
+      try {
+        find.search('r');
+        await flush();
+        await releaseAll();
+        find.refresh();
+        await flush();
+        const recount = runs[1];
+        expect([runs.length, recount.reads, recount.live(), find.result.pending]).toEqual([2, 2, true, true]);
+        const paintsBefore = paints.length;
+        if (by === 'a newer recount') find.refresh();
+        else if (by === 'a new query') find.search('r2');
+        else if (by === 'close') find.clear();
+        else unregister();
+        expect(recount.live()).toBe(false);
+        // A source that keeps emitting into the stopped scan adds nothing.
+        const late = { identity: 'r9', at: 9 };
+        recount.emit(late);
+        await releaseAll();
+        // It stopped at its pause and read nothing past it.
+        expect([recount.done, recount.reads]).toEqual([true, 2]);
+        const shown = new Set(find.hits);
+        expect([...recount.emitted, late].some((hit) => shown.has(hit))).toBe(false);
+        if (by === 'close' || by === 'unmount') {
+          expect([runs.length, find.hits.length, find.result.pending]).toEqual([2, 0, false]);
+          expect(paints.slice(paintsBefore).every(([, current]) => current === null)).toBe(true);
+        } else {
+          const next = runs[2];
+          expect([runs.length, next.done, find.result.pending]).toEqual([3, true, false]);
+          expect(find.hits.every((hit) => next.emitted.includes(hit))).toBe(true);
+          expect(ids(find)).toEqual(by === 'a new query' ? ['r2'] : items);
+        }
+      } finally {
+        unregister();
+      }
+    });
+
     it('keeps the published cap until the swap', async () => {
       let items = Array.from({ length: 100 }, (_, i) => `d${i}`);
       const s = source(() => items, { slice: 50 });

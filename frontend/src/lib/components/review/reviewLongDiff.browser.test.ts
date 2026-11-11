@@ -14,7 +14,8 @@ import type { ReviewFind } from '../../stores/reviewFind.svelte';
 import type { CommentAnchor } from '../../utils/reviewRows';
 import type { DiffReviewComment } from '../../types/models';
 import { REVIEW_FILE_HEADER_BAR_PX } from '../../utils/reviewRows';
-import { scanReviewFind, type ReviewFindHit } from '../../utils/reviewFindScan';
+import { findDraftKey, scanReviewFind, type ReviewFindHit } from '../../utils/reviewFindScan';
+import { findHighlightName } from '../../utils/findHighlights';
 import { parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from '../../utils/patchStore';
 import { conflictPatchFile } from '../../utils/conflictFile';
 import { HELD_EDGE_PX, HELD_LIMIT_PX } from '../../utils/virtual/heldRows';
@@ -657,6 +658,132 @@ describe('review find over the real list', () => {
       expect(new Set(samples)).toEqual(new Set([left]));
       expect(find.result.count).toBe(3);
       expect(rowText(find.hits[find.result.current])).toContain('zq three');
+    } finally {
+      sampling = false;
+      unmount(finder);
+    }
+  });
+
+  // A first file on screen, then a large one that keeps a scan going for
+  // many frames.
+  const recountPatch = (first: string[]) => {
+    const big = Array.from({ length: 400_000 }, (_, i) => `filler ${i}`);
+    const file = (path: string, lines: string[]) => [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, `@@ -1,${lines.length} +1,${lines.length} @@`, ...lines.map((line) => ` ${line}`)];
+    return [...file('src/a.ts', first), ...file('src/big.ts', big), ''].join('\n');
+  };
+  const currentText = (key: string) => [...(CSS.highlights.get(`${findHighlightName(key)}-current`) ?? [])].map((range) => (range as Range).toString());
+
+  it('a current match whose row goes during a recount paints nothing until the swap, then its survivor', async () => {
+    const draft = (id: string, newLine: number, body: string): DiffReviewComment => ({
+      id, threadId: 'thread-1', scope: 'workspace', sourceKey: 'source', filePath: 'src/a.ts',
+      status: 'draft', newLine, side: 'new', selectedText: '', body, createdAt: 1, updatedAt: 1,
+    });
+    const { props, scrollEl, body } = await mountBody(recountPatch(['alpha', 'beta', 'gamma', 'delta zq', 'epsilon']));
+    const drafts = [draft('first', 2, 'zq first note'), draft('second', 3, 'zq second note')];
+    props.drafts = drafts;
+    props.commentThread = draftRows(() => props.drafts) as typeof props.commentThread;
+    await settle(scrollEl);
+    const review = rawProps({
+      drafts, prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
+      toggleCollapsed: () => {}, togglePRThread: () => {},
+    });
+    const finder = mount(ReviewPaneFind, {
+      target: document.body,
+      props: {
+        findKey: 'pane-gone', title: 'Review', review: review as unknown as ReviewPaneState, view: 'diff', files: props.files,
+        root: mounted.at(-1)!.host, diff: () => body as never, log: () => undefined,
+      },
+    });
+    flushSync();
+    try {
+      const find = getPaneFindProvider('pane-gone') as ReviewFind<ReviewFindHit>;
+      scrollEl.scrollTop = 0;
+      await settle(scrollEl);
+      openPaneFind('pane-gone');
+      setPaneFindQuery('pane-gone', 'zq');
+      await waitFor(() => find.result.count === 3 && !find.result.pending, 'the scan', 1200);
+      await settle(scrollEl);
+      expect(find.hits[find.result.current].rowKey).toBe(findDraftKey('first'));
+      expect(currentText('pane-gone')).toEqual(['zq']);
+      const published = find.hits.map((hit) => hit.identity);
+      // The first draft is deleted: its row goes, and the view recounts.
+      const rest = drafts.slice(1);
+      props.drafts = rest;
+      review.drafts = rest;
+      flushSync();
+      await waitFor(() => scrollEl.querySelector(`[data-find-key="${findDraftKey('first')}"]`) === null, 'the row gone');
+      for (let i = 0; i < 4; i += 1) await new Promise((resolve) => requestAnimationFrame(resolve));
+      expect(find.result.pending).toBe(true);
+      expect(find.hits.map((hit) => hit.identity)).toEqual(published);
+      expect(find.hits[find.result.current].rowKey).toBe(findDraftKey('first'));
+      expect(currentText('pane-gone')).toEqual([]);
+      await waitFor(() => !find.result.pending, 'the recount', 1200);
+      await settle(scrollEl);
+      expect(find.result.count).toBe(2);
+      expect(find.hits[find.result.current].rowKey).toBe(findDraftKey('second'));
+      const current = CSS.highlights.get(`${findHighlightName('pane-gone')}-current`)!;
+      const [range] = [...current] as Range[];
+      expect(range.toString()).toBe('zq');
+      expect(range.startContainer.parentElement?.closest(`[data-find-key="${findDraftKey('second')}"]`)).not.toBeNull();
+    } finally {
+      unmount(finder);
+    }
+  });
+
+  it('a recount from an edit on screen keeps the shifted line that holds the current match', async () => {
+    const long = `${'w'.repeat(300)} zq one`;
+    const { props, scrollEl, body } = await mountBody(recountPatch(['short', long, 'edit me', 'tail']));
+    const host = mounted.at(-1)!.host;
+    host.style.width = '360px';
+    await settle(scrollEl);
+    const findProps = rawProps({
+      findKey: 'pane-edit', title: 'Review', view: 'diff' as const, files: props.files, root: host as HTMLElement | undefined,
+      review: {
+        drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), wordWrap: false,
+      } as unknown as ReviewPaneState,
+      diff: () => body as never, log: () => undefined,
+    });
+    const finder = mount(ReviewPaneFind, { target: document.body, props: findProps });
+    flushSync();
+    const find = getPaneFindProvider('pane-edit') as ReviewFind<ReviewFindHit>;
+    const shiftedLine = () => [...scrollEl.querySelectorAll<HTMLElement>('[data-testid="review-line-block"] *')].find((el) => el.scrollLeft > 0);
+    let sampling = true;
+    try {
+      scrollEl.scrollTop = 0;
+      await settle(scrollEl);
+      openPaneFind('pane-edit');
+      setPaneFindQuery('pane-edit', 'zq');
+      await waitFor(() => !find.result.pending && shiftedLine() !== undefined, 'the scan and the shift', 1200);
+      await settle(scrollEl);
+      const line = shiftedLine()!;
+      expect(line.textContent).toContain('zq one');
+      const left = line.scrollLeft;
+      const edited = () => scrollEl.textContent?.includes('edited now') === true;
+      const samples: number[] = [];
+      let editSeen = false;
+      const sample = () => {
+        if (!sampling) return;
+        samples.push(line.scrollLeft);
+        if (edited()) editSeen = true;
+        requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+      // A line on screen changes: the highlighter sees the rows mutate while
+      // the recount runs.
+      const files = readFiles(recountPatch(['short', long, 'edited now', 'tail']));
+      props.files = files;
+      findProps.files = files;
+      flushSync();
+      await waitFor(edited, 'the edit on screen');
+      for (let i = 0; i < 6; i += 1) await new Promise((resolve) => requestAnimationFrame(resolve));
+      expect(find.result.pending).toBe(true);
+      expect(editSeen).toBe(true);
+      expect(new Set(samples)).toEqual(new Set([left]));
+      await waitFor(() => !find.result.pending, 'the recount', 1200);
+      await settle(scrollEl);
+      sampling = false;
+      expect(line.isConnected).toBe(true);
+      expect(new Set(samples)).toEqual(new Set([left]));
     } finally {
       sampling = false;
       unmount(finder);
