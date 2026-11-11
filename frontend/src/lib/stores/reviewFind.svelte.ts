@@ -98,6 +98,10 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
   let timer: ReturnType<typeof setTimeout> | null = null;
   // The match a reveal changed the content for; the rescan reveals it again.
   let revealAgain: string | null = null;
+  // Whether this query has shown its first match. Only a new query's first
+  // match and a step reveal; a rescan for a content change never scrolls,
+  // even one that restarts a query still scanning.
+  let revealed = false;
 
   const result: PaneFindResult = {
     get count() { return hits.length; },
@@ -176,7 +180,7 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
         if (at >= 0) {
           current = at;
           paint();
-          reveal(false);
+          revealFirst();
           return;
         }
       }
@@ -221,7 +225,7 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
       const at = found.findIndex(below);
       current = at >= 0 ? at : found.length - 1;
       paint();
-      reveal(false);
+      revealFirst();
       return;
     }
     const kept = keep === null ? -1 : found.findIndex((hit) => hit.identity === keep);
@@ -231,11 +235,18 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
       if (revealAgain === keep) reveal(true);
       return;
     }
+    // The current match is gone: the nearest surviving one is current,
+    // painted where it is and not brought on screen.
     revealAgain = null;
     const near = keep === null ? -1 : nearestSurviving(before, was, found);
     const at = near >= 0 ? near : found.findIndex(below);
     current = at >= 0 ? at : found.length - 1;
     paint();
+  }
+
+  function revealFirst(): void {
+    if (revealed || current < 0) return;
+    revealed = true;
     reveal(false);
   }
 
@@ -249,6 +260,7 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
       next = (next + count) % count;
     }
     current = next;
+    revealed = true;
     paint();
     reveal(true);
   }
@@ -259,6 +271,7 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
     get hits() { return hits; },
     search(next: string): void {
       query = next.trim();
+      revealed = false;
       start('query');
     },
     next: () => step(1),
@@ -267,6 +280,7 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
       if (query) start(pending ? 'query' : 'refresh');
     },
     rescope(): void {
+      revealed = false;
       if (query) start('query');
     },
     clear(): void {

@@ -3,9 +3,14 @@
 // every navigation and restore must still reach the right line.
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { flushSync, mount, unmount } from 'svelte';
+import { createRawSnippet, flushSync, mount, unmount } from 'svelte';
 import '../../../app.css';
 import ReviewDiffBody from './ReviewDiffBody.svelte';
+import ReviewCommentThread from './ReviewCommentThread.svelte';
+import ReviewPaneFind from './ReviewPaneFind.svelte';
+import { getPaneFindProvider, openPaneFind, resetPaneFindForTest, setPaneFindQuery } from '../../stores/paneFind.svelte';
+import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
+import type { CommentAnchor } from '../../utils/reviewRows';
 import type { DiffReviewComment } from '../../types/models';
 import { REVIEW_FILE_HEADER_BAR_PX } from '../../utils/reviewRows';
 import { scanReviewFind, type ReviewFindHit } from '../../utils/reviewFindScan';
@@ -41,6 +46,7 @@ beforeEach(() => {
 const mounted: { app: object; host: HTMLElement; files: ReviewFile[][] }[] = [];
 
 afterEach(() => {
+  resetPaneFindForTest();
   for (const { app, host, files } of mounted.splice(0)) {
     unmount(app);
     host.remove();
@@ -244,5 +250,68 @@ describe('review find reading position', () => {
       starts.add(expected);
     }
     expect(starts.size).toBe(3);
+  });
+});
+
+describe('review find over the real list', () => {
+  // ReviewPane's comment-thread row: the real draft card.
+  function draftRows(drafts: () => readonly DiffReviewComment[]) {
+    return createRawSnippet((threadKey: () => string, _anchor: () => CommentAnchor, pulse: () => number) => ({
+      render: () => '<div></div>',
+      setup: (node: Element) => {
+        const comment = drafts().find((draft) => draft.id === threadKey())!;
+        const app = mount(ReviewCommentThread, { target: node, props: { comment, pulse: pulse(), onUpdate: () => {}, onDelete: () => {} } });
+        return () => { void unmount(app); };
+      },
+    }));
+  }
+
+  it('a recount from opening the current match\'s draft editor neither scrolls nor unmounts the editor', async () => {
+    // The only other match is far below, outside the held rows.
+    const { props, scrollEl, body } = await mountBody(patch.replace('+f650:500\n', '+zq f650:500\n'));
+    const draft: DiffReviewComment = {
+      id: 'near', threadId: 'thread-1', scope: 'workspace', sourceKey: 'source', filePath: 'src/f000.ts',
+      status: 'draft', newLine: 5, side: 'new', selectedText: '', body: 'zq note', createdAt: 1, updatedAt: 1,
+    };
+    props.drafts = [draft];
+    props.commentThread = draftRows(() => props.drafts) as typeof props.commentThread;
+    await settle(scrollEl);
+    const review = {
+      drafts: [draft], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
+      toggleCollapsed: () => {}, togglePRThread: () => {},
+    } as unknown as ReviewPaneState;
+    const host = mounted.at(-1)!.host;
+    const finder = mount(ReviewPaneFind, {
+      target: document.body,
+      props: {
+        findKey: 'pane-real', title: 'Review', review, view: 'diff', files: props.files, root: host,
+        diff: () => body as never, log: () => undefined,
+      },
+    });
+    flushSync();
+    try {
+      const find = getPaneFindProvider('pane-real')!;
+      openPaneFind('pane-real');
+      setPaneFindQuery('pane-real', 'zq');
+      await waitFor(() => find.result.count === 2 && !find.result.pending, 'both matches');
+      expect(find.result.current).toBe(0);
+      await settle(scrollEl);
+      const top = scrollEl.scrollTop;
+      const card = scrollEl.querySelector<HTMLElement>('[data-testid="review-comment-thread"]')!;
+      card.querySelector<HTMLButtonElement>('button[aria-label="Edit"]')!.click();
+      flushSync();
+      const box = card.querySelector('textarea')!;
+      box.value = 'zq typed and unsaved';
+      box.dispatchEvent(new Event('input', { bubbles: true }));
+      // The draft's match is gone: the far one is current, not shown.
+      await waitFor(() => find.result.count === 1 && !find.result.pending, 'the recount');
+      await settle(scrollEl);
+      expect(find.result.current).toBe(0);
+      expect(scrollEl.scrollTop).toBe(top);
+      expect(box.isConnected).toBe(true);
+      expect(scrollEl.querySelector('textarea')?.value).toBe('zq typed and unsaved');
+    } finally {
+      unmount(finder);
+    }
   });
 });

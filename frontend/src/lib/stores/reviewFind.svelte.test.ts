@@ -127,7 +127,7 @@ describe('review find', () => {
     expect(find.hits.map((hit) => hit.identity)).toEqual(['r1']);
   });
 
-  it('a content change rescans in place: the current match is kept, nothing moves', async () => {
+  it('a content change rescans in place: the current match is kept, nothing scrolls', async () => {
     let items = ['c1', 'c2', 'c3'];
     const s = source(() => items);
     const { h, reveals } = host(() => s.src);
@@ -146,19 +146,42 @@ describe('review find', () => {
     expect(reveals).toEqual([]);
     // The current match gone with the one after it (a block closed): the
     // first surviving match after it is current, though one before is
-    // nearer, and is shown only if off screen.
+    // nearer, and is not brought on screen.
     items = ['c0', 'c1', 'c3'];
     find.refresh();
     await flush();
     expect(find.hits.map((hit) => hit.identity)).toEqual(['c0', 'c1', 'c3']);
     expect(find.result.current).toBe(2);
-    expect(reveals).toEqual([['c3', false]]);
     // With nothing after it, the one before.
     items = ['c0', 'c1'];
     find.refresh();
     await flush();
     expect(find.result.current).toBe(1);
-    expect(reveals.at(-1)).toEqual(['c1', false]);
+    expect(reveals).toEqual([]);
+    // A step still reveals.
+    find.previous();
+    expect(reveals).toEqual([['c0', true]]);
+  });
+
+  it('a content change while a query scans restarts it without revealing again', async () => {
+    let items = ['q1', 'q2', 'q3'];
+    const s = source(() => items, { slice: 2 });
+    const { h, reveals } = host(() => s.src);
+    const find = createReviewFind(h, () => 'diff');
+    find.search('q');
+    await flush();
+    expect([find.result.current, find.result.pending]).toEqual([0, true]);
+    expect(reveals).toEqual([['q1', false]]);
+    items = ['q0', 'q1', 'q2', 'q3'];
+    find.refresh();
+    await flush();
+    await s.release();
+    expect([find.result.count, find.result.pending]).toEqual([4, false]);
+    expect(reveals).toEqual([['q1', false]]);
+    // A new query reveals its first match again.
+    find.search('q3');
+    await flush();
+    expect(reveals).toEqual([['q1', false], ['q3', false]]);
   });
 
   it('a step taken while a query scans is kept when the scan ends', async () => {
