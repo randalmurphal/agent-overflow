@@ -215,6 +215,10 @@ export async function loadPatch(
   // so the flag structurally cannot reach a source that would ignore it.
   ignoreWhitespace: boolean,
   existing?: ExistingLoad,
+  // pr scope: whether a person asked for this load, so its fetch of the
+  // commits the clone lacks may ask for git credentials and a failure arms
+  // the pump's retry. Unattended unless the caller says so.
+  userInitiated = false,
 ): Promise<LoadedPatch> {
   const { workspace, threadId, backend } = subject;
   const diff = (open: ConstructorParameters<typeof ReviewDiffSource>[1]) => new ReviewDiffSource(backend, open);
@@ -230,11 +234,11 @@ export async function loadPatch(
       // the commits the clone lacks.
       const commits = existing
         ? existing.commits
-        : (((await ListPRCommits(workspace, pr, revision)) ?? []) as BranchCommit[]);
+        : (((await ListPRCommits(workspace, pr, revision, userInitiated)) ?? []) as BranchCommit[]);
       const commitSHA = resolveSelectedCommit(selectedCommitSHA, commits);
       const patch = commitSHA
-        ? diff(() => OpenPRCommitDiff(workspace, pr, revision, commitSHA, ignoreWhitespace))
-        : diff(() => OpenPRDiff(workspace, pr, revision, ignoreWhitespace));
+        ? diff(() => OpenPRCommitDiff(workspace, pr, revision, commitSHA, ignoreWhitespace, userInitiated))
+        : diff(() => OpenPRDiff(workspace, pr, revision, ignoreWhitespace, userInitiated));
       return { patch, commits, selectedCommitSHA: commitSHA, prRevision: revision };
     }
     case 'workspace':

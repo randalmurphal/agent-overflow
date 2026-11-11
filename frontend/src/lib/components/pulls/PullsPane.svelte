@@ -182,7 +182,12 @@
     appStorageSet(TAB_KEY, next);
   }
 
+  // The row a person opened, so its review's first read may ask for git
+  // credentials; a selection the page restored is not one.
+  let openedKey = $state<string | null>(null);
+
   function openRow(row: PullRowView): void {
+    openedKey = row.key;
     selectPR(paneId, row.key);
   }
 
@@ -369,7 +374,7 @@
       {#if tab === 'mrs'}
         {#if pinnedReview}
           {#key pinnedReview.key}
-            <ReviewPane pr={pinnedReview.subject} />
+            <ReviewPane pr={pinnedReview.subject} userInitiated={openedKey === pinnedReview.key} />
           {/key}
         {:else}
           <div class="flex flex-1 items-center justify-center px-6" data-testid="pulls-detail-empty">

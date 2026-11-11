@@ -83,7 +83,7 @@ func openBranchBasePatch(t *testing.T, app *App, ref WorkspaceRef, base string, 
 func openPRCommitPatch(t *testing.T, app *App, ref WorkspaceRef, rev gitops.PRRevision, sha string) (string, error) {
 	t.Helper()
 	ctx, _ := reviewDiffConn(t)
-	opened, err := app.OpenPRCommitDiff(ctx, ref, prRef(), rev, sha, false)
+	opened, err := app.OpenPRCommitDiff(ctx, ref, prRef(), rev, sha, false, true)
 	if err != nil {
 		return "", err
 	}
@@ -252,7 +252,7 @@ func TestOpenPRDiffIsTheThreeDotDiffAtTheRevision(t *testing.T) {
 	origin := moveOriginMainOn(t, clone)
 	rev := gitops.PRRevision{BaseRef: "main", BaseSHA: revParseIn(t, origin, "main"), HeadSHA: prSHAs[0]}
 	ctx, _ := reviewDiffConn(t)
-	opened, err := app.OpenPRDiff(ctx, ref, prRef(), rev, false)
+	opened, err := app.OpenPRDiff(ctx, ref, prRef(), rev, false, true)
 	if err != nil {
 		t.Fatalf("OpenPRDiff: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestOpenPRDiffReportsWhyTheCommitsCouldNotBeFetched(t *testing.T) {
 	rev := gitops.PRRevision{BaseRef: "main", BaseSHA: revParseIn(t, origin, "main"), HeadSHA: prSHAs[0]}
 	testutil.RunGit(t, clone, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone"))
 	ctx, _ := reviewDiffConn(t)
-	_, err := app.OpenPRDiff(ctx, ref, prRef(), rev, false)
+	_, err := app.OpenPRDiff(ctx, ref, prRef(), rev, false, true)
 	if err == nil {
 		t.Fatal("OpenPRDiff succeeded without the base commit")
 	}

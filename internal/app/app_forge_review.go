@@ -219,12 +219,13 @@ func (a *App) GetPRDetail(ctx context.Context, pr gitops.PRReference) (gitops.PR
 
 // OpenPRDiff opens the PR's three-dot diff (merge base of the recorded base
 // and the head, to the head) at rev, the revision of the PR snapshot the caller
-// shows, computed in the referenced clone.
+// shows, computed in the referenced clone. userInitiated is whether a person
+// asked for the read (prRevisionWorkspace).
 //
 //ao:scope git:operate
-func (a *App) OpenPRDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, ignoreWhitespace bool) (ReviewDiffOpened, error) {
+func (a *App) OpenPRDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, ignoreWhitespace, userInitiated bool) (ReviewDiffOpened, error) {
 	const action = "open PR diff"
-	workspace, err := a.prRevisionWorkspace(action, ws, pr, rev, true)
+	workspace, err := a.prRevisionWorkspace(action, ws, pr, rev, userInitiated)
 	if err != nil {
 		return ReviewDiffOpened{}, err
 	}
@@ -235,11 +236,12 @@ func (a *App) OpenPRDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRRefer
 }
 
 // ListPRCommits returns the commits a PR carries at rev (`base..head`,
-// newest first), computed from the referenced clone.
+// newest first), computed from the referenced clone. userInitiated is
+// whether a person asked for the read (prRevisionWorkspace).
 //
 //ao:scope git:operate
-func (a *App) ListPRCommits(ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision) ([]BranchCommit, error) {
-	workspace, err := a.prRevisionWorkspace("list PR commits", ws, pr, rev, true)
+func (a *App) ListPRCommits(ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, userInitiated bool) ([]BranchCommit, error) {
+	workspace, err := a.prRevisionWorkspace("list PR commits", ws, pr, rev, userInitiated)
 	if err != nil {
 		return nil, err
 	}
@@ -248,11 +250,12 @@ func (a *App) ListPRCommits(ws WorkspaceRef, pr gitops.PRReference, rev gitops.P
 
 // OpenPRCommitDiff opens the unified patch a single commit of the PR at rev
 // introduced (first-parent diff), read from the referenced clone.
+// userInitiated is whether a person asked for the read (prRevisionWorkspace).
 //
 //ao:scope git:operate
-func (a *App) OpenPRCommitDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, sha string, ignoreWhitespace bool) (ReviewDiffOpened, error) {
+func (a *App) OpenPRCommitDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, sha string, ignoreWhitespace, userInitiated bool) (ReviewDiffOpened, error) {
 	const action = "open PR commit diff"
-	workspace, err := a.prRevisionWorkspace(action, ws, pr, rev, true)
+	workspace, err := a.prRevisionWorkspace(action, ws, pr, rev, userInitiated)
 	if err != nil {
 		return ReviewDiffOpened{}, err
 	}

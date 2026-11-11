@@ -12,6 +12,7 @@ import {
   __resetReviewPaneStateForTest,
   disposeReviewStateForPane,
   openReviewCompanion,
+  reviewSubjectForPane,
   reviewStateForPane,
   type ConversationFeedItem,
   type ReviewSubject,
@@ -29,7 +30,8 @@ import { __setTransportHelloForTest, __setTransportStatusForTest } from './trans
 import type { TransportHello } from '../transport/wsClient';
 import { companionSubjectKey } from './companionSubject';
 import { __seedGitStatusForTest } from './gitStatusStore.svelte';
-import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { getPane, registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { persistScope } from './reviewPaneScope';
 import { removeThread } from './threads.svelte';
 import { createThreadPane } from './thread.svelte';
 import { registerComposerDraft, resetComposerDraftRegistryForTest } from './composerDraftRegistry.svelte';
@@ -778,6 +780,7 @@ describe('reviewPane store — PR scope', () => {
       expect.objectContaining({ Number: 5 }),
       { baseRef: 'main', baseSHA: 'base-main', headSHA: 'sha-a' },
       false,
+      false,
     );
     expect(state.sourceKey).toBe(PR_SOURCE_KEY);
     expect(state.prDetail?.number).toBe(5);
@@ -801,14 +804,14 @@ describe('reviewPane store — PR scope', () => {
     await waitLoaded(state);
     await state.setScope('pr');
     const revision = { baseRef: 'main', baseSHA: 'base-main', headSHA: 'sha-a' };
-    expect(list).toHaveBeenCalledWith(REVIEW_WS, expect.objectContaining({ Number: 5 }), revision);
+    expect(list).toHaveBeenCalledWith(REVIEW_WS, expect.objectContaining({ Number: 5 }), revision, false);
     expect(state.commits.map((commit) => commit.sha)).toEqual([sha]);
     expect(state.sourceKey).toBe(PR_SOURCE_KEY);
 
     await state.selectCommit(sha);
     expect(state.selectedCommitSHA).toBe(sha);
     expect(state.sourceKey).toBe(`commit:${sha}`);
-    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, expect.objectContaining({ Number: 5 }), revision, sha, false);
+    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, expect.objectContaining({ Number: 5 }), revision, sha, false, false);
 
     // Back to the whole PR.
     await state.selectCommit(null);
@@ -1066,6 +1069,7 @@ describe('reviewPane store — PR scope', () => {
       REVIEW_WS,
       expect.objectContaining({ Number: 5 }),
       { baseRef: 'main', baseSHA: 'base-main-2', headSHA: 'sha-a' },
+      false,
       false,
     );
   });
@@ -4054,5 +4058,170 @@ describe('reviewPane store — PR whose first fetch failed', () => {
     expect(state.prUpdateError).toBeNull();
     expect(state.prDetail?.number).toBe(5);
     expect(diff).toHaveBeenCalledTimes(1);
+  });
+});
+
+// A PR read may ask for git credentials only when a person asked for it.
+// Every store entry point reads unattended unless its caller says so, and
+// the reads the store starts itself (a retry on a pump frame) never do.
+describe('reviewPane store — PR read intent', () => {
+  const sha = 'b'.repeat(40);
+  const revision = { baseRef: 'main', baseSHA: 'base-main', headSHA: 'sha-a' };
+  const pr = expect.objectContaining({ Number: 5 });
+  function installIntentMocks() {
+    installPRMocks();
+    const list = setBindingMock('ListPRCommits', async () => [
+      { sha, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
+    ]);
+    const diff = setReviewDiffMock('OpenPRDiff', async () => patchFor('src/app.ts', 3));
+    const commitDiff = setReviewDiffMock('OpenPRCommitDiff', async () => patchFor('src/app.ts', 2));
+    return { list, diff, commitDiff };
+  }
+
+  it('reads unattended from every entry point that does not say a person asked', async () => {
+    const { list, diff, commitDiff } = installIntentMocks();
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+
+    await state.setScope('pr');
+    expect(list).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false);
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, false);
+    await state.reload();
+    expect(list).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false);
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, false);
+    await state.selectCommit(sha);
+    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, sha, false, false);
+    await state.setIgnoreWhitespace(true);
+    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, sha, true, false);
+  });
+
+  it('reads attended for the entry points a person drove', async () => {
+    const { list, diff, commitDiff } = installIntentMocks();
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+
+    await state.setScope('pr', { userInitiated: true });
+    expect(list).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, true);
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, true);
+    await state.reload();
+    await state.reload({ userInitiated: true });
+    expect(list).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, true);
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, true);
+    await state.selectCommit(sha, { userInitiated: true });
+    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, sha, false, true);
+    await state.setIgnoreWhitespace(true, { userInitiated: true });
+    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, sha, true, true);
+  });
+
+  it('retries a failed user read unattended on the next pump frame', async () => {
+    installIntentMocks();
+    let fail = true;
+    const diff = setReviewDiffMock('OpenPRDiff', async () => {
+      if (fail) throw new Error('fetch failed');
+      return patchFor('src/app.ts', 3);
+    });
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr', { userInitiated: true });
+    expect(state.error).toContain('fetch failed');
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, true);
+
+    fail = false;
+    applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub(), threads: [], headSHA: 'sha-a', seq: 50 });
+    await vi.waitFor(() => expect(state.files).toHaveLength(1));
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, false);
+  });
+
+  it('keeps a person\'s open across the wait for the PR snapshot', async () => {
+    const { diff } = installIntentMocks();
+    setBindingMock('SubscribePRUpdates', async () => ({
+      id: 'sub-1', prKey: PR_KEY, detail: prDetailStub({ baseRefSHA: '' }), threads: [], headSHA: 'sha-a', seq: 1,
+    }));
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr', { userInitiated: true });
+    expect(state.awaitingPR).toBe(true);
+    expect(diff).not.toHaveBeenCalled();
+
+    applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub(), threads: [], headSHA: 'sha-a', seq: 2 });
+    await vi.waitFor(() => expect(state.files).toHaveLength(1));
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, true);
+  });
+
+  it('keeps a person\'s open across the wait for the workspace status', async () => {
+    const { diff } = installIntentMocks();
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    await state.setScope('pr', { userInitiated: true });
+    expect(state.awaitingPR).toBe(true);
+    expect(diff).not.toHaveBeenCalled();
+
+    prSubject();
+    await vi.waitFor(() => expect(state.files).toHaveLength(1));
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, true);
+  });
+
+  it('reads unattended when a PR appears after the status answered none, even after a person\'s wait', async () => {
+    const { diff } = installIntentMocks();
+    const state = reviewStateForPane('pane-1', subjectFor());
+    await waitLoaded(state);
+    await state.setScope('pr', { userInitiated: true });
+    expect(state.awaitingPR).toBe(true);
+
+    // The status lands with no PR: the open ends in its error.
+    seedPaneWorkspaceStatus('pane-1', {});
+    await vi.waitFor(() => expect(state.error).toContain('No PR'));
+    expect(diff).not.toHaveBeenCalled();
+
+    // A PR opened later is not the person's open.
+    prSubject();
+    await vi.waitFor(() => expect(state.files).toHaveLength(1));
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, false);
+  });
+
+  it.each([
+    ['toggleReviewPane', () => getPane('pane-1')!.toggleReviewPane()],
+    ['setShowReviewPane', () => getPane('pane-1')!.setShowReviewPane(true)],
+  ] as const)('the pane\'s %s is a person\'s open', async (_name, open) => {
+    const { diff } = installIntentMocks();
+    setPaneLayoutItemsForTest([{ id: 'pane-1', paneId: 'pane-1', kind: 'thread', widthPx: 1 }]);
+    persistScope('thread-1', 'pr', null);
+    prSubject();
+    // The pane's thread names its project, so the pane has a checkout.
+    getPane('pane-1')!.replaceThread({
+      id: 'thread-1', title: 'Review', provider: 'claude', projectId: REVIEW_WS.projectId,
+      workspacePath: REVIEW_WORKSPACE, projectPath: REVIEW_WORKSPACE, model: 'm', createdAt: 0, updatedAt: 0, archived: false,
+    });
+    expect(reviewSubjectForPane(getPane('pane-1')!)?.workspace).toEqual(REVIEW_WS);
+    open();
+    await vi.waitFor(() => expect(diff).toHaveBeenCalled());
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, true);
+  });
+
+  it('openReviewCompanion reads attended only when its caller says a person opened it', async () => {
+    const { diff } = installIntentMocks();
+    setPaneLayoutItemsForTest([{ id: 'pane-1', paneId: 'pane-1', kind: 'thread', widthPx: 1 }]);
+    const opened = await openReviewCompanion('pane-1', prSubject(), { scope: 'pr', userInitiated: true });
+    await waitLoaded(opened!);
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, true);
+    disposeReviewStateForPane('pane-1', opened!);
+
+    // No scope: the state's own first load carries the open.
+    const reopened = await openReviewCompanion('pane-1', prSubject(), { userInitiated: true });
+    await waitLoaded(reopened!);
+    expect(reopened!.scope).toBe('pr');
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, true);
+    disposeReviewStateForPane('pane-1', reopened!);
+
+    // A state made by a mount (a restored layout) reads unattended.
+    const mounted = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(mounted);
+    expect(mounted.scope).toBe('pr');
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, false);
+    disposeReviewStateForPane('pane-1', mounted);
+
+    const unsaid = await openReviewCompanion('pane-1', prSubject(), { scope: 'pr' });
+    await waitLoaded(unsaid!);
+    expect(diff).toHaveBeenLastCalledWith(REVIEW_WS, pr, revision, false, false);
   });
 });

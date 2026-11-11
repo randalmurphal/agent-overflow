@@ -6,11 +6,11 @@
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import PullsPane from './PullsPane.svelte';
-import { selectedPR } from '../../stores/pullsPage.svelte';
+import { selectPR, selectedPR } from '../../stores/pullsPage.svelte';
 import { stepPullsBack } from '../../stores/pullsCommands.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { TransportError } from '../../transport/wsClient';
-import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { PULLS_PANE, installPullsPaneMocks, pullItem, pullRowKey, pullsProject, pullsSnapshot, resetPullsPane } from '../../../test/helpers/pullsPane';
 
 function mountPane() {
@@ -177,5 +177,24 @@ describe('Back on compact', () => {
     await fireEvent.click(await waitFor(() => view.getByRole('button', { name: 'View conflicts' })));
     await waitFor(() => expect(view.getByTestId('review-conflicts-back')).toBeInTheDocument());
     expect(view.queryByTestId('pulls-back')).toBeNull();
+  });
+});
+
+describe('the pinned review', () => {
+  // A person's click may ask for git credentials; a selection the page
+  // makes on its own (a restored page) reads unattended.
+  it('reads the MR attended when a person opens its row, and unattended otherwise', async () => {
+    installPullsPaneMocks();
+    const diff = getBindingMock('OpenPRDiff')!;
+    const view = mountPane();
+    await rowsListed(view);
+    await fireEvent.click(rowOf(view, 5).querySelector('button')!);
+    await waitFor(() => expect(diff).toHaveBeenCalled());
+    expect(diff.mock.calls.at(-1)?.at(-1)).toBe(true);
+
+    const calls = diff.mock.calls.length;
+    expect(selectPR(PULLS_PANE, pullRowKey(6))).toBe(true);
+    await waitFor(() => expect(diff.mock.calls.length).toBe(calls + 1));
+    expect(diff.mock.calls.at(-1)?.at(-1)).toBe(false);
   });
 });

@@ -1,9 +1,10 @@
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ReviewPane from './ReviewPane.svelte';
+import ReviewConversationCommits from './ReviewConversationCommits.svelte';
 import type { PanelContext } from '../../stores/panelContext.svelte';
 import { makeStubPanelContext } from '../../../test/helpers/panelContext';
-import { __resetReviewPaneStateForTest } from '../../stores/reviewPane.svelte';
+import { __resetReviewPaneStateForTest, type ReviewPaneState } from '../../stores/reviewPane.svelte';
 import { resetForTest as resetDiffReviewCommentsForTest } from '../../stores/diffReviewComments.svelte';
 import { resetAppStorageForTest } from '../../stores/appStorage';
 import type { CIPipeline, DiffReviewComment, DiffReviewCommentInput, PRDetail, ReviewThread, Thread } from '../../types/models';
@@ -1421,6 +1422,87 @@ describe('<ReviewPane> load failures', () => {
     });
     expect(diff.mock.calls.length).toBe(calls + 1);
     expect(view.queryByTestId('review-error')).not.toBeInTheDocument();
+  });
+});
+
+// A PR read the pane's controls start is a person's: it may ask for git
+// credentials (the store reads unattended unless told).
+describe('<ReviewPane> PR read intent', () => {
+  const commitSHA = 'b'.repeat(40);
+  const lastIntent = (mock: { mock: { calls: unknown[][] } }) => mock.mock.calls.at(-1)?.at(-1);
+
+  it('every control that reads the PR says a person asked', async () => {
+    installFakeHighlighter();
+    let fail = false;
+    const diff = setReviewDiffMock('OpenPRDiff', async () => {
+      if (fail) throw new Error('fetch failed');
+      return patch();
+    });
+    const list = setBindingMock('ListPRCommits', async () => [
+      { sha: commitSHA, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
+    ]);
+    const commitDiff = setReviewDiffMock('OpenPRCommitDiff', async () => patch());
+    const view = await renderPRScope();
+    await waitFor(() => expect(view.getByTestId('review-diff-stats')).toBeInTheDocument());
+    // The scope pick.
+    expect(lastIntent(list)).toBe(true);
+    expect(lastIntent(diff)).toBe(true);
+
+    // The toolbar's Reload.
+    await waitFor(() => expect(view.getByTestId('review-reload')).toBeEnabled());
+    let calls = diff.mock.calls.length;
+    await fireEvent.click(view.getByTestId('review-reload'));
+    await waitFor(() => expect(diff.mock.calls.length).toBe(calls + 1));
+    expect(lastIntent(diff)).toBe(true);
+
+    // The error banner's Retry.
+    fail = true;
+    await waitFor(() => expect(view.getByTestId('review-reload')).toBeEnabled());
+    await fireEvent.click(view.getByTestId('review-reload'));
+    await waitFor(() => expect(view.getByTestId('review-error')).toBeInTheDocument());
+    fail = false;
+    calls = diff.mock.calls.length;
+    await fireEvent.click(await waitFor(() => view.getByTestId('review-error-retry')));
+    await waitFor(() => expect(diff.mock.calls.length).toBe(calls + 1));
+    expect(lastIntent(diff)).toBe(true);
+
+    // The stale banner's Reload.
+    setReviewDiffMock('OpenPRDiff', async (...args: never[]) => {
+      diff(...args);
+      return patch();
+    });
+    pushTo('sha-b');
+    await waitFor(() => expect(view.getByTestId('review-pr-stale')).toBeInTheDocument());
+    calls = diff.mock.calls.length;
+    await fireEvent.click(view.getByTestId('review-pr-stale').querySelector('button')!);
+    await waitFor(() => expect(diff.mock.calls.length).toBe(calls + 1));
+    expect(lastIntent(diff)).toBe(true);
+
+    // Hide whitespace.
+    calls = diff.mock.calls.length;
+    const toggle = await openViewOption(view, 'review-ignore-whitespace-toggle');
+    await waitFor(() => expect(toggle).not.toHaveAttribute('aria-disabled', 'true'));
+    await fireEvent.click(toggle);
+    await waitFor(() => expect(diff.mock.calls.length).toBe(calls + 1));
+    expect(lastIntent(diff)).toBe(true);
+
+    // The commit picker.
+    await waitFor(() => expect(view.getByTestId('review-commit-select')).toBeEnabled());
+    await fireEvent.click(view.getByTestId('review-commit-select'));
+    await fireEvent.click(await waitFor(() => view.getByTestId('review-commit-option')));
+    await waitFor(() => expect(commitDiff).toHaveBeenCalled());
+    expect(lastIntent(commitDiff)).toBe(true);
+  });
+
+  it('a commit picked in the Conversation feed says a person asked', async () => {
+    const selectCommit = vi.fn(async () => undefined);
+    const view = render(ReviewConversationCommits, {
+      review: { selectCommit } as unknown as ReviewPaneState,
+      author: 'r',
+      commits: [{ sha: commitSHA, shortSha: 'bbbbbbb', subject: 'first', body: '', author: 'r', authoredAt: 1 }],
+    });
+    await fireEvent.click(view.getByTitle("Show this commit's diff"));
+    expect(selectCommit).toHaveBeenCalledWith(commitSHA, { userInitiated: true });
   });
 });
 

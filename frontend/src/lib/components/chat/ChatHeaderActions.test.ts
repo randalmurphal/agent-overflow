@@ -159,6 +159,31 @@ describe('<ChatHeaderActions> badge gating', () => {
     await fireEvent.click(getByTestId('review-toggle'));
     expect(pane.showReviewPane).toBe(true);
   });
+
+  // A person's click on the badge may ask for git credentials on the PR's
+  // first read.
+  it('clicking the PR badge opens the PR review as a person\'s read', async () => {
+    const pane = await buildPane();
+    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 1 }]);
+    installSubscribeMock(status({ forge: 'github', openPrUrl: 'https://github.com/o/r/pull/7', openPrNumber: 7 }));
+    setBindingMock('SubscribePRUpdates', async () => ({
+      id: 'pr-sub', prKey: 'github:o/r:7', threads: [], headSHA: 'sha-a', seq: 1,
+      detail: { number: 7, headSHA: 'sha-a', baseRefName: 'main', baseRefSHA: 'base-main', headRefName: 'feature', state: 'open' },
+    }));
+    setBindingMock('UnsubscribePRUpdates', async () => undefined);
+    setBindingMock('ListPRReviewThreads', async () => []);
+    setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
+    setBindingMock('ListDiffReviewComments', async () => []);
+    const commits = setBindingMock('ListPRCommits', async () => []);
+    setBindingMock('OpenPRDiff', async () => ({ id: '', chunk: { data: '', offset: 0, nextOffset: 0, eof: true }, headSha: '' }));
+    const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
+    await flush();
+
+    await fireEvent.click(getByTestId('chat-header-pr-badge'));
+    await vi.waitFor(() => expect(getBindingMock('OpenPRDiff')).toHaveBeenCalled());
+    expect(commits.mock.calls.at(-1)?.at(-1)).toBe(true);
+    expect(getBindingMock('OpenPRDiff')!.mock.calls.at(-1)?.at(-1)).toBe(true);
+  });
 });
 
 describe('<ChatHeaderActions> subscription effect', () => {

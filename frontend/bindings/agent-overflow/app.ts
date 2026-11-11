@@ -3005,10 +3005,11 @@ export function ListOwnDevices(): $CancellablePromise<app$0.OwnDeviceList> {
 
 /**
  * ListPRCommits returns the commits a PR carries at rev (`base..head`,
- * newest first), computed from the referenced clone.
+ * newest first), computed from the referenced clone. userInitiated is
+ * whether a person asked for the read (prRevisionWorkspace).
  */
-export function ListPRCommits(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: git$0.PRRevision): $CancellablePromise<app$0.BranchCommit[]> {
-    return $Call.ByID(4110818691, ws, pr, rev).then(($result: any) => {
+export function ListPRCommits(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: git$0.PRRevision, userInitiated: boolean): $CancellablePromise<app$0.BranchCommit[]> {
+    return $Call.ByID(4110818691, ws, pr, rev, userInitiated).then(($result: any) => {
         return $$createType132($result);
     });
 }
@@ -3708,9 +3709,10 @@ export function OpenOwnComputerPairing(networkChoice: string): $CancellablePromi
 /**
  * OpenPRCommitDiff opens the unified patch a single commit of the PR at rev
  * introduced (first-parent diff), read from the referenced clone.
+ * userInitiated is whether a person asked for the read (prRevisionWorkspace).
  */
-export function OpenPRCommitDiff(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: git$0.PRRevision, sha: string, ignoreWhitespace: boolean): $CancellablePromise<app$0.ReviewDiffOpened> {
-    return $Call.ByID(110447601, ws, pr, rev, sha, ignoreWhitespace).then(($result: any) => {
+export function OpenPRCommitDiff(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: git$0.PRRevision, sha: string, ignoreWhitespace: boolean, userInitiated: boolean): $CancellablePromise<app$0.ReviewDiffOpened> {
+    return $Call.ByID(110447601, ws, pr, rev, sha, ignoreWhitespace, userInitiated).then(($result: any) => {
         return $$createType175($result);
     });
 }
@@ -3718,10 +3720,11 @@ export function OpenPRCommitDiff(ws: app$0.WorkspaceRef, pr: git$0.PRReference, 
 /**
  * OpenPRDiff opens the PR's three-dot diff (merge base of the recorded base
  * and the head, to the head) at rev, the revision of the PR snapshot the caller
- * shows, computed in the referenced clone.
+ * shows, computed in the referenced clone. userInitiated is whether a person
+ * asked for the read (prRevisionWorkspace).
  */
-export function OpenPRDiff(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: git$0.PRRevision, ignoreWhitespace: boolean): $CancellablePromise<app$0.ReviewDiffOpened> {
-    return $Call.ByID(4075510992, ws, pr, rev, ignoreWhitespace).then(($result: any) => {
+export function OpenPRDiff(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: git$0.PRRevision, ignoreWhitespace: boolean, userInitiated: boolean): $CancellablePromise<app$0.ReviewDiffOpened> {
+    return $Call.ByID(4075510992, ws, pr, rev, ignoreWhitespace, userInitiated).then(($result: any) => {
         return $$createType175($result);
     });
 }

@@ -88,5 +88,5 @@ export async function openWorkflowFullReview(threadId: string): Promise<void> {
   const pane = getPane(paneId);
   const subject = pane ? reviewSubjectForPane(pane) : null;
   if (!subject) return;
-  await openReviewCompanion(paneId, subject, { scope: 'branch' });
+  await openReviewCompanion(paneId, subject, { scope: 'branch', userInitiated: true });
 }

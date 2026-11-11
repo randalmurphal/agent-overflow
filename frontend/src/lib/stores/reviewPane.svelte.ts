@@ -330,13 +330,13 @@ export interface ReviewPaneState {
   /** Whether the current diff source can honor `ignoreWhitespace` — only
    * the gitdiff-backed patches can. See supportsIgnoreWhitespace. */
   readonly canIgnoreWhitespace: boolean;
-  setScope(scope: ReviewScope, opts?: { baseBranch?: string }): Promise<void>;
+  setScope(scope: ReviewScope, opts?: { baseBranch?: string } & ReadIntent): Promise<void>;
   /** Switch the loaded diff to a single commit (null → full range). */
-  selectCommit(sha: string | null): Promise<void>;
+  selectCommit(sha: string | null, opts?: ReadIntent): Promise<void>;
   /** Switch the edits-scope diff (selector value encoding: `item:<id>`
    * or `turn:<n>`; null → default, the latest turn). */
-  selectEdit(key: string | null): Promise<void>;
-  reload(): Promise<void>;
+  selectEdit(key: string | null, opts?: ReadIntent): Promise<void>;
+  reload(opts?: ReadIntent): Promise<void>;
   consumePendingJumpFilePath(): void;
   consumePendingJumpRowKey(): void;
   openDraftEditor(anchor: CommentAnchor): void;
@@ -470,8 +470,18 @@ export interface ReviewPaneState {
   setWordWrap(wrap: boolean): void;
   /** Flips `-w` and re-requests the diff (the patch itself changes, so
    * this is a full reload, not a view toggle). */
-  setIgnoreWhitespace(ignore: boolean): Promise<void>;
+  setIgnoreWhitespace(ignore: boolean, opts?: ReadIntent): Promise<void>;
   dispose(): void;
+}
+
+/**
+ * Whether a person asked for a load: a pr-scope read that may fetch from
+ * origin may ask for git credentials, and its failure arms the PR pump's
+ * retry, only then. Every entry point defaults to unattended, so a load
+ * nobody asked for cannot prompt by omission; a user action says so.
+ */
+export interface ReadIntent {
+  userInitiated?: boolean;
 }
 
 const CI_RESULT_STATUSES = new Set(['success', 'failed', 'running', 'pending', 'canceled', 'skipped', 'manual']);
@@ -577,7 +587,7 @@ export function reviewSubjectForPane(pane: {
 export function reviewStateForPane(
   sourcePaneId: string,
   subject: ReviewSubject,
-  opts: { deferInitialLoad?: boolean } = {},
+  opts: { deferInitialLoad?: boolean } & ReadIntent = {},
 ): ReviewPaneState {
   // A pinned review belongs to its page's retention, not a companion slot.
   if (subject.pinned) throw new Error('A pull request review is held by reviewStateForPR.');
@@ -589,7 +599,7 @@ export function reviewStateForPane(
   // The replaced state may own a live PR-update subscription; drop it or
   // the Go-side poll pump outlives the state that could unsubscribe it.
   existing?.dispose();
-  const state = createReviewPaneState(sourcePaneId, subject, opts.deferInitialLoad ?? false);
+  const state = createReviewPaneState(sourcePaneId, subject, opts.deferInitialLoad ?? false, opts.userInitiated ?? false);
   statesBySourcePane.set(sourcePaneId, state);
   return state;
 }
@@ -614,21 +624,22 @@ export async function openReviewCompanion(
     filePath?: string;
     /** Edits scope: the edit tool call to pin on load. */
     editItemId?: string;
-  } = {},
+  } & ReadIntent = {},
 ): Promise<ReviewPaneState | null> {
   const companion = openCompanion(sourcePaneId, 'review');
   if (!companion) return null;
   const hasExplicitSelection = opts.scope !== undefined || opts.editItemId !== undefined;
-  const state = reviewStateForPane(sourcePaneId, subject, { deferInitialLoad: hasExplicitSelection });
+  const userInitiated = opts.userInitiated ?? false;
+  const state = reviewStateForPane(sourcePaneId, subject, { deferInitialLoad: hasExplicitSelection, userInitiated });
   if (opts.editItemId) {
     state.pendingEditItemID = opts.editItemId;
   }
   if (opts.scope) {
-    await state.setScope(opts.scope);
+    await state.setScope(opts.scope, { userInitiated });
   } else if (opts.editItemId) {
     // A pinned edit implies edits scope; setScope reloads even when the
     // pane already sits there, which is what consumes the pending pin.
-    await state.setScope('edits');
+    await state.setScope('edits', { userInitiated });
   }
   // After the scope switch, which retires the previous diff and the reveals
   // that came with it.
@@ -645,6 +656,8 @@ export function createReviewPaneState(
   sourcePaneId: string,
   subject: ReviewSubject,
   deferInitialLoad: boolean,
+  // Whether a person opened the pane, which the first load carries.
+  initialUserInitiated = false,
 ): ReviewPaneState {
   installHeldPRObservers();
   const { identity, threadId, rowId, workspace } = subject;
@@ -1152,6 +1165,11 @@ export function createReviewPaneState(
   // frame arrives.
   let failedPRLoad = $state<{ snapshot: PRSnapshot; headSHA: string } | null>(null);
   const awaitingPR = $derived(awaitingPRDetail || awaitingPRStatus);
+  // The intent of the load that is waiting on the status or the snapshot:
+  // no PR read has run for it yet, so the load the wait ends is still the
+  // one a person may have asked for. Every load resets it, so a PR that
+  // appears after the status answered "none" reads unattended.
+  let awaitedUserInitiated = false;
   function workspacePRLookupSettled(): boolean {
     if (pinned) return true;
     const key = workspaceKeyForThread(getPane(sourcePaneId)?.thread ?? null);
@@ -1163,11 +1181,13 @@ export function createReviewPaneState(
     $effect(() => {
       if (!awaitingPRRef || prRef === null) return;
       awaitingPRRef = false;
-      void reload();
+      void reload({ userInitiated: awaitedUserInitiated });
     });
     $effect(() => {
       // Status landed, with or without a PR: the load runs now, so a
       // workspace with no PR answers "no PR" instead of waiting forever.
+      // A status that names a PR resolves the ref too, and the watcher
+      // above, which runs first, carries the waiting load's intent.
       if (!awaitingPRStatus || !workspacePRLookupSettled()) return;
       awaitingPRStatus = false;
       void reload();
@@ -1175,13 +1195,14 @@ export function createReviewPaneState(
     $effect(() => {
       if (!awaitingPRDetail || !prRevision(prSnapshot?.detail, prSnapshot?.headSHA)) return;
       awaitingPRDetail = false;
-      void reload();
+      void reload({ userInitiated: awaitedUserInitiated });
     });
     $effect(() => {
       // A failed pr-scope load retries on the next frame the pump delivers:
       // the backend has the pump emit its next successful poll after a
       // failed read, so this is "once the forge answers again", not a
-      // timer. A diff still on screen of a PR whose head has since moved is
+      // timer. The retry reads unattended, so its failure arms no further
+      // emit. A diff still on screen of a PR whose head has since moved is
       // the stale banner's to reload (it measures the head alone).
       const failed = failedPRLoad;
       const live = prSnapshot;
@@ -1263,7 +1284,7 @@ export function createReviewPaneState(
     conflictExpandedFolds.clear();
   }
 
-  async function setScope(nextScope: ReviewScope, opts?: { baseBranch?: string }): Promise<void> {
+  async function setScope(nextScope: ReviewScope, opts?: { baseBranch?: string } & ReadIntent): Promise<void> {
     if (pinned && nextScope !== 'pr') {
       throw new Error('A pull request review shows only its pull request.');
     }
@@ -1295,10 +1316,10 @@ export function createReviewPaneState(
     draftBodies.clear();
     collapseOverrides.clear();
     if (threadId !== null) persistScope(threadId, scope, baseBranch);
-    await reload();
+    await reload({ userInitiated: opts?.userInitiated });
   }
 
-  async function selectCommit(sha: string | null): Promise<void> {
+  async function selectCommit(sha: string | null, opts?: ReadIntent): Promise<void> {
     if (sha === selectedCommitSHA) return;
     navigationSeq++;
     retireDiffSubject();
@@ -1306,10 +1327,10 @@ export function createReviewPaneState(
     openEditors = [];
     draftBodies.clear();
     collapseOverrides.clear();
-    await reload({ selectionOnly: true });
+    await reload({ selectionOnly: true, userInitiated: opts?.userInitiated });
   }
 
-  async function setIgnoreWhitespace(ignore: boolean): Promise<void> {
+  async function setIgnoreWhitespace(ignore: boolean, opts?: ReadIntent): Promise<void> {
     if (ignore === ignoreWhitespace) return;
     ignoreWhitespace = ignore;
     // THIS IS A FULL DIFF RE-REQUEST, NOT A RENDER TOGGLE, and that cost
@@ -1325,10 +1346,10 @@ export function createReviewPaneState(
     // Collapse overrides deliberately SURVIVE, unlike selectCommit/selectEdit:
     // those switch which change is under review, whereas this shows the same
     // change with less noise. A file the user opened stays open.
-    await reload({ selectionOnly: true });
+    await reload({ selectionOnly: true, userInitiated: opts?.userInitiated });
   }
 
-  async function selectEdit(key: string | null): Promise<void> {
+  async function selectEdit(key: string | null, opts?: ReadIntent): Promise<void> {
     const next = editSelectionFromKey(key, edits);
     if (editSelectionKey(next) === editSelectionKey(selectedEdit)) return;
     navigationSeq++;
@@ -1337,7 +1358,7 @@ export function createReviewPaneState(
     openEditors = [];
     draftBodies.clear();
     collapseOverrides.clear();
-    await reload({ selectionOnly: true });
+    await reload({ selectionOnly: true, userInitiated: opts?.userInitiated });
   }
 
   // A new subject cannot reuse the previous patch under its new scope,
@@ -1350,7 +1371,9 @@ export function createReviewPaneState(
     clearContextExpansions();
   }
 
-  async function reload(opts?: { selectionOnly?: boolean }): Promise<void> {
+  async function reload(opts?: { selectionOnly?: boolean } & ReadIntent): Promise<void> {
+    const userInitiated = opts?.userInitiated ?? false;
+    awaitedUserInitiated = false;
     // A commit/edit selection changes only which diff is shown — the
     // selector list and the PR snapshot are still valid, so reuse them and
     // fetch just the diff. Only when a previous full load actually
@@ -1397,6 +1420,7 @@ export function createReviewPaneState(
           // says why (or GitLab is still preparing the merge request's
           // diff), and the watcher above reloads when one lands.
           awaitingPRDetail = true;
+          awaitedUserInitiated = userInitiated;
           return;
         }
         awaitingPRDetail = false;
@@ -1415,6 +1439,7 @@ export function createReviewPaneState(
         awaitingPRRef = true;
         if (!workspacePRLookupSettled()) {
           awaitingPRStatus = true;
+          awaitedUserInitiated = userInitiated;
           return;
         }
         awaitingPRStatus = false;
@@ -1432,6 +1457,7 @@ export function createReviewPaneState(
         // anyway would make the button's state a lie.
         ignoreWhitespace && canIgnoreWhitespace,
         selectionOnly ? { commits, edits, editTurnLabels, prRevision: loadedPRRevision } : undefined,
+        userInitiated,
       );
       if (seq !== loadSeq || disposed) {
         loaded.patch?.abandon();
@@ -1627,7 +1653,7 @@ export function createReviewPaneState(
     return { files: view(read.parser.files), read, patchKey: read.parser.sourceKey() };
   }
 
-  if (!deferInitialLoad) void reload();
+  if (!deferInitialLoad) void reload({ userInitiated: initialUserInitiated });
 
   function clearContextExpansions(): void {
     unexpandableEditPaths.clear();
@@ -2132,7 +2158,7 @@ export function createReviewPaneState(
   // the backend names that case by its code (git.ForgeErrorStaleHead).
   function mergeFailureAction(err: unknown): { label: string; run: () => void } | undefined {
     if (err instanceof TransportError && err.code === 'forge_stale_head') {
-      return { label: 'Reload', run: () => { void reload(); } };
+      return { label: 'Reload', run: () => { void reload({ userInitiated: true }); } };
     }
     return undefined;
   }

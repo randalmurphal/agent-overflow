@@ -46,9 +46,12 @@
      * `disposePRReviewStates(ownerPaneId)` when its page goes; the states
      * of the PR on screen and the one before it outlive this component. */
     pr?: { ownerPaneId: string; backend: BackendKey; projectId: string; pr: PRRef };
+    /** Pinned: whether a person opened this PR, which a new state's first
+     * read carries (a restored page's does not). */
+    userInitiated?: boolean;
   }
 
-  let { ctx, pr }: Props = $props();
+  let { ctx, pr, userInitiated = false }: Props = $props();
   // File-filter state (type chips, hide tests) is owned here, not in the
   // tree, so it narrows the diff body too, and the selection survives the
   // rail hiding. The dropdown's "Apply filter to diff" item is the switch
@@ -78,7 +81,7 @@
   const sourcePaneId = pr?.ownerPaneId ?? ctx?.paneId ?? '';
   function initialState(): ReviewPaneState | null {
     if (!subject) return null;
-    return subject.pinned ? reviewStateForPR(sourcePaneId, subject) : reviewStateForPane(sourcePaneId, subject);
+    return subject.pinned ? reviewStateForPR(sourcePaneId, subject, { userInitiated }) : reviewStateForPane(sourcePaneId, subject);
   }
   const review = initialState();
   // The conflict view's Back, unless the host's header owns Back.
@@ -248,7 +251,7 @@
           type="button"
           class="shrink-0 rounded border border-error/40 px-2 py-0.5 disabled:opacity-50"
           disabled={review.loading}
-          onclick={() => { void review?.reload(); }}
+          onclick={() => { void review?.reload({ userInitiated: true }); }}
           data-testid="review-error-retry"
         >Retry</button>
       </div>
@@ -290,7 +293,7 @@
     {#if review.prStale}
       <div class="flex items-center justify-between gap-3 border-b border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning" data-testid="review-pr-stale">
         <span>PR updated.</span>
-        <button type="button" class="rounded border border-warning/40 px-2 py-0.5" onclick={() => { void review?.reload(); }}>Reload</button>
+        <button type="button" class="rounded border border-warning/40 px-2 py-0.5" onclick={() => { void review?.reload({ userInitiated: true }); }}>Reload</button>
       </div>
     {/if}
     {#if review.scope === 'pr' && review.prDetail}

@@ -184,10 +184,18 @@ describe('a pinned review', () => {
       expect.objectContaining({ Number: 5 }),
       { baseRef: 'main', baseSHA: 'base-main', headSHA: 'sha-5' },
       false,
+      false,
     );
     expect(state.files.length).toBe(1);
     expect(state.prDetail?.number).toBe(5);
     expect(state.effectiveSubmitTarget).toBe('pr');
+  });
+
+  it('reads attended only when the page says a person opened it', async () => {
+    const { diff } = installPRMocks();
+    const state = reviewStateForPR(OWNER, reviewSubjectForPR({ ownerPaneId: OWNER, backend: HOME_BACKEND, projectId: PROJECT, pr: ref(5) }), { userInitiated: true });
+    await waitLoaded(state);
+    expect(diff).toHaveBeenLastCalledWith(ROOT, expect.objectContaining({ Number: 5 }), expect.anything(), false, true);
   });
 
   it('never reads the owner pane\'s git status, even once that pane shows a thread with another PR', async () => {

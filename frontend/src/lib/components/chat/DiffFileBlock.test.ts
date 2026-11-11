@@ -286,6 +286,7 @@ describe('<DiffFileBlock>', () => {
     expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', PANE_SUBJECT, {
       scope: 'workspace',
       filePath: 'src/big.ts',
+      userInitiated: true,
     });
   });
 
@@ -335,6 +336,7 @@ describe('<DiffFileBlock>', () => {
     expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', PANE_SUBJECT, {
       scope: 'workspace',
       filePath: 'src/foo.ts',
+      userInitiated: true,
     });
   });
 
@@ -348,6 +350,7 @@ describe('<DiffFileBlock>', () => {
     expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', PANE_SUBJECT, {
       scope: 'workspace',
       filePath: 'src/long.ts',
+      userInitiated: true,
     });
   });
 
@@ -361,6 +364,7 @@ describe('<DiffFileBlock>', () => {
     expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', PANE_SUBJECT, {
       scope: 'workspace',
       filePath: 'src/foo.ts',
+      userInitiated: true,
     });
   });
 
@@ -624,6 +628,7 @@ describe('<DiffFileBlock>', () => {
       expect(openReviewCompanion).toHaveBeenCalledExactlyOnceWith('pane-1', PANE_SUBJECT, {
         scope: 'workspace',
         filePath: 'src/foo.ts',
+        userInitiated: true,
       });
       expect(getByTestId('diff-file-body')).toBeInTheDocument();
     });
