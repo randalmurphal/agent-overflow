@@ -16,7 +16,7 @@ describe('find matching', () => {
     }
     for (const { text, query, at } of vectors.offsets) {
       const found: number[] = [];
-      forEachFindMatch(foldFindText(text), findNeedle(query), (offset) => found.push([...text.slice(0, offset)].length));
+      forEachFindMatch(foldFindText(text), findNeedle(query), (offset) => found.push(Array.from(text.slice(0, offset)).length));
       expect(found, `${query} in ${text}`).toEqual(at);
     }
   });

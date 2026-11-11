@@ -22,7 +22,7 @@
   import { REVIEW_JUMP_PULSE_MS } from '../../utils/reviewJumpPulse';
   import { findLineKeyIndex, findLineKeyPath, type ReviewFindHit } from '../../utils/reviewFindScan';
   import { findHitRow, findRowPosition } from '../../utils/reviewFindRows';
-  import { reviewDiffKeydown, topRowIndex, type ReviewDiffKeysHost } from './reviewDiffKeys';
+  import { reviewDiffKeydown, type ReviewDiffKeysHost } from './reviewDiffKeys';
   import { elementAtEdge } from '../../utils/findReadingEdge';
   import {
     BlockRowsCache,
