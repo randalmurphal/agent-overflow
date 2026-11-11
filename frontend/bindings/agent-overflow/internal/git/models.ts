@@ -1047,7 +1047,7 @@ export class PRReference {
  * recorded for the PR. The diff and the commit list of one snapshot use the
  * same pair, so they agree with each other and with the forge. The merge
  * conflict read merges the head with the base branch's live tip instead
- * (FetchBranchTip), because the recorded base does not follow the branch.
+ * (RemoteBranchTip), because the recorded base does not follow the branch.
  */
 export class PRRevision {
     "baseRef": string;

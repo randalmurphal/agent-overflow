@@ -107,8 +107,8 @@ func TestGetPRMergeConflictsMergesWithTheLiveBaseTip(t *testing.T) {
 	}
 }
 
-// A base tip that cannot be fetched is an error, never a clean merge.
-func TestGetPRMergeConflictsFailsWhenTheBaseTipCannotBeFetched(t *testing.T) {
+// A base tip that cannot be read is an error, never a clean merge.
+func TestGetPRMergeConflictsFailsWhenTheBaseTipCannotBeRead(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	origin, clone, rev := staleBasePR(t)
@@ -119,10 +119,10 @@ func TestGetPRMergeConflictsFailsWhenTheBaseTipCannotBeFetched(t *testing.T) {
 	pr := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "owner", Repo: "repo", Number: 9}
 	result, err := app.GetPRMergeConflicts(ref, pr, rev, "feature")
 	if err == nil {
-		t.Fatalf("result = %+v, want the base tip fetch failure", result)
+		t.Fatalf("result = %+v, want the base tip read failure", result)
 	}
-	if !strings.Contains(err.Error(), "get PR merge conflicts") || !strings.Contains(err.Error(), "fetch main from origin") {
-		t.Fatalf("err = %v, want the action and the fetch failure named", err)
+	if !strings.Contains(err.Error(), "get PR merge conflicts") || !strings.Contains(err.Error(), "read main on origin") {
+		t.Fatalf("err = %v, want the action and the read failure named", err)
 	}
 }
 

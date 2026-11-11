@@ -21,7 +21,7 @@ type PRMergeConflictsResult struct {
 }
 
 // GetPRMergeConflicts merges rev's head with the tip rev.BaseRef has on
-// origin now, fetched by this call, in the referenced clone and reports the
+// origin now, read by this call and fetched when the clone lacks it, in the referenced clone and reports the
 // conflicts. rev.BaseSHA is not merged: it is the base the forge recorded,
 // which the head usually contains, so merging with it never conflicts.
 //
@@ -32,7 +32,7 @@ func (a *App) GetPRMergeConflicts(ws WorkspaceRef, pr gitops.PRReference, rev gi
 	if err != nil {
 		return PRMergeConflictsResult{}, err
 	}
-	baseTip, err := a.gitCore().FetchBranchTip(workspace, rev.BaseRef)
+	baseTip, err := a.gitCore().RemoteBranchTip(workspace, rev.BaseRef)
 	if err != nil {
 		a.notePRReadFailed(pr)
 		return PRMergeConflictsResult{}, fmt.Errorf("%s: %w", action, err)

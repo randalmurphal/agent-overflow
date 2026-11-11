@@ -989,11 +989,11 @@ describe('prReviewStore — merge conflicts follow the PR', () => {
     expect(peekPRConflicts(KEY, CONFLICT_WS).state?.paths).toEqual([]);
 
     setBindingMock('GetPRMergeConflicts', async () => {
-      throw new Error('get PR merge conflicts: fetch main from origin: exited with code 128');
+      throw new Error('get PR merge conflicts: read main on origin: exited with code 128');
     });
     await openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
     expect(peekPRConflicts(KEY, CONFLICT_WS).state).toBeNull();
-    expect(peekPRConflicts(KEY, CONFLICT_WS).error).toContain('fetch main from origin');
+    expect(peekPRConflicts(KEY, CONFLICT_WS).error).toContain('read main on origin');
     a.release();
   });
 

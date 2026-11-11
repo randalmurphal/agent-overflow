@@ -1783,7 +1783,7 @@ export function GetPRListNeedsYou(): $CancellablePromise<number> {
 
 /**
  * GetPRMergeConflicts merges rev's head with the tip rev.BaseRef has on
- * origin now, fetched by this call, in the referenced clone and reports the
+ * origin now, read by this call and fetched when the clone lacks it, in the referenced clone and reports the
  * conflicts. rev.BaseSHA is not merged: it is the base the forge recorded,
  * which the head usually contains, so merging with it never conflicts.
  */

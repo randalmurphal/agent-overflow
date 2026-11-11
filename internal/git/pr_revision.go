@@ -10,7 +10,7 @@ import (
 // recorded for the PR. The diff and the commit list of one snapshot use the
 // same pair, so they agree with each other and with the forge. The merge
 // conflict read merges the head with the base branch's live tip instead
-// (FetchBranchTip), because the recorded base does not follow the branch.
+// (RemoteBranchTip), because the recorded base does not follow the branch.
 type PRRevision struct {
 	BaseRef string `json:"baseRef"`
 	// BaseSHA is the base commit the forge recorded for the PR
@@ -74,52 +74,67 @@ func (c *Core) EnsurePRObjects(cwd string, pr PRReference, rev PRRevision) error
 		strings.Join(missing, ", "), headRef, rev.BaseRef)
 }
 
-// FetchBranchTip fetches branch from origin and returns the commit it names
-// there now, with its objects present in cwd's repository. It is one
-// network step: the fetch both resolves the tip and downloads it. The tip is
-// read from the fetch's own porcelain output, not from FETCH_HEAD, which a
-// concurrent fetch can overwrite. As with EnsurePRObjects, the fetch names
-// the branch, so git also moves origin/<branch> to it.
-//
-// A fetch that brought the commit but lost the origin/<branch> update to
-// another git process still answers; any other failure is returned.
-func (c *Core) FetchBranchTip(cwd, branch string) (string, error) {
+// RemoteBranchTip returns the commit branch names on origin now, with its
+// objects present in cwd's repository. `git ls-remote` resolves the tip;
+// when that commit is already local nothing else touches the network and no
+// ref moves. Otherwise one fetch of the branch downloads it, and, as with
+// EnsurePRObjects, the fetch names the branch, so git also moves
+// origin/<branch>. Success is the commit being present afterwards, not the
+// fetch's exit status. A tip still missing after a successful fetch means
+// the branch moved between the two calls; that is an error, not a retry.
+func (c *Core) RemoteBranchTip(cwd, branch string) (string, error) {
 	if err := ValidateBranchName(branch); err != nil {
 		return "", err
 	}
-	stdout, _, fetchErr := c.executeInteractive(cwd, "fetch", "--porcelain", "origin", "refs/heads/"+branch)
-	tip := porcelainFetchHead(stdout)
-	if tip == "" {
-		if fetchErr != nil {
-			return "", fmt.Errorf("fetch %s from origin: %w", branch, fetchErr)
-		}
-		return "", fmt.Errorf("fetch %s from origin reported no commit", branch)
+	ref := "refs/heads/" + branch
+	stdout, _, err := c.executeInteractive(cwd, "ls-remote", "origin", ref)
+	if err != nil {
+		return "", fmt.Errorf("read %s on origin: %w", branch, err)
+	}
+	tip, err := lsRemoteTip(stdout, ref)
+	if err != nil {
+		return "", fmt.Errorf("read %s on origin: %w", branch, err)
+	}
+	missing, err := c.missingCommits(cwd, tip)
+	if err != nil || len(missing) == 0 {
+		return tip, err
+	}
+	_, _, fetchErr := c.executeInteractive(cwd, "fetch", "origin", ref)
+	missing, err = c.missingCommits(cwd, tip)
+	if err != nil {
+		return "", err
+	}
+	if len(missing) == 0 {
+		return tip, nil
 	}
 	if fetchErr != nil {
-		missing, err := c.missingCommits(cwd, tip)
-		if err != nil {
-			return "", err
-		}
-		if len(missing) != 0 {
-			return "", fmt.Errorf("fetch %s from origin: %w", branch, fetchErr)
-		}
+		return "", fmt.Errorf("fetch %s from origin: %w", branch, fetchErr)
 	}
-	return tip, nil
+	return "", fmt.Errorf("%s moved on origin during the read: it named %s, which the fetch did not bring; try again", branch, tip)
 }
 
-// porcelainFetchHead returns the new object ID of the FETCH_HEAD line in
-// `git fetch --porcelain` output ("<flag> <old> <new> <ref>"), or "".
-func porcelainFetchHead(stdout string) string {
+// lsRemoteTip returns the object ID of the one `git ls-remote` line
+// ("<oid>\t<ref>") naming ref exactly. ls-remote matches its pattern
+// against trailing path components, so lines for other refs are skipped.
+func lsRemoteTip(stdout, ref string) (string, error) {
+	tip := ""
 	for _, line := range strings.Split(stdout, "\n") {
-		if len(line) < 2 {
+		oid, name, ok := strings.Cut(strings.TrimSuffix(line, "\r"), "\t")
+		if !ok || name != ref {
 			continue
 		}
-		fields := strings.Fields(line[2:])
-		if len(fields) == 3 && fields[2] == "FETCH_HEAD" && treeOIDPattern.MatchString(fields[1]) {
-			return fields[1]
+		if tip != "" {
+			return "", fmt.Errorf("git ls-remote listed %s more than once", ref)
 		}
+		if !treeOIDPattern.MatchString(oid) {
+			return "", fmt.Errorf("git ls-remote listed %s at %q, not an object ID", ref, oid)
+		}
+		tip = oid
 	}
-	return ""
+	if tip == "" {
+		return "", fmt.Errorf("origin has no branch %s", strings.TrimPrefix(ref, "refs/heads/"))
+	}
+	return tip, nil
 }
 
 // missingCommits returns the oids that do not name a commit in cwd's

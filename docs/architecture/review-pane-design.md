@@ -27,7 +27,8 @@ the forge recorded (`git.PRRevision`), and fetches from origin only the
 commits the clone lacks (`Core.EnsurePRObjects`). The recorded base does
 not follow the base branch (GitLab's `start_sha` is usually the merge
 base), so the conflict read merges the head with the base branch's tip,
-fetched from origin on every read (`Core.FetchBranchTip`); a failed fetch
+read from origin on every read and fetched when the clone lacks it
+(`Core.RemoteBranchTip`); a failed read
 is the view's error, never "no conflicts". A failed refresh keeps
 the diff on screen under its error; a failed read retries on the next
 frame of the PR's poll pump, which emits once after a failed read even

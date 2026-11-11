@@ -1,8 +1,10 @@
 package git
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -141,8 +143,8 @@ func staleBaseOrigin(t *testing.T) (origin, clone string, rev PRRevision) {
 }
 
 // Merging the head with the recorded base cannot conflict; merging it with
-// the base branch's tip, fetched now, does.
-func TestFetchBranchTipFindsConflictsTheRecordedBaseHides(t *testing.T) {
+// the base branch's tip on origin, read now, does.
+func TestRemoteBranchTipFindsConflictsTheRecordedBaseHides(t *testing.T) {
 	origin, clone, rev := staleBaseOrigin(t)
 	core := NewCore()
 	if err := core.EnsurePRObjects(clone, prRevisionPR, rev); err != nil {
@@ -156,9 +158,9 @@ func TestFetchBranchTipFindsConflictsTheRecordedBaseHides(t *testing.T) {
 		t.Fatalf("fixture: the recorded base conflicts: %+v", recorded)
 	}
 
-	tip, err := core.FetchBranchTip(clone, rev.BaseRef)
+	tip, err := core.RemoteBranchTip(clone, rev.BaseRef)
 	if err != nil {
-		t.Fatalf("FetchBranchTip: %v", err)
+		t.Fatalf("RemoteBranchTip: %v", err)
 	}
 	if want := revParse(t, origin, "main"); tip != want {
 		t.Fatalf("tip = %s, want origin's main %s", tip, want)
@@ -181,78 +183,181 @@ func TestFetchBranchTipFindsConflictsTheRecordedBaseHides(t *testing.T) {
 	}
 }
 
-// The tip is fetched every time, even when the clone already has the
-// recorded base and an older origin/main.
-func TestFetchBranchTipFollowsTheBranchAcrossCalls(t *testing.T) {
+// countUploadPack has the clone reach origin through a wrapper around
+// git-upload-pack that appends one line to the returned log per connection
+// (one per ls-remote, one per fetch). With moveTo set, the second
+// connection first force-moves origin's main to it, so the branch moves
+// between the tip read and the fetch.
+func countUploadPack(t *testing.T, origin, clone, moveTo string) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the upload-pack wrapper is a POSIX shell script")
+	}
+	dir := t.TempDir()
+	log := filepath.Join(dir, "connections")
+	move := ""
+	if moveTo != "" {
+		move = fmt.Sprintf("if [ \"$(wc -l < '%s')\" -eq 2 ]; then git -C '%s' update-ref refs/heads/main %s; fi\n", log, origin, moveTo)
+	}
+	script := filepath.Join(dir, "upload-pack.sh")
+	body := "#!/bin/sh\necho connection >> '" + log + "'\n" + move + "exec git upload-pack \"$@\"\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	testutil.RunGit(t, clone, "config", "remote.origin.uploadpack", script)
+	return log
+}
+
+func connections(t *testing.T, log string) int {
+	t.Helper()
+	data, err := os.ReadFile(log)
+	if os.IsNotExist(err) {
+		return 0
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Count(string(data), "\n")
+}
+
+// A tip the clone already has costs the ls-remote alone: no fetch, and
+// origin/main stays where it was.
+func TestRemoteBranchTipUsesALocalTipWithoutFetching(t *testing.T) {
 	origin, clone, rev := staleBaseOrigin(t)
-	core := NewCore()
-	first, err := core.FetchBranchTip(clone, rev.BaseRef)
+	// The commit arrives without origin/main following it: a fetch by path
+	// writes FETCH_HEAD only.
+	testutil.RunGit(t, clone, "fetch", "-q", origin, "main")
+	tracking := revParse(t, clone, "refs/remotes/origin/main")
+	log := countUploadPack(t, origin, clone, "")
+
+	tip, err := NewCore().RemoteBranchTip(clone, rev.BaseRef)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("RemoteBranchTip: %v", err)
 	}
-	commitFile(t, origin, "later.txt", "later\n")
-	second, err := core.FetchBranchTip(clone, rev.BaseRef)
-	if err != nil {
-		t.Fatal(err)
+	if want := revParse(t, origin, "main"); tip != want {
+		t.Fatalf("tip = %s, want %s", tip, want)
 	}
-	if want := revParse(t, origin, "main"); second != want || second == first {
-		t.Fatalf("second tip = %s (first %s), want origin's new main %s", second, first, want)
+	if n := connections(t, log); n != 1 {
+		t.Fatalf("connections to origin = %d, want the ls-remote alone", n)
 	}
-	// An unchanged branch still answers its tip.
-	third, err := core.FetchBranchTip(clone, rev.BaseRef)
-	if err != nil || third != second {
-		t.Fatalf("unchanged tip = %s, %v; want %s", third, err, second)
+	if got := revParse(t, clone, "refs/remotes/origin/main"); got != tracking {
+		t.Fatalf("origin/main moved to %s, want it left at %s", got, tracking)
 	}
 }
 
-func TestFetchBranchTipReportsAnUnreachableOrigin(t *testing.T) {
+// A tip the clone lacks is fetched once, and the tip read again later
+// follows the branch.
+func TestRemoteBranchTipFetchesAMissingTip(t *testing.T) {
+	origin, clone, rev := staleBaseOrigin(t)
+	log := countUploadPack(t, origin, clone, "")
+	core := NewCore()
+
+	tip, err := core.RemoteBranchTip(clone, rev.BaseRef)
+	if err != nil {
+		t.Fatalf("RemoteBranchTip: %v", err)
+	}
+	if want := revParse(t, origin, "main"); tip != want {
+		t.Fatalf("tip = %s, want %s", tip, want)
+	}
+	if n := connections(t, log); n != 2 {
+		t.Fatalf("connections to origin = %d, want ls-remote and one fetch", n)
+	}
+	if missing, err := core.missingCommits(clone, tip); err != nil || len(missing) != 0 {
+		t.Fatalf("tip missing after the read: %v, %v", missing, err)
+	}
+	// The branch is fetched by name, so origin/main follows it.
+	if got := revParse(t, clone, "refs/remotes/origin/main"); got != tip {
+		t.Fatalf("origin/main = %s, want %s", got, tip)
+	}
+
+	commitFile(t, origin, "later.txt", "later\n")
+	later, err := core.RemoteBranchTip(clone, rev.BaseRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := revParse(t, origin, "main"); later != want || later == tip {
+		t.Fatalf("later tip = %s (first %s), want origin's new main %s", later, tip, want)
+	}
+}
+
+func TestRemoteBranchTipReportsABranchOriginLacks(t *testing.T) {
+	_, clone, _ := staleBaseOrigin(t)
+	_, err := NewCore().RemoteBranchTip(clone, "no-such-branch")
+	if err == nil || !strings.Contains(err.Error(), "origin has no branch no-such-branch") {
+		t.Fatalf("err = %v, want the absent branch named", err)
+	}
+}
+
+func TestRemoteBranchTipReportsAnUnreachableOrigin(t *testing.T) {
 	_, clone, rev := staleBaseOrigin(t)
 	breakOrigin(t, clone)
-	_, err := NewCore().FetchBranchTip(clone, rev.BaseRef)
-	if err == nil || !strings.Contains(err.Error(), "fetch main from origin") || !strings.Contains(err.Error(), "fatal:") {
-		t.Fatalf("err = %v, want the fetch failure with git's diagnosis", err)
+	_, err := NewCore().RemoteBranchTip(clone, rev.BaseRef)
+	if err == nil || !strings.Contains(err.Error(), "read main on origin") || !strings.Contains(err.Error(), "fatal:") {
+		t.Fatalf("err = %v, want the ls-remote failure with git's diagnosis", err)
 	}
 }
 
-func TestFetchBranchTipReportsAMissingBranch(t *testing.T) {
-	_, clone, _ := staleBaseOrigin(t)
-	_, err := NewCore().FetchBranchTip(clone, "no-such-branch")
-	if err == nil || !strings.Contains(err.Error(), "couldn't find remote ref") {
-		t.Fatalf("err = %v, want git's missing-ref diagnosis", err)
+// A branch force-moved between the ls-remote and the fetch leaves the tip
+// it named missing; that is an error, read once, not a loop.
+func TestRemoteBranchTipReportsABranchThatMovedDuringTheRead(t *testing.T) {
+	origin, clone, rev := staleBaseOrigin(t)
+	// A commit that does not contain main's tip, for main to jump to.
+	testutil.RunGit(t, origin, "checkout", "-q", "--orphan", "elsewhere")
+	commitFile(t, origin, "other.txt", "other\n")
+	elsewhere := revParse(t, origin, "HEAD")
+	testutil.RunGit(t, origin, "checkout", "-q", "-f", "main")
+	tip := revParse(t, origin, "main")
+	log := countUploadPack(t, origin, clone, elsewhere)
+
+	_, err := NewCore().RemoteBranchTip(clone, rev.BaseRef)
+	if err == nil || !strings.Contains(err.Error(), "main moved on origin during the read") || !strings.Contains(err.Error(), tip) {
+		t.Fatalf("err = %v, want the move during the read named with tip %s", err, tip)
+	}
+	if n := connections(t, log); n != 2 {
+		t.Fatalf("connections to origin = %d, want ls-remote and one fetch", n)
 	}
 }
 
 // A fetch that brought the tip but lost the origin/main update to a held
 // lock still answers the tip.
-func TestFetchBranchTipSucceedsWhenTheRefUpdateFails(t *testing.T) {
+func TestRemoteBranchTipSucceedsWhenTheRefUpdateFails(t *testing.T) {
 	origin, clone, rev := staleBaseOrigin(t)
 	lock := filepath.Join(clone, ".git", "refs", "remotes", "origin", "main.lock")
 	if err := os.WriteFile(lock, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	tip, err := NewCore().FetchBranchTip(clone, rev.BaseRef)
+	tip, err := NewCore().RemoteBranchTip(clone, rev.BaseRef)
 	if err != nil {
-		t.Fatalf("FetchBranchTip with a held ref lock: %v", err)
+		t.Fatalf("RemoteBranchTip with a held ref lock: %v", err)
 	}
 	if want := revParse(t, origin, "main"); tip != want {
 		t.Fatalf("tip = %s, want %s", tip, want)
 	}
 }
 
-func TestPorcelainFetchHead(t *testing.T) {
+func TestLSRemoteTip(t *testing.T) {
 	sha := strings.Repeat("a", 40)
-	zero := strings.Repeat("0", 40)
+	other := strings.Repeat("b", 40)
+	const ref = "refs/heads/main"
 	for _, tc := range []struct {
-		name, stdout, want string
+		name, stdout, want, err string
 	}{
-		{"fetch head only", "* " + zero + " " + sha + " FETCH_HEAD\n", sha},
-		{"with tracking update", "* " + zero + " " + sha + " FETCH_HEAD\n  " + zero + " " + sha + " refs/remotes/origin/main\n", sha},
-		{"tracking only", "  " + zero + " " + sha + " refs/remotes/origin/main\n", ""},
-		{"empty", "", ""},
-		{"not an oid", "* " + zero + " nope FETCH_HEAD\n", ""},
+		{"one line", sha + "\t" + ref + "\n", sha, ""},
+		{"other refs skipped", other + "\trefs/heads/x/refs/heads/main\n" + sha + "\t" + ref + "\n", sha, ""},
+		{"none", "", "", "origin has no branch main"},
+		{"only a suffix match", other + "\trefs/remotes/origin/refs/heads/main\n", "", "origin has no branch main"},
+		{"twice", sha + "\t" + ref + "\n" + other + "\t" + ref + "\n", "", "more than once"},
+		{"not an oid", "nope\t" + ref + "\n", "", "not an object ID"},
 	} {
-		if got := porcelainFetchHead(tc.stdout); got != tc.want {
-			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		got, err := lsRemoteTip(tc.stdout, ref)
+		if tc.err == "" {
+			if err != nil || got != tc.want {
+				t.Errorf("%s: got %q, %v; want %q", tc.name, got, err, tc.want)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), tc.err) {
+			t.Errorf("%s: err = %v, want %q", tc.name, err, tc.err)
 		}
 	}
 }
