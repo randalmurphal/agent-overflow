@@ -32,6 +32,12 @@ type Request struct {
 	// Attachment allows an absolute Path. Only the attachment fetchers set
 	// it.
 	Attachment bool
+	// MaxBodyBytes bounds the body Do, JSON and Pages read for this
+	// request; zero takes Options.MaxBodyBytes. A read whose measured
+	// worst-case page is past the default names its own bound, at most
+	// maxRequestBodyBytes. Stream takes its limit as an argument and
+	// refuses one here.
+	MaxBodyBytes int64
 
 	// expiryLookup marks the client's own token expiry lookup: it runs no
 	// lookup itself and a 401 is returned as is, without the token refresh.
@@ -44,7 +50,7 @@ type Response struct {
 	Status int
 	Header http.Header
 	// Body is the response body for Do, JSON and GraphQL, bounded by
-	// Options.MaxBodyBytes; nil for Stream.
+	// Request.MaxBodyBytes or Options.MaxBodyBytes; nil for Stream.
 	Body []byte
 	// NotModified is a 304. Do and JSON answer it from the ETag store with
 	// the stored body and the headers it came with.
@@ -282,12 +288,28 @@ func (ex *exchange) credential() string {
 	return ex.key.fingerprint
 }
 
+// bodyLimit is the bound on r's body: its own MaxBodyBytes, else the
+// Service's. A bound below zero or past maxRequestBodyBytes is refused.
+func (c *Client) bodyLimit(r Request) (int64, error) {
+	switch {
+	case r.MaxBodyBytes == 0:
+		return c.svc.opts.MaxBodyBytes, nil
+	case r.MaxBodyBytes < 0 || r.MaxBodyBytes > maxRequestBodyBytes:
+		return 0, fmt.Errorf("forgeapi: Request.MaxBodyBytes %d is outside 1 to %d", r.MaxBodyBytes, int64(maxRequestBodyBytes))
+	}
+	return r.MaxBodyBytes, nil
+}
+
 func (c *Client) call(ctx context.Context, r Request, graphQL bool) (*Response, error) {
+	limit, err := c.bodyLimit(r)
+	if err != nil {
+		return nil, err
+	}
 	ctx, cancel := c.withTimeout(ctx, r.Timeout)
 	defer cancel()
 	refreshed := false
 	for {
-		resp, retry, err := c.attempt(ctx, r, graphQL, refreshed)
+		resp, retry, err := c.attempt(ctx, r, graphQL, limit, refreshed)
 		if !retry {
 			return resp, c.settleProbe(ctx, err)
 		}
@@ -295,7 +317,7 @@ func (c *Client) call(ctx context.Context, r Request, graphQL bool) (*Response, 
 	}
 }
 
-func (c *Client) attempt(ctx context.Context, r Request, graphQL, refreshed bool) (*Response, bool, error) {
+func (c *Client) attempt(ctx context.Context, r Request, graphQL bool, limit int64, refreshed bool) (*Response, bool, error) {
 	ex, err := c.prepare(ctx, r, graphQL)
 	if err != nil {
 		return nil, false, err
@@ -317,13 +339,13 @@ func (c *Client) attempt(ctx context.Context, r Request, graphQL, refreshed bool
 		return nil, false, err
 	}
 	defer drain(resp)
-	body, readErr := readBounded(resp.Body, c.svc.opts.MaxBodyBytes)
+	body, readErr := readBounded(resp.Body, limit)
 	if readErr != nil {
 		if !errors.Is(readErr, ErrBodyTooLarge) {
 			return nil, false, c.bodyError(ctx, ex.req, readErr)
 		}
 		if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
-			return nil, false, fmt.Errorf("forge %s %s: %w (limit %d)", ex.req.Method, c.redact(ex.req.URL), ErrBodyTooLarge, c.svc.opts.MaxBodyBytes)
+			return nil, false, fmt.Errorf("forge %s %s: %w (limit %d)", ex.req.Method, c.redact(ex.req.URL), ErrBodyTooLarge, limit)
 		}
 	}
 	return c.settle(ctx, ex, ex.req, resp, body, refreshed)

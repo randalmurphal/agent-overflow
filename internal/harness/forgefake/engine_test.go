@@ -779,7 +779,6 @@ func TestPRScopedCallsAnswerOnlyOnTheSeededHost(t *testing.T) {
 		"merge request": "projects/grp%2Ftool/merge_requests/3",
 		"approvals":     "projects/grp%2Ftool/merge_requests/3/approvals",
 		"discussions":   "projects/grp%2Ftool/merge_requests/3/discussions?per_page=100",
-		"pipeline jobs": "projects/grp%2Ftool/pipelines/80/jobs?per_page=100",
 		"job trace":     "projects/grp%2Ftool/jobs/601/trace",
 		"upload":        "projects/grp%2Ftool/uploads/0123456789abcdef0123456789abcdef/d.svg",
 	} {

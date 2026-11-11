@@ -189,8 +189,9 @@ func (f *gitlabForge) ReadPRStates(ctx context.Context, repo RepoReference, prs 
 			MergedAt *string `json:"merged_at"`
 		}
 		request := forgeapi.Request{
-			Path:  gitlabProjectPath(repo.Project()) + "/merge_requests",
-			Query: url.Values{"iids[]": batch, "state": {"all"}, "per_page": {strconv.Itoa(prStatesBatch)}},
+			Path:         gitlabProjectPath(repo.Project()) + "/merge_requests",
+			Query:        url.Values{"iids[]": batch, "state": {"all"}, "per_page": {strconv.Itoa(prStatesBatch)}},
+			MaxBodyBytes: gitlabMRListMaxBody,
 		}
 		if _, err := client.JSON(ctx, request, &raw); err != nil {
 			return nil, err

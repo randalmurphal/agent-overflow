@@ -167,7 +167,7 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitLab | `GET projects/P/merge_requests?iids[]=N...&state=all&per_page=100` (`glab api merge request list`) | merged-PR cleanup: state and `merged_at` of tracked MRs |
 | GitLab | `GET projects/P/pipelines?[per_page=N][&page=N][&ref=R][&status=S][&scope=tags\|branches]` (`glab api pipelines`) | pipelines list: every pipeline of the project, highest id first; a scope answers each tag's latest tag pipeline or each branch's latest branch pipeline (a branch may share a tag's name), then the ref and status filters apply; `X-Next-Page` while more pages exist |
 | GitLab | `GET projects/P/pipelines/ID` (`glab api pipeline`) | ReadPipeline: one pipeline; ListPipelines: its `tag` flag, for a pipeline on a tag's name outside the tag scope |
-| GitLab | `GET projects/P/pipelines/ID/jobs?per_page=N[&page=N]` (`glab api pipeline jobs`) | ReadPR CI, ReadPipeline's jobs |
+| GitLab | GraphQL `PipelineJobs(fullPath, id, after)` (`glab graphql PipelineJobs`) | ReadPR CI, ReadPipeline's rows: the pipeline's stages in fixture order and its rows newest first in pages of 100, each a build, a bridge or an external commit status by its `kind` (gid, `webPath`, `detailsPath`, `downstreamPipeline` as gitlab.com answers them); a project not on the host is a null `project`, a pipeline it lacks a null `pipeline` |
 | GitLab | `GET projects/P/jobs/ID/trace` (`glab api job trace`, conditional) | CI job log (the current `log` of a started job, running included; 404 while the job sets `logWithheld`). A completed job's trace honors a start or closed range (206) and refuses a suffix range (400); a running job's trace ignores `Range` (200, whole body) and a running `synthetic` trace grows on every request |
 | GitLab | `GET projects/P/uploads/SECRET/NAME` (`glab api upload`) | forge attachments |
 
@@ -230,6 +230,10 @@ bulk publish, discussion note POST, discussion resolve PUT and
   the next, as GitLab's does.
 - Generated ids start at 1,000,000 and stay unique across reseeds and
   resets.
+- A GitLab job's `kind` makes it a `bridge` (its `downstream` pipeline
+  path, none until set) or an `external` commit status (its `targetUrl`,
+  stage `external` by default) instead of a build; neither has a log, and
+  its trace is the forge's 404. A GitHub run holds builds only.
 - A job's `log` is served as the forge would serve it, and the app's log
   view splits it into rows from what it carries. A GitHub log splits by
   its steps: give each line its own time prefix

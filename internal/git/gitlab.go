@@ -122,8 +122,9 @@ func (f *gitlabForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitP
 		return nil, err
 	}
 	request := forgeapi.Request{
-		Path:  project + "/merge_requests",
-		Query: url.Values{"state": {"opened"}, "source_branch": {sourceBranch}, "per_page": {strconv.Itoa(gitlabPageSize)}},
+		Path:         project + "/merge_requests",
+		Query:        url.Values{"state": {"opened"}, "source_branch": {sourceBranch}, "per_page": {strconv.Itoa(gitlabPageSize)}},
+		MaxBodyBytes: gitlabMRListMaxBody,
 	}
 	pulls := []GitPR{}
 	page, pages := 1, 0
@@ -176,6 +177,7 @@ func (f *gitlabForge) ListMergedPRHeads(ctx context.Context, cwd string, limit i
 			"state": {"merged"}, "per_page": {strconv.Itoa(perPage)},
 			"order_by": {"updated_at"}, "sort": {"desc"},
 		},
+		MaxBodyBytes: gitlabMRListMaxBody,
 	}
 	heads := make([]MergedPRHead, 0, perPage)
 	page := 1
@@ -233,10 +235,10 @@ func gitlabDiscussionPath(ref PRReference, discussionID string) string {
 // once per login per project per gitlabCacheTTL) and the viewer's login
 // (once per login per host per gitlabCacheTTL), the threads and the
 // events the discussions (paged; the system notes are events, the rest
-// threads), CI the head pipeline's jobs (paged). A part not wanted costs no
-// request. prev and stepsFor are unused: the pipeline's jobs list is one
-// read the previous observation cannot stand in for, and GitLab jobs have
-// no steps.
+// threads), CI the head pipeline's rows (paged, readGitLabPipeline). A
+// part not wanted costs no request. prev and stepsFor are unused: the
+// rows are one read the previous observation cannot stand in for, and
+// GitLab jobs have no steps.
 func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadParts, _ *CIPipeline, _ []string) (PRRead, error) {
 	client, err := f.core.gitlabAPI(ref.Host)
 	if err != nil {
@@ -472,8 +474,9 @@ func normalizeGitLabMergeability(hasConflicts bool, detailed string) string {
 // the events' source (gitlabEvents).
 func readGitLabDiscussions(ctx context.Context, client *forgeapi.Client, ref PRReference, headSHA string) ([]ReviewThread, []gitlabNoteRaw, error) {
 	request := forgeapi.Request{
-		Path:  gitlabMRPath(ref) + "/discussions",
-		Query: url.Values{"per_page": {strconv.Itoa(gitlabPageSize)}},
+		Path:         gitlabMRPath(ref) + "/discussions",
+		Query:        url.Values{"per_page": {strconv.Itoa(gitlabPageSize)}},
+		MaxBodyBytes: gitlabDiscussionsMaxBody,
 	}
 	var threads []ReviewThread
 	var system []gitlabNoteRaw

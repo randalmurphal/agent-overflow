@@ -12,58 +12,141 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 
 	"agent-overflow/internal/forgeapi"
 )
 
-// GitLab CI: the MR's head pipeline is one pipeline of staged jobs.
-// The pipeline comes from the MR read, its jobs from
-// /pipelines/:id/jobs; per-job traces from /jobs/:id/trace. Verified shapes (2026-07): jobs carry id, name,
-// stage, status, duration, web_url, allow_failure, started_at; the
-// jobs list is ordered newest-first, so stage order is recovered by
-// first-seen over ascending job id.
+// GitLab CI: the MR's head pipeline is one pipeline of staged rows.
+// The pipeline comes from the MR read (or ReadPipeline's), its rows from
+// one GraphQL PipelineJobs read per 100 rows, and a build's trace from
+// /jobs/:id/trace. A pipeline's rows are its builds, its bridges (trigger
+// jobs) and its generic commit statuses (external checks, all an
+// external pipeline holds); the REST /pipelines/:id/jobs list holds only
+// the builds. Verified on gitlab.com (2026-11): a row's gid names its
+// kind (Ci::Build, Ci::Bridge, GenericCommitStatus), a commit status's
+// detailsPath is its target URL and a bridge's downstreamPipeline.path
+// its child; rows come newest first; retried: false drops retried rows
+// as the REST list does; the query costs 38 of the 250 complexity limit.
 
-// gitlabCIJobsMaxPages bounds the jobs pages read of one pipeline. A
-// pipeline past it shows its newest gitlabCIJobsMaxPages*gitlabPageSize
-// jobs.
+// gitlabCIJobsMaxPages bounds the PipelineJobs pages read of one
+// pipeline. A pipeline past it shows its newest
+// gitlabCIJobsMaxPages*gitlabPageSize rows.
 const gitlabCIJobsMaxPages = 5
 
-type gitlabCIJobRaw struct {
-	ID           int64    `json:"id"`
+// gitlabPipelineJobsQuery reads one page of a pipeline's rows beside its
+// stages in pipeline order.
+const gitlabPipelineJobsQuery = `query PipelineJobs($fullPath: ID!, $id: CiPipelineID!, $after: String) {
+  project(fullPath: $fullPath) {
+    pipeline(id: $id) {
+      stages { nodes { name } }
+      jobs(first: 100, after: $after, retried: false) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id name status allowFailure duration startedAt webPath
+          stage { name }
+          detailedStatus { detailsPath }
+          downstreamPipeline { path }
+        }
+      }
+    }
+  }
+}`
+
+// The gid types of a pipeline's rows.
+const (
+	gitlabGIDBuild        = "Ci::Build"
+	gitlabGIDBridge       = "Ci::Bridge"
+	gitlabGIDCommitStatus = "GenericCommitStatus"
+)
+
+// gitlabCIJobNode is one PipelineJobs node. An absent value is null.
+type gitlabCIJobNode struct {
+	ID           string   `json:"id"`
 	Name         string   `json:"name"`
-	Stage        string   `json:"stage"`
 	Status       string   `json:"status"`
+	AllowFailure bool     `json:"allowFailure"`
 	Duration     *float64 `json:"duration"`
-	WebURL       string   `json:"web_url"`
-	AllowFailure bool     `json:"allow_failure"`
-	StartedAt    *string  `json:"started_at"`
+	StartedAt    *string  `json:"startedAt"`
+	WebPath      *string  `json:"webPath"`
+	Stage        *struct {
+		Name string `json:"name"`
+	} `json:"stage"`
+	DetailedStatus *struct {
+		DetailsPath *string `json:"detailsPath"`
+	} `json:"detailedStatus"`
+	DownstreamPipeline *struct {
+		Path *string `json:"path"`
+	} `json:"downstreamPipeline"`
 }
 
-// readGitLabPipeline reads the jobs of a pipeline already read: the merge
+// gitlabCIRow is a decoded row with the numeric part of its gid, which
+// orders rows by creation, and its stage.
+type gitlabCIRow struct {
+	id    int64
+	stage string
+	job   CIJob
+}
+
+// readGitLabPipeline reads the rows of a pipeline already read: the merge
 // request's head pipeline, which the MR read named, or ReadPipeline's. A
 // merge request with no pipeline costs no request.
 func readGitLabPipeline(ctx context.Context, client *forgeapi.Client, repo RepoReference, pipeline *gitlabPipelineRaw) (CIPipeline, error) {
 	if pipeline == nil || pipeline.ID <= 0 {
 		return CIPipeline{}, nil
 	}
-	request := forgeapi.Request{
-		Path:  gitlabProjectPath(repo.Project()) + "/pipelines/" + strconv.FormatInt(pipeline.ID, 10) + "/jobs",
-		Query: url.Values{"per_page": {strconv.Itoa(gitlabPageSize)}},
+	web, err := url.Parse(pipeline.WebURL)
+	if err != nil || !web.IsAbs() {
+		web = nil
 	}
-	var jobs []gitlabCIJobRaw
-	page, pages := 1, 0
-	err := client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
-		var pageJobs []gitlabCIJobRaw
-		if err := json.Unmarshal(resp.Body, &pageJobs); err != nil {
-			return false, fmt.Errorf("GitLab pipeline %d jobs: decode response: %w", pipeline.ID, err)
+	var stageOrder []string
+	var rows []gitlabCIRow
+	var after any
+	for page := range gitlabCIJobsMaxPages {
+		var raw struct {
+			Project *struct {
+				Pipeline *struct {
+					Stages struct {
+						Nodes []struct {
+							Name string `json:"name"`
+						} `json:"nodes"`
+					} `json:"stages"`
+					Jobs struct {
+						PageInfo githubPageInfo    `json:"pageInfo"`
+						Nodes    []gitlabCIJobNode `json:"nodes"`
+					} `json:"jobs"`
+				} `json:"pipeline"`
+			} `json:"project"`
 		}
-		jobs = append(jobs, pageJobs...)
-		pages++
-		return len(pageJobs) == gitlabPageSize && pages < gitlabCIJobsMaxPages && advanceGitLabPage(resp, &page), nil
-	})
-	if err != nil {
-		return CIPipeline{}, err
+		vars := map[string]any{
+			"fullPath": repo.Project(),
+			"id":       "gid://gitlab/Ci::Pipeline/" + strconv.FormatInt(pipeline.ID, 10),
+			"after":    after,
+		}
+		if _, err := client.GraphQL(ctx, "PipelineJobs", gitlabPipelineJobsQuery, vars, &raw); err != nil {
+			return CIPipeline{}, fmt.Errorf("GitLab pipeline %d rows: %w", pipeline.ID, err)
+		}
+		if raw.Project == nil || raw.Project.Pipeline == nil {
+			return CIPipeline{}, fmt.Errorf("GitLab answered no pipeline %d for %s on %s", pipeline.ID, repo.Project(), repo.Host)
+		}
+		if page == 0 {
+			for _, stage := range raw.Project.Pipeline.Stages.Nodes {
+				stageOrder = append(stageOrder, stage.Name)
+			}
+		}
+		for _, node := range raw.Project.Pipeline.Jobs.Nodes {
+			row, err := gitlabRow(node, web)
+			if err != nil {
+				return CIPipeline{}, fmt.Errorf("GitLab pipeline %d: %w", pipeline.ID, err)
+			}
+			rows = append(rows, row)
+		}
+		info := raw.Project.Pipeline.Jobs.PageInfo
+		if !info.HasNextPage || info.EndCursor == "" {
+			break
+		}
+		after = info.EndCursor
 	}
 	return CIPipeline{
 		ID:     strconv.FormatInt(pipeline.ID, 10),
@@ -71,41 +154,120 @@ func readGitLabPipeline(ctx context.Context, client *forgeapi.Client, repo RepoR
 		URL:    pipeline.WebURL,
 		Ref:    pipeline.Ref,
 		SHA:    pipeline.SHA,
-		Stages: groupGitLabJobsByStage(jobs),
+		Stages: groupGitLabRowsByStage(stageOrder, rows),
 	}, nil
 }
 
-func groupGitLabJobsByStage(raw []gitlabCIJobRaw) []CIStage {
-	// The API returns jobs newest-first; ascending job id recovers
-	// creation order, which follows stage order.
-	sort.Slice(raw, func(i, j int) bool { return raw[i].ID < raw[j].ID })
+// gitlabRow decodes one PipelineJobs node. A build keeps its job id, its
+// job page and a log once it has started (a created, manual or skipped
+// job's trace is a 404). A bridge and a commit status have no log, so no
+// id, as GitHub's external checks: a bridge links to its downstream
+// pipeline, a commit status to its target URL (the job webPath GitLab
+// gives one is no page). A relative path resolves against the
+// pipeline's web URL.
+func gitlabRow(node gitlabCIJobNode, web *url.URL) (gitlabCIRow, error) {
+	kind, number, ok := gitlabGID(node.ID)
+	if !ok {
+		return gitlabCIRow{}, fmt.Errorf("job id %q is not a GitLab global id", node.ID)
+	}
+	row := gitlabCIRow{id: number, job: CIJob{
+		Name:         node.Name,
+		Status:       NormalizeCIStatus(node.Status, ""),
+		AllowFailure: node.AllowFailure,
+	}}
+	if node.Stage != nil {
+		row.stage = node.Stage.Name
+	}
+	if node.Duration != nil {
+		row.job.DurationSeconds = *node.Duration
+	}
+	switch kind {
+	case gitlabGIDBuild:
+		row.job.ID = strconv.FormatInt(number, 10)
+		row.job.URL = gitlabWebURL(web, node.WebPath)
+		row.job.LogsAvailable = node.StartedAt != nil && *node.StartedAt != ""
+	case gitlabGIDBridge:
+		if node.DownstreamPipeline != nil {
+			row.job.URL = gitlabWebURL(web, node.DownstreamPipeline.Path)
+		}
+	case gitlabGIDCommitStatus:
+		if node.DetailedStatus != nil {
+			row.job.URL = gitlabWebURL(web, node.DetailedStatus.DetailsPath)
+		}
+	default:
+		return gitlabCIRow{}, fmt.Errorf("job %s is not a build, bridge or commit status", node.ID)
+	}
+	return row, nil
+}
 
+// gitlabGID splits "gid://gitlab/<type>/<id>" into its type and its
+// positive decimal id.
+func gitlabGID(gid string) (string, int64, bool) {
+	rest, ok := strings.CutPrefix(gid, "gid://gitlab/")
+	if !ok {
+		return "", 0, false
+	}
+	kind, digits, ok := strings.Cut(rest, "/")
+	if !ok || kind == "" || ValidateCIJobID(digits) != nil {
+		return "", 0, false
+	}
+	number, err := strconv.ParseInt(digits, 10, 64)
+	if err != nil || number <= 0 {
+		return "", 0, false
+	}
+	return kind, number, true
+}
+
+// gitlabWebURL is path resolved against the pipeline's web URL: an
+// absolute URL as it is, a path on the pipeline's host, and "" for none
+// or for a relative path with no web URL to resolve it against.
+func gitlabWebURL(web *url.URL, path *string) string {
+	if path == nil || *path == "" {
+		return ""
+	}
+	target, err := url.Parse(*path)
+	switch {
+	case err != nil:
+		return ""
+	case target.IsAbs():
+		return target.String()
+	case web == nil:
+		return ""
+	}
+	return web.ResolveReference(target).String()
+}
+
+// groupGitLabRowsByStage groups rows into stages in the pipeline's stage
+// order, with a stage the order does not name after those, and orders
+// each stage's rows by id, the order they were created in (the read
+// answers newest first).
+func groupGitLabRowsByStage(order []string, rows []gitlabCIRow) []CIStage {
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].id < rows[j].id })
+	rank := make(map[string]int, len(order))
+	for i, name := range order {
+		if _, ok := rank[name]; !ok {
+			rank[name] = i
+		}
+	}
 	var stages []CIStage
 	indexByStage := make(map[string]int)
-	for _, job := range raw {
-		duration := 0.0
-		if job.Duration != nil {
-			duration = *job.Duration
-		}
-		ci := CIJob{
-			ID:              strconv.FormatInt(job.ID, 10),
-			Name:            job.Name,
-			Status:          NormalizeCIStatus(job.Status, ""),
-			DurationSeconds: duration,
-			URL:             job.WebURL,
-			AllowFailure:    job.AllowFailure,
-			// A trace exists once the job has started; created/manual/
-			// skipped jobs 404 on the trace endpoint.
-			LogsAvailable: job.StartedAt != nil && *job.StartedAt != "",
-		}
-		index, ok := indexByStage[job.Stage]
+	for _, row := range rows {
+		index, ok := indexByStage[row.stage]
 		if !ok {
 			index = len(stages)
-			indexByStage[job.Stage] = index
-			stages = append(stages, CIStage{Name: job.Stage})
+			indexByStage[row.stage] = index
+			stages = append(stages, CIStage{Name: row.stage})
 		}
-		stages[index].Jobs = append(stages[index].Jobs, ci)
+		stages[index].Jobs = append(stages[index].Jobs, row.job)
 	}
+	sort.SliceStable(stages, func(i, j int) bool {
+		ri, iListed := rank[stages[i].Name]
+		rj, jListed := rank[stages[j].Name]
+		if iListed && jListed {
+			return ri < rj
+		}
+		return iListed && !jListed
+	})
 	for i := range stages {
 		statuses := make([]string, len(stages[i].Jobs))
 		for j, job := range stages[i].Jobs {
@@ -494,7 +656,7 @@ func gitlabTagPipelines(ctx context.Context, client *forgeapi.Client, path, ref 
 	return refs, tagged, nil
 }
 
-// ReadPipeline reads one pipeline and its jobs, as ReadPR reads a merge
+// ReadPipeline reads one pipeline and its rows, as ReadPR reads a merge
 // request's head pipeline. prev and stepsFor are unused: GitLab jobs have
 // no steps.
 func (f *gitlabForge) ReadPipeline(ctx context.Context, repo RepoReference, id string, _ *CIPipeline, _ []string) (CIPipeline, error) {

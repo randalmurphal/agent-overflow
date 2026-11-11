@@ -76,6 +76,8 @@ function gitlabRepo(): ForgeRepo {
     pipelines: [
       { id: 9_001, refKind: 'branch', ref: 'main', sha: SHA('a'), status: 'success', title: 'Merge !100', jobs: PIPELINE_JOBS('success') },
       { id: 9_002, refKind: 'tag', ref: 'v3.9.2', sha: SHA('b'), status: 'failed', title: 'release', jobs: PIPELINE_JOBS('failed') },
+      // An external pipeline holds one commit status and no job.
+      { id: 9_003, refKind: 'branch', ref: 'review', sha: SHA('f'), source: 'external', status: 'success', jobs: [{ name: 'CodeRabbit', kind: 'external', status: 'success' }] },
     ],
   };
 }
@@ -402,10 +404,10 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       const pane = await openPage(page);
       await page.getByRole('radio', { name: 'Pipelines' }).click();
       await expect(pane).toHaveAttribute('data-tab', 'pipelines');
-      // Two repository pipelines and two merge request pipelines on GitLab,
-      // one workflow run and one pull request run on GitHub.
+      // Three repository pipelines and two merge request pipelines on
+      // GitLab, one workflow run and one pull request run on GitHub.
       const rows = pane.getByTestId('pipeline-row');
-      await expect(rows).toHaveCount(6);
+      await expect(rows).toHaveCount(7);
       const tagRow = rows.filter({ hasText: '#9002' });
       await expect(tagRow).toContainText('v3.9.2');
       await expect(rows.filter({ hasText: '#7001' })).toContainText('CI');
@@ -418,7 +420,7 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       await expect(rows).toHaveCount(1);
       await pane.getByTestId('pipelines-ref-picker').click();
       await page.getByTestId('pipelines-ref-any').click();
-      await expect(rows).toHaveCount(6);
+      await expect(rows).toHaveCount(7);
 
       // The project and status filters narrow the list and survive a
       // reload: widgets' failed tag and merge request pipelines.
@@ -441,7 +443,7 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       await pane.getByTestId(`pipelines-project-${gadgets}`).click();
       await pane.getByTestId('pipelines-status-picker').click();
       await page.getByTestId('pipelines-status-all').click();
-      await expect(rows).toHaveCount(6);
+      await expect(rows).toHaveCount(7);
 
       // A row opens its stages; a job opens its log.
       await tagRow.getByRole('button').first().click();
@@ -463,7 +465,7 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
         await expect(view.getByTestId('pipeline-view-empty')).toBeVisible();
         await page.getByTestId('pulls-back').click();
         await expect(view).toBeHidden();
-        await expect(rows).toHaveCount(6);
+        await expect(rows).toHaveCount(7);
       }
 
       // A GitHub run opens the same way: #201's run, its unit job's log.
@@ -478,6 +480,23 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
         await expect(page.getByRole('button', { name: 'Back', exact: true })).toHaveCount(1);
         await page.getByTestId('pulls-back').click();
         await expect(log).toHaveCount(0);
+        await page.getByTestId('pulls-back').click();
+        await expect(view).toBeHidden();
+      }
+
+      // An external pipeline shows its commit status as its check, a
+      // link-only row in GitLab's external stage, not "No checks".
+      const externalRow = rows.filter({ hasText: '#9003' });
+      await expect(externalRow.getByTestId('pipeline-stages').locator('span')).toHaveCount(1);
+      await externalRow.getByRole('button').first().click();
+      await expect(view).toHaveAttribute('data-pipeline-key', /:9003$/);
+      await expect(view.getByTestId('pipeline-view-status')).toHaveText('success');
+      const chips = view.getByTestId('review-ci-chips');
+      await expect(chips).not.toContainText('No checks');
+      await chips.getByTestId('review-ci-chip').filter({ hasText: 'external' }).click();
+      await expect(page.getByTestId('review-ci-job').filter({ hasText: 'CodeRabbit' })).toBeVisible();
+      await page.keyboard.press('Escape');
+      if (compact) {
         await page.getByTestId('pulls-back').click();
         await expect(view).toBeHidden();
       }

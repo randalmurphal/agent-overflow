@@ -30,6 +30,9 @@ func (c *Client) Stream(ctx context.Context, r Request, dst io.Writer, limit int
 	if limit <= 0 && limit != NoLimit {
 		return nil, errors.New("forgeapi: Stream needs a positive limit or NoLimit")
 	}
+	if r.MaxBodyBytes != 0 {
+		return nil, errors.New("forgeapi: Stream takes its limit as an argument, not Request.MaxBodyBytes")
+	}
 	ctx, cancel := c.withTimeout(ctx, r.Timeout)
 	defer cancel()
 	refreshed := false
