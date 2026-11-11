@@ -105,6 +105,7 @@ import type { BranchCommit, WorkspaceRef } from '../types/git';
 import type {
   CIJob,
   CILogLines,
+  CILogSearch,
   CILogSection,
   CIPipeline,
   DiffReviewComment,
@@ -286,6 +287,9 @@ export interface ReviewPaneState {
   readonly conflictContentByPath: SvelteMap<string, string>;
   readonly conflictCollapsedPaths: SvelteSet<string>;
   readonly conflictFiles: ReviewFile[];
+  /** The hidden lines of each collapsed fold of a conflict file, by fold
+   * id, as `conflictFiles` renders it now; null with no content. */
+  conflictFoldLines(path: string): ReadonlyMap<number, readonly string[]> | null;
   /** The colors the diff surface and the conflict surface last painted,
    * served to their lines while exact spans are in flight. */
   readonly paintedSpans: PaintedSpans;
@@ -459,6 +463,8 @@ export interface ReviewPaneState {
   setCILogSectionsOpen(sectionKeys: readonly string[], open: boolean): void;
   /** Reads a window of the open job's cached log, for its view. */
   readCILogLines(from: number, count: number): Promise<CILogLines>;
+  /** Finds `query` in the open job's cached log, for the pane's find. */
+  searchCILog(query: string, limit: number): Promise<CILogSearch>;
   /** Copies one section of the open log: its text up to
    * CI_SECTION_INLINE_MAX_BYTES, otherwise a file it is saved to, whose
    * path is copied. Resolves true when something was copied. */
@@ -1036,26 +1042,37 @@ export function createReviewPaneState(
     if (contextExpansions.size === 0) return parsed;
     return parsed.map((file) => applyContextExpansion(file, contextExpansions.get(file.path)));
   });
-  const conflictFiles = $derived.by(() => {
+  // The conflict view's files and, per file with content, the hidden lines
+  // of each fold it renders: find reads the folds this one build made.
+  const conflictProjection = $derived.by(() => {
+    const folds = new Map<string, Map<number, readonly string[]>>();
     const conflicts = conflictsState.state;
-    if (!conflicts) return [];
+    if (!conflicts) return { files: [] as ReviewFile[], folds };
     const { baseLabel, headLabel, notes } = conflicts;
-    return conflicts.paths.map((path) => {
+    const files = conflicts.paths.map((path) => {
       const content = conflictsState.contentByPath.get(path);
       const pathNotes = notes[path];
       // A structural conflict's content can be unfetchable (the path may
       // not exist in the merged tree at all) — its notes still render.
       if (content !== undefined || pathNotes?.length) {
+        const fileFolds = new Map<number, readonly string[]>();
+        if (content !== undefined) folds.set(path, fileFolds);
         return reviewFileFromPatchFile(conflictPatchFile(path, content ?? '', {
           baseLabel,
           headLabel,
           notes: pathNotes,
           expandedFolds: conflictExpandedFolds.get(path),
+          onFold: (id, lines) => fileFolds.set(id, lines),
         }));
       }
       return reviewFileFromPatchFile({ path, kind: 'conflict', additions: 0, deletions: 0, lines: [] });
     });
+    return { files, folds };
   });
+  const conflictFiles = $derived(conflictProjection.files);
+  function conflictFoldLines(path: string): ReadonlyMap<number, readonly string[]> | null {
+    return conflictProjection.folds.get(path) ?? null;
+  }
   // The colors each surface last painted (see PaintedSpans), retained
   // for exactly the files that surface shows. Lines keep them while
   // their file's exact spans are in flight after an expansion, a reload
@@ -2662,6 +2679,7 @@ export function createReviewPaneState(
     get conflictContentByPath() { return conflictsState.contentByPath; },
     get conflictCollapsedPaths() { return conflictCollapsedPaths; },
     get conflictFiles() { return conflictFiles; },
+    conflictFoldLines,
     paintedSpans,
     conflictPaintedSpans,
     get ciPipeline() { return ci.pipeline; },
@@ -2801,6 +2819,7 @@ export function createReviewPaneState(
     toggleCILogSection: (sectionKey: string) => ci.toggleSection(sectionKey),
     setCILogSectionsOpen: (sectionKeys: readonly string[], open: boolean) => ci.setSectionsOpen(sectionKeys, open),
     readCILogLines: (from: number, count: number) => ci.readLines(from, count),
+    searchCILog: (query: string, limit: number) => ci.searchLog(query, limit),
     copyCILogSection: (section: CILogSection) => ci.copySection(section),
     sendCILogSectionToChat,
     expandDiffContext,

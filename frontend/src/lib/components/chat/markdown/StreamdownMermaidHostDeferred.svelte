@@ -16,7 +16,7 @@
   let { token, id: _id }: { token: Tokens.Code; id: string } = $props();
 </script>
 
-<div class="mermaid streamdown-mermaid-host" data-mermaid-source={token.text}>
+<div class="mermaid streamdown-mermaid-host" data-mermaid-source={token.text} data-find-skip>
   <pre class="mermaid-source-fallback">{token.text}</pre>
 </div>
 

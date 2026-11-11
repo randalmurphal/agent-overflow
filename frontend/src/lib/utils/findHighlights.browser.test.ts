@@ -139,4 +139,36 @@ describe('find highlights', () => {
     h.setQuery('needle');
     expect(h.matches).toHaveLength(1);
   });
+
+  it('with rowsOnly matches text inside rows only, a row boundary ending a block', () => {
+    const root = mount(`
+      <div class="line"><span>12 13</span><span data-find-key="l1"><span data-find-skip>+</span>needle ne</span><span data-find-key="l2">edle</span></div>
+      <p>needle outside every row</p>
+    `);
+    const h = createFindHighlighter({ root, name: findHighlightName('pane-r'), rowSelector: '[data-find-key]', rowKeyAttribute: 'data-find-key', rowsOnly: true });
+    highlighters.push(h);
+    h.setQuery('needle');
+    expect(h.matches.map((m) => [m.range.toString(), m.rowKey])).toEqual([['needle', 'l1']]);
+    h.setQuery('+needle');
+    expect(h.matches).toHaveLength(0);
+    h.setQuery('13');
+    expect(h.matches).toHaveLength(0);
+  });
+
+  it('paints one occurrence of a row as current and answers its range', () => {
+    const root = mount('<div data-find-key="r1">ab ab ab</div><div data-find-key="r2">ab</div>');
+    const h = createFindHighlighter({ root, name: findHighlightName('pane-o'), rowSelector: '[data-find-key]', rowKeyAttribute: 'data-find-key', rowsOnly: true });
+    highlighters.push(h);
+    h.setQuery('ab');
+    const name = findHighlightName('pane-o');
+    h.setCurrent({ row: 'r1', occurrence: 1 });
+    expect(painted(`${name}-current`)).toEqual(['ab']);
+    expect(painted(name)).toHaveLength(3);
+    expect(h.currentRange()?.startOffset).toBe(3);
+    h.setCurrent({ row: 'r1', occurrence: 5 });
+    expect(painted(`${name}-current`)).toEqual([]);
+    expect(h.currentRange()).toBeNull();
+    h.setCurrent({ row: 'r2', occurrence: 0 });
+    expect(h.currentRange()?.startContainer.parentElement?.getAttribute('data-find-key')).toBe('r2');
+  });
 });

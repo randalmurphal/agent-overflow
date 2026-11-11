@@ -3,6 +3,9 @@
   import { companionForSource } from '../../stores/companionPanes.svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import ReviewCILogView from './ReviewCILogView.svelte';
+  import ReviewConflictHeader from './ReviewConflictHeader.svelte';
+  import ReviewPaneBanners from './ReviewPaneBanners.svelte';
+  import ReviewPaneFind, { type ReviewFindView } from './ReviewPaneFind.svelte';
   import ReviewCommentThread from './ReviewCommentThread.svelte';
   import ReviewCommitCard from './ReviewCommitCard.svelte';
   import ReviewDiffBody from './ReviewDiffBody.svelte';
@@ -33,11 +36,9 @@
   import { countReviewComments, type CommentCounts } from '../../utils/reviewComments';
   import type { ReviewLeadRow } from '../../utils/reviewRows';
   import { filterReviewFiles } from '../../utils/reviewTree';
-  import { rateLimitMessage } from '../../utils/forgeFailure';
   import { forgeLabels } from '../../utils/forgeLabels';
   import { FORGE_ATTACHMENT_SOURCE_CONTEXT } from '../chat/markdown/forgeAttachmentContext';
   import RenderBoundary from '../shared/RenderBoundary.svelte';
-  import { hostedBackReader } from '../panes/hostedBack';
 
   interface Props {
     /** A review companion beside a thread pane. */
@@ -50,9 +51,13 @@
     /** Pinned: whether a person opened this PR, which a new state's first
      * read carries (a restored page's does not). */
     userInitiated?: boolean;
+    /** The key of this review's find (state, provider, bar, highlights).
+     * A companion defaults to its layout pane id; a pinned review has no
+     * find unless its host passes one. */
+    findKey?: string;
   }
 
-  let { ctx, pr, userInitiated = false }: Props = $props();
+  let { ctx, pr, userInitiated = false, findKey: findKeyProp }: Props = $props();
   // File-filter state (type chips, hide tests) is owned here, not in the
   // tree, so it narrows the diff body too, and the selection survives the
   // rail hiding. The dropdown's "Apply filter to diff" item is the switch
@@ -90,10 +95,11 @@
   // retained. A pinned review lives in its owner's pane; a companion in
   // its own layout pane, fixed for its life.
   // svelte-ignore state_referenced_locally
-  const hostPaneId = pr?.ownerPaneId ?? untrack(() => companionForSource(sourcePaneId, 'review')?.paneId) ?? sourcePaneId;
+  const companionPaneId = pr ? null : (untrack(() => companionForSource(sourcePaneId, 'review')?.paneId) ?? null);
+  // svelte-ignore state_referenced_locally
+  const hostPaneId = pr?.ownerPaneId ?? companionPaneId ?? sourcePaneId;
   $effect(() => review?.attachSurface(hostPaneId));
-  // The conflict view's Back, unless the host's header owns Back.
-  const hostOwnsBack = hostedBackReader();
+  const findKey = $derived(findKeyProp ?? companionPaneId);
   // Forge attachments in every ChatMarkdown under this pane — the PR body,
   // the conversation, each thread's comments, the comments list. A reader
   // rather than a value: the PR reference and its web URL arrive after
@@ -117,6 +123,9 @@
   let rootEl: HTMLElement | undefined = $state();
   let treeVisible = $state(storedTreeVisible ?? true);
   let jumpFilePath: string | null = $state(null);
+  let diffBody: ReviewDiffBody | undefined = $state();
+  let ciLogView: ReviewCILogView | undefined = $state();
+  const findView = $derived<ReviewFindView>(!review ? 'none' : review.ciLogView ? 'log' : review.conflictView ? 'conflicts' : 'diff');
   let topFileIndex = $state(-1);
   // The files the diff body renders: the tree's filtered subset (type
   // chips, hide tests; never the search box), or the full set once the
@@ -241,6 +250,18 @@
     {collapsibleFileCount}
     onClose={ctx ? () => ctx?.close() : undefined}
   />
+  {#if findKey && review}
+    <ReviewPaneFind
+      {findKey}
+      title="Review"
+      {review}
+      view={findView}
+      files={findView === 'conflicts' ? review.conflictFiles : diffFiles}
+      root={rootEl}
+      diff={() => diffBody}
+      log={() => ciLogView}
+    />
+  {/if}
 
   {#if !review}
     <div class="p-3 text-sm text-fg-muted" data-testid="review-no-subject">{subjectError ?? 'No thread selected.'}</div>
@@ -250,60 +271,7 @@
          leave whatever DOM the previous branch had — "Loading…" with a
          fully loaded store and nothing on screen to say why. -->
     <RenderBoundary label="The review pane" testId="review-render-error">
-    {#if review.error}
-      <!-- A failed refresh keeps the diff it was refreshing below this
-           banner; Retry runs the same load again. -->
-      <div class="flex items-start justify-between gap-3 border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="review-error">
-        <span class="max-h-32 min-w-0 overflow-y-auto whitespace-pre-wrap break-words" data-testid="review-error-message">{review.error}</span>
-        <button
-          type="button"
-          class="shrink-0 rounded border border-error/40 px-2 py-0.5 disabled:opacity-50"
-          disabled={review.loading}
-          onclick={() => { void review?.reload({ userInitiated: true }); }}
-          data-testid="review-error-retry"
-        >Retry</button>
-      </div>
-    {/if}
-    {#if branchesError && review.scope === 'branch'}
-      <div class="border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="review-branches-error">
-        {branchesError}
-      </div>
-    {/if}
-    {#if review.submitError}
-      <div class="border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="review-submit-error">
-        {review.submitError}
-      </div>
-    {/if}
-    {#if review.conflictsError}
-      <div class="border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="review-conflicts-error">
-        {review.conflictsError}
-      </div>
-    {/if}
-    {#if review.prUpdateError}
-      {@const failure = review.prUpdateFailure}
-      {#if failure?.kind === 'rate_limited'}
-        <div class="border-b border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning" data-testid="review-pr-rate-limited">
-          {rateLimitMessage(review.prRef?.forge, failure)}
-        </div>
-      {:else if failure?.kind === 'setup' || failure?.kind === 'forbidden'}
-        <!-- A login to fix outside the app (missing, expired, or without
-             the scope or the project): the message names it, and no retry
-             will change it until the user does. -->
-        <div class="border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="review-pr-setup">
-          {review.prUpdateError}
-        </div>
-      {:else}
-        <div class="border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="review-pr-update-error">
-          Retrying: {review.prUpdateError}
-        </div>
-      {/if}
-    {/if}
-    {#if review.prStale}
-      <div class="flex items-center justify-between gap-3 border-b border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning" data-testid="review-pr-stale">
-        <span>PR updated.</span>
-        <button type="button" class="rounded border border-warning/40 px-2 py-0.5" onclick={() => { void review?.reload({ userInitiated: true }); }}>Reload</button>
-      </div>
-    {/if}
+    <ReviewPaneBanners {review} {branchesError} />
     {#if review.scope === 'pr' && review.prDetail}
       <ReviewPRTitleBar
         detail={review.prDetail}
@@ -323,6 +291,7 @@
     {/if}
     {#if review.ciLogView}
       <ReviewCILogView
+        bind:this={ciLogView}
         view={review.ciLogView}
         log={review.ciLog}
         fetchLines={(from, count) => review?.readCILogLines(from, count) ?? Promise.reject(new Error('No CI job log is open.'))}
@@ -342,34 +311,7 @@
         onSendSection={review.pinned ? undefined : (section) => { void review?.sendCILogSectionToChat(section); }}
       />
     {:else if review.conflictView}
-      <div class="flex items-center justify-between gap-3 border-b border-border bg-surface-1 px-3 py-2 text-xs">
-        <span class="min-w-0 truncate text-fg-muted">
-          {#if review.conflicts}
-            Conflicts: {review.conflicts.baseLabel} ← {review.conflicts.headLabel} — read-only
-          {:else}
-            Conflicts — read-only
-          {/if}
-        </span>
-        {#if !hostOwnsBack()}
-          <button
-            type="button"
-            class="shrink-0 rounded border border-border-subtle px-2 py-1 text-[0.6875rem] text-fg-muted hover:text-fg"
-            data-testid="review-conflicts-back"
-            onclick={() => review?.closeConflictView()}
-          >
-            Back
-          </button>
-        {/if}
-      </div>
-      {#if review.conflicts && review.conflicts.messages.length > 0}
-        <!-- Fallback only: per-file messages render as note rows inside
-             their file's body; this strip carries the rare merge-tree
-             message that names no conflicted path. -->
-        <div
-          class="max-h-28 overflow-y-auto border-b border-warning/30 bg-warning/5 px-3 py-2 font-mono text-[0.6875rem] leading-relaxed text-fg-muted whitespace-pre-wrap"
-          data-testid="review-conflict-messages"
-        >{review.conflicts.messages.join('\n')}</div>
-      {/if}
+      <ReviewConflictHeader {review} />
       {#if review.conflictsLoading && review.conflictFiles.length === 0}
         <div class="px-4 py-3 text-xs text-fg-muted">Loading…</div>
       {:else if review.conflicts && review.conflicts.paths.length === 0}
@@ -382,6 +324,7 @@
                draft editors, or PR thread rows. The tree is hidden here to
                keep the conflict surface scoped to the marker-bearing files. -->
           <ReviewDiffBody
+            bind:this={diffBody}
             subjectId={review.identity}
             spanOwner={review.rowId}
             scope={`${review.scope}:conflicts`}
@@ -442,6 +385,7 @@
           {/if}
         {/snippet}
         <ReviewDiffBody
+          bind:this={diffBody}
           subjectId={review.identity}
           spanOwner={review.rowId}
           scope={review.scope}

@@ -35,8 +35,8 @@ const PROGRAMMATIC_SCROLL_EVENT_DUPLICATE_BUDGET = 4;
 // clears to land strictly AFTER this window.
 export const RESIZE_CLEAR_PADDING_MS = 1;
 
-const UP_KEYS: ReadonlySet<string> = new Set(['PageUp', 'ArrowUp', 'Home']);
-const DOWN_KEYS: ReadonlySet<string> = new Set(['PageDown', 'ArrowDown', 'End']);
+export const UP_KEYS: ReadonlySet<string> = new Set(['PageUp', 'ArrowUp', 'Home']);
+export const DOWN_KEYS: ReadonlySet<string> = new Set(['PageDown', 'ArrowDown', 'End']);
 
 // Whether the primary button is held, for selection tracking. READ from the
 // browser's own button bitmask on every pointer event, never LATCHED from a
@@ -100,13 +100,22 @@ const TEXT_INPUT_TYPES: ReadonlySet<string> = new Set(['text', 'search', 'url', 
  * or disabled text field, a checkbox, or a button in a non-editable island
  * of an editor leaves them to the scroller.
  */
-function isEditableTarget(target: EventTarget | null): boolean {
+export function isEditableTarget(target: EventTarget | null): boolean {
   if (target instanceof HTMLTextAreaElement) return !target.readOnly && !target.disabled;
   if (target instanceof HTMLInputElement) {
     return TEXT_INPUT_TYPES.has(target.type) && !target.readOnly && !target.disabled;
   }
   if (target instanceof HTMLSelectElement) return true;
   return target instanceof HTMLElement && target.isContentEditable;
+}
+
+/** Whether a pointer press lands on the scroller's own vertical scrollbar. */
+export function inScrollbarGutter(scrollEl: HTMLElement, e: PointerEvent): boolean {
+  const scrollbarWidth = scrollEl.offsetWidth - scrollEl.clientWidth;
+  if (scrollbarWidth <= 0) return false;
+  const rect = scrollEl.getBoundingClientRect();
+  if (e.clientX >= rect.right - scrollbarWidth) return true;
+  return window.getComputedStyle(scrollEl).direction === 'rtl' && e.clientX <= rect.left + scrollbarWidth;
 }
 
 export function isSelectingInside(scrollEl: HTMLElement): boolean {
@@ -610,18 +619,11 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
 
     if (e.isPrimary === false) return;
 
-    const scrollbarWidth = scrollEl.offsetWidth - scrollEl.clientWidth;
-    if (scrollbarWidth <= 0) return;
-
-    const rect = scrollEl.getBoundingClientRect();
-    const style = window.getComputedStyle(scrollEl);
-    const inRightGutter = e.clientX >= rect.right - scrollbarWidth;
-    const inLeftGutter = style.direction === 'rtl' && e.clientX <= rect.left + scrollbarWidth;
-    if (!inRightGutter && !inLeftGutter) return;
+    if (!inScrollbarGutter(scrollEl, e)) return;
 
     if (isUiRenderTraceEnabled()) trace('scroll.pointer.intent', () => ({
       clientX: Math.round(e.clientX),
-      scrollbarWidth: Math.round(scrollbarWidth),
+      scrollbarWidth: Math.round(scrollEl.offsetWidth - scrollEl.clientWidth),
       scrollTop: Math.round(scrollEl.scrollTop),
       isAtBottomState: deps.isAtBottom(),
       escapedFromLockState: deps.escaped(),

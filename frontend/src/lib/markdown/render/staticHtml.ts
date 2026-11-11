@@ -2,7 +2,7 @@ import type { StreamdownContext } from './context.svelte';
 import type { StreamdownToken } from '../parser/index';
 import type { Tokens } from '../parser/engine';
 import { codespanClass } from './codespan';
-import { classifyLinkHref } from './elements/url';
+import { INCOMPLETE_LINK_HREF, classifyLinkHref, linkTagText, tableCellRenders } from './elements/url';
 import {
 	PREVIEW_ALLOW_CLASS,
 	PREVIEW_ALLOW_LABEL,
@@ -201,7 +201,7 @@ export function renderStaticTokenHtml(
 				case 'td':
 				case 'th': {
 					if (streamdown.snippets[token.type]) return false;
-					if (token.rowspan <= 0) break;
+					if (!tableCellRenders(token)) break;
 					const align = token.align && ['left', 'center', 'right', 'justify', 'char'].includes(token.align)
 						? token.align
 						: 'left';
@@ -251,7 +251,7 @@ export function renderStaticTokenHtml(
 						}
 						break;
 					}
-					if (href || token.href === 'streamdown:incomplete-link') {
+					if (href || token.href === INCOMPLETE_LINK_HREF) {
 						output.push(
 							`<a data-streamdown-link="${dataId}"` +
 							attribute('class', streamdown.theme.link.base) +
@@ -270,7 +270,7 @@ export function renderStaticTokenHtml(
 							'>',
 						);
 						if (!render(children)) return false;
-						if (linkClass.kind === 'blocked') output.push(' [blocked]');
+						output.push(escapeHtml(linkTagText(token.href, streamdown.allowedLinkPrefixes ?? [])));
 						output.push('</span>');
 					}
 					break;

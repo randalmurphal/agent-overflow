@@ -1,0 +1,313 @@
+{
+  "about": "A CI log line as the log view shows it (utils/ansiText.ts, AnsiText.svelte) and as internal/cilog Search counts it. Read by ansiText.test.ts, ansiText.browser.test.ts and internal/cilog/search_test.go.",
+  "vectors": [
+    {
+      "name": "plain",
+      "input": "plain needle",
+      "shown": "plain needle",
+      "query": "needle",
+      "count": 1
+    },
+    {
+      "name": "SGR colour",
+      "input": "\u001b[31mred needle\u001b[0m",
+      "shown": "red needle",
+      "query": "needle",
+      "count": 1
+    },
+    {
+      "name": "SGR around the line",
+      "input": "\u001b[31mplain\u001b[0m",
+      "shown": "plain",
+      "query": "m",
+      "count": 0
+    },
+    {
+      "name": "SGR with no parameters",
+      "input": "a\u001b[mb",
+      "shown": "ab",
+      "query": "ab",
+      "count": 1
+    },
+    {
+      "name": "SGR bold and colour",
+      "input": "\u001b[1;32mok\u001b[39;22m done",
+      "shown": "ok done",
+      "query": "ok done",
+      "count": 1
+    },
+    {
+      "name": "needle split by SGR",
+      "input": "nee\u001b[31mdle",
+      "shown": "needle",
+      "query": "needle",
+      "count": 1
+    },
+    {
+      "name": "needle split by a reset",
+      "input": "nee\u001b[0mdle",
+      "shown": "needle",
+      "query": "needle",
+      "count": 1
+    },
+    {
+      "name": "CSI erase is text",
+      "input": "a\u001b[2Kneedle",
+      "shown": "a\u001b[2Kneedle",
+      "query": "needle",
+      "count": 1
+    },
+    {
+      "name": "CSI cursor is text",
+      "input": "\u001b[?25lneedle",
+      "shown": "\u001b[?25lneedle",
+      "query": "[?25l",
+      "count": 1
+    },
+    {
+      "name": "CSI letters are text",
+      "input": "\u001b[1Aup",
+      "shown": "\u001b[1Aup",
+      "query": "a",
+      "count": 1
+    },
+    {
+      "name": "OSC ended by BEL",
+      "input": "a\u001b]0;needle title\u0007b",
+      "shown": "ab",
+      "query": "needle",
+      "count": 0
+    },
+    {
+      "name": "OSC ended by ST",
+      "input": "a\u001b]8;;https://x/needle\u001b\\link\u001b]8;;\u001b\\b",
+      "shown": "alinkb",
+      "query": "link",
+      "count": 1
+    },
+    {
+      "name": "needle split by OSC",
+      "input": "nee\u001b]0;t\u0007dle",
+      "shown": "needle",
+      "query": "needle",
+      "count": 1
+    },
+    {
+      "name": "unterminated OSC is text",
+      "input": "a\u001b]0;needle",
+      "shown": "a\u001b]0;needle",
+      "query": "needle",
+      "count": 1
+    },
+    {
+      "name": "OSC stopped by an ESC is text",
+      "input": "a\u001b]0;x\u001bneedle",
+      "shown": "a\u001b]0;x\u001bneedle",
+      "query": "needle",
+      "count": 1
+    },
+    {
+      "name": "APC",
+      "input": "a\u001b_needle payload\u001b\\b",
+      "shown": "ab",
+      "query": "needle",
+      "count": 0
+    },
+    {
+      "name": "needle split by APC",
+      "input": "nee\u001b_p\u001b\\dle",
+      "shown": "needle",
+      "query": "needle",
+      "count": 1
+    },
+    {
+      "name": "unterminated APC is text",
+      "input": "a\u001b_needle",
+      "shown": "a\u001b_needle",
+      "query": "needle",
+      "count": 1
+    },
+    {
+      "name": "DCS is text",
+      "input": "a\u001bPneedle\u001b\\b",
+      "shown": "a\u001bPneedle\u001b\\b",
+      "query": "needle",
+      "count": 1
+    },
+    {
+      "name": "PM is text",
+      "input": "a\u001b^needle\u001b\\b",
+      "shown": "a\u001b^needle\u001b\\b",
+      "query": "needle",
+      "count": 1
+    },
+    {
+      "name": "SOS is text",
+      "input": "a\u001bXneedle\u001b\\b",
+      "shown": "a\u001bXneedle\u001b\\b",
+      "query": "needle",
+      "count": 1
+    },
+    {
+      "name": "lone ESC is text",
+      "input": "nee\u001bdle",
+      "shown": "nee\u001bdle",
+      "query": "needle",
+      "count": 0
+    },
+    {
+      "name": "trailing ESC is text",
+      "input": "needle\u001b",
+      "shown": "needle\u001b",
+      "query": "needle",
+      "count": 1
+    },
+    {
+      "name": "C1 CSI is text",
+      "input": "a\u009b31mneedle",
+      "shown": "a\u009b31mneedle",
+      "query": "needle",
+      "count": 1
+    },
+    {
+      "name": "C1 OSC is text",
+      "input": "a\u009d0;t\u009cneedle",
+      "shown": "a\u009d0;t\u009cneedle",
+      "query": "needle",
+      "count": 1
+    },
+    {
+      "name": "C1 split needle is text",
+      "input": "nee\u009b0mdle",
+      "shown": "nee\u009b0mdle",
+      "query": "needle",
+      "count": 0
+    },
+    {
+      "name": "NUL is dropped",
+      "input": "nee\u0000dle",
+      "shown": "needle",
+      "query": "needle",
+      "count": 1
+    },
+    {
+      "name": "tab and other controls are text",
+      "input": "a\tb\u0007c",
+      "shown": "a\tb\u0007c",
+      "query": "b\u0007c",
+      "count": 1
+    },
+    {
+      "name": "escapes beside each other",
+      "input": "\u001b[31m\u001b]0;t\u0007\u001b_x\u001b\\needle\u001b[0m",
+      "shown": "needle",
+      "query": "needle",
+      "count": 1
+    },
+    {
+      "name": "OSC inside OSC",
+      "input": "a\u001b]x\u001b]y\u0007b",
+      "shown": "a\u001b]xb",
+      "query": "]xb",
+      "count": 1
+    },
+    {
+      "name": "APC inside OSC",
+      "input": "a\u001b]x\u001b_y\u001b\\b",
+      "shown": "a\u001b]xb",
+      "query": "]xb",
+      "count": 1
+    },
+    {
+      "name": "SGR inside OSC",
+      "input": "a\u001b]x\u001b[31my\u0007b",
+      "shown": "a\u001b]xy\u0007b",
+      "query": "xy",
+      "count": 1
+    },
+    {
+      "name": "OSC inside APC",
+      "input": "a\u001b_x\u001b]y\u0007b\u001b\\c",
+      "shown": "a\u001b_xb\u001b\\c",
+      "query": "_xb",
+      "count": 1
+    },
+    {
+      "name": "APC inside APC",
+      "input": "a\u001b_x\u001b_y\u001b\\b",
+      "shown": "a\u001b_xb",
+      "query": "_xb",
+      "count": 1
+    },
+    {
+      "name": "SGR inside APC",
+      "input": "a\u001b_x\u001b[1my\u001b\\b",
+      "shown": "a\u001b_xy\u001b\\b",
+      "query": "xy",
+      "count": 1
+    },
+    {
+      "name": "OSC inside SGR",
+      "input": "\u001b[\u001b]t\u000731mneedle",
+      "shown": "\u001b[31mneedle",
+      "query": "needle",
+      "count": 1
+    },
+    {
+      "name": "APC inside SGR",
+      "input": "\u001b[3\u001b_t\u001b\\1mneedle",
+      "shown": "\u001b[31mneedle",
+      "query": "[31m",
+      "count": 1
+    },
+    {
+      "name": "SGR inside SGR",
+      "input": "\u001b[3\u001b[0m1mneedle",
+      "shown": "\u001b[31mneedle",
+      "query": "31mneedle",
+      "count": 1
+    },
+    {
+      "name": "OSC start at the end of a line",
+      "input": "needle\u001b]",
+      "shown": "needle\u001b]",
+      "query": "needle",
+      "count": 1
+    },
+    {
+      "name": "OSC body at the end of a line",
+      "input": "needle\u001b]0;title",
+      "shown": "needle\u001b]0;title",
+      "query": "title",
+      "count": 1
+    },
+    {
+      "name": "OSC ended by a lone ESC at the end of a line",
+      "input": "needle\u001b]0;t\u001b",
+      "shown": "needle\u001b]0;t\u001b",
+      "query": ";t",
+      "count": 1
+    },
+    {
+      "name": "APC at the end of a line",
+      "input": "needle\u001b_x",
+      "shown": "needle\u001b_x",
+      "query": "_x",
+      "count": 1
+    },
+    {
+      "name": "SGR parameters at the end of a line",
+      "input": "needle\u001b[31",
+      "shown": "needle\u001b[31",
+      "query": "[31",
+      "count": 1
+    },
+    {
+      "name": "SGR start at the end of a line",
+      "input": "needle\u001b[",
+      "shown": "needle\u001b[",
+      "query": "needle",
+      "count": 1
+    }
+  ]
+}

@@ -134,6 +134,45 @@ func (a *App) GetPRCILogLines(repo gitops.RepoReference, jobID string, fromLine,
 	return lines, err
 }
 
+// maxCILogSearchMatches bounds one SearchPRCILog answer; the find bar asks
+// for fewer.
+const maxCILogSearchMatches = 5000
+
+// SearchPRCILog counts the matches of query in a job's cached log as the
+// log view shows it (each line up to maxCILogLineBytes, escapes the view
+// hides left out), for the review pane's find bar: the lines holding
+// matches in line order, stopping at limit matches. A cancelled call (the
+// connection closed) stops the read. The reply names the version it read.
+//
+//ao:scope git:operate
+//ao:route selected
+func (a *App) SearchPRCILog(ctx context.Context, repo gitops.RepoReference, jobID, query string, limit int) (cilog.Search, error) {
+	if a.shuttingDown.Load() {
+		return cilog.Search{}, ErrShuttingDown
+	}
+	if err := repo.Validate(); err != nil {
+		return cilog.Search{}, err
+	}
+	if err := gitops.ValidateCIJobID(jobID); err != nil {
+		return cilog.Search{}, err
+	}
+	if strings.TrimSpace(query) == "" {
+		return cilog.Search{}, errors.New("a CI log search needs a query")
+	}
+	if limit < 1 || limit > maxCILogSearchMatches {
+		return cilog.Search{}, fmt.Errorf("CI log search limit %d is outside 1 to %d", limit, maxCILogSearchMatches)
+	}
+	store, err := a.ciLogs()
+	if err != nil {
+		return cilog.Search{}, err
+	}
+	found, err := store.Search(ctx, ciLogKey(repo, jobID), query, limit, maxCILogLineBytes)
+	if errors.Is(err, cilog.ErrNoLog) {
+		return cilog.Search{}, errCILogNotDownloaded
+	}
+	return found, err
+}
+
 // SavePRCIJobLog writes a job's whole log, as the log view shows it,
 // under the app-managed ci-logs directory and returns the absolute path.
 // The file is a copy of the cached log, downloaded first when the cache

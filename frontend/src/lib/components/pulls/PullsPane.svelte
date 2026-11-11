@@ -399,7 +399,7 @@
       {#if tab === 'mrs'}
         {#if pinnedReview}
           {#key pinnedReview.key}
-            <ReviewPane pr={pinnedReview.subject} userInitiated={pinnedReview.userInitiated} />
+            <ReviewPane pr={pinnedReview.subject} userInitiated={pinnedReview.userInitiated} findKey={detailFindKey} />
           {/key}
         {:else}
           <div class="flex flex-1 items-center justify-center px-6" data-testid="pulls-detail-empty">

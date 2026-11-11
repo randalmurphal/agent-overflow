@@ -6,6 +6,7 @@
   import type { DiffReviewComment } from '../../types/models';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { jumpPulse } from '../../utils/reviewJumpPulse';
+  import { findDraftKey } from '../../utils/reviewFindScan';
 
   // The reader's own draft comment on the diff surface: the same card
   // shape as a PR thread, with an accent edge in place of a state edge
@@ -115,6 +116,7 @@
       {#if editing}
         <textarea
           bind:value={editBody}
+          data-find-editing={findDraftKey(comment.id)}
           rows="3"
           class="w-full resize-none rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2.5 py-2 text-xs leading-relaxed text-fg focus:border-accent/60 focus:outline-none"
           onkeydown={onEditKeydown}
@@ -137,7 +139,7 @@
           </button>
         </div>
       {:else}
-        <p class="whitespace-pre-wrap leading-relaxed text-fg">{comment.body}</p>
+        <p class="whitespace-pre-wrap leading-relaxed text-fg" data-find-key={findDraftKey(comment.id)}>{comment.body}</p>
       {/if}
     </div>
   </div>

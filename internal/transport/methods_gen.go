@@ -417,6 +417,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SavePRCIJobLog", ID: 1537914193, Scope: "git:operate", Route: "selected"},                                         // main.App.SavePRCIJobLog
 	{Name: "SavePRCIJobLogSection", ID: 1281545488, Scope: "git:operate", Route: "selected"},                                  // main.App.SavePRCIJobLogSection
 	{Name: "SavePayloadToFile", ID: 3576148797, Scope: "host", Route: "thread"},                                               // main.App.SavePayloadToFile
+	{Name: "SearchPRCILog", ID: 349857499, Scope: "git:operate", Route: "selected"},                                           // main.App.SearchPRCILog
 	{Name: "SearchThreadItems", ID: 1414650511, Scope: "threads:read", Route: "thread"},                                       // main.App.SearchThreadItems
 	{Name: "SearchThreadMessages", ID: 3644945077, Scope: "threads:read", Route: "all"},                                       // main.App.SearchThreadMessages
 	{Name: "SearchTimelineItems", ID: 1822896830, Scope: "threads:read", Route: "thread"},                                     // main.App.SearchTimelineItems
