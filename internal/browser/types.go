@@ -75,6 +75,10 @@ type FindState struct {
 	// end across the Manager, so an answer older than an end is
 	// recognizably stale.
 	Session uint64 `json:"session"`
+	// Foreign marks an answer for an action that changed nothing because
+	// the find it named is gone or another mount's; Mount then names the
+	// find's real owner, and the answer acknowledges nothing of the asker's.
+	Foreign bool   `json:"foreign"`
 	Active  bool   `json:"active"`
 	Query   string `json:"query"`
 	Found   bool   `json:"found"`

@@ -493,6 +493,62 @@ describe('browser find provider', () => {
     expect(onEnded).toHaveBeenCalledTimes(1);
   });
 
+  // Reported order: a reload ends the find while the reader's stop waits for
+  // the page. The stop then changes nothing and says so; its answer must not
+  // read as newer than the end, or the bar would stay open over a page with
+  // no find.
+  it('closes on an end that overtook its stop, whose answer is foreign', async () => {
+    const { find, onEnded } = setup();
+    find.opened?.();
+    find.search('alpha');
+    await settle();
+    const stop = held();
+    answer = (call) => call.kind === 'stop' ? stop.promise : Promise.resolve(state({ session: 99, active: false }));
+    find.search('');
+    await settle(0);
+    ended(gen + 1);
+    expect(onEnded).not.toHaveBeenCalled();
+    stop.release(state({ session: gen + 1, mount: '', active: false, foreign: true }));
+    await settle(0);
+    expect(onEnded).toHaveBeenCalledTimes(1);
+  });
+
+  // Reported order: mount B takes the find over while A's stop waits. A's
+  // stop answers foreign, naming B at B's newer generation; A still closes
+  // on the end of its own find.
+  it('closes on its end when its stop queued behind another mount\'s takeover', async () => {
+    const { find, onEnded } = setup();
+    find.opened?.();
+    find.search('alpha');
+    await settle();
+    const stop = held();
+    answer = (call) => call.kind === 'stop' ? stop.promise : Promise.resolve(state({ session: 99, active: false }));
+    find.search('');
+    await settle(0);
+    const end = gen + 1;
+    ended(end);
+    stop.release(state({ session: end + 1, mount: 'mount-2', active: false, foreign: true }));
+    await settle(0);
+    expect(onEnded).toHaveBeenCalledTimes(1);
+  });
+
+  // The marker alone decides: a foreign answer acknowledges nothing even
+  // where its identity matches the held find's.
+  it('takes no generation from a foreign answer', async () => {
+    const { find, onEnded } = setup();
+    find.opened?.();
+    find.search('alpha');
+    await settle();
+    const stop = held();
+    answer = (call) => call.kind === 'stop' ? stop.promise : Promise.resolve(state({ session: 99, active: false }));
+    find.search('');
+    await settle(0);
+    ended(gen + 1);
+    stop.release(state({ session: gen + 5, active: false, foreign: true }));
+    await settle(0);
+    expect(onEnded).toHaveBeenCalledTimes(1);
+  });
+
   // Another mount opening the page takes its find over: the backend ends
   // this mount's find, and this bar closes. An end of another mount's find
   // leaves this one alone.

@@ -799,6 +799,9 @@ func TestBrowserCompanionFindRunsOnTheThreadsShownPage(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = app.BrowserCompanionPaneDetach(context.Background(), mount.ID) })
+	if _, err := app.BrowserCompanionFind(ctx, thread.ID, BrowserFindAction{Kind: "open", PageID: pageID, Mount: mount.ID}); err != nil {
+		t.Fatalf("open: %v", err)
+	}
 	found, err := app.BrowserCompanionFind(ctx, thread.ID, BrowserFindAction{Kind: "start", PageID: pageID, Query: "alpha", Mount: mount.ID})
 	if err != nil || found.Matches != 2 || found.Current != 0 || !found.Active || found.Mount != mount.ID {
 		t.Fatalf("start = %+v, %v", found, err)

@@ -350,6 +350,8 @@ func TestNativeEngineRealFind(t *testing.T) {
 		}
 	}
 
+	// The search runs in the pane's open bar.
+	find("open", "")
 	position(find("start", "alpha"), 0)
 	position(find("next", ""), 1)
 	position(find("next", ""), 2)

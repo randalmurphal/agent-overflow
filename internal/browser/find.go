@@ -27,11 +27,21 @@ import (
 // commit older than the find's document, an answer older than an end, or a
 // page that is not the same incarnation leaves it alone.
 //
+// An answer for an action that changed nothing because its find is gone or
+// another mount's is marked Foreign and names the find's real owner, "" for
+// none: it acknowledges nothing of the asking find's.
+//
 // Generations come from one counter across the Manager, so their order
 // holds across a page's suspend and restore. An engine call runs with the
 // page lock held but not the find lock, so an end can land while it runs:
 // the call's answer is published only if no end moved the page's
 // generation meanwhile, and otherwise the engine's search is stopped again.
+//
+// Whether the engine holds a search (its highlights, its match selection,
+// its own bar) is its own fact (findSession.engine), apart from the
+// logical session: an end only owes the engine a stop, and that stop is
+// owed until an engine call really clears or replaces the search, whatever
+// bookkeeping runs between.
 
 const (
 	// maxFindQueryBytes bounds a query. A search term is a phrase; anything
@@ -56,8 +66,9 @@ const (
 	// claims the page's Escape for `find.close`. FindModeBar only.
 	FindOpen = "open"
 	// FindStart replaces the search with one for the query; an empty query
-	// ends the search and leaves the bar open. In FindModeEngine it opens
-	// the engine's own bar.
+	// ends the search and leaves the bar open. In FindModeBar it searches in
+	// the mount's open bar, and changes nothing without one. In
+	// FindModeEngine it opens the engine's own bar.
 	FindStart = "start"
 	FindNext  = "next"
 	FindPrev  = "previous"
@@ -83,6 +94,10 @@ type findSession struct {
 	// active is whether a search runs; search is its generation.
 	active bool
 	search uint64
+	// engine is whether the engine may hold a search AO has not cleared:
+	// set by every FindStart, cleared only by a FindStop that succeeded.
+	// Written with the page lock held.
+	engine bool
 	mode   string
 	state  FindState
 }
@@ -156,7 +171,7 @@ func (m *Manager) Find(ctx context.Context, access Access, pageID, kind, query, 
 		return FindState{}, fmt.Errorf("browser: a find belongs to a mounted browser pane")
 	}
 	ending := kind == FindStop || kind == FindClose
-	gone := FindState{PageID: pageID, Mount: mount, Current: -1}
+	gone := FindState{PageID: pageID, Current: -1, Foreign: true}
 	var p *managedPage
 	var err error
 	if kind == FindOpen || kind == FindStart {
@@ -257,11 +272,11 @@ func (m *Manager) reserveFind(ctx context.Context, access Access, p *managedPage
 	}
 	p.findMu.Lock()
 	var taken *FindState
-	searching := false
+	owed := false
 	if !p.find.idle() && p.find.owner != mount {
-		searching = p.find.active
 		state := m.endLocked(p)
 		taken = &state
+		owed = p.find.engine
 	}
 	p.find.gen = m.findGen.Add(1)
 	mine := p.find.gen
@@ -271,10 +286,8 @@ func (m *Manager) reserveFind(ctx context.Context, access Access, p *managedPage
 	p.findMu.Unlock()
 	if taken != nil {
 		m.emit(CompanionEvent{Kind: "find", ThreadID: p.owner, PageID: p.id, Find: taken})
-		if searching {
-			if err := finder.FindStop(ctx); err != nil && p.ctx.Err() == nil {
-				log.Printf("browser: page %s: stop the find another pane owned: %v", p.id, err)
-			}
+		if owed {
+			_ = m.clearEngineFind(ctx, p, finder)
 		}
 	}
 	var refused error
@@ -333,6 +346,18 @@ func (m *Manager) startFind(ctx context.Context, access Access, p *managedPage, 
 	if mode == FindModeBar && query == "" {
 		return m.stopFindLocked(ctx, p, finder, false, mount)
 	}
+	if mode == FindModeBar {
+		// The search lives in the mount's bar. A start that waited out the
+		// bar's end, or another mount's takeover, does not bring a search
+		// back without one.
+		p.findMu.Lock()
+		barless := p.find.owner != mount || !p.find.bar
+		state := p.find.identify(p, FindState{Session: p.find.gen, Current: -1, Foreign: true})
+		p.findMu.Unlock()
+		if barless {
+			return state, nil
+		}
+	}
 	mine, err := m.reserveFind(ctx, access, p, finder, mount)
 	if err != nil {
 		return FindState{}, err
@@ -342,16 +367,13 @@ func (m *Manager) startFind(ctx context.Context, access Access, p *managedPage, 
 	}
 	result, err := finder.FindStart(ctx, query)
 	p.findMu.Lock()
+	p.find.engine = true
 	if p.find.gen != mine {
 		// An end landed during the call: the search it started is nobody's.
 		state := p.find.identify(p, FindState{Session: mine, Current: -1})
 		state.Mount = mount
 		p.findMu.Unlock()
-		if err == nil {
-			if stopErr := finder.FindStop(ctx); stopErr != nil && p.ctx.Err() == nil {
-				log.Printf("browser: page %s: stop a superseded find: %v", p.id, stopErr)
-			}
-		}
+		_ = m.clearEngineFind(ctx, p, finder)
 		return state, nil
 	}
 	p.find.starting = false
@@ -361,6 +383,8 @@ func (m *Manager) startFind(ctx context.Context, access Access, p *managedPage, 
 			p.find.owner = ""
 		}
 		p.findMu.Unlock()
+		// What the engine kept of a failed start is cleared with it.
+		_ = m.clearEngineFind(ctx, p, finder)
 		return FindState{}, err
 	}
 	defer p.findMu.Unlock()
@@ -402,9 +426,12 @@ func (m *Manager) stepFind(ctx context.Context, p *managedPage, finder pageFind,
 		return state, nil
 	}
 	if err != nil {
-		// What the engine still shows is unknown, so the next action starts
-		// over.
+		// What the engine still shows is unknown: it is cleared, and the
+		// next action starts over.
 		p.find.active = false
+		p.findMu.Unlock()
+		_ = m.clearEngineFind(ctx, p, finder)
+		p.findMu.Lock()
 		return FindState{}, err
 	}
 	state := &p.find.state
@@ -439,13 +466,13 @@ func (m *Manager) stepFind(ctx context.Context, p *managedPage, finder pageFind,
 func (m *Manager) stopFindLocked(ctx context.Context, p *managedPage, finder pageFind, closeBar bool, mount string) (FindState, error) {
 	p.findMu.Lock()
 	if p.find.owner != mount {
-		state := p.find.identify(p, FindState{Session: p.find.gen, Current: -1})
-		state.Mount = mount
+		// Not this mount's find: nothing is ended, and the answer says
+		// whose it is.
+		state := p.find.identify(p, FindState{Session: p.find.gen, Current: -1, Foreign: true})
 		p.findMu.Unlock()
 		return state, nil
 	}
 	p.find.gen = m.findGen.Add(1)
-	searching := p.find.active
 	p.find.active = false
 	if closeBar {
 		p.find.bar = false
@@ -455,14 +482,28 @@ func (m *Manager) stopFindLocked(ctx context.Context, p *managedPage, finder pag
 	if !p.find.bar && !p.find.starting {
 		p.find.owner = ""
 	}
+	owed := p.find.engine
 	p.findMu.Unlock()
-	if !searching {
+	if !owed {
 		return state, nil
 	}
-	if err := finder.FindStop(ctx); err != nil {
+	if err := m.clearEngineFind(ctx, p, finder); err != nil {
 		return state, fmt.Errorf("browser: stop find: %w", err)
 	}
 	return state, nil
+}
+
+// clearEngineFind stops the engine's search and records that it holds none,
+// or on failure that the stop is still owed. The caller holds p.mu.
+func (m *Manager) clearEngineFind(ctx context.Context, p *managedPage, finder pageFind) error {
+	err := finder.FindStop(ctx)
+	p.findMu.Lock()
+	p.find.engine = err != nil
+	p.findMu.Unlock()
+	if err != nil && p.ctx.Err() == nil {
+		log.Printf("browser: page %s: stop find: %v", p.id, err)
+	}
+	return err
 }
 
 // endLocked ends p's find: the search, the bar and any action in flight, and
@@ -493,25 +534,32 @@ func (m *Manager) endFindIf(p *managedPage, stopEngine bool, ends func(*findSess
 		p.findMu.Unlock()
 		return
 	}
-	searching := p.find.active
+	owed := p.find.engine
 	state := m.endLocked(p)
 	p.findMu.Unlock()
 	m.emit(CompanionEvent{Kind: "find", ThreadID: p.owner, PageID: p.id, Find: &state})
-	if stopEngine && searching {
-		go m.stopEngineFind(p, state.Session)
+	if stopEngine && owed {
+		stop := func() { m.stopEngineFind(p) }
+		if m.deferEngineStop != nil {
+			m.deferEngineStop(stop)
+			return
+		}
+		go stop()
 	}
 }
 
-func (m *Manager) stopEngineFind(p *managedPage, ended uint64) {
+// stopEngineFind makes the stop an end owed the engine, unless a search
+// started since has replaced the one it owed or the stop was made already.
+func (m *Manager) stopEngineFind(p *managedPage) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !m.pageLive(p) {
 		return
 	}
 	p.findMu.Lock()
-	current := p.find.gen
+	owed := p.find.engine && !p.find.active
 	p.findMu.Unlock()
-	if current != ended {
+	if !owed {
 		return
 	}
 	finder, mode := pageFinder(p)
@@ -520,9 +568,7 @@ func (m *Manager) stopEngineFind(p *managedPage, ended uint64) {
 	}
 	ctx, cancel := operationContext(context.Background(), p.ctx, findTimeout)
 	defer cancel()
-	if err := finder.FindStop(ctx); err != nil && p.ctx.Err() == nil {
-		log.Printf("browser: page %s: stop find: %v", p.id, err)
-	}
+	_ = m.clearEngineFind(ctx, p, finder)
 }
 
 // documentCommitted is pageHooks.DocumentCommitted. It runs where the engine

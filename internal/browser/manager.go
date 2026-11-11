@@ -75,7 +75,10 @@ type Manager struct {
 	// findReserved, when set by a test, runs after a find action reserved
 	// its generation and before it publishes.
 	findReserved func()
-	profileDir   string
+	// deferEngineStop, when set by a test, receives the engine stop an end
+	// owes instead of a goroutine running it.
+	deferEngineStop func(func())
+	profileDir      string
 
 	startMu sync.Mutex
 	mu      sync.Mutex

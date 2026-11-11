@@ -349,7 +349,7 @@ describe('accelerators from the native page view', () => {
         kind: 'find',
         threadId: 'thread-browser',
         pageId: 'page-1',
-        find: { pageId: 'page-1', incarnation: 1, mount: 'mount-1', document: 1, session: 2, active: false, query: '', found: false, matches: 0, current: -1, capped: false },
+        find: { pageId: 'page-1', incarnation: 1, mount: 'mount-1', document: 1, session: 2, foreign: false, active: false, query: '', found: false, matches: 0, current: -1, capped: false },
       });
       expect(onEnded).toHaveBeenCalledTimes(1);
       expect(companionForSource('main', 'browser')).not.toBeNull();

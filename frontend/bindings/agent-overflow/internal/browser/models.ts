@@ -157,6 +157,13 @@ export class FindState {
      * recognizably stale.
      */
     "session": number;
+
+    /**
+     * Foreign marks an answer for an action that changed nothing because
+     * the find it named is gone or another mount's; Mount then names the
+     * find's real owner, and the answer acknowledges nothing of the asker's.
+     */
+    "foreign": boolean;
     "active": boolean;
     "query": string;
     "found": boolean;
@@ -190,6 +197,9 @@ export class FindState {
         }
         if (!("session" in $$source)) {
             this["session"] = 0;
+        }
+        if (!("foreign" in $$source)) {
+            this["foreign"] = false;
         }
         if (!("active" in $$source)) {
             this["active"] = false;

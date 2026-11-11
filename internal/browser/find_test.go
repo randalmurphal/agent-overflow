@@ -85,11 +85,30 @@ func (f *findFixture) page(t *testing.T, pageID string) *fakePage {
 
 func (f *findFixture) find(t *testing.T, kind, query string) FindState {
 	t.Helper()
+	// A search in AO's bar runs in the mount's open bar: the pane opens it
+	// before its first query.
+	if kind == FindStart && query != "" && f.fake.FindMode() == FindModeBar && !f.barOpen(t) {
+		if _, err := f.manager.Find(t.Context(), f.access, f.pageID, FindOpen, "", f.mount); err != nil {
+			t.Fatalf("open the bar for start %q: %v", query, err)
+		}
+	}
 	state, err := f.manager.Find(t.Context(), f.access, f.pageID, kind, query, f.mount)
 	if err != nil {
 		t.Fatalf("find %s %q: %v", kind, query, err)
 	}
 	return state
+}
+
+// barOpen reports whether the fixture's mount holds the page's bar.
+func (f *findFixture) barOpen(t *testing.T) bool {
+	t.Helper()
+	p, _, err := f.manager.lookupOwnedPage(f.access, f.pageID)
+	if err != nil {
+		return false
+	}
+	p.findMu.Lock()
+	defer p.findMu.Unlock()
+	return p.find.bar && p.find.owner == f.mount
 }
 
 func (f *findFixture) wantCall(t *testing.T, want string) {
@@ -227,7 +246,7 @@ func TestFindRunsOnlyOnTheShownActivePage(t *testing.T) {
 	if _, err := f.manager.NewCompanionPage(t.Context(), f.access); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "start", "alpha", f.mount); err == nil || !strings.Contains(err.Error(), "shows") {
+	if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "open", "", f.mount); err == nil || !strings.Contains(err.Error(), "shows") {
 		t.Fatalf("find on a background tab error = %v", err)
 	}
 	if err := f.manager.ActivateCompanionPage(t.Context(), f.access, f.pageID); err != nil {
@@ -237,7 +256,7 @@ func TestFindRunsOnlyOnTheShownActivePage(t *testing.T) {
 	if _, err := f.manager.Visibility(t.Context(), f.access, &hide, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "start", "alpha", f.mount); err == nil || !strings.Contains(err.Error(), "shows") {
+	if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "open", "", f.mount); err == nil || !strings.Contains(err.Error(), "shows") {
 		t.Fatalf("find with the companion hidden error = %v", err)
 	}
 }
@@ -373,6 +392,7 @@ func TestFindEndsWhenThePageClosesOrSuspends(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.fake = f.page(t, f.pageID)
+	f.find(t, "open", "")
 	gate := make(chan struct{})
 	entered := make(chan struct{})
 	f.fake.mu.Lock()
@@ -420,8 +440,8 @@ func TestFindEndsWhenItsPaneUnmounts(t *testing.T) {
 		f.manager.DetachPane(f.mount)
 		f.wantEnded(t, started.Session)
 		f.wantCall(t, "stop")
-		if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "start", "alpha", f.mount); err == nil {
-			t.Fatalf("round %d: a find started with no pane mounted", round)
+		if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "open", "", f.mount); err == nil {
+			t.Fatalf("round %d: a find opened with no pane mounted", round)
 		}
 		f.attach(t)
 	}
@@ -1033,7 +1053,7 @@ func TestFindStopNeverRestoresAndIsIdempotent(t *testing.T) {
 	}
 	f.wantEnded(t, 0)
 	for _, kind := range []string{"stop", "close"} {
-		if state := f.find(t, kind, ""); state.Active {
+		if state := f.find(t, kind, ""); state.Active || !state.Foreign || state.Mount != "" {
 			t.Fatalf("%s on a suspended page = %+v", kind, state)
 		}
 	}
@@ -1048,7 +1068,7 @@ func TestFindStopNeverRestoresAndIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, kind := range []string{"stop", "close"} {
-		if state := f.find(t, kind, ""); state.Active || state.PageID != f.pageID {
+		if state := f.find(t, kind, ""); state.Active || state.PageID != f.pageID || !state.Foreign || state.Mount != "" {
 			t.Fatalf("%s on a closed page = %+v", kind, state)
 		}
 	}
@@ -1064,6 +1084,9 @@ func TestFindDetachedWhileAnActionReservesEndsIt(t *testing.T) {
 			f := newFindFixture(t, "https://example.test/alpha")
 			handle := f.fake.Handle()
 			owner := f.mount
+			if kind == "start" {
+				f.find(t, "open", "")
+			}
 			f.attach(t)
 			entered := make(chan struct{})
 			gate := make(chan struct{})
@@ -1162,8 +1185,10 @@ func TestFindTakenOverByAnotherMount(t *testing.T) {
 	f.find(t, "start", "beta")
 	f.wantCall(t, "start beta")
 	for _, kind := range []string{"stop", "close"} {
+		// Not the old owner's find: the answer is marked so and names the
+		// find's real owner.
 		state, err := f.manager.Find(t.Context(), f.access, f.pageID, kind, "", old)
-		if err != nil || state.Active || state.Mount != old {
+		if err != nil || state.Active || !state.Foreign || state.Mount != f.mount {
 			t.Fatalf("%s by the old owner = %+v, %v", kind, state, err)
 		}
 	}
@@ -1241,10 +1266,12 @@ func TestFindFromAGoneMountTakesNothingOver(t *testing.T) {
 	gone := f.mount
 	f.mount = owner
 	f.manager.DetachPane(gone)
-	for _, kind := range []string{"open", "start"} {
-		if _, err := f.manager.Find(t.Context(), f.access, f.pageID, kind, "beta", gone); !errors.Is(err, errFindNoMount) {
-			t.Fatalf("%s from a gone mount: %v", kind, err)
-		}
+	if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "open", "", gone); !errors.Is(err, errFindNoMount) {
+		t.Fatalf("open from a gone mount: %v", err)
+	}
+	// A start searches only in its own mount's bar.
+	if state, err := f.manager.Find(t.Context(), f.access, f.pageID, "start", "beta", gone); err != nil || !state.Foreign || state.Mount != owner {
+		t.Fatalf("start from a gone mount = %+v, %v", state, err)
 	}
 	f.noEvent(t)
 	f.noCall(t)
@@ -1255,4 +1282,146 @@ func TestFindFromAGoneMountTakesNothingOver(t *testing.T) {
 		t.Fatalf("owner's search after a gone mount's open = %+v", state)
 	}
 	f.wantCall(t, "step")
+}
+
+// A stop that waited for the page lock while a reload ended its find
+// changes nothing: its answer is marked Foreign and names no owner, so it
+// acknowledges nothing the end did not.
+func TestFindStopOvertakenByAnEndAnswersForeign(t *testing.T) {
+	f := newFindFixture(t, "https://example.test/alpha")
+	f.find(t, "open", "")
+	started := f.find(t, "start", "alpha")
+	f.wantCall(t, "start alpha")
+	p, _, err := f.manager.lookupOwnedPage(f.access, f.pageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.mu.Lock()
+	type answer struct {
+		state FindState
+		err   error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		state, err := f.manager.Find(context.Background(), f.access, f.pageID, "stop", "", f.mount)
+		answered <- answer{state, err}
+	}()
+	// Let the stop resolve the page and wait for its lock; the reload's
+	// commit ends the find meanwhile.
+	time.Sleep(50 * time.Millisecond)
+	f.fake.commitDocument()
+	end := f.wantEnded(t, started.Session)
+	p.mu.Unlock()
+	got := <-answered
+	if got.err != nil || !got.state.Foreign || got.state.Mount != "" || got.state.Active {
+		t.Fatalf("stop overtaken by an end = %+v, %v", got.state, got.err)
+	}
+	if got.state.Session != end.Session {
+		t.Fatalf("overtaken stop answered generation %d, the end was %d", got.state.Session, end.Session)
+	}
+	f.wantCall(t, "stop")
+	f.noCall(t)
+}
+
+// An end owes the engine a stop. Bookkeeping that runs before that stop (a
+// bar opened or closed, a refused step, another mount's open) does not
+// clear the engine's search, so the stop is still made; a new search that
+// replaced the engine's is not stopped.
+func TestFindOwedEngineStopOutlivesBookkeeping(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		then   []string
+		search string
+	}{
+		{name: "empty open", then: []string{"open B"}},
+		{name: "open then close", then: []string{"open B", "close B"}},
+		{name: "refused step", then: []string{"step A"}},
+		{name: "refused stop and close", then: []string{"stop A", "close A"}},
+		{name: "takeover", then: []string{"open B", "open A"}},
+		{name: "new search", then: []string{"open B", "start B"}, search: "beta"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newFindPairEnv(t, "search")
+			ops := map[string]findPairOp{}
+			for _, op := range findPairOps() {
+				ops[op.name] = op
+			}
+			ops["detach A"].run(t, e)
+			for _, name := range tc.then {
+				ops[name].run(t, e)
+			}
+			ops["engine stop"].run(t, e)
+			e.f.fake.mu.Lock()
+			query := e.f.fake.findQuery
+			e.f.fake.mu.Unlock()
+			if query != tc.search {
+				t.Fatalf("engine search after the owed stop = %q, want %q", query, tc.search)
+			}
+			e.settle(t)
+			e.check(t)
+		})
+	}
+}
+
+// A stop the engine refused stays owed: the next close clears the engine's
+// search even though no session is active.
+func TestFindFailedEngineStopStaysOwed(t *testing.T) {
+	e := newFindPairEnv(t, "search")
+	ops := map[string]findPairOp{}
+	for _, op := range findPairOps() {
+		ops[op.name] = op
+	}
+	ops["detach A"].run(t, e)
+	e.f.fake.mu.Lock()
+	e.f.fake.findErr = errors.New("engine busy")
+	e.f.fake.mu.Unlock()
+	ops["engine stop"].run(t, e)
+	e.f.fake.mu.Lock()
+	e.f.fake.findErr = nil
+	held := e.f.fake.findQuery
+	e.f.fake.mu.Unlock()
+	if held != "alpha" {
+		t.Fatalf("engine search after a refused stop = %q, want it kept", held)
+	}
+	ops["open B"].run(t, e)
+	ops["close B"].run(t, e)
+	e.f.fake.mu.Lock()
+	query := e.f.fake.findQuery
+	e.f.fake.mu.Unlock()
+	if query != "" {
+		t.Fatalf("engine search after the next close = %q", query)
+	}
+	e.settle(t)
+	e.check(t)
+}
+
+// A start or step the engine failed is cleared with it: the engine keeps no
+// search the Manager does not hold.
+func TestFindFailedEngineCallIsCleared(t *testing.T) {
+	for _, kind := range []string{"start", "next"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newFindFixture(t, "https://example.test/alpha")
+			f.find(t, "start", "alpha")
+			f.wantCall(t, "start alpha")
+			f.fake.mu.Lock()
+			f.fake.findErr = errors.New("engine failed")
+			// The failing call alone fails; the stop after it succeeds.
+			f.fake.findHook = func(call string) {
+				f.fake.mu.Lock()
+				f.fake.findErr = nil
+				f.fake.mu.Unlock()
+				f.calls <- call
+			}
+			f.fake.mu.Unlock()
+			if _, err := f.manager.Find(t.Context(), f.access, f.pageID, kind, "beta", f.mount); err == nil {
+				t.Fatalf("%s did not fail", kind)
+			}
+			f.fake.mu.Lock()
+			query := f.fake.findQuery
+			f.fake.mu.Unlock()
+			if query != "" {
+				t.Fatalf("engine search after a failed %s = %q", kind, query)
+			}
+		})
+	}
 }

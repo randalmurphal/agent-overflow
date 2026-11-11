@@ -170,9 +170,13 @@ the accelerator path above.
 - A find's identity is its page (id and incarnation), the pane mount that
   owns it, the document it was opened on, and a generation; every action,
   answer and end carries all four (`FindState`). Each action names its
-  mount. A mount's `open` or `start` on a find another mount owns takes it
-  over: the old owner gets an end and its search is stopped. A `stop`,
-  `close` or step from a mount that does not own the find changes nothing.
+  mount. A mount's `open` on a find another mount owns takes it over (in
+  "engine" mode, its `start`): the old owner gets an end and its search is
+  stopped. In "bar" mode a `start` searches only in the mount's own open
+  bar. A `start`, `stop`, `close` or step that finds no find of its mount's
+  (it ended, or another mount took it) changes nothing, and its answer is
+  marked `foreign` and names the find's real owner, "" for none, so the
+  provider never takes it as an acknowledgement.
   A restored page is a new incarnation under the same id, and generations
   come from one counter across the Manager, so their order holds across a
   suspend and restore.
@@ -184,6 +188,13 @@ the accelerator path above.
   driver, and WebKitGTK and WKWebView also refuse any operation on a page
   whose lifetime ended before it reaches the view. An action overtaken by
   an end publishes nothing and stops the search it made.
+- Whether the engine holds a search (highlights, a match selection, its own
+  bar) is tracked apart from the logical session: every `FindStart` sets
+  it and only a `FindStop` that succeeded clears it, including after a
+  failed start or step. An end owes the engine a stop, made behind the page
+  lock unless a new search replaced the engine's meanwhile, so bookkeeping
+  that runs first (a bar opened or closed, a refused action) never cancels
+  it, and a refused stop stays owed to the next close.
 - A new document is each engine's commit signal, so a reload ends the find
   and a same-document navigation (a fragment, the History API) keeps it:
   WebKitGTK `load-changed` with `WEBKIT_LOAD_COMMITTED`, WKWebView

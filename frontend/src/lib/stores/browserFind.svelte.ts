@@ -13,6 +13,10 @@
 // commit older than the find's document, an answer older than an end, or a
 // page that is not the same incarnation leaves it alone.
 //
+// An answer for an action that changed nothing because its find is gone or
+// another mount's is marked Foreign and names the find's real owner, "" for
+// none: it acknowledges nothing of the asking find's.
+//
 // Every request is an intent object made when the reader acts and carried to
 // its answer: open, start (its query), step (its direction), stop (the
 // search) and close (the bar). Each records the page and the mount it is
@@ -38,7 +42,8 @@
 // | bar closed (`clear`, dispose)  | seq++; drop the queue but its closes; queue close if      |
 // |                                | anything is held                                          |
 // | engine find opened             | seq++; drop the queue; queue start(seed); held.search     |
-// | answer for the held mount      | known = max(known, session), reset by a newer incarnation;|
+// | answer for the held mount,     | known = max(known, session), reset by a newer incarnation;|
+// | not foreign                    |                                                           |
 // |                                | shown if its seq is current                               |
 // | failure                        | shown as an error if its seq is current                   |
 // | end event for the held page    | in flight: kept as deferredEnd; else seq++, drop the      |
@@ -180,7 +185,7 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
 
   /** Records the generation an answer reports for the held find. */
   function note(state: BrowserFindState): void {
-    if (!forHeld(state) || state.incarnation < held.incarnation) return;
+    if (state.foreign || !forHeld(state) || state.incarnation < held.incarnation) return;
     if (state.incarnation > held.incarnation) {
       held.incarnation = state.incarnation;
       held.known = state.session;

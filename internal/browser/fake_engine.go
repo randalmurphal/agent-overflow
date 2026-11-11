@@ -417,7 +417,10 @@ func (p *fakePage) FindStep(_ context.Context, backwards bool) (findResult, erro
 func (p *fakePage) FindStop(context.Context) error {
 	p.mu.Lock()
 	hook, err := p.findHook, p.findErr
-	p.findQuery = ""
+	// A refused stop leaves the search where it was.
+	if err == nil {
+		p.findQuery = ""
+	}
 	p.mu.Unlock()
 	if hook != nil {
 		hook("stop")
