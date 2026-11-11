@@ -91,7 +91,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
   import type { Thread } from './lib/types/models';
   import { getPaletteTargetPaneId, isPaletteOpen } from './lib/stores/palette.svelte';
   import { closeCheatSheet, isCheatSheetOpen } from './lib/stores/cheatSheet.svelte';
-  import { closeMessageSearch, getMessageSearchMode, getMessageSearchTargetPaneId, isMessageSearchOpen } from './lib/stores/messageSearch.svelte';
+  import { closeMessageSearch, getMessageSearchTargetPaneId, isMessageSearchOpen } from './lib/stores/messageSearch.svelte';
   import { closeThreadPicker, getThreadPickerTargetPaneId, isThreadPickerOpen } from './lib/stores/threadPicker.svelte';
   import { closeAccountSwitcher, isAccountSwitcherOpen } from './lib/stores/accountSwitcher.svelte';
   import { isSessionImportOpen } from './lib/stores/sessionImport.svelte';
@@ -710,7 +710,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
 <UnsentMessageConfirmationHost />
 <BackgroundKillConfirmationHost />
 <KeybindingsCheatSheet open={isCheatSheetOpen()} onClose={closeCheatSheet} />
-<MessageSearch open={isMessageSearchOpen()} pane={messageSearchPane} mode={getMessageSearchMode()} onClose={closeMessageSearch} />
+<MessageSearch open={isMessageSearchOpen()} pane={messageSearchPane} onClose={closeMessageSearch} />
 <UnifiedThreadPicker open={isThreadPickerOpen()} pane={threadPickerPane} onClose={closeThreadPicker} />
 <!--
   Account switcher loads lazily: it is a rarely-mounted picker that pulls in the

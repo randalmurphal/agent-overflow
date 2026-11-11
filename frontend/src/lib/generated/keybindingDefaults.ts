@@ -183,9 +183,9 @@ export const KEYBINDING_DEFAULTS: readonly KeybindingRule[] = [
   },
   {
     "key": "mod+f",
-    "command": "search.in-thread",
-    "when": "hasActiveThread \u0026\u0026 !terminalFocus",
-    "defaultId": "search.in-thread",
+    "command": "find.in-pane",
+    "when": "paneFindAvailable \u0026\u0026 !terminalFocus",
+    "defaultId": "find.in-pane",
     "defaultKey": "mod+f"
   },
   {

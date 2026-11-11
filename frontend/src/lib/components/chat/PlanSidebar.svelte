@@ -34,6 +34,11 @@
   import ProposedPlanActions from './ProposedPlanActions.svelte';
   import ProposedPlanReviewSurface from './ProposedPlanReviewSurface.svelte';
   import ProposedPlanSaveModal from './ProposedPlanSaveModal.svelte';
+  import PaneFindBar from '../panes/PaneFindBar.svelte';
+  import { createScrollTextFind } from '../panes/scrollTextFind.svelte';
+  import { companionForSource } from '../../stores/companionPanes.svelte';
+  import { registerPaneFindProvider } from '../../stores/paneFind.svelte';
+  import { findHighlightName } from '../../utils/findHighlights';
 
   interface Props {
     ctx: PanelContext;
@@ -80,6 +85,21 @@
   const pathRefs = $derived(getPathRefsFromMeta(currentPlan?.meta) ?? EMPTY_PATH_REFS);
 
   const planExport = createPlanSaveDialog(ensurePlanMarkdown, () => ctx.workspace);
+
+  // Find over the rendered plan. ctx.paneId is the source pane; the find
+  // belongs to this companion's own layout pane.
+  let planScrollEl: HTMLDivElement | undefined = $state(undefined);
+  let planPaneId = $derived(companionForSource(ctx.paneId, 'plan')?.paneId ?? null);
+  $effect(() => {
+    const id = planPaneId;
+    if (!id) return;
+    const find = createScrollTextFind({
+      root: () => planScrollEl ?? null,
+      name: findHighlightName(id),
+      noun: () => 'plan',
+    });
+    return untrack(() => registerPaneFindProvider(id, find));
+  });
 
   $effect(() => {
     const id = threadId;
@@ -241,7 +261,11 @@
       </div>
     </div>
 
-    <div class="flex-1 overflow-y-auto px-8 pb-2">
+    {#if planPaneId}
+      <PaneFindBar paneId={planPaneId} {title} fallbackFocus={() => planScrollEl ?? null} />
+    {/if}
+
+    <div bind:this={planScrollEl} class="flex-1 overflow-y-auto px-8 pb-2" data-testid="plan-sidebar-scroll">
       {#if currentPlan}
         {#if planLoadError}
           <div class="flex flex-col items-start gap-2 py-3 text-xs text-text-secondary" data-testid="plan-sidebar-error">

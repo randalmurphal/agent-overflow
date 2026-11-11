@@ -6,7 +6,7 @@ import { noteThread, __resetEntityIndexForTest } from '../transport/entityIndex'
 import { __setTransportHelloForTest } from './transportStatus.svelte';
 import type { TransportHello } from '../transport/wsClient';
 import type { TimelineSelection } from '../../../bindings/agent-overflow/internal/store/models';
-import { GetThreadUserMessageTicks, ListActivityRunMembers, ListItemsAfterCursor, ListItemsBeforeCursor, ListThreadSliceAround, SyncThreadWindow } from './bindings';
+import { GetThreadUserMessageTicks, SearchThreadItems, ListActivityRunMembers, ListItemsAfterCursor, ListItemsBeforeCursor, ListThreadSliceAround, SyncThreadWindow } from './bindings';
 
 const hello: TransportHello = { protocolVersion: 1, capabilities: ['timeline.scopes.v1'], backendId: '', backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 };
 const cursor = { turnIndex: 0, itemIndex: 0, itemId: 'first' };
@@ -17,6 +17,7 @@ const readers = [
   ['ListItemsBeforeCursor', (selection: TimelineSelection) => ListItemsBeforeCursor('thread', cursor, 20, {}, selection)],
   ['ListItemsAfterCursor', (selection: TimelineSelection) => ListItemsAfterCursor('thread', cursor, 20, {}, selection)],
   ['GetTimelineUserMessageTicks', (selection: TimelineSelection) => GetThreadUserMessageTicks('thread', selection)],
+  ['SearchTimelineItems', (selection: TimelineSelection) => SearchThreadItems('thread', 'needle', 10, selection)],
 ] as const;
 
 beforeEach(() => { resetBindingMocks(); resetStagedBackends(); __resetEntityIndexForTest(); });

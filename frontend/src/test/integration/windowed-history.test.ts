@@ -282,19 +282,15 @@ describe('App integration — windowed thread history', () => {
     expect(pane.items.some((it) => it.id === 'old-hit')).toBe(true);
   });
 
-  it('in-thread find (mode=thread) scopes SearchThreadItems to the active thread and scrolls to the clicked hit', async () => {
-    // The mod+f path: search is scoped to the already-open thread, and a
-    // click scrolls the live timeline to that message WITHOUT a thread
-    // switch (hit.threadId === pane.threadId). This is the feature's core
-    // job — pin it end-to-end through the real App mount + live pane, since
-    // the component tests stub the pane and never exercise openHit.
+  it('the pane find bar searches the active thread and reveals the hit nearest the reader', async () => {
+    // The mod+f path end-to-end through the real App mount and live pane:
+    // the bar belongs to the pane, reads SearchThreadItems for its thread,
+    // and moves the timeline to the current hit through the pane's
+    // scroll-to-item request without a thread switch.
     let scopedSearch!: ReturnType<typeof setBindingMock>;
-    const { findByTestId } = await mountAndActivateThread(
+    const { findByTestId, queryByTestId } = await mountAndActivateThread(
       makeThread({ title: 'Windowed Thread' }),
       () => {
-        // Seed one in-window item so the click's requestScrollToItem resolves
-        // without the out-of-window loadUntilItem paging the global test
-        // above already covers.
         setBindingMock('ListThreadSliceAround', async () => ({
           items: [
             makeItem({
@@ -316,15 +312,13 @@ describe('App integration — windowed thread history', () => {
             provider: 'claude',
             itemId: 'thr-msg',
             turnIndex: 5,
+            itemIndex: 0,
             itemKind: 'text',
             itemRole: 'assistant',
             summary: 'preserve seconds after one hour',
             matchType: 'item' as const,
           },
         ]);
-        // A SearchThreadMessages mock would only be hit if the overlay
-        // wrongly fell back to global; leaving it unset means such a
-        // regression throws "called without a mock" instead of passing.
       },
     );
 
@@ -332,24 +326,23 @@ describe('App integration — windowed thread history', () => {
     const pane = paneMod.getMainPane();
     const scrollSpy = vi.spyOn(pane, 'requestScrollToItem');
 
-    // Open scoped to THIS pane's thread — exactly what the mod+f command does.
-    const searchMod = await import('../../lib/stores/messageSearch.svelte');
-    searchMod.openMessageSearch(pane.paneId, 'thread');
+    // Through the command mod+f runs, against the focused pane.
+    paneMod.focusPane(pane.paneId);
+    const { runCommand } = await import('../../lib/stores/commandRegistry.svelte');
+    const { makeCommandContext } = await import('../../lib/stores/builtinCommands.svelte');
+    expect(runCommand('find.in-pane', makeCommandContext(pane, {}))).toBe(true);
     await flush();
+    // The bar sits inside its own pane.
+    expect(document.querySelector(`[data-pane-id="${pane.paneId}"] [data-testid="pane-find-bar"]`)).not.toBeNull();
 
-    const input = (await findByTestId('message-search-input')) as HTMLInputElement;
+    const input = (await findByTestId('pane-find-input')) as HTMLInputElement;
     await fireEvent.input(input, { target: { value: 'seconds' } });
-
-    const hitBtn = await findByTestId('message-search-hit-thread-1-thr-msg');
-    // The scoped binding ran with the active thread id + the typed query.
     await waitFor(() => expect(scopedSearch).toHaveBeenCalled());
-    expect(scopedSearch.mock.calls[0]).toEqual(['thread-1', 'seconds', 50]);
-
-    await fireEvent.click(hitBtn);
-    await flush(10);
-
-    // Clicking an in-thread hit scrolls the live timeline to that message.
-    expect(scrollSpy).toHaveBeenCalledWith('thr-msg');
+    expect(scopedSearch.mock.calls[0]).toEqual(['thread-1', 'seconds', 1000]);
+    await waitFor(() => expect((queryByTestId('pane-find-count')?.textContent ?? '').trim()).toBe('1/1'));
+    expect(scrollSpy).toHaveBeenCalledWith('thr-msg', { mark: true });
+    // The modal never opens for find.
+    expect(queryByTestId('message-search')).toBeNull();
   });
 
   it('PlanSidebar renders the current plan from the dedicated plan list outside the timeline window', async () => {

@@ -31,12 +31,20 @@ import { PANE_NAV_COMMAND_IDS, TERMINAL_ESCAPE_COMMAND_IDS } from './paneNavComm
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import {
   closeMessageSearch,
-  getMessageSearchMode,
-  getMessageSearchTargetPaneId,
   isMessageSearchOpen,
   openMessageSearch,
 } from './messageSearch.svelte';
 import { getToasts } from './toast.svelte';
+import {
+  getPaneFind,
+  openPaneFind,
+  registerPaneFindProvider,
+  resetPaneFindForTest,
+  type PaneFindProvider,
+} from './paneFind.svelte';
+import { dispatchKey, eventMatchesKeybindingCommand, resetKeybindingsStore, setKeybindingsForTest } from './keybindings.svelte';
+import { KEYBINDING_DEFAULTS } from '../generated/keybindingDefaults';
+import { createSurfaceDismissalEvent } from '../utils/surfaceDismissal';
 import {
   closeThreadPicker,
   isThreadPickerOpen,
@@ -916,58 +924,126 @@ describe('search.messages command', () => {
   });
 });
 
-// --- search.in-thread wiring ---
+// --- find.in-pane wiring ---
 //
-// mod+f opens the SAME MessageSearch overlay as search.messages, but in
-// thread-scoped mode (Find in thread). It reuses the toggle-on-rechord shape
-// and additionally refuses to open without an active thread — there is
-// nothing to scope to — surfacing a warning toast instead.
+// mod+f opens the focused layout pane's own find bar. A pane with no find
+// provider has no find: the command is disabled and its chord falls through.
 
-describe('search.in-thread command', () => {
+describe('find.in-pane command', () => {
+  const providerFor = (): PaneFindProvider => ({
+    noun: 'thread',
+    result: { count: 0, current: -1, pending: false },
+    search: vi.fn(),
+    clear: vi.fn(),
+  });
+
   beforeEach(() => {
     clearCommandRegistry();
     closeMessageSearch();
+    resetPaneFindForTest();
+    resetPanesForTest();
+    setPaneLayoutItemsForTest([
+      { id: 'a', paneId: 'a', kind: 'thread', widthPx: 600 },
+      { id: 'b', paneId: 'b', kind: 'thread', widthPx: 600 },
+    ]);
   });
 
-  it('registers the command', () => {
-    registerFixtureCommands(readyPane());
-    expect(getCommand('search.in-thread')).toBeDefined();
+  afterEach(() => {
+    resetPaneFindForTest();
+    resetPaneLayoutForTest();
+    resetKeybindingsStore();
+    document.body.replaceChildren();
   });
 
-  it('opens MessageSearch in thread mode scoped to the active pane', () => {
+  it('opens the focused pane\'s bar, never the message search', () => {
     const pane = readyPane();
     registerFixtureCommands(pane);
+    registerPaneFindProvider('a', providerFor());
+    registerPaneFindProvider('b', providerFor());
+    focusPane('b');
     const ctx = makeCommandContext(pane, {}) as CommandContext;
+    expect(isCommandEnabled('find.in-pane', ctx)).toBe(true);
+    expect(runCommand('find.in-pane', ctx)).toBe(true);
+    expect(getPaneFind('b')?.open).toBe(true);
+    expect(getPaneFind('a')).toBeNull();
     expect(isMessageSearchOpen()).toBe(false);
-    const ran = runCommand('search.in-thread', ctx);
-    expect(ran).toBe(true);
-    expect(isMessageSearchOpen()).toBe(true);
-    // The distinguishing behavior vs search.messages: thread mode + a pane id
-    // so the overlay knows which thread to scope SearchThreadItems to.
-    expect(getMessageSearchMode()).toBe('thread');
-    expect(getMessageSearchTargetPaneId()).toBe(pane.paneId);
   });
 
-  it('toggles closed when the same chord runs while open', () => {
+  it('is a no-op with no provider for the focused pane', () => {
     const pane = readyPane();
     registerFixtureCommands(pane);
+    registerPaneFindProvider('a', providerFor());
+    focusPane('b');
     const ctx = makeCommandContext(pane, {}) as CommandContext;
-    runCommand('search.in-thread', ctx);
-    expect(isMessageSearchOpen()).toBe(true);
-    runCommand('search.in-thread', ctx);
+    expect(ctx.flags.paneFindAvailable).toBe(false);
+    expect(runCommand('find.in-pane', ctx)).toBe(false);
+    expect(getPaneFind('b')).toBeNull();
     expect(isMessageSearchOpen()).toBe(false);
   });
 
-  it('refuses to open without an active thread and warns instead', () => {
-    registerFixtureCommands(readyPane());
-    const before = getToasts().length;
-    // A null pane yields hasActiveThread:false / paneId:null — opening an
-    // unscoped in-thread find would search nothing, so the run bails.
-    const ctx = makeCommandContext(null, {}) as CommandContext;
-    runCommand('search.in-thread', ctx);
-    expect(isMessageSearchOpen()).toBe(false);
-    const added = getToasts().slice(before);
-    expect(added.some((t) => t.type === 'warning')).toBe(true);
+  it('fires mod+f from the composer textarea and from inside the bar', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
+    registerPaneFindProvider('a', providerFor());
+    focusPane('a');
+    const section = document.createElement('section');
+    section.dataset.paneId = 'a';
+    const composer = document.createElement('textarea');
+    section.appendChild(composer);
+    document.body.appendChild(section);
+    composer.focus();
+    const press = (target: HTMLElement) => {
+      const event = new KeyboardEvent('keydown', { key: 'f', code: 'KeyF', ctrlKey: true, bubbles: true });
+      Object.defineProperty(event, 'target', { value: target });
+      const ctx = makeCommandContext(pane, {}) as CommandContext;
+      // App.svelte lets an editable target through only for these commands.
+      const reachable = new Set(['find.in-pane']);
+      return eventMatchesKeybindingCommand(event, ctx, reachable, { isMac: false })
+        && dispatchKey(event, ctx, { isMac: false });
+    };
+    expect(getCommand('find.in-pane')?.editableReachable).toBe(true);
+    expect(press(composer)).toBe(true);
+    expect(getPaneFind('a')).toMatchObject({ open: true, returnFocus: composer });
+    const request = getPaneFind('a')!.focusRequest;
+    expect(press(composer)).toBe(true);
+    expect(getPaneFind('a')!.focusRequest).toBe(request + 1);
+  });
+
+  it('seeds the query from text selected inside the pane', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    registerPaneFindProvider('a', providerFor());
+    focusPane('a');
+    const section = document.createElement('section');
+    section.dataset.paneId = 'a';
+    section.innerHTML = '<p>pick this word</p>';
+    document.body.appendChild(section);
+    const range = document.createRange();
+    const text = section.querySelector('p')!.firstChild!;
+    range.setStart(text, 5);
+    range.setEnd(text, 9);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    runCommand('find.in-pane', makeCommandContext(pane, {}) as CommandContext);
+    expect(getPaneFind('a')?.query).toBe('this');
+    window.getSelection()!.removeAllRanges();
+  });
+
+  it('closes the focused bar on Back through the dismissal ladder', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    const provider = providerFor();
+    registerPaneFindProvider('a', provider);
+    focusPane('a');
+    openPaneFind('a');
+    const ctx = makeCommandContext(pane, {}) as CommandContext;
+    expect(ctx.flags.paneFindOpen).toBe(true);
+    expect(getCommand('find.close')?.dismissesSurface).toBe(true);
+    expect(dispatchKey(createSurfaceDismissalEvent(), ctx)).toBe(true);
+    expect(getPaneFind('a')?.open).toBe(false);
+    expect(provider.clear).toHaveBeenCalled();
+    expect(dispatchKey(createSurfaceDismissalEvent(), makeCommandContext(pane, {}) as CommandContext)).toBe(false);
   });
 });
 

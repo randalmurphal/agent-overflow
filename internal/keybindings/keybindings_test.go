@@ -63,7 +63,7 @@ func TestDefaultsIncludeNewHelpSearchAndInterruptBindings(t *testing.T) {
 	want := map[string]string{
 		"help.keybindings":       "mod+shift+?",
 		"search.messages":        "mod+shift+f",
-		"search.in-thread":       "mod+f",
+		"find.in-pane":           "mod+f",
 		"thread.search":          "mod+p",
 		"provider.switchAccount": "mod+shift+u",
 		"thread.interrupt":       "esc",

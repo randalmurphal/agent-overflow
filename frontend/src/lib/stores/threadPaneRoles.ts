@@ -75,6 +75,7 @@ import type {
   LoadUntilItemResult,
   PaneErrorKind,
   PaneScrollController,
+  ScrollToItemOptions,
   ScrollToItemRequest,
 } from './threadPaneShared';
 import type {
@@ -217,7 +218,7 @@ export interface ScrollHost {
   readonly attachScrollController: (controller: PaneScrollController) => void;
   readonly detachScrollController: (controller: PaneScrollController) => void;
   readonly scrollToItemRequest: ScrollToItemRequest | null;
-  readonly requestScrollToItem: (itemID: string) => void;
+  readonly requestScrollToItem: (itemID: string, options?: ScrollToItemOptions) => void;
   /** Take-once: clears the pending request; null when none or stale. */
   readonly takeScrollToItemRequest: () => string | null;
   /** One-shot structural-append spring window; call before the mutation. */

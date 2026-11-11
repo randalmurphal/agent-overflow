@@ -18,6 +18,7 @@ import type { Thread } from '../types/models';
 import {
   threadUsesDiscussionSurface,
   type PaneScrollController,
+  type ScrollToItemOptions,
   type ScrollToItemRequest,
 } from './threadPaneShared';
 
@@ -47,7 +48,7 @@ export interface ThreadPaneScroll {
   detach(controller: PaneScrollController): void;
   /** The pending scroll-to-item request, null when none is pending. */
   readonly scrollToItemRequest: ScrollToItemRequest | null;
-  requestScrollToItem(itemID: string): void;
+  requestScrollToItem(itemID: string, options?: ScrollToItemOptions): void;
   /**
    * Clear the pending request and return its item id. Null when nothing
    * is pending or the request is stale (the pane switched, cleared or
@@ -265,11 +266,12 @@ export function createThreadPaneScroll(
      * container and lets the pane load the target's window first. A newer
      * request replaces an untaken one.
      */
-    requestScrollToItem(itemID: string): void {
+    requestScrollToItem(itemID: string, request?: ScrollToItemOptions): void {
       if (!itemID) return;
       scrollToItemRequest = {
         itemId: itemID,
         switchGeneration: options.getSwitchGeneration(),
+        mark: request?.mark === true,
       };
     },
     takeScrollToItemRequest(): string | null {

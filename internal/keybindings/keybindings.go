@@ -173,12 +173,11 @@ var Defaults = []Keybinding{
 	{Key: "alt+shift+h", Command: "pane.moveLeft", DefaultID: "pane.moveLeft.vim"},
 	{Key: "alt+shift+l", Command: "pane.moveRight", DefaultID: "pane.moveRight.vim"},
 	{Key: "mod+shift+g", Command: "diff.panel.toggle", When: "hasActiveThread && !terminalFocus", DefaultID: "diff.panel.toggle"},
-	// mod+f is in-thread "find" (search the current thread's messages), matching
-	// the editor convention where Ctrl+F finds in the current document and
-	// Ctrl+Shift+F (search.messages) finds across everything. The sidebar
-	// thread-search it replaced stays on mod+/ (sidebar.focus-search) and the
-	// command palette.
-	{Key: "mod+f", Command: "search.in-thread", When: "hasActiveThread && !terminalFocus", DefaultID: "search.in-thread"},
+	// mod+f opens the focused pane's find bar, matching the editor convention
+	// where Ctrl+F finds in the current document and Ctrl+Shift+F
+	// (search.messages) finds across everything. paneFindAvailable is false
+	// for a pane with no find provider, so the chord falls through.
+	{Key: "mod+f", Command: "find.in-pane", When: "paneFindAvailable && !terminalFocus", DefaultID: "find.in-pane"},
 	{Key: "mod+,", Command: "settings.open", DefaultID: "settings.open"},
 	// Esc closes the settings overlay. Position relative to thread.interrupt
 	// below is not load-bearing: the two `when` expressions are mutually

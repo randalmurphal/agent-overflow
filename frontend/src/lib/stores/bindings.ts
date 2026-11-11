@@ -6,6 +6,10 @@ import {
 import type { TimelineSelection, TimelineScopeContext, TimelineCursor } from '../../../bindings/agent-overflow/internal/store/models';
 import { GetThreadUserMessageTicks as GetThreadUserMessageTicksRaw } from '../../../bindings/agent-overflow/app.js';
 import { GetTimelineUserMessageTicks as GetTimelineUserMessageTicksRaw } from '../../../bindings/agent-overflow/app.js';
+import {
+  SearchThreadItems as SearchThreadItemsRaw,
+  SearchTimelineItems as SearchTimelineItemsRaw,
+} from '../../../bindings/agent-overflow/app.js';
 import { requireTimelineSelectionSupport } from './timelineSelectionSupport';
 // Re-export Wails v3 generated bindings used by components.
 //
@@ -435,7 +439,6 @@ export {
 
   // Message search
   SearchThreadMessages,
-  SearchThreadItems,
 
   // Keybindings
   GetKeybindings,
@@ -1211,6 +1214,14 @@ export function GetThreadUserMessageTicks(threadId: string, selection: TimelineS
   return selection.scopeRootId || selection.tools
     ? GetTimelineUserMessageTicksRaw(threadId, selection)
     : GetThreadUserMessageTicksRaw(threadId);
+}
+
+/** Find hits in the selected transcript of one thread, in document order. */
+export function SearchThreadItems(threadId: string, query: string, limit: number, selection: TimelineSelection = {}) {
+  requireTimelineSelectionSupport(threadId, selection);
+  return selection.scopeRootId || selection.tools || selection.digestItemId
+    ? SearchTimelineItemsRaw(threadId, query, selection, limit)
+    : SearchThreadItemsRaw(threadId, query, limit);
 }
 
 export { ListAsyncQuestions, SubmitAsyncAnswers, SetAsyncQuestionDismissed } from '../../../bindings/agent-overflow/app.js';

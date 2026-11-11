@@ -227,6 +227,20 @@ const COLOR_ENTRIES: readonly TokenEntry[] = [
     'Markdown list bullets and numbers in chat prose (the code-axis counterpart is syntax-markup-list). Follows the muted body-text tier (fg-muted).',
     true,
   ),
+  entry(
+    'colors',
+    'tokens.css',
+    'find-match',
+    'Ground painted behind every find-bar match. Translucent; follows the warning color.',
+    true,
+  ),
+  entry(
+    'colors',
+    'tokens.css',
+    'find-match-current',
+    'Ground painted behind the current find-bar match. Translucent; follows the warning color.',
+    true,
+  ),
   entry('colors', 'app.css', 'code-inline-bg', 'Ground behind inline code spans in prose.'),
   entry(
     'colors',

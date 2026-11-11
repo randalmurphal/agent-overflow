@@ -943,11 +943,15 @@
 
   // Take a pane's scroll-to-item request once the pane has installed its
   // window: a switch still loading can replace the window the jump lands
-  // in. Taken once, so a remount cannot replay it.
+  // in. Taken once, so a remount cannot replay it. A marked request lands
+  // through the explicit-jump session, which flashes the row.
   $effect(() => {
     if (!pane.scrollToItemRequest || pane.loading) return;
+    const mark = untrack(() => pane.scrollToItemRequest?.mark === true);
     const itemId = untrack(() => pane.takeScrollToItemRequest());
-    if (itemId) void restore.scrollToItem(itemId);
+    if (!itemId) return;
+    if (mark) void jump.jumpToItem(itemId);
+    else void restore.scrollToItem(itemId);
   });
 
   onDestroy(() => {

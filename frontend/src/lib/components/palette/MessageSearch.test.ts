@@ -4,7 +4,6 @@ import MessageSearch from './MessageSearch.svelte';
 import { createThreadPane, type ThreadPane } from '../../stores/thread.svelte';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { refreshThreads } from '../../stores/threads.svelte';
-import type { MessageSearchMode } from '../../stores/messageSearch.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { installAnimateShim } from '../../../test/integration/_helpers';
 import { makeItem } from '../../../test/helpers/chat';
@@ -26,23 +25,15 @@ function makePane() {
   return createThreadPane();
 }
 
-// Existing tests exercise the global cross-thread search; default the mode so
-// each call site only states what it cares about. Thread-mode tests pass
-// `mode: 'thread'` explicitly.
 function renderSearch(props: {
   open: boolean;
   pane: ThreadPane | null;
   onClose?: () => void;
-  mode?: MessageSearchMode;
 }) {
-  const { open, pane, onClose = vi.fn(), mode = 'global' } = props;
-  return render(MessageSearch, { open, pane, onClose, mode });
+  const { open, pane, onClose = vi.fn() } = props;
+  return render(MessageSearch, { open, pane, onClose });
 }
 
-// In-thread find reads only `pane.threadId` before calling SearchThreadItems.
-// Driving a real pane to a loaded thread needs switchThread's full binding
-// set; this stub provides the one field the search path touches. The shared
-// openHit/navigation path is covered by the global-mode tests above.
 function threadPaneStub(threadId: string): ThreadPane {
   return { threadId, requestScrollToItem: vi.fn() } as unknown as ThreadPane;
 }
@@ -415,61 +406,16 @@ describe('<MessageSearch> — provider rendering', () => {
   });
 });
 
-// ---- In-thread find (mode='thread') ----
+// ---- Scope ----
 
-describe('<MessageSearch> — in-thread find', () => {
-  it('titles the dialog "Find in thread" and queries SearchThreadItems scoped to the pane thread', async () => {
-    const scoped = setBindingMock('SearchThreadItems', async () => [
-      hit({ threadId: 'thr-1', itemId: 'm5', turnIndex: 5, summary: 'thirty seconds in', matchType: 'item' }),
-    ]);
-    const pane = threadPaneStub('thr-1');
-    const { getByTestId, findByTestId } = renderSearch({ open: true, pane, mode: 'thread' });
-    // Title reflects the scoped mode.
-    expect(getByTestId('message-search-input').getAttribute('aria-label')).toBe('Find in thread');
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'seconds' } });
-    await findByTestId('message-search-hit-thr-1-m5');
-    // Scoped binding, called with the pane's own thread id + result limit.
-    expect(scoped).toHaveBeenCalledTimes(1);
-    expect(scoped.mock.calls[0]).toEqual(['thr-1', 'seconds', 50]);
-  });
-
-  it('renders a thread-scoped row with a turn marker and no provider/match-type badge', async () => {
-    setBindingMock('SearchThreadItems', async () => [
-      hit({
-        threadId: 'thr-1', itemId: 'm5', turnIndex: 9,
-        summary: 'preserve seconds after one hour', matchType: 'item', provider: 'codex',
-      }),
-    ]);
-    const pane = threadPaneStub('thr-1');
-    const { getByTestId, findByTestId } = renderSearch({ open: true, pane, mode: 'thread' });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'seconds' } });
-    const row = await findByTestId('message-search-hit-thr-1-m5');
-    expect(row.textContent).toMatch(/turn 9/);
-    expect(row.textContent).toContain('preserve seconds after one hour');
-    // The global-mode codex badge ('X') and the title/turn match-type badge
-    // are both suppressed in thread mode — every hit is already in-thread.
-    expect(row.textContent).not.toMatch(/\bX\b/);
-    expect(row.textContent).not.toMatch(/\btitle\b/);
-  });
-
-  it('does not query the backend when the pane has no thread yet', async () => {
-    const scoped = setBindingMock('SearchThreadItems', async () => []);
-    const pane = makePane(); // fresh pane → threadId is null
-    const { getByTestId, findByTestId } = renderSearch({ open: true, pane, mode: 'thread' });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'seconds' } });
-    await findByTestId('message-search-empty');
-    expect(scoped).not.toHaveBeenCalled();
-  });
-
-  it('uses the global title + binding when mode is "global"', async () => {
+describe('<MessageSearch> scope', () => {
+  it('searches every thread even when the pane has a thread', async () => {
     const global = setBindingMock('SearchThreadMessages', async () => []);
     const scoped = setBindingMock('SearchThreadItems', async () => []);
-    const pane = threadPaneStub('thr-1');
-    const { getByTestId } = renderSearch({ open: true, pane, mode: 'global' });
+    const { getByTestId } = renderSearch({ open: true, pane: threadPaneStub('thr-1') });
     expect(getByTestId('message-search-input').getAttribute('aria-label')).toBe('Search messages');
     await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'seconds' } });
     await waitFor(() => expect(global).toHaveBeenCalled());
-    // Even though the pane has a thread, global mode never hits the scoped path.
     expect(scoped).not.toHaveBeenCalled();
   });
 });
@@ -481,10 +427,10 @@ function nextFrame(): Promise<void> {
 }
 
 describe('<MessageSearch> — focus', () => {
-  it.each(['global', 'thread'] as const)('opens %s search with the input focused', async (mode) => {
+  it('opens with the input focused', async () => {
     const pane = makePane();
-    const { getByTestId, rerender } = renderSearch({ open: false, pane, mode });
-    await rerender({ open: true, pane, onClose: vi.fn(), mode });
+    const { getByTestId, rerender } = renderSearch({ open: false, pane });
+    await rerender({ open: true, pane, onClose: vi.fn() });
     const input = getByTestId('message-search-input');
     await waitFor(() => expect(document.activeElement).toBe(input));
     // Still there once the open has painted: nothing claims focus a frame later.

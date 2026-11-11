@@ -57,6 +57,10 @@ export interface CommandFlags {
   anyPickerOpen: boolean;
   /** True while the settings overlay is mounted over the pane strip. */
   settingsOpen: boolean;
+  /** True while the raw focused pane has a find provider (stores/paneFind.svelte.ts). */
+  paneFindAvailable: boolean;
+  /** True while the raw focused pane's find bar is open. */
+  paneFindOpen: boolean;
   /** True while the raw focused pane is a tool pane (Pull requests, Workflows). */
   toolPaneFocused: boolean;
   /**

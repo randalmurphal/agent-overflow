@@ -1968,6 +1968,12 @@ export class ThreadMessageHit {
     "provider": string;
     "itemId": string;
     "turnIndex": number;
+
+    /**
+     * ItemIndex with TurnIndex is the item's timeline coordinate, so a
+     * reader's position orders against a hit.
+     */
+    "itemIndex": number;
     "itemKind": string;
     "itemRole": string;
 
@@ -2004,6 +2010,9 @@ export class ThreadMessageHit {
         }
         if (!("turnIndex" in $$source)) {
             this["turnIndex"] = 0;
+        }
+        if (!("itemIndex" in $$source)) {
+            this["itemIndex"] = 0;
         }
         if (!("itemKind" in $$source)) {
             this["itemKind"] = "";

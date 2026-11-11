@@ -399,6 +399,12 @@ export function withViewportBottomHeld(
 export interface ScrollToItemRequest {
   itemId: string;
   switchGeneration: number;
+  /** Flash the landing row, as an explicit jump does (find steps). */
+  mark: boolean;
+}
+
+export interface ScrollToItemOptions {
+  mark?: boolean;
 }
 
 export function loadOlderResult(

@@ -24,6 +24,7 @@ import { addErrorToast, addToast } from './toast.svelte';
 import { getActiveTurn, isSendInFlight } from './threadStatuses.svelte';
 import {
   focusAdjacentPane,
+  getFocusedPaneId,
   getFocusedThreadPaneId,
   getPane,
   moveFocusedPane,
@@ -33,6 +34,8 @@ import {
   syncThreadReply,
 } from './panes.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
+import { closePaneFind, hasPaneFindProvider, isPaneFindOpen, openPaneFind } from './paneFind.svelte';
+import { findSeedIn, isInFindBar, paneElement } from '../utils/paneFindSeed';
 import { closeFocusedPaneOrCompanion } from './companionPanes.svelte';
 import { closeFocusedBrowserTab } from './browserCompanion.svelte';
 import type { PaneLayoutItem } from './paneLayout.svelte';
@@ -744,23 +747,36 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     },
   });
 
+  // The focused layout pane's own find bar (stores/paneFind.svelte.ts). A
+  // pane kind with no provider leaves the command disabled.
   registerCommand({
-    id: 'search.in-thread',
-    label: 'Find in Thread',
-    description: 'Search the messages in the current thread.',
+    id: 'find.in-pane',
+    label: 'Find in Pane',
+    description: 'Find text in the focused pane.',
     icon: '⌕',
-    // Reachable while the composer textarea is focused, like search.messages.
+    when: 'paneFindAvailable',
+    // Reachable while the composer textarea (or the bar's own input) has focus.
     editableReachable: true,
-    run: (ctx) => {
-      if (isMessageSearchOpen()) {
-        closeMessageSearch();
-        return;
-      }
-      if (!ctx.hasActiveThread) {
-        addToast('warning', 'Open a thread to search within it.');
-        return;
-      }
-      openMessageSearch(ctx.paneId, 'thread');
+    run: () => {
+      const paneId = getFocusedPaneId();
+      if (!paneId || !hasPaneFindProvider(paneId)) return;
+      const pane = paneElement(paneId);
+      const active = typeof document === 'undefined' ? null : document.activeElement;
+      openPaneFind(paneId, {
+        seed: pane ? findSeedIn(pane) : '',
+        returnFocus: active instanceof HTMLElement && !isInFindBar(active) ? active : null,
+      });
+    },
+  });
+
+  registerCommand({
+    id: 'find.close',
+    dismissesSurface: true,
+    label: 'Find: Close',
+    when: 'paneFindOpen',
+    run: () => {
+      const paneId = getFocusedPaneId();
+      if (paneId) closePaneFind(paneId);
     },
   });
 
@@ -1204,6 +1220,8 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     // silently make Esc inert).
     settingsOpen: isSettingsOpen(),
     toolPaneFocused: focusedToolKind() !== null,
+    paneFindAvailable: hasPaneFindProvider(getFocusedPaneId()),
+    paneFindOpen: isPaneFindOpen(getFocusedPaneId()),
     toolDetailOpen: focusedToolDetailOpen(),
     workflowsPaneFocused: isWorkflowsPaneFocused(),
     pullsPaneFocused: isPullsPaneFocused(),

@@ -1703,9 +1703,23 @@ history rows or late adornments that change row geometry.
 
 ## Search
 
-Full-thread search goes through the `MessageSearch` palette and the
-`SearchThreadMessages` binding. Browser find only sees mounted virtual
-rows and is not a complete search surface.
+Cross-thread search (`search.messages`, mod+shift+f) goes through the
+`MessageSearch` dialog and the `SearchThreadMessages` binding. Browser find
+only sees mounted virtual rows and is not a complete search surface.
+
+Find inside one pane (`find.in-pane`, mod+f) is that pane's find bar, never
+the dialog. A pane body registers a provider (`stores/paneFind.svelte.ts`)
+while it is mounted; the command opens the focused layout pane's bar and is
+disabled for a pane with no provider. A pane that renders a thread timeline
+uses `stores/threadFind.svelte.ts`: `SearchThreadItems` returns the hits of
+the transcript the pane shows (main top-level rows, or an agent scope's
+direct children) in document order with their `(turnIndex, itemIndex)`. A
+new query starts at the first hit at or below the reading position recorded
+in the pane's scroll snapshot, else the last; it moves only when that row is
+off screen. Steps wrap and always move. Every move is the pane's
+scroll-to-item request with `mark`, which `MessageTimeline` lands through the
+explicit-jump session (load until item, then the landing flash). Matches in
+mounted rows paint through `utils/findHighlights.ts`.
 
 A hit goes through `navigateToThreadItem(pane, threadId, itemId)`
 (`stores/threadItemNavigation.ts`). A pane that shows another thread by then

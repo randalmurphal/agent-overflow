@@ -747,6 +747,14 @@ describe('threadTimelineWindow', () => {
       expect(pane.takeScrollToItemRequest()).toBeNull();
     });
 
+    it('carries whether the landing is marked, and a newer request decides it', () => {
+      const pane = createThreadPane();
+      pane.requestScrollToItem('a', { mark: true });
+      expect(pane.scrollToItemRequest?.mark).toBe(true);
+      pane.requestScrollToItem('b');
+      expect(pane.scrollToItemRequest?.mark).toBe(false);
+    });
+
     it.each([
       ['a switch to another thread', (pane: ThreadPane) => pane.switchThread(makeThread({ id: 'other' }))],
       ['a forced reload of the same thread', (pane: ThreadPane) => pane.switchThread(pane.thread!)],

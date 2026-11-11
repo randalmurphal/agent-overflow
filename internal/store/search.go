@@ -18,8 +18,11 @@ type ThreadMessageHit struct {
 	Provider       string `json:"provider"`
 	ItemID         string `json:"itemId"`
 	TurnIndex      int    `json:"turnIndex"`
-	ItemKind       string `json:"itemKind"`
-	ItemRole       string `json:"itemRole"`
+	// ItemIndex with TurnIndex is the item's timeline coordinate, so a
+	// reader's position orders against a hit.
+	ItemIndex int    `json:"itemIndex"`
+	ItemKind  string `json:"itemKind"`
+	ItemRole  string `json:"itemRole"`
 	// Summary is the item's stored summary field. The frontend can highlight
 	// the query within it.
 	Summary string `json:"summary"`
@@ -76,17 +79,21 @@ func (s *Store) SearchThreadMessages(query string, limit int) ([]ThreadMessageHi
 
 // SearchThreadItems returns item-summary hits within a SINGLE thread, in
 // document order (oldest turn/item first), so callers can step through matches
-// top-to-bottom like an in-document "find". It never matches thread titles —
+// top-to-bottom like an in-document "find". It never matches thread titles:
 // the caller already knows which thread it is searching.
 //
+// selection names the transcript searched, with the rows the timeline shows
+// for it: the zero value is the main transcript's visible top-level rows, a
+// scope root its agent's direct children (resolved to the canonical root as
+// timeline pages resolve it).
+//
 // Because it is scoped to one thread via the thread_id index it stays fast
-// even on a cold cache (a thread is hundreds of items, not the whole history),
-// which is why in-thread find does not need the FTS5 work the global search
-// will eventually want.
+// even on a cold cache, which is why in-thread find does not need the FTS5
+// work the global search will eventually want.
 //
 // limit caps the number of hits; zero or negative means unbounded. It
 // reads the whole thread, so it takes a history read slot.
-func (s *Store) SearchThreadItems(threadID, query string, limit int) ([]ThreadMessageHit, error) {
+func (s *Store) SearchThreadItems(threadID, query string, selection TimelineSelection, limit int) ([]ThreadMessageHit, error) {
 	if err := s.CheckForkReady(threadID); err != nil {
 		return nil, err
 	}
@@ -96,16 +103,23 @@ func (s *Store) SearchThreadItems(threadID, query string, limit int) ([]ThreadMe
 	}
 	pattern := likePattern(trimmed)
 	return historyReadSnapshot(context.Background(), s, "search thread items", func(q sqlQueryer) ([]ThreadMessageHit, error) {
+		scope, err := s.resolveTimelineScope(q, threadID, selection)
+		if err != nil {
+			return nil, err
+		}
+		filter, filterArgs := scope.filter("i.")
+		args := append([]any{threadID}, filterArgs...)
+		args = append(args, pattern)
 		rows, err := q.Query(`
 		SELECT t.id, t.title, t.provider, t.ownership_epoch,
-			i.id, i.turn_index, i.kind, i.role, i.summary
+			i.id, i.turn_index, i.item_index, i.kind, i.role, i.summary
 		FROM timeline_items i
 		JOIN owned_threads t ON t.id = i.thread_id
-		WHERE i.thread_id = ?
+		WHERE i.thread_id = ? AND `+filter+`
 			AND LOWER(i.summary) LIKE `+boundText+` ESCAPE '\'
 		ORDER BY i.turn_index ASC, i.item_index ASC
 		`+limitSuffix(limit),
-			threadID, pattern,
+			args...,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("store: search thread items: %w", err)
@@ -177,7 +191,7 @@ func searchGlobalItemHits(q sqlQueryer, pattern string, limit int) ([]ThreadMess
 	args := append([]any{pattern}, hiddenArgs...)
 	rows, err := q.Query(`
 		SELECT t.id, t.title, t.provider, t.ownership_epoch,
-			i.id, i.turn_index, i.kind, i.role, i.summary
+			i.id, i.turn_index, i.item_index, i.kind, i.role, i.summary
 		FROM timeline_items i
 		JOIN owned_threads t ON t.id = i.thread_id
 		WHERE t.fork_preparing = 0 AND LOWER(i.summary) LIKE `+boundText+` ESCAPE '\' AND `+hiddenClause+`
@@ -193,14 +207,14 @@ func searchGlobalItemHits(q sqlQueryer, pattern string, limit int) ([]ThreadMess
 }
 
 // scanItemHits scans the shared item-hit column tuple (both the global and the
-// thread-scoped item queries project these nine columns in this order).
+// thread-scoped item queries project these ten columns in this order).
 func scanItemHits(rows *sql.Rows) ([]ThreadMessageHit, error) {
 	var hits []ThreadMessageHit
 	for rows.Next() {
 		var h ThreadMessageHit
 		if err := rows.Scan(
 			&h.ThreadID, &h.ThreadTitle, &h.Provider, &h.OwnershipEpoch,
-			&h.ItemID, &h.TurnIndex, &h.ItemKind, &h.ItemRole, &h.Summary,
+			&h.ItemID, &h.TurnIndex, &h.ItemIndex, &h.ItemKind, &h.ItemRole, &h.Summary,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan item hit: %w", err)
 		}
