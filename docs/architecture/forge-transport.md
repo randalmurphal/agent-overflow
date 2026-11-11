@@ -673,7 +673,13 @@ scope or permission) is a `*ForbiddenError`, never "unauthenticated".
 | CLI present, no token for the host | `*SetupError{Kind: "unauthenticated", Host}` | Setup banner |
 | 401 after one token refresh, on a read, or on a mutation whose probe of the login's own `user` is answered 401 (one GET, sent after the mutation released its host slot; GitLab answers a merge the login may not perform with 401) | `*SetupError{Kind: "unauthenticated", Host, ExpiredAt}`: `ExpiredAt` when the token's remembered expiry (see Credentials) has passed; a remembered revocation leaves it zero and says "revoked" in `Message` | Setup banner; `git.ExplainForgeError` names the expiry date |
 | 401 after one token refresh on a mutation while the login still reads `user` | `*StatusError` (the forge refused the action) | `git.ExplainForgeError`: "FORGE did not let you ACTION NAME." |
-| 401 after one token refresh on a mutation whose `user` probe fails otherwise (rate limited, 5xx, unreachable, timeout, cancelled) | the probe's own error | Retry; never "log in again" |
+| 401 after one token refresh on a mutation whose `user` probe fails otherwise (rate limited, 5xx, unreachable, timeout, cancelled) | `*RefusalError{Refusal, Step: "probe", Err}`: the mutation's 401 and the probe's own error, which `errors.As` finds first | Retry; never "log in again"; `git.ExplainForgeError`: the action was refused, nothing changed, try again |
+| 401 on a mutation whose token re-read then fails | `*RefusalError{Refusal, Step: "credential", Err}`: the 401 and the re-read's error, found first; on a read, the re-read's error alone | `git.ExplainForgeError`: a setup error's sentence, else the token was refused and the re-read failed, check the login |
+| A mutation's 4xx whose body is cut short | the status's error, with the body that arrived; on a read, `*TransientError` | As the status |
+
+A complete refusal is a fact about the write that a later step cannot
+erase: `WriteNotApplied` reports a write the forge refused in full, or
+never received, as not applied, whatever failed after it.
 | 403 without rate-limit headers | `*ForbiddenError{Status, Scope, Message}`: `Scope` only with evidence the token lacks it, GitLab's `insufficient_scope` body or GitHub's `X-Accepted-OAuth-Scopes` beside an `X-OAuth-Scopes` granting none of them (the first accepted one); a fine-grained token's "Resource not accessible by personal access token" is a permission, no `Scope`; `Message` the body's | `git.ExplainForgeError` names the scope; else an action shows the forge's message and a read the project |
 | Rate limited (rules above), or refused for the reserve | `*RateLimitedError{Host, Pool, Until, Reserve}` | Pollers wait for `Until`; see below |
 | 404 on a PR-, job- or thread-scoped path | `*StatusError` matching `errors.Is(err, ErrNotFound)` | `ErrCIJobLogNotFound`, PR gone, log not published yet |

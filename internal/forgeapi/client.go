@@ -347,7 +347,10 @@ func (c *Client) attempt(ctx context.Context, r Request, graphQL bool, limit int
 	defer drain(resp)
 	body, readErr := readBounded(resp.Body, limit)
 	if readErr != nil {
-		if !errors.Is(readErr, ErrBodyTooLarge) {
+		// A write's 4xx is the forge refusing it whatever its body says, so
+		// a body cut short is settled by its status with what arrived.
+		refused := mutation(ex.req.Method) && resp.StatusCode >= 400 && resp.StatusCode <= 499
+		if !errors.Is(readErr, ErrBodyTooLarge) && !refused {
 			return nil, false, c.bodyError(ctx, ex.req, readErr)
 		}
 		if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
@@ -389,6 +392,9 @@ func (c *Client) settle(ctx context.Context, ex *exchange, answered *http.Reques
 			return nil, false, c.unauthenticated(result.err, used)
 		}
 		if err := c.refresh(ctx, used); err != nil {
+			if mutation(ex.req.Method) {
+				return nil, false, &RefusalError{Refusal: result.err, Step: RefusalStepCredential, Err: err}
+			}
 			return nil, false, err
 		}
 		if ex.body {
@@ -516,11 +522,11 @@ func (c *Client) contextError(ctx context.Context, cause error) error {
 }
 
 // readBounded reads at most limit bytes; a longer body returns what was
-// read with ErrBodyTooLarge.
+// read with ErrBodyTooLarge, and a failed read what arrived before it.
 func readBounded(r io.Reader, limit int64) ([]byte, error) {
 	body, err := io.ReadAll(io.LimitReader(r, limit+1))
 	if err != nil {
-		return nil, err
+		return body, err
 	}
 	if int64(len(body)) > limit {
 		return body[:limit], ErrBodyTooLarge
@@ -563,8 +569,9 @@ func mutation(method string) bool {
 // 401 is the forge refusing the action and reaches the caller as its
 // *StatusError. A probe answered 401 is a dead login. A probe that failed
 // any other way (rate limited, a 5xx, unreachable, out of time,
-// cancelled) leaves the login's state unknown and returns its own error,
-// which the caller retries.
+// cancelled) leaves the login's state unknown: the call's error is a
+// *RefusalError carrying the mutation's 401 and the probe's error, which
+// the caller retries.
 func (c *Client) settleProbe(ctx context.Context, err error) error {
 	probe, ok := err.(*probeNeeded)
 	if !ok {
@@ -577,5 +584,5 @@ func (c *Client) settleProbe(ctx context.Context, err error) error {
 	if status, ok := errors.AsType[*StatusError](probeErr); ok && status.Status == http.StatusUnauthorized {
 		return c.unauthenticated(probe.unauthorized, probe.fingerprint)
 	}
-	return probeErr
+	return &RefusalError{Refusal: probe.unauthorized, Step: RefusalStepProbe, Err: probeErr}
 }

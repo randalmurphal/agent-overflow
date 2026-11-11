@@ -68,6 +68,8 @@ type forgeGate struct {
 	// deletesGone answers every draft note delete 404 without running it,
 	// as if another publish had taken the notes.
 	deletesGone bool
+	// userFails answers the login probe (GET user) 503.
+	userFails bool
 }
 
 // lose makes the next publish lose its answer (see losing).
@@ -100,9 +102,14 @@ func (g *forgeGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		losing, g.losing = g.losing, ""
 	}
 	deletesGone := g.deletesGone && r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/draft_notes/")
+	userFails := g.userFails && r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/user")
 	g.mu.Unlock()
 	if held {
 		<-release
+	}
+	if userFails {
+		http.Error(w, `{"message":"503 Service Unavailable"}`, http.StatusServiceUnavailable)
+		return
 	}
 	if deletesGone {
 		http.Error(w, `{"message":"404 Draft Note Not Found"}`, http.StatusNotFound)
@@ -708,6 +715,51 @@ func TestSubmitPRReviewGitHubUnprocessableIsNotPosted(t *testing.T) {
 	}
 	if got := c.comment(t, false, draft.ID).Status; got != "draft" {
 		t.Fatalf("draft is %q, want draft", got)
+	}
+}
+
+// A review the forge refused with 401, again after the token refresh, is
+// not posted when the login probe then fails: the drafts stay drafts and
+// GitLab's notes are removed.
+func TestSubmitPRReviewRefused401IsNotPostedWhenTheLoginCheckFails(t *testing.T) {
+	t.Parallel()
+	for _, forge := range []string{"github", "gitlab"} {
+		t.Run(forge, func(t *testing.T) {
+			t.Parallel()
+			c := newReviewSubmitCase(t, forge)
+			draft := c.draft(t, forge == "gitlab", 3, "Guard this.")
+			if err := c.engine.SetRefusal(forgefake.Refusal{Route: publishRoute[forge], Status: http.StatusUnauthorized}); err != nil {
+				t.Fatal(err)
+			}
+			c.gate.userFails = true
+			review := c.request(forge == "gitlab", draft)
+			review.AttemptID = "attempt-401"
+			result, err := c.submit(review)
+			if err == nil || result.Unconfirmed || result.Posted {
+				t.Fatalf("submit = %+v, %v; want a not-posted error", result, err)
+			}
+			if forge == "gitlab" && !strings.Contains(err.Error(), "nothing was changed") {
+				t.Fatalf("err = %v; want it to say the publish was refused and nothing changed", err)
+			}
+			if outcome, _ := c.app.GetPRReviewSubmitOutcome(context.Background(), c.pr, "attempt-401"); outcome.State != "failed" {
+				t.Fatalf("outcome = %+v, want failed", outcome)
+			}
+			if got := c.comment(t, forge == "gitlab", draft.ID).Status; got != "draft" {
+				t.Fatalf("draft is %q, want draft", got)
+			}
+			left := 0
+			for _, inv := range c.engine.Invocations(0).Invocations {
+				switch {
+				case inv.Route == "glab api create draft note" && inv.Status < 300:
+					left++
+				case inv.Route == "glab api delete draft note" && inv.Status < 300:
+					left--
+				}
+			}
+			if left != 0 {
+				t.Fatalf("%d draft notes left pending, want them removed", left)
+			}
+		})
 	}
 }
 

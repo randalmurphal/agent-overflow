@@ -2,6 +2,7 @@ package forgeapi
 
 import (
 	"errors"
+	"fmt"
 	"net"
 )
 
@@ -28,6 +29,11 @@ func WriteNotApplied(err error) bool {
 	if _, ok := errors.AsType[*NotSentError](err); ok {
 		return true
 	}
+	// Before the status search: a failed probe's own *StatusError (a 5xx)
+	// would be found first.
+	if _, ok := errors.AsType[*RefusalError](err); ok {
+		return true
+	}
 	if status, ok := errors.AsType[*StatusError](err); ok {
 		return status.Status >= 400 && status.Status < 500
 	}
@@ -39,6 +45,35 @@ func WriteNotApplied(err error) bool {
 	}
 	return false
 }
+
+// RefusalError is a write the forge refused in full with a 401 (Refusal,
+// its *StatusError) whose recovery then failed (Err): re-reading the login
+// (RefusalStepCredential), or checking it with GET user after the
+// re-read left the 401 standing (RefusalStepProbe). The refusal is a fact
+// about the write that the recovery's failure does not change; Err is
+// what the user can act on. errors.As finds Err's types first, so the
+// recovery is classified as it was alone, and the refusal's status stays
+// readable after it.
+type RefusalError struct {
+	Refusal error
+	Step    string
+	Err     error
+}
+
+// RefusalError steps.
+const (
+	RefusalStepCredential = "credential"
+	RefusalStepProbe      = "probe"
+)
+
+func (e *RefusalError) Error() string {
+	if e.Step == RefusalStepProbe {
+		return fmt.Sprintf("checking the login failed: %v (the forge had refused the request: %v)", e.Err, e.Refusal)
+	}
+	return fmt.Sprintf("reading the login again failed: %v (the forge had refused the request: %v)", e.Err, e.Refusal)
+}
+
+func (e *RefusalError) Unwrap() []error { return []error{e.Err, e.Refusal} }
 
 // notSent marks err, a failure before the request left this process.
 func notSent(err error) error {
