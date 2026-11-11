@@ -20,7 +20,6 @@ import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
 import { reconcileThreadLiveActivity } from './threadLiveActivity';
 import { reconcileSettledFlushes } from './flushSettlement';
 import { isWorkflowOverlayLoaded, refreshWorkflowRunsSoon, resyncWorkflowEngineState } from './workflowRuns.svelte';
-import { hydratePullsAttention } from './pullsAttention.svelte';
 
 export function installComputerHydration(): () => void {
   let stopped = false;
@@ -68,7 +67,6 @@ export function installComputerHydration(): () => void {
         await preloadProviderModelsForSettings(getSettings(backend), backend);
       }
     })();
-    if (hasScope('git:operate', backend)) void hydratePullsAttention(backend);
     if (hasScope('access:admin', backend)) {
       void loadProviderAccounts(backend);
       void hydrateProviderLogins(backend);

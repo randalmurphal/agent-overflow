@@ -37,7 +37,18 @@ import { resetAppStorageForTest } from '../../stores/appStorage';
 import { installThreadSwitchMocks, makeThread } from '../../../test/helpers/chat';
 import { prependThread } from '../../stores/threads.svelte';
 import { resetBindingMocks } from '../../../test/mocks/bindings-app';
-import { encodeThreadDragPayload, PANE_REORDER_DRAG_MIME, THREAD_ROW_DRAG_MIME } from '../../utils/threadDragPayload';
+import {
+  beginThreadRowDrag,
+  beginToolPaneDrag,
+  encodeThreadDragPayload,
+  encodeToolDragPayload,
+  endThreadRowDrag,
+  endToolPaneDrag,
+  PANE_REORDER_DRAG_MIME,
+  THREAD_ROW_DRAG_MIME,
+  TOOL_PANE_DRAG_MIME,
+  toolDragPayloadForEvent,
+} from '../../utils/threadDragPayload';
 
 class QuietResizeObserver {
   observe(): void {}
@@ -213,6 +224,109 @@ describe('tool panes in the strip', () => {
     }
     expect(getPaneLayoutItems().map((item) => item.widthPx)).toEqual([640, 760]);
     expect(rendered.getByTestId('stub-tool-body')).toBe(body);
+  });
+});
+
+// A tools-row button dragged into the strip: the same slots and preview a
+// thread row gets, read from the in-flight record during dragover because the
+// DataTransfer answers nothing there.
+describe('a tool dragged from the tools row', () => {
+  beforeEach(() => {
+    vi.stubGlobal('ResizeObserver', QuietResizeObserver);
+    resetAll();
+  });
+
+  afterEach(() => {
+    cleanup();
+    endToolPaneDrag();
+    resetBindingMocks();
+    resetAll();
+    vi.unstubAllGlobals();
+  });
+
+  function toolDrag(kind: 'pulls' | 'workflows', silent: boolean): DataTransfer {
+    return {
+      types: [TOOL_PANE_DRAG_MIME],
+      dropEffect: 'none',
+      effectAllowed: 'move',
+      getData: (type: string) => (!silent && type === TOOL_PANE_DRAG_MIME ? encodeToolDragPayload({ kind }) : ''),
+      setData: () => {},
+      setDragImage: () => {},
+    } as unknown as DataTransfer;
+  }
+
+  async function drag(el: HTMLElement, type: 'dragover' | 'drop', dataTransfer: DataTransfer, clientX: number): Promise<void> {
+    const event = new Event(type, { bubbles: true, cancelable: true }) as DragEvent;
+    Object.defineProperty(event, 'dataTransfer', { value: dataTransfer });
+    Object.defineProperty(event, 'clientX', { value: clientX });
+    await fireEvent(el, event);
+  }
+
+  function preview(container: HTMLElement): HTMLElement | null {
+    return container.querySelector<HTMLElement>('[data-testid="pane-thread-drop-preview"]');
+  }
+
+  it('previews the slot during a silent dragover and places the tool there, replacing nothing', async () => {
+    setPaneLayoutItemsForTest([thread('left'), thread('right')]);
+    focusPane('left');
+    const rendered = render(PaneHost);
+    const right = section(rendered.container, 'right');
+    stubRect(right, 700, 700);
+    beginToolPaneDrag({ kind: 'pulls' });
+    await drag(right, 'dragover', toolDrag('pulls', true), 800);
+    expect(preview(rendered.container)).toHaveAttribute('data-drop-kind', 'pane-left');
+    expect(preview(rendered.container)).toHaveAttribute('data-insert-index', '1');
+    await drag(right, 'drop', toolDrag('pulls', false), 800);
+    expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['left', 'tool-pulls', 'right']);
+    expect(getFocusedPaneId()).toBe('tool-pulls');
+    expect(lastToolKind()).toBe('pulls');
+    expect(preview(rendered.container)).toBeNull();
+    // The drop cleared the record: a later silent drag has no tool.
+    const silent = { dataTransfer: { types: [TOOL_PANE_DRAG_MIME], getData: () => '' } } as unknown as DragEvent;
+    expect(toolDragPayloadForEvent(silent)).toBeNull();
+  });
+
+  it('appends at the end handle', async () => {
+    setPaneLayoutItemsForTest([thread('left'), thread('right')]);
+    const rendered = render(PaneHost);
+    beginToolPaneDrag({ kind: 'workflows' });
+    const end = rendered.getByTestId('pane-end-handle');
+    await drag(end, 'dragover', toolDrag('workflows', true), 1500);
+    expect(preview(rendered.container)).toHaveAttribute('data-drop-kind', 'end');
+    await drag(end, 'drop', toolDrag('workflows', false), 1500);
+    expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['left', 'right', 'tool-workflows']);
+  });
+
+  it('moves an open tool, with no preview over its own slot', async () => {
+    setPaneLayoutItemsForTest([pulls, thread('middle'), thread('right')]);
+    focusPane('right');
+    const rendered = render(PaneHost);
+    const middle = section(rendered.container, 'middle');
+    stubRect(middle, 700, 700);
+    beginToolPaneDrag({ kind: 'pulls' });
+    // The middle pane's left half is slot 1, right of the tool: no move.
+    await drag(middle, 'dragover', toolDrag('pulls', true), 800);
+    expect(preview(rendered.container)).toBeNull();
+    const right = section(rendered.container, 'right');
+    stubRect(right, 1400, 700);
+    await drag(right, 'dragover', toolDrag('pulls', true), 2000);
+    expect(preview(rendered.container)).toHaveAttribute('data-insert-index', '3');
+    await drag(right, 'drop', toolDrag('pulls', false), 2000);
+    expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['middle', 'right', 'tool-pulls']);
+    expect(getFocusedPaneId()).toBe('tool-pulls');
+  });
+
+  it('is never read as a thread drop', async () => {
+    setPaneLayoutItemsForTest([thread('left')]);
+    const rendered = render(PaneHost);
+    const left = section(rendered.container, 'left');
+    stubRect(left, 0, 700);
+    beginThreadRowDrag({ threadId: 'stale', title: 'Stale', projectId: 'project-1' });
+    beginToolPaneDrag({ kind: 'workflows' });
+    await drag(left, 'dragover', toolDrag('workflows', true), 600);
+    await drag(left, 'drop', toolDrag('workflows', false), 600);
+    expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['left', 'tool-workflows']);
+    endThreadRowDrag();
   });
 });
 

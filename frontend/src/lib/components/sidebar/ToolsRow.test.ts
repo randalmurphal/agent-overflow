@@ -4,8 +4,14 @@ import type { WorkItem } from '../../types/workflow';
 import ToolsRow from './ToolsRow.svelte';
 import { hydrateWorkflowAttention, resetWorkflowRunsForTest } from '../../stores/workflowRuns.svelte';
 import { resetWorkflowsOverlayForTest } from '../../stores/workflowsOverlay.svelte';
-import { resetPullsAttentionForTest, setPullsNeedsYouCount } from '../../stores/pullsAttention.svelte';
-import { HOME_BACKEND } from '../../transport/backendKey';
+import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
+import {
+  decodeToolDragPayload,
+  endToolPaneDrag,
+  threadDragPayloadForEvent,
+  toolDragPayloadForEvent,
+  TOOL_PANE_DRAG_MIME,
+} from '../../utils/threadDragPayload';
 import {
   isToolOpen,
   noteToolUsed,
@@ -35,12 +41,25 @@ function layoutIds(): string[] {
   return getPaneLayoutItems().map((entry) => entry.paneId);
 }
 
+function toolDataTransfer(): DataTransfer {
+  const values = new Map<string, string>();
+  return {
+    effectAllowed: 'none',
+    dropEffect: 'none',
+    setData: (type: string, value: string) => { values.set(type, value); },
+    getData: (type: string) => values.get(type) ?? '',
+    setDragImage: () => {},
+    get types() { return Array.from(values.keys()); },
+  } as unknown as DataTransfer;
+}
+
 function resetAll(): void {
   resetBindingMocks();
   resetAppStorageForTest();
   resetWorkflowsOverlayForTest();
   resetWorkflowRunsForTest();
-  resetPullsAttentionForTest();
+  endToolPaneDrag();
+  setCompactLayoutForTest(false);
   resetToolPanesForTest();
   resetPanesForTest();
   resetPaneLayoutForTest();
@@ -106,18 +125,45 @@ describe('ToolsRow', () => {
     expect(view.getByTestId('sidebar-tool-workflows')).toHaveAttribute('title', 'Workflows · 2 need you');
   });
 
-  it('shows the pulls count in accent, and hides it again at zero', async () => {
-    await hydrate([]);
-    setPullsNeedsYouCount(HOME_BACKEND, 1);
+  it('shows no count on Pull requests, in the badge or the hover text', async () => {
+    await hydrate([item('gate', 'needs-human', { reason: 'gate' })]);
+    noteToolUsed('workflows');
     const view = render(ToolsRow);
-    const badge = view.getByTestId('sidebar-tool-pulls-badge');
-    expect(badge).toHaveTextContent('1');
-    expect(badge.className).toContain('text-accent');
-    expect(view.getByTestId('sidebar-tool-pulls')).toHaveAttribute('title', 'Pull requests · 1 needs you');
-
-    setPullsNeedsYouCount(HOME_BACKEND, 0);
-    await Promise.resolve();
     expect(view.queryByTestId('sidebar-tool-pulls-badge')).not.toBeInTheDocument();
+    expect(view.getByTestId('sidebar-tool-pulls')).toHaveAttribute('title', 'Pull requests');
+    expect(view.getByTestId('sidebar-tool-pulls')).toHaveAttribute('aria-label', 'Pull requests');
+    expect(view.getByTestId('sidebar-tool-pulls').textContent?.trim()).toBe('');
+  });
+
+  it('drags a tool as its own payload, which no thread target reads', async () => {
+    await hydrate([]);
+    const view = render(ToolsRow);
+    const button = view.getByTestId('sidebar-tool-workflows');
+    expect(button).toHaveAttribute('draggable', 'true');
+    const dataTransfer = toolDataTransfer();
+    await fireEvent.dragStart(button, { dataTransfer });
+    expect(dataTransfer.types).toEqual([TOOL_PANE_DRAG_MIME]);
+    expect(decodeToolDragPayload(dataTransfer.getData(TOOL_PANE_DRAG_MIME))).toEqual({ kind: 'workflows' });
+    // dragover hands back nothing: the in-flight record answers until dragend.
+    const silent = { dataTransfer: { types: [TOOL_PANE_DRAG_MIME], getData: () => '' } } as unknown as DragEvent;
+    expect(toolDragPayloadForEvent(silent)).toEqual({ kind: 'workflows' });
+    expect(threadDragPayloadForEvent(silent)).toBeNull();
+    await fireEvent.dragEnd(button, { dataTransfer });
+    expect(toolDragPayloadForEvent(silent)).toBeNull();
+    // A drag opens nothing by itself.
+    expect(layoutIds()).toEqual(['main']);
+  });
+
+  it('is no drag source on compact', async () => {
+    await hydrate([]);
+    setCompactLayoutForTest(true);
+    const view = render(ToolsRow);
+    for (const id of ['sidebar-tool-pulls', 'sidebar-tool-workflows']) {
+      expect(view.getByTestId(id)).not.toHaveAttribute('draggable');
+    }
+    const dataTransfer = toolDataTransfer();
+    await fireEvent.dragStart(view.getByTestId('sidebar-tool-pulls'), { dataTransfer });
+    expect(dataTransfer.types).toEqual([]);
   });
 
   it('opens a tool in place of the focused pane on a plain click', async () => {

@@ -71,6 +71,10 @@
     ariaLabel?: string;
     class?: string;
     onclick?: (e: MouseEvent) => void;
+    /** Make the button an HTML drag source; it is never one while disabled. */
+    draggable?: boolean;
+    ondragstart?: (e: DragEvent) => void;
+    ondragend?: (e: DragEvent) => void;
     children?: Snippet;
     leading?: Snippet;
     trailing?: Snippet;
@@ -89,6 +93,9 @@
     ariaLabel,
     class: className = '',
     onclick,
+    draggable = false,
+    ondragstart,
+    ondragend,
     children,
     leading,
     trailing,
@@ -148,7 +155,10 @@
   data-autofocus={autofocus ? '' : undefined}
   data-testid={testId}
   disabled={disabled || loading}
+  draggable={draggable && !disabled && !loading ? 'true' : undefined}
   onclick={handleClick}
+  {ondragstart}
+  {ondragend}
   class={[
     'inline-flex items-center justify-center rounded-[var(--radius-control)]',
     'font-medium cursor-pointer select-none whitespace-nowrap',

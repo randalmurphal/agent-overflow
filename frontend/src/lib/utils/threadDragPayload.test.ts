@@ -5,10 +5,16 @@ import {
   canUngroupDroppedThread,
   decodeThreadDragPayload,
   encodeThreadDragPayload,
+  beginToolPaneDrag,
+  decodeToolDragPayload,
+  encodeToolDragPayload,
   endThreadRowDrag,
+  endToolPaneDrag,
   projectedPaneDropWidth,
   threadDragPayloadForEvent,
+  toolDragPayloadForEvent,
   THREAD_ROW_DRAG_MIME,
+  TOOL_PANE_DRAG_MIME,
 } from './threadDragPayload';
 
 describe('pane thread drop helpers', () => {
@@ -220,5 +226,48 @@ describe('group drop predicates', () => {
     expect(canUngroupDroppedThread(inG1, 'p1')).toBe(true);
     expect(canUngroupDroppedThread(inG1, 'p2')).toBe(false);
     expect(canUngroupDroppedThread(loose, 'p1')).toBe(false);
+  });
+});
+
+// A tool button drags its kind under its own type, so a thread target never
+// reads it as a thread and a pane drop never reads a thread as a tool.
+describe('tool drag payloads', () => {
+  afterEach(() => {
+    endToolPaneDrag();
+    endThreadRowDrag();
+  });
+
+  function evt(types: string[], data: Record<string, string>): DragEvent {
+    return {
+      dataTransfer: { types, getData: (type: string) => data[type] ?? '' },
+    } as unknown as DragEvent;
+  }
+
+  it('round-trips a tool kind and refuses anything else', () => {
+    expect(decodeToolDragPayload(encodeToolDragPayload({ kind: 'workflows' }))).toEqual({ kind: 'workflows' });
+    expect(decodeToolDragPayload(encodeToolDragPayload({ kind: 'pulls' }))).toEqual({ kind: 'pulls' });
+    expect(decodeToolDragPayload('{"kind":"thread"}')).toBeNull();
+    expect(decodeToolDragPayload('{}')).toBeNull();
+    expect(decodeToolDragPayload('null')).toBeNull();
+    expect(decodeToolDragPayload('not json')).toBeNull();
+  });
+
+  it('reads the DataTransfer when it answers and the in-flight record when it does not', () => {
+    beginToolPaneDrag({ kind: 'pulls' });
+    expect(toolDragPayloadForEvent(evt([TOOL_PANE_DRAG_MIME], { [TOOL_PANE_DRAG_MIME]: encodeToolDragPayload({ kind: 'workflows' }) }))).toEqual({ kind: 'workflows' });
+    expect(toolDragPayloadForEvent(evt([TOOL_PANE_DRAG_MIME], {}))).toEqual({ kind: 'pulls' });
+    endToolPaneDrag();
+    expect(toolDragPayloadForEvent(evt([TOOL_PANE_DRAG_MIME], {}))).toBeNull();
+  });
+
+  it('is never a thread, and a thread is never a tool', () => {
+    beginToolPaneDrag({ kind: 'pulls' });
+    beginThreadRowDrag({ threadId: 'stale', title: 'Stale', projectId: 'p1' });
+    const tool = evt([TOOL_PANE_DRAG_MIME], { [TOOL_PANE_DRAG_MIME]: encodeToolDragPayload({ kind: 'pulls' }) });
+    expect(threadDragPayloadForEvent(tool)).toBeNull();
+    const thread = evt([THREAD_ROW_DRAG_MIME], { [THREAD_ROW_DRAG_MIME]: encodeThreadDragPayload({ threadId: 't', title: 'T', projectId: 'p1' }) });
+    expect(toolDragPayloadForEvent(thread)).toBeNull();
+    expect(toolDragPayloadForEvent(evt(['Files'], {}))).toBeNull();
+    expect(TOOL_PANE_DRAG_MIME).not.toBe(THREAD_ROW_DRAG_MIME);
   });
 });

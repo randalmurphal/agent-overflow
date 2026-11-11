@@ -144,7 +144,7 @@ type appPRUpdateState struct {
 	// listGen counts the writers of the PR list's stored copy started (each
 	// list pump and the boot prefetch), under mu: the latest owns the copy
 	// (commitPRListStore). listStore serializes that copy's writes and
-	// prunes with the badge each emits. listStoreHook, for tests, runs at
+	// prunes with their ownership checks. listStoreHook, for tests, runs at
 	// each change's stages: "enter" before listStore is taken, "owned"
 	// once the writer is found to own the copy.
 	listGen       uint64

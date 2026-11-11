@@ -110,33 +110,24 @@ func prListRow(repo gitops.RepoReference, number int, mutate func(*gitops.PRList
 	return row
 }
 
-// prListEvents are the list's frames a test captured: pulls:updated
-// snapshots and pulls:badge counts.
+// prListEvents are the list's pulls:updated snapshots a test captured.
 type prListEvents struct {
 	updates chan PRListSnapshot
-	badges  chan int
 }
 
 func capturePRList(t *testing.T, app *App) prListEvents {
 	t.Helper()
-	events := prListEvents{updates: make(chan PRListSnapshot, 64), badges: make(chan int, 64)}
+	events := prListEvents{updates: make(chan PRListSnapshot, 64)}
 	app.testEmitHook = func(name string, data any) {
-		switch name {
-		case "pulls:updated":
-			snapshot, ok := data.(PRListSnapshot)
-			if !ok {
-				t.Errorf("pulls:updated payload type = %T", data)
-				return
-			}
-			events.updates <- snapshot
-		case "pulls:badge":
-			badge, ok := data.(PRListBadge)
-			if !ok {
-				t.Errorf("pulls:badge payload type = %T", data)
-				return
-			}
-			events.badges <- badge.NeedsYou
+		if name != "pulls:updated" {
+			return
 		}
+		snapshot, ok := data.(PRListSnapshot)
+		if !ok {
+			t.Errorf("pulls:updated payload type = %T", data)
+			return
+		}
+		events.updates <- snapshot
 	}
 	return events
 }
@@ -295,8 +286,8 @@ func TestPRListSubscribeAnswersFromTheStoreBeforeAnyForgeCall(t *testing.T) {
 	if !snapshot.Stale || snapshot.Seq == 0 || len(a.Rows) != 1 || a.Rows[0].Ref.Number != 1 || a.Rows[0].State != PRStateYourTurn || a.ReadAt == "" || a.Name != "Widgets" {
 		t.Fatalf("stored answer = %+v", snapshot)
 	}
-	if snapshot.NeedsYou != 1 || len(prListProject(t, snapshot, "p-b").Rows) != 0 {
-		t.Fatalf("stored answer needs-you %d, project B %+v", snapshot.NeedsYou, prListProject(t, snapshot, "p-b"))
+	if len(prListProject(t, snapshot, "p-b").Rows) != 0 {
+		t.Fatalf("stored answer project B %+v", prListProject(t, snapshot, "p-b"))
 	}
 	// The pump's reads are under way and held: the answer did not wait.
 	for range 2 {
@@ -351,14 +342,6 @@ func TestPRListTickPublishesEachProjectAsItLands(t *testing.T) {
 	if !first.Stale || len(prListProject(t, first, "p-b").Rows) != 0 || prListProject(t, first, "p-a").ReadAt == "" {
 		t.Fatalf("frame before B landed = %+v", first)
 	}
-	select {
-	case badge := <-events.badges:
-		if badge != 1 {
-			t.Fatalf("badge after A's write = %d, want 1", badge)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("no pulls:badge after A's read was stored")
-	}
 	if keys := storedPRListKeys(t, app); !slices.Equal(keys, []string{prListRepoA.Key()}) {
 		t.Fatalf("stored before B landed = %v", keys)
 	}
@@ -401,9 +384,6 @@ func TestPRListSubscribeReadsEachRepositoryOnceAndJoinersShareIt(t *testing.T) {
 			t.Errorf("the subscribe's read admission = %v, want interactive", f.interactive[prListRepoA.Key()])
 		}
 	})
-	if snapshot.NeedsYou != 2 {
-		t.Fatalf("needs you = %d, want 2", snapshot.NeedsYou)
-	}
 	var order []string
 	for _, row := range prListProject(t, snapshot, "p-a").Rows {
 		order = append(order, fmt.Sprintf("%d:%s", row.Ref.Number, row.State))
@@ -714,36 +694,10 @@ func TestPRListReportsAProjectWhoseOriginFailed(t *testing.T) {
 	}
 }
 
-// The badge before the page opens counts the stored copy's needs-you
-// rows for the current projects, each PR once, with no forge call; a
-// repository no project names does not count.
-func TestGetPRListNeedsYouAnswersFromTheStore(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	app.prUpdates.interval = time.Hour
-	fake := newPRListFake(t, app)
-	fake.set(func(f *prListFake) {
-		f.projects = append(f.projects, ForgeProject{ProjectID: "p-a2", Name: "Clone", Path: "/w2", Repo: prListRepoA})
-		f.listGate = func(context.Context, gitops.RepoReference) { t.Error("GetPRListNeedsYou read the forge") }
-	})
-	mine := func(r *gitops.PRListRow) { r.ViewerIsAuthor, r.MergeStatus = true, "clean" }
-	storePRList(t, app, "p-a", prListRepoA, []gitops.PRListRow{prListRow(prListRepoA, 1, mine), prListRow(prListRepoA, 2, nil)}, time.Hour)
-	gone := gitops.RepoReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "gone"}
-	storePRList(t, app, "p-gone", gone, []gitops.PRListRow{prListRow(gone, 3, mine)}, time.Hour)
-	got, err := app.GetPRListNeedsYou(context.Background())
-	if err != nil || got != 1 {
-		t.Fatalf("GetPRListNeedsYou = %d, %v; want 1", got, err)
-	}
-	if prListPumpLive(app) {
-		t.Fatal("GetPRListNeedsYou started a pump")
-	}
-}
-
 // The boot prefetch reads every project with background admission,
-// stores each read, emits pulls:badge after each store write (the prune
-// of a repository no project names included) and holds nothing; it reads
-// nothing while the stored copy is younger than the interval or a pump
-// runs.
+// stores each read, prunes the repository no project names and holds
+// nothing; it reads nothing while the stored copy is younger than the
+// interval or a pump runs.
 func TestPRListPrefetchWritesTheStoreAndSkipsWhenFresh(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -755,7 +709,6 @@ func TestPRListPrefetchWritesTheStoreAndSkipsWhenFresh(t *testing.T) {
 	})
 	gone := gitops.RepoReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "gone"}
 	storePRList(t, app, "p-gone", gone, nil, 2*time.Hour)
-	events := capturePRList(t, app)
 	stored, err := app.prefetchPRList(context.Background())
 	if err != nil || stored != 2 {
 		t.Fatalf("prefetch = %d, %v", stored, err)
@@ -768,18 +721,6 @@ func TestPRListPrefetchWritesTheStoreAndSkipsWhenFresh(t *testing.T) {
 			t.Errorf("prefetch admission = %v, want background", f.interactive[prListRepoA.Key()])
 		}
 	})
-	var badges []int
-	for len(badges) < 3 {
-		select {
-		case badge := <-events.badges:
-			badges = append(badges, badge)
-		case <-time.After(3 * time.Second):
-			t.Fatalf("badges = %v, want the prune's and one per stored read", badges)
-		}
-	}
-	if badges[0] != 0 || badges[2] != 1 {
-		t.Fatalf("badges = %v, want the last to count the review asked of the user", badges)
-	}
 	if prListPumpLive(app) || app.prUpdates.list != nil {
 		t.Fatal("the prefetch left a pump")
 	}
@@ -819,22 +760,6 @@ func TestUnsubscribePRListUnbindsItsConnectionTie(t *testing.T) {
 		},
 	})
 	app.prUpdates.wg.Wait()
-}
-
-// awaitBadge waits for a pulls:badge of want, skipping others.
-func awaitBadge(t *testing.T, events prListEvents, want int) {
-	t.Helper()
-	deadline := time.After(3 * time.Second)
-	for {
-		select {
-		case got := <-events.badges:
-			if got == want {
-				return
-			}
-		case <-deadline:
-			t.Fatalf("no pulls:badge of %d", want)
-		}
-	}
 }
 
 // A prefetch whose read is still in flight when a pump starts loses the
@@ -900,59 +825,9 @@ func TestPRListPrefetchLosesTheStoredCopyToAPumpThatStarted(t *testing.T) {
 	}
 }
 
-// The last subscriber leaving while a read is being stored ends the pump,
-// but the badge still counts what the store committed, not the stopped
-// pump's empty frame.
-func TestPRListBadgeCountsTheCommittedCopyWhenThePumpStopsMidWrite(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	app.prUpdates.interval = time.Hour
-	fake := newPRListFake(t, app)
-	fake.set(func(f *prListFake) {
-		f.projects = f.projects[:1]
-		f.rows[prListRepoA.Key()] = []gitops.PRListRow{prListRow(prListRepoA, 1, func(r *gitops.PRListRow) { r.ViewerReviewState = "unreviewed" })}
-	})
-	// The tick's first change is its prune; its second the read's write,
-	// already found to own the copy when the subscriber leaves.
-	ids := make(chan string, 1)
-	changes := 0
-	app.prUpdates.listStoreHook = func(stage string) {
-		if stage != "owned" {
-			return
-		}
-		if changes++; changes == 2 {
-			app.unsubscribePRList(<-ids)
-		}
-	}
-	events := capturePRList(t, app)
-	sub, err := app.SubscribePRList(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	ids <- sub.ID
-	select {
-	case got := <-events.badges:
-		if got != 1 {
-			t.Fatalf("badge after the write = %d, want the stored copy's 1", got)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("no pulls:badge after the write")
-	}
-	app.prUpdates.wg.Wait()
-	if prListPumpLive(app) {
-		t.Fatal("the pump survived its last subscriber")
-	}
-	select {
-	case got := <-events.badges:
-		t.Fatalf("a second badge %d after the pump stopped", got)
-	default:
-	}
-}
-
-// Removing a project's repository deletes its stored rows and emits the
-// badge from what is left, even when every remaining read fails: another
-// client's badge goes to 0.
-func TestPRListPruneEmitsTheBadgeEvenWhenEveryReadFails(t *testing.T) {
+// Removing a project's repository deletes its stored rows, even when
+// every remaining read fails.
+func TestPRListPruneDeletesARemovedRepositoryEvenWhenEveryReadFails(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.prUpdates.interval = time.Hour
@@ -963,12 +838,16 @@ func TestPRListPruneEmitsTheBadgeEvenWhenEveryReadFails(t *testing.T) {
 	})
 	events := capturePRList(t, app)
 	sub := subscribePRList(t, app)
-	awaitBadge(t, events, 1)
+	awaitPRList(t, events, "project A's read", func(s PRListSnapshot) bool {
+		return len(prListProject(t, s, "p-a").Rows) == 1
+	})
+	if keys := storedPRListKeys(t, app); !slices.Equal(keys, []string{prListRepoA.Key()}) {
+		t.Fatalf("stored before the removal = %v", keys)
+	}
 	fake.set(func(f *prListFake) { f.projects = f.projects[1:] })
 	if err := app.RefreshPRList(context.Background(), sub.ID); err != nil {
 		t.Fatal(err)
 	}
-	awaitBadge(t, events, 0)
 	if keys := storedPRListKeys(t, app); len(keys) != 0 {
 		t.Fatalf("stored = %v, want the removed repository's rows deleted", keys)
 	}

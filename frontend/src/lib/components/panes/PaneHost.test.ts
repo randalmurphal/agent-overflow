@@ -47,6 +47,7 @@ import { makeSettings } from '../../../test/helpers/settings';
 import { getCompactScreen, setCompactLayoutForTest, showCompactList } from '../../stores/layoutMode.svelte';
 import {
   beginThreadRowDrag,
+  endThreadRowDrag,
   encodeThreadDragPayload,
   PANE_REORDER_DRAG_MIME,
   THREAD_ROW_DRAG_MIME,
@@ -1195,6 +1196,27 @@ describe('PaneHost', () => {
     const preview = rendered.getByTestId('pane-thread-drop-preview');
     expect(preview).toHaveAttribute('data-drop-kind', 'end');
     expect(preview).toHaveAttribute('data-insert-index', '1');
+  });
+
+  it('previews a thread during a dragover whose DataTransfer answers nothing, from the row\'s record', async () => {
+    const dragged = makeThread({ id: 'drag-silent', title: 'Silent' });
+    prependThread(dragged);
+    registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
+    setPaneLayoutItemsForTest([{ id: 'left-item', paneId: 'left', kind: 'thread', widthPx: 900 }]);
+    const rendered = render(PaneHost);
+    const silent = {
+      types: [THREAD_ROW_DRAG_MIME],
+      dropEffect: 'none',
+      effectAllowed: 'copyMove',
+      getData: () => '',
+    } as unknown as DataTransfer;
+    beginThreadRowDrag({ threadId: dragged.id, title: dragged.title, projectId: dragged.projectId ?? '' });
+    try {
+      await dispatchDrag(rendered.getByTestId('pane-end-handle'), 'dragover', silent, 950);
+      expect(rendered.getByTestId('pane-thread-drop-preview')).toHaveAttribute('data-drop-kind', 'end');
+    } finally {
+      endThreadRowDrag();
+    }
   });
 
   it('drop on the empty state creates the first pane', async () => {

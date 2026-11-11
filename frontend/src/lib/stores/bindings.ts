@@ -571,7 +571,6 @@ export {
   SetPRListActive,
   RefreshPRList,
   UnsubscribePRList,
-  GetPRListNeedsYou,
   ListThreadsOnPR,
   OpenPRThread,
   ListPRDiffReviewComments,
