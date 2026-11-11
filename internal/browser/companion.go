@@ -510,6 +510,9 @@ func (m *Manager) syncPanePresentation(threadID string) {
 	m.mu.Lock()
 	st := m.presenting[threadID]
 	if st == nil {
+		if m.presenting == nil {
+			m.presenting = make(map[string]*presentSync)
+		}
 		st = &presentSync{}
 		m.presenting[threadID] = st
 	}
