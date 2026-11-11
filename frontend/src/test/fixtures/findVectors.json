@@ -2,10 +2,16 @@
   "fold": [
     ["ABC xyz", "abc xyz"],
     ["Run make TEST_1", "run make test_1"],
-    ["ÀÉÎ", "ÀÉÎ"],
-    ["İx", "İx"],
-    ["ΣΑΣ", "ΣΑΣ"],
-    ["STRAẞE", "straẞe"],
+    ["École", "école"],
+    ["ÉCOLE", "école"],
+    ["ÀÉÎ", "àéî"],
+    ["İstanbul", "istanbul"],
+    ["ΣΊΣΥΦΟΣ", "σίσυφοσ"],
+    ["Straße STRAẞE", "straße straße"],
+    ["Kelvin", "kelvin"],
+    ["𐐀𐐁", "𐐨𐐩"],
+    ["𞤀", "𞤢"],
+    ["É", "é"],
     ["a😀B", "a😀b"],
     ["[@`{]", "[@`{]"]
   ],
@@ -13,11 +19,23 @@
     { "text": "a.b axb A.B", "query": "a.b", "count": 2 },
     { "text": "aaaa", "query": "aa", "count": 2 },
     { "text": "aaa", "query": "  AA  ", "count": 1 },
-    { "text": "École école", "query": "école", "count": 1 },
-    { "text": "İstanbul istanbul", "query": "ISTANBUL", "count": 1 },
+    { "text": "École école", "query": "école", "count": 2 },
+    { "text": "École école", "query": "ÉCOLE", "count": 2 },
+    { "text": "İstanbul istanbul", "query": "ISTANBUL", "count": 2 },
+    { "text": "ΣΊΣΥΦΟΣ σίσυφος", "query": "ΣΊΣΥΦΟΣ", "count": 1 },
     { "text": "Straße STRASSE", "query": "strasse", "count": 1 },
+    { "text": "Straße STRAẞE", "query": "STRAẞE", "count": 2 },
+    { "text": "Kelvin KELVIN", "query": "kelvin", "count": 2 },
+    { "text": "𐐀𐐁 𐐨𐐩", "query": "𐐨𐐩", "count": 2 },
+    { "text": "Café café", "query": "CAFÉ", "count": 1 },
     { "text": "😀😀😀", "query": "😀", "count": 3 },
     { "text": "50% done_", "query": "% DONE_", "count": 1 },
     { "text": "abc", "query": "   ", "count": 0 }
+  ],
+  "offsets": [
+    { "text": "x École ÉCOLE", "query": "école", "at": [2, 8] },
+    { "text": "İİ i", "query": "i", "at": [0, 1, 3] },
+    { "text": "😀K😀k", "query": "k", "at": [1, 3] },
+    { "text": "𐐀a𐐨A", "query": "𐐨a", "at": [0, 2] }
   ]
 }

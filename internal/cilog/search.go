@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode/utf8"
+
+	"agent-overflow/internal/stringsx"
 )
 
 // SearchHit is a line of a log holding Count matches of a search.
@@ -39,12 +41,12 @@ var hiddenEscapes = regexp.MustCompile(`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b_[
 
 // Search counts the matches of query in key's published log as the log
 // view shows each line: its first lineMax bytes, without the escapes the
-// view hides. The rule is the find bar's (utils/findMatch.ts): the query
-// trimmed, matched literally with ASCII case folded, matches counted left
-// to right without overlap. The search stops at limit matches and when
+// view hides. The rule is the find bar's (stringsx.FoldForFind): the query
+// trimmed, matched literally with each code point folded to its simple
+// lower case, matches counted left to right without overlap. The search stops at limit matches and when
 // ctx ends; it holds one line at a time.
 func (s *Store) Search(ctx context.Context, key Key, query string, limit, lineMax int) (Search, error) {
-	needle := FoldForFind(strings.TrimSpace(query))
+	needle := stringsx.FoldForFind(strings.TrimSpace(query))
 	if needle == "" || limit <= 0 || lineMax <= 0 {
 		return Search{}, fmt.Errorf("search CI log: empty query or bound")
 	}
@@ -81,7 +83,7 @@ func (s *Store) Search(ctx context.Context, key Key, query string, limit, lineMa
 			// The view receives each invalid byte as U+FFFD (encoding/json).
 			shown = string([]rune(shown))
 		}
-		count := strings.Count(FoldForFind(shown), needle)
+		count := strings.Count(stringsx.FoldForFind(shown), needle)
 		if count == 0 {
 			continue
 		}
@@ -122,23 +124,4 @@ func readShownLine(br *bufio.Reader, dst []byte, lineMax int) ([]byte, error) {
 		dst = trimPartialRune(dst)
 	}
 	return dst, nil
-}
-
-// FoldForFind folds text for find matching by the frontend's rule
-// (utils/findMatch.ts foldFindText): ASCII letters to lower case, every
-// other byte as it is. The vectors in
-// frontend/src/test/fixtures/findVectors.json hold both sides to it.
-func FoldForFind(text string) string {
-	for i := 0; i < len(text); i++ {
-		if c := text[i]; c >= 'A' && c <= 'Z' {
-			b := []byte(text)
-			for j := i; j < len(b); j++ {
-				if b[j] >= 'A' && b[j] <= 'Z' {
-					b[j] += 'a' - 'A'
-				}
-			}
-			return string(b)
-		}
-	}
-	return text
 }

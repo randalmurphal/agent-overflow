@@ -279,7 +279,8 @@ polling.
   Text the patch budget evicted is read back through `whenResident`. A CI
   log is searched by `SearchPRCILog` (`cilog.Store.Search`, bounded and
   cancellable). Matching is `utils/findMatch.ts` everywhere (trimmed
-  literal, ASCII case folding); `cilog.FoldForFind` folds the same, held by
+  literal, each code point folded to its simple lower case);
+  `stringsx.FoldForFind` folds the same for the CI log and thread find, held by
   shared vectors. A step expands what hides its match (a collapsed file, a
   resolved thread, a conflict fold, a closed log step). A content, filter
   or view change, or a `<details>` in a comment opened or closed by hand,

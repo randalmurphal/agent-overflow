@@ -32,8 +32,9 @@ func TestSearchCountsMatchesAsTheViewShowsLines(t *testing.T) {
 	if !slices.Equal(got.Hits, want) || got.Matches != 5 || got.Capped || got.TotalLines != len(lines) {
 		t.Fatalf("search = %+v, want hits %v", got, want)
 	}
+	// Each code point folds: É matches é.
 	got, err = s.Search(t.Context(), key, "NEEDLÉ", 100, 1<<16)
-	if err != nil || !slices.Equal(got.Hits, []SearchHit{{Line: 5, Count: 1}}) {
+	if err != nil || !slices.Equal(got.Hits, []SearchHit{{Line: 5, Count: 2}}) {
 		t.Fatalf("non-ASCII search = %+v, %v", got, err)
 	}
 }
@@ -81,7 +82,6 @@ func TestFindRuleMatchesTheSharedVectors(t *testing.T) {
 		t.Fatal(err)
 	}
 	var vectors struct {
-		Fold  [][2]string `json:"fold"`
 		Count []struct {
 			Text  string `json:"text"`
 			Query string `json:"query"`
@@ -91,13 +91,8 @@ func TestFindRuleMatchesTheSharedVectors(t *testing.T) {
 	if err := json.Unmarshal(raw, &vectors); err != nil {
 		t.Fatal(err)
 	}
-	if len(vectors.Fold) == 0 || len(vectors.Count) == 0 {
+	if len(vectors.Count) == 0 {
 		t.Fatal("no vectors")
-	}
-	for _, v := range vectors.Fold {
-		if got := FoldForFind(v[0]); got != v[1] {
-			t.Errorf("FoldForFind(%q) = %q, want %q", v[0], got, v[1])
-		}
 	}
 	s, _, _ := newTestStore(t, CacheBytes)
 	for i, v := range vectors.Count {

@@ -2,8 +2,11 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -202,6 +205,58 @@ func TestSearchThreadMessages_TitleMatchesSortedBeforeItemMatches(t *testing.T) 
 }
 
 // ---- Case-insensitivity ----
+
+// Thread find matches by the rule the find bar paints with: the shared
+// vectors (frontend/src/test/fixtures/findVectors.json, read by
+// findMatch.test.ts and stringsx) find a summary and a title exactly when
+// they count a match.
+func TestSearchMatchesTheSharedFindVectors(t *testing.T) {
+	raw, err := os.ReadFile("../../frontend/src/test/fixtures/findVectors.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vectors struct {
+		Count []struct {
+			Text  string `json:"text"`
+			Query string `json:"query"`
+			Count int    `json:"count"`
+		} `json:"count"`
+	}
+	if err := json.Unmarshal(raw, &vectors); err != nil || len(vectors.Count) == 0 {
+		t.Fatalf("vectors: %v", err)
+	}
+	s := newTestStore(t)
+	for i, v := range vectors.Count {
+		if strings.TrimSpace(v.Query) == "" {
+			continue
+		}
+		id := fmt.Sprintf("v%d", i)
+		mustCreateThreadForSearch(t, s, id, v.Text)
+		mustInsertItemForSearch(t, s, id, id+"-item", 0, v.Text, 100)
+		items, err := s.SearchThreadItems(context.Background(), id, v.Query, TimelineSelection{}, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := len(items) > 0; got != (v.Count > 0) {
+			t.Errorf("thread find of %q in %q found %v, want %v", v.Query, v.Text, got, v.Count > 0)
+		}
+		hits, err := s.SearchThreadMessages(v.Query, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		title, item := false, false
+		for _, h := range hits {
+			if h.ThreadID != id {
+				continue
+			}
+			title = title || h.MatchType == "title"
+			item = item || h.MatchType == "item"
+		}
+		if title != (v.Count > 0) || item != (v.Count > 0) {
+			t.Errorf("global search of %q in %q: title %v item %v, want %v", v.Query, v.Text, title, item, v.Count > 0)
+		}
+	}
+}
 
 func TestSearchThreadMessages_CaseInsensitiveMatch(t *testing.T) {
 	s := newTestStore(t)
@@ -551,9 +606,8 @@ func TestSearchThreadItems_ItemIndexBreaksTurnTies(t *testing.T) {
 	}
 }
 
-// SearchThreadItems shares likePattern/escapeLike with the global search, but
-// its i.summary path had no direct literal-wildcard test. A literal % in the
-// query must match a literal % in a summary, not act as a wildcard.
+// A literal % in the query matches a literal % in a summary, never a
+// wildcard.
 func TestSearchThreadItems_LiteralPercentInSummary(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThreadForSearch(t, s, "t1", "x")

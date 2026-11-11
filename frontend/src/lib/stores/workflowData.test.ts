@@ -214,7 +214,7 @@ describe('home groups and the list find needle', () => {
   const runs = [
     item('r1', 'needs-human', 1, { projectId: 'p1', goal: 'Port the queue', workflowId: 'port', reason: 'gate' }),
     item('r2', 'running', 2, { projectId: 'p1', goal: '', workflowId: 'nightly-audit', startedAt: 2 }),
-    item('r3', 'done', 3, { projectId: 'p2', goal: 'Trim retention', workflowId: 'port', disposition: MERGED }),
+    item('r3', 'done', 3, { projectId: 'p2', goal: 'Trim Rétention', workflowId: 'port', disposition: MERGED }),
     item('r4', 'failed', 4, { projectId: 'p2', goal: 'Rework header', workflowId: 'fix' }),
   ];
   const definitions: Record<string, WorkflowDefinitionListing[]> = {
@@ -249,6 +249,8 @@ describe('home groups and the list find needle', () => {
     expect(ids('failed')).toEqual([['p2', ['r4'], []]]);
     expect(ids('running')).toEqual([['p1', ['r2'], []]]);
     expect(ids('gadgets')).toEqual([['p2', ['r4', 'r3'], []]]);
+    // Every code point folds, not only ASCII.
+    expect(ids('RÉTENTION')).toEqual([['p2', ['r3'], []]]);
   });
 
   it('matches a definition on its name, id, chain and automations', () => {

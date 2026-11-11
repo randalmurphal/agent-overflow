@@ -1,17 +1,29 @@
 // The match rule of every find and row filter: the query trimmed, matched
-// literally as a substring, with ASCII letters folded to lower case and
-// every other character compared as is; matches are counted left to right
-// without overlap. Folding keeps the text's length, so an offset in folded
-// text is an offset in the original (findHighlights.ts paints from it), and
-// text folds the same whole or node by node. Thread find's SQLite LOWER and
-// the CI log search (cilog.FoldForFind) fold the same; the vectors in
-// src/test/fixtures/findVectors.json, read by both tests, hold them to it.
+// literally as a substring, with each code point folded on its own to its
+// simple lower case and matches counted left to right without overlap.
+// Folding keeps every code point and its UTF-16 length, so an offset in
+// folded text is an offset in the original (findHighlights.ts paints from
+// it), and text folds the same whole or node by node. Thread find's SQL
+// (store find_fold) and the CI log search fold with the Go side of the
+// rule (stringsx.FoldForFind); the vectors in
+// src/test/fixtures/findVectors.json, read by both sides' tests, hold them
+// to it.
 
-const ASCII_UPPER = /[A-Z]/g;
+// What may fold: ASCII capitals and every non-ASCII code point.
+const FOLDABLE = /[A-Z]|[^\0-\x7f]/gu;
+
+// A code point's simple lower case: the first code point of its full lower
+// case (U+0130 to i, a lone capital sigma to small sigma), kept as it is
+// when that would change its UTF-16 length (no Unicode mapping does).
+function foldCodePoint(char: string): string {
+  if (char.length === 1 && char <= 'Z') return String.fromCharCode(char.charCodeAt(0) + 32);
+  const lower = String.fromCodePoint(char.toLowerCase().codePointAt(0)!);
+  return lower.length === char.length ? lower : char;
+}
 
 /** `text` folded for matching; the same length as `text`. */
 export function foldFindText(text: string): string {
-  return text.replace(ASCII_UPPER, (char) => String.fromCharCode(char.charCodeAt(0) + 32));
+  return text.replace(FOLDABLE, foldCodePoint);
 }
 
 /** The folded needle for a query; '' when the query is blank. */

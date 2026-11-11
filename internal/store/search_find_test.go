@@ -117,7 +117,7 @@ func TestSearchThreadItems_WalksTheTimelineArms(t *testing.T) {
 	s := newTestStore(t)
 	seedTimelineParityThread(t, s)
 	for _, selection := range []TimelineSelection{{}, {ScopeRootID: "root"}} {
-		sel := threadFindSelection(timelineScope{selection: selection}, likePattern("needle"), 50)
+		sel := threadFindSelection(timelineScope{selection: selection}, findPattern("needle"), 50)
 		query, args := mustTimelineIDSelection(t, s, timelineParityThreadID, sel)
 		assertLocalArmWalksAnIndex(t, s, fmt.Sprintf("thread find %+v", selection), query, args...)
 	}
