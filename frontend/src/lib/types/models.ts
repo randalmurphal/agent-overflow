@@ -739,6 +739,16 @@ export interface SubmitPRReviewResult {
    * edited since, which stay drafts (pr-review-drafts.v1). */
   sentDraftIds?: string[];
   editedDraftIds?: string[];
+  /** A draft submit's own fact that the forge took a review from it. */
+  posted?: boolean;
+}
+
+/** What a submit attempt did (GetPRReviewSubmitOutcome). */
+export interface PRReviewSubmitOutcome {
+  state: 'posted' | 'failed' | 'unknown';
+  result?: SubmitPRReviewResult;
+  code?: string;
+  message?: string;
 }
 
 export interface ProposedPlanComment {

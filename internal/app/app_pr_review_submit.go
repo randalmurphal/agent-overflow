@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sync"
 	"time"
@@ -30,10 +31,14 @@ import (
 //     note of the viewer, an unlocked submit could publish the notes a
 //     locked one is still creating, which that one's cleanup would then
 //     read as removed. Nothing else creates draft notes (replies and
-//     thread actions post notes directly), so nothing else takes it. A draft that is not a draft any
-//     more when the submit reads it (sent by an earlier submit, another
-//     tab or device, or a message) is refused with
-//     ReviewDraftsNotDraftsCode before anything reaches the forge.
+//     thread actions post notes directly), so nothing else takes it.
+//   - A result means this submit reached the forge, and Posted says
+//     whether the forge took a review from it; an error means it posted
+//     nothing. A draft that is not a draft any more (sent by an earlier
+//     submit, another tab or device, or a message) is refused with
+//     ReviewDraftsNotDraftsCode, and one an earlier review posted that is
+//     not marked yet with ReviewDraftsUnmarkedCode, before anything reaches
+//     the forge.
 //   - The forge comments are built from the stored drafts; the request's
 //     own Comments are ignored.
 //   - Marking is conditional on what was posted
@@ -41,32 +46,39 @@ import (
 //     deleted while the review posted stays as it is, and the result
 //     names it (EditedDraftIDs).
 //   - A review the forge accepted whose drafts could not be marked keeps
-//     them in memory as posted (postedReviewDrafts) and answers
-//     ReviewPostedUnmarkedCode. The next submit for the owner retries the
-//     marking before it reads anything, and refuses to post while it
-//     fails; so does the next list of the owner's drafts.
+//     them in memory as posted (postedReviewDrafts) and says so in its
+//     result (PartialFailureKind "unmarked"). The next submit for the
+//     owner retries the marking before it reads anything, and refuses to
+//     post while it fails; so does the next list of the owner's drafts.
+//   - A request with an AttemptID records its outcome (reviewAttempts):
+//     GetPRReviewSubmitOutcome answers it after a lost answer, and a
+//     request repeating the id gets the recorded outcome and posts
+//     nothing.
 //
 // What this does not cover: the process ending between the forge's answer
 // and the mark leaves posted drafts listed as unsent, with no record that
-// they were posted; the pane's lost-answer message tells the person to
-// check the PR. The lock is this backend's: two computers holding the same
-// PR's drafts do not share it, and on GitLab, whose publish takes every
-// pending draft note of the viewer, two computers submitting the same MR
-// at once can publish each other's notes.
+// they were posted, and forgets every attempt; the pane tells a restarted
+// backend by its hello's launchId and says the review may be on the PR.
+// The lock is this backend's: two computers holding the same PR's drafts
+// do not share it, and on GitLab two computers submitting the same MR at
+// once can publish each other's notes.
 //
 // A request without Drafts is the caller's comments, posted as given; the
 // caller marks its drafts with MarkDiffReviewCommentsSent or
 // MarkPRDiffReviewCommentsSent.
 
-// Codes of SubmitPRReview's refusals of a draft submit.
+// Codes of SubmitPRReview's refusals of a draft submit. Both posted nothing.
 const (
-	// ReviewDraftsNotDraftsCode: a named draft is not a draft any more;
-	// nothing was posted. The pane re-reads its drafts.
+	// ReviewDraftsNotDraftsCode: a named draft is not a draft any more.
 	ReviewDraftsNotDraftsCode = "review_drafts_not_drafts"
-	// ReviewPostedUnmarkedCode: a review posted and some of its drafts are
-	// not marked sent yet; nothing more was posted.
-	ReviewPostedUnmarkedCode = "review_posted_unmarked"
+	// ReviewDraftsUnmarkedCode: drafts an earlier review posted are not
+	// marked sent yet, so this one waits.
+	ReviewDraftsUnmarkedCode = "review_drafts_unmarked"
 )
+
+// reviewUnmarkedKind is the PartialFailureKind of a review that posted
+// with drafts left unmarked.
+const reviewUnmarkedKind = "unmarked"
 
 // SubmitPRReviewRequest is one review submit: a verdict, a summary and the
 // comments, either built by the caller (Comments) or, with Drafts, read
@@ -78,6 +90,9 @@ type SubmitPRReviewRequest struct {
 	// Drafts names the stored pr-scope drafts the review carries; Comments
 	// is then ignored. Absent from a client older than pr-review-drafts.v1.
 	Drafts *SubmitPRReviewDrafts `json:"drafts,omitempty"`
+	// AttemptID names this press of Send, fresh for each, so its outcome
+	// can be asked for (GetPRReviewSubmitOutcome).
+	AttemptID string `json:"attemptId,omitempty"`
 }
 
 // SubmitPRReviewDrafts selects the drafts a review posts: a thread's own
@@ -95,12 +110,22 @@ type SubmitPRReviewDrafts struct {
 //
 //ao:scope git:operate
 //ao:route selected
-func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review SubmitPRReviewRequest) (SubmitPRReviewResult, error) {
+func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review SubmitPRReviewRequest) (result SubmitPRReviewResult, err error) {
 	if a.shuttingDown.Load() {
 		return SubmitPRReviewResult{}, ErrShuttingDown
 	}
 	if err := pr.Validate(); err != nil {
 		return SubmitPRReviewResult{}, err
+	}
+	if review.AttemptID != "" {
+		attempt, repeated := a.reviewAttempts.begin(review.AttemptID, pr.Key())
+		if repeated && attempt.prKey != pr.Key() {
+			return SubmitPRReviewResult{}, fmt.Errorf("submit PR review: attempt %s was a submit to another PR", review.AttemptID)
+		}
+		if repeated {
+			return attempt.wait(ctx)
+		}
+		defer func() { a.reviewAttempts.finish(attempt, result, err) }()
 	}
 	// Every submit to the PR holds its lock, whatever the request's shape:
 	// on GitLab one submit's publish takes the draft notes another is
@@ -115,6 +140,11 @@ func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review 
 		mapped, err := mapSubmitPRReviewResult(pr, gitops.ActionReview, result, err)
 		return mapped, gitops.ExplainForgeError(pr, gitops.ActionReview, err)
 	}
+	return a.submitPRReviewDrafts(ctx, pr, review)
+}
+
+// submitPRReviewDrafts is SubmitPRReview with Drafts, under the PR's lock.
+func (a *App) submitPRReviewDrafts(ctx context.Context, pr gitops.PRReference, review SubmitPRReviewRequest) (SubmitPRReviewResult, error) {
 	owner := store.PRReviewOwner(pr.Key())
 	sentTurnID := ""
 	if threadID := review.Drafts.ThreadID; threadID != "" {
@@ -130,7 +160,7 @@ func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review 
 	}
 	drafts, err := a.store.ListDraftDiffReviewCommentsByID(owner, string(store.DiffReviewScopePR), source, review.Drafts.IDs, store.DiffReviewMessageRows{})
 	if errors.Is(err, store.ErrDiffReviewCommentsNotDrafts) {
-		return SubmitPRReviewResult{}, errorsx.Public(ReviewDraftsNotDraftsCode, "Some of these comments were already sent or removed, so the review was not posted. The drafts are read again.", err)
+		return SubmitPRReviewResult{}, errorsx.Public(ReviewDraftsNotDraftsCode, "Some of these comments were already sent or removed, so this review was not posted.", err)
 	}
 	if err != nil {
 		return SubmitPRReviewResult{}, fmt.Errorf("submit PR review: %w", err)
@@ -144,14 +174,24 @@ func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review 
 	result, err := a.gitCore().SubmitReview(forgeapi.WithInteractive(ctx), pr, request)
 	mapped, err := mapSubmitPRReviewResult(pr, gitops.ActionReview, result, err)
 	if err != nil {
-		return mapped, gitops.ExplainForgeError(pr, gitops.ActionReview, err)
+		return SubmitPRReviewResult{}, gitops.ExplainForgeError(pr, gitops.ActionReview, err)
+	}
+	// The one place a draft submit says it posted.
+	mapped.Posted = mapped.PostedReview || mapped.PostedFileComments > 0
+	if !mapped.Posted {
+		return mapped, nil
 	}
 	posted := postedReviewDraftsOf(drafts, mapped)
 	sentAt := time.Now().UnixMilli()
 	marked, err := a.store.MarkPostedDiffReviewDraftsSent(owner, string(store.DiffReviewScopePR), source, posted, sentAt, sentTurnID)
 	if err != nil {
 		a.postedReviewDrafts.hold(owner, postedReviewBatch{sourceKey: source, sentTurnID: sentTurnID, sentAt: sentAt, drafts: posted})
-		return SubmitPRReviewResult{}, errorsx.Public(ReviewPostedUnmarkedCode, "The review posted, but its comments are not marked sent yet. They will not post again; the app marks them on the next read.", err)
+		slog.Warn("submit PR review: posted drafts not marked sent", "pr", pr.Key(), "err", err)
+		if mapped.PartialFailure == "" {
+			mapped.PartialFailure = "Its comments are not marked sent yet. They will not post again, and the app marks them on its next read."
+			mapped.PartialFailureKind = reviewUnmarkedKind
+		}
+		return mapped, nil
 	}
 	mapped.SentDraftIDs = marked
 	for _, draft := range posted {
@@ -163,6 +203,113 @@ func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review 
 		a.announceDiffCommentsChanged(owner.ThreadID, string(store.DiffReviewScopePR), source)
 	}
 	return mapped, nil
+}
+
+// PRReviewSubmitOutcome is what a submit attempt did: "posted" (Result),
+// "failed" (Code and Message: it posted nothing), or "unknown": this
+// process never received the attempt, or has forgotten it.
+type PRReviewSubmitOutcome struct {
+	State   string                `json:"state"`
+	Result  *SubmitPRReviewResult `json:"result,omitempty"`
+	Code    string                `json:"code,omitempty"`
+	Message string                `json:"message,omitempty"`
+}
+
+// GetPRReviewSubmitOutcome answers what the submit attempt attemptID to pr
+// did, waiting for one still running.
+//
+//ao:scope git:operate
+//ao:route selected
+//ao:callerbound
+func (a *App) GetPRReviewSubmitOutcome(ctx context.Context, pr gitops.PRReference, attemptID string) (PRReviewSubmitOutcome, error) {
+	if err := pr.Validate(); err != nil {
+		return PRReviewSubmitOutcome{}, err
+	}
+	attempt := a.reviewAttempts.find(attemptID, pr.Key())
+	if attempt == nil {
+		return PRReviewSubmitOutcome{State: "unknown"}, nil
+	}
+	select {
+	case <-attempt.done:
+	case <-ctx.Done():
+		return PRReviewSubmitOutcome{}, ctx.Err()
+	}
+	return attempt.outcome, nil
+}
+
+// reviewAttemptsKept bounds the finished attempts a process remembers.
+const reviewAttemptsKept = 256
+
+// reviewAttempts holds the submit attempts this process received: every
+// running one, and the last reviewAttemptsKept finished.
+type reviewAttempts struct {
+	mu       sync.Mutex
+	byID     map[string]*reviewAttempt
+	finished []string
+}
+
+type reviewAttempt struct {
+	id      string
+	prKey   string
+	done    chan struct{}
+	outcome PRReviewSubmitOutcome
+	result  SubmitPRReviewResult
+	err     error
+}
+
+// begin records attempt id, or returns the one already recorded under it.
+func (r *reviewAttempts) begin(id, prKey string) (*reviewAttempt, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if prior, ok := r.byID[id]; ok {
+		return prior, true
+	}
+	if r.byID == nil {
+		r.byID = make(map[string]*reviewAttempt)
+	}
+	attempt := &reviewAttempt{id: id, prKey: prKey, done: make(chan struct{})}
+	r.byID[id] = attempt
+	return attempt, false
+}
+
+func (r *reviewAttempts) finish(attempt *reviewAttempt, result SubmitPRReviewResult, err error) {
+	attempt.result, attempt.err = result, err
+	if err == nil {
+		attempt.outcome = PRReviewSubmitOutcome{State: "posted", Result: &result}
+	} else {
+		code, message, ok := errorsx.PublicDetails(err)
+		if !ok {
+			message = "The review was not posted."
+		}
+		attempt.outcome = PRReviewSubmitOutcome{State: "failed", Code: code, Message: message}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.finished = append(r.finished, attempt.id)
+	for len(r.finished) > reviewAttemptsKept {
+		delete(r.byID, r.finished[0])
+		r.finished = r.finished[1:]
+	}
+	close(attempt.done)
+}
+
+func (r *reviewAttempts) find(id, prKey string) *reviewAttempt {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if attempt, ok := r.byID[id]; ok && attempt.prKey == prKey {
+		return attempt
+	}
+	return nil
+}
+
+// wait answers a repeated attempt with the first one's outcome.
+func (attempt *reviewAttempt) wait(ctx context.Context) (SubmitPRReviewResult, error) {
+	select {
+	case <-attempt.done:
+		return attempt.result, attempt.err
+	case <-ctx.Done():
+		return SubmitPRReviewResult{}, ctx.Err()
+	}
 }
 
 // prDraftSource is the comment source of pr's pr-scope drafts; the
@@ -216,7 +363,7 @@ func (a *App) reviewSubmitLocks() *keyedlock.Registry {
 func (a *App) reconcilePostedReviewDrafts(owner store.DiffReviewOwner) error {
 	for _, batch := range a.postedReviewDrafts.held(owner) {
 		if _, err := a.store.MarkPostedDiffReviewDraftsSent(owner, string(store.DiffReviewScopePR), batch.sourceKey, batch.drafts, batch.sentAt, batch.sentTurnID); err != nil {
-			return errorsx.Public(ReviewPostedUnmarkedCode, "A review posted earlier still has comments that are not marked sent, so nothing more was posted. Try again in a moment.", err)
+			return errorsx.Public(ReviewDraftsUnmarkedCode, "These comments were posted by an earlier review and are being marked sent, so this review was not posted.", err)
 		}
 		a.postedReviewDrafts.forget(owner, batch)
 		if owner.ThreadID != "" {

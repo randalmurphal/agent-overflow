@@ -2,9 +2,9 @@
 // backend took the call) posts once. On the Pull requests page, on GitHub
 // and GitLab, a review with one line comment is submitted and the socket is
 // closed instead of delivering SubmitPRReview's answer: the backend posted
-// the review and marked the draft sent in the same call, the pane reads its
-// drafts again, finds the draft sent and ends as a success, and the forge
-// holds the review once.
+// the review and marked the draft sent in the same call, the pane asks the
+// backend what its attempt did (GetPRReviewSubmitOutcome), ends as a
+// success, and the forge holds the review once.
 import { randomBytes } from 'node:crypto';
 import type { Page } from '@playwright/test';
 
@@ -74,8 +74,8 @@ for (const forge of ['gitlab', 'github'] as const) {
 
       await review.getByTestId('review-send-comments').click();
       await expect.poll(wire.lost).toBe(true);
-      // The pane reads the drafts again: the draft is sent, the strip goes
-      // and nothing says the submit failed.
+      // The pane asks what the attempt did: it posted, the strip goes and
+      // nothing says the submit failed.
       await expect(strip).toHaveCount(0, { timeout: 30_000 });
       await expect(review.getByText('may already be on the PR')).toHaveCount(0);
       const published = async () => (await forgeInvocations(harness))

@@ -258,10 +258,12 @@ polling.
     (`internal/app/app_pr_review_submit.go` owns the contract). An older
     backend gets the comments and the pane marks them after.
   Drafts clear only on confirmed success; failures surface in the pane and
-  keep drafts (errors are user-facing state). After every outcome,
-  including a lost answer, the pane reads its drafts again before the next
-  submit. An answer is what happened; only after a lost answer do drafts
-  that read as sent mean the review posted.
+  keep drafts (errors are user-facing state). Only the backend says what a
+  submit did: its answer, or after a lost answer its record of the
+  attempt (`GetPRReviewSubmitOutcome`, by the attempt id each press of
+  Send mints). The pane never infers it from drafts reading as sent. A
+  review that was not posted keeps its summary and verdict in the send
+  strip, which stays while either is set.
 - **Agent context rule (deterministic, no toggle).** If the target thread's
   workspace is the diff source (commenting on that agent's own live work),
   keep today's lean prompt. The agent sees the diff in-turn. Otherwise

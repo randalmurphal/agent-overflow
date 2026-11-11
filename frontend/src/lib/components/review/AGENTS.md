@@ -133,9 +133,10 @@ PR stores; components own presentation and interaction.
 
 Review mutations reconcile from authoritative responses and show partial or
 failed outcomes in the affected surface. Never optimistically erase unresolved
-threads, failed comments, or stale-head warnings. A PR review submit's
-outcome is known only once its drafts are read again (`settleSubmit`),
-whatever the call answered; no submit starts before that read succeeds.
+threads, failed comments, or stale-head warnings. What a PR review submit
+did comes only from the backend (`settleSubmit`): its answer, or after a
+lost answer the outcome of its attempt id; never from the state of drafts
+anyone can send. No submit starts while a lost one's outcome is unknown.
 
 Test pure diff projection separately from component interaction. Use browser
 tests for virtualized geometry, selection, sticky headers, and scroll anchoring.

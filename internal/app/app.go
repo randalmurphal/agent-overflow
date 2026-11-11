@@ -239,12 +239,14 @@ type App struct {
 	remoteWatchWG    sync.WaitGroup
 	remoteStartsOnce sync.Once
 	remoteStarts     *keyedlock.Registry
-	// reviewSubmits and postedReviewDrafts are SubmitPRReview's per-PR
-	// submit lock and its posted-but-unmarked drafts
-	// (app_pr_review_submit.go). Zero value ready.
+	// reviewSubmits, postedReviewDrafts and reviewAttempts are
+	// SubmitPRReview's per-PR submit lock, its posted-but-unmarked drafts
+	// and its attempts' outcomes (app_pr_review_submit.go). Zero value
+	// ready.
 	reviewSubmitsOnce  sync.Once
 	reviewSubmits      *keyedlock.Registry
 	postedReviewDrafts postedReviewDrafts
+	reviewAttempts     reviewAttempts
 	// providerTerminals is the per-connection take-control bookkeeping for
 	// claude-tui PTYs: which caller armed which attachment, so a dead socket
 	// releases exactly its own claim and its input lease. Zero value ready.

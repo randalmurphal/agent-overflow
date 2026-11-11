@@ -95,6 +95,7 @@ export {
     PRListSubscriptionResult,
     PRMergeConflictsResult,
     PRReason,
+    PRReviewSubmitOutcome,
     PRThread,
     PRThreadsRequest,
     PRUpdateSubscriptionResult,

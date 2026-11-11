@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -439,11 +440,13 @@ func TestSubmitPRReviewPostedButUnmarkedReconcilesWithoutASecondPost(t *testing.
 		if _, err := db.Exec(`CREATE TRIGGER refuse_review_sent BEFORE UPDATE OF status ON diff_review_comments WHEN NEW.status = 'sent' BEGIN SELECT RAISE(ABORT, 'injected mark failure'); END`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := c.submit(c.request(threadOwned, draft)); reviewSubmitCode(err) != ReviewPostedUnmarkedCode {
-			t.Fatalf("thread=%v: submit = %v, want %s", threadOwned, err, ReviewPostedUnmarkedCode)
+		result, err := c.submit(c.request(threadOwned, draft))
+		if err != nil || !result.Posted || result.PartialFailureKind != reviewUnmarkedKind || len(result.SentDraftIDs) != 0 {
+			t.Fatalf("thread=%v: submit = %+v, %v, want posted with its drafts unmarked", threadOwned, result, err)
 		}
-		if _, err := c.submit(c.request(threadOwned, draft)); reviewSubmitCode(err) != ReviewPostedUnmarkedCode {
-			t.Fatalf("thread=%v: a submit while marking fails = %v, want %s", threadOwned, err, ReviewPostedUnmarkedCode)
+		// Another tab's submit of the same drafts posts nothing, and says so.
+		if result, err := c.submit(c.request(threadOwned, draft)); reviewSubmitCode(err) != ReviewDraftsUnmarkedCode || result.Posted {
+			t.Fatalf("thread=%v: a submit while marking fails = %+v, %v, want %s", threadOwned, result, err, ReviewDraftsUnmarkedCode)
 		}
 		if n := c.published(); n != 1 {
 			t.Fatalf("thread=%v: published %d reviews, want 1", threadOwned, n)
@@ -466,6 +469,96 @@ func TestSubmitPRReviewPostedButUnmarkedReconcilesWithoutASecondPost(t *testing.
 		if n := c.published(); n != 1 {
 			t.Fatalf("thread=%v: published %d reviews, want 1", threadOwned, n)
 		}
+	}
+}
+
+// An attempt's outcome answers a lost answer: posted with its drafts,
+// failed with its code, or unknown for an id this process never received.
+// A repeated attempt id answers the recorded outcome and posts nothing.
+func TestSubmitPRReviewAttemptOutcome(t *testing.T) {
+	t.Parallel()
+	c := newReviewSubmitCase(t, "gitlab")
+	draft := c.draft(t, false, 3, "Guard this.")
+	review := c.request(false, draft)
+	review.AttemptID = "attempt-1"
+	first, err := c.submit(review)
+	if err != nil || !first.Posted {
+		t.Fatalf("submit = %+v, %v", first, err)
+	}
+	outcome, err := c.app.GetPRReviewSubmitOutcome(context.Background(), c.pr, "attempt-1")
+	if err != nil || outcome.State != "posted" || outcome.Result == nil || !slices.Equal(outcome.Result.SentDraftIDs, []string{draft.ID}) {
+		t.Fatalf("outcome = %+v, %v", outcome, err)
+	}
+	again, err := c.submit(review)
+	if err != nil || !reflect.DeepEqual(again, first) {
+		t.Fatalf("repeated attempt = %+v, %v, want the first answer %+v", again, err, first)
+	}
+	if n := c.published(); n != 1 {
+		t.Fatalf("published %d reviews, want 1", n)
+	}
+
+	refused := c.request(false, draft)
+	refused.AttemptID = "attempt-2"
+	if _, err := c.submit(refused); reviewSubmitCode(err) != ReviewDraftsNotDraftsCode {
+		t.Fatalf("resubmit of sent drafts = %v", err)
+	}
+	outcome, err = c.app.GetPRReviewSubmitOutcome(context.Background(), c.pr, "attempt-2")
+	if err != nil || outcome.State != "failed" || outcome.Code != ReviewDraftsNotDraftsCode || outcome.Message == "" {
+		t.Fatalf("refused outcome = %+v, %v", outcome, err)
+	}
+
+	for _, id := range []string{"attempt-never-sent", ""} {
+		if outcome, err := c.app.GetPRReviewSubmitOutcome(context.Background(), c.pr, id); err != nil || outcome.State != "unknown" {
+			t.Fatalf("outcome of %q = %+v, %v, want unknown", id, outcome, err)
+		}
+	}
+	other := c.pr
+	other.Number++
+	if outcome, err := c.app.GetPRReviewSubmitOutcome(context.Background(), other, "attempt-1"); err != nil || outcome.State != "unknown" {
+		t.Fatalf("outcome on another PR = %+v, %v, want unknown", outcome, err)
+	}
+}
+
+// The outcome of an attempt still at the forge waits for it.
+func TestSubmitPRReviewAttemptOutcomeWaitsForARunningAttempt(t *testing.T) {
+	t.Parallel()
+	c := newReviewSubmitCase(t, "github")
+	draft := c.draft(t, true, 3, "Guard this.")
+	review := c.request(true, draft)
+	review.AttemptID = "attempt-running"
+	entered, release := c.gate.hold()
+	defer release()
+	go func() { _, _ = c.submit(review) }()
+	<-entered
+	answered := make(chan PRReviewSubmitOutcome, 1)
+	go func() {
+		outcome, _ := c.app.GetPRReviewSubmitOutcome(context.Background(), c.pr, "attempt-running")
+		answered <- outcome
+	}()
+	select {
+	case outcome := <-answered:
+		t.Fatalf("outcome %+v before the forge answered", outcome)
+	case <-time.After(100 * time.Millisecond):
+	}
+	release()
+	if outcome := <-answered; outcome.State != "posted" || !outcome.Result.Posted {
+		t.Fatalf("outcome = %+v", outcome)
+	}
+}
+
+// The attempts a process remembers are bounded.
+func TestReviewAttemptsForgetTheOldestFinished(t *testing.T) {
+	t.Parallel()
+	var attempts reviewAttempts
+	for i := range reviewAttemptsKept + 1 {
+		attempt, _ := attempts.begin(fmt.Sprintf("a%d", i), "pr")
+		attempts.finish(attempt, SubmitPRReviewResult{Posted: true}, nil)
+	}
+	if attempts.find("a0", "pr") != nil || attempts.find(fmt.Sprintf("a%d", reviewAttemptsKept), "pr") == nil {
+		t.Fatal("kept the oldest attempt or forgot the newest")
+	}
+	if len(attempts.byID) != reviewAttemptsKept {
+		t.Fatalf("%d attempts kept, want %d", len(attempts.byID), reviewAttemptsKept)
 	}
 }
 

@@ -352,6 +352,9 @@ type SubmitPRReviewResult struct {
 	// stay drafts. Both empty for a submit without drafts.
 	SentDraftIDs   []string `json:"sentDraftIds,omitempty"`
 	EditedDraftIDs []string `json:"editedDraftIds,omitempty"`
+	// Posted is a draft submit's own fact that the forge took a review
+	// from it; false on every answer of a submit without drafts.
+	Posted bool `json:"posted,omitempty"`
 }
 
 // mapSubmitPRReviewResult turns a submit's result into the wire answer. A
