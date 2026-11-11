@@ -111,7 +111,10 @@ type Manager struct {
 	panes     map[string]paneMount
 	sessions  map[string]SessionInfo
 	// viewportSyncs serializes viewport application per thread (viewport.go).
-	viewportSyncs  map[string]*viewportSync
+	viewportSyncs map[string]*viewportSync
+	// presenting holds, per thread, whether a presentation pass runs and
+	// whether another was asked for during it (syncPanePresentation).
+	presenting     map[string]*presentSync
 	artifactRoot   string
 	artifactInitMu sync.Mutex
 	artifactReady  bool
@@ -283,6 +286,7 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		panes:         make(map[string]paneMount),
 		sessions:      make(map[string]SessionInfo),
 		viewportSyncs: make(map[string]*viewportSync),
+		presenting:    make(map[string]*presentSync),
 		artifactRoot:  filepath.Join(configDir, "browser-artifacts"),
 		findTimeout:   findActionTimeout,
 	}

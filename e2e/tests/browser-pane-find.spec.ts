@@ -23,18 +23,18 @@ interface BrowserState {
 }
 
 test('mod+f finds in the shown browser page and closes when the page navigates away', async ({ harness, page }) => {
-  // The pane mount and find id each find action names: a search belongs to
-  // its mount's find, so only that find can see whether the pane's search
-  // is still there.
+  // The pane mount and sequence each find action names: a search belongs to
+  // its mount at its sequence, so only that can see whether the pane's
+  // search is still there.
   let findMount = '';
-  let findId = '';
+  let findSeq = 0;
   await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
     const server = socket.connectToServer();
     socket.onMessage((message) => {
       const frame = JSON.parse(String(message));
       if (frame.type === 'rpc' && frame.methodId === FIND_METHOD_ID && frame.params?.[1]?.mount) {
         findMount = frame.params[1].mount;
-        findId = frame.params[1].findId;
+        findSeq = frame.params[1].seq;
       }
       server.send(message);
     });
@@ -116,14 +116,14 @@ test('mod+f finds in the shown browser page and closes when the page navigates a
     await bar.getByTestId('pane-find-input').fill('gamma');
     await expect(count).toHaveText('1/1');
     const mount = findMount;
-    const id = findId;
+    const seq = findSeq;
     expect(mount).not.toBe('');
-    expect(id).not.toBe('');
+    expect(seq).toBeGreaterThan(0);
     await pane.getByRole('button', { name: 'Close browser' }).click();
     await expect(pane).toHaveCount(0);
     // The pane's search is gone: a step from its find changes nothing and
     // says the search is not its own.
-    const step = await harness.rpc<{ foreign: boolean; active: boolean }>('BrowserCompanionFind', threadId, { kind: 'next', pageId, mount, findId: id });
+    const step = await harness.rpc<{ foreign: boolean; active: boolean }>('BrowserCompanionFind', threadId, { kind: 'next', pageId, mount, seq });
     expect(step).toMatchObject({ foreign: true, active: false });
     await harness.rpc('BrowserCompanionDo', threadId, { kind: 'show', pageId });
     await expect(pane).toBeVisible();

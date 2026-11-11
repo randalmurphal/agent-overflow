@@ -499,7 +499,42 @@ func (m *Manager) OpenPaneDevTools(ctx context.Context, access Access, pageID st
 // a page that stopped being it (a tab switch, a hidden companion) ends, and
 // so does a find bar whose pane mount is gone.
 // Occlusion is not hiding: an overlay over the pane leaves the find running.
+//
+// Passes of a thread never overlap: each reads the state and tells the
+// engine without a lock held, so two at once could land in either order and
+// leave a page shown that the newer state hides. A call made while a pass
+// runs leaves it to that caller, which runs one more pass after its own, so
+// the last pass always reads the newest state and no caller waits on a pass
+// it did not start (an engine's UI thread among them).
 func (m *Manager) syncPanePresentation(threadID string) {
+	m.mu.Lock()
+	st := m.presenting[threadID]
+	if st == nil {
+		st = &presentSync{}
+		m.presenting[threadID] = st
+	}
+	st.dirty = true
+	if st.busy {
+		m.mu.Unlock()
+		return
+	}
+	st.busy = true
+	for st.dirty {
+		st.dirty = false
+		m.mu.Unlock()
+		m.presentPanes(threadID)
+		m.mu.Lock()
+	}
+	delete(m.presenting, threadID)
+	m.mu.Unlock()
+}
+
+// presentSync is one thread's presentation passes: busy while one runs,
+// dirty when another was asked for. Guarded by Manager.mu.
+type presentSync struct{ busy, dirty bool }
+
+// presentPanes is one presentation pass of syncPanePresentation.
+func (m *Manager) presentPanes(threadID string) {
 	host, ok := m.engine.(paneHost)
 	m.mu.Lock()
 	session, hasSession := m.sessions[threadID]
