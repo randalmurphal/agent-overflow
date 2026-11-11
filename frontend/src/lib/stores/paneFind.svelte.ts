@@ -33,8 +33,9 @@ export interface PaneFindResult {
  * `next` and `previous` are absent for a provider whose query only filters.
  * `clear` ends the session: highlights, timers and pending reads go.
  * A provider with `openNative` has its own find UI: an open goes there with
- * the seed and no bar opens. While that UI is open (`nativeOpen`) the pane's
- * find reads as open, and a close ends it through `clear`.
+ * the seed and no bar opens. That UI closes without telling the provider, so
+ * the pane's find never reads as open for it and `find.close` leaves its
+ * Escape to the UI; another open seeds it again.
  */
 export interface PaneFindProvider {
   /** Completes the placeholder: "Find in {noun}". */
@@ -46,8 +47,6 @@ export interface PaneFindProvider {
   previous?(): void;
   clear(): void;
   openNative?(seed: string): void;
-  /** Reactive. */
-  readonly nativeOpen?: boolean;
 }
 
 interface PaneFindState {
@@ -147,10 +146,7 @@ export function getPaneFind(paneId: string): PaneFindView | null {
 }
 
 export function isPaneFindOpen(paneId: string | null): boolean {
-  if (paneId === null) return false;
-  const provider = providers.get(paneId);
-  if (!provider) return false;
-  return provider.nativeOpen === true || states.get(paneId)?.open === true;
+  return paneId !== null && hasPaneFindProvider(paneId) && states.get(paneId)?.open === true;
 }
 
 export interface OpenPaneFindOptions {
@@ -202,11 +198,6 @@ export function stepPaneFind(paneId: string, direction: 1 | -1): void {
 
 /** Closes the bar and clears its highlights. The query stays for a reopen. */
 export function closePaneFind(paneId: string): void {
-  const provider = providers.get(paneId);
-  if (provider?.nativeOpen) {
-    provider.clear();
-    return;
-  }
   const state = states.get(paneId);
   if (!state?.open) return;
   state.open = false;

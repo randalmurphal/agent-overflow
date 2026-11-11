@@ -15,26 +15,17 @@ import (
 	"agent-overflow/internal/keybindings"
 )
 
-// A bare Escape is the page's unless its find bar is open; a modified one
-// goes through the bound set only.
-func TestClaimChordTakesThePagesEscapeOnlyWhileFindIsOpen(t *testing.T) {
-	host := &Host{accelerators: keybindings.AcceleratorSet{{Key: "w", Ctrl: true}: {}}}
-	page := &hostPage{id: "page-1"}
+// An unmodified key is the page's, Escape included, even when a bound set
+// names it; a modified one goes through the bound set only.
+func TestClaimChordNeverTakesAnUnmodifiedKey(t *testing.T) {
 	escape := keybindings.Accelerator{Key: "escape"}
-	if _, ok := host.claimChord(page, escape); ok {
-		t.Fatal("Escape was claimed with no find")
+	host := &Host{accelerators: keybindings.AcceleratorSet{{Key: "w", Ctrl: true}: {}, escape: {}}}
+	for _, key := range []keybindings.Accelerator{escape, {Key: "escape", Shift: true}, {Key: "a"}} {
+		if _, ok := host.claimChord(key); ok {
+			t.Errorf("%+v was claimed", key)
+		}
 	}
-	page.findOpen = true
-	if bound, ok := host.claimChord(page, escape); !ok || bound != escape {
-		t.Fatalf("Escape during a find = %+v, %v", bound, ok)
-	}
-	if _, ok := host.claimChord(page, keybindings.Accelerator{Key: "escape", Shift: true}); ok {
-		t.Fatal("Shift+Escape was claimed by the find")
-	}
-	if _, ok := host.claimChord(page, keybindings.Accelerator{Key: "a"}); ok {
-		t.Fatal("typing was claimed during a find")
-	}
-	if _, ok := host.claimChord(page, keybindings.Accelerator{Key: "w", Ctrl: true}); !ok {
+	if _, ok := host.claimChord(keybindings.Accelerator{Key: "w", Ctrl: true}); !ok {
 		t.Fatal("a bound chord was not claimed")
 	}
 }
@@ -131,17 +122,19 @@ func TestFindSmokeOpensTheEnginesFindBar(t *testing.T) {
 	}
 
 	t.Logf("find for alpha: %d matches, active index %d", count, active)
+	// The engine reports no close of its own bar, so the page's Escape stays
+	// the page's and the bar's while it is open, whoever closes it.
 	escape := keybindings.Accelerator{Key: "escape"}
 	var claimed bool
-	ui.do(func() { _, claimed = host.claimChord(page, escape) })
-	if !claimed {
-		t.Fatal("the page's Escape was not claimed while its find bar is open")
+	ui.do(func() { _, claimed = host.claimChord(escape) })
+	if claimed {
+		t.Fatal("the page's Escape was claimed while the engine's find bar is open")
 	}
 
 	host.Apply(Directive{Op: OpFindStop, PageID: "page-1"})
-	ui.do(func() { _, claimed = host.claimChord(page, escape) })
+	ui.do(func() { _, claimed = host.claimChord(escape) })
 	if claimed {
-		t.Fatal("the page's Escape was claimed after its find bar closed")
+		t.Fatal("the page's Escape was claimed after the find bar closed")
 	}
 	host.Apply(Directive{Op: OpFind, PageID: "page-1", Query: "absent"})
 	time.Sleep(time.Second)

@@ -254,27 +254,23 @@ describe('browser find provider', () => {
     expect(calls.map((call) => call.kind)).toEqual(['start', 'stop', 'start', 'stop']);
   });
 
-  it('reads as open while the engine find UI is, and find.close stops it', async () => {
-    const { find, onEnded } = setup('engine');
+  // The engine's UI closes without telling AO, so it never reads as open:
+  // find.close (Escape) is never the pane's for it, and each open seeds it
+  // again. The engine's session is still stopped when the provider goes.
+  it('never reads the engine find UI as open, and stops it on dispose', async () => {
+    const { find } = setup('engine');
     registerPaneFindProvider('browser-main', find);
-    expect(isPaneFindOpen('browser-main')).toBe(false);
     for (let round = 0; round < 2; round++) {
-      openPaneFind('browser-main', { seed: '' });
-      await settle(0);
-      expect(find.nativeOpen).toBe(true);
-      expect(isPaneFindOpen('browser-main')).toBe(true);
-      closePaneFind('browser-main');
+      openPaneFind('browser-main', { seed: 'alpha' });
       await settle(0);
       expect(isPaneFindOpen('browser-main')).toBe(false);
+      closePaneFind('browser-main');
+      await settle(0);
     }
-    expect(calls.map((call) => call.kind)).toEqual(['start', 'stop', 'start', 'stop']);
-    // The backend's own end closes it too.
-    answer = async () => state({ session: 7, found: false });
-    openPaneFind('browser-main', { seed: '' });
+    expect(calls.map((call) => call.kind)).toEqual(['start', 'start']);
+    find.dispose();
     await settle(0);
-    ended(8);
-    expect(isPaneFindOpen('browser-main')).toBe(false);
-    expect(onEnded).toHaveBeenCalledTimes(1);
+    expect(calls.map((call) => call.kind)).toEqual(['start', 'start', 'stop']);
   });
 
   it('a disposed provider hears no end and stops its session', async () => {

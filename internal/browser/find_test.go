@@ -573,6 +573,39 @@ func TestFindClaimsThePagesEscapeOnlyWhileFinding(t *testing.T) {
 	}
 }
 
+// The engine's own bar closes without telling AO, so a find in it never
+// claims the page's Escape: one the user typed after closing that bar always
+// reaches the page. A start in it also releases a claim an earlier bar find
+// held on the same page.
+func TestFindInTheEnginesBarNeverClaimsThePagesEscape(t *testing.T) {
+	f := newFindFixture(t, "https://example.test/alpha")
+	handle := f.fake.Handle()
+	escape := keybindings.Accelerator{Key: "escape"}
+	f.find(t, "start", "alpha")
+	f.wantCall(t, "start alpha")
+	if !f.manager.keyChord(handle, escape) {
+		t.Fatal("Escape was not claimed during a bar find")
+	}
+	<-f.keys
+	f.fake.mu.Lock()
+	f.fake.findMode = FindModeEngine
+	f.fake.mu.Unlock()
+	for round := range 2 {
+		if state := f.find(t, "start", "alpha"); !state.Active {
+			t.Fatalf("round %d: open = %+v", round, state)
+		}
+		f.wantCall(t, "start alpha")
+		if f.manager.keyChord(handle, escape) {
+			t.Fatalf("round %d: Escape was claimed while the engine's bar may be open", round)
+		}
+	}
+	f.find(t, "stop", "")
+	f.wantCall(t, "stop")
+	if f.manager.keyChord(handle, escape) {
+		t.Fatal("Escape was claimed after the engine's find stopped")
+	}
+}
+
 // findlessPage hides the fake's find: a driver of an engine without one.
 type findlessPage struct{ pageDriver }
 

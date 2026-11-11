@@ -95,16 +95,11 @@ func (h *Host) openFind(page *hostPage, query string) error {
 		})
 		page.pendingHandlers = append(page.pendingHandlers, page.findStarted)
 	}
-	if err := find.start(options, page.findStarted); err != nil {
-		return err
-	}
-	page.findOpen = true
-	return nil
+	return find.start(options, page.findStarted)
 }
 
 // stopFind ends the page's find and hides its bar. Runs on the UI thread.
 func (h *Host) stopFind(page *hostPage) {
-	page.findOpen = false
 	find, err := page.view.pageFind()
 	if err == nil && find == nil {
 		return

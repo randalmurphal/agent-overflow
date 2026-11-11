@@ -1021,9 +1021,41 @@ describe('find.in-pane command', () => {
   });
 
   // A chord from the browser pane's native view is replayed on the window
-  // with the companion focused (browserCompanion.replayBrowserAccelerator).
-  // The context is the source thread pane's, so only its terminal holding
-  // DOM focus could gate the chord; the replay drops that stale focus.
+  // with the companion focused (browserCompanion.replayBrowserAccelerator)
+  // while the document has no keyboard focus. The context is the source
+  // thread pane's, whose terminal may still hold DOM focus: that focus is
+  // stale and must not gate the chord, while a terminal the user is typing
+  // in still keeps mod+f.
+  it('fires a replayed mod+f for a browser companion while a source terminal holds stale DOM focus', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
+    setPaneLayoutItemsForTest([
+      { id: 'a', paneId: 'a', kind: 'thread', widthPx: 600 },
+      { id: 'browser-a', paneId: 'browser-a', kind: 'browser', widthPx: 600 },
+    ]);
+    const openNative = vi.fn();
+    registerPaneFindProvider('browser-a', { ...providerFor(), openNative });
+    focusPane('browser-a');
+    const press = () => {
+      const event = new KeyboardEvent('keydown', { key: 'f', code: 'KeyF', ctrlKey: true, cancelable: true });
+      return dispatchKey(event, makeCommandContext(pane, {}) as CommandContext, { isMac: false });
+    };
+    notifyTerminalFocus(pane.paneId, true);
+    const hasFocus = vi.spyOn(document, 'hasFocus');
+    try {
+      hasFocus.mockReturnValue(false);
+      expect(press()).toBe(true);
+      expect(openNative).toHaveBeenCalledTimes(1);
+      hasFocus.mockReturnValue(true);
+      expect(press()).toBe(false);
+      expect(openNative).toHaveBeenCalledTimes(1);
+    } finally {
+      hasFocus.mockRestore();
+      notifyTerminalFocus(pane.paneId, false);
+    }
+  });
+
   it('fires mod+f for a focused browser companion, gated only by a focused source terminal', () => {
     const pane = readyPane();
     registerFixtureCommands(pane);
@@ -1053,9 +1085,10 @@ describe('find.in-pane command', () => {
   });
 
   // The page's Escape is replayed as a bare window keydown with the
-  // companion focused and DOM focus dropped; it must reach find.close for
-  // the shared bar and for an engine's own find UI alike.
-  it('Escape closes a focused browser companion\'s find, bar or engine UI', () => {
+  // companion focused; it reaches find.close for the shared bar. An engine's
+  // own find UI closes without telling AO, so after an open of it Escape is
+  // never find.close's: it stays with the page and the engine.
+  it('Escape closes a focused browser companion\'s bar and is never taken for an engine UI', () => {
     const pane = readyPane();
     registerFixtureCommands(pane);
     setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
@@ -1078,14 +1111,14 @@ describe('find.in-pane command', () => {
     expect(bar.clear).toHaveBeenCalledTimes(1);
     release();
 
-    let nativeOpen = true;
-    const engine = { ...providerFor(), openNative: vi.fn(), clear: vi.fn(() => { nativeOpen = false; }) };
-    Object.defineProperty(engine, 'nativeOpen', { get: () => nativeOpen });
+    const engine = { ...providerFor(), openNative: vi.fn() };
     registerPaneFindProvider('browser-a', engine);
-    expect(escape()).toBe(true);
-    expect(engine.clear).toHaveBeenCalledTimes(1);
-    // Closed, Escape is no longer the find's.
-    expect(escape()).toBe(false);
+    for (let round = 0; round < 2; round++) {
+      openPaneFind('browser-a');
+      expect(engine.openNative).toHaveBeenCalledTimes(round + 1);
+      expect(escape()).toBe(false);
+    }
+    expect(engine.clear).not.toHaveBeenCalled();
   });
 
   it('seeds the query from text selected inside the pane', () => {

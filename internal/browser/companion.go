@@ -216,9 +216,9 @@ func (m *Manager) pageByHandleLocked(handle string) *managedPage {
 // keyChord is engineEvents.KeyChord: it answers on the engine's UI thread, so
 // it is one set lookup, and the routing that takes m.mu happens off it.
 //
-// A bare Escape is claimed only from a page with an active find, so the find
-// closes through `find.close` while keyboard focus is in the page; otherwise
-// the page keeps it.
+// A bare Escape is claimed only from a page whose find runs in AO's bar, so
+// the bar closes through `find.close` while keyboard focus is in the page;
+// otherwise the page keeps it.
 func (m *Manager) keyChord(handle string, pressed keybindings.Accelerator) bool {
 	if pressed == findEscape {
 		if _, finding := m.finding.Load(handle); !finding {

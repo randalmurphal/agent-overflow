@@ -44,8 +44,8 @@ on no overlay above it; the store drops a pane's state and reads when the
 pane leaves the layout. The browser pane uses
 `stores/browserFind.svelte.ts`, where the engine searches and matches are
 the engine's to paint; a provider that cannot count reports `count: null`,
-and one with `openNative` opens its engine's own find UI instead of the bar
-and reads as open while `nativeOpen`, so `find.close` reaches it
+and one with `openNative` opens its engine's own find UI instead of the bar,
+which never reads as open, so its Escape stays the engine's
 ([browser-tools.md](../../../../../docs/architecture/browser-tools.md#find)).
 Review, terminal, discussion and tool panes have no provider yet, so mod+f
 falls through there.

@@ -61,7 +61,7 @@ export type BrowserFind = PaneFindProvider & { dispose(): void };
 export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
   const { threadId, mode } = options;
   const reads = paneFindReads(options.paneId);
-  const view = $state({ count: 0 as number | null, current: -1, pending: false, capped: false, nativeOpen: false });
+  const view = $state({ count: 0 as number | null, current: -1, pending: false, capped: false });
   // Moves on every query change and close; an answer must match it.
   let seq = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -97,12 +97,10 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
   function show(state: BrowserFindState): void {
     if (!state.active) {
       session = null;
-      view.nativeOpen = false;
       reset();
       return;
     }
     session = { pageId: state.pageId, session: state.session };
-    view.nativeOpen = mode === 'engine';
     view.count = !state.found ? 0 : state.matches < 0 ? null : state.matches;
     view.current = state.current;
     view.capped = state.capped;
@@ -121,7 +119,6 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
   function fail(mine: number, err: unknown): void {
     if (mine !== seq) return;
     session = null;
-    view.nativeOpen = false;
     reset();
     options.onError(errString(err));
   }
@@ -192,7 +189,6 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
     wanted = false;
     steps = 0;
     session = null;
-    view.nativeOpen = false;
     reset();
     options.onEnded();
   }
@@ -213,7 +209,6 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
     // A start not made yet is dropped; one made is stopped.
     startQuery = null;
     session = null;
-    view.nativeOpen = false;
     reset();
     if (held) {
       stopNeeded = true;
@@ -238,7 +233,6 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
   const provider: BrowserFind = {
     noun: 'page',
     result,
-    get nativeOpen() { return view.nativeOpen; },
     search(query: string): void {
       if (mode === 'engine') return;
       if (!query.trim()) {

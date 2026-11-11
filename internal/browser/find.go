@@ -187,7 +187,13 @@ func (m *Manager) beginFind(p *managedPage, mode, query string, result findResul
 	defer p.findMu.Unlock()
 	p.find.seq++
 	p.find.active = true
-	m.finding.Store(p.driver.Handle(), struct{}{})
+	// Only AO's bar is known to be open: the engine's own bar closes without
+	// telling AO, so its Escape stays the page's.
+	if mode == FindModeBar {
+		m.finding.Store(p.driver.Handle(), struct{}{})
+	} else {
+		m.finding.Delete(p.driver.Handle())
+	}
 	p.find.mode = mode
 	p.find.doc = documentOf(p.cachedInfo().URL)
 	state := FindState{Query: query, Current: -1}

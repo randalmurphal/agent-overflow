@@ -1203,6 +1203,10 @@ export function overlayBesidePalette(): boolean {
   return airspaceSurfaces().length > (isPaletteOpen() ? 1 : 0);
 }
 
+function documentHasFocus(): boolean {
+  return typeof document !== 'undefined' && document.hasFocus();
+}
+
 /**
  * Compute the CommandContext the registry expects. Centralised here so the
  * palette and the keybindings dispatcher see an identical view of the app.
@@ -1218,8 +1222,10 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     // The TerminalBody component bumps the per-pane registry on focus/blur
     // events. With no pane there's no terminal to gate against, so false —
     // never fall through to "any terminal anywhere is focused", which would
-    // suppress an unrelated pane's chords.
-    terminalFocus: pane ? getTerminalFocused(pane.paneId) : false,
+    // suppress an unrelated pane's chords. A document without keyboard focus
+    // has no focused terminal, whatever DOM focus it kept: a chord the
+    // browser pane's native view replays arrives that way.
+    terminalFocus: pane ? getTerminalFocused(pane.paneId) && documentHasFocus() : false,
     approvalPending: pane ? pane.pendingApprovals.length > 0 : false,
     anyModalOpen: false,
     hasActiveThread: thread !== null,

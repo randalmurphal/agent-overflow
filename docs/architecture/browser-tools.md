@@ -144,8 +144,8 @@ so AO's chords have to be taken back at the engine:
   keydown, so `when` gates, rebinds and the palette all behave as if the SPA
   had been focused. A bound chord whose `when` fails there is a no-op — the
   page never gets it back, which is the price of answering synchronously.
-  DOM focus left in the SPA is dropped before the replay: keyboard focus is
-  in the page, so a source pane's terminal must not gate the chord.
+  DOM focus left in the SPA stays put; it gates nothing because the document
+  has no keyboard focus, which the command context's `terminalFocus` reads.
 
 ## Find
 
@@ -164,12 +164,11 @@ the accelerator path above.
   closes; that end is a `find` event on `browser:companion-state`, and the
   bar showing it closes. The engine's find is stopped behind it unless a
   newer session started.
-- Escape closes the find through `find.close`, wherever keyboard focus is.
-  In the app it is an ordinary keydown. In the page, while the page has a
-  find, the engine offers its bare Escape to the chord gate above, which
-  claims it (the Manager's `keyChord`; for WebView2 the launcher's
-  `claimChord`, since `AcceleratorKeyPressed` always reports Escape); without
-  a find the page keeps it.
+- Escape closes AO's find bar through `find.close`, wherever keyboard focus
+  is. In the app it is an ordinary keydown. In the page, while the page has
+  a find in AO's bar, the engine offers its bare Escape to the chord gate
+  above, which claims it (the Manager's `keyChord`); otherwise the page keeps
+  it.
 - The pane's provider (`frontend/src/lib/stores/browserFind.svelte.ts`) makes
   its engine calls one at a time through the pane's `paneFindReads` slot.
   Every call is made, since the engine holds the session; a superseded
@@ -190,11 +189,13 @@ the accelerator path above.
   (`ICoreWebView2Find` with the default dialog left on), seeded with the
   SPA's selection or else the page's, and moves keyboard focus into the page.
   The engine's bar counts, steps and closes itself; AO's bar is not shown.
-  While it is open the pane's find reads as open (`nativeOpen`), so
-  `find.close` stops it. The engine reports no close of its own bar, so after
-  a close inside it AO still reads the find as open, and the next Escape
-  only stops a find already gone. A runtime without the API is reported at
-  page create (`find-unavailable`) and the page has no find.
+  `ICoreWebView2Find` has no close event, so AO never models that bar as
+  open: the pane's find does not read as open, `find.close` does not apply,
+  and the launcher's `claimChord` never takes an unmodified key, so Escape
+  goes to the engine and the page. mod+f again seeds and opens the bar. The
+  Manager's session ends as above and stops the engine's find, which does
+  nothing once the user closed the bar. A runtime without the API is
+  reported at page create (`find-unavailable`) and the page has no find.
 - Headless Chromium has no find: serve mode has no pane to find in.
 
 ## Tool surface

@@ -306,13 +306,15 @@ describe('accelerators from the native page view', () => {
     expect(seen[0].ctrlKey).toBe(false);
   });
 
-  // Keyboard focus is in the native view, so DOM focus left in the SPA (the
-  // source pane's terminal) is stale: it must not gate the replayed chord.
-  it('drops stale DOM focus before replaying, so the source terminal does not gate the chord', () => {
-    const terminal = document.createElement('textarea');
-    document.body.appendChild(terminal);
-    terminal.focus();
-    let focusedAtReplay: Element | null = terminal;
+  // DOM focus left in the SPA (a composer or terminal caret) is where the
+  // user returns to; a replayed chord that moves no focus leaves it there.
+  it('leaves DOM focus where it was across a replayed chord', () => {
+    const composer = document.createElement('textarea');
+    document.body.appendChild(composer);
+    composer.focus();
+    const blurred = vi.fn();
+    composer.addEventListener('blur', blurred);
+    let focusedAtReplay: Element | null = null;
     const listener = () => { focusedAtReplay = document.activeElement; };
     window.addEventListener('keydown', listener);
     try {
@@ -321,11 +323,13 @@ describe('accelerators from the native page view', () => {
         threadId: 'thread-browser',
         accelerator: { key: 'f', ctrl: true },
       });
+      expect(focusedAtReplay).toBe(composer);
+      expect(document.activeElement).toBe(composer);
+      expect(blurred).not.toHaveBeenCalled();
     } finally {
       window.removeEventListener('keydown', listener);
-      terminal.remove();
+      composer.remove();
     }
-    expect(focusedAtReplay).toBe(document.body);
   });
 
   it('routes the end of a find to the thread and leaves the pane state alone', async () => {
