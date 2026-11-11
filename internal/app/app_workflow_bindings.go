@@ -973,7 +973,6 @@ type WorkflowPRReviewComments struct {
 //
 //ao:scope threads:autonomy
 //ao:route home
-//ao:callerbound
 func (a *App) WorkflowFetchPRReviewComments(ctx context.Context, itemID string) (WorkflowPRReviewComments, error) {
 	if a.shuttingDown.Load() {
 		return WorkflowPRReviewComments{}, ErrShuttingDown

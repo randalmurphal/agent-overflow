@@ -865,7 +865,7 @@ func (h *connHandler) handleRPC(ctx context.Context, frame ClientFrame) {
 		}
 		return
 	}
-	ctx = withRemoteCaller(WithCallerProof(ctx, proof), h.lifetime)
+	ctx = withServerLifetime(WithCallerProof(ctx, proof), h.lifetime)
 
 	result, fe := h.dispatcher.Invoke(ctx, method, frame.Params)
 	if fe != nil {

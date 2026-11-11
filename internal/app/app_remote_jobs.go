@@ -123,7 +123,6 @@ func (a *App) RemoteCommandCancel(ctx context.Context, id string) (RemoteCommand
 //
 //ao:scope terminal:operate
 //ao:route selected
-//ao:callerbound
 func (a *App) RemoteCommandProjects(ctx context.Context) ([]RemoteCommandProject, error) {
 	rows, err := a.store.ListProjects()
 	if err != nil {
@@ -262,7 +261,6 @@ func (a *App) remoteAgentScope(ctx context.Context) (transport.CallerScope, erro
 //
 //ao:scope terminal:operate
 //ao:route selected
-//ao:callerbound
 func (a *App) AgentRemoteComputers(ctx context.Context) ([]AgentComputer, error) {
 	if _, err := a.remoteAgentScope(ctx); err != nil {
 		return nil, err

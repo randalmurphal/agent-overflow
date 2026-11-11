@@ -38,7 +38,6 @@ func (a *App) RemoteCommandSearchLog(ctx context.Context, id, query string, offs
 }
 
 //ao:scope terminal:operate
-//ao:callerbound
 func (a *App) ReadThreadRemoteLog(ctx context.Context, threadID, computerID, requestID string, offset int64, maxBytes int) (RemoteLogChunk, error) {
 	var result RemoteLogChunk
 	err := a.callThreadRemoteJob(ctx, threadID, computerID, requestID, "RemoteCommandReadLog", &result, requestID, offset, maxBytes)

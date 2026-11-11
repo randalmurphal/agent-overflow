@@ -567,7 +567,6 @@ func (a *App) MintPreviewURL(ctx context.Context, threadID string, port int, pat
 //
 //ao:scope preview:open
 //ao:route selected
-//ao:callerbound
 func (a *App) GetDevServers(ctx context.Context) (devscan.DevServerList, error) {
 	servers, err := a.scanDevServers(ctx)
 	if err != nil {

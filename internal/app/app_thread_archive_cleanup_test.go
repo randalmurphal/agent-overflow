@@ -2,10 +2,13 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/eventchan"
@@ -69,26 +72,93 @@ func TestOrganizeArchiveCutAfterTheArchiveStillCancelsRemoteCommands(t *testing.
 	}
 }
 
-// An archive repeated after an earlier one wrote the row but did not clean
-// up finishes the cleanup.
-func TestRepeatedOrganizeArchiveFinishesTheCleanup(t *testing.T) {
+// An archive stops the commands the thread had started when it committed,
+// and no other: one admitted after the commit, while the archive is still
+// finishing, keeps running, and a repeated archive of the archived thread
+// stops nothing. Both doors that archive run the same capture.
+func TestArchiveStopsOnlyTheCommandsItCaptured(t *testing.T) {
 	t.Parallel()
-	f := newRequestFixture(t)
-	f.mockClaudeHoldingTheTurn(t, "working")
-	spawn := f.runningRequest(t, "how big is the index?")
-	if row := f.request(t, spawn.Token); !row.Notify {
-		t.Fatal("the request under test is not owed a message")
-	}
-	// What an archive cut after its write left behind.
-	if _, _, err := f.app.threadApplication().Archive(f.caller.ID); err != nil {
-		t.Fatalf("Archive: %v", err)
-	}
-
+	remotetest.Require(t)
 	archived := true
-	if _, err := f.app.applyThreadOrganizePatch(t.Context(), f.caller.ID, threadapp.OrganizePatch{Archived: &archived}); err != nil {
-		t.Fatalf("applyThreadOrganizePatch: %v", err)
+	for name, archive := range map[string]func(*App, context.Context, string) error{
+		"ArchiveThread": func(a *App, _ context.Context, id string) error { return a.ArchiveThread(id) },
+		"thread_update": func(a *App, ctx context.Context, id string) error {
+			_, err := a.applyThreadOrganizePatch(ctx, id, threadapp.OrganizePatch{Archived: &archived})
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			source, receiver, ctx, input := remoteAdmissionFixture(t)
+			receiver.remoteJobs.Close()
+			manager, err := remotejobs.New(ctx, receiver.store, func(ctx context.Context, _ string, _ []string, _ io.Writer) (remotejobs.Outcome, error) {
+				<-ctx.Done()
+				return remotejobs.Outcome{ExitCode: -1}, ctx.Err()
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			receiver.remoteJobs = manager
+			t.Cleanup(manager.Close)
+			first, err := source.AgentRemoteStart(ctx, input)
+			if err != nil || first.State != "running" {
+				t.Fatalf("start: %+v %v", first, err)
+			}
+			later := input
+			later.Request.ID = uuid.NewString()
+			threadID := first.SourceThreadID
+			var once sync.Once
+			laterDone := make(chan error, 1)
+			source.testEmitHook = func(name string, data any) {
+				event, ok := data.(triage.ThreadUpdateEvent)
+				if name == string(eventchan.ThreadUpdated) && ok && (event.ID == threadID || (event.Thread != nil && event.Thread.ID == threadID)) {
+					// The archive has committed; a command admitted from here
+					// on is not one it stops. The start waits for the locks
+					// the archive still holds, so it runs beside it.
+					once.Do(func() {
+						go func() {
+							started, err := source.AgentRemoteStart(ctx, later)
+							if err == nil && started.State != "running" {
+								err = fmt.Errorf("later command = %+v", started)
+							}
+							laterDone <- err
+						}()
+					})
+				}
+			}
+			if err := archive(source, ctx, threadID); err != nil {
+				t.Fatalf("archive: %v", err)
+			}
+			if err := <-laterDone; err != nil {
+				t.Fatalf("starting a command after the commit: %v", err)
+			}
+			waitRemoteJobState(t, receiver, input.Request.ID, func(state string) bool { return state != "running" })
+
+			if err := archive(source, ctx, threadID); err != nil {
+				t.Fatalf("repeated archive: %v", err)
+			}
+			time.Sleep(50 * time.Millisecond)
+			if job, err := receiver.store.GetRemoteJob(later.Request.ID); err != nil || job.State != "running" {
+				t.Fatalf("command admitted after the archive committed = %+v, %v; want it still running", job, err)
+			}
+		})
 	}
-	if row := f.request(t, spawn.Token); row.Notify {
-		t.Error("a repeated archive left the archived thread owed a message")
+}
+
+func waitRemoteJobState(t *testing.T, receiver *remoteAdmissionReceiver, id string, done func(string) bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		job, err := receiver.store.GetRemoteJob(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if done(job.State) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("remote command %s stayed %s", id, job.State)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

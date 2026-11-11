@@ -450,9 +450,8 @@ connection context at once. It then waits for the handlers that started and
 for its pump, keepalive and session watchdog, and only then runs the
 connection's cleanups. Only a method marked `//ao:callerbound` sees its
 caller's departure as context cancellation; every other method keeps running
-until it returns or the server stops, and a wait it makes on the caller's
-behalf ends through `transport.CallerGone`. The `/rpc` route applies the same
-rule to its request. The [application guide](../../internal/app/AGENTS.md)
+until it returns or the server stops, whatever its caller does. The `/rpc`
+route applies the same rule to its request. The [application guide](../../internal/app/AGENTS.md)
 says which methods may be caller-bound. A reply written after the socket is
 gone fails at once and is dropped.
 

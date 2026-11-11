@@ -35,7 +35,6 @@ func (a *App) reviewWorkspace(action string, ws WorkspaceRef) (string, error) {
 // toggle (`-w`); see gitdiff.Options.
 //
 //ao:scope files:read
-//ao:callerbound
 func (a *App) OpenWorkspaceDiff(ctx context.Context, ws WorkspaceRef, ignoreWhitespace bool) (ReviewDiffOpened, error) {
 	const action = "open workspace diff"
 	if a.shuttingDown.Load() {
@@ -59,7 +58,6 @@ func (a *App) OpenWorkspaceDiff(ctx context.Context, ws WorkspaceRef, ignoreWhit
 // baseBranch would contain.
 //
 //ao:scope files:read
-//ao:callerbound
 func (a *App) OpenBranchBaseDiff(ctx context.Context, ws WorkspaceRef, baseBranch string, ignoreWhitespace bool) (ReviewDiffOpened, error) {
 	const action = "open branch base diff"
 	if a.shuttingDown.Load() {
@@ -138,7 +136,6 @@ func (a *App) ListRecentCommits(ws WorkspaceRef) ([]BranchCommit, error) {
 // (first-parent diff; empty-tree diff for a root commit).
 //
 //ao:scope files:read
-//ao:callerbound
 func (a *App) OpenCommitDiff(ctx context.Context, ws WorkspaceRef, sha string, ignoreWhitespace bool) (ReviewDiffOpened, error) {
 	const action = "open commit diff"
 	if a.shuttingDown.Load() {

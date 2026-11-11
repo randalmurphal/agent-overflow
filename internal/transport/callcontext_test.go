@@ -122,28 +122,10 @@ func TestScopedRPCEndsACallerBoundMethodWithItsCaller(t *testing.T) {
 	}
 }
 
-// A call not arriving over the transport has no separate caller: its
-// presence is its context.
-func TestCallerGoneOutsideTheTransportIsTheContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	gone := CallerGone(ctx)
-	select {
-	case <-gone:
-		t.Fatal("caller gone before cancel")
-	default:
-	}
-	cancel()
-	select {
-	case <-gone:
-	case <-time.After(time.Second):
-		t.Fatal("caller not gone after cancel")
-	}
-}
-
 // Shutdown still ends a method that is not caller-bound.
 func TestServerShutdownEndsAnUnboundMethod(t *testing.T) {
 	lifetime, stop := context.WithCancel(context.Background())
-	caller := withRemoteCaller(context.Background(), lifetime)
+	caller := withServerLifetime(context.Background(), lifetime)
 	ctx := methodContext(caller, &Method{Name: "Unbound"})
 	derived, cancel := context.WithTimeout(ctx, time.Hour)
 	defer cancel()

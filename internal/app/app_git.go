@@ -56,7 +56,6 @@ func (a *App) workspaceState(project, workspace string) GitWorkspaceState {
 // never reported is how a silently dead watchpoint gets reinstalled.
 //
 //ao:scope git:operate
-//ao:callerbound
 func (a *App) GetGitStatus(ctx context.Context, ws WorkspaceRef) (gitops.GitStatus, error) {
 	return a.gitApplication().Status(ctx, ws)
 }

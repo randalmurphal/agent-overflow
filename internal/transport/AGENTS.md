@@ -145,7 +145,7 @@ concurrent revocation.
 A bound method marked `//ao:callerbound` runs on its caller's context, which
 ends when the WebSocket's read loop exits or the `/rpc` request ends. Every
 other method runs on the caller's values with the server's lifetime
-(`callcontext.go`), and sees the caller leave only through `CallerGone`.
+(`callcontext.go`); its caller leaving never affects it.
 When the read loop exits, close the subscriber and cancel the connection
 context first, then join the RPC handlers and the connection's loops, then
 run the cleanup stack; a handler still running when its resources are

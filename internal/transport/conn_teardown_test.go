@@ -85,24 +85,6 @@ func (a *teardownApp) Detached(ctx context.Context) error {
 	return nil
 }
 
-// Presence makes its effect, then waits on its caller's behalf until the
-// caller leaves.
-func (a *teardownApp) Presence(ctx context.Context) error {
-	if err := a.registerCleanup(ctx); err != nil {
-		return err
-	}
-	a.record("effect")
-	a.entered <- "presence"
-	select {
-	case <-CallerGone(ctx):
-	case <-time.After(10 * time.Second):
-		a.record("wait outlived its caller")
-		return nil
-	}
-	a.record(fmt.Sprintf("wait ended (err=%v)", ctx.Err()))
-	return nil
-}
-
 // connGoroutines counts goroutines running a connHandler method.
 func connGoroutines() int {
 	buf := make([]byte, 1<<20)
@@ -238,26 +220,6 @@ func TestDetachedCallCompletesAfterDisconnect(t *testing.T) {
 			want := []string{"detached finished (err=<nil>)", "cleanup"}
 			if got := app.lines(); strings.Join(got, "|") != strings.Join(want, "|") {
 				t.Fatalf("teardown order = %q, want %q", got, want)
-			}
-		})
-	}
-}
-
-// A wait on the caller's behalf ends when the caller leaves; the effect
-// before it stands and the call's context is still live.
-func TestPresenceAwareWaitEndsAtDisconnect(t *testing.T) {
-	for name, disconnect := range disconnects {
-		t.Run(name, func(t *testing.T) {
-			f, app := newTeardownFixture(t)
-			conn := f.dial(t)
-			callWithoutReply(t, conn, "presence-1", "Presence")
-			waitEntered(t, app, "presence")
-
-			disconnect(conn)
-			waitCleanup(t, app)
-			want := []string{"effect", "wait ended (err=<nil>)", "cleanup"}
-			if got := app.lines(); strings.Join(got, "|") != strings.Join(want, "|") {
-				t.Fatalf("log = %q, want %q", got, want)
 			}
 		})
 	}

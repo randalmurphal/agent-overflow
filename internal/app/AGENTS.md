@@ -61,13 +61,14 @@ principal and is omitted from generated TypeScript signatures. Regenerate both
 binding sets after adding it.
 
 That context ends at server shutdown, not when the caller disconnects, unless
-the method is marked `//ao:callerbound`. Mark only a method with no durable,
-provider-visible or remote effect (a read, a subscription, a diff stream), and
-list it with its reason in `callerBoundMethods`; when in doubt, do not. A
-method with an effect that then waits on its caller's behalf selects on
-`transport.CallerGone(ctx)` for that wait only. Work past a method's first
-effect that must also survive shutdown runs on `context.WithoutCancel(ctx)`, or
-`ctxutil.Detach` onto its owner's lifetime, under its own timeout.
+the method is marked `//ao:callerbound`. Mark only a method whose context
+reaches nothing outside the process: no subprocess, no network request, no
+shared or deduplicated operation and no write. A subscription or stream
+qualifies when the connection's cleanup stack releases it. List it in
+`callerBoundMethods` with what its context reaches; when in doubt, do not.
+Work past a method's first effect that must also survive shutdown runs on
+`context.WithoutCancel(ctx)`, or `ctxutil.Detach` onto its owner's lifetime,
+under its own timeout.
 
 Per-screen settings must be obtained through `settingsCaller(ctx)` so bucket
 and device class come from one derivation. Backend work for the local screen

@@ -132,7 +132,6 @@ func (a *App) CreateProject(path string) (store.Project, error) {
 //
 //ao:scope git:operate
 //ao:route selected
-//ao:callerbound
 func (a *App) InspectProjectFolder(ctx context.Context, path string) (projectapp.FolderIdentity, error) {
 	if err := a.requireIsolatedWorkspace(path); err != nil {
 		return projectapp.FolderIdentity{}, err

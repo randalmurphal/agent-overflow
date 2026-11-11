@@ -65,7 +65,6 @@ type GitStatusEvent struct {
 // connection-tied cleanup is the safety net for unclean disconnects.
 //
 //ao:scope git:operate
-//ao:callerbound
 func (a *App) GitStatusSubscribe(ctx context.Context, ws WorkspaceRef) (GitStatusSubscriptionResult, error) {
 	if a.shuttingDown.Load() {
 		return GitStatusSubscriptionResult{}, ErrShuttingDown

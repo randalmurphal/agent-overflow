@@ -9,43 +9,24 @@ import (
 // method (//ao:callerbound) receives its caller's context, which ends when
 // the caller's connection or request does. Every other method receives
 // the caller's values on a context that ends only when the server stops,
-// so a disconnect never cuts a method part way through an effect. Such a
-// method that waits on its caller's behalf before any effect selects on
-// CallerGone for that wait.
+// so its caller leaving never affects it.
 
-// callerKey carries the transport's record of the remote caller.
-type callerKey struct{}
+// serverLifetimeKey carries the server's lifetime on a remote call.
+type serverLifetimeKey struct{}
 
-type remoteCaller struct {
-	// gone closes when the caller's connection or request ends.
-	gone <-chan struct{}
-	// lifetime ends at server shutdown.
-	lifetime context.Context
-}
-
-// withRemoteCaller marks ctx as a remote caller's context: ctx ends when
-// the caller leaves, lifetime when the server stops.
-func withRemoteCaller(ctx, lifetime context.Context) context.Context {
-	return context.WithValue(ctx, callerKey{}, remoteCaller{gone: ctx.Done(), lifetime: lifetime})
-}
-
-// CallerGone returns a channel that closes when the caller waiting on
-// this call has gone. For a call that did not arrive over the transport it
-// is ctx.Done().
-func CallerGone(ctx context.Context) <-chan struct{} {
-	if caller, ok := ctx.Value(callerKey{}).(remoteCaller); ok {
-		return caller.gone
-	}
-	return ctx.Done()
+// withServerLifetime marks ctx as a remote caller's context, whose
+// non-caller-bound methods run until lifetime ends.
+func withServerLifetime(ctx, lifetime context.Context) context.Context {
+	return context.WithValue(ctx, serverLifetimeKey{}, lifetime)
 }
 
 // methodContext is the context m runs on for a call arriving on ctx.
 func methodContext(ctx context.Context, m *Method) context.Context {
-	caller, ok := ctx.Value(callerKey{}).(remoteCaller)
+	lifetime, ok := ctx.Value(serverLifetimeKey{}).(context.Context)
 	if !ok || m.CallerBound {
 		return ctx
 	}
-	return serverBoundContext{lifetime: caller.lifetime, values: context.WithoutCancel(ctx)}
+	return serverBoundContext{lifetime: lifetime, values: context.WithoutCancel(ctx)}
 }
 
 // serverBoundContext has its caller's values and its server's lifetime.

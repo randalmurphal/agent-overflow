@@ -207,7 +207,6 @@ func prUpdateKey(pr gitops.PRReference) string {
 //
 //ao:scope git:operate
 //ao:route selected
-//ao:callerbound
 func (a *App) GetPRDetail(ctx context.Context, pr gitops.PRReference) (gitops.PRDetail, error) {
 	if a.shuttingDown.Load() {
 		return gitops.PRDetail{}, ErrShuttingDown
@@ -224,7 +223,6 @@ func (a *App) GetPRDetail(ctx context.Context, pr gitops.PRReference) (gitops.PR
 // asked for the read (prRevisionWorkspace).
 //
 //ao:scope git:operate
-//ao:callerbound
 func (a *App) OpenPRDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, ignoreWhitespace, userInitiated bool) (ReviewDiffOpened, error) {
 	const action = "open PR diff"
 	workspace, err := a.prRevisionWorkspace(action, ws, pr, rev, userInitiated)
@@ -255,7 +253,6 @@ func (a *App) ListPRCommits(ws WorkspaceRef, pr gitops.PRReference, rev gitops.P
 // userInitiated is whether a person asked for the read (prRevisionWorkspace).
 //
 //ao:scope git:operate
-//ao:callerbound
 func (a *App) OpenPRCommitDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, sha string, ignoreWhitespace, userInitiated bool) (ReviewDiffOpened, error) {
 	const action = "open PR commit diff"
 	workspace, err := a.prRevisionWorkspace(action, ws, pr, rev, userInitiated)
@@ -331,7 +328,6 @@ func (a *App) notePRReadFailed(pr gitops.PRReference) {
 //
 //ao:scope git:operate
 //ao:route selected
-//ao:callerbound
 func (a *App) ListPRReviewThreads(ctx context.Context, pr gitops.PRReference) ([]gitops.ReviewThread, error) {
 	if a.shuttingDown.Load() {
 		return nil, ErrShuttingDown
@@ -448,7 +444,6 @@ func (a *App) SetPRThreadResolved(ctx context.Context, pr gitops.PRReference, th
 //
 //ao:scope git:operate
 //ao:route selected
-//ao:callerbound
 func (a *App) SubscribePRUpdates(ctx context.Context, pr gitops.PRReference) (PRUpdateSubscriptionResult, error) {
 	if a.shuttingDown.Load() {
 		return PRUpdateSubscriptionResult{}, ErrShuttingDown

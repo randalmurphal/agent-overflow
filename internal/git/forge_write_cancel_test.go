@@ -38,7 +38,7 @@ func TestForgeWritesFinishAfterTheirCallerCancels(t *testing.T) {
 				_, err := core.SubmitReview(ctx, gitlabTestRef(7), review)
 				return err
 			},
-			want: []string{"GET " + mr, "GET " + mr + "/draft_notes?per_page=100", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/approve"},
+			want: []string{"GET " + mr, "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/approve"},
 		},
 		"approve": {
 			hold:  "POST " + mr + "/approve",
@@ -76,8 +76,8 @@ func TestForgeWritesFinishAfterTheirCallerCancels(t *testing.T) {
 				switch {
 				case key == "GET "+mr:
 					return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
-				case key == "GET "+mr+"/draft_notes?per_page=100":
-					return forgeAPIAnswer{Body: `[]`}
+				case key == "POST "+mr+"/draft_notes":
+					return forgeAPIAnswer{Status: http.StatusCreated, Body: `{"id":11}`}
 				case key == "POST "+mr+"/draft_notes/bulk_publish":
 					return forgeAPIAnswer{Status: http.StatusNoContent}
 				case strings.HasPrefix(key, "POST ") || strings.HasPrefix(key, "PUT "):
@@ -159,51 +159,5 @@ func TestCreatePRFinishesAfterItsCallerCancels(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("CreatePR did not finish")
-	}
-}
-
-// A repeated GitLab submit finds the drafts an interrupted one left pending
-// and posts only the rest; bulk_publish then publishes them all once.
-func TestGitLabSubmitReviewRepeatPostsOnlyMissingDrafts(t *testing.T) {
-	t.Parallel()
-	mr := gitlabTestProject + "/merge_requests/7"
-	// What GitLab lists for the two drafts the first attempt created, in the
-	// shape https://docs.gitlab.com/api/draft_notes/ documents: its own ids
-	// and fields beside the note, and for the summary, sent without a
-	// position, a position whose anchor is null.
-	pending := `[{"id":11,"author_id":3,"merge_request_id":7,"resolve_discussion":false,"discussion_id":null,"note":"Looks good",
-		"commit_id":null,"line_code":null,"position":{"base_sha":null,"start_sha":null,"head_sha":null,"old_path":null,"new_path":null,
-		"position_type":"text","old_line":null,"new_line":null,"line_range":null}},
-		{"id":12,"author_id":3,"merge_request_id":7,"resolve_discussion":false,"discussion_id":null,"note":"nit",
-		"commit_id":null,"line_code":"abc_0_4","position":{"base_sha":"base","start_sha":"start","head_sha":"head2","old_path":"a.go","new_path":"a.go",
-		"position_type":"text","old_line":null,"new_line":4,"line_range":null}}]`
-	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-		switch call.Method + " " + call.Path {
-		case "GET " + mr:
-			return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
-		case "GET " + mr + "/draft_notes?per_page=100":
-			return forgeAPIAnswer{Body: pending}
-		case "POST " + mr + "/draft_notes":
-			return forgeAPIAnswer{Status: http.StatusCreated, Body: `{"id":13}`}
-		case "POST " + mr + "/draft_notes/bulk_publish":
-			return forgeAPIAnswer{Status: http.StatusNoContent}
-		}
-		return forgeUnexpected(t, call)
-	})
-	line, other := 4, 9
-	review := SubmitReviewRequest{Verdict: ReviewVerdictComment, Body: "Looks good", Comments: []ReviewLineComment{
-		{Path: "a.go", Body: "nit", Line: &line, Side: "right"},
-		{Path: "a.go", Body: "nit", Line: &other, Side: "right"},
-	}}
-	result, err := core.SubmitReview(t.Context(), gitlabTestRef(7), review)
-	if err != nil || !result.PostedReview {
-		t.Fatalf("SubmitReview = %+v, %v", result, err)
-	}
-	want := []string{"GET " + mr, "GET " + mr + "/draft_notes?per_page=100", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes/bulk_publish"}
-	if got := gitlabPaths(calls); strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("requests = %q, want %q", got, want)
-	}
-	if body := string(calls.all()[2].Body); !strings.Contains(body, `"new_line":9`) {
-		t.Fatalf("posted draft = %s, want only the one on line 9", body)
 	}
 }

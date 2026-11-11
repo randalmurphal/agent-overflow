@@ -196,12 +196,31 @@ type Pull struct {
 	// events when it has none.
 	Events []Event `json:"events,omitempty"`
 
+	// DraftNotes are a GitLab merge request's pending draft notes, a
+	// review's comments before bulk_publish, each visible to its author
+	// alone. A review the app submits adds the viewer's.
+	DraftNotes []DraftNote `json:"draftNotes,omitempty"`
+
 	// squash is how a GitLab merge request merges or merged (its squash
 	// flag), squashSHA the squash commit of a squashed merge; forceRemove
 	// is its force_remove_source_branch.
 	squash      bool
 	squashSHA   string
 	forceRemove bool
+}
+
+// DraftNote is one pending GitLab draft note. Publishing it makes a
+// thread on Path at Line (StartLine for a range), on Side "right", "left"
+// or "file", or a conversation comment when Path is empty.
+type DraftNote struct {
+	// ID is generated when omitted.
+	ID        int64  `json:"id,omitempty"`
+	Author    string `json:"author"`
+	Note      string `json:"note"`
+	Path      string `json:"path,omitempty"`
+	Line      *int   `json:"line,omitempty"`
+	StartLine *int   `json:"startLine,omitempty"`
+	Side      string `json:"side,omitempty"`
 }
 
 // Readiness is the merge box state a pull carries beyond its reviews, CI,
@@ -694,6 +713,27 @@ func (p *Pull) normalize(forge string, ids *idSource) error {
 		}
 		p.Reviews[i].SubmittedAt = defaultString(review.SubmittedAt, "2026-01-01T00:00:00Z")
 		p.Reviews[i].CommitSHA = defaultString(review.CommitSHA, p.HeadSHA)
+	}
+	for i := range p.DraftNotes {
+		draft := &p.DraftNotes[i]
+		if forge != "gitlab" {
+			return errors.New("draftNotes: GitLab only")
+		}
+		if draft.Author == "" || draft.Note == "" {
+			return fmt.Errorf("draftNotes[%d]: author and note are required", i)
+		}
+		if draft.Path != "" {
+			probe := Thread{Path: draft.Path, Line: draft.Line, StartLine: draft.StartLine, Side: draft.Side, ID: "-", Comments: []Comment{{Author: draft.Author, Body: draft.Note}}}
+			if err := probe.normalize(forge, draft.Author, "", ids); err != nil {
+				return fmt.Errorf("draftNotes[%d]: %w", i, err)
+			}
+			draft.Side = probe.Side
+		} else if draft.Line != nil || draft.StartLine != nil || draft.Side != "" {
+			return fmt.Errorf("draftNotes[%d]: a draft with no path has no line or side", i)
+		}
+		if draft.ID == 0 {
+			draft.ID = ids.next()
+		}
 	}
 	for i, login := range p.ChangeRequests {
 		same := func(other string) bool { return strings.EqualFold(other, login) }

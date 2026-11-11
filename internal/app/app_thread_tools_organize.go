@@ -96,26 +96,24 @@ func (t threadToolsApp) updateOneThread(ctx context.Context, caller threadtools.
 // never the reverse. A patch that does not archive takes the mutation lock
 // alone, exactly as the pin and rename bindings do.
 func (a *App) applyThreadOrganizePatch(ctx context.Context, threadID string, patch threadapp.OrganizePatch) (threadapp.OrganizeResult, error) {
-	result, err := a.applyThreadOrganizePatchLocked(ctx, threadID, patch)
+	result, work, err := a.applyThreadOrganizePatchLocked(ctx, threadID, patch)
 	if err != nil {
 		return threadapp.OrganizeResult{}, err
 	}
-	if patch.Archived != nil && *patch.Archived && result.Thread.Archived {
-		// The same cleanup the archive binding runs, through the same door:
-		// the requests this thread is waiting on end and its wakes are
-		// disarmed, then the commands it started elsewhere are cancelled.
-		// The archive itself is already durable, so a failure to reach the
-		// other computer is reported here rather than turned into a refusal
-		// of a change that landed; the destination stops the work itself
-		// after the owner grace.
-		if err := a.stopArchivedThreadWork(threadID); err != nil {
+	if work != nil {
+		// The same cleanup the archive binding runs, through the same door,
+		// for the archive this patch committed. It is already durable, so a
+		// failure to reach the other computer is reported here rather than
+		// turned into a refusal of a change that landed; the destination
+		// stops the work itself after the owner grace.
+		if err := a.stopArchivedThreadWork(*work); err != nil {
 			log.Printf("thread tools: archive thread %s: cancel remote commands: %v", threadID, err)
 		}
 	}
 	return result, nil
 }
 
-func (a *App) applyThreadOrganizePatchLocked(ctx context.Context, threadID string, patch threadapp.OrganizePatch) (threadapp.OrganizeResult, error) {
+func (a *App) applyThreadOrganizePatchLocked(ctx context.Context, threadID string, patch threadapp.OrganizePatch) (threadapp.OrganizeResult, *archivedThreadWork, error) {
 	archiving := patch.Archived != nil && *patch.Archived
 	// Stamped before the locks, for the same reason ArchiveThread stamps it
 	// there: waiting for the lock is exactly the window in which this
@@ -126,31 +124,39 @@ func (a *App) applyThreadOrganizePatchLocked(ctx context.Context, threadID strin
 		unlockAction := a.threadLocks().Lock(threadID)
 		defer unlockAction()
 	}
-	result, err := a.applyThreadOrganizePatchMutable(ctx, threadID, patch)
+	result, work, err := a.applyThreadOrganizePatchMutable(ctx, threadID, patch)
 	if err != nil {
-		return threadapp.OrganizeResult{}, err
+		return threadapp.OrganizeResult{}, nil, err
 	}
 	// Under the action lock alone, as archiveThreadLocked stops it: the
 	// teardown's queue drop takes the thread's mutation lock
 	// (dropQueueForTeardown), which is not reentrant.
-	if result.ArchivedChanged && result.Thread.Archived {
+	if work != nil {
 		a.stopArchivedThreadSession(threadID, requestedAt)
 	}
-	return result, nil
+	return result, work, nil
 }
 
 // applyThreadOrganizePatchMutable writes the patch and announces it under
-// the thread's mutation lock, and releases the lock before it returns.
-func (a *App) applyThreadOrganizePatchMutable(ctx context.Context, threadID string, patch threadapp.OrganizePatch) (threadapp.OrganizeResult, error) {
+// the thread's mutation lock, and releases the lock before it returns. A
+// patch that archives the thread captures, in the same critical section,
+// the work that archive stops (captureArchivedThreadWork); a repeated
+// archive captures nothing.
+func (a *App) applyThreadOrganizePatchMutable(ctx context.Context, threadID string, patch threadapp.OrganizePatch) (threadapp.OrganizeResult, *archivedThreadWork, error) {
 	unlock, err := a.threadApplication().LockMutable(ctx, threadID)
 	if err != nil {
-		return threadapp.OrganizeResult{}, err
+		return threadapp.OrganizeResult{}, nil, err
 	}
 	defer unlock()
 
 	result, err := a.threadApplication().ApplyOrganizePatch(threadID, patch)
 	if err != nil {
-		return threadapp.OrganizeResult{}, err
+		return threadapp.OrganizeResult{}, nil, err
+	}
+	var work *archivedThreadWork
+	if result.ArchivedChanged && result.Thread.Archived {
+		captured := a.captureArchivedThreadWork(threadID)
+		work = &captured
 	}
 	// The group frame goes first: a client that receives the thread's new
 	// groupId before it has the group row has nowhere to render the thread.
@@ -163,7 +169,7 @@ func (a *App) applyThreadOrganizePatchMutable(ctx context.Context, threadID stri
 	for _, carried := range result.Carried {
 		a.announceThread(triage.ThreadActionFull, carried.ID)
 	}
-	return result, nil
+	return result, work, nil
 }
 
 // organizeThreadAction picks the sidebar frame this patch produced. An

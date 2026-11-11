@@ -163,7 +163,6 @@ func (a *App) ThreadToolResolve(ctx context.Context, resolve ThreadPeerResolve) 
 //
 //ao:scope threads:read
 //ao:route selected
-//ao:callerbound
 func (a *App) ThreadToolQuery(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
 	if _, err := a.remoteCommandOwner(ctx); err != nil {
 		return ThreadPeerReply{}, err
