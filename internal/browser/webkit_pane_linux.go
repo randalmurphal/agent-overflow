@@ -111,7 +111,7 @@ func (e *webkitEngine) SetPageBounds(handle string, placement PanePlacement) {
 	// Background first: a present that exposes new pixels must find the pane's
 	// own color already under the page.
 	if paint {
-		webkitSetViewBackground(p.liveView(), color)
+		_ = webkitSetViewBackground(p.liveView(), color)
 	}
 	if present {
 		_ = webkitPresentView(p.liveView(), placement)
@@ -138,7 +138,7 @@ func (e *webkitEngine) ShowPage(handle string) {
 	e.pane[p.id] = st
 	e.mu.Unlock()
 	if paint {
-		webkitSetViewBackground(p.liveView(), color)
+		_ = webkitSetViewBackground(p.liveView(), color)
 	}
 	if present {
 		_ = webkitPresentView(p.liveView(), placement)
@@ -164,7 +164,7 @@ func (e *webkitEngine) HidePage(handle string) {
 
 func (e *webkitEngine) OpenPageDevTools(handle string) {
 	if p := webkitPaneTarget(handle); p != nil {
-		webkitOpenInspector(p.liveView())
+		_ = webkitOpenInspector(p.liveView())
 	}
 }
 
