@@ -164,8 +164,9 @@
   }
 
   // Opens what hides the match (its file, its settled thread), then
-  // scrolls once the rows are built, if it is still the current match.
-  async function showDiffHit(hit: ReviewFindHit): Promise<void> {
+  // scrolls once the rows are built, if its reveal is still wanted (a
+  // rescan that restarts the query while the rows build keeps it).
+  async function showDiffHit(hit: ReviewFindHit): Promise<boolean> {
     const conflicts = untrack(() => view) === 'conflicts';
     if (conflicts && review.conflictCollapsedPaths.has(hit.path)) await review.toggleConflictCollapsed(hit.path);
     else if (!conflicts && review.collapsedPaths.has(hit.path)) review.toggleCollapsed(hit.path);
@@ -175,8 +176,10 @@
       if (thread?.isResolved && !review.expandedPRThreadIds.has(thread.id)) review.togglePRThread(thread.id);
     }
     await tick();
-    if (find.hits[find.result.current]?.identity !== hit.identity) return;
-    if (diff()?.revealFindHit(hit)) aim(hit);
+    if (!find.wants(hit.identity)) return false;
+    const shown = diff()?.revealFindHit(hit) ?? false;
+    if (shown) aim(hit);
+    return shown;
   }
 
   // A revision, commit, filter or conflict tree change replaces `files`,
@@ -243,16 +246,19 @@
     reveal: (hit, force) => {
       if (!force && offscreenBy() === 0) return true;
       if (isLogHit(hit)) {
-        void log()?.revealFindLine(hit.line, hit.sectionKey).then(() => aim(hit));
-        return true;
+        const surface = log();
+        if (!surface) return false;
+        return surface.revealFindLine(hit.line, hit.sectionKey).then(() => {
+          aim(hit);
+          return true;
+        });
       }
       const place = hit.place;
       if (place.kind === 'fold') {
         review.expandConflictFold(hit.path, place.foldId);
         return false;
       }
-      void showDiffHit(hit);
-      return true;
+      return showDiffHit(hit);
     },
     paint: (query, current) => {
       if (!query) {

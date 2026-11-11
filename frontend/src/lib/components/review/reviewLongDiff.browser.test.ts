@@ -14,7 +14,8 @@ import type { CommentAnchor } from '../../utils/reviewRows';
 import type { DiffReviewComment } from '../../types/models';
 import { REVIEW_FILE_HEADER_BAR_PX } from '../../utils/reviewRows';
 import { scanReviewFind, type ReviewFindHit } from '../../utils/reviewFindScan';
-import { parseReviewFiles, type ReviewFile } from '../../utils/patchStore';
+import { parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from '../../utils/patchStore';
+import { conflictPatchFile } from '../../utils/conflictFile';
 import { HELD_EDGE_PX, HELD_LIMIT_PX } from '../../utils/virtual/heldRows';
 import { waitFor } from '../../../test/helpers/browserFrames';
 import { rawProps } from '../../../test/helpers/rawProps.svelte';
@@ -310,6 +311,113 @@ describe('review find over the real list', () => {
       expect(scrollEl.scrollTop).toBe(top);
       expect(box.isConnected).toBe(true);
       expect(scrollEl.querySelector('textarea')?.value).toBe('zq typed and unsaved');
+    } finally {
+      unmount(finder);
+    }
+  });
+
+  it('a fold opened by a query still scanning is brought on screen after the rescan it causes', async () => {
+    const { props, scrollEl, body } = await mountBody('diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n');
+    // The match is deep inside a long fold at the top; a second, large
+    // file keeps the scan going past it.
+    const lead = Array.from({ length: 1000 }, (_, i) => (i === 600 ? 'zq deep in the fold' : `lead ${i}`));
+    const contents: Record<string, string> = {
+      'a.go': [...lead, '<<<<<<< ours', 'left', '=======', 'right', '>>>>>>> theirs'].join('\n'),
+      'z.go': [...Array.from({ length: 200_000 }, (_, i) => `filler ${i}`), '<<<<<<< ours', 'l', '=======', 'r', '>>>>>>> theirs'].join('\n'),
+    };
+    const expanded = new Map<string, Set<number>>();
+    const folds = new Map<string, Map<number, readonly string[]>>();
+    const build = () => Object.entries(contents).map(([path, content]) => {
+      const fileFolds = new Map<number, readonly string[]>();
+      folds.set(path, fileFolds);
+      return reviewFileFromPatchFile(conflictPatchFile(path, content, {
+        expandedFolds: expanded.get(path), onFold: (id, lines) => fileFolds.set(id, lines),
+      }));
+    });
+    let files = build();
+    mounted.at(-1)!.files.push(files);
+    props.files = files;
+    await settle(scrollEl);
+    let pendingAtExpand: boolean | null = null;
+    const findProps = rawProps({
+      findKey: 'pane-fold', title: 'Review', view: 'conflicts' as const, files, root: mounted.at(-1)!.host as HTMLElement | undefined,
+      review: {
+        drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
+        conflictCollapsedPaths: new Set<string>(),
+        conflictFoldLines: (path: string) => folds.get(path) ?? null,
+        expandConflictFold: (path: string, foldId: number) => {
+          pendingAtExpand = getPaneFindProvider('pane-fold')!.result.pending;
+          expanded.set(path, new Set([...(expanded.get(path) ?? []), foldId]));
+          files = build();
+          mounted.at(-1)!.files.push(files);
+          props.files = files;
+          findProps.files = files;
+        },
+      } as unknown as ReviewPaneState,
+      diff: () => body as never,
+      log: () => undefined,
+    });
+    const finder = mount(ReviewPaneFind, { target: document.body, props: findProps });
+    flushSync();
+    try {
+      const find = getPaneFindProvider('pane-fold')!;
+      openPaneFind('pane-fold');
+      setPaneFindQuery('pane-fold', 'zq');
+      await waitFor(() => find.result.count === 1 && !find.result.pending, 'the scan', 600);
+      await settle(scrollEl);
+      // The fold opened while the query was still scanning.
+      expect(pendingAtExpand).toBe(true);
+      const row = scrollEl.querySelector<HTMLElement>(`[data-find-key="${find.hits[0].rowKey}"]`);
+      expect(row?.textContent).toContain('zq deep in the fold');
+      const view = scrollEl.getBoundingClientRect();
+      const box = row!.getBoundingClientRect();
+      expect(box.top).toBeGreaterThanOrEqual(view.top);
+      expect(box.bottom).toBeLessThanOrEqual(view.bottom);
+    } finally {
+      unmount(finder);
+    }
+  });
+
+  it('a collapsed file opened by a query still scanning is brought on screen though its load restarts the scan', async () => {
+    const { props, scrollEl, body, files } = await mountBody();
+    const path = 'src/f003.ts';
+    let collapsed = new Set([path]);
+    props.collapsedPaths = collapsed;
+    await settle(scrollEl);
+    let pendingAtOpen: boolean | null = null;
+    const findProps = rawProps({
+      findKey: 'pane-load', title: 'Review', view: 'diff' as const, files, root: mounted.at(-1)!.host as HTMLElement | undefined,
+      review: {
+        drafts: [], prThreads: [], expandedPRThreadIds: new Set<string>(),
+        get collapsedPaths() { return collapsed; },
+        // Opening the file loads it: the files are read again.
+        toggleCollapsed: (at: string) => {
+          pendingAtOpen = getPaneFindProvider('pane-load')!.result.pending;
+          collapsed = new Set([...collapsed].filter((p) => p !== at));
+          props.collapsedPaths = collapsed;
+          const next = readFiles();
+          props.files = next;
+          findProps.files = next;
+        },
+      } as unknown as ReviewPaneState,
+      diff: () => body as never,
+      log: () => undefined,
+    });
+    const finder = mount(ReviewPaneFind, { target: document.body, props: findProps });
+    flushSync();
+    try {
+      const find = getPaneFindProvider('pane-load')!;
+      openPaneFind('pane-load');
+      setPaneFindQuery('pane-load', 'f3:500');
+      await waitFor(() => find.result.count === 1 && !find.result.pending, 'the scan', 1200);
+      await settle(scrollEl);
+      expect(pendingAtOpen).toBe(true);
+      const row = scrollEl.querySelector<HTMLElement>(`[data-find-key="${find.hits[0].rowKey}"]`);
+      expect(row?.textContent).toContain('f3:500');
+      const view = scrollEl.getBoundingClientRect();
+      const box = row!.getBoundingClientRect();
+      expect(box.top).toBeGreaterThanOrEqual(view.top);
+      expect(box.bottom).toBeLessThanOrEqual(view.bottom);
     } finally {
       unmount(finder);
     }

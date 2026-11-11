@@ -39,6 +39,11 @@ function source(items: () => string[], options: { slice?: number; remote?: boole
         await flush();
       }
     },
+    /** Lets the paused scan run to its next pause. */
+    async step() {
+      gates.shift()?.();
+      await flush();
+    },
   };
 }
 
@@ -69,7 +74,158 @@ afterEach(() => {
   setPatchTextBudgetForTest(null);
 });
 
+function deferred() {
+  let resolve!: (done: boolean) => void;
+  const promise = new Promise<boolean>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 describe('review find', () => {
+  it('a reveal that opened a fold completes after the restart its change causes', async () => {
+    const s = source(() => ['f0', 'f1', 'f2', 'f3'], { slice: 1 });
+    let opened = false;
+    // The reader is past f0 when the query starts; the opened fold moves
+    // the reading position above it.
+    let readFrom = 1;
+    let find: ReturnType<typeof createReviewFind<Hit>>;
+    const { h, reveals } = host(() => s.src, {
+      readingPosition: () => {
+        const from = readFrom;
+        return (hit) => hit.at >= from;
+      },
+      reveal: (hit, force) => {
+        reveals.push([hit.identity, force]);
+        if (opened) return true;
+        // The fold opens: the files change, and the pane rescans while
+        // the query is still scanning.
+        opened = true;
+        readFrom = 0;
+        queueMicrotask(() => find.refresh());
+        return false;
+      },
+    });
+    find = createReviewFind(h, () => 'conflicts');
+    find.search('f');
+    await flush();
+    await s.step();
+    expect(reveals).toEqual([['f1', false]]);
+    // The restart has found only f0: it is not chosen over the match the
+    // reveal waits for.
+    expect([find.result.current, find.result.pending]).toEqual([-1, true]);
+    // The replaced scan's pause, then the restart's.
+    await s.step();
+    await s.step();
+    expect(find.hits[find.result.current].identity).toBe('f1');
+    expect(reveals).toEqual([['f1', false], ['f1', false]]);
+    expect(find.wants('f1')).toBe(false);
+    await s.release();
+    expect([find.result.count, find.result.pending]).toEqual([4, false]);
+    // Later recounts and restarts never reveal it again.
+    find.refresh();
+    await s.release();
+    find.refresh();
+    await flush();
+    find.refresh();
+    await s.release();
+    expect(reveals).toEqual([['f1', false], ['f1', false]]);
+  });
+
+  it('a reveal waiting on a file that loads survives the restarts and completes once', async () => {
+    const s = source(() => ['g1', 'g2', 'g3'], { slice: 1 });
+    const first = deferred();
+    const { h, reveals } = host(() => s.src, {
+      reveal: (hit, force) => {
+        reveals.push([hit.identity, force]);
+        return reveals.length === 1 ? first.promise : true;
+      },
+    });
+    const find = createReviewFind(h, () => 'diff');
+    find.search('g');
+    await flush();
+    expect(reveals).toEqual([['g1', false]]);
+    expect(find.wants('g1')).toBe(true);
+    // The file starts loading: a restart while the reveal runs does not
+    // start a second one.
+    find.refresh();
+    await s.step();
+    expect(reveals).toEqual([['g1', false]]);
+    // The reveal could not show it yet; the load's rescan does.
+    first.resolve(false);
+    await flush();
+    expect(find.wants('g1')).toBe(true);
+    find.refresh();
+    await s.step();
+    expect(reveals).toEqual([['g1', false], ['g1', false]]);
+    expect(find.wants('g1')).toBe(false);
+    find.refresh();
+    await s.release();
+    expect(reveals).toEqual([['g1', false], ['g1', false]]);
+  });
+
+  it('a step whose reveal is running when a live log grows reveals once', async () => {
+    let items = ['l1', 'l2'];
+    const s = source(() => items);
+    const running = deferred();
+    const { h, reveals } = host(() => s.src, {
+      reveal: (hit, force) => {
+        reveals.push([hit.identity, force]);
+        return force ? running.promise : true;
+      },
+    });
+    const find = createReviewFind(h, () => 'log');
+    find.search('l');
+    await flush();
+    find.next();
+    expect(reveals).toEqual([['l1', false], ['l2', true]]);
+    items = ['l1', 'l2', 'l3'];
+    find.refresh();
+    await flush();
+    expect([find.result.count, find.result.current]).toEqual([3, 1]);
+    running.resolve(true);
+    await flush();
+    items = ['l1', 'l2', 'l3', 'l4'];
+    find.refresh();
+    await flush();
+    expect(reveals).toEqual([['l1', false], ['l2', true]]);
+    expect(find.wants('l2')).toBe(false);
+  });
+
+  it('a reveal that changed the content waits for a later scan, not the one it came from', async () => {
+    const s = source(() => ['w1', 'w2', 'w3'], { slice: 1 });
+    const { h, reveals } = host(() => s.src, {
+      reveal: (hit, force) => {
+        reveals.push([hit.identity, force]);
+        return reveals.length > 1;
+      },
+    });
+    const find = createReviewFind(h, () => 'conflicts');
+    find.search('w');
+    await flush();
+    await s.release();
+    expect(find.result.pending).toBe(false);
+    expect(reveals).toEqual([['w1', false]]);
+    find.refresh();
+    await s.release();
+    expect(reveals).toEqual([['w1', false], ['w1', false]]);
+  });
+
+  it('a newer step or a close drops the outstanding reveal', async () => {
+    const s = source(() => ['n1', 'n2', 'n3']);
+    const { h, reveals } = host(() => s.src, {
+      reveal: (hit, force) => {
+        reveals.push([hit.identity, force]);
+        return false;
+      },
+    });
+    const find = createReviewFind(h, () => 'conflicts');
+    find.search('n');
+    await flush();
+    find.next();
+    expect([find.wants('n1'), find.wants('n2')]).toEqual([false, true]);
+    find.clear();
+    expect(find.wants('n2')).toBe(false);
+  });
+
   it('counts progressively, picks the first match below the reading position, and moves only for it', async () => {
     const items = ['a1', 'a2', 'a3', 'a4', 'a5'];
     const s = source(() => items, { slice: 2 });

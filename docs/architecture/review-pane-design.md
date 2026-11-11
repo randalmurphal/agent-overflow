@@ -287,7 +287,9 @@ polling.
   re-runs the query in place and keeps the current match by identity; a
   current match that is gone gives way to the next surviving one, else the
   previous, painted where it is. Such a recount never scrolls; only a new
-  query's first match and a step bring a match on screen. Mermaid, math and attachment chips
+  query's first match and a step bring a match on screen, and that reveal
+  stays outstanding across the rescans it causes (a fold or file it opens)
+  until it completes once. Mermaid, math and attachment chips
   carry `data-find-skip`, so they are neither counted nor painted.
 
 ## Edge Cases
