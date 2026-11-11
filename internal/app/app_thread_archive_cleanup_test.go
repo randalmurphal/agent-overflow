@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"sync"
 	"testing"
@@ -13,6 +12,7 @@ import (
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/remotejobs"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadapp"
 	"agent-overflow/internal/triage"
 )
@@ -75,7 +75,9 @@ func TestOrganizeArchiveCutAfterTheArchiveStillCancelsRemoteCommands(t *testing.
 // An archive stops the commands the thread had started when it committed,
 // and no other: one admitted after the commit, while the archive is still
 // finishing, keeps running, and a repeated archive of the archived thread
-// stops nothing. Both doors that archive run the same capture.
+// stops nothing. Both doors that archive run the same capture. The test
+// holds the stop before it cancels anything, so the later command is
+// always running when the stop decides what to cancel.
 func TestArchiveStopsOnlyTheCommandsItCaptured(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
@@ -107,30 +109,47 @@ func TestArchiveStopsOnlyTheCommandsItCaptured(t *testing.T) {
 			later := input
 			later.Request.ID = uuid.NewString()
 			threadID := first.SourceThreadID
+
+			// An open ask the thread owns: the stop settles it before it
+			// cancels the commands, and the settle lock the test holds keeps
+			// the stop there until a later command is running.
+			ask := newThreadRequestToken()
+			if err := source.store.InsertThreadRequest(store.ThreadRequest{
+				Token: ask, CallerThreadID: threadID, Kind: store.ThreadRequestAsk, State: store.ThreadRequestAccepted,
+			}); err != nil {
+				t.Fatalf("InsertThreadRequest: %v", err)
+			}
+			if _, _, err := source.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
+				Token: ask, OwnerDeviceID: threadReceiptLocalOwner, SourceThreadID: threadID, Kind: store.ThreadRequestAsk,
+			}); err != nil {
+				t.Fatalf("AcceptThreadRequestReceipt: %v", err)
+			}
+			releaseStop := source.threadRequestSettleLock(ask)
 			var once sync.Once
-			laterDone := make(chan error, 1)
+			committed := make(chan struct{})
 			source.testEmitHook = func(name string, data any) {
 				event, ok := data.(triage.ThreadUpdateEvent)
 				if name == string(eventchan.ThreadUpdated) && ok && (event.ID == threadID || (event.Thread != nil && event.Thread.ID == threadID)) {
-					// The archive has committed; a command admitted from here
-					// on is not one it stops. The start waits for the locks
-					// the archive still holds, so it runs beside it.
-					once.Do(func() {
-						go func() {
-							started, err := source.AgentRemoteStart(ctx, later)
-							if err == nil && started.State != "running" {
-								err = fmt.Errorf("later command = %+v", started)
-							}
-							laterDone <- err
-						}()
-					})
+					once.Do(func() { close(committed) })
 				}
 			}
-			if err := archive(source, ctx, threadID); err != nil {
-				t.Fatalf("archive: %v", err)
+			archived := make(chan error, 1)
+			go func() { archived <- archive(source, ctx, threadID) }()
+			select {
+			case <-committed:
+			case <-time.After(10 * time.Second):
+				releaseStop()
+				t.Fatal("the archive never committed")
 			}
-			if err := <-laterDone; err != nil {
-				t.Fatalf("starting a command after the commit: %v", err)
+			// The archive has committed and captured its work; this command
+			// is admitted after that and before the held stop cancels.
+			started, err := source.AgentRemoteStart(ctx, later)
+			releaseStop()
+			if err != nil || started.State != "running" {
+				t.Fatalf("starting a command after the commit: %+v, %v", started, err)
+			}
+			if err := <-archived; err != nil {
+				t.Fatalf("archive: %v", err)
 			}
 			waitRemoteJobState(t, receiver, input.Request.ID, func(state string) bool { return state != "running" })
 
