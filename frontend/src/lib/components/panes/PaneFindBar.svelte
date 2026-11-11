@@ -3,8 +3,10 @@
   // header, full pane width, in the flow, so it pushes the content down
   // rather than covering it. It renders only while its pane's find is open
   // (stores/paneFind.svelte.ts) and owns the keys and focus of the session:
-  // Enter / Shift+Enter step, Escape closes, a close returns focus to the
-  // element that had it when the bar opened (else `fallbackFocus`).
+  // Enter / Shift+Enter step, and a close returns focus to the element that
+  // had it when the bar opened (else `fallbackFocus`). Escape is not the
+  // bar's: it bubbles to `find.close`, which decides which pane's find may
+  // be dismissed (the focused pane, or the one on screen under compact).
   import { tick, untrack } from 'svelte';
   import Search from '@lucide/svelte/icons/search';
   import ChevronUp from '@lucide/svelte/icons/chevron-up';
@@ -91,11 +93,9 @@
     stepPaneFind(paneId, event.shiftKey ? -1 : 1);
   }
 
+  // An Escape that ends an IME composition belongs to the composition.
   function handleKeydown(event: KeyboardEvent): void {
-    if (event.key !== 'Escape' || isImeComposingEvent(event)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    closePaneFind(paneId);
+    if (event.key === 'Escape' && isImeComposingEvent(event)) event.stopPropagation();
   }
 </script>
 

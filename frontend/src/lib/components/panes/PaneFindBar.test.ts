@@ -105,7 +105,7 @@ describe('<PaneFindBar>', () => {
     expect(provider.previous).toHaveBeenCalledTimes(1);
   });
 
-  it('Escape closes, clears, and returns focus to where it was', async () => {
+  it('a close clears and returns focus to where it was', async () => {
     const before = document.createElement('textarea');
     document.body.appendChild(before);
     before.focus();
@@ -113,14 +113,33 @@ describe('<PaneFindBar>', () => {
     await openBar(before);
     const input = getByTestId('pane-find-input');
     await waitFor(() => expect(document.activeElement).toBe(input));
-    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
-    input.dispatchEvent(escape);
+    closePaneFind('a');
     await tick();
-    expect(escape.defaultPrevented).toBe(true);
     expect(queryByTestId('pane-find-bar')).toBeNull();
-    expect(getPaneFind('a')?.open).toBe(false);
     expect(provider.clear).toHaveBeenCalled();
     await waitFor(() => expect(document.activeElement).toBe(before));
+  });
+
+  // `find.close` decides which find Escape dismisses (builtinCommands tests);
+  // the bar keeps only an IME composition's Escape from reaching it.
+  it('leaves Escape to the find.close command, except one that ends an IME composition', async () => {
+    const { getByTestId } = renderBar();
+    await openBar();
+    const input = getByTestId('pane-find-input');
+    const seen: KeyboardEvent[] = [];
+    const onKey = (event: KeyboardEvent) => seen.push(event);
+    window.addEventListener('keydown', onKey);
+    try {
+      const plain = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+      input.dispatchEvent(plain);
+      expect(seen).toEqual([plain]);
+      expect(plain.defaultPrevented).toBe(false);
+      expect(getPaneFind('a')?.open).toBe(true);
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true, cancelable: true }));
+      expect(seen).toEqual([plain]);
+    } finally {
+      window.removeEventListener('keydown', onKey);
+    }
   });
 
   it('returns focus to the pane when the element it came from is gone', async () => {

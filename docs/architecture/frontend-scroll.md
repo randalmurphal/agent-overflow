@@ -1714,10 +1714,12 @@ layout pane, or under compact the pane on the thread screen, since opening a
 companion leaves focus on its source. It is disabled for a pane with no
 provider or under an overlay (`overlayOpen`, the airspace registry,
 palette included; the palette's own list leaves the palette out through
-`overlayBesidePalette` because its command runs after it closes). Escape (`find.close`) closes the bar
-from the transcript or the composer before it can interrupt a turn, and
-Back closes the target's bar after any overlay above it, so a find off
-screen is never Back's rung. A pane's find state is dropped when the pane
+`overlayBesidePalette` because its command runs after it closes). Escape
+(`find.close`) closes the target's bar from the transcript, the composer
+or the bar's own input before it can interrupt a turn; the bar has no
+Escape handling of its own beyond an IME composition's. Back closes the
+target's bar after any overlay above it, so a find off screen is never
+Back's rung. A pane's find state is dropped when the pane
 leaves the layout.
 
 A pane that renders a thread timeline uses `stores/threadFind.svelte.ts`,
@@ -1747,7 +1749,12 @@ item, then the landing flash). A replaced query or a close withdraws it
 whose navigation is still current is superseded by a newer navigation, so a
 lookup still loading lands nowhere. The navigation's liveness reaches
 `loadUntilItem(itemId, live)`, so its window slice and any run members it
-fetches are not committed once it ends. Matches in mounted rows paint through
+fetches are not committed once it ends. Its paging claims
+(`loadingOlder`, `loadingNewer`) go when it ends or is superseded, not
+when its request settles: the timeline calls `releaseEndedNavigation` at
+every navigation end, and a newer page load or cut releases them too, so
+the window pages again while the request is still out. A newer claim is
+never released by an older navigation. Matches in mounted rows paint through
 `utils/findHighlights.ts`.
 
 A hit goes through `navigateToThreadItem(pane, threadId, itemId)`

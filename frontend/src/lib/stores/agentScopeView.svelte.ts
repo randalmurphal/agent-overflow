@@ -128,6 +128,7 @@ export function createAgentScopeView(
     loadOlder: window.loadOlder,
     loadNewer: window.loadNewer,
     loadUntilItem: window.loadUntilItem,
+    releaseEndedNavigation: window.releaseEndedNavigation,
     loadRecentTail: window.loadRecentTail,
     get hasMoreHistory() { return window.hasMoreHistory; },
     get hasMoreNewer() { return window.hasMoreNewer; },

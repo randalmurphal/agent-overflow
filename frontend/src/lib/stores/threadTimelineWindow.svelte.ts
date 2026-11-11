@@ -160,6 +160,13 @@ export interface ThreadTimelineWindow {
    * load commits nothing (no slice, no run members) and is `superseded`.
    */
   loadUntilItem(itemID: string, live?: () => boolean): Promise<LoadUntilItemResult>;
+  /**
+   * Drop the paging claims of a `loadUntilItem` whose navigation ended
+   * (`live` false) or was superseded, without waiting for its request to
+   * settle. A newer navigation's or pager's claim is left alone. The
+   * timeline calls it whenever a navigation ends.
+   */
+  releaseEndedNavigation(): void;
   loadNewer(): Promise<LoadOlderResult>;
   loadRecentTail(): Promise<boolean>;
 }
@@ -349,6 +356,21 @@ export function createThreadTimelineWindow(
    * mutations never move it; a snapshot reconciles those against its page.
    */
   let windowVersion = 0;
+
+  /**
+   * The `loadUntilItem` holding both paging edges. Its claims go as soon as
+   * its lifetime ends, so the window pages again while its request is still
+   * out; the generation and `live` guards still refuse its answer.
+   */
+  let navigationClaim: { pageGen: number; live: () => boolean } | null = null;
+
+  function releaseEndedNavigation(): void {
+    const claim = navigationClaim;
+    if (!claim || (claim.pageGen === pagingGeneration && claim.live())) return;
+    navigationClaim = null;
+    if (loadingOlder === claim.pageGen) loadingOlder = null;
+    if (loadingNewer === claim.pageGen) loadingNewer = null;
+  }
 
   /** A page load claims the paging generation and the window it will replace. */
   function beginPageLoad(): number {
@@ -677,6 +699,7 @@ export function createThreadTimelineWindow(
     recentWindowPrunePending = false;
     loadingOlder = null;
     loadingNewer = null;
+    navigationClaim = null;
   }
 
   /**
@@ -698,6 +721,7 @@ export function createThreadTimelineWindow(
     recentWindowPrunePending = false;
     loadingOlder = null;
     loadingNewer = null;
+    navigationClaim = null;
   }
 
   /**
@@ -717,6 +741,7 @@ export function createThreadTimelineWindow(
 
   function applyConversationCut(boundaryWasLoaded: boolean): void {
     ++pagingGeneration;
+    releaseEndedNavigation();
     windowVersion++;
     if (boundaryWasLoaded || !hasMoreNewer) {
       hasMoreNewer = false;
@@ -954,6 +979,7 @@ export function createThreadTimelineWindow(
     if (!currentThread || !itemID) return 'missing';
     if (windowHolds(itemID)) {
       ++pagingGeneration;
+      releaseEndedNavigation();
       return 'loaded';
     }
 
@@ -963,11 +989,14 @@ export function createThreadTimelineWindow(
     const superseded = (): boolean =>
       gen !== options.getSwitchGeneration() || threadBackend(currentThread.id) !== ownership || pageGen !== pagingGeneration
       || !live();
+    releaseEndedNavigation();
     loadingOlder = pageGen;
     loadingNewer = pageGen;
+    navigationClaim = { pageGen, live };
     try {
       return await loadUntilItemClaimed(currentThread, itemID, superseded);
     } finally {
+      if (navigationClaim?.pageGen === pageGen) navigationClaim = null;
       if (loadingOlder === pageGen) loadingOlder = null;
       if (loadingNewer === pageGen) loadingNewer = null;
     }
@@ -1157,6 +1186,7 @@ export function createThreadTimelineWindow(
     const ownership = threadBackend(currentThread.id);
     const gen = options.getSwitchGeneration();
     const pageGen = beginPageLoad();
+    releaseEndedNavigation();
     loadingNewer = pageGen;
     try {
       const paged = await ListThreadSliceAround(
@@ -1227,7 +1257,7 @@ export function createThreadTimelineWindow(
     installFromSnapshot,
     resetForFreshThread,
     resetAfterLoadError,
-    invalidatePendingReads: () => { pagingGeneration++; windowVersion++; },
+    invalidatePendingReads: () => { pagingGeneration++; windowVersion++; releaseEndedNavigation(); },
     observeWindow,
     noteDroppedNewerItems,
     noteDroppedOlderItems: () => { hasMoreHistory = true; },
@@ -1238,6 +1268,7 @@ export function createThreadTimelineWindow(
     retryDeferredRecentWindowPrune,
     settleRecentWindowPrune,
     loadOlder,
+    releaseEndedNavigation,
     loadUntilItem,
     loadNewer,
     loadRecentTail,

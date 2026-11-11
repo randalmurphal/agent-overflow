@@ -3,6 +3,8 @@
 
 import { describe, expect, it, afterEach, beforeEach, vi } from 'vitest';
 import { tick } from 'svelte';
+import { render } from '@testing-library/svelte';
+import PaneFindBar from '../components/panes/PaneFindBar.svelte';
 import { createThreadPane } from './thread.svelte';
 import {
   isSidebarCollapsed,
@@ -1231,6 +1233,72 @@ describe('pane find under compact', () => {
     ctx = makeCommandContext(pane, {}) as CommandContext;
     expect(ctx.flags.paneFindOpen).toBe(false);
     expect(ctx.flags.paneFindAvailable).toBe(false);
+  });
+
+  // The bar's input keeps DOM focus while keyboard navigation reveals the
+  // companion: Back must close the companion on screen, not the bar behind it.
+  it('a focused bar\'s Escape goes through the same target: Back passes an off-screen bar, desktop Escape closes it', async () => {
+    const pane = readyPane();
+    registerPaneForTest('a', pane);
+    registerFixtureCommands(pane);
+    focusPane('a');
+    registerPaneFindProvider('a', providerFor());
+    const plan = openCompanion('a', 'plan')!;
+    focusPane('a');
+    setCompactLayoutForTest(true);
+    showCompactThread();
+
+    let onScreen = 'a';
+    const rect = (left: number) => ({ left, right: left + 412, top: 0, bottom: 800, width: 412, height: 800, x: left, y: 0, toJSON: () => ({}) });
+    const strip = document.createElement('div');
+    strip.className = 'compact-screen-thread';
+    strip.getBoundingClientRect = () => rect(0);
+    const sections = new Map<string, HTMLElement>();
+    for (const paneId of ['a', plan.paneId]) {
+      const section = document.createElement('section');
+      section.dataset.paneId = paneId;
+      section.getBoundingClientRect = () => rect(paneId === onScreen ? 0 : 412);
+      strip.appendChild(section);
+      sections.set(paneId, section);
+    }
+    document.body.appendChild(strip);
+    render(PaneFindBar, { target: sections.get('a')!, props: { paneId: 'a', title: 'A', fallbackFocus: () => null } });
+
+    // App.svelte's window handler, reduced to its dispatch rules.
+    const reachable = new Set(listCommands().filter((c) => c.editableReachable).map((c) => c.id));
+    const onKey = (event: KeyboardEvent) => {
+      const ctx = makeCommandContext(pane, {}) as CommandContext;
+      const target = event.target as HTMLElement;
+      const editable = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA';
+      if (!isSurfaceDismissalEvent(event) && editable && !eventMatchesKeybindingCommand(event, ctx, reachable, { isMac: false })) return;
+      if (dispatchKey(event, ctx, { isMac: false })) event.preventDefault();
+    };
+    window.addEventListener('keydown', onKey);
+    release = () => window.removeEventListener('keydown', onKey);
+
+    openPaneFind('a');
+    await tick();
+    const input = sections.get('a')!.querySelector<HTMLInputElement>('[data-testid="pane-find-input"]')!;
+    await vi.waitFor(() => expect(document.activeElement).toBe(input));
+
+    // Keyboard navigation reveals the plan; DOM focus stays in A's input.
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', code: 'KeyL', altKey: true, bubbles: true, cancelable: true }));
+    onScreen = plan.paneId;
+    expect(document.activeElement).toBe(input);
+
+    // Back closes the plan on screen; A's bar, off screen, stays open.
+    expect(stepBack()).toBe(true);
+    expect(isCompanionOpen('a', 'plan')).toBe(false);
+    expect(getPaneFind('a')?.open).toBe(true);
+
+    // On desktop, Escape in the focused bar closes it.
+    setCompactLayoutForTest(false);
+    focusPane('a');
+    input.focus();
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true });
+    input.dispatchEvent(escape);
+    expect(escape.defaultPrevented).toBe(true);
+    expect(getPaneFind('a')?.open).toBe(false);
   });
 });
 

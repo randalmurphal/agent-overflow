@@ -1134,6 +1134,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       return timelineWindow.loadUntilItem(itemID, live);
     },
 
+    releaseEndedNavigation(): void {
+      timelineWindow.releaseEndedNavigation();
+    },
+
     /** Fetch the next batch of newer turns and append them to the window. See threadTimelineWindow.svelte.ts. */
     loadNewer(): Promise<LoadOlderResult> {
       return timelineWindow.loadNewer();

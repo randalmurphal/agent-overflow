@@ -5,7 +5,9 @@
 // find open in a thread and an agent pane opened from it on screen (focus
 // stays on the thread), Back closes the agent pane and leaves the thread's
 // find open; mod+f there opens the agent pane's own find, which Back closes
-// first. Desktop coverage: pane-find.spec.ts.
+// first. With the thread's find input still focused, alt+l reveals the
+// agent pane and Back closes it, not the bar behind it. Desktop coverage:
+// pane-find.spec.ts.
 import { test, expect, type SeedResult } from './fixtures.js';
 import {
   RESULT_LINE, asyncAgentAckLine, backgroundTasksChangedLine, claudeScenario,
@@ -102,6 +104,21 @@ test('Back resolves the find on the pane on screen, not the thread focus stayed 
   await expect(agent.getByTestId('pane-find-bar')).toHaveCount(0);
   await expect(agent).toBeInViewport({ ratio: 1 });
   await expect(threadBar).toBeAttached();
+  await page.goBack();
+  await expect(agentBody).toHaveCount(0);
+  await expect(threadBar).toBeVisible();
+
+  // The thread's find input keeps focus while keyboard navigation reveals the agent pane.
+  await openAgent();
+  await page.keyboard.press('Alt+l');
+  await expect(agent).toHaveAttribute('data-pane-focused', 'true');
+  await page.keyboard.press('Alt+h');
+  await expect(thread).toBeInViewport({ ratio: 1 });
+  const threadInput = threadBar.getByTestId('pane-find-input');
+  await threadInput.focus();
+  await page.keyboard.press('Alt+l');
+  await expect(agent).toBeInViewport({ ratio: 1 });
+  await expect(threadInput).toBeFocused();
   await page.goBack();
   await expect(agentBody).toHaveCount(0);
   await expect(threadBar).toBeVisible();

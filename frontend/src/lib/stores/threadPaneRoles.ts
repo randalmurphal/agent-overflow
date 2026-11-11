@@ -198,6 +198,8 @@ export interface TimelineWindow {
   readonly loadNewer: () => Promise<LoadOlderResult>;
   readonly loadRecentTail: () => Promise<boolean>;
   readonly loadUntilItem: (itemID: string, live?: () => boolean) => Promise<LoadUntilItemResult>;
+  /** Free an ended navigation's paging claims; see `ThreadTimelineWindow`. */
+  readonly releaseEndedNavigation: () => void;
   /** Set when a wire settle deferred its window prune to visual quiet. */
   readonly hasDeferredRecentWindowPrune: boolean;
   readonly retryDeferredRecentWindowPrune: () => void;

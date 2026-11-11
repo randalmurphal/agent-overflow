@@ -66,6 +66,7 @@ function harness(opts: { revealed?: string[]; grouped?: string[]; nodes?: Timeli
       lookups.push(lookup);
       return lookup.promise;
     }),
+    releaseEndedNavigation: vi.fn(),
   };
   const stick = {
     markEscaped: vi.fn(),

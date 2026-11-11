@@ -167,6 +167,7 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
   function endAll(): void {
     navigationToken += 1;
     holdToken += 1;
+    options.getPane().releaseEndedNavigation();
   }
 
   // The restore/snapshot IDENTITY for this timeline surface. The base
@@ -734,8 +735,11 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
     return outcome === 'issued' || outcome === 'withheld';
   }
 
+  // Every end of a navigation frees the window's paging claims it held.
   function beginNavigation(): number {
-    return ++navigationToken;
+    const token = ++navigationToken;
+    options.getPane().releaseEndedNavigation();
+    return token;
   }
 
   function claimNavigation(token: number): boolean {
@@ -754,6 +758,7 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
 
   function noteReaderGesture(): void {
     readerGestureEpoch += 1;
+    options.getPane().releaseEndedNavigation();
   }
 
   function invalidateRestore(): void {
