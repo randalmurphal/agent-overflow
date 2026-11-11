@@ -141,6 +141,7 @@ type ThreadPeerResolve struct {
 //
 //ao:scope threads:read
 //ao:route selected
+//ao:callerbound
 func (a *App) ThreadToolResolve(ctx context.Context, resolve ThreadPeerResolve) (threadtools.Resolution, error) {
 	if _, err := a.remoteCommandOwner(ctx); err != nil {
 		return threadtools.Resolution{}, err
@@ -162,6 +163,7 @@ func (a *App) ThreadToolResolve(ctx context.Context, resolve ThreadPeerResolve) 
 //
 //ao:scope threads:read
 //ao:route selected
+//ao:callerbound
 func (a *App) ThreadToolQuery(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
 	if _, err := a.remoteCommandOwner(ctx); err != nil {
 		return ThreadPeerReply{}, err
@@ -252,6 +254,7 @@ func (a *App) ThreadToolRequestStatus(ctx context.Context, poll ThreadPeerPoll) 
 //
 //ao:scope threads:read
 //ao:route selected
+//ao:callerbound
 func (a *App) ThreadToolExportChunk(ctx context.Context, exportID string, offset int64) (RemoteArtifactChunk, error) {
 	if _, err := a.remoteCommandOwner(ctx); err != nil {
 		return RemoteArtifactChunk{}, err

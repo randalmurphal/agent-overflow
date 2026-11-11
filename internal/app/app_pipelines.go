@@ -38,6 +38,7 @@ type PipelineListResult struct {
 // interactive. A failure is the forge's, explained for the project.
 //
 //ao:scope git:operate
+//ao:callerbound
 func (a *App) ListProjectPipelines(ctx context.Context, projectID string, filter gitops.PipelineListFilter, interactive bool) (PipelineListResult, error) {
 	if a.shuttingDown.Load() {
 		return PipelineListResult{}, ErrShuttingDown
@@ -82,6 +83,7 @@ type PipelineStages struct {
 //
 //ao:scope git:operate
 //ao:route selected
+//ao:callerbound
 func (a *App) ReadPipelineStages(ctx context.Context, repo gitops.RepoReference, ids []string, interactive bool) (map[string]PipelineStages, error) {
 	if a.shuttingDown.Load() {
 		return nil, ErrShuttingDown

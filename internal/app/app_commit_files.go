@@ -122,6 +122,7 @@ type CommitFiles struct {
 // as one entry. Empty for non-git workspaces.
 //
 //ao:scope git:operate
+//ao:callerbound
 func (a *App) ListCommitFiles(ctx context.Context, ws WorkspaceRef) (CommitFiles, error) {
 	const action = "list commit files"
 	if a.shuttingDown.Load() {
@@ -157,6 +158,7 @@ func (a *App) ListCommitFiles(ctx context.Context, ws WorkspaceRef) (CommitFiles
 // with both paths of a rename.
 //
 //ao:scope files:read
+//ao:callerbound
 func (a *App) OpenCommitFileDiff(ctx context.Context, ws WorkspaceRef, paths []string) (ReviewDiffOpened, error) {
 	const action = "open commit file diff"
 	if a.shuttingDown.Load() {

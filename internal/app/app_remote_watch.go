@@ -449,8 +449,8 @@ func (a *App) CancelThreadRemoteCommand(ctx context.Context, threadID, computerI
 	if w.ThreadID != threadID {
 		return RemoteCommand{}, errorsx.Public("remote_wrong_conversation", "This job belongs to another conversation.", nil)
 	}
-	// The cancel and the record of its answer finish once sent; only the
-	// settle wait below ends with the caller.
+	// The cancel and the record of its answer finish once sent, even at
+	// shutdown; only the settle wait below ends with the caller.
 	call, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
 	defer cancel()
 	var receipt RemoteCommand
@@ -470,6 +470,8 @@ func (a *App) CancelThreadRemoteCommand(ctx context.Context, threadID, computerI
 	for receipt.State == "running" && time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
+			return receipt, nil
+		case <-transport.CallerGone(ctx):
 			return receipt, nil
 		case <-time.After(remoteCancelSettlePoll):
 		}

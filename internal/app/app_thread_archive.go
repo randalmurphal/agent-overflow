@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"log"
 	"time"
 
@@ -50,20 +49,24 @@ func (a *App) ArchiveThread(id string) error {
 	if err := a.archiveThreadLocked(id); err != nil {
 		return err
 	}
-	return a.stopArchivedThreadWork(context.Background(), id)
+	return a.stopArchivedThreadWork(id)
 }
 
 // stopArchivedThreadWork ends what a thread that has just been archived can
 // no longer receive. Both doors that archive (this binding and the agents'
 // thread_update patch) run it, in this order, so a thread archived from
-// either one is left in the same state.
+// either one is left in the same state. It runs on the app's lifetime, not
+// its caller's, because the archive it follows is already durable, and it
+// runs on every archive request, not only the one that flipped the row, so
+// repeating an archive finishes a cleanup an earlier one did not.
 //
 // An archived thread cannot receive an answer, so its parked calls end and
 // its wakes are disarmed. A later wait or thread_status re-arms them, and
 // delivering a re-armed one unarchives the thread. The session is stopped by
 // then, so nothing can admit another remote command; both cancellations run
 // outside the locks because reaching the other computer may take a while.
-func (a *App) stopArchivedThreadWork(ctx context.Context, id string) error {
+func (a *App) stopArchivedThreadWork(id string) error {
+	ctx := a.lifeCtx()
 	if err := a.cancelThreadRequests(ctx, id); err != nil {
 		log.Printf("thread tools: archive %s: cancel requests: %v", id, err)
 	}

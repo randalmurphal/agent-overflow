@@ -241,12 +241,19 @@ func (s *Service) landDisposition(ctx context.Context, receipt *DispositionRecei
 		)
 		if err != nil {
 			// An earlier attempt can have opened the PR and stopped before
-			// its receipt was written. The branch's own open PR is that one.
+			// its receipt was written. That PR is the branch's one open PR
+			// into this base; a PR into any other base is not this landing.
 			existing, lookupErr := client.ListOpenPRs(ctx, item.WorktreePath, item.Branch)
-			if lookupErr != nil || len(existing) != 1 {
+			var intended []gitops.GitPR
+			for _, pr := range existing {
+				if pr.BaseBranch == base {
+					intended = append(intended, pr)
+				}
+			}
+			if lookupErr != nil || len(intended) != 1 {
 				return errors.Join(fmt.Errorf("workflow disposition %s create PR: %w", item.ID, err), lookupErr)
 			}
-			prRef = existing[0].URL
+			prRef = intended[0].URL
 		}
 		receipt.PRRef, receipt.SHA = prRef, sha
 		return nil

@@ -136,6 +136,7 @@ func (f *gitlabForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitP
 			State           string `json:"state"`
 			ProjectID       int64  `json:"project_id"`
 			SourceProjectID int64  `json:"source_project_id"`
+			TargetBranch    string `json:"target_branch"`
 		}
 		if err := json.Unmarshal(resp.Body, &raw); err != nil {
 			return false, fmt.Errorf("GitLab open merge requests: decode response: %w", err)
@@ -144,7 +145,7 @@ func (f *gitlabForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitP
 			if r.SourceProjectID != r.ProjectID {
 				continue
 			}
-			pulls = append(pulls, GitPR{URL: r.WebURL, Number: r.IID, Title: r.Title, State: NormalizePRState(r.State)})
+			pulls = append(pulls, GitPR{URL: r.WebURL, Number: r.IID, Title: r.Title, State: NormalizePRState(r.State), BaseBranch: r.TargetBranch})
 		}
 		pages++
 		return len(pulls) == 0 && pages < gitlabOpenMRsMaxPages && len(raw) == gitlabPageSize && advanceGitLabPage(resp, &page), nil
@@ -737,7 +738,9 @@ type gitlabDraftNoteIn struct {
 
 // key identifies a draft note by its text and its anchor, the parts GitLab
 // echoes back when it lists pending drafts. Line codes are left out: GitLab
-// may compute its own.
+// may compute its own. A position with no anchor is no position: GitLab
+// lists a draft sent without one with a position whose anchor fields are
+// null (https://docs.gitlab.com/api/draft_notes/).
 func (n gitlabDraftNoteIn) key() string {
 	line := func(v *int) string {
 		if v == nil {
@@ -746,7 +749,8 @@ func (n gitlabDraftNoteIn) key() string {
 		return strconv.Itoa(*v)
 	}
 	p := n.Position
-	if p == nil {
+	if p == nil || (p.BaseSHA == "" && p.StartSHA == "" && p.HeadSHA == "" && p.OldPath == "" && p.NewPath == "" &&
+		p.OldLine == nil && p.NewLine == nil && p.LineRange == nil) {
 		return fmt.Sprintf("%q", n.Note)
 	}
 	lines := line(p.OldLine) + " " + line(p.NewLine)

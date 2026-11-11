@@ -52,6 +52,7 @@ type ForgeAttachment struct {
 //
 //ao:scope git:operate
 //ao:route selected
+//ao:callerbound
 func (a *App) FetchForgeAttachment(ctx context.Context, pr gitops.PRReference, href string, maxWidth int) (ForgeAttachment, error) {
 	original, err := a.resolveForgeAttachment(ctx, pr, href)
 	if err != nil {

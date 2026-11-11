@@ -97,6 +97,7 @@ func (a *App) fetchPipeline(ctx context.Context, repo gitops.RepoReference, id s
 //
 //ao:scope git:operate
 //ao:route selected
+//ao:callerbound
 func (a *App) SubscribePipeline(ctx context.Context, repo gitops.RepoReference, id string) (PipelineSubscriptionResult, error) {
 	if a.shuttingDown.Load() {
 		return PipelineSubscriptionResult{}, ErrShuttingDown

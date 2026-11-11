@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"sync"
+
+	"agent-overflow/internal/transport"
 )
 
 // workAdmission closes the gap between observing an idle host and handing it
@@ -34,9 +36,12 @@ func (g *workAdmission) begin(ctx context.Context) (func(), error) {
 			return g.end, nil
 		}
 		g.mu.Unlock()
+		// Nothing has happened yet, so a caller that left stops waiting.
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
+		case <-transport.CallerGone(ctx):
+			return nil, context.Canceled
 		case <-resume:
 		}
 	}

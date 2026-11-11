@@ -201,8 +201,11 @@ type connHandler struct {
 	pongTimeout       time.Duration
 	watermarkInterval time.Duration
 
-	sessions       SessionAuthority
-	cancel         context.CancelFunc
+	sessions SessionAuthority
+	cancel   context.CancelFunc
+	// lifetime is the server's context, which a call not bound to its
+	// caller runs on (callcontext.go).
+	lifetime       context.Context
 	sessionRecheck time.Duration
 	maxLifetime    time.Duration
 
@@ -302,6 +305,7 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 		rpcBeforeReady:    settings.rpcBeforeReady,
 		eventScopes:       eventScopes,
 		leaseWake:         make(chan struct{}, 1),
+		lifetime:          ctx,
 	}
 	h.lastReadAt.Store(time.Now().UnixNano())
 
@@ -861,7 +865,7 @@ func (h *connHandler) handleRPC(ctx context.Context, frame ClientFrame) {
 		}
 		return
 	}
-	ctx = WithCallerProof(ctx, proof)
+	ctx = withRemoteCaller(WithCallerProof(ctx, proof), h.lifetime)
 
 	result, fe := h.dispatcher.Invoke(ctx, method, frame.Params)
 	if fe != nil {

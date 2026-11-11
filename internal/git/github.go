@@ -21,6 +21,8 @@ type GitPR struct {
 	Number int    `json:"number"`
 	Title  string `json:"title"`
 	State  string `json:"state"`
+	// BaseBranch is the branch the PR merges into.
+	BaseBranch string `json:"baseRefName,omitempty"`
 }
 
 // githubForge implements Forge over the GitHub API through the Core's
@@ -94,7 +96,7 @@ const githubOpenPRsQuery = `query OpenPRsByHead($owner: String!, $name: String!,
   repository(owner: $owner, name: $name) {
     pullRequests(headRefName: $head, states: [OPEN], first: 100, after: $after) {
       pageInfo { hasNextPage endCursor }
-      nodes { id url number title state isCrossRepository }
+      nodes { id url number title state baseRefName isCrossRepository }
     }
   }
 }`

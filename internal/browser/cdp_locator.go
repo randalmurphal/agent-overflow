@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/chromedp/cdproto/dom"
 	cdpruntime "github.com/chromedp/cdproto/runtime"
@@ -200,5 +201,17 @@ func resolveNodeObject(ctx context.Context, node *chromedp.Node) (*cdpruntime.Re
 // releaseObject frees an object resolveNodeObject made. The page frees it
 // with its document anyway, so a failure costs only memory until then.
 func releaseObject(ctx context.Context, obj *cdpruntime.RemoteObject) {
-	_, _ = chromedp.Call(ctx, cdpruntime.ReleaseObject, cdpruntime.ReleaseObjectParams{ObjectID: obj.ObjectID})
+	cleanup, cancel := cdpCleanupContext(ctx)
+	defer cancel()
+	_, _ = chromedp.Call(cleanup, cdpruntime.ReleaseObject, cdpruntime.ReleaseObjectParams{ObjectID: obj.ObjectID})
+}
+
+// cdpCleanupTimeout bounds one CDP call that undoes what an action set.
+const cdpCleanupTimeout = 5 * time.Second
+
+// cdpCleanupContext is the context a deferred CDP undo runs on: the
+// action's target without its cancellation, so an action whose caller left
+// still undoes what it set on the page.
+func cdpCleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), cdpCleanupTimeout)
 }

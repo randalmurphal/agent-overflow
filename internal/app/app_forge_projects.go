@@ -29,6 +29,7 @@ type ForgeProject struct {
 //
 //ao:scope git:operate
 //ao:route selected
+//ao:callerbound
 func (a *App) ListForgeProjects(ctx context.Context) ([]ForgeProject, error) {
 	if a.shuttingDown.Load() {
 		return nil, ErrShuttingDown

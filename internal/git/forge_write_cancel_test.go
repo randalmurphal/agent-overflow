@@ -167,10 +167,15 @@ func TestCreatePRFinishesAfterItsCallerCancels(t *testing.T) {
 func TestGitLabSubmitReviewRepeatPostsOnlyMissingDrafts(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
-	// What GitLab lists for the two drafts the first attempt created: its
-	// own ids, line codes and extra fields beside the anchor it was sent.
-	pending := `[{"id":11,"note":"Looks good","position":null},
-		{"id":12,"note":"nit","author_id":3,"position":{"base_sha":"base","start_sha":"start","head_sha":"head2","old_path":"a.go","new_path":"a.go",
+	// What GitLab lists for the two drafts the first attempt created, in the
+	// shape https://docs.gitlab.com/api/draft_notes/ documents: its own ids
+	// and fields beside the note, and for the summary, sent without a
+	// position, a position whose anchor is null.
+	pending := `[{"id":11,"author_id":3,"merge_request_id":7,"resolve_discussion":false,"discussion_id":null,"note":"Looks good",
+		"commit_id":null,"line_code":null,"position":{"base_sha":null,"start_sha":null,"head_sha":null,"old_path":null,"new_path":null,
+		"position_type":"text","old_line":null,"new_line":null,"line_range":null}},
+		{"id":12,"author_id":3,"merge_request_id":7,"resolve_discussion":false,"discussion_id":null,"note":"nit",
+		"commit_id":null,"line_code":"abc_0_4","position":{"base_sha":"base","start_sha":"start","head_sha":"head2","old_path":"a.go","new_path":"a.go",
 		"position_type":"text","old_line":null,"new_line":4,"line_range":null}}]`
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 		switch call.Method + " " + call.Path {

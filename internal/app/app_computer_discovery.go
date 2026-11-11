@@ -17,6 +17,7 @@ import (
 //ao:scope host
 //ao:route home
 //ao:remote
+//ao:callerbound
 func (a *App) DiscoverComputers(ctx context.Context) ([]attachedbackends.DiscoveredComputer, error) {
 	if a.backends == nil {
 		return nil, errNoBackendProfiles

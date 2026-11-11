@@ -366,7 +366,7 @@ func TestCreateOpensAPullForTheCheckoutsBranch(t *testing.T) {
 	srv := testServer(t, e)
 	open := graphQL(t, srv, "github.com", "OpenPRsByHead", map[string]any{"owner": "acme", "name": "widgets", "head": branch})
 	if !strings.Contains(open.body, `"number":8,"state":"OPEN","title":"Topic","url":"https://github.com/acme/widgets/pull/8"}]`) ||
-		!strings.Contains(open.body, `"nodes":[{"id":"PR_ao`) {
+		!strings.Contains(open.body, `"nodes":[{"baseRefName":"main","id":"PR_ao`) {
 		t.Fatalf("open pulls after create = %s", open.body)
 	}
 	var created8 struct {
@@ -1637,8 +1637,8 @@ func TestGitHubPullLists(t *testing.T) {
 	}
 	srv := testServer(t, e)
 	open := graphQL(t, srv, "github.com", "OpenPRsByHead", map[string]any{"owner": "a", "name": "b", "head": "topic"})
-	if !strings.Contains(open.body, `"nodes":[{"id":"PR_one","isCrossRepository":false,"number":1,"state":"OPEN","title":"open","url":"https://github.com/a/b/pull/1"},`+
-		`{"id":"PR_fork","isCrossRepository":true,"number":6,"state":"OPEN","title":"fork","url":"https://github.com/a/b/pull/6"}]`) ||
+	if !strings.Contains(open.body, `"nodes":[{"baseRefName":"main","id":"PR_one","isCrossRepository":false,"number":1,"state":"OPEN","title":"open","url":"https://github.com/a/b/pull/1"},`+
+		`{"baseRefName":"main","id":"PR_fork","isCrossRepository":true,"number":6,"state":"OPEN","title":"fork","url":"https://github.com/a/b/pull/6"}]`) ||
 		!strings.Contains(open.body, `"pageInfo":{"endCursor":"cursor:2","hasNextPage":false}`) {
 		t.Fatalf("open = %s", open.body)
 	}

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"log"
+	"slices"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
@@ -17,7 +18,9 @@ import (
 //
 // The settlement comes FIRST so the turn observer, which settles only a
 // `running` receipt, cannot race the interrupt and report the interrupted
-// turn as this request's answer.
+// turn as this request's answer. Once it is settled the stop always runs to
+// the end, and a repeated cancel of a cancelled receipt stops whatever the
+// first one did not reach.
 func (a *App) stopThreadRequestWork(ctx context.Context, token string) (string, error) {
 	receipt, found, err := a.store.GetThreadRequestReceipt(token)
 	if err != nil {
@@ -27,16 +30,29 @@ func (a *App) stopThreadRequestWork(ctx context.Context, token string) (string, 
 		return threadtools.EffectNothing, nil
 	}
 	state := receipt.State
-	// The door takes the settle lock for the settlement and releases it
-	// before the queue and provider work below: both take thread locks, and
-	// neither settles anything.
-	if err := a.settleThreadReceipt(token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
-		State:      store.ThreadReceiptCancelled,
-		Answer:     []byte("The sender cancelled this request."),
-		AnswerKind: store.ThreadAnswerError,
-	}); err != nil {
-		return "", err
+	switch {
+	case slices.Contains(store.ThreadReceiptOpenStates(), state):
+		// The door takes the settle lock for the settlement and releases it
+		// before the queue and provider work below: both take thread locks,
+		// and neither settles anything.
+		if err := a.settleThreadReceipt(token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
+			State:      store.ThreadReceiptCancelled,
+			Answer:     []byte("The sender cancelled this request."),
+			AnswerKind: store.ThreadAnswerError,
+		}); err != nil {
+			return "", err
+		}
+	case state == store.ThreadReceiptCancelled:
+		// A turn bound to the receipt means it was running when cancelled;
+		// otherwise its message may still be queued or just dispatched.
+		state = store.ThreadReceiptAccepted
+		if receipt.TurnID != "" {
+			state = store.ThreadReceiptRunning
+		}
+	default:
+		return threadtools.EffectNothing, nil
 	}
+	ctx = context.WithoutCancel(ctx)
 
 	switch state {
 	case store.ThreadReceiptAccepted:

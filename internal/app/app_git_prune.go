@@ -60,6 +60,7 @@ type BranchPruneResult struct {
 // refs/remotes/* only; classification is read-only.
 //
 //ao:scope git:operate
+//ao:callerbound
 func (a *App) GitListBranchPruneCandidates(ctx context.Context, ws WorkspaceRef) (BranchPruneCandidates, error) {
 	result, err := a.gitApplication().ListBranchPruneCandidates(ctx, ws)
 	if err != nil {

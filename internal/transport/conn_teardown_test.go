@@ -73,15 +73,33 @@ func (a *teardownApp) Block(ctx context.Context) error {
 	return ctx.Err()
 }
 
-// Detached keeps working after its caller is gone.
+// Detached is not caller-bound, so it keeps working after its caller is
+// gone.
 func (a *teardownApp) Detached(ctx context.Context) error {
 	if err := a.registerCleanup(ctx); err != nil {
 		return err
 	}
-	work := context.WithoutCancel(ctx)
 	a.entered <- "detached"
 	<-a.release
-	a.record(fmt.Sprintf("detached finished (err=%v)", work.Err()))
+	a.record(fmt.Sprintf("detached finished (err=%v)", ctx.Err()))
+	return nil
+}
+
+// Presence makes its effect, then waits on its caller's behalf until the
+// caller leaves.
+func (a *teardownApp) Presence(ctx context.Context) error {
+	if err := a.registerCleanup(ctx); err != nil {
+		return err
+	}
+	a.record("effect")
+	a.entered <- "presence"
+	select {
+	case <-CallerGone(ctx):
+	case <-time.After(10 * time.Second):
+		a.record("wait outlived its caller")
+		return nil
+	}
+	a.record(fmt.Sprintf("wait ended (err=%v)", ctx.Err()))
 	return nil
 }
 
@@ -113,6 +131,8 @@ func newTeardownFixture(t *testing.T) (*serverFixture, *teardownApp) {
 		if _, err := d.Register(app, RegisterOptions{Package: "main", TypeName: "App"}); err != nil {
 			t.Fatalf("register teardown receiver: %v", err)
 		}
+		// Block stands in for a //ao:callerbound method.
+		d.byName["Block"].CallerBound = true
 		cfg.Dispatcher = d
 	})
 	app.bus = f.bus
@@ -191,7 +211,7 @@ func TestDisconnectCancelsCallsBeforeCleanups(t *testing.T) {
 	}
 }
 
-// A call that detached from its caller finishes after the disconnect. Its
+// A call not bound to its caller finishes after the disconnect. Its
 // reply has no socket to go to; writing it neither blocks nor panics, and
 // the connection's cleanups wait for it.
 func TestDetachedCallCompletesAfterDisconnect(t *testing.T) {
@@ -218,6 +238,26 @@ func TestDetachedCallCompletesAfterDisconnect(t *testing.T) {
 			want := []string{"detached finished (err=<nil>)", "cleanup"}
 			if got := app.lines(); strings.Join(got, "|") != strings.Join(want, "|") {
 				t.Fatalf("teardown order = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// A wait on the caller's behalf ends when the caller leaves; the effect
+// before it stands and the call's context is still live.
+func TestPresenceAwareWaitEndsAtDisconnect(t *testing.T) {
+	for name, disconnect := range disconnects {
+		t.Run(name, func(t *testing.T) {
+			f, app := newTeardownFixture(t)
+			conn := f.dial(t)
+			callWithoutReply(t, conn, "presence-1", "Presence")
+			waitEntered(t, app, "presence")
+
+			disconnect(conn)
+			waitCleanup(t, app)
+			want := []string{"effect", "wait ended (err=<nil>)", "cleanup"}
+			if got := app.lines(); strings.Join(got, "|") != strings.Join(want, "|") {
+				t.Fatalf("log = %q, want %q", got, want)
 			}
 		})
 	}

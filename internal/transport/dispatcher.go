@@ -47,7 +47,10 @@ type Method struct {
 	// LocalOnly refuses the method for non-loopback peers. Set for every
 	// method on a receiver registered with RegisterOptions.LocalOnly;
 	// there is no per-method form.
-	LocalOnly   bool
+	LocalOnly bool
+	// CallerBound is the generated table's //ao:callerbound mark: the
+	// method's context ends with its caller (callcontext.go).
+	CallerBound bool
 	fn          reflect.Value
 	inputTypes  []reflect.Type
 	outputTypes []reflect.Type
@@ -169,6 +172,7 @@ func (d *Dispatcher) Register(receiver any, opts RegisterOptions) ([]*Method, er
 			NeedsContext: needsCtx,
 			IsVariadic:   methodType.IsVariadic(),
 			LocalOnly:    opts.LocalOnly,
+			CallerBound:  classify(name).CallerBound,
 			fn:           methodValue,
 			inputTypes:   inputTypes,
 			outputTypes:  outputTypes,
@@ -334,7 +338,7 @@ func (d *Dispatcher) Invoke(ctx context.Context, m *Method, params []json.RawMes
 		return nil, fe
 	}
 
-	args, fe := d.buildArgs(ctx, m, params)
+	args, fe := d.buildArgs(methodContext(ctx, m), m, params)
 	if fe != nil {
 		return nil, fe
 	}

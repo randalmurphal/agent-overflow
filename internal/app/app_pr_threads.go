@@ -50,6 +50,7 @@ type PRThread struct {
 //
 //ao:scope git:operate
 //ao:route selected
+//ao:callerbound
 func (a *App) ListThreadsOnPR(ctx context.Context, req PRThreadsRequest) ([]PRThread, error) {
 	if err := a.requireScope(ctx, transport.ScopeThreadsRead, "ListThreadsOnPR lists threads"); err != nil {
 		return nil, err
@@ -186,7 +187,7 @@ func (a *App) OpenPRThread(ctx context.Context, req OpenPRThreadRequest) (OpenPR
 	if req.CrossRepository {
 		branch, _, createdBranch, err = a.gitCore().FetchPRBranch(ctx, project.Path, req.PR)
 		if err != nil {
-			return OpenPRThreadResult{}, fmt.Errorf("open PR thread: %w", err)
+			return OpenPRThreadResult{}, errors.Join(fmt.Errorf("open PR thread: %w", err), a.dropPRBranch(project.Path, branch, createdBranch))
 		}
 	} else {
 		// The create path cuts a new branch when the named one does not

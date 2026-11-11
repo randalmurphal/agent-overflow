@@ -125,7 +125,7 @@ func TestPRDispositionCancelledByItsCallerNeverStopsBetweenPushAndReceipt(t *tes
 				if point == "lookup" {
 					cancel()
 				}
-				return []gitops.GitPR{{URL: url}}, lookupCtx.Err()
+				return []gitops.GitPR{{URL: url, BaseBranch: "main"}}, lookupCtx.Err()
 			}
 			service, database, item := newPRDispositionFixture(t, git)
 			if point == "before" {
@@ -156,7 +156,7 @@ func TestPRDispositionAdoptsTheBranchsOpenPR(t *testing.T) {
 			return "", errors.New("a pull request for branch workflow/run into branch main already exists")
 		},
 		listOpenPRs: func(context.Context) ([]gitops.GitPR, error) {
-			return []gitops.GitPR{{URL: "https://github.com/acme/repo/pull/7"}}, nil
+			return []gitops.GitPR{{URL: "https://github.com/acme/repo/pull/7", BaseBranch: "main"}}, nil
 		},
 	}
 	service, database, item := newPRDispositionFixture(t, git)
@@ -167,8 +167,14 @@ func TestPRDispositionAdoptsTheBranchsOpenPR(t *testing.T) {
 		t.Fatalf("receipt = %+v (found %t), want the branch's open PR", stored, found)
 	}
 
-	// No open PR, or more than one, is not an answer: the refusal stands.
-	for _, open := range [][]gitops.GitPR{nil, {{URL: "a"}, {URL: "b"}}} {
+	// No open PR into the base, or more than one, is not an answer: the
+	// refusal stands. The branch's PR into another base is someone else's
+	// landing, and adopting it would record this one as done.
+	for _, open := range [][]gitops.GitPR{
+		nil,
+		{{URL: "a", BaseBranch: "main"}, {URL: "b", BaseBranch: "main"}},
+		{{URL: "release", BaseBranch: "release"}},
+	} {
 		git.listOpenPRs = func(context.Context) ([]gitops.GitPR, error) { return open, nil }
 		service, database, item := newPRDispositionFixture(t, git)
 		if _, err := service.CreateItemPR(context.Background(), item.ID); err == nil {

@@ -136,6 +136,7 @@ func (a *App) StopCodexSubagent(threadID, launchID string) (bool, error) {
 //
 //ao:scope threads:operate
 //ao:route selected
+//ao:callerbound
 func (a *App) GetCodexSkills(ctx context.Context, workspacePath string, forceReload bool) (codexskills.CwdSkills, error) {
 	return a.codexAppService().Skills(ctx, workspacePath, forceReload)
 }
