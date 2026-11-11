@@ -237,10 +237,11 @@ func TestGitLabPipelinesAnswerEveryPipelineNewestFirst(t *testing.T) {
 	if missing := glabGET(t, srv, "gitlab.com", "projects/grp%2Fpipes/pipelines/99"); missing.status != 404 || !strings.Contains(missing.body, "Pipeline") {
 		t.Errorf("unknown pipeline = %+v", missing)
 	}
-	var jobs []map[string]any
-	decodeBody(t, glabGET(t, srv, "gitlab.com", "projects/grp%2Fpipes/pipelines/20/jobs?per_page=100"), &jobs)
-	if len(jobs) != 1 || jobs[0]["id"] != float64(2101) {
-		t.Errorf("repository pipeline jobs = %v", jobs)
+	if rows := pipelineJobsRead(t, srv, "gitlab.com", "grp/pipes", 20, nil); len(rows.nodes()) != 1 || rows.nodes()[0]["id"] != "gid://gitlab/Ci::Build/2101" {
+		t.Errorf("repository pipeline jobs = %v", rows)
+	}
+	if rest := glabGET(t, srv, "gitlab.com", "projects/grp%2Fpipes/pipelines/20/jobs?per_page=100"); rest.status != 404 || !lastInvocation(t, e).Unhandled {
+		t.Errorf("the REST jobs list = %+v, want unhandled: the app reads PipelineJobs", rest)
 	}
 	var mrJSON map[string]any
 	decodeBody(t, glabGET(t, srv, "gitlab.com", "projects/grp%2Fpipes/merge_requests/9"), &mrJSON)

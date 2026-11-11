@@ -64,6 +64,13 @@ func (p *Pipeline) normalizeRun(forge string, pull *Pull, ids *idSource) error {
 		sources = gitlabSources
 	}
 	p.Source = defaultString(p.Source, sources[p.RefKind])
+	if forge == "github" {
+		for i, job := range p.Jobs {
+			if job.Kind != "" {
+				return fmt.Errorf("jobs[%d]: kind %q is GitLab's; a GitHub run holds Actions jobs", i, job.Kind)
+			}
+		}
+	}
 	p.Title = defaultString(p.Title, p.Name)
 	p.CreatedAt = defaultString(p.CreatedAt, "2026-01-01T00:00:00Z")
 	p.UpdatedAt = defaultString(p.UpdatedAt, p.CreatedAt)

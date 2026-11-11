@@ -666,7 +666,7 @@ func TestGitHubReadPipelineReadsTheRunAndItsJobs(t *testing.T) {
 	}
 }
 
-// ReadPipeline on GitLab reads the pipeline, then its jobs as ReadPR
+// ReadPipeline on GitLab reads the pipeline, then its rows as ReadPR
 // reads a head pipeline's.
 func TestGitLabReadPipelineReadsThePipelineAndItsJobs(t *testing.T) {
 	t.Parallel()
@@ -674,9 +674,10 @@ func TestGitLabReadPipelineReadsThePipelineAndItsJobs(t *testing.T) {
 		switch {
 		case call.Path == "projects/grp%2Fsub%2Fapp/pipelines/7002":
 			return forgeAPIAnswer{Body: `{"id":7002,"status":"success","ref":"v2.0.0","tag":true,"sha":"def456","source":"push","web_url":"https://gitlab.example/grp/sub/app/-/pipelines/7002"}`}
-		case strings.HasPrefix(call.Path, "projects/grp%2Fsub%2Fapp/pipelines/7002/jobs?"):
-			return forgeAPIAnswer{Body: `[{"id":12,"name":"deploy","stage":"release","status":"success","started_at":"2026-10-19T10:01:00Z","duration":4.5},
-				{"id":11,"name":"build","stage":"build","status":"success","started_at":"2026-10-19T10:00:00Z","duration":60}]`}
+		case call.Op == "PipelineJobs":
+			return gitlabJobsPage([]string{"build", "release"}, "",
+				gitlabJobNode("Ci::Build", 12, "deploy", "release", "SUCCESS", `"startedAt":"2026-10-19T10:01:00Z","duration":4.5`),
+				gitlabJobNode("Ci::Build", 11, "build", "build", "SUCCESS", `"startedAt":"2026-10-19T10:00:00Z","duration":60`))
 		}
 		return forgeUnexpected(t, call)
 	})
@@ -729,8 +730,8 @@ func TestPRCIReadNamesTheRefAndCommit(t *testing.T) {
 		switch {
 		case call.Path == "projects/grp%2Fsub%2Fapp/merge_requests/3":
 			return forgeAPIAnswer{Body: `{"iid":3,"sha":"head2","head_pipeline":{"id":77,"status":"running","ref":"refs/merge-requests/3/head","sha":"head2","web_url":"https://gitlab.example/p/77"}}`}
-		case strings.HasPrefix(call.Path, "projects/grp%2Fsub%2Fapp/pipelines/77/jobs?"):
-			return forgeAPIAnswer{Body: `[{"id":1,"name":"unit","stage":"test","status":"running","started_at":"2026-10-20T10:00:00Z"}]`}
+		case call.Op == "PipelineJobs":
+			return gitlabJobsPage([]string{"test"}, "", gitlabJobNode("Ci::Build", 1, "unit", "test", "RUNNING", `"startedAt":"2026-10-20T10:00:00Z"`))
 		}
 		return forgeUnexpected(t, call)
 	})

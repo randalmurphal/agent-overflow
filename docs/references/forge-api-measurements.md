@@ -162,6 +162,73 @@ whose last page names no next is complete to the after date. Stopping at
 the first short page read one comments page, reaching back 12 days
 (2026-10-09). The feed's `after` semantics were not probed.
 
+## List page sizes
+
+Read-only GETs on 2026-11-11 (`gh api` on randalmurphal/agent-overflow,
+`glab api` on a private gitlab.com project), compact JSON sizes of one
+page. `forgeapi` reads a body into memory up to 1 MiB unless the request
+names its own bound; each list below that can pass it has one in
+`internal/git/forge_body_limits.go`, sized from these.
+
+| Read | Page | Per record | Bound |
+|---|---|---|---|
+| GitHub `actions/runs?per_page=100` | 1,340,650 B | 13.0 to 14.2 KB (`repository` and `head_repository` 4.5 KB each, `head_commit` 1.4 KB, `actor` and `triggering_actor` 1 KB each) | 8 MiB |
+| GitHub `actions/runs/ID/jobs?per_page=100` (22 jobs, 15 steps at most) | 60,540 B | 0.9 to 3.5 KB, 150 B per step | 4 MiB |
+| GitLab `merge_requests?state=merged&per_page=100` | 1,952,122 B | 7.0 to 56.2 KB, 19.4 KB on average (the description) | 8 MiB |
+| GitLab `merge_requests?state=all&per_page=100` | 1,708,881 B | 3.5 to 56.2 KB | 8 MiB |
+| GitLab `merge_requests?state=opened&per_page=100` (28 open) | 208,195 B | 2.5 to 21.7 KB | 8 MiB |
+| GitLab `merge_requests/N/discussions?per_page=100` (an MR of 146 notes) | 396,609 B | 0.7 to 53.2 KB, 3.9 KB on average | 8 MiB |
+| GitLab `users/ID/events?action=commented&per_page=100` (92 events) | 234,776 B | 1.4 to 4.8 KB (the note) | 4 MiB |
+| GitLab `users/ID/events?action=approved&per_page=100` | 67,460 B | 0.6 to 0.7 KB | default |
+| GitLab `pipelines?per_page=100` | 35,484 B | 0.3 to 0.4 KB | default |
+
+The merged list already passed 1 MiB, so the merged-branch prune read
+failed on that project before it had a bound. The REST pipeline jobs list
+(3.5 KB a job, the commit and runner embedded in each) is no longer read.
+
+## Pipeline rows
+
+Read-only GraphQL and REST on gitlab.com, 2026-11-11. The project's
+pipeline 2979144634 (`source: external`) answers `[]` on
+`pipelines/ID/jobs` and on `pipelines/ID/bridges`; its one check is a
+commit status, `CodeRabbit`, at
+`repository/commits/SHA/statuses?pipeline_id=ID` (`target_url` null).
+43 of its latest 100 pipelines are external.
+
+`project(fullPath) { pipeline(id: "gid://gitlab/Ci::Pipeline/ID") { stages { nodes { name } } jobs(first: 100, after, retried: false) { pageInfo { hasNextPage endCursor } nodes { id name status allowFailure duration startedAt webPath stage { name } detailedStatus { detailsPath } downstreamPipeline { path } } } } }`
+(the shipped `PipelineJobs`) answers every row:
+
+- A row's `id` names its kind: `gid://gitlab/Ci::Build/N` (N is the
+  REST job id the trace takes), `gid://gitlab/Ci::Bridge/N`,
+  `gid://gitlab/GenericCommitStatus/N`. `kind` is `BUILD` for a build and
+  for a commit status, `BRIDGE` for a bridge.
+- A commit status sits in stage `external`; its `webPath` is a job path
+  that is no page, and `detailedStatus.detailsPath` is its `target_url`
+  (null when none; on a public project's AppVeyor status it was the
+  absolute AppVeyor URL, the same as the REST status's `target_url`).
+- A bridge's `webPath` is null; `downstreamPipeline { path }` and
+  `detailsPath` are the child pipeline's path once it exists (gitlab-org
+  pipelines, another project's included), null for a manual or created
+  bridge.
+- `status` is the `CiJobStatus` enum (`SUCCESS`, `RUNNING`, `MANUAL`,
+  `CREATED`, ...); stage `status` in `stages` is lowercase. `duration` is
+  whole seconds or null; `startedAt` is null until a row starts.
+- Rows come newest first (descending id); `stages` lists the stages in
+  pipeline order. A 129-row gitlab-org pipeline paged 100 then 29 by
+  `endCursor`.
+- `retried: false` matched REST: 33 rows where REST `pipelines/ID/jobs`
+  answered 33 and the unfiltered connection 34; it also drops a commit
+  status posted again.
+- `queryComplexity` scored the document 38 of 250. Three runs each from
+  the same machine: 0.66 s per GraphQL read against 0.91 s per REST jobs
+  list page (glab start-up included in both), for a 37-job pipeline; the
+  answer was 14.5 KB against 131 KB.
+
+GitLab GraphQL draws on the REST quota pool and has no ETag; the REST
+jobs list answered 200 to `If-None-Match`, so neither read was free to
+revalidate. Reading builds, bridges and statuses over REST takes three
+lists per poll.
+
 ## Merge readiness and actions
 
 ### GitHub
