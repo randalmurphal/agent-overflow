@@ -1208,6 +1208,9 @@ func TestFindStopRetriesAStopTheEngineRefused(t *testing.T) {
 			f := newFindFixture(t, "https://example.test/alpha")
 			f.find(t, "start", "alpha")
 			f.wantCall(t, "start alpha")
+			// No end submitted before is still to be applied: every
+			// transition that follows is the test's own.
+			f.manager.findWork.Wait()
 			failures := 0
 			f.fake.mu.Lock()
 			f.fake.findStopErr = func(context.Context) error {
@@ -1439,6 +1442,9 @@ func TestFindStopThatNeverAnswersIsBoundedAndStaysOwed(t *testing.T) {
 				}
 			}
 			f.fake.mu.Unlock()
+			// No end submitted before is still to be applied: the next
+			// transition is the test's own.
+			f.manager.findWork.Wait()
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			answered := make(chan error, 1)
