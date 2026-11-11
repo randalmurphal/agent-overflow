@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -62,8 +63,10 @@ const (
 	// maxFindSeedRunes bounds a selection that seeds the engine's own bar,
 	// the rule the SPA's find bar applies to its seed.
 	maxFindSeedRunes = 200
-	// findTimeout bounds one engine find call.
-	findTimeout = 10 * time.Second
+	// findActionTimeout bounds one find action, from before it waits for the
+	// page lock to its last engine call, and one application of submitted
+	// ends (Manager.findTimeout).
+	findActionTimeout = 10 * time.Second
 )
 
 // findEscape is the key that closes AO's find bar from inside the page:
@@ -216,6 +219,10 @@ func (m *Manager) Find(ctx context.Context, access Access, pageID, kind, query, 
 	if mode == "" {
 		return FindState{}, errFindUnavailable
 	}
+	// The action's deadline runs from before the wait for the page lock, so
+	// an action that waited past it, or whose caller went, changes nothing.
+	opCtx, cancel := operationContext(ctx, p.ctx, m.findTimeout)
+	defer cancel()
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	// Resolved, the page could have closed or suspended before its lock was
@@ -226,8 +233,11 @@ func (m *Manager) Find(ctx context.Context, access Access, pageID, kind, query, 
 		}
 		return FindState{}, errPageNotFound
 	}
-	opCtx, cancel := operationContext(ctx, p.ctx, findTimeout)
-	defer cancel()
+	// The caller's own context is read too: opCtx learns of its end
+	// asynchronously.
+	if err := cmp.Or(ctx.Err(), opCtx.Err()); err != nil {
+		return FindState{}, fmt.Errorf("browser: find %s: %w", kind, err)
+	}
 	settled := m.beginFindLocked(opCtx, p)
 	defer m.endFindTransitionLocked(opCtx, p)
 	switch kind {
@@ -596,7 +606,7 @@ func (m *Manager) endFindLocked(p *managedPage) {
 	p.ends.mu.Lock()
 	p.ends.all = true
 	p.ends.mu.Unlock()
-	ctx, cancel := operationContext(context.Background(), p.ctx, findTimeout)
+	ctx, cancel := operationContext(context.Background(), p.ctx, m.findTimeout)
 	defer cancel()
 	_ = m.settleFindLocked(ctx, p)
 }
@@ -637,7 +647,7 @@ func (m *Manager) applyFindEnds(p *managedPage) {
 	defer m.findWork.Done()
 	for {
 		p.mu.Lock()
-		ctx, cancel := operationContext(context.Background(), p.ctx, findTimeout)
+		ctx, cancel := operationContext(context.Background(), p.ctx, m.findTimeout)
 		m.findPoint("apply")
 		_ = m.settleFindLocked(ctx, p)
 		cancel()

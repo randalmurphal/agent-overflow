@@ -81,7 +81,9 @@ type Manager struct {
 	findWork   sync.WaitGroup
 	findGate   sync.Mutex
 	findClosed bool
-	profileDir string
+	// findTimeout is findActionTimeout; a test shortens it.
+	findTimeout time.Duration
+	profileDir  string
 
 	startMu sync.Mutex
 	mu      sync.Mutex
@@ -281,6 +283,7 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		sessions:      make(map[string]SessionInfo),
 		viewportSyncs: make(map[string]*viewportSync),
 		artifactRoot:  filepath.Join(configDir, "browser-artifacts"),
+		findTimeout:   findActionTimeout,
 	}
 	m.accelerators = opts.Accelerators
 	m.engine = selectEngine(configDir, opts, engineEvents{

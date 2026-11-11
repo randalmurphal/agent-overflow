@@ -28,7 +28,17 @@ type findFixture struct {
 
 func newFindFixture(t *testing.T, address string) *findFixture {
 	t.Helper()
+	return newFindFixtureWith(t, address, nil)
+}
+
+// newFindFixtureWith is newFindFixture with configure run on the Manager
+// before anything else uses it.
+func newFindFixtureWith(t *testing.T, address string, configure func(*Manager)) *findFixture {
+	t.Helper()
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
+	if configure != nil {
+		configure(manager)
+	}
 	t.Cleanup(func() {
 		if err := manager.Close(); err != nil {
 			t.Errorf("close manager: %v", err)
@@ -1419,6 +1429,63 @@ func TestFindEndsSubmittedDuringCloseAreJoined(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 		if n := late.Load(); n != 0 {
 			t.Fatalf("round %d: %d find applies ran after Close returned", round, n)
+		}
+	}
+}
+
+// A find action's deadline runs from before it waits for the page lock: an
+// action that waited past it is refused and changes nothing, whatever its
+// kind, and so is one whose caller went while it waited.
+func TestFindActionThatWaitedPastItsDeadlineChangesNothing(t *testing.T) {
+	for _, why := range []string{"deadline", "caller"} {
+		for _, kind := range []string{"open", "start", "next", "stop", "close"} {
+			t.Run(why+" "+kind, func(t *testing.T) {
+				f := newFindFixtureWith(t, "https://example.test/alpha", func(m *Manager) {
+					if why == "deadline" {
+						m.findTimeout = 200 * time.Millisecond
+					}
+				})
+				if kind != "open" {
+					f.find(t, "open", "")
+				}
+				if kind == "next" || kind == "stop" || kind == "close" {
+					f.find(t, "start", "alpha")
+					f.wantCall(t, "start alpha")
+				}
+				p, _, err := f.manager.lookupOwnedPage(f.access, f.pageID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				p.findMu.Lock()
+				before := p.find
+				p.findMu.Unlock()
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				p.mu.Lock()
+				answered := make(chan error, 1)
+				go func() {
+					_, err := f.manager.Find(ctx, f.access, f.pageID, kind, "beta", f.mount)
+					answered <- err
+				}()
+				if why == "caller" {
+					time.Sleep(50 * time.Millisecond)
+					cancel()
+				} else {
+					time.Sleep(400 * time.Millisecond)
+				}
+				p.mu.Unlock()
+				if err := <-answered; err == nil {
+					t.Fatalf("%s that waited past its deadline was not refused", kind)
+				}
+				f.noCall(t)
+				f.noEvent(t)
+				p.findMu.Lock()
+				after := p.find
+				p.findMu.Unlock()
+				if after != before {
+					t.Fatalf("%s that waited past its deadline changed the find: %+v, was %+v", kind, after, before)
+				}
+			})
 		}
 	}
 }
