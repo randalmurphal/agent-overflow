@@ -10,6 +10,7 @@ import ReviewCommentThread from './ReviewCommentThread.svelte';
 import ReviewPaneFind from './ReviewPaneFind.svelte';
 import { getPaneFindProvider, openPaneFind, resetPaneFindForTest, setPaneFindQuery } from '../../stores/paneFind.svelte';
 import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
+import type { ReviewFind } from '../../stores/reviewFind.svelte';
 import type { CommentAnchor } from '../../utils/reviewRows';
 import type { DiffReviewComment } from '../../types/models';
 import { REVIEW_FILE_HEADER_BAR_PX } from '../../utils/reviewRows';
@@ -360,7 +361,7 @@ describe('review find over the real list', () => {
     const finder = mount(ReviewPaneFind, { target: document.body, props: findProps });
     flushSync();
     try {
-      const find = getPaneFindProvider('pane-fold')!;
+      const find = getPaneFindProvider('pane-fold') as ReviewFind<ReviewFindHit>;
       openPaneFind('pane-fold');
       setPaneFindQuery('pane-fold', 'zq');
       await waitFor(() => find.result.count === 1 && !find.result.pending, 'the scan', 600);
@@ -406,7 +407,7 @@ describe('review find over the real list', () => {
     const finder = mount(ReviewPaneFind, { target: document.body, props: findProps });
     flushSync();
     try {
-      const find = getPaneFindProvider('pane-load')!;
+      const find = getPaneFindProvider('pane-load') as ReviewFind<ReviewFindHit>;
       openPaneFind('pane-load');
       setPaneFindQuery('pane-load', 'f3:500');
       await waitFor(() => find.result.count === 1 && !find.result.pending, 'the scan', 1200);
@@ -479,7 +480,7 @@ describe('review find over the real list', () => {
     });
     flushSync();
     try {
-      const find = getPaneFindProvider(`pane-wide-${view}`)!;
+      const find = getPaneFindProvider(`pane-wide-${view}`) as ReviewFind<ReviewFindHit>;
       openPaneFind(`pane-wide-${view}`);
       setPaneFindQuery(`pane-wide-${view}`, 'zq');
       await waitFor(() => find.result.count === 2 && !find.result.pending, 'the scan');
