@@ -36,7 +36,10 @@ type ThreadMessageHit struct {
 // SearchThreadMessages returns hits that match the query across thread titles
 // and item summaries. Matching is case-insensitive substring via SQLite's
 // LOWER + LIKE — intentionally simple for now; a future migration can swap
-// to an FTS5 virtual table without changing the return shape.
+// to an FTS5 virtual table without changing the return shape. The query is
+// lower cased in Go (Unicode) and the text by SQLite (ASCII only); the
+// search modal highlights by that rule (frontend utils/highlight.ts
+// searchHighlightSegments), held to it by searchVectors.json.
 //
 // limit caps the total number of hits returned. Zero or negative is treated
 // as an unbounded search (callers should always pass a small positive int

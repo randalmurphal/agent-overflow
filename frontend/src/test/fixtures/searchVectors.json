@@ -1,0 +1,29 @@
+{
+  "ranges": [
+    { "text": "Hello WORLD", "query": "world", "ranges": [[6, 11]] },
+    { "text": "abc ABC", "query": "ABC", "ranges": [[0, 3], [4, 7]] },
+    { "text": "aaa", "query": "aa", "ranges": [[0, 2]] },
+    { "text": "abc", "query": "  ", "ranges": [] },
+    { "text": "école ÉCOLE École", "query": "école", "ranges": [[0, 5]] },
+    { "text": "école ÉCOLE", "query": "ÉCOLE", "ranges": [[0, 5]] },
+    { "text": "ÉCOLE", "query": "ÉCOLE", "ranges": [] },
+    { "text": "İstanbul istanbul ISTANBUL", "query": "istanbul", "ranges": [[9, 17], [18, 26]] },
+    { "text": "İx İ i I", "query": "İ", "ranges": [[5, 6], [7, 8]] },
+    { "text": "İx", "query": "x", "ranges": [[1, 2]] },
+    { "text": "Straße STRASSE straße", "query": "straße", "ranges": [[0, 6], [15, 21]] },
+    { "text": "STRAẞE straße", "query": "STRAẞE", "ranges": [[7, 13]] },
+    { "text": "Kelvin Kelvin kelvin", "query": "kelvin", "ranges": [[0, 6], [14, 20]] },
+    { "text": "Kelvin Kelvin", "query": "K", "ranges": [[0, 1]] },
+    { "text": "é é É", "query": "é", "ranges": [[3, 4]] },
+    { "text": "é é É", "query": "e", "ranges": [[0, 1], [5, 6]] },
+    { "text": "ΣΊΣΥΦΟΣ σίσυφος", "query": "ΣΊΣΥΦΟΣ", "ranges": [] },
+    { "text": "a😀b 😀", "query": "😀", "ranges": [[1, 3], [5, 7]] },
+    { "text": "𐐀𐐨", "query": "𐐀", "ranges": [[2, 4]] },
+    { "text": "50% done_ 50x", "query": "0%", "ranges": [[1, 3]] },
+    { "text": "50% done_ 50x", "query": "_", "ranges": [[8, 9]] },
+    { "text": "50% done_ 50x", "query": "50_", "ranges": [] },
+    { "text": "a\\b", "query": "\\", "ranges": [[1, 2]] },
+    { "text": "abc", "query": "\u0085b ", "ranges": [[1, 2]] },
+    { "text": "abc", "query": "﻿b", "ranges": [] }
+  ]
+}
