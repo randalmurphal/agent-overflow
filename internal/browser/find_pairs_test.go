@@ -652,7 +652,8 @@ func (e *findTableEnv) check(t *testing.T, name string) {
 		if p.shown != p.bar {
 			t.Errorf("%s: provider %s shows a bar %v holding one %v", name, label, p.shown, p.bar)
 		}
-		if session, live := sessions[p.page]; p.bar && !(live && session.ownedBy(p.mount, p.open) && session.bar && claims[p.page]) {
+		session, live := sessions[p.page]
+		if held := live && session.ownedBy(p.mount, p.open) && session.bar && claims[p.page]; p.bar && !held {
 			t.Errorf("%s: provider %s shows a bar on %s the Manager does not hold for its open %s (%+v)", name, label, e.pageLabel(p.page), p.open, session)
 		}
 		for id, session := range sessions {
