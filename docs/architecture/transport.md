@@ -442,8 +442,16 @@ the configured event-count bound.
 Each connection caps its in-flight RPC handlers. Reaching the cap refuses the
 frame immediately with `client_overloaded` instead of parking the read loop:
 the reader keeps serving the connection's other frames, and the caller gets a
-settled rejection naming a call that never started. Connection teardown still
-waits for the handlers that did start.
+settled rejection naming a call that never started.
+
+When the read loop exits, for a client close, a network drop or a server-side
+teardown, the connection closes its event subscriber and cancels the
+connection context at once. It then waits for the handlers that started and
+for its pump, keepalive and session watchdog, and only then runs the
+connection's cleanups. A handler sees its caller's departure as context
+cancellation; work that must outlive it detaches as the
+[application guide](../../internal/app/AGENTS.md) describes. A reply written
+after the socket is gone fails at once and is dropped.
 
 The server sends application-visible ping frames on the heartbeat cadence and
 periodically verifies a protocol pong while the reader is parked. Every write
@@ -478,8 +486,9 @@ Revocation teardown:
 2. cancels connection work; and
 3. closes the WebSocket to wake the reader.
 
-The steps are idempotent and run without holding the registry lock. Ordinary
-connection teardown uses the same cleanup stack. Transport stores no revocation
+The steps are idempotent and run without holding the registry lock. The woken
+reader then runs the ordinary connection teardown, whose cleanup stack also
+removes the connection from the registry. Transport stores no revocation
 tombstone; the durable identity rows remain authoritative for later admission.
 
 The per-RPC scope hook also consults current session liveness, so an established

@@ -184,9 +184,11 @@ type connHandler struct {
 	// Acquired before `go handleRPC`, released in the goroutine's defer.
 	rpcSem chan struct{}
 
-	// rpcWG tracks in-flight RPC goroutines so connection teardown can
-	// wait for responses to finish writing before closing the WS.
+	// rpcWG tracks in-flight RPC goroutines; loops tracks the pump,
+	// keepalive and session watchdog. Teardown joins both after cancelling
+	// the connection context and before running connection cleanups.
 	rpcWG sync.WaitGroup
+	loops sync.WaitGroup
 
 	// writeMu serialises writes to the WS. Both the request handler
 	// goroutines and the event-pump goroutine share the connection;
@@ -302,17 +304,15 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 		leaseWake:         make(chan struct{}, 1),
 	}
 	h.lastReadAt.Store(time.Now().UnixNano())
-	defer h.sub.Close()
 
 	connCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	h.cancel = cancel
 
 	// Per-connection scratch space. Handlers (e.g. GitStatusSubscribe)
 	// register cleanup callbacks here so a dropped WS releases their
 	// long-lived server-side resources without waiting for the App to
-	// shut down. runCleanups runs in LIFO order after the read loop
-	// exits and after in-flight RPC goroutines drain.
+	// shut down. Cleanups run in LIFO order once the connection's calls
+	// and loops have returned.
 	//
 	// The principal carries BOTH halves of "who is this": the session the
 	// upgrade admitted and the screen that declared itself on the URL.
@@ -322,7 +322,16 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 		Client:    profile.client,
 		SessionID: profile.sessionID,
 	})
-	defer state.RunCleanups()
+	// Teardown, in order: stop event delivery and cancel every call the
+	// moment the caller is gone, join the calls and loops so nothing still
+	// uses a connection resource, then release those resources.
+	defer func() {
+		h.sub.Close()
+		cancel()
+		h.rpcWG.Wait()
+		h.loops.Wait()
+		state.RunCleanups()
+	}()
 
 	// A connection carrying a durable session joins the live-session
 	// registry, so revoking that session force-closes this socket instead
@@ -396,20 +405,20 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	// Lives on its own goroutine so a slow read doesn't backpressure
 	// the publisher (the EventBus already drops on full subscriber
 	// channels).
-	go h.pumpEvents(connCtx)
+	h.loops.Go(func() { h.pumpEvents(connCtx) })
 
 	// Keepalive: heartbeat frames + periodic protocol pings. Exits on
 	// ctx cancel or the first failed write/pong (the read loop owns
 	// teardown; on pong timeout the keepalive closes the conn itself
 	// to unblock it).
-	go h.keepalive(connCtx)
+	h.loops.Go(func() { h.keepalive(connCtx) })
 
 	// Session watchdog: the interval re-check and the lifetime cap. Only
 	// for a connection that named a session — one that named none has
 	// nothing to re-validate and no credential to force back through the
 	// ticket route.
 	if profile.sessionID != "" {
-		go h.watchSession(connCtx, cancel)
+		h.loops.Go(func() { h.watchSession(connCtx, cancel) })
 	}
 
 	started := time.Now()
@@ -424,10 +433,6 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	log.Printf("transport: ws %s closed after %s (loopback=%t device=%q page=%q): %s",
 		profile.remoteAddr, time.Since(started).Round(time.Millisecond),
 		profile.isLoopback, profile.client.DeviceID, profile.client.ConnectionID, h.closeReason(readErr))
-
-	// Wait for in-flight RPC handlers to finish writing their
-	// responses before we let the parent close the WS underneath them.
-	h.rpcWG.Wait()
 }
 
 // keepalive runs the per-connection heartbeat loop. Every tick writes
