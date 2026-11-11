@@ -14,9 +14,10 @@ import (
 // review pane writes on a PR opened with no thread
 // (store.PRReviewOwner, keyed by the computer-neutral PRReference.Key).
 // They are pr scope, never a thread's, so a thread's transfer, fork and
-// deletion never see them. SubmitPRReview posts them, after which
-// MarkPRDiffReviewCommentsSent settles them; SendPRDiffReviewComments
-// hands them to a thread instead.
+// deletion never see them. SubmitPRReview posts them and marks them sent
+// (a client that posts them itself settles them with
+// MarkPRDiffReviewCommentsSent); SendPRDiffReviewComments hands them to a
+// thread instead.
 
 // ListPRDiffReviewComments lists pr's drafts for one source.
 //
