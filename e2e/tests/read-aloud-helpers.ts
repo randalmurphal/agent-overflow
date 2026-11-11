@@ -228,10 +228,11 @@ function expectClose(actual: number, expected: number, what: string): void {
 }
 
 /** `row` is one assistant message's meta row. Checks every read-aloud
- * control it shows (play/pause, and restart while paused) against Copy. */
+ * control it shows (play/pause, previous, back and next while reading,
+ * restart while paused) against Copy. */
 export async function expectReadAloudInCopyGrid(row: Locator): Promise<void> {
   const copy = await boxOf(row.getByRole('button', { name: /^Cop/ }));
-  const controls = [row.getByTestId('assistant-message-read-aloud'), row.getByTestId('assistant-message-read-aloud-restart')];
+  const controls = ['', '-previous', '-back', '-next', '-restart'].map((id) => row.getByTestId(`assistant-message-read-aloud${id}`));
   let checked = 0;
   for (const control of controls) {
     if ((await control.count()) === 0) continue;
@@ -243,4 +244,154 @@ export async function expectReadAloudInCopyGrid(row: Locator): Promise<void> {
     expectClose(box.y + box.height / 2, copy.y + copy.height / 2, `${id} center y vs Copy`);
   }
   expect(checked, 'the row shows a read-aloud control').toBeGreaterThan(0);
+}
+
+// ---- sections ----
+//
+// A reply is read in sections (frontend/src/lib/utils/speakableText.ts): a
+// heading starts one, short paragraphs are packed into one, and a code block
+// ends one. The reading reply shows a rule beside its current section's
+// blocks and a "read from here" button beside every other section.
+
+/** Three sections, each a heading and a short paragraph: blocks 0-1, 2-3, 4-5. */
+export const SECTIONS_REPLY = [
+  '## Setup', '', 'Install it first.', '',
+  '## Build', '', 'Then build it.', '',
+  '## Ship', '', 'Ship it once the checks are green and the notes are written.',
+].join('\n');
+/** What an OpenAI voice is asked to read for each section of SECTIONS_REPLY. */
+export const SECTION_TEXTS = [
+  'Setup\n\nInstall it first.',
+  'Build\n\nThen build it.',
+  'Ship\n\nShip it once the checks are green and the notes are written.',
+];
+/** The blocks each section of SECTIONS_REPLY covers. */
+export const SECTION_BLOCKS = [[0, 1], [2, 3], [4, 5]] as const;
+/** What a device voice says for each section of SECTIONS_REPLY. */
+export const SECTION_SENTENCES = [
+  ['Setup', 'Install it first.'],
+  ['Build', 'Then build it.'],
+  ['Ship', 'Ship it once the checks are green and the notes are written.'],
+];
+/** The pause between two OpenAI sections at normal speed (native/clipSpeech.ts). */
+export const SECTION_PAUSE_MS = 850;
+
+/** A thread with `filler` short turns, then `reply`, then SECOND_REPLY. */
+export async function seedSectionReplies(harness: HarnessApp, filler = 0, reply = SECTIONS_REPLY): Promise<void> {
+  const fillers = Array.from({ length: filler }, (_, i) => ({
+    userText: `Filler ${i}?`,
+    items: [{ kind: 'assistant_text', summary: `Filler answer ${i}.\n\nWith a second paragraph to take up room.` }],
+  }));
+  await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [{
+      name: 'read-aloud-sections-app',
+      repo: { commits: [{ message: 'init', files: { 'README.md': '# Seeded\n' } }] },
+      threads: [{
+        title: 'Read this by section',
+        turns: [
+          ...fillers,
+          { userText: 'Sections?', items: [{ kind: 'assistant_text', summary: reply }] },
+          { userText: 'Second?', items: [{ kind: 'assistant_text', summary: SECOND_REPLY }] },
+        ],
+      }],
+    }],
+  });
+}
+
+/** One reply's parts, found by its body's text. */
+export function replyParts(page: Page, text: string) {
+  const body = page.getByTestId('assistant-message-body').filter({ hasText: text });
+  const message = page.locator('[data-item-kind="assistant_text"]').filter({ has: body });
+  return {
+    body,
+    message,
+    row: page.locator('[data-virtual-row]').filter({ has: body }),
+    meta: message.getByTestId('assistant-message-meta'),
+    blocks: body.locator('.markdown-body > .md-committed > *'),
+    marker: message.getByTestId('assistant-message-read-aloud-marker'),
+    layer: message.getByTestId('assistant-message-read-aloud-sections'),
+    from: message.getByTestId('assistant-message-read-aloud-from'),
+    fromSection: (section: number) => message.locator(`[data-section="${section}"]`).getByTestId('assistant-message-read-aloud-from'),
+    control: (id: '' | '-previous' | '-back' | '-next' | '-restart') => message.getByTestId(`assistant-message-read-aloud${id}`),
+    slot: message.getByTestId('assistant-message-read-aloud-slot'),
+  };
+}
+
+export type ReplyParts = ReturnType<typeof replyParts>;
+
+/** The marker is on `section` and spans its blocks' real boxes, in the 8px
+ * gutter left of the text. */
+export async function expectMarkerOn(parts: ReplyParts, section: number): Promise<void> {
+  await expect(parts.marker).toHaveAttribute('data-section', String(section));
+  const [first, last] = SECTION_BLOCKS[section];
+  const rule = await boxOf(parts.marker);
+  const top = await boxOf(parts.blocks.nth(first));
+  const bottom = await boxOf(parts.blocks.nth(last));
+  const body = await boxOf(parts.body);
+  expectClose(rule.y, top.y, `marker top vs block ${first}`);
+  expectClose(rule.y + rule.height, bottom.y + bottom.height, `marker bottom vs block ${last}`);
+  expect(rule.x + rule.width, 'the marker ends before the text').toBeLessThanOrEqual(body.x);
+  expect(rule.x, 'the marker is in the 8px gutter, right of the nav rail strip').toBeGreaterThanOrEqual(body.x - 8);
+}
+
+/** Every "read from here" button sits in the row's right gutter, clear of
+ * the text and of the overlay scrollbar's 6px strip, beside the first line
+ * of its section. */
+export async function expectFromButtonsInGutter(page: Page, parts: ReplyParts): Promise<void> {
+  const body = await boxOf(parts.body);
+  const scroller = await boxOf(page.getByTestId('message-timeline-scroll'));
+  const count = await parts.from.count();
+  expect(count).toBeGreaterThan(0);
+  for (let i = 0; i < count; i += 1) {
+    const button = parts.from.nth(i);
+    const section = Number(await button.locator('..').getAttribute('data-section'));
+    const box = await boxOf(button);
+    expect(box.x, `button ${section} starts right of the text`).toBeGreaterThanOrEqual(body.x + body.width - TOLERANCE);
+    expect(box.x + box.width, `button ${section} ends inside the 32px gutter`).toBeLessThanOrEqual(body.x + body.width + 32);
+    expect(box.x + box.width, `button ${section} is clear of the scrollbar strip`).toBeLessThanOrEqual(scroller.x + scroller.width - 6);
+    const block = await boxOf(parts.blocks.nth(SECTION_BLOCKS[section][0]));
+    const center = box.y + box.height / 2;
+    expect(center, `button ${section} is beside its first line`).toBeGreaterThan(block.y);
+    expect(center).toBeLessThan(block.y + Math.min(block.height, 40));
+  }
+}
+
+/** The meta row's controls are on one line, inside the row and the viewport. */
+export async function expectClusterFits(page: Page, meta: Locator): Promise<void> {
+  const row = await boxOf(meta);
+  const viewport = page.viewportSize()!;
+  const overflow = await meta.evaluate((el) => el.scrollWidth - el.clientWidth);
+  expect(overflow, 'the meta row does not overflow').toBeLessThanOrEqual(1);
+  const buttons = meta.getByRole('button');
+  const count = await buttons.count();
+  const first = await boxOf(buttons.first());
+  for (let i = 0; i < count; i += 1) {
+    const box = await boxOf(buttons.nth(i));
+    expectClose(box.y + box.height / 2, first.y + first.height / 2, `button ${i} on the first button's line`);
+    expect(box.x + box.width, `button ${i} inside the row`).toBeLessThanOrEqual(row.x + row.width + TOLERANCE);
+    expect(box.x + box.width, `button ${i} inside the viewport`).toBeLessThanOrEqual(viewport.width);
+  }
+}
+
+/** The opacity of each "read from here" button's reveal, by section. */
+export function fromOpacities(parts: ReplyParts): Promise<Record<number, string>> {
+  return parts.message.locator('[data-section]:has([data-testid="assistant-message-read-aloud-from"])').evaluateAll((els) =>
+    Object.fromEntries(els.map((el) => [Number((el as HTMLElement).dataset.section), getComputedStyle(el).opacity])));
+}
+
+/** Keeps the audio element the page last played as `window.__aoAudio`, so
+ * a spec can read where a clip is. Call before the page loads. */
+export async function trackAudio(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const play = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function (this: HTMLMediaElement) {
+      (window as unknown as { __aoAudio?: HTMLMediaElement }).__aoAudio = this;
+      return play.call(this);
+    };
+  });
+}
+
+/** Where the tracked audio element is in its clip, in seconds; -1 before any play. */
+export function audioTime(page: Page): Promise<number> {
+  return page.evaluate(() => (window as unknown as { __aoAudio?: HTMLMediaElement }).__aoAudio?.currentTime ?? -1);
 }

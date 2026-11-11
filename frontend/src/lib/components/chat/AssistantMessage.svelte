@@ -11,7 +11,8 @@
   import ChatMarkdown from './ChatMarkdown.svelte';
   import CopyButton from '../primitives/CopyButton.svelte';
   import ReadAloudButton from './ReadAloudButton.svelte';
-  import { readAloudAvailable, readAloudPhase, replyReadingKey } from '../../stores/readAloud.svelte';
+  import ReadAloudSections from './ReadAloudSections.svelte';
+  import { readAloudAvailable, readAloudPosition, replyReadingKey } from '../../stores/readAloud.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { EMPTY_PATH_REFS, getAuthoredWorkspaceFromMeta, getPathRefsFromMeta } from '../../utils/pathLinkify';
   import { formatTimeOfDay } from '../../utils/format';
@@ -107,7 +108,9 @@
   const readAloudMachine = $derived(verifiedThreadMachine(item.threadId));
   const canReadAloud = $derived(canCopy && readAloudAvailable(readAloudMachine));
   const readingKey = $derived(replyReadingKey(item.threadId, item.id));
-  const readingThis = $derived(readAloudPhase(readingKey) !== 'idle');
+  // Being read or paused: the meta-row controls stay shown and the section
+  // layer (`ReadAloudSections`) is mounted; an idle reply mounts nothing.
+  const readingThis = $derived(readAloudPosition(readingKey) !== null);
 
   // The timestamp/copy row is a completion artifact — it must not float
   // above an EMPTY body. With live updates disabled the body is withheld
@@ -228,7 +231,9 @@
   const markdownSourceAppend = $derived(rendered.append);
   const directSourceIsRawJson = $derived(rendered.rawJson);
   const pathCompletionGuard = new AllowlistedPathCompletionGuard();
-  let bodyRoot: HTMLElement;
+  // State so the section layer, mounted in the same pass when a row
+  // remounts mid-reading, receives the element once it is bound.
+  let bodyRoot = $state<HTMLElement>();
   const directRevealSink = createStreamingAssistantLiteralOwner({
     getRoot: () => bodyRoot,
     canAppendSource: (source, nextSource, delta) =>
@@ -243,7 +248,7 @@
   // full-source data attribute or a second retained answer. Ordinary sessions
   // install no property and allocate no object.
   $effect(() => {
-    if (!isHarnessSession()) return;
+    if (!isHarnessSession() || !bodyRoot) return;
     const root = bodyRoot as DiagnosticAssistantBody;
     const diagnostics: AssistantMarkdownDiagnostics = {
       get itemId() { return item.id; },
@@ -342,6 +347,9 @@
       {liveCodeRow}
     />
   </div>
+  {#if readingThis && bodyRoot}
+    <ReadAloudSections body={bodyRoot} {readingKey} markdown={item.summary} />
+  {/if}
   {#if hasVisibleBody}
     <div
       class="mt-1.5 flex items-center gap-1.5 text-[0.625rem] text-fg-hint"

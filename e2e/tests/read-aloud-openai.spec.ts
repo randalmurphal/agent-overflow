@@ -1,10 +1,11 @@
 // Read-aloud in OpenAI voices through the shipped UI and the real backend:
 // with the computer's switch on and a key in its key file, Settings > Voice
-// lists its voices; a reply read in one admits each sentence on the
-// computer, fetches its WAV once from /attachments/speech/ and plays it in
-// the page to its end (the fixtures fail a test on any CSP violation, so
-// blob playback is allowed); pause and resume refetch the sentence it
-// paused in; Preview reads a voice without changing the saved one; a
+// lists its voices; a reply read in one admits each section on the
+// computer (short paragraphs packed into one), fetches its WAV once from
+// /attachments/speech/ and plays it in the page to its end, with a pause
+// between sections (the fixtures fail a test on any CSP violation, so blob
+// playback is allowed); pause holds the clip and resume continues it
+// mid-clip without asking again; Preview reads a voice without changing the saved one; a
 // failure shows the computer's reason; switching the computer's switch off
 // ends a reading, sounding or still waiting on OpenAI, without an error,
 // also when it is switched straight back on; a
@@ -18,6 +19,8 @@ import type { HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
 import {
   FIRST_REPLY,
+  SECTION_PAUSE_MS,
+  audioTime,
   fakeSpeechMs,
   installSpeechStub,
   openVoiceSettings,
@@ -25,11 +28,13 @@ import {
   readAloudSlots,
   setUpOpenAIVoices,
   spoken,
+  trackAudio,
   turnOffOpenAIVoices,
   watchSpeech,
 } from './read-aloud-helpers.js';
 
-const FIRST_SENTENCES = ['First one.', 'Second one.', 'Third one.'];
+// FIRST_REPLY's sections: its first paragraph, then (after the code block) its last.
+const FIRST_SECTIONS = ['First one. Second one.', 'Third one.'];
 const LONG_REPLY = 'This first sentence is long enough to pause while it is still being read aloud. Then a short one.';
 // Read aloud drops a bracketed span as a citation, so the fake's marker is
 // escaped to reach the computer as text.
@@ -74,7 +79,7 @@ test.afterEach(async ({ harness }) => {
   await turnOffOpenAIVoices(harness);
 });
 
-test('a reply read in an OpenAI voice fetches each sentence once and plays it to its end', async ({ harness, page }) => {
+test('a reply read in an OpenAI voice fetches each section once and plays it to its end', async ({ harness, page }) => {
   await installSpeechStub(page);
   await setUpOpenAIVoices(harness, 'sk-e2e-read-aloud-main');
   await seedReplies(harness);
@@ -89,17 +94,20 @@ test('a reply read in an OpenAI voice fetches each sentence once and plays it to
   await expect(slot).toHaveAttribute('data-phase', 'playing');
   await expect(slot).toHaveAttribute('data-phase', 'idle', { timeout: 20_000 });
   const elapsed = Date.now() - started;
-  // The audio really played: the reading lasts the clips' length.
-  expect(elapsed).toBeGreaterThanOrEqual(FIRST_SENTENCES.reduce((ms, s) => ms + fakeSpeechMs(s), 0) * 0.9);
-  expect(speech.minted).toEqual(FIRST_SENTENCES.map((text) => ({ text, voice: 'marin' })));
-  expect(speech.fetches()).toBe(3);
+  // The audio really played: the reading lasts the clips' length and the
+  // pause between them.
+  const audio = FIRST_SECTIONS.reduce((ms, s) => ms + fakeSpeechMs(s), 0);
+  expect(elapsed).toBeGreaterThanOrEqual((audio + SECTION_PAUSE_MS) * 0.9);
+  expect(speech.minted).toEqual(FIRST_SECTIONS.map((text) => ({ text, voice: 'marin' })));
+  expect(speech.fetches()).toBe(2);
   // The device's own voice said nothing.
   expect(await spoken(page)).toEqual([]);
   await expect(readAloudButtons(page).first()).toHaveAttribute('aria-label', 'Read aloud');
 });
 
-test('pause and resume read on from the sentence it paused in', async ({ harness, page }) => {
+test('pause holds the clip and resume continues it mid-clip without asking again', async ({ harness, page }) => {
   await installSpeechStub(page);
+  await trackAudio(page);
   await setUpOpenAIVoices(harness, 'sk-e2e-read-aloud-pause');
   await seedReplies(harness);
   const speech = watchSpeech(page);
@@ -109,19 +117,25 @@ test('pause and resume read on from the sentence it paused in', async ({ harness
   const button = readAloudButtons(page).nth(1);
   const slot = readAloudSlots(page).nth(1);
   await button.click();
-  // The first sentence is sounding once the wait is over.
+  // The section is sounding once the wait is over.
   await expect(slot).toHaveAttribute('data-waiting', 'false');
-  await expect(slot).toHaveAttribute('data-phase', 'playing');
+  await expect.poll(() => audioTime(page)).toBeGreaterThan(0.5);
   await button.click();
   await expect(slot).toHaveAttribute('data-phase', 'paused');
   await expect(button).toHaveAttribute('aria-label', /^Resume reading/);
-  const before = speech.minted.length;
+  const pausedAt = await audioTime(page);
+  expect(speech.minted).toEqual([{ text: LONG_REPLY, voice: 'cedar' }]);
+  const fetches = speech.fetches();
 
   await button.click();
   await expect(slot).toHaveAttribute('data-phase', 'playing');
+  await expect(slot).toHaveAttribute('data-waiting', 'false');
+  // It goes on from where it paused, not from the clip's start.
+  expect(await audioTime(page)).toBeGreaterThanOrEqual(pausedAt);
+  await expect.poll(() => audioTime(page)).toBeGreaterThan(pausedAt + 0.2);
   await expect(slot).toHaveAttribute('data-phase', 'idle', { timeout: 20_000 });
-  const [first, second] = LONG_REPLY.split(/(?<=\.) /);
-  expect(speech.minted.slice(before)).toEqual([{ text: first, voice: 'cedar' }, { text: second, voice: 'cedar' }]);
+  expect(speech.minted).toEqual([{ text: LONG_REPLY, voice: 'cedar' }]);
+  expect(speech.fetches()).toBe(fetches);
 });
 
 test('Preview reads a voice through the computer without changing the saved voice', async ({ harness, page }) => {
@@ -177,7 +191,7 @@ test('switching the computer’s OpenAI voices off ends a reading without an err
   await openThread(harness, page);
   await chooseVoice(page, 'openai:marin');
 
-  // While a sentence is sounding.
+  // While a section is sounding.
   const sounding = readAloudSlots(page).nth(1);
   await readAloudButtons(page).nth(1).click();
   await expect(sounding).toHaveAttribute('data-waiting', 'false');
@@ -185,7 +199,7 @@ test('switching the computer’s OpenAI voices off ends a reading without an err
   await turnOffOpenAIVoices(harness);
   await expect(sounding).toHaveAttribute('data-phase', 'idle');
 
-  // While OpenAI has yet to answer the first sentence.
+  // While OpenAI has yet to answer the first section.
   await setUpOpenAIVoices(harness, 'sk-e2e-read-aloud-revoked');
   await openVoiceSettings(page);
   await expect(page.getByTestId('voice-read-aloud-api-status')).toHaveText('Ready');
@@ -210,7 +224,7 @@ test('switching the computer’s OpenAI voices off ends a reading without an err
   await readAloudButtons(page).first().click();
   await expect(again).toHaveAttribute('data-phase', 'playing');
   await expect(again).toHaveAttribute('data-phase', 'idle', { timeout: 20_000 });
-  expect(speech.minted.slice(minted + 1)).toEqual(FIRST_SENTENCES.map((text) => ({ text, voice: 'marin' })));
+  expect(speech.minted.slice(minted + 1)).toEqual(FIRST_SECTIONS.map((text) => ({ text, voice: 'marin' })));
   await expect(page.getByTestId('toast-message')).toHaveCount(0);
 
   // With the switch off the saved OpenAI voice is not offered, so the
@@ -221,7 +235,7 @@ test('switching the computer’s OpenAI voices off ends a reading without an err
   await page.keyboard.press('Escape');
   await readAloudButtons(page).first().click();
   await expect.poll(async () => (await spoken(page)).map((u) => u.text)).toEqual(['First one.']);
-  expect(speech.minted).toHaveLength(minted + 1 + FIRST_SENTENCES.length);
+  expect(speech.minted).toHaveLength(minted + 1 + FIRST_SECTIONS.length);
 });
 
 test('a device with no voices reads through the computer’s OpenAI voice', async ({ harness, page }) => {
@@ -234,7 +248,7 @@ test('a device with no voices reads through the computer’s OpenAI voice', asyn
   await expect(readAloudButtons(page)).toHaveCount(REPLIES);
   await readAloudButtons(page).first().click();
   await expect(readAloudSlots(page).first()).toHaveAttribute('data-phase', 'idle', { timeout: 20_000 });
-  expect(speech.minted.map((m) => m.text)).toEqual(FIRST_SENTENCES);
+  expect(speech.minted.map((m) => m.text)).toEqual(FIRST_SECTIONS);
 });
 
 test('with the switch off no OpenAI voice is offered and nothing is fetched', async ({ harness, page }) => {

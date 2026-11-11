@@ -6,7 +6,7 @@
   // speed and volume. The device's own voices speak here.
   //
   // OpenAI voices belong to the computer the page names: its host-tier
-  // switch, off until turned on, has it make each sentence's audio with the
+  // switch, off until turned on, has it make each section's audio with the
   // key in its key file (the Dictation section's key file block, whose
   // problem arrives as `keyProblem`). A reply from a computer that does not
   // offer the saved OpenAI voice is read in this device's voice.
