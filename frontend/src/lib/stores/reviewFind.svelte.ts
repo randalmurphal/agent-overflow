@@ -15,9 +15,10 @@
 //
 // (a) `selected`, the identity of the current match. Changed only by a new
 //     query (its first match at or below the reading position, else its
-//     last), a step, or its match disappearing (the first surviving match
-//     after it, else the last before it, else none). Never by a restart, a
-//     background recount or a completed reveal.
+//     last, from the first scan that finds any), a step, or its match
+//     disappearing (the first surviving match after it, else the last
+//     before it, else none). Never by a restart, a background recount or a
+//     completed reveal.
 // (b) `owedReveal`, the match to bring into view. Set only by a new query
 //     (its first match, once chosen) or a step. It survives restarts,
 //     content changes and a running host reveal; it is served when its
@@ -294,13 +295,12 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
     pending = false;
     publishHits(found);
     if (selected === null) {
-      // Only a new query that has not chosen yet picks a match here.
-      if (owedReveal && owedReveal.identity === null) {
-        if (found.length === 0) owedReveal = null;
-        else {
-          const at = found.findIndex(below);
-          chooseFirst(at >= 0 ? at : found.length - 1);
-        }
+      // Only a new query that has not chosen yet picks a match here; one
+      // that found none (the view still loading) waits for a scan that
+      // does.
+      if (owedReveal && owedReveal.identity === null && found.length > 0) {
+        const at = found.findIndex(below);
+        chooseFirst(at >= 0 ? at : found.length - 1);
       }
       paint();
       serve(mine);

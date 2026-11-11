@@ -216,6 +216,24 @@ describe('review find', () => {
     expect(reveals).toEqual([['w1', false], ['w1', false]]);
   });
 
+  it('a query that finds nothing while the view loads chooses and reveals its first match once one appears', async () => {
+    let items: string[] = [];
+    const s = source(() => items);
+    const { h, reveals } = host(() => s.src);
+    const find = createReviewFind(h, () => 'conflicts');
+    find.search('e');
+    await flush();
+    expect([find.result.count, find.selected]).toEqual([0, null]);
+    items = ['e1', 'e2'];
+    find.refresh();
+    await flush();
+    expect([find.result.count, find.result.current, find.selected]).toEqual([2, 0, 'e1']);
+    expect(reveals).toEqual([['e1', false]]);
+    find.refresh();
+    await flush();
+    expect(reveals).toEqual([['e1', false]]);
+  });
+
   it('a newer step or a close drops the outstanding reveal', async () => {
     const s = source(() => ['n1', 'n2', 'n3']);
     const { h, reveals } = host(() => s.src, {
