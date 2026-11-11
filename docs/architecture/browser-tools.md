@@ -321,7 +321,10 @@ store's alone; the backend holds only what the engine holds.
   sees the find's messages. A document regenerated with `document.open`
   runs the script again in the same window; each run replaces its listener
   and announces again, so the window keeps one listener and its children.
-  The console capture is rerun-safe the same way. Nothing waits for a frame, so a frame cannot
+  The console capture also runs again: it wraps the console's methods only
+  on its first run in a window, since the console and its wrappers outlive
+  `document.open`, and each run re-adds only its error and
+  unhandledrejection listeners. Nothing waits for a frame, so a frame cannot
   fail the stop, and a frame that runs no script (sandboxed without
   `allow-scripts`) keeps its selection. WebView2's own find bar has no
   selection housekeeping of AO's to fix.

@@ -354,13 +354,16 @@ func webkitAssetFetchScript(url string, limit int64) string {
 // webkitConsoleCaptureScript is injected at document start in every frame. It
 // is the WebKit half of what CDP's Runtime/Log domains report for free. It
 // runs again in a window whose document is regenerated with document.open,
-// which keeps the window's console but drops its listeners, so the state it
-// keeps on the console (aoCapture) says which methods it already wrapped,
-// and each run replaces its own listeners: an entry is reported once
-// however many times it runs.
+// which keeps the window's console, and every wrapper around its methods,
+// but drops its listeners. So the console's methods are wrapped once, by the
+// run that creates the state kept on the console (aoCapture), and never
+// again; a later run only replaces its error and unhandledrejection
+// listeners. An entry is reported once however many times it runs. A page
+// that replaces a method with a function that does not call the one it
+// replaced loses capture for that method, with or without document.open.
 func webkitConsoleCaptureScript(handler string) string {
-	return fmt.Sprintf(`(()=>{const post=window.webkit?.messageHandlers?.%s;if(!post)return;let st=console.aoCapture;if(!st){st={wrapped:{},error:null,rejection:null};Object.defineProperty(console,"aoCapture",{value:st});}const send=(level,parts)=>{try{post.postMessage(JSON.stringify({level,message:parts.map(v=>{try{return typeof v==="string"?v:(v instanceof Error?(v.stack||v.message):JSON.stringify(v))}catch(_){return String(v)}}).join(" ").slice(0,%d),url:location.href}))}catch(_){}};
-for(const level of ["log","info","warning","warn","error","debug","trace"]){const original=console[level];if(typeof original!=="function"||st.wrapped[level]===original)continue;const wrapped=function(...args){send(level,args);return original.apply(this,args)};st.wrapped[level]=wrapped;console[level]=wrapped}
+	return fmt.Sprintf(`(()=>{const post=window.webkit?.messageHandlers?.%s;if(!post)return;const send=(level,parts)=>{try{post.postMessage(JSON.stringify({level,message:parts.map(v=>{try{return typeof v==="string"?v:(v instanceof Error?(v.stack||v.message):JSON.stringify(v))}catch(_){return String(v)}}).join(" ").slice(0,%d),url:location.href}))}catch(_){}};
+let st=console.aoCapture;if(!st){st={error:null,rejection:null};Object.defineProperty(console,"aoCapture",{value:st});for(const level of ["log","info","warning","warn","error","debug","trace"]){const original=console[level];if(typeof original!=="function")continue;console[level]=function(...args){send(level,args);return original.apply(this,args)}}}
 if(st.error)removeEventListener("error",st.error);if(st.rejection)removeEventListener("unhandledrejection",st.rejection);
 st.error=e=>send("error",[e.message||String(e.error||"error")]);st.rejection=e=>send("error",["Unhandled promise rejection: "+String(e.reason)]);
 addEventListener("error",st.error);addEventListener("unhandledrejection",st.rejection);})();`, handler, maxConsoleMessageBytes)

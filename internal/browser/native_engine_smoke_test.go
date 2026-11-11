@@ -763,16 +763,43 @@ func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 		}
 		return len(logs)
 	}
+	// arrive waits for an entry naming text, a bounded number of round trips.
+	arrive := func(text string) {
+		for round := 0; count(text) == 0; round++ {
+			if round == 200 {
+				t.Fatalf("the console entry %q never arrived", text)
+			}
+			eval("wait a round trip", `1`)
+		}
+	}
 	// The page reports its entries in order, so once the fence is in, so is
 	// every copy of the entry before it.
-	for round := 0; count("ao-console-fence") == 0; round++ {
-		if round == 200 {
-			t.Fatal("the console entries never arrived")
-		}
-		eval("wait a round trip", `1`)
-	}
+	arrive("ao-console-fence")
 	if n := count("ao-console-once"); n != 1 {
 		t.Fatalf("a console entry in a regenerated page was reported %d times, want 1", n)
+	}
+
+	// A page that decorates a console method and then regenerates its
+	// document keeps one capture wrapper around it, and the error and
+	// unhandledrejection listeners the regeneration dropped are back once.
+	eval("decorate the console and regenerate the page", `(async () => {
+		console.log = console.log.bind(console);
+		document.open(); document.write("<p>preview</p>"); document.close();
+		console.log("ao-console-bound");
+		// A thrown error's message is muted to "Script error." on a file page,
+		// so the error event is dispatched with its own.
+		dispatchEvent(new ErrorEvent("error", { message: "ao-console-error" }));
+		Promise.reject(new Error("ao-console-rejection"));
+		return 1; })()`)
+	for _, text := range []string{"ao-console-bound", "ao-console-error", "Unhandled promise rejection: Error: ao-console-rejection"} {
+		arrive(text)
+	}
+	eval("fence the console", `console.log("ao-console-second-fence"); 1`)
+	arrive("ao-console-second-fence")
+	for _, text := range []string{"ao-console-bound", "ao-console-error", "Unhandled promise rejection: Error: ao-console-rejection"} {
+		if n := count(text); n != 1 {
+			t.Fatalf("the console entry %q after a decorated console and document.open was reported %d times, want 1", text, n)
+		}
 	}
 }
 
