@@ -62,10 +62,16 @@ type webkitPage struct {
 	closed       bool
 	lastURL      string
 	lastActivity time.Time
+	// findCount is the last search's answer, which its steps report.
+	findCount findResult
 }
 
 func (p *webkitPage) Lifetime() context.Context { return p.ctx }
-func (p *webkitPage) Handle() string            { return p.handle }
+
+// liveView is the view as an operation reaches it: refused once the page
+// closed (webkitView.do).
+func (p *webkitPage) liveView() webkitView { return webkitView{ptr: p.view, life: p.ctx} }
+func (p *webkitPage) Handle() string       { return p.handle }
 
 // OwnsFrame answers for this page's own handle: this engine addresses every
 // event by page, so a page's only frame identity is itself.
@@ -143,11 +149,17 @@ func (p *webkitPage) bind(ctx context.Context) (context.Context, context.CancelF
 	return merged, func() { stop(); cancel() }
 }
 
-// evalBody runs one async-function body and returns its raw JSON result.
+// evalBody runs one async-function body in the page's script world and
+// returns its raw JSON result.
 func (p *webkitPage) evalBody(ctx context.Context, body string) (json.RawMessage, error) {
+	return p.evalIn(ctx, "", body)
+}
+
+// evalIn is evalBody in the named isolated world, "" for the page's own.
+func (p *webkitPage) evalIn(ctx context.Context, world, body string) (json.RawMessage, error) {
 	opCtx, cancel := p.bind(ctx)
 	defer cancel()
-	raw, err := gtkEvaluate(opCtx, p.view, body)
+	raw, err := gtkEvaluate(opCtx, p.liveView(), world, body)
 	if err != nil {
 		return nil, err
 	}
@@ -178,41 +190,41 @@ func (p *webkitPage) Info(ctx context.Context) (string, string, error) {
 }
 
 func (p *webkitPage) Navigate(ctx context.Context, url string) error {
-	if err := webkitLoadURI(p.view, url); err != nil {
+	if err := webkitLoadURI(p.liveView(), url); err != nil {
 		return err
 	}
 	return p.awaitLoad(ctx)
 }
 
 func (p *webkitPage) HistoryState(context.Context) (bool, bool, error) {
-	return webkitCanGo(p.view, false), webkitCanGo(p.view, true), nil
+	return webkitCanGo(p.liveView(), false), webkitCanGo(p.liveView(), true), nil
 }
 
 func (p *webkitPage) History(ctx context.Context, action string) error {
 	switch action {
 	case "back":
-		if !webkitCanGo(p.view, false) {
+		if !webkitCanGo(p.liveView(), false) {
 			return fmt.Errorf("browser: no previous history entry")
 		}
-		if err := webkitHistory(p.view, webkitHistoryBack); err != nil {
+		if err := webkitHistory(p.liveView(), webkitHistoryBack); err != nil {
 			return err
 		}
 		return p.awaitLoad(ctx)
 	case "forward":
-		if !webkitCanGo(p.view, true) {
+		if !webkitCanGo(p.liveView(), true) {
 			return fmt.Errorf("browser: no forward history entry")
 		}
-		if err := webkitHistory(p.view, webkitHistoryForward); err != nil {
+		if err := webkitHistory(p.liveView(), webkitHistoryForward); err != nil {
 			return err
 		}
 		return p.awaitLoad(ctx)
 	case "reload":
-		if err := webkitHistory(p.view, webkitHistoryReload); err != nil {
+		if err := webkitHistory(p.liveView(), webkitHistoryReload); err != nil {
 			return err
 		}
 		return p.awaitLoad(ctx)
 	case "stop":
-		return webkitHistory(p.view, webkitHistoryStop)
+		return webkitHistory(p.liveView(), webkitHistoryStop)
 	}
 	return fmt.Errorf("browser: unsupported history action %q", action)
 }
@@ -231,7 +243,7 @@ func (p *webkitPage) awaitLoad(ctx context.Context) error {
 		case <-opCtx.Done():
 			return opCtx.Err()
 		case <-ticker.C:
-			if webkitIsLoading(p.view) {
+			if webkitIsLoading(p.liveView()) {
 				settled = 0
 				continue
 			}
@@ -253,7 +265,7 @@ func (p *webkitPage) PageStatus(ctx context.Context) (pageStatus, error) {
 	p.mu.Lock()
 	quiet := time.Since(p.lastActivity) >= webkitNetworkQuiet
 	p.mu.Unlock()
-	return pageStatus{URL: probe.URL, Ready: probe.Ready, NetworkIdle: quiet && !webkitIsLoading(p.view)}, nil
+	return pageStatus{URL: probe.URL, Ready: probe.Ready, NetworkIdle: quiet && !webkitIsLoading(p.liveView())}, nil
 }
 
 func (p *webkitPage) NavigationMark(ctx context.Context) (navigationMark, error) {
@@ -371,6 +383,64 @@ func (p *webkitPage) SelectionText(ctx context.Context) string {
 	return selected
 }
 
+// webkitFindMaxMatches is the most matches a search counts and highlights;
+// past it the count is reported as capped.
+const webkitFindMaxMatches = 1000
+
+var _ pageFind = (*webkitPage)(nil)
+
+// FindMode is the shared find bar: WebKitFindController has no UI of its own.
+func (p *webkitPage) FindMode() string { return FindModeBar }
+
+func (p *webkitPage) FindStart(ctx context.Context, query string) (findResult, error) {
+	return p.find(ctx, webkitFindSearch, query)
+}
+
+func (p *webkitPage) FindStep(ctx context.Context, backwards bool) (findResult, error) {
+	op := webkitFindNext
+	if backwards {
+		op = webkitFindPrevious
+	}
+	return p.find(ctx, op, "")
+}
+
+// FindStop ends the search and drops the selection that marks its match,
+// in the page and its same-origin frames, from an isolated world:
+// search_finish clears only the highlights. A match selected in a
+// cross-origin frame stays selected.
+func (p *webkitPage) FindStop(ctx context.Context) error {
+	if err := gtkFindFinish(p.liveView()); err != nil {
+		return err
+	}
+	_, err := p.evalIn(ctx, webkitFindWorld, webkitClearSelectionScript)
+	return err
+}
+
+func (p *webkitPage) find(ctx context.Context, op int, query string) (findResult, error) {
+	opCtx, cancel := p.bind(ctx)
+	defer cancel()
+	answer, err := gtkFind(opCtx, p.liveView(), op, query, webkitFindMaxMatches)
+	if err != nil {
+		return findResult{}, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	switch {
+	case answer.found == 0:
+		p.findCount = findResult{}
+	case op != webkitFindSearch:
+		// A step's found-text carries no total, so the search's count stands.
+		if !p.findCount.Found {
+			return findResult{Found: true, Matches: -1}, nil
+		}
+	case answer.matches == webkitFindUnbounded || answer.matches > webkitFindMaxMatches:
+		p.findCount = findResult{Found: true, Matches: webkitFindMaxMatches, Capped: true}
+	default:
+		p.findCount = findResult{Found: true, Matches: int(answer.matches)}
+	}
+	return p.findCount, nil
+}
+
 func (p *webkitPage) Scroll(ctx context.Context, selector string, x, y float64) error {
 	_, err := p.evalBody(ctx, webkitScrollScript(selector, x, y))
 	return err
@@ -410,7 +480,7 @@ func (p *webkitPage) WaitVisible(ctx context.Context, selector string) error {
 // so the page's viewport IS the widget's allocation, and the host keeps that
 // allocation whether the page is parked or presented scaled in the pane.
 func (p *webkitPage) SetViewport(_ context.Context, width, height int) error {
-	return webkitSetViewSize(p.view, width, height)
+	return webkitSetViewSize(p.liveView(), width, height)
 }
 
 func (p *webkitPage) Screenshot(ctx context.Context, opts ScreenshotOptions) ([]byte, error) {
@@ -419,7 +489,7 @@ func (p *webkitPage) Screenshot(ctx context.Context, opts ScreenshotOptions) ([]
 	// A clip is expressed in document coordinates (the CDP driver captures it
 	// beyond the viewport), so both the clip and the full-page shapes need the
 	// whole document; only the plain case is the visible region.
-	pixels, width, height, err := webkitSnapshot(opCtx, p.view, opts.Clip != nil || opts.FullPage)
+	pixels, width, height, err := webkitSnapshot(opCtx, p.liveView(), opts.Clip != nil || opts.FullPage)
 	if err != nil {
 		return nil, fmt.Errorf("browser: screenshot: %w", err)
 	}

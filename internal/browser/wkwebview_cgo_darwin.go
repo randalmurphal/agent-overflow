@@ -78,6 +78,33 @@ func wkDo(fn func()) bool {
 
 var errWKUnavailable = fmt.Errorf("browser: the desktop window is not accepting browser work")
 
+// wkView is a live page's view as the page's operations reach it. The page's
+// lifetime ends (wkPage.discard) before Close queues the view's release, and
+// the main thread runs dispatches in order, so a dispatch that still finds
+// the lifetime live there runs before the release.
+type wkView struct {
+	ptr  unsafe.Pointer
+	life context.Context
+}
+
+// do runs fn with the view on the main thread, unless the page closed first.
+func (v wkView) do(fn func(view unsafe.Pointer)) error {
+	closed := false
+	if !wkDo(func() {
+		if v.life.Err() != nil {
+			closed = true
+			return
+		}
+		fn(v.ptr)
+	}) {
+		return errWKUnavailable
+	}
+	if closed {
+		return errViewClosed
+	}
+	return nil
+}
+
 // wkOnMainThread answers whether wkDo would run its closure inline right now —
 // true only on the AppKit main thread, where Wails' dispatch short-circuits.
 func wkOnMainThread() bool { return C.ao_wkv_on_main_thread() == 1 }
@@ -103,6 +130,8 @@ type wkCallResult struct {
 	pixels []byte
 	width  int
 	height int
+	// found is a find's answer: 1 found, 0 none, -1 unusable.
+	found int
 }
 
 func wkRegisterCall() (uint64, chan wkCallResult) {
@@ -138,6 +167,11 @@ func aoWKVEvalDone(callID C.uint64_t, jsonText *C.char, errText *C.char) {
 	wkCompleteCall(uint64(callID), wkCallResult{
 		json: wkTakeString(jsonText), err: wkTakeString(errText),
 	})
+}
+
+//export aoWKVFindDone
+func aoWKVFindDone(callID C.uint64_t, found C.int) {
+	wkCompleteCall(uint64(callID), wkCallResult{found: int(found)})
 }
 
 //export aoWKVClearDone
@@ -215,18 +249,32 @@ func aoWKVPageInfo(pageID C.uint64_t, uri *C.char, title *C.char) {
 	go page.engine.events.PageInfoChanged(page.handle, location, name)
 }
 
+//export aoWKVDocumentCommitted
+func aoWKVDocumentCommitted(pageID C.uint64_t) {
+	page := wkLookupPage(uint64(pageID))
+	if page == nil || page.hooks.DocumentCommitted == nil {
+		return
+	}
+	// The commit's order is stamped here, on the main thread, before any
+	// later page operation can be dispatched; finish only submits the find's
+	// end, which the Manager applies off this thread.
+	if finish := page.hooks.DocumentCommitted(); finish != nil {
+		finish()
+	}
+}
+
 // aoWKVKeyChord runs ON the main thread, inside the key event's delivery, and
 // answers synchronously: it is a set lookup in the Manager and nothing that
 // waits. The routing that follows a claim leaves the thread on a goroutine.
 //
 //export aoWKVKeyChord
-func aoWKVKeyChord(pageID C.uint64_t, key *C.char, ctrl, meta, alt, shift C.int) C.int {
+func aoWKVKeyChord(pageID C.uint64_t, key *C.char, ctrl, meta, alt, shift, repeat, composing C.int) C.int {
 	page := wkLookupPage(uint64(pageID))
 	if page == nil || page.engine.events.KeyChord == nil {
 		return 0
 	}
 	pressed := keybindings.Accelerator{Key: C.GoString(key), Ctrl: ctrl != 0, Meta: meta != 0, Alt: alt != 0, Shift: shift != 0}
-	if page.engine.events.KeyChord(page.handle, pressed) {
+	if page.engine.events.KeyChord(page.handle, pressed, KeyPress{Repeat: repeat != 0, Composing: composing != 0}) {
 		return 1
 	}
 	return 0
@@ -365,30 +413,24 @@ func wkParkView(view unsafe.Pointer, slot int) {
 // frame over those bounds is the scale. The colour is parsed HERE rather than
 // on the main thread: the Objective-C half takes the packed value and never a
 // string.
-func wkPresentView(view unsafe.Pointer, placement PanePlacement) error {
+func wkPresentView(view wkView, placement PanePlacement) error {
 	rect := placement.Rect
 	background := C.int(wkBackgroundCode(rect.Background))
-	if !wkDo(func() {
+	return view.do(func(view unsafe.Pointer) {
 		C.ao_wkv_host_present(view, C.double(rect.X), C.double(rect.Y),
 			C.double(rect.Width), C.double(rect.Height),
 			C.double(rect.ClipX), C.double(rect.ClipY),
 			C.double(rect.ClipWidth), C.double(rect.ClipHeight),
 			C.double(rect.ViewportWidth), C.double(rect.ViewportHeight),
 			background)
-	}) {
-		return errWKUnavailable
-	}
-	return nil
+	})
 }
 
-func wkHideView(view unsafe.Pointer, slot int) error {
-	if !wkDo(func() {
+func wkHideView(view wkView, slot int) error {
+	return view.do(func(view unsafe.Pointer) {
 		C.ao_wkv_host_hide(view)
 		C.ao_wkv_host_park(view, C.int(slot))
-	}) {
-		return errWKUnavailable
-	}
-	return nil
+	})
 }
 
 // Every C string below is allocated INSIDE its dispatch closure and freed
@@ -486,45 +528,36 @@ func wkCloseView(view unsafe.Pointer) {
 	wkDo(func() { C.ao_wkv_view_close(view) })
 }
 
-func wkSetViewSize(view unsafe.Pointer, width, height int) error {
-	if !wkDo(func() { C.ao_wkv_view_set_size(view, C.int(width), C.int(height)) }) {
-		return errWKUnavailable
-	}
-	return nil
+func wkSetViewSize(view wkView, width, height int) error {
+	return view.do(func(view unsafe.Pointer) { C.ao_wkv_view_set_size(view, C.int(width), C.int(height)) })
 }
 
-func wkViewSize(view unsafe.Pointer) (int, int, error) {
+func wkViewSize(view wkView) (int, int, error) {
 	var width, height C.int
-	if !wkDo(func() { C.ao_wkv_view_get_size(view, &width, &height) }) {
-		return 0, 0, errWKUnavailable
+	if err := view.do(func(view unsafe.Pointer) { C.ao_wkv_view_get_size(view, &width, &height) }); err != nil {
+		return 0, 0, err
 	}
 	return int(width), int(height), nil
 }
 
-func wkLoadURI(view unsafe.Pointer, uri string) error {
-	if !wkDo(func() {
+func wkLoadURI(view wkView, uri string) error {
+	return view.do(func(view unsafe.Pointer) {
 		cURI := C.CString(uri)
 		C.ao_wkv_view_load_uri(view, cURI)
 		C.free(unsafe.Pointer(cURI))
-	}) {
-		return errWKUnavailable
-	}
-	return nil
+	})
 }
 
 // wkLoadFile is the file:// path. WKWebView refuses a file URL handed to
 // -loadRequest:; -loadFileURL:allowingReadAccessToURL: is the documented way,
 // and the read-access root is what lets the page reach its own siblings.
-func wkLoadFile(view unsafe.Pointer, path, readAccessDir string) error {
-	if !wkDo(func() {
+func wkLoadFile(view wkView, path, readAccessDir string) error {
+	return view.do(func(view unsafe.Pointer) {
 		cPath, cRoot := C.CString(path), C.CString(readAccessDir)
 		C.ao_wkv_view_load_file(view, cPath, cRoot)
 		C.free(unsafe.Pointer(cPath))
 		C.free(unsafe.Pointer(cRoot))
-	}) {
-		return errWKUnavailable
-	}
-	return nil
+	})
 }
 
 // The history action codes the Objective-C side takes.
@@ -535,44 +568,80 @@ const (
 	wkHistoryStop    = 3
 )
 
-func wkHistory(view unsafe.Pointer, action int) error {
-	if !wkDo(func() { C.ao_wkv_view_history(view, C.int(action)) }) {
-		return errWKUnavailable
-	}
-	return nil
+func wkHistory(view wkView, action int) error {
+	return view.do(func(view unsafe.Pointer) { C.ao_wkv_view_history(view, C.int(action)) })
 }
 
-func wkCanGo(view unsafe.Pointer, forward bool) bool {
+func wkCanGo(view wkView, forward bool) bool {
 	flag := C.int(0)
 	if forward {
 		flag = 1
 	}
 	answer := false
-	wkDo(func() { answer = C.ao_wkv_view_can_go(view, flag) == 1 })
+	_ = view.do(func(view unsafe.Pointer) { answer = C.ao_wkv_view_can_go(view, flag) == 1 })
 	return answer
 }
 
-func wkIsLoading(view unsafe.Pointer) bool {
+func wkIsLoading(view wkView) bool {
 	loading := false
-	wkDo(func() { loading = C.ao_wkv_view_is_loading(view) == 1 })
+	_ = view.do(func(view unsafe.Pointer) { loading = C.ao_wkv_view_is_loading(view) == 1 })
 	return loading
 }
 
+// wkFind runs one -findString:withConfiguration:completionHandler: and
+// reports whether it found a match.
+func wkFind(ctx context.Context, view wkView, text string, backwards bool) (bool, error) {
+	if !wkAlive() {
+		return false, errWKUnavailable
+	}
+	id, ch := wkRegisterCall()
+	flag := C.int(0)
+	if backwards {
+		flag = 1
+	}
+	if err := view.do(func(view unsafe.Pointer) {
+		cText := C.CString(text)
+		C.ao_wkv_view_find(view, cText, flag, C.uint64_t(id))
+		C.free(unsafe.Pointer(cText))
+	}); err != nil {
+		wkCallByID.Delete(id)
+		return false, err
+	}
+	select {
+	case result := <-ch:
+		if result.found < 0 {
+			return false, fmt.Errorf("browser: the page cannot search for this text")
+		}
+		return result.found == 1, nil
+	case <-ctx.Done():
+		wkCallByID.Delete(id)
+		return false, ctx.Err()
+	}
+}
+
 // wkEvaluate runs one async-function body in the page and returns its JSON
-// result. An undefined result is an empty answer, matching what CDP reports for
-// a void expression.
-func wkEvaluate(ctx context.Context, view unsafe.Pointer, body string) (string, error) {
+// result: in the page's content world, or in the isolated one named world. An
+// undefined result is an empty answer, matching what CDP reports for a void
+// expression.
+func wkEvaluate(ctx context.Context, view wkView, world, body string) (string, error) {
 	if !wkAlive() {
 		return "", errWKUnavailable
 	}
 	id, ch := wkRegisterCall()
-	if !wkDo(func() {
+	if err := view.do(func(view unsafe.Pointer) {
 		cBody := C.CString(body)
-		C.ao_wkv_view_eval(view, cBody, C.uint64_t(id))
+		var cWorld *C.char
+		if world != "" {
+			cWorld = C.CString(world)
+		}
+		C.ao_wkv_view_eval(view, cBody, cWorld, C.uint64_t(id))
 		C.free(unsafe.Pointer(cBody))
-	}) {
+		if cWorld != nil {
+			C.free(unsafe.Pointer(cWorld))
+		}
+	}); err != nil {
 		wkCallByID.Delete(id)
-		return "", errWKUnavailable
+		return "", err
 	}
 	select {
 	case result := <-ch:
@@ -590,11 +659,11 @@ func wkEvaluate(ctx context.Context, view unsafe.Pointer, body string) (string, 
 // cannot reach past the view's bounds, so a full-document capture is the page
 // driver resizing the view first — which is why this call has no region flag,
 // unlike the GTK one.
-func wkSnapshot(ctx context.Context, view unsafe.Pointer) ([]byte, int, int, error) {
+func wkSnapshot(ctx context.Context, view wkView) ([]byte, int, int, error) {
 	id, ch := wkRegisterCall()
-	if !wkDo(func() { C.ao_wkv_view_snapshot(view, C.uint64_t(id)) }) {
+	if err := view.do(func(view unsafe.Pointer) { C.ao_wkv_view_snapshot(view, C.uint64_t(id)) }); err != nil {
 		wkCallByID.Delete(id)
-		return nil, 0, 0, errWKUnavailable
+		return nil, 0, 0, err
 	}
 	select {
 	case result := <-ch:

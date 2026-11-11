@@ -8,7 +8,7 @@
     getEffectiveThreadStatus,
   } from '../../stores/threadStatuses.svelte';
   import { unreachableThreadMachineName } from '../../stores/attachedBackends.svelte';
-  import { computeHighlightSegments } from '../../utils/highlight';
+  import { lowerCaseHighlightSegments } from '../../utils/highlight';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { pathBasename } from '../../utils/pathDisplay';
   import { getProviderDefinition } from '../../providers/catalog';
@@ -214,7 +214,7 @@
                   ></span>
                 {/if}
                 <span class="text-[0.8125rem] truncate text-fg flex-1 min-w-0">
-                  {#each computeHighlightSegments(hit.thread.title || 'Untitled', query) as seg}
+                  {#each lowerCaseHighlightSegments(hit.thread.title || 'Untitled', query) as seg}
                     {#if seg.type === 'match'}
                       <mark class="bg-accent/30 text-fg rounded-sm px-0.5">{seg.value}</mark>
                     {:else}{seg.value}{/if}

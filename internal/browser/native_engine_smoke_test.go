@@ -5,9 +5,11 @@ package browser
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -25,9 +27,10 @@ import (
 //
 //	AO_NATIVE_BROWSER_SMOKE=1 go test ./internal/browser -run TestNativeEngineReal -count=1
 //
-// Linux needs a display nobody is using, such as an Xvfb or a headless
-// Wayland compositor named by DISPLAY or WAYLAND_DISPLAY. macOS needs a
-// logged-in session. Nothing else runs them.
+// On Linux the run starts its own headless weston and runs inside it, and
+// is refused without one unless AO_NATIVE_BROWSER_SMOKE_SESSION_DISPLAY=1
+// puts its window on the session display (nativeSmokeDisplay). macOS needs
+// a logged-in session. Nothing else runs them.
 const nativeBrowserSmokeEnv = "AO_NATIVE_BROWSER_SMOKE"
 
 // nativeSmokeWindow is the window the gated run hosts pages in, nil unless
@@ -37,6 +40,15 @@ var nativeSmokeWindow atomic.Pointer[application.WebviewWindow]
 func TestMain(m *testing.M) {
 	if os.Getenv(nativeBrowserSmokeEnv) != "1" {
 		os.Exit(m.Run())
+	}
+	weston, _ := exec.LookPath("weston")
+	plan, err := nativeSmokeDisplay(os.Getenv, weston, runtime.GOOS)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if plan == smokeUnderWeston {
+		os.Exit(runUnderHeadlessWeston(weston))
 	}
 	os.Exit(runInNativeWindow(m))
 }
@@ -272,6 +284,288 @@ func TestNativeEngineRealEvaluateSemantics(t *testing.T) {
 	t.Run("the native bridge carries JSON data or fails", func(t *testing.T) {
 		assertNativeEvalBridge(ctx, t, manager, access, page.ID)
 	})
+}
+
+// TestNativeEngineRealFind drives the engine's find-in-page through the
+// Manager on a page with known text: the count where the engine reports one,
+// next and previous moving the selected match with wrap, a miss, and a stop
+// that leaves a later search starting over.
+func TestNativeEngineRealFind(t *testing.T) {
+	window := nativeSmokeWindow.Load()
+	if window == nil {
+		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
+	}
+	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{NativeWindow: window.NativeWindow})
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Errorf("close manager: %v", err)
+		}
+	})
+	workspace := resolvedTempDir(t)
+	access := Access{ThreadID: "native-smoke-find", Workspace: workspace}
+	t.Cleanup(func() {
+		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+			t.Errorf("close the thread's pages: %v", err)
+		}
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	page, err := manager.OpenFile(ctx, access, writeSmokeFile(t, workspace, "find.html",
+		`<!doctype html><title>find</title><p id="m0">alpha one</p><p id="m1">two ALPHA</p><p id="m2">alpha three</p><p>omega</p>`),
+		OpenOptions{})
+	if err != nil {
+		t.Fatalf("open the page: %v", err)
+	}
+	show := true
+	if _, err := manager.Visibility(ctx, access, &show, page.ID); err != nil {
+		t.Fatalf("show the page: %v", err)
+	}
+	mount, err := manager.AttachPane(access)
+	if err != nil {
+		t.Fatalf("mount a pane: %v", err)
+	}
+	t.Cleanup(func() { manager.DetachPane(mount.ID) })
+	// seq numbers the starts, as the pane's provider does.
+	var seq uint64
+	find := func(kind, query string) FindState {
+		t.Helper()
+		if kind == FindStart {
+			seq++
+		}
+		state, err := manager.Find(ctx, access, page.ID, kind, query, mount.ID, seq)
+		if err != nil {
+			t.Fatalf("find %s %q: %v", kind, query, err)
+		}
+		return state
+	}
+	// selected names the paragraph holding the page's selection: the engine
+	// selects the match it moves to.
+	selected := func() string {
+		t.Helper()
+		value, _, err := manager.Evaluate(ctx, access, page.ID, `(() => { const s = getSelection(); const n = s && s.rangeCount ? s.getRangeAt(0).startContainer : null; const e = n && (n.nodeType === 1 ? n : n.parentElement); return s && !s.isCollapsed && e ? e.id : ""; })()`, nil)
+		if err != nil {
+			t.Fatalf("read the selection: %v", err)
+		}
+		id, _ := value.(string)
+		return id
+	}
+	counted := runtime.GOOS == "linux"
+	position := func(state FindState, want int) {
+		t.Helper()
+		if !state.Active || !state.Found {
+			t.Fatalf("find state = %+v, want an active find that found its query", state)
+		}
+		if counted && (state.Matches != 3 || state.Current != want || state.Capped) {
+			t.Fatalf("find state = %+v, want match %d of 3", state, want)
+		}
+		if !counted && (state.Matches != -1 || state.Current != -1) {
+			t.Fatalf("find state = %+v, want no count from this engine", state)
+		}
+		if got := selected(); got != fmt.Sprintf("m%d", want) {
+			t.Fatalf("selected match is %q, want m%d (state %+v)", got, want, state)
+		}
+	}
+
+	position(find("start", "alpha"), 0)
+	position(find("next", ""), 1)
+	position(find("next", ""), 2)
+	position(find("next", ""), 0)
+	position(find("previous", ""), 2)
+	position(find("previous", ""), 1)
+
+	if miss := find("start", "absent-text"); !miss.Active || miss.Found || miss.Matches != 0 || miss.Current != -1 {
+		t.Fatalf("find for missing text = %+v", miss)
+	}
+	if stopped := find("stop", ""); stopped.Active {
+		t.Fatalf("stopped find = %+v", stopped)
+	}
+	// No search runs: a step answers so without the engine moving the
+	// selection.
+	if state := find("next", ""); state.Active || !state.Foreign {
+		t.Fatalf("a step after stop = %+v", state)
+	}
+	position(find("start", "ALPHA"), 0)
+	find("stop", "")
+
+	// Past the engine's most matches the count is a floor and the position
+	// unknown.
+	if _, _, err := manager.Evaluate(ctx, access, page.ID, `document.body.textContent = "beta ".repeat(1500); 1`, nil); err != nil {
+		t.Fatalf("fill the page: %v", err)
+	}
+	many := find("start", "beta")
+	if counted && (!many.Found || !many.Capped || many.Matches != 1000 || many.Current != 0) {
+		t.Fatalf("find past the most matches = %+v, want 1000 capped", many)
+	}
+	if !counted && (!many.Found || many.Matches != -1) {
+		t.Fatalf("find past the most matches = %+v", many)
+	}
+	find("stop", "")
+
+	// The engine's own commit signal ends the find on a new document, a
+	// reload included, and a same-document navigation keeps it.
+	ended := make(chan FindState, 8)
+	manager.SetEventSink(func(event CompanionEvent) {
+		if event.Kind == "find" && event.Find != nil {
+			select {
+			case ended <- *event.Find:
+			default:
+			}
+		}
+	})
+	kept := find("start", "beta")
+	if _, _, err := manager.Evaluate(ctx, access, page.ID, `history.pushState({}, "", "?same-document"); 1`, nil); err != nil {
+		t.Fatalf("push a history entry: %v", err)
+	}
+	select {
+	case state := <-ended:
+		t.Fatalf("a same-document navigation ended the find: %+v", state)
+	case <-time.After(time.Second):
+	}
+	if state := find("next", ""); !state.Active || state.Session != kept.Session {
+		t.Fatalf("find after a same-document navigation = %+v", state)
+	}
+	if _, err := manager.History(ctx, access, page.ID, "reload"); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	select {
+	case state := <-ended:
+		if state.Active || state.Session <= kept.Session {
+			t.Fatalf("find end after a reload = %+v", state)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a reload did not end the find")
+	}
+
+	// A closed page's view is never reached again: the driver refuses.
+	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	if err != nil {
+		t.Fatalf("look the page up: %v", err)
+	}
+	if err := manager.ClosePage(ctx, access, page.ID); err != nil {
+		t.Fatalf("close the page: %v", err)
+	}
+	finder := p.driver.(pageFind)
+	if _, err := finder.FindStart(ctx, "beta"); !errors.Is(err, errViewClosed) {
+		t.Fatalf("find on a closed page's driver = %v, want %v", err, errViewClosed)
+	}
+	if err := finder.FindStop(ctx); !errors.Is(err, errViewClosed) {
+		t.Fatalf("find stop on a closed page's driver = %v, want %v", err, errViewClosed)
+	}
+	if _, err := p.driver.Evaluate(ctx, "1", false); !errors.Is(err, errViewClosed) {
+		t.Fatalf("evaluate on a closed page's driver = %v, want %v", err, errViewClosed)
+	}
+}
+
+// TestNativeEngineRealFindClearsFrameSelections stops a search on a page
+// with a selection in the page, in a same-origin frame and in a frame inside
+// that one: every selection goes. Then the page overrides getSelection and
+// removeAllRanges to throw, and a search's stop still clears its match,
+// since the clearing runs in an isolated world; run in the page's own world,
+// the same clearing fails rather than reporting a stop that cleared nothing.
+func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
+	window := nativeSmokeWindow.Load()
+	if window == nil {
+		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
+	}
+	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{NativeWindow: window.NativeWindow})
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Errorf("close manager: %v", err)
+		}
+	})
+	workspace := resolvedTempDir(t)
+	access := Access{ThreadID: "native-smoke-find-frames", Workspace: workspace}
+	t.Cleanup(func() {
+		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+			t.Errorf("close the thread's pages: %v", err)
+		}
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	page, err := manager.OpenFile(ctx, access, writeSmokeFile(t, workspace, "frames.html",
+		`<!doctype html><title>frames</title><p id="top">alpha in the page</p><iframe src="data:text/html,<p>alpha in a cross-origin frame</p>"></iframe>`), OpenOptions{})
+	if err != nil {
+		t.Fatalf("open the page: %v", err)
+	}
+	show := true
+	if _, err := manager.Visibility(ctx, access, &show, page.ID); err != nil {
+		t.Fatalf("show the page: %v", err)
+	}
+	mount, err := manager.AttachPane(access)
+	if err != nil {
+		t.Fatalf("mount a pane: %v", err)
+	}
+	t.Cleanup(func() { manager.DetachPane(mount.ID) })
+	eval := func(what, expression string) any {
+		t.Helper()
+		value, _, err := manager.Evaluate(ctx, access, page.ID, expression, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+		return value
+	}
+	// An about:blank frame is same-origin and ready at once: two levels. The
+	// data: frame is cross-origin: nothing reaches into it, and the clearing
+	// passes over it.
+	eval("build the frames", `(() => {
+		const add = (doc, text) => { const f = doc.createElement("iframe"); doc.body.appendChild(f); f.contentDocument.body.innerHTML = "<p>" + text + "</p>"; return f.contentDocument; };
+		add(add(document, "alpha in a frame"), "alpha in a nested frame");
+		return 1; })()`)
+	// selections counts the windows, the page and its frames, holding a
+	// selection, through the document's getSelection, which the page leaves
+	// alone.
+	const selections = `(() => { let n = 0; const walk = (w) => { let s; try { s = w.Document.prototype.getSelection.call(w.document); } catch (e) { return; } if (s && s.rangeCount && !s.isCollapsed) n++; for (let i = 0; i < w.frames.length; i++) walk(w.frames[i]); }; walk(window); return n; })()`
+	// seq numbers the starts, as the pane's provider does.
+	var seq uint64
+	find := func(kind, query string) FindState {
+		t.Helper()
+		if kind == FindStart {
+			seq++
+		}
+		state, err := manager.Find(ctx, access, page.ID, kind, query, mount.ID, seq)
+		if err != nil {
+			t.Fatalf("find %s %q: %v", kind, query, err)
+		}
+		return state
+	}
+
+	if state := find(FindStart, "alpha"); !state.Found {
+		t.Fatalf("start = %+v", state)
+	}
+	eval("select in every window", `(() => {
+		const walk = (w) => { try { w.getSelection().selectAllChildren(w.document.body); } catch (e) { return; } for (let i = 0; i < w.frames.length; i++) walk(w.frames[i]); };
+		walk(window); return 1; })()`)
+	if n := eval("count the selections", selections); n != float64(3) {
+		t.Fatalf("selected in %v windows, want 3", n)
+	}
+	find(FindStop, "")
+	if n := eval("count the selections", selections); n != float64(0) {
+		t.Fatalf("%v selections left after the search stopped", n)
+	}
+
+	// The page shadows what the clearing calls, in every window.
+	eval("override the selection API", `(() => {
+		const walk = (w) => {
+			try { w.document; } catch (e) { return; }
+			w.getSelection = () => { throw new Error("the page's getSelection"); };
+			w.Selection.prototype.removeAllRanges = function () { throw new Error("the page's removeAllRanges"); };
+			for (let i = 0; i < w.frames.length; i++) walk(w.frames[i]);
+		};
+		walk(window); return 1; })()`)
+	if state := find(FindStart, "alpha"); !state.Found {
+		t.Fatalf("start under the overrides = %+v", state)
+	}
+	if n := eval("count the selections", selections); n == float64(0) {
+		t.Fatal("the search selected no match")
+	}
+	find(FindStop, "")
+	if n := eval("count the selections", selections); n != float64(0) {
+		t.Fatalf("%v selections left after the search stopped under the page's overrides", n)
+	}
+	// In the page's own world the overrides reach the clearing: it fails.
+	if _, _, err := manager.Evaluate(ctx, access, page.ID, "(async () => {"+webkitClearSelectionScript+"})()", nil); err == nil || !strings.Contains(err.Error(), "clear the selection") {
+		t.Fatalf("the clearing in the page's world under its overrides = %v, want a failure", err)
+	}
 }
 
 // assertNativeEvalBridge holds the glue under every WebKit page operation to

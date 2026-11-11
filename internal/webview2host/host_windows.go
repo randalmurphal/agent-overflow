@@ -118,6 +118,9 @@ type hostPage struct {
 	// per bounds directive.
 	bgUnsupported bool
 	failHandler   *iProcessFailedHandler
+	// findStarted is the page's one Start completion handler, made on the
+	// first find and kept in pendingHandlers (find_windows.go).
+	findStarted *iFindStartCompletedHandler
 	// pendingHandlers keeps every COM callback object this page handed to
 	// WebView2 alive for as long as WebView2 can invoke it.
 	pendingHandlers []any
@@ -254,6 +257,10 @@ func (h *Host) Apply(directive Directive) {
 		h.clearData(directive.PageID)
 	case OpAccelerators:
 		h.setAccelerators(directive.Accelerators)
+	case OpFind:
+		h.withPage(directive.PageID, func(page *hostPage) { h.startFind(page, directive.Query) })
+	case OpFindStop:
+		h.withPage(directive.PageID, h.stopFind)
 	}
 }
 
@@ -846,6 +853,12 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 	page.pendingHandlers = append(page.pendingHandlers, keyHandler)
 	if _, err := controller.addAcceleratorKeyPressed(keyHandler); err != nil {
 		h.config.Logf("browser host: page %s accelerator subscription: %v", page.id, err)
+	}
+
+	// A runtime without the find API has to be known before the page is
+	// used, so its report precedes created.
+	if !h.findSupported(view) {
+		h.config.Report(page.id, ReportFindUnavailable, "")
 	}
 
 	// Target.getTargetInfo through the controller's own DevTools session

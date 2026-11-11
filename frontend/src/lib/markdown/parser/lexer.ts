@@ -31,7 +31,7 @@ import { markedHr } from './extensions/hr';
 import { markedTable } from './extensions/table';
 import { markedTableBlock } from './extensions/tableSource';
 import { markedDl, markedDlBlock } from './extensions/dl';
-import { markedAlign, markedAlignBlock } from './extensions/align';
+import { markedAlign } from './extensions/align';
 import { markedCitations } from './extensions/citations';
 import { markedMdx, markedMdxBlock } from './extensions/mdx';
 import { markedBlockquoteBlock } from './extensions/blockquoteSource';
@@ -62,7 +62,7 @@ const DEFAULT_BLOCK_EXTENSIONS: Extension[] = [
     markedListBlock,
     markedDlBlock,
     markedTableBlock,
-    markedAlignBlock,
+    markedAlign,
     markedMdxBlock
 ];
 const parseExtensions = (...extensions: Extension[]): LexerOptions => {
@@ -75,7 +75,7 @@ const parseExtensions = (...extensions: Extension[]): LexerOptions => {
             startInline: []
         }
     };
-    extensions.forEach(({ level, name, tokenizer, ...rest }) => {
+    extensions.forEach(({ level, name: _name, tokenizer, ...rest }) => {
         if ('start' in rest && rest.start) {
             if (level === 'block') {
                 options.extensions.startBlock.push(rest.start);

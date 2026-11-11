@@ -78,6 +78,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "BookmarkUIRenderTrace", ID: 1374242488, Scope: "host", Route: "home"},                                             // main.App.BookmarkUIRenderTrace
 	{Name: "BrowseDirectory", ID: 320967638, Scope: "files:read", Route: "selected"},                                          // main.App.BrowseDirectory
 	{Name: "BrowserCompanionDo", ID: 197228034, Scope: "host", Route: "home"},                                                 // main.App.BrowserCompanionDo
+	{Name: "BrowserCompanionFind", ID: 1528700844, Scope: "host", Route: "home"},                                              // main.App.BrowserCompanionFind
 	{Name: "BrowserCompanionPaneAttach", ID: 205254296, Scope: "host", Route: "home"},                                         // main.App.BrowserCompanionPaneAttach
 	{Name: "BrowserCompanionPaneDetach", ID: 3255514830, Scope: "host", Route: "home"},                                        // main.App.BrowserCompanionPaneDetach
 	{Name: "BrowserCompanionPaneRect", ID: 2491183339, Scope: "host", Route: "home"},                                          // main.App.BrowserCompanionPaneRect

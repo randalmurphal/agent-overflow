@@ -35,8 +35,6 @@ export interface HandlerPayload {
 export interface LineContext {
     code: boolean;
     math: boolean;
-    center: boolean;
-    right: boolean;
 }
 /**
  * The fence awaiting its closer, as the context-manager plugin records it.
@@ -52,7 +50,7 @@ export interface FenceInfo {
 export interface ParseState {
     currentLine: number;
     context: 'normal' | 'list' | 'blockquote' | 'descriptionList';
-    blockingContexts: Set<'code' | 'math' | 'center' | 'right'>;
+    blockingContexts: Set<'code' | 'math'>;
     lineContexts?: LineContext[];
     fenceInfo?: FenceInfo;
     mdxUnclosedTags?: Array<{

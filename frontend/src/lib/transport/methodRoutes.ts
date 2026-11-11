@@ -39,6 +39,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1374242488: 'home', // BookmarkUIRenderTrace
 	320967638: 'selected', // BrowseDirectory
 	197228034: 'home', // BrowserCompanionDo
+	1528700844: 'home', // BrowserCompanionFind
 	205254296: 'home', // BrowserCompanionPaneAttach
 	3255514830: 'home', // BrowserCompanionPaneDetach
 	2491183339: 'home', // BrowserCompanionPaneRect

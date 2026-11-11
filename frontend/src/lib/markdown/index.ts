@@ -22,8 +22,13 @@ export {
   createProvenAppend,
   createMaterializedProvenAppend,
   matchesProvenAppend,
+  alignmentAfter,
+  alignmentAtEnd,
+  isAlignmentMarkerBlock,
+  topLevelShape,
 } from './parser/index';
 export type {
+  Alignment,
   Extension,
   LexerOptions,
   Token,

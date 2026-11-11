@@ -153,13 +153,19 @@ function hiddenByDetails(element: Element): boolean {
 
 function collectSegments(root: Element, rowSelector: string | undefined, rowsOnly: boolean, laidOut = true, keepHidden = false): Segment[] {
   const visible = new Map<Element, boolean>();
+  // checkVisibility fails a `display: contents` element, which has no box,
+  // though its loose text renders in its parent's.
+  const laidOutVisible = (element: Element): boolean => {
+    if (typeof element.checkVisibility !== 'function' || element.checkVisibility()) return true;
+    const parent = element.parentElement;
+    return parent !== null && getComputedStyle(element).display === 'contents' && isVisible(parent);
+  };
   const isVisible = (element: Element): boolean => {
     let answer = visible.get(element);
     if (answer === undefined) {
       // checkVisibility passes a closed <details> itself, whose loose
       // body text it does not show.
-      answer = !hiddenByDetails(element)
-        && (!laidOut || typeof element.checkVisibility !== 'function' || element.checkVisibility());
+      answer = !hiddenByDetails(element) && (!laidOut || laidOutVisible(element));
       visible.set(element, answer);
     }
     return answer;

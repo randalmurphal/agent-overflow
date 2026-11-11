@@ -33,7 +33,9 @@ describe('read-aloud block indexes', () => {
     const elements = Array.from(body.children[0].children);
     const blocks = renderedBlocks(lex(REPLY));
     expect(elements).toHaveLength(blocks.length);
-    blocks.forEach((token, i) => expect(elements[i].tagName, `${i} ${token.type}`).toBe(TAGS[token.type] ?? 'DIV'));
+    // An aligned block renders inside its alignment wrapper.
+    const tagOf = (el: Element) => (el.hasAttribute('data-streamdown-align') ? el.firstElementChild!.tagName : el.tagName);
+    blocks.forEach((token, i) => expect(tagOf(elements[i]), `${i} ${token.type}`).toBe(TAGS[token.type] ?? 'DIV'));
 
     const sections = speakableSections(REPLY);
     expect(sections.length).toBeGreaterThan(3);

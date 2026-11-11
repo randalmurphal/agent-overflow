@@ -13,6 +13,7 @@ import "C"
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -72,6 +73,33 @@ func gtkDo(fn func()) bool {
 
 var errGTKUnavailable = fmt.Errorf("browser: the desktop window is not accepting browser work")
 
+// webkitView is a live page's view as the page's operations reach it. The
+// page's lifetime ends (webkitPage.discard) before Close queues the view's
+// release, and the GTK thread runs dispatches in order, so a dispatch that
+// still finds the lifetime live there runs before the release.
+type webkitView struct {
+	ptr  unsafe.Pointer
+	life context.Context
+}
+
+// do runs fn with the view on the GTK thread, unless the page closed first.
+func (v webkitView) do(fn func(view unsafe.Pointer)) error {
+	closed := false
+	if !gtkDo(func() {
+		if v.life.Err() != nil {
+			closed = true
+			return
+		}
+		fn(v.ptr)
+	}) {
+		return errGTKUnavailable
+	}
+	if closed {
+		return errViewClosed
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Registries the C callbacks resolve against
 // ---------------------------------------------------------------------------
@@ -93,6 +121,10 @@ type webkitCallResult struct {
 	pixels []byte
 	width  int
 	height int
+	// found and matches are a find's answer: found 1 with the match count,
+	// 0 with none, -1 when the view has no find controller.
+	found   int
+	matches uint32
 }
 
 func webkitRegisterCall() (uint64, chan webkitCallResult) {
@@ -128,6 +160,11 @@ func aoWebKitEvalDone(callID C.uint64_t, jsonText *C.char, errText *C.char) {
 	webkitCompleteCall(uint64(callID), webkitCallResult{
 		json: webkitTakeString(jsonText), err: webkitTakeString(errText),
 	})
+}
+
+//export aoWebKitFindDone
+func aoWebKitFindDone(callID C.uint64_t, found C.int, matchCount C.uint) {
+	webkitCompleteCall(uint64(callID), webkitCallResult{found: int(found), matches: uint32(matchCount)})
 }
 
 //export aoWebKitSnapshotDone
@@ -192,19 +229,33 @@ func aoWebKitPageInfo(pageID C.uint64_t, uri *C.char, title *C.char) {
 	go page.engine.events.PageInfoChanged(page.handle, location, name)
 }
 
+//export aoWebKitDocumentCommitted
+func aoWebKitDocumentCommitted(pageID C.uint64_t) {
+	page := webkitLookupPage(uint64(pageID))
+	if page == nil || page.hooks.DocumentCommitted == nil {
+		return
+	}
+	// The commit's order is stamped here, on the GTK thread, before any later
+	// page operation can be dispatched; finish only submits the find's end,
+	// which the Manager applies off this thread.
+	if finish := page.hooks.DocumentCommitted(); finish != nil {
+		finish()
+	}
+}
+
 // aoWebKitKeyChord runs ON the GTK thread, inside the key event's delivery,
 // and answers synchronously: it is a set lookup in the Manager and nothing
-// that waits. The routing that follows a claim leaves the thread on a
-// goroutine.
+// that waits. The routing that follows a claim, or an Escape's
+// announcement, leaves the thread on a goroutine.
 //
 //export aoWebKitKeyChord
-func aoWebKitKeyChord(pageID C.uint64_t, key *C.char, ctrl, meta, alt, shift C.int) C.int {
+func aoWebKitKeyChord(pageID C.uint64_t, key *C.char, ctrl, meta, alt, shift, held, composing C.int) C.int {
 	page := webkitLookupPage(uint64(pageID))
 	if page == nil || page.engine.events.KeyChord == nil {
 		return 0
 	}
 	pressed := keybindings.Accelerator{Key: C.GoString(key), Ctrl: ctrl != 0, Meta: meta != 0, Alt: alt != 0, Shift: shift != 0}
-	if page.engine.events.KeyChord(page.handle, pressed) {
+	if page.engine.events.KeyChord(page.handle, pressed, KeyPress{Held: held != 0, Composing: composing != 0}) {
 		return 1
 	}
 	return 0
@@ -350,38 +401,32 @@ func webkitParkView(view unsafe.Pointer, slot int) {
 // webkitPresentView shows the view at its placement: the fitted rect, its
 // clip, and the scale the page is drawn at. The page's own size was set by
 // SetViewport and is not touched here.
-func webkitPresentView(view unsafe.Pointer, placement PanePlacement) error {
+func webkitPresentView(view webkitView, placement PanePlacement) error {
 	rect := placement.Rect
-	if !gtkDo(func() {
+	return view.do(func(view unsafe.Pointer) {
 		C.ao_wk_host_present(view, C.double(rect.X), C.double(rect.Y),
 			C.double(rect.Width), C.double(rect.Height),
 			C.double(rect.ClipX), C.double(rect.ClipY),
 			C.double(rect.ClipWidth), C.double(rect.ClipHeight),
 			C.double(rect.ViewportWidth), C.double(rect.ViewportHeight),
 			C.double(placement.Scale))
-	}) {
-		return errGTKUnavailable
-	}
-	return nil
+	})
 }
 
 // webkitSetViewBackground paints the pane's own surface color underneath the
 // page, so a strip the clip rect has just exposed matches the pane instead of
 // flashing WebKit's default white.
-func webkitSetViewBackground(view unsafe.Pointer, color webkitRGB) {
-	gtkDo(func() {
+func webkitSetViewBackground(view webkitView, color webkitRGB) error {
+	return view.do(func(view unsafe.Pointer) {
 		C.ao_wk_view_set_background(view, C.double(color.R), C.double(color.G), C.double(color.B))
 	})
 }
 
-func webkitHideView(view unsafe.Pointer, slot int) error {
-	if !gtkDo(func() {
+func webkitHideView(view webkitView, slot int) error {
+	return view.do(func(view unsafe.Pointer) {
 		C.ao_wk_host_hide(view)
 		C.ao_wk_host_park(view, C.int(slot))
-	}) {
-		return errGTKUnavailable
-	}
-	return nil
+	})
 }
 
 // Every C string below is allocated INSIDE its dispatch closure and freed
@@ -446,26 +491,20 @@ func webkitCloseView(view unsafe.Pointer) {
 	gtkDo(func() { C.ao_wk_view_close(view) })
 }
 
-func webkitOpenInspector(view unsafe.Pointer) {
-	gtkDo(func() { C.ao_wk_view_open_inspector(view) })
+func webkitOpenInspector(view webkitView) error {
+	return view.do(func(view unsafe.Pointer) { C.ao_wk_view_open_inspector(view) })
 }
 
-func webkitSetViewSize(view unsafe.Pointer, width, height int) error {
-	if !gtkDo(func() { C.ao_wk_view_set_size(view, C.int(width), C.int(height)) }) {
-		return errGTKUnavailable
-	}
-	return nil
+func webkitSetViewSize(view webkitView, width, height int) error {
+	return view.do(func(view unsafe.Pointer) { C.ao_wk_view_set_size(view, C.int(width), C.int(height)) })
 }
 
-func webkitLoadURI(view unsafe.Pointer, uri string) error {
-	if !gtkDo(func() {
+func webkitLoadURI(view webkitView, uri string) error {
+	return view.do(func(view unsafe.Pointer) {
 		cURI := C.CString(uri)
 		C.ao_wk_view_load_uri(view, cURI)
 		C.free(unsafe.Pointer(cURI))
-	}) {
-		return errGTKUnavailable
-	}
-	return nil
+	})
 }
 
 // The history action codes the C side takes.
@@ -476,44 +515,49 @@ const (
 	webkitHistoryStop    = 3
 )
 
-func webkitHistory(view unsafe.Pointer, action int) error {
-	if !gtkDo(func() { C.ao_wk_view_history(view, C.int(action)) }) {
-		return errGTKUnavailable
-	}
-	return nil
+func webkitHistory(view webkitView, action int) error {
+	return view.do(func(view unsafe.Pointer) { C.ao_wk_view_history(view, C.int(action)) })
 }
 
-func webkitCanGo(view unsafe.Pointer, forward bool) bool {
+func webkitCanGo(view webkitView, forward bool) bool {
 	flag := C.int(0)
 	if forward {
 		flag = 1
 	}
 	answer := false
-	gtkDo(func() { answer = C.ao_wk_view_can_go(view, flag) == 1 })
+	_ = view.do(func(view unsafe.Pointer) { answer = C.ao_wk_view_can_go(view, flag) == 1 })
 	return answer
 }
 
-func webkitIsLoading(view unsafe.Pointer) bool {
+func webkitIsLoading(view webkitView) bool {
 	loading := false
-	gtkDo(func() { loading = C.ao_wk_view_is_loading(view) == 1 })
+	_ = view.do(func(view unsafe.Pointer) { loading = C.ao_wk_view_is_loading(view) == 1 })
 	return loading
 }
 
 // gtkEvaluate runs one async-function body in the page and returns its JSON
-// result. An undefined result is an empty answer, matching what CDP reports
+// result: in the page's own script world, or in the isolated world named
+// world. An undefined result is an empty answer, matching what CDP reports
 // for a void expression.
-func gtkEvaluate(ctx context.Context, view unsafe.Pointer, body string) (string, error) {
+func gtkEvaluate(ctx context.Context, view webkitView, world, body string) (string, error) {
 	if !gtkAlive() {
 		return "", errGTKUnavailable
 	}
 	id, ch := webkitRegisterCall()
-	if !gtkDo(func() {
+	if err := view.do(func(view unsafe.Pointer) {
 		cBody := C.CString(body)
-		C.ao_wk_view_eval(view, cBody, C.uint64_t(id))
+		var cWorld *C.char
+		if world != "" {
+			cWorld = C.CString(world)
+		}
+		C.ao_wk_view_eval(view, cBody, cWorld, C.uint64_t(id))
 		C.free(unsafe.Pointer(cBody))
-	}) {
+		if cWorld != nil {
+			C.free(unsafe.Pointer(cWorld))
+		}
+	}); err != nil {
 		webkitCallByID.Delete(id)
-		return "", errGTKUnavailable
+		return "", err
 	}
 	select {
 	case result := <-ch:
@@ -527,18 +571,124 @@ func gtkEvaluate(ctx context.Context, view unsafe.Pointer, body string) (string,
 	}
 }
 
+// webkitFind ops: a search from the start of the document, or a step.
+const (
+	webkitFindSearch   = C.AO_FIND_SEARCH
+	webkitFindNext     = C.AO_FIND_NEXT
+	webkitFindPrevious = C.AO_FIND_PREVIOUS
+)
+
+// webkitFindUnbounded is G_MAXUINT (guint is 32 bits), the count found-text
+// reports past the search's max_match_count (WebKit-6.0.gir,
+// WebKitFindController::found-text).
+const webkitFindUnbounded = math.MaxUint32
+
+// gtkFind runs one find on the view's WebKitFindController and waits for its
+// found-text or failed-to-find-text answer.
+func gtkFind(ctx context.Context, view webkitView, op int, text string, maxMatches uint32) (webkitCallResult, error) {
+	id, ch := webkitRegisterCall()
+	if err := view.do(func(view unsafe.Pointer) {
+		cText := C.CString(text)
+		C.ao_wk_view_find(view, C.int(op), cText, C.uint(maxMatches), C.uint64_t(id))
+		C.free(unsafe.Pointer(cText))
+	}); err != nil {
+		webkitCallByID.Delete(id)
+		return webkitCallResult{}, err
+	}
+	select {
+	case result := <-ch:
+		if result.found < 0 {
+			return result, fmt.Errorf("browser: this page has no find controller")
+		}
+		return result, nil
+	case <-ctx.Done():
+		webkitCallByID.Delete(id)
+		return webkitCallResult{}, ctx.Err()
+	}
+}
+
+// escapeOffer is one Escape press handed to the key gate: with Control when
+// Ctrl, followed by its release when Release.
+type escapeOffer struct{ Ctrl, Release bool }
+
+// offerEscapes hands the page's key gate the presses in order, inside one
+// GTK callback so no other event (a focus change) lands between them, and
+// answers which AO stopped (ao_wk_view_offer_escape). For the native smoke.
+func (p *webkitPage) offerEscapes(offers []escapeOffer) ([]bool, error) {
+	handled := make([]C.int, len(offers))
+	err := p.liveView().do(func(view unsafe.Pointer) {
+		for i, offer := range offers {
+			handled[i] = C.ao_wk_view_offer_escape(view, flagInt(offer.Ctrl), flagInt(offer.Release))
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	stopped := make([]bool, len(offers))
+	for i, h := range handled {
+		if h < 0 {
+			return nil, fmt.Errorf("browser: page %d has no key controller", p.id)
+		}
+		stopped[i] = h == 1
+	}
+	return stopped, nil
+}
+
+// onKeyPress has every KeyChord question of the page's engine reported to
+// seen before it is answered, until the returned restore runs. It swaps the
+// hook on the GTK thread, which is the only reader. For the native smoke.
+func (p *webkitPage) onKeyPress(seen func(keybindings.Accelerator, KeyPress)) (restore func() error, err error) {
+	var orig func(string, keybindings.Accelerator, KeyPress) bool
+	err = p.liveView().do(func(unsafe.Pointer) {
+		orig = p.engine.events.KeyChord
+		p.engine.events.KeyChord = func(handle string, pressed keybindings.Accelerator, press KeyPress) bool {
+			seen(pressed, press)
+			return orig(handle, pressed, press)
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	return func() error {
+		return p.liveView().do(func(unsafe.Pointer) { p.engine.events.KeyChord = orig })
+	}, nil
+}
+
+// hasInputMethod answers whether the page's view has an input method
+// context, the one the key gate reads a composition from. For the native
+// smoke.
+func (p *webkitPage) hasInputMethod() (bool, error) {
+	has := C.int(0)
+	err := p.liveView().do(func(view unsafe.Pointer) {
+		has = C.ao_wk_view_has_input_method(view)
+	})
+	return has == 1, err
+}
+
+func flagInt(on bool) C.int {
+	if on {
+		return 1
+	}
+	return 0
+}
+
+// gtkFindFinish ends the view's find and clears its highlight.
+func gtkFindFinish(view webkitView) error {
+	return view.do(func(view unsafe.Pointer) { C.ao_wk_view_find_finish(view) })
+}
+
 // webkitSnapshot captures the view. It works on a parked view and returns
 // fresh pixels after a DOM mutation, which is what makes hidden agent pages
 // screenshot-able at all.
-func webkitSnapshot(ctx context.Context, view unsafe.Pointer, fullDocument bool) ([]byte, int, int, error) {
+func webkitSnapshot(ctx context.Context, view webkitView, fullDocument bool) ([]byte, int, int, error) {
 	id, ch := webkitRegisterCall()
 	flag := C.int(0)
 	if fullDocument {
 		flag = 1
 	}
-	if !gtkDo(func() { C.ao_wk_view_snapshot(view, flag, C.uint64_t(id)) }) {
+	if err := view.do(func(view unsafe.Pointer) { C.ao_wk_view_snapshot(view, flag, C.uint64_t(id)) }); err != nil {
 		webkitCallByID.Delete(id)
-		return nil, 0, 0, errGTKUnavailable
+		return nil, 0, 0, err
 	}
 	select {
 	case result := <-ch:

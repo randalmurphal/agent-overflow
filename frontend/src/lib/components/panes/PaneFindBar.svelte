@@ -55,13 +55,15 @@
   let open = $derived(find?.open === true && provider !== null);
   let query = $derived(find?.query ?? '');
   let result = $derived(provider?.result ?? null);
-  let count = $derived(result?.count ?? 0);
+  let count = $derived(result ? result.count : 0);
   let error = $derived(result?.error ?? null);
   // A progressive provider's count shows beside the spinner while it grows.
-  let showCount = $derived(!result?.pending || (result.progressive === true && count > 0));
+  let showCount = $derived(!result?.pending || (result.progressive === true && count !== null && count > 0));
   let stepping = $derived(provider !== null && isSteppingFind(provider));
   let countText = $derived.by(() => {
     if (!query.trim() || !result) return '';
+    // A provider that cannot count reports a match without a number.
+    if (count === null) return 'Found';
     if (!stepping) {
       if (count === 0) return result.pending ? '' : 'No matches';
       return `${count}${result.capped ? '+' : ''} ${count === 1 ? 'match' : 'matches'}`;

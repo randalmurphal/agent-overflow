@@ -12,6 +12,7 @@ import {
   BrowserPaneRect,
   type BrowserCompanionEvent,
 } from './bindings';
+import { applyBrowserFindEvent } from './browserFind.svelte';
 import { createEntityStore, type EntityAttachment } from './entityStore.svelte';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import {
@@ -87,6 +88,11 @@ export function attachBrowserCompanion(threadId: string): EntityAttachment<Brows
   return store.attach(threadId, undefined);
 }
 
+/** The backend's id of the thread's mounted pane, null while it has none. */
+export function browserPaneMountId(threadId: string): string | null {
+  return paneIds.get(threadId) ?? null;
+}
+
 /**
  * Reports where the mounted pane's host rect sits, already coalesced to one
  * call per changed frame by the pane. A refusal is a teardown race (the mount
@@ -134,6 +140,10 @@ export function applyBrowserCompanionState(event: BrowserCompanionEvent): void {
     replayBrowserAccelerator(event);
     return;
   }
+  if (event.kind === 'find' || event.kind === 'escape') {
+    applyBrowserFindEvent(event);
+    return;
+  }
   if (event.kind !== 'state') return;
   hydratedThreads.add(event.threadId);
   if ((event.pages?.length ?? 0) > 0) liveStates.set(event.threadId, event);
@@ -168,7 +178,9 @@ export function applyBrowserCompanionState(event: BrowserCompanionEvent): void {
  * behave exactly as if the SPA had been focused. The companion pane is
  * focused first: the click that gave the page focus moved no DOM focus, and
  * pane-scoped commands (pane.close → this pane's tab) need the logical focus
- * to be where the user is looking.
+ * to be where the user is looking. DOM focus left in the SPA stays where it
+ * is for the user's return; it gates nothing, since the document does not
+ * have keyboard focus (makeCommandContext's `terminalFocus`).
  */
 function replayBrowserAccelerator(event: BrowserCompanionEvent): void {
   const chord = event.accelerator;
@@ -193,6 +205,22 @@ function replayBrowserAccelerator(event: BrowserCompanionEvent): void {
 // when ITS thread's pages change.
 export function browserCompanionState(threadId: string): BrowserCompanionEvent | null {
   return liveStates.get(threadId);
+}
+
+// A find stop that could not be delivered, per thread (stores/browserFind):
+// the page may keep its highlights. Its own entry, so a browser action
+// neither clears it nor is hidden by it.
+const findCleanupErrors = createKeyedSignalRegistry<string>('');
+
+/** Records, or with null withdraws, the thread's find cleanup failure. */
+export function noteBrowserFindCleanupError(threadId: string, message: string | null): void {
+  if (message) findCleanupErrors.set(threadId, message);
+  else findCleanupErrors.drop(threadId);
+}
+
+/** The thread's find cleanup failure, '' for none. */
+export function browserFindCleanupError(threadId: string): string {
+  return findCleanupErrors.get(threadId);
 }
 
 export function noteBrowserActionError(threadId: string, message: string): void {
@@ -310,6 +338,7 @@ addPaneThreadMountedObserver(reconcileBrowserCompanionForPane);
 export function resetBrowserCompanionForTest(): void {
   paneIds.clear();
   liveStates.reset();
+  findCleanupErrors.reset();
   hydratedThreads.clear();
   store.suspend();
   store.resetAll();

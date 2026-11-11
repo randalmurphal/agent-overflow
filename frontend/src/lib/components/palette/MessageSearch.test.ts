@@ -118,6 +118,38 @@ describe('<MessageSearch> — search behavior', () => {
     expect(getByTestId('message-search-hit-t2-i9').textContent).toContain('hit body');
   });
 
+  it('marks what the search matched: ASCII letters folded on both sides, other characters exact', async () => {
+    setBindingMock('SearchThreadMessages', async () => [
+      hit({ threadId: 't1', threadTitle: 'İx ÉCOLE École école', matchType: 'item', itemId: 'i1', summary: 'Kelvin Kelvin' }),
+    ]);
+    const pane = makePane();
+    const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
+    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'ÉCOLE' } });
+    const row = await findByTestId('message-search-hit-t1-i1');
+    expect([...row.querySelectorAll('mark')].map((mark) => mark.textContent)).toEqual(['ÉCOLE', 'École']);
+  });
+
+  it('marks the rows by the query that found them while the next search waits', async () => {
+    let release: (value: unknown[]) => void = () => {};
+    const second = new Promise<unknown[]>((resolve) => { release = resolve; });
+    let calls = 0;
+    const search = setBindingMock('SearchThreadMessages', async () => {
+      calls += 1;
+      if (calls === 1) return [hit({ threadId: 't1', threadTitle: 'alpha beta', matchType: 'title', itemId: '' })];
+      return second;
+    });
+    const pane = makePane();
+    const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
+    const input = getByTestId('message-search-input');
+    await fireEvent.input(input, { target: { value: 'alpha' } });
+    const row = await findByTestId('message-search-hit-t1-title');
+    await fireEvent.input(input, { target: { value: 'beta' } });
+    await waitFor(() => expect(search).toHaveBeenCalledTimes(2));
+    expect([...row.querySelectorAll('mark')].map((mark) => mark.textContent)).toEqual(['alpha']);
+    release([hit({ threadId: 't1', threadTitle: 'alpha beta', matchType: 'title', itemId: '' })]);
+    await waitFor(() => expect([...getByTestId('message-search-hit-t1-title').querySelectorAll('mark')].map((mark) => mark.textContent)).toEqual(['beta']));
+  });
+
   it('shows the empty-state message when no hits match', async () => {
     setBindingMock('SearchThreadMessages', async () => []);
     const pane = makePane();

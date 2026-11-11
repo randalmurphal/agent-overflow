@@ -1,0 +1,803 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  applyBrowserFindEvent,
+  BROWSER_FIND_DEBOUNCE_MS,
+  BROWSER_FIND_STOP_ATTEMPTS,
+  BROWSER_FIND_STOP_RETRY_MS,
+  createBrowserFind,
+  resetBrowserFindForTest,
+  type BrowserFindMode,
+} from './browserFind.svelte';
+import { BrowserCompanionEvent, BrowserFindState } from './bindings';
+import { setBindingMock } from '../../test/mocks/bindings-app';
+import { DisconnectedError, TransportError } from '../transport/wsClient';
+import { errString } from '../utils/errors';
+import { getToasts, resetToastsForTest } from './toast.svelte';
+import {
+  closePaneFind,
+  isPaneFindOpen,
+  openPaneFind,
+  paneFindReads,
+  registerPaneFindProvider,
+  resetPaneFindForTest,
+  setPaneFindQuery,
+} from './paneFind.svelte';
+
+interface Call {
+  threadId: string;
+  kind: string;
+  pageId: string;
+  query: string;
+  mount: string;
+  seq: number;
+}
+
+const PANE = 'browser-main';
+const TOO_LONG = 'that search is too long; shorten it to 1024 bytes or fewer';
+
+function state(partial: Partial<BrowserFindState>): BrowserFindState {
+  return new BrowserFindState({
+    pageId: 'page-1', incarnation: 1, mount: 'mount-1', document: 1, session: 1, active: true, current: -1, ...partial,
+  });
+}
+
+let calls: Call[];
+let answer: (call: Call) => Promise<BrowserFindState>;
+let pageId: string;
+let mount: string | null;
+// The backend's generation: every action takes the next one.
+let gen: number;
+
+/** The sequence the provider's newest call named. */
+const lastSeq = (): number => calls.at(-1)?.seq ?? 0;
+
+/** A refusal the backend answered: the action did not run. */
+const refused = (message: string) => new TransportError('method_error', message);
+
+/**
+ * A provider registered with the pane-find store as the browser pane
+ * registers it, its bar closing through the store.
+ */
+function setup(mode: BrowserFindMode = 'bar') {
+  const closeBar = vi.fn(() => closePaneFind(PANE));
+  const onCleanupError = vi.fn();
+  const find = createBrowserFind({
+    threadId: 'thread', paneId: PANE, mode, pageId: () => pageId, mount: () => mount, closeBar, onCleanupError,
+  });
+  const release = registerPaneFindProvider(PANE, find);
+  const unmount = () => {
+    release();
+    find.dispose();
+  };
+  return { find, closeBar, onCleanupError, unmount };
+}
+
+/** A bar-mode provider whose bar is open with a search for `query`. */
+async function setupSearching(query = 'alpha') {
+  const made = setup();
+  openPaneFind(PANE, { seed: query });
+  await settle();
+  return made;
+}
+
+/** The backend ends a search: by default the one of the newest call's find. */
+function ended(session: number, page = 'page-1', identity: Partial<BrowserFindState> = {}): void {
+  applyBrowserFindEvent(new BrowserCompanionEvent({
+    kind: 'find', threadId: 'thread', pageId: page,
+    find: state({ pageId: page, session, active: false, seq: lastSeq(), ...identity }),
+  }));
+}
+
+function escaped(page = 'page-1', threadId = 'thread'): void {
+  applyBrowserFindEvent(new BrowserCompanionEvent({ kind: 'escape', threadId, pageId: page }));
+}
+
+async function settle(ms = BROWSER_FIND_DEBOUNCE_MS): Promise<void> {
+  await vi.advanceTimersByTimeAsync(ms);
+}
+
+/** A promise answer the test resolves later. */
+function held(): { promise: Promise<BrowserFindState>; release: (s: BrowserFindState) => void } {
+  let release!: (s: BrowserFindState) => void;
+  const promise = new Promise<BrowserFindState>((resolve) => { release = resolve; });
+  return { promise, release };
+}
+
+const kinds = () => calls.map((call) => call.kind);
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  resetBrowserFindForTest();
+  resetPaneFindForTest();
+  resetToastsForTest();
+  calls = [];
+  pageId = 'page-1';
+  mount = 'mount-1';
+  gen = 0;
+  answer = async (call) => {
+    gen += 1;
+    const identity = { pageId: call.pageId, mount: call.mount, seq: call.seq, session: gen };
+    if (call.kind === 'start' || call.kind === 'next' || call.kind === 'previous') {
+      return state({ ...identity, query: call.query, found: true, matches: 3, current: 0 });
+    }
+    return state({ ...identity, active: false });
+  };
+  setBindingMock('BrowserCompanionFind', async (threadId: string, action: { kind: string; pageId: string; query?: string; mount?: string; seq?: number }) => {
+    const call = { threadId, kind: action.kind, pageId: action.pageId, query: action.query ?? '', mount: action.mount ?? '', seq: action.seq ?? 0 };
+    calls.push(call);
+    return answer(call);
+  });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  resetBrowserFindForTest();
+  resetPaneFindForTest();
+  resetToastsForTest();
+});
+
+describe('browser find provider', () => {
+  // A bar's open is the store's: nothing reaches the backend until a query
+  // searches.
+  it('sends nothing when the bar opens with no query', async () => {
+    setup();
+    openPaneFind(PANE);
+    await settle();
+    expect(calls).toEqual([]);
+    expect(isPaneFindOpen(PANE)).toBe(true);
+  });
+
+  // Every start takes the next sequence; its steps name it, and a stop names
+  // the newest sequence issued.
+  it('numbers every start above the last; steps name it, stops the newest issued', async () => {
+    const { find } = await setupSearching();
+    find.next?.();
+    setPaneFindQuery(PANE, '');
+    setPaneFindQuery(PANE, 'beta');
+    await settle();
+    closePaneFind(PANE);
+    await settle(0);
+    openPaneFind(PANE);
+    await settle();
+    expect(calls.map((call) => [call.kind, call.seq])).toEqual([
+      ['start', 1], ['next', 1], ['stop', 1], ['start', 2], ['stop', 2], ['start', 3],
+    ]);
+    expect(calls).toMatchObject(Array(6).fill({ threadId: 'thread', pageId: 'page-1', mount: 'mount-1' }));
+  });
+
+  // The counter is the frontend's: a pane mount's next provider numbers on.
+  it('numbers on across providers of the same mount', async () => {
+    const first = await setupSearching();
+    first.unmount();
+    await settle(0);
+    await setupSearching('beta');
+    expect(calls.map((call) => [call.kind, call.seq])).toEqual([['start', 1], ['stop', 1], ['start', 2]]);
+  });
+
+  // Row: query typed.
+  it('debounces the query to one start on the shown page and shows the answer', async () => {
+    const { find } = setup();
+    openPaneFind(PANE);
+    find.search('al');
+    find.search('alpha');
+    expect(find.result.pending).toBe(true);
+    await settle(BROWSER_FIND_DEBOUNCE_MS - 1);
+    expect(calls).toEqual([]);
+    await settle(1);
+    expect(calls).toMatchObject([{ kind: 'start', pageId: 'page-1', query: 'alpha', mount: 'mount-1' }]);
+    expect(find.result).toMatchObject({ count: 3, current: 0, pending: false, capped: false });
+  });
+
+  it('drops an answer a newer query superseded', async () => {
+    const { find } = setup();
+    const slow = held();
+    answer = (call) => call.query === 'slow'
+      ? slow.promise
+      : Promise.resolve(state({ seq: call.seq, session: 2, query: call.query, found: true, matches: 1, current: 0 }));
+    find.search('slow');
+    await settle();
+    find.search('fast');
+    await settle();
+    slow.release(state({ seq: lastSeq(), query: 'slow', found: true, matches: 9, current: 0 }));
+    await settle(0);
+    expect(find.result).toMatchObject({ count: 1, current: 0 });
+  });
+
+  // A start in flight, a second query's start queued, a third query typed
+  // before the first answers: the queued start is dropped the moment the
+  // query changes, so its answer can never show under the third query. The
+  // first answer, for a sequence the bar no longer shows, shows nothing, and
+  // the third start replaces its search.
+  it('drops a queued start the moment the query changes', async () => {
+    const { find } = setup();
+    const alpha = held();
+    answer = (call) => call.query === 'alpha'
+      ? alpha.promise
+      : Promise.resolve(state({ seq: call.seq, session: 5, query: call.query, found: true, matches: call.query === 'gamma' ? 2 : 7, current: 0 }));
+    find.search('alpha');
+    await settle();
+    find.search('beta');
+    await settle();
+    find.search('gamma');
+    alpha.release(state({ seq: 1, session: 1, query: 'alpha', found: true, matches: 4, current: 0 }));
+    await settle(0);
+    expect(find.result.pending).toBe(true);
+    await settle();
+    expect(calls.map((call) => [call.kind, call.seq, call.query])).toEqual([['start', 1, 'alpha'], ['start', 3, 'gamma']]);
+    expect(find.result).toMatchObject({ count: 2, pending: false });
+  });
+
+  // Row: query emptied. The search ends; the bar stays.
+  it('an emptied query stops the search and leaves the bar open', async () => {
+    const { find } = setup();
+    openPaneFind(PANE);
+    find.search('');
+    await settle(0);
+    expect(calls).toEqual([]);
+    find.search('alpha');
+    await settle();
+    find.search('  ');
+    await settle(0);
+    expect(kinds()).toEqual(['start', 'stop']);
+    expect(find.result).toMatchObject({ count: 0, pending: false });
+    expect(isPaneFindOpen(PANE)).toBe(true);
+    // Typed and emptied before the debounce: nothing to stop.
+    find.search('al');
+    find.search('');
+    await settle();
+    expect(kinds()).toEqual(['start', 'stop']);
+  });
+
+  // Row: bar closed.
+  it('a close stops the search, twice, and sends nothing with none held', async () => {
+    const { find } = setup();
+    find.clear();
+    await settle(0);
+    expect(calls).toEqual([]);
+    for (let round = 0; round < 2; round++) {
+      openPaneFind(PANE, { seed: 'alpha' });
+      await settle();
+      expect(find.result.count).toBe(3);
+      closePaneFind(PANE);
+      await settle(0);
+      expect(find.result).toMatchObject({ count: 0, current: -1, pending: false });
+    }
+    expect(kinds()).toEqual(['start', 'stop', 'start', 'stop']);
+  });
+
+  it('a start the reader closed on before it answered is stopped after it', async () => {
+    const { find } = setup();
+    const start = held();
+    answer = (call) => call.kind === 'start' ? start.promise : Promise.resolve(state({ session: 2, active: false }));
+    openPaneFind(PANE, { seed: 'late' });
+    await settle();
+    closePaneFind(PANE);
+    await settle(0);
+    start.release(state({ seq: calls[0].seq, query: 'late', found: true, matches: 2, current: 0 }));
+    await settle(0);
+    expect(kinds()).toEqual(['start', 'stop']);
+    expect(calls[1].seq).toBe(calls[0].seq);
+    expect(find.result).toMatchObject({ count: 0, current: -1, pending: false });
+  });
+
+  // Row: Enter / Shift+Enter.
+  it('steps with next and previous only while a search has matches', async () => {
+    const { find } = setup();
+    find.next?.();
+    expect(calls).toEqual([]);
+    find.search('alpha');
+    await settle();
+    answer = async (call) => state({ seq: call.seq, session: 2, found: true, matches: 3, current: call.kind === 'next' ? 1 : 0 });
+    find.next?.();
+    await settle(0);
+    expect(find.result.current).toBe(1);
+    find.previous?.();
+    await settle(0);
+    expect(kinds()).toEqual(['start', 'next', 'previous']);
+    expect(find.result.current).toBe(0);
+
+    answer = async (call) => state({ seq: call.seq, session: 3, found: false, matches: 0 });
+    find.search('absent');
+    await settle();
+    expect(find.result.count).toBe(0);
+    find.next?.();
+    expect(calls.at(-1)?.kind).toBe('start');
+  });
+
+  it('makes every engine call in order, one at a time, and nets opposite steps', async () => {
+    const { find } = setup();
+    const releases: Array<() => void> = [];
+    answer = (call) => new Promise((resolve) => {
+      releases.push(() => resolve(state({ seq: call.seq, found: true, matches: 3, current: call.kind === 'start' ? 0 : 1 })));
+    });
+    find.search('alpha');
+    await settle();
+    expect(kinds()).toEqual(['start']);
+    releases.shift()!();
+    await settle(0);
+    find.next?.();
+    find.next?.();
+    find.next?.();
+    find.previous?.();
+    find.next?.();
+    await settle(0);
+    expect(kinds()).toEqual(['start', 'next']);
+    while (releases.length) {
+      releases.shift()!();
+      await settle(0);
+    }
+    expect(kinds()).toEqual(['start', 'next', 'next', 'next']);
+  });
+
+  // The provider's calls run on its own queue: a read another provider of
+  // the pane left in the pane's read slot holds nothing of the browser
+  // find's up.
+  it('runs its calls on its own queue, whatever holds the pane\'s read slot', async () => {
+    paneFindReads(PANE).request(() => new Promise<void>(() => {}));
+    const { find } = setup();
+    find.search('alpha');
+    await settle();
+    find.search('');
+    await settle(0);
+    expect(kinds()).toEqual(['start', 'stop']);
+  });
+
+  it('shows an engine without a count as found with no numbers', async () => {
+    const { find } = setup();
+    answer = async (call) => state({ seq: call.seq, found: true, matches: -1, current: -1 });
+    find.search('alpha');
+    await settle();
+    expect(find.result).toMatchObject({ count: null, current: -1 });
+  });
+
+  // Row: failed start or step.
+  it('shows a failed start as its result in the bar, and stops through it once', async () => {
+    const { find, onCleanupError, closeBar } = setup();
+    answer = async (call) => {
+      if (call.kind === 'start') throw refused('find runs on the page the browser pane shows');
+      return state({ seq: 0, active: false, foreign: true });
+    };
+    find.search('alpha');
+    await settle();
+    expect(find.result).toMatchObject({ count: 0, pending: false, error: 'find runs on the page the browser pane shows' });
+    expect(onCleanupError).not.toHaveBeenCalled();
+    find.search('');
+    find.next?.();
+    await settle(0);
+    expect(calls.map((call) => [call.kind, call.seq])).toEqual([['start', 1], ['stop', 1]]);
+    expect(closeBar).not.toHaveBeenCalled();
+  });
+
+  // A replacement the backend refuses (a query too long), or one dropped
+  // before it was sent, leaves the search shown before it on the backend:
+  // the stop through the newest sequence ends it.
+  it('ends the search shown before a refused replacement', async () => {
+    const { find, onCleanupError } = await setupSearching();
+    answer = async (call) => {
+      if (call.kind === 'start') throw refused(TOO_LONG);
+      return state({ seq: 1, active: false });
+    };
+    setPaneFindQuery(PANE, 'a'.repeat(1025));
+    await settle();
+    expect(find.result.error).toBe(TOO_LONG);
+    closePaneFind(PANE);
+    await settle(0);
+    expect(calls.map((call) => [call.kind, call.seq])).toEqual([['start', 1], ['start', 2], ['stop', 2]]);
+    expect(find.result).toMatchObject({ count: 0, current: -1, pending: false, error: null });
+    expect(onCleanupError).not.toHaveBeenCalled();
+  });
+
+  // A refusal is the result of the search the bar showed: the next query's
+  // result replaces it, and a closed bar shows none.
+  it('replaces a refused search\'s error with the next query\'s result, and drops it on close', async () => {
+    const { find, onCleanupError } = await setupSearching();
+    const answering = answer;
+    answer = (call) => call.kind === 'start' && call.query.length > 1024 ? Promise.reject(refused(TOO_LONG)) : answering(call);
+    setPaneFindQuery(PANE, 'a'.repeat(1025));
+    await settle();
+    expect(find.result.error).toBe(TOO_LONG);
+    setPaneFindQuery(PANE, 'beta');
+    expect(find.result.error, 'a new query is pending, not failed').toBeNull();
+    await settle();
+    expect(find.result).toMatchObject({ count: 3, current: 0, pending: false, error: null });
+    setPaneFindQuery(PANE, 'a'.repeat(1025));
+    await settle();
+    expect(find.result.error).toBe(TOO_LONG);
+    closePaneFind(PANE);
+    expect(find.result.error).toBeNull();
+    openPaneFind(PANE);
+    expect(find.result.error).toBeNull();
+    expect(onCleanupError).not.toHaveBeenCalled();
+  });
+
+  it('ends the search shown before a dropped replacement when the bar closes', async () => {
+    const { find } = await setupSearching();
+    const beta = held();
+    answer = (call) => call.kind === 'start' ? beta.promise : Promise.resolve(state({ seq: call.seq, active: false }));
+    setPaneFindQuery(PANE, 'beta');
+    await settle();
+    setPaneFindQuery(PANE, 'gamma');
+    await settle();
+    setPaneFindQuery(PANE, 'delta');
+    closePaneFind(PANE);
+    beta.release(state({ seq: 2, query: 'beta', found: true, matches: 1, current: 0 }));
+    await settle();
+    // gamma (3) was dropped from the queue and delta never left its debounce.
+    expect(calls.map((call) => [call.kind, call.seq])).toEqual([['start', 1], ['start', 2], ['stop', 3]]);
+    expect(find.result).toMatchObject({ count: 0, pending: false });
+  });
+
+  // Row: end event for the held search.
+  it('closes its bar on the end of its own search, and on no other', async () => {
+    const { find, closeBar } = await setupSearching();
+    const session = gen;
+    ended(session + 5, 'page-1', { seq: 99 });
+    ended(session + 5, 'page-1', { mount: 'mount-2' });
+    ended(session + 5, 'page-2');
+    expect(closeBar).not.toHaveBeenCalled();
+    expect(isPaneFindOpen(PANE)).toBe(true);
+    ended(session + 1);
+    expect(closeBar).toHaveBeenCalledTimes(1);
+    expect(isPaneFindOpen(PANE)).toBe(false);
+    expect(find.result).toMatchObject({ count: 0, current: -1 });
+    await settle(0);
+    // The backend ended the search: nothing is stopped.
+    expect(kinds()).toEqual(['start']);
+  });
+
+  it('an end with no search held changes nothing', async () => {
+    const { closeBar } = setup();
+    ended(5, 'page-1', { seq: 1 });
+    openPaneFind(PANE);
+    ended(9, 'page-1', { seq: 1 });
+    expect(closeBar).not.toHaveBeenCalled();
+    expect(isPaneFindOpen(PANE)).toBe(true);
+  });
+
+  // A step in flight when the backend ends the search (a tab switch): the
+  // end closes the bar at once, and the step's late answer shows nothing.
+  // The backend ended the search: nothing is stopped.
+  it('closes the bar on an end that lands while a step is in flight', async () => {
+    const { find, closeBar } = await setupSearching();
+    const step = held();
+    answer = (call) => call.kind === 'next' ? step.promise : Promise.resolve(state({ session: 99, active: false }));
+    find.next?.();
+    await settle(0);
+    ended(gen + 1);
+    expect(closeBar).toHaveBeenCalledTimes(1);
+    step.release(state({ seq: 1, session: gen + 2, found: true, matches: 3, current: 1 }));
+    await settle(0);
+    expect(closeBar).toHaveBeenCalledTimes(1);
+    expect(find.result).toMatchObject({ count: 0, current: -1 });
+    expect(kinds()).toEqual(['start', 'next']);
+  });
+
+  // A late end of an earlier search of the bar, arriving after a later
+  // start's answer, names the earlier search: the bar stays.
+  it('keeps the bar over a later search when an earlier search\'s end arrives late', async () => {
+    const { find, closeBar } = await setupSearching();
+    const early = lastSeq();
+    setPaneFindQuery(PANE, 'beta');
+    await settle();
+    expect(find.result.count).toBe(3);
+    expect(lastSeq()).toBeGreaterThan(early);
+    ended(gen + 1, 'page-1', { seq: early });
+    expect(closeBar).not.toHaveBeenCalled();
+    expect(find.result.count).toBe(3);
+  });
+
+  // Row: foreign answer to a start or step.
+  for (const kind of ['start', 'next'] as const) {
+    it(`closes the bar on a foreign answer to a ${kind}`, async () => {
+      const { find, closeBar } = setup();
+      openPaneFind(PANE);
+      if (kind !== 'start') {
+        find.search('alpha');
+        await settle();
+      }
+      answer = async (call) => state({ pageId: call.pageId, session: 50, mount: 'mount-2', seq: 7, foreign: true, active: false });
+      if (kind === 'start') find.search('alpha');
+      else find.next?.();
+      await settle();
+      expect(closeBar).toHaveBeenCalledTimes(1);
+      expect(isPaneFindOpen(PANE)).toBe(false);
+      expect(find.result).toMatchObject({ count: 0, pending: false });
+    });
+  }
+
+  it('a foreign answer to a stop changes nothing more', async () => {
+    const { find, closeBar } = await setupSearching();
+    answer = async (call) => state({ pageId: call.pageId, session: 50, mount: '', seq: 0, foreign: true, active: false });
+    find.search('');
+    await settle(0);
+    expect(closeBar).not.toHaveBeenCalled();
+    expect(isPaneFindOpen(PANE)).toBe(true);
+    expect(kinds()).toEqual(['start', 'stop']);
+  });
+
+  // The stop carries the mount the search was started for, not whichever
+  // the pane has when it runs, and steps go to that mount too.
+  it('sends every action of a search to the mount that holds it', async () => {
+    const { find } = await setupSearching();
+    mount = 'mount-2';
+    find.next?.();
+    closePaneFind(PANE);
+    await settle(0);
+    expect(calls.map((call) => call.mount)).toEqual(['mount-1', 'mount-1', 'mount-1']);
+    expect(kinds()).toEqual(['start', 'next', 'stop']);
+  });
+
+  // Row: engine find opened.
+  it('in engine mode opens the engine find with the seed, a find of its own each time', async () => {
+    const { find, onCleanupError } = setup('engine');
+    expect(find.openNative).toBeTypeOf('function');
+    find.openNative?.('needle');
+    find.search('ignored');
+    await settle(0);
+    find.openNative?.('');
+    await settle(0);
+    expect(calls).toMatchObject([{ kind: 'start', pageId: 'page-1', query: 'needle' }, { kind: 'start', query: '' }]);
+    expect(calls[1].seq).toBeGreaterThan(calls[0].seq);
+    const answering = answer;
+    answer = (call) => call.kind === 'start' ? Promise.reject(refused('no engine find')) : answering(call);
+    find.openNative?.('x');
+    await settle(0);
+    expect(getToasts()).toMatchObject([{ type: 'error', message: 'Find could not open in this page' }]);
+    expect(find.result.error, 'engine mode has no bar to show it').toBeNull();
+    expect(onCleanupError).not.toHaveBeenCalled();
+  });
+
+  // The engine's UI closes without telling AO, so it never reads as open:
+  // find.close (Escape) is never the pane's for it. The engine's search is
+  // still stopped when the pane goes.
+  it('never reads the engine find UI as open, and stops it on unmount', async () => {
+    const { unmount } = setup('engine');
+    for (let round = 0; round < 2; round++) {
+      openPaneFind(PANE, { seed: 'alpha' });
+      await settle(0);
+      expect(isPaneFindOpen(PANE)).toBe(false);
+      closePaneFind(PANE);
+      await settle(0);
+    }
+    expect(kinds()).toEqual(['start', 'start']);
+    unmount();
+    await settle(0);
+    expect(kinds()).toEqual(['start', 'start', 'stop']);
+  });
+
+  // The pane unmounts while a start is in flight: the release clears the
+  // bar and queues its stop, and the dispose that follows keeps it.
+  for (const mode of ['bar', 'engine'] as const) {
+    it(`keeps the stop a clear queued through a dispose, with a start in flight (${mode})`, async () => {
+      const { find } = setup(mode);
+      const start = held();
+      answer = (call) => call.kind === 'start' ? start.promise : Promise.resolve(state({ session: 9, active: false }));
+      if (mode === 'bar') find.search('alpha');
+      else find.openNative?.('alpha');
+      await settle();
+      find.clear();
+      find.dispose();
+      find.clear();
+      start.release(state({ seq: calls[0].seq, session: 2, query: 'alpha', found: true, matches: 2, current: 0 }));
+      await settle(0);
+      expect(kinds()).toEqual(['start', 'stop']);
+      expect(calls.at(-1)).toMatchObject({ kind: 'stop', pageId: 'page-1', mount: 'mount-1', seq: calls[0].seq });
+    });
+  }
+
+  it('a disposed provider hears no end and stops what it held', async () => {
+    const { closeBar, unmount } = await setupSearching();
+    unmount();
+    await settle(0);
+    ended(50);
+    expect(closeBar).not.toHaveBeenCalled();
+    expect(calls.at(-1)?.kind).toBe('stop');
+  });
+
+  // An unknown outcome may have left a search running: the provider holds
+  // none, and stops it.
+  const unknowns: Array<[string, () => Error]> = [
+    ['a lost connection', () => new DisconnectedError()],
+    ['a timeout', () => new TransportError('timeout', 'the call timed out')],
+    ['an error that is not the transport\'s', () => new Error('broken')],
+  ];
+  for (const kind of ['start', 'next'] as const) {
+    for (const [why, error] of unknowns) {
+      it(`stops a search a ${kind} may have left after ${why}`, async () => {
+        const { find, closeBar, onCleanupError } = setup();
+        const answering = answer;
+        if (kind === 'next') {
+          find.search('alpha');
+          await settle();
+        }
+        answer = (call) => call.kind === kind ? Promise.reject(error()) : answering(call);
+        if (kind === 'start') find.search('alpha');
+        else find.next?.();
+        await settle();
+        expect(find.result.error).toBe(errString(error()));
+        expect(onCleanupError).not.toHaveBeenCalled();
+        expect(closeBar).not.toHaveBeenCalled();
+        expect(calls.at(-2)?.kind).toBe(kind);
+        expect(calls.at(-1)).toMatchObject({ kind: 'stop', seq: calls.at(-2)?.seq });
+        expect(find.result).toMatchObject({ count: 0, pending: false });
+      });
+    }
+  }
+
+  // Row: failed stop. Sent again on the provider's own timer while attempts
+  // remain, through the pane's unmount too; no timer is left once the
+  // attempts are spent. An unmounted pane shows no cleanup error.
+  for (const [why, error] of [...unknowns, ['a refusal', () => refused('fake engine: find stop failed')] as [string, () => Error]]) {
+    it(`retries a stop that failed with ${why}, a bounded number of times`, async () => {
+      const { onCleanupError, unmount } = await setupSearching();
+      answer = async (call) => {
+        if (call.kind === 'stop') throw error();
+        return state({ seq: call.seq, session: 9, active: false });
+      };
+      unmount();
+      await settle(0);
+      expect(kinds()).toEqual(['start', 'stop']);
+      for (let attempt = 2; attempt <= BROWSER_FIND_STOP_ATTEMPTS; attempt++) {
+        await settle(BROWSER_FIND_STOP_RETRY_MS - 1);
+        expect(calls, `attempt ${attempt} waits ${BROWSER_FIND_STOP_RETRY_MS} ms`).toHaveLength(attempt);
+        await settle(1);
+        expect(calls).toHaveLength(attempt + 1);
+      }
+      expect(vi.getTimerCount()).toBe(0);
+      await settle(BROWSER_FIND_STOP_RETRY_MS * 4);
+      expect(kinds()).toEqual(['start', ...Array(BROWSER_FIND_STOP_ATTEMPTS).fill('stop')]);
+      expect(new Set(calls.slice(1).map((call) => call.seq))).toEqual(new Set([calls[0].seq]));
+      expect(onCleanupError).not.toHaveBeenCalled();
+    });
+  }
+
+  it('clears a stop\'s retry and the pane\'s cleanup error once a retry answers', async () => {
+    const { find, onCleanupError } = await setupSearching();
+    let failures = 1;
+    answer = async (call) => {
+      if (call.kind === 'stop' && failures-- > 0) throw new DisconnectedError();
+      return state({ seq: call.seq, session: 9, active: false });
+    };
+    find.search('');
+    await settle(0);
+    expect(vi.getTimerCount()).toBe(1);
+    expect(onCleanupError.mock.calls).toEqual([[errString(new DisconnectedError())]]);
+    expect(find.result.error).toBeNull();
+    await settle(BROWSER_FIND_STOP_RETRY_MS);
+    expect(kinds()).toEqual(['start', 'stop', 'stop']);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(onCleanupError.mock.calls.at(-1)).toEqual([null]);
+  });
+
+  // A stop refused after its retries leaves the pane's error up until a
+  // later stop through it or further answers; a dispose withdraws it.
+  it('keeps the cleanup error of a stop refused after its retries until a later stop answers', async () => {
+    const { find, onCleanupError, unmount } = await setupSearching();
+    const answering = answer;
+    let refusing = true;
+    answer = (call) => call.kind === 'stop' && refusing ? Promise.reject(refused('fake engine: find stop failed')) : answering(call);
+    find.search('');
+    await settle(BROWSER_FIND_STOP_RETRY_MS * BROWSER_FIND_STOP_ATTEMPTS);
+    expect(kinds()).toEqual(['start', ...Array(BROWSER_FIND_STOP_ATTEMPTS).fill('stop')]);
+    expect(onCleanupError.mock.calls.at(-1)).toEqual(['fake engine: find stop failed']);
+    find.search('beta');
+    await settle();
+    expect(onCleanupError.mock.calls.at(-1), 'an answered start delivers no stop').toEqual(['fake engine: find stop failed']);
+    expect(find.result.error).toBeNull();
+    refusing = false;
+    find.search('');
+    await settle(0);
+    expect(onCleanupError.mock.calls.at(-1)).toEqual([null]);
+    refusing = true;
+    find.search('gamma');
+    await settle();
+    find.search('');
+    await settle(0);
+    expect(onCleanupError.mock.calls.at(-1)).toEqual(['fake engine: find stop failed']);
+    unmount();
+    expect(onCleanupError.mock.calls.at(-1), 'an unmounted pane shows nothing').toEqual([null]);
+    await settle(BROWSER_FIND_STOP_RETRY_MS * BROWSER_FIND_STOP_ATTEMPTS);
+    expect(onCleanupError.mock.calls.at(-1)).toEqual([null]);
+  });
+
+  // The stop of a search is outstanding when a new query's start is made;
+  // the stop then fails, and its retry is refused too after the new search
+  // answered. A stop's failure never changes what the bar shows, and its
+  // bound is the earlier search's, so the backend, which holds the new one,
+  // leaves that alone when a retry finally runs: the bar keeps the new
+  // counts.
+  it('a stop that fails, retried and refused again, never touches a later search', async () => {
+    const { find, closeBar, onCleanupError } = setup();
+    // The backend: one search at a time, at its sequence.
+    let running = 0;
+    let failStop!: () => void;
+    let stops = 0;
+    answer = (call) => {
+      gen += 1;
+      const identity = { pageId: call.pageId, mount: call.mount, session: gen };
+      if (call.kind === 'start') {
+        running = call.seq;
+        return Promise.resolve(state({ ...identity, seq: call.seq, query: call.query, found: true, matches: 3, current: 0 }));
+      }
+      if (call.kind === 'next') {
+        return Promise.resolve(state({ ...identity, seq: running, found: true, matches: 3, current: 1, foreign: running !== call.seq }));
+      }
+      if (call.kind === 'stop') {
+        stops += 1;
+        if (stops === 1) return new Promise((_resolve, reject) => { failStop = () => reject(refused('fake engine: find stop failed')); });
+        if (stops === 2) return Promise.reject(refused('browser: find stop: context deadline exceeded'));
+      }
+      if (running === 0 || running > call.seq) {
+        return Promise.resolve(state({ ...identity, seq: running, active: false, foreign: true }));
+      }
+      running = 0;
+      return Promise.resolve(state({ ...identity, seq: call.seq, active: false }));
+    };
+    openPaneFind(PANE, { seed: 'alpha' });
+    await settle();
+    setPaneFindQuery(PANE, '');
+    await settle(0);
+    setPaneFindQuery(PANE, 'beta');
+    await settle();
+    failStop();
+    await settle(0);
+    expect(calls.map((call) => [call.kind, call.seq])).toEqual([['start', 1], ['stop', 1], ['start', 2]]);
+    expect(find.result).toMatchObject({ count: 3, current: 0, pending: false });
+    await settle(BROWSER_FIND_STOP_RETRY_MS);
+    expect(calls.at(-1)).toMatchObject({ kind: 'stop', seq: 1 });
+    expect(onCleanupError).toHaveBeenCalledTimes(2);
+    expect(find.result).toMatchObject({ count: 3, current: 0, pending: false, error: null });
+    find.next?.();
+    await settle(0);
+    expect(calls.at(-1)).toMatchObject({ kind: 'next', seq: 2 });
+    await settle(BROWSER_FIND_STOP_RETRY_MS);
+    expect(calls.at(-1)).toMatchObject({ kind: 'stop', seq: 1 });
+    expect(running).toBe(2);
+    expect(onCleanupError.mock.calls.at(-1), 'the answered retry delivers the stop').toEqual([null]);
+    expect(find.result).toMatchObject({ count: 3, current: 1, pending: false });
+    expect(closeBar).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+// Row: escape event. A bare Escape pressed in the page stays the page's; the
+// backend announces it, and the pane closes an open bar on the page it
+// shows.
+describe('browser find escape', () => {
+  it('closes an open bar on the shown page, through the find.close path', async () => {
+    const { closeBar } = await setupSearching();
+    escaped();
+    expect(closeBar).toHaveBeenCalledTimes(1);
+    expect(isPaneFindOpen(PANE)).toBe(false);
+    await settle(0);
+    expect(kinds()).toEqual(['start', 'stop']);
+  });
+
+  it('closes an open bar with no query', () => {
+    const { closeBar } = setup();
+    openPaneFind(PANE);
+    escaped();
+    expect(closeBar).toHaveBeenCalledTimes(1);
+    expect(isPaneFindOpen(PANE)).toBe(false);
+  });
+
+  it('is ignored with no bar open, for another page or thread, in engine mode, and after unmount', async () => {
+    const bar = setup();
+    escaped();
+    openPaneFind(PANE);
+    escaped('page-2');
+    escaped('page-1', 'another-thread');
+    expect(bar.closeBar).not.toHaveBeenCalled();
+    expect(isPaneFindOpen(PANE)).toBe(true);
+    bar.unmount();
+    escaped();
+    expect(bar.closeBar).not.toHaveBeenCalled();
+
+    const engine = setup('engine');
+    openPaneFind(PANE, { seed: 'alpha' });
+    await settle(0);
+    escaped();
+    expect(engine.closeBar).not.toHaveBeenCalled();
+    expect(calls.at(-1)?.kind).toBe('start');
+  });
+});

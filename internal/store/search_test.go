@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf16"
 )
 
 func TestSearchHidesPreparingForkUntilPublication(t *testing.T) {
@@ -241,8 +242,9 @@ func TestSearchThreadItemsMatchesTheSharedFindVectors(t *testing.T) {
 			t.Errorf("thread find of %q in %q found %v, want %v", v.Query, v.Text, got, v.Count > 0)
 		}
 	}
-	// The cross-thread search keeps its own rule: the query lower cased
-	// in Go, the text by SQLite LOWER, which folds ASCII only.
+	// The cross-thread search keeps its own rule: ASCII letters fold on
+	// both sides, every other character matches exactly
+	// (TestSearchThreadMessagesMatchesTheSharedSearchVectors).
 	mustCreateThreadForSearch(t, s, "accent", "HAUTE ÉCOLE")
 	hits, err := s.SearchThreadMessages("haute école", 10)
 	if err != nil {
@@ -680,5 +682,66 @@ func TestSearchThreadMessages_ProviderFieldPropagates(t *testing.T) {
 	}
 	if providers["tx"] != "codex" {
 		t.Errorf("codex provider missing: %+v", providers)
+	}
+}
+
+// The cross-thread search's match rule, held to the vectors the search
+// modal's highlighter reads (frontend/src/test/fixtures/searchVectors.json,
+// highlight.test.ts): a title is found exactly when the vector has a range,
+// each range alone is found, and the title with its ranges blanked out is
+// not, so the highlighter paints every match the SQL made and no other.
+func TestSearchThreadMessagesMatchesTheSharedSearchVectors(t *testing.T) {
+	raw, err := os.ReadFile("../../frontend/src/test/fixtures/searchVectors.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vectors struct {
+		Ranges []struct {
+			Text   string   `json:"text"`
+			Query  string   `json:"query"`
+			Ranges [][2]int `json:"ranges"`
+		} `json:"ranges"`
+	}
+	if err := json.Unmarshal(raw, &vectors); err != nil || len(vectors.Ranges) == 0 {
+		t.Fatalf("vectors: %v", err)
+	}
+	s := newTestStore(t)
+	next := 0
+	// found reports whether a thread titled title is a hit for query.
+	found := func(title, query string) bool {
+		t.Helper()
+		next++
+		id := fmt.Sprintf("sv%d", next)
+		mustCreateThreadForSearch(t, s, id, title)
+		hits, err := s.SearchThreadMessages(query, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, h := range hits {
+			if h.ThreadID == id {
+				return true
+			}
+		}
+		return false
+	}
+	for _, v := range vectors.Ranges {
+		units := utf16.Encode([]rune(v.Text))
+		if got := found(v.Text, v.Query); got != (len(v.Ranges) > 0) {
+			t.Errorf("search of %q in %q found %v, vector has ranges %v", v.Query, v.Text, got, v.Ranges)
+		}
+		blanked := append([]uint16(nil), units...)
+		for _, r := range v.Ranges {
+			if part := string(utf16.Decode(units[r[0]:r[1]])); !found(part, v.Query) {
+				t.Errorf("search of %q: range %v (%q) of %q is not a match", v.Query, r, part, v.Text)
+			}
+			for i := r[0]; i < r[1]; i++ {
+				blanked[i] = 1
+			}
+		}
+		if len(v.Ranges) > 0 {
+			if rest := string(utf16.Decode(blanked)); found(rest, v.Query) {
+				t.Errorf("search of %q in %q matches outside ranges %v (%q)", v.Query, v.Text, v.Ranges, rest)
+			}
+		}
 	}
 }

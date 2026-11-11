@@ -2,7 +2,7 @@
  * The block-context completer: one plugin that pre-scans the whole tail.
  *
  * It records, per source line, which blocking construct that line sits inside
- * (fenced code, `$$` math, `[center]`, `[right]`) so the inline completers can
+ * (fenced code, `$$` math) so the inline completers can
  * skip lines they must not touch, then seals whatever is still open at the end
  * of the document. Sealing an open fence replicates the OPENER's leading
  * prefix, fence char and run length: a flush-left ``` under a
@@ -29,10 +29,6 @@ export const contextPlugins: Plugin[] = [
             // real closer arrives.
             let openFence: FenceInfo | undefined;
             let inMathBlock = false;
-            let inCenterBlock = false;
-            let inRightBlock = false;
-            let centerOpenLine = -1;
-            let rightOpenLine = -1;
             // Track which lines are in which contexts for state management
             const lineContexts: LineContext[] = [];
             for (let i = 0; i < lines.length; i++) {
@@ -67,39 +63,17 @@ export const contextPlugins: Plugin[] = [
                 if (line.trim().startsWith('$$') && !line.trim().includes('$$', 2)) {
                     inMathBlock = !inMathBlock;
                 }
-                if (line.trim() === '[center]') {
-                    inCenterBlock = true;
-                    centerOpenLine = i;
-                }
-                if (line.trim() === '[/center]') {
-                    inCenterBlock = false;
-                }
-                if (line.trim() === '[right]') {
-                    inRightBlock = true;
-                    rightOpenLine = i;
-                }
-                if (line.trim() === '[/right]') {
-                    inRightBlock = false;
-                }
                 lineContexts[i] = {
                     code: inCodeBlock,
-                    math: inMathBlock,
-                    center: inCenterBlock,
-                    right: inRightBlock
+                    math: inMathBlock
                 };
             }
             // Set the final blocking contexts (for postprocessing)
-            const finalContexts = new Set<'code' | 'math' | 'center' | 'right'>();
+            const finalContexts = new Set<'code' | 'math'>();
             if (inCodeBlock)
                 finalContexts.add('code');
             if (inMathBlock)
                 finalContexts.add('math');
-            // Only auto-close center/right when content follows the opening tag;
-            // a bare trailing '[center]'/'[right]' line is left untouched.
-            if (inCenterBlock && centerOpenLine < lines.length - 1)
-                finalContexts.add('center');
-            if (inRightBlock && rightOpenLine < lines.length - 1)
-                finalContexts.add('right');
             // Return both the text and the updated state
             return {
                 text: text, // Don't modify text in preprocess
@@ -112,7 +86,7 @@ export const contextPlugins: Plugin[] = [
         },
         postprocess: ({ text, state }) => {
             // Complete incomplete blocks at end of input.
-            // Close inner blocks (code/math) before alignment wrappers.
+            // Close an open fence, then an open display math block.
             let result = text;
             if (state.blockingContexts.has('code')) {
                 const fence = state.fenceInfo;
@@ -151,12 +125,6 @@ export const contextPlugins: Plugin[] = [
             }
             if (state.blockingContexts.has('math')) {
                 result += '\n$$';
-            }
-            if (state.blockingContexts.has('center')) {
-                result += '\n[/center]';
-            }
-            if (state.blockingContexts.has('right')) {
-                result += '\n[/right]';
             }
             return result;
         }
