@@ -55,7 +55,7 @@ func TestWriteNotAppliedOnTheWire(t *testing.T) {
 			if err != nil {
 				panic(err)
 			}
-			defer conn.Close()
+			defer func() { _ = conn.Close() }()
 			if how == "truncate" {
 				_, _ = buf.WriteString("HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: 64\r\n\r\n{\"id\":")
 				_ = buf.Flush()

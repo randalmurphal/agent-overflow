@@ -120,10 +120,10 @@ func (g *forgeGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		panic(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if losing == "truncate" {
 		body := answer.Body.Bytes()
-		fmt.Fprintf(buf, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n", answer.Code, http.StatusText(answer.Code), len(body)+64)
+		_, _ = fmt.Fprintf(buf, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n", answer.Code, http.StatusText(answer.Code), len(body)+64)
 		_, _ = buf.Write(body[:len(body)/2])
 		_ = buf.Flush()
 	}
