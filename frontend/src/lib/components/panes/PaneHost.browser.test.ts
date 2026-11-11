@@ -192,6 +192,26 @@ it('a rotation keeps the recorded pane on a strip that narrowed under it', async
   expectShown(strip, 'b', ['a', 'c']);
 });
 
+// Narrowing clamps the strip. An engine may deliver the clamp's scroll
+// event before the ResizeObserver callback (Chromium here runs the observer
+// first, so the test delivers it): at the new width against the offsets of
+// the old one, the strip's centre lies over b.
+it('a rotation that clamps the strip under the last pane keeps that pane', async () => {
+  installViewportQuery(true);
+  const strip = await mountStrip(['a', 'b', 'c'], 640);
+  revealPane('c');
+  await waitFor(() => strip.scrollLeft === paneLeft('c'), 'the strip at c');
+  await stripAtRest(strip);
+  expectShown(strip, 'c', ['a', 'b']);
+
+  host.style.width = '360px';
+  expect(strip.scrollLeft).toBe(720);
+  strip.dispatchEvent(new Event('scroll'));
+  expect(compactShownPaneId()).toBe('c');
+  await stripAtRest(strip);
+  expectShown(strip, 'c', ['a', 'b']);
+});
+
 // The reconcile after the strip gains a pane leaves a reveal in flight to
 // land: the record already names the new pane, and its glide follows.
 it('a pane opened by a reveal on compact glides in rather than snapping', async () => {
