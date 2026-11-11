@@ -18,6 +18,7 @@ import {
   type PRDraftsTarget,
 } from './prDiffReviewComments.svelte';
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+import { isPaneOnScreen } from './layoutMode.svelte';
 import { untrack } from 'svelte';
 import {
   ApprovePR,
@@ -439,10 +440,10 @@ export interface ReviewPaneState {
   refreshPRThreads(): Promise<void>;
   openConflictView(): Promise<void>;
   closeConflictView(): void;
-  /** The pane rendering this state is mounted; returns the detach. The
-   * conflict view's reconcile permit is held only while one is, so a
-   * retained state off screen reads no merges. */
-  attachSurface(): () => void;
+  /** A pane rendering this state is mounted in layout pane `paneId`;
+   * returns the detach. The conflict view's reconcile permit is held only
+   * while such a pane is on screen, so a state off screen reads no merges. */
+  attachSurface(paneId: string): () => void;
   toggleConflictCollapsed(path: string): Promise<void>;
   expandConflictFold(path: string, foldId: number): void;
   /** Has the PR's pump poll the pipeline now. */
@@ -707,12 +708,15 @@ export function createReviewPaneState(
   let prAttachment: PRAttachment | null = null;
   let conflictView = $state(false);
   // The conflict view's reconcile permit, held for exactly as long as the
-  // view is open AND a mounted pane renders this state: a head move
-  // recomputes the merged tree only for a view somebody is looking at (see
-  // prReviewConflicts.svelte.ts). A retained state off screen (a pinned
-  // review the page keeps for a step back) holds none.
+  // view is open AND a mounted pane that renders this state is on screen
+  // (`isPaneOnScreen`: every mounted pane on the desktop, the one compact
+  // shows): a head move recomputes the merged tree only for a view
+  // somebody is looking at (see prReviewConflicts.svelte.ts). A retained
+  // state off screen (a pinned review the page keeps for a step back, a
+  // companion compact navigated away from) holds none.
   let conflictReconcilePermit: { key: string; release: () => void } | null = null;
-  let mountedSurfaces = 0;
+  // Mounted surfaces by the layout pane that hosts them.
+  const surfacePanes = new SvelteMap<string, number>();
   let conflictCollapsedPaths: SvelteSet<string> = $state(new SvelteSet<string>());
   // Expanded fold ids per path. Entries are replaced wholesale on expand
   // so the SvelteMap write re-derives conflictFiles.
@@ -1185,6 +1189,8 @@ export function createReviewPaneState(
     return peekGitStatusError(key) !== null;
   }
   const disposePRRefWatch = $effect.root(() => {
+    // The screen moving (compact navigation) takes or releases the permit.
+    $effect(() => syncConflictPermit());
     $effect(() => {
       if (!awaitingPRRef || prRef === null) return;
       awaitingPRRef = false;
@@ -1275,13 +1281,17 @@ export function createReviewPaneState(
   // leaves an open view rendering the previous head's merge.
   function setConflictView(open: boolean): void {
     conflictView = open;
-    syncConflictPermit();
+    untrack(syncConflictPermit);
   }
 
   // The one writer of the permit.
   function syncConflictPermit(): void {
+    // Tracked only by the watcher in the effect root (the screen moving
+    // re-decides); every other caller runs it untracked, so a component
+    // effect that attaches a surface never depends on what it writes.
+    const shown = conflictView && [...surfacePanes.keys()].some(isPaneOnScreen);
     untrack(() => {
-      const key = conflictView && mountedSurfaces > 0 && !disposed ? prEntityKey : null;
+      const key = shown && !disposed ? prEntityKey : null;
       if (conflictReconcilePermit?.key === key) return;
       conflictReconcilePermit?.release();
       conflictReconcilePermit = null;
@@ -1289,15 +1299,21 @@ export function createReviewPaneState(
     });
   }
 
-  function attachSurface(): () => void {
-    mountedSurfaces += 1;
-    syncConflictPermit();
+  function attachSurface(paneId: string): () => void {
+    untrack(() => {
+      surfacePanes.set(paneId, (surfacePanes.get(paneId) ?? 0) + 1);
+      syncConflictPermit();
+    });
     let attached = true;
     return () => {
       if (!attached) return;
       attached = false;
-      mountedSurfaces -= 1;
-      syncConflictPermit();
+      untrack(() => {
+        const remaining = (surfacePanes.get(paneId) ?? 1) - 1;
+        if (remaining > 0) surfacePanes.set(paneId, remaining);
+        else surfacePanes.delete(paneId);
+        syncConflictPermit();
+      });
     };
   }
 

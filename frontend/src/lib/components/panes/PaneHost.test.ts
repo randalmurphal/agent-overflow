@@ -44,7 +44,7 @@ import {
 import { prependThread } from '../../stores/threads.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeSettings } from '../../../test/helpers/settings';
-import { getCompactScreen, setCompactLayoutForTest, showCompactList } from '../../stores/layoutMode.svelte';
+import { compactShownPaneId, getCompactScreen, isPaneOnScreen, setCompactLayoutForTest, showCompactList } from '../../stores/layoutMode.svelte';
 import {
   beginThreadRowDrag,
   endThreadRowDrag,
@@ -339,6 +339,34 @@ describe('PaneHost', () => {
       const leftOffset = spacingPx(classes, '-left-');
       const width = spacingPx(classes, 'w-');
       expect(leftOffset).toBeGreaterThanOrEqual(width);
+    }
+  });
+
+  // Compact shows the pane last revealed. A shown pane that leaves the
+  // strip with no reveal naming the next one is not left on record: the
+  // strip measures what reflowed under it (jsdom has no geometry, so none).
+  it('on compact, forgets a shown pane that left the strip without a reveal', async () => {
+    setCompactLayoutForTest(true);
+    try {
+      registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
+      registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
+      setPaneLayoutItemsForTest([
+        { id: 'left-item', paneId: 'left', kind: 'thread', widthPx: 1 },
+        { id: 'right-item', paneId: 'right', kind: 'thread', widthPx: 1 },
+      ]);
+      render(PaneHost);
+      await tick();
+      revealPane('right');
+      expect(compactShownPaneId()).toBe('right');
+      expect(isPaneOnScreen('right')).toBe(true);
+      expect(isPaneOnScreen('left')).toBe(false);
+
+      removePaneLayoutItem('right');
+      await tick();
+      await tick();
+      expect(compactShownPaneId()).toBeNull();
+    } finally {
+      setCompactLayoutForTest(false);
     }
   });
 

@@ -28,6 +28,11 @@ export type CompactScreen = 'list' | 'thread';
 
 let compact = $state(false);
 let screen: CompactScreen = $state('list');
+// The pane the thread screen was last brought to: every compact move to a
+// pane goes through `revealPane` or the strip's first-paint snap, and the
+// strip has no free scroll, so this is the pane `onScreenCompactPaneId`
+// would measure once the glide settles, held reactively.
+let shownPaneId: string | null = $state(null);
 
 export function isCompactLayout(): boolean {
   return compact;
@@ -42,9 +47,31 @@ export function showCompactList(): void {
   stamp();
 }
 
-export function showCompactThread(): void {
+/** The thread screen, brought to `paneId` when the caller names one. */
+export function showCompactThread(paneId?: string): void {
   screen = 'thread';
+  if (paneId) shownPaneId = paneId;
   stamp();
+}
+
+/** The strip brought `paneId` into view on its own (first paint, or the
+ * shown pane left the strip). */
+export function noteCompactPaneShown(paneId: string | null): void {
+  shownPaneId = paneId;
+}
+
+/** The pane the compact thread screen was last brought to (reactive). */
+export function compactShownPaneId(): string | null {
+  return shownPaneId;
+}
+
+/**
+ * Reactive: whether a mounted pane is on screen. Every mounted pane is on
+ * the desktop strip; compact shows one pane, on the thread screen only.
+ */
+export function isPaneOnScreen(paneId: string): boolean {
+  if (!compact) return true;
+  return screen === 'thread' && shownPaneId === paneId;
 }
 
 /**
@@ -100,5 +127,6 @@ export function installLayoutMode(): () => void {
 export function setCompactLayoutForTest(next: boolean): void {
   compact = next;
   screen = 'list';
+  shownPaneId = null;
   stamp();
 }

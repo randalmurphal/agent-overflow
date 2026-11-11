@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onDestroy, onMount, setContext } from 'svelte';
+  import { onDestroy, onMount, setContext, untrack } from 'svelte';
+  import { companionForSource } from '../../stores/companionPanes.svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import ReviewCILogView from './ReviewCILogView.svelte';
   import ReviewCommentThread from './ReviewCommentThread.svelte';
@@ -84,9 +85,13 @@
     return subject.pinned ? reviewStateForPR(sourcePaneId, subject, { userInitiated }) : reviewStateForPane(sourcePaneId, subject);
   }
   const review = initialState();
-  // The conflict view's reconcile permit follows this mount, not how long
-  // the state is retained.
-  $effect(() => review?.attachSurface());
+  // The conflict view's reconcile permit follows this mount, and whether
+  // the layout pane hosting it is on screen, not how long the state is
+  // retained. A pinned review lives in its owner's pane; a companion in
+  // its own layout pane, fixed for its life.
+  // svelte-ignore state_referenced_locally
+  const hostPaneId = pr?.ownerPaneId ?? untrack(() => companionForSource(sourcePaneId, 'review')?.paneId) ?? sourcePaneId;
+  $effect(() => review?.attachSurface(hostPaneId));
   // The conflict view's Back, unless the host's header owns Back.
   const hostOwnsBack = hostedBackReader();
   // Forge attachments in every ChatMarkdown under this pane — the PR body,

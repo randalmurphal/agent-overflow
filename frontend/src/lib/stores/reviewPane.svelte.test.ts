@@ -30,7 +30,8 @@ import { __setTransportHelloForTest, __setTransportStatusForTest } from './trans
 import type { TransportHello } from '../transport/wsClient';
 import { companionSubjectKey } from './companionSubject';
 import { __seedGitStatusForTest } from './gitStatusStore.svelte';
-import { getPane, registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { getPane, registerPaneForTest, resetPanesForTest, revealPane } from './panes.svelte';
+import { setCompactLayoutForTest, showCompactList } from './layoutMode.svelte';
 import { persistScope } from './reviewPaneScope';
 import { removeThread } from './threads.svelte';
 import { createThreadPane } from './thread.svelte';
@@ -3847,7 +3848,7 @@ describe('reviewPane store: painted span retention', () => {
     setBindingMock('GetMergeConflictFile', async () => ['<<<<<<< ours', 'left', '=======', 'right', '>>>>>>> theirs'].join('\n'));
     const state = reviewStateForPane('pane-1', prSubject());
     // The mounted pane: a push recomputes only a view on screen.
-    state.attachSurface();
+    state.attachSurface('companion-1');
     await waitLoaded(state);
     await state.setScope('pr');
     const [a, b] = state.files;
@@ -4269,7 +4270,7 @@ describe('reviewPane store — the conflict view\'s permit follows the mounted p
     installPRMocks();
     const conflicts = installConflictTree();
     const state = reviewStateForPane('pane-1', prSubject());
-    const detach = state.attachSurface();
+    const detach = state.attachSurface('companion-1');
     await waitLoaded(state);
     await state.setScope('pr');
     await state.openConflictView();
@@ -4280,18 +4281,78 @@ describe('reviewPane store — the conflict view\'s permit follows the mounted p
     await flushPane();
     expect(conflicts).toHaveBeenCalledTimes(1);
 
-    const reattach = state.attachSurface();
+    const reattach = state.attachSurface('companion-1');
     await vi.waitFor(() => expect(conflicts).toHaveBeenCalledTimes(2));
     expect(heads(conflicts)[1]).toEqual(['sha-b', false]);
     expect(state.conflictView).toBe(true);
     reattach();
   });
 
+  it('on compact, holds the permit only while the companion is the pane on screen', async () => {
+    setCompactLayoutForTest(true);
+    try {
+      installPRMocks();
+      const conflicts = installConflictTree();
+      const state = reviewStateForPane('pane-1', prSubject());
+      state.attachSurface('companion-1');
+      revealPane('companion-1');
+      await waitLoaded(state);
+      await state.setScope('pr');
+      await state.openConflictView();
+      expect(heads(conflicts)).toEqual([['sha-a', true]]);
+
+      // Back to the sidebar screen: a frame reads nothing.
+      showCompactList();
+      await flushPane();
+      applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub({ headSHA: 'sha-b' }), threads: [], headSHA: 'sha-b', seq: 40 });
+      await flushPane();
+      expect(conflicts).toHaveBeenCalledTimes(1);
+      // Back to the companion: the snapshot moved, so it reads.
+      revealPane('companion-1');
+      await vi.waitFor(() => expect(conflicts).toHaveBeenCalledTimes(2));
+      expect(heads(conflicts)[1]).toEqual(['sha-b', false]);
+
+      // Another pane on screen: likewise.
+      revealPane('pane-1');
+      await flushPane();
+      applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub({ headSHA: 'sha-c' }), threads: [], headSHA: 'sha-c', seq: 41 });
+      await flushPane();
+      expect(conflicts).toHaveBeenCalledTimes(2);
+      revealPane('companion-1');
+      await vi.waitFor(() => expect(conflicts).toHaveBeenCalledTimes(3));
+      expect(heads(conflicts)[2]).toEqual(['sha-c', false]);
+
+      // A return with nothing moved reads nothing.
+      revealPane('pane-1');
+      await flushPane();
+      revealPane('companion-1');
+      await flushPane();
+      expect(conflicts).toHaveBeenCalledTimes(3);
+    } finally {
+      setCompactLayoutForTest(false);
+    }
+  });
+
+  it('on the desktop, every mounted pane keeps its permit whichever pane was revealed', async () => {
+    installPRMocks();
+    const conflicts = installConflictTree();
+    const state = reviewStateForPane('pane-1', prSubject());
+    state.attachSurface('companion-1');
+    await waitLoaded(state);
+    await state.setScope('pr');
+    await state.openConflictView();
+    revealPane('pane-2');
+    showCompactList();
+    await flushPane();
+    applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub({ headSHA: 'sha-b' }), threads: [], headSHA: 'sha-b', seq: 42 });
+    await vi.waitFor(() => expect(conflicts).toHaveBeenCalledTimes(2));
+  });
+
   it('a reopen of a PR that moved while the view was closed is the person\'s read', async () => {
     installPRMocks();
     const conflicts = installConflictTree();
     const state = reviewStateForPane('pane-1', prSubject());
-    state.attachSurface();
+    state.attachSurface('companion-1');
     await waitLoaded(state);
     await state.setScope('pr');
     await state.openConflictView();

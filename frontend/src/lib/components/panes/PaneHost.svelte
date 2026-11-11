@@ -15,7 +15,7 @@
   import { getPaneLayoutItems, isCompanionKind, isToolKind } from '../../stores/paneLayout.svelte';
   import { getPaneWidth, setPaneHostWidth } from '../../stores/layoutMetrics.svelte';
   import { REVEAL_PANE_EVENT } from '../../stores/eventNames';
-  import { getCompactScreen, isCompactLayout } from '../../stores/layoutMode.svelte';
+  import { compactShownPaneId, getCompactScreen, isCompactLayout, noteCompactPaneShown, onScreenCompactPaneId } from '../../stores/layoutMode.svelte';
   import PaneDivider from './PaneDivider.svelte';
   import { measurePane } from './measurePane';
   import { createPaneThreadDrag } from './usePaneThreadDrag.svelte';
@@ -240,7 +240,18 @@
     // Untracked — a focus change alone must not re-run this effect.
     if (stripAppeared) {
       const focusTarget = untrack(() => focusedPaneId);
-      if (focusTarget) requestPaneScroll(focusTarget, { instant: true });
+      if (focusTarget) {
+        noteCompactPaneShown(focusTarget);
+        requestPaneScroll(focusTarget, { instant: true });
+      }
+    } else if (untrack(() => compact)) {
+      // The pane the screen was brought to left the strip without a reveal
+      // naming the next one: the strip shows whichever pane reflowed under
+      // it, which the geometry answers now that the sections are flushed.
+      const shown = untrack(compactShownPaneId);
+      if (shown !== null && !layoutItems.some((item) => item.paneId === shown)) {
+        noteCompactPaneShown(onScreenCompactPaneId());
+      }
     }
 
     let secondHandle = 0;
