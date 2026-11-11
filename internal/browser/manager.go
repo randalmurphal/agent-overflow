@@ -72,6 +72,10 @@ type Manager struct {
 	// findPointHook, when set by a test, runs at the points inside a find
 	// transition named by findPoint.
 	findPointHook atomic.Pointer[func(point string)]
+	// findWaitHook, when set by a test, runs with a find action's context
+	// just before the action waits for the page lock, so a test can hold
+	// the lock until the action is waiting on it or past its deadline.
+	findWaitHook atomic.Pointer[func(ctx context.Context)]
 	// findWork joins the goroutines that apply submitted find ends. Each is
 	// admitted under findGate unless findClosed, which Close sets under it
 	// before it waits, so no Add follows the Wait.

@@ -223,6 +223,9 @@ func (m *Manager) Find(ctx context.Context, access Access, pageID, kind, query, 
 	// an action that waited past it, or whose caller went, changes nothing.
 	opCtx, cancel := operationContext(ctx, p.ctx, m.findTimeout)
 	defer cancel()
+	if hook := m.findWaitHook.Load(); hook != nil {
+		(*hook)(opCtx)
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	// Resolved, the page could have closed or suspended before its lock was

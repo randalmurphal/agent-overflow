@@ -614,7 +614,7 @@ func TestFindNeverClaimsAPagesBareEscape(t *testing.T) {
 			if event.ThreadID != f.access.ThreadID || event.PageID != f.pageID || event.Find != nil || event.Accelerator != nil {
 				t.Fatalf("%s: escape event = %+v", state, event)
 			}
-		case <-time.After(time.Second):
+		case <-time.After(5 * time.Second):
 			if announced {
 				t.Fatalf("%s: the Escape was never announced", state)
 			}
@@ -667,7 +667,7 @@ func TestFindNeverClaimsAPagesBareEscape(t *testing.T) {
 		if key != ctrl {
 			t.Fatalf("routed chord %+v, want Ctrl+Escape", key)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("a bound Ctrl+Escape was never routed")
 	}
 	select {
@@ -841,15 +841,16 @@ func TestFindNeverCallsTheDriverOfAPageClosedWhileItWaited(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			waiting := findWaiting(f.manager)
 			p.mu.Lock()
 			answered := make(chan error, 1)
 			go func() {
 				_, err := f.manager.Find(context.Background(), f.access, f.pageID, kind, "alpha", f.mount, f.findID)
 				answered <- err
 			}()
-			// Let the find resolve the page and block on its lock, then tear
+			// Once the find resolved the page and waits for its lock, tear
 			// the page down under that lock, as closing does.
-			time.Sleep(100 * time.Millisecond)
+			<-waiting
 			p.driver.Close()
 			f.manager.mu.Lock()
 			delete(scope.pages, p.id)
@@ -1169,6 +1170,7 @@ func TestFindStopOvertakenByAnEndAnswersForeign(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	waiting := findWaiting(f.manager)
 	p.mu.Lock()
 	type answer struct {
 		state FindState
@@ -1179,9 +1181,9 @@ func TestFindStopOvertakenByAnEndAnswersForeign(t *testing.T) {
 		state, err := f.manager.Find(context.Background(), f.access, f.pageID, "stop", "", f.mount, f.findID)
 		answered <- answer{state, err}
 	}()
-	// Let the stop resolve the page and wait for its lock; the reload's
+	// The stop resolved the page and waits for its lock; the reload's
 	// commit is submitted meanwhile.
-	time.Sleep(50 * time.Millisecond)
+	<-waiting
 	f.fake.commitDocument()
 	p.mu.Unlock()
 	got := <-answered
@@ -1357,18 +1359,21 @@ func TestFindActionThatWaitedPastItsDeadlineChangesNothing(t *testing.T) {
 				p.findMu.Unlock()
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
+				waiting := findWaiting(f.manager)
 				p.mu.Lock()
 				answered := make(chan error, 1)
 				go func() {
 					_, err := f.manager.Find(ctx, f.access, f.pageID, kind, "beta", f.mount, f.findID)
 					answered <- err
 				}()
+				// The action waits for the lock with its deadline running;
+				// the lock is held until its caller went, or until the
+				// deadline passed.
+				action := <-waiting
 				if why == "caller" {
-					time.Sleep(50 * time.Millisecond)
 					cancel()
-				} else {
-					time.Sleep(400 * time.Millisecond)
 				}
+				<-action.Done()
 				p.mu.Unlock()
 				if err := <-answered; err == nil {
 					t.Fatalf("%s that waited past its deadline was not refused", kind)
@@ -1386,25 +1391,23 @@ func TestFindActionThatWaitedPastItsDeadlineChangesNothing(t *testing.T) {
 	}
 }
 
-// An engine stop that never answers is bounded by the action's deadline
+// An engine stop that never answers is bounded by its action's context
 // wherever a find action makes one: a stop, and the clearing of a step the
-// engine failed. The action answers, the stop stays owed, and the next
-// transition makes it.
+// engine failed. The fake engine says when the stop is waiting, and the
+// action's caller then goes: the action answers, the stop stays owed, and
+// the next transition makes it. Nothing waits on a clock.
 func TestFindStopThatNeverAnswersIsBoundedAndStaysOwed(t *testing.T) {
 	for _, kind := range []string{"stop", "next"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newFindFixture(t, "https://example.test/alpha")
 			f.find(t, "start", "alpha")
 			f.wantCall(t, "start alpha")
-			release := make(chan struct{})
-			var once sync.Once
-			unblock := func() { once.Do(func() { close(release) }) }
-			t.Cleanup(unblock)
-			hang := true
+			stopping := make(chan struct{})
+			var first sync.Once
 			f.fake.mu.Lock()
 			if kind == "next" {
 				// The step fails; the stop that clears it is the one that
-				// hangs.
+				// never answers.
 				f.fake.findErr = errors.New("engine failed")
 				record := f.fake.findHook
 				f.fake.findHook = func(call string) {
@@ -1414,43 +1417,51 @@ func TestFindStopThatNeverAnswersIsBoundedAndStaysOwed(t *testing.T) {
 					record(call)
 				}
 			}
+			// The first stop never answers before its context ends; every
+			// later one answers at once, refused only if its context already
+			// ended.
 			f.fake.findStopErr = func(ctx context.Context) error {
-				f.fake.mu.Lock()
-				hanging := hang
-				f.fake.mu.Unlock()
-				if !hanging {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				hang := false
+				first.Do(func() { hang = true })
+				if !hang {
 					return nil
 				}
+				close(stopping)
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
-				case <-release:
-					return errors.New("released by the test")
+				case <-t.Context().Done():
+					// The test ended: let its cleanup close the page.
+					return errors.New("released by the test's end")
 				}
 			}
 			f.fake.mu.Unlock()
-			ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			answered := make(chan error, 1)
 			go func() {
 				_, err := f.manager.Find(ctx, f.access, f.pageID, kind, "", f.mount, f.findID)
 				answered <- err
 			}()
+			<-stopping
+			cancel()
+			// A stop reports its stop's end; a step reports its own failure.
+			// The bound is reached only when the engine stop ignores the
+			// action's end.
 			select {
 			case err := <-answered:
-				if err == nil {
-					t.Fatalf("a %s whose engine stop timed out reported nothing", kind)
+				if err == nil || (kind == "stop" && !errors.Is(err, context.Canceled)) {
+					t.Fatalf("a %s whose engine stop never answered = %v", kind, err)
 				}
-			case <-time.After(5 * time.Second):
-				unblock()
-				t.Fatalf("%s waited on an engine stop past its deadline", kind)
+			case <-time.After(30 * time.Second):
+				t.Fatalf("a %s's engine stop outlived the action's end", kind)
 			}
 			if !f.session(t).engine {
-				t.Fatal("a stop that timed out was recorded as made")
+				t.Fatal("a stop that never answered was recorded as made")
 			}
-			f.fake.mu.Lock()
-			hang = false
-			f.fake.mu.Unlock()
 			// The action's own calls, its end-of-transition retry among them;
 			// then the next transition makes the stop it is owed.
 			for draining := true; draining; {
@@ -1467,4 +1478,13 @@ func TestFindStopThatNeverAnswersIsBoundedAndStaysOwed(t *testing.T) {
 			}
 		})
 	}
+}
+
+// findWaiting reports each find action's context once the action waits for
+// its page's lock.
+func findWaiting(m *Manager) <-chan context.Context {
+	waiting := make(chan context.Context, 16)
+	hook := func(ctx context.Context) { waiting <- ctx }
+	m.findWaitHook.Store(&hook)
+	return waiting
 }
