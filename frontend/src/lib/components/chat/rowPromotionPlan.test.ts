@@ -80,14 +80,15 @@ describe('row promotion plan', () => {
       removesRun: true, runBoundary: true, boundary: false, divider: false, pill: false,
     });
 
-    // Behind earlier activity of the same turn the prose is a response.
+    // Only a run directly above opens a response; a row between the earlier
+    // activity and the prose closes it.
     const earlier = run([tool], { runId: 'run-0' });
     const between = leaf({ id: 'note', kind: 'notification', turnIndex: 1, itemIndex: 1 });
     const afterActivity = plan(
       [user, earlier, between, run([thinking])],
       [user, tool, between, thinking],
     );
-    expect(afterActivity).toMatchObject({ removesRun: true, divider: true });
+    expect(afterActivity).toMatchObject({ removesRun: true, divider: false, pill: false });
   });
 
   it('declines anything it cannot present on screen', () => {
