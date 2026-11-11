@@ -27,13 +27,15 @@ import { createReviewFind, type ReviewFind, type ReviewFindHost, type ReviewFind
 // while it ran, else not until the next one: no ask is made again without
 // one of those events since its last unshown answer. The reader scrolling
 // the view ends the ask for good: nothing reveals for it after, not even
-// a later content change.
+// a later content change. So does the review's own navigation on the
+// reader's behalf (a file, comment or section jump), which the host
+// reports the same way.
 
 interface Hit { identity: string }
 
 const OPS = [
   'query', 'next', 'prev', 'refresh', 'keep', 'remove', 'move', 'reorder', 'hide', 'publish', 'complete',
-  'hostTrue', 'hostFalse', 'hostDeferred', 'settleTrue', 'settleFalse', 'close', 'reopen', 'repaint', 'readerScroll',
+  'hostTrue', 'hostFalse', 'hostDeferred', 'settleTrue', 'settleFalse', 'close', 'reopen', 'repaint', 'readerScroll', 'navigate',
 ] as const;
 type Op = typeof OPS[number];
 
@@ -319,8 +321,10 @@ function harness() {
         find.repainted();
         break;
       case 'readerScroll':
-        // The reader's own scroll input: no reveal is asked for this ask
-        // again, and none is owed. A query still chooses its first match.
+      case 'navigate':
+        // The reader's own scroll input, or a jump made for them: no
+        // reveal is asked for this ask again, and none is owed. A query
+        // still chooses its first match.
         if (ask) ask.withdrawn = true;
         find.withdraw();
         break;
@@ -476,6 +480,8 @@ for (const asked of ['next', 'prev', 'reopen'] as const) {
   SEQUENCES.push(['complete', 'hostDeferred', asked, 'readerScroll', 'settleFalse', 'repaint', 'refresh', 'complete']);
   SEQUENCES.push(['complete', 'hostDeferred', asked, 'repaint', 'settleFalse', 'repaint']);
   SEQUENCES.push(['complete', 'hostFalse', asked, 'remove', 'readerScroll', 'complete', 'repaint']);
+  SEQUENCES.push(['complete', 'hostDeferred', asked, 'navigate', 'settleFalse', 'repaint', 'refresh', 'complete']);
+  SEQUENCES.push(['complete', 'hostFalse', asked, 'navigate', 'repaint', 'publish', 'complete']);
 }
 
 // A step's reveal running when its match goes at the swap, settled after

@@ -24,6 +24,7 @@ import { resetScrollIntentModuleStateForTest } from '../../utils/scroll/intent';
 
 const JOB: CIJob = { id: '20', name: 'unit', status: 'success', logsAvailable: true };
 const MATCH_LINE = 3000;
+const SECOND_LINE = 7000;
 
 const mounted: (() => void)[] = [];
 
@@ -33,12 +34,22 @@ afterEach(() => {
   resetScrollIntentModuleStateForTest();
 });
 
-function setup(key: string) {
+function setup(key: string, second = false) {
   const lines = numberedLines(10_000);
   // Wrapped lines above the match: the per-line estimate lands far off.
   for (let at = MATCH_LINE - 199; at < MATCH_LINE; at += 1) lines[at] = `${'w'.repeat(400)} ${at}`;
   lines[MATCH_LINE] = '\x1b[31mzq\x1b[0m at the match';
+  if (second) lines[SECOND_LINE] = 'zq at the second match';
   const fake = new FakeCILog(lines);
+  // Reads of one block wait on its gate.
+  const blockGates = new Map<number, Promise<void>>();
+  const asked: number[] = [];
+  const fetchLines: typeof fake.fetch = async (from, count) => {
+    asked.push(from);
+    const gate = blockGates.get(from);
+    if (gate) await gate;
+    return fake.fetch(from, count);
+  };
   const host = document.createElement('div');
   host.style.cssText = 'position:fixed;top:0;left:0;width:700px;height:400px;display:flex';
   document.body.appendChild(host);
@@ -46,7 +57,7 @@ function setup(key: string) {
   const logProps = rawProps({
     view: { stageName: 'test', jobId: '20', job: JOB },
     log: fake.state,
-    fetchLines: fake.fetch,
+    fetchLines,
     loading: false,
     error: null as string | null,
     savedPath: null as string | null,
@@ -61,7 +72,8 @@ function setup(key: string) {
     onSendSection: () => {},
   });
   const logView = mount(ReviewCILogView, { target: host, props: logProps });
-  const search: CILogSearch = { version: fake.version, totalLines: lines.length, matches: 1, capped: false, hits: [{ line: MATCH_LINE, count: 1 }] };
+  const hits = second ? [{ line: MATCH_LINE, count: 1 }, { line: SECOND_LINE, count: 1 }] : [{ line: MATCH_LINE, count: 1 }];
+  const search: CILogSearch = { version: fake.version, totalLines: lines.length, matches: hits.length, capped: false, hits };
   const review = {
     ciLog: fake.state,
     ciLogView: { jobId: '20' },
@@ -91,7 +103,7 @@ function setup(key: string) {
     const view = scroll.getBoundingClientRect();
     return box.top >= view.top && box.bottom <= view.bottom;
   };
-  return { fake, scroll, find, painted, inView };
+  return { fake, scroll, find, painted, inView, blockGates, asked };
 }
 
 function deferred() {
@@ -165,6 +177,34 @@ describe('review find over a CI log', () => {
     } finally {
       spy.restore();
     }
+  });
+
+  it('a step back onto a match whose block is still being read asks for its row again, and shows it once the read lands', async () => {
+    const { scroll, find, painted, inView, blockGates, asked } = setup('pane-log-again', true);
+    await waitFor(() => scroll.textContent?.includes('line 10000') === true, 'the tail');
+    const block = deferred();
+    blockGates.set(SECOND_LINE, block.gate);
+    openPaneFind('pane-log-again');
+    setPaneFindQuery('pane-log-again', 'zq');
+    await waitFor(() => find.result.count === 2 && find.selected !== null, 'the answer');
+    // From the tail the first match is the last: its block's read starts.
+    expect(find.hits[find.result.current].line).toBe(SECOND_LINE);
+    await waitFor(() => asked.includes(SECOND_LINE), 'the second block asked', 600);
+    // Back to the first match: shown, far from the second.
+    find.previous();
+    await waitFor(() => !find.wants(find.selected!) && painted()?.toString() === 'zq', 'the first match shown', 600);
+    // The second match's row is not mounted, and its block's read is out.
+    expect(scroll.textContent).not.toContain(`lines ${SECOND_LINE + 1} to`);
+    // Forward again while the second block's first read is still out.
+    find.next();
+    expect(find.hits[find.result.current].line).toBe(SECOND_LINE);
+    // The step asks for its row at once: it mounts on the read in flight.
+    await waitFor(() => scroll.textContent?.includes(`lines ${SECOND_LINE + 1} to`) === true, 'the second row mounted', 60);
+    expect(find.wants(find.selected!)).toBe(true);
+    block.release();
+    await waitFor(() => !find.wants(find.selected!), 'the step answered', 600);
+    expect(painted()?.startContainer.parentElement?.closest('[data-find-key]')?.textContent).toContain('the second match');
+    expect(inView()).toBe(true);
   });
 
   it('a block that fails to load puts its error in the bar', async () => {

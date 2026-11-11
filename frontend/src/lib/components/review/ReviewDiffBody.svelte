@@ -24,6 +24,7 @@
   import { findHitRow, findRowPosition } from '../../utils/reviewFindRows';
   import { reviewDiffKeydown, type ReviewDiffKeysHost } from './reviewDiffKeys';
   import { elementAtEdge } from '../../utils/findReadingEdge';
+  import { reportReaderNavigation } from '../../utils/scroll/readerInput';
   import {
     BlockRowsCache,
     buildReviewRows,
@@ -201,7 +202,7 @@
       const saved = savedReadingPosition(key);
       const target = saved === undefined ? readingAnchor : saved;
       if (target) restoreAnchor(target);
-      else if (saved === null) scroll.applyScrollTarget(0);
+      else if (saved === null) restoreTop();
       // The engine tail-seeds its window until its first scroll input
       // (chat's bottom-anchored mount seeding). This surface is
       // TOP-anchored, and neither a restore that lands on the current
@@ -283,6 +284,21 @@
     readingAnchor = ref ? captureReadingAnchor(built, files, blockRows, ref, offset) : null;
   }
 
+  // A key saved at the top opens at the top.
+  function restoreTop(): void {
+    scroll.applyScrollTarget(0);
+  }
+
+  // Every scroll made on the reader's behalf (a file, row, comment or
+  // sticky-header jump) goes through here and is reported as theirs, so a
+  // pending find reveal ends. Find's own reveal (revealFindPlace,
+  // scrollFindBy) and keeping the reader's place (restoreAnchor,
+  // restoreTop, the virtualizer's writes) do not.
+  function navigateToIndex(index: number, opts?: { offset?: number }): void {
+    reportReaderNavigation(scrollEl);
+    listRef?.scrollToIndex(index, opts);
+  }
+
   function restoreAnchor(target: ReadingAnchor): void {
     const ref = listRef;
     if (!ref) return;
@@ -329,7 +345,7 @@
     const headerRow = fileIndex >= 0 ? (built.firstRowOfFile[fileIndex] ?? -1) : -1;
     if (headerRow < 0) return;
     untrack(() => {
-      ref.scrollToIndex(headerRow);
+      navigateToIndex(headerRow);
       onJumpConsumed?.();
     });
   });
@@ -358,10 +374,10 @@
       // The overview is a destination, not a find: no pulse, and it
       // sits above every file so nothing overlays its top.
       if (key === REVIEW_OVERVIEW_ROW_KEY) {
-        ref.scrollToIndex(rowIndex);
+        navigateToIndex(rowIndex);
         return;
       }
-      ref.scrollToIndex(rowIndex, { offset: -REVIEW_FILE_HEADER_BAR_PX });
+      navigateToIndex(rowIndex, { offset: -REVIEW_FILE_HEADER_BAR_PX });
       pulse = { rowKey: key, generation: (pulse?.generation ?? 0) + 1 };
       clearTimeout(pulseTimer);
       pulseTimer = setTimeout(() => { pulse = null; }, REVIEW_JUMP_PULSE_MS);
@@ -383,13 +399,14 @@
 
   function jumpToStickyFile(): void {
     const headerRow = built.firstRowOfFile[stickyFileIndex] ?? -1;
-    if (headerRow >= 0) listRef?.scrollToIndex(headerRow);
+    if (headerRow >= 0) navigateToIndex(headerRow);
   }
 
   const keysHost: ReviewDiffKeysHost = {
     built: () => built,
     files: () => files,
     list: () => listRef,
+    navigateToIndex,
     scrollTop: () => scrollEl?.scrollTop ?? 0,
     onAddComment: () => onAddComment,
   };

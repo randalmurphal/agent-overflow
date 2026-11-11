@@ -22,6 +22,7 @@
   import type { CILogSection } from '../../types/models';
   import { ciJobLive, ciStatusDotClass, ciStatusTextClass, formatCIDuration } from '../../utils/ciStatus';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
+  import { reportReaderNavigation } from '../../utils/scroll/readerInput';
   import type { RowEstimate } from '../../utils/virtual/types';
   import { rateLimitMessage, type ForgeFailure } from '../../utils/forgeFailure';
   import { findCILogKey } from '../../utils/ciLogFind';
@@ -205,23 +206,35 @@
       if (anchoredJobId === job) return;
       anchoredJobId = job;
       stick.armWarmup();
-      stick.requestBottom({
-        takeover: 'claim',
-        write: () => {
-          ref.scrollToIndex(count - 1, { align: 'end' });
-          stick.markAtBottom();
-        },
-      });
+      placeAtEnd(ref, count);
     });
   });
 
-  // The reader acted, so bottom-follow is over. A list that fit its
-  // viewport has had no scroll event, so the virtualizer still holds the
-  // rows at the tail as a pin would want; revalidating hands it the real
-  // position before the list grows.
-  function takeOver(): void {
+  function placeAtEnd(ref: LongListHandle, count: number): void {
+    stick.requestBottom({
+      takeover: 'claim',
+      write: () => {
+        ref.scrollToIndex(count - 1, { align: 'end' });
+        stick.markAtBottom();
+      },
+    });
+  }
+
+  // Bottom-follow is over. A list that fit its viewport has had no scroll
+  // event, so the virtualizer still holds the rows at the tail as a pin
+  // would want; revalidating hands it the real position before the list
+  // grows.
+  function endFollow(): void {
     listRef?.revalidate();
     stick.markEscaped();
+  }
+
+  // The reader acted (a section opened or closed, all of them): follow
+  // ends, and the act is reported as the reader's, so a pending find
+  // reveal ends. Find's own calls end follow only.
+  function takeOver(): void {
+    reportReaderNavigation(scrollEl);
+    endFollow();
   }
 
   function toggleSection(section: CILogSection, anchor: HTMLElement): void {
@@ -261,20 +274,20 @@
     return { loading: block.loading, error: block.loading ? null : block.error };
   }
 
-  /** Find: opens a closed section, ending bottom-follow like any reading
-   * act. False when it is open already. */
+  /** Find: opens a closed section, ending bottom-follow. False when it is
+   * open already. */
   export function openFindSection(sectionKey: string): boolean {
     const section = sections.find((s) => s.key === sectionKey);
     if (!section || isOpen(section)) return false;
-    takeOver();
+    endFollow();
     onSetSectionsOpen([sectionKey], true);
     return true;
   }
 
   /** Find: scrolls the line's row so the line sits a third down the view,
-   * ending bottom-follow like any reading act. */
+   * ending bottom-follow. */
   export function revealFindLine(line: number): void {
-    takeOver();
+    endFollow();
     const index = rows.findIndex((row) => row.kind === 'lines' && row.from <= line && line < row.to);
     const ref = listRef;
     if (index < 0 || !ref) return;
@@ -286,7 +299,7 @@
   export function scrollFindBy(delta: number): void {
     const el = scrollEl;
     if (!el || delta === 0) return;
-    takeOver();
+    endFollow();
     stick.applyScrollTarget(Math.max(0, el.scrollTop + delta));
   }
 

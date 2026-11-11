@@ -23,10 +23,11 @@
   // is in view or the scroll would change nothing. Unshown, it stays owed
   // and the store asks it again at the next publish, content change or
   // repaint (rows mounted, a block loaded). The reader's own scroll input
-  // on the view ends it. A match is an identity: the painter, the shift
-  // and the reveal each ask whether it is present in the content shown at
-  // that moment, and where (`resolveDiff`, `resolveLog`); one not present
-  // now is neither painted, shifted nor shown, and its reveal stays owed.
+  // on the view, or a jump the view makes for them, ends it. A match is
+  // an identity: the painter, the shift and the reveal each ask whether it
+  // is present in the content shown at that moment, and where
+  // (`resolveDiff`, `resolveLog`); one not present now is neither painted,
+  // shifted nor shown, and its reveal stays owed.
   // The reading position places a scan's own fresh matches.
   import { getContext, tick, untrack } from 'svelte';
   import PaneFindBar from '../panes/PaneFindBar.svelte';
@@ -397,8 +398,9 @@
     if (resolved.kind === 'unknown') {
       const load = surface.findLineLoad(hit.line);
       if (load.error !== null) return Promise.reject(new Error(load.error));
-      // No row of its block is mounted to read it.
-      if (!load.loading) surface.revealFindLine(hit.line);
+      // Its row is asked for whatever its block's read is doing: the
+      // mounted row takes the block, read or in flight, and paints it.
+      surface.revealFindLine(hit.line);
       return false;
     }
     if (!mounted(resolved.at.rowKey)) {
@@ -542,7 +544,8 @@
     run: () => find.refresh(),
   });
   $effect(() => () => logRefreshes.dispose());
-  // The reader scrolling the view ends the owed reveal.
+  // The reader scrolling the view, or a jump made for them, ends the owed
+  // reveal.
   $effect(() => {
     const at = root;
     if (!at) return;

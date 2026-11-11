@@ -20,7 +20,9 @@ import { findHighlightName } from '../../utils/findHighlights';
 import { parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from '../../utils/patchStore';
 import { conflictPatchFile } from '../../utils/conflictFile';
 import { HELD_EDGE_PX, HELD_LIMIT_PX } from '../../utils/virtual/heldRows';
+import { setPatchTextBudgetForTest } from '../../utils/patchMemory.svelte';
 import { waitFor } from '../../../test/helpers/browserFrames';
+import { streamPatch } from '../../../test/helpers/streamedPatch';
 import { rawProps } from '../../../test/helpers/rawProps.svelte';
 import { spyScheduling } from '../../../test/helpers/schedulingSpy';
 import { reviewThreadRowSnippet } from '../../../test/helpers/reviewThreadRowSnippet.svelte';
@@ -1095,6 +1097,71 @@ describe('review find over the real list', () => {
       expect(find.wants(find.selected!)).toBe(true);
     } finally {
       unmount(finder);
+    }
+  });
+
+  it('a file picked while a reveal waits on its evicted text ends the reveal: the read lands and the view stays on the picked file', async () => {
+    // B's text past the budget is evicted once read; the step's read of it
+    // waits on a gate.
+    const bLines = Array.from({ length: 4000 }, (_, i) => (i === 1500 ? 'zq in b' : `${'b'.repeat(200)} ${i}`));
+    const source = onePatch('src/a.ts', '@@ -1,3 +1,3 @@', ['alpha', 'zq in a', 'beta']) + onePatch('src/b.ts', '@@ -1,4000 +1,4000 @@', bLines);
+    setPatchTextBudgetForTest(200_000);
+    const streamed = streamPatch(source, 4000);
+    const at = source.indexOf('zq in b');
+    let gate: Promise<void> | null = null;
+    let release = () => {};
+    let gated = 0;
+    const read = streamed.source.read.getMockImplementation()!;
+    streamed.source.read.mockImplementation(async (offset, nextOffset) => {
+      const mine = gate;
+      if (mine && nextOffset > at - 8000 && offset < at + 8000) {
+        gated += 1;
+        await mine;
+      }
+      return read(offset, nextOffset);
+    });
+    const { props, scrollEl, body } = await mountBody(onePatch('x', '@@ -1 +1 @@', ['x']));
+    const files = streamed.files;
+    props.files = files;
+    await settle(scrollEl);
+    const finder = mount(ReviewPaneFind, {
+      target: document.body,
+      props: {
+        findKey: 'pane-pick', title: 'Review', view: 'diff', files, root: mounted.at(-1)!.host,
+        review: { drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>() } as unknown as ReviewPaneState,
+        diff: () => body as never, log: () => undefined,
+      },
+    });
+    flushSync();
+    try {
+      const find = getPaneFindProvider('pane-pick') as ReviewFind<ReviewFindHit>;
+      scrollEl.scrollTop = 0;
+      await settle(scrollEl);
+      openPaneFind('pane-pick');
+      setPaneFindQuery('pane-pick', 'zq');
+      await waitFor(() => find.result.count === 2 && !find.result.pending && !find.wants(find.selected!), 'the first shown', 1200);
+      gate = new Promise<void>((resolve) => { release = resolve; });
+      find.next();
+      expect(find.hits[find.result.current].path).toBe('src/b.ts');
+      await waitFor(() => gated > 0, 'the read of the step\'s text', 600);
+      expect(find.wants(find.selected!)).toBe(true);
+      // The reader picks file A in the tree.
+      props.jumpToFilePath = 'src/a.ts';
+      flushSync();
+      await settle(scrollEl);
+      expect(find.wants(find.selected!)).toBe(false);
+      gate = null;
+      release();
+      for (let i = 0; i < 30; i += 1) await new Promise((resolve) => requestAnimationFrame(resolve));
+      await settle(scrollEl);
+      expect(find.wants(find.selected!)).toBe(false);
+      expect(onScreen(scrollEl, 'zq in a')).toBe(true);
+      expect(onScreen(scrollEl, 'zq in b')).toBe(false);
+    } finally {
+      release();
+      unmount(finder);
+      streamed.parser.store.dispose();
+      setPatchTextBudgetForTest(null);
     }
   });
 

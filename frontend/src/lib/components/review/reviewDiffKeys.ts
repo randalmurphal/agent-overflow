@@ -10,6 +10,8 @@ export interface ReviewDiffKeysHost {
   built(): ReviewRowsResult;
   files(): readonly ReviewFile[];
   list(): LongListHandle | undefined;
+  /** Scrolls to a row on the reader's behalf. */
+  navigateToIndex(index: number, opts?: { offset?: number }): void;
   scrollTop(): number;
   onAddComment(): ((anchor: CommentAnchor) => void) | undefined;
 }
@@ -37,7 +39,7 @@ export function reviewDiffKeydown(host: ReviewDiffKeysHost): (event: KeyboardEve
     const fileIndex = topFileIndex();
     if (fileIndex < 0) return;
     const targetRow = host.built().firstRowOfFile[fileIndex + delta] ?? -1;
-    if (targetRow >= 0) host.list()?.scrollToIndex(targetRow);
+    if (targetRow >= 0) host.navigateToIndex(targetRow);
   }
 
   function jumpComment(delta: 1 | -1): void {
@@ -47,7 +49,7 @@ export function reviewDiffKeydown(host: ReviewDiffKeysHost): (event: KeyboardEve
     for (let index = top + delta; index >= 0 && index < rows.length; index += delta) {
       const kind = rows[index]?.kind;
       if (kind === 'draft-editor' || kind === 'comment-thread' || kind === 'pr-thread') {
-        host.list()?.scrollToIndex(index, { offset: -REVIEW_FILE_HEADER_BAR_PX });
+        host.navigateToIndex(index, { offset: -REVIEW_FILE_HEADER_BAR_PX });
         return;
       }
     }

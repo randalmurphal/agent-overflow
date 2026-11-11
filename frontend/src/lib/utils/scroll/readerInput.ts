@@ -4,14 +4,24 @@
 // sends none of them, so they tell the reader's scrolls from the app's
 // without reading where scrollTop is. A gesture a nested scroller takes
 // (wheelAttribution.ts) is not the scroller's. Sideways input counts: it
-// moves what the reader sees as much as a vertical one.
+// moves what the reader sees as much as a vertical one. A scroll a
+// surface makes on the reader's behalf (a jump to a file, a comment, a
+// section) is theirs too: the surface reports it (`reportReaderNavigation`).
 
 import { DOWN_KEYS, UP_KEYS, inScrollbarGutter, isEditableTarget } from './intent';
 import { touchDragConsumedBelow, wheelConsumedBelow } from './wheelAttribution';
 
 const SIDE_KEYS: ReadonlySet<string> = new Set(['ArrowLeft', 'ArrowRight']);
+const NAVIGATION_EVENT = 'reader-navigation';
 
-/** Calls `onInput` at each scroll input of the reader inside the scroller
+/** Reports a scroll a surface makes on the reader's behalf, from its
+ * scroller, to whoever watches it. */
+export function reportReaderNavigation(scroller: HTMLElement | null | undefined): void {
+  scroller?.dispatchEvent(new Event(NAVIGATION_EVENT, { bubbles: true }));
+}
+
+/** Calls `onInput` at each scroll input of the reader, and each navigation
+ * reported for them, inside the scroller
  * `scroller()` names, read from events that reach `host`, which holds it
  * (the scroller can be replaced while `host` stays). Returns the function
  * that stops watching. */
@@ -53,6 +63,10 @@ export function watchReaderScrollInput(host: HTMLElement, scroller: () => HTMLEl
     const el = inside(e);
     if (el && (e.button === 1 || (e.isPrimary !== false && inScrollbarGutter(el, e)))) onInput();
   };
+  const navigation = (e: Event) => {
+    if (inside(e)) onInput();
+  };
+  host.addEventListener(NAVIGATION_EVENT, navigation);
   host.addEventListener('wheel', wheel, { passive: true });
   host.addEventListener('keydown', key);
   host.addEventListener('touchstart', touchStart, { passive: true });
@@ -61,6 +75,7 @@ export function watchReaderScrollInput(host: HTMLElement, scroller: () => HTMLEl
   host.addEventListener('touchcancel', touchEnd, { passive: true });
   host.addEventListener('pointerdown', press, { passive: true });
   return () => {
+    host.removeEventListener(NAVIGATION_EVENT, navigation);
     host.removeEventListener('wheel', wheel);
     host.removeEventListener('keydown', key);
     host.removeEventListener('touchstart', touchStart);
