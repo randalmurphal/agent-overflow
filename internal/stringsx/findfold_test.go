@@ -101,3 +101,19 @@ func TestFoldForFindKeepsInvalidBytes(t *testing.T) {
 		t.Errorf("FoldForFind = %q", got)
 	}
 }
+
+// Text with nothing to fold comes back as it is, without a copy: the
+// thread find's SQL calls the fold on every summary of the thread.
+func TestFoldForFindDoesNotCopyTextWithNothingToFold(t *testing.T) {
+	for _, text := range []string{"plain lower case words", "école à l'été", "日本語のテキスト 123", "a😀b\xff", ""} {
+		if got := FoldForFind(text); got != text {
+			t.Fatalf("FoldForFind(%q) = %q", text, got)
+		}
+		if allocs := testing.AllocsPerRun(100, func() { _ = FoldForFind(text) }); allocs != 0 {
+			t.Errorf("FoldForFind(%q) allocated %v times", text, allocs)
+		}
+	}
+	if allocs := testing.AllocsPerRun(100, func() { _ = FoldForFind("Needs A Fold") }); allocs != 1 {
+		t.Errorf("FoldForFind of text to fold allocated %v times, want 1", allocs)
+	}
+}

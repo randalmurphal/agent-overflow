@@ -10,9 +10,11 @@ import (
 )
 
 // find_fold(text) is text folded by the find rule (stringsx.FoldForFind),
-// so a search's SQL matches what the find bar paints. SQLite's LOWER and
-// LIKE fold ASCII only. Registered on the driver before any connection
-// opens; NULL stays NULL.
+// so a pane's thread find matches what its bar paints; SQLite's LOWER and
+// LIKE fold ASCII only. It is a Go call per row, so only the thread find
+// uses it, on rows an index already narrowed to one thread
+// (threadFindSelection); the cross-thread search keeps LOWER and LIKE.
+// Registered on the driver before any connection opens; NULL stays NULL.
 func init() {
 	sqlite.MustRegisterDeterministicScalarFunction("find_fold", 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
 		switch v := args[0].(type) {

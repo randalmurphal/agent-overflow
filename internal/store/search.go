@@ -34,8 +34,9 @@ type ThreadMessageHit struct {
 }
 
 // SearchThreadMessages returns hits that match the query across thread titles
-// and item summaries. Matching is the find bar's literal substring rule
-// (find_fold, stringsx.FoldForFind), so a hit is a match the bar paints.
+// and item summaries. Matching is case-insensitive substring via SQLite's
+// LOWER + LIKE — intentionally simple for now; a future migration can swap
+// to an FTS5 virtual table without changing the return shape.
 //
 // limit caps the total number of hits returned. Zero or negative is treated
 // as an unbounded search (callers should always pass a small positive int
@@ -63,7 +64,7 @@ func (s *Store) SearchThreadMessages(query string, limit int) ([]ThreadMessageHi
 	if trimmed == "" {
 		return nil, nil
 	}
-	pattern := findPattern(trimmed)
+	pattern := likePattern(trimmed)
 	return historyReadSnapshot(context.Background(), s, "search threads", func(q sqlQueryer) ([]ThreadMessageHit, error) {
 		titleHits, err := searchTitleHits(q, pattern, limit)
 		if err != nil {
@@ -144,8 +145,10 @@ func (s *Store) SearchThreadItems(ctx context.Context, threadID, query string, s
 	})
 }
 
-// threadFindSelection selects scope's rows whose summary matches pattern,
-// in document order, cut to limit (zero for none).
+// threadFindSelection selects scope's rows whose summary matches pattern
+// (findPattern) by the find bar's rule, so the pane's count is what its bar
+// paints, in document order, cut to limit (zero for none). The scope
+// narrows to one thread's rows by index before find_fold reads a summary.
 func threadFindSelection(scope timelineScope, pattern string, limit int) timelineSelection {
 	filter, args := scope.filter("items.")
 	return timelineSelection{
@@ -164,7 +167,7 @@ func searchTitleHits(q sqlQueryer, pattern string, limit int) ([]ThreadMessageHi
 	rows, err := q.Query(`
 		SELECT id, title, provider, ownership_epoch
 		FROM owned_threads
-		WHERE fork_preparing = 0 AND `+findMatchSQL("title")+` AND `+hiddenClause+`
+		WHERE fork_preparing = 0 AND LOWER(title) LIKE `+boundText+` ESCAPE '\' AND `+hiddenClause+`
 		ORDER BY updated_at DESC
 		`+limitSuffix(limit),
 		args...,
@@ -221,7 +224,7 @@ func searchGlobalItemHits(q sqlQueryer, pattern string, limit int) ([]ThreadMess
 			i.id, i.turn_index, i.item_index, i.kind, i.role, i.summary
 		FROM timeline_items i
 		JOIN owned_threads t ON t.id = i.thread_id
-		WHERE t.fork_preparing = 0 AND `+findMatchSQL("i.summary")+` AND `+hiddenClause+`
+		WHERE t.fork_preparing = 0 AND LOWER(i.summary) LIKE `+boundText+` ESCAPE '\' AND `+hiddenClause+`
 		ORDER BY i.created_at DESC
 		`+limitSuffix(limit),
 		args...,
@@ -251,10 +254,33 @@ func scanItemHits(rows *sql.Rows) ([]ThreadMessageHit, error) {
 	return hits, rows.Err()
 }
 
+// likePattern lowercases the query and wraps it in substring wildcards, with
+// the user's own %, _, and \ escaped so they are matched literally (paired
+// with the ESCAPE '\' clause in every query above).
+func likePattern(query string) string {
+	return "%" + escapeLike(strings.ToLower(query)) + "%"
+}
+
 // limitSuffix renders an optional "LIMIT n" clause; non-positive means none.
 func limitSuffix(limit int) string {
 	if limit > 0 {
 		return fmt.Sprintf("LIMIT %d", limit)
 	}
 	return ""
+}
+
+// escapeLike escapes the SQLite LIKE wildcards (%, _) and the escape char
+// (\) from the input so an arbitrary user query doesn't behave like a
+// pattern. Used in tandem with the ESCAPE '\' clause in the queries.
+func escapeLike(in string) string {
+	var b strings.Builder
+	b.Grow(len(in))
+	for _, r := range in {
+		switch r {
+		case '\\', '%', '_':
+			b.WriteRune('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }

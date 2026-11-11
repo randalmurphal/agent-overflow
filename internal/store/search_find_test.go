@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -112,7 +113,8 @@ func TestSearchThreadItems_CancelledContextStopsTheSearch(t *testing.T) {
 
 // A find read stops at its limit: each physical arm walks its ordering
 // index and the merged compound takes the first hits, rather than reading
-// every match of the view into a sorter.
+// every match of the view into a sorter. The index narrows to the thread
+// first, so find_fold reads only that thread's summaries, never the table.
 func TestSearchThreadItems_WalksTheTimelineArms(t *testing.T) {
 	s := newTestStore(t)
 	seedTimelineParityThread(t, s)
@@ -120,5 +122,19 @@ func TestSearchThreadItems_WalksTheTimelineArms(t *testing.T) {
 		sel := threadFindSelection(timelineScope{selection: selection}, findPattern("needle"), 50)
 		query, args := mustTimelineIDSelection(t, s, timelineParityThreadID, sel)
 		assertLocalArmWalksAnIndex(t, s, fmt.Sprintf("thread find %+v", selection), query, args...)
+		plan := explainPlan(t, s, query, args...)
+		t.Logf("thread find %+v plan:\n%s", selection, planText(plan))
+		scoped := false
+		for _, r := range plan {
+			if strings.HasPrefix(r.detail, "SCAN items") || strings.HasPrefix(r.detail, "SCAN import_history_items") {
+				t.Errorf("thread find %+v scans a table: %q\n%s", selection, r.detail, planText(plan))
+			}
+			if strings.HasPrefix(r.detail, "SEARCH items USING") && strings.Contains(r.detail, "thread_id=?") {
+				scoped = true
+			}
+		}
+		if !scoped {
+			t.Errorf("thread find %+v: no search of items by thread_id\n%s", selection, planText(plan))
+		}
 	}
 }

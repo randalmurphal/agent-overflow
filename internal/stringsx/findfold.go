@@ -7,13 +7,15 @@ import (
 )
 
 // FoldForFind folds text for find matching. It is the one match rule of
-// every find and row filter, the frontend's foldFindText
-// (frontend/src/lib/utils/findMatch.ts) included: each code point becomes
-// its simple lower case (unicode.ToLower, one code point for one), and a
-// byte that is not valid UTF-8 stays as it is. The fold keeps the text's
-// code points, so a match's offset in it is the match's offset in the text.
-// The vectors in frontend/src/test/fixtures/findVectors.json hold both
-// sides to it.
+// every find bar and row filter: the frontend's foldFindText
+// (frontend/src/lib/utils/findMatch.ts), the CI log search and a pane's
+// thread find (store find_fold). The cross-thread message search keeps
+// SQLite's LOWER and LIKE. Each code point becomes its simple lower case
+// (unicode.ToLower, one code point for one), and a byte that is not valid
+// UTF-8 stays as it is. The fold keeps the text's code points, so a
+// match's offset in it is the match's offset in the text. Text with
+// nothing to fold is returned as it is, without a copy. The vectors in
+// frontend/src/test/fixtures/findVectors.json hold both sides to it.
 func FoldForFind(text string) string {
 	for i := 0; i < len(text); {
 		if c := text[i]; c < utf8.RuneSelf {

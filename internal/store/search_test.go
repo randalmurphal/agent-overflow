@@ -208,9 +208,9 @@ func TestSearchThreadMessages_TitleMatchesSortedBeforeItemMatches(t *testing.T) 
 
 // Thread find matches by the rule the find bar paints with: the shared
 // vectors (frontend/src/test/fixtures/findVectors.json, read by
-// findMatch.test.ts and stringsx) find a summary and a title exactly when
-// they count a match.
-func TestSearchMatchesTheSharedFindVectors(t *testing.T) {
+// findMatch.test.ts and stringsx) find a summary exactly when they count a
+// match. The cross-thread search keeps SQLite's ASCII LOWER and LIKE.
+func TestSearchThreadItemsMatchesTheSharedFindVectors(t *testing.T) {
 	raw, err := os.ReadFile("../../frontend/src/test/fixtures/findVectors.json")
 	if err != nil {
 		t.Fatal(err)
@@ -231,7 +231,7 @@ func TestSearchMatchesTheSharedFindVectors(t *testing.T) {
 			continue
 		}
 		id := fmt.Sprintf("v%d", i)
-		mustCreateThreadForSearch(t, s, id, v.Text)
+		mustCreateThreadForSearch(t, s, id, "vectors")
 		mustInsertItemForSearch(t, s, id, id+"-item", 0, v.Text, 100)
 		items, err := s.SearchThreadItems(context.Background(), id, v.Query, TimelineSelection{}, 10)
 		if err != nil {
@@ -240,21 +240,21 @@ func TestSearchMatchesTheSharedFindVectors(t *testing.T) {
 		if got := len(items) > 0; got != (v.Count > 0) {
 			t.Errorf("thread find of %q in %q found %v, want %v", v.Query, v.Text, got, v.Count > 0)
 		}
-		hits, err := s.SearchThreadMessages(v.Query, 0)
-		if err != nil {
-			t.Fatal(err)
+	}
+	// The cross-thread search keeps its own rule: the query lower cased
+	// in Go, the text by SQLite LOWER, which folds ASCII only.
+	mustCreateThreadForSearch(t, s, "accent", "HAUTE ÉCOLE")
+	hits, err := s.SearchThreadMessages("haute école", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range hits {
+		if h.ThreadID == "accent" {
+			t.Errorf("cross-thread search folded É in the text: %+v", h)
 		}
-		title, item := false, false
-		for _, h := range hits {
-			if h.ThreadID != id {
-				continue
-			}
-			title = title || h.MatchType == "title"
-			item = item || h.MatchType == "item"
-		}
-		if title != (v.Count > 0) || item != (v.Count > 0) {
-			t.Errorf("global search of %q in %q: title %v item %v, want %v", v.Query, v.Text, title, item, v.Count > 0)
-		}
+	}
+	if hits, err := s.SearchThreadMessages("HAUTE", 10); err != nil || len(hits) != 1 || hits[0].ThreadID != "accent" {
+		t.Errorf("cross-thread search of HAUTE = %+v, %v", hits, err)
 	}
 }
 
@@ -607,7 +607,7 @@ func TestSearchThreadItems_ItemIndexBreaksTurnTies(t *testing.T) {
 }
 
 // A literal % in the query matches a literal % in a summary, never a
-// wildcard.
+// wildcard: thread find matches literally (find_fold and instr).
 func TestSearchThreadItems_LiteralPercentInSummary(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThreadForSearch(t, s, "t1", "x")
