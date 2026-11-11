@@ -1,9 +1,8 @@
 // What the reader changed by hand in the mounted comment rows, which
 // review find counts as the reader left it: the <details> opened or closed
-// in PR comments, and the drafts open in their editor, whose saved body is
-// not on screen (and whose textarea Highlight ranges cannot paint). A row
-// that unmounts renders as written again when it returns, so only mounted
-// rows are read.
+// in PR comments. A row that unmounts renders as written again when it
+// returns, so only mounted rows are read. A draft open in its editor is
+// the review state's (`draftEditBodyFor`), not read here.
 
 import { reportFrontendDiagnostic } from './frontendErrorCapture';
 
@@ -40,11 +39,6 @@ export function readCommentDetails(
     if (states.some((open, index) => open !== written[index])) toggled.set(key, states);
   }
   return { toggled };
-}
-
-/** The `data-find-key`s of the drafts open in their editor under `root`. */
-export function editingDrafts(root: ParentNode): Set<string> {
-  return new Set(Array.from(root.querySelectorAll<HTMLElement>('[data-find-editing]'), (element) => element.dataset.findEditing!));
 }
 
 export function sameKeys(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {

@@ -1,7 +1,8 @@
 // The Pull requests pane's commands (docs/specs/pull-requests.md, "The
 // page"): the chord that opens or closes the pane, and the surface
-// dismissal that steps back from an open MR or pipeline (a CI log or the
-// conflict view open in it first, then the MR or pipeline), which
+// dismissal that steps back from an open MR or pipeline (a CI log, the
+// conflict view or, on compact, the open file-tree rail open in it first,
+// then the MR or pipeline), which
 // is what Escape and the phone's Back run while the pane is focused with a
 // detail open. The pane registers what "back" does for its active tab.
 

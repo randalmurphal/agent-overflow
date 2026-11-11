@@ -3,7 +3,7 @@
 // the virtualizer has not mounted, the query brings it on screen painted
 // current, and Back closes the find before it closes the review. With a CI
 // job log open, find counts the log and brings its match on screen; Back
-// closes the find, then the review. Desktop coverage:
+// closes the find, then the log, then the review. Desktop coverage:
 // review-find.spec.ts; the Pull requests page: pulls-page-find-flow.ts.
 import { randomBytes } from 'node:crypto';
 import type { Page } from '@playwright/test';
@@ -96,6 +96,9 @@ test('mod+f finds in the review on screen and Back closes the find first', async
   await page.goBack();
   await expect(bar).toHaveCount(0);
   await expect(logScroll).toBeVisible();
+  await page.goBack();
+  await expect(logScroll).toHaveCount(0);
+  await expect(review.getByTestId('review-pr-header')).toBeVisible();
   await page.goBack();
   await expect(review.getByTestId('review-pr-header')).toHaveCount(0);
   await expectEveryForgeCallHandled(harness);

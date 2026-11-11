@@ -87,8 +87,11 @@ PR stores; components own presentation and interaction.
   picked, so the fixed chrome never changes height for it. The
   file-tree toggle lives in the rail (`ReviewRail`: the tree's header when
   open, a strip when closed; on compact the open rail covers the diff and
-  a pick closes it). The conversation refresh is on the Conversation
-  section's header. The PR title bar (`ReviewPRTitleBar`) is four
+  a pick closes it). Back steps out of the CI log, the conflict view and
+  the compact rail before the review: `ReviewPane` registers that step
+  under its host pane (`stores/paneBackSteps.ts`), which the companion
+  rung of `utils/stepBack.ts` and the Pull requests page run first. The
+  conversation refresh is on the Conversation section's header. The PR title bar (`ReviewPRTitleBar`) is four
   fixed-minimum-height lines: title, author and state, refs and verdicts,
   CI with its refresh inside the wrapping chip row.
 - A jump to a row inside a file lands under the sticky file bar: scroll it
@@ -118,9 +121,14 @@ PR stores; components own presentation and interaction.
   that renders searched text carries the matching key; text the scanner
   skips (the +/- gutter, the log's clip note, any chrome inside a keyed
   element) carries `data-find-skip`. A split view keys a context line on
-  its new side only. An editor that replaces
-  a searched text while open carries `data-find-editing` with that text's
-  key, so the text is not counted while it is off screen.
+  its new side only. A draft open in its editor is not counted, mounted
+  or not: find reads the open edits from the review state.
+- An open comment editor (a new comment, a draft's edit, a thread reply)
+  is a virtualized row, so its unsaved text and open state live in the
+  review state (`draftBodyFor`, `draftEditBodyFor`, `replyBodyFor`,
+  `replyOpen`) until it is saved or cancelled. Closing a reply (Cancel,
+  Escape, Back) keeps its text for the next open; only a sent reply
+  clears it.
 - Wrap the review surface in `shared/RenderBoundary.svelte`.
 
 Review mutations reconcile from authoritative responses and show partial or

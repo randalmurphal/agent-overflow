@@ -220,8 +220,8 @@ stepping through the list never loses it. The list column's width is
 remembered and clamped to leave the detail a usable width in the pane as
 it is now; its handle also resizes from the keyboard. Compact: the list
 is the page, a tap opens the pane full width, and the page header's Back
-is the one Back: it closes a CI log or the conflict view open in the
-detail, then the detail.
+is the one Back: it closes a CI log, the conflict view or the open
+file-tree rail in the detail, then the detail.
 
 The pane is pinned to the MR (`reviewSubjectForPR`): its scope is the PR
 alone, and the MR, its computer and the `git:operate` check are the ones

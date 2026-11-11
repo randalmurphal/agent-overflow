@@ -42,8 +42,8 @@
   import { createMarkdownFindTextCache, type MarkdownFindText } from '../chat/markdown/markdownFindText';
   import { FORGE_ATTACHMENT_SOURCE_CONTEXT, type ForgeAttachmentSourceReader } from '../chat/markdown/forgeAttachmentContext';
   import { visibleBody } from '../../utils/reviewComments';
-  import { editingDrafts, readCommentDetails, sameCommentDetails, sameKeys, type MountedCommentDetails } from '../../utils/reviewFindDetails';
-  import { findThreadCommentOfKey, reviewCommentKey, scanReviewFind, type ReviewFindHit, type ReviewFindPlace } from '../../utils/reviewFindScan';
+  import { readCommentDetails, sameCommentDetails, sameKeys, type MountedCommentDetails } from '../../utils/reviewFindDetails';
+  import { findDraftKey, findThreadCommentOfKey, reviewCommentKey, scanReviewFind, type ReviewFindHit, type ReviewFindPlace } from '../../utils/reviewFindScan';
   import {
     findHitAtOrBelow,
     placeReviewFindHit,
@@ -121,8 +121,13 @@
     });
   }
 
+  // The drafts open in their editor, mounted or not: the store keeps an
+  // open edit across a row unmount, and its saved body is not on screen.
   function readEditing(): Set<string> {
-    return root && untrack(() => view) === 'diff' ? editingDrafts(root) : new Set();
+    return untrack(() => {
+      if (view !== 'diff') return new Set<string>();
+      return new Set(review.drafts.filter((draft) => review.draftEditBodyFor(draft.id) !== null).map((draft) => findDraftKey(draft.id)));
+    });
   }
 
   // A <details> opened or closed by hand, a draft's editor opened or

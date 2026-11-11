@@ -71,7 +71,7 @@ describe('review find over comments', () => {
     const host = document.createElement('div');
     host.style.width = '700px';
     document.body.appendChild(host);
-    render(ReviewCommentThread, { target: host, props: { comment: DRAFT, onUpdate: () => {}, onDelete: () => {} } });
+    render(ReviewCommentThread, { target: host, props: { comment: DRAFT, editBody: null, onEditBodyChange: () => {}, onUpdate: () => {}, onDelete: () => {} } });
     render(ReviewThreadComments, { target: host, props: { thread: THREAD, findKeys: true } });
     await waitFor(() => expect(host.querySelectorAll('[data-find-key^="pc:"]').length).toBe(3));
 
@@ -103,10 +103,19 @@ describe('review find over a draft open in its editor', () => {
     const host = document.createElement('div');
     host.style.width = '700px';
     document.body.appendChild(host);
-    const thread = render(ReviewCommentThread, { target: host, props: { comment: DRAFT, onUpdate: () => {}, onDelete: () => {} } });
+    // The open edit is the review state's, as the pane wires it.
+    const props = rawProps({
+      comment: DRAFT,
+      editBody: null as string | null,
+      onEditBodyChange: (_id: string, body: string | null) => { props.editBody = body; },
+      onUpdate: () => {},
+      onDelete: () => {},
+    });
+    const thread = render(ReviewCommentThread, { target: host, props });
     const files = parseReviewFiles(PATCH);
     const review = {
       drafts: [DRAFT], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
+      draftEditBodyFor: (id: string) => (id === DRAFT.id ? props.editBody : null),
     } as unknown as ReviewPaneState;
     render(ReviewPaneFind, {
       target: document.body,

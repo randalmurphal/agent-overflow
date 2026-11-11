@@ -30,6 +30,7 @@ import {
   openCompanion,
   resetCompanionPanesForTest,
 } from '../stores/companionPanes.svelte';
+import { registerPaneBackStep } from '../stores/paneBackSteps';
 
 function threadItem(paneId: string): PaneLayoutItem {
   return { id: paneId, paneId, kind: 'thread', widthPx: 412 };
@@ -140,6 +141,31 @@ describe('answerBackPress', () => {
     expect(isCompanionOpen('main', 'review')).toBe(false);
     expect(revealed).toEqual(['main']);
     expect(getCompactScreen()).toBe('thread');
+  });
+
+  it('steps out of a view open inside the companion on screen before closing it', () => {
+    setPaneLayoutItemsForTest([threadItem('main')]);
+    createPane('main');
+    const review = openCompanion('main', 'review')!;
+    mountStrip([
+      { paneId: 'main', kind: 'thread', onScreen: false },
+      { paneId: review.paneId, kind: 'review', onScreen: true },
+    ]);
+    let logOpen = true;
+    const dispose = registerPaneBackStep(review.paneId, () => {
+      if (!logOpen) return false;
+      logOpen = false;
+      return true;
+    });
+    try {
+      expect(answerBackPress()).toBe(true);
+      expect(logOpen).toBe(false);
+      expect(isCompanionOpen('main', 'review')).toBe(true);
+      expect(answerBackPress()).toBe(true);
+      expect(isCompanionOpen('main', 'review')).toBe(false);
+    } finally {
+      dispose();
+    }
   });
 
   it('closes the companion on screen before a terminal the source thread still holds', () => {

@@ -41,12 +41,18 @@
     collapsed: boolean;
     orphaned: boolean;
     body: string;
+    /** Whether the reply composer is open; the owner keeps it, the row
+     * is virtualized. */
+    replying: boolean;
     error: string | null;
     sending: boolean;
     resolving: boolean;
     resolveError: string | null;
     onToggle: () => void;
     onBodyChange: (body: string) => void;
+    onOpenReply: () => void;
+    /** Closes the composer; the review state keeps its text. */
+    onCloseReply: () => void;
     onSendReply: () => Promise<void> | void;
     /** Absent for non-resolvable threads: no resolve control renders. */
     onResolve?: (resolved: boolean) => void;
@@ -63,22 +69,20 @@
     collapsed,
     orphaned,
     body,
+    replying,
     error,
     sending,
     resolving,
     resolveError,
     onToggle,
     onBodyChange,
+    onOpenReply,
+    onCloseReply,
     onSendReply,
     onResolve,
     onJumpToConversation,
     pulse = 0,
   }: Props = $props();
-  // Rows are virtualized: a windowing remount must not collapse a composer
-  // that still holds drafted text (the text itself is store-backed). Only
-  // the mount-time value matters, hence the deliberate initial-value read.
-  // svelte-ignore state_referenced_locally
-  let replying = $state(body !== '');
 
   const threadState = $derived(reviewThreadState(thread));
   const outdated = $derived(reviewThreadOutdated(thread, orphaned));
@@ -174,8 +178,8 @@
           {replying}
           {resolving}
           {resolveError}
-          onOpenReply={() => { replying = true; }}
-          onCloseReply={() => { replying = false; }}
+          {onOpenReply}
+          {onCloseReply}
           {onBodyChange}
           {onSendReply}
           {onResolve}

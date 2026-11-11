@@ -1,5 +1,6 @@
 import { fireEvent, render } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
+import { SvelteSet } from 'svelte/reactivity';
 import ReviewConversationThread from './ReviewConversationThread.svelte';
 import { parseReviewFiles } from '../../utils/patchStore';
 import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
@@ -37,10 +38,14 @@ function withReplies(count: number): ReviewComment[] {
   ];
 }
 
-// Only the members the card reads. The fake is not reactive: a test that
-// needs another store state renders again.
+// Only the members the card reads. The fake is not reactive, except for
+// the open composers: a test that needs another store state renders again.
 function fakeReview(overrides: Partial<Record<keyof ReviewPaneState, unknown>> = {}) {
+  const open = new SvelteSet<string>();
   const review = {
+    replyOpen: vi.fn((id: string, surface: string) => open.has(`${surface}:${id}`)),
+    openReply: vi.fn((id: string, surface: string) => { open.add(`${surface}:${id}`); }),
+    closeReply: vi.fn((id: string, surface: string) => { open.delete(`${surface}:${id}`); }),
     files: [],
     isTurnActive: false,
     replyBodyFor: vi.fn(() => ''),
@@ -225,13 +230,14 @@ describe('<ReviewConversationThread> reply composer', () => {
     await fireEvent.click(view.getByTestId('review-thread-reply'));
     await fireEvent.click(view.getByText('Cancel'));
     expect(view.queryByTestId('review-thread-composer')).toBeNull();
+    expect(view.review.closeReply).toHaveBeenCalledWith('t1', 'conversation');
     await fireEvent.click(view.getByTestId('review-thread-reply'));
     await fireEvent.keyDown(view.container.querySelector('textarea')!, { key: 'Escape' });
     expect(view.queryByTestId('review-thread-composer')).toBeNull();
   });
 
-  it('mounts with the composer open when a draft survived', () => {
-    const review = fakeReview({ replyBodyFor: vi.fn(() => 'half a reply') });
+  it('mounts with the composer open when the store kept it open', () => {
+    const review = fakeReview({ replyBodyFor: vi.fn(() => 'half a reply'), replyOpen: vi.fn(() => true) });
     const view = renderCard(thread(), { review });
     expect(view.container.querySelector('textarea')!.value).toBe('half a reply');
   });

@@ -28,6 +28,7 @@
   import { reviewStateForPR, reviewSubjectForPR } from '../../stores/reviewPanePinned.svelte';
   import { GitListBranches } from '../../stores/bindings';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
+  import { registerPaneBackStep } from '../../stores/paneBackSteps';
   import { getPane } from '../../stores/panes.svelte';
   import type { BackendKey } from '../../transport/backendKey';
   import type { GitBranch } from '../../types/git';
@@ -99,6 +100,18 @@
   // svelte-ignore state_referenced_locally
   const hostPaneId = pr?.ownerPaneId ?? companionPaneId ?? sourcePaneId;
   $effect(() => review?.attachSurface(hostPaneId));
+  // Back steps out of a view open inside the review before the review
+  // goes: the CI log, the conflict view, then on compact the open rail,
+  // which covers the diff.
+  let rail: ReviewRail | undefined = $state();
+  onDestroy(registerPaneBackStep(hostPaneId, () => {
+    if (!review) return false;
+    if (review.ciLogView) review.closeCILogView();
+    else if (review.conflictView) review.closeConflictView();
+    else if (rail && treeVisible && isCompactLayout()) toggleTree();
+    else return false;
+    return true;
+  }));
   const findKey = $derived(findKeyProp ?? companionPaneId);
   // Forge attachments in every ChatMarkdown under this pane — the PR body,
   // the conversation, each thread's comments, the comments list. A reader
@@ -362,6 +375,7 @@
       <div class="relative flex min-h-0 flex-1">
         {#if review.files.length > 0}
           <ReviewRail
+            bind:this={rail}
             files={review.files}
             activeFileIndex={treeActiveFileIndex}
             onSelectFile={jumpToFile}
@@ -435,6 +449,8 @@
                 {comment}
                 {pulse}
                 orphaned={review?.orphanedDraftIds().has(comment.id) ?? false}
+                editBody={review?.draftEditBodyFor(comment.id) ?? null}
+                onEditBodyChange={(commentId, body) => review?.setDraftEditBody(commentId, body)}
                 onUpdate={(commentId, body) => review?.updateComment(commentId, body)}
                 onDelete={(commentId) => review?.deleteComment(commentId)}
               />
@@ -448,12 +464,15 @@
               {orphaned}
               {pulse}
               body={review?.replyBodyFor(thread.id) ?? ''}
+              replying={review?.replyOpen(thread.id, 'diff') ?? false}
               error={review?.replyErrorFor(thread.id) ?? null}
               sending={review?.sendingReply(thread.id) ?? false}
               resolving={review?.resolvingThread(thread.id) ?? false}
               resolveError={review?.resolveErrorFor(thread.id) ?? null}
               onToggle={() => review?.togglePRThread(thread.id)}
               onBodyChange={(body) => review?.setReplyBody(thread.id, body)}
+              onOpenReply={() => review?.openReply(thread.id, 'diff')}
+              onCloseReply={() => review?.closeReply(thread.id, 'diff')}
               onSendReply={() => review?.sendPRThreadReply(thread)}
               onResolve={thread.isResolvable
                 ? (resolved) => { void review?.setPRThreadResolved(thread, resolved); }
