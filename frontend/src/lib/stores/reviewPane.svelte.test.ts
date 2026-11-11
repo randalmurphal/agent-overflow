@@ -21,7 +21,6 @@ import {
   COLLAPSE_ROW_LIMIT,
   draftAnchorExists,
   EditFileMerge,
-  reviewLineCommentForDraft,
   supportsIgnoreWhitespace,
 } from './reviewPaneLoad';
 import { applyPRCILogEvent, applyPRCIUpdatedEvent, applyPRUpdatedEvent, attachPR } from './prReviewStore.svelte';
@@ -202,32 +201,6 @@ beforeEach(() => {
 });
 
 describe('reviewPane store', () => {
-  it('maps draft anchors to PR review line comments', () => {
-    expect(reviewLineCommentForDraft(draft({ side: 'new', newLine: 7 }))).toEqual({
-      path: 'src/app.ts',
-      body: 'comment',
-      line: 7,
-      side: 'right',
-    });
-    expect(reviewLineCommentForDraft(draft({ side: 'old', oldLine: 5, newLine: undefined }))).toEqual({
-      path: 'src/app.ts',
-      body: 'comment',
-      line: 5,
-      side: 'left',
-    });
-    expect(reviewLineCommentForDraft(draft({ side: 'context', oldLine: 3, newLine: 3 }))).toEqual({
-      path: 'src/app.ts',
-      body: 'comment',
-      line: 3,
-      side: 'right',
-    });
-    expect(reviewLineCommentForDraft(draft({ side: 'file', oldLine: undefined, newLine: undefined }))).toEqual({
-      path: 'src/app.ts',
-      body: 'comment',
-      side: 'file',
-    });
-  });
-
   it('detects drafts orphaned by a vanished line', () => {
     const files = parseReviewFiles(patchFor('src/app.ts', 2));
     expect(draftAnchorExists(files, draft({ newLine: 2 }))).toBe(true);
@@ -717,7 +690,6 @@ function installPRMocks(): {
   setBindingMock('ListPRReviewThreads', async () => []);
   setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
   setBindingMock('SubmitPRReview', async () => ({ postedReview: true, postedFileComments: 0 }));
-  setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
   return { subscribe, unsubscribe };
 }
 
@@ -2274,9 +2246,13 @@ describe('reviewPane store — PR scope', () => {
     expect(state.error).toBeNull();
   });
 
-  it('submit success marks drafts sent against the head SHA and clears the summary', async () => {
+  it('submits the drafts with one submit id, kept for a retry until an answer, and reads the drafts the backend marked sent', async () => {
     installPRMocks();
-    const markSent = setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
+    let lost = true;
+    const submit = setBindingMock('SubmitPRReview', async () => {
+      if (lost) throw new Error('connection closed');
+      return { postedReview: true, postedFileComments: 0 };
+    });
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
@@ -2285,14 +2261,58 @@ describe('reviewPane store — PR scope', () => {
     ]);
     state.setSummaryBody('overall note');
 
-    await state.submitPRReview();
+    // The answer is lost: the drafts and the summary stay, with the error.
+    await expect(state.submitPRReview()).rejects.toThrow('connection closed');
+    expect(state.drafts.map((comment) => comment.id)).toEqual(['d-1']);
+    expect(state.summaryBody).toBe('overall note');
+    expect(state.submitError).toContain('connection closed');
 
-    expect(markSent).toHaveBeenCalledWith('thread-1', 'pr', PR_SOURCE_KEY, ['d-1'], 'pr:sha-a');
+    // The retry is the same submit; the backend marked the drafts sent.
+    lost = false;
+    const list = setBindingMock('ListDiffReviewComments', async () => []);
+    await state.submitPRReview();
+    expect(submit).toHaveBeenCalledTimes(2);
+    const [first, second] = submit.mock.calls.map((call) => call[1] as { submitId: string });
+    expect(second).toEqual(first);
+    expect(first).toEqual({
+      submitId: expect.any(String),
+      verdict: 'comment',
+      body: 'overall note',
+      drafts: { threadId: 'thread-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, commentIds: ['d-1'], headSha: 'sha-a' },
+    });
+    expect(list).toHaveBeenCalledWith('thread-1', 'pr', PR_SOURCE_KEY);
+    expect(state.drafts).toEqual([]);
     expect(state.summaryBody).toBe('');
     expect(state.submitError).toBeNull();
+
+    // The next submit is another one.
+    replaceDiffReviewCommentsForTest('thread-1', 'pr', PR_SOURCE_KEY, [
+      draft({ id: 'd-2', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' }),
+    ]);
+    await state.submitPRReview();
+    const third = submit.mock.calls[2]![1] as { submitId: string };
+    expect(third.submitId).not.toBe(first.submitId);
   });
 
-  it('partial submit keeps unposted file-level drafts and marks line drafts sent', async () => {
+  it('a submit of another draft set or verdict after a failure is another submit', async () => {
+    installPRMocks();
+    const submit = setBindingMock('SubmitPRReview', async () => {
+      throw new Error('forge refused');
+    });
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    replaceDiffReviewCommentsForTest('thread-1', 'pr', PR_SOURCE_KEY, [
+      draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' }),
+    ]);
+    await expect(state.submitPRReview()).rejects.toThrow('forge refused');
+    state.setVerdict('approve');
+    await expect(state.submitPRReview()).rejects.toThrow('forge refused');
+    const [first, second] = submit.mock.calls.map((call) => (call[1] as { submitId: string }).submitId);
+    expect(second).not.toBe(first);
+  });
+
+  it('a partial submit says which comment did not post and reads back what stays a draft', async () => {
     installPRMocks();
     setBindingMock('SubmitPRReview', async () => ({
       postedReview: true,
@@ -2300,31 +2320,30 @@ describe('reviewPane store — PR scope', () => {
       partialFailurePath: 'src/app.ts',
       partialFailure: 'boom',
     }));
-    const markSent = setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
+    const fileDraft = draft({ id: 'd-file', scope: 'pr', sourceKey: PR_SOURCE_KEY, filePath: 'src/app.ts', side: 'file', newLine: undefined });
     replaceDiffReviewCommentsForTest('thread-1', 'pr', PR_SOURCE_KEY, [
-      // Same file: the line draft rode the batched review and posted; only
-      // the file-level draft (standalone follow-up call) failed.
-      draft({ id: 'd-file', scope: 'pr', sourceKey: PR_SOURCE_KEY, filePath: 'src/app.ts', side: 'file', newLine: undefined }),
+      fileDraft,
       draft({ id: 'd-line', scope: 'pr', sourceKey: PR_SOURCE_KEY, filePath: 'src/app.ts', newLine: 1, side: 'new' }),
     ]);
+    // The backend marked the line draft sent; the file draft stays.
+    setBindingMock('ListDiffReviewComments', async () => [fileDraft]);
 
     await state.submitPRReview();
 
-    expect(markSent).toHaveBeenCalledWith('thread-1', 'pr', PR_SOURCE_KEY, ['d-line'], 'pr:sha-a');
+    expect(state.drafts.map((comment) => comment.id)).toEqual(['d-file']);
     expect(state.submitError).toContain('src/app.ts');
   });
 
-  it('a pathless partial failure (approve failed after publish) marks all drafts sent and keeps the error', async () => {
+  it('a pathless partial failure (approve failed after publish) keeps the summary and the error', async () => {
     installPRMocks();
     setBindingMock('SubmitPRReview', async () => ({
       postedReview: true,
       postedFileComments: 0,
       partialFailure: 'glab api approve merge request failed',
     }));
-    const markSent = setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
@@ -2335,29 +2354,8 @@ describe('reviewPane store — PR scope', () => {
 
     await state.submitPRReview();
 
-    expect(markSent).toHaveBeenCalledWith('thread-1', 'pr', PR_SOURCE_KEY, ['d-1'], 'pr:sha-a');
     expect(state.submitError).toContain('approve');
     expect(state.summaryBody).toBe('overall note');
-  });
-
-  it('a thrown submit keeps every draft and surfaces the error', async () => {
-    installPRMocks();
-    setBindingMock('SubmitPRReview', async () => {
-      throw new Error('gh api submit review failed');
-    });
-    const markSent = setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
-    const state = reviewStateForPane('pane-1', prSubject());
-    await waitLoaded(state);
-    await state.setScope('pr');
-    replaceDiffReviewCommentsForTest('thread-1', 'pr', PR_SOURCE_KEY, [
-      draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' }),
-    ]);
-
-    await expect(state.submitPRReview()).rejects.toThrow('gh api submit review failed');
-
-    expect(markSent).not.toHaveBeenCalled();
-    expect(state.submitError).toContain('gh api submit review failed');
-    expect(state.drafts.map((comment) => comment.id)).toEqual(['d-1']);
   });
 
   function setDocumentVisibility(value: DocumentVisibilityState): void {

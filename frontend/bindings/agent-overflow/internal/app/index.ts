@@ -152,6 +152,8 @@ export {
     SourceDiffReview,
     SourceProposedPlan,
     StartTerminalOptions,
+    SubmitPRReviewDrafts,
+    SubmitPRReviewInput,
     SubmitPRReviewResult,
     SyncThreadWindowRequest,
     SyncThreadWindowResponse,

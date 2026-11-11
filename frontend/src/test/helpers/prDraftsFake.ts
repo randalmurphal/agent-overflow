@@ -13,7 +13,9 @@ export interface PRDraftsFake {
   /** The backend each call was routed to. */
   routed: string[];
   create: ReturnType<typeof vi.fn>;
-  mark: ReturnType<typeof vi.fn>;
+  /** SubmitPRReview: posts the PR's drafts it names and marks them sent,
+   * answering a repeated submit id from its record. */
+  submit: ReturnType<typeof vi.fn>;
   send: ReturnType<typeof vi.fn>;
 }
 
@@ -58,12 +60,17 @@ export function installPRDraftsFake(): PRDraftsFake {
   const settle = (wire: Wire, ids: readonly string[]) => {
     for (const comment of rows(wire)) if (ids.includes(comment.id)) comment.status = 'sent';
   };
-  const mark = setBindingMock('MarkPRDiffReviewCommentsSent', async (wire: Wire, _scope: string, _source: string, ids: string[]) => {
-    settle(wire, ids);
+  const submits = new Map<string, unknown>();
+  const submit = setBindingMock('SubmitPRReview', async (wire: Wire, input: { submitId: string; drafts: { threadId?: string; commentIds: string[] } }) => {
+    if (submits.has(input.submitId)) return submits.get(input.submitId);
+    const result = { postedReview: true, postedFileComments: 0 };
+    if (!input.drafts.threadId) settle(wire, input.drafts.commentIds);
+    submits.set(input.submitId, result);
+    return result;
   });
   const send = setBindingMock('SendPRDiffReviewComments', async (wire: Wire, threadId: string, _scope: string, _source: string, ids: string[]) => {
     settle(wire, ids);
     return { id: threadId };
   });
-  return { held, routed, create, mark, send };
+  return { held, routed, create, submit, send };
 }

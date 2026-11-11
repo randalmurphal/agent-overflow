@@ -325,17 +325,6 @@ func (a *App) DeleteDiffReviewComment(threadID, commentID string) error {
 	return nil
 }
 
-//ao:scope threads:operate
-func (a *App) MarkDiffReviewCommentsSent(threadID, scope, sourceKey string, commentIDs []string, sentTurnID string) error {
-	if err := a.store.MarkDiffReviewCommentsSent(store.ThreadReviewOwner(threadID), scope, sourceKey, commentIDs, time.Now().UnixMilli(), sentTurnID); err != nil {
-		return fmt.Errorf("mark diff review comments sent: %w", err)
-	}
-	// Sending is a set change like any other: a draft that became sent renders
-	// differently, and only a re-read can say which ones moved.
-	a.announceDiffCommentsChanged(threadID, scope, sourceKey)
-	return nil
-}
-
 type SendDiffReviewCommentsInput struct {
 	PR *store.DiffReviewPRContext `json:"pr,omitempty"`
 }

@@ -12,7 +12,6 @@ import {
   CreatePRDiffReviewComment,
   DeletePRDiffReviewComment,
   ListPRDiffReviewComments,
-  MarkPRDiffReviewCommentsSent,
   SendPRDiffReviewComments,
   UpdatePRDiffReviewComment,
 } from './bindings';
@@ -111,18 +110,6 @@ export async function deletePRDiffReviewComment(
 ): Promise<void> {
   const wire = prReferenceWire(target.pr);
   await withBackendTarget(target.backend, () => DeletePRDiffReviewComment(wire, commentId));
-  await refreshPRDiffReviewComments(target, scope, sourceKey);
-}
-
-/** Settles drafts a PR review posted to the forge. */
-export async function markPRDiffReviewCommentsSent(
-  target: PRDraftsTarget,
-  scope: DiffReviewScope,
-  sourceKey: string,
-  commentIds: readonly string[],
-): Promise<void> {
-  const wire = prReferenceWire(target.pr);
-  await withBackendTarget(target.backend, () => MarkPRDiffReviewCommentsSent(wire, scope, sourceKey, [...commentIds]));
   await refreshPRDiffReviewComments(target, scope, sourceKey);
 }
 

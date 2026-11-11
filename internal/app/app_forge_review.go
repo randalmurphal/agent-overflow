@@ -377,20 +377,6 @@ func mapSubmitPRReviewResult(pr gitops.PRReference, action gitops.ForgeAction, r
 
 //ao:scope git:operate
 //ao:route selected
-func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review gitops.SubmitReviewRequest) (SubmitPRReviewResult, error) {
-	if a.shuttingDown.Load() {
-		return SubmitPRReviewResult{}, ErrShuttingDown
-	}
-	if err := pr.Validate(); err != nil {
-		return SubmitPRReviewResult{}, err
-	}
-	result, err := a.gitCore().SubmitReview(forgeapi.WithInteractive(ctx), pr, review)
-	mapped, err := mapSubmitPRReviewResult(pr, gitops.ActionReview, result, err)
-	return mapped, gitops.ExplainForgeError(pr, gitops.ActionReview, err)
-}
-
-//ao:scope git:operate
-//ao:route selected
 func (a *App) ReplyToPRThread(ctx context.Context, pr gitops.PRReference, threadID string, databaseID int64, body string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown

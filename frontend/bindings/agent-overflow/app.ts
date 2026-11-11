@@ -3351,18 +3351,6 @@ export function ListWorkspaceMcpServers(providerName: string, workspacePath: str
     });
 }
 
-export function MarkDiffReviewCommentsSent(threadID: string, scope: string, sourceKey: string, commentIDs: string[], sentTurnID: string): $CancellablePromise<void> {
-    return $Call.ByID(1673567995, threadID, scope, sourceKey, commentIDs, sentTurnID);
-}
-
-/**
- * MarkPRDiffReviewCommentsSent settles drafts a SubmitPRReview posted to
- * the forge; no turn carried them.
- */
-export function MarkPRDiffReviewCommentsSent(pr: git$0.PRReference, scope: string, sourceKey: string, commentIDs: string[]): $CancellablePromise<void> {
-    return $Call.ByID(3609806653, pr, scope, sourceKey, commentIDs);
-}
-
 export function MarkPRReady(pr: git$0.PRReference): $CancellablePromise<app$0.PRActionResult> {
     return $Call.ByID(404041677, pr).then(($result: any) => {
         return $$createType7($result);
@@ -5692,8 +5680,13 @@ export function SubmitAsyncAnswers(threadID: string, sendID: string, answers: st
     return $Call.ByID(1219107798, threadID, sendID, answers);
 }
 
-export function SubmitPRReview(pr: git$0.PRReference, review: git$0.SubmitReviewRequest): $CancellablePromise<app$0.SubmitPRReviewResult> {
-    return $Call.ByID(2692607191, pr, review).then(($result: any) => {
+/**
+ * SubmitPRReview posts a review of pr with the selected drafts as its
+ * comments, marks the drafts it posted sent and answers what landed. A
+ * repeat of input.SubmitID answers the first submit's outcome.
+ */
+export function SubmitPRReview(pr: git$0.PRReference, input: app$0.SubmitPRReviewInput): $CancellablePromise<app$0.SubmitPRReviewResult> {
+    return $Call.ByID(2692607191, pr, input).then(($result: any) => {
         return $$createType206($result);
     });
 }

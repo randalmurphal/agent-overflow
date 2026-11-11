@@ -126,7 +126,6 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   CreatePRDiffReviewComment: owned(PR_DRAFTS_STORE, 'createPRDiffReviewComment()'),
   UpdatePRDiffReviewComment: owned(PR_DRAFTS_STORE, 'updatePRDiffReviewComment()'),
   DeletePRDiffReviewComment: owned(PR_DRAFTS_STORE, 'deletePRDiffReviewComment()'),
-  MarkPRDiffReviewCommentsSent: owned(PR_DRAFTS_STORE, 'markPRDiffReviewCommentsSent()'),
   SendPRDiffReviewComments: owned(PR_DRAFTS_STORE, 'sendPRDiffReviewComments()'),
   ListThreadMcpServers: owned(MCP_SERVERS_STORE, 'attachMcpServers()'),
   ListWorkspaceMcpServers: owned(MCP_SERVERS_STORE, 'attachMcpServers()'),

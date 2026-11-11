@@ -374,8 +374,6 @@ describe('pinned comments and actions', () => {
   it('drafts under the PR through its own bindings and posts them as a PR review', async () => {
     const { drafts: fake } = installPRMocks();
     const create = setBindingMock('CreateDiffReviewComment', async () => ({}));
-    const mark = setBindingMock('MarkDiffReviewCommentsSent', async () => undefined);
-    const submit = setBindingMock('SubmitPRReview', async () => ({ postedReview: true, postedFileComments: 0 }));
     const state = pinned(5);
     await waitLoaded(state);
     expect(state.canDraftComments).toBe(true);
@@ -392,14 +390,13 @@ describe('pinned comments and actions', () => {
     expect(state.drafts[0]?.body).toBe('needs two tests');
 
     await state.submitPRReview();
-    expect(submit).toHaveBeenCalledWith(
+    // The PR's drafts, by id: the backend posts and marks them in one call.
+    expect(fake.submit).toHaveBeenCalledWith(
       { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 5 },
-      { verdict: 'comment', body: '', comments: [{ path: 'src/app.ts', body: 'needs two tests', line: 2, side: 'right' }] },
-    );
-    expect(mark).not.toHaveBeenCalled();
-    expect(fake.mark).toHaveBeenCalledWith(
-      { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 5 },
-      'pr', `pr:${prKey(ref(5))}`, ['c1'],
+      {
+        submitId: expect.any(String), verdict: 'comment', body: '',
+        drafts: { threadId: undefined, scope: 'pr', sourceKey: `pr:${prKey(ref(5))}`, commentIds: ['c1'], headSha: 'sha-5' },
+      },
     );
     expect(state.drafts).toEqual([]);
     const held = getPRDiffReviewComments(composeWorkspaceKey(HOME_BACKEND, prKey(ref(5))), 'pr', `pr:${prKey(ref(5))}`);

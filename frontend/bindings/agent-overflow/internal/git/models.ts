@@ -1345,37 +1345,6 @@ export class ReviewEvent {
     }
 }
 
-export class ReviewLineComment {
-    "path": string;
-    "body": string;
-    "line"?: number | null;
-    "side": string;
-    "startLine"?: number | null;
-
-    /** Creates a new ReviewLineComment instance. */
-    constructor($$source: Partial<ReviewLineComment> = {}) {
-        if (!("path" in $$source)) {
-            this["path"] = "";
-        }
-        if (!("body" in $$source)) {
-            this["body"] = "";
-        }
-        if (!("side" in $$source)) {
-            this["side"] = "";
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new ReviewLineComment instance from a string or object.
-     */
-    static createFrom($$source: any = {}): ReviewLineComment {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new ReviewLineComment($$parsedSource as Partial<ReviewLineComment>);
-    }
-}
-
 export class ReviewReplyTo {
     "id": string;
     "databaseID": number;
@@ -1514,39 +1483,6 @@ export class ReviewVerdict {
     }
 }
 
-export class SubmitReviewRequest {
-    "verdict": string;
-    "body": string;
-    "comments": ReviewLineComment[];
-
-    /** Creates a new SubmitReviewRequest instance. */
-    constructor($$source: Partial<SubmitReviewRequest> = {}) {
-        if (!("verdict" in $$source)) {
-            this["verdict"] = "";
-        }
-        if (!("body" in $$source)) {
-            this["body"] = "";
-        }
-        if (!("comments" in $$source)) {
-            this["comments"] = [];
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new SubmitReviewRequest instance from a string or object.
-     */
-    static createFrom($$source: any = {}): SubmitReviewRequest {
-        const $$createField2_0 = $$createType26;
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("comments" in $$parsedSource) {
-            $$parsedSource["comments"] = $$createField2_0($$parsedSource["comments"]);
-        }
-        return new SubmitReviewRequest($$parsedSource as Partial<SubmitReviewRequest>);
-    }
-}
-
 // Private type creation functions
 const $$createType0 = CIStep.createFrom;
 const $$createType1 = $Create.Array($$createType0);
@@ -1573,5 +1509,3 @@ const $$createType21 = ReviewReplyTo.createFrom;
 const $$createType22 = $Create.Nullable($$createType21);
 const $$createType23 = ReviewComment.createFrom;
 const $$createType24 = $Create.Array($$createType23);
-const $$createType25 = ReviewLineComment.createFrom;
-const $$createType26 = $Create.Array($$createType25);

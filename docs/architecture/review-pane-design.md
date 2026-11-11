@@ -253,7 +253,11 @@ polling.
   - *Linked agent*: extends the existing `SendDiffReviewComments` saga.
   - *The PR*: `SubmitReview` with Comment / Approve / Request changes.
   Drafts clear only on confirmed success; failures surface in the pane and
-  keep drafts (errors are user-facing state).
+  keep drafts (errors are user-facing state). `SubmitPRReview` posts the
+  stored drafts and marks them sent in the transaction that records the
+  outcome under the pane's submit id; the pane keeps that id for a retry
+  of the same verdict, summary and drafts until an answer arrives, so a
+  retry after a lost answer posts nothing (`app_pr_review_submit.go`).
 - **Agent context rule (deterministic, no toggle).** If the target thread's
   workspace is the diff source (commenting on that agent's own live work),
   keep today's lean prompt. The agent sees the diff in-turn. Otherwise

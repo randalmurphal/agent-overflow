@@ -721,14 +721,6 @@ export interface ReviewComment {
   replyTo?: { id: string; databaseID: number };
 }
 
-export interface ReviewLineComment {
-  path: string;
-  body: string;
-  line?: number;
-  side: string;
-  startLine?: number;
-}
-
 export interface SubmitPRReviewResult {
   postedReview: boolean;
   postedFileComments: number;

@@ -29,9 +29,7 @@ export {
     RepoReference,
     ReviewComment,
     ReviewEvent,
-    ReviewLineComment,
     ReviewReplyTo,
     ReviewThread,
-    ReviewVerdict,
-    SubmitReviewRequest
+    ReviewVerdict
 } from "./models.js";
