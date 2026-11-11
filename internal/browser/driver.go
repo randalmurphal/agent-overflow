@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"regexp"
 
@@ -68,6 +69,16 @@ type engineUIThread interface {
 // launcher-hosted WebView2 claims in its own process and hands focus there.
 type engineAppFocus interface {
 	FocusApp() error
+}
+
+// focusReleaseError reads a native engine's answer to hiding or closing a
+// page view (paneHost): 1 the view held keyboard focus and gave it to the
+// app, 0 it held none, -1 it held focus and the app could not take it.
+func focusReleaseError(released int) error {
+	if released < 0 {
+		return errors.New("browser: the page held keyboard focus and the app has no webview to take it")
+	}
+	return nil
 }
 
 // engineAccelerators is implemented by an engine whose key-chord gate runs

@@ -6,6 +6,7 @@ import {
   closeFocusedBrowserTab,
   reconcileBrowserCompanionForPane,
   resetBrowserCompanionForTest,
+  setBrowserPaneMountForTest,
 } from './browserCompanion.svelte';
 import { BROWSER_FIND_DEBOUNCE_MS, createBrowserFind } from './browserFind.svelte';
 import { companionForSource, installCompanionPanes, resetCompanionPanesForTest } from './companionPanes.svelte';
@@ -285,6 +286,7 @@ describe('accelerators from the native page view', () => {
       visible: true,
       pages: [{ id: 'page-1', url: 'https://example.com', title: 'Example', canGoBack: false, canGoForward: false }],
     });
+    setBrowserPaneMountForTest('thread-browser', 'mount-1');
   });
 
   it('focuses the companion and replays the chord as a window keydown', () => {
@@ -296,6 +298,7 @@ describe('accelerators from the native page view', () => {
       applyBrowserCompanionState({
         kind: 'accelerator',
         threadId: 'thread-browser',
+        mount: 'mount-1',
         accelerator: { key: 'w', meta: true },
       });
     } finally {
@@ -323,6 +326,7 @@ describe('accelerators from the native page view', () => {
       applyBrowserCompanionState({
         kind: 'accelerator',
         threadId: 'thread-browser',
+        mount: 'mount-1',
         accelerator: { key: 'f', ctrl: true },
       });
       expect(focusedAtReplay).toBe(composer);
@@ -348,6 +352,7 @@ describe('accelerators from the native page view', () => {
       applyBrowserCompanionState({
         kind: 'accelerator',
         threadId: 'thread-browser',
+        mount: 'mount-1',
         accelerator: { key: 'w', ctrl: true },
       });
       expect(during).toBe(false);
@@ -388,12 +393,44 @@ describe('accelerators from the native page view', () => {
     }
   });
 
+  // Every host client receives the event; a client whose pane mount did not
+  // show the page, or that holds none, replays nothing.
+  it.each([
+    ['another client\'s mount', 'mount-2'],
+    ['no mount named', undefined],
+  ])('does not replay a chord routed to %s', (_name, mount) => {
+    const seen: KeyboardEvent[] = [];
+    const listener = (event: KeyboardEvent) => seen.push(event);
+    window.addEventListener('keydown', listener);
+    try {
+      applyBrowserCompanionState({ kind: 'accelerator', threadId: 'thread-browser', mount, accelerator: { key: 'w', ctrl: true } });
+    } finally {
+      window.removeEventListener('keydown', listener);
+    }
+    expect(seen).toEqual([]);
+    expect(getFocusedPaneId()).not.toBe('browser-main');
+  });
+
+  it('does not replay a chord in a client with no pane mounted', () => {
+    resetBrowserCompanionForTest();
+    const seen: KeyboardEvent[] = [];
+    const listener = (event: KeyboardEvent) => seen.push(event);
+    window.addEventListener('keydown', listener);
+    try {
+      applyBrowserCompanionState({ kind: 'accelerator', threadId: 'thread-browser', mount: 'mount-1', accelerator: { key: 'w', ctrl: true } });
+      applyBrowserCompanionState({ kind: 'accelerator', threadId: 'thread-browser', accelerator: { key: 'w', ctrl: true } });
+    } finally {
+      window.removeEventListener('keydown', listener);
+    }
+    expect(seen).toEqual([]);
+  });
+
   it('is inert without a chord', () => {
     const seen: KeyboardEvent[] = [];
     const listener = (event: KeyboardEvent) => seen.push(event);
     window.addEventListener('keydown', listener);
     try {
-      applyBrowserCompanionState({ kind: 'accelerator', threadId: 'thread-browser' });
+      applyBrowserCompanionState({ kind: 'accelerator', threadId: 'thread-browser', mount: 'mount-1' });
     } finally {
       window.removeEventListener('keydown', listener);
     }

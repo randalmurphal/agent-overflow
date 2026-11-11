@@ -3,6 +3,8 @@
 package browser
 
 import (
+	"errors"
+	"log"
 	"strconv"
 	"strings"
 )
@@ -158,7 +160,9 @@ func (e *webkitEngine) HidePage(handle string) {
 	e.pane[p.id] = st
 	e.mu.Unlock()
 	if unpresent {
-		_ = webkitHideView(p.liveView(), p.slot)
+		if err := webkitHideView(p.liveView(), p.slot); err != nil && !errors.Is(err, errViewClosed) {
+			log.Printf("browser: hide page %d: %v", p.id, err)
+		}
 	}
 }
 

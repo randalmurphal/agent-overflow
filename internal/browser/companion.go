@@ -276,14 +276,25 @@ func (m *Manager) emitEscape(handle string) {
 	m.emit(CompanionEvent{Kind: "escape", ThreadID: p.owner, PageID: p.id})
 }
 
+// emitAccelerator routes a claimed chord to the pane mount showing the page,
+// so that only the client holding the mount replays it. A page no pane shows
+// has nobody to act for, and its chord is dropped.
 func (m *Manager) emitAccelerator(handle string, bound keybindings.Accelerator) {
 	m.mu.Lock()
 	p := m.pageByHandleLocked(handle)
+	mount := ""
+	if p != nil && m.presentedPageLocked(p.owner) == p.id {
+		mount, _, _ = m.shownPaneRectLocked(p.owner)
+	}
 	m.mu.Unlock()
 	if p == nil {
 		return
 	}
-	m.emit(CompanionEvent{Kind: "accelerator", ThreadID: p.owner, Accelerator: &bound})
+	if mount == "" {
+		log.Printf("browser: drop the chord %+v pressed in page %s: no pane shows the page", bound, p.id)
+		return
+	}
+	m.emit(CompanionEvent{Kind: "accelerator", ThreadID: p.owner, Mount: mount, Accelerator: &bound})
 }
 
 // AcceleratorsChanged tells an engine that matches chords out of process
@@ -439,23 +450,24 @@ func (m *Manager) SetPaneRect(id string, rect PaneRect) error {
 	return nil
 }
 
-// shownPaneRectLocked answers the host rect of a mounted pane of the thread
-// that can show a page: visible, and neither empty nor clipped away. The
-// caller holds m.mu.
-func (m *Manager) shownPaneRectLocked(threadID string) (PaneRect, bool) {
+// shownPaneRectLocked answers the id and host rect of a mounted pane of the
+// thread that can show a page: visible, and neither empty nor clipped away.
+// The caller holds m.mu.
+func (m *Manager) shownPaneRectLocked(threadID string) (string, PaneRect, bool) {
+	var id string
 	var rect PaneRect
 	shown := false
-	for _, mount := range m.panes {
+	for mountID, mount := range m.panes {
 		if mount.threadID != threadID || !mount.hasRect {
 			continue
 		}
 		if mount.rect.Visible && mount.rect.Width >= 1 && mount.rect.Height >= 1 &&
 			mount.rect.ClipWidth >= 1 && mount.rect.ClipHeight >= 1 {
 			shown = true
-			rect = mount.rect
+			id, rect = mountID, mount.rect
 		}
 	}
-	return rect, shown
+	return id, rect, shown
 }
 
 // presentedPageLocked answers the page a mounted pane shows: the thread's
@@ -466,7 +478,7 @@ func (m *Manager) presentedPageLocked(threadID string) string {
 	if !ok || !session.Visible {
 		return ""
 	}
-	rect, shown := m.shownPaneRectLocked(threadID)
+	_, rect, shown := m.shownPaneRectLocked(threadID)
 	if !shown {
 		return ""
 	}
@@ -555,7 +567,7 @@ func (m *Manager) presentPanes(threadID string) {
 	host, ok := m.engine.(paneHost)
 	m.mu.Lock()
 	session, hasSession := m.sessions[threadID]
-	rect, shown := m.shownPaneRectLocked(threadID)
+	_, rect, shown := m.shownPaneRectLocked(threadID)
 	visible := hasSession && session.Visible && shown
 	var pages []*managedPage
 	var active *managedPage

@@ -47,6 +47,13 @@ export class CompanionEvent {
     "accelerator"?: keybindings$0.Accelerator | null;
 
     /**
+     * Mount rides a Kind "accelerator" event: the pane mount (AttachPane)
+     * showing the page the chord was pressed in. The event reaches every
+     * host client, and only the one holding that mount replays the chord.
+     */
+    "mount"?: string;
+
+    /**
      * FindMode rides a Kind "state" event: how the active page's find is
      * presented (FindModeBar or FindModeEngine), empty when it has none.
      */
@@ -79,7 +86,7 @@ export class CompanionEvent {
     static createFrom($$source: any = {}): CompanionEvent {
         const $$createField2_0 = $$createType1;
         const $$createField11_0 = $$createType3;
-        const $$createField13_0 = $$createType5;
+        const $$createField14_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pages" in $$parsedSource) {
             $$parsedSource["pages"] = $$createField2_0($$parsedSource["pages"]);
@@ -88,7 +95,7 @@ export class CompanionEvent {
             $$parsedSource["accelerator"] = $$createField11_0($$parsedSource["accelerator"]);
         }
         if ("find" in $$parsedSource) {
-            $$parsedSource["find"] = $$createField13_0($$parsedSource["find"]);
+            $$parsedSource["find"] = $$createField14_0($$parsedSource["find"]);
         }
         return new CompanionEvent($$parsedSource as Partial<CompanionEvent>);
     }

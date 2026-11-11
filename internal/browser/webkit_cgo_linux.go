@@ -13,6 +13,7 @@ import "C"
 import (
 	"context"
 	"fmt"
+	"log"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -422,11 +423,14 @@ func webkitSetViewBackground(view webkitView, color webkitRGB) error {
 	})
 }
 
+// webkitHideView parks the view. A view that held keyboard focus gives it to
+// the SPA's webview; the error says when that handoff failed.
 func webkitHideView(view webkitView, slot int) error {
-	return view.do(func(view unsafe.Pointer) {
-		C.ao_wk_host_hide(view)
-		C.ao_wk_host_park(view, C.int(slot))
-	})
+	released := 0
+	if err := view.do(func(view unsafe.Pointer) { released = int(C.ao_wk_host_hide(view, C.int(slot))) }); err != nil {
+		return err
+	}
+	return focusReleaseError(released)
 }
 
 // Every C string below is allocated INSIDE its dispatch closure and freed
@@ -487,8 +491,14 @@ func webkitAdoptView(view unsafe.Pointer, pageID uint64, userScript, consoleHand
 	return nil
 }
 
+// webkitCloseView closes the view, giving keyboard focus it held to the SPA's
+// webview. No caller can act on a failed handoff, so it is logged here.
 func webkitCloseView(view unsafe.Pointer) {
-	gtkDo(func() { C.ao_wk_view_close(view) })
+	released := 0
+	gtkDo(func() { released = int(C.ao_wk_view_close(view)) })
+	if err := focusReleaseError(released); err != nil {
+		log.Printf("browser: close a page: %v", err)
+	}
 }
 
 func webkitOpenInspector(view webkitView) error {
@@ -698,6 +708,14 @@ const (
 // does. For the native smoke.
 func (p *webkitPage) grabFocus() error {
 	return p.liveView().do(func(view unsafe.Pointer) { C.ao_wk_view_grab_focus(view) })
+}
+
+// presented answers whether a pane presents the page's view. For the native
+// smoke.
+func (p *webkitPage) presented() (bool, error) {
+	on := C.int(0)
+	err := p.liveView().do(func(view unsafe.Pointer) { on = C.ao_wk_host_presented(view) })
+	return on == 1, err
 }
 
 // focusHolder answers who holds the page window's focus and whether that

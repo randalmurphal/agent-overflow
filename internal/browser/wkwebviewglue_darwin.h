@@ -68,9 +68,11 @@ void ao_wkv_host_present(void *view, double x, double y, double width, double he
 
 // ao_wkv_host_hide stops presenting THIS view without tearing anything down:
 // its clip container is hidden and no other page's presentation is touched.
-// The caller parks the view immediately afterwards, as on Linux. The container
-// itself lives until the page closes, so re-showing costs no view surgery.
-void ao_wkv_host_hide(void *view);
+// It then parks the view at slot, as on Linux. The container itself lives
+// until the page closes, so re-showing costs no view surgery. A view that
+// held keyboard focus hands it to the SPA's webview: it answers 1 when it
+// did, -1 when the view held focus and the handoff failed, 0 otherwise.
+int ao_wkv_host_hide(void *view, int slot);
 
 // ao_wkv_host_presented reports whether this view is currently presented, which
 // is what decides whether a dialog or file picker is shown or answered. It is
@@ -121,7 +123,9 @@ void ao_wkv_view_adopt(void *view, uint64_t page_id, uint64_t profile_id,
                        const char *user_script, const char *console_handler,
                        const char *download_dir);
 
-void ao_wkv_view_close(void *view);
+// ao_wkv_view_close closes the view, handing keyboard focus it held to the
+// SPA's webview, and answers as ao_wkv_host_hide does.
+int ao_wkv_view_close(void *view);
 // ao_wkv_view_set_size sets the page's viewport: its bounds size, parked or
 // presented. A presented view keeps its fitted frame and lays out at the new
 // size until the next placement carries the matching scale.

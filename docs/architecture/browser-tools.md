@@ -147,9 +147,19 @@ so AO's chords have to be taken back at the engine:
   bare Escape, leave focus in the page. No command focuses anything for
   this; the command puts DOM focus where it wants it (the find bar's input,
   the palette), and the keys typed next reach it.
+- A page that is not visible never holds keyboard focus. Each way a pane
+  stops showing a page (a tab switch, the pane closing, a compact screen
+  change, the companion hidden) is the engine's hide of that page, and the
+  hide, like the close of a page, gives focus the page held to the app's
+  webview through the same code as a claimed chord's handoff
+  (`ao_wk_focus_app`, `ao_wkv_focus_app`, and the launcher's
+  `releaseFocus`). Showing a page takes no focus.
 - The chord then reaches the frontend as an `accelerator` event on
   `browser:companion-state`, carrying the BOUND spelling (Shift glyph
-  variants are normalized by the match). The store focuses the thread's
+  variants are normalized by the match) and the pane mount showing the page
+  (`mount`). Every host client receives the event, and only the one holding
+  that mount replays it; a chord in a page no pane shows is dropped. The
+  store focuses the thread's
   browser companion and replays the chord as a window keydown, so `when`
   gates, rebinds and the palette all behave as if the SPA had been focused.
   A bound chord whose `when` fails there is a no-op — the page never gets it

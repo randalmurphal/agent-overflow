@@ -548,16 +548,39 @@ void ao_wkv_host_present(void *view, double x, double y, double width, double he
   }
 }
 
-void ao_wkv_host_hide(void *view) {
+// ao_view_holds_focus answers whether the view's window has the view, or a
+// view inside it, as its first responder.
+static BOOL ao_view_holds_focus(NSView *view) {
+  NSResponder *responder = [[view window] firstResponder];
+  return [responder isKindOfClass:[NSView class]] && [(NSView *)responder isDescendantOf:view];
+}
+
+// ao_release_focus ends a page's hold on keyboard focus when the page stops
+// being visible. A parked view stays in the window inside the 1x1 clip and
+// would go on taking every key unseen; a view removed from its window leaves
+// the window itself as first responder, so the keys reach nothing. Either
+// way the focus goes to the SPA's webview, as a claimed chord's does
+// (ao_wkv_focus_app).
+static int ao_release_focus(BOOL held) {
+  if (!held) {
+    return 0;
+  }
+  return ao_wkv_focus_app() ? 1 : -1;
+}
+
+int ao_wkv_host_hide(void *view, int slot) {
   @autoreleasepool {
     if (view == NULL) {
-      return;
+      return 0;
     }
-    // Only this page's container. The caller parks the view out of it
-    // immediately afterwards, and an emptied container would otherwise keep
-    // painting the pane's background colour over the SPA — while another
-    // thread's presented pane is left exactly as it was.
+    BOOL held = ao_view_holds_focus((NSView *)view);
+    // Only this page's container. The park moves the view out of it, and an
+    // emptied container would otherwise keep painting the pane's background
+    // colour over the SPA, while another thread's presented pane is left
+    // exactly as it was.
     [ao_view_clip((NSView *)view) setHidden:YES];
+    ao_wkv_host_park(view, slot);
+    return ao_release_focus(held);
   }
 }
 
@@ -1145,12 +1168,13 @@ void ao_wkv_view_adopt(void *view, uint64_t page_id, uint64_t profile_id,
   }
 }
 
-void ao_wkv_view_close(void *view) {
+int ao_wkv_view_close(void *view) {
   @autoreleasepool {
     if (view == NULL) {
-      return;
+      return 0;
     }
     WKWebView *v = (WKWebView *)view;
+    BOOL held = ao_view_holds_focus(v);
     ao_wkv_host_unpark(view);
     // Unpark first, then the container: it holds nothing by that point, so
     // dropping the association releases it for good. A per-page view left in
@@ -1170,6 +1194,7 @@ void ao_wkv_view_close(void *view) {
     }
     objc_setAssociatedObject(v, &kAOPageIDKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [v release];
+    return ao_release_focus(held);
   }
 }
 

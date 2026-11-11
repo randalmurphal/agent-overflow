@@ -52,8 +52,10 @@ void ao_wk_host_present(void *view, double x, double y, double width,
                         double clip_width, double clip_height, double vw,
                         double vh, double scale);
 
-// ao_wk_host_hide ends a presentation; the caller parks the view next.
-void ao_wk_host_hide(void *view);
+// ao_wk_host_hide ends a presentation and parks the view at slot. A view
+// that held keyboard focus hands it to the SPA's webview: it answers 1 when
+// it did, -1 when the view held focus and the handoff failed, 0 otherwise.
+int ao_wk_host_hide(void *view, int slot);
 
 // ao_wk_host_presented reports whether this view is presented, which is what
 // decides whether a dialog, picker, or context menu is shown or answered.
@@ -83,7 +85,9 @@ void *ao_wk_view_new(void *session, uint64_t page_id, const char *user_script,
 void ao_wk_view_adopt(void *view, uint64_t page_id, const char *user_script,
                       const char *console_handler);
 
-void ao_wk_view_close(void *view);
+// ao_wk_view_close closes the view, handing keyboard focus it held to the
+// SPA's webview, and answers as ao_wk_host_hide does.
+int ao_wk_view_close(void *view);
 // ao_wk_view_set_background sets the view's base color (opaque), which is what
 // the page paints over and what shows where it has not painted yet.
 void ao_wk_view_set_background(void *view, double red, double green, double blue);

@@ -196,10 +196,13 @@ export function isReplayingBrowserPageChord(): boolean {
  * to the SPA. DOM focus left in the SPA stays where it is, so a surface the
  * chord opens returns focus there on close; it gates nothing for this chord
  * (isReplayingBrowserPageChord).
+ *
+ * Every host client receives the event; only the one holding the pane
+ * mount that showed the page (`event.mount`) replays it.
  */
 function replayBrowserAccelerator(event: BrowserCompanionEvent): void {
   const chord = event.accelerator;
-  if (!chord) return;
+  if (!chord || !event.mount || event.mount !== browserPaneMountId(event.threadId)) return;
   const sourcePaneId = sourcePaneIdForThread(event.threadId);
   const companion = sourcePaneId ? companionForSource(sourcePaneId, 'browser') : null;
   if (companion) focusPane(companion.paneId);
@@ -362,4 +365,9 @@ export function resetBrowserCompanionForTest(): void {
   hydratedThreads.clear();
   store.suspend();
   store.resetAll();
+}
+
+/** Records the thread's pane mount as an attach would, for tests. */
+export function setBrowserPaneMountForTest(threadId: string, mount: string): void {
+  paneIds.set(threadId, mount);
 }

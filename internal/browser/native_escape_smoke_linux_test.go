@@ -67,6 +67,10 @@ func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 		t.Fatalf("mount a pane: %v", err)
 	}
 	t.Cleanup(func() { manager.DetachPane(mount.ID) })
+	// A chord is routed to the pane showing its page.
+	if err := manager.SetPaneRect(mount.ID, PaneRect{Width: 640, Height: 400, ViewportWidth: 1280, ViewportHeight: 800, Visible: true}); err != nil {
+		t.Fatalf("place the pane: %v", err)
+	}
 	p, _, err := manager.lookupOwnedPage(access, page.ID)
 	if err != nil {
 		t.Fatalf("look the page up: %v", err)

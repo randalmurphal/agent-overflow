@@ -62,6 +62,20 @@ func (h *Host) acceleratorPressed(page *hostPage, args *iAcceleratorKeyPressedEv
 	h.config.Report(page.id, ReportAccelerator, string(detail))
 }
 
+// releaseFocus ends a page's hold on keyboard focus when it stops being
+// visible: held says the page's window had the focus before its hide or
+// close. Nothing in the hide says where Windows puts that focus, so it is
+// given to the launcher window, and so to the SPA, by the same handoff as a
+// claimed chord's. Runs on the UI thread.
+func (h *Host) releaseFocus(page *hostPage, held bool) {
+	if !held {
+		return
+	}
+	if !focusWindow(h.config.HostWindow()) {
+		h.config.Logf("browser host: page %s hidden: keyboard focus stays where it was (the launcher window is not in the foreground)", page.id)
+	}
+}
+
 // claimChord answers the bound chord a key event is, if AO takes it. An
 // unmodified key is never taken: Escape (always an accelerator: WebView2.idl,
 // add_AcceleratorKeyPressed) belongs to the page and to the engine's own find

@@ -41,6 +41,10 @@ type CompanionEvent struct {
 	// while the thread's page view held keyboard focus, for the frontend to
 	// dispatch as if the SPA had received it.
 	Accelerator *keybindings.Accelerator `json:"accelerator,omitempty"`
+	// Mount rides a Kind "accelerator" event: the pane mount (AttachPane)
+	// showing the page the chord was pressed in. The event reaches every
+	// host client, and only the one holding that mount replays the chord.
+	Mount string `json:"mount,omitempty"`
 	// FindMode rides a Kind "state" event: how the active page's find is
 	// presented (FindModeBar or FindModeEngine), empty when it has none.
 	FindMode string `json:"findMode,omitempty"`
