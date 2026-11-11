@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { useStreamdown } from '../context.svelte';
-	import { BLOCKED_LINK_SUFFIX, classifyLinkHref } from './url';
+	import { INCOMPLETE_LINK_HREF, classifyLinkHref, linkTagText } from './url';
 	import {
 		PREVIEW_ALLOW_CLASS,
 		PREVIEW_ALLOW_LABEL,
@@ -61,7 +61,7 @@
 			type="button"
 			class={PREVIEW_ALLOW_CLASS}
 			{...previewAllowAttributes(preview)}>{PREVIEW_ALLOW_LABEL}</button>{/if}
-{:else if transformedUrl || token.href === 'streamdown:incomplete-link'}
+{:else if transformedUrl || token.href === INCOMPLETE_LINK_HREF}
 	<Slot
 		props={{
 			href: transformedUrl,
@@ -90,6 +90,6 @@
 		class={streamdown.theme.link.blocked}
 		title={linkClass.kind === 'anchor' ? undefined : linkClass.title}
 	>
-		{@render children()}{#if linkClass.kind === 'blocked'}{BLOCKED_LINK_SUFFIX}{/if}
+		{@render children()}{linkTagText(token.href, streamdown.allowedLinkPrefixes ?? [])}
 	</span>
 {/if}

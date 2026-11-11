@@ -6,7 +6,9 @@ import ChatMarkdown from '../ChatMarkdown.svelte';
 import { EMPTY_PATH_REFS } from '../../../utils/pathLinkify';
 import { countFindMatches, findNeedle, foldFindText } from '../../../utils/findMatch';
 import { findTextSegments } from '../../../utils/findHighlights';
-import { markdownFindText } from './markdownFindText';
+import { markdownFindText, SHOWS } from './markdownFindText';
+import { EMBEDDED_HTML_EXTENSIONS, lex, parseBlocks } from '../../../markdown';
+import { buildForgeAttachmentExtension } from '../../../utils/forgeAttachmentExtension';
 import { FORGE_ATTACHMENT_SOURCE_CONTEXT } from './forgeAttachmentContext';
 import type { ForgeAttachmentSource } from '../../../utils/forgeAttachments';
 import { resetCodeSpanCacheForTest } from './codeSpanCache';
@@ -66,6 +68,10 @@ const CORPUS = [
   'Open http://localhost:5173/app now.',
   '<Note kind="x">mdx child words</Note> after',
   'Copy &nbsp;non&#8209;breaking &#x41; and \\backslash',
+  '[center]\naligned needle words\n[/center]\n\nafter the block',
+  '[typed](streamdown:incomplete-link) and [label][ref]\n\n[ref]: https://example.com/ref',
+  '- item\n\n  loose paragraph\n\n- next',
+  '| Name | Count |\n| --- | --- |\n| apples | 3 |\n| --- | --- |\n| total footer | 3 |',
 ];
 
 const TOGGLED = CORPUS.filter((source) => source.includes('<details'));
@@ -110,7 +116,32 @@ function mismatches(source: string, dom: readonly string[], projected: readonly 
     .filter((row) => row.dom !== row.projected);
 }
 
+// Every token kind the projection has a rule for, as the corpus lexes.
+function corpusKinds(): Set<string> {
+  const extensions = [...buildForgeAttachmentExtension({ ...FORGE, embeddedHtml: true }), ...EMBEDDED_HTML_EXTENSIONS];
+  const seen = new Set<string>();
+  const visit = (tokens: readonly { type: string; tokens?: unknown[]; items?: unknown[] }[] | undefined) => {
+    for (const token of tokens ?? []) {
+      seen.add(token.type);
+      visit(token.tokens as typeof tokens);
+      visit(token.items as typeof tokens);
+    }
+  };
+  for (const source of CORPUS) {
+    for (const block of parseBlocks(source, extensions)) visit(lex(block, extensions) as never);
+  }
+  return seen;
+}
+
 describe('markdownFindText', () => {
+  it('has a corpus case for every token kind the lexer produces', () => {
+    const seen = corpusKinds();
+    // lex() drops these at the top level; a block holds none.
+    const dropped = new Set(['space', 'footnote']);
+    expect(Object.keys(SHOWS).filter((kind) => !seen.has(kind) && !dropped.has(kind))).toEqual([]);
+    expect([...seen].filter((kind) => !(kind in SHOWS))).toEqual([]);
+  });
+
   it.each(CORPUS)('counts what the rendered comment shows: %s', async (source) => {
     const root = await mounted(source);
     const dom = findTextSegments(root);
