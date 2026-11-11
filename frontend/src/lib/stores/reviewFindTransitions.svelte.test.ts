@@ -4,11 +4,16 @@ import { createReviewFind, type ReviewFind, type ReviewFindHost, type ReviewFind
 // The review find store's contract (reviewFind.svelte.ts header) as a
 // transition table: every ordered pair of operations, every triple with
 // a deferred host reveal, and each ask whose deferred reveal settles
-// before or after every other operation, from a query still scanning. After each
-// operation `selected` may change only as the contract says; after the
-// sequence settles, the index points at `selected`, a reveal happened
-// only for an ask, at most once per ask, never after close, and did
-// happen when its match survived and the content is stable.
+// before or after every other operation, from a query still scanning.
+// The table keeps its own model of the published matches, from the
+// source's scans and the contract's rule (a query publishes at each pause,
+// any scan publishes its whole result when it completes, a superseded one
+// nothing), and of the reading position (matches from n3 on). After each
+// operation the published matches are the model's and `selected` changes
+// only as the contract says; after the sequence settles, the index points
+// at `selected`, a reveal happened only for an ask, at most once per ask,
+// never after close, and did happen when its match survived and the
+// content is stable.
 
 interface Hit { identity: string }
 
@@ -37,18 +42,49 @@ function harness() {
   const running: { call: Call; resolve: (done: boolean) => void }[] = [];
   let find!: ReviewFind<Hit>;
 
+  // The model: the published matches, whether a completed scan published
+  // them, and which scan is live and what kind (the operation that starts
+  // a scan names it; a scan the store starts on its own is a recount).
+  let published: string[] = [];
+  let publishedComplete = false;
+  let liveScan = -1;
+  let liveRunning = false;
+  let nextScanKind: 'query' | 'recount' = 'recount';
+  // The last published set each identity was in: the survivor order.
+  const seen = new Map<string, string[]>();
+  const modelPublish = (list: string[], whole: boolean) => {
+    published = list;
+    publishedComplete = whole;
+    for (const id of list) seen.set(id, list);
+  };
+  // The reader is at n3: a new query's first match is the first from n3 on.
+  const below = (id: string) => Number(id.slice(1)) >= 3;
+
   const src: ReviewFindSource<Hit> = {
     remote: false,
     run: async (query, context) => {
       scans += 1;
+      const id = scans;
+      const kind = nextScanKind;
+      nextScanKind = 'recount';
+      liveScan = id;
+      liveRunning = true;
+      if (kind === 'query') modelPublish([], false);
       const all = content.filter((item) => item.includes(query));
+      const found: string[] = [];
       for (let i = 0; i < all.length; i += 1) {
         if (i > 0 && i % 2 === 0) {
+          if (liveScan === id && kind === 'query') modelPublish(found.slice(), false);
           if (!context.live()) return false;
           await new Promise<void>((resolve) => gates.push(resolve));
           if (!context.live()) return false;
         }
         context.emit({ identity: all[i] });
+        found.push(all[i]);
+      }
+      if (liveScan === id) {
+        modelPublish(found, true);
+        liveRunning = false;
       }
       return false;
     },
@@ -56,7 +92,7 @@ function harness() {
   const host: ReviewFindHost<Hit> = {
     paneId: () => 'pane-table',
     source: () => src,
-    readingPosition: () => () => true,
+    readingPosition: () => (hit) => below(hit.identity),
     reveal: (hit) => {
       const call: Call = { ask, identity: hit.identity, answer: nextAnswer, scansAtCall: scans };
       nextAnswer = 'true';
@@ -100,25 +136,25 @@ function harness() {
     next.resolve(shows);
   }
 
-  // `selected` after the step rule, from the projection the step reads.
+  // `selected` after the step rule, over the model's published matches:
+  // steps wrap once a completed scan published them.
   function stepped(delta: 1 | -1): string | null {
-    const hits = find.hits;
-    const at = find.result.current;
-    if (hits.length === 0) return find.selected;
+    const at = find.selected === null ? -1 : published.indexOf(find.selected);
+    if (published.length === 0) return find.selected;
     let next = at < 0 ? 0 : at + delta;
-    if (next < 0 || next >= hits.length) {
-      if (find.result.pending) return find.selected;
-      next = (next + hits.length) % hits.length;
+    if (next < 0 || next >= published.length) {
+      if (!publishedComplete) return find.selected;
+      next = (next + published.length) % published.length;
     }
-    return hits[next].identity;
+    return published[next];
   }
 
-  // The last published matches each identity was seen in.
-  const seen = new Map<string, string[]>();
-  function noteSeen(): void {
-    const ids = find.hits.map((hit) => hit.identity);
-    if (find.selected !== null && ids.includes(find.selected)) seen.set(find.selected, ids);
+  // A new query's first match in the published matches: the first from
+  // the reading position on, else the last once a scan completed.
+  function firstChoice(): string | null {
+    return published.find(below) ?? (publishedComplete ? (published.at(-1) ?? null) : null);
   }
+
   function survivor(gone: string): string | null {
     const before = seen.get(gone) ?? [];
     const at = before.indexOf(gone);
@@ -136,20 +172,23 @@ function harness() {
     switch (op) {
       case 'query':
         newAsk();
+        nextScanKind = 'query';
         find.search('n');
         expected = null;
         break;
       case 'reopen':
+        closeModel();
         find.clear();
         newAsk();
+        nextScanKind = 'query';
         find.search('n');
         expected = null;
         break;
       case 'next':
       case 'prev': {
         expected = stepped(op === 'next' ? 1 : -1);
-        const moves = find.hits.length > 0 && expected !== was;
-        if (moves || (find.hits.length > 0 && find.result.current < 0)) {
+        const moves = published.length > 0 && expected !== was;
+        if (moves || (published.length > 0 && find.result.current < 0)) {
           newAsk();
           stepAsk = true;
         }
@@ -194,6 +233,7 @@ function harness() {
         break;
       case 'close':
         ask = null;
+        closeModel();
         find.clear();
         expected = null;
         break;
@@ -204,20 +244,30 @@ function harness() {
     check(op, expected, unchosen);
   }
 
-  // After an operation, `selected` is what the operation made it, or
-  // what scan progress may make that: a new query's first match, or the
-  // nearest survivor of a match that is gone.
+  function closeModel(): void {
+    liveScan = -1;
+    liveRunning = false;
+    published = [];
+    publishedComplete = false;
+  }
+
+  // After an operation, the published matches are the model's, and
+  // `selected` is what the operation made it, or what scan progress may
+  // make that: a new query's first match, or the nearest survivor of a
+  // match that is gone.
   function check(op: Op, expected: string | null, unchosen: boolean): void {
+    const shown = find.hits.map((hit) => hit.identity);
+    if (shown.join() !== published.join()) violations.push(`${op}: published ${shown.join()}, contract says ${published.join()}`);
+    if (find.result.pending !== liveRunning) violations.push(`${op}: pending ${find.result.pending} with a scan ${liveRunning ? '' : 'not '}running`);
     const now = find.selected;
     const allowed = new Set<string | null>([expected]);
-    if (unchosen) allowed.add(find.hits[0]?.identity ?? null);
+    if (unchosen) allowed.add(firstChoice());
     if (expected !== null && !content.includes(expected)) allowed.add(survivor(expected));
     // A query chooses its first match, which can be gone already too.
     // A copy: the loop adds to the set.
     const candidates = Array.from(allowed);
     for (const id of candidates) if (id !== null && !content.includes(id)) allowed.add(survivor(id));
     if (!allowed.has(now)) violations.push(`${op}: selected ${now}, contract allows ${[...allowed].join(' or ')}`);
-    noteSeen();
   }
 
   async function quiesce(): Promise<void> {
@@ -265,9 +315,10 @@ function harness() {
   return {
     async setup() {
       newAsk();
+      nextScanKind = 'query';
       find.search('n');
       await flush();
-      noteSeen();
+      check('query', null, true);
     },
     apply,
     quiesce,
@@ -291,6 +342,14 @@ for (const asked of ['query', 'next', 'prev', 'reopen'] as const) {
       SEQUENCES.push(['hostDeferred', asked, other, 'complete', settled], ['hostDeferred', asked, settled, other, 'complete']);
     }
   }
+}
+
+// A recount started while a query's published prefix reaches past the
+// selected match, then that match removed: its survivor is the next match
+// the prefix published, not one before it.
+for (const step of ['next', 'prev'] as const) {
+  SEQUENCES.push(['publish', step, 'refresh', 'remove', 'refresh', 'complete']);
+  SEQUENCES.push(['publish', 'publish', step, 'refresh', 'remove', 'refresh', 'complete']);
 }
 
 describe('review find transitions', () => {

@@ -109,16 +109,13 @@ describe('review find', () => {
     await flush();
     await s.step();
     expect(reveals).toEqual([['f1', false]]);
-    // The restart has found only f0: it is not chosen over the match the
-    // reveal waits for.
-    expect([find.result.current, find.result.pending]).toEqual([-1, true]);
-    // The replaced scan's pause, then the restart's.
-    await s.step();
-    await s.step();
+    // The recount keeps what the query published, f1 current, though the
+    // reading position moved above f0.
+    expect([find.result.current, find.result.count, find.result.pending]).toEqual([1, 2, true]);
+    await s.release();
     expect(find.hits[find.result.current].identity).toBe('f1');
     expect(reveals).toEqual([['f1', false], ['f1', false]]);
     expect(find.wants('f1')).toBe(false);
-    await s.release();
     expect([find.result.count, find.result.pending]).toEqual([4, false]);
     // Later recounts and restarts never reveal it again.
     find.refresh();
@@ -234,6 +231,110 @@ describe('review find', () => {
     expect(reveals).toEqual([['e1', false]]);
   });
 
+  describe('a recount swaps its result in whole', () => {
+    const ids = (find: { hits: readonly Hit[] }) => find.hits.map((hit) => hit.identity);
+
+    it('orders the survivors by the published set, not by a recount in progress', async () => {
+      let items = ['a1', 'a2', 'a3', 'a4', 'a5', 'a6'];
+      const s = source(() => items, { slice: 2 });
+      const { h } = host(() => s.src);
+      const find = createReviewFind(h, () => 'diff');
+      find.search('a');
+      await flush();
+      await s.step();
+      find.next();
+      expect([ids(find), find.selected, find.result.pending]).toEqual([['a1', 'a2', 'a3', 'a4'], 'a2', true]);
+      // A recount starts and reaches a pause; nothing it found is published.
+      find.refresh();
+      await flush();
+      expect([ids(find), find.selected, find.result.pending]).toEqual([['a1', 'a2', 'a3', 'a4'], 'a2', true]);
+      // The selected match goes (its draft opens an editor): a recount again.
+      items = items.filter((item) => item !== 'a2');
+      find.refresh();
+      await flush();
+      expect(ids(find)).toEqual(['a1', 'a2', 'a3', 'a4']);
+      await s.release();
+      expect([ids(find), find.selected, find.result.pending]).toEqual([['a1', 'a3', 'a4', 'a5', 'a6'], 'a3', false]);
+    });
+
+    it('a recount superseded by a new query is dropped, and the query publishes from empty', async () => {
+      const s = source(() => ['b1', 'b2', 'b3', 'b4'], { slice: 2 });
+      const { h } = host(() => s.src);
+      const find = createReviewFind(h, () => 'diff');
+      find.search('b');
+      await flush();
+      await s.release();
+      find.refresh();
+      await flush();
+      expect([ids(find), find.result.pending]).toEqual([['b1', 'b2', 'b3', 'b4'], true]);
+      find.search('b3');
+      expect([ids(find), find.result.pending]).toEqual([[], true]);
+      await s.release();
+      expect([ids(find), find.selected]).toEqual([['b3'], 'b3']);
+    });
+
+    it('a step during a recount walks the published matches; one gone at the swap gives way to its survivor', async () => {
+      let items = ['c1', 'c2', 'c3'];
+      const s = source(() => items, { slice: 1 });
+      const { h, reveals } = host(() => s.src, {
+        reveal: (hit, force) => {
+          reveals.push([hit.identity, force]);
+          return false;
+        },
+      });
+      const find = createReviewFind(h, () => 'diff');
+      find.search('c');
+      await flush();
+      await s.release();
+      items = ['c1', 'c3'];
+      find.refresh();
+      await flush();
+      find.next();
+      expect([find.selected, find.wants('c2')]).toEqual(['c2', true]);
+      await s.release();
+      expect([ids(find), find.selected, find.wants('c2'), find.wants('c3')]).toEqual([['c1', 'c3'], 'c3', false, false]);
+    });
+
+    it('steps wrap during a recount of a completed set, and not over a new query prefix', async () => {
+      const s = source(() => ['e1', 'e2', 'e3', 'e4', 'e5'], { slice: 2 });
+      const { h } = host(() => s.src);
+      const find = createReviewFind(h, () => 'diff');
+      find.search('e');
+      await flush();
+      await s.release();
+      find.refresh();
+      await flush();
+      expect([find.selected, find.result.pending]).toEqual(['e1', true]);
+      find.previous();
+      expect(find.selected).toBe('e5');
+      find.next();
+      expect(find.selected).toBe('e1');
+      await s.release();
+      find.search('e');
+      await flush();
+      expect([ids(find), find.selected]).toEqual([['e1', 'e2'], 'e1']);
+      find.previous();
+      expect(find.selected).toBe('e1');
+    });
+
+    it('keeps the published cap until the swap', async () => {
+      let items = Array.from({ length: 100 }, (_, i) => `d${i}`);
+      const s = source(() => items, { slice: 50 });
+      const { h } = host(() => s.src);
+      const find = createReviewFind(h, () => 'diff');
+      find.search('d');
+      await flush();
+      await s.release();
+      expect([find.result.count, find.result.capped]).toEqual([100, true]);
+      items = items.slice(0, 60);
+      find.refresh();
+      await flush();
+      expect([find.result.count, find.result.capped, find.result.pending]).toEqual([100, true, true]);
+      await s.release();
+      expect([find.result.count, find.result.capped, find.result.pending]).toEqual([60, false, false]);
+    });
+  });
+
   it('a newer step or a close drops the outstanding reveal', async () => {
     const s = source(() => ['n1', 'n2', 'n3']);
     const { h, reveals } = host(() => s.src, {
@@ -320,7 +421,8 @@ describe('review find', () => {
     reveals.length = 0;
     items = ['c0', 'c1', 'c2', 'c2b', 'c3'];
     find.refresh();
-    expect(find.result.pending).toBe(false);
+    // Pending, with the published matches as they were until the swap.
+    expect([find.result.pending, find.result.count, find.result.current]).toEqual([true, 3, 1]);
     await flush();
     expect(find.result.count).toBe(5);
     expect(find.result.current).toBe(2);
@@ -419,7 +521,8 @@ describe('review find', () => {
     stale = true;
     find.refresh();
     await flush();
-    expect([find.result.current, find.result.count, find.result.pending]).toEqual([1, 2, false]);
+    // Nothing applies; the host's rescan is still owed.
+    expect([find.result.current, find.result.count, find.result.pending]).toEqual([1, 2, true]);
     find.search('z1');
     await flush();
     expect([find.result.count, find.result.pending]).toEqual([0, true]);

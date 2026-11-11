@@ -3,11 +3,12 @@
 // source finds every match in document order; this owns the session.
 //
 // A query scans the whole view and the count grows as the scan goes
-// (`pending` until it ends). Steps wrap once the scan is done. A content
-// change in the same view (a commit, a filter, a revision, a live log
-// growing) rescans in place; one that lands while a query still scans
-// restarts it. A view change starts over. Only the latest scan applies; a
-// newer query, a rescan or a close stops the one running. A failed scan
+// (`pending` until it ends). Steps wrap once a scan has completed. A
+// content change in the same view (a commit, a filter, a revision, a live
+// log growing, a details toggle, a draft's editor) recounts in place,
+// stopping the scan running, even a query's. A view change starts over.
+// Only the latest scan applies; a newer query, a recount or a close stops
+// the one running and drops what it found. A failed scan
 // is the result's `error`. DOM work (painting, scrolling, expanding,
 // shifting a clipped line sideways) belongs to the host.
 //
@@ -32,6 +33,12 @@
 //
 // `hits` and the current index are a projection of the latest scan and
 // never the source of (a) or (b).
+//
+// Only a new query publishes progressively, from empty. A recount scans
+// into a private result and swaps it in whole when it completes; until
+// then the published matches, count, current match and shifted line stay
+// as they were, with `pending` set. The survivor order of (a) is the
+// published set, which a recount in progress never truncates.
 
 import { paneFindReads, type PaneFindProvider, type PaneFindResult } from './paneFind.svelte';
 import { errString } from '../utils/errors';
@@ -107,7 +114,7 @@ function owe(identity: string | null, force: boolean): OwedReveal {
   return { identity, force, running: false, seen: false, barrier: -1 };
 }
 
-type Mode = 'query' | 'refresh';
+type Mode = 'query' | 'recount';
 
 // The index in `found` of the first match after `at` in `before` that is
 // still there, else the last one before it; -1 when none is.
@@ -135,9 +142,9 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
   let seq = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let owedReveal: OwedReveal | null = null;
-  // The latest published matches holding `selected`, for the nearest
-  // survivor when it disappears.
-  let basis: readonly H[] = [];
+  // Whether `hits` is a completed scan's, not a query's prefix: only then
+  // do steps wrap.
+  let complete = false;
 
   const result: PaneFindResult = {
     get count() { return hits.length; },
@@ -150,16 +157,6 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
 
   function paint(): void {
     host.paint(query, hits[current] ?? null);
-  }
-
-  function publishHits(next: H[]): void {
-    hits = next;
-    if (selected !== null && next.some((hit) => hit.identity === selected)) basis = next;
-  }
-
-  function select(identity: string | null): void {
-    selected = identity;
-    if (identity !== null) basis = hits;
   }
 
   // Serves the owed reveal for scan number `scanned` (a step or a settled
@@ -203,7 +200,7 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
 
   // A new query's first match is chosen: it is the reveal's match.
   function chooseFirst(at: number): void {
-    select(hits[at].identity);
+    selected = hits[at].identity;
     if (owedReveal && owedReveal.identity === null) owedReveal.identity = selected;
   }
 
@@ -221,19 +218,21 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
       pending = false;
       if (mode === 'query') {
         hits = [];
+        complete = false;
         capped = false;
         error = null;
       }
       paint();
       return;
     }
+    pending = true;
     if (mode === 'query') {
-      // A restart keeps `selected` and the owed reveal; the matches are
-      // the new scan's as it publishes them.
+      // A new query publishes as it goes, from empty. A recount publishes
+      // nothing until it completes.
       hits = [];
+      complete = false;
       capped = false;
       error = null;
-      pending = true;
       paint();
     }
     const go = (): Promise<void> => (mine === seq ? scan(mode, mine, source) : Promise.resolve());
@@ -259,7 +258,7 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
     const publish = () => {
       if (mode !== 'query' || found.length === shown) return;
       shown = found.length;
-      publishHits(found.slice());
+      hits = found.slice();
       if (selected === null) {
         const at = found.findIndex(below);
         if (at >= 0) chooseFirst(at);
@@ -281,6 +280,7 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
     } catch (err) {
       if (!live()) return;
       hits = [];
+      complete = false;
       capped = false;
       pending = false;
       error = errString(err);
@@ -289,11 +289,13 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
     }
     if (!live()) return;
     if (wasCapped === null) return;
-    const before = basis;
+    // The swap: the published set before it orders the survivors.
+    const before = hits;
     error = null;
     capped = wasCapped;
     pending = false;
-    publishHits(found);
+    hits = found;
+    complete = true;
     if (selected === null) {
       // Only a new query that has not chosen yet picks a match here; one
       // that found none (the view still loading) waits for a scan that
@@ -312,7 +314,7 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
       const gone = selected;
       if (owedReveal?.identity === gone) owedReveal = null;
       const near = nearestSurviving(before, before.findIndex((hit) => hit.identity === gone), found);
-      select(near >= 0 ? found[near].identity : null);
+      selected = near >= 0 ? found[near].identity : null;
     }
     paint();
     serve(mine);
@@ -323,19 +325,18 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
     if (count === 0) return;
     let next = current < 0 ? 0 : current + delta;
     if (next < 0 || next >= count) {
-      // The end of a scan still running is not the last match.
-      if (pending) return;
+      // The end of a query's prefix is not the last match.
+      if (!complete) return;
       next = (next + count) % count;
     }
-    select(hits[next].identity);
+    selected = hits[next].identity;
     owedReveal = owe(selected, true);
     paint();
     serve(Infinity);
   }
 
   function newQuery(): void {
-    select(null);
-    basis = [];
+    selected = null;
     owedReveal = owe(null, false);
     start('query');
   }
@@ -353,7 +354,7 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
     next: () => step(1),
     previous: () => step(-1),
     refresh(): void {
-      if (query) start(pending ? 'query' : 'refresh');
+      if (query) start('recount');
     },
     rescope(): void {
       if (query) newQuery();
@@ -362,10 +363,10 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
     clear(): void {
       stop();
       query = '';
-      select(null);
-      basis = [];
+      selected = null;
       owedReveal = null;
       hits = [];
+      complete = false;
       capped = false;
       error = null;
       pending = false;
