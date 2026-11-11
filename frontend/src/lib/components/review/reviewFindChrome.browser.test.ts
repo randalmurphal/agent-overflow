@@ -81,7 +81,7 @@ afterEach(() => {
   for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 });
 
-function painted(root: HTMLElement, query: string): string[] {
+function painted(root: HTMLElement, query: string): (string | null)[] {
   highlighter ??= createFindHighlighter({ root, name: 'ao-find-chrome', rowSelector: '[data-find-key]', rowKeyAttribute: 'data-find-key', rowsOnly: true });
   highlighter.setQuery(query);
   return highlighter.matches.map((match) => match.rowKey);
@@ -209,7 +209,7 @@ describe('review find over row chrome', () => {
     cleanups.push(() => { void unmount(app); });
     await waitFor(() => target.textContent!.includes('gamma red'), 'log lines');
     // The search reads each line as the view shows it, without escapes.
-    const shownText = lines.map((line) => line.replace(/\u001b\[[0-9;]*m/g, ''));
+    const shownText = ['short gamma', `${'x'.repeat(40)} gamma`, 'gamma red'];
     for (const query of [...LOG_CHROME, 'gamma']) {
       const count = shownText.reduce((sum, line) => sum + countFindMatches(line, query), 0);
       expect(painted(target, query).length, query).toBe(count);
