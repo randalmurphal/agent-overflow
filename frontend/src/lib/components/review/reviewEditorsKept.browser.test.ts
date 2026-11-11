@@ -337,7 +337,7 @@ describe('open comment editors across a row unmount', () => {
     expect(editing()!.value).toBe('saved body');
   });
 
-  it('drop a draft edit when the review moves to another subject', async () => {
+  it('keep both editors when the review re-enters its subject, and drop them on another subject', async () => {
     const held = [draft('workspace', '')];
     setBindingMock('GetThread', async () => ({ id: 'thread-1', workspacePath: '/repo' }));
     setBindingMock('GetGitStatus', async () => ({}));
@@ -349,12 +349,24 @@ describe('open comment editors across a row unmount', () => {
       held.map((comment) => ({ ...comment, scope, sourceKey })));
     const ctx = makeStubPanelContext();
     app = mount(ReviewPane, { target, props: { ctx } });
+    await openNewComment();
+    type(editor()!, 'kept new');
     await startEdit();
     type(editing()!, 'kept edit');
     const review = reviewStateForPane(ctx.paneId, reviewSubjectForPane(ctx)!);
 
+    // The scope on screen picked again (the PR badge's path through
+    // openReviewCompanion) reloads it and keeps what is typed.
+    await review.setScope(review.scope);
+    await frames(4);
+    await vi.waitFor(() => {
+      expect(editor()?.value).toBe('kept new');
+      expect(editing()?.value).toBe('kept edit');
+    });
+
     await review.setScope('branch');
     await review.setScope('workspace');
+    await vi.waitFor(() => expect(editor()).toBeNull());
     await startEdit();
     expect(editing()!.value).toBe('saved body');
   });
