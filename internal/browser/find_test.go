@@ -1301,7 +1301,7 @@ func TestFindCloseRetriesAStopTheEngineRefused(t *testing.T) {
 			f.wantCall(t, "start alpha")
 			failures := 0
 			f.fake.mu.Lock()
-			f.fake.findStopErr = func() error {
+			f.fake.findStopErr = func(context.Context) error {
 				if always || failures == 0 {
 					failures++
 					return errors.New("engine busy")
@@ -1365,6 +1365,95 @@ func TestFindFailedEngineCallIsCleared(t *testing.T) {
 			f.fake.mu.Unlock()
 			if query != "" {
 				t.Fatalf("engine search after a failed %s = %q", kind, query)
+			}
+		})
+	}
+}
+
+// An engine stop that never answers is bounded by the action's deadline
+// wherever a find action makes one: the takeover of another mount's find
+// by an open, and a close. The action answers, the stop stays owed, and the
+// next transition makes it.
+func TestFindStopThatNeverAnswersIsBoundedAndStaysOwed(t *testing.T) {
+	for _, kind := range []string{"open", "close"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newFindFixture(t, "https://example.test/alpha")
+			f.find(t, "open", "")
+			f.find(t, "start", "alpha")
+			f.wantCall(t, "start alpha")
+			release := make(chan struct{})
+			var once sync.Once
+			unblock := func() { once.Do(func() { close(release) }) }
+			t.Cleanup(unblock)
+			hang := true
+			f.fake.mu.Lock()
+			f.fake.findStopErr = func(ctx context.Context) error {
+				f.fake.mu.Lock()
+				hanging := hang
+				f.fake.mu.Unlock()
+				if !hanging {
+					return nil
+				}
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-release:
+					return errors.New("released by the test")
+				}
+			}
+			f.fake.mu.Unlock()
+			if kind == "open" {
+				f.attach(t)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+			defer cancel()
+			answered := make(chan error, 1)
+			go func() {
+				_, err := f.manager.Find(ctx, f.access, f.pageID, kind, "", f.mount)
+				answered <- err
+			}()
+			select {
+			case err := <-answered:
+				if kind == "close" && err == nil {
+					t.Fatal("a close whose stop timed out reported nothing")
+				}
+				if kind == "open" && err != nil {
+					t.Fatalf("open over a find whose stop timed out: %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				unblock()
+				t.Fatalf("%s waited on an engine stop past its deadline", kind)
+			}
+			f.wantCall(t, "stop")
+			p, _, err := f.manager.lookupOwnedPage(f.access, f.pageID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.findMu.Lock()
+			owed := p.find.engine
+			p.findMu.Unlock()
+			if !owed {
+				t.Fatal("a stop that timed out was recorded as made")
+			}
+			f.fake.mu.Lock()
+			hang = false
+			f.fake.mu.Unlock()
+			// The action's own retry after it timed out too; then the next
+			// transition makes the stop it is owed.
+			for draining := true; draining; {
+				select {
+				case <-f.calls:
+				default:
+					draining = false
+				}
+			}
+			f.find(t, "stop", "")
+			f.wantCall(t, "stop")
+			p.findMu.Lock()
+			owed = p.find.engine
+			p.findMu.Unlock()
+			if owed {
+				t.Fatal("the next transition left the owed stop owed")
 			}
 		})
 	}

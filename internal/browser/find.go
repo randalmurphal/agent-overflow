@@ -232,7 +232,7 @@ func (m *Manager) Find(ctx context.Context, access Access, pageID, kind, query, 
 	defer m.endFindTransitionLocked(opCtx, p)
 	switch kind {
 	case FindOpen:
-		return m.openFindBar(access, p, finder, mode, mount)
+		return m.openFindBar(opCtx, access, p, finder, mode, mount)
 	case FindStart:
 		return m.startFind(opCtx, access, p, finder, mode, query, mount)
 	case FindStop, FindClose:
@@ -351,13 +351,13 @@ func (m *Manager) takeFind(ctx context.Context, access Access, p *managedPage, f
 }
 
 // openFindBar records AO's bar open on p for mount and claims the page's
-// Escape. The caller holds p.mu.
-func (m *Manager) openFindBar(access Access, p *managedPage, finder pageFind, mode, mount string) (FindState, error) {
+// Escape. Opening searches nothing; the one engine call it can make is the
+// stop of a find it takes over. The caller holds p.mu.
+func (m *Manager) openFindBar(ctx context.Context, access Access, p *managedPage, finder pageFind, mode, mount string) (FindState, error) {
 	if mode != FindModeBar {
 		return FindState{}, fmt.Errorf("browser: this engine shows its own find bar")
 	}
-	// Opening a bar searches nothing, so no engine call is made.
-	mine, err := m.takeFind(context.Background(), access, p, finder, mount)
+	mine, err := m.takeFind(ctx, access, p, finder, mount)
 	if err != nil {
 		return FindState{}, err
 	}
@@ -589,12 +589,16 @@ func (m *Manager) settleFindLocked(ctx context.Context, p *managedPage) error {
 }
 
 // endFindLocked ends p's find at once, for a caller closing or suspending
-// the page under its lock. The caller holds p.mu.
+// the page under its lock. Those callers close the driver first, so the
+// settle asks the engine nothing; it is bounded like every other one. The
+// caller holds p.mu.
 func (m *Manager) endFindLocked(p *managedPage) {
 	p.ends.mu.Lock()
 	p.ends.all = true
 	p.ends.mu.Unlock()
-	_ = m.settleFindLocked(context.Background(), p)
+	ctx, cancel := operationContext(context.Background(), p.ctx, findTimeout)
+	defer cancel()
+	_ = m.settleFindLocked(ctx, p)
 }
 
 // submitFindEnd hands p an end to apply, without waiting: the running

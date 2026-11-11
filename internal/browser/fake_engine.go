@@ -174,8 +174,9 @@ type fakePage struct {
 	// findStartErr, when set, fails FindStart alone, after it replaced the
 	// search as a real engine's failed start can.
 	findStartErr error
-	// findStopErr, when set, is asked on each FindStop whether it fails.
-	findStopErr func() error
+	// findStopErr, when set, is asked on each FindStop, with the stop's
+	// context, whether it fails.
+	findStopErr func(context.Context) error
 }
 
 func (p *fakePage) Lifetime() context.Context { return p.ctx }
@@ -424,12 +425,12 @@ func (p *fakePage) FindStep(_ context.Context, backwards bool) (findResult, erro
 	return p.findCall("step")
 }
 
-func (p *fakePage) FindStop(context.Context) error {
+func (p *fakePage) FindStop(ctx context.Context) error {
 	p.mu.Lock()
 	hook, err, stopErr := p.findHook, p.findErr, p.findStopErr
 	p.mu.Unlock()
 	if err == nil && stopErr != nil {
-		err = stopErr()
+		err = stopErr(ctx)
 	}
 	// A refused stop leaves the search where it was.
 	if err == nil {

@@ -2,6 +2,7 @@ package browser
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -183,7 +184,7 @@ func (e *findTableEnv) install() {
 	defer fake.mu.Unlock()
 	fake.findHook = nil
 	fake.findAnswer = nil
-	fake.findStopErr = func() error {
+	fake.findStopErr = func(context.Context) error {
 		e.mu.Lock()
 		defer e.mu.Unlock()
 		failed := e.stopFail != ""
