@@ -268,13 +268,13 @@ func aoWKVDocumentCommitted(pageID C.uint64_t) {
 // waits. The routing that follows a claim leaves the thread on a goroutine.
 //
 //export aoWKVKeyChord
-func aoWKVKeyChord(pageID C.uint64_t, key *C.char, ctrl, meta, alt, shift, repeat C.int) C.int {
+func aoWKVKeyChord(pageID C.uint64_t, key *C.char, ctrl, meta, alt, shift, repeat, composing C.int) C.int {
 	page := wkLookupPage(uint64(pageID))
 	if page == nil || page.engine.events.KeyChord == nil {
 		return 0
 	}
 	pressed := keybindings.Accelerator{Key: C.GoString(key), Ctrl: ctrl != 0, Meta: meta != 0, Alt: alt != 0, Shift: shift != 0}
-	if page.engine.events.KeyChord(page.handle, pressed, repeat != 0) {
+	if page.engine.events.KeyChord(page.handle, pressed, KeyPress{Repeat: repeat != 0, Composing: composing != 0}) {
 		return 1
 	}
 	return 0

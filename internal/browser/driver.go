@@ -374,10 +374,21 @@ type engineEvents struct {
 	// or a bare Escape, was pressed while the page's native view held
 	// keyboard focus — does AO own it? True means the engine swallows the
 	// event and AO dispatches the chord; false means the page keeps it. A
-	// bare Escape is always the page's; repeat says the key is held down,
-	// which in-process engines report for it. It runs on the engine's UI
-	// thread, so the answer must be a set lookup and nothing that waits.
-	KeyChord func(handle string, pressed keybindings.Accelerator, repeat bool) bool
+	// bare Escape is always the page's; press is what the engine knows of
+	// it besides the chord. It runs on the engine's UI thread, so the answer
+	// must be a set lookup and nothing that waits.
+	KeyChord func(handle string, pressed keybindings.Accelerator, press KeyPress) bool
+}
+
+// KeyPress is what an in-process engine gathers about a key press besides
+// its chord, for the Manager's decision on a bare Escape
+// (pageEscapeAnnounced): Repeat is the OS's auto-repeat flag (WKWebView),
+// Held is the engine's own record that the key went down before without its
+// release (WebKitGTK, whose GTK 4 reports no repeat), and Composing is
+// whether the page's input method has a composition in progress, which the
+// Escape cancels.
+type KeyPress struct {
+	Repeat, Held, Composing bool
 }
 
 // matchStatus reports whether a sampled page state satisfies a wait condition.

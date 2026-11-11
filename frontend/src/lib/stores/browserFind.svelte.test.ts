@@ -142,9 +142,9 @@ describe('browser find provider', () => {
     expect(isPaneFindOpen(PANE)).toBe(true);
   });
 
-  // Each bar is a find of its own: every action names the bar's id, and the
-  // bar opened again after a close makes another.
-  it('names its find id on every action of a bar, and a new one after the bar closes', async () => {
+  // Each start is a search of its own: it names a new find id, and that
+  // search's steps and stop name it too.
+  it('names a new find id for every start, which its steps and stop carry', async () => {
     const { find } = await setupSearching();
     find.next?.();
     setPaneFindQuery(PANE, '');
@@ -157,8 +157,10 @@ describe('browser find provider', () => {
     expect(kinds()).toEqual(['start', 'next', 'stop', 'start', 'stop', 'start']);
     const ids = calls.map((call) => call.findId);
     expect(ids[0]).not.toBe('');
-    expect(new Set(ids.slice(0, 5)).size).toBe(1);
-    expect(ids[5]).not.toBe(ids[0]);
+    expect(ids[1]).toBe(ids[0]);
+    expect(ids[2]).toBe(ids[0]);
+    expect(ids[4]).toBe(ids[3]);
+    expect(new Set([ids[0], ids[3], ids[5]]).size).toBe(3);
     expect(calls).toMatchObject(Array(6).fill({ threadId: 'thread', pageId: 'page-1', mount: 'mount-1' }));
   });
 
@@ -193,7 +195,8 @@ describe('browser find provider', () => {
 
   // A start in flight, a second query's start queued, a third query typed
   // before the first answers: the queued start is dropped the moment the
-  // query changes, so its answer can never show under the third query.
+  // query changes, so its answer can never show under the third query. The
+  // first search, which nothing shows, is stopped.
   it('drops a queued start the moment the query changes', async () => {
     const { find } = setup();
     const alpha = held();
@@ -205,11 +208,13 @@ describe('browser find provider', () => {
     find.search('beta');
     await settle();
     find.search('gamma');
-    alpha.release(state({ findId: lastId(), session: 1, query: 'alpha', found: true, matches: 4, current: 0 }));
+    const first = lastId();
+    alpha.release(state({ findId: first, session: 1, query: 'alpha', found: true, matches: 4, current: 0 }));
     await settle(0);
     expect(find.result.pending).toBe(true);
     await settle();
-    expect(calls.map((call) => call.query)).toEqual(['alpha', 'gamma']);
+    expect(calls.filter((call) => call.kind === 'start').map((call) => call.query)).toEqual(['alpha', 'gamma']);
+    expect(calls).toMatchObject([{ kind: 'start', findId: first }, { kind: 'stop', findId: first }, { kind: 'start', query: 'gamma' }]);
     expect(find.result).toMatchObject({ count: 2, pending: false });
   });
 
@@ -359,8 +364,6 @@ describe('browser find provider', () => {
     ended(session + 5, 'page-1', { findId: 'another-find' });
     ended(session + 5, 'page-1', { mount: 'mount-2' });
     ended(session + 5, 'page-2');
-    // No newer than the answer taken: an end of an earlier search.
-    ended(session);
     expect(closeBar).not.toHaveBeenCalled();
     expect(isPaneFindOpen(PANE)).toBe(true);
     ended(session + 1);
@@ -401,16 +404,15 @@ describe('browser find provider', () => {
   });
 
   // A late end of an earlier search of the bar, arriving after a later
-  // start's answer, is older than it: the bar stays.
+  // start's answer, names the earlier search: the bar stays.
   it('keeps the bar over a later search when an earlier search\'s end arrives late', async () => {
     const { find, closeBar } = await setupSearching();
-    const early = gen;
-    setPaneFindQuery(PANE, '');
+    const early = lastId();
     setPaneFindQuery(PANE, 'beta');
     await settle();
     expect(find.result.count).toBe(3);
-    expect(early + 1).toBeLessThan(gen);
-    ended(early + 1);
+    expect(lastId()).not.toBe(early);
+    ended(gen + 1, 'page-1', { findId: early });
     expect(closeBar).not.toHaveBeenCalled();
     expect(find.result.count).toBe(3);
   });
@@ -591,24 +593,50 @@ describe('browser find provider', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  // A start of the same find settles what its stop was owed: the retry
-  // waiting would stop the new search, so it goes.
-  it('a new start of the find drops the stop retry waiting for it', async () => {
-    const { find } = await setupSearching();
-    let failures = 1;
-    const answering = answer;
-    answer = async (call) => {
-      if (call.kind === 'stop' && failures-- > 0) throw refused('fake engine: find stop failed');
-      return answering(call);
+  // The stop of a search is outstanding when a new query's start is made;
+  // the stop then fails and its retry fires after the new search answered.
+  // The retry names the search it was sent for, and the backend, which
+  // holds the new one, leaves that alone: the bar keeps the new counts.
+  it('a retried stop of an earlier search never stops a later one', async () => {
+    const { find, closeBar } = setup();
+    // The backend: one search at a time, owned by its find id.
+    let running = '';
+    let failStop!: () => void;
+    answer = (call) => {
+      gen += 1;
+      const identity = { pageId: call.pageId, mount: call.mount, session: gen };
+      if (call.kind === 'start') {
+        running = call.findId;
+        return Promise.resolve(state({ ...identity, findId: call.findId, query: call.query, found: true, matches: 3, current: 0 }));
+      }
+      if (call.kind === 'stop' && failStop === undefined) {
+        return new Promise((_resolve, reject) => { failStop = () => reject(refused('fake engine: find stop failed')); });
+      }
+      if (call.findId !== running) {
+        return Promise.resolve(state({ ...identity, findId: running, active: false, foreign: true }));
+      }
+      running = '';
+      return Promise.resolve(state({ ...identity, findId: call.findId, active: false }));
     };
-    find.search('');
-    await settle(0);
-    find.search('beta');
+    openPaneFind(PANE, { seed: 'alpha' });
     await settle();
-    expect(vi.getTimerCount()).toBe(0);
-    await settle(BROWSER_FIND_STOP_RETRY_MS * 2);
-    expect(kinds()).toEqual(['start', 'stop', 'start']);
+    const alpha = lastId();
+    setPaneFindQuery(PANE, '');
+    await settle(0);
+    setPaneFindQuery(PANE, 'beta');
+    await settle();
+    failStop();
+    await settle(0);
+    const beta = calls.at(-1)!.findId;
+    expect(calls).toMatchObject([{ kind: 'start', findId: alpha }, { kind: 'stop', findId: alpha }, { kind: 'start', query: 'beta' }]);
+    expect(beta).not.toBe(alpha);
     expect(find.result.count).toBe(3);
+    await settle(BROWSER_FIND_STOP_RETRY_MS);
+    expect(calls.at(-1)).toMatchObject({ kind: 'stop', findId: alpha });
+    expect(running).toBe(beta);
+    expect(find.result.count).toBe(3);
+    expect(closeBar).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 

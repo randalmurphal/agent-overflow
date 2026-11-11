@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -26,9 +27,10 @@ import (
 //
 //	AO_NATIVE_BROWSER_SMOKE=1 go test ./internal/browser -run TestNativeEngineReal -count=1
 //
-// Linux needs a display nobody is using, such as an Xvfb or a headless
-// Wayland compositor named by DISPLAY or WAYLAND_DISPLAY. macOS needs a
-// logged-in session. Nothing else runs them.
+// On Linux the run starts its own headless weston and runs inside it, and
+// is refused without one unless AO_NATIVE_BROWSER_SMOKE_SESSION_DISPLAY=1
+// puts its window on the session display (nativeSmokeDisplay). macOS needs
+// a logged-in session. Nothing else runs them.
 const nativeBrowserSmokeEnv = "AO_NATIVE_BROWSER_SMOKE"
 
 // nativeSmokeWindow is the window the gated run hosts pages in, nil unless
@@ -38,6 +40,15 @@ var nativeSmokeWindow atomic.Pointer[application.WebviewWindow]
 func TestMain(m *testing.M) {
 	if os.Getenv(nativeBrowserSmokeEnv) != "1" {
 		os.Exit(m.Run())
+	}
+	weston, _ := exec.LookPath("weston")
+	plan, err := nativeSmokeDisplay(os.Getenv, weston, runtime.GOOS)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if plan == smokeUnderWeston {
+		os.Exit(runUnderHeadlessWeston(weston))
 	}
 	os.Exit(runInNativeWindow(m))
 }
@@ -437,6 +448,92 @@ func TestNativeEngineRealFind(t *testing.T) {
 	}
 	if _, err := p.driver.Evaluate(ctx, "1", false); !errors.Is(err, errViewClosed) {
 		t.Fatalf("evaluate on a closed page's driver = %v, want %v", err, errViewClosed)
+	}
+}
+
+// TestNativeEngineRealFindClearsFrameSelections runs the selection clearing
+// a find stop and a start from the top use on a page with a selection in
+// the page, in a same-origin frame and in a frame inside that one: every
+// selection goes. Then a search's stop leaves no selection behind.
+func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
+	window := nativeSmokeWindow.Load()
+	if window == nil {
+		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
+	}
+	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{NativeWindow: window.NativeWindow})
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Errorf("close manager: %v", err)
+		}
+	})
+	workspace := resolvedTempDir(t)
+	access := Access{ThreadID: "native-smoke-find-frames", Workspace: workspace}
+	t.Cleanup(func() {
+		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+			t.Errorf("close the thread's pages: %v", err)
+		}
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	page, err := manager.OpenFile(ctx, access, writeSmokeFile(t, workspace, "frames.html",
+		`<!doctype html><title>frames</title><p id="top">alpha in the page</p>`), OpenOptions{})
+	if err != nil {
+		t.Fatalf("open the page: %v", err)
+	}
+	show := true
+	if _, err := manager.Visibility(ctx, access, &show, page.ID); err != nil {
+		t.Fatalf("show the page: %v", err)
+	}
+	mount, err := manager.AttachPane(access)
+	if err != nil {
+		t.Fatalf("mount a pane: %v", err)
+	}
+	t.Cleanup(func() { manager.DetachPane(mount.ID) })
+	eval := func(what, expression string) any {
+		t.Helper()
+		value, _, err := manager.Evaluate(ctx, access, page.ID, expression, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+		return value
+	}
+	// An about:blank frame is same-origin and ready at once: two levels.
+	eval("build the frames", `(() => {
+		const add = (doc, text) => { const f = doc.createElement("iframe"); doc.body.appendChild(f); f.contentDocument.body.innerHTML = "<p>" + text + "</p>"; return f.contentDocument; };
+		add(add(document, "alpha in a frame"), "alpha in a nested frame");
+		return 1; })()`)
+	// selections counts the windows, the page and its frames, holding a
+	// selection.
+	const selections = `(() => { let n = 0; const walk = (w) => { const s = w.getSelection(); if (s && s.rangeCount && !s.isCollapsed) n++; for (let i = 0; i < w.frames.length; i++) walk(w.frames[i]); }; walk(window); return n; })()`
+	eval("select in every window", `(() => {
+		const walk = (w) => { w.getSelection().selectAllChildren(w.document.body); for (let i = 0; i < w.frames.length; i++) walk(w.frames[i]); };
+		walk(window); return 1; })()`)
+	if n := eval("count the selections", selections); n != float64(3) {
+		t.Fatalf("selected in %v windows, want 3", n)
+	}
+	eval("clear the selections", "(() => {"+webkitClearSelectionScript+"})()")
+	if n := eval("count the selections", selections); n != float64(0) {
+		t.Fatalf("%v selections left after the clearing", n)
+	}
+
+	// A search selects its match; its stop leaves no selection.
+	find := func(kind, query string) FindState {
+		t.Helper()
+		state, err := manager.Find(ctx, access, page.ID, kind, query, mount.ID, "smoke-frames")
+		if err != nil {
+			t.Fatalf("find %s %q: %v", kind, query, err)
+		}
+		return state
+	}
+	if state := find(FindStart, "alpha"); !state.Found {
+		t.Fatalf("start = %+v", state)
+	}
+	find(FindNext, "")
+	find(FindNext, "")
+	t.Logf("selections while the search runs: %v", eval("count the selections", selections))
+	find(FindStop, "")
+	if n := eval("count the selections", selections); n != float64(0) {
+		t.Fatalf("%v selections left after the search stopped", n)
 	}
 }
 

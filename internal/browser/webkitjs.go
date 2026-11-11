@@ -191,6 +191,12 @@ func webkitScrollScript(selector string, x, y float64) string {
 	return fmt.Sprintf(`const s=%s;const el=s?document.querySelector(s):window;if(!el)throw new Error("selector not found");el.scrollBy({left:%f,top:%f,behavior:"instant"});return true;`, jsonString(strings.TrimSpace(selector)), x, y)
 }
 
+// webkitClearSelectionScript drops the selection of the page and of every
+// same-origin frame inside it, walking window.frames recursively; WKWebView's
+// find starts at the selection and marks its match with it. A cross-origin
+// frame cannot be reached from the page, so its selection stays.
+const webkitClearSelectionScript = `const clear=(w)=>{let s;try{s=w.getSelection();}catch(e){return;}if(s)s.removeAllRanges();try{for(let i=0;i<w.frames.length;i++)clear(w.frames[i]);}catch(e){}};clear(window);return null;`
+
 // webkitSelectionTextScript reads the page's current selection for the copy
 // chord, matching the CDP driver's expression exactly.
 const webkitSelectionTextScript = `const a=document.activeElement;if(a&&(a instanceof HTMLInputElement||a instanceof HTMLTextAreaElement)&&a.selectionStart!==null)return a.value.slice(a.selectionStart,a.selectionEnd);return String(getSelection()||"");`

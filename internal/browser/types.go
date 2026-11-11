@@ -71,8 +71,8 @@ type FindState struct {
 	Incarnation uint64 `json:"incarnation"`
 	// Mount is the pane mount that owns the search, "" for none.
 	Mount string `json:"mount"`
-	// FindID is the id the owning mount's provider made for its bar,
-	// "" for none.
+	// FindID is the id the owning mount's provider made for the search's
+	// start, "" for none.
 	FindID string `json:"findId"`
 	// Document is the epoch of the document the search started on.
 	Document uint64 `json:"document"`

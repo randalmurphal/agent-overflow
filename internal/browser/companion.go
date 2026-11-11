@@ -216,15 +216,22 @@ func (m *Manager) pageByHandleLocked(handle string) *managedPage {
 // observes (keyChord).
 var pageEscape = keybindings.Accelerator{Key: "escape"}
 
+// pageEscapeAnnounced decides whether a key pressed in a page is announced
+// as the page's Escape: a bare Escape, newly pressed (not repeating, not
+// held), that no input method composition takes to cancel itself.
+func pageEscapeAnnounced(pressed keybindings.Accelerator, press KeyPress) bool {
+	return pressed == pageEscape && !press.Repeat && !press.Held && !press.Composing
+}
+
 // keyChord is engineEvents.KeyChord: it answers on the engine's UI thread, so
 // it is one set lookup, and the routing that takes m.mu happens off it.
 //
 // A bare Escape is never AO's: the page has it exactly as if AO were not
-// there. Pressed, not held, it is announced (emitEscape) so a find bar the
-// pane shows over the page can close.
-func (m *Manager) keyChord(handle string, pressed keybindings.Accelerator, repeat bool) bool {
+// there. When pageEscapeAnnounced says so it is announced (emitEscape), so
+// a find bar the pane shows over the page can close.
+func (m *Manager) keyChord(handle string, pressed keybindings.Accelerator, press KeyPress) bool {
 	if pressed == pageEscape {
-		if !repeat {
+		if pageEscapeAnnounced(pressed, press) {
 			go m.emitEscape(handle)
 		}
 		return false

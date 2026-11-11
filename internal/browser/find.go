@@ -20,8 +20,8 @@ import (
 // goes; that end is announced as a Kind "find" event so the bar showing the
 // search closes. Whether a find bar is open is the frontend's alone.
 //
-// A search's owner is a pane mount and a find id: the id the mount's
-// provider made for its bar, which every action of that bar names.
+// A search's owner is a pane mount and a find id: a new id the mount's
+// provider makes for every start, which that search's steps and stop name.
 // Every answer and end carries the owner with the page (id and incarnation),
 // the document the search started on, and a generation. A start from
 // another owner replaces the search, and the earlier owner hears its end; a
@@ -106,6 +106,11 @@ func (s *findSession) ownedBy(owner findOwner) bool {
 	return s.active && s.owner == owner.mount && s.id == owner.id
 }
 
+// settled reports whether the page has nothing of a find left to end or to
+// stop: no search runs and the engine is owed no stop. Every question of
+// whether a page needs a find transition reads it.
+func (s *findSession) settled() bool { return !s.active && !s.engine }
+
 // disown ends the search's ownership with it.
 func (s *findSession) disown() { s.active, s.owner, s.id = false, "", "" }
 
@@ -177,7 +182,7 @@ func findSeed(selection string) string {
 }
 
 // Find runs one find action of a pane mount's on a page of the thread's
-// companion, for the find id its provider made for its bar. start
+// companion, for the find id its provider made for the search's start. start
 // runs only on the shown active page; next, previous and stop never restore
 // a suspended page, and stop answers for a page that is gone as for one with
 // no search.
@@ -521,7 +526,7 @@ func (m *Manager) settleFindLocked(ctx context.Context, p *managedPage) error {
 	if ends {
 		state = m.endLocked(p)
 	}
-	owed := live && p.find.engine && !p.find.active
+	owed := live && !p.find.active && !p.find.settled()
 	p.findMu.Unlock()
 	if ends {
 		m.emit(CompanionEvent{Kind: "find", ThreadID: p.owner, PageID: p.id, Find: &state})
@@ -619,16 +624,17 @@ func (m *Manager) documentCommitted(p *managedPage) func() {
 }
 
 // endHiddenFinds submits to each of the thread's live pages that holds a
-// search, or is in a transition, an end of a search not on the shown active
-// page or whose owning pane mount is gone. What is shown is read when the
-// end is applied. A page outside a transition with no search is skipped: a
-// transition starting after the change reads it in its own checks.
+// search or owes the engine a stop, or is in a transition, an end of a
+// search not on the shown active page or whose owning pane mount is gone,
+// and with it the owed stop. What is shown is read when the end is applied.
+// A settled page outside a transition is skipped: a transition starting
+// after the change reads it in its own checks.
 func (m *Manager) endHiddenFinds(pages []*managedPage) {
 	for _, p := range pages {
 		p.findMu.Lock()
-		quiet := !p.find.active
+		settled := p.find.settled()
 		p.findMu.Unlock()
-		if quiet && !p.findBusy.Load() {
+		if settled && !p.findBusy.Load() {
 			continue
 		}
 		m.submitFindEnd(p, func(e *findEnds) { e.review = true })

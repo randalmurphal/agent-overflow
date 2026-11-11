@@ -600,10 +600,10 @@ func TestFindNeverClaimsAPagesBareEscape(t *testing.T) {
 	escape := keybindings.Accelerator{Key: "escape"}
 	press := func(t *testing.T, state string, announced bool) {
 		t.Helper()
-		if f.manager.keyChord(handle, escape, false) {
+		if f.manager.keyChord(handle, escape, KeyPress{}) {
 			t.Fatalf("%s: AO took the page's Escape", state)
 		}
-		if f.manager.keyChord(handle, escape, true) {
+		if f.manager.keyChord(handle, escape, KeyPress{Held: true}) {
 			t.Fatalf("%s: AO took the page's held Escape", state)
 		}
 		select {
@@ -655,11 +655,11 @@ func TestFindNeverClaimsAPagesBareEscape(t *testing.T) {
 
 	// A modified Escape is a chord: AO takes it only when it is bound.
 	ctrl := keybindings.Accelerator{Key: "escape", Ctrl: true}
-	if f.manager.keyChord(handle, ctrl, false) {
+	if f.manager.keyChord(handle, ctrl, KeyPress{}) {
 		t.Fatal("an unbound Ctrl+Escape was taken")
 	}
 	f.manager.accelerators = func() keybindings.AcceleratorSet { return keybindings.AcceleratorSet{ctrl: {}} }
-	if !f.manager.keyChord(handle, ctrl, false) {
+	if !f.manager.keyChord(handle, ctrl, KeyPress{}) {
 		t.Fatal("a bound Ctrl+Escape did not go through the accelerator gate")
 	}
 	select {
@@ -1493,4 +1493,96 @@ func findWaiting(m *Manager) <-chan context.Context {
 	hook := func(ctx context.Context) { waiting <- ctx }
 	m.findWaitHook.Store(&hook)
 	return waiting
+}
+
+// A page whose search ended with its engine stop still owed is not settled:
+// hiding the companion or unmounting the pane makes that stop, so no
+// highlight outlives the pane.
+func TestFindOwedStopIsMadeWhenThePaneGoes(t *testing.T) {
+	for _, why := range []string{"detach", "hide"} {
+		t.Run(why, func(t *testing.T) {
+			f := newFindFixture(t, "https://example.test/alpha")
+			f.find(t, "start", "alpha")
+			f.wantCall(t, "start alpha")
+			refuse := true
+			f.fake.mu.Lock()
+			f.fake.findStopErr = func(context.Context) error {
+				f.fake.mu.Lock()
+				defer f.fake.mu.Unlock()
+				if refuse {
+					return errors.New("engine busy")
+				}
+				return nil
+			}
+			f.fake.mu.Unlock()
+			f.manager.findWork.Wait()
+			if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "stop", "", f.mount, f.findID); err == nil {
+				t.Fatal("a refused stop reported nothing")
+			}
+			f.wantCall(t, "stop")
+			f.wantCall(t, "stop")
+			if session := f.session(t); session.active || !session.engine {
+				t.Fatalf("after the refused stop the page holds %+v", session)
+			}
+			f.fake.mu.Lock()
+			refuse = false
+			f.fake.mu.Unlock()
+			if why == "detach" {
+				f.manager.DetachPane(f.mount)
+			} else {
+				hide := false
+				if _, err := f.manager.Visibility(t.Context(), f.access, &hide, ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.manager.findWork.Wait()
+			f.wantCall(t, "stop")
+			if f.session(t).engine {
+				t.Fatalf("the owed stop was not made on %s", why)
+			}
+			f.fake.mu.Lock()
+			query := f.fake.findQuery
+			f.fake.mu.Unlock()
+			if query != "" {
+				t.Fatalf("the engine still searches for %q after %s", query, why)
+			}
+		})
+	}
+}
+
+// The announce decision for a key pressed in a page, over every key the
+// engines offer the gate for it: only a bare Escape, newly pressed and not
+// cancelling a composition, is announced. And the gate never takes a bare
+// Escape, in any of those states, even from a bound set that names one.
+func TestPageEscapeAnnouncedOnlyForAFreshBareEscape(t *testing.T) {
+	bools := []bool{false, true}
+	m := &Manager{accelerators: func() keybindings.AcceleratorSet {
+		return keybindings.AcceleratorSet{{Key: "escape"}: {}}
+	}}
+	for _, key := range []string{"escape", "f"} {
+		for _, ctrl := range bools {
+			for _, meta := range bools {
+				for _, alt := range bools {
+					for _, shift := range bools {
+						pressed := keybindings.Accelerator{Key: key, Ctrl: ctrl, Meta: meta, Alt: alt, Shift: shift}
+						bare := key == "escape" && !ctrl && !meta && !alt && !shift
+						for _, repeat := range bools {
+							for _, held := range bools {
+								for _, composing := range bools {
+									press := KeyPress{Repeat: repeat, Held: held, Composing: composing}
+									want := bare && !repeat && !held && !composing
+									if got := pageEscapeAnnounced(pressed, press); got != want {
+										t.Errorf("pageEscapeAnnounced(%+v, %+v) = %v, want %v", pressed, press, got, want)
+									}
+									if bare && m.keyChord("no-such-page", pressed, press) {
+										t.Errorf("the gate took a bare Escape (%+v)", press)
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 }

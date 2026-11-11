@@ -1207,8 +1207,25 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "id": "A2",
      "query": "beta"
+    }
+   },
+   {
+    "event": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "findId": "A1",
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
     }
    },
    {
@@ -1216,9 +1233,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "findId": "A2",
      "document": 2,
-     "session": 2,
+     "session": 3,
      "foreign": false,
      "active": true,
      "query": "beta",
@@ -1276,7 +1293,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "id": "A2",
      "query": "beta"
     }
    },
@@ -1287,7 +1304,24 @@
      "mount": "mount-A",
      "findId": "A1",
      "document": 1,
-     "session": 3,
+     "session": 2,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "event": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "findId": "A2",
+     "document": 1,
+     "session": 4,
      "foreign": false,
      "active": false,
      "query": "",
@@ -1302,9 +1336,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "findId": "A2",
      "document": 1,
-     "session": 2,
+     "session": 3,
      "foreign": false,
      "active": true,
      "query": "beta",
@@ -1318,7 +1352,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "id": "A2"
     }
    },
    {
@@ -1328,7 +1362,7 @@
      "mount": "",
      "findId": "",
      "document": 1,
-     "session": 3,
+     "session": 4,
      "foreign": true,
      "active": false,
      "query": "",
@@ -1353,7 +1387,24 @@
      "mount": "mount-A",
      "findId": "A1",
      "document": 1,
-     "session": 3,
+     "session": 2,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "event": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "findId": "A2",
+     "document": 1,
+     "session": 4,
      "foreign": false,
      "active": false,
      "query": "",
@@ -1411,7 +1462,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "id": "A2",
      "query": "beta"
     }
    },
@@ -1422,7 +1473,24 @@
      "mount": "mount-A",
      "findId": "A1",
      "document": 1,
-     "session": 3,
+     "session": 2,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "event": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "findId": "A2",
+     "document": 1,
+     "session": 4,
      "foreign": false,
      "active": false,
      "query": "",
@@ -1437,9 +1505,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "findId": "A2",
      "document": 1,
-     "session": 2,
+     "session": 3,
      "foreign": false,
      "active": true,
      "query": "beta",
@@ -1453,7 +1521,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "id": "A2"
     }
    },
    {
@@ -1463,7 +1531,7 @@
      "mount": "",
      "findId": "",
      "document": 1,
-     "session": 3,
+     "session": 4,
      "foreign": true,
      "active": false,
      "query": "",
@@ -1524,7 +1592,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "id": "A2",
      "query": "beta"
     }
    },
@@ -1535,7 +1603,24 @@
      "mount": "mount-A",
      "findId": "A1",
      "document": 1,
-     "session": 3,
+     "session": 2,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "event": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "findId": "A2",
+     "document": 1,
+     "session": 4,
      "foreign": false,
      "active": false,
      "query": "",
@@ -1550,9 +1635,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "findId": "A2",
      "document": 1,
-     "session": 2,
+     "session": 3,
      "foreign": false,
      "active": true,
      "query": "beta",
@@ -1566,7 +1651,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "id": "A2"
     }
    },
    {
@@ -1576,7 +1661,7 @@
      "mount": "",
      "findId": "",
      "document": 1,
-     "session": 3,
+     "session": 4,
      "foreign": true,
      "active": false,
      "query": "",
@@ -1604,7 +1689,24 @@
      "mount": "mount-A",
      "findId": "A1",
      "document": 1,
-     "session": 3,
+     "session": 2,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "event": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "findId": "A2",
+     "document": 1,
+     "session": 4,
      "foreign": false,
      "active": false,
      "query": "",

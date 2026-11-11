@@ -10,13 +10,13 @@
 // backend announces it as an `escape` companion event, and the provider
 // closes its bar if it is open on that page.
 //
-// A find's identity is its page, its pane mount and its find id: the id this
-// provider makes the first time a bar's query searches (after the bar opened,
-// or the engine's find opened) and carries on every action of that bar. The
-// backend echoes all three on every answer and end. An end applies to the
-// held search only if it names its page, mount and id and is newer (its
-// `session`) than every answer taken for it, so a late end of an earlier
-// search never closes the bar over a later one.
+// A search's identity is its page, its pane mount and its find id: a new id
+// this provider makes for every start, which that search's steps and stop
+// carry. The backend echoes all three on every answer and end, and a stop or
+// step naming another id than the running search's changes nothing of it.
+// A start under a new id replaces the provider's earlier search on the
+// backend like any other owner's start. So an end, an answer or a retried
+// stop of an earlier search never touches a later one.
 //
 // An answer for an action that changed nothing because its search is gone or
 // another find's is marked Foreign: it acknowledges nothing of the asking
@@ -31,27 +31,26 @@
 // removes it.
 //
 // A stop that fails is reported and sent again on this provider's own timer,
-// at most BROWSER_FIND_STOP_ATTEMPTS times in all, until one answers; a new
-// start of that find clears the retry waiting for it. A stop that never
-// succeeds leaves the page's highlights until the next start, navigation,
-// page switch or pane unmount, each of which ends the engine's search.
+// at most BROWSER_FIND_STOP_ATTEMPTS times in all, until one answers. A stop
+// that never succeeds leaves the page's highlights until the next start,
+// navigation, page switch or pane unmount, each of which ends the engine's
+// search.
 //
 // State: `seq` (display generation), `queue` (intents), `held` (the search
-// this provider is bound to: its page, mount, id, whether a search is held,
-// and the newest session answered for it), the debounce timer and the stop
-// retry timers.
+// this provider is bound to: its page, mount and id, and whether a search is
+// held), the debounce timer and the stop retry timers.
 //
 // | Event                          | Effect                                                    |
 // |--------------------------------|-----------------------------------------------------------|
 // | query typed                    | seq++; drop queued starts and steps; debounce, then bind  |
-// |                                | the shown page and mount, a find id if none, and queue    |
+// |                                | the shown page and mount and a new find id, and queue     |
 // |                                | start(query); held.search                                 |
 // | query emptied                  | seq++; drop queued starts and steps; queue stop if a      |
 // |                                | search is held                                            |
 // | Enter / Shift+Enter            | queue a step, or cancel a queued opposite one             |
 // | bar closed (`clear`, dispose)  | seq++; drop queued starts and steps; queue stop if a      |
-// |                                | search is held; the find id goes                          |
-// | engine find opened             | a new find id; start(seed) as for a typed query           |
+// |                                | search is held                                            |
+// | engine find opened             | start(seed) as for a typed query                          |
 // | answer for the held search     | shown if its seq is current                               |
 // | active answer for a search no  | queue its stop: nothing shows it                          |
 // | longer held                    |                                                           |
@@ -150,10 +149,6 @@ function outcomeUnknown(err: unknown): boolean {
   return true;
 }
 
-function retryKey(of: { pageId: string; id: string }): string {
-  return `${of.pageId}\n${of.id}`;
-}
-
 export type BrowserFind = PaneFindProvider & { dispose(): void };
 
 export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
@@ -163,7 +158,7 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
   let timer: ReturnType<typeof setTimeout> | null = null;
   const queue: Intent[] = [];
   let running = false;
-  const held = { pageId: '', mount: '', id: '', search: false, session: 0 };
+  const held = { pageId: '', mount: '', id: '', search: false };
   const retries = new Map<string, ReturnType<typeof setTimeout>>();
   let disposed = false;
 
@@ -197,12 +192,11 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
     timer = null;
   }
 
-  function cancelRetry(of: { pageId: string; id: string }): void {
-    const key = retryKey(of);
-    const waiting = retries.get(key);
+  function cancelRetry(id: string): void {
+    const waiting = retries.get(id);
     if (waiting === undefined) return;
     clearTimeout(waiting);
-    retries.delete(key);
+    retries.delete(id);
   }
 
   /** Drops queued intents of the given kinds; the one in flight runs on. */
@@ -229,11 +223,10 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
 
   /** Sends a failed stop again after the retry wait, while attempts remain. */
   function retryStop(intent: Intent): void {
-    cancelRetry(intent);
+    cancelRetry(intent.id);
     if (intent.attempt + 1 >= BROWSER_FIND_STOP_ATTEMPTS) return;
-    const key = retryKey(intent);
-    retries.set(key, setTimeout(() => {
-      retries.delete(key);
+    retries.set(intent.id, setTimeout(() => {
+      retries.delete(intent.id);
       enqueue({ ...intent, seq, attempt: intent.attempt + 1 });
     }, BROWSER_FIND_STOP_RETRY_MS));
   }
@@ -267,7 +260,6 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
             // A search nothing here shows any more.
             if (answer.active) enqueueStop(intent);
           } else {
-            held.session = Math.max(held.session, answer.session);
             if (intent.seq === seq) show(answer);
           }
         } catch (err) {
@@ -295,7 +287,6 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
 
   function ended(state: BrowserFindState): void {
     if (!held.search || state.pageId !== held.pageId || state.mount !== held.mount || state.findId !== held.id) return;
-    if (state.session <= held.session) return;
     accept();
   }
 
@@ -335,12 +326,8 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
   function begin(query: string): void {
     held.pageId = options.pageId();
     held.mount = options.mount() ?? '';
-    if (!held.id) {
-      held.id = randomId();
-      held.session = 0;
-    }
+    held.id = randomId();
     held.search = true;
-    cancelRetry(held);
     enqueue(heldIntent('start', query));
   }
 
@@ -399,8 +386,6 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
       cancelTimer();
       seq += 1;
       drop(['start']);
-      // Each open of the engine's find is a find of its own.
-      held.id = '';
       begin(seed);
     };
   }

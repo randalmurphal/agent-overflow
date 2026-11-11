@@ -25,7 +25,7 @@ extern void aoWebKitDownloadStarted(uint64_t profile_id, uint64_t page_id,
 extern void aoWebKitDownloadProgress(uint64_t download_id, double received,
                                      int state, char *path);
 extern int aoWebKitKeyChord(uint64_t page_id, const char *key, int ctrl, int meta,
-                            int alt, int shift, int repeat);
+                            int alt, int shift, int held, int composing);
 extern void aoWebKitFindDone(uint64_t call_id, int found, unsigned int match_count);
 
 // The download state vocabulary the Go seam uses (driver.go).
@@ -686,6 +686,29 @@ static void ao_script_message(WebKitUserContentManager *manager, JSCValue *value
 static void ao_escape_up(GtkWidget *view) {
   g_object_set_data(G_OBJECT(view), AO_ESCAPE_DOWN_KEY, NULL);
 }
+
+// ao_view_composing reports whether the view's input method has a
+// composition in progress (a non-empty preedit). This controller runs in the
+// capture phase, before WebKit hands the key to the input method, so an
+// Escape that will cancel the composition is still seen with it.
+static int ao_view_composing(GtkWidget *view) {
+  WebKitInputMethodContext *im = webkit_web_view_get_input_method_context(WEBKIT_WEB_VIEW(view));
+  if (im == NULL) {
+    return 0;
+  }
+  char *text = NULL;
+  GList *underlines = NULL;
+  guint cursor = 0;
+  webkit_input_method_context_get_preedit(im, &text, &underlines, &cursor);
+  int composing = text != NULL && text[0] != '\0';
+  g_free(text);
+  g_list_free_full(underlines, (GDestroyNotify)webkit_input_method_underline_free);
+  return composing;
+}
+
+int ao_wk_view_has_input_method(void *view) {
+  return webkit_web_view_get_input_method_context(WEBKIT_WEB_VIEW(view)) != NULL;
+}
 // ---------------------------------------------------------------------------
 
 // ao_key_name spells a keyval the way KeyboardEvent.key does, which is the
@@ -739,12 +762,14 @@ static gboolean ao_key_pressed(GtkEventControllerKey *controller, guint keyval, 
     return FALSE;
   }
   GtkWidget *view = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller));
-  int repeat = 0;
+  int held = 0;
+  int composing = 0;
   if (keyval == GDK_KEY_Escape) {
-    repeat = g_object_get_data(G_OBJECT(view), AO_ESCAPE_DOWN_KEY) != NULL;
+    held = g_object_get_data(G_OBJECT(view), AO_ESCAPE_DOWN_KEY) != NULL;
     g_object_set_data(G_OBJECT(view), AO_ESCAPE_DOWN_KEY, GINT_TO_POINTER(1));
+    composing = ao_view_composing(view);
   }
-  return aoWebKitKeyChord(ao_view_page_id(view), key, ctrl, meta, alt, shift, repeat) == 1;
+  return aoWebKitKeyChord(ao_view_page_id(view), key, ctrl, meta, alt, shift, held, composing) == 1;
 }
 
 static void ao_key_released(GtkEventControllerKey *controller, guint keyval, guint keycode,

@@ -48,7 +48,8 @@ import (
 //     pane;
 //  5. an action fails only for an engine failure, or a start the page or
 //     the mount cannot take: never because its search already ended;
-//  6. a provider showing results has a backend search it owns.
+//  6. a provider shows counts exactly when the Manager holds a search for
+//     it.
 
 // updateFindScripts rewrites the scripts the frontend replays.
 var updateFindScripts = os.Getenv("AO_UPDATE_FIND_SCRIPTS") == "1"
@@ -164,7 +165,6 @@ type findProvider struct {
 	inFlight     *findCall
 	page, id     string
 	search       bool
-	session      uint64
 	// retries are the stops waiting on their retry timer, in the order
 	// their timers were set.
 	retries []findIntent
@@ -204,8 +204,8 @@ func (p *findProvider) show(state FindState) {
 	p.pending = false
 }
 
-func (p *findProvider) cancelRetry(page, id string) {
-	p.retries = slices.DeleteFunc(p.retries, func(intent findIntent) bool { return intent.page == page && intent.id == id })
+func (p *findProvider) cancelRetry(id string) {
+	p.retries = slices.DeleteFunc(p.retries, func(intent findIntent) bool { return intent.id == id })
 }
 
 func (p *findProvider) drop(kinds ...string) {
@@ -231,7 +231,7 @@ func (p *findProvider) enqueueStop(t *testing.T, of findIntent) {
 }
 
 func (p *findProvider) retryStop(intent findIntent) {
-	p.cancelRetry(intent.page, intent.id)
+	p.cancelRetry(intent.id)
 	if intent.attempt+1 >= findPortStopAttempts {
 		return
 	}
@@ -330,7 +330,6 @@ func (p *findProvider) complete(t *testing.T, call *findCall) {
 			p.queueStopAfter(intent)
 		}
 	default:
-		p.session = max(p.session, call.state.Session)
 		if intent.seq == p.seq {
 			p.show(call.state)
 		}
@@ -349,9 +348,6 @@ func (p *findProvider) queueStopAfter(of findIntent) {
 
 func (p *findProvider) ended(state FindState) {
 	if !p.search || state.PageID != p.page || state.Mount != p.mount || state.FindID != p.id {
-		return
-	}
-	if state.Session <= p.session {
 		return
 	}
 	p.accept()
@@ -394,13 +390,9 @@ func (p *findProvider) close(t *testing.T) {
 
 func (p *findProvider) begin(t *testing.T, query string) {
 	p.page = p.e.shown
-	if p.id == "" {
-		p.ids++
-		p.id = fmt.Sprintf("%s%d", p.label, p.ids)
-		p.session = 0
-	}
+	p.ids++
+	p.id = fmt.Sprintf("%s%d", p.label, p.ids)
 	p.search = true
-	p.cancelRetry(p.page, p.id)
 	p.enqueue(t, p.heldIntent(FindStart, query))
 }
 
@@ -758,8 +750,8 @@ func (e *findTableEnv) check(t *testing.T, name string) {
 		if p.search && !owned {
 			t.Errorf("%s: provider %s holds a search on %s the Manager has not for its find %s (%+v)", name, label, e.pageLabel(p.page), p.id, session)
 		}
-		if p.count != 0 && (!p.search || !owned) {
-			t.Errorf("%s: provider %s shows results with no search it owns", name, label)
+		if shows := p.search && !p.pending; shows != owned {
+			t.Errorf("%s: provider %s shows counts %v (count %d); the Manager holds a search for it %v", name, label, shows, p.count, owned)
 		}
 		for id, session := range sessions {
 			if !session.active || session.owner != p.mount {
@@ -968,6 +960,14 @@ func TestFindOutstandingCallAcrossLaterActions(t *testing.T) {
 		{"retype", "search", func(p *findProvider, t *testing.T) { p.uiSearch(t, "beta") }},
 		{"step", "search", (*findProvider).uiNext},
 		{"empty", "search", func(p *findProvider, t *testing.T) { p.uiSearch(t, "") }},
+		// The stop fails once, so its answer, late, sets a retry going after
+		// whatever the later actions started.
+		{"empty, its stop refused", "search", func(p *findProvider, t *testing.T) {
+			p.e.mu.Lock()
+			p.e.stopFail = "once"
+			p.e.mu.Unlock()
+			p.uiSearch(t, "")
+		}},
 		{"close", "search", (*findProvider).uiClear},
 	}
 	later := []struct {

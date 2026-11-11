@@ -149,8 +149,8 @@ export class FindState {
     "mount": string;
 
     /**
-     * FindID is the id the owning mount's provider made for its bar,
-     * "" for none.
+     * FindID is the id the owning mount's provider made for the search's
+     * start, "" for none.
      */
     "findId": string;
 

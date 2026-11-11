@@ -25,7 +25,8 @@ extern void aoWKVDownloadStarted(uint64_t profile_id, uint64_t page_id, uint64_t
                                  void *download, char *uri, char *suggested);
 extern void aoWKVDownloadFinished(uint64_t download_id, double received, int state, char *path);
 extern void aoWKVClearDone(uint64_t call_id, char *err);
-extern int aoWKVKeyChord(uint64_t page_id, const char *key, int ctrl, int meta, int alt, int shift, int repeat);
+extern int aoWKVKeyChord(uint64_t page_id, const char *key, int ctrl, int meta, int alt, int shift, int repeat,
+                         int composing);
 extern void aoWKVFindDone(uint64_t call_id, int found);
 
 // The download state vocabulary the Go seam uses (driver.go).
@@ -143,7 +144,12 @@ static BOOL ao_claim_chord(WKWebView *view, NSEvent *event) {
     return NO;
   }
   int repeat = [event isARepeat] ? 1 : 0;
-  return aoWKVKeyChord(ao_view_page_id(view), [key UTF8String], ctrl, meta, alt, shift, repeat) == 1;
+  // An Escape that cancels the responder's input method composition is the
+  // composition's: the responder that gets the key says whether one runs.
+  int composing = [responder respondsToSelector:@selector(hasMarkedText)] &&
+                  [(id<NSTextInputClient>)responder hasMarkedText];
+  return aoWKVKeyChord(ao_view_page_id(view), [key UTF8String], ctrl, meta, alt, shift, repeat,
+                       composing) == 1;
 }
 
 @implementation AOWebView

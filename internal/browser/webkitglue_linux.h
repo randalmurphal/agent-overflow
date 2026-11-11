@@ -139,6 +139,10 @@ void ao_wk_view_find_finish(void *view);
 // cannot make a real input event. The native smoke's door into the gate.
 int ao_wk_view_offer_escape(void *view, int ctrl, int release);
 
+// ao_wk_view_has_input_method answers whether the view has an input method
+// context, the one the key gate reads a composition from.
+int ao_wk_view_has_input_method(void *view);
+
 // ---- memory --------------------------------------------------------------
 
 // ao_wk_free releases memory the C half allocated for the Go half. GLib's

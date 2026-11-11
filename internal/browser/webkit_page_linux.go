@@ -398,7 +398,16 @@ func (p *webkitPage) FindStep(ctx context.Context, backwards bool) (findResult, 
 	return p.find(ctx, op, "")
 }
 
-func (p *webkitPage) FindStop(context.Context) error { return gtkFindFinish(p.liveView()) }
+// FindStop ends the search and drops the selection that marks its match,
+// in the page and its same-origin frames: search_finish clears only the
+// highlights. A match selected in a cross-origin frame stays selected.
+func (p *webkitPage) FindStop(ctx context.Context) error {
+	if err := gtkFindFinish(p.liveView()); err != nil {
+		return err
+	}
+	_, err := p.evalBody(ctx, webkitClearSelectionScript)
+	return err
+}
 
 func (p *webkitPage) find(ctx context.Context, op int, query string) (findResult, error) {
 	opCtx, cancel := p.bind(ctx)

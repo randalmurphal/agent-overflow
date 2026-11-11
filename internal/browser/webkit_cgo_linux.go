@@ -249,13 +249,13 @@ func aoWebKitDocumentCommitted(pageID C.uint64_t) {
 // announcement, leaves the thread on a goroutine.
 //
 //export aoWebKitKeyChord
-func aoWebKitKeyChord(pageID C.uint64_t, key *C.char, ctrl, meta, alt, shift, repeat C.int) C.int {
+func aoWebKitKeyChord(pageID C.uint64_t, key *C.char, ctrl, meta, alt, shift, held, composing C.int) C.int {
 	page := webkitLookupPage(uint64(pageID))
 	if page == nil || page.engine.events.KeyChord == nil {
 		return 0
 	}
 	pressed := keybindings.Accelerator{Key: C.GoString(key), Ctrl: ctrl != 0, Meta: meta != 0, Alt: alt != 0, Shift: shift != 0}
-	if page.engine.events.KeyChord(page.handle, pressed, repeat != 0) {
+	if page.engine.events.KeyChord(page.handle, pressed, KeyPress{Held: held != 0, Composing: composing != 0}) {
 		return 1
 	}
 	return 0
@@ -599,21 +599,62 @@ func gtkFind(ctx context.Context, view webkitView, op int, text string, maxMatch
 	}
 }
 
-// offerEscape hands the page's key gate one Escape press, with Control when
-// ctrl and followed by its release when release, and answers whether AO
-// stopped it (ao_wk_view_offer_escape). For the native smoke.
-func (p *webkitPage) offerEscape(ctrl, release bool) (bool, error) {
-	handled := C.int(0)
+// escapeOffer is one Escape press handed to the key gate: with Control when
+// Ctrl, followed by its release when Release.
+type escapeOffer struct{ Ctrl, Release bool }
+
+// offerEscapes hands the page's key gate the presses in order, inside one
+// GTK callback so no other event (a focus change) lands between them, and
+// answers which AO stopped (ao_wk_view_offer_escape). For the native smoke.
+func (p *webkitPage) offerEscapes(offers []escapeOffer) ([]bool, error) {
+	handled := make([]C.int, len(offers))
 	err := p.liveView().do(func(view unsafe.Pointer) {
-		handled = C.ao_wk_view_offer_escape(view, flagInt(ctrl), flagInt(release))
+		for i, offer := range offers {
+			handled[i] = C.ao_wk_view_offer_escape(view, flagInt(offer.Ctrl), flagInt(offer.Release))
+		}
 	})
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	if handled < 0 {
-		return false, fmt.Errorf("browser: page %d has no key controller", p.id)
+	stopped := make([]bool, len(offers))
+	for i, h := range handled {
+		if h < 0 {
+			return nil, fmt.Errorf("browser: page %d has no key controller", p.id)
+		}
+		stopped[i] = h == 1
 	}
-	return handled == 1, nil
+	return stopped, nil
+}
+
+// onKeyPress has every KeyChord question of the page's engine reported to
+// seen before it is answered, until the returned restore runs. It swaps the
+// hook on the GTK thread, which is the only reader. For the native smoke.
+func (p *webkitPage) onKeyPress(seen func(keybindings.Accelerator, KeyPress)) (restore func() error, err error) {
+	var orig func(string, keybindings.Accelerator, KeyPress) bool
+	err = p.liveView().do(func(unsafe.Pointer) {
+		orig = p.engine.events.KeyChord
+		p.engine.events.KeyChord = func(handle string, pressed keybindings.Accelerator, press KeyPress) bool {
+			seen(pressed, press)
+			return orig(handle, pressed, press)
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	return func() error {
+		return p.liveView().do(func(unsafe.Pointer) { p.engine.events.KeyChord = orig })
+	}, nil
+}
+
+// hasInputMethod answers whether the page's view has an input method
+// context, the one the key gate reads a composition from. For the native
+// smoke.
+func (p *webkitPage) hasInputMethod() (bool, error) {
+	has := C.int(0)
+	err := p.liveView().do(func(view unsafe.Pointer) {
+		has = C.ao_wk_view_has_input_method(view)
+	})
+	return has == 1, err
 }
 
 func flagInt(on bool) C.int {

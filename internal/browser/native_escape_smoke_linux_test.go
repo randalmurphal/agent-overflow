@@ -4,6 +4,7 @@ package browser
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -12,11 +13,12 @@ import (
 
 // TestNativeEngineRealEscapeStaysThePages drives Escape through the real
 // WebKitGTK view's key controller, as GTK delivers a key to it: a bare
-// Escape is never stopped, with a search running or none, and is announced
-// once per press while a pane shows the page and not for a key held down;
-// a bound Ctrl+Escape goes through the accelerator gate. GTK 4 cannot make
-// a real input event, so the press reaches AO's gate and not the page's DOM:
-// that the gate lets it through is what this run shows.
+// Escape is never stopped, with a search running or none; the gate gathers
+// whether the press is held and whether the view's input method is
+// composing, and a fresh press while a pane shows the page is announced; a
+// bound Ctrl+Escape goes through the accelerator gate. GTK 4 cannot make a
+// real input event or composition, so the press reaches AO's gate and not
+// the page's DOM, and the composing input is only ever read as false here.
 func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 	window := nativeSmokeWindow.Load()
 	if window == nil {
@@ -73,89 +75,97 @@ func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 	if !ok {
 		t.Fatalf("the page's driver is %T, want the WebKitGTK page", p.driver)
 	}
-	offer := func(state string, ctrl, release bool) bool {
+	// What the gate gathered for each press, in order; it reports
+	// synchronously, inside the press.
+	var presses []KeyPress
+	restore, err := view.onKeyPress(func(pressed keybindings.Accelerator, press KeyPress) {
+		if pressed.Key == "escape" {
+			presses = append(presses, press)
+		}
+	})
+	if err != nil {
+		t.Fatalf("watch the gate: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := restore(); err != nil {
+			t.Errorf("restore the gate: %v", err)
+		}
+	})
+	// offer hands the gate the presses inside one GTK callback, so no focus
+	// change lands between them, and answers what the gate gathered.
+	offer := func(state string, offers ...escapeOffer) []KeyPress {
 		t.Helper()
-		handled, err := view.offerEscape(ctrl, release)
+		presses = nil
+		stopped, err := view.offerEscapes(offers)
 		if err != nil {
 			t.Fatalf("%s: offer Escape: %v", state, err)
 		}
-		return handled
+		for i, offer := range offers {
+			if stopped[i] != offer.Ctrl {
+				t.Fatalf("%s: press %d (%+v) stopped %v", state, i, offer, stopped[i])
+			}
+		}
+		if len(presses) != len(offers) {
+			t.Fatalf("%s: the gate saw %d presses of %d", state, len(presses), len(offers))
+		}
+		return presses
 	}
-	announced := func(state string, want bool) {
+	// announced waits for the Escape event a fresh press while shown makes;
+	// the bound is reached only when none comes. Which presses are announced
+	// is pageEscapeAnnounced's, covered by the unit tests.
+	announced := func(state string) {
 		t.Helper()
 		select {
 		case event := <-escapes:
-			if !want {
-				t.Fatalf("%s: an Escape was announced: %+v", state, event)
-			}
 			if event.ThreadID != access.ThreadID || event.PageID != page.ID {
 				t.Fatalf("%s: escape event = %+v", state, event)
 			}
-		case <-time.After(time.Second):
-			if want {
-				t.Fatalf("%s: the Escape was never announced", state)
-			}
+		case <-time.After(30 * time.Second):
+			t.Fatalf("%s: the Escape was never announced", state)
 		}
 	}
 
-	if offer("no search", false, true) {
-		t.Fatal("no search: AO stopped the page's Escape")
+	// The gate reads a composition from the view's input method context;
+	// WebKitGTK gives every view one, and with nothing typed it is empty.
+	hasIM, err := view.hasInputMethod()
+	if err != nil || !hasIM {
+		t.Fatalf("the view's input method context: %v, %v", hasIM, err)
 	}
-	announced("no search", true)
+	fresh := KeyPress{}
+	if got := offer("no search", escapeOffer{Release: true}); got[0] != fresh {
+		t.Fatalf("no search: gathered %+v", got[0])
+	}
+	announced("no search")
 
 	started, err := manager.Find(ctx, access, page.ID, FindStart, "alpha", mount.ID, "smoke-find")
 	if err != nil || !started.Active {
 		t.Fatalf("start a search = %+v, %v", started, err)
 	}
-	if offer("a search running", false, true) {
-		t.Fatal("a search running: AO stopped the page's Escape")
+	if got := offer("a search running", escapeOffer{Release: true}); got[0] != fresh {
+		t.Fatalf("a search running: gathered %+v", got[0])
 	}
-	announced("a search running", true)
+	announced("a search running")
 	// The Escape changed nothing of the search: the pane decides.
 	if state, err := manager.Find(ctx, access, page.ID, FindNext, "", mount.ID, "smoke-find"); err != nil || !state.Active || state.Session != started.Session {
 		t.Fatalf("step after the Escape = %+v, %v", state, err)
 	}
 
-	// Held down: the first press is announced, the repeats are not, and the
-	// release makes the next press new.
-	for i := range 3 {
-		if offer("held", false, false) {
-			t.Fatalf("held press %d: AO stopped the page's Escape", i)
-		}
-		announced("held", i == 0)
+	// Held down: the presses after the first are held until a release, and
+	// the press after the release is fresh again.
+	got := offer("held", escapeOffer{}, escapeOffer{}, escapeOffer{Release: true}, escapeOffer{Release: true})
+	want := []KeyPress{fresh, {Held: true}, {Held: true}, fresh}
+	if !slices.Equal(got, want) {
+		t.Fatalf("held: gathered %+v, want %+v", got, want)
 	}
-	if offer("released", false, true) {
-		t.Fatal("released: AO stopped the page's Escape")
-	}
-	announced("the release of a held Escape", false)
-	if offer("pressed again", false, true) {
-		t.Fatal("pressed again: AO stopped the page's Escape")
-	}
-	announced("pressed again", true)
 
-	// A bound Ctrl+Escape is a chord: stopped and routed, never announced as
-	// the page's Escape.
-	if !offer("Ctrl+Escape", true, true) {
-		t.Fatal("a bound Ctrl+Escape was not stopped")
-	}
+	// A bound Ctrl+Escape is a chord: stopped and routed.
+	offer("Ctrl+Escape", escapeOffer{Ctrl: true, Release: true})
 	select {
 	case chord := <-chords:
 		if chord != ctrl {
 			t.Fatalf("routed chord %+v, want Ctrl+Escape", chord)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("a bound Ctrl+Escape was never routed")
 	}
-	announced("Ctrl+Escape", false)
-
-	// The page no longer shown: the Escape is still the page's and nothing
-	// is announced.
-	hide := false
-	if _, err := manager.Visibility(ctx, access, &hide, ""); err != nil {
-		t.Fatalf("hide the companion: %v", err)
-	}
-	if offer("not shown", false, true) {
-		t.Fatal("not shown: AO stopped the page's Escape")
-	}
-	announced("not shown", false)
 }
