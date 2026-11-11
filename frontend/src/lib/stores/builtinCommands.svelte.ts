@@ -35,7 +35,7 @@ import {
   syncThreadReply,
 } from './panes.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
-import { closePaneFind, hasPaneFindProvider, isPaneFindOpen, openPaneFind } from './paneFind.svelte';
+import { closePaneFind, hasPaneFindProvider, isPaneFindOpen, openPaneFind, paneFindRegionElement, paneFindTarget, paneOfFindKey } from './paneFind.svelte';
 import { findSeedIn, isInFindBar, paneElement } from '../utils/paneFindSeed';
 import { closeFocusedPaneOrCompanion } from './companionPanes.svelte';
 import { closeFocusedBrowserTab } from './browserCompanion.svelte';
@@ -748,8 +748,9 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     },
   });
 
-  // The target pane's own find bar (stores/paneFind.svelte.ts; target:
-  // `paneFindTargetId`). A pane kind with no provider, or a pane under an
+  // The target pane's own find bar, or its target region's
+  // (stores/paneFind.svelte.ts; target: `paneFindTargetId`, then
+  // `paneFindTarget`). A pane kind with no provider, or a pane under an
   // overlay, leaves the command disabled.
   registerCommand({
     id: 'find.in-pane',
@@ -760,12 +761,12 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     // Reachable while the composer textarea (or the bar's own input) has focus.
     editableReachable: true,
     run: () => {
-      const paneId = paneFindTargetId();
-      if (!paneId || !hasPaneFindProvider(paneId)) return;
-      const pane = paneElement(paneId);
+      const key = paneFindTarget(paneFindTargetId());
+      if (!key || !hasPaneFindProvider(key)) return;
+      const root = paneFindRegionElement(key) ?? paneElement(paneOfFindKey(key));
       const active = typeof document === 'undefined' ? null : document.activeElement;
-      openPaneFind(paneId, {
-        seed: pane ? findSeedIn(pane) : '',
+      openPaneFind(key, {
+        seed: root ? findSeedIn(root) : '',
         returnFocus: active instanceof HTMLElement && !isInFindBar(active) ? active : null,
       });
     },
@@ -780,8 +781,8 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     when: 'paneFindOpen && !overlayOpen',
     editableReachable: true,
     run: () => {
-      const paneId = paneFindTargetId();
-      if (paneId) closePaneFind(paneId);
+      const key = paneFindTarget(paneFindTargetId());
+      if (key) closePaneFind(key);
     },
   });
 
@@ -1210,7 +1211,7 @@ export function overlayBesidePalette(): boolean {
 export function makeCommandContext(pane: ThreadPane | null, extra: Partial<CommandFlags>): CommandContext {
   const thread = pane?.thread ?? null;
   const overlayOpen = extra.overlayOpen ?? airspaceSurfaces().length > 0;
-  const findTarget = paneFindTargetId();
+  const findTarget = paneFindTarget(paneFindTargetId());
   const flags: CommandFlags = {
     paletteOpen: false,
     terminalOpen: pane?.showTerminal ?? false,

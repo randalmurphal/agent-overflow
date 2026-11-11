@@ -4,7 +4,9 @@
   // rather than covering it. It renders only while its pane's find is open
   // (stores/paneFind.svelte.ts) and owns the keys and focus of the session:
   // Enter / Shift+Enter step, and a close returns focus to the element that
-  // had it when the bar opened (else `fallbackFocus`). Escape is not the
+  // had it when the bar opened (else `fallbackFocus`). A provider with no
+  // `next` / `previous` is a filter: the bar shows how many results match,
+  // has no step buttons, and Enter moves focus to the first result. Escape is not the
   // bar's: it bubbles to `find.close`, which decides which pane's find may
   // be dismissed (the focused pane, or the one on screen under compact).
   import { tick, untrack } from 'svelte';
@@ -17,8 +19,10 @@
   import SteppedSpinner from '../primitives/SteppedSpinner.svelte';
   import {
     closePaneFind,
+    focusFirstPaneFindResult,
     getPaneFind,
     getPaneFindProvider,
+    isSteppingFind,
     setPaneFindQuery,
     stepPaneFind,
     takePaneFindReturnFocus,
@@ -26,9 +30,10 @@
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { PANE_FIND_BAR_ATTR } from '../../utils/paneFindSeed';
   import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
+  import { errString } from '../../utils/errors';
 
   interface Props {
-    /** The layout pane id the find state is keyed by. */
+    /** The find key the state is keyed by: a layout pane id or a region key. */
     paneId: string;
     /** The pane's title; labels the search landmark. */
     title: string;
@@ -48,8 +53,10 @@
   let query = $derived(find?.query ?? '');
   let result = $derived(provider?.result ?? null);
   let count = $derived(result?.count ?? 0);
+  let stepping = $derived(provider !== null && isSteppingFind(provider));
   let countText = $derived.by(() => {
     if (!query.trim() || !result) return '';
+    if (!stepping) return count === 0 ? 'No matches' : `${count} ${count === 1 ? 'match' : 'matches'}`;
     if (count === 0) return 'No results';
     return `${result.current + 1}/${count}${result.capped ? '+' : ''}`;
   });
@@ -103,7 +110,13 @@
   function handleInputKeydown(event: KeyboardEvent): void {
     if (event.key !== 'Enter' || isImeComposingEvent(event)) return;
     event.preventDefault();
-    stepPaneFind(paneId, event.shiftKey ? -1 : 1);
+    if (stepping) {
+      stepPaneFind(paneId, event.shiftKey ? -1 : 1);
+      return;
+    }
+    void focusFirstPaneFindResult(paneId).catch((err: unknown) => {
+      reportFrontendDiagnostic('pane find focus first result failed', errString(err));
+    });
   }
 
   // An Escape that ends an IME composition belongs to the composition.
@@ -119,6 +132,7 @@
     aria-label={`Find in ${title}`}
     {...{ [PANE_FIND_BAR_ATTR]: '' }}
     data-testid="pane-find-bar"
+    data-find-mode={stepping ? 'step' : 'filter'}
     class="flex h-8 compact:h-10 shrink-0 items-center gap-0.5 border-b border-border-subtle bg-surface-1 pl-3 pr-1.5"
     onkeydown={handleKeydown}
   >
@@ -147,12 +161,14 @@
         {countText}
       {/if}
     </span>
-    <IconButton size="xs" label="Previous match" testId="pane-find-previous" disabled={count === 0} onClick={() => stepPaneFind(paneId, -1)}>
-      {#snippet children()}<Icon icon={ChevronUp} size={14} />{/snippet}
-    </IconButton>
-    <IconButton size="xs" label="Next match" testId="pane-find-next" disabled={count === 0} onClick={() => stepPaneFind(paneId, 1)}>
-      {#snippet children()}<Icon icon={ChevronDown} size={14} />{/snippet}
-    </IconButton>
+    {#if stepping}
+      <IconButton size="xs" label="Previous match" testId="pane-find-previous" disabled={count === 0} onClick={() => stepPaneFind(paneId, -1)}>
+        {#snippet children()}<Icon icon={ChevronUp} size={14} />{/snippet}
+      </IconButton>
+      <IconButton size="xs" label="Next match" testId="pane-find-next" disabled={count === 0} onClick={() => stepPaneFind(paneId, 1)}>
+        {#snippet children()}<Icon icon={ChevronDown} size={14} />{/snippet}
+      </IconButton>
+    {/if}
     <IconButton size="xs" label="Close find" testId="pane-find-close" onClick={() => closePaneFind(paneId)}>
       {#snippet children()}<Icon icon={X} size={13} />{/snippet}
     </IconButton>
