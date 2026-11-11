@@ -217,8 +217,8 @@ func (a *App) GetPRDetail(ctx context.Context, pr gitops.PRReference) (gitops.PR
 	return a.gitCore().GetPRDetail(forgeapi.WithInteractive(ctx), pr)
 }
 
-// OpenPRDiff opens the PR's three-dot diff (merge base of the base branch
-// tip to the head) at rev, the revision of the PR snapshot the caller
+// OpenPRDiff opens the PR's three-dot diff (merge base of the recorded base
+// and the head, to the head) at rev, the revision of the PR snapshot the caller
 // shows, computed in the referenced clone.
 //
 //ao:scope git:operate

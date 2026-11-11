@@ -455,7 +455,7 @@ describe('<ReviewMergeSection> guards', () => {
     ].join('\n'));
     const view = await mountReviewPanePR(blocked());
     await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
-    await fireEvent.click(await waitFor(() => view.getByTestId('review-tree-filter-diff')));
+    // The filter narrows the diff by default.
     await fireEvent.click(await waitFor(() => view.getByTestId('review-tree-hide-tests')));
     await waitFor(() => {
       expect(view.getByTestId('review-filter-empty')).toBeInTheDocument();

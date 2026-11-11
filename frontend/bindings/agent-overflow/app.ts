@@ -1782,8 +1782,10 @@ export function GetPRListNeedsYou(): $CancellablePromise<number> {
 }
 
 /**
- * GetPRMergeConflicts merges the PR at rev in the referenced clone and
- * reports the conflicts.
+ * GetPRMergeConflicts merges rev's head with the tip rev.BaseRef has on
+ * origin now, fetched by this call, in the referenced clone and reports the
+ * conflicts. rev.BaseSHA is not merged: it is the base the forge recorded,
+ * which the head usually contains, so merging with it never conflicts.
  */
 export function GetPRMergeConflicts(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: git$0.PRRevision, headRefName: string): $CancellablePromise<app$0.PRMergeConflictsResult> {
     return $Call.ByID(106351482, ws, pr, rev, headRefName).then(($result: any) => {
@@ -3708,8 +3710,8 @@ export function OpenPRCommitDiff(ws: app$0.WorkspaceRef, pr: git$0.PRReference, 
 }
 
 /**
- * OpenPRDiff opens the PR's three-dot diff (merge base of the base branch
- * tip to the head) at rev, the revision of the PR snapshot the caller
+ * OpenPRDiff opens the PR's three-dot diff (merge base of the recorded base
+ * and the head, to the head) at rev, the revision of the PR snapshot the caller
  * shows, computed in the referenced clone.
  */
 export function OpenPRDiff(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: git$0.PRRevision, ignoreWhitespace: boolean): $CancellablePromise<app$0.ReviewDiffOpened> {

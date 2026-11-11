@@ -340,28 +340,52 @@ describe('<ReviewPane>', () => {
     expect(view.getByTestId('review-tree-comment-count').classList.contains('text-warning')).toBe(true);
   });
 
-  it('applies the extension filter to the diff when the dropdown toggle is checked', async () => {
-    const view = render(ReviewPane, { ctx: makeCtx() });
-    // Distinct paths, because the sticky overlay can duplicate the top
-    // file's header row.
-    const headerPaths = () =>
-      [...new Set(view.getAllByTestId('review-file-header').map((node) => node.getAttribute('data-path')))];
+  it('applies the extension filter to the diff by default, and the dropdown item turns that off', async () => {
+    const mount = () => {
+      const view = render(ReviewPane, { ctx: makeCtx() });
+      // Distinct paths, because the sticky overlay can duplicate the top
+      // file's header row.
+      const headerPaths = () =>
+        [...new Set(view.getAllByTestId('review-file-header').map((node) => node.getAttribute('data-path')))];
+      const treePaths = () =>
+        view.getAllByTestId('review-tree-file').map((node) => node.getAttribute('data-file-path'));
+      return { view, headerPaths, treePaths };
+    };
+    const { view, headerPaths, treePaths } = mount();
     await waitFor(() => {
       expect(headerPaths()).toEqual(['src/app.ts', 'pnpm-lock.yaml']);
     });
 
     await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
+    expect(view.getByTestId('review-tree-filter-diff')).toHaveTextContent('✓');
     await fireEvent.click(view.getByRole('menuitem', { name: /^\.ts/ }));
-    // Rail-only by default: the diff still shows both files.
-    expect(headerPaths()).toHaveLength(2);
-
-    await fireEvent.click(view.getByRole('menuitem', { name: /apply filter to diff/i }));
+    // Nothing else touched: the diff narrows with the tree.
+    expect(treePaths()).toEqual(['src/app.ts']);
     expect(headerPaths()).toEqual(['src/app.ts']);
     expect(view.getByTestId('review-diff-stats').textContent).toContain('1 file');
 
-    // Unchecking restores the full diff; the rail filter stays active.
-    await fireEvent.click(view.getByRole('menuitem', { name: /apply filter to diff/i }));
-    expect(headerPaths()).toHaveLength(2);
+    // Unchecking restores the full diff; the tree stays filtered.
+    await fireEvent.click(view.getByTestId('review-tree-filter-diff'));
+    expect(view.getByTestId('review-tree-filter-diff')).not.toHaveTextContent('✓');
+    expect(headerPaths()).toEqual(['src/app.ts', 'pnpm-lock.yaml']);
+    expect(treePaths()).toEqual(['src/app.ts']);
+
+    // Checking it again narrows the diff again.
+    await fireEvent.click(view.getByTestId('review-tree-filter-diff'));
+    expect(headerPaths()).toEqual(['src/app.ts']);
+    await fireEvent.click(view.getByTestId('review-tree-filter-diff'));
+    view.unmount();
+
+    // A new pane starts with no filter and the item back on.
+    const again = mount();
+    await waitFor(() => {
+      expect(again.headerPaths()).toEqual(['src/app.ts', 'pnpm-lock.yaml']);
+    });
+    expect(again.treePaths()).toHaveLength(2);
+    await fireEvent.click(again.view.getByTestId('review-tree-ext-trigger'));
+    expect(again.view.getByTestId('review-tree-filter-diff')).toHaveTextContent('✓');
+    await fireEvent.click(again.view.getByRole('menuitem', { name: /^\.ts/ }));
+    expect(again.headerPaths()).toEqual(['src/app.ts']);
   });
 
   it('toggles hide-whitespace from the toolbar and re-requests the diff', async () => {

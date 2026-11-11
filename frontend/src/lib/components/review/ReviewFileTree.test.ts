@@ -249,6 +249,101 @@ describe('<ReviewFileTree> hide tests', () => {
   });
 });
 
+describe('<ReviewFileTree> folder collapse under filters', () => {
+  const FILES_WITH_TESTS = [
+    file('src/app.ts'),
+    file('src/app.test.ts'),
+    file('docs/guide.md'),
+    file('internal/git/forge_test.go'),
+    file('internal/git/forge.go'),
+  ];
+  interface TreeView {
+    queryAllByTestId(id: string): HTMLElement[];
+    getByTestId(id: string): HTMLElement;
+    getByText(text: string): HTMLElement;
+  }
+  const filePaths = (view: TreeView) =>
+    view.queryAllByTestId('review-tree-file').map((node) => node.getAttribute('data-file-path'));
+  const dir = (view: TreeView, name: string) => view.getByText(name).closest('button')!;
+  const search = (view: TreeView, value: string) =>
+    fireEvent.input(view.getByTestId('review-tree-search'), { target: { value } });
+
+  it('collapses a folder while a type filter is on', async () => {
+    const view = render(ReviewFileTree, { files: FILES_WITH_TESTS, onSelectFile: () => {} });
+    await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
+    await fireEvent.click(view.getByRole('menuitem', { name: /^\.ts/ }));
+    expect(filePaths(view)).toEqual(['src/app.test.ts', 'src/app.ts']);
+
+    await fireEvent.click(dir(view, 'src'));
+    expect(filePaths(view)).toEqual([]);
+    expect(dir(view, 'src').getAttribute('aria-expanded')).toBe('false');
+
+    // The collapse is the user's, so it holds once the filter is cleared.
+    await fireEvent.click(view.getByRole('menuitem', { name: /^\.ts/ }));
+    expect(filePaths(view)).not.toContain('src/app.ts');
+    expect(filePaths(view)).toContain('docs/guide.md');
+  });
+
+  it('collapses a folder while hide tests is on', async () => {
+    const view = render(ReviewFileTree, {
+      files: FILES_WITH_TESTS,
+      onSelectFile: () => {},
+      hideTests: false,
+      onHideTestsChange: () => {},
+    });
+    await view.rerender({ hideTests: true });
+    expect(filePaths(view)).toEqual(['docs/guide.md', 'internal/git/forge.go', 'src/app.ts']);
+
+    await fireEvent.click(dir(view, 'internal/git'));
+    expect(filePaths(view)).toEqual(['docs/guide.md', 'src/app.ts']);
+    expect(dir(view, 'internal/git').getAttribute('aria-expanded')).toBe('false');
+
+    await fireEvent.click(dir(view, 'internal/git'));
+    expect(filePaths(view)).toEqual(['docs/guide.md', 'internal/git/forge.go', 'src/app.ts']);
+    expect(dir(view, 'internal/git').getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('a typed query shows its matches inside a folder collapsed before it', async () => {
+    const view = render(ReviewFileTree, { files: FILES_WITH_TESTS, onSelectFile: () => {} });
+    await fireEvent.click(dir(view, 'src'));
+    expect(filePaths(view)).not.toContain('src/app.ts');
+
+    await search(view, 'app');
+    expect(filePaths(view)).toEqual(['src/app.test.ts', 'src/app.ts']);
+    expect(dir(view, 'src').getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('collapses during a query, resets those collapses when the query is edited, and restores the earlier ones when it is cleared', async () => {
+    const view = render(ReviewFileTree, { files: FILES_WITH_TESTS, onSelectFile: () => {} });
+    // Collapsed before the search.
+    await fireEvent.click(dir(view, 'docs'));
+    expect(filePaths(view)).not.toContain('docs/guide.md');
+
+    await search(view, 'g');
+    expect(filePaths(view)).toEqual(['docs/guide.md', 'internal/git/forge_test.go', 'internal/git/forge.go']);
+
+    // Collapse during the query.
+    await fireEvent.click(dir(view, 'internal/git'));
+    expect(filePaths(view)).toEqual(['docs/guide.md']);
+    expect(dir(view, 'internal/git').getAttribute('aria-expanded')).toBe('false');
+
+    // An edit of the query starts its collapses over.
+    await search(view, 'go');
+    expect(filePaths(view)).toEqual(['internal/git/forge_test.go', 'internal/git/forge.go']);
+    expect(dir(view, 'internal/git').getAttribute('aria-expanded')).toBe('true');
+
+    await fireEvent.click(dir(view, 'internal/git'));
+    expect(filePaths(view)).toEqual([]);
+
+    // Clearing the query brings back the collapses made before it, and
+    // none made during it.
+    await search(view, '');
+    expect(dir(view, 'docs').getAttribute('aria-expanded')).toBe('false');
+    expect(dir(view, 'internal/git').getAttribute('aria-expanded')).toBe('true');
+    expect(filePaths(view)).toEqual(['internal/git/forge_test.go', 'internal/git/forge.go', 'src/app.test.ts', 'src/app.ts']);
+  });
+});
+
 describe('<ReviewRail> on compact', () => {
   it('closes the open tree on the Back ladder\'s dismissal, unless an overlay is up, and never off compact', () => {
     const onToggleOpen = vi.fn();

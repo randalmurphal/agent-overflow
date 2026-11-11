@@ -20,16 +20,24 @@ type PRMergeConflictsResult struct {
 	Messages []string `json:"messages"`
 }
 
-// GetPRMergeConflicts merges the PR at rev in the referenced clone and
-// reports the conflicts.
+// GetPRMergeConflicts merges rev's head with the tip rev.BaseRef has on
+// origin now, fetched by this call, in the referenced clone and reports the
+// conflicts. rev.BaseSHA is not merged: it is the base the forge recorded,
+// which the head usually contains, so merging with it never conflicts.
 //
 //ao:scope git:operate
 func (a *App) GetPRMergeConflicts(ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, headRefName string) (PRMergeConflictsResult, error) {
-	workspace, err := a.prRevisionWorkspace("get PR merge conflicts", ws, pr, rev)
+	const action = "get PR merge conflicts"
+	workspace, err := a.prRevisionWorkspace(action, ws, pr, rev)
 	if err != nil {
 		return PRMergeConflictsResult{}, err
 	}
-	result, err := a.gitCore().MergeTreeConflicts(workspace, rev.BaseSHA, rev.HeadSHA)
+	baseTip, err := a.gitCore().FetchBranchTip(workspace, rev.BaseRef)
+	if err != nil {
+		a.notePRReadFailed(pr)
+		return PRMergeConflictsResult{}, fmt.Errorf("%s: %w", action, err)
+	}
+	result, err := a.gitCore().MergeTreeConflicts(workspace, baseTip, rev.HeadSHA)
 	if err != nil {
 		return PRMergeConflictsResult{}, err
 	}

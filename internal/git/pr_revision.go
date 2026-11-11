@@ -6,12 +6,18 @@ import (
 )
 
 // PRRevision is the pull request state a local read is computed at, as the
-// forge last reported it: the head commit and the base branch's tip. Every
-// PR read of one snapshot (diff, commit list, merge conflicts) uses the
-// same pair, so they agree with each other and with the forge.
+// forge last reported it: the head commit and the base commit the forge
+// recorded for the PR. The diff and the commit list of one snapshot use the
+// same pair, so they agree with each other and with the forge. The merge
+// conflict read merges the head with the base branch's live tip instead
+// (FetchBranchTip), because the recorded base does not follow the branch.
 type PRRevision struct {
 	BaseRef string `json:"baseRef"`
-	// BaseSHA is the base branch's tip (PRDetail.BaseRefSHA).
+	// BaseSHA is the base commit the forge recorded for the PR
+	// (PRDetail.BaseRefSHA). It is not the base branch's current tip:
+	// GitLab's start_sha is the target tip when the diff was last
+	// computed, usually the merge base, and GitHub's baseRefOid can lag
+	// the branch by several merges.
 	BaseSHA string `json:"baseSHA"`
 	HeadSHA string `json:"headSHA"`
 }
@@ -66,6 +72,54 @@ func (c *Core) EnsurePRObjects(cwd string, pr PRReference, rev PRRevision) error
 	}
 	return fmt.Errorf("origin has no commit %s for %s or %s; the pull request changed since the forge reported it",
 		strings.Join(missing, ", "), headRef, rev.BaseRef)
+}
+
+// FetchBranchTip fetches branch from origin and returns the commit it names
+// there now, with its objects present in cwd's repository. It is one
+// network step: the fetch both resolves the tip and downloads it. The tip is
+// read from the fetch's own porcelain output, not from FETCH_HEAD, which a
+// concurrent fetch can overwrite. As with EnsurePRObjects, the fetch names
+// the branch, so git also moves origin/<branch> to it.
+//
+// A fetch that brought the commit but lost the origin/<branch> update to
+// another git process still answers; any other failure is returned.
+func (c *Core) FetchBranchTip(cwd, branch string) (string, error) {
+	if err := ValidateBranchName(branch); err != nil {
+		return "", err
+	}
+	stdout, _, fetchErr := c.executeInteractive(cwd, "fetch", "--porcelain", "origin", "refs/heads/"+branch)
+	tip := porcelainFetchHead(stdout)
+	if tip == "" {
+		if fetchErr != nil {
+			return "", fmt.Errorf("fetch %s from origin: %w", branch, fetchErr)
+		}
+		return "", fmt.Errorf("fetch %s from origin reported no commit", branch)
+	}
+	if fetchErr != nil {
+		missing, err := c.missingCommits(cwd, tip)
+		if err != nil {
+			return "", err
+		}
+		if len(missing) != 0 {
+			return "", fmt.Errorf("fetch %s from origin: %w", branch, fetchErr)
+		}
+	}
+	return tip, nil
+}
+
+// porcelainFetchHead returns the new object ID of the FETCH_HEAD line in
+// `git fetch --porcelain` output ("<flag> <old> <new> <ref>"), or "".
+func porcelainFetchHead(stdout string) string {
+	for _, line := range strings.Split(stdout, "\n") {
+		if len(line) < 2 {
+			continue
+		}
+		fields := strings.Fields(line[2:])
+		if len(fields) == 3 && fields[2] == "FETCH_HEAD" && treeOIDPattern.MatchString(fields[1]) {
+			return fields[1]
+		}
+	}
+	return ""
 }
 
 // missingCommits returns the oids that do not name a commit in cwd's

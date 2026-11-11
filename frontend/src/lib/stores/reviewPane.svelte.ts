@@ -2282,9 +2282,10 @@ export function createReviewPaneState(
   }
 
   // The merged tree and every conflicted file's content belong to the PR
-  // in this checkout (one merge-tree run serves every pane there); what
-  // this pane owns is whether the surface is showing and which files it
-  // has collapsed.
+  // in this checkout (every pane there shows the latest read, and each
+  // open reads again against the base branch's live tip); what this pane
+  // owns is whether the surface is showing and which files it has
+  // collapsed.
   async function openConflictView(): Promise<void> {
     const detail = prSnapshot?.detail;
     const key = prEntityKey;

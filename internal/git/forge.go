@@ -151,9 +151,11 @@ type PRDetail struct {
 	Draft       bool   `json:"draft"`
 	HeadRefName string `json:"headRefName"`
 	BaseRefName string `json:"baseRefName"`
-	// BaseRefSHA is the base branch's tip the forge compares the PR
-	// against: GitHub's baseRefOid, GitLab's diff_refs.start_sha. Empty
-	// while GitLab is still preparing the merge request's diff.
+	// BaseRefSHA is the base commit the forge recorded for the PR's diff:
+	// GitHub's baseRefOid, GitLab's diff_refs.start_sha. It does not follow
+	// the base branch, so it is not the branch's current tip (see
+	// PRRevision.BaseSHA). Empty while GitLab is still preparing the merge
+	// request's diff.
 	BaseRefSHA     string          `json:"baseRefSHA"`
 	HeadSHA        string          `json:"headSHA"`
 	URL            string          `json:"url"`

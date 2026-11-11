@@ -22,9 +22,13 @@ Superseded in part 2026-09-27: standalone PR review (`pr://` threads
 started from a PR URL) and the forge CLI patch (`gh pr diff` /
 `glab mr diff`) were removed. The PR scope needs a local clone whose
 branch has the PR. Every PR read (diff, commit list, merge conflicts) runs
-at the revision of the pane's PR snapshot, the head and base branch tip
-the forge reported (`git.PRRevision`), and fetches from origin only the
-commits the clone lacks (`Core.EnsurePRObjects`). A failed refresh keeps
+at the revision of the pane's PR snapshot, the head and the base commit
+the forge recorded (`git.PRRevision`), and fetches from origin only the
+commits the clone lacks (`Core.EnsurePRObjects`). The recorded base does
+not follow the base branch (GitLab's `start_sha` is usually the merge
+base), so the conflict read merges the head with the base branch's tip,
+fetched from origin on every read (`Core.FetchBranchTip`); a failed fetch
+is the view's error, never "no conflicts". A failed refresh keeps
 the diff on screen under its error; a failed read retries on the next
 frame of the PR's poll pump, which emits once after a failed read even
 when nothing changed. Diffs of every scope are read in chunks with no
@@ -152,9 +156,9 @@ polling.
   failure over a snapshot on screen is not shown unless the retry fails
   too; each kind has its own surface ([failure
   presentation](forge-transport.md#failure-presentation)). A GitLab merge
-  request read with no base tip (`diff_refs` is null until GitLab has
+  request read with no recorded base (`diff_refs` is null until GitLab has
   computed a new MR's diff) also polls on the retry delay, and the pane
-  shows it as waiting until a frame carries the tip. The pane reads its PR from
+  shows it as waiting until a frame carries the base. The pane reads its PR from
   the workspace's git status; the fast first status marks its PR lookup
   pending (`openPrLookupPending`) and carries the branch's last known PR,
   which the pane loads; with none, it waits on the lookup rather than

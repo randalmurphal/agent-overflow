@@ -10,10 +10,13 @@ PR stores; components own presentation and interaction.
   panes without a thread row.
 - PR data is keyed by computer and repository identity. Route forge reads and
   mutations to that computer rather than current global focus.
-- A loaded diff records the PR revision (head and base tip) it represents in
+- A loaded diff records the PR revision (head and recorded base) it represents in
   pane-local state. Derive staleness against the store's live head so two
   panes can hold different snapshots safely. PR reads take that revision,
-  never a branch name the backend resolves on its own.
+  never a branch name the backend resolves on its own. The conflict read
+  is the one exception: the recorded base does not follow the branch, so
+  `GetPRMergeConflicts` fetches the base branch's tip itself, and every
+  open of the conflict view reads again.
 - Capture mutation targets before awaiting. Late replies update the captured
   PR or thread and must not navigate a pane whose target changed.
 - A review is a companion of a thread pane (`ctx`, `reviewSubjectForPane`)

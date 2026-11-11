@@ -896,21 +896,104 @@ describe('prReviewStore — applying pushes', () => {
 });
 
 describe('prReviewStore — merge conflicts follow the PR', () => {
-  it('computes the merged tree once and reuses it for the same base/head', async () => {
+  it('shares one in-flight read between opens and reads again on every later open', async () => {
     installSubscribeMock();
-    const { conflicts, file } = installConflictMocks();
+    const { file } = installConflictMocks();
+    let releaseTree!: () => void;
+    const held = new Promise<void>((resolve) => {
+      releaseTree = resolve;
+    });
+    const conflicts = setBindingMock('GetPRMergeConflicts', async () => {
+      await held;
+      return { conflicted: true, treeOID: 'tree-1', baseLabel: 'origin/main', headLabel: 'feature', paths: ['main.go'], notes: {}, messages: [] };
+    });
     const a = attachPR(KEY, { ref: REF });
     await flush();
 
-    await openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
+    // Two panes opening together share the read, and the second open
+    // settles only with the first one's answer.
+    const first = openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
+    let secondSettled = false;
+    const second = openPRConflicts(KEY, CONFLICT_WS, REF, detailStub()).then(() => {
+      secondSettled = true;
+    });
+    await flush();
+    expect(secondSettled).toBe(false);
+    releaseTree();
+    await second;
+    expect(peekPRConflicts(KEY, CONFLICT_WS).state?.treeOID).toBe('tree-1');
+    await first;
     expect(conflicts).toHaveBeenCalledTimes(1);
     expect(file).toHaveBeenCalledTimes(1);
-    expect(peekPRConflicts(KEY, CONFLICT_WS).state?.treeOID).toBe('tree-1');
     expect(peekPRConflicts(KEY, CONFLICT_WS).contentByPath.get('main.go')).toBe('merged content');
 
-    // A second pane opening the same view pays nothing.
+    // The revision does not move when the base branch does, so a reopen
+    // at the same revision reads the merge with the live tip again.
+    setBindingMock('GetPRMergeConflicts', async () => ({
+      conflicted: false, treeOID: 'tree-clean', baseLabel: 'origin/main', headLabel: 'feature', paths: [], notes: {}, messages: [],
+    }));
     await openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
-    expect(conflicts).toHaveBeenCalledTimes(1);
+    expect(peekPRConflicts(KEY, CONFLICT_WS).state?.treeOID).toBe('tree-clean');
+    expect(peekPRConflicts(KEY, CONFLICT_WS).state?.paths).toEqual([]);
+    expect(peekPRConflicts(KEY, CONFLICT_WS).contentByPath.size).toBe(0);
+    a.release();
+  });
+
+  // The forge's recorded base stays put when the base branch moves; what
+  // the forge does report is the mergeability that move changed.
+  it('an open view reads again when the forge reports a mergeability change at the same revision', async () => {
+    installSubscribeMock();
+    installConflictMocks([]);
+    const a = attachPR(KEY, { ref: REF });
+    await flush();
+    const viewing = permitPRConflictReconcile(KEY, CONFLICT_WS);
+    await openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
+    expect(peekPRConflicts(KEY, CONFLICT_WS).state?.paths).toEqual([]);
+
+    const recompute = installConflictMocks(['main.go'], 'tree-conflicted').conflicts;
+    applyPRUpdatedEvent({ prKey: KEY, detail: detailStub({ mergeability: 'conflicting' }), threads: [], headSHA: 'sha-a' });
+    await flush();
+
+    expect(recompute).toHaveBeenCalledTimes(1);
+    expect(peekPRConflicts(KEY, CONFLICT_WS).state?.paths).toEqual(['main.go']);
+    expect(peekPRConflicts(KEY, CONFLICT_WS).contentByPath.get('main.go')).toBe('merged content');
+
+    // A frame that changes nothing the merge depends on does not re-read.
+    applyPRUpdatedEvent({ prKey: KEY, detail: detailStub({ mergeability: 'conflicting', title: 'renamed' }), threads: [], headSHA: 'sha-a' });
+    await flush();
+    expect(recompute).toHaveBeenCalledTimes(1);
+    viewing();
+    a.release();
+  });
+
+  it('a closed view does not read on a mergeability change', async () => {
+    installSubscribeMock();
+    installConflictMocks([]);
+    const a = attachPR(KEY, { ref: REF });
+    await flush();
+    await openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
+
+    const recompute = installConflictMocks().conflicts;
+    applyPRUpdatedEvent({ prKey: KEY, detail: detailStub({ mergeability: 'conflicting' }), threads: [], headSHA: 'sha-a' });
+    await flush();
+    expect(recompute).not.toHaveBeenCalled();
+    a.release();
+  });
+
+  it('a failed read leaves no "no conflicts" state behind', async () => {
+    installSubscribeMock();
+    installConflictMocks([]);
+    const a = attachPR(KEY, { ref: REF });
+    await flush();
+    await openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
+    expect(peekPRConflicts(KEY, CONFLICT_WS).state?.paths).toEqual([]);
+
+    setBindingMock('GetPRMergeConflicts', async () => {
+      throw new Error('get PR merge conflicts: fetch main from origin: exited with code 128');
+    });
+    await openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
+    expect(peekPRConflicts(KEY, CONFLICT_WS).state).toBeNull();
+    expect(peekPRConflicts(KEY, CONFLICT_WS).error).toContain('fetch main from origin');
     a.release();
   });
 
@@ -1335,9 +1418,9 @@ describe('prReviewStore — merge conflicts per checkout', () => {
     expect(conflicts.mock.calls.map((call) => call[0])).toEqual([CONFLICT_WS, OTHER_WS]);
     expect(file.mock.calls.map((call) => call[0])).toEqual([CONFLICT_WS, OTHER_WS]);
     expect(peekPRConflicts(KEY, OTHER_WS).contentByPath.get('main.go')).toBe('content of tree /workspace-2 main');
-    // A pane in the same checkout still reuses that checkout's tree.
+    // A reopen reads again in its own checkout only.
     await openPRConflicts(KEY, OTHER_WS, REF, detailStub());
-    expect(conflicts).toHaveBeenCalledTimes(2);
+    expect(conflicts.mock.calls.map((call) => call[0])).toEqual([CONFLICT_WS, OTHER_WS, OTHER_WS]);
     a.release();
   });
 

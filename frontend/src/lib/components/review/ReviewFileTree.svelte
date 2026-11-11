@@ -45,8 +45,8 @@
      * isTestPath). The item renders only when a handler is provided. */
     hideTests?: boolean;
     onHideTestsChange?: (value: boolean) => void;
-    /** The dropdown's "Apply filter to diff" toggle. The item renders
-     * only when a handler is provided. */
+    /** The dropdown's "Apply filter to diff" toggle, on unless the user
+     * turns it off. The item renders only when a handler is provided. */
     filterDiff?: boolean;
     onFilterDiffChange?: (value: boolean) => void;
   }
@@ -60,14 +60,18 @@
     activeExtensions = new SvelteSet<string>(),
     hideTests = false,
     onHideTestsChange,
-    filterDiff = false,
+    filterDiff = true,
     onFilterDiffChange,
   }: Props = $props();
 
-  const EMPTY_COLLAPSED: ReadonlySet<string> = new Set();
-
   let query = $state('');
-  const collapsedPaths = $state(new SvelteSet<string>());
+  // The user's collapsed folders, applied to the full tree and to the tree
+  // the type filter and hide-tests narrow.
+  const collapsedPaths = new SvelteSet<string>();
+  // Folders collapsed during a text query. It starts empty and empties on
+  // every edit of the query, so a typed query shows its matches expanded,
+  // and clearing the query returns to collapsedPaths untouched.
+  const queryCollapsedPaths = new SvelteSet<string>();
   let extMenuOpen = $state(false);
   let extTriggerEl: HTMLButtonElement | undefined = $state(undefined);
 
@@ -87,18 +91,15 @@
   // or tests to hide.
   const filterMenuShown = $derived(extensionCounts.length > 1 || (onHideTestsChange !== undefined && testFileCount > 0));
   const menuFilterCount = $derived(activeExtensions.size + (hideTests ? 1 : 0));
-  const filterActive = $derived(query.trim() !== '' || menuFilterCount > 0);
+  const queryActive = $derived(query.trim() !== '');
   const filtered = $derived(filterReviewFiles(files, query, activeExtensions, hideTests));
   const tree = $derived(buildReviewTree(filtered.files, filtered.fileIndexes));
-  // A live filter overrides manual collapse: every match must be visible.
-  const visibleNodes = $derived(
-    flattenReviewTree(tree, filterActive ? EMPTY_COLLAPSED : collapsedPaths),
-  );
+  const collapsedInEffect = $derived(queryActive ? queryCollapsedPaths : collapsedPaths);
+  const visibleNodes = $derived(flattenReviewTree(tree, collapsedInEffect));
 
   function toggleDirectory(path: string): void {
-    if (filterActive) return;
-    if (collapsedPaths.has(path)) collapsedPaths.delete(path);
-    else collapsedPaths.add(path);
+    if (collapsedInEffect.has(path)) collapsedInEffect.delete(path);
+    else collapsedInEffect.add(path);
   }
 
   function toggleExtension(ext: string): void {
@@ -169,6 +170,7 @@
         aria-label="Filter files"
         data-testid="review-tree-search"
         bind:value={query}
+        oninput={() => queryCollapsedPaths.clear()}
       />
     </div>
     {#if filterMenuShown}
@@ -240,7 +242,7 @@
         <button
           type="button"
           class="flex h-7 w-full min-w-0 items-center pr-2 text-left text-xs text-fg-muted hover:bg-surface-2/50 hover:text-fg"
-          aria-expanded={filterActive || !collapsedPaths.has(node.path)}
+          aria-expanded={!collapsedInEffect.has(node.path)}
           onclick={() => toggleDirectory(node.path)}
           data-testid="review-tree-dir"
         >
@@ -249,7 +251,7 @@
             <Icon
               icon={ChevronRight}
               size={12}
-              class={!filterActive && collapsedPaths.has(node.path) ? 'shrink-0' : 'shrink-0 rotate-90'}
+              class={collapsedInEffect.has(node.path) ? 'shrink-0' : 'shrink-0 rotate-90'}
             />
             <Icon icon={Folder} size={12} class="shrink-0 opacity-80" />
             <span class="min-w-0 truncate">{node.name}</span>

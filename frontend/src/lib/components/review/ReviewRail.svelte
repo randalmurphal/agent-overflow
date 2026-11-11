@@ -50,7 +50,7 @@
     activeExtensions,
     hideTests = false,
     onHideTestsChange,
-    filterDiff = false,
+    filterDiff = true,
     onFilterDiffChange,
   }: Props = $props();
 

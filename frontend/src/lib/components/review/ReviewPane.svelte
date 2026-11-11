@@ -50,11 +50,12 @@
 
   let { ctx, pr }: Props = $props();
   // File-filter state (type chips, hide tests) is owned here, not in the
-  // tree, so the dropdown's "Apply filter to diff" toggle can also narrow
-  // the diff body, and the selection survives the rail hiding.
+  // tree, so it narrows the diff body too, and the selection survives the
+  // rail hiding. The dropdown's "Apply filter to diff" item is the switch
+  // that turns the diff narrowing off.
   const activeExtensions = new SvelteSet<string>();
   let hideTests = $state(false);
-  let filterDiff = $state(false);
+  let filterDiff = $state(true);
   // Captured at init, NOT $derived: the subject is fixed for this instance
   // (CompanionPane keys the body on conversation, ownership epoch and checkout,
   // so a move, workspace change or draft materialization remounts it; the
@@ -106,9 +107,9 @@
   let treeVisible = $state(storedTreeVisible ?? true);
   let jumpFilePath: string | null = $state(null);
   let topFileIndex = $state(-1);
-  // The files the diff body renders: the full set, or the tree's filtered
-  // subset (type chips, hide tests; never the search box) when the
-  // dropdown's apply-to-diff toggle is on.
+  // The files the diff body renders: the tree's filtered subset (type
+  // chips, hide tests; never the search box), or the full set once the
+  // dropdown's apply-to-diff item is turned off.
   const diffFiles = $derived.by(() => {
     const files = review?.files ?? [];
     if (!filterDiff || (activeExtensions.size === 0 && !hideTests)) return files;
