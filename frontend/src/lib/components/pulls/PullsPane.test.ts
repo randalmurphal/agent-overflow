@@ -176,7 +176,7 @@ describe('Back on compact', () => {
     expect(stepPullsBack()).toBe(false);
   });
 
-  it('closes the conflict view before the merge request, with no Back of its own', async () => {
+  it('closes the conflict view and the rail before the merge request, with no Back of its own', async () => {
     setCompactLayoutForTest(true);
     installPullsPaneMocks();
     const view = mountPane();
@@ -189,6 +189,13 @@ describe('Back on compact', () => {
     expect(view.queryByTestId('review-conflicts-back')).toBeNull();
     await fireEvent.click(view.getByTestId('pulls-back'));
     await waitFor(() => expect(view.queryByTestId('review-conflicts-empty')).toBeNull());
+    expect(selectedPR(PULLS_PANE)?.key).toBe(pullRowKey(5));
+
+    // The file rail opened with the review (no stored choice, no width
+    // here) and covers the diff on compact: Back closes it next.
+    expect(view.getByTestId('review-rail')).toHaveAttribute('data-open', 'true');
+    await fireEvent.click(view.getByTestId('pulls-back'));
+    await waitFor(() => expect(view.getByTestId('review-rail')).toHaveAttribute('data-open', 'false'));
     expect(selectedPR(PULLS_PANE)?.key).toBe(pullRowKey(5));
 
     await fireEvent.click(view.getByTestId('pulls-back'));
