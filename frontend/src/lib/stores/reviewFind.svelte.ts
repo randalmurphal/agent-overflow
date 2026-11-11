@@ -24,13 +24,15 @@
 //     (its first match, once chosen) or a step. It survives restarts,
 //     content changes and a running host reveal. While its match is
 //     selected and published it is asked of the host when set, at every
-//     publish and swap, at every content change the host reports, and when
-//     a host reveal settles unshown after one of those happened while it
-//     ran; it completes once, when the host answers that the match is in
-//     view. One owed reveal has at most one host call in flight, and a
-//     reveal that changes content to show its match is in flight until the
-//     host answers. Dropped by a newer query, step or close, or by its
-//     match disappearing, except a step's reveal the host has not shown:
+//     publish and swap, at every content change or repaint the host
+//     reports, and when a host reveal settles unshown after one of those
+//     happened while it ran; nothing else asks it, so a reveal the host
+//     cannot show yet waits for one of those events. It completes once,
+//     when the host answers that the match is in view. One owed reveal has
+//     at most one host call in flight, and a reveal that changes content to
+//     show its match is in flight until the host answers. Dropped by a
+//     newer query, step or close, by the reader scrolling the view, or by
+//     its match disappearing, except a step's reveal the host has not shown:
 //     the reader asked to move and was shown nothing, so it passes to the
 //     match that takes the gone one's place. When the gone match's host
 //     call is still in flight, the passed reveal waits for it to settle
@@ -85,10 +87,12 @@ export interface ReviewFindHost<H extends ReviewFindMatch> {
   source(): ReviewFindSource<H> | null;
   /** A predicate true for matches at or below the current reading position. */
   readingPosition(): (hit: H) => boolean;
-  /** Brings the match on screen (`force`), or only when it is off screen.
-   * Answers true when done; false when it cannot show it yet (not present
-   * in the content shown now); or a promise of either when it finishes
-   * later, which it must be when it changes the content to show it. */
+  /** One attempt to bring the match on screen (`force`), or only when it
+   * is off screen, that does not wait on frames or timers. Answers true
+   * when it is in view; false when it cannot show it yet (not present in
+   * the content shown now, its row not built or not painted); or a promise
+   * of either when it finishes later, which it must be when it changes the
+   * content to show it. */
   reveal(hit: H, force: boolean): boolean | Promise<boolean>;
   paint(query: string, current: H | null): void;
 }
@@ -99,6 +103,12 @@ export interface ReviewFind<H extends ReviewFindMatch> extends PaneFindProvider 
   /** The view's content changed: rescan in place, and ask the owed reveal
    * again of the content shown now. */
   refresh(): void;
+  /** The host repainted because rows appeared or changed: ask the owed
+   * reveal again of what shows now. */
+  repainted(): void;
+  /** The reader scrolled the view: the owed reveal ends, and nothing asks
+   * it again. */
+  withdraw(): void;
   /** The pane shows another view: start the query over. */
   rescope(): void;
   /** The current matches, for tests and the host. */
@@ -154,6 +164,8 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
   let seq = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let owedReveal: OwedReveal | null = null;
+  // A new query that has not chosen its first match yet.
+  let choosing = false;
   // Whether `hits` is a completed scan's, not a query's prefix: only then
   // do steps wrap.
   let complete = false;
@@ -221,6 +233,7 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
 
   // A new query's first match is chosen: it is the reveal's match.
   function chooseFirst(at: number): void {
+    choosing = false;
     selected = hits[at].identity;
     if (owedReveal && owedReveal.identity === null) owedReveal.identity = selected;
   }
@@ -321,7 +334,7 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
       // Only a new query that has not chosen yet picks a match here; one
       // that found none (the view still loading) waits for a scan that
       // does.
-      if (owedReveal && owedReveal.identity === null && found.length > 0) {
+      if (choosing && found.length > 0) {
         const at = found.findIndex(below);
         chooseFirst(at >= 0 ? at : found.length - 1);
       }
@@ -361,6 +374,7 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
 
   function newQuery(): void {
     selected = null;
+    choosing = true;
     owedReveal = owe(null, false);
     start('query');
   }
@@ -382,6 +396,10 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
       start('recount');
       serve();
     },
+    repainted: () => serve(),
+    withdraw(): void {
+      owedReveal = null;
+    },
     rescope(): void {
       if (query) newQuery();
       else owedReveal = null;
@@ -390,6 +408,7 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
       stop();
       query = '';
       selected = null;
+      choosing = false;
       owedReveal = null;
       hits = [];
       complete = false;

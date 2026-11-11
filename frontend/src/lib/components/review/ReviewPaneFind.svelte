@@ -16,10 +16,14 @@
   // Another job's log starts over, and a log answer applies only to the
   // job and log version it was read from.
   // A match in a collapsed file, a settled thread or a closed log section
-  // opens it; one in a collapsed conflict fold opens the fold first. After
-  // the list scrolls to a match's row, the painted range corrects the
-  // landing (wrapped lines), and the reveal answers shown only once that
-  // range is in view. A match is an identity: the painter, the shift
+  // opens it; one in a collapsed conflict fold opens the fold first. A
+  // reveal is one attempt that never waits on frames or timers: it asks
+  // the list for the match's row when the row is not mounted, and scrolls
+  // a painted match toward where it can be shown, answering shown once it
+  // is in view or the scroll would change nothing. Unshown, it stays owed
+  // and the store asks it again at the next publish, content change or
+  // repaint (rows mounted, a block loaded). The reader's own scroll input
+  // on the view ends it. A match is an identity: the painter, the shift
   // and the reveal each ask whether it is present in the content shown at
   // that moment, and where (`resolveDiff`, `resolveLog`); one not present
   // now is neither painted, shifted nor shown, and its reveal stays owed.
@@ -49,6 +53,7 @@
     type ReviewFindShown,
   } from '../../utils/reviewFindRows';
   import { REVIEW_FILE_HEADER_BAR_PX } from '../../utils/reviewRows';
+  import { watchReaderScrollInput } from '../../utils/scroll/readerInput';
 
   type Hit = ReviewFindHit | CILogFindHit;
 
@@ -62,7 +67,8 @@
     findReadingLine(): number;
     findLineText(line: number): string | null;
     findLineLoad(line: number): { loading: boolean; error: string | null };
-    revealFindLine(line: number, sectionKey: string): Promise<void>;
+    openFindSection(sectionKey: string): boolean;
+    revealFindLine(line: number): void;
     scrollFindBy(delta: number): void;
   }
 
@@ -190,10 +196,21 @@
     restoreShifted(null);
   }
 
+  // The pixels that bring a span [start, end) into [lo, hi) on one axis: 0
+  // when it is in view. A span larger than the room is in view while its
+  // start is, and is placed with its start at `lo`, so the reader sees
+  // where it begins; another is placed a third of the way in.
+  function axisDelta(start: number, end: number, lo: number, hi: number): number {
+    const room = hi - lo;
+    if (end - start > room) return start >= lo && start < hi ? 0 : Math.round(start - lo);
+    if (start >= lo && end <= hi) return 0;
+    return Math.round(start - (lo + room / 3));
+  }
+
   interface Placement {
-    /** Pixels that put the match a third down; 0 when it is in view. */
+    /** Pixels that bring the match into view vertically; 0 when it is. */
     dy: number;
-    /** Pixels that put it a third across `across`; 0 when it is in view. */
+    /** Pixels that bring it into view across `across`; 0 when it is. */
     dx: number;
     /** What scrolls it horizontally: a code line that clips it (wrap off),
      * else the scroller when that scrolls sideways; null for neither. */
@@ -209,8 +226,15 @@
     return el.scrollWidth > el.clientWidth ? el : null;
   }
 
-  // Where the current match's range sits against what the scroller shows,
-  // on both axes; null when it is not mounted.
+  // The visible horizontal room of `across` within the scroller.
+  function roomAcross(across: HTMLElement, el: HTMLElement): { left: number; right: number } {
+    const view = el.getBoundingClientRect();
+    const box = across !== el ? across.getBoundingClientRect() : view;
+    return { left: Math.max(box.left, view.left), right: Math.min(box.right, view.right - (el.offsetWidth - el.clientWidth)) };
+  }
+
+  // Where the current match's painted range sits against what the
+  // scroller shows, on both axes; null when it is not painted.
   function placement(): Placement | null {
     const range = highlighter?.currentRange();
     const el = scroller();
@@ -219,13 +243,11 @@
     if (rect.height === 0 && rect.width === 0) return null;
     const view = el.getBoundingClientRect();
     const top = view.top + (isLogView() ? 0 : REVIEW_FILE_HEADER_BAR_PX);
-    const dy = rect.top >= top && rect.bottom <= view.bottom ? 0 : Math.round(rect.top - (view.top + view.height / 3));
+    const dy = axisDelta(rect.top, rect.bottom, top, view.bottom);
     const across = clipAcross(range.startContainer, el);
-    const box = across && across !== el ? across.getBoundingClientRect() : view;
-    const left = Math.max(box.left, view.left);
-    const right = Math.min(box.right, view.right - (el.offsetWidth - el.clientWidth));
-    const dx = rect.left >= left && rect.right <= right ? 0 : Math.round(rect.left - (left + (right - left) / 3));
-    return { dy, dx: across ? dx : 0, across };
+    if (!across) return { dy, dx: 0, across };
+    const { left, right } = roomAcross(across, el);
+    return { dy, dx: axisDelta(rect.left, rect.right, left, right), across };
   }
 
   function inView(): boolean {
@@ -254,12 +276,11 @@
     const range = el ? (highlighter?.currentRange() ?? null) : null;
     const across = range && el ? clipAcross(range.startContainer, el) : null;
     const line = across && across !== el ? across : null;
-    if (line && range) {
+    if (line && range && el) {
       const rect = range.getBoundingClientRect();
-      const box = line.getBoundingClientRect();
-      if (rect.left < box.left || rect.right > box.right) {
-        line.scrollLeft = Math.max(0, line.scrollLeft + Math.round(rect.left - (box.left + box.width / 3)));
-      }
+      const { left, right } = roomAcross(line, el);
+      const dx = axisDelta(rect.left, rect.right, left, right);
+      if (dx !== 0) line.scrollLeft = Math.max(0, line.scrollLeft + dx);
       if (line.scrollLeft > 0) shiftedLines.add(line);
     }
     restoreShifted(line);
@@ -269,59 +290,35 @@
     return untrack(() => view) === 'log';
   }
 
-  // After a scroll toward `hit`: each frame, once its rows are built and
-  // its range painted, corrects the landing until the range is in view,
-  // and answers true then. A row the list unmounted again (rows above it
-  // measured taller than estimated) is scrolled to again (`rescroll`).
-  // False once its reveal is no longer wanted (a newer ask, a close, a
-  // swap that passed it on) or it is not present now; a log line whose
-  // block failed to load rejects with that error. Nothing else ends it.
-  function bringIntoView(hit: Hit, rescroll: () => void): Promise<boolean> {
-    return new Promise<boolean>((resolve, reject) => {
-      const frame = () => {
-        if (!find.wants(hit.identity)) return resolve(false);
-        let rowKey: string | null = null;
-        if (isLogHit(hit)) {
-          const resolved = resolveLog(hit);
-          if (resolved.kind === 'absent') return resolve(false);
-          if (resolved.kind === 'unknown') {
-            const load = log()?.findLineLoad(hit.line) ?? { loading: false, error: null };
-            if (load.error !== null) return reject(new Error(load.error));
-            // No row of it is mounted to read its block.
-            if (!load.loading) rescroll();
-          } else {
-            rowKey = resolved.at.rowKey;
-          }
-        } else {
-          const resolved = resolveDiff(hit);
-          if (resolved.kind === 'absent') return resolve(false);
-          if (resolved.kind === 'present') rowKey = resolved.at.rowKey;
-        }
-        if (rowKey !== null && !root?.querySelector(`[data-find-key="${CSS.escape(rowKey)}"]`)) rescroll();
-        const at = rowKey === null ? null : placement();
-        if (at !== null && at.dy === 0 && at.dx === 0) {
-          syncShift();
-          return resolve(true);
-        }
-        if (at !== null) {
-          if (at.dy !== 0) {
-            if (isLogView()) log()?.scrollFindBy(at.dy);
-            else diff()?.scrollFindBy(at.dy);
-          }
-          // The scroller itself scrolling sideways; a clipped line is syncShift's.
-          const el = scroller();
-          if (at.dx !== 0 && el && at.across === el) el.scrollLeft = Math.max(0, el.scrollLeft + at.dx);
-          syncShift();
-        }
-        requestAnimationFrame(frame);
-      };
-      requestAnimationFrame(frame);
-    });
+  // Whether the row keyed `rowKey` is mounted.
+  function mounted(rowKey: string): boolean {
+    return root?.querySelector(`[data-find-key="${CSS.escape(rowKey)}"]`) != null;
   }
 
-  // Opens what hides the match (its file, its settled thread), then
-  // scrolls once the rows are built, if its reveal is still wanted (a
-  // rescan that restarts the query while the rows build keeps it).
+  // One attempt at the painted current match, with no waiting: scrolls
+  // toward the placement the scroll geometry can reach. True when it is in
+  // view after, or when the scroll it asks for changes nothing (clamped at
+  // an end, or its start shown in a box it is larger than); false while it
+  // is not painted or the scroll moved and it is not in view yet, which a
+  // repaint asks again.
+  function placeCurrent(scrollBy: (delta: number) => void): boolean {
+    const at = placement();
+    const el = scroller();
+    if (!at || !el) return false;
+    if (at.dy === 0 && at.dx === 0) {
+      syncShift();
+      return true;
+    }
+    const before = [el.scrollTop, el.scrollLeft, at.across?.scrollLeft ?? 0];
+    if (at.dy !== 0) scrollBy(at.dy);
+    // The scroller itself scrolling sideways; a clipped line is syncShift's.
+    if (at.dx !== 0 && at.across === el) el.scrollLeft = Math.max(0, el.scrollLeft + at.dx);
+    syncShift();
+    if (inView()) return true;
+    const after = [el.scrollTop, el.scrollLeft, at.across?.scrollLeft ?? 0];
+    return after.every((value, index) => value === before[index]);
+  }
+
   // Whether `hit` is present now, judged with its line's text read back
   // and held while it is judged when the patch budget evicted it.
   async function presentDiff(hit: ReviewFindHit): Promise<ReviewFindResolution> {
@@ -331,10 +328,25 @@
     return file.body.whenResident(() => resolveDiff(hit), lineIndex, lineIndex + 1);
   }
 
-  // One host call from asking to the answer: a fold it opens changes the
-  // content, and the reveal finds the match in what that shows. A match
-  // not present now is not shown: the answer is false, and it stays owed.
-  async function showDiffHit(hit: ReviewFindHit): Promise<boolean> {
+  // One attempt at a diff match, resolved in the content shown now: its
+  // row is asked of the list when it is not mounted, else the painted
+  // match is placed.
+  function attemptDiff(hit: ReviewFindHit): boolean {
+    if (!find.wants(hit.identity)) return false;
+    const resolved = resolveDiff(hit);
+    if (resolved.kind !== 'present') return false;
+    if (!mounted(resolved.at.rowKey)) {
+      diff()?.revealFindPlace(resolved.at);
+      return false;
+    }
+    return placeCurrent((delta) => diff()?.scrollFindBy(delta));
+  }
+
+  // Opens what hides the match (its file, its settled thread, its fold),
+  // then attempts it. What it opens changes the content, so the call is in
+  // flight until that content shows; a match not present now is not
+  // shown: the answer is false, and it stays owed.
+  async function openDiffHit(hit: ReviewFindHit): Promise<boolean> {
     if ((await presentDiff(hit)).kind !== 'present') return false;
     const conflicts = untrack(() => view) === 'conflicts';
     if (conflicts && review.conflictCollapsedPaths.has(hit.path)) await review.toggleConflictCollapsed(hit.path);
@@ -345,27 +357,55 @@
       if (thread?.isResolved && !review.expandedPRThreadIds.has(thread.id)) review.togglePRThread(thread.id);
     }
     await tick();
-    let resolved = await presentDiff(hit);
+    const resolved = await presentDiff(hit);
     if (resolved.kind === 'present' && resolved.at.place.kind === 'fold') {
       if (!find.wants(hit.identity)) return false;
       review.expandConflictFold(hit.path, resolved.at.place.foldId);
       await tick();
-      resolved = await presentDiff(hit);
+      await presentDiff(hit);
     }
-    if (resolved.kind !== 'present' || !find.wants(hit.identity)) return false;
-    const place = resolved.at;
-    if (!(diff()?.revealFindPlace(place) ?? false)) return false;
-    return bringIntoView(hit, () => diff()?.revealFindPlace(place));
+    return attemptDiff(hit);
   }
 
-  // Opens and scrolls to a log match present now, or to the line of one
-  // whose block is not loaded, which is judged once the block shows it.
-  async function showLogHit(hit: CILogFindHit, surface: LogSurface): Promise<boolean> {
+  // Whether the diff shows what the match needs open, with its text
+  // resident: then one attempt answers now.
+  function openInDiff(hit: ReviewFindHit): boolean {
+    const resolved = resolveDiff(hit);
+    if (resolved.kind !== 'present' || resolved.at.place.kind === 'fold') return false;
+    const conflicts = untrack(() => view) === 'conflicts';
+    if ((conflicts ? review.conflictCollapsedPaths : review.collapsedPaths).has(hit.path)) return false;
+    const at = hit.at;
+    if (at.kind !== 'thread') return true;
+    const thread = review.prThreads.find((t) => t.id === at.threadId);
+    return !thread?.isResolved || review.expandedPRThreadIds.has(thread.id);
+  }
+
+  function revealDiff(hit: ReviewFindHit): boolean | Promise<boolean> {
+    return openInDiff(hit) ? attemptDiff(hit) : openDiffHit(hit);
+  }
+
+  // One attempt at a log match, resolved in the log shown now: a closed
+  // section is opened (in flight until it shows), a row not mounted is
+  // asked of the list, a row whose block failed rejects with its error,
+  // else the painted match is placed.
+  function attemptLog(hit: CILogFindHit, surface: LogSurface): boolean | Promise<boolean> {
+    if (!find.wants(hit.identity)) return false;
     const resolved = resolveLog(hit);
     if (resolved.kind === 'absent') return false;
     const sectionKey = resolved.kind === 'present' ? resolved.at.sectionKey : resolved.sectionKey;
-    await surface.revealFindLine(hit.line, sectionKey);
-    return bringIntoView(hit, () => void surface.revealFindLine(hit.line, sectionKey));
+    if (surface.openFindSection(sectionKey)) return tick().then(() => attemptLog(hit, surface));
+    if (resolved.kind === 'unknown') {
+      const load = surface.findLineLoad(hit.line);
+      if (load.error !== null) return Promise.reject(new Error(load.error));
+      // No row of its block is mounted to read it.
+      if (!load.loading) surface.revealFindLine(hit.line);
+      return false;
+    }
+    if (!mounted(resolved.at.rowKey)) {
+      surface.revealFindLine(hit.line);
+      return false;
+    }
+    return placeCurrent((delta) => surface.scrollFindBy(delta));
   }
 
   // A revision, commit, filter or conflict tree change replaces `files`,
@@ -443,9 +483,9 @@
       if (!force && inView()) return true;
       if (isLogHit(hit)) {
         const surface = log();
-        return surface ? showLogHit(hit, surface) : false;
+        return surface ? attemptLog(hit, surface) : false;
       }
-      return showDiffHit(hit);
+      return revealDiff(hit);
     },
     paint: (query, current) => {
       if (!query) {
@@ -464,8 +504,12 @@
           rowsOnly: true,
           onMatches: () => {
             // What shows is read first, so the current match is found in it.
-            if (reconcileMounted()) highlighter?.setCurrent(paintedCurrent);
+            const rescanned = reconcileMounted();
+            if (rescanned) highlighter?.setCurrent(paintedCurrent);
             syncShift();
+            // Rows appeared or changed: an owed reveal is asked again (a
+            // rescan asked it already).
+            if (!rescanned) find.repainted();
           },
         });
         highlighterRoot = at;
@@ -498,6 +542,12 @@
     run: () => find.refresh(),
   });
   $effect(() => () => logRefreshes.dispose());
+  // The reader scrolling the view ends the owed reveal.
+  $effect(() => {
+    const at = root;
+    if (!at) return;
+    return watchReaderScrollInput(at, scroller, () => find.withdraw());
+  });
   // A wrap toggle changes which lines clip, after its rows lay out.
   $effect(() => {
     void review.wordWrap;

@@ -1,6 +1,8 @@
 // ReviewPaneFind's CI log source: an answer applies only to the job and
 // log version it was read from, and another job's log starts the query
-// over at once. Painting is covered by findHighlights.browser.test.ts.
+// over at once. Its diff reveal asks the list for a match's row as the
+// content shown at that moment places it. Painting is covered by
+// findHighlights.browser.test.ts.
 import { render } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -10,6 +12,8 @@ import { REVIEW_FIND_REMOTE_DEBOUNCE_MS, type ReviewFind } from '../../stores/re
 import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
 import { placeCILogLine, type CILogFindHit } from '../../utils/ciLogFind';
 import type { CILogSearch, CILogSection } from '../../types/models';
+import { parseReviewFiles } from '../../utils/patchStore';
+import type { ReviewFindHit, ReviewFindPlace } from '../../utils/reviewFindScan';
 
 const KEY = 'pane-find-log';
 
@@ -38,7 +42,7 @@ function mount() {
     props: {
       findKey: KEY, title: 'Review', review, view: 'log', files: [], root,
       diff: () => undefined,
-      log: () => ({ findReadingLine: () => 0, findLineText: () => null, findLineLoad: () => ({ loading: false, error: null }), revealFindLine: async () => {}, scrollFindBy: () => {} }),
+      log: () => ({ findReadingLine: () => 0, findLineText: () => null, findLineLoad: () => ({ loading: false, error: null }), openFindSection: () => false, revealFindLine: () => {}, scrollFindBy: () => {} }),
     },
   });
   const find = getPaneFindProvider(KEY) as ReviewFind<CILogFindHit>;
@@ -97,5 +101,45 @@ describe('review find over a CI job log', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(lines()).toEqual(['a2:3']);
     expect(find.result.pending).toBe(false);
+  });
+});
+
+describe('review find over the diff', () => {
+  const patch = (path: string, lines: string[]) => [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, `@@ -1,${lines.length} +1,${lines.length} @@`, ...lines.map((line) => ` ${line}`), ''].join('\n');
+
+  it('a reveal whose row is not mounted asks the list for it where the content shown now places it, never where it was', async () => {
+    const a = () => parseReviewFiles(patch('src/a.test.ts', ['alpha', 'zq in a']));
+    const b = () => parseReviewFiles(patch('src/b.ts', ['beta', 'gamma', 'zq in b']));
+    const asks: { fileIndex: number; place: ReviewFindPlace }[] = [];
+    const list = {
+      findReadingPosition: () => null,
+      revealFindPlace: (at: { fileIndex: number; place: ReviewFindPlace }) => {
+        asks.push(at);
+        return true;
+      },
+      scrollFindBy: () => {},
+    };
+    const review = { drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>() } as unknown as ReviewPaneState;
+    const root = document.createElement('div');
+    document.body.append(root);
+    const { rerender } = render(ReviewPaneFind, {
+      props: { findKey: 'pane-find-diff', title: 'Review', review, view: 'diff', files: [...a(), ...b()], root, diff: () => list, log: () => undefined },
+    });
+    const find = getPaneFindProvider('pane-find-diff') as ReviewFind<ReviewFindHit>;
+    openPaneFind('pane-find-diff');
+    setPaneFindQuery('pane-find-diff', 'zq');
+    await vi.waitFor(() => expect([find.result.count, find.result.pending]).toEqual([2, false]));
+    find.next();
+    // No row is mounted here: the list was asked for B, the second file.
+    expect(find.hits[find.result.current].path).toBe('src/b.ts');
+    const asked = asks.at(-1)!;
+    expect(asked.fileIndex).toBe(1);
+    // A is hidden: the content change asks again, of B as the first file.
+    const before = asks.length;
+    await rerender({ files: b() });
+    await vi.waitFor(() => expect(asks.length).toBeGreaterThan(before));
+    expect(find.wants(find.selected!)).toBe(true);
+    expect(asks.slice(before).map((at) => [at.fileIndex, at.place])).toEqual([[0, asked.place]]);
+    root.remove();
   });
 });

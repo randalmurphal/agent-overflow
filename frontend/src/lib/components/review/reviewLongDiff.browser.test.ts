@@ -22,6 +22,7 @@ import { conflictPatchFile } from '../../utils/conflictFile';
 import { HELD_EDGE_PX, HELD_LIMIT_PX } from '../../utils/virtual/heldRows';
 import { waitFor } from '../../../test/helpers/browserFrames';
 import { rawProps } from '../../../test/helpers/rawProps.svelte';
+import { spyScheduling } from '../../../test/helpers/schedulingSpy';
 import { reviewThreadRowSnippet } from '../../../test/helpers/reviewThreadRowSnippet.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 
@@ -950,6 +951,148 @@ describe('review find over the real list', () => {
       expect(inView()).toBe(true);
       await settle(scrollEl);
       expect(inView()).toBe(true);
+    } finally {
+      unmount(finder);
+    }
+  });
+
+  it.each(['header', 'line start', 'line middle'] as const)('a match wider than the box that clips it (%s) is shown from its start, and its reveal settles', async (where) => {
+    const path = `src/${'deep/'.repeat(80)}file.ts`;
+    const text = `${where === 'line middle' ? 'y'.repeat(800) : ''}zq${'x'.repeat(3000)}`;
+    const { props, scrollEl, body } = await mountBody(onePatch('x', '@@ -1 +1 @@', ['x']));
+    const files = readFiles(onePatch(path, '@@ -1,2 +1,2 @@', ['first', text]));
+    const host = mounted.at(-1)!.host;
+    host.style.width = '360px';
+    props.files = files;
+    await settle(scrollEl);
+    const key = `pane-wide-${where.replace(' ', '-')}`;
+    const finder = mount(ReviewPaneFind, {
+      target: document.body,
+      props: {
+        findKey: key, title: 'Review', view: 'diff', files, root: host,
+        review: { drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>() } as unknown as ReviewPaneState,
+        diff: () => body as never, log: () => undefined,
+      },
+    });
+    flushSync();
+    const spy = spyScheduling('ReviewPaneFind.svelte', ['pause']);
+    try {
+      const find = getPaneFindProvider(key) as ReviewFind<ReviewFindHit>;
+      openPaneFind(key);
+      setPaneFindQuery(key, where === 'header' ? path : `zq${'x'.repeat(2000)}`);
+      await waitFor(() => find.result.count === 1 && !find.result.pending, 'the scan');
+      await waitFor(() => !find.wants(find.selected!), 'the first reveal settled', 300);
+      // A step to it again (the one match): settles too.
+      find.next();
+      await waitFor(() => !find.wants(find.selected!), 'the step settled', 300);
+      const [range] = [...(CSS.highlights.get(`${findHighlightName(key)}-current`) ?? [])] as Range[];
+      const rect = range.getBoundingClientRect();
+      let clip = range.startContainer.parentElement!;
+      while (clip.scrollWidth <= clip.clientWidth || getComputedStyle(clip).overflowX === 'visible') clip = clip.parentElement!;
+      const box = clip.getBoundingClientRect();
+      // Larger than its box, it is shown from its start, which a match
+      // off to the right is brought to.
+      expect(rect.width).toBeGreaterThan(box.width);
+      expect(rect.left).toBeGreaterThanOrEqual(box.left - 1);
+      expect(rect.left).toBeLessThan(box.right);
+      if (where === 'line middle') expect(Math.abs(rect.left - box.left)).toBeLessThan(2);
+      for (let i = 0; i < 30; i += 1) await new Promise((resolve) => requestAnimationFrame(resolve));
+      expect(find.wants(find.selected!)).toBe(false);
+      expect(spy.calls).toEqual([]);
+    } finally {
+      spy.restore();
+      unmount(finder);
+    }
+  });
+
+  it('a reveal whose file moves up as the file above it is hidden is asked of its row in the content shown now, and settles', async () => {
+    const lines = Array.from({ length: 3000 }, (_, i) => (i === 2500 ? 'zq far in b' : `${'w '.repeat(220)}${i}`));
+    const { props, scrollEl, body } = await mountBody(onePatch('x', '@@ -1 +1 @@', ['x']), true);
+    const a = () => readFiles(onePatch('src/a.test.ts', '@@ -1,3 +1,3 @@', ['alpha', 'zq in a', 'beta']));
+    const b = () => readFiles(onePatch('src/b.ts', '@@ -1,3000 +1,3000 @@', lines));
+    let files = [...a(), ...b()];
+    props.files = files;
+    await settle(scrollEl);
+    // The list, with a hook on its first ask for a row after it is set.
+    let onAsk: (() => void) | null = null;
+    const list = {
+      findReadingPosition: () => body.findReadingPosition(),
+      revealFindPlace: (at: Parameters<typeof body.revealFindPlace>[0]) => {
+        const out = body.revealFindPlace(at);
+        const hook = onAsk;
+        onAsk = null;
+        if (hook) queueMicrotask(hook);
+        return out;
+      },
+      scrollFindBy: (delta: number) => (body as unknown as { scrollFindBy(delta: number): void }).scrollFindBy(delta),
+    };
+    const findProps = rawProps({
+      findKey: 'pane-move', title: 'Review', view: 'diff' as const, files: files as readonly ReviewFile[], root: mounted.at(-1)!.host as HTMLElement | undefined,
+      review: { drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(), wordWrap: true } as unknown as ReviewPaneState,
+      diff: () => list as never, log: () => undefined,
+    });
+    const finder = mount(ReviewPaneFind, { target: document.body, props: findProps });
+    flushSync();
+    const spy = spyScheduling('ReviewPaneFind.svelte', ['pause']);
+    try {
+      const find = getPaneFindProvider('pane-move') as ReviewFind<ReviewFindHit>;
+      scrollEl.scrollTop = 0;
+      await settle(scrollEl);
+      openPaneFind('pane-move');
+      setPaneFindQuery('pane-move', 'zq');
+      await waitFor(() => find.result.count === 2 && !find.result.pending, 'the scan', 1200);
+      await waitFor(() => !find.wants(find.selected!), 'the first shown', 600);
+      // A step into B, the second file: right after its row is asked of
+      // the list, before the row is mounted, Hide tests removes A and B is
+      // the first file.
+      let mountedAtChange: boolean | null = null;
+      onAsk = () => {
+        mountedAtChange = scrollEl.querySelector(`[data-find-key="${keyIn(files, find.hits[find.result.current])}"]`) !== null;
+        files = b();
+        props.files = files;
+        findProps.files = files;
+        flushSync();
+      };
+      find.next();
+      expect(find.wants(find.selected!)).toBe(true);
+      await waitFor(() => mountedAtChange !== null, 'the row asked', 600);
+      expect(mountedAtChange).toBe(false);
+      await waitFor(() => !find.wants(find.selected!), 'the step settled', 1200);
+      const row = currentRow('pane-move');
+      expect(row?.textContent).toContain('zq far in b');
+      const box = row!.getBoundingClientRect();
+      const view = scrollEl.getBoundingClientRect();
+      expect(box.top >= view.top && box.bottom <= view.bottom).toBe(true);
+      for (let i = 0; i < 30; i += 1) await new Promise((resolve) => requestAnimationFrame(resolve));
+      expect(spy.calls).toEqual([]);
+    } finally {
+      spy.restore();
+      unmount(finder);
+    }
+  });
+
+  it('a step onto a mounted match the view does not lay out (its surface hidden) is not shown and stays owed', async () => {
+    const { props, scrollEl, body } = await mountBody(onePatch('src/h.ts', '@@ -1,4 +1,4 @@', ['zq one', 'alpha', 'zq two', 'beta']));
+    const host = mounted.at(-1)!.host;
+    const finder = mount(ReviewPaneFind, {
+      target: document.body,
+      props: {
+        findKey: 'pane-hidden', title: 'Review', view: 'diff', files: props.files, root: host,
+        review: { drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>() } as unknown as ReviewPaneState,
+        diff: () => body as never, log: () => undefined,
+      },
+    });
+    flushSync();
+    try {
+      const find = getPaneFindProvider('pane-hidden') as ReviewFind<ReviewFindHit>;
+      openPaneFind('pane-hidden');
+      setPaneFindQuery('pane-hidden', 'zq');
+      await waitFor(() => find.result.count === 2 && !find.result.pending && !find.wants(find.selected!), 'the first shown');
+      // Both rows are mounted; the surface is hidden (another screen).
+      expect(scrollEl.querySelector(`[data-find-key="${keyIn(props.files, find.hits[1])}"]`)).not.toBeNull();
+      host.style.display = 'none';
+      find.next();
+      expect(find.wants(find.selected!)).toBe(true);
     } finally {
       unmount(finder);
     }

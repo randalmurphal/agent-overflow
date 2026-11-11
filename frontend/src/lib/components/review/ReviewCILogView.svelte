@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, tick, untrack } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import Check from '@lucide/svelte/icons/check';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
@@ -261,15 +261,20 @@
     return { loading: block.loading, error: block.loading ? null : block.error };
   }
 
-  /** Find: opens the line's section and scrolls the line a third down the
-   * view, ending bottom-follow like any reading act. */
-  export async function revealFindLine(line: number, sectionKey: string): Promise<void> {
-    takeOver();
+  /** Find: opens a closed section, ending bottom-follow like any reading
+   * act. False when it is open already. */
+  export function openFindSection(sectionKey: string): boolean {
     const section = sections.find((s) => s.key === sectionKey);
-    if (section && !isOpen(section)) {
-      onSetSectionsOpen([sectionKey], true);
-      await tick();
-    }
+    if (!section || isOpen(section)) return false;
+    takeOver();
+    onSetSectionsOpen([sectionKey], true);
+    return true;
+  }
+
+  /** Find: scrolls the line's row so the line sits a third down the view,
+   * ending bottom-follow like any reading act. */
+  export function revealFindLine(line: number): void {
+    takeOver();
     const index = rows.findIndex((row) => row.kind === 'lines' && row.from <= line && line < row.to);
     const ref = listRef;
     if (index < 0 || !ref) return;

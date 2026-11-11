@@ -23,18 +23,21 @@ import { createReviewFind, type ReviewFind, type ReviewFindHost, type ReviewFind
 // ask changes target, and a settled step owes nothing only if the host last
 // showed the current match for it. One ask never has two host calls in
 // flight, and a reveal that settles unshown while still wanted is asked
-// again exactly once if a publish, swap or content change came while it
-// ran, else not until the next one.
+// again exactly once if a publish, swap, content change or repaint came
+// while it ran, else not until the next one: no ask is made again without
+// one of those events since its last unshown answer. The reader scrolling
+// the view ends the ask for good: nothing reveals for it after, not even
+// a later content change.
 
 interface Hit { identity: string }
 
 const OPS = [
   'query', 'next', 'prev', 'refresh', 'keep', 'remove', 'move', 'reorder', 'hide', 'publish', 'complete',
-  'hostTrue', 'hostFalse', 'hostDeferred', 'settleTrue', 'settleFalse', 'close', 'reopen',
+  'hostTrue', 'hostFalse', 'hostDeferred', 'settleTrue', 'settleFalse', 'close', 'reopen', 'repaint', 'readerScroll',
 ] as const;
 type Op = typeof OPS[number];
 
-interface Ask { id: number; step: boolean; target: string | null; calls: number; done: number; lastCall: Call | null }
+interface Ask { id: number; step: boolean; target: string | null; calls: number; done: number; lastCall: Call | null; withdrawn: boolean }
 interface Call { ask: Ask | null; identity: string; answer: 'true' | 'false' | 'deferred'; eventsAtCall: number }
 
 async function flush(): Promise<void> {
@@ -50,7 +53,8 @@ function harness() {
   const content = () => order.flatMap((file) => (hidden && file === 'A' ? [] : items.filter((item) => item.file === file).map((item) => item.id)));
   let added = 0;
   let scans = 0;
-  // Publishes, swaps and content changes: each asks an owed reveal again.
+  // Publishes, swaps, content changes and repaints: each asks an owed
+  // reveal again.
   let events = 0;
   const gates: (() => void)[] = [];
   const violations: string[] = [];
@@ -118,9 +122,12 @@ function harness() {
       if (ask && running.some((each) => each.call.ask === ask)) violations.push(`reveal ${hit.identity}: ask ${ask.id} has a call in flight`);
       nextAnswer = 'true';
       if (!ask) violations.push(`reveal ${hit.identity} with no ask (after close)`);
+      else if (ask.withdrawn) violations.push(`reveal ${hit.identity} for ask ${ask.id}, which the reader's scroll ended`);
       else {
         if (ask.done > 0) violations.push(`reveal ${hit.identity} after ask ${ask.id} completed`);
         if (find.selected !== hit.identity) violations.push(`reveal ${hit.identity} while ${find.selected} is selected`);
+        const last = ask.lastCall;
+        if (last && last.answer === 'false' && events === last.eventsAtCall) violations.push(`reveal ${hit.identity}: ask ${ask.id} asked again with no event since its unshown answer`);
         if (ask.target === null) ask.target = hit.identity;
         else if (ask.step && !content().includes(ask.target) && survivor(ask.target) === hit.identity) ask.target = hit.identity;
         else if (ask.target !== hit.identity) violations.push(`reveal ${hit.identity} for ask of ${ask.target}`);
@@ -143,7 +150,7 @@ function harness() {
   find = createReviewFind(host, () => 'diff');
 
   function newAsk(step = false): void {
-    ask = { id: asks.length, step, target: null, calls: 0, done: 0, lastCall: null };
+    ask = { id: asks.length, step, target: null, calls: 0, done: 0, lastCall: null, withdrawn: false };
     asks.push(ask);
   }
 
@@ -306,6 +313,17 @@ function harness() {
         find.clear();
         expected = null;
         break;
+      case 'repaint':
+        // Rows mounted or changed: the host reports its repaint.
+        events += 1;
+        find.repainted();
+        break;
+      case 'readerScroll':
+        // The reader's own scroll input: no reveal is asked for this ask
+        // again, and none is owed. A query still chooses its first match.
+        if (ask) ask.withdrawn = true;
+        find.withdraw();
+        break;
     }
     if (stepAsk && ask && find.selected !== expected) violations.push(`${op}: selected ${find.selected}, step rule says ${expected}`);
     const unchosen = ask !== null && expected === null && (op === 'query' || op === 'reopen' || choosing);
@@ -370,12 +388,12 @@ function harness() {
     for (const each of asks) if (each.done > 1) out.push(`ask ${each.id} revealed ${each.done} times`);
     // A reveal is owed only for the selected match of an open ask.
     for (const id of new Set([...content(), ...seen.keys()])) {
-      if (find.wants(id) && (id !== find.selected || !ask)) out.push(`a reveal of ${id} is owed while ${find.selected} is selected`);
+      if (find.wants(id) && (id !== find.selected || !ask || ask.withdrawn)) out.push(`a reveal of ${id} is owed while ${find.selected} is selected`);
     }
     // The latest ask, still open, whose match survived: it was revealed,
     // unless the host's last answer was that it is not present now and no
     // publish, swap or content change has come since it was asked.
-    if (ask && ask.target !== null && find.selected === ask.target && ask.done === 0) {
+    if (ask && !ask.withdrawn && ask.target !== null && find.selected === ask.target && ask.done === 0) {
       const last = ask.lastCall;
       const excused = last !== null && last.answer === 'false' && events === last.eventsAtCall;
       if (!excused) out.push(`ask ${ask.id} for ${ask.target} was never revealed`);
@@ -383,7 +401,7 @@ function harness() {
     // A step's reveal is discharged only by the host showing its match: the
     // current one, or one shown and gone since. One whose match went before
     // it was shown passed to its survivor, running or not.
-    if (ask && ask.step && find.selected !== null && !find.wants(find.selected)
+    if (ask && !ask.withdrawn && ask.step && find.selected !== null && !find.wants(find.selected)
       && (lastShown?.ask !== ask || (lastShown.identity !== find.selected && content().includes(lastShown.identity)))) {
       out.push(`step ask ${ask.id} owes nothing, but the host last showed ${lastShown ? `${lastShown.identity} for ask ${lastShown.ask?.id}` : 'nothing'} while ${find.selected} is current`);
     }
@@ -448,6 +466,17 @@ for (const asked of ['next', 'prev', 'reopen'] as const) {
 // A new query's first reveal unshown, then its match removed.
 SEQUENCES.push(['complete', 'reopen', 'hostFalse', 'publish', 'remove', 'complete']);
 SEQUENCES.push(['complete', 'reopen', 'hostFalse', 'publish', 'complete', 'remove', 'complete']);
+
+// A reveal the host could not show is asked again at a repaint, once; the
+// reader scrolling ends it, and a later content change, repaint or settle
+// does not restart it.
+for (const asked of ['next', 'prev', 'reopen'] as const) {
+  SEQUENCES.push(['complete', 'hostFalse', asked, 'repaint', 'repaint']);
+  SEQUENCES.push(['complete', 'hostFalse', asked, 'readerScroll', 'repaint', 'refresh', 'complete']);
+  SEQUENCES.push(['complete', 'hostDeferred', asked, 'readerScroll', 'settleFalse', 'repaint', 'refresh', 'complete']);
+  SEQUENCES.push(['complete', 'hostDeferred', asked, 'repaint', 'settleFalse', 'repaint']);
+  SEQUENCES.push(['complete', 'hostFalse', asked, 'remove', 'readerScroll', 'complete', 'repaint']);
+}
 
 // A step's reveal running when its match goes at the swap, settled after
 // the swap: shown, unshown.

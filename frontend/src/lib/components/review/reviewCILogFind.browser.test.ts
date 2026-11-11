@@ -1,7 +1,8 @@
 // Review find over a CI log in real Chromium: a step to a match whose
 // block is not loaded stays owed until the block arrives and its painted
-// match is in view, however long that takes; a block that fails to load
-// puts its error in the bar.
+// match is in view, however long that takes, and schedules no frame or
+// timer of its own while it waits; the reader scrolling meanwhile ends
+// it; a block that fails to load puts its error in the bar.
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
@@ -18,6 +19,7 @@ import type { CIJob, CILogSearch } from '../../types/models';
 import { FakeCILog, numberedLines } from '../../../test/helpers/ciLog';
 import { raf, waitFor } from '../../../test/helpers/browserFrames';
 import { rawProps } from '../../../test/helpers/rawProps.svelte';
+import { spyScheduling } from '../../../test/helpers/schedulingSpy';
 import { resetScrollIntentModuleStateForTest } from '../../utils/scroll/intent';
 
 const JOB: CIJob = { id: '20', name: 'unit', status: 'success', logsAvailable: true };
@@ -107,16 +109,62 @@ describe('review find over a CI log', () => {
     openPaneFind('pane-log-late');
     setPaneFindQuery('pane-log-late', 'zq');
     await waitFor(() => find.result.count === 1 && find.selected !== null, 'the answer');
-    // Far longer than any frame allowance: still owed, nothing claimed.
-    for (let i = 0; i < 200; i += 1) await raf();
+    const spy = spyScheduling('ReviewPaneFind.svelte', ['pause']);
+    try {
+      // Far longer than any frame allowance: still owed, nothing claimed,
+      // and nothing of find's own scheduled to ask again.
+      for (let i = 0; i < 200; i += 1) await raf();
+      expect(find.wants(find.selected!)).toBe(true);
+      expect(painted()).toBeNull();
+      expect(spy.calls).toEqual([]);
+      fake.gate = null;
+      block.release();
+      await waitFor(() => !find.wants(find.selected!), 'the reveal answered', 600);
+      expect(painted()?.toString()).toBe('zq');
+      expect(inView()).toBe(true);
+      expect(find.result.error).toBeNull();
+      for (let i = 0; i < 30; i += 1) await raf();
+      expect(spy.calls).toEqual([]);
+    } finally {
+      spy.restore();
+    }
+  });
+
+  it('the reader scrolling while a reveal waits on its block ends the reveal: the block arrives and the view stays where the reader left it', async () => {
+    const { fake, scroll, find, painted, inView } = setup('pane-log-away');
+    await waitFor(() => scroll.textContent?.includes('line 10000') === true, 'the tail');
+    const tail = scroll.scrollTop;
+    const block = deferred();
+    fake.gate = block.gate;
+    openPaneFind('pane-log-away');
+    setPaneFindQuery('pane-log-away', 'zq');
+    await waitFor(() => find.result.count === 1 && find.selected !== null, 'the answer');
+    // The list was asked for the match's row: it is mounted, not loaded.
+    await waitFor(() => scroll.scrollTop < tail - 10_000 && scroll.querySelector('[data-testid="review-ci-log-block-placeholder"]') !== null, 'the row asked', 600);
+    for (let i = 0; i < 10; i += 1) await raf();
     expect(find.wants(find.selected!)).toBe(true);
-    expect(painted()).toBeNull();
-    fake.gate = null;
-    block.release();
-    await waitFor(() => !find.wants(find.selected!), 'the reveal answered', 600);
-    expect(painted()?.toString()).toBe('zq');
-    expect(inView()).toBe(true);
-    expect(find.result.error).toBeNull();
+    const spy = spyScheduling('ReviewPaneFind.svelte', ['pause']);
+    try {
+      // The reader wheels down past it; its row stays mounted.
+      scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: 300, bubbles: true }));
+      scroll.scrollTop += 300;
+      for (let i = 0; i < 5; i += 1) await raf();
+      expect(find.wants(find.selected!)).toBe(false);
+      fake.gate = null;
+      block.release();
+      // The block arrives and paints: the repaint asks nothing.
+      await waitFor(() => painted()?.toString() === 'zq', 'the block painted', 600);
+      for (let i = 0; i < 30; i += 1) await raf();
+      expect(find.wants(find.selected!)).toBe(false);
+      // Still past it, as the reader left it (the rows above it grew and
+      // were held in place, so scrollTop itself moved).
+      expect(inView()).toBe(false);
+      expect(painted()!.getBoundingClientRect().bottom).toBeLessThan(scroll.getBoundingClientRect().top);
+      expect(find.result.error).toBeNull();
+      expect(spy.calls).toEqual([]);
+    } finally {
+      spy.restore();
+    }
   });
 
   it('a block that fails to load puts its error in the bar', async () => {
