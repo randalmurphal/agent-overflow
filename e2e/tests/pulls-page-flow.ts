@@ -4,8 +4,9 @@
 // GitHub project, each with open merge requests in several attention
 // states and repository pipelines. Covered: the tools row opens the page
 // in the focused pane's place; the Needs you and Waiting on others groups
-// carry one state pill per row and the sidebar badge counts the first
-// group; the page reads each project with its forge's fixed request set
+// carry one state pill per row; the Needs you count on the filter button
+// counts the first group for the picked projects, and the sidebar shows no
+// Pull requests count; the page reads each project with its forge's fixed request set
 // (GitHub one PullsSearch, GitLab the list beside its GraphQL reviewer,
 // activity and approval rule reads and the viewer's events) and never a
 // read per row; a GitLab row's failed pipeline arrives with its project's
@@ -209,9 +210,11 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       await expect(rowState(page, 102)).toHaveText('Draft');
       await expect(rowState(page, 104)).toHaveText('Open');
       await expect(pane.getByTestId('pulls-group-waiting')).toContainText('2');
-      await expect(page.getByTestId('sidebar-tool-pulls-badge')).toHaveText('4');
-      // The needs-you count on the filter button reads the same.
+      // The filter button counts the Needs you group whatever filter shows;
+      // the sidebar's tool carries no count.
       await expect(pane.getByTestId('pulls-filter-needs-you-count')).toHaveText('4');
+      await expect(page.getByTestId('sidebar-tool-pulls-badge')).toHaveCount(0);
+      await expect(page.getByTestId('sidebar-tool-pulls')).not.toContainText('4');
       // Approvals and the CI dot come with each project's read.
       await expect(row(page, 101).getByTestId('pull-approvals')).toHaveText('0/1 approvals');
       await expect(row(page, 201).getByTestId('pull-approvals')).toHaveText('1/1 approvals');
@@ -228,16 +231,20 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       await page.keyboard.press('Escape');
       await expect(pane.getByTestId('pull-row')).toHaveCount(4);
       await expect(row(page, 201)).toHaveCount(0);
+      // The count follows the picker: the GitLab project's !101 and !103.
+      await expect(pane.getByTestId('pulls-filter-needs-you-count')).toHaveText('2');
       await page.reload();
       // Compact starts on the list screen; the tools row reveals the pane.
       if (compact) await page.getByTestId('sidebar-tool-pulls').click();
       await expect(page.getByTestId('pulls-pane')).toBeVisible();
       await expect(page.getByTestId('pulls-filter')).toHaveAttribute('data-filter', 'all');
       await expect(page.getByTestId('pull-row')).toHaveCount(4);
+      await expect(page.getByTestId('pulls-filter-needs-you-count')).toHaveText('2');
       await page.getByTestId('pulls-projects-picker').click();
       await page.getByTestId('pulls-projects-all').click();
       await page.keyboard.press('Escape');
       await expect(page.getByTestId('pull-row')).toHaveCount(6);
+      await expect(page.getByTestId('pulls-filter-needs-you-count')).toHaveText('4');
 
       // A row opens the review pinned to it: the readiness pill, the Merge
       // section, no scope selector and no close (Back on compact).
@@ -273,14 +280,14 @@ export function registerPullsPageFlow({ compact }: PullsSurface): void {
       };
       await seedForge(harness, [{ ...seeded.gitlab, pulls: [reviewed, ...rest] }]);
       await expect(rowState(page, 101)).toHaveText('Reviewed by you', { timeout: 20_000 });
-      await expect(page.getByTestId('sidebar-tool-pulls-badge')).toHaveText('3');
+      await expect(page.getByTestId('pulls-filter-needs-you-count')).toHaveText('3');
       // The author answers a minute later: the viewer's turn again.
       await seedForge(harness, [{
         ...seeded.gitlab,
         pulls: [{ ...reviewed, comments: [...reviewed.comments, { author: 'sabossedgh', body: 'Three would hide a dead endpoint.', createdAt: '2026-10-20T15:01:00Z' }], updatedAt: '2026-10-20T15:01:00Z' }, ...rest],
       }]);
       await expect(rowState(page, 101)).toHaveText('Author replied', { timeout: 20_000 });
-      await expect(page.getByTestId('sidebar-tool-pulls-badge')).toHaveText('4');
+      await expect(page.getByTestId('pulls-filter-needs-you-count')).toHaveText('4');
 
       await expectEveryForgeCallHandled(harness);
     } finally {

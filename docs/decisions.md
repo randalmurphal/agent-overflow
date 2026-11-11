@@ -577,10 +577,13 @@ and anti-changes that live only here:
   default to every status; the review pane's CI line stays the head
   pipeline only (rulings 2026-10-20, `docs/specs/pull-requests.md`).
 - Tools (Workflows, Pull requests, later Issues) are pane kinds behind
-  one sidebar tools row above Settings: the active tool carries its label
-  and badge, the others their icon and badge with hover text. A click
+  one sidebar tools row above Settings: the active tool carries its label,
+  the others their icon with hover text; only Workflows carries a count
+  (ruling 2026-11-11: no Pull requests count in the sidebar, and the
+  page's `Needs you` count follows its project picker). A click
   opens the tool in the focused pane like a thread; ctrl+click opens a new
-  pane, so two tools sit side by side with no special case. Workflows
+  pane, so two tools sit side by side with no special case; a drag places
+  it in the pane strip like a thread row (2026-11-11). Workflows
   loses its modal. The row's label follows the focused pane when it is a
   tool, else the tool used last (ruling 2026-10-20).
 - The Pull requests page never records which PRs the user opened. A row's

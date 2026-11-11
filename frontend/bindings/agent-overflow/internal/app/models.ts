@@ -4096,9 +4096,8 @@ export class PRListItem {
 
 /**
  * PRListSnapshot is the pulls:updated frame and SubscribePRList's
- * snapshot: every forge project's rows, the needs-you count (the sidebar
- * badge, each PR once), and Error when the projects themselves could not
- * be read. Seq orders frames against a subscribe's snapshot; FetchedAt
+ * snapshot: every forge project's rows, and Error when the projects
+ * themselves could not be read. Seq orders frames against a subscribe's snapshot; FetchedAt
  * (RFC 3339) is when it was assembled. Stale is a snapshot served from the
  * stored copy while a refresh runs: a subscribe's answer when a project's
  * stored read is older than the PR update interval or missing, and the
@@ -4107,7 +4106,6 @@ export class PRListItem {
 export class PRListSnapshot {
     "seq": number;
     "fetchedAt": string;
-    "needsYou": number;
     "stale": boolean;
     "error"?: string;
     "projects": ProjectPRList[];
@@ -4119,9 +4117,6 @@ export class PRListSnapshot {
         }
         if (!("fetchedAt" in $$source)) {
             this["fetchedAt"] = "";
-        }
-        if (!("needsYou" in $$source)) {
-            this["needsYou"] = 0;
         }
         if (!("stale" in $$source)) {
             this["stale"] = false;
@@ -4137,10 +4132,10 @@ export class PRListSnapshot {
      * Creates a new PRListSnapshot instance from a string or object.
      */
     static createFrom($$source: any = {}): PRListSnapshot {
-        const $$createField5_0 = $$createType67;
+        const $$createField4_0 = $$createType67;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("projects" in $$parsedSource) {
-            $$parsedSource["projects"] = $$createField5_0($$parsedSource["projects"]);
+            $$parsedSource["projects"] = $$createField4_0($$parsedSource["projects"]);
         }
         return new PRListSnapshot($$parsedSource as Partial<PRListSnapshot>);
     }

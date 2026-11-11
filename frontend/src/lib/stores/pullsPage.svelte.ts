@@ -1,6 +1,6 @@
 // The Pull requests page's state (docs/specs/pull-requests.md, "The
 // page"): one list subscription per computer the page shows, the rows it
-// projects through the remembered filters and sort, the needs-you badge
+// projects through the remembered filters and sort, the needs-you count
 // and each pane's selected PR.
 //
 // The list pump (docs/architecture/forge-transport.md, "The PR list pump")
@@ -25,12 +25,12 @@ import type { PRListItem, PRListSnapshot } from './bindings';
 import { createEntityStore } from './entityStore.svelte';
 import { captureError, type CapturedError } from './errorReports.svelte';
 import { applyPipelineFrame, applyPipelineLogFrame, resyncPipelinesAfterGap } from './pipelineCI.svelte';
-import { setPullsNeedsYouCount } from './pullsAttention.svelte';
 import { addToast } from './toast.svelte';
 import { ensurePullsFilters, mrFilters } from './pullsPageFilters.svelte';
 import {
   groupRows,
   listedRows,
+  needsYouCount,
   projectChoices,
   projectErrors,
   type PullsGroup,
@@ -92,7 +92,6 @@ const listStore = createEntityStore<PRListSnapshot, BackendKey>({
     sourceRunByBackend.set(args.key, run.then(() => undefined, () => undefined));
     return run;
   },
-  onApply: (backend, snapshot) => pages.get(backend)?.applied(snapshot),
 });
 
 async function subscribeList(
@@ -140,6 +139,7 @@ class PullsPageBackend {
   readonly rows: readonly PullsListedRow[] = $derived.by(() => listedRows(this.snapshot, this.backend));
   readonly rowsByKey = $derived(new Map(this.rows.map((row) => [row.key, row])));
   readonly groups: readonly PullsGroup[] = $derived.by(() => groupRows(this.snapshot, this.backend, mrFilters(this.backend)));
+  readonly needsYou: number = $derived.by(() => needsYouCount(this.snapshot, this.backend, mrFilters(this.backend).projects));
   readonly projects: readonly PullsProjectChoice[] = $derived(projectChoices(this.snapshot));
   readonly errors: readonly PullsProjectError[] = $derived.by(() => projectErrors(this.snapshot, mrFilters(this.backend).projects, this.backend));
 
@@ -155,10 +155,6 @@ class PullsPageBackend {
         return () => attachment.release();
       });
     });
-  }
-
-  applied(snapshot: PRListSnapshot): void {
-    setPullsNeedsYouCount(this.backend, snapshot.needsYou);
   }
 
   dispose(): void {
@@ -329,9 +325,10 @@ export function pullsProjectErrors(paneId: string): readonly PullsProjectError[]
   return pageOf(paneId)?.errors ?? [];
 }
 
-/** The needs-you count over every project, whatever the filters. */
+/** The rows the Needs you filter lists for the picked projects, whatever
+ * the filter and sort shown. */
 export function pullsNeedsYouCount(paneId: string): number {
-  return pageOf(paneId)?.snapshot?.needsYou ?? 0;
+  return pageOf(paneId)?.needsYou ?? 0;
 }
 
 export function pullsRefreshing(paneId: string): boolean {

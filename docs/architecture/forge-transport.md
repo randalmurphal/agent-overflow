@@ -481,8 +481,7 @@ release, a project whose origin cannot be read keeps the repository and
 rows the last tick read beside that error, and a removed project takes
 its rows along, from the pump and the store. Each row's attention state,
 group and reason come from `prAttention` (`app_pr_attention.go`), a pure
-function of the row; `NeedsYou`, the sidebar badge, counts each PR once.
-The last unsubscribe stops the pump, cancels its reads in flight and
+function of the row. The last unsubscribe stops the pump, cancels its reads in flight and
 drops what it held.
 
 The boot prefetch (`app_pr_list_store.go`) runs once after
@@ -496,11 +495,8 @@ started: each pump and the prefetch, which takes its own generation): the
 latest started, and a pump only while it runs. A write or prune of a
 writer that lost the copy, or of a pump that stopped, is dropped, so a
 read that lands after a newer writer's neither replaces it nor undoes a
-prune. `GetPRListNeedsYou` answers the badge from the
-store, and every change to it (a read stored, a repository pruned)
-emits `pulls:badge` `{needsYou}` counted from what the store committed,
-in commit order, so the badge is right before the page opens and after
-a pump stopped mid-write.
+prune. The prefetch is what lets a page opened after boot subscribe to
+a current stored copy rather than a stale one.
 
 | Tick | GitHub | GitLab |
 |---|---|---|

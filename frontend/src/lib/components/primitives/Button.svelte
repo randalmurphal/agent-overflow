@@ -32,23 +32,18 @@
    * `pressed` toggles the aria-pressed state and applies a visual
    * depressed treatment (used for ChatHeader Diffs/Plans toggles and
    * compact segmented controls).
+   *
+   * The classes come from `buttonClasses.ts`, shared with controls that
+   * must not be a native button.
    */
   import type { Snippet } from 'svelte';
+  import { buttonClasses, type ButtonSize, type ButtonVariant } from './buttonClasses';
 
-  type Variant =
-    | 'primary'
-    | 'secondary'
-    | 'ghost'
-    | 'tinted'
-    | 'danger'
-    | 'danger-outline'
-    | 'danger-ghost';
-  type Size = 'xs' | 'sm' | 'md';
   type ButtonType = 'button' | 'submit' | 'reset';
 
   interface Props {
-    variant?: Variant;
-    size?: Size;
+    variant?: ButtonVariant;
+    size?: ButtonSize;
     type?: ButtonType;
     disabled?: boolean;
     loading?: boolean;
@@ -94,44 +89,6 @@
     trailing,
   }: Props = $props();
 
-  const SIZE: Record<Size, string> = {
-    xs: 'h-6 compact:h-9 px-2 compact:px-2.5 text-[0.6875rem] gap-1',
-    sm: 'h-7 compact:h-9 px-2.5 text-xs gap-1.5',
-    md: 'h-8 compact:h-10 px-3 text-sm gap-2',
-  };
-
-  const VARIANT: Record<Variant, string> = {
-    primary:
-      'bg-accent text-surface-0 hover:opacity-90 active:opacity-80 ' +
-      'focus-visible:ring-accent/40',
-    secondary:
-      'border border-border-subtle bg-transparent text-fg-muted ' +
-      'hover:text-fg hover:border-border hover:bg-surface-2/40 ' +
-      'focus-visible:ring-accent/40',
-    ghost:
-      'bg-transparent text-fg-muted hover:text-fg hover:bg-surface-2/40 ' +
-      'focus-visible:ring-accent/30',
-    tinted:
-      'bg-accent/15 text-accent hover:bg-accent/25 active:bg-accent/30 ' +
-      'focus-visible:ring-accent/40',
-    danger:
-      'bg-error text-surface-0 hover:opacity-90 active:opacity-80 ' +
-      'focus-visible:ring-error/40',
-    'danger-outline':
-      'border border-error/40 bg-transparent text-error/90 ' +
-      'hover:text-error hover:border-error/70 hover:bg-error/10 ' +
-      'focus-visible:ring-error/40',
-    'danger-ghost':
-      'bg-transparent text-error/80 hover:text-error hover:bg-error/10 ' +
-      'focus-visible:ring-error/40',
-  };
-
-  // Pressed-state styling is shared across every variant. The subtle
-  // inset ring + surface tint reads as "currently engaged" without
-  // overriding the variant's rest color identity.
-  const PRESSED_CLASSES =
-    'bg-surface-2/60 text-fg ring-1 ring-inset ring-border-subtle';
-
   function handleClick(e: MouseEvent): void {
     if (disabled || loading) return;
     onclick?.(e);
@@ -149,19 +106,7 @@
   data-testid={testId}
   disabled={disabled || loading}
   onclick={handleClick}
-  class={[
-    'inline-flex items-center justify-center rounded-[var(--radius-control)]',
-    'font-medium cursor-pointer select-none whitespace-nowrap',
-    'transition-[color,background-color,border-color,opacity,transform] duration-150',
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-0',
-    'disabled:cursor-not-allowed disabled:opacity-50',
-    'active:scale-[0.98]',
-    SIZE[size],
-    // Pressed takes precedence so the toggle-state visual isn't
-    // fighting the variant's rest palette.
-    pressed ? PRESSED_CLASSES : VARIANT[variant],
-    className,
-  ].join(' ')}
+  class={buttonClasses({ variant, size, pressed, class: className })}
 >
   {#if loading}
     <span

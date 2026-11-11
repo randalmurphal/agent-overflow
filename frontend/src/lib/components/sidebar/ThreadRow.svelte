@@ -50,6 +50,7 @@
   import ThreadRowPinButton from './ThreadRowPinButton.svelte';
   import SidebarRowMenuButton from './SidebarRowMenuButton.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
+  import { roleButtonKeys } from '../../utils/roleButtonKeys';
   import {
     archiveThreadAction,
     deleteThreadAction,
@@ -239,6 +240,9 @@
     if (pane) void openThreadFromNavigation(thread, pane);
     else void openThreadFromNavigation(thread);
   }
+
+  // Enter and Space open the row as they would a native button.
+  const rowKeys = roleButtonKeys(() => handleClick());
 
   function startRename() {
     editing = true;
@@ -475,7 +479,9 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     bind:this={rowEl}
-    onkeydown={(e) => { if (!editing && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); handleClick(); } if (!editing && e.key === 'F2') { e.preventDefault(); startRename(); } }}
+    onkeydown={(e) => { if (!editing && rowKeys.keydown(e)) return; if (!editing && e.key === 'F2') { e.preventDefault(); startRename(); } }}
+    onkeyup={(e) => { if (!editing) rowKeys.keyup(e); }}
+    onblur={rowKeys.blur}
     role="button"
     tabindex={0}
     aria-pressed={selected}

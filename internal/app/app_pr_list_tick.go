@@ -315,8 +315,8 @@ func (a *App) publishPRList(pump *prListPump) (PRListSnapshot, bool, time.Time) 
 
 // assemblePRListSnapshot is the snapshot of projects from each
 // repository's list (lists, by key): every project in the projects'
-// order with its repository's rows, the projects' own read failure as
-// Error, and the needs-you count, each PR once. A project whose origin
+// order with its repository's rows and the projects' own read failure as
+// Error. A project whose origin
 // could not be read shows that failure beside the rows its repository
 // had, found by its Repo or, without one, the list it last wrote.
 func assemblePRListSnapshot(projects []ForgeProject, projectsErr error, lists map[string]ProjectPRList) PRListSnapshot {
@@ -324,9 +324,6 @@ func assemblePRListSnapshot(projects []ForgeProject, projectsErr error, lists ma
 	if projectsErr != nil {
 		snapshot.Error = "The projects could not be read: " + projectsErr.Error()
 	}
-	// A repository two projects clone lists its PRs twice; the badge
-	// counts each PR once.
-	needsYou := map[string]bool{}
 	for _, project := range projects {
 		repo := project.Repo
 		if repo == (gitops.RepoReference{}) {
@@ -347,13 +344,7 @@ func assemblePRListSnapshot(projects []ForgeProject, projectsErr error, lists ma
 			// The origin's failure, beside the rows read before it.
 			list.Error, list.ErrorKind, list.ErrorDetails, list.Reserve, list.ResumeAt = project.Error, forgeFailureForge, nil, false, ""
 		}
-		for _, row := range list.Rows {
-			if row.Group == PRGroupNeedsYou {
-				needsYou[row.Ref.Key()] = true
-			}
-		}
 		snapshot.Projects = append(snapshot.Projects, list)
 	}
-	snapshot.NeedsYou = len(needsYou)
 	return snapshot
 }

@@ -47,6 +47,7 @@ import { makeSettings } from '../../../test/helpers/settings';
 import { getCompactScreen, setCompactLayoutForTest, showCompactList } from '../../stores/layoutMode.svelte';
 import {
   beginThreadRowDrag,
+  endThreadRowDrag,
   encodeThreadDragPayload,
   PANE_REORDER_DRAG_MIME,
   THREAD_ROW_DRAG_MIME,
@@ -1051,6 +1052,55 @@ describe('PaneHost', () => {
     expect(threadDragPayloadForEvent(silentDragOver)).toBeNull();
   });
 
+  it('places a dropped thread by the layout at the drop, not the last dragover', async () => {
+    const dragged = makeThread({ id: 'drag-mutated', title: 'Mutated' });
+    prependThread(dragged);
+    installThreadSwitchMocks(dragged);
+    registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
+    registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
+    setPaneLayoutItemsForTest([
+      { id: 'left-item', paneId: 'left', kind: 'thread', widthPx: 1 },
+      { id: 'right-item', paneId: 'right', kind: 'thread', widthPx: 1 },
+    ]);
+    const rendered = render(PaneHost);
+    const rightPane = rendered.container.querySelector<HTMLElement>('[data-pane-id="right"]')!;
+    stubRect(rightPane, 500, 500);
+    const dataTransfer = threadDataTransfer(dragged.id);
+    await dispatchDrag(rightPane, 'dragover', dataTransfer, 550);
+    expect(rendered.getByTestId('pane-thread-drop-preview')).toHaveAttribute('data-insert-index', '1');
+    // Left closes before the drop; Right is now first, and the drop is on
+    // its left half.
+    removePaneLayoutItem('left');
+    await tick();
+    stubRect(rightPane, 0, 500);
+    await dispatchDrag(rightPane, 'drop', dataTransfer, 50);
+    await waitFor(() => {
+      expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual([paneIdForThread(dragged.id), 'right']);
+    });
+  });
+
+  it('places a dropped thread where the pointer is when it moved without a dragover', async () => {
+    const dragged = makeThread({ id: 'drag-moved', title: 'Moved' });
+    prependThread(dragged);
+    installThreadSwitchMocks(dragged);
+    registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
+    registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
+    setPaneLayoutItemsForTest([
+      { id: 'left-item', paneId: 'left', kind: 'thread', widthPx: 1 },
+      { id: 'right-item', paneId: 'right', kind: 'thread', widthPx: 1 },
+    ]);
+    const rendered = render(PaneHost);
+    const leftPane = rendered.container.querySelector<HTMLElement>('[data-pane-id="left"]')!;
+    stubRect(leftPane, 0, 500);
+    const dataTransfer = threadDataTransfer(dragged.id);
+    await dispatchDrag(leftPane, 'dragover', dataTransfer, 450);
+    expect(rendered.getByTestId('pane-thread-drop-preview')).toHaveAttribute('data-insert-index', '1');
+    await dispatchDrag(leftPane, 'drop', dataTransfer, 50);
+    await waitFor(() => {
+      expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual([paneIdForThread(dragged.id), 'left', 'right']);
+    });
+  });
+
   it('drop on a pane right half inserts after the target', async () => {
     const dragged = makeThread({ id: 'drag-right', title: 'Dragged Right' });
     prependThread(dragged);
@@ -1195,6 +1245,27 @@ describe('PaneHost', () => {
     const preview = rendered.getByTestId('pane-thread-drop-preview');
     expect(preview).toHaveAttribute('data-drop-kind', 'end');
     expect(preview).toHaveAttribute('data-insert-index', '1');
+  });
+
+  it('previews a thread during a dragover whose DataTransfer answers nothing, from the row\'s record', async () => {
+    const dragged = makeThread({ id: 'drag-silent', title: 'Silent' });
+    prependThread(dragged);
+    registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
+    setPaneLayoutItemsForTest([{ id: 'left-item', paneId: 'left', kind: 'thread', widthPx: 900 }]);
+    const rendered = render(PaneHost);
+    const silent = {
+      types: [THREAD_ROW_DRAG_MIME],
+      dropEffect: 'none',
+      effectAllowed: 'copyMove',
+      getData: () => '',
+    } as unknown as DataTransfer;
+    beginThreadRowDrag({ threadId: dragged.id, title: dragged.title, projectId: dragged.projectId ?? '' });
+    try {
+      await dispatchDrag(rendered.getByTestId('pane-end-handle'), 'dragover', silent, 950);
+      expect(rendered.getByTestId('pane-thread-drop-preview')).toHaveAttribute('data-drop-kind', 'end');
+    } finally {
+      endThreadRowDrag();
+    }
   });
 
   it('drop on the empty state creates the first pane', async () => {
