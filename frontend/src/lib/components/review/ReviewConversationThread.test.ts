@@ -45,7 +45,7 @@ function fakeReview(overrides: Partial<Record<keyof ReviewPaneState, unknown>> =
   const review = {
     replyOpen: vi.fn((id: string, surface: string) => open.has(`${surface}:${id}`)),
     openReply: vi.fn((id: string, surface: string) => { open.add(`${surface}:${id}`); }),
-    discardReply: vi.fn((id: string, surface: string) => { open.delete(`${surface}:${id}`); }),
+    closeReply: vi.fn((id: string, surface: string) => { open.delete(`${surface}:${id}`); }),
     files: [],
     isTurnActive: false,
     replyBodyFor: vi.fn(() => ''),
@@ -230,7 +230,7 @@ describe('<ReviewConversationThread> reply composer', () => {
     await fireEvent.click(view.getByTestId('review-thread-reply'));
     await fireEvent.click(view.getByText('Cancel'));
     expect(view.queryByTestId('review-thread-composer')).toBeNull();
-    expect(view.review.discardReply).toHaveBeenCalledWith('t1', 'conversation');
+    expect(view.review.closeReply).toHaveBeenCalledWith('t1', 'conversation');
     await fireEvent.click(view.getByTestId('review-thread-reply'));
     await fireEvent.keyDown(view.container.querySelector('textarea')!, { key: 'Escape' });
     expect(view.queryByTestId('review-thread-composer')).toBeNull();

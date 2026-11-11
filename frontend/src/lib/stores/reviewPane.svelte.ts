@@ -379,8 +379,9 @@ export interface ReviewPaneState {
    * row or the Conversation card); store-backed, both rows unmount. */
   replyOpen(threadId: string, surface: ReviewReplySurface): boolean;
   openReply(threadId: string, surface: ReviewReplySurface): void;
-  /** Closes the composer and discards the thread's unsaved reply. */
-  discardReply(threadId: string, surface: ReviewReplySurface): void;
+  /** Closes the composer; its text stays for the next open until a send
+   * succeeds. */
+  closeReply(threadId: string, surface: ReviewReplySurface): void;
   sendPRThreadReply(thread: ReviewThread): Promise<void>;
   replyErrorFor(threadId: string): string | null;
   sendingReply(threadId: string): boolean;
@@ -2805,9 +2806,8 @@ export function createReviewPaneState(
     openReply(prThreadId: string, surface: ReviewReplySurface): void {
       openReplies.add(`${surface}:${prThreadId}`);
     },
-    discardReply(prThreadId: string, surface: ReviewReplySurface): void {
+    closeReply(prThreadId: string, surface: ReviewReplySurface): void {
       openReplies.delete(`${surface}:${prThreadId}`);
-      replyBodies.delete(prThreadId);
     },
     refreshPRThreads,
     sendPRThreadReply,

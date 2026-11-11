@@ -176,7 +176,7 @@
         resolving={review.resolvingThread(thread.id)}
         resolveError={review.resolveErrorFor(thread.id)}
         onOpenReply={openReply}
-        onCloseReply={() => review.discardReply(thread.id, 'conversation')}
+        onCloseReply={() => review.closeReply(thread.id, 'conversation')}
         onBodyChange={(body) => review.setReplyBody(thread.id, body)}
         onSendReply={() => review.sendPRThreadReply(thread)}
         onResolve={thread.isResolvable

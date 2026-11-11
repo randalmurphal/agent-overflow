@@ -472,7 +472,7 @@
               onToggle={() => review?.togglePRThread(thread.id)}
               onBodyChange={(body) => review?.setReplyBody(thread.id, body)}
               onOpenReply={() => review?.openReply(thread.id, 'diff')}
-              onDiscardReply={() => review?.discardReply(thread.id, 'diff')}
+              onCloseReply={() => review?.closeReply(thread.id, 'diff')}
               onSendReply={() => review?.sendPRThreadReply(thread)}
               onResolve={thread.isResolvable
                 ? (resolved) => { void review?.setPRThreadResolved(thread, resolved); }

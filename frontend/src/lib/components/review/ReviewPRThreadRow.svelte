@@ -51,8 +51,8 @@
     onToggle: () => void;
     onBodyChange: (body: string) => void;
     onOpenReply: () => void;
-    /** Closes the composer and discards its text. */
-    onDiscardReply: () => void;
+    /** Closes the composer; the review state keeps its text. */
+    onCloseReply: () => void;
     onSendReply: () => Promise<void> | void;
     /** Absent for non-resolvable threads: no resolve control renders. */
     onResolve?: (resolved: boolean) => void;
@@ -77,7 +77,7 @@
     onToggle,
     onBodyChange,
     onOpenReply,
-    onDiscardReply,
+    onCloseReply,
     onSendReply,
     onResolve,
     onJumpToConversation,
@@ -179,7 +179,7 @@
           {resolving}
           {resolveError}
           {onOpenReply}
-          onCloseReply={onDiscardReply}
+          {onCloseReply}
           {onBodyChange}
           {onSendReply}
           {onResolve}

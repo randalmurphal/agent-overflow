@@ -35,7 +35,7 @@ function setup() {
       onToggle: vi.fn(),
       onBodyChange: vi.fn(),
       onOpenReply: vi.fn(),
-      onDiscardReply: vi.fn(),
+      onCloseReply: vi.fn(),
       onSendReply,
     },
   });
@@ -93,7 +93,7 @@ describe('<ReviewPRThreadRow> card', () => {
         onToggle: vi.fn(),
         onBodyChange: vi.fn(),
         onOpenReply: vi.fn(),
-        onDiscardReply: vi.fn(),
+        onCloseReply: vi.fn(),
         onSendReply: vi.fn(),
         ...overrides,
       },

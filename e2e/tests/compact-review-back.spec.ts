@@ -6,6 +6,8 @@
 // the log returning to the diff line the reader left; the next Back closes
 // the review. In the review pinned on the Pull requests page the open rail
 // and the log each close on one Back before the review returns to the list.
+// Back from a focused thread reply with find open closes the reply and keeps
+// its text for the next open; the next Back closes find.
 // Find before the log: compact-review-find.spec.ts, pulls-page-find-flow.ts.
 import { randomBytes } from 'node:crypto';
 import type { Locator, Page } from '@playwright/test';
@@ -162,6 +164,54 @@ test('Back closes the rail and the log inside the pinned review before the list'
     await page.goBack();
     await expect(review).toHaveCount(0);
     await expect(column).toBeVisible();
+    await expectEveryForgeCallHandled(harness);
+  } finally {
+    await page.close();
+    await harness.close();
+  }
+});
+
+test('Back from a focused reply closes the reply and keeps its text, then closes find', async ({ page }) => {
+  test.setTimeout(120_000);
+  const harness = await launchPullsHarness();
+  try {
+    const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+      projects: [{ name: 'pinned-reply-back', repo: { commits: [{ message: 'init', files: { 'README.md': '# Pinned\n' } }] }, threads: [] }],
+    });
+    await publishPullRequest(harness, seed.projects[0].path, {
+      forge: 'gitlab',
+      project: `ao-e2e/pinned-reply-back-${randomBytes(4).toString('hex')}`,
+      pulls: [{ ...pull(9_950), threads: [{ path: 'src/values.ts', line: 3, comments: [{ author: 'priya', body: 'Why three?' }] }] }],
+    }, { 'src/values.ts': source() });
+    await harness.open(page);
+    const pane = await openPage(page);
+    await pickFilter(page, pane, 'all');
+    await row(page, 7).getByRole('button').first().tap();
+    const review = page.getByTestId('review-pane');
+    await expect(review.getByTestId('review-diff-stats')).toContainText('1 file', { timeout: 60_000 });
+
+    const thread = review.getByTestId('review-pr-thread').filter({ hasText: 'Why three?' });
+    await expect(thread).toBeVisible({ timeout: 30_000 });
+    await thread.getByTestId('review-thread-reply').tap();
+    const reply = thread.getByTestId('review-thread-composer').locator('textarea');
+    await reply.fill('kept reply');
+
+    await page.keyboard.press('ControlOrMeta+f');
+    const bar = review.getByTestId('pane-find-bar');
+    await expect(bar).toBeVisible();
+    await reply.focus();
+    await expect(reply).toBeFocused();
+
+    await page.goBack();
+    await expect(reply).toHaveCount(0);
+    await expect(bar).toBeVisible();
+
+    await page.goBack();
+    await expect(bar).toHaveCount(0);
+    await expect(review.getByTestId('review-diff-stats')).toBeVisible();
+
+    await thread.getByTestId('review-thread-reply').tap();
+    await expect(reply).toHaveValue('kept reply');
     await expectEveryForgeCallHandled(harness);
   } finally {
     await page.close();

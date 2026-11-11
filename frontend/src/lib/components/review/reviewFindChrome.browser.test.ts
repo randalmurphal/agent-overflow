@@ -124,7 +124,7 @@ async function mountDiff(files: ReviewFile[], drafts: DiffReviewComment[], prThr
         target: node,
         props: {
           thread: thread(), anchor: anchor(), collapsed: collapsed(), orphaned: orphaned(), body: '', replying: false, error: null, sending: false,
-          resolving: false, resolveError: null, onToggle: () => {}, onBodyChange: () => {}, onOpenReply: () => {}, onDiscardReply: () => {}, onSendReply: () => {},
+          resolving: false, resolveError: null, onToggle: () => {}, onBodyChange: () => {}, onOpenReply: () => {}, onCloseReply: () => {}, onSendReply: () => {},
           onResolve: () => {}, onJumpToConversation: () => {},
         },
       });

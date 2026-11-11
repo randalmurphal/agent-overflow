@@ -126,7 +126,9 @@ PR stores; components own presentation and interaction.
 - An open comment editor (a new comment, a draft's edit, a thread reply)
   is a virtualized row, so its unsaved text and open state live in the
   review state (`draftBodyFor`, `draftEditBodyFor`, `replyBodyFor`,
-  `replyOpen`) until it is saved or discarded.
+  `replyOpen`) until it is saved or cancelled. Closing a reply (Cancel,
+  Escape, Back) keeps its text for the next open; only a sent reply
+  clears it.
 - Wrap the review surface in `shared/RenderBoundary.svelte`.
 
 Review mutations reconcile from authoritative responses and show partial or

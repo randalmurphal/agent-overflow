@@ -2,8 +2,9 @@
 // held range unmounts it. In real Chromium, a new line comment, an edit
 // of a draft and a reply to a PR thread keep their unsaved text and their
 // open state across that unmount, across a reload of the diff, on a
-// thread's companion review and on a review pinned to a PR; Cancel and
-// Save leave nothing kept.
+// thread's companion review and on a review pinned to a PR. Cancel ends
+// a new comment or an edit and keeps nothing, as Save does; Cancel on a
+// reply closes it and keeps its text until the reply sends.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, tick, unmount } from 'svelte';
@@ -266,16 +267,25 @@ describe('open comment editors across a row unmount', () => {
     expect(editing()?.value).toBe('kept edit');
     expect(replyComposer()?.value).toBe('kept reply');
 
-    // Cancel discards the reply; reopened, it is empty.
+    // Cancel closes the reply and keeps its text; reopened, it is there.
     button(q('[data-testid="review-thread-composer"]')!, 'Cancel').click();
     await vi.waitFor(() => expect(replyComposer()).toBeNull());
     await scrollAwayAndBack();
     expect(replyComposer()).toBeNull();
     q<HTMLButtonElement>('[data-testid="review-pr-thread"] [data-testid="review-thread-reply"]')!.click();
-    await vi.waitFor(() => expect(replyComposer()?.value).toBe(''));
+    await vi.waitFor(() => expect(replyComposer()?.value).toBe('kept reply'));
 
-    // An open composer with nothing typed yet stays open too.
+    // An open composer with nothing typed stays open too.
+    type(replyComposer()!, '');
     await scrollAwayAndBack();
     expect(replyComposer()?.value).toBe('');
+
+    // A reply that sends keeps nothing.
+    type(replyComposer()!, 'sent reply');
+    const sent = setBindingMock('ReplyToPRThread', async () => undefined);
+    await tick();
+    button(q('[data-testid="review-thread-composer"]')!, 'Reply').click();
+    await vi.waitFor(() => expect(sent).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(replyComposer()?.value ?? '').toBe(''));
   });
 });
