@@ -30,6 +30,11 @@ int ao_wkv_on_main_thread(void);
 // Returns 1 on success, 0 when the window has no content view.
 int ao_wkv_host_attach(void *ns_window);
 
+// ao_wkv_focus_app makes the Wails SPA's webview its window's first
+// responder, the handoff of a claimed chord, and answers 1 when AppKit
+// accepted it, 0 otherwise.
+int ao_wkv_focus_app(void);
+
 // ao_wkv_host_park puts a view into the park view at its own slot, at its
 // viewport (ao_wkv_view_set_size) and scale 1. The park view is 1x1 with a
 // masked layer, so a parked view is IN THE WINDOW (real viewport,

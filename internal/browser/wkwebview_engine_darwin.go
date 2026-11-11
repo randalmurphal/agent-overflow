@@ -148,6 +148,13 @@ func (e *wkEngine) OnUIThread() bool { return wkOnMainThread() }
 
 var _ engineUIThread = (*wkEngine)(nil)
 
+// FocusApp is engineAppFocus: the SPA's webview becomes the first
+// responder. Called on the main thread from the key gate, where wkDo runs
+// inline.
+func (e *wkEngine) FocusApp() error { return wkFocusApp() }
+
+var _ engineAppFocus = (*wkEngine)(nil)
+
 // holdPopup takes ownership of an engine-created view until the Manager adopts
 // or discards it. The engine never decides which.
 func (e *wkEngine) holdPopup(view unsafe.Pointer) string {

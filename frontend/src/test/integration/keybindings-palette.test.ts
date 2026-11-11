@@ -451,4 +451,56 @@ describe('App integration — keybindings + palette', () => {
     )!;
     await waitFor(() => expect(document.activeElement).toBe(mainInput));
   });
+
+  // A chord claimed in the browser pane's native page arrives as an
+  // `accelerator` event, keyboard focus already handed to the app by the
+  // engine. The command puts DOM focus in its own input, and its close
+  // returns it to the element that held it when the chord arrived, in the
+  // app; the page gets keyboard focus back only from a click.
+  it('a chord claimed in the browser page focuses the surface it opens, and its close stays in the app', async () => {
+    const thread = makeThread({ id: 't-browser', title: 'Browsing' });
+    const page = { id: 'page-1', url: 'https://example.test/', title: 'Example', canGoBack: false, canGoForward: false };
+    const state = { kind: 'state', threadId: thread.id, activePageId: page.id, visible: true, pages: [page], findMode: 'bar' };
+    setBindingMock('BrowserCompanionPaneAttach', async () => ({ id: 'mount-1', state }));
+    setBindingMock('BrowserCompanionPaneDetach', async () => undefined);
+    setBindingMock('BrowserCompanionPaneRect', async () => undefined);
+    setBindingMock('BrowserCompanionDo', async () => state);
+    setBindingMock('BrowserCompanionFind', async (_thread: string, action: { kind: string; query?: string; mount: string; seq: number }) => ({
+      pageId: page.id, incarnation: 1, mount: action.mount, seq: action.seq, document: 1, session: 1,
+      active: action.kind !== 'stop', query: action.query ?? '', found: false, matches: 0, current: -1, capped: false,
+    }));
+    const rendered = await mountBareApp([thread]);
+    await fireEvent.click(rendered.getAllByText(thread.title)[0]);
+    await flush(15);
+    await loadKeybindingsFromMock([
+      { key: 'mod+k', command: 'palette.open' },
+      { key: 'mod+f', command: 'find.in-pane' },
+      { key: 'escape', command: 'find.close' },
+    ]);
+    const { applyBrowserCompanionState } = await import('../../lib/stores/browserCompanion.svelte');
+    const { isMacPlatform } = await import('../../lib/utils/platform');
+    applyBrowserCompanionState(state as never);
+    const { hasPaneFindProvider } = await import('../../lib/stores/paneFind.svelte');
+    // The pane registers its find once its mount is attached.
+    await waitFor(() => expect(hasPaneFindProvider('browser-main')).toBe(true));
+    const chord = (key: string) => ({ key, ...(isMacPlatform() ? { meta: true } : { ctrl: true }) });
+    const composer = rendered.container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message Input"]')!;
+    composer.focus();
+    expect(document.activeElement).toBe(composer);
+
+    applyBrowserCompanionState({ kind: 'accelerator', threadId: thread.id, accelerator: chord('f') } as never);
+    const findInput = await waitFor(() => rendered.getByTestId('pane-find-input'));
+    await waitFor(() => expect(document.activeElement).toBe(findInput));
+    await fireEvent.keyDown(findInput, { key: 'Escape' });
+    await waitFor(() => expect(rendered.queryByTestId('pane-find-bar')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(composer));
+
+    applyBrowserCompanionState({ kind: 'accelerator', threadId: thread.id, accelerator: chord('k') } as never);
+    await waitFor(() => expect(rendered.getByTestId('command-palette-input')).toBeInTheDocument());
+    const list = document.querySelector<HTMLElement>('#palette-listbox');
+    await waitFor(() => expect(document.activeElement).toBe(list));
+    await fireEvent.keyDown(rendered.getByTestId('command-palette-input'), { key: 'Escape' });
+    await waitFor(() => expect(rendered.queryByTestId('command-palette-backdrop')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(composer));
+  });
 });

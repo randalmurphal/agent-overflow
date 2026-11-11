@@ -22,7 +22,26 @@ var (
 	procShowWindow     = user32.NewProc("ShowWindow")
 	procDefWindowProc  = user32.NewProc("DefWindowProcW")
 	procGetKeyState    = user32.NewProc("GetKeyState")
+	procGetForeground  = user32.NewProc("GetForegroundWindow")
+	procSetFocus       = user32.NewProc("SetFocus")
 )
+
+// focusWindow gives hwnd keyboard focus, only while it is the foreground
+// window: SetFocus on a window that is not would activate it, and AO never
+// takes the OS focus. Wails answers WM_SETFOCUS on the launcher window by
+// moving focus into the SPA's WebView2 controller. Answers false when hwnd
+// is not the foreground window and focus was left alone.
+func focusWindow(hwnd uintptr) bool {
+	if hwnd == 0 {
+		return false
+	}
+	if foreground, _, _ := procGetForeground.Call(); foreground != hwnd {
+		return false
+	}
+	// SetFocus answers the previous focus window, which may be none.
+	_, _, _ = procSetFocus.Call(hwnd)
+	return true
+}
 
 // Virtual-key codes the chord gate reads modifier state for.
 const (
