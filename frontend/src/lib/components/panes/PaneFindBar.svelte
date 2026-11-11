@@ -25,13 +25,18 @@
   } from '../../stores/paneFind.svelte';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { PANE_FIND_BAR_ATTR } from '../../utils/paneFindSeed';
+  import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
 
   interface Props {
     /** The layout pane id the find state is keyed by. */
     paneId: string;
     /** The pane's title; labels the search landmark. */
     title: string;
-    /** Focus target when the element focused before the bar is gone. */
+    /**
+     * Focus target when the element focused before the bar is gone or
+     * cannot take focus. Must be focusable by script (a scroller takes
+     * `tabindex="-1"`); one that is not is reported.
+     */
     fallbackFocus: () => HTMLElement | null;
   }
 
@@ -78,10 +83,18 @@
     void tick().then(() => {
       const active = document.activeElement;
       if (active && active !== document.body && active.isConnected) return;
-      const next = target?.isConnected ? target : fallbackFocus();
-      next?.focus({ preventScroll: true });
+      if (target?.isConnected && takesFocus(target)) return;
+      const fallback = fallbackFocus();
+      if (fallback && !takesFocus(fallback)) {
+        reportFrontendDiagnostic('pane find focus fallback not focusable', fallback.tagName);
+      }
     });
   });
+
+  function takesFocus(element: HTMLElement): boolean {
+    element.focus({ preventScroll: true });
+    return document.activeElement === element;
+  }
 
   function handleInput(event: Event): void {
     setPaneFindQuery(paneId, (event.currentTarget as HTMLInputElement).value);

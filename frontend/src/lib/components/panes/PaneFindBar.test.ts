@@ -13,15 +13,19 @@ import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/
 import { fakeFindProvider, type FakeFindProvider } from '../../../test/helpers/paneFind.svelte';
 
 let provider: FakeFindProvider;
-let fallback: HTMLButtonElement;
+let fallback: HTMLElement;
+let fallbackTarget: () => HTMLElement | null;
 
 beforeEach(() => {
   resetPaneFindForTest();
   setPaneLayoutItemsForTest([{ id: 'a', paneId: 'a', kind: 'thread', widthPx: 600 }]);
   provider = fakeFindProvider();
   registerPaneFindProvider('a', provider);
-  fallback = document.createElement('button');
+  // Like the panes' scrollers: focusable by script, never a tab stop.
+  fallback = document.createElement('div');
+  fallback.tabIndex = -1;
   document.body.appendChild(fallback);
+  fallbackTarget = () => fallback;
 });
 
 afterEach(() => {
@@ -31,7 +35,7 @@ afterEach(() => {
 });
 
 function renderBar() {
-  return render(PaneFindBar, { paneId: 'a', title: 'My thread', fallbackFocus: () => fallback });
+  return render(PaneFindBar, { paneId: 'a', title: 'My thread', fallbackFocus: () => fallbackTarget() });
 }
 
 async function openBar(returnFocus: HTMLElement | null = null) {
@@ -148,6 +152,17 @@ describe('<PaneFindBar>', () => {
     const { getByTestId } = renderBar();
     await openBar(before);
     before.remove();
+    await fireEvent.click(getByTestId('pane-find-close'));
+    await tick();
+    await waitFor(() => expect(document.activeElement).toBe(fallback));
+  });
+
+  it('returns focus to the pane when the element it came from is still there but cannot take focus', async () => {
+    const before = document.createElement('textarea');
+    document.body.appendChild(before);
+    const { getByTestId } = renderBar();
+    await openBar(before);
+    before.disabled = true;
     await fireEvent.click(getByTestId('pane-find-close'));
     await tick();
     await waitFor(() => expect(document.activeElement).toBe(fallback));
