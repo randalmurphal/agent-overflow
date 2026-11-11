@@ -18,6 +18,9 @@
   import PullsList from './PullsList.svelte';
   import PullsListResizer from './PullsListResizer.svelte';
   import PullsToolbar from './PullsToolbar.svelte';
+  import PaneFindBar from '../panes/PaneFindBar.svelte';
+  import { paneFindRegion } from '../panes/paneFindRegion';
+  import { attachPullsPaneFind, type PullsFindList } from './pullsPaneFind.svelte';
   import { ListColumnWidth } from './listWidth.svelte';
   import { provideHostedBack } from '../panes/hostedBack';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
@@ -37,6 +40,7 @@
     pipelinesLoading,
     pipelinesProjectErrors,
     pipelinesProjects,
+    pipelinesQuery,
     pipelinesReading,
     pipelinesRows,
     refreshPipelinesPage,
@@ -57,6 +61,7 @@
     pullsNeedsYouCount,
     pullsProjectErrors,
     pullsProjects,
+    pullsQuery,
     pullsRefreshFailure,
     pullsRefreshing,
     pullsRowsByGroup,
@@ -83,6 +88,7 @@
   import { currentPinnedReviewState, reviewSubjectForPR } from '../../stores/reviewPanePinned.svelte';
   import { selectedBackend } from '../../stores/selectedBackend.svelte';
   import { addErrorToast } from '../../stores/toast.svelte';
+  import { paneFindDetailKey } from '../../stores/paneFind.svelte';
   import { registerToolDetailProbe } from '../../stores/toolPanes.svelte';
   import type { PullRowView } from './pullRowView';
   import type { PipelineRowView } from './pipelineRowView';
@@ -147,6 +153,17 @@
       return () => detachPipelinesPage(paneId);
     }
   });
+  // Find acts per region: the list filters its rows, the detail has its own.
+  let mrList: PullsFindList | undefined = $state(undefined);
+  let pipeList: PullsFindList | undefined = $state(undefined);
+  const listFindKey = attachPullsPaneFind({
+    paneId: ownerPaneId,
+    tab: () => tab,
+    compact: () => compact,
+    detailShown: () => detailShown,
+    list: () => (tab === 'mrs' ? mrList : pipeList),
+  });
+  const detailFindKey = paneFindDetailKey(ownerPaneId);
   const disposeProbe = registerToolDetailProbe('pulls', () => (tab === 'mrs' ? detailOpen(paneId) : pipelineDetailOpen(paneId)));
   const disposeBack = registerPullsBackHandler(stepBack);
   onDestroy(() => {
@@ -321,7 +338,9 @@
       class="@container/pulls relative flex min-h-0 shrink-0 flex-col border-r border-border-subtle compact:w-full compact:border-r-0 {compact && detailShown ? 'hidden' : ''}"
       style:width={compact ? undefined : `${listColumn.width}px`}
       data-testid="pulls-list-column"
+      {@attach paneFindRegion(listFindKey)}
     >
+      <PaneFindBar paneId={listFindKey} title={tab === 'mrs' ? 'Merge requests' : 'Pipelines'} fallbackFocus={() => (tab === 'mrs' ? mrList : pipeList)?.scroller() ?? null} />
       {#if tab === 'mrs'}
         <PullsToolbar
           filter={filters.filter}
@@ -337,10 +356,12 @@
           <div class="border-y border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="pulls-snapshot-error">{pullsSnapshotError(paneId)}</div>
         {/if}
         <PullsList
+          bind:this={mrList}
           groups={pullsRowsByGroup(paneId)}
           projectErrors={pullsProjectErrors(paneId)}
           selectedKey={selection?.key ?? null}
           filter={filters.filter}
+          query={pullsQuery(paneId)}
           orderKey="{filters.sort.key}:{filters.sort.reversed ? 'reversed' : 'forward'}"
           noProjects={pullsProjects(paneId).length === 0}
           error={pullsError(paneId)}
@@ -354,7 +375,9 @@
       {:else}
         <PipelinesFilterChips filters={pipeFilters} projects={pipelinesProjects(paneId)} onChange={(next) => setPipelinesFilters(paneId, next)} />
         <PipelinesList
+          bind:this={pipeList}
           rows={pipelinesRows(paneId)}
+          query={pipelinesQuery(paneId)}
           projectErrors={pipelinesProjectErrors(paneId)}
           selectedKey={pipeline?.key ?? null}
           error={pipelinesError(paneId)}
@@ -372,7 +395,7 @@
     </div>
 
     <!-- The detail: the review pinned to the picked MR, or the picked pipeline. -->
-    <div class="flex min-h-0 min-w-0 flex-1 flex-col {compact && !detailShown ? 'hidden' : ''}" data-testid="pulls-detail">
+    <div class="flex min-h-0 min-w-0 flex-1 flex-col {compact && !detailShown ? 'hidden' : ''}" data-testid="pulls-detail" {@attach paneFindRegion(detailFindKey)}>
       {#if tab === 'mrs'}
         {#if pinnedReview}
           {#key pinnedReview.key}

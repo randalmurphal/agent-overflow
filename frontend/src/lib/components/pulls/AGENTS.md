@@ -23,10 +23,19 @@ the width rendered, clamped to leave the detail its minimum in the pane as
 measured; the pointer and keyboard paths of `PullsListResizer` set it
 through that one clamp.
 
+mod+f acts on the list column or the detail, whichever was last focused
+or pressed (the one on screen under compact), as find regions
+(`pullsPaneFind.svelte.ts`, contract in
+[`panes/AGENTS.md`](../panes/AGENTS.md#find)). The list's find filters the
+shown tab's rows through `setPullsQuery` and `setPipelinesQuery`, and the
+row match lives in `stores/pullsPageRows.ts`; the detail's find is the
+review pane's own, under `paneFindDetailKey`. The query is not persisted.
+
 A picked MR or pipeline reports through the tool's `toolDetailOpen` probe,
 which gates `pulls.escape`; `stepPullsBack` (`stores/pullsCommands.svelte.ts`)
 runs the pane's ladder: a CI log or the conflict view open in the detail
-closes first, then the pick clears. On compact the list is the page, the
+closes first, then the pick clears. An open find in the target region
+closes before either (`find.close`). On compact the list is the page, the
 detail replaces it, and the pane header's Back is the one Back: the pane
 provides `panes/hostedBack.ts`, and the hosted views drop their own Back
 controls while it owns Back.

@@ -1,5 +1,5 @@
 <script lang="ts" generics="R extends { key: string }">
-  import { onDestroy, untrack, type Snippet } from 'svelte';
+  import { onDestroy, tick, untrack, type Snippet } from 'svelte';
   import LongListVirtualizer, { type LongListHandle } from '../virtual/LongListVirtualizer.svelte';
   import PullsGroupHeader from './PullsGroupHeader.svelte';
   import PullsProjectError from './PullsProjectError.svelte';
@@ -19,7 +19,9 @@
   // anywhere. The heading of
   // the group under the viewport top sticks over the list once its own
   // row has scrolled under the top; the rows' own headings cannot stick,
-  // each row being positioned on its own.
+  // each row being positioned on its own. `focusFirstRow` (the list
+  // find's Enter) scrolls the first row into view and focuses its button;
+  // a row's root carries `data-list-row-key`.
 
   const IS_TEST = import.meta.env.MODE === 'test'
     && typeof window !== 'undefined' && 'happyDOM' in window;
@@ -135,6 +137,33 @@
     // The subscription replays its sample at once, inside this effect.
     return ref.subscribeContentGeometry(() => untrack(update));
   });
+  const FOCUS_FRAMES = 4;
+
+  /** The scroller, focusable by script: the list find's focus fallback. */
+  export function scroller(): HTMLElement | null {
+    return scrollEl ?? null;
+  }
+
+  /** Focuses the first row's button, scrolling it into view; false when
+   * the list has no row or the row did not mount. */
+  export async function focusFirstRow(): Promise<boolean> {
+    const index = items.findIndex((item) => item.kind === 'row');
+    const item = items[index];
+    if (!item || item.kind !== 'row' || !listRef) return false;
+    listRef.scrollToIndex(index, { align: 'start' });
+    const selector = `[data-list-row-key="${CSS.escape(item.row.key)}"] button`;
+    for (let frame = 0; frame < FOCUS_FRAMES; frame += 1) {
+      await tick();
+      const button = scrollEl?.querySelector<HTMLElement>(selector);
+      if (button) {
+        button.focus({ preventScroll: true });
+        return document.activeElement === button;
+      }
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+    return false;
+  }
+
   // A list that goes (the tab switches) leaves no row on screen: the
   // store holds what it was last told.
   onDestroy(() => {
@@ -144,8 +173,9 @@
 
 <div
   bind:this={scrollEl}
-  class="min-h-0 flex-1 overflow-y-auto border-t border-border-subtle"
+  class="min-h-0 flex-1 overflow-y-auto border-t border-border-subtle focus:outline-none"
   style:overflow-anchor="none"
+  tabindex="-1"
   data-testid={testid}
 >
   <!-- Takes no height, so the rows' offsets are the scroller's. -->

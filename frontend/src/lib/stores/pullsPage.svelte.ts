@@ -45,6 +45,7 @@ import { isTransportClassError } from './transportStatus.svelte';
 import type { BackendKey } from '../transport/backendKey';
 import { withBackendTarget } from '../transport/backends';
 import { hasScope, pageGrantsKnownTracked } from '../transport/scopes';
+import { findNeedle } from '../utils/findMatch';
 import { documentHidden } from '../utils/pageVisibility';
 import type { PRRef } from '../utils/prReference';
 
@@ -138,8 +139,6 @@ class PullsPageBackend {
   readonly error = $derived.by(() => listStore.peekError(this.backend));
   readonly rows: readonly PullsListedRow[] = $derived.by(() => listedRows(this.snapshot, this.backend));
   readonly rowsByKey = $derived(new Map(this.rows.map((row) => [row.key, row])));
-  readonly groups: readonly PullsGroup[] = $derived.by(() => groupRows(this.snapshot, this.backend, mrFilters(this.backend)));
-  readonly needsYou: number = $derived.by(() => needsYouCount(this.snapshot, this.backend, mrFilters(this.backend).projects));
   readonly projects: readonly PullsProjectChoice[] = $derived(projectChoices(this.snapshot));
   readonly errors: readonly PullsProjectError[] = $derived.by(() => projectErrors(this.snapshot, mrFilters(this.backend).projects, this.backend));
 
@@ -171,6 +170,18 @@ const pages = new SvelteMap<BackendKey, PullsPageBackend>();
 
 class PaneEntry {
   selection = $state.raw<PullsSelection | null>(null);
+  /** The list find's query (paneFind.svelte.ts); '' while find is closed. */
+  query = $state('');
+  readonly needle = $derived(findNeedle(this.query));
+  readonly groups: readonly PullsGroup[] = $derived.by(() => {
+    const page = pages.get(this.backend);
+    return page ? groupRows(page.snapshot, this.backend, mrFilters(this.backend), this.needle) : [];
+  });
+  readonly listedCount = $derived(this.groups.reduce((sum, group) => sum + group.rows.length, 0));
+  readonly needsYou: number = $derived.by(() => {
+    const page = pages.get(this.backend);
+    return page ? needsYouCount(page.snapshot, this.backend, mrFilters(this.backend).projects, this.needle) : 0;
+  });
   constructor(readonly backend: BackendKey, readonly attachment: number) {}
 }
 
@@ -316,19 +327,39 @@ export function pullsProjects(paneId: string): readonly PullsProjectChoice[] {
   return pageOf(paneId)?.projects ?? [];
 }
 
-/** The Merge requests tab's rows after the filter and project picker. */
+/** The Merge requests tab's rows after the filter, project picker and
+ * the list find's query. */
 export function pullsRowsByGroup(paneId: string): readonly PullsGroup[] {
-  return pageOf(paneId)?.groups ?? [];
+  return paneEntries.get(paneId)?.groups ?? [];
+}
+
+/** Reactive: the rows the Merge requests tab lists. */
+export function pullsListedCount(paneId: string): number {
+  return paneEntries.get(paneId)?.listedCount ?? 0;
+}
+
+/** Reactive: the list find's query narrowing the Merge requests tab. */
+export function pullsQuery(paneId: string): string {
+  return paneEntries.get(paneId)?.query ?? '';
+}
+
+/** The list find narrows the Merge requests tab to rows matching `query`
+ * (`pullRowMatches`); '' lists every row. Ignored before the page attached. */
+export function setPullsQuery(paneId: string, query: string): void {
+  untrack(() => {
+    const entry = paneEntries.get(paneId);
+    if (entry && entry.query !== query) entry.query = query;
+  });
 }
 
 export function pullsProjectErrors(paneId: string): readonly PullsProjectError[] {
   return pageOf(paneId)?.errors ?? [];
 }
 
-/** The rows the Needs you filter lists for the picked projects, whatever
- * the filter and sort shown. */
+/** The rows the Needs you filter lists for the picked projects and the
+ * find query, whatever the filter and sort shown. */
 export function pullsNeedsYouCount(paneId: string): number {
-  return pageOf(paneId)?.needsYou ?? 0;
+  return paneEntries.get(paneId)?.needsYou ?? 0;
 }
 
 export function pullsRefreshing(paneId: string): boolean {
