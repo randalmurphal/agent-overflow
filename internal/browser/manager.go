@@ -703,9 +703,10 @@ func (m *Manager) newPage(ctx context.Context, scope *workspaceScope, p *managed
 // reports. Nothing here decides ownership or limits.
 func (m *Manager) pageHooks(p *managedPage) pageHooks {
 	return pageHooks{
-		Console: p.appendLog,
-		PageURL: func() string { return p.cachedInfo().URL },
-		Allow:   func(rawURL string) bool { return m.navigationAllowed(p.access, rawURL) },
+		Console:           p.appendLog,
+		PageURL:           func() string { return p.cachedInfo().URL },
+		Allow:             func(rawURL string) bool { return m.navigationAllowed(p.access, rawURL) },
+		DocumentCommitted: func() { m.documentCommitted(p) },
 	}
 }
 

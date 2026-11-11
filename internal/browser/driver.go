@@ -136,6 +136,11 @@ type pageHooks struct {
 	PageURL func() string
 	// Allow answers the navigation-authority question for one request URL.
 	Allow func(url string) bool
+	// DocumentCommitted reports that the page's main frame committed a new
+	// document: a load, a reload, or a history move to another document. A
+	// same-document navigation (a fragment, the History API) is not one.
+	// Engines report it off their UI thread.
+	DocumentCommitted func()
 }
 
 // pageDriver is one engine's implementation of every per-page operation the

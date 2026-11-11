@@ -5,6 +5,7 @@ package browser
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -315,7 +316,7 @@ func TestNativeEngineRealFind(t *testing.T) {
 	t.Cleanup(func() { manager.DetachPane(mount.ID) })
 	find := func(kind, query string) FindState {
 		t.Helper()
-		state, err := manager.Find(ctx, access, page.ID, kind, query)
+		state, err := manager.Find(ctx, access, page.ID, kind, query, mount.ID)
 		if err != nil {
 			t.Fatalf("find %s %q: %v", kind, query, err)
 		}
@@ -362,7 +363,7 @@ func TestNativeEngineRealFind(t *testing.T) {
 	if stopped := find("stop", ""); stopped.Active {
 		t.Fatalf("stopped find = %+v", stopped)
 	}
-	if _, err := manager.Find(ctx, access, page.ID, "next", ""); err == nil {
+	if _, err := manager.Find(ctx, access, page.ID, "next", "", mount.ID); err == nil {
 		t.Fatal("a step after stop reached the engine")
 	}
 	position(find("start", "ALPHA"), 0)
@@ -381,6 +382,60 @@ func TestNativeEngineRealFind(t *testing.T) {
 		t.Fatalf("find past the most matches = %+v", many)
 	}
 	find("stop", "")
+
+	// The engine's own commit signal ends the find on a new document, a
+	// reload included, and a same-document navigation keeps it.
+	ended := make(chan FindState, 8)
+	manager.SetEventSink(func(event CompanionEvent) {
+		if event.Kind == "find" && event.Find != nil {
+			select {
+			case ended <- *event.Find:
+			default:
+			}
+		}
+	})
+	kept := find("start", "beta")
+	if _, _, err := manager.Evaluate(ctx, access, page.ID, `history.pushState({}, "", "?same-document"); 1`, nil); err != nil {
+		t.Fatalf("push a history entry: %v", err)
+	}
+	select {
+	case state := <-ended:
+		t.Fatalf("a same-document navigation ended the find: %+v", state)
+	case <-time.After(time.Second):
+	}
+	if state := find("next", ""); !state.Active || state.Session != kept.Session {
+		t.Fatalf("find after a same-document navigation = %+v", state)
+	}
+	if _, err := manager.History(ctx, access, page.ID, "reload"); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	select {
+	case state := <-ended:
+		if state.Active || state.Session <= kept.Session {
+			t.Fatalf("find end after a reload = %+v", state)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a reload did not end the find")
+	}
+
+	// A closed page's view is never reached again: the driver refuses.
+	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	if err != nil {
+		t.Fatalf("look the page up: %v", err)
+	}
+	if err := manager.ClosePage(ctx, access, page.ID); err != nil {
+		t.Fatalf("close the page: %v", err)
+	}
+	finder := p.driver.(pageFind)
+	if _, err := finder.FindStart(ctx, "beta"); !errors.Is(err, errViewClosed) {
+		t.Fatalf("find on a closed page's driver = %v, want %v", err, errViewClosed)
+	}
+	if err := finder.FindStop(ctx); !errors.Is(err, errViewClosed) {
+		t.Fatalf("find stop on a closed page's driver = %v, want %v", err, errViewClosed)
+	}
+	if _, err := p.driver.Evaluate(ctx, "1", false); !errors.Is(err, errViewClosed) {
+		t.Fatalf("evaluate on a closed page's driver = %v, want %v", err, errViewClosed)
+	}
 }
 
 // assertNativeEvalBridge holds the glue under every WebKit page operation to

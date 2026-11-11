@@ -850,14 +850,16 @@ export class BrowserCompanionAction {
 }
 
 /**
- * BrowserFindAction is one request of the browser pane's find: start (the
- * query; empty ends the find, or opens an engine's own find bar empty), next,
- * previous, or stop.
+ * BrowserFindAction is one request of the browser pane's find: open (AO's
+ * bar opened in the pane mount Mount), start (the query; empty ends the
+ * search, or opens an engine's own find bar empty), next, previous, stop
+ * (the search) or close (the search and the bar).
  */
 export class BrowserFindAction {
     "kind": string;
     "pageId": string;
     "query"?: string;
+    "mount"?: string;
 
     /** Creates a new BrowserFindAction instance. */
     constructor($$source: Partial<BrowserFindAction> = {}) {

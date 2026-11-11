@@ -17,6 +17,7 @@ extern void aoWKVAllow(uint64_t page_id, uint64_t profile_id, void *decision, ch
                        int download);
 extern void aoWKVConsole(uint64_t page_id, char *payload);
 extern void aoWKVPageInfo(uint64_t page_id, char *uri, char *title);
+extern void aoWKVDocumentCommitted(uint64_t page_id);
 extern void aoWKVPageClosed(uint64_t page_id);
 extern void aoWKVPopup(uint64_t opener_page_id, uint64_t profile_id, void *view, char *uri);
 extern int aoWKVPagePresented(uint64_t page_id);
@@ -649,6 +650,15 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
 }
 
 // ---- page identity ----
+
+// Called when the main frame starts receiving a new document's content
+// (WKNavigationDelegate.h, webView:didCommitNavigation:). A same-document
+// navigation (a fragment, the History API) changes the URL without a
+// navigation commit, so this is the document signal.
+- (void)webView:(WKWebView *)webView didCommitNavigation:(WKNavigation *)navigation {
+  (void)navigation;
+  aoWKVDocumentCommitted(ao_view_page_id(webView));
+}
 
 - (void)observeValueForKeyPath:(NSString *)keyPath
                       ofObject:(id)object

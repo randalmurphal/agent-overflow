@@ -154,7 +154,6 @@ func (p *managedPage) cachedInfo() PageInfo {
 
 func (m *Manager) pageChanged(p *managedPage) {
 	p.touch()
-	m.followFindDocument(p)
 	m.ensureActivePage(p.owner, p.id)
 	m.emitThreadState(p.owner)
 	m.syncPanePresentation(p.owner)
@@ -272,7 +271,6 @@ func (m *Manager) updatePageInfo(handle, url, title string) {
 		// and let the async refresh below correct it.
 		CanGoBack: previous.CanGoBack, CanGoForward: previous.CanGoForward,
 	})
-	m.followFindDocument(found)
 	m.emitThreadState(found.owner)
 	go m.refreshHistoryState(found)
 }
@@ -473,7 +471,8 @@ func (m *Manager) OpenPaneDevTools(ctx context.Context, access Access, pageID st
 // cannot present a page at all.
 //
 // A find runs on the shown active page only, so this is also where a find on
-// a page that stopped being it (a tab switch, a hidden companion) ends.
+// a page that stopped being it (a tab switch, a hidden companion) ends, and
+// so does a find bar whose pane mount is gone.
 // Occlusion is not hiding: an overlay over the pane leaves the find running.
 func (m *Manager) syncPanePresentation(threadID string) {
 	host, ok := m.engine.(paneHost)
@@ -481,7 +480,13 @@ func (m *Manager) syncPanePresentation(threadID string) {
 	session, hasSession := m.sessions[threadID]
 	rect, shown := m.shownPaneRectLocked(threadID)
 	visible := hasSession && session.Visible && shown
-	mounted := m.paneMountedLocked(threadID)
+	mounts := make(map[string]bool)
+	for id, mount := range m.panes {
+		if mount.threadID == threadID {
+			mounts[id] = true
+		}
+	}
+	mounted := len(mounts) > 0
 	var pages []*managedPage
 	var active *managedPage
 	for _, scope := range m.scopes {
@@ -496,7 +501,7 @@ func (m *Manager) syncPanePresentation(threadID string) {
 		}
 	}
 	m.mu.Unlock()
-	m.endHiddenFinds(pages, session, hasSession && mounted)
+	m.endHiddenFinds(pages, session, hasSession && mounted, mounts)
 	if !ok {
 		return
 	}

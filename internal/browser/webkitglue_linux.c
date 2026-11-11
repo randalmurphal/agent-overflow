@@ -14,6 +14,7 @@ extern void aoWebKitSnapshotDone(uint64_t call_id, void *pixels, int width,
 extern void aoWebKitAllow(uint64_t page_id, uint64_t profile_id, void *decision, char *uri);
 extern void aoWebKitConsole(uint64_t page_id, char *payload);
 extern void aoWebKitPageInfo(uint64_t page_id, char *uri, char *title);
+extern void aoWebKitDocumentCommitted(uint64_t page_id);
 extern void aoWebKitPageClosed(uint64_t page_id);
 extern void aoWebKitPopup(uint64_t opener_page_id, uint64_t profile_id,
                           void *view, char *uri);
@@ -570,8 +571,14 @@ static void ao_notify_info(GObject *object, GParamSpec *spec, gpointer data) {
                    title ? g_strdup(title) : NULL);
 }
 
+// A load commits a new document; a navigation within the same page changes
+// the URI without a load (WebKit-6.0.gir, webkit_web_view_get_uri and
+// WebKitWebView::load-changed), so COMMITTED is the document signal.
 static void ao_load_changed(WebKitWebView *view, WebKitLoadEvent event, gpointer data) {
   (void)data;
+  if (event == WEBKIT_LOAD_COMMITTED) {
+    aoWebKitDocumentCommitted(ao_view_page_id(view));
+  }
   if (event == WEBKIT_LOAD_COMMITTED || event == WEBKIT_LOAD_FINISHED) {
     ao_notify_info(G_OBJECT(view), NULL, NULL);
   }

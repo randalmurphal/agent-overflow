@@ -202,7 +202,6 @@ func (p *fakePage) Navigate(_ context.Context, rawURL string) error {
 		return fmt.Errorf("browser: navigation to %s is not allowed", rawURL)
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	// A navigation truncates the forward entries AFTER the current one and
 	// keeps everything up to and including it, exactly like a real session
 	// history — dropping the current entry would make "back" impossible after
@@ -213,8 +212,37 @@ func (p *fakePage) Navigate(_ context.Context, rawURL string) error {
 		p.history = append(p.history[:p.index+1], rawURL)
 	}
 	p.index = len(p.history) - 1
+	// A move to a fragment of the same address stays in the document, as
+	// in a real engine; anything else loads a new one.
+	commits := fakeDocument(p.url) != fakeDocument(rawURL) || !strings.Contains(rawURL, "#")
 	p.url, p.title = rawURL, fakeTitle(rawURL)
+	p.mu.Unlock()
+	if commits {
+		p.commitDocument()
+	}
 	return nil
+}
+
+// fakeDocument is an address without its fragment.
+func fakeDocument(rawURL string) string {
+	document, _, _ := strings.Cut(rawURL, "#")
+	return document
+}
+
+// commitDocument reports a new document, as a real engine's commit signal
+// does.
+func (p *fakePage) commitDocument() {
+	if p.hooks.DocumentCommitted != nil {
+		p.hooks.DocumentCommitted()
+	}
+}
+
+// SameDocumentNavigation changes the address the way history.pushState
+// does: no new document. A test seam.
+func (p *fakePage) SameDocumentNavigation(rawURL string) {
+	p.mu.Lock()
+	p.url, p.title = rawURL, fakeTitle(rawURL)
+	p.mu.Unlock()
 }
 
 func (p *fakePage) HistoryState(context.Context) (bool, bool, error) {
@@ -225,23 +253,32 @@ func (p *fakePage) HistoryState(context.Context) (bool, bool, error) {
 
 func (p *fakePage) History(_ context.Context, action string) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	switch action {
 	case "back":
 		if p.index <= 0 {
+			p.mu.Unlock()
 			return errors.New("browser: no previous history entry")
 		}
 		p.index--
 	case "forward":
 		if p.index+1 >= len(p.history) {
+			p.mu.Unlock()
 			return errors.New("browser: no forward history entry")
 		}
 		p.index++
-	case "reload", "stop":
+	case "reload":
+		// A reload loads the same address as a new document.
+		p.mu.Unlock()
+		p.commitDocument()
+		return nil
+	case "stop":
+		p.mu.Unlock()
 		return nil
 	}
 	p.url = p.history[p.index]
 	p.title = fakeTitle(p.url)
+	p.mu.Unlock()
+	p.commitDocument()
 	return nil
 }
 

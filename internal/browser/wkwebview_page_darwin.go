@@ -74,7 +74,11 @@ type wkPage struct {
 }
 
 func (p *wkPage) Lifetime() context.Context { return p.ctx }
-func (p *wkPage) Handle() string            { return p.handle }
+
+// liveView is the view as an operation reaches it: refused once the page
+// closed (wkView.do).
+func (p *wkPage) liveView() wkView { return wkView{ptr: p.view, life: p.ctx} }
+func (p *wkPage) Handle() string   { return p.handle }
 
 // OwnsFrame answers for this page's own handle: this engine addresses every
 // event by page, so a page's only frame identity is itself.
@@ -157,7 +161,7 @@ func (p *wkPage) bind(ctx context.Context) (context.Context, context.CancelFunc)
 func (p *wkPage) evalBody(ctx context.Context, body string) (json.RawMessage, error) {
 	opCtx, cancel := p.bind(ctx)
 	defer cancel()
-	raw, err := wkEvaluate(opCtx, p.view, body)
+	raw, err := wkEvaluate(opCtx, p.liveView(), body)
 	if err != nil {
 		return nil, err
 	}
@@ -202,44 +206,44 @@ func (p *wkPage) Navigate(ctx context.Context, target string) error {
 func (p *wkPage) load(target string) error {
 	parsed, err := url.Parse(target)
 	if err != nil || !strings.EqualFold(parsed.Scheme, "file") {
-		return wkLoadURI(p.view, target)
+		return wkLoadURI(p.liveView(), target)
 	}
 	path := parsed.Path
 	if path == "" {
 		return fmt.Errorf("browser: file URL has no path")
 	}
-	return wkLoadFile(p.view, path, filepath.Dir(path))
+	return wkLoadFile(p.liveView(), path, filepath.Dir(path))
 }
 
 func (p *wkPage) HistoryState(context.Context) (bool, bool, error) {
-	return wkCanGo(p.view, false), wkCanGo(p.view, true), nil
+	return wkCanGo(p.liveView(), false), wkCanGo(p.liveView(), true), nil
 }
 
 func (p *wkPage) History(ctx context.Context, action string) error {
 	switch action {
 	case "back":
-		if !wkCanGo(p.view, false) {
+		if !wkCanGo(p.liveView(), false) {
 			return fmt.Errorf("browser: no previous history entry")
 		}
-		if err := wkHistory(p.view, wkHistoryBack); err != nil {
+		if err := wkHistory(p.liveView(), wkHistoryBack); err != nil {
 			return err
 		}
 		return p.awaitLoad(ctx)
 	case "forward":
-		if !wkCanGo(p.view, true) {
+		if !wkCanGo(p.liveView(), true) {
 			return fmt.Errorf("browser: no forward history entry")
 		}
-		if err := wkHistory(p.view, wkHistoryForward); err != nil {
+		if err := wkHistory(p.liveView(), wkHistoryForward); err != nil {
 			return err
 		}
 		return p.awaitLoad(ctx)
 	case "reload":
-		if err := wkHistory(p.view, wkHistoryReload); err != nil {
+		if err := wkHistory(p.liveView(), wkHistoryReload); err != nil {
 			return err
 		}
 		return p.awaitLoad(ctx)
 	case "stop":
-		return wkHistory(p.view, wkHistoryStop)
+		return wkHistory(p.liveView(), wkHistoryStop)
 	}
 	return fmt.Errorf("browser: unsupported history action %q", action)
 }
@@ -258,7 +262,7 @@ func (p *wkPage) awaitLoad(ctx context.Context) error {
 		case <-opCtx.Done():
 			return opCtx.Err()
 		case <-ticker.C:
-			if wkIsLoading(p.view) {
+			if wkIsLoading(p.liveView()) {
 				settled = 0
 				continue
 			}
@@ -280,7 +284,7 @@ func (p *wkPage) PageStatus(ctx context.Context) (pageStatus, error) {
 	p.mu.Lock()
 	quiet := time.Since(p.lastActivity) >= wkNetworkQuiet
 	p.mu.Unlock()
-	return pageStatus{URL: probe.URL, Ready: probe.Ready, NetworkIdle: quiet && !wkIsLoading(p.view)}, nil
+	return pageStatus{URL: probe.URL, Ready: probe.Ready, NetworkIdle: quiet && !wkIsLoading(p.liveView())}, nil
 }
 
 func (p *wkPage) NavigationMark(ctx context.Context) (navigationMark, error) {
@@ -442,7 +446,7 @@ func (p *wkPage) FindStop(ctx context.Context) error {
 func (p *wkPage) find(ctx context.Context, query string, backwards bool) (findResult, error) {
 	opCtx, cancel := p.bind(ctx)
 	defer cancel()
-	found, err := wkFind(opCtx, p.view, query, backwards)
+	found, err := wkFind(opCtx, p.liveView(), query, backwards)
 	if err != nil || !found {
 		return findResult{}, err
 	}
@@ -488,7 +492,7 @@ func (p *wkPage) WaitVisible(ctx context.Context, selector string) error {
 // so the page's viewport IS the view's bounds, and the host keeps those bounds
 // whether the page is parked or presented scaled in the pane.
 func (p *wkPage) SetViewport(_ context.Context, width, height int) error {
-	return wkSetViewSize(p.view, width, height)
+	return wkSetViewSize(p.liveView(), width, height)
 }
 
 func (p *wkPage) Screenshot(ctx context.Context, opts ScreenshotOptions) ([]byte, error) {
@@ -524,11 +528,11 @@ func (p *wkPage) Screenshot(ctx context.Context, opts ScreenshotOptions) ([]byte
 // other's size.
 func (p *wkPage) capture(ctx context.Context, fullDocument bool) ([]byte, int, int, error) {
 	if !fullDocument {
-		return wkSnapshot(ctx, p.view)
+		return wkSnapshot(ctx, p.liveView())
 	}
 	p.snapshotMu.Lock()
 	defer p.snapshotMu.Unlock()
-	width, height, err := wkViewSize(p.view)
+	width, height, err := wkViewSize(p.liveView())
 	if err != nil {
 		return nil, 0, 0, err
 	}
@@ -538,15 +542,15 @@ func (p *wkPage) capture(ctx context.Context, fullDocument bool) ([]byte, int, i
 	}
 	target := clampDocumentCapture(document.Width, document.Height, width, height)
 	if target.width == width && target.height == height {
-		return wkSnapshot(ctx, p.view)
+		return wkSnapshot(ctx, p.liveView())
 	}
-	if err := wkSetViewSize(p.view, target.width, target.height); err != nil {
+	if err := wkSetViewSize(p.liveView(), target.width, target.height); err != nil {
 		return nil, 0, 0, err
 	}
-	pixels, capturedWidth, capturedHeight, err := wkSnapshot(ctx, p.view)
+	pixels, capturedWidth, capturedHeight, err := wkSnapshot(ctx, p.liveView())
 	// The restore runs whether or not the capture worked: a page left at the
 	// document's size would keep reporting that as its viewport forever.
-	if restoreErr := wkSetViewSize(p.view, width, height); err == nil {
+	if restoreErr := wkSetViewSize(p.liveView(), width, height); err == nil {
 		err = restoreErr
 	}
 	return pixels, capturedWidth, capturedHeight, err
