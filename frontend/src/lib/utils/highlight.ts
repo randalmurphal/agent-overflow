@@ -64,18 +64,21 @@ export function lowerCaseHighlightSegments(text: string, query: string): Highlig
       // The end rounds up to the end of the character holding lower[end - 1].
       let to = end;
       while (to < lower.length && starts[to] === starts[end - 1]) to++;
-      ranges.push([starts[at], starts[to]]);
+      // Matches that map back into one character overlap; they merge.
+      const last = ranges.at(-1);
+      if (last && starts[at] < last[1]) last[1] = starts[to];
+      else ranges.push([starts[at], starts[to]]);
     }
   }
   return segmentsOf(text, ranges);
 }
 
+// `ranges` are ascending and disjoint.
 function segmentsOf(text: string, ranges: ReadonlyArray<readonly [number, number]>): HighlightSegment[] {
   if (text.length === 0) return [];
   const segments: HighlightSegment[] = [];
   let cursor = 0;
   for (const [from, to] of ranges) {
-    if (from < cursor || to <= from) continue;
     if (from > cursor) segments.push({ type: 'text', value: text.slice(cursor, from) });
     segments.push({ type: 'match', value: text.slice(from, to) });
     cursor = to;

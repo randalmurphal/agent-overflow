@@ -30,6 +30,8 @@ describe('lowerCaseHighlightSegments', () => {
     // A match inside a character's lower case covers the whole character.
     ['İx', 'i', [[0, 1]]],
     ['İİ', '\u0307i', [[0, 2]]],
+    // Overlapping mapped matches merge: [0, 2] and [1, 3] here.
+    ['İİİ', '\u0307i', [[0, 3]]],
     ['ÉCOLE école', 'École', [[0, 5], [6, 11]]],
     ['ΣΊΣΥΦΟΣ', 'σίσυφος', [[0, 7]]],
     ['a😀B', '😀b', [[1, 4]]],
