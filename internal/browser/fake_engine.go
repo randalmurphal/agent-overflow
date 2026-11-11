@@ -230,11 +230,22 @@ func fakeDocument(rawURL string) string {
 }
 
 // commitDocument reports a new document, as a real engine's commit signal
-// does.
+// does, delivering the Manager's work at once.
 func (p *fakePage) commitDocument() {
-	if p.hooks.DocumentCommitted != nil {
-		p.hooks.DocumentCommitted()
+	p.commitDocumentLate()()
+}
+
+// commitDocumentLate stamps a new document now and returns the delivery of
+// the Manager's work, which a test runs later: the order a real engine's
+// goroutine can land in.
+func (p *fakePage) commitDocumentLate() (deliver func()) {
+	if p.hooks.DocumentCommitted == nil {
+		return func() {}
 	}
+	if finish := p.hooks.DocumentCommitted(); finish != nil {
+		return finish
+	}
+	return func() {}
 }
 
 // SameDocumentNavigation changes the address the way history.pushState

@@ -19,15 +19,25 @@ interface Call {
 }
 
 function state(partial: Partial<BrowserFindState>): BrowserFindState {
-  return new BrowserFindState({ pageId: 'page-1', session: 1, active: true, current: -1, ...partial });
+  return new BrowserFindState({
+    pageId: 'page-1', incarnation: 1, mount: 'mount-1', document: 1, session: 1, active: true, current: -1, ...partial,
+  });
 }
 
 let calls: Call[];
 let answer: (call: Call) => Promise<BrowserFindState>;
 let pageId: string;
 let mount: string | null;
-// The backend's generation: every action takes the next one.
+// The backend's generation: every action takes the next one. A restored
+// page is a new incarnation whose generations may start over.
 let gen: number;
+let incarnation: number;
+
+/** The page is suspended and restored: a new incarnation, numbered afresh. */
+function restore(): void {
+  incarnation += 1;
+  gen = 0;
+}
 
 function setup(mode: BrowserFindMode = 'bar') {
   const onEnded = vi.fn();
@@ -38,10 +48,11 @@ function setup(mode: BrowserFindMode = 'bar') {
   return { find, onEnded, onError };
 }
 
-function ended(session: number, page = 'page-1'): void {
-  applyBrowserFindEvent(
-    new BrowserCompanionEvent({ kind: 'find', threadId: 'thread', pageId: page, find: state({ pageId: page, session, active: false }) }),
-  );
+function ended(session: number, page = 'page-1', identity: Partial<BrowserFindState> = {}): void {
+  applyBrowserFindEvent(new BrowserCompanionEvent({
+    kind: 'find', threadId: 'thread', pageId: page,
+    find: state({ pageId: page, incarnation, session, active: false, ...identity }),
+  }));
 }
 
 async function settle(ms = BROWSER_FIND_DEBOUNCE_MS): Promise<void> {
@@ -65,12 +76,14 @@ beforeEach(() => {
   pageId = 'page-1';
   mount = 'mount-1';
   gen = 0;
+  incarnation = 1;
   answer = async (call) => {
     gen += 1;
+    const identity = { pageId: call.pageId, mount: call.mount, incarnation, session: gen };
     if (call.kind === 'start' || call.kind === 'next' || call.kind === 'previous') {
-      return state({ session: gen, query: call.query, found: true, matches: 3, current: 0 });
+      return state({ ...identity, query: call.query, found: true, matches: 3, current: 0 });
     }
-    return state({ session: gen, active: false });
+    return state({ ...identity, active: false });
   };
   setBindingMock('BrowserCompanionFind', async (threadId: string, action: { kind: string; pageId: string; query?: string; mount?: string }) => {
     const call = { threadId, kind: action.kind, pageId: action.pageId, query: action.query ?? '', mount: action.mount ?? '' };
@@ -104,7 +117,7 @@ describe('browser find provider', () => {
     await settle(BROWSER_FIND_DEBOUNCE_MS - 1);
     expect(calls).toEqual([]);
     await settle(1);
-    expect(calls).toMatchObject([{ kind: 'start', pageId: 'page-1', query: 'alpha', mount: '' }]);
+    expect(calls).toMatchObject([{ kind: 'start', pageId: 'page-1', query: 'alpha', mount: 'mount-1' }]);
     expect(find.result).toMatchObject({ count: 3, current: 0, pending: false, capped: false });
   });
 
@@ -407,6 +420,106 @@ describe('browser find provider', () => {
     find.dispose();
     await settle(0);
     expect(kinds()).toEqual(['start', 'start', 'close']);
+  });
+
+  // Reported order: the pane unmounts while a start is in flight. The
+  // release clears the bar and queues its close; the dispose that follows
+  // must not drop it, or the engine's search stays open.
+  for (const mode of ['bar', 'engine'] as const) {
+    it(`keeps the close a clear queued through a dispose, with a start in flight (${mode})`, async () => {
+      const { find } = setup(mode);
+      const start = held();
+      answer = (call) => call.kind === 'start' ? start.promise : Promise.resolve(state({ session: 9, active: false }));
+      if (mode === 'bar') {
+        find.opened?.();
+        find.search('alpha');
+      } else {
+        find.openNative?.('alpha');
+      }
+      await settle();
+      find.clear();
+      find.dispose();
+      find.clear();
+      start.release(state({ session: 2, query: 'alpha', found: true, matches: 2, current: 0 }));
+      await settle(0);
+      expect(kinds()).toEqual(mode === 'bar' ? ['open', 'start', 'close'] : ['start', 'close']);
+      expect(calls.at(-1)).toMatchObject({ kind: 'close', pageId: 'page-1', mount: 'mount-1' });
+    });
+  }
+
+  // A close queued for one page survives the backend ending the find the
+  // provider then held on another: the first page's search still needs it.
+  it('keeps a queued close through an end of a later find', async () => {
+    const { find, onEnded } = setup();
+    const start = held();
+    answer = (call) => call.kind === 'start' ? start.promise : Promise.resolve(state({ pageId: call.pageId, session: 9, active: false }));
+    find.search('alpha');
+    await settle();
+    find.clear();
+    pageId = 'page-2';
+    find.opened?.();
+    ended(20, 'page-2');
+    start.release(state({ session: 2, query: 'alpha', found: true, matches: 2, current: 0 }));
+    await settle(0);
+    expect(onEnded).toHaveBeenCalledTimes(1);
+    expect(calls).toMatchObject([{ kind: 'start', pageId: 'page-1' }, { kind: 'close', pageId: 'page-1' }]);
+    expect(calls).toHaveLength(2);
+  });
+
+  // Reported order: a page searched up to generation 10 is suspended and
+  // restored, and the restored page numbers its finds afresh. Its answers
+  // reset what the provider knows, so its end closes the bar, and a late end
+  // of the old incarnation does not.
+  it('follows a restored page whose generations started over', async () => {
+    const { find, onEnded } = setup();
+    find.opened?.();
+    for (const query of ['a', 'al', 'alp', 'alph', 'alpha']) {
+      find.search(query);
+      await settle();
+    }
+    gen = 10;
+    find.next?.();
+    await settle(0);
+    find.clear();
+    await settle(0);
+    restore();
+    find.opened?.();
+    find.search('alpha');
+    await settle();
+    expect(gen).toBe(2);
+    ended(11, 'page-1', { incarnation: 1 });
+    expect(onEnded).not.toHaveBeenCalled();
+    ended(3);
+    expect(onEnded).toHaveBeenCalledTimes(1);
+  });
+
+  // Another mount opening the page takes its find over: the backend ends
+  // this mount's find, and this bar closes. An end of another mount's find
+  // leaves this one alone.
+  it('closes only on an end of its own mount', async () => {
+    const { find, onEnded } = setup();
+    find.opened?.();
+    find.search('alpha');
+    await settle();
+    ended(gen + 5, 'page-1', { mount: 'mount-2' });
+    expect(onEnded).not.toHaveBeenCalled();
+    ended(gen + 1);
+    expect(onEnded).toHaveBeenCalledTimes(1);
+  });
+
+  // The close carries the mount the find was opened for, not whichever the
+  // pane has when it runs, and steps go to that mount too.
+  it('sends every action to the mount that holds the find', async () => {
+    const { find } = setup();
+    find.opened?.();
+    find.search('alpha');
+    await settle();
+    mount = 'mount-2';
+    find.next?.();
+    find.clear();
+    await settle(0);
+    expect(calls.map((call) => call.mount)).toEqual(['mount-1', 'mount-1', 'mount-1', 'mount-1']);
+    expect(kinds()).toEqual(['open', 'start', 'next', 'close']);
   });
 
   it('a disposed provider hears no end and closes what it held', async () => {

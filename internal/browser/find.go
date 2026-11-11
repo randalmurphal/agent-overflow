@@ -13,18 +13,25 @@ import (
 )
 
 // Find in the browser pane (docs/architecture/browser-tools.md, "Find"). The
-// engine searches; the Manager owns the page's find: whether AO's find bar is
-// open on it and for which pane mount, the running search's query and
-// current match, and when both end. They end when the page commits another
-// document, stops being the shown active page, is suspended or closes, or
-// when the bar's pane unmounts; that end is announced as a Kind "find" event
-// so the bar showing it closes.
+// engine searches; the Manager owns the page's find: AO's find bar open on
+// it, the running search with its query and current match, and when they
+// end. They end when the page commits another document, stops being the
+// shown active page, is suspended or closes, or when the pane mount that
+// owns them goes; that end is announced as a Kind "find" event so the bar
+// showing it closes.
 //
-// Every find action and every end takes the next number of the page's
-// generation (findSession.gen). An engine call runs with the page lock held
-// but not the find lock, so an end can land while it runs: the call's answer
-// is published only if no end moved the generation meanwhile, and otherwise
-// the engine's search is stopped again.
+// A find's identity is its page (id and incarnation), the pane mount that
+// owns it, the document it was opened on, and a generation. Every action,
+// answer and end carries all four, and an end, a close or a claim applies
+// only to the find whose identity it names: another mount's close, a
+// commit older than the find's document, an answer older than an end, or a
+// page that is not the same incarnation leaves it alone.
+//
+// Generations come from one counter across the Manager, so their order
+// holds across a page's suspend and restore. An engine call runs with the
+// page lock held but not the find lock, so an end can land while it runs:
+// the call's answer is published only if no end moved the page's
+// generation meanwhile, and otherwise the engine's search is stopped again.
 
 const (
 	// maxFindQueryBytes bounds a query. A search term is a phrase; anything
@@ -62,14 +69,16 @@ const (
 
 // findSession is one page's find state. Guarded by managedPage.findMu.
 type findSession struct {
-	// gen numbers the page's find actions and ends. An action answers with
-	// the number it took (a step with its search's), an end announces the
-	// number it moved to, so an end newer than every answer a client holds
-	// is recognizably one it has not seen.
+	// gen is the generation of the page's newest find action or end.
 	gen uint64
-	// bar is the pane mount whose find bar is open on the page, "" for none.
-	bar string
-	// starting is whether a start is in its engine call.
+	// owner is the pane mount the find belongs to: its bar and its search,
+	// and an action in flight. "" when the page has none.
+	owner string
+	// doc is the document epoch the find was opened on.
+	doc uint64
+	// bar is whether AO's find bar is open; starting whether an action is
+	// in its engine call.
+	bar      bool
 	starting bool
 	// active is whether a search runs; search is its generation.
 	active bool
@@ -78,15 +87,26 @@ type findSession struct {
 	state  FindState
 }
 
-func (s *findSession) snapshot(pageID string) FindState {
+func (s *findSession) idle() bool { return !s.active && !s.bar && !s.starting }
+
+// identify stamps a state with the find's identity on page p.
+func (s *findSession) identify(p *managedPage, state FindState) FindState {
+	state.PageID = p.id
+	state.Incarnation = p.incarnation
+	state.Mount = s.owner
+	state.Document = s.doc
+	return state
+}
+
+// snapshot is the find as a reply shows it.
+func (s *findSession) snapshot(p *managedPage) FindState {
 	if !s.active {
-		return FindState{PageID: pageID, Session: s.gen, Current: -1}
+		return s.identify(p, FindState{Session: s.gen, Current: -1})
 	}
 	state := s.state
-	state.PageID = pageID
 	state.Session = s.search
 	state.Active = true
-	return state
+	return s.identify(p, state)
 }
 
 func pageFinder(p *managedPage) (pageFind, string) {
@@ -115,10 +135,10 @@ func findSeed(selection string) string {
 	return seed
 }
 
-// Find runs one find action on a page of the thread's companion. open and
-// start run only on the shown active page, open for a mount of the thread's.
-// stop and close never restore a suspended page and answer for a page that
-// is gone as for one with no find: there is nothing left to end.
+// Find runs one find action of a pane mount's on a page of the thread's
+// companion. open and start run only on the shown active page. stop and
+// close never restore a suspended page, answer for a page that is gone as
+// for one with no find, and leave alone a find another mount owns.
 func (m *Manager) Find(ctx context.Context, access Access, pageID, kind, query, mount string) (FindState, error) {
 	kind = strings.ToLower(strings.TrimSpace(kind))
 	switch kind {
@@ -132,7 +152,11 @@ func (m *Manager) Find(ctx context.Context, access Access, pageID, kind, query, 
 	if pageID = strings.TrimSpace(pageID); pageID == "" {
 		return FindState{}, fmt.Errorf("browser: page id is required")
 	}
+	if mount = strings.TrimSpace(mount); mount == "" {
+		return FindState{}, fmt.Errorf("browser: a find belongs to a mounted browser pane")
+	}
 	ending := kind == FindStop || kind == FindClose
+	gone := FindState{PageID: pageID, Mount: mount, Current: -1}
 	var p *managedPage
 	var err error
 	if kind == FindOpen || kind == FindStart {
@@ -141,7 +165,7 @@ func (m *Manager) Find(ctx context.Context, access Access, pageID, kind, query, 
 		p, _, err = m.lookupOwnedPage(access, pageID)
 	}
 	if ending && errors.Is(err, errPageNotFound) {
-		return FindState{PageID: pageID, Current: -1}, nil
+		return gone, nil
 	}
 	if err != nil {
 		return FindState{}, err
@@ -156,7 +180,7 @@ func (m *Manager) Find(ctx context.Context, access Access, pageID, kind, query, 
 	// taken; its driver is not called then.
 	if !m.pageLive(p) {
 		if ending {
-			return FindState{PageID: pageID, Current: -1}, nil
+			return gone, nil
 		}
 		return FindState{}, errPageNotFound
 	}
@@ -164,13 +188,13 @@ func (m *Manager) Find(ctx context.Context, access Access, pageID, kind, query, 
 	defer cancel()
 	switch kind {
 	case FindOpen:
-		return m.openFindBar(access, p, mode, mount)
+		return m.openFindBar(opCtx, access, p, finder, mode, mount)
 	case FindStart:
-		return m.startFind(opCtx, access, p, finder, mode, query)
+		return m.startFind(opCtx, access, p, finder, mode, query, mount)
 	case FindStop, FindClose:
-		return m.stopFindLocked(opCtx, p, finder, kind == FindClose)
+		return m.stopFindLocked(opCtx, p, finder, kind == FindClose, mount)
 	}
-	return m.stepFind(opCtx, p, finder, mode, kind == FindPrev)
+	return m.stepFind(opCtx, p, finder, mode, kind == FindPrev, mount)
 }
 
 // pageLive reports whether p is still the live page registered under its id.
@@ -207,71 +231,109 @@ func (m *Manager) paneMountedLocked(threadID string) bool {
 	return false
 }
 
-var errFindNotShown = errors.New("browser: find runs on the page the browser pane shows")
+// mountOf reports whether mount is a pane mount of the thread's.
+func (m *Manager) mountOf(threadID, mount string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pane, ok := m.panes[mount]
+	return ok && pane.threadID == threadID
+}
 
-// reserveFind takes the next generation for an action on p and checks, after
-// taking it, that p is the shown page: a presentation change that ends the
-// find moves the generation, so one that lands later is seen at publish.
-// The caller holds p.mu.
-func (m *Manager) reserveFind(threadID string, p *managedPage) (uint64, error) {
+var (
+	errFindNotShown = errors.New("browser: find runs on the page the browser pane shows")
+	errFindNoMount  = errors.New("browser: find opens in a mounted browser pane")
+)
+
+// reserveFind makes mount the owner of p's find for an action and takes the
+// action's generation and document. Another mount's find is ended first,
+// announced to it, and its search stopped. The owner is recorded before the
+// mount and the presentation are checked, so a detach or a presentation
+// change that lands after the check finds the owner and ends the action,
+// which publish then sees. The caller holds p.mu.
+func (m *Manager) reserveFind(ctx context.Context, access Access, p *managedPage, finder pageFind, mount string) (uint64, error) {
+	// A mount that is already gone takes nothing over.
+	if !m.mountOf(access.ThreadID, mount) {
+		return 0, errFindNoMount
+	}
 	p.findMu.Lock()
-	p.find.gen++
+	var taken *FindState
+	searching := false
+	if !p.find.idle() && p.find.owner != mount {
+		searching = p.find.active
+		state := m.endLocked(p)
+		taken = &state
+	}
+	p.find.gen = m.findGen.Add(1)
 	mine := p.find.gen
+	p.find.owner = mount
+	p.find.doc = p.docEpoch.Load()
 	p.find.starting = true
 	p.findMu.Unlock()
-	if !m.pageShown(threadID, p.id) {
+	if taken != nil {
+		m.emit(CompanionEvent{Kind: "find", ThreadID: p.owner, PageID: p.id, Find: taken})
+		if searching {
+			if err := finder.FindStop(ctx); err != nil && p.ctx.Err() == nil {
+				log.Printf("browser: page %s: stop the find another pane owned: %v", p.id, err)
+			}
+		}
+	}
+	var refused error
+	switch {
+	case !m.mountOf(access.ThreadID, mount):
+		refused = errFindNoMount
+	case !m.pageShown(access.ThreadID, p.id):
+		refused = errFindNotShown
+	}
+	if refused != nil {
 		p.findMu.Lock()
-		p.find.starting = false
+		if p.find.gen == mine {
+			p.find.starting = false
+			if !p.find.bar && !p.find.active {
+				p.find.owner = ""
+			}
+		}
 		p.findMu.Unlock()
-		return 0, errFindNotShown
+		return 0, refused
+	}
+	if m.findReserved != nil {
+		m.findReserved()
 	}
 	return mine, nil
 }
 
 // openFindBar records AO's bar open on p for mount and claims the page's
 // Escape. The caller holds p.mu.
-func (m *Manager) openFindBar(access Access, p *managedPage, mode, mount string) (FindState, error) {
+func (m *Manager) openFindBar(ctx context.Context, access Access, p *managedPage, finder pageFind, mode, mount string) (FindState, error) {
 	if mode != FindModeBar {
 		return FindState{}, fmt.Errorf("browser: this engine shows its own find bar")
 	}
-	if !m.mountOf(access.ThreadID, mount) {
-		return FindState{}, fmt.Errorf("browser: find opens in a mounted browser pane")
-	}
-	mine, err := m.reserveFind(access.ThreadID, p)
+	mine, err := m.reserveFind(ctx, access, p, finder, mount)
 	if err != nil {
 		return FindState{}, err
 	}
 	p.findMu.Lock()
 	defer p.findMu.Unlock()
-	p.find.starting = false
 	// An end since the reservation (the mount detached, the page hid) wins.
 	if p.find.gen != mine {
 		return FindState{}, errFindNotShown
 	}
-	p.find.bar = mount
+	p.find.starting = false
+	p.find.bar = true
 	m.finding.Store(p.driver.Handle(), struct{}{})
-	state := p.find.snapshot(p.id)
+	state := p.find.snapshot(p)
 	state.Session = mine
 	return state, nil
-}
-
-// mountOf reports whether mount is a pane mount of the thread's.
-func (m *Manager) mountOf(threadID, mount string) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	pane, ok := m.panes[strings.TrimSpace(mount)]
-	return ok && pane.threadID == threadID
 }
 
 // startFind replaces p's search. In FindModeBar it searches for query, and
 // an empty query ends the search; in FindModeEngine it opens the engine's
 // own bar seeded with query or else the page's selection. The caller holds
 // p.mu.
-func (m *Manager) startFind(ctx context.Context, access Access, p *managedPage, finder pageFind, mode, query string) (FindState, error) {
+func (m *Manager) startFind(ctx context.Context, access Access, p *managedPage, finder pageFind, mode, query, mount string) (FindState, error) {
 	if mode == FindModeBar && query == "" {
-		return m.stopFindLocked(ctx, p, finder, false)
+		return m.stopFindLocked(ctx, p, finder, false, mount)
 	}
-	mine, err := m.reserveFind(access.ThreadID, p)
+	mine, err := m.reserveFind(ctx, access, p, finder, mount)
 	if err != nil {
 		return FindState{}, err
 	}
@@ -280,19 +342,24 @@ func (m *Manager) startFind(ctx context.Context, access Access, p *managedPage, 
 	}
 	result, err := finder.FindStart(ctx, query)
 	p.findMu.Lock()
-	p.find.starting = false
 	if p.find.gen != mine {
 		// An end landed during the call: the search it started is nobody's.
+		state := p.find.identify(p, FindState{Session: mine, Current: -1})
+		state.Mount = mount
 		p.findMu.Unlock()
 		if err == nil {
 			if stopErr := finder.FindStop(ctx); stopErr != nil && p.ctx.Err() == nil {
 				log.Printf("browser: page %s: stop a superseded find: %v", p.id, stopErr)
 			}
 		}
-		return FindState{PageID: p.id, Session: mine, Current: -1}, nil
+		return state, nil
 	}
+	p.find.starting = false
 	if err != nil {
 		p.find.active = false
+		if !p.find.bar {
+			p.find.owner = ""
+		}
 		p.findMu.Unlock()
 		return FindState{}, err
 	}
@@ -310,18 +377,18 @@ func (m *Manager) startFind(ctx context.Context, access Access, p *managedPage, 
 		}
 	}
 	p.find.state = state
-	return p.find.snapshot(p.id), nil
+	return p.find.snapshot(p), nil
 }
 
 // stepFind moves the search's current match with a step's answer. The engine
 // wraps; past a capped count the position is unknown, so it is not wrapped
 // here either. The caller holds p.mu.
-func (m *Manager) stepFind(ctx context.Context, p *managedPage, finder pageFind, mode string, backwards bool) (FindState, error) {
+func (m *Manager) stepFind(ctx context.Context, p *managedPage, finder pageFind, mode string, backwards bool, mount string) (FindState, error) {
 	if mode == FindModeEngine {
 		return FindState{}, fmt.Errorf("browser: this engine steps through matches in its own find bar")
 	}
 	p.findMu.Lock()
-	active, search := p.find.active, p.find.search
+	active, search := p.find.active && p.find.owner == mount, p.find.search
 	p.findMu.Unlock()
 	if !active {
 		return FindState{}, fmt.Errorf("browser: no find is in progress on this page")
@@ -330,7 +397,9 @@ func (m *Manager) stepFind(ctx context.Context, p *managedPage, finder pageFind,
 	p.findMu.Lock()
 	defer p.findMu.Unlock()
 	if !p.find.active || p.find.search != search {
-		return FindState{PageID: p.id, Session: search, Current: -1}, nil
+		state := p.find.identify(p, FindState{Session: search, Current: -1})
+		state.Mount = mount
+		return state, nil
 	}
 	if err != nil {
 		// What the engine still shows is unknown, so the next action starts
@@ -361,21 +430,31 @@ func (m *Manager) stepFind(ctx context.Context, p *managedPage, finder pageFind,
 	default:
 		state.Current++
 	}
-	return p.find.snapshot(p.id), nil
+	return p.find.snapshot(p), nil
 }
 
-// stopFindLocked is a caller's end of the search, and with closeBar of the
-// bar too. Ending what already ended answers the same. The caller holds p.mu.
-func (m *Manager) stopFindLocked(ctx context.Context, p *managedPage, finder pageFind, closeBar bool) (FindState, error) {
+// stopFindLocked is mount's end of its search, and with closeBar of its bar
+// too. A find another mount owns is left alone, and ending what already
+// ended answers the same. The caller holds p.mu.
+func (m *Manager) stopFindLocked(ctx context.Context, p *managedPage, finder pageFind, closeBar bool, mount string) (FindState, error) {
 	p.findMu.Lock()
-	p.find.gen++
+	if p.find.owner != mount {
+		state := p.find.identify(p, FindState{Session: p.find.gen, Current: -1})
+		state.Mount = mount
+		p.findMu.Unlock()
+		return state, nil
+	}
+	p.find.gen = m.findGen.Add(1)
 	searching := p.find.active
 	p.find.active = false
-	if closeBar && p.find.bar != "" {
-		p.find.bar = ""
+	if closeBar {
+		p.find.bar = false
 		m.finding.Delete(p.driver.Handle())
 	}
-	state := p.find.snapshot(p.id)
+	state := p.find.snapshot(p)
+	if !p.find.bar && !p.find.starting {
+		p.find.owner = ""
+	}
 	p.findMu.Unlock()
 	if !searching {
 		return state, nil
@@ -386,8 +465,18 @@ func (m *Manager) stopFindLocked(ctx context.Context, p *managedPage, finder pag
 	return state, nil
 }
 
-// endFind ends p's find on the Manager's own account: the search, the bar
-// and any action in flight. An end that ended something is announced.
+// endLocked ends p's find: the search, the bar and any action in flight, and
+// answers the end as its owner should see it. The caller holds p.findMu.
+func (m *Manager) endLocked(p *managedPage) FindState {
+	p.find.gen = m.findGen.Add(1)
+	state := p.find.identify(p, FindState{Session: p.find.gen, Current: -1})
+	p.find.active, p.find.bar, p.find.starting = false, false, false
+	p.find.owner = ""
+	m.finding.Delete(p.driver.Handle())
+	return state
+}
+
+// endFind ends p's find on the Manager's own account, and announces it.
 // stopEngine asks the engine to clear a search left on a page that lives on;
 // the call queues behind the page's in-flight operation, off the caller's
 // goroutine, and is skipped when a newer action ran first. Callers may hold
@@ -396,28 +485,20 @@ func (m *Manager) endFind(p *managedPage, stopEngine bool) {
 	m.endFindIf(p, stopEngine, nil)
 }
 
-// endFindIf is endFind when ends answers true for the page's session, nil
-// for always.
+// endFindIf is endFind when ends answers true for the page's find, nil for
+// always.
 func (m *Manager) endFindIf(p *managedPage, stopEngine bool, ends func(*findSession) bool) {
 	p.findMu.Lock()
-	idle := !p.find.active && p.find.bar == "" && !p.find.starting
-	if idle || (ends != nil && !ends(&p.find)) {
+	if p.find.idle() || (ends != nil && !ends(&p.find)) {
 		p.findMu.Unlock()
 		return
 	}
-	p.find.gen++
-	ended := p.find.gen
-	searching, open := p.find.active, p.find.bar != ""
-	p.find.active, p.find.bar = false, ""
-	m.finding.Delete(p.driver.Handle())
-	state := p.find.snapshot(p.id)
+	searching := p.find.active
+	state := m.endLocked(p)
 	p.findMu.Unlock()
-	if !searching && !open {
-		return
-	}
 	m.emit(CompanionEvent{Kind: "find", ThreadID: p.owner, PageID: p.id, Find: &state})
 	if stopEngine && searching {
-		go m.stopEngineFind(p, ended)
+		go m.stopEngineFind(p, state.Session)
 	}
 }
 
@@ -444,22 +525,28 @@ func (m *Manager) stopEngineFind(p *managedPage, ended uint64) {
 	}
 }
 
-// documentCommitted ends p's find once its main frame commits another
-// document (pageHooks.DocumentCommitted); a same-document navigation keeps it.
-func (m *Manager) documentCommitted(p *managedPage) {
-	m.endFind(p, true)
+// documentCommitted is pageHooks.DocumentCommitted. It runs where the engine
+// reports the commit and only stamps the new document epoch, so an action
+// dispatched after the commit is bound to the new document. The work it
+// returns ends a find opened on an earlier document, whenever it runs; a
+// find opened on this document or a later one is not its to end.
+func (m *Manager) documentCommitted(p *managedPage) func() {
+	epoch := p.docEpoch.Add(1)
+	return func() {
+		m.endFindIf(p, true, func(s *findSession) bool { return s.doc < epoch })
+	}
 }
 
 // endHiddenFinds ends the finds of the thread's pages that are not the shown
-// active page, and a bar whose pane mount is gone. pages are the thread's
-// live pages; shown is whether the thread has a session and a mounted pane;
-// mounts are the thread's pane mounts.
-func (m *Manager) endHiddenFinds(pages []*managedPage, session SessionInfo, shown bool, mounts map[string]bool) {
+// active page or whose owning pane mount is gone. pages are the thread's
+// live pages. Whether a find is shown is read when its end is decided, not
+// from the caller's snapshot: a find opened after the snapshot was taken is
+// judged by what is true now, and one opened before the change that called
+// this is seen by it.
+func (m *Manager) endHiddenFinds(threadID string, pages []*managedPage) {
 	for _, p := range pages {
-		if shown && session.Visible && p.id == session.ActivePageID {
-			m.endFindIf(p, true, func(s *findSession) bool { return s.bar != "" && !mounts[s.bar] })
-			continue
-		}
-		m.endFind(p, true)
+		m.endFindIf(p, true, func(s *findSession) bool {
+			return !m.pageShown(threadID, p.id) || !m.mountOf(threadID, s.owner)
+		})
 	}
 }

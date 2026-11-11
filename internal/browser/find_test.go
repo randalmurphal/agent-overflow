@@ -118,9 +118,15 @@ func (f *findFixture) noCall(t *testing.T) {
 // showing it closes on.
 func (f *findFixture) wantEnded(t *testing.T, after uint64) FindState {
 	t.Helper()
+	return f.wantEndedFor(t, after, f.mount)
+}
+
+// wantEndedFor is wantEnded for the find mount owned.
+func (f *findFixture) wantEndedFor(t *testing.T, after uint64, mount string) FindState {
+	t.Helper()
 	select {
 	case event := <-f.events:
-		if event.Find == nil || event.Find.Active || event.Find.PageID != f.pageID || event.ThreadID != f.access.ThreadID {
+		if event.Find == nil || event.Find.Active || event.Find.PageID != f.pageID || event.Find.Mount != mount || event.ThreadID != f.access.ThreadID {
 			t.Fatalf("find end event = %+v (%+v)", event, event.Find)
 		}
 		if event.Find.Session <= after {
@@ -699,8 +705,9 @@ func TestFindBarClaimEndsWithEveryEnding(t *testing.T) {
 				opened := f.find(t, "open", "")
 				started := f.find(t, "start", "alpha")
 				f.wantCall(t, "start alpha")
+				owner := f.mount
 				tc.away(t, f)
-				f.wantEnded(t, max(opened.Session, started.Session))
+				f.wantEndedFor(t, max(opened.Session, started.Session), owner)
 				if f.manager.keyChord(handle, findEscape) {
 					t.Fatalf("round %d: the page's Escape was claimed after the find ended", round)
 				}
@@ -786,7 +793,11 @@ func TestFindIsRefusedWhereTheEngineHasNone(t *testing.T) {
 	if mode := manager.CompanionState(access).FindMode; mode != "" {
 		t.Fatalf("state find mode = %q on an engine without find", mode)
 	}
-	if _, err := manager.Find(t.Context(), access, info.ID, "start", "alpha", ""); !errors.Is(err, errFindUnavailable) {
+	pane, err := manager.AttachPane(access)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Find(t.Context(), access, info.ID, "start", "alpha", pane.ID); !errors.Is(err, errFindUnavailable) {
 		t.Fatalf("find error = %v, want unavailable", err)
 	}
 
@@ -1041,4 +1052,207 @@ func TestFindStopNeverRestoresAndIsIdempotent(t *testing.T) {
 			t.Fatalf("%s on a closed page = %+v", kind, state)
 		}
 	}
+}
+
+// A pane mount detached while its find action is between reserving and
+// publishing ends that action: another mount of the thread stays, so the
+// page stays shown, and the action publishes nothing, claims nothing and
+// stops the search it started.
+func TestFindDetachedWhileAnActionReservesEndsIt(t *testing.T) {
+	for _, kind := range []string{"open", "start"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newFindFixture(t, "https://example.test/alpha")
+			handle := f.fake.Handle()
+			owner := f.mount
+			f.attach(t)
+			entered := make(chan struct{})
+			gate := make(chan struct{})
+			f.manager.findReserved = func() {
+				close(entered)
+				<-gate
+			}
+			type answer struct {
+				state FindState
+				err   error
+			}
+			answered := make(chan answer, 1)
+			go func() {
+				state, err := f.manager.Find(context.Background(), f.access, f.pageID, kind, "alpha", owner)
+				answered <- answer{state, err}
+			}()
+			<-entered
+			f.manager.DetachPane(owner)
+			f.wantEndedFor(t, 0, owner)
+			close(gate)
+			got := <-answered
+			f.manager.findReserved = nil
+			if kind == "open" && got.err == nil {
+				t.Fatalf("open by a detached mount = %+v", got.state)
+			}
+			if kind == "start" {
+				if got.err != nil || got.state.Active {
+					t.Fatalf("start by a detached mount = %+v, %v", got.state, got.err)
+				}
+				f.wantCall(t, "start alpha")
+				f.wantCall(t, "stop")
+			}
+			if f.manager.keyChord(handle, findEscape) {
+				t.Fatal("the page's Escape stayed claimed for a detached mount")
+			}
+			f.noCall(t)
+		})
+	}
+}
+
+// A restored page is a new incarnation under the same id, and its find's
+// generations continue past every one the page answered before, so an end
+// of the restored page's find is newer than what a bar last showed.
+func TestFindGenerationsOutliveARestore(t *testing.T) {
+	f := newFindFixture(t, "https://example.test/alpha")
+	f.find(t, "open", "")
+	for _, query := range []string{"a", "al", "alp", "alpha"} {
+		f.find(t, "start", query)
+		f.wantCall(t, "start "+query)
+	}
+	before := f.find(t, "next", "")
+	f.wantCall(t, "step")
+	if err := f.manager.SuspendThread(t.Context(), f.access.ThreadID); err != nil {
+		t.Fatal(err)
+	}
+	ended := f.wantEnded(t, before.Session)
+	if err := f.manager.ActivateCompanionPage(t.Context(), f.access, f.pageID); err != nil {
+		t.Fatal(err)
+	}
+	f.fake = f.page(t, f.pageID)
+	opened := f.find(t, "open", "")
+	if opened.Incarnation == before.Incarnation {
+		t.Fatalf("restored page answered incarnation %d, the same as before", opened.Incarnation)
+	}
+	if opened.Session <= ended.Session {
+		t.Fatalf("restored page's open session %d is not newer than the end %d", opened.Session, ended.Session)
+	}
+	started := f.find(t, "start", "alpha")
+	f.wantCall(t, "start alpha")
+	f.fake.commitDocument()
+	if end := f.wantEnded(t, started.Session); end.Incarnation != opened.Incarnation {
+		t.Fatalf("end incarnation %d, want %d", end.Incarnation, opened.Incarnation)
+	}
+}
+
+// A mount opening a find on a page another mount's find holds takes it
+// over: the old owner is told its find ended and its search is stopped, and
+// the old owner's later stop, close or step leaves the new owner's find
+// alone.
+func TestFindTakenOverByAnotherMount(t *testing.T) {
+	f := newFindFixture(t, "https://example.test/alpha")
+	handle := f.fake.Handle()
+	f.find(t, "open", "")
+	started := f.find(t, "start", "alpha")
+	f.wantCall(t, "start alpha")
+	old := f.mount
+	f.attach(t)
+	opened := f.find(t, "open", "")
+	if end := f.wantEndedFor(t, started.Session, old); end.Session >= opened.Session {
+		t.Fatalf("takeover end %d is not older than the new open %d", end.Session, opened.Session)
+	}
+	f.wantCall(t, "stop")
+	if opened.Mount != f.mount {
+		t.Fatalf("open answered mount %q, want %q", opened.Mount, f.mount)
+	}
+	f.find(t, "start", "beta")
+	f.wantCall(t, "start beta")
+	for _, kind := range []string{"stop", "close"} {
+		state, err := f.manager.Find(t.Context(), f.access, f.pageID, kind, "", old)
+		if err != nil || state.Active || state.Mount != old {
+			t.Fatalf("%s by the old owner = %+v, %v", kind, state, err)
+		}
+	}
+	if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "next", "", old); err == nil {
+		t.Fatal("the old owner stepped the new owner's search")
+	}
+	f.noCall(t)
+	f.noEvent(t)
+	if !f.manager.keyChord(handle, findEscape) {
+		t.Fatal("the old owner's close released the new owner's claim")
+	}
+	if state := f.find(t, "next", ""); !state.Active || state.Mount != f.mount {
+		t.Fatalf("new owner's step after the old owner's close = %+v", state)
+	}
+	f.wantCall(t, "step")
+	f.find(t, "close", "")
+	f.wantCall(t, "stop")
+	if f.manager.keyChord(handle, findEscape) {
+		t.Fatal("the owner's close left the page's Escape claimed")
+	}
+}
+
+// A commit is stamped where the engine reports it; the end it causes can run
+// later. A late end leaves a find opened on the new document alone and ends
+// one opened before the commit.
+func TestFindLateCommitEndsOnlyOlderDocuments(t *testing.T) {
+	t.Run("newer find", func(t *testing.T) {
+		f := newFindFixture(t, "https://example.test/alpha")
+		handle := f.fake.Handle()
+		f.find(t, "open", "")
+		f.find(t, "start", "alpha")
+		f.wantCall(t, "start alpha")
+		deliver := f.fake.commitDocumentLate()
+		started := f.find(t, "start", "beta")
+		f.wantCall(t, "start beta")
+		deliver()
+		f.noEvent(t)
+		f.noCall(t)
+		if !f.manager.keyChord(handle, findEscape) {
+			t.Fatal("a late commit released the claim of a find on its document")
+		}
+		if state := f.find(t, "next", ""); !state.Active || state.Document != started.Document {
+			t.Fatalf("step after a late commit = %+v", state)
+		}
+		f.wantCall(t, "step")
+	})
+	t.Run("older find", func(t *testing.T) {
+		f := newFindFixture(t, "https://example.test/alpha")
+		handle := f.fake.Handle()
+		f.find(t, "open", "")
+		started := f.find(t, "start", "alpha")
+		f.wantCall(t, "start alpha")
+		deliver := f.fake.commitDocumentLate()
+		deliver()
+		if end := f.wantEnded(t, started.Session); end.Document != started.Document {
+			t.Fatalf("end document %d, want %d", end.Document, started.Document)
+		}
+		f.wantCall(t, "stop")
+		if f.manager.keyChord(handle, findEscape) {
+			t.Fatal("a late commit left an older find's claim")
+		}
+	})
+}
+
+// An action from a mount that is already gone is refused before it takes
+// anything over: the live owner's find stays.
+func TestFindFromAGoneMountTakesNothingOver(t *testing.T) {
+	f := newFindFixture(t, "https://example.test/alpha")
+	handle := f.fake.Handle()
+	f.find(t, "open", "")
+	f.find(t, "start", "alpha")
+	f.wantCall(t, "start alpha")
+	owner := f.mount
+	f.attach(t)
+	gone := f.mount
+	f.mount = owner
+	f.manager.DetachPane(gone)
+	for _, kind := range []string{"open", "start"} {
+		if _, err := f.manager.Find(t.Context(), f.access, f.pageID, kind, "beta", gone); !errors.Is(err, errFindNoMount) {
+			t.Fatalf("%s from a gone mount: %v", kind, err)
+		}
+	}
+	f.noEvent(t)
+	f.noCall(t)
+	if !f.manager.keyChord(handle, findEscape) {
+		t.Fatal("a gone mount's open released the owner's claim")
+	}
+	if state := f.find(t, "next", ""); !state.Active {
+		t.Fatalf("owner's search after a gone mount's open = %+v", state)
+	}
+	f.wantCall(t, "step")
 }

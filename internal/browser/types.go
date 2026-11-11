@@ -58,11 +58,22 @@ const (
 	FindModeEngine = "engine"
 )
 
-// FindState is a page's find session as the find bar shows it.
+// FindState is a page's find session as the find bar shows it, with the
+// find's identity (find.go): the page and its incarnation, the pane mount
+// that owns it, the document it was opened on, and the generation of the
+// action that answered or of the end.
 type FindState struct {
 	PageID string `json:"pageId"`
-	// Session increases with every start and every end of a find on the
-	// page, so an answer from an older session is recognizably stale.
+	// Incarnation tells apart pages that share PageID: a restored page
+	// reuses its id.
+	Incarnation uint64 `json:"incarnation"`
+	// Mount is the pane mount that owns the find, "" for none.
+	Mount string `json:"mount"`
+	// Document is the epoch of the document the find was opened on.
+	Document uint64 `json:"document"`
+	// Session is the generation: it increases with every find action and
+	// end across the Manager, so an answer older than an end is
+	// recognizably stale.
 	Session uint64 `json:"session"`
 	Active  bool   `json:"active"`
 	Query   string `json:"query"`

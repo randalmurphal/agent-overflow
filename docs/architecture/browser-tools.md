@@ -156,29 +156,46 @@ chord falls through elsewhere. A chord pressed inside the page arrives through
 the accelerator path above.
 
 - The Manager owns the page's find (`internal/browser/find.go`,
-  `BrowserCompanionFind`): whether AO's bar is open on the page and for
-  which pane mount (`open`, `close`), and the search with its query and
-  current match (`start`, `next`, `previous`, `stop`). `open` and `start`
-  run only on the active page of a shown companion with a pane mounted.
-  Both end when the page commits another document, stops being the shown
-  active page, is suspended or closes, when the bar's pane mount goes
-  (unmounted, or its connection closed), or when the browser closes; that
-  end is a `find` event on `browser:companion-state`, and the bar showing
-  it closes. The engine's search is stopped behind it unless a newer action
-  ran. `stop` and `close` never restore a suspended page and answer for a
-  gone page as for no find.
-- Every find action and end takes the page's next generation. An action
-  revalidates its page under the page lock before any driver call, so one
-  that waited out a close never reaches the closed driver, and WebKitGTK
-  and WKWebView also refuse any operation on a page whose lifetime ended
-  before it reaches the view. A start whose engine call is overtaken by an
-  end publishes nothing and stops the search it made.
+  `BrowserCompanionFind`): whether AO's bar is open on the page (`open`,
+  `close`), and the search with its query and current match (`start`,
+  `next`, `previous`, `stop`). `open` and `start` run only on the active
+  page of a shown companion, from a mounted pane. Both end when the page
+  commits another document, stops being the shown active page, is
+  suspended or closes, when the owning pane mount goes (unmounted, or its
+  connection closed), or when the browser closes; that end is a `find`
+  event on `browser:companion-state`, and the bar showing it closes. The
+  engine's search is stopped behind it unless a newer action ran. `stop`
+  and `close` never restore a suspended page and answer for a gone page as
+  for no find.
+- A find's identity is its page (id and incarnation), the pane mount that
+  owns it, the document it was opened on, and a generation; every action,
+  answer and end carries all four (`FindState`). Each action names its
+  mount. A mount's `open` or `start` on a find another mount owns takes it
+  over: the old owner gets an end and its search is stopped. A `stop`,
+  `close` or step from a mount that does not own the find changes nothing.
+  A restored page is a new incarnation under the same id, and generations
+  come from one counter across the Manager, so their order holds across a
+  suspend and restore.
+- An action records its mount as the owner before it checks the mount and
+  the presentation, and every pane change rereads both when it decides an
+  end, so a detach that lands between the check and the publish ends the
+  action. An action revalidates its page under the page lock before any
+  driver call, so one that waited out a close never reaches the closed
+  driver, and WebKitGTK and WKWebView also refuse any operation on a page
+  whose lifetime ended before it reaches the view. An action overtaken by
+  an end publishes nothing and stops the search it made.
 - A new document is each engine's commit signal, so a reload ends the find
   and a same-document navigation (a fragment, the History API) keeps it:
   WebKitGTK `load-changed` with `WEBKIT_LOAD_COMMITTED`, WKWebView
   `webView:didCommitNavigation:`, and CDP `Page.frameNavigated` for the main
   frame (hosted WebView2 and headless Chromium), each reported through
-  `pageHooks.DocumentCommitted`.
+  `pageHooks.DocumentCommitted`. The hook runs where the engine reports the
+  commit (the UI thread for WebKitGTK and WKWebView) and only stamps the
+  page's next document epoch; the end it returns runs on a goroutine and
+  ends only a find opened on an earlier document, so a late end never
+  closes a find opened after the commit. A CDP commit is stamped when its
+  event reaches Go, so a find answered first on the new document is ended
+  (the bar closes), never left showing the old document's results.
 - Escape closes AO's find bar through `find.close`, wherever keyboard focus
   is. In the app it is an ordinary keydown. In the page, while AO's bar is
   open on it, with or without a query, the engine offers its bare Escape to
@@ -186,12 +203,15 @@ the accelerator path above.
   otherwise the page keeps it. Every end of the bar releases the claim.
 - The pane's provider (`frontend/src/lib/stores/browserFind.svelte.ts`) turns
   each reader action into an intent (open, start with its query, step,
-  stop, close) carried with its page and display generation to its answer,
-  and runs them one at a time, in order, through the pane's `paneFindReads`
-  slot; its header holds the state table. A queued start is dropped when the
-  query changes, an answer shows only under its own generation, and an end
-  the backend announces is accepted against the newest generation any
-  answer reported, so nothing is sent to a find the backend already ended.
+  stop, close) carried with its page, mount and display generation to its
+  answer, and runs them one at a time, in order, through the pane's
+  `paneFindReads` slot; its header holds the state table. A queued start is
+  dropped when the query changes, an answer shows only under its own
+  generation, and an end the backend announces is accepted only for the
+  held page and mount, against the newest generation an answer of that
+  incarnation reported, so nothing is sent to a find the backend already
+  ended. A queued close is removed only by running, so a release and a
+  dispose in a row still close the backend's find.
 - WebKitGTK (`findMode` "bar") drives the shared find bar through
   `WebKitFindController`: a case-insensitive, wrapping search that counts up
   to 1000 matches (past that the count shows as `1000+` and the position as

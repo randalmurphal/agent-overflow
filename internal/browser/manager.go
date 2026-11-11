@@ -66,10 +66,16 @@ type Manager struct {
 	// accelerators is ManagerOptions.Accelerators; read per keypress on the
 	// engine's UI thread by keyChord.
 	accelerators func() keybindings.AcceleratorSet
-	// finding holds the driver handle of every page with an active find, so
-	// keyChord can claim the page's Escape without taking m.mu.
-	finding    sync.Map
-	profileDir string
+	// finding holds the driver handle of every page with AO's find bar open,
+	// so keyChord can claim the page's Escape without taking m.mu.
+	finding sync.Map
+	// findGen numbers every find action and end across all pages, so the
+	// order survives a page's suspend and restore (find.go).
+	findGen atomic.Uint64
+	// findReserved, when set by a test, runs after a find action reserved
+	// its generation and before it publishes.
+	findReserved func()
+	profileDir   string
 
 	startMu sync.Mutex
 	mu      sync.Mutex
@@ -220,11 +226,19 @@ type managedPage struct {
 	nodeMu       sync.Mutex
 	nodeRefs     map[string]nodeReference
 	nodeOrder    []string
-	// findMu guards find (find.go). Taken alone or inside mu, never around
-	// it.
+	// findMu guards find (find.go). Taken alone or inside mu; it may be held
+	// around the Manager's mu, never taken inside it.
 	findMu sync.Mutex
 	find   findSession
+	// incarnation tells this page apart from another under the same id: a
+	// restored page reuses its id. docEpoch counts the documents its main
+	// frame committed, stamped on the engine's own thread (find.go).
+	incarnation uint64
+	docEpoch    atomic.Uint64
 }
+
+// pageIncarnations numbers every page the process creates or restores.
+var pageIncarnations atomic.Uint64
 
 // newManagedPage allocates the AO-owned half of a page. Its driver is attached
 // once the engine has produced one, so the driver's own event handlers can
@@ -234,7 +248,8 @@ func newManagedPage(access Access) *managedPage {
 		id: uuid.NewString(), owner: access.ThreadID, access: access,
 		createdAt:    time.Now().UnixNano(),
 		downloadWait: make(chan struct{}), inventories: make(map[string]AssetInventory),
-		nodeRefs: make(map[string]nodeReference),
+		nodeRefs:    make(map[string]nodeReference),
+		incarnation: pageIncarnations.Add(1),
 	}
 	p.tabOrder.Store(p.createdAt)
 	return p
@@ -706,7 +721,7 @@ func (m *Manager) pageHooks(p *managedPage) pageHooks {
 		Console:           p.appendLog,
 		PageURL:           func() string { return p.cachedInfo().URL },
 		Allow:             func(rawURL string) bool { return m.navigationAllowed(p.access, rawURL) },
-		DocumentCommitted: func() { m.documentCommitted(p) },
+		DocumentCommitted: func() func() { return m.documentCommitted(p) },
 	}
 }
 

@@ -127,14 +127,34 @@ export class CompanionSubscription {
 }
 
 /**
- * FindState is a page's find session as the find bar shows it.
+ * FindState is a page's find session as the find bar shows it, with the
+ * find's identity (find.go): the page and its incarnation, the pane mount
+ * that owns it, the document it was opened on, and the generation of the
+ * action that answered or of the end.
  */
 export class FindState {
     "pageId": string;
 
     /**
-     * Session increases with every start and every end of a find on the
-     * page, so an answer from an older session is recognizably stale.
+     * Incarnation tells apart pages that share PageID: a restored page
+     * reuses its id.
+     */
+    "incarnation": number;
+
+    /**
+     * Mount is the pane mount that owns the find, "" for none.
+     */
+    "mount": string;
+
+    /**
+     * Document is the epoch of the document the find was opened on.
+     */
+    "document": number;
+
+    /**
+     * Session is the generation: it increases with every find action and
+     * end across the Manager, so an answer older than an end is
+     * recognizably stale.
      */
     "session": number;
     "active": boolean;
@@ -158,6 +178,15 @@ export class FindState {
     constructor($$source: Partial<FindState> = {}) {
         if (!("pageId" in $$source)) {
             this["pageId"] = "";
+        }
+        if (!("incarnation" in $$source)) {
+            this["incarnation"] = 0;
+        }
+        if (!("mount" in $$source)) {
+            this["mount"] = "";
+        }
+        if (!("document" in $$source)) {
+            this["document"] = 0;
         }
         if (!("session" in $$source)) {
             this["session"] = 0;

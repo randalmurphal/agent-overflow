@@ -6,17 +6,26 @@
 // committed another document, the tab changed, the page closed, the pane
 // unmounted) arrives as a `find` companion event and closes the bar.
 //
+// A find's identity is its page (id and incarnation), the pane mount that
+// owns it, the document it was opened on, and a generation. Every action,
+// answer and end carries all four, and an end, a close or a claim applies
+// only to the find whose identity it names: another mount's close, a
+// commit older than the find's document, an answer older than an end, or a
+// page that is not the same incarnation leaves it alone.
+//
 // Every request is an intent object made when the reader acts and carried to
 // its answer: open, start (its query), step (its direction), stop (the
-// search) and close (the bar). Each records the page it is for and the
-// display generation (`seq`) it was made under. Intents run one at a time,
-// in order, through the pane's `paneFindReads` slot; an answer is shown only
-// if its intent's generation is still current.
+// search) and close (the bar). Each records the page and the mount it is
+// for and the display generation (`seq`) it was made under. Intents run one
+// at a time, in order, through the pane's `paneFindReads` slot; an answer is
+// shown only if its intent's generation is still current. A queued close is
+// cleanup the backend still needs, so nothing but its own run removes it.
 //
 // State: `seq` (display generation), `queue` and `inFlight` (intents),
-// `held` (what the backend holds for this provider: its page, whether the
-// bar and a search are open there, and `known`, the newest backend
-// generation any answer reported), `deferredEnd`, and the debounce timer.
+// `held` (what the backend holds for this provider: its page, mount and the
+// page's incarnation, whether the bar and a search are open there, and
+// `known`, the newest backend generation an answer of that incarnation
+// reported), `deferredEnd`, and the debounce timer.
 //
 // | Event                          | Effect                                                    |
 // |--------------------------------|-----------------------------------------------------------|
@@ -26,12 +35,15 @@
 // | query emptied                  | seq++; drop queued starts and steps; queue stop if a      |
 // |                                | search is held                                            |
 // | Enter / Shift+Enter            | queue a step, or cancel a queued opposite one             |
-// | bar closed (`clear`, dispose)  | seq++; drop the queue; queue close if anything is held    |
+// | bar closed (`clear`, dispose)  | seq++; drop the queue but its closes; queue close if      |
+// |                                | anything is held                                          |
 // | engine find opened             | seq++; drop the queue; queue start(seed); held.search     |
-// | answer                         | known = max(known, session); shown if its seq is current  |
+// | answer for the held mount      | known = max(known, session), reset by a newer incarnation;|
+// |                                | shown if its seq is current                               |
 // | failure                        | shown as an error if its seq is current                   |
-// | end event, newer than `known`  | in flight: kept as deferredEnd; else seq++, drop the      |
-// | for the held page              | queue, nothing held, onEnded (the bar closes)             |
+// | end event for the held page    | in flight: kept as deferredEnd; else seq++, drop the      |
+// | and mount, newer than `known`  | queue but its closes, nothing held, onEnded (bar closes)  |
+// | or a newer incarnation         |                                                           |
 // | in-flight intent completes     | a deferredEnd newer than `known` is accepted as above     |
 
 import {
@@ -68,6 +80,8 @@ type IntentKind = 'open' | 'start' | 'next' | 'previous' | 'stop' | 'close';
 interface Intent {
   kind: IntentKind;
   pageId: string;
+  /** The pane mount the find belongs to. */
+  mount: string;
   query: string;
   /** The display generation the intent was made under. */
   seq: number;
@@ -96,7 +110,7 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
   let timer: ReturnType<typeof setTimeout> | null = null;
   const queue: Intent[] = [];
   let inFlight: Intent | null = null;
-  const held = { pageId: '', bar: false, search: false, known: 0 };
+  const held = { pageId: '', mount: '', incarnation: 0, bar: false, search: false, known: 0 };
   let deferredEnd: BrowserFindState | null = null;
   let disposed = false;
 
@@ -137,21 +151,47 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
     }
   }
 
-  function enqueue(kind: IntentKind, pageId: string, query = ''): void {
-    queue.push({ kind, pageId, query, seq });
+  function enqueue(kind: IntentKind, query = ''): void {
+    queue.push({ kind, pageId: held.pageId, mount: held.mount, query, seq });
     reads.request(drain);
   }
 
-  function holdPage(pageId: string): void {
-    if (held.pageId === pageId) return;
+  /** Queues the close of what is held, unless one for it is queued already. */
+  function enqueueClose(): void {
+    const queued = queue.some((intent) => intent.kind === 'close' && intent.pageId === held.pageId && intent.mount === held.mount);
+    if (!queued) enqueue('close');
+  }
+
+  /** Holds the shown page for the pane's mount, ahead of an open or a start. */
+  function holdShown(): void {
+    const pageId = options.pageId();
+    const mount = options.mount() ?? '';
+    if (held.pageId === pageId && held.mount === mount) return;
     held.pageId = pageId;
+    held.mount = mount;
+    held.incarnation = 0;
     held.known = 0;
   }
 
+  /** Whether an answer or end is for the held page and mount. */
+  function forHeld(state: BrowserFindState): boolean {
+    return state.pageId === held.pageId && state.mount === held.mount;
+  }
+
+  /** Records the generation an answer reports for the held find. */
+  function note(state: BrowserFindState): void {
+    if (!forHeld(state) || state.incarnation < held.incarnation) return;
+    if (state.incarnation > held.incarnation) {
+      held.incarnation = state.incarnation;
+      held.known = state.session;
+      return;
+    }
+    held.known = Math.max(held.known, state.session);
+  }
+
   function call(intent: Intent): Promise<BrowserFindState> {
-    const mount = intent.kind === 'open' ? options.mount() ?? '' : '';
     return BrowserCompanionFind(threadId, new BrowserFindAction({
-      kind: intent.kind, pageId: intent.pageId, query: intent.query, mount,
+      kind: intent.kind, pageId: intent.pageId, query: intent.query, mount: intent.mount,
     }));
   }
 
@@ -161,7 +201,7 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
       inFlight = intent;
       try {
         const answer = await call(intent);
-        if (answer.pageId === held.pageId) held.known = Math.max(held.known, answer.session);
+        note(answer);
         if (intent.seq === seq && (intent.kind === 'start' || intent.kind === 'next' || intent.kind === 'previous')) {
           show(answer);
         }
@@ -178,7 +218,9 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
   }
 
   function endsHeld(state: BrowserFindState): boolean {
-    return (held.bar || held.search) && state.pageId === held.pageId && state.session > held.known;
+    if (!(held.bar || held.search) || !forHeld(state)) return false;
+    if (state.incarnation !== held.incarnation) return state.incarnation > held.incarnation;
+    return state.session > held.known;
   }
 
   function ended(state: BrowserFindState): void {
@@ -200,7 +242,7 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
   function accept(): void {
     seq += 1;
     cancelTimer();
-    queue.length = 0;
+    drop(['open', 'start', 'next', 'previous', 'stop']);
     held.bar = false;
     held.search = false;
     reset();
@@ -211,10 +253,10 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
   function close(): void {
     seq += 1;
     cancelTimer();
-    queue.length = 0;
+    drop(['open', 'start', 'next', 'previous', 'stop']);
     deferredEnd = null;
     reset();
-    if (held.bar || held.search) enqueue('close', held.pageId);
+    if (held.bar || held.search) enqueueClose();
     held.bar = false;
     held.search = false;
   }
@@ -235,7 +277,7 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
       queue.pop();
       return;
     }
-    enqueue(kind, held.pageId);
+    enqueue(kind);
   }
 
   const provider: BrowserFind = {
@@ -245,10 +287,9 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
       if (mode === 'engine' || disposed) return;
       seq += 1;
       reset();
-      const pageId = options.pageId();
-      holdPage(pageId);
+      holdShown();
       held.bar = true;
-      enqueue('open', pageId);
+      enqueue('open');
     },
     search(query: string): void {
       if (mode === 'engine' || disposed) return;
@@ -257,17 +298,16 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
       drop(['start', 'next', 'previous']);
       if (!query.trim()) {
         reset();
-        if (held.search) enqueue('stop', held.pageId);
+        if (held.search) enqueue('stop');
         held.search = false;
         return;
       }
       view.pending = true;
       timer = setTimeout(() => {
         timer = null;
-        const pageId = options.pageId();
-        holdPage(pageId);
+        holdShown();
         held.search = true;
-        enqueue('start', pageId, query);
+        enqueue('start', query);
       }, BROWSER_FIND_DEBOUNCE_MS);
     },
     next: () => step('next'),
@@ -286,10 +326,9 @@ export function createBrowserFind(options: BrowserFindOptions): BrowserFind {
       cancelTimer();
       seq += 1;
       drop(['start']);
-      const pageId = options.pageId();
-      holdPage(pageId);
+      holdShown();
       held.search = true;
-      enqueue('start', pageId, seed);
+      enqueue('start', seed);
     };
   }
   return provider;

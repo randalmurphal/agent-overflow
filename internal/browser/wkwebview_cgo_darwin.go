@@ -255,8 +255,12 @@ func aoWKVDocumentCommitted(pageID C.uint64_t) {
 	if page == nil || page.hooks.DocumentCommitted == nil {
 		return
 	}
-	// Off the main thread: the Manager takes its own locks to route this.
-	go page.hooks.DocumentCommitted()
+	// The commit's order is stamped here, on the main thread, before any
+	// later page operation can be dispatched; the Manager's locks are taken
+	// off it.
+	if finish := page.hooks.DocumentCommitted(); finish != nil {
+		go finish()
+	}
 }
 
 // aoWKVKeyChord runs ON the main thread, inside the key event's delivery, and

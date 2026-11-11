@@ -11,12 +11,29 @@
 // internal/browser/find_test.go.
 import { test, expect, type SeedResult } from './fixtures.js';
 
+// BrowserCompanionFind's method id (frontend/src/lib/transport/methodRoutes.ts).
+const FIND_METHOD_ID = 1528700844;
+
 interface BrowserState {
   activePageId?: string;
   pages?: Array<{ id: string; url: string }>;
 }
 
 test('mod+f finds in the shown browser page and closes when the page navigates away', async ({ harness, page }) => {
+  // The pane mount each find action names: a find belongs to its mount, so
+  // only that mount can see whether the pane's find is still there.
+  let findMount = '';
+  await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
+    const server = socket.connectToServer();
+    socket.onMessage((message) => {
+      const frame = JSON.parse(String(message));
+      if (frame.type === 'rpc' && frame.methodId === FIND_METHOD_ID && frame.params?.[1]?.mount) {
+        findMount = frame.params[1].mount;
+      }
+      server.send(message);
+    });
+    server.onMessage((message) => socket.send(message));
+  });
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [{
       name: 'browser-find',
@@ -92,9 +109,11 @@ test('mod+f finds in the shown browser page and closes when the page navigates a
     await address.press('ControlOrMeta+f');
     await bar.getByTestId('pane-find-input').fill('gamma');
     await expect(count).toHaveText('1/1');
+    const mount = findMount;
+    expect(mount).not.toBe('');
     await pane.getByRole('button', { name: 'Close browser' }).click();
     await expect(pane).toHaveCount(0);
-    await expect(harness.rpc('BrowserCompanionFind', threadId, { kind: 'next', pageId })).rejects.toThrow(/no find is in progress/);
+    await expect(harness.rpc('BrowserCompanionFind', threadId, { kind: 'next', pageId, mount })).rejects.toThrow(/no find is in progress/);
     await harness.rpc('BrowserCompanionDo', threadId, { kind: 'show', pageId });
     await expect(pane).toBeVisible();
   }

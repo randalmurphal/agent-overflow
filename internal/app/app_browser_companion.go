@@ -173,14 +173,16 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 }
 
 // BrowserFindAction is one request of the browser pane's find: open (AO's
-// bar opened in the pane mount Mount), start (the query; empty ends the
-// search, or opens an engine's own find bar empty), next, previous, stop
-// (the search) or close (the search and the bar).
+// bar opened), start (the query; empty ends the search, or opens an
+// engine's own find bar empty), next, previous, stop (the search) or close
+// (the search and the bar). Mount is the pane mount the find belongs to;
+// every action names it, and one for a find another mount owns changes
+// nothing.
 type BrowserFindAction struct {
 	Kind   string `json:"kind"`
 	PageID string `json:"pageId"`
 	Query  string `json:"query,omitempty"`
-	Mount  string `json:"mount,omitempty"`
+	Mount  string `json:"mount"`
 }
 
 // BrowserCompanionFind runs one find action on the page the thread's browser

@@ -480,13 +480,6 @@ func (m *Manager) syncPanePresentation(threadID string) {
 	session, hasSession := m.sessions[threadID]
 	rect, shown := m.shownPaneRectLocked(threadID)
 	visible := hasSession && session.Visible && shown
-	mounts := make(map[string]bool)
-	for id, mount := range m.panes {
-		if mount.threadID == threadID {
-			mounts[id] = true
-		}
-	}
-	mounted := len(mounts) > 0
 	var pages []*managedPage
 	var active *managedPage
 	for _, scope := range m.scopes {
@@ -501,7 +494,7 @@ func (m *Manager) syncPanePresentation(threadID string) {
 		}
 	}
 	m.mu.Unlock()
-	m.endHiddenFinds(pages, session, hasSession && mounted, mounts)
+	m.endHiddenFinds(threadID, pages)
 	if !ok {
 		return
 	}

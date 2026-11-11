@@ -851,15 +851,17 @@ export class BrowserCompanionAction {
 
 /**
  * BrowserFindAction is one request of the browser pane's find: open (AO's
- * bar opened in the pane mount Mount), start (the query; empty ends the
- * search, or opens an engine's own find bar empty), next, previous, stop
- * (the search) or close (the search and the bar).
+ * bar opened), start (the query; empty ends the search, or opens an
+ * engine's own find bar empty), next, previous, stop (the search) or close
+ * (the search and the bar). Mount is the pane mount the find belongs to;
+ * every action names it, and one for a find another mount owns changes
+ * nothing.
  */
 export class BrowserFindAction {
     "kind": string;
     "pageId": string;
     "query"?: string;
-    "mount"?: string;
+    "mount": string;
 
     /** Creates a new BrowserFindAction instance. */
     constructor($$source: Partial<BrowserFindAction> = {}) {
@@ -868,6 +870,9 @@ export class BrowserFindAction {
         }
         if (!("pageId" in $$source)) {
             this["pageId"] = "";
+        }
+        if (!("mount" in $$source)) {
+            this["mount"] = "";
         }
 
         Object.assign(this, $$source);

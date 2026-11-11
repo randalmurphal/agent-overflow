@@ -139,8 +139,10 @@ type pageHooks struct {
 	// DocumentCommitted reports that the page's main frame committed a new
 	// document: a load, a reload, or a history move to another document. A
 	// same-document navigation (a fragment, the History API) is not one.
-	// Engines report it off their UI thread.
-	DocumentCommitted func()
+	// Engines call it where the engine reports the commit (the UI thread for
+	// WebKitGTK and WKWebView), and it only stamps the commit's order; the
+	// work it returns, when not nil, runs on a goroutine of the engine's.
+	DocumentCommitted func() (finish func())
 }
 
 // pageDriver is one engine's implementation of every per-page operation the

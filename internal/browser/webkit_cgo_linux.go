@@ -235,8 +235,11 @@ func aoWebKitDocumentCommitted(pageID C.uint64_t) {
 	if page == nil || page.hooks.DocumentCommitted == nil {
 		return
 	}
-	// Off the GTK thread: the Manager takes its own locks to route this.
-	go page.hooks.DocumentCommitted()
+	// The commit's order is stamped here, on the GTK thread, before any later
+	// page operation can be dispatched; the Manager's locks are taken off it.
+	if finish := page.hooks.DocumentCommitted(); finish != nil {
+		go finish()
+	}
 }
 
 // aoWebKitKeyChord runs ON the GTK thread, inside the key event's delivery,

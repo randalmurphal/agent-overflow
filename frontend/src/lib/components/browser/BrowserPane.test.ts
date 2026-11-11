@@ -122,8 +122,8 @@ describe('<BrowserPane> find', () => {
   }
 
   it('drives the shared bar on the shown page and closes it when the backend ends the find', async () => {
-    const find = setBindingMock('BrowserCompanionFind', vi.fn(async (_thread: string, action: { kind: string; query?: string }) => ({
-      pageId: 'a', session: 1, active: action.kind !== 'stop', query: action.query ?? '', found: true, matches: 2, current: 0, capped: false,
+    const find = setBindingMock('BrowserCompanionFind', vi.fn(async (_thread: string, action: { kind: string; query?: string; mount: string }) => ({
+      pageId: 'a', incarnation: 1, mount: action.mount, document: 1, session: 1, active: action.kind !== 'stop', query: action.query ?? '', found: true, matches: 2, current: 0, capped: false,
     })));
     const view = mount('bar');
     await waitFor(() => expect(hasPaneFindProvider('browser-main')).toBe(true));
@@ -133,12 +133,12 @@ describe('<BrowserPane> find', () => {
     expect(input.placeholder).toBe('Find in page');
     await fireEvent.input(input, { target: { value: 'alpha' } });
     await vi.advanceTimersByTimeAsync(BROWSER_FIND_DEBOUNCE_MS);
-    expect(find).toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'start', pageId: 'a', query: 'alpha' }));
+    expect(find).toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'start', pageId: 'a', query: 'alpha', mount: 'mount-1' }));
     await waitFor(() => expect(view.getByTestId('pane-find-count').textContent?.trim()).toBe('1/2'));
 
     applyBrowserCompanionState({
       kind: 'find', threadId: THREAD, pageId: 'a',
-      find: { pageId: 'a', session: 2, active: false, query: '', found: false, matches: 0, current: -1, capped: false },
+      find: { pageId: 'a', incarnation: 1, mount: 'mount-1', document: 1, session: 2, active: false, query: '', found: false, matches: 0, current: -1, capped: false },
     } as never);
     await waitFor(() => expect(view.queryByTestId('pane-find-bar')).toBeNull());
   });
@@ -156,8 +156,8 @@ describe('<BrowserPane> find', () => {
   });
 
   it('closing the pane closes the find on the backend, each time it is opened', async () => {
-    const find = setBindingMock('BrowserCompanionFind', vi.fn(async (_thread: string, action: { kind: string }) => ({
-      pageId: 'a', session: 1, active: action.kind === 'start', query: '', found: true, matches: 1, current: 0, capped: false,
+    const find = setBindingMock('BrowserCompanionFind', vi.fn(async (_thread: string, action: { kind: string; mount: string }) => ({
+      pageId: 'a', incarnation: 1, mount: action.mount, document: 1, session: 1, active: action.kind === 'start', query: '', found: true, matches: 1, current: 0, capped: false,
     })));
     for (let round = 0; round < 2; round++) {
       const view = mount('bar');
@@ -167,7 +167,7 @@ describe('<BrowserPane> find', () => {
       await vi.advanceTimersByTimeAsync(BROWSER_FIND_DEBOUNCE_MS);
       await waitFor(() => expect(view.getByTestId('pane-find-count').textContent?.trim()).toBe('1/1'));
       view.unmount();
-      await waitFor(() => expect(find.mock.calls.at(-1)?.[1]).toMatchObject({ kind: 'close', pageId: 'a' }));
+      await waitFor(() => expect(find.mock.calls.at(-1)?.[1]).toMatchObject({ kind: 'close', pageId: 'a', mount: 'mount-1' }));
       expect(hasPaneFindProvider('browser-main')).toBe(false);
     }
     expect(find.mock.calls.map((args) => (args[1] as { kind: string }).kind))

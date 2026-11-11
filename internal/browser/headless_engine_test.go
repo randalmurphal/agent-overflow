@@ -878,7 +878,10 @@ func TestCDPPageReportsOnlyMainFrameDocumentCommits(t *testing.T) {
 	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
 	var commits atomic.Int64
 	hooks := testPageHooks()
-	hooks.DocumentCommitted = func() { commits.Add(1) }
+	hooks.DocumentCommitted = func() func() {
+		commits.Add(1)
+		return nil
+	}
 	page, err := profile.NewPage(context.Background(), hooks)
 	if err != nil {
 		t.Fatalf("new page: %v", err)

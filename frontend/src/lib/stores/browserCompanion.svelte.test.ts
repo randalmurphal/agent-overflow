@@ -335,7 +335,7 @@ describe('accelerators from the native page view', () => {
   it('routes the end of a find to the thread and leaves the pane state alone', async () => {
     vi.useFakeTimers();
     setBindingMock('BrowserCompanionFind', async () => ({
-      pageId: 'page-1', session: 1, active: true, query: 'alpha', found: true, matches: 2, current: 0, capped: false,
+      pageId: 'page-1', incarnation: 1, mount: 'mount-1', document: 1, session: 1, active: true, query: 'alpha', found: true, matches: 2, current: 0, capped: false,
     }));
     const onEnded = vi.fn();
     const find = createBrowserFind({
@@ -349,7 +349,7 @@ describe('accelerators from the native page view', () => {
         kind: 'find',
         threadId: 'thread-browser',
         pageId: 'page-1',
-        find: { pageId: 'page-1', session: 2, active: false, query: '', found: false, matches: 0, current: -1, capped: false },
+        find: { pageId: 'page-1', incarnation: 1, mount: 'mount-1', document: 1, session: 2, active: false, query: '', found: false, matches: 0, current: -1, capped: false },
       });
       expect(onEnded).toHaveBeenCalledTimes(1);
       expect(companionForSource('main', 'browser')).not.toBeNull();
