@@ -142,6 +142,16 @@ operation proofs and scopes do not end a live session. After attaching a new
 connection to `SessionConns`, check liveness again to close the race with a
 concurrent revocation.
 
+A bound method marked `//ao:callerbound` runs on its caller's context, which
+ends when the WebSocket's read loop exits or the `/rpc` request ends. Every
+other method runs on the caller's values with the server's lifetime
+(`callcontext.go`); its caller leaving never affects it.
+When the read loop exits, close the subscriber and cancel the connection
+context first, then join the RPC handlers and the connection's loops, then
+run the cleanup stack; a handler still running when its resources are
+released is a bug. Replies written after the socket is gone must fail
+without blocking.
+
 Revocation teardown stops event delivery, cancels connection work, and closes
 the socket. Call close callbacks outside the registry lock and use the shared
 connection cleanup stack. Do not store revocation tombstones in transport;

@@ -156,6 +156,7 @@ func (a *App) closeBackgroundTaskTailer() {
 // that connection's UnwatchBackgroundTaskOutput releases it.
 //
 //ao:scope threads:read
+//ao:callerbound
 func (a *App) WatchBackgroundTaskOutput(ctx context.Context, threadID, launchItemID string) (tasktail.Snapshot, error) {
 	if a.shuttingDown.Load() {
 		return tasktail.Snapshot{}, ErrShuttingDown

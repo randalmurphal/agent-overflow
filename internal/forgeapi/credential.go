@@ -2,9 +2,11 @@ package forgeapi
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // authTransport is where a token meets a request. The request a Client
@@ -70,30 +72,85 @@ func (c *Client) refresh(ctx context.Context, used string) error {
 	return c.read(ctx, used)
 }
 
-func (c *Client) read(ctx context.Context, rejected string) error {
-	select {
-	case c.readLock <- struct{}{}:
-	case <-ctx.Done():
-		return c.contextError(ctx, nil)
-	}
-	defer func() { <-c.readLock }()
+// credentialReadTimeout bounds one shared token read, every handoff
+// command in it included.
+const credentialReadTimeout = time.Minute
 
-	now := c.svc.now()
-	c.credMu.RLock()
-	current := c.token != nil && now.Sub(c.readAt) < tokenRereadAfter && (rejected == "" || c.fp != rejected)
-	failed, failUntil := c.failErr, c.failUntil
-	c.credMu.RUnlock()
-	if current {
-		return nil
+// credentialRead is one token read in flight; err is set before done
+// closes.
+type credentialRead struct {
+	done chan struct{}
+	err  error
+}
+
+// read makes the credential current. The token read runs once for every
+// request that needs it, on the Service's lifetime under
+// credentialReadTimeout, so a caller that leaves ends only its own wait
+// and never the handoff command, which may be holding a refreshed login.
+// A request that waited for another's read checks again against what it
+// stored, as one that found the read done would.
+func (c *Client) read(ctx context.Context, rejected string) error {
+	for {
+		c.readMu.Lock()
+		if f := c.reading; f != nil {
+			c.readMu.Unlock()
+			select {
+			case <-f.done:
+				continue
+			case <-ctx.Done():
+				return c.contextError(ctx, nil)
+			}
+		}
+		now := c.svc.now()
+		c.credMu.RLock()
+		current := c.token != nil && now.Sub(c.readAt) < tokenRereadAfter && (rejected == "" || c.fp != rejected)
+		failed, failUntil := c.failErr, c.failUntil
+		c.credMu.RUnlock()
+		if current {
+			c.readMu.Unlock()
+			return nil
+		}
+		if failed != nil && now.Before(failUntil) {
+			c.readMu.Unlock()
+			return failed
+		}
+		f := &credentialRead{done: make(chan struct{})}
+		if !c.svc.startRead(func(life context.Context) { c.runRead(life, f, now) }) {
+			c.readMu.Unlock()
+			return errClosed
+		}
+		c.reading = f
+		c.readMu.Unlock()
+		select {
+		case <-f.done:
+			return f.err
+		case <-ctx.Done():
+			return c.contextError(ctx, nil)
+		}
 	}
-	if failed != nil && now.Before(failUntil) {
-		return failed
-	}
+}
+
+// runRead is the shared read: it stores what the source answered and
+// releases every waiter. A read ended by Close stores nothing.
+func (c *Client) runRead(life context.Context, f *credentialRead, now time.Time) {
+	ctx, cancel := context.WithTimeout(life, credentialReadTimeout)
+	defer cancel()
+	f.err = c.readToken(ctx, life, now)
+	c.readMu.Lock()
+	c.reading = nil
+	c.readMu.Unlock()
+	close(f.done)
+}
+
+func (c *Client) readToken(ctx, life context.Context, now time.Time) error {
 	secret, info, err := c.svc.source.Token(ctx, c.forge, c.host)
 	defer clear(secret)
 	if err != nil {
+		if life.Err() != nil {
+			return errClosed
+		}
 		if ctx.Err() != nil {
-			return c.contextError(ctx, err)
+			err = &TransientError{Err: fmt.Errorf("reading the %s login timed out after %s: %w", c.forge, credentialReadTimeout, err)}
 		}
 		err = withHost(err, c.host)
 		c.credMu.Lock()

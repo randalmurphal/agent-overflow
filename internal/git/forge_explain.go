@@ -92,6 +92,12 @@ func explainForgeError(ref RepoReference, name string, action ForgeAction, err e
 		return err
 	}
 	labels := forgeLabels(ref.Forge)
+	if left, ok := errors.AsType[*DraftsLeftError](err); ok {
+		cause, _ := explainForgeError(ref, name, action, left.Err).(*ForgeActionError)
+		return &ForgeActionError{Kind: cause.Kind, Err: err, Message: fmt.Sprintf(
+			"%s %d draft comments this submit created could not be removed and may still be pending on %s; delete them on %s before submitting again.",
+			cause.Message, left.Count, name, labels.name)}
+	}
 	wrap := func(kind, message string) error {
 		return &ForgeActionError{Kind: kind, Message: message, Err: err}
 	}

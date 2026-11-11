@@ -759,6 +759,7 @@ type WorkflowAgentUnitView struct {
 //
 //ao:scope threads:autonomy
 //ao:route home
+//ao:callerbound
 func (a *App) WorkflowAgentInspectRun(ctx context.Context, input WorkflowAgentInspectInput) (WorkflowAgentRunInspection, error) {
 	inspection, err := a.workflowApplication().InspectRun(ctx, workflowapp.InspectInput{
 		ItemID: input.ItemID, PhaseID: input.PhaseID, Attempt: input.Attempt,
@@ -854,6 +855,7 @@ func (a *App) WorkflowAgentAddMemory(ctx context.Context, input WorkflowAgentMem
 //
 //ao:scope threads:autonomy
 //ao:route home
+//ao:callerbound
 func (a *App) WorkflowAgentListMemory(ctx context.Context, input WorkflowAgentMemoryListInput) (WorkflowAgentMemoryLog, error) {
 	result, err := a.workflowApplication().ListMemory(ctx, workflowapp.MemoryListInput{
 		ItemID: input.ItemID, Kind: input.Kind,
@@ -916,6 +918,7 @@ type WorkflowAgentNarrative struct {
 //
 //ao:scope threads:autonomy
 //ao:route home
+//ao:callerbound
 func (a *App) WorkflowAgentRunNarrative(ctx context.Context, input WorkflowAgentNarrativeInput) (WorkflowAgentNarrative, error) {
 	narrative, err := a.workflowApplication().RunNarrative(ctx, workflowapp.NarrativeInput{
 		ItemID: input.ItemID, PhaseID: input.PhaseID, Attempt: input.Attempt, UnitID: input.UnitID,
@@ -1389,6 +1392,7 @@ func (a *App) resolveAgentWorkflow(scope transport.CallerScope, workflowID, work
 //
 //ao:scope threads:autonomy
 //ao:route home
+//ao:callerbound
 func (a *App) WorkflowAgentRunStatus(ctx context.Context, itemID string) (WorkflowAgentRunView, error) {
 	view, err := a.workflowApplication().RunStatus(ctx, itemID)
 	if err != nil {
@@ -1403,6 +1407,7 @@ func (a *App) WorkflowAgentRunStatus(ctx context.Context, itemID string) (Workfl
 //
 //ao:scope threads:autonomy
 //ao:route home
+//ao:callerbound
 func (a *App) WorkflowAgentListRuns(ctx context.Context, activeOnly bool) ([]WorkflowAgentRunView, error) {
 	views, err := a.workflowApplication().ListRuns(ctx, activeOnly)
 	if err != nil {
@@ -1422,6 +1427,7 @@ func (a *App) WorkflowAgentListRuns(ctx context.Context, activeOnly bool) ([]Wor
 //
 //ao:scope threads:autonomy
 //ao:route home
+//ao:callerbound
 func (a *App) WorkflowAgentRunOutput(ctx context.Context, itemID string) (WorkflowAgentRunOutputs, error) {
 	result, err := a.workflowApplication().RunOutput(ctx, itemID)
 	if err != nil {
@@ -1656,6 +1662,7 @@ type WorkflowAgentWatchResult struct {
 //
 //ao:scope threads:autonomy
 //ao:route home
+//ao:callerbound
 func (a *App) WorkflowAgentWatchRun(ctx context.Context, input WorkflowAgentWatchInput) (WorkflowAgentWatchResult, error) {
 	result, err := a.workflowApplication().WatchRun(ctx, workflowapp.WatchInput{
 		ItemID: input.ItemID, Cursor: input.Cursor, Tree: input.Tree, WaitMillis: input.WaitMillis,

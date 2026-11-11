@@ -101,7 +101,7 @@ func TestProviderLeafBindingsAllocateWireSlices(t *testing.T) {
 
 	cwd := t.TempDir()
 	cache := codexskills.New()
-	if _, err := cache.Get(context.Background(), codexskills.Key("codex-test", cwd), func(context.Context) (codexskills.CwdSkills, error) {
+	if _, err := cache.Get(context.Background(), codexskills.Key("codex-test", cwd), func() (codexskills.CwdSkills, error) {
 		return codexskills.CwdSkills{Cwd: cwd}, nil
 	}); err != nil {
 		t.Fatalf("prime skills cache: %v", err)

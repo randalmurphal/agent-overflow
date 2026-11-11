@@ -80,7 +80,7 @@ func TestSkillsValidationProjectionAndReset(t *testing.T) {
 	cwd := t.TempDir()
 	key := codexskills.Key("codex-test", cwd)
 	calls := 0
-	fetch := func(context.Context) (codexskills.CwdSkills, error) {
+	fetch := func() (codexskills.CwdSkills, error) {
 		calls++
 		return codexskills.CwdSkills{Cwd: cwd}, nil
 	}

@@ -3,7 +3,9 @@ package codexskills
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -37,7 +39,7 @@ func TestCacheServesWithinTTLThenRefetches(t *testing.T) {
 	c := NewWith(time.Minute, time.Second, fixedClock(&now))
 
 	calls := 0
-	fetch := func(context.Context) (CwdSkills, error) {
+	fetch := func() (CwdSkills, error) {
 		calls++
 		return sample("/repo", "review"), nil
 	}
@@ -69,7 +71,7 @@ func TestCacheKeysOnCwd(t *testing.T) {
 	c := NewWith(time.Minute, time.Second, fixedClock(&now))
 
 	fetchFor := func(cwd string, name string) Fetch {
-		return func(context.Context) (CwdSkills, error) { return sample(cwd, name), nil }
+		return func() (CwdSkills, error) { return sample(cwd, name), nil }
 	}
 	if _, err := c.Get(context.Background(), Key("codex", "/a"), fetchFor("/a", "alpha")); err != nil {
 		t.Fatalf("Get /a: %v", err)
@@ -89,7 +91,7 @@ func TestCacheDropsExpiredEntriesOnStore(t *testing.T) {
 	now := time.Unix(0, 0)
 	c := NewWith(time.Minute, time.Second, fixedClock(&now))
 	fetchFor := func(cwd string) Fetch {
-		return func(context.Context) (CwdSkills, error) { return sample(cwd, "skill"), nil }
+		return func() (CwdSkills, error) { return sample(cwd, "skill"), nil }
 	}
 	for _, cwd := range []string{"/a", "/b"} {
 		if _, err := c.Get(context.Background(), Key("codex", cwd), fetchFor(cwd)); err != nil {
@@ -116,7 +118,7 @@ func TestCacheSharesErrorsRatherThanEmptyLists(t *testing.T) {
 
 	wantErr := errors.New("boom")
 	calls := 0
-	fetch := func(context.Context) (CwdSkills, error) {
+	fetch := func() (CwdSkills, error) {
 		calls++
 		return CwdSkills{}, wantErr
 	}
@@ -150,7 +152,7 @@ func TestCacheSingleFlightsConcurrentGets(t *testing.T) {
 	release := make(chan struct{})
 	var calls int
 	var mu sync.Mutex
-	fetch := func(context.Context) (CwdSkills, error) {
+	fetch := func() (CwdSkills, error) {
 		mu.Lock()
 		calls++
 		mu.Unlock()
@@ -190,6 +192,76 @@ func TestCacheSingleFlightsConcurrentGets(t *testing.T) {
 	}
 }
 
+// The caller that started a read leaving ends only its own wait: a caller
+// sharing the read gets its answer, and the next Get is served that
+// answer, not the first caller's cancellation.
+func TestCallerLeavingASharedReadEndsOnlyItsWait(t *testing.T) {
+	now := time.Unix(0, 0)
+	c := NewWith(time.Minute, time.Minute, fixedClock(&now))
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int32
+	fetch := func() (CwdSkills, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-release
+		}
+		return sample("/repo", "review"), nil
+	}
+	key := Key("codex", "/repo")
+
+	callerA, leaveA := context.WithCancel(context.Background())
+	aDone := make(chan error, 1)
+	go func() {
+		_, err := c.Get(callerA, key, fetch)
+		aDone <- err
+	}()
+	<-started
+	bDone := make(chan CwdSkills, 1)
+	go func() {
+		got, err := c.Get(context.Background(), key, fetch)
+		if err != nil {
+			t.Errorf("caller B: %v", err)
+		}
+		bDone <- got
+	}()
+	leaveA()
+	if err := <-aDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("caller A after leaving: %v, want context.Canceled", err)
+	}
+	close(release)
+	if got := <-bDone; len(got.Skills) != 1 {
+		t.Fatalf("caller B got %+v, want the shared read's answer", got)
+	}
+	got, err := c.Get(context.Background(), key, fetch)
+	if err != nil || len(got.Skills) != 1 {
+		t.Fatalf("next Get = %+v, %v, want the cached answer", got, err)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("fetch calls = %d, want 1", n)
+	}
+}
+
+// A read its owner's shutdown cancelled is not cached as a failure.
+func TestCancelledReadIsNotCached(t *testing.T) {
+	now := time.Unix(0, 0)
+	c := NewWith(time.Minute, time.Minute, fixedClock(&now))
+	var calls atomic.Int32
+	fetch := func() (CwdSkills, error) {
+		if calls.Add(1) == 1 {
+			return CwdSkills{}, fmt.Errorf("skills/list: %w", context.Canceled)
+		}
+		return sample("/repo", "review"), nil
+	}
+	key := Key("codex", "/repo")
+	if _, err := c.Get(context.Background(), key, fetch); !errors.Is(err, context.Canceled) {
+		t.Fatalf("first Get = %v, want the cancellation", err)
+	}
+	if got, err := c.Get(context.Background(), key, fetch); err != nil || len(got.Skills) != 1 {
+		t.Fatalf("second Get = %+v, %v, want a fresh read", got, err)
+	}
+}
+
 // Transition coverage: an invalidation that lands WHILE a read is in
 // flight must not be undone by that read's result.
 func TestResetDuringInFlightFetchIsNotUndone(t *testing.T) {
@@ -199,7 +271,7 @@ func TestResetDuringInFlightFetchIsNotUndone(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	calls := 0
-	fetch := func(context.Context) (CwdSkills, error) {
+	fetch := func() (CwdSkills, error) {
 		calls++
 		if calls == 1 {
 			close(started)
@@ -242,7 +314,7 @@ func TestResetWithNoCachedEntryThenPopulates(t *testing.T) {
 	c.Reset()
 
 	calls := 0
-	fetch := func(context.Context) (CwdSkills, error) {
+	fetch := func() (CwdSkills, error) {
 		calls++
 		return sample("/repo", "review"), nil
 	}
@@ -262,7 +334,7 @@ func TestInvalidateThenRefetch(t *testing.T) {
 	c := NewWith(time.Minute, time.Second, fixedClock(&now))
 
 	calls := 0
-	fetch := func(context.Context) (CwdSkills, error) {
+	fetch := func() (CwdSkills, error) {
 		calls++
 		return sample("/repo", "review"), nil
 	}
@@ -295,7 +367,7 @@ func TestRefreshBypassesTheCachedEntry(t *testing.T) {
 	c := NewWith(time.Minute, time.Second, fixedClock(&now))
 
 	calls := 0
-	fetch := func(context.Context) (CwdSkills, error) {
+	fetch := func() (CwdSkills, error) {
 		calls++
 		return sample("/repo", "review"), nil
 	}
@@ -322,7 +394,7 @@ func TestCacheHandsOutDefensiveCopies(t *testing.T) {
 	now := time.Unix(0, 0)
 	c := NewWith(time.Minute, time.Second, fixedClock(&now))
 
-	fetch := func(context.Context) (CwdSkills, error) {
+	fetch := func() (CwdSkills, error) {
 		entry := sample("/repo", "review")
 		entry.Errors = []LoadError{{Path: "/repo/.codex/skills", Message: "permission denied"}}
 		return entry, nil

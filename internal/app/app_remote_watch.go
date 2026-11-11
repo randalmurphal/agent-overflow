@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -449,7 +450,9 @@ func (a *App) CancelThreadRemoteCommand(ctx context.Context, threadID, computerI
 	if w.ThreadID != threadID {
 		return RemoteCommand{}, errorsx.Public("remote_wrong_conversation", "This job belongs to another conversation.", nil)
 	}
-	call, cancel := context.WithTimeout(ctx, 20*time.Second)
+	// The cancel and the record of its answer finish once sent, even at
+	// shutdown; only the settle wait below ends with the context.
+	call, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
 	defer cancel()
 	var receipt RemoteCommand
 	err = a.backends.CallAgentPeer(call, computerID, "RemoteCommandCancel", &receipt, requestID)
@@ -506,15 +509,27 @@ func (a *App) remoteCommandStatus(ctx context.Context, computerID, requestID str
 // once this computer stops polling it, so the caller's operation proceeds.
 // Only store failures are returned.
 func (a *App) cancelThreadRemoteCommands(ctx context.Context, threadID string) error {
-	a.cancelRemoteWaits(threadID)
-	rows, err := a.store.ListRemoteWatches(threadID, 0, 256)
+	rows, err := a.disarmRemoteCommands(threadID)
 	if err != nil {
 		return err
 	}
+	return a.cancelRemoteCommands(ctx, threadID, rows)
+}
+
+// disarmRemoteCommands ends the thread's parked remote waits and returns the
+// commands it started that still await completion.
+func (a *App) disarmRemoteCommands(threadID string) ([]store.RemoteWatch, error) {
+	a.cancelRemoteWaits(threadID)
+	rows, err := a.store.ListRemoteWatches(threadID, 0, 256)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(rows, func(w store.RemoteWatch) bool { return w.Notification != "pending" }), nil
+}
+
+// cancelRemoteCommands cancels and dismisses exactly the commands named.
+func (a *App) cancelRemoteCommands(ctx context.Context, threadID string, rows []store.RemoteWatch) error {
 	for _, w := range rows {
-		if w.Notification != "pending" {
-			continue
-		}
 		unfinished := w.Receipt.ID == "" || w.Receipt.State == "running"
 		if unfinished && a.backends != nil {
 			call, cancel := context.WithTimeout(ctx, 20*time.Second)

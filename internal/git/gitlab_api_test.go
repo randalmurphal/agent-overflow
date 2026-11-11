@@ -515,7 +515,7 @@ func TestGitLabOriginScopedLists(t *testing.T) {
 			// A fork's merge request from a branch of the same name comes
 			// first; it is not the project's own.
 			return forgeAPIAnswer{Body: `[{"web_url":"https://gitlab.com/grp/sub/app/-/merge_requests/7","iid":7,"title":"Fork","state":"opened","project_id":10,"source_project_id":99},` +
-				`{"web_url":"https://gitlab.com/grp/sub/app/-/merge_requests/3","iid":3,"title":"Fix","state":"opened","project_id":10,"source_project_id":10}]`}
+				`{"web_url":"https://gitlab.com/grp/sub/app/-/merge_requests/3","iid":3,"title":"Fix","state":"opened","project_id":10,"source_project_id":10,"target_branch":"release"}]`}
 		case "merged":
 			perPage, _ := strconv.Atoi(q.Get("per_page"))
 			page, _ := strconv.Atoi(q.Get("page"))
@@ -537,7 +537,7 @@ func TestGitLabOriginScopedLists(t *testing.T) {
 		t.Fatalf("origin classified as %q", forge)
 	}
 	pulls, err := core.ListOpenPRs(t.Context(), cwd, "feature/x y")
-	if err != nil || len(pulls) != 1 || pulls[0].Number != 3 || pulls[0].State != "open" || pulls[0].URL == "" {
+	if err != nil || len(pulls) != 1 || pulls[0].Number != 3 || pulls[0].State != "open" || pulls[0].URL == "" || pulls[0].BaseBranch != "release" {
 		t.Fatalf("ListOpenPRs = %+v, %v", pulls, err)
 	}
 	if pulls, err := core.ListOpenPRs(t.Context(), cwd, "none"); err != nil || len(pulls) != 0 {

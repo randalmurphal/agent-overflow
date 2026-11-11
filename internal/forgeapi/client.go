@@ -79,9 +79,10 @@ type Client struct {
 	err   error
 	slots chan struct{}
 
-	// readLock serializes token reads, so concurrent requests fork one
-	// handoff.
-	readLock chan struct{}
+	// readMu guards reading, the one token read in flight. Every request
+	// that needs the credential meanwhile waits for it (credential.go).
+	readMu  sync.Mutex
+	reading *credentialRead
 
 	// credMu guards the credential and the resolved bases. A request's
 	// header is written under the read lock and the token is zeroed under
