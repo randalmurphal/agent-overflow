@@ -80,6 +80,10 @@ type Manager struct {
 	// the renewal goroutine each carrier runs.
 	closed   bool
 	renewals sync.WaitGroup
+	// life ends at Close. Work that outlives the call that started it,
+	// such as an enrollment past its redemption, runs on it.
+	life    context.Context
+	endLife context.CancelFunc
 }
 
 // ErrClosed answers a carrier asked for after Close.
@@ -91,7 +95,8 @@ func New(dir, label, platform string) (*Manager, error) {
 	if dir == "" {
 		return nil, errors.New("attachedbackends: a device profile directory is required")
 	}
-	return &Manager{dir: dir, label: label, platform: platform, carriers: map[string]*carrier{}, profiles: keyedlock.New()}, nil
+	life, endLife := context.WithCancel(context.Background())
+	return &Manager{dir: dir, label: label, platform: platform, carriers: map[string]*carrier{}, profiles: keyedlock.New(), life: life, endLife: endLife}, nil
 }
 
 // Attached implements transport.AttachedBackends.
@@ -181,6 +186,7 @@ func (m *Manager) wire(built *carrier, id string) {
 // already handed out keep their sessions; only the renewal stops. Close is
 // idempotent.
 func (m *Manager) Close() {
+	m.endLife()
 	m.mu.Lock()
 	m.closed = true
 	held := make([]*carrier, 0, len(m.carriers))

@@ -115,6 +115,19 @@ func (c *Cache) Get(ctx context.Context, binary string) ([]provider.ModelInfo, e
 	c.inflight[binary] = l
 	c.mu.Unlock()
 
+	go c.run(context.WithoutCancel(ctx), binary, l)
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-l.done:
+		return provider.CloneModels(l.models), l.err
+	}
+}
+
+// run is one shared lookup. It belongs to no caller: it keeps the first
+// caller's values but not its cancellation, ends at the lister's own
+// bound, and each caller waits on its own context.
+func (c *Cache) run(ctx context.Context, binary string, l *load) {
 	models, err := c.list(ctx, binary)
 	cloned := provider.CloneModels(models)
 
@@ -143,8 +156,6 @@ func (c *Cache) Get(ctx context.Context, binary string) ([]provider.ModelInfo, e
 	}
 	close(l.done)
 	c.mu.Unlock()
-
-	return provider.CloneModels(models), err
 }
 
 // KnownModel returns previously observed capabilities without waiting for a refresh.

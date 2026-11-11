@@ -1258,6 +1258,78 @@ func TestGitLabMergeActionsThroughTheAppsForgeCode(t *testing.T) {
 	}
 }
 
+// A GitLab review submit through the app's own code: one that fails after
+// creating its drafts deletes exactly those, by the ids GitLab returned,
+// and never the viewer's own pending draft with the same text; a retry
+// then publishes each comment once. A delete that fails too is said.
+func TestGitLabSubmitReviewDraftsThroughTheAppsForgeCode(t *testing.T) {
+	fixture := gitlabMergeFixture("running")
+	fixture.Repos[0].Pulls[0].DraftNotes = []forgefake.DraftNote{{ID: 9001, Author: "alice", Note: "LGTM"}}
+	r := newRig(t, fixture)
+	ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "merge", Number: 4}
+	ctx := forgeapi.WithInteractive(t.Context())
+	line := 3
+	review := gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "LGTM", Comments: []gitops.ReviewLineComment{
+		{Path: "a.go", Body: "nit", Line: &line, Side: "right"},
+	}}
+	routes := func(since int) (created, deleted []string) {
+		for _, inv := range r.engine.Invocations(since).Invocations {
+			if inv.Unhandled {
+				t.Errorf("unhandled %s %s: %s", inv.Method, inv.Path, inv.Detail)
+			}
+			switch inv.Route {
+			case "glab api create draft note":
+				created = append(created, inv.Path)
+			case "glab api delete draft note":
+				deleted = append(deleted, inv.Path[strings.LastIndex(inv.Path, "/")+1:])
+			}
+		}
+		return created, deleted
+	}
+
+	if err := r.engine.SetRefusal(forgefake.Refusal{Route: "glab api publish draft notes", Status: 422, Times: 1, Body: []byte(`{"message":"refused"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	before := len(r.engine.Invocations(0).Invocations)
+	if _, err := r.core.SubmitReview(ctx, ref, review); err == nil {
+		t.Fatal("SubmitReview succeeded through a refused publish")
+	} else if _, left := errors.AsType[*gitops.DraftsLeftError](err); left {
+		t.Fatalf("SubmitReview = %v, want its drafts removed", err)
+	}
+	created, deleted := routes(before)
+	if len(created) != 2 || len(deleted) != 2 || slices.Contains(deleted, "9001") {
+		t.Fatalf("created %v, deleted %v: want exactly the two created drafts deleted", created, deleted)
+	}
+
+	if _, err := r.core.SubmitReview(ctx, ref, review); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	bodies := map[string]int{}
+	for _, thread := range mergeRead(t, r, ref).Threads {
+		for _, comment := range thread.Comments {
+			bodies[comment.Body]++
+		}
+	}
+	// The viewer's own pending "LGTM" publishes with the review, as
+	// bulk_publish does on GitLab; nothing the failed submit made remains.
+	if bodies["nit"] != 1 || bodies["LGTM"] != 2 {
+		t.Fatalf("published comments = %v, want nit once and the two LGTMs", bodies)
+	}
+
+	for _, route := range []string{"glab api publish draft notes", "glab api delete draft note"} {
+		if err := r.engine.SetRefusal(forgefake.Refusal{Route: route, Status: 422, Body: []byte(`{"message":"refused"}`)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := r.core.SubmitReview(ctx, ref, review)
+	if left, ok := errors.AsType[*gitops.DraftsLeftError](err); !ok || left.Count != 2 {
+		t.Fatalf("SubmitReview with failing deletes = %v, want both drafts reported left", err)
+	}
+	if got := explained(t, ref, gitops.ActionReview, err); !strings.Contains(got.Message, "2 draft comments") || !strings.Contains(got.Message, "may still be pending") {
+		t.Fatalf("explained = %+v", got)
+	}
+}
+
 // A refusal the knob arms reaches the app as the forge's own: a token
 // without the scope is named in the sentence on both forges, and a 401 on
 // a mutation the login survives is GitLab refusing the action.

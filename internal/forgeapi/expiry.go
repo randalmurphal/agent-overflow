@@ -52,7 +52,8 @@ type expiryState struct {
 // when the source marked the token as one GitLab reports
 // (SourceInfo.ExpiryLookup). It runs inside a request's prepare, under
 // that request's context, and never fails it: a failed lookup is logged
-// once per host and the token is not asked about again.
+// once per host and the token is not asked about again. Other requests do
+// not wait for it, and one its caller cancelled is forgotten, not failed.
 func (c *Client) lookupExpiry(ctx context.Context) {
 	c.credMu.RLock()
 	fp, want := c.fp, c.expiryLookup
@@ -91,6 +92,13 @@ func (c *Client) lookupExpiry(ctx context.Context) {
 	c.expiry.mu.Lock()
 	defer c.expiry.mu.Unlock()
 	if err != nil {
+		// The caller leaving is not an answer: the next request asks.
+		if ctx.Err() != nil {
+			if c.expiry.token.fp == fp && !c.expiry.token.known {
+				c.expiry.token = tokenExpiry{}
+			}
+			return
+		}
 		if !c.expiry.logged {
 			c.expiry.logged = true
 			log.Printf("forgeapi: %s token expiry lookup failed; an expired token will read as not authenticated: %v", c.host, err)

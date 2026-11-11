@@ -83,6 +83,12 @@ type Service struct {
 	mu      sync.Mutex
 	closed  bool
 	clients map[clientKey]*Client
+
+	// life bounds the shared token reads (Client.read); Close ends it and
+	// joins them.
+	life  context.Context
+	stop  context.CancelFunc
+	reads sync.WaitGroup
 }
 
 type clientKey struct{ forge, host string }
@@ -111,6 +117,7 @@ func New(opts Options) (*Service, error) {
 		now:       time.Now,
 		clients:   make(map[clientKey]*Client),
 	}
+	s.life, s.stop = context.WithCancel(context.Background())
 	s.resolveBase = s.defaultBase
 	switch {
 	case opts.Isolated != nil && opts.TokenSource != nil:
@@ -177,7 +184,7 @@ func (s *Service) client(forge, host string) *Client {
 	if c := s.clients[key]; c != nil {
 		return c
 	}
-	c := &Client{svc: s, forge: forge, host: host, slots: make(chan struct{}, hostConcurrency), readLock: make(chan struct{}, 1)}
+	c := &Client{svc: s, forge: forge, host: host, slots: make(chan struct{}, hostConcurrency)}
 	if err := validHost(host); err != nil {
 		c.err = err
 	}
@@ -221,14 +228,17 @@ func (s *Service) DropNegative(host string) {
 	}
 }
 
-// Close zeroes every token, drops the gates, quota and ETag entries and
-// closes idle connections. A request after Close fails.
+// Close ends and joins the token reads in flight, zeroes every token,
+// drops the gates, quota and ETag entries and closes idle connections. A
+// request after Close fails.
 func (s *Service) Close() {
 	s.mu.Lock()
 	s.closed = true
 	clients := s.clients
 	s.clients = make(map[clientKey]*Client)
 	s.mu.Unlock()
+	s.stop()
+	s.reads.Wait()
 	for _, c := range clients {
 		c.credMu.Lock()
 		c.token.Zero()
@@ -239,6 +249,18 @@ func (s *Service) Close() {
 	s.gates.clear()
 	s.etags.clear()
 	s.transport.CloseIdleConnections()
+}
+
+// startRead runs read on the Service's lifetime, or reports false after
+// Close.
+func (s *Service) startRead(read func(context.Context)) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
+	s.reads.Go(func() { read(s.life) })
+	return true
 }
 
 func (s *Service) isClosed() bool {

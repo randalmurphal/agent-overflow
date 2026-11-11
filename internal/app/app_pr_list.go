@@ -131,6 +131,7 @@ func prListCleanupKey(id string) string { return "pr-list:" + id }
 //
 //ao:scope git:operate
 //ao:route selected
+//ao:callerbound
 func (a *App) SubscribePRList(ctx context.Context) (PRListSubscriptionResult, error) {
 	if a.shuttingDown.Load() {
 		return PRListSubscriptionResult{}, ErrShuttingDown

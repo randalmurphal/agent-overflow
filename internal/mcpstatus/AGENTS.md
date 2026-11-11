@@ -4,6 +4,7 @@ Concurrency-safe in-memory MCP server status cache shared by provider adapters. 
 
 - Keep stale entries after expiry or fetch failure; `Invalidate` is the explicit removal path.
 - `RefreshProvider` always fetches and coalesces concurrent refreshes. Clone result slices for every caller.
+- A shared fetch runs without its first caller's cancellation, under the fetcher's own timeout; each caller waits on its own context.
 - Cache every status returned by a fetcher, even when the fetch also reports an
   error. This preserves useful partial results while returning the error to the
   caller. A fetch error with no returned statuses leaves prior entries intact.

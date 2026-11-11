@@ -1,6 +1,7 @@
 package forgeapi
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -209,5 +210,42 @@ func TestSourceSetupErrorNamesTheHost(t *testing.T) {
 	setup, ok := errors.AsType[*SetupError](err)
 	if !ok || setup.Host != "ghe.example:8443" || setup == original || original.Host != "" {
 		t.Fatalf("source failure = %#v (original Host %q)", err, original.Host)
+	}
+}
+
+// A lookup whose request's caller left is no answer: the next request
+// asks again, and its answer names the expiry.
+func TestTokenExpiryLookupCancelledByItsCallerIsAskedAgain(t *testing.T) {
+	t.Parallel()
+	forge := &expiryForge{}
+	forge.self.Store(`{"expires_at":"2023-11-20","revoked":false,"active":true}`)
+	asked := make(chan struct{}, 1)
+	inner := forge.server(t).Config.Handler
+	var first atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v4/"+gitlabTokenSelfPath && first.CompareAndSwap(false, true) {
+			asked <- struct{}{}
+			<-r.Context().Done()
+			return
+		}
+		inner.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	s, clock := liveService(t, &testSource{tokens: []string{testSecret}, info: gitlabPAT}, srv)
+	gl := s.GitLab("gitlab.example")
+	caller, leave := context.WithCancel(t.Context())
+	go func() {
+		<-asked
+		leave()
+	}()
+	_, _ = gl.Do(caller, Request{Path: "projects/1"})
+	if _, err := gl.Do(t.Context(), Request{Path: "projects/1"}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(10 * 24 * time.Hour)
+	forge.denied.Store(true)
+	_, err := gl.Do(t.Context(), Request{Path: "projects/1"})
+	if setup, ok := errors.AsType[*SetupError](err); !ok || setup.ExpiredAt.IsZero() {
+		t.Fatalf("401 after a cancelled lookup = %#v, want the expiry the second lookup learned", err)
 	}
 }

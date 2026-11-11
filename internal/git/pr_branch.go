@@ -30,7 +30,9 @@ var ErrPRBranchDiverged = errors.New("the local branch is not at the pull reques
 // ErrPRBranchDiverged naming both commits. The fetch lands in
 // a ref of its own, deleted afterwards, so a concurrent fetch writing
 // FETCH_HEAD cannot change the answer. The fetch is the user's action
-// (a credential prompt may answer it) and ends with ctx.
+// (a credential prompt may answer it) and ends with ctx; the local steps
+// after it do not. An error with created true names a branch this call
+// made, which the caller removes.
 func (c *Core) FetchPRBranch(ctx context.Context, cwd string, pr PRReference) (branch, head string, created bool, err error) {
 	if err := pr.Validate(); err != nil {
 		return "", "", false, err
@@ -58,6 +60,10 @@ func (c *Core) FetchPRBranch(ctx context.Context, cwd string, pr PRReference) (b
 	if err != nil {
 		return "", "", false, fmt.Errorf("fetch %s from origin: %w", headRef, err)
 	}
+	// The scratch ref exists now: the local steps that resolve it, create the
+	// branch and drop it run to the end, so a caller that leaves cannot
+	// strand the ref or a branch it was not told about. git closes over ctx.
+	ctx = context.WithoutCancel(ctx)
 	defer func() {
 		// The scratch ref is ours alone; a failure to drop it leaves a ref
 		// no reader lists, so it is reported beside the answer, not instead
