@@ -5,14 +5,12 @@
 // order: what the reader did, the page the pane shows, each call the
 // provider sent, the answer to its oldest unanswered call (which can come
 // several reader actions later), each end the thread's providers were told
-// of, and the provider's stop retry wait running out. The provider must send
-// exactly those calls, leave no timer behind, and end with its bar open
-// exactly as the port left it. The Go side checks the Manager against the
+// of, a typed query's debounce running out, and the provider's stop retry
+// wait running out. The provider must send exactly those calls, sequences
+// included, leave no timer behind, and end with its bar open and showing
+// exactly what the port left. The Go side checks the Manager against the
 // same sequences and models the provider by a port of it, so the two cannot
 // drift apart.
-//
-// Find ids are the provider's own: a script names them by label (A1, B2),
-// and the replay binds each label to the id the provider sent with it first.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   applyBrowserFindEvent, BROWSER_FIND_DEBOUNCE_MS, BROWSER_FIND_STOP_RETRY_MS, createBrowserFind, resetBrowserFindForTest,
@@ -27,17 +25,19 @@ import pairs from '../../test/fixtures/browserFind/pairs.json';
 import triples from '../../test/fixtures/browserFind/triples.json';
 import inside from '../../test/fixtures/browserFind/inside.json';
 import outstanding from '../../test/fixtures/browserFind/outstanding.json';
+import named from '../../test/fixtures/browserFind/named.json';
 
 interface ScriptCall {
   kind: string;
   page: string;
-  id: string;
+  seq: number;
   query?: string;
 }
 
 interface ScriptStep {
-  ui?: 'open' | 'search' | 'next' | 'clear' | 'dispose';
+  ui?: 'open' | 'search' | 'type' | 'next' | 'clear' | 'dispose';
   query?: string;
+  debounce?: boolean;
   shown?: string;
   send?: ScriptCall;
   answer?: Record<string, unknown>;
@@ -52,12 +52,13 @@ interface Script {
   page: string;
   steps: ScriptStep[];
   bar: boolean;
+  view: { count: number; current: number; pending: boolean };
 }
 
 interface SentCall {
   kind: string;
   pageId: string;
-  findId: string;
+  seq: number;
   query?: string;
 }
 
@@ -71,12 +72,7 @@ async function replay(script: Script): Promise<void> {
     sent.push(action);
     return new Promise<BrowserFindState>((resolve, reject) => { replies.push({ resolve, reject }); });
   });
-  const ids = new Map<string, string>();
-  // An id the provider never sent (another provider's) stays as named.
-  const translate = (state: Record<string, unknown>) => {
-    const id = String(state.findId ?? '');
-    return new BrowserFindState({ ...(state as Partial<BrowserFindState>), findId: ids.get(id) ?? id });
-  };
+  const translate = (state: Record<string, unknown>) => new BrowserFindState(state as Partial<BrowserFindState>);
   let page = script.page;
   let disposed = false;
   let checked = 0;
@@ -94,6 +90,7 @@ async function replay(script: Script): Promise<void> {
             openPaneFind(PANE);
             break;
           case 'search':
+          case 'type':
             setPaneFindQuery(PANE, step.query ?? '');
             break;
           case 'next':
@@ -109,6 +106,8 @@ async function replay(script: Script): Promise<void> {
             break;
         }
         await vi.advanceTimersByTimeAsync(step.ui === 'search' || step.ui === 'open' ? BROWSER_FIND_DEBOUNCE_MS : 0);
+      } else if (step.debounce) {
+        await vi.advanceTimersByTimeAsync(BROWSER_FIND_DEBOUNCE_MS);
       } else if (step.shown) {
         page = step.shown;
       } else if (step.retry) {
@@ -117,16 +116,8 @@ async function replay(script: Script): Promise<void> {
         const want = step.send;
         expect(sent.length, `${at}: the provider sent ${want.kind}`).toBeGreaterThan(checked);
         const got = sent[checked++];
-        expect({ kind: got.kind, page: got.pageId, query: got.query ?? '' }, `${at}: the call`)
-          .toEqual({ kind: want.kind, page: want.page, query: want.query ?? '' });
-        const bound = ids.get(want.id);
-        if (bound === undefined) {
-          expect([...ids.values()], `${at}: find ${want.id} is a new find`).not.toContain(got.findId);
-          expect(got.findId, `${at}: find ${want.id} has an id`).not.toBe('');
-          ids.set(want.id, got.findId);
-        } else {
-          expect(got.findId, `${at}: the call names find ${want.id}`).toBe(bound);
-        }
+        expect({ kind: got.kind, page: got.pageId, seq: got.seq, query: got.query ?? '' }, `${at}: the call`)
+          .toEqual({ kind: want.kind, page: want.page, seq: want.seq, query: want.query ?? '' });
       } else if (step.event) {
         const state = translate(step.event);
         applyBrowserFindEvent(new BrowserCompanionEvent({ kind: 'find', threadId: THREAD, pageId: state.pageId, find: state }));
@@ -144,6 +135,8 @@ async function replay(script: Script): Promise<void> {
     expect(replies.length, 'every call the provider sent was answered').toBe(0);
     expect(vi.getTimerCount(), 'no timer of the provider outlives what it serves').toBe(0);
     expect(isPaneFindOpen(PANE), 'the bar is open exactly as the port left it').toBe(script.bar);
+    expect({ count: find.result.count ?? -1, current: find.result.current, pending: find.result.pending }, 'the bar shows what the port left')
+      .toEqual(script.view);
   } finally {
     if (!disposed) {
       release();
@@ -169,6 +162,7 @@ describe.each([
   ['triples', triples as Script[]],
   ['actions with an end inside', inside as Script[]],
   ['a call outstanding across later actions', outstanding as Script[]],
+  ['named sequences', named as Script[]],
 ])('browser find scripts: %s', (_table, scripts) => {
   it('has scripts to replay', () => {
     expect(scripts.length).toBeGreaterThan(0);

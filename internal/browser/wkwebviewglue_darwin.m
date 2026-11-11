@@ -1281,12 +1281,16 @@ void ao_wkv_view_find(void *view, const char *text, int backwards, uint64_t call
 // Evaluation
 // ---------------------------------------------------------------------------
 
-void ao_wkv_view_eval(void *view, const char *body, uint64_t call_id) {
+void ao_wkv_view_eval(void *view, const char *body, const char *world, uint64_t call_id) {
   @autoreleasepool {
     if (view == NULL || body == NULL) {
       aoWKVEvalDone(call_id, NULL, strdup("browser: the page is gone"));
       return;
     }
+    // A named world is isolated from the page's scripts; NULL is the page's.
+    WKContentWorld *contentWorld =
+        world == NULL ? [WKContentWorld pageWorld]
+                      : [WKContentWorld worldWithName:[NSString stringWithUTF8String:world]];
     // -callAsyncJavaScript: takes an async FUNCTION BODY and awaits its
     // return value, which is exactly what WebKitGTK's
     // webkit_web_view_call_async_javascript_function does. -evaluateJavaScript
@@ -1294,7 +1298,7 @@ void ao_wkv_view_eval(void *view, const char *body, uint64_t call_id) {
     [(WKWebView *)view callAsyncJavaScript:[NSString stringWithUTF8String:body]
                                  arguments:nil
                                    inFrame:nil
-                            inContentWorld:[WKContentWorld pageWorld]
+                            inContentWorld:contentWorld
                          completionHandler:^(id result, NSError *error) {
                            if (error != nil) {
                              // localizedDescription is the same sentence for

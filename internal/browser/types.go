@@ -61,9 +61,9 @@ const (
 )
 
 // FindState is a page's search as the find bar shows it, with the search's
-// identity (find.go): the page and its incarnation, the pane mount and find
-// id that own it, the document it started on, and the generation of the
-// action that answered or of the end.
+// identity (find.go): the page and its incarnation, the pane mount and
+// sequence that own it, the document it started on, and the generation of
+// the action that answered or of the end.
 type FindState struct {
 	PageID string `json:"pageId"`
 	// Incarnation tells apart pages that share PageID: a restored page
@@ -71,9 +71,8 @@ type FindState struct {
 	Incarnation uint64 `json:"incarnation"`
 	// Mount is the pane mount that owns the search, "" for none.
 	Mount string `json:"mount"`
-	// FindID is the id the owning mount's provider made for the search's
-	// start, "" for none.
-	FindID string `json:"findId"`
+	// Seq is the sequence of the start that made the search, 0 for none.
+	Seq uint64 `json:"seq"`
 	// Document is the epoch of the document the search started on.
 	Document uint64 `json:"document"`
 	// Session is the generation: it increases with every find action and
@@ -81,7 +80,7 @@ type FindState struct {
 	// recognizably stale.
 	Session uint64 `json:"session"`
 	// Foreign marks an answer for an action that changed nothing because
-	// the search it named is gone or another owner's; Mount and FindID then
+	// the search it named is gone or another owner's; Mount and Seq then
 	// name the search's real owner, and the answer acknowledges nothing of
 	// the asker's.
 	Foreign bool   `json:"foreign"`

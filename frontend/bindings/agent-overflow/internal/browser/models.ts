@@ -130,9 +130,9 @@ export class CompanionSubscription {
 
 /**
  * FindState is a page's search as the find bar shows it, with the search's
- * identity (find.go): the page and its incarnation, the pane mount and find
- * id that own it, the document it started on, and the generation of the
- * action that answered or of the end.
+ * identity (find.go): the page and its incarnation, the pane mount and
+ * sequence that own it, the document it started on, and the generation of
+ * the action that answered or of the end.
  */
 export class FindState {
     "pageId": string;
@@ -149,10 +149,9 @@ export class FindState {
     "mount": string;
 
     /**
-     * FindID is the id the owning mount's provider made for the search's
-     * start, "" for none.
+     * Seq is the sequence of the start that made the search, 0 for none.
      */
-    "findId": string;
+    "seq": number;
 
     /**
      * Document is the epoch of the document the search started on.
@@ -168,7 +167,7 @@ export class FindState {
 
     /**
      * Foreign marks an answer for an action that changed nothing because
-     * the search it named is gone or another owner's; Mount and FindID then
+     * the search it named is gone or another owner's; Mount and Seq then
      * name the search's real owner, and the answer acknowledges nothing of
      * the asker's.
      */
@@ -201,8 +200,8 @@ export class FindState {
         if (!("mount" in $$source)) {
             this["mount"] = "";
         }
-        if (!("findId" in $$source)) {
-            this["findId"] = "";
+        if (!("seq" in $$source)) {
+            this["seq"] = 0;
         }
         if (!("document" in $$source)) {
             this["document"] = 0;

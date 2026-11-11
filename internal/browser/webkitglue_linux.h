@@ -103,8 +103,9 @@ int ao_wk_view_is_loading(void *view);
 int ao_wk_view_can_go(void *view, int forward);
 
 // ao_wk_view_eval evaluates one async-function body and reports the JSON result
-// to aoWebKitEvalDone under call_id.
-void ao_wk_view_eval(void *view, const char *body, uint64_t call_id);
+// to aoWebKitEvalDone under call_id. world names an isolated script world, or
+// is NULL for the page's own.
+void ao_wk_view_eval(void *view, const char *body, const char *world, uint64_t call_id);
 
 // ao_wk_view_snapshot captures the view and reports premultiplied BGRA pixels
 // to aoWebKitSnapshotDone under call_id. Works on a parked (mapped but

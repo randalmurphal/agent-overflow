@@ -536,17 +536,25 @@ func webkitIsLoading(view webkitView) bool {
 }
 
 // gtkEvaluate runs one async-function body in the page and returns its JSON
-// result. An undefined result is an empty answer, matching what CDP reports
+// result: in the page's own script world, or in the isolated world named
+// world. An undefined result is an empty answer, matching what CDP reports
 // for a void expression.
-func gtkEvaluate(ctx context.Context, view webkitView, body string) (string, error) {
+func gtkEvaluate(ctx context.Context, view webkitView, world, body string) (string, error) {
 	if !gtkAlive() {
 		return "", errGTKUnavailable
 	}
 	id, ch := webkitRegisterCall()
 	if err := view.do(func(view unsafe.Pointer) {
 		cBody := C.CString(body)
-		C.ao_wk_view_eval(view, cBody, C.uint64_t(id))
+		var cWorld *C.char
+		if world != "" {
+			cWorld = C.CString(world)
+		}
+		C.ao_wk_view_eval(view, cBody, cWorld, C.uint64_t(id))
 		C.free(unsafe.Pointer(cBody))
+		if cWorld != nil {
+			C.free(unsafe.Pointer(cWorld))
+		}
 	}); err != nil {
 		webkitCallByID.Delete(id)
 		return "", err

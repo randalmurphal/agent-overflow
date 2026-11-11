@@ -325,9 +325,14 @@ func TestNativeEngineRealFind(t *testing.T) {
 		t.Fatalf("mount a pane: %v", err)
 	}
 	t.Cleanup(func() { manager.DetachPane(mount.ID) })
+	// seq numbers the starts, as the pane's provider does.
+	var seq uint64
 	find := func(kind, query string) FindState {
 		t.Helper()
-		state, err := manager.Find(ctx, access, page.ID, kind, query, mount.ID, "smoke-find")
+		if kind == FindStart {
+			seq++
+		}
+		state, err := manager.Find(ctx, access, page.ID, kind, query, mount.ID, seq)
 		if err != nil {
 			t.Fatalf("find %s %q: %v", kind, query, err)
 		}
@@ -451,10 +456,12 @@ func TestNativeEngineRealFind(t *testing.T) {
 	}
 }
 
-// TestNativeEngineRealFindClearsFrameSelections runs the selection clearing
-// a find stop and a start from the top use on a page with a selection in
-// the page, in a same-origin frame and in a frame inside that one: every
-// selection goes. Then a search's stop leaves no selection behind.
+// TestNativeEngineRealFindClearsFrameSelections stops a search on a page
+// with a selection in the page, in a same-origin frame and in a frame inside
+// that one: every selection goes. Then the page overrides getSelection and
+// removeAllRanges to throw, and a search's stop still clears its match,
+// since the clearing runs in an isolated world; run in the page's own world,
+// the same clearing fails rather than reporting a stop that cleared nothing.
 func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 	window := nativeSmokeWindow.Load()
 	if window == nil {
@@ -476,7 +483,7 @@ func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 	page, err := manager.OpenFile(ctx, access, writeSmokeFile(t, workspace, "frames.html",
-		`<!doctype html><title>frames</title><p id="top">alpha in the page</p>`), OpenOptions{})
+		`<!doctype html><title>frames</title><p id="top">alpha in the page</p><iframe src="data:text/html,<p>alpha in a cross-origin frame</p>"></iframe>`), OpenOptions{})
 	if err != nil {
 		t.Fatalf("open the page: %v", err)
 	}
@@ -497,43 +504,67 @@ func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 		}
 		return value
 	}
-	// An about:blank frame is same-origin and ready at once: two levels.
+	// An about:blank frame is same-origin and ready at once: two levels. The
+	// data: frame is cross-origin: nothing reaches into it, and the clearing
+	// passes over it.
 	eval("build the frames", `(() => {
 		const add = (doc, text) => { const f = doc.createElement("iframe"); doc.body.appendChild(f); f.contentDocument.body.innerHTML = "<p>" + text + "</p>"; return f.contentDocument; };
 		add(add(document, "alpha in a frame"), "alpha in a nested frame");
 		return 1; })()`)
 	// selections counts the windows, the page and its frames, holding a
-	// selection.
-	const selections = `(() => { let n = 0; const walk = (w) => { const s = w.getSelection(); if (s && s.rangeCount && !s.isCollapsed) n++; for (let i = 0; i < w.frames.length; i++) walk(w.frames[i]); }; walk(window); return n; })()`
-	eval("select in every window", `(() => {
-		const walk = (w) => { w.getSelection().selectAllChildren(w.document.body); for (let i = 0; i < w.frames.length; i++) walk(w.frames[i]); };
-		walk(window); return 1; })()`)
-	if n := eval("count the selections", selections); n != float64(3) {
-		t.Fatalf("selected in %v windows, want 3", n)
-	}
-	eval("clear the selections", "(() => {"+webkitClearSelectionScript+"})()")
-	if n := eval("count the selections", selections); n != float64(0) {
-		t.Fatalf("%v selections left after the clearing", n)
-	}
-
-	// A search selects its match; its stop leaves no selection.
+	// selection, through the document's getSelection, which the page leaves
+	// alone.
+	const selections = `(() => { let n = 0; const walk = (w) => { let s; try { s = w.Document.prototype.getSelection.call(w.document); } catch (e) { return; } if (s && s.rangeCount && !s.isCollapsed) n++; for (let i = 0; i < w.frames.length; i++) walk(w.frames[i]); }; walk(window); return n; })()`
+	// seq numbers the starts, as the pane's provider does.
+	var seq uint64
 	find := func(kind, query string) FindState {
 		t.Helper()
-		state, err := manager.Find(ctx, access, page.ID, kind, query, mount.ID, "smoke-frames")
+		if kind == FindStart {
+			seq++
+		}
+		state, err := manager.Find(ctx, access, page.ID, kind, query, mount.ID, seq)
 		if err != nil {
 			t.Fatalf("find %s %q: %v", kind, query, err)
 		}
 		return state
 	}
+
 	if state := find(FindStart, "alpha"); !state.Found {
 		t.Fatalf("start = %+v", state)
 	}
-	find(FindNext, "")
-	find(FindNext, "")
-	t.Logf("selections while the search runs: %v", eval("count the selections", selections))
+	eval("select in every window", `(() => {
+		const walk = (w) => { try { w.getSelection().selectAllChildren(w.document.body); } catch (e) { return; } for (let i = 0; i < w.frames.length; i++) walk(w.frames[i]); };
+		walk(window); return 1; })()`)
+	if n := eval("count the selections", selections); n != float64(3) {
+		t.Fatalf("selected in %v windows, want 3", n)
+	}
 	find(FindStop, "")
 	if n := eval("count the selections", selections); n != float64(0) {
 		t.Fatalf("%v selections left after the search stopped", n)
+	}
+
+	// The page shadows what the clearing calls, in every window.
+	eval("override the selection API", `(() => {
+		const walk = (w) => {
+			try { w.document; } catch (e) { return; }
+			w.getSelection = () => { throw new Error("the page's getSelection"); };
+			w.Selection.prototype.removeAllRanges = function () { throw new Error("the page's removeAllRanges"); };
+			for (let i = 0; i < w.frames.length; i++) walk(w.frames[i]);
+		};
+		walk(window); return 1; })()`)
+	if state := find(FindStart, "alpha"); !state.Found {
+		t.Fatalf("start under the overrides = %+v", state)
+	}
+	if n := eval("count the selections", selections); n == float64(0) {
+		t.Fatal("the search selected no match")
+	}
+	find(FindStop, "")
+	if n := eval("count the selections", selections); n != float64(0) {
+		t.Fatalf("%v selections left after the search stopped under the page's overrides", n)
+	}
+	// In the page's own world the overrides reach the clearing: it fails.
+	if _, _, err := manager.Evaluate(ctx, access, page.ID, "(async () => {"+webkitClearSelectionScript+"})()", nil); err == nil || !strings.Contains(err.Error(), "clear the selection") {
+		t.Fatalf("the clearing in the page's world under its overrides = %v, want a failure", err)
 	}
 }
 

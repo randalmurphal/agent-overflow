@@ -1043,9 +1043,9 @@ static void ao_eval_finished(GObject *object, GAsyncResult *result, gpointer dat
   aoWebKitEvalDone(call_id, json, NULL);
 }
 
-void ao_wk_view_eval(void *view, const char *body, uint64_t call_id) {
+void ao_wk_view_eval(void *view, const char *body, const char *world, uint64_t call_id) {
   webkit_web_view_call_async_javascript_function(
-      WEBKIT_WEB_VIEW(view), body, -1, NULL, NULL, NULL, NULL, ao_eval_finished,
+      WEBKIT_WEB_VIEW(view), body, -1, NULL, world, NULL, NULL, ao_eval_finished,
       GSIZE_TO_POINTER((gsize)call_id));
 }
 

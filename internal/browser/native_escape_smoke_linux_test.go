@@ -137,7 +137,7 @@ func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 	}
 	announced("no search")
 
-	started, err := manager.Find(ctx, access, page.ID, FindStart, "alpha", mount.ID, "smoke-find")
+	started, err := manager.Find(ctx, access, page.ID, FindStart, "alpha", mount.ID, 1)
 	if err != nil || !started.Active {
 		t.Fatalf("start a search = %+v, %v", started, err)
 	}
@@ -146,7 +146,7 @@ func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 	}
 	announced("a search running")
 	// The Escape changed nothing of the search: the pane decides.
-	if state, err := manager.Find(ctx, access, page.ID, FindNext, "", mount.ID, "smoke-find"); err != nil || !state.Active || state.Session != started.Session {
+	if state, err := manager.Find(ctx, access, page.ID, FindNext, "", mount.ID, 1); err != nil || !state.Active || state.Session != started.Session {
 		t.Fatalf("step after the Escape = %+v, %v", state, err)
 	}
 

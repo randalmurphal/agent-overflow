@@ -9,6 +9,7 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -16,15 +17,16 @@ import (
 // The find's operations run here in ordered sequences against two pane
 // mounts' providers, A holding a search and B mounted beside it: what each
 // pane's reader does (open the bar, type, step, empty the query, close the
-// bar), a document commit and a late one, a page switch, suspend and
-// restore, detaching A, and engine failures (a start that fails, a stop that
-// fails once or always). TestFindOutstandingCallAcrossLaterActions also
-// leaves one call of A's outstanding, answered late or arriving late, across
-// the next one and two of A's actions.
+// bar), starts the Manager refuses (a query too long, a page already gone),
+// a document commit and a late one, a page switch, suspend and restore,
+// detaching A, and engine failures (a start that fails, a stop that fails
+// once or always). TestFindOutstandingCallAcrossLaterActions also leaves one
+// call of A's outstanding, answered late or arriving late, across the next
+// one and two of A's actions; TestFindNamedSequences runs orders found by
+// review.
 //
 // Each provider is a port of browserFind.svelte.ts (findProvider): its
-// queue, display generation, find ids, drop rules, answer rules and stop
-// retries. It sends what that provider would; every end the Manager
+// queue, sequences, drop rules, answer rules and stop retries. It sends what that provider would; every end the Manager
 // announces reaches both providers when it is announced, in flight or not,
 // and the stop retries waiting when a sequence quiesces run then. The
 // frontend replays the recorded scripts against the real provider
@@ -35,21 +37,22 @@ import (
 //
 // After each sequence quiesces:
 //
-//  1. the Manager's search state matches what its end events told each
-//     provider: a provider holds a search exactly when the Manager has one
-//     owned by its mount and find id, and the Manager has none of its mount
-//     under another id; no call is left unanswered and no stop retry waits;
+//  1. no call is left unanswered and no stop retry waits;
 //  2. the engine holds a search exactly when a session is active or owes
 //     its stop, and owes one only while the stop it is owed failed and no
 //     find action has run since;
-//  3. an answer names the asking mount and find id, or is marked Foreign
-//     and names the search's real owner;
+//  3. an answer names the asking mount and the action's sequence (a stop's
+//     at or below its bound), or is marked Foreign and names the search's
+//     real owner;
 //  4. a search exists only on the shown active page, owned by a mounted
 //     pane;
-//  5. an action fails only for an engine failure, or a start the page or
-//     the mount cannot take: never because its search already ended;
-//  6. a provider shows counts exactly when the Manager holds a search for
-//     it.
+//  5. an action fails only for an engine failure, a start the page, the
+//     mount or the query cannot take, or an action whose deadline passed
+//     before it ran: never because its search already ended;
+//  6. a provider's bar shows a count, a current match and enabled stepping
+//     exactly when the Manager holds a search for its mount at the sequence
+//     the bar shows, and then that search's count and current match; the
+//     Manager holds no other search of the mount.
 
 // updateFindScripts rewrites the scripts the frontend replays.
 var updateFindScripts = os.Getenv("AO_UPDATE_FIND_SCRIPTS") == "1"
@@ -82,6 +85,8 @@ type findTableEnv struct {
 	mu        sync.Mutex
 	stopFail  string
 	startFail bool
+	// expire makes the next call run past its deadline.
+	expire bool
 	// actions counts the find actions run on each page, and lastStop is
 	// each page's last engine stop: at which action, and whether it failed.
 	actions  map[string]int
@@ -101,32 +106,43 @@ type findTableError struct {
 }
 
 type findTableAnswer struct {
-	op, mount, id string
-	owner         findOwner
-	state         FindState
+	op, kind, mount string
+	seq             uint64
+	owner           findOwner
+	state           FindState
 }
 
 // findScriptStep is one thing that happened to a provider, in order: what
-// the reader did (UI, with Query for "search"), the page the pane now shows
-// (Shown), a call the provider sent (Send), the answer to its oldest
-// unanswered call (Answer, or Error), an end the thread's providers were
-// told of (Event), or the provider's stop retry wait running out (Retry).
+// the reader did (UI, with Query for "search" and "type"), a typed query's
+// debounce running out (Debounce), the page the pane now shows (Shown), a
+// call the provider sent (Send), the answer to its oldest unanswered call
+// (Answer, or Error), an end the thread's providers were told of (Event), or
+// the provider's stop retry wait running out (Retry).
 type findScriptStep struct {
-	UI     string          `json:"ui,omitempty"`
-	Query  string          `json:"query,omitempty"`
-	Shown  string          `json:"shown,omitempty"`
-	Send   *findScriptCall `json:"send,omitempty"`
-	Answer *FindState      `json:"answer,omitempty"`
-	Error  bool            `json:"error,omitempty"`
-	Event  *FindState      `json:"event,omitempty"`
-	Retry  bool            `json:"retry,omitempty"`
+	UI       string          `json:"ui,omitempty"`
+	Query    string          `json:"query,omitempty"`
+	Debounce bool            `json:"debounce,omitempty"`
+	Shown    string          `json:"shown,omitempty"`
+	Send     *findScriptCall `json:"send,omitempty"`
+	Answer   *FindState      `json:"answer,omitempty"`
+	Error    bool            `json:"error,omitempty"`
+	Event    *FindState      `json:"event,omitempty"`
+	Retry    bool            `json:"retry,omitempty"`
 }
 
 type findScriptCall struct {
 	Kind  string `json:"kind"`
 	Page  string `json:"page"`
-	ID    string `json:"id"`
+	Seq   uint64 `json:"seq"`
 	Query string `json:"query,omitempty"`
+}
+
+// findScriptView is what the provider's bar shows at the end: count is -1
+// for an uncounted match.
+type findScriptView struct {
+	Count   int  `json:"count"`
+	Current int  `json:"current"`
+	Pending bool `json:"pending"`
 }
 
 type findScript struct {
@@ -134,15 +150,18 @@ type findScript struct {
 	Mount string           `json:"mount"`
 	Page  string           `json:"page"`
 	Steps []findScriptStep `json:"steps"`
-	// Bar is whether the provider's bar is open at the end: the real
-	// provider must leave it so.
-	Bar bool `json:"bar"`
+	// Bar is whether the provider's bar is open at the end, and View what
+	// it shows: the real provider must leave both so.
+	Bar  bool           `json:"bar"`
+	View findScriptView `json:"view"`
 }
 
-// findIntent is the port's Intent.
+// findIntent is the port's Intent: seq is a start's sequence, the sequence
+// a step steps, or a stop's bound.
 type findIntent struct {
-	kind, page, id, query string
-	seq, attempt          int
+	kind, page, query string
+	seq               uint64
+	attempt           int
 }
 
 // findCall is a call a provider sent; ran once the Manager ran it.
@@ -155,27 +174,31 @@ type findCall struct {
 }
 
 // findProvider is a port of createBrowserFind in bar mode. Each method
-// mirrors the function of the same name there; shown and query are the
+// mirrors the function of the same name there; open and query are the
 // pane-find store's open state and query for the pane.
 type findProvider struct {
 	e            *findTableEnv
 	label, mount string
-	seq          int
 	queue        []findIntent
 	inFlight     *findCall
-	page, id     string
-	search       bool
+	// page is bound.pageId; showing, issued and stopped are showing, issued
+	// and stoppedThrough. The port numbers its own starts from 1, as the
+	// provider does with the module's counter reset.
+	page                     string
+	showing, issued, stopped uint64
 	// retries are the stops waiting on their retry timer, in the order
 	// their timers were set.
 	retries []findIntent
-	// count and pending are view.count (-1 for an uncounted match) and
-	// view.pending.
-	count    int
-	pending  bool
-	shown    bool
-	query    string
+	// count, current and pending are view.count (-1 for an uncounted
+	// match), view.current and view.pending; answered is whether the view
+	// holds an answer of the search it shows.
+	count, current    int
+	pending, answered bool
+	open              bool
+	query             string
+	// debounce is a typed query whose debounce has not run out, "" for none.
+	debounce string
 	disposed bool
-	ids      int
 	// hold, when set, keeps the next call outstanding until release:
 	// "answer" runs it at once and answers it late, "arrive" runs it late.
 	hold  string
@@ -186,7 +209,9 @@ func (p *findProvider) record(step findScriptStep) {
 	p.steps = append(p.steps, step)
 }
 
-func (p *findProvider) reset() { p.count, p.pending = 0, false }
+func (p *findProvider) reset() {
+	p.count, p.current, p.pending, p.answered = 0, -1, false, false
+}
 
 func (p *findProvider) show(state FindState) {
 	if !state.Active {
@@ -201,11 +226,7 @@ func (p *findProvider) show(state FindState) {
 	default:
 		p.count = state.Matches
 	}
-	p.pending = false
-}
-
-func (p *findProvider) cancelRetry(id string) {
-	p.retries = slices.DeleteFunc(p.retries, func(intent findIntent) bool { return intent.id == id })
+	p.current, p.pending, p.answered = state.Current, false, true
 }
 
 func (p *findProvider) drop(kinds ...string) {
@@ -217,25 +238,37 @@ func (p *findProvider) enqueue(t *testing.T, intent findIntent) {
 	p.drain(t)
 }
 
-func (p *findProvider) heldIntent(kind, query string) findIntent {
-	return findIntent{kind: kind, page: p.page, id: p.id, query: query, seq: p.seq}
-}
-
-func (p *findProvider) enqueueStop(t *testing.T, of findIntent) {
+// queueStop is enqueueStop without the drain: a stop of the mount's search
+// through the bound, unless one through it or later is queued already.
+func (p *findProvider) queueStop(page string, through uint64) {
+	p.stopped = max(p.stopped, through)
 	for _, intent := range p.queue {
-		if intent.kind == FindStop && intent.page == of.page && intent.id == of.id {
+		if intent.kind == FindStop && intent.seq >= through {
 			return
 		}
 	}
-	p.enqueue(t, findIntent{kind: FindStop, page: of.page, id: of.id, seq: p.seq})
+	p.queue = append(p.queue, findIntent{kind: FindStop, page: page, seq: through})
+}
+
+// stopIssued queues the stop of every search the provider started, unless
+// one was made since its last start.
+func (p *findProvider) stopIssued() {
+	if p.issued > p.stopped {
+		p.queueStop(p.page, p.issued)
+	}
 }
 
 func (p *findProvider) retryStop(intent findIntent) {
-	p.cancelRetry(intent.id)
 	if intent.attempt+1 >= findPortStopAttempts {
 		return
 	}
 	p.retries = append(p.retries, intent)
+}
+
+// settleRetries drops the retries an answered stop made needless: those
+// bounded at or below it.
+func (p *findProvider) settleRetries(stop findIntent) {
+	p.retries = slices.DeleteFunc(p.retries, func(intent findIntent) bool { return intent.seq <= stop.seq })
 }
 
 // runRetries is the stop retry wait running out: every waiting stop is
@@ -248,16 +281,10 @@ func (p *findProvider) runRetries(t *testing.T) bool {
 	waiting := p.retries
 	p.retries = nil
 	for _, intent := range waiting {
-		intent.seq = p.seq
 		intent.attempt++
 		p.enqueue(t, intent)
 	}
 	return true
-}
-
-func (p *findProvider) isHeld(intent findIntent) bool {
-	// A provider's calls all name its own mount.
-	return p.search && intent.page == p.page && intent.id == p.id
 }
 
 func (p *findProvider) drain(t *testing.T) {
@@ -266,7 +293,7 @@ func (p *findProvider) drain(t *testing.T) {
 		p.queue = p.queue[1:]
 		call := &findCall{intent: intent}
 		p.inFlight = call
-		p.record(findScriptStep{Send: &findScriptCall{Kind: intent.kind, Page: p.e.pageLabel(intent.page), ID: intent.id, Query: intent.query}})
+		p.record(findScriptStep{Send: &findScriptCall{Kind: intent.kind, Page: p.e.pageLabel(intent.page), Seq: intent.seq, Query: intent.query}})
 		mode := p.hold
 		p.hold = ""
 		if mode != "arrive" {
@@ -275,7 +302,7 @@ func (p *findProvider) drain(t *testing.T) {
 		if mode != "" {
 			return
 		}
-		p.complete(t, call)
+		p.complete(call)
 	}
 }
 
@@ -290,110 +317,78 @@ func (p *findProvider) release(t *testing.T) {
 	if !call.ran {
 		p.e.run(t, p, call)
 	}
-	p.complete(t, call)
+	p.complete(call)
 	p.drain(t)
 }
 
 // complete is drain's handling of one answer. The intents it queues run
 // once the call in flight is cleared, from drain.
-func (p *findProvider) complete(t *testing.T, call *findCall) {
+func (p *findProvider) complete(call *findCall) {
 	intent := call.intent
 	p.inFlight = nil
 	if call.err != nil {
 		p.record(findScriptStep{Error: true})
-		if intent.seq == p.seq {
-			p.reset()
-		}
 		if intent.kind == FindStop {
 			p.retryStop(intent)
 			return
 		}
-		if intent.seq == p.seq && p.isHeld(intent) {
-			p.search = false
+		if intent.seq == p.showing {
+			p.reset()
+			p.showing = 0
 			p.drop(FindNext, FindPrev)
 		}
-		// A table's failure is the backend's answer, never an unknown
-		// outcome: no stop follows.
+		p.queueStop(intent.page, intent.seq)
 		return
 	}
 	normal := p.e.normalize(call.state)
 	p.record(findScriptStep{Answer: &normal})
 	switch {
 	case intent.kind == FindStop:
-		// Answered: no retry follows.
+		p.settleRetries(intent)
+	case intent.seq != p.showing:
+		// A search the bar no longer shows.
 	case call.state.Foreign:
-		if p.isHeld(intent) {
-			p.accept()
-		}
-	case !p.isHeld(intent):
-		if call.state.Active {
-			p.queueStopAfter(intent)
-		}
+		p.accept()
 	default:
-		if intent.seq == p.seq {
-			p.show(call.state)
-		}
+		p.show(call.state)
 	}
-}
-
-// queueStopAfter is enqueueStop from inside an answer: drain sends it next.
-func (p *findProvider) queueStopAfter(of findIntent) {
-	for _, intent := range p.queue {
-		if intent.kind == FindStop && intent.page == of.page && intent.id == of.id {
-			return
-		}
-	}
-	p.queue = append(p.queue, findIntent{kind: FindStop, page: of.page, id: of.id, seq: p.seq})
 }
 
 func (p *findProvider) ended(state FindState) {
-	if !p.search || state.PageID != p.page || state.Mount != p.mount || state.FindID != p.id {
+	if p.showing == 0 || state.PageID != p.page || state.Mount != p.mount || state.Seq != p.showing {
 		return
 	}
 	p.accept()
 }
 
-// accept is the held search's end: the bar closes, which is closeBar, and
-// through it the store's close calling clear.
+// accept is the shown search's end: the bar closes, which is closeBar, and
+// through it the store's close calling clear, which has nothing left to
+// stop.
 func (p *findProvider) accept() {
-	p.seq++
-	p.drop(FindStart, FindNext, FindPrev)
-	p.search = false
-	p.id = ""
-	p.reset()
-	if p.shown {
-		p.shown = false
-		p.closeLocal()
-	}
+	p.stopped = max(p.stopped, p.issued)
+	p.closeLocal()
+	p.open = false
 }
 
-// closeLocal is close without a drain: the stop it could queue only when a
-// search is held, and accept holds none.
+// closeLocal is close without its drain.
 func (p *findProvider) closeLocal() {
-	p.seq++
+	p.debounce = ""
 	p.drop(FindStart, FindNext, FindPrev)
+	p.showing = 0
 	p.reset()
-	p.search = false
-	p.id = ""
+	p.stopIssued()
 }
 
 func (p *findProvider) close(t *testing.T) {
-	p.seq++
-	p.drop(FindStart, FindNext, FindPrev)
-	p.reset()
-	if p.search {
-		p.enqueueStop(t, p.heldIntent(FindStop, ""))
-	}
-	p.search = false
-	p.id = ""
+	p.closeLocal()
+	p.drain(t)
 }
 
 func (p *findProvider) begin(t *testing.T, query string) {
 	p.page = p.e.shown
-	p.ids++
-	p.id = fmt.Sprintf("%s%d", p.label, p.ids)
-	p.search = true
-	p.enqueue(t, p.heldIntent(FindStart, query))
+	p.issued++
+	p.showing = p.issued
+	p.enqueue(t, findIntent{kind: FindStart, page: p.page, query: query, seq: p.issued})
 }
 
 // The reader's actions, as the pane makes them: each only when the pane's
@@ -402,63 +397,87 @@ func (p *findProvider) begin(t *testing.T, query string) {
 // uiOpen is openPaneFind: the bar opens with the query it kept, which
 // searches.
 func (p *findProvider) uiOpen(t *testing.T) {
-	if p.disposed || p.shown {
+	if p.disposed || p.open {
 		return
 	}
 	p.record(findScriptStep{UI: "open"})
-	p.shown = true
+	p.open = true
 	if p.query != "" {
-		p.searchQuery(t, p.query)
+		p.searchQuery(t, p.query, true)
 	}
 }
 
 // uiSearch is setPaneFindQuery, with its debounce run out at once.
 func (p *findProvider) uiSearch(t *testing.T, query string) {
-	if p.disposed || !p.shown || query == p.query {
+	if p.disposed || !p.open || query == p.query {
 		return
 	}
 	p.record(findScriptStep{UI: "search", Query: query})
 	p.query = query
-	p.searchQuery(t, query)
+	p.searchQuery(t, query, true)
 }
 
-func (p *findProvider) searchQuery(t *testing.T, query string) {
-	p.seq++
+// uiType is setPaneFindQuery with its debounce still running.
+func (p *findProvider) uiType(t *testing.T, query string) {
+	if p.disposed || !p.open || query == p.query {
+		return
+	}
+	p.record(findScriptStep{UI: "type", Query: query})
+	p.query = query
+	p.searchQuery(t, query, false)
+}
+
+// runDebounce is a typed query's debounce running out.
+func (p *findProvider) runDebounce(t *testing.T) {
+	if p.debounce == "" {
+		return
+	}
+	p.record(findScriptStep{Debounce: true})
+	query := p.debounce
+	p.debounce = ""
+	p.begin(t, query)
+}
+
+func (p *findProvider) searchQuery(t *testing.T, query string, debounced bool) {
+	p.debounce = ""
 	p.drop(FindStart, FindNext, FindPrev)
+	p.showing = 0
 	if query == "" {
 		p.reset()
-		if p.search {
-			p.enqueueStop(t, p.heldIntent(FindStop, ""))
-		}
-		p.search = false
+		p.stopIssued()
+		p.drain(t)
 		return
 	}
 	p.pending = true
+	if !debounced {
+		p.debounce = query
+		return
+	}
 	p.begin(t, query)
 }
 
 func (p *findProvider) uiNext(t *testing.T) {
-	if p.disposed || !p.shown {
+	if p.disposed || !p.open {
 		return
 	}
 	p.record(findScriptStep{UI: "next"})
-	if !p.search || p.pending || p.count == 0 {
+	if p.showing == 0 || p.pending || p.count == 0 {
 		return
 	}
 	if n := len(p.queue); n > 0 && p.queue[n-1].kind == FindPrev {
 		p.queue = p.queue[:n-1]
 		return
 	}
-	p.enqueue(t, p.heldIntent(FindNext, ""))
+	p.enqueue(t, findIntent{kind: FindNext, page: p.page, seq: p.showing})
 }
 
 // uiClear is closePaneFind: the bar closes and keeps its query.
 func (p *findProvider) uiClear(t *testing.T) {
-	if p.disposed || !p.shown {
+	if p.disposed || !p.open {
 		return
 	}
 	p.record(findScriptStep{UI: "clear"})
-	p.shown = false
+	p.open = false
 	p.close(t)
 }
 
@@ -473,7 +492,7 @@ func (p *findProvider) dispose(t *testing.T) {
 		return
 	}
 	p.record(findScriptStep{UI: "dispose"})
-	p.shown = false
+	p.open = false
 	p.close(t)
 	p.disposed = true
 }
@@ -500,7 +519,7 @@ func newFindTableEnv(t *testing.T, base string) *findTableEnv {
 	e.labels = map[string]string{e.mounts["A"]: "mount-A", e.mounts["B"]: "mount-B"}
 	e.providers = map[string]*findProvider{}
 	for _, label := range []string{"A", "B"} {
-		e.providers[label] = &findProvider{e: e, label: label, mount: e.mounts[label]}
+		e.providers[label] = &findProvider{e: e, label: label, mount: e.mounts[label], current: -1}
 	}
 	e.install(t)
 	setFindPoint(f.manager, func(point string) {
@@ -599,6 +618,8 @@ func (e *findTableEnv) pageLabel(id string) string {
 		return "page-1"
 	case e.other:
 		return "page-2"
+	case findGonePage:
+		return "page-gone"
 	}
 	return id
 }
@@ -614,12 +635,21 @@ func (e *findTableEnv) run(t *testing.T, p *findProvider, call *findCall) {
 	e.mu.Lock()
 	e.actions[intent.page]++
 	e.mu.Unlock()
-	state, err := e.f.manager.Find(t.Context(), e.f.access, intent.page, intent.kind, intent.query, p.mount, intent.id)
+	ctx := t.Context()
+	e.mu.Lock()
+	if e.expire {
+		e.expire = false
+		expired, cancel := context.WithCancel(ctx)
+		cancel()
+		ctx = expired
+	}
+	e.mu.Unlock()
+	state, err := e.f.manager.Find(ctx, e.f.access, intent.page, intent.kind, intent.query, p.mount, intent.seq)
 	e.settle()
 	var owner findOwner
 	if page, ok := e.livePages()[intent.page]; ok {
 		page.findMu.Lock()
-		owner = findOwner{mount: page.find.owner, id: page.find.id}
+		owner = findOwner{mount: page.find.owner, seq: page.find.seq}
 		page.findMu.Unlock()
 	}
 	call.ran, call.state, call.err = true, state, err
@@ -627,7 +657,7 @@ func (e *findTableEnv) run(t *testing.T, p *findProvider, call *findCall) {
 	if err != nil {
 		e.errs = append(e.errs, findTableError{op: name, kind: intent.kind, err: err})
 	} else {
-		e.answers = append(e.answers, findTableAnswer{op: name, mount: p.mount, id: intent.id, owner: owner, state: state})
+		e.answers = append(e.answers, findTableAnswer{op: name, kind: intent.kind, mount: p.mount, seq: intent.seq, owner: owner, state: state})
 	}
 	call.events = e.deliver()
 }
@@ -697,10 +727,13 @@ func (e *findTableEnv) quiesce(t *testing.T) {
 	e.late = nil
 	e.settle()
 	e.deliver()
-	// Each provider's waiting stops run out, again while the engine keeps
-	// refusing, until none waits.
+	// Each provider's typed query and waiting stops run out, again while the
+	// engine keeps refusing, until none waits.
 	for _, label := range []string{"A", "B"} {
 		p := e.providers[label]
+		if p.inFlight == nil {
+			p.runDebounce(t)
+		}
 		for p.inFlight == nil && p.runRetries(t) {
 		}
 	}
@@ -726,8 +759,8 @@ func (e *findTableEnv) check(t *testing.T, name string) {
 		if session.active && (!e.f.manager.pageShown(e.f.access.ThreadID, id) || !e.f.manager.mountOf(e.f.access.ThreadID, session.owner)) {
 			t.Errorf("%s: %s: a search of %s is left on a page not shown, or for a pane that is gone", name, page, e.labels[session.owner])
 		}
-		if !session.active && (session.owner != "" || session.id != "") {
-			t.Errorf("%s: %s: no search runs, yet it names an owner %s/%s", name, page, e.labels[session.owner], session.id)
+		if !session.active && (session.owner != "" || session.seq != 0) {
+			t.Errorf("%s: %s: no search runs, yet it names an owner %s/%d", name, page, e.labels[session.owner], session.seq)
 		}
 		if engine != (session.active || session.engine) {
 			t.Errorf("%s: %s: engine holds a search %v; the Manager's session active %v, engine owed %v", name, page, engine, session.active, session.engine)
@@ -744,37 +777,47 @@ func (e *findTableEnv) check(t *testing.T, name string) {
 		if len(p.retries) != 0 {
 			t.Errorf("%s: provider %s has a stop retry left waiting", name, label)
 		}
-		owner := findOwner{mount: p.mount, id: p.id}
 		session, live := sessions[p.page]
-		owned := live && session.ownedBy(owner)
-		if p.search && !owned {
-			t.Errorf("%s: provider %s holds a search on %s the Manager has not for its find %s (%+v)", name, label, e.pageLabel(p.page), p.id, session)
+		held := p.showing != 0 && live && session.ownedBy(findOwner{mount: p.mount, seq: p.showing})
+		shows := p.showing != 0 && !p.pending && p.answered
+		stepping := shows && p.count != 0
+		if shows != held {
+			t.Errorf("%s: provider %s shows a count %v (count %d, current %d, stepping %v) for sequence %d; the Manager holds that search %v", name, label, shows, p.count, p.current, stepping, p.showing, held)
 		}
-		if shows := p.search && !p.pending; shows != owned {
-			t.Errorf("%s: provider %s shows counts %v (count %d); the Manager holds a search for it %v", name, label, shows, p.count, owned)
+		if shows && held {
+			want := session.state.Matches
+			if !session.state.Found {
+				want = 0
+			}
+			if p.count != want || p.current != session.state.Current {
+				t.Errorf("%s: provider %s shows count %d at %d; the Manager's search has %d at %d", name, label, p.count, p.current, want, session.state.Current)
+			}
 		}
 		for id, session := range sessions {
-			if !session.active || session.owner != p.mount {
-				continue
-			}
-			if !p.search || id != p.page || session.id != p.id {
-				t.Errorf("%s: provider %s: the Manager searches %s for its mount's find %s; the provider holds %v for %s on %s", name, label, e.pageLabel(id), session.id, p.search, p.id, e.pageLabel(p.page))
+			if session.active && session.owner == p.mount && (!held || id != p.page) {
+				t.Errorf("%s: provider %s: the Manager searches %s for its mount at sequence %d; the bar shows sequence %d on %s", name, label, e.pageLabel(id), session.seq, p.showing, e.pageLabel(p.page))
 			}
 		}
 	}
 	for _, failed := range e.errs {
-		allowed := errors.Is(failed.err, errFakeFindStart) || errors.Is(failed.err, errFakeFindStop) ||
-			(failed.kind == FindStart && (errors.Is(failed.err, errFindNotShown) || errors.Is(failed.err, errFindNoMount)))
+		refusedStart := failed.kind == FindStart && (errors.Is(failed.err, errFindNotShown) || errors.Is(failed.err, errFindNoMount) ||
+			errors.Is(failed.err, errFindQueryTooLong) || errors.Is(failed.err, errPageNotFound))
+		allowed := errors.Is(failed.err, errFakeFindStart) || errors.Is(failed.err, errFakeFindStop) || refusedStart ||
+			errors.Is(failed.err, context.Canceled)
 		if !allowed {
 			t.Errorf("%s: %s failed: %v", name, failed.op, failed.err)
 		}
 	}
 	for _, answer := range e.answers {
-		if !answer.state.Foreign && (answer.state.Mount != answer.mount || answer.state.FindID != answer.id) {
-			t.Errorf("%s: %s answered %s/%s to %s/%s unmarked", name, answer.op, e.labels[answer.state.Mount], answer.state.FindID, e.labels[answer.mount], answer.id)
+		if answer.state.Foreign {
+			if answer.state.Mount != answer.owner.mount || answer.state.Seq != answer.owner.seq {
+				t.Errorf("%s: %s answered Foreign naming %s/%d, the owner was %s/%d", name, answer.op, e.labels[answer.state.Mount], answer.state.Seq, e.labels[answer.owner.mount], answer.owner.seq)
+			}
+			continue
 		}
-		if answer.state.Foreign && (answer.state.Mount != answer.owner.mount || answer.state.FindID != answer.owner.id) {
-			t.Errorf("%s: %s answered Foreign naming %s/%s, the owner was %s/%s", name, answer.op, e.labels[answer.state.Mount], answer.state.FindID, e.labels[answer.owner.mount], answer.owner.id)
+		named := answer.state.Seq == answer.seq || (answer.kind == FindStop && answer.state.Seq <= answer.seq)
+		if answer.state.Mount != answer.mount || !named {
+			t.Errorf("%s: %s answered %s/%d to %s/%d unmarked", name, answer.op, e.labels[answer.state.Mount], answer.state.Seq, e.labels[answer.mount], answer.seq)
 		}
 	}
 }
@@ -788,7 +831,10 @@ func (e *findTableEnv) scripts(t *testing.T, name string) []findScript {
 		if len(p.steps) == 0 {
 			continue
 		}
-		out = append(out, findScript{Name: name + " / " + label, Mount: e.labels[p.mount], Page: "page-1", Steps: p.steps, Bar: p.shown})
+		out = append(out, findScript{
+			Name: name + " / " + label, Mount: e.labels[p.mount], Page: "page-1", Steps: p.steps, Bar: p.open,
+			View: findScriptView{Count: p.count, Current: p.current, Pending: p.pending},
+		})
 	}
 	return out
 }
@@ -819,6 +865,14 @@ func findTableOps() []findTableOp {
 			ui("close "+label, label, (*findProvider).uiClear),
 		)
 	}
+	ops = append(ops,
+		ui("oversized A", "A", func(p *findProvider, t *testing.T) { p.uiSearch(t, findOversizedQuery) }),
+		findTableOp{name: "gone page A", run: func(t *testing.T, e *findTableEnv) {
+			e.goneStart(t, e.providers["A"])
+			e.settle()
+			e.deliver()
+		}},
+	)
 	return append(ops,
 		other("commit", func(_ *testing.T, e *findTableEnv) { e.f.fake.commitDocument() }),
 		other("late commit", func(_ *testing.T, e *findTableEnv) {
@@ -862,6 +916,30 @@ func findTableOps() []findTableOp {
 			e.install(t)
 		}),
 	)
+}
+
+// findGonePage is a page id the Manager has no page for: one that closed
+// before the pane learned of it.
+const findGonePage = "page-closed-before-the-pane-knew"
+
+// findOversizedQuery is a query the Manager refuses.
+var findOversizedQuery = strings.Repeat("a", maxFindQueryBytes+1)
+
+// goneStart is the reader typing while the pane still shows a page that
+// already closed: the start is refused, and then the pane shows the page it
+// showed before.
+func (e *findTableEnv) goneStart(t *testing.T, p *findProvider) {
+	if p.disposed || !p.open {
+		return
+	}
+	shown := e.shown
+	e.showPage(findGonePage)
+	query := "gamma"
+	if p.query == query {
+		query = "delta"
+	}
+	p.uiSearch(t, query)
+	e.showPage(shown)
 }
 
 // switchTo activates a page, restoring it if suspended, and the panes show
@@ -914,6 +992,7 @@ func TestFindEveryOrderedTripleKeepsTheInvariants(t *testing.T) {
 		"open A": true, "open B": true, "start A": true, "start B": true, "step A": true, "step B": true,
 		"stop A": true, "stop B": true, "close A": true, "close B": true, "commit": true, "late commit": true,
 		"switch away": true, "suspend and restore": true, "detach A": true, "stop fails once": true,
+		"oversized A": true, "gone page A": true,
 	}
 	var ops []findTableOp
 	for _, op := range findTableOps() {
@@ -985,6 +1064,7 @@ func TestFindOutstandingCallAcrossLaterActions(t *testing.T) {
 			p.uiSearch(t, query)
 		}},
 		{"step", func(t *testing.T, e *findTableEnv) { e.providers["A"].uiNext(t) }},
+		{"oversized", func(t *testing.T, e *findTableEnv) { e.providers["A"].uiSearch(t, findOversizedQuery) }},
 		{"switch", func(t *testing.T, e *findTableEnv) {
 			if e.shown == e.f.pageID {
 				e.switchTo(t, e.other)
@@ -1108,7 +1188,7 @@ func TestFindEndInsideAnActionLandsAfterIt(t *testing.T) {
 					// Every end of the asking find's search announced while
 					// it was in flight is newer than its answer.
 					for _, end := range call.events {
-						if end.FindID == call.intent.id && end.Session <= call.state.Session {
+						if end.Mount == p.mount && end.Seq == call.intent.seq && end.Session <= call.state.Session {
 							t.Fatalf("end %d is not newer than the action's answer %d", end.Session, call.state.Session)
 						}
 					}
@@ -1127,6 +1207,62 @@ func TestFindEndInsideAnActionLandsAfterIt(t *testing.T) {
 		}
 	}
 	checkFindScripts(t, "inside.json", scripts)
+}
+
+// Orders review found, each named: a stop made after a start the Manager
+// refused, or one dropped or left unanswered, ends the search shown before
+// it; a stop's failure, its retry's among them, never changes what the bar
+// shows.
+func TestFindNamedSequences(t *testing.T) {
+	sequences := []struct {
+		name, base string
+		run        func(t *testing.T, e *findTableEnv)
+	}{
+		{"a search, a replacement too long to start, then the bar closes", "search", func(t *testing.T, e *findTableEnv) {
+			a := e.providers["A"]
+			a.uiSearch(t, findOversizedQuery)
+			a.uiClear(t)
+		}},
+		{"a search, a replacement on a page already gone, then the bar closes", "search", func(t *testing.T, e *findTableEnv) {
+			a := e.providers["A"]
+			e.goneStart(t, a)
+			a.uiClear(t)
+		}},
+		{"a start answered late, its replacement answered, a query still debouncing, then the bar closes", "bar", func(t *testing.T, e *findTableEnv) {
+			a := e.providers["A"]
+			a.hold = "answer"
+			a.uiSearch(t, "alpha")
+			a.uiSearch(t, "beta")
+			a.release(t)
+			a.uiType(t, "gamma")
+			a.uiClear(t)
+		}},
+		{"a stop refused, the next search shown, then the stop's retry refused", "search", func(t *testing.T, e *findTableEnv) {
+			a := e.providers["A"]
+			e.mu.Lock()
+			e.stopFail = "once"
+			e.mu.Unlock()
+			a.uiSearch(t, "")
+			a.uiSearch(t, "beta")
+			e.mu.Lock()
+			e.expire = true
+			e.mu.Unlock()
+			if !a.runRetries(t) {
+				t.Fatal("the refused stop set no retry")
+			}
+		}},
+	}
+	var scripts []findScript
+	for _, sequence := range sequences {
+		t.Run(sequence.name, func(t *testing.T) {
+			e := newFindTableEnv(t, sequence.base)
+			sequence.run(t, e)
+			e.quiesce(t)
+			e.check(t, sequence.name)
+			scripts = append(scripts, e.scripts(t, sequence.name)...)
+		})
+	}
+	checkFindScripts(t, "named.json", scripts)
 }
 
 // checkFindScripts compares the scripts with the copy the frontend replays,

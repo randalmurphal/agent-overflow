@@ -800,17 +800,17 @@ func TestBrowserCompanionFindRunsOnTheThreadsShownPage(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = app.BrowserCompanionPaneDetach(context.Background(), mount.ID) })
-	found, err := app.BrowserCompanionFind(ctx, thread.ID, BrowserFindAction{Kind: "start", PageID: pageID, Query: "alpha", Mount: mount.ID, FindID: "find-1"})
+	found, err := app.BrowserCompanionFind(ctx, thread.ID, BrowserFindAction{Kind: "start", PageID: pageID, Query: "alpha", Mount: mount.ID, Seq: 1})
 	if err != nil || found.Matches != 2 || found.Current != 0 || !found.Active || found.Mount != mount.ID {
 		t.Fatalf("start = %+v, %v", found, err)
 	}
-	if next, err := app.BrowserCompanionFind(ctx, thread.ID, BrowserFindAction{Kind: "next", PageID: pageID, Mount: mount.ID, FindID: "find-1"}); err != nil || next.Current != 1 {
+	if next, err := app.BrowserCompanionFind(ctx, thread.ID, BrowserFindAction{Kind: "next", PageID: pageID, Mount: mount.ID, Seq: 1}); err != nil || next.Current != 1 {
 		t.Fatalf("next = %+v, %v", next, err)
 	}
-	if _, err := app.BrowserCompanionFind(ctx, other.ID, BrowserFindAction{Kind: "next", PageID: pageID, Mount: mount.ID, FindID: "find-1"}); err == nil {
+	if _, err := app.BrowserCompanionFind(ctx, other.ID, BrowserFindAction{Kind: "next", PageID: pageID, Mount: mount.ID, Seq: 1}); err == nil {
 		t.Fatal("another thread stepped this thread's find")
 	}
-	if stopped, err := app.BrowserCompanionFind(ctx, thread.ID, BrowserFindAction{Kind: "stop", PageID: pageID, Mount: mount.ID, FindID: "find-1"}); err != nil || stopped.Active {
+	if stopped, err := app.BrowserCompanionFind(ctx, thread.ID, BrowserFindAction{Kind: "stop", PageID: pageID, Mount: mount.ID, Seq: 1}); err != nil || stopped.Active {
 		t.Fatalf("stop = %+v, %v", stopped, err)
 	}
 }
@@ -843,7 +843,7 @@ func TestBrowserFindRunAfterItsConnectionClosedIsEndedByTheCleanup(t *testing.T)
 		t.Fatal(err)
 	}
 	// The socket is gone; the transport runs the find it was waiting on.
-	action := BrowserFindAction{Kind: "start", PageID: pageID, Query: "alpha", Mount: mount.ID, FindID: "find-1"}
+	action := BrowserFindAction{Kind: "start", PageID: pageID, Query: "alpha", Mount: mount.ID, Seq: 1}
 	if started, err := app.BrowserCompanionFind(ctx, thread.ID, action); err != nil || !started.Active {
 		t.Fatalf("start after the socket closed = %+v, %v", started, err)
 	}

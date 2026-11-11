@@ -157,11 +157,17 @@ func (p *wkPage) bind(ctx context.Context) (context.Context, context.CancelFunc)
 	return merged, func() { stop(); cancel() }
 }
 
-// evalBody runs one async-function body and returns its raw JSON result.
+// evalBody runs one async-function body in the page's content world and
+// returns its raw JSON result.
 func (p *wkPage) evalBody(ctx context.Context, body string) (json.RawMessage, error) {
+	return p.evalIn(ctx, "", body)
+}
+
+// evalIn is evalBody in the named isolated world, "" for the page's own.
+func (p *wkPage) evalIn(ctx context.Context, world, body string) (json.RawMessage, error) {
 	opCtx, cancel := p.bind(ctx)
 	defer cancel()
-	raw, err := wkEvaluate(opCtx, p.liveView(), body)
+	raw, err := wkEvaluate(opCtx, p.liveView(), world, body)
 	if err != nil {
 		return nil, err
 	}
@@ -408,10 +414,10 @@ var _ pageFind = (*wkPage)(nil)
 func (p *wkPage) FindMode() string { return FindModeBar }
 
 // FindStart searches from the top: WKWebView searches from the selection, so
-// the selection is dropped first, in the page and its same-origin frames.
-// WKFindResult has no count.
+// the selection is dropped first, in the page and its same-origin frames,
+// from an isolated world. WKFindResult has no count.
 func (p *wkPage) FindStart(ctx context.Context, query string) (findResult, error) {
-	if _, err := p.evalBody(ctx, webkitClearSelectionScript); err != nil {
+	if _, err := p.evalIn(ctx, webkitFindWorld, webkitClearSelectionScript); err != nil {
 		return findResult{}, err
 	}
 	p.mu.Lock()
@@ -432,13 +438,13 @@ func (p *wkPage) FindStep(ctx context.Context, backwards bool) (findResult, erro
 }
 
 // FindStop drops the selection that marks the match, in the page and its
-// same-origin frames; a match selected in a cross-origin frame stays
-// selected.
+// same-origin frames, from an isolated world; a match selected in a
+// cross-origin frame stays selected.
 func (p *wkPage) FindStop(ctx context.Context) error {
 	p.mu.Lock()
 	p.findQuery = ""
 	p.mu.Unlock()
-	_, err := p.evalBody(ctx, webkitClearSelectionScript)
+	_, err := p.evalIn(ctx, webkitFindWorld, webkitClearSelectionScript)
 	return err
 }
 

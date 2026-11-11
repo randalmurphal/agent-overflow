@@ -117,6 +117,9 @@ type paneMount struct {
 	threadID string
 	rect     PaneRect
 	hasRect  bool
+	// findSeq is the sequence of the newest find start the Manager took
+	// from this mount (admitFindStart).
+	findSeq uint64
 }
 
 func (p *managedPage) setInfo(info PageInfo) {

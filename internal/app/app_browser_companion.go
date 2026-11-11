@@ -175,15 +175,16 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 // BrowserFindAction is one request of the browser pane's find: start (the
 // query; empty ends the search, or opens an engine's own find bar empty),
 // next, previous or stop. Mount is the pane mount the find belongs to and
-// FindID the id its provider made for the search's start, which that
-// search's steps and stop name; a step or stop for a search another owner
-// holds changes nothing.
+// Seq the provider's sequence: a start's own, increasing with every start
+// the provider makes; the one a step steps; for a stop, the highest the
+// provider made, and the stop ends the mount's search at or below it. A step
+// or stop for a search another owner holds changes nothing.
 type BrowserFindAction struct {
 	Kind   string `json:"kind"`
 	PageID string `json:"pageId"`
 	Query  string `json:"query,omitempty"`
 	Mount  string `json:"mount"`
-	FindID string `json:"findId"`
+	Seq    uint64 `json:"seq"`
 }
 
 // BrowserCompanionFind runs one find action on the page the thread's browser
@@ -201,7 +202,7 @@ func (a *App) BrowserCompanionFind(ctx context.Context, threadID string, action 
 	if err != nil {
 		return appbrowser.FindState{}, err
 	}
-	state, err := a.browser.manager.Find(ctx, access, action.PageID, action.Kind, action.Query, action.Mount, action.FindID)
+	state, err := a.browser.manager.Find(ctx, access, action.PageID, action.Kind, action.Query, action.Mount, action.Seq)
 	// An open or start on a suspended page restores it.
 	if deletedErr := a.closeBrowserPagesIfThreadDeleted(access.ThreadID); deletedErr != nil {
 		return appbrowser.FindState{}, deletedErr

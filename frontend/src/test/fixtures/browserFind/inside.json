@@ -15,7 +15,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -24,7 +24,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -43,7 +43,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -51,7 +51,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -64,7 +64,12 @@
     }
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "close A with detach A at checked / A",
@@ -82,7 +87,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -91,7 +96,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -110,7 +115,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -118,7 +123,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -134,7 +139,12 @@
     "ui": "dispose"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "close A with switch away at checked / A",
@@ -152,7 +162,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -161,7 +171,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -180,7 +190,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -188,7 +198,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -204,7 +214,12 @@
     "shown": "page-2"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "close A with switch away at checked / B",
@@ -215,7 +230,12 @@
     "shown": "page-2"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "next A with commit at checked / A",
@@ -233,7 +253,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -242,7 +262,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -261,7 +281,7 @@
     "send": {
      "kind": "next",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -269,7 +289,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -286,7 +306,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -297,33 +317,14 @@
      "current": 0,
      "capped": false
     }
-   },
-   {
-    "send": {
-     "kind": "stop",
-     "page": "page-1",
-     "id": "A1"
-    }
-   },
-   {
-    "answer": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "",
-     "findId": "",
-     "document": 1,
-     "session": 2,
-     "foreign": true,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "next A with commit at checked / B",
@@ -335,7 +336,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -348,7 +349,12 @@
     }
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "next A with detach A at checked / A",
@@ -366,7 +372,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -375,7 +381,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -394,7 +400,7 @@
     "send": {
      "kind": "next",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -402,7 +408,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -419,7 +425,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -432,34 +438,15 @@
     }
    },
    {
-    "send": {
-     "kind": "stop",
-     "page": "page-1",
-     "id": "A1"
-    }
-   },
-   {
-    "answer": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "",
-     "findId": "",
-     "document": 1,
-     "session": 2,
-     "foreign": true,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
-   },
-   {
     "ui": "dispose"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "next A with switch away at checked / A",
@@ -477,7 +464,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -486,7 +473,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -505,7 +492,7 @@
     "send": {
      "kind": "next",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -513,7 +500,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -530,7 +517,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -543,34 +530,15 @@
     }
    },
    {
-    "send": {
-     "kind": "stop",
-     "page": "page-1",
-     "id": "A1"
-    }
-   },
-   {
-    "answer": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "",
-     "findId": "",
-     "document": 1,
-     "session": 2,
-     "foreign": true,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
-   },
-   {
     "shown": "page-2"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "next A with switch away at checked / B",
@@ -582,7 +550,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -598,7 +566,12 @@
     "shown": "page-2"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "reopen A with commit at checked on an idle page / A",
@@ -616,7 +589,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -625,7 +598,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -644,7 +617,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -652,7 +625,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -671,7 +644,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A2",
+     "seq": 2,
      "query": "alpha"
     }
    },
@@ -680,7 +653,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 2,
      "session": 3,
      "foreign": false,
@@ -693,7 +666,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 1,
+   "current": 0,
+   "pending": false
+  }
  },
  {
   "name": "reopen A with commit at engine on an idle page / A",
@@ -711,7 +689,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -720,7 +698,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -739,7 +717,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -747,7 +725,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -766,7 +744,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A2",
+     "seq": 2,
      "query": "alpha"
     }
    },
@@ -775,7 +753,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
      "session": 4,
      "foreign": false,
@@ -792,7 +770,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
      "session": 3,
      "foreign": false,
@@ -803,33 +781,14 @@
      "current": 0,
      "capped": false
     }
-   },
-   {
-    "send": {
-     "kind": "stop",
-     "page": "page-1",
-     "id": "A2"
-    }
-   },
-   {
-    "answer": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "",
-     "findId": "",
-     "document": 1,
-     "session": 4,
-     "foreign": true,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "reopen A with commit at engine on an idle page / B",
@@ -841,7 +800,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
      "session": 4,
      "foreign": false,
@@ -854,7 +813,12 @@
     }
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "reopen A with detach A at checked on an idle page / A",
@@ -872,7 +836,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -881,7 +845,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -900,7 +864,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -908,7 +872,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -927,7 +891,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A2",
+     "seq": 2,
      "query": "alpha"
     }
    },
@@ -936,7 +900,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
      "session": 4,
      "foreign": false,
@@ -953,7 +917,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
      "session": 3,
      "foreign": false,
@@ -966,34 +930,15 @@
     }
    },
    {
-    "send": {
-     "kind": "stop",
-     "page": "page-1",
-     "id": "A2"
-    }
-   },
-   {
-    "answer": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "",
-     "findId": "",
-     "document": 1,
-     "session": 4,
-     "foreign": true,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
-   },
-   {
     "ui": "dispose"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "reopen A with switch away at checked on an idle page / A",
@@ -1011,7 +956,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -1020,7 +965,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -1039,7 +984,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -1047,7 +992,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -1066,7 +1011,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A2",
+     "seq": 2,
      "query": "alpha"
     }
    },
@@ -1075,7 +1020,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
      "session": 4,
      "foreign": false,
@@ -1092,7 +1037,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
      "session": 3,
      "foreign": false,
@@ -1105,34 +1050,15 @@
     }
    },
    {
-    "send": {
-     "kind": "stop",
-     "page": "page-1",
-     "id": "A2"
-    }
-   },
-   {
-    "answer": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "",
-     "findId": "",
-     "document": 1,
-     "session": 4,
-     "foreign": true,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
-   },
-   {
     "shown": "page-2"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "reopen A with switch away at checked on an idle page / B",
@@ -1144,7 +1070,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
      "session": 4,
      "foreign": false,
@@ -1160,7 +1086,12 @@
     "shown": "page-2"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "start A with commit at checked / A",
@@ -1178,7 +1109,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -1187,7 +1118,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -1207,25 +1138,8 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A2",
+     "seq": 2,
      "query": "beta"
-    }
-   },
-   {
-    "event": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "mount-A",
-     "findId": "A1",
-     "document": 1,
-     "session": 2,
-     "foreign": false,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
     }
    },
    {
@@ -1233,9 +1147,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 2,
-     "session": 3,
+     "session": 2,
      "foreign": false,
      "active": true,
      "query": "beta",
@@ -1246,7 +1160,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 1,
+   "current": 0,
+   "pending": false
+  }
  },
  {
   "name": "start A with commit at engine / A",
@@ -1264,7 +1183,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -1273,7 +1192,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -1293,7 +1212,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A2",
+     "seq": 2,
      "query": "beta"
     }
    },
@@ -1302,26 +1221,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 2,
      "document": 1,
-     "session": 2,
-     "foreign": false,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
-   },
-   {
-    "event": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "mount-A",
-     "findId": "A2",
-     "document": 1,
-     "session": 4,
+     "session": 3,
      "foreign": false,
      "active": false,
      "query": "",
@@ -1336,9 +1238,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
-     "session": 3,
+     "session": 2,
      "foreign": false,
      "active": true,
      "query": "beta",
@@ -1347,33 +1249,14 @@
      "current": 0,
      "capped": false
     }
-   },
-   {
-    "send": {
-     "kind": "stop",
-     "page": "page-1",
-     "id": "A2"
-    }
-   },
-   {
-    "answer": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "",
-     "findId": "",
-     "document": 1,
-     "session": 4,
-     "foreign": true,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "start A with commit at engine / B",
@@ -1385,26 +1268,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 2,
      "document": 1,
-     "session": 2,
-     "foreign": false,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
-   },
-   {
-    "event": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "mount-A",
-     "findId": "A2",
-     "document": 1,
-     "session": 4,
+     "session": 3,
      "foreign": false,
      "active": false,
      "query": "",
@@ -1415,7 +1281,12 @@
     }
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "start A with detach A at checked / A",
@@ -1433,7 +1304,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -1442,7 +1313,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -1462,7 +1333,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A2",
+     "seq": 2,
      "query": "beta"
     }
    },
@@ -1471,26 +1342,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 2,
      "document": 1,
-     "session": 2,
-     "foreign": false,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
-   },
-   {
-    "event": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "mount-A",
-     "findId": "A2",
-     "document": 1,
-     "session": 4,
+     "session": 3,
      "foreign": false,
      "active": false,
      "query": "",
@@ -1505,9 +1359,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
-     "session": 3,
+     "session": 2,
      "foreign": false,
      "active": true,
      "query": "beta",
@@ -1518,34 +1372,15 @@
     }
    },
    {
-    "send": {
-     "kind": "stop",
-     "page": "page-1",
-     "id": "A2"
-    }
-   },
-   {
-    "answer": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "",
-     "findId": "",
-     "document": 1,
-     "session": 4,
-     "foreign": true,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
-   },
-   {
     "ui": "dispose"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "start A with switch away at checked / A",
@@ -1563,7 +1398,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -1572,7 +1407,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -1592,7 +1427,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A2",
+     "seq": 2,
      "query": "beta"
     }
    },
@@ -1601,26 +1436,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 2,
      "document": 1,
-     "session": 2,
-     "foreign": false,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
-   },
-   {
-    "event": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "mount-A",
-     "findId": "A2",
-     "document": 1,
-     "session": 4,
+     "session": 3,
      "foreign": false,
      "active": false,
      "query": "",
@@ -1635,9 +1453,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
-     "session": 3,
+     "session": 2,
      "foreign": false,
      "active": true,
      "query": "beta",
@@ -1648,34 +1466,15 @@
     }
    },
    {
-    "send": {
-     "kind": "stop",
-     "page": "page-1",
-     "id": "A2"
-    }
-   },
-   {
-    "answer": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "",
-     "findId": "",
-     "document": 1,
-     "session": 4,
-     "foreign": true,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
-   },
-   {
     "shown": "page-2"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "start A with switch away at checked / B",
@@ -1687,26 +1486,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 2,
      "document": 1,
-     "session": 2,
-     "foreign": false,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
-   },
-   {
-    "event": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "mount-A",
-     "findId": "A2",
-     "document": 1,
-     "session": 4,
+     "session": 3,
      "foreign": false,
      "active": false,
      "query": "",
@@ -1720,7 +1502,12 @@
     "shown": "page-2"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "start B with commit at checked / A",
@@ -1738,7 +1525,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -1747,7 +1534,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -1764,7 +1551,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -1777,7 +1564,12 @@
     }
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "start B with commit at checked / B",
@@ -1795,7 +1587,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "B1",
+     "seq": 1,
      "query": "beta"
     }
    },
@@ -1804,7 +1596,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -1821,7 +1613,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-B",
-     "findId": "B1",
+     "seq": 1,
      "document": 2,
      "session": 3,
      "foreign": false,
@@ -1834,7 +1626,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 1,
+   "current": 0,
+   "pending": false
+  }
  },
  {
   "name": "start B with commit at engine / A",
@@ -1852,7 +1649,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -1861,7 +1658,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -1878,7 +1675,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -1895,7 +1692,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-B",
-     "findId": "B1",
+     "seq": 1,
      "document": 1,
      "session": 4,
      "foreign": false,
@@ -1908,7 +1705,12 @@
     }
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "start B with commit at engine / B",
@@ -1926,7 +1728,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "B1",
+     "seq": 1,
      "query": "beta"
     }
    },
@@ -1935,7 +1737,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -1952,7 +1754,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-B",
-     "findId": "B1",
+     "seq": 1,
      "document": 1,
      "session": 4,
      "foreign": false,
@@ -1969,7 +1771,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-B",
-     "findId": "B1",
+     "seq": 1,
      "document": 1,
      "session": 3,
      "foreign": false,
@@ -1980,33 +1782,14 @@
      "current": 0,
      "capped": false
     }
-   },
-   {
-    "send": {
-     "kind": "stop",
-     "page": "page-1",
-     "id": "B1"
-    }
-   },
-   {
-    "answer": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "",
-     "findId": "",
-     "document": 1,
-     "session": 4,
-     "foreign": true,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "start B with detach A at checked / A",
@@ -2024,7 +1807,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -2033,7 +1816,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -2050,7 +1833,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -2066,7 +1849,12 @@
     "ui": "dispose"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "start B with detach A at checked / B",
@@ -2084,7 +1872,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "B1",
+     "seq": 1,
      "query": "beta"
     }
    },
@@ -2093,7 +1881,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -2110,7 +1898,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-B",
-     "findId": "B1",
+     "seq": 1,
      "document": 1,
      "session": 3,
      "foreign": false,
@@ -2123,7 +1911,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 1,
+   "current": 0,
+   "pending": false
+  }
  },
  {
   "name": "start B with switch away at checked / A",
@@ -2141,7 +1934,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -2150,7 +1943,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -2167,7 +1960,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -2184,7 +1977,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-B",
-     "findId": "B1",
+     "seq": 1,
      "document": 1,
      "session": 4,
      "foreign": false,
@@ -2200,7 +1993,12 @@
     "shown": "page-2"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "start B with switch away at checked / B",
@@ -2218,7 +2016,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "B1",
+     "seq": 1,
      "query": "beta"
     }
    },
@@ -2227,7 +2025,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -2244,7 +2042,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-B",
-     "findId": "B1",
+     "seq": 1,
      "document": 1,
      "session": 4,
      "foreign": false,
@@ -2261,7 +2059,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-B",
-     "findId": "B1",
+     "seq": 1,
      "document": 1,
      "session": 3,
      "foreign": false,
@@ -2274,34 +2072,15 @@
     }
    },
    {
-    "send": {
-     "kind": "stop",
-     "page": "page-1",
-     "id": "B1"
-    }
-   },
-   {
-    "answer": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "",
-     "findId": "",
-     "document": 1,
-     "session": 4,
-     "foreign": true,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
-   },
-   {
     "shown": "page-2"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "stop A with commit at checked / A",
@@ -2319,7 +2098,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -2328,7 +2107,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -2347,7 +2126,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -2355,7 +2134,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -2368,7 +2147,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "stop A with detach A at checked / A",
@@ -2386,7 +2170,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -2395,7 +2179,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -2414,7 +2198,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -2422,7 +2206,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -2438,7 +2222,12 @@
     "ui": "dispose"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "stop A with switch away at checked / A",
@@ -2456,7 +2245,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -2465,7 +2254,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -2484,7 +2273,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -2492,7 +2281,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -2508,6 +2297,11 @@
     "shown": "page-2"
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  }
 ]

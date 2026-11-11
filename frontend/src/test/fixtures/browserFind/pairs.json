@@ -11,7 +11,12 @@
     "ui": "clear"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/close A then detach A / A",
@@ -28,7 +33,12 @@
     "ui": "dispose"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/close A then open A / A",
@@ -45,7 +55,12 @@
     "ui": "open"
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/close A then open B / B",
@@ -56,7 +71,12 @@
     "ui": "open"
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/close A then switch away / A",
@@ -73,7 +93,12 @@
     "shown": "page-2"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/close A then switch away / B",
@@ -84,7 +109,12 @@
     "shown": "page-2"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/close B then close B / A",
@@ -95,7 +125,12 @@
     "ui": "open"
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/close B then detach A / A",
@@ -109,7 +144,147 @@
     "ui": "dispose"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/close B then gone page A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 1,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/close B then gone page A / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "shown": "page-gone"
+   },
+   {
+    "shown": "page-1"
+   }
+  ],
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/close B then oversized A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/close B then start A / A",
@@ -127,7 +302,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "beta"
     }
    },
@@ -136,7 +311,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -149,7 +324,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 1,
+   "current": 0,
+   "pending": false
+  }
  },
  {
   "name": "bar/close B then step A / A",
@@ -163,7 +343,12 @@
     "ui": "next"
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/close B then switch away / A",
@@ -177,7 +362,12 @@
     "shown": "page-2"
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/commit then start A / A",
@@ -195,7 +385,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "beta"
     }
    },
@@ -204,7 +394,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 2,
      "session": 1,
      "foreign": false,
@@ -217,7 +407,697 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 1,
+   "current": 0,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/gone page A then close A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 1,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   },
+   {
+    "ui": "clear"
+   }
+  ],
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/gone page A then detach A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 1,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   },
+   {
+    "ui": "dispose"
+   }
+  ],
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/gone page A then gone page A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 1,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "delta"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 2,
+     "query": "delta"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/gone page A then gone page A / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "shown": "page-gone"
+   },
+   {
+    "shown": "page-1"
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "shown": "page-1"
+   }
+  ],
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/gone page A then open B / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "shown": "page-gone"
+   },
+   {
+    "shown": "page-1"
+   },
+   {
+    "ui": "open"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/gone page A then oversized A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 1,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 2,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/gone page A then start A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 1,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   },
+   {
+    "ui": "search",
+    "query": "beta"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 2,
+     "query": "beta"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 2,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 1,
+   "current": 0,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/gone page A then step A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 1,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   },
+   {
+    "ui": "next"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/gone page A then stop A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 1,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   },
+   {
+    "ui": "search"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/gone page A then switch away / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 1,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   },
+   {
+    "shown": "page-2"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/gone page A then switch away / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "shown": "page-gone"
+   },
+   {
+    "shown": "page-1"
+   },
+   {
+    "shown": "page-2"
+   }
+  ],
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/open B then close B / B",
@@ -231,7 +1111,34 @@
     "ui": "clear"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/open B then gone page A / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "shown": "page-1"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/open B then start B / B",
@@ -249,7 +1156,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "B1",
+     "seq": 1,
      "query": "beta"
     }
    },
@@ -258,7 +1165,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-B",
-     "findId": "B1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -271,7 +1178,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 1,
+   "current": 0,
+   "pending": false
+  }
  },
  {
   "name": "bar/open B then step B / B",
@@ -285,7 +1197,12 @@
     "ui": "next"
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/open B then switch away / B",
@@ -299,7 +1216,486 @@
     "shown": "page-2"
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/oversized A then close A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "ui": "clear"
+   }
+  ],
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/oversized A then detach A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "ui": "dispose"
+   }
+  ],
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/oversized A then gone page A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 2,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/oversized A then start A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "ui": "search",
+    "query": "beta"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 2,
+     "query": "beta"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 2,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 1,
+   "current": 0,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/oversized A then step A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "ui": "next"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/oversized A then stop A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "ui": "search"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/oversized A then switch away / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-2"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/start A then close A / A",
@@ -317,7 +1713,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "beta"
     }
    },
@@ -326,7 +1722,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -345,7 +1741,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -353,7 +1749,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -366,7 +1762,12 @@
     }
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/start A then commit / A",
@@ -384,7 +1785,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "beta"
     }
    },
@@ -393,7 +1794,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -410,7 +1811,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -423,7 +1824,12 @@
     }
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/start A then commit / B",
@@ -435,7 +1841,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -448,7 +1854,12 @@
     }
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/start A then detach A / A",
@@ -466,7 +1877,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "beta"
     }
    },
@@ -475,7 +1886,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -492,7 +1903,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -508,7 +1919,186 @@
     "ui": "dispose"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/start A then gone page A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "beta"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "beta"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 2,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/start A then oversized A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "beta"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "beta"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 2,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/start A then step A / A",
@@ -526,7 +2116,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "beta"
     }
    },
@@ -535,7 +2125,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -554,7 +2144,7 @@
     "send": {
      "kind": "next",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -562,7 +2152,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -575,7 +2165,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 1,
+   "current": 0,
+   "pending": false
+  }
  },
  {
   "name": "bar/start A then stop A / A",
@@ -593,7 +2188,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "beta"
     }
    },
@@ -602,7 +2197,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -621,7 +2216,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -629,7 +2224,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -642,7 +2237,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/start A then switch away / A",
@@ -660,7 +2260,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "beta"
     }
    },
@@ -669,7 +2269,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -686,7 +2286,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -702,7 +2302,12 @@
     "shown": "page-2"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/start A then switch away / B",
@@ -714,7 +2319,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -730,7 +2335,12 @@
     "shown": "page-2"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/start fails then start A / A",
@@ -748,15 +2358,44 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "beta"
     }
    },
    {
     "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "",
+     "seq": 0,
+     "document": 1,
+     "session": 1,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/step A then close A / A",
@@ -773,7 +2412,12 @@
     "ui": "clear"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/step A then detach A / A",
@@ -790,7 +2434,134 @@
     "ui": "dispose"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/step A then gone page A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "next"
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 1,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/step A then oversized A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "next"
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/step A then start A / A",
@@ -811,7 +2582,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "beta"
     }
    },
@@ -820,7 +2591,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -833,7 +2604,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 1,
+   "current": 0,
+   "pending": false
+  }
  },
  {
   "name": "bar/step A then step A / A",
@@ -850,7 +2626,12 @@
     "ui": "next"
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/step A then switch away / A",
@@ -867,7 +2648,12 @@
     "shown": "page-2"
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/switch away then close A / A",
@@ -884,7 +2670,12 @@
     "ui": "clear"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/switch away then detach A / A",
@@ -901,7 +2692,98 @@
     "ui": "dispose"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/switch away then gone page A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "shown": "page-2"
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 1,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-2"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/switch away then gone page A / B",
+  "mount": "mount-B",
+  "page": "page-1",
+  "steps": [
+   {
+    "shown": "page-2"
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "shown": "page-2"
+   }
+  ],
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/switch away then open B / B",
@@ -915,7 +2797,70 @@
     "ui": "open"
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "bar/switch away then oversized A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "shown": "page-2"
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-2",
+     "seq": 1,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-2",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-2",
+     "incarnation": 1,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/switch away then start A / A",
@@ -936,7 +2881,7 @@
     "send": {
      "kind": "start",
      "page": "page-2",
-     "id": "A1",
+     "seq": 1,
      "query": "beta"
     }
    },
@@ -945,7 +2890,7 @@
      "pageId": "page-2",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 0,
      "session": 1,
      "foreign": false,
@@ -958,7 +2903,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/switch away then step A / A",
@@ -975,7 +2925,12 @@
     "ui": "next"
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/switch away then suspend and restore / A",
@@ -992,7 +2947,12 @@
     "shown": "page-1"
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "bar/switch away then suspend and restore / B",
@@ -1006,7 +2966,12 @@
     "shown": "page-1"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/close A then close A / A",
@@ -1024,7 +2989,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -1033,7 +2998,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -1052,7 +3017,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -1060,7 +3025,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -1073,7 +3038,12 @@
     }
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/close A then detach A / A",
@@ -1091,7 +3061,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -1100,7 +3070,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -1119,7 +3089,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -1127,7 +3097,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -1143,7 +3113,12 @@
     "ui": "dispose"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/close A then open A / A",
@@ -1161,7 +3136,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -1170,7 +3145,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -1189,7 +3164,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -1197,7 +3172,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -1216,7 +3191,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A2",
+     "seq": 2,
      "query": "alpha"
     }
    },
@@ -1225,7 +3200,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
      "session": 3,
      "foreign": false,
@@ -1238,7 +3213,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 1,
+   "current": 0,
+   "pending": false
+  }
  },
  {
   "name": "search/close A then switch away / A",
@@ -1256,7 +3236,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -1265,7 +3245,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -1284,7 +3264,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -1292,7 +3272,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -1308,7 +3288,12 @@
     "shown": "page-2"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/close B then close B / A",
@@ -1326,7 +3311,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -1335,7 +3320,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -1348,7 +3333,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 1,
+   "current": 0,
+   "pending": false
+  }
  },
  {
   "name": "search/close B then commit / A",
@@ -1366,7 +3356,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -1375,7 +3365,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -1392,7 +3382,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -1405,7 +3395,12 @@
     }
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/close B then detach A / A",
@@ -1423,7 +3418,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -1432,7 +3427,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -1449,7 +3444,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -1465,7 +3460,186 @@
     "ui": "dispose"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/close B then gone page A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 2,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/close B then oversized A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 2,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/close B then start A / A",
@@ -1483,7 +3657,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -1492,7 +3666,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -1512,25 +3686,8 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A2",
+     "seq": 2,
      "query": "beta"
-    }
-   },
-   {
-    "event": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "mount-A",
-     "findId": "A1",
-     "document": 1,
-     "session": 2,
-     "foreign": false,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
     }
    },
    {
@@ -1538,9 +3695,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
-     "session": 3,
+     "session": 2,
      "foreign": false,
      "active": true,
      "query": "beta",
@@ -1551,7 +3708,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 1,
+   "current": 0,
+   "pending": false
+  }
  },
  {
   "name": "search/close B then step A / A",
@@ -1569,7 +3731,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -1578,7 +3740,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -1597,7 +3759,7 @@
     "send": {
      "kind": "next",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -1605,7 +3767,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -1618,7 +3780,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 1,
+   "current": 0,
+   "pending": false
+  }
  },
  {
   "name": "search/close B then stop A / A",
@@ -1636,7 +3803,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -1645,7 +3812,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -1664,7 +3831,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -1672,7 +3839,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -1685,7 +3852,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/close B then switch away / A",
@@ -1703,7 +3875,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -1712,7 +3884,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -1729,7 +3901,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -1745,7 +3917,12 @@
     "shown": "page-2"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/commit then open A / A",
@@ -1763,7 +3940,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -1772,7 +3949,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -1789,7 +3966,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -1808,7 +3985,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A2",
+     "seq": 2,
      "query": "alpha"
     }
    },
@@ -1817,7 +3994,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 2,
      "session": 3,
      "foreign": false,
@@ -1830,7 +4007,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 1,
+   "current": 0,
+   "pending": false
+  }
  },
  {
   "name": "search/commit then open B / B",
@@ -1842,7 +4024,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -1858,7 +4040,860 @@
     "ui": "open"
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/gone page A then close A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 2,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   },
+   {
+    "ui": "clear"
+   }
+  ],
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/gone page A then detach A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 2,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   },
+   {
+    "ui": "dispose"
+   }
+  ],
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/gone page A then gone page A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 2,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "delta"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 3,
+     "query": "delta"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 3
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/gone page A then oversized A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 2,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 3,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 3
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "",
+     "seq": 0,
+     "document": 1,
+     "session": 2,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/gone page A then start A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 2,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   },
+   {
+    "ui": "search",
+    "query": "beta"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 3,
+     "query": "beta"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 3,
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 1,
+   "current": 0,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/gone page A then step A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 2,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   },
+   {
+    "ui": "next"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/gone page A then stop A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 2,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   },
+   {
+    "ui": "search"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/gone page A then switch away / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 2,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   },
+   {
+    "shown": "page-2"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/late commit then open B / B",
@@ -1873,7 +4908,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -1886,7 +4921,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/late commit then start A / A",
@@ -1904,7 +4944,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -1913,7 +4953,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -1933,25 +4973,8 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A2",
+     "seq": 2,
      "query": "beta"
-    }
-   },
-   {
-    "event": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "mount-A",
-     "findId": "A1",
-     "document": 1,
-     "session": 2,
-     "foreign": false,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
     }
    },
    {
@@ -1959,9 +4982,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 2,
-     "session": 3,
+     "session": 2,
      "foreign": false,
      "active": true,
      "query": "beta",
@@ -1972,7 +4995,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 1,
+   "current": 0,
+   "pending": false
+  }
  },
  {
   "name": "search/late commit then step A / A",
@@ -1990,7 +5018,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -1999,7 +5027,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -2018,7 +5046,7 @@
     "send": {
      "kind": "next",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -2026,7 +5054,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -2043,7 +5071,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -2056,7 +5084,12 @@
     }
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/open B then start B / B",
@@ -2074,7 +5107,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "B1",
+     "seq": 1,
      "query": "beta"
     }
    },
@@ -2083,7 +5116,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -2100,7 +5133,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-B",
-     "findId": "B1",
+     "seq": 1,
      "document": 1,
      "session": 3,
      "foreign": false,
@@ -2113,7 +5146,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 1,
+   "current": 0,
+   "pending": false
+  }
  },
  {
   "name": "search/open B then switch away / B",
@@ -2128,7 +5166,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -2144,7 +5182,689 @@
     "shown": "page-2"
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/oversized A then close A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 2,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "ui": "clear"
+   }
+  ],
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/oversized A then detach A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 2,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "ui": "dispose"
+   }
+  ],
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/oversized A then gone page A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 2,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 3,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 3
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/oversized A then start A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 2,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "ui": "search",
+    "query": "beta"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 3,
+     "query": "beta"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 3,
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 1,
+   "current": 0,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/oversized A then step A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 2,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "ui": "next"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/oversized A then stop A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 2,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "ui": "search"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/oversized A then switch away / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 2,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-2"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/start A then close A / A",
@@ -2162,7 +5882,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -2171,7 +5891,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -2191,25 +5911,8 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A2",
+     "seq": 2,
      "query": "beta"
-    }
-   },
-   {
-    "event": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "mount-A",
-     "findId": "A1",
-     "document": 1,
-     "session": 2,
-     "foreign": false,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
     }
    },
    {
@@ -2217,9 +5920,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
-     "session": 3,
+     "session": 2,
      "foreign": false,
      "active": true,
      "query": "beta",
@@ -2236,7 +5939,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A2"
+     "seq": 2
     }
    },
    {
@@ -2244,9 +5947,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
-     "session": 4,
+     "session": 3,
      "foreign": false,
      "active": false,
      "query": "",
@@ -2257,7 +5960,12 @@
     }
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/start A then commit / A",
@@ -2275,7 +5983,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -2284,7 +5992,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -2304,25 +6012,8 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A2",
+     "seq": 2,
      "query": "beta"
-    }
-   },
-   {
-    "event": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "mount-A",
-     "findId": "A1",
-     "document": 1,
-     "session": 2,
-     "foreign": false,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
     }
    },
    {
@@ -2330,9 +6021,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
-     "session": 3,
+     "session": 2,
      "foreign": false,
      "active": true,
      "query": "beta",
@@ -2347,9 +6038,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
-     "session": 4,
+     "session": 3,
      "foreign": false,
      "active": false,
      "query": "",
@@ -2360,7 +6051,12 @@
     }
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/start A then commit / B",
@@ -2372,26 +6068,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 2,
      "document": 1,
-     "session": 2,
-     "foreign": false,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
-   },
-   {
-    "event": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "mount-A",
-     "findId": "A2",
-     "document": 1,
-     "session": 4,
+     "session": 3,
      "foreign": false,
      "active": false,
      "query": "",
@@ -2402,7 +6081,12 @@
     }
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/start A then detach A / A",
@@ -2420,7 +6104,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -2429,7 +6113,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -2449,25 +6133,8 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A2",
+     "seq": 2,
      "query": "beta"
-    }
-   },
-   {
-    "event": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "mount-A",
-     "findId": "A1",
-     "document": 1,
-     "session": 2,
-     "foreign": false,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
     }
    },
    {
@@ -2475,9 +6142,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
-     "session": 3,
+     "session": 2,
      "foreign": false,
      "active": true,
      "query": "beta",
@@ -2492,9 +6159,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
-     "session": 4,
+     "session": 3,
      "foreign": false,
      "active": false,
      "query": "",
@@ -2508,7 +6175,244 @@
     "ui": "dispose"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/start A then gone page A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "ui": "search",
+    "query": "beta"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 2,
+     "query": "beta"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 2,
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 3,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 3
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/start A then oversized A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "ui": "search",
+    "query": "beta"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 2,
+     "query": "beta"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 2,
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": true,
+     "query": "beta",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 3,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 3
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 2,
+     "document": 1,
+     "session": 3,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/start A then step A / A",
@@ -2526,7 +6430,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -2535,7 +6439,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -2555,25 +6459,8 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A2",
+     "seq": 2,
      "query": "beta"
-    }
-   },
-   {
-    "event": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "mount-A",
-     "findId": "A1",
-     "document": 1,
-     "session": 2,
-     "foreign": false,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
     }
    },
    {
@@ -2581,9 +6468,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
-     "session": 3,
+     "session": 2,
      "foreign": false,
      "active": true,
      "query": "beta",
@@ -2600,7 +6487,7 @@
     "send": {
      "kind": "next",
      "page": "page-1",
-     "id": "A2"
+     "seq": 2
     }
    },
    {
@@ -2608,9 +6495,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
-     "session": 3,
+     "session": 2,
      "foreign": false,
      "active": true,
      "query": "beta",
@@ -2621,7 +6508,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 1,
+   "current": 0,
+   "pending": false
+  }
  },
  {
   "name": "search/start A then stop A / A",
@@ -2639,7 +6531,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -2648,7 +6540,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -2668,25 +6560,8 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A2",
+     "seq": 2,
      "query": "beta"
-    }
-   },
-   {
-    "event": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "mount-A",
-     "findId": "A1",
-     "document": 1,
-     "session": 2,
-     "foreign": false,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
     }
    },
    {
@@ -2694,9 +6569,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
-     "session": 3,
+     "session": 2,
      "foreign": false,
      "active": true,
      "query": "beta",
@@ -2713,7 +6588,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A2"
+     "seq": 2
     }
    },
    {
@@ -2721,9 +6596,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
-     "session": 4,
+     "session": 3,
      "foreign": false,
      "active": false,
      "query": "",
@@ -2734,7 +6609,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/start A then switch away / A",
@@ -2752,7 +6632,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -2761,7 +6641,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -2781,25 +6661,8 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A2",
+     "seq": 2,
      "query": "beta"
-    }
-   },
-   {
-    "event": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "mount-A",
-     "findId": "A1",
-     "document": 1,
-     "session": 2,
-     "foreign": false,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
     }
    },
    {
@@ -2807,9 +6670,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
-     "session": 3,
+     "session": 2,
      "foreign": false,
      "active": true,
      "query": "beta",
@@ -2824,9 +6687,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
-     "session": 4,
+     "session": 3,
      "foreign": false,
      "active": false,
      "query": "",
@@ -2840,7 +6703,12 @@
     "shown": "page-2"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/start A then switch away / B",
@@ -2852,26 +6720,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 2,
      "document": 1,
-     "session": 2,
-     "foreign": false,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
-   },
-   {
-    "event": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "mount-A",
-     "findId": "A2",
-     "document": 1,
-     "session": 4,
+     "session": 3,
      "foreign": false,
      "active": false,
      "query": "",
@@ -2885,7 +6736,12 @@
     "shown": "page-2"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/start fails then start A / A",
@@ -2903,7 +6759,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -2912,7 +6768,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -2932,19 +6788,29 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A2",
+     "seq": 2,
      "query": "beta"
     }
    },
    {
-    "event": {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
      "pageId": "page-1",
      "incarnation": 1,
-     "mount": "mount-A",
-     "findId": "A1",
+     "mount": "",
+     "seq": 0,
      "document": 1,
      "session": 2,
-     "foreign": false,
+     "foreign": true,
      "active": false,
      "query": "",
      "found": false,
@@ -2952,12 +6818,14 @@
      "current": -1,
      "capped": false
     }
-   },
-   {
-    "error": true
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/step A then close A / A",
@@ -2975,7 +6843,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -2984,7 +6852,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -3003,7 +6871,7 @@
     "send": {
      "kind": "next",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -3011,7 +6879,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -3030,7 +6898,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -3038,7 +6906,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -3051,7 +6919,12 @@
     }
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/step A then detach A / A",
@@ -3069,7 +6942,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -3078,7 +6951,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -3097,7 +6970,7 @@
     "send": {
      "kind": "next",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -3105,7 +6978,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -3122,7 +6995,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -3138,7 +7011,240 @@
     "ui": "dispose"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/step A then gone page A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "ui": "next"
+   },
+   {
+    "send": {
+     "kind": "next",
+     "page": "page-1",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 2,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/step A then oversized A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "ui": "next"
+   },
+   {
+    "send": {
+     "kind": "next",
+     "page": "page-1",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 2,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/step A then start A / A",
@@ -3156,7 +7262,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -3165,7 +7271,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -3184,7 +7290,7 @@
     "send": {
      "kind": "next",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -3192,7 +7298,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -3212,25 +7318,8 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A2",
+     "seq": 2,
      "query": "beta"
-    }
-   },
-   {
-    "event": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "mount-A",
-     "findId": "A1",
-     "document": 1,
-     "session": 2,
-     "foreign": false,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
     }
    },
    {
@@ -3238,9 +7327,9 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
-     "session": 3,
+     "session": 2,
      "foreign": false,
      "active": true,
      "query": "beta",
@@ -3251,7 +7340,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 1,
+   "current": 0,
+   "pending": false
+  }
  },
  {
   "name": "search/step A then step A / A",
@@ -3269,7 +7363,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -3278,7 +7372,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -3297,7 +7391,7 @@
     "send": {
      "kind": "next",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -3305,7 +7399,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -3324,7 +7418,7 @@
     "send": {
      "kind": "next",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -3332,7 +7426,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -3345,7 +7439,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 1,
+   "current": 0,
+   "pending": false
+  }
  },
  {
   "name": "search/step A then stop A / A",
@@ -3363,7 +7462,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -3372,7 +7471,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -3391,7 +7490,7 @@
     "send": {
      "kind": "next",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -3399,7 +7498,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -3418,7 +7517,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -3426,7 +7525,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -3439,7 +7538,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/step A then switch away / A",
@@ -3457,7 +7561,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -3466,7 +7570,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -3485,7 +7589,7 @@
     "send": {
      "kind": "next",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -3493,7 +7597,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -3510,7 +7614,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -3526,7 +7630,12 @@
     "shown": "page-2"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/stop A then close A / A",
@@ -3544,7 +7653,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -3553,7 +7662,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -3572,7 +7681,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -3580,7 +7689,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -3596,7 +7705,12 @@
     "ui": "clear"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/stop A then detach A / A",
@@ -3614,7 +7728,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -3623,7 +7737,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -3642,7 +7756,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -3650,7 +7764,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -3666,7 +7780,240 @@
     "ui": "dispose"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/stop A then gone page A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "ui": "search"
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 2,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-1"
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/stop A then oversized A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "ui": "search"
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 1
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 2,
+     "foreign": false,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 2,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "",
+     "seq": 0,
+     "document": 1,
+     "session": 2,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/stop A then start A / A",
@@ -3684,7 +8031,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -3693,7 +8040,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -3712,7 +8059,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -3720,7 +8067,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -3740,7 +8087,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A2",
+     "seq": 2,
      "query": "beta"
     }
    },
@@ -3749,7 +8096,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
      "session": 3,
      "foreign": false,
@@ -3762,7 +8109,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 1,
+   "current": 0,
+   "pending": false
+  }
  },
  {
   "name": "search/stop A then step A / A",
@@ -3780,7 +8132,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -3789,7 +8141,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -3808,7 +8160,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -3816,7 +8168,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -3832,7 +8184,12 @@
     "ui": "next"
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/stop A then switch away / A",
@@ -3850,7 +8207,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -3859,7 +8216,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -3878,7 +8235,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -3886,7 +8243,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -3902,7 +8259,12 @@
     "shown": "page-2"
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/stop fails always then close A / A",
@@ -3920,7 +8282,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -3929,7 +8291,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -3948,7 +8310,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -3961,7 +8323,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -3974,14 +8336,218 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
     "error": true
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/stop fails always then gone page A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "shown": "page-gone"
+   },
+   {
+    "ui": "search",
+    "query": "gamma"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-gone",
+     "seq": 2,
+     "query": "gamma"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 2
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "shown": "page-1"
+   },
+   {
+    "retry": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-gone",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-gone",
+     "incarnation": 0,
+     "mount": "",
+     "seq": 0,
+     "document": 0,
+     "session": 0,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/stop fails always then oversized A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 2,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 2
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "retry": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 2
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "retry": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 2
+    }
+   },
+   {
+    "error": true
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/stop fails always then stop A / A",
@@ -3999,7 +8565,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -4008,7 +8574,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -4027,7 +8593,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -4040,7 +8606,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -4053,14 +8619,19 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
     "error": true
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/stop fails once then close A / A",
@@ -4078,7 +8649,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -4087,7 +8658,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -4106,7 +8677,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -4119,7 +8690,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -4127,7 +8698,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "",
-     "findId": "",
+     "seq": 0,
      "document": 1,
      "session": 2,
      "foreign": true,
@@ -4140,7 +8711,109 @@
     }
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
+ },
+ {
+  "name": "search/stop fails once then oversized A / A",
+  "mount": "mount-A",
+  "page": "page-1",
+  "steps": [
+   {
+    "ui": "open"
+   },
+   {
+    "ui": "search",
+    "query": "alpha"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 1,
+     "query": "alpha"
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "mount-A",
+     "seq": 1,
+     "document": 1,
+     "session": 1,
+     "foreign": false,
+     "active": true,
+     "query": "alpha",
+     "found": true,
+     "matches": 1,
+     "current": 0,
+     "capped": false
+    }
+   },
+   {
+    "ui": "search",
+    "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   {
+    "send": {
+     "kind": "start",
+     "page": "page-1",
+     "seq": 2,
+     "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 2
+    }
+   },
+   {
+    "error": true
+   },
+   {
+    "retry": true
+   },
+   {
+    "send": {
+     "kind": "stop",
+     "page": "page-1",
+     "seq": 2
+    }
+   },
+   {
+    "answer": {
+     "pageId": "page-1",
+     "incarnation": 1,
+     "mount": "",
+     "seq": 0,
+     "document": 1,
+     "session": 2,
+     "foreign": true,
+     "active": false,
+     "query": "",
+     "found": false,
+     "matches": 0,
+     "current": -1,
+     "capped": false
+    }
+   }
+  ],
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/stop fails once then stop A / A",
@@ -4158,7 +8831,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -4167,7 +8840,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -4186,7 +8859,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -4199,7 +8872,7 @@
     "send": {
      "kind": "stop",
      "page": "page-1",
-     "id": "A1"
+     "seq": 1
     }
    },
    {
@@ -4207,7 +8880,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "",
-     "findId": "",
+     "seq": 0,
      "document": 1,
      "session": 2,
      "foreign": true,
@@ -4220,7 +8893,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/suspend and restore then open A / A",
@@ -4238,7 +8916,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -4247,7 +8925,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -4264,7 +8942,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -4283,7 +8961,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A2",
+     "seq": 2,
      "query": "alpha"
     }
    },
@@ -4292,7 +8970,7 @@
      "pageId": "page-1",
      "incarnation": 2,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 1,
      "session": 3,
      "foreign": false,
@@ -4305,7 +8983,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 1,
+   "current": 0,
+   "pending": false
+  }
  },
  {
   "name": "search/switch away then detach A / A",
@@ -4323,7 +9006,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -4332,7 +9015,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -4349,7 +9032,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -4368,7 +9051,12 @@
     "ui": "dispose"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/switch away then open A / A",
@@ -4386,7 +9074,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -4395,7 +9083,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -4412,7 +9100,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -4434,7 +9122,7 @@
     "send": {
      "kind": "start",
      "page": "page-2",
-     "id": "A2",
+     "seq": 2,
      "query": "alpha"
     }
    },
@@ -4443,7 +9131,7 @@
      "pageId": "page-2",
      "incarnation": 2,
      "mount": "mount-A",
-     "findId": "A2",
+     "seq": 2,
      "document": 0,
      "session": 3,
      "foreign": false,
@@ -4456,7 +9144,12 @@
     }
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/switch away then open B / B",
@@ -4468,7 +9161,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -4487,7 +9180,12 @@
     "ui": "open"
    }
   ],
-  "bar": true
+  "bar": true,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/switch away then suspend and restore / A",
@@ -4505,7 +9203,7 @@
     "send": {
      "kind": "start",
      "page": "page-1",
-     "id": "A1",
+     "seq": 1,
      "query": "alpha"
     }
    },
@@ -4514,7 +9212,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 1,
      "foreign": false,
@@ -4531,7 +9229,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -4550,7 +9248,12 @@
     "shown": "page-1"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  },
  {
   "name": "search/switch away then suspend and restore / B",
@@ -4562,7 +9265,7 @@
      "pageId": "page-1",
      "incarnation": 1,
      "mount": "mount-A",
-     "findId": "A1",
+     "seq": 1,
      "document": 1,
      "session": 2,
      "foreign": false,
@@ -4581,6 +9284,11 @@
     "shown": "page-1"
    }
   ],
-  "bar": false
+  "bar": false,
+  "view": {
+   "count": 0,
+   "current": -1,
+   "pending": false
+  }
  }
 ]

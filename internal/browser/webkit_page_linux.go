@@ -149,11 +149,17 @@ func (p *webkitPage) bind(ctx context.Context) (context.Context, context.CancelF
 	return merged, func() { stop(); cancel() }
 }
 
-// evalBody runs one async-function body and returns its raw JSON result.
+// evalBody runs one async-function body in the page's script world and
+// returns its raw JSON result.
 func (p *webkitPage) evalBody(ctx context.Context, body string) (json.RawMessage, error) {
+	return p.evalIn(ctx, "", body)
+}
+
+// evalIn is evalBody in the named isolated world, "" for the page's own.
+func (p *webkitPage) evalIn(ctx context.Context, world, body string) (json.RawMessage, error) {
 	opCtx, cancel := p.bind(ctx)
 	defer cancel()
-	raw, err := gtkEvaluate(opCtx, p.liveView(), body)
+	raw, err := gtkEvaluate(opCtx, p.liveView(), world, body)
 	if err != nil {
 		return nil, err
 	}
@@ -399,13 +405,14 @@ func (p *webkitPage) FindStep(ctx context.Context, backwards bool) (findResult, 
 }
 
 // FindStop ends the search and drops the selection that marks its match,
-// in the page and its same-origin frames: search_finish clears only the
-// highlights. A match selected in a cross-origin frame stays selected.
+// in the page and its same-origin frames, from an isolated world:
+// search_finish clears only the highlights. A match selected in a
+// cross-origin frame stays selected.
 func (p *webkitPage) FindStop(ctx context.Context) error {
 	if err := gtkFindFinish(p.liveView()); err != nil {
 		return err
 	}
-	_, err := p.evalBody(ctx, webkitClearSelectionScript)
+	_, err := p.evalIn(ctx, webkitFindWorld, webkitClearSelectionScript)
 	return err
 }
 

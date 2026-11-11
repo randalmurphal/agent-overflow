@@ -853,16 +853,17 @@ export class BrowserCompanionAction {
  * BrowserFindAction is one request of the browser pane's find: start (the
  * query; empty ends the search, or opens an engine's own find bar empty),
  * next, previous or stop. Mount is the pane mount the find belongs to and
- * FindID the id its provider made for the search's start, which that
- * search's steps and stop name; a step or stop for a search another owner
- * holds changes nothing.
+ * Seq the provider's sequence: a start's own, increasing with every start
+ * the provider makes; the one a step steps; for a stop, the highest the
+ * provider made, and the stop ends the mount's search at or below it. A step
+ * or stop for a search another owner holds changes nothing.
  */
 export class BrowserFindAction {
     "kind": string;
     "pageId": string;
     "query"?: string;
     "mount": string;
-    "findId": string;
+    "seq": number;
 
     /** Creates a new BrowserFindAction instance. */
     constructor($$source: Partial<BrowserFindAction> = {}) {
@@ -875,8 +876,8 @@ export class BrowserFindAction {
         if (!("mount" in $$source)) {
             this["mount"] = "";
         }
-        if (!("findId" in $$source)) {
-            this["findId"] = "";
+        if (!("seq" in $$source)) {
+            this["seq"] = 0;
         }
 
         Object.assign(this, $$source);

@@ -620,17 +620,25 @@ func wkFind(ctx context.Context, view wkView, text string, backwards bool) (bool
 }
 
 // wkEvaluate runs one async-function body in the page and returns its JSON
-// result. An undefined result is an empty answer, matching what CDP reports for
-// a void expression.
-func wkEvaluate(ctx context.Context, view wkView, body string) (string, error) {
+// result: in the page's content world, or in the isolated one named world. An
+// undefined result is an empty answer, matching what CDP reports for a void
+// expression.
+func wkEvaluate(ctx context.Context, view wkView, world, body string) (string, error) {
 	if !wkAlive() {
 		return "", errWKUnavailable
 	}
 	id, ch := wkRegisterCall()
 	if err := view.do(func(view unsafe.Pointer) {
 		cBody := C.CString(body)
-		C.ao_wkv_view_eval(view, cBody, C.uint64_t(id))
+		var cWorld *C.char
+		if world != "" {
+			cWorld = C.CString(world)
+		}
+		C.ao_wkv_view_eval(view, cBody, cWorld, C.uint64_t(id))
 		C.free(unsafe.Pointer(cBody))
+		if cWorld != nil {
+			C.free(unsafe.Pointer(cWorld))
+		}
 	}); err != nil {
 		wkCallByID.Delete(id)
 		return "", err
