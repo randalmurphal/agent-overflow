@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1367,6 +1368,58 @@ func TestFindFailedEngineCallIsCleared(t *testing.T) {
 				t.Fatalf("engine search after a failed %s = %q", kind, query)
 			}
 		})
+	}
+}
+
+// Ends submitted while the Manager closes, from the engine's commit callback
+// and from presentation changes, are either joined by Close or never
+// started: no find work runs once Close has returned.
+func TestFindEndsSubmittedDuringCloseAreJoined(t *testing.T) {
+	for round := range 50 {
+		f := newFindFixture(t, "https://example.test/alpha")
+		f.find(t, "start", "alpha")
+		f.wantCall(t, "start alpha")
+		p, _, err := f.manager.lookupOwnedPage(f.access, f.pageID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var closed atomic.Bool
+		var late atomic.Int32
+		setFindPoint(f.manager, func(point string) {
+			if point == "apply" && closed.Load() {
+				late.Add(1)
+			}
+		})
+		var submitters sync.WaitGroup
+		start := make(chan struct{})
+		for i := range 8 {
+			submitters.Add(1)
+			go func() {
+				defer submitters.Done()
+				<-start
+				for range 20 {
+					if i%2 == 0 {
+						f.fake.commitDocument()
+					} else {
+						f.manager.endHiddenFinds([]*managedPage{p})
+					}
+				}
+			}()
+		}
+		close(start)
+		if err := f.manager.Close(); err != nil {
+			t.Fatalf("round %d: close: %v", round, err)
+		}
+		closed.Store(true)
+		submitters.Wait()
+		// Submitted after Close returned: refused, not started.
+		f.fake.commitDocument()
+		f.manager.endFind(p)
+		// Work wrongly started after Close would be running by now.
+		time.Sleep(20 * time.Millisecond)
+		if n := late.Load(); n != 0 {
+			t.Fatalf("round %d: %d find applies ran after Close returned", round, n)
+		}
 	}
 }
 

@@ -140,8 +140,9 @@ type pageHooks struct {
 	// document: a load, a reload, or a history move to another document. A
 	// same-document navigation (a fragment, the History API) is not one.
 	// Engines call it where the engine reports the commit (the UI thread for
-	// WebKitGTK and WKWebView), and it only stamps the commit's order; the
-	// work it returns, when not nil, runs on a goroutine of the engine's.
+	// WebKitGTK and WKWebView), and it only stamps the commit's order. The
+	// engine then runs the work it returns, when not nil, in the same
+	// callback: that work never waits, and the Manager joins what it starts.
 	DocumentCommitted func() (finish func())
 }
 

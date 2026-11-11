@@ -75,8 +75,12 @@ type Manager struct {
 	// findPointHook, when set by a test, runs at the points inside a find
 	// transition named by findPoint.
 	findPointHook atomic.Pointer[func(point string)]
-	// findWork joins the goroutines that apply submitted find ends.
+	// findWork joins the goroutines that apply submitted find ends. Each is
+	// admitted under findGate unless findClosed, which Close sets under it
+	// before it waits, so no Add follows the Wait.
 	findWork   sync.WaitGroup
+	findGate   sync.Mutex
+	findClosed bool
 	profileDir string
 
 	startMu sync.Mutex
@@ -575,6 +579,11 @@ func (m *Manager) Close() error {
 	m.closed = true
 	m.mu.Unlock()
 	err := errors.Join(m.saveOpenPages(), m.closeBrowser(context.Background()))
+	// The browser's close submitted the end of every page's find; what an
+	// engine reports after it has no page left to end a find on.
+	m.findGate.Lock()
+	m.findClosed = true
+	m.findGate.Unlock()
 	m.findWork.Wait()
 	return err
 }

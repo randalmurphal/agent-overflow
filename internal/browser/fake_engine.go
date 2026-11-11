@@ -242,8 +242,8 @@ func (p *fakePage) commitDocument() {
 }
 
 // commitDocumentLate stamps a new document now and returns the delivery of
-// the Manager's work, which a test runs later: the order a real engine's
-// goroutine can land in.
+// the Manager's work, which a test runs later: an action on another
+// goroutine can run between a real engine's stamp and its delivery.
 func (p *fakePage) commitDocumentLate() (deliver func()) {
 	if p.hooks.DocumentCommitted == nil {
 		return func() {}

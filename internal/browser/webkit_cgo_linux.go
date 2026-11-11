@@ -236,9 +236,10 @@ func aoWebKitDocumentCommitted(pageID C.uint64_t) {
 		return
 	}
 	// The commit's order is stamped here, on the GTK thread, before any later
-	// page operation can be dispatched; the Manager's locks are taken off it.
+	// page operation can be dispatched; finish only submits the find's end,
+	// which the Manager applies off this thread.
 	if finish := page.hooks.DocumentCommitted(); finish != nil {
-		go finish()
+		finish()
 	}
 }
 

@@ -603,18 +603,32 @@ func (m *Manager) endFindLocked(p *managedPage) {
 
 // submitFindEnd hands p an end to apply, without waiting: the running
 // transition applies it when it finishes, or one of its own does. Safe on
-// any thread, the engine's UI thread included.
+// any thread, the engine's UI thread included. Once Close has begun to join
+// the find work, an end is no longer applied: the browser's close ended
+// every find before it.
 func (m *Manager) submitFindEnd(p *managedPage, set func(*findEnds)) {
 	p.ends.mu.Lock()
 	set(&p.ends)
-	start := !p.ends.running
-	p.ends.running = true
+	start := !p.ends.running && m.admitFindWork()
+	if start {
+		p.ends.running = true
+	}
 	p.ends.mu.Unlock()
-	if !start {
-		return
+	if start {
+		go m.applyFindEnds(p)
+	}
+}
+
+// admitFindWork counts one goroutine of find work for Close to join, or
+// answers false once Close has begun joining it.
+func (m *Manager) admitFindWork() bool {
+	m.findGate.Lock()
+	defer m.findGate.Unlock()
+	if m.findClosed {
+		return false
 	}
 	m.findWork.Add(1)
-	go m.applyFindEnds(p)
+	return true
 }
 
 // applyFindEnds is a transition of its own for submitted ends, repeated

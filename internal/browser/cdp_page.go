@@ -142,7 +142,7 @@ func (p *cdpPage) installHandlers() error {
 		p.frames.navigated(event.Frame.ID)
 		if event.Frame.ParentID == "" && p.hooks.DocumentCommitted != nil {
 			if finish := p.hooks.DocumentCommitted(); finish != nil {
-				go finish()
+				finish()
 			}
 		}
 	})
