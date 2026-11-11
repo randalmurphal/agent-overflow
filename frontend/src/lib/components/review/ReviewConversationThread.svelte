@@ -49,10 +49,9 @@
 
   let { review, thread, inDiff, pulse = 0 }: Props = $props();
 
-  // The composer's text is store-backed; only the open/closed flag is
-  // local, seeded open when drafted text survives a row unmount.
-  // svelte-ignore state_referenced_locally
-  let replying = $state(review.replyBodyFor(thread.id) !== '');
+  // The composer's text and open state are store-backed: the card
+  // unmounts with the overview row.
+  const replying = $derived(review.replyOpen(thread.id, 'conversation'));
 
   const repliesOpen = $derived(review.conversationThreadExpanded(thread.id));
   const threadState = $derived(reviewThreadState(thread));
@@ -82,7 +81,7 @@
     inDiff && thread.line ? (review.files.find((file) => file.path === thread.path) ?? null) : null,
   );
   function openReply(): void {
-    replying = true;
+    review.openReply(thread.id, 'conversation');
     // Replying into a folded thread: unfold so the reply lands in view.
     if (replyCount > 0 && !repliesOpen) review.toggleConversationThread(thread.id);
   }
@@ -177,7 +176,7 @@
         resolving={review.resolvingThread(thread.id)}
         resolveError={review.resolveErrorFor(thread.id)}
         onOpenReply={openReply}
-        onCloseReply={() => { replying = false; }}
+        onCloseReply={() => review.discardReply(thread.id, 'conversation')}
         onBodyChange={(body) => review.setReplyBody(thread.id, body)}
         onSendReply={() => review.sendPRThreadReply(thread)}
         onResolve={thread.isResolvable

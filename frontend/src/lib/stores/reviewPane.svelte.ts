@@ -146,6 +146,9 @@ import type { ReviewSectionId } from './reviewSectionSizes.svelte';
 import { REVIEW_OVERVIEW_ROW_KEY } from '../utils/reviewRows';
 
 export type ReviewScope = DiffReviewScope;
+/** Where a PR thread's reply composer is: its diff row or its card in
+ * the overview's Conversation section. */
+export type ReviewReplySurface = 'diff' | 'conversation';
 
 /** One row of the Conversation section's chronological feed: a review
  * thread's card, a verdict one-liner, a forge event one-liner (an
@@ -352,6 +355,12 @@ export interface ReviewPaneState {
   /** True exactly once after openDraftEditor, for the mount autofocus. */
   consumeDraftEditorFocus(anchor: CommentAnchor): boolean;
   createComment(anchor: CommentAnchor, body: string): Promise<void>;
+  /** The unsaved text of a draft open in its editor, or null when it is
+   * not being edited; store-backed like `draftBodyFor`. */
+  draftEditBodyFor(commentId: string): string | null;
+  /** Opens (a body), changes or, with null, discards a draft's edit. */
+  setDraftEditBody(commentId: string, body: string | null): void;
+  /** Saves a draft's body; a success ends its edit. */
   updateComment(commentId: string, body: string): Promise<void>;
   deleteComment(commentId: string): Promise<void>;
   sendComments(): Promise<void>;
@@ -366,6 +375,12 @@ export interface ReviewPaneState {
   togglePRThread(threadId: string): void;
   replyBodyFor(threadId: string): string;
   setReplyBody(threadId: string, body: string): void;
+  /** Whether a thread's reply composer is open on one surface (the diff
+   * row or the Conversation card); store-backed, both rows unmount. */
+  replyOpen(threadId: string, surface: ReviewReplySurface): boolean;
+  openReply(threadId: string, surface: ReviewReplySurface): void;
+  /** Closes the composer and discards the thread's unsaved reply. */
+  discardReply(threadId: string, surface: ReviewReplySurface): void;
   sendPRThreadReply(thread: ReviewThread): Promise<void>;
   replyErrorFor(threadId: string): string | null;
   sendingReply(threadId: string): boolean;
@@ -736,6 +751,8 @@ export function createReviewPaneState(
   let summaryBody = $state('');
   let submitError: string | null = $state(null);
   const replyBodies = new SvelteMap<string, string>();
+  // `${surface}:${threadId}` of each open reply composer.
+  const openReplies = new SvelteSet<string>();
   const replyErrors = new SvelteMap<string, string>();
   const sendingReplyIds: SvelteSet<string> = $state(new SvelteSet<string>());
   const resolvingThreadIds: SvelteSet<string> = $state(new SvelteSet<string>());
@@ -808,6 +825,8 @@ export function createReviewPaneState(
   // are virtualized, so scrolling one out of the render window unmounts
   // it — row-local state would silently drop the user's typed text.
   const draftBodies = new SvelteMap<string, string>();
+  // The same for a saved draft open in its editor, by comment id.
+  const draftEditBodies = new SvelteMap<string, string>();
   // One-shot focus request, set on user-initiated open and consumed by
   // the editor's mount effect. Without it, an editor row remounting as
   // it re-enters the render buffer would steal focus mid-scroll.
@@ -1373,6 +1392,7 @@ export function createReviewPaneState(
     }
     openEditors = [];
     draftBodies.clear();
+    draftEditBodies.clear();
     collapseOverrides.clear();
     if (threadId !== null) persistScope(threadId, scope, baseBranch);
     await reload({ userInitiated: opts?.userInitiated });
@@ -1385,6 +1405,7 @@ export function createReviewPaneState(
     selectedCommitSHA = sha;
     openEditors = [];
     draftBodies.clear();
+    draftEditBodies.clear();
     collapseOverrides.clear();
     await reload({ selectionOnly: true, userInitiated: opts?.userInitiated });
   }
@@ -1402,6 +1423,7 @@ export function createReviewPaneState(
     // and the PR subscription describe the same subject either way.
     openEditors = [];
     draftBodies.clear();
+    draftEditBodies.clear();
     // Collapse overrides deliberately SURVIVE, unlike selectCommit/selectEdit:
     // those switch which change is under review, whereas this shows the same
     // change with less noise. A file the user opened stays open.
@@ -1416,6 +1438,7 @@ export function createReviewPaneState(
     selectedEdit = next;
     openEditors = [];
     draftBodies.clear();
+    draftEditBodies.clear();
     collapseOverrides.clear();
     await reload({ selectionOnly: true, userInitiated: opts?.userInitiated });
   }
@@ -1577,6 +1600,7 @@ export function createReviewPaneState(
       if (!nextSourceKey) {
         openEditors = [];
         draftBodies.clear();
+        draftEditBodies.clear();
         setActiveDiffReviewSource(threadId, null);
         error = null;
         return;
@@ -1611,6 +1635,7 @@ export function createReviewPaneState(
       patchKey = '';
       openEditors = [];
       draftBodies.clear();
+      draftEditBodies.clear();
       collapsedPaths = new SvelteSet<string>();
       if (threadId !== null) setActiveDiffReviewSource(threadId, null);
     } finally {
@@ -1960,6 +1985,7 @@ export function createReviewPaneState(
     try {
       if (pinnedDrafts !== null) await updatePRDiffReviewComment(pinnedDrafts, scope, sourceKey, commentId, { body: trimmed });
       else await updateDiffReviewComment(commentThreadId(), scope, sourceKey, commentId, { body: trimmed });
+      draftEditBodies.delete(commentId);
       error = null;
     } catch (err) {
       error = userFacingError(err);
@@ -1972,11 +1998,17 @@ export function createReviewPaneState(
     try {
       if (pinnedDrafts !== null) await deletePRDiffReviewComment(pinnedDrafts, scope, sourceKey, commentId);
       else await deleteDiffReviewComment(commentThreadId(), scope, sourceKey, commentId);
+      draftEditBodies.delete(commentId);
       error = null;
     } catch (err) {
       error = userFacingError(err);
       throw err;
     }
+  }
+
+  // A sent draft is no longer editable; its open edit goes with it.
+  function forgetDraftEdits(sent: readonly DiffReviewComment[]): void {
+    for (const comment of sent) draftEditBodies.delete(comment.id);
   }
 
   async function sendComments(): Promise<void> {
@@ -1989,6 +2021,7 @@ export function createReviewPaneState(
       const sending = drafts;
       const pr = await prSendContext(sendScope, sending);
       await SendDiffReviewComments(thread, sendScope, key, sending.map((comment) => comment.id), { pr });
+      forgetDraftEdits(sending);
       await refreshDiffReviewComments(commentThreadId(), scope, sourceKey);
       error = null;
     } catch (err) {
@@ -2026,6 +2059,7 @@ export function createReviewPaneState(
       const sending = drafts;
       const pr = await prSendContext('pr', sending);
       const thread = await sendPRDiffReviewComments(pinnedDrafts, target, 'pr', key, sending.map((comment) => comment.id), { pr });
+      forgetDraftEdits(sending);
       error = null;
       return thread;
     } catch (err) {
@@ -2071,6 +2105,7 @@ export function createReviewPaneState(
         // Everything posted; a follow-up step (GitLab approve) failed.
         submitError = `The review posted, but a step after it did not. ${result.partialFailure}`;
       }
+      forgetDraftEdits(sent);
       if (pinnedDrafts !== null) {
         // Posted drafts are the forge's comments now; the rest stay.
         if (sent.length > 0) await markPRDiffReviewCommentsSent(pinnedDrafts, scope, sourceKey, sent.map((comment) => comment.id));
@@ -2732,6 +2767,13 @@ export function createReviewPaneState(
       return true;
     },
     createComment,
+    draftEditBodyFor(commentId: string): string | null {
+      return draftEditBodies.get(commentId) ?? null;
+    },
+    setDraftEditBody(commentId: string, body: string | null): void {
+      if (body === null) draftEditBodies.delete(commentId);
+      else draftEditBodies.set(commentId, body);
+    },
     updateComment,
     deleteComment,
     sendComments,
@@ -2756,6 +2798,16 @@ export function createReviewPaneState(
     },
     setReplyBody(prThreadId: string, body: string): void {
       replyBodies.set(prThreadId, body);
+    },
+    replyOpen(prThreadId: string, surface: ReviewReplySurface): boolean {
+      return openReplies.has(`${surface}:${prThreadId}`);
+    },
+    openReply(prThreadId: string, surface: ReviewReplySurface): void {
+      openReplies.add(`${surface}:${prThreadId}`);
+    },
+    discardReply(prThreadId: string, surface: ReviewReplySurface): void {
+      openReplies.delete(`${surface}:${prThreadId}`);
+      replyBodies.delete(prThreadId);
     },
     refreshPRThreads,
     sendPRThreadReply,

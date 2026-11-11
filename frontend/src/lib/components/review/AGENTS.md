@@ -121,9 +121,12 @@ PR stores; components own presentation and interaction.
   that renders searched text carries the matching key; text the scanner
   skips (the +/- gutter, the log's clip note, any chrome inside a keyed
   element) carries `data-find-skip`. A split view keys a context line on
-  its new side only. An editor that replaces
-  a searched text while open carries `data-find-editing` with that text's
-  key, so the text is not counted while it is off screen.
+  its new side only. A draft open in its editor is not counted, mounted
+  or not: find reads the open edits from the review state.
+- An open comment editor (a new comment, a draft's edit, a thread reply)
+  is a virtualized row, so its unsaved text and open state live in the
+  review state (`draftBodyFor`, `draftEditBodyFor`, `replyBodyFor`,
+  `replyOpen`) until it is saved or discarded.
 - Wrap the review surface in `shared/RenderBoundary.svelte`.
 
 Review mutations reconcile from authoritative responses and show partial or

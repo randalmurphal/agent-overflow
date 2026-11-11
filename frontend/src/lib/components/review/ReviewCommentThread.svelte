@@ -11,22 +11,27 @@
   // The reader's own draft comment on the diff surface: the same card
   // shape as a PR thread, with an accent edge in place of a state edge
   // (a draft has no forge state yet) and edit/delete in place of
-  // reply/resolve.
+  // reply/resolve. The row is virtualized, so an open edit's text lives in
+  // the review state (`draftEditBodyFor`) and survives the row unmounting.
 
   interface Props {
     comment: DiffReviewComment;
     orphaned?: boolean;
+    /** The unsaved text of this draft's open edit; null when not editing. */
+    editBody: string | null;
+    /** Opens (a body), changes or, with null, discards the edit. */
+    onEditBodyChange: (commentId: string, body: string | null) => void;
+    /** Saves the body; the owner ends the edit on success. */
     onUpdate: (commentId: string, body: string) => Promise<void> | void;
     onDelete: (commentId: string) => Promise<void> | void;
     /** The jump that landed here (utils/reviewJumpPulse); 0 for none. */
     pulse?: number;
   }
 
-  let { comment, orphaned = false, onUpdate, onDelete, pulse = 0 }: Props = $props();
-  let editing = $state(false);
-  let editBody = $state('');
+  let { comment, orphaned = false, editBody, onEditBodyChange, onUpdate, onDelete, pulse = 0 }: Props = $props();
   let busy = $state(false);
-  const canSave = $derived(editBody.trim().length > 0 && !busy);
+  const editing = $derived(editBody !== null);
+  const canSave = $derived((editBody ?? '').trim().length > 0 && !busy);
   const quote = $derived(comment.selectedText.trim().replace(/\s+/g, ' '));
 
   function commentLocation(comment: DiffReviewComment): string {
@@ -36,22 +41,18 @@
   }
 
   function startEdit(): void {
-    editBody = comment.body;
-    editing = true;
+    onEditBodyChange(comment.id, comment.body);
   }
 
   function cancelEdit(): void {
-    editing = false;
-    editBody = '';
+    onEditBodyChange(comment.id, null);
   }
 
   async function saveEdit(): Promise<void> {
-    if (!canSave) return;
+    if (!canSave || editBody === null) return;
     busy = true;
     try {
       await onUpdate(comment.id, editBody);
-      editing = false;
-      editBody = '';
     } catch {
       // The review-pane store exposes the user-facing error.
     } finally {
@@ -115,8 +116,8 @@
       {/if}
       {#if editing}
         <textarea
-          bind:value={editBody}
-          data-find-editing={findDraftKey(comment.id)}
+          value={editBody}
+          oninput={(event) => onEditBodyChange(comment.id, event.currentTarget.value)}
           rows="3"
           class="w-full resize-none rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2.5 py-2 text-xs leading-relaxed text-fg focus:border-accent/60 focus:outline-none"
           onkeydown={onEditKeydown}

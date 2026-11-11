@@ -19,7 +19,6 @@ const anchor: CommentAnchor = { filePath: 'src/a.ts', newLine: 5, side: 'new' };
 
 function setup() {
   const onSendReply = vi.fn();
-  // A non-empty body mounts the row with its reply composer open.
   // `anchor` is a reserved Svelte mount option, so props must be nested.
   const view = render(ReviewPRThreadRow, {
     props: {
@@ -28,12 +27,15 @@ function setup() {
       collapsed: true,
       orphaned: false,
       body: 'reply text',
+      replying: true,
       error: null,
       sending: false,
       resolving: false,
       resolveError: null,
       onToggle: vi.fn(),
       onBodyChange: vi.fn(),
+      onOpenReply: vi.fn(),
+      onDiscardReply: vi.fn(),
       onSendReply,
     },
   });
@@ -83,12 +85,15 @@ describe('<ReviewPRThreadRow> card', () => {
         collapsed: true,
         orphaned: false,
         body: '',
+        replying: false,
         error: null,
         sending: false,
           resolving: false,
         resolveError: null,
         onToggle: vi.fn(),
         onBodyChange: vi.fn(),
+        onOpenReply: vi.fn(),
+        onDiscardReply: vi.fn(),
         onSendReply: vi.fn(),
         ...overrides,
       },
@@ -160,10 +165,14 @@ describe('<ReviewPRThreadRow> card', () => {
     const collapsedView = renderRow({ collapsed: true });
     expect(collapsedView.queryByTestId('review-thread-footer')).toBeNull();
     collapsedView.unmount();
-    const view = renderRow({ collapsed: false });
+    const onOpenReply = vi.fn();
+    const view = renderRow({ collapsed: false, onOpenReply });
     expect(view.queryByTestId('review-thread-composer')).toBeNull();
     await fireEvent.click(view.getByTestId('review-thread-reply'));
-    expect(view.getByTestId('review-thread-composer')).toBeTruthy();
+    expect(onOpenReply).toHaveBeenCalledTimes(1);
+    view.unmount();
+    // The owner keeps the composer open, collapsed or not.
+    expect(renderRow({ collapsed: true, replying: true }).getByTestId('review-thread-composer')).toBeTruthy();
   });
 
   it('resolves from the footer only when the host offers it', async () => {

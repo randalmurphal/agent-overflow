@@ -113,7 +113,7 @@ async function mountDiff(files: ReviewFile[], drafts: DiffReviewComment[], prThr
     render: () => '<div></div>',
     setup: (node: Element) => {
       const comment = drafts.find((draft) => draft.id === threadKey())!;
-      const app = mount(ReviewCommentThread, { target: node, props: { comment, onUpdate: () => {}, onDelete: () => {} } });
+      const app = mount(ReviewCommentThread, { target: node, props: { comment, editBody: null, onEditBodyChange: () => {}, onUpdate: () => {}, onDelete: () => {} } });
       return () => { void unmount(app); };
     },
   }));
@@ -123,8 +123,8 @@ async function mountDiff(files: ReviewFile[], drafts: DiffReviewComment[], prThr
       const app = mount(ReviewPRThreadRow, {
         target: node,
         props: {
-          thread: thread(), anchor: anchor(), collapsed: collapsed(), orphaned: orphaned(), body: '', error: null, sending: false,
-          resolving: false, resolveError: null, onToggle: () => {}, onBodyChange: () => {}, onSendReply: () => {},
+          thread: thread(), anchor: anchor(), collapsed: collapsed(), orphaned: orphaned(), body: '', replying: false, error: null, sending: false,
+          resolving: false, resolveError: null, onToggle: () => {}, onBodyChange: () => {}, onOpenReply: () => {}, onDiscardReply: () => {}, onSendReply: () => {},
           onResolve: () => {}, onJumpToConversation: () => {},
         },
       });

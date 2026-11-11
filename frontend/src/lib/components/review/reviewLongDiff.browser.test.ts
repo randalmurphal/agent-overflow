@@ -4,6 +4,7 @@
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createRawSnippet, flushSync, mount, unmount } from 'svelte';
+import { SvelteMap } from 'svelte/reactivity';
 import '../../../app.css';
 import ReviewDiffBody from './ReviewDiffBody.svelte';
 import ReviewCommentThread from './ReviewCommentThread.svelte';
@@ -269,12 +270,27 @@ describe('review find reading position', () => {
 
 describe('review find over the real list', () => {
   // ReviewPane's comment-thread row: the real draft card.
+  // Open edits by draft id, held as the review state holds them.
+  const draftEdits = new SvelteMap<string, string>();
+  const draftEditBodyFor = (id: string) => draftEdits.get(id) ?? null;
+  afterEach(() => draftEdits.clear());
+
   function draftRows(drafts: () => readonly DiffReviewComment[]) {
     return createRawSnippet((threadKey: () => string, _anchor: () => CommentAnchor, pulse: () => number) => ({
       render: () => '<div></div>',
       setup: (node: Element) => {
         const comment = drafts().find((draft) => draft.id === threadKey())!;
-        const app = mount(ReviewCommentThread, { target: node, props: { comment, pulse: pulse(), onUpdate: () => {}, onDelete: () => {} } });
+        const app = mount(ReviewCommentThread, {
+          target: node,
+          props: {
+            comment, pulse: pulse(), onUpdate: () => {}, onDelete: () => {},
+            get editBody() { return draftEditBodyFor(comment.id); },
+            onEditBodyChange: (id: string, body: string | null) => {
+              if (body === null) draftEdits.delete(id);
+              else draftEdits.set(id, body);
+            },
+          },
+        });
         return () => { void unmount(app); };
       },
     }));
@@ -292,7 +308,7 @@ describe('review find over the real list', () => {
     await settle(scrollEl);
     const review = {
       drafts: [draft], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
-      toggleCollapsed: () => {}, togglePRThread: () => {},
+      toggleCollapsed: () => {}, togglePRThread: () => {}, draftEditBodyFor,
     } as unknown as ReviewPaneState;
     const host = mounted.at(-1)!.host;
     const finder = mount(ReviewPaneFind, {
@@ -697,7 +713,7 @@ describe('review find over the real list', () => {
     await settle(scrollEl);
     const review = rawProps({
       drafts, prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>(),
-      toggleCollapsed: () => {}, togglePRThread: () => {},
+      toggleCollapsed: () => {}, togglePRThread: () => {}, draftEditBodyFor,
     });
     const finder = mount(ReviewPaneFind, {
       target: document.body,
