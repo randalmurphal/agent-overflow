@@ -37,10 +37,19 @@
 	import {
 		createIncrementalLexCache,
 		incrementalLex,
+		matchesProvenAppend,
+		type Alignment,
 		type IncrementalLexObserver,
 		type ProvenAppend,
 		type StreamdownToken
 	} from '../parser/index';
+	import {
+		alignedTokens,
+		nextShortLastLine,
+		shortLastLine,
+		withoutAlignmentMarkers,
+		withoutPartialAlignmentCloser
+	} from '../parser/extensions/align';
 	import LiteralHost from './LiteralHost.svelte';
 	import { useStreamdown } from './context.svelte';
 	import { renderStaticTokenHtml } from './staticHtml';
@@ -51,13 +60,16 @@
 		append,
 		static: isStatic = false,
 		directAppendTail = false,
-		compactStaticHtml = false
+		compactStaticHtml = false,
+		align = null
 	}: {
 		block: string;
 		append?: ProvenAppend;
 		static?: boolean;
 		directAppendTail?: boolean;
 		compactStaticHtml?: boolean;
+		/** The alignment in force before this block (extensions/align.ts). */
+		align?: Alignment;
 	} = $props();
 
 	const streamdown = useStreamdown();
@@ -70,23 +82,53 @@
 		__observeIncrementalLex?: IncrementalLexObserver;
 	};
 	const lexCache = createIncrementalLexCache(diagnosticContext.__observeIncrementalLex);
-	const tokens = $derived(
-		incrementalLex(
-			block,
-			streamdown.extensions,
-			lexCache,
-			isStatic || streamdown.parseIncompleteMarkdown === false
-				? null
-				: parseIncompleteMarkdown,
-			append
-		)
+	const completer = $derived(
+		isStatic || streamdown.parseIncompleteMarkdown === false ? null : parseIncompleteMarkdown
 	);
+	// Only a static Block renders a whole document, with its markers; any
+	// other is one block string from parseBlocks, which never is a marker.
+	const lexBlock = (
+		source: string,
+		cache: typeof lexCache,
+		sourceAppend?: ProvenAppend
+	): StreamdownToken[] => {
+		const run = () => incrementalLex(source, streamdown.extensions, cache, completer, sourceAppend);
+		return isStatic ? run() : withoutAlignmentMarkers(run);
+	};
+	const blockTokens = $derived(lexBlock(block, lexCache, append));
+	// While streaming inside an alignment, a trailing partial closer line of
+	// a paragraph or list is held back: shown, it would vanish once the
+	// closer completes. Only the few appends spelling the closer lex twice.
+	// The last line comes from the append delta, so the growing block is
+	// never scanned.
+	const heldLexCache = createIncrementalLexCache();
+	let lastLineOf: string | undefined;
+	let lastLine: string | null = null;
+	const blockLastLine = (): string | null => {
+		if (lastLineOf === block) return lastLine;
+		lastLine = lastLineOf !== undefined && matchesProvenAppend(append, lastLineOf, block)
+			? nextShortLastLine(lastLine, append.delta)
+			: shortLastLine(block);
+		lastLineOf = block;
+		return lastLine;
+	};
+	const tokens = $derived.by(() => {
+		if (align === null || completer === null)
+			return blockTokens;
+		const type = blockTokens.at(-1)?.type;
+		if (type !== 'paragraph' && type !== 'list') return blockTokens;
+		const held = withoutPartialAlignmentCloser(block, align, blockLastLine());
+		return held === block ? blockTokens : lexBlock(held, heldLexCache);
+	});
 	const id = $props.id();
 	const staticHtml = $derived(
 		compactStaticHtml && streamdown.parseIncompleteMarkdown === false
-			? renderStaticTokenHtml(tokens, streamdown, id)
+			? renderStaticTokenHtml(tokens, streamdown, id, align)
 			: null
 	);
+	// Top-level tokens with the alignment each renders under; null when none
+	// is in force, so unaligned content renders exactly as before.
+	const aligned = $derived(alignedTokens(tokens, align, Boolean(streamdown.renderHtml)));
 
 </script>
 
@@ -300,6 +342,19 @@
 
 {#if staticHtml !== null}
 	{@html staticHtml}
+{:else if aligned !== null}
+	{#each aligned as entry, index}
+		{#if entry.align !== null}
+			<div
+				data-streamdown-align={id}
+				class={entry.align === 'right' ? streamdown.theme.align.right : streamdown.theme.align.center}
+			>
+				{@render renderChildren([entry.token], directAppendTail && index === aligned.length - 1, true)}
+			</div>
+		{:else}
+			{@render renderChildren([entry.token], directAppendTail && index === aligned.length - 1, true)}
+		{/if}
+	{/each}
 {:else}
 	{@render renderChildren(tokens, directAppendTail, true)}
 {/if}

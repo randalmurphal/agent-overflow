@@ -1,52 +1,248 @@
 import { render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import ChatMarkdown from './ChatMarkdown.svelte';
+import { Lexer, Streamdown } from '../../markdown';
+import { chatMarkdownTheme } from './markdown/streamdownTheme';
+import { __setAlignmentEnabledForTest } from '../../markdown/parser/extensions/align';
+import { getSettings } from '../../stores/settings.svelte';
+import { serializeRangeToMarkdown } from '../../utils/markdownSerialize';
+import { NOT_ALIGNMENT_CORPUS } from '../../../test/helpers/alignmentCorpus';
 
-// `[center]` / `[right]` blocks render their content aligned as written,
-// settled and while streaming.
+// `[center]` / `[right]` align every top-level block up to the closer, or
+// to the end of the message, the same way settled and while streaming.
 
 // Blocks join with no separator in textContent, so compare without spaces.
 const text = (root: Element) => (root.textContent ?? '').replace(/\s+/g, '');
 
-describe('<ChatMarkdown> alignment blocks', () => {
+/** Each top-level rendered block: its alignment, element and text. */
+const layout = (root: Element): string[] =>
+  Array.from(root.querySelectorAll('.markdown-body > div > *')).map((el) => {
+    const align = el.hasAttribute('data-streamdown-align')
+      ? (el.classList.contains('text-right') ? 'right' : 'center')
+      : '-';
+    const element = align === '-' ? el : el.firstElementChild;
+    return `${align}|${element?.tagName ?? ''}|${text(el)}`;
+  });
+
+// An opener line shows as text until its newline proves it a marker.
+// The completer closes the bracket of a partial one: `[cen` shows `[cen]`.
+const OPENER_PREFIX = /\[(?:c(?:e(?:n(?:t(?:e(?:r)?)?)?)?)?|r(?:i(?:g(?:h(?:t)?)?)?)?)?\]?$/;
+const withoutOpenerPrefix = (shown: string) => shown.replace(OPENER_PREFIX, '');
+// What later text must extend: no partial opener, and no bracket the
+// completer closed provisionally.
+const settledPart = (shown: string) => withoutOpenerPrefix(shown).replace(/\]$/, '');
+
+const stable = (html: string) => html.replace(/(data-streamdown-[\w-]+)="[^"]*"/g, '$1');
+
+/** Renders `source` streamed in `prefixes`, calling `each` after every one,
+ * then settles it; returns the last streamed and the settled layout. */
+async function stream(
+  source: string,
+  prefixes: string[],
+  each: (container: HTMLElement, prefix: string) => void,
+): Promise<{ streamed: string[]; settled: string[] }> {
+  const view = render(ChatMarkdown, { props: { source: prefixes[0], streaming: true, pathRefs: [] } });
+  for (const prefix of prefixes) {
+    await view.rerender({ source: prefix, streaming: true, pathRefs: [] });
+    await tick();
+    each(view.container, prefix);
+  }
+  const streamed = layout(view.container);
+  await view.rerender({ source, streaming: false, pathRefs: [] });
+  await tick();
+  const settled = layout(view.container);
+  view.unmount();
+  return { streamed, settled };
+}
+
+const everyPrefix = (source: string) => Array.from({ length: source.length }, (_, i) => source.slice(0, i + 1));
+
+const random = (seed: number) => () => {
+  seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+  return seed / 0x7fffffff;
+};
+const chunked = (source: string, seed: number): string[] => {
+  const next = random(seed);
+  const out: string[] = [];
+  for (let end = 0; end < source.length;) {
+    end = Math.min(source.length, end + 1 + Math.floor(next() * 8));
+    out.push(source.slice(0, end));
+  }
+  return out;
+};
+
+const FAR = Array.from({ length: 12 }, (_, i) => `paragraph ${i}`).join('\n\n');
+
+// [source, settled layout]
+const STREAMED: [string, string[]][] = [
+  ['[center]\nfirst paragraph\n\nsecond paragraph\n[/center]\n\nafter',
+    ['center|P|firstparagraph', 'center|P|secondparagraph', '-|P|after']],
+  ['[right]\n## Heading\n\n- one\n\n- two\n\nlast words\n[/right]\n\nafter',
+    ['right|H2|Heading', 'right|UL|onetwo', 'right|P|lastwords', '-|P|after']],
+  ['before\n\n[center]\nnever closed\n\n- a list\n- of two\n\nlast',
+    ['-|P|before', 'center|P|neverclosed', 'center|UL|alistoftwo', 'center|P|last']],
+  ['[center]\nforgot the right closer\n[/right]\n\nstill centered',
+    ['center|P|forgottherightcloser[/right]', 'center|P|stillcentered']],
+  [`[right]\n${FAR}\n[/right]\nafter`,
+    [...Array.from({ length: 12 }, (_, i) => `right|P|paragraph${i}`), '-|P|after']],
+  ['[center]\nA\n[/center]\n[right]\nB\n[/right]\nC',
+    ['center|P|A', 'right|P|B', '-|P|C']],
+];
+
+describe('<ChatMarkdown> alignment', () => {
   it.each([
     ['center', 'text-center'],
     ['right', 'text-right'],
-  ])('renders a settled [%s] block aligned with its content', async (align, alignClass) => {
+  ])('renders each block of a settled [%s] block aligned', async (align, alignClass) => {
     const source = `before\n\n[${align}]\nAligned **bold** words\n\nsecond paragraph\n[/${align}]\n\nafter`;
     const { container } = render(ChatMarkdown, { props: { source, pathRefs: [] } });
     await waitFor(() => expect(text(container)).toContain('after'));
-    const block = container.querySelector(`[data-streamdown-align].${alignClass}`);
-    expect(block).not.toBeNull();
-    expect(block!.querySelector('strong')?.textContent).toBe('bold');
-    expect(block!.querySelectorAll('p')).toHaveLength(2);
+    const blocks = container.querySelectorAll(`[data-streamdown-align].${alignClass}`);
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0].querySelector('strong')?.textContent).toBe('bold');
     expect(text(container)).toBe('beforeAlignedboldwordssecondparagraphafter');
   });
 
-  it.each([
-    ['[center]\nfirst paragraph\n\nsecond paragraph\n[/center]\n\nafter', 'firstparagraphsecondparagraphafter'],
-    ['[right]\n## Heading\n\n- one\n\n- two\n\nlast words\n[/right]\n\nafter', 'Headingonetwolastwordsafter'],
-  ])('shows an open block while it streams and never takes back text when it closes: %j', async (source, settled) => {
-    const start = source.indexOf('\n') + 2;
-    const view = render(ChatMarkdown, { props: { source: source.slice(0, start), streaming: true, pathRefs: [] } });
-    let previous = '';
-    for (let end = start; end <= source.length; end++) {
-      await view.rerender({ source: source.slice(0, end), streaming: true, pathRefs: [] });
-      await tick();
-      const shown = text(view.container);
-      expect(shown, `at ${JSON.stringify(source.slice(0, end))}`).not.toContain('[');
-      expect(shown.startsWith(previous), `at ${JSON.stringify(source.slice(0, end))}: ${JSON.stringify({ previous, shown })}`).toBe(true);
-      previous = shown;
-      // The open block is one aligned element holding all of its text.
-      if (end <= source.indexOf('after')) {
-        expect(view.container.querySelectorAll('[data-streamdown-align]'), `at ${JSON.stringify(source.slice(0, end))}`).toHaveLength(1);
-        expect(text(view.container.querySelector('[data-streamdown-align]')!)).toBe(shown);
+  it('copies aligned blocks as the same markdown as unaligned ones', async () => {
+    const copied = async (source: string) => {
+      const { container, unmount } = render(ChatMarkdown, { props: { source, pathRefs: [] } });
+      await waitFor(() => expect(text(container)).toContain('last'));
+      const range = document.createRange();
+      range.selectNodeContents(container.querySelector('.markdown-body')!);
+      const markdown = serializeRangeToMarkdown(range);
+      unmount();
+      return markdown;
+    };
+    const body = 'first **bold**\n\n- one\n- two\n\n## heading\n\nlast';
+    expect(await copied(`[center]\n${body}\n[/center]`)).toBe(await copied(body));
+    expect(await copied(`[right]\n${body}`)).toBe(await copied(body));
+  });
+
+  it('wraps no block that renders nothing', async () => {
+    const source = '[center]\nA\n\n[ref]: https://example.com\n\n<!-- note -->\n\nB';
+    const { container } = render(ChatMarkdown, { props: { source, pathRefs: [] } });
+    await waitFor(() => expect(text(container)).toContain('B'));
+    expect(layout(container)).toEqual(['center|P|A', 'center|P|B']);
+  });
+
+  describe.each([true, false])('streaming enabled: %s', (enabled) => {
+    it.each(STREAMED)('streams %j without taking back text, settling to the same render', async (source, settled) => {
+      const settings = getSettings();
+      const saved = settings.streamingEnabled;
+      settings.streamingEnabled = enabled;
+      try {
+        for (const prefixes of [everyPrefix(source), chunked(source, 7)]) {
+          let previous = '';
+          const result = await stream(source, prefixes, (container, prefix) => {
+            const shown = text(container);
+            const at = `at ${JSON.stringify(prefix)}: ${JSON.stringify({ previous, shown })}`;
+            expect(shown.startsWith(settledPart(previous)), at).toBe(true);
+            if (!source.includes('[/right]\n\nstill')) expect(withoutOpenerPrefix(shown), at).not.toContain('[');
+            previous = shown;
+          });
+          if (enabled) expect(result.streamed).toEqual(settled);
+          expect(result.settled).toEqual(settled);
+        }
+      } finally {
+        settings.streamingEnabled = saved;
       }
-    }
-    await view.rerender({ source, streaming: false, pathRefs: [] });
+    });
+  });
+
+  it('shows an open block aligned while it streams, before any closer', async () => {
+    const source = '[center]\nfirst\n\n## second\n\n- third';
+    await stream(source, everyPrefix(source).slice(9), (container, prefix) => {
+      for (const line of layout(container)) expect(line, JSON.stringify(prefix)).toMatch(/^center\|/);
+    });
+  });
+
+  it.each([...NOT_ALIGNMENT_CORPUS.map((doc) => [doc]), [NOT_ALIGNMENT_CORPUS.join('\n\n')]])(
+    'renders text that is no marker exactly as with alignment off: %j',
+    async (doc) => {
+      for (const prefixes of [everyPrefix(doc), chunked(doc, 3)]) {
+        const on = render(ChatMarkdown, { props: { source: prefixes[0], streaming: true, pathRefs: [] } });
+        __setAlignmentEnabledForTest(false);
+        const off = render(ChatMarkdown, { props: { source: prefixes[0], streaming: true, pathRefs: [] } });
+        __setAlignmentEnabledForTest(true);
+        try {
+          const step = async (props: { source: string; streaming: boolean; pathRefs: never[] }) => {
+            await on.rerender(props);
+            await tick();
+            const html = stable(on.container.innerHTML);
+            __setAlignmentEnabledForTest(false);
+            try {
+              await off.rerender(props);
+              await tick();
+            } finally {
+              __setAlignmentEnabledForTest(true);
+            }
+            expect(html, JSON.stringify(props)).toBe(stable(off.container.innerHTML));
+          };
+          for (const prefix of prefixes) await step({ source: prefix, streaming: true, pathRefs: [] });
+          await step({ source: doc, streaming: false, pathRefs: [] });
+        } finally {
+          on.unmount();
+          off.unmount();
+        }
+      }
+    },
+  );
+
+  it.each([false, true])('follows a changed starting alignment over the same content (streaming: %s)', async (parseIncompleteMarkdown) => {
+    // Streamdown's context and root are bindable props; a rerender must carry them.
+    let context: unknown;
+    let element: unknown;
+    const props = (alignStart: 'center' | null) => ({
+      content: 'A\n\nB',
+      theme: chatMarkdownTheme,
+      compactStaticHtml: true,
+      parseIncompleteMarkdown,
+      alignStart,
+      get streamdown() { return context as never; },
+      set streamdown(value) { context = value; },
+      get element() { return element as never; },
+      set element(value) { element = value; },
+    });
+    const view = render(Streamdown, { props: props(null) });
+    const aligned = () => Array.from(view.container.querySelectorAll('[data-streamdown-align]')).map(text);
     await tick();
-    expect(text(view.container)).toBe(previous);
-    expect(previous).toBe(settled);
+    expect(aligned()).toEqual([]);
+    await view.rerender(props('center'));
+    await tick();
+    expect(aligned()).toEqual(['A', 'B']);
+    await view.rerender(props(null));
+    await tick();
+    expect(aligned()).toEqual([]);
+    expect(text(view.container)).toBe('AB');
+  });
+
+  it('lexes no more streaming inside an open block than outside one', async () => {
+    const body = Array.from({ length: 40 }, (_, i) => `Paragraph ${i} of words that keep streaming in.`).join('\n\n');
+    const work = async (source: string): Promise<number> => {
+      let lexed = 0;
+      const original = Lexer.prototype.blockTokens;
+      const spy = vi.spyOn(Lexer.prototype, 'blockTokens').mockImplementation(function (this: Lexer, src, ...rest) {
+        lexed += src.length;
+        return original.call(this, src, ...(rest as [])) as never;
+      });
+      try {
+        const words = source.split(/(?<= )/);
+        let prefix = '';
+        const view = render(ChatMarkdown, { props: { source: '', streaming: true, pathRefs: [] } });
+        for (const word of words) {
+          prefix += word;
+          await view.rerender({ source: prefix, streaming: true, pathRefs: [] });
+          await tick();
+        }
+        view.unmount();
+      } finally {
+        spy.mockRestore();
+      }
+      return lexed;
+    };
+    const plain = await work(`top\n\n${body}`);
+    const aligned = await work(`[center]\n${body}`);
+    expect(aligned).toBeLessThan(plain * 1.5);
   });
 });

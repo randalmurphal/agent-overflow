@@ -112,7 +112,7 @@ type MdToken = {
 // Top-level tokens that render exactly one element in chat
 // (`markdown/render/Element.svelte`, `staticHtml.ts`).
 const ELEMENT_BLOCKS = new Set([
-  'paragraph', 'heading', 'code', 'blockquote', 'alert', 'list', 'table', 'hr', 'math', 'descriptionList', 'details', 'align',
+  'paragraph', 'heading', 'code', 'blockquote', 'alert', 'list', 'table', 'hr', 'math', 'descriptionList', 'details',
 ]);
 
 /**
@@ -121,7 +121,8 @@ const ELEMENT_BLOCKS = new Set([
  * An MDX container renders its blocks in place (chat registers no MDX
  * component), so it contributes its blocks. Everything else renders no
  * element: `space`, `def` and footnote definitions, raw HTML (chat renders
- * none), and unknown extensions.
+ * none), `[center]`/`[right]` markers (each aligned block renders in its
+ * own wrapper element), and unknown extensions.
  */
 export function renderedBlocks<T extends { type: string; tokens?: unknown }>(tokens: readonly T[]): T[] {
   const out: T[] = [];
@@ -213,7 +214,7 @@ function splitBlock(parts: string[]): Array<{ text: string; sentences: string[] 
 }
 
 // Block types read as their own run of text. Anything else that carries
-// children (blockquote, alert, list, align, a future extension) recurses.
+// children (blockquote, alert, list, a future extension) recurses.
 const SILENT_BLOCKS = new Set(['code', 'table', 'html', 'def', 'space', 'hr']);
 
 function collectBlocks(tokens: MdToken[], out: string[]): void {

@@ -78,6 +78,8 @@ const CORPUS = [
   'Copy &nbsp;non&#8209;breaking &#x41; and \\backslash',
   '[center]\naligned needle words\n[/center]\n\nafter the block',
   '[right]\nright needle\n\n- listed needle\n[/right]\n[center]\nnext needle\n[/center]',
+  '[center]\nunclosed needle\n\n- listed needle\n\nlast needle',
+  '[center]\nneedle\n[/right]\n\nstill centered needle\n\n[/center]\n[/center]',
   '[typed](streamdown:incomplete-link) and [label][ref]\n\n[ref]: https://example.com/ref',
   '- item\n\n  loose paragraph\n\n- next',
   '| Name | Count |\n| --- | --- |\n| apples | 3 |\n| --- | --- |\n| total footer | 3 |',
@@ -283,9 +285,11 @@ describe('markdownFindText over generated comments', () => {
         case 7: return `<details${open()}><summary>${words()}</summary>\n\n${block(depth + 1)}\n\n</details>`;
         case 8: return `<details${open()}><summary>${words()}</summary>\n\n${block(depth + 1)}\n\n</details>\n<details${open()}><summary>${words()}</summary>\n\n${words()}\n\n</details>`;
         case 9: return `<table><tr><td><details${open()}><summary>${words()}</summary>${words()}</details></td><td>${words()}</td></tr></table>`;
+        // Closed, unclosed (aligned to the end), or closed by the other kind (text).
         case 10: {
           const align = pick(['center', 'right']);
-          return `[${align}]\n${words()}\n\n${block(depth + 1)}\n[/${align}]`;
+          const closer = pick([`\n[/${align}]`, '', `\n[/${align === 'center' ? 'right' : 'center'}]`]);
+          return `[${align}]\n${words()}\n\n${block(depth + 1)}${closer}`;
         }
         default: return `- ${words()}\n- ${block(depth + 1).replace(/\n/g, ' ')}`;
       }
@@ -295,10 +299,11 @@ describe('markdownFindText over generated comments', () => {
 
   const SEEDS = Array.from({ length: 60 }, (_, i) => i + 1);
 
-  it('generates alignment blocks of both kinds', () => {
-    const sources = SEEDS.map(comment).join('\n');
-    expect(sources).toContain('[/center]');
-    expect(sources).toContain('[/right]');
+  it('generates alignment blocks of both kinds, closed and unclosed', () => {
+    const sources = SEEDS.map(comment);
+    expect(sources.join('\n')).toContain('[/center]');
+    expect(sources.join('\n')).toContain('[/right]');
+    expect(sources.some((source) => /^\[(center|right)\]$/m.test(source) && !/^\[\/(center|right)\]$/m.test(source))).toBe(true);
   });
 
   it.each(SEEDS)('seed %i', async (seed) => {

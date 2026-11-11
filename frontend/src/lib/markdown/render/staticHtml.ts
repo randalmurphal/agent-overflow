@@ -1,5 +1,6 @@
 import type { StreamdownContext } from './context.svelte';
-import type { StreamdownToken } from '../parser/index';
+import type { Alignment, StreamdownToken } from '../parser/index';
+import { alignedTokens } from '../parser/extensions/align';
 import type { Tokens } from '../parser/engine';
 import { codespanClass } from './codespan';
 import { INCOMPLETE_LINK_HREF, classifyLinkHref, linkTagText, tableCellRenders } from './elements/url';
@@ -48,12 +49,14 @@ function extensionToken(_token: never): false {
  * Serializes only Streamdown's fixed, synchronous default elements. Every
  * model-authored value is escaped and every tag/attribute name is owned here.
  * A custom renderer or component-bearing token returns null so the Svelte
- * renderer keeps full ownership of that block.
+ * renderer keeps full ownership of that block. `align` is the alignment in
+ * force before the tokens (parser/extensions/align.ts), as in Block.svelte.
  */
 export function renderStaticTokenHtml(
 	tokens: readonly StreamdownToken[],
 	streamdown: StreamdownContext,
 	id: string,
+	align: Alignment = null,
 ): string | null {
 	if (streamdown.children) return null;
 
@@ -110,14 +113,8 @@ export function renderStaticTokenHtml(
 					output.push('</p>');
 					break;
 
+				// A marker renders nothing; the top level applies its alignment.
 				case 'align':
-					output.push(
-						`<div data-streamdown-align="${dataId}"` +
-						attribute('class', token.align === 'right' ? streamdown.theme.align.right : streamdown.theme.align.center) +
-						'>',
-					);
-					if (!render(children)) return false;
-					output.push('</div>');
 					break;
 
 				case 'blockquote':
@@ -382,5 +379,20 @@ export function renderStaticTokenHtml(
 		return true;
 	};
 
-	return render(tokens) ? output.join('') : null;
+	const aligned = alignedTokens([...tokens], align, Boolean(streamdown.renderHtml));
+	if (aligned === null) return render(tokens) ? output.join('') : null;
+	for (const entry of aligned) {
+		if (entry.align === null) {
+			if (!render([entry.token])) return null;
+			continue;
+		}
+		output.push(
+			`<div data-streamdown-align="${dataId}"` +
+			attribute('class', entry.align === 'right' ? streamdown.theme.align.right : streamdown.theme.align.center) +
+			'>',
+		);
+		if (!render([entry.token])) return null;
+		output.push('</div>');
+	}
+	return output.join('');
 }

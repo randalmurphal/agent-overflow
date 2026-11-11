@@ -22,8 +22,6 @@ export interface BlockContext {
   readonly listIndent?: number;
   readonly listMayEnd?: boolean;
   readonly inFootnote?: boolean;
-  /** The open `[center]` / `[right]` block (parser/extensions/align.ts). */
-  readonly align?: 'center' | 'right';
   readonly footnoteIdentifier?: string;
 }
 

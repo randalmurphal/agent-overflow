@@ -18,6 +18,7 @@ import {
     sameExtensionSequence
 } from './lexer';
 import type { Extension } from './lexer';
+import type { Alignment } from './extensions/align';
 import { createProvenAppend } from './provenAppend';
 import type { ProvenAppend } from './provenAppend';
 import {
@@ -31,6 +32,7 @@ import {
     appendParseBlockRaw,
     replaceParseBlockRaw,
     trailingBlockMayMergeBackward,
+    alignmentBefore,
     truncateParseBlocksCache,
     updateTrailingBlockRecord
 } from './parseBlocks.cache';
@@ -39,8 +41,10 @@ import { parseListSource } from './extensions/list';
 import { parseTableBlockSource } from './extensions/tableSource';
 import { parseBlockquoteSource } from './extensions/blockquoteSource';
 const INITIAL_HEADING = /^ {0,3}#{1,6}(?:[ \t]+|$)/;
-const initialBlockToken = (markdown: string, extensions: Extension[]): BlockToken | null => {
-    if (extensions.some(({ level, applyInBlockParsing }) => level === 'block' && applyInBlockParsing))
+// Seeds a boundary without a Lexer, so only where no alignment is in force:
+// its list geometry does not stop at a closer.
+const initialBlockToken = (markdown: string, extensions: Extension[], alignStart: Alignment): BlockToken | null => {
+    if (alignStart !== null || extensions.some(({ level, applyInBlockParsing }) => level === 'block' && applyInBlockParsing))
         return null;
     const list = parseListSource(markdown, DEFAULT_BLOCK_OPTIONS, true);
     if (list?.raw === markdown)
@@ -66,18 +70,24 @@ const blockTokensOf = (
     markdown: string,
     extensions: Extension[],
     cache: ParseBlocksCache | undefined,
-    path: ParseBlocksLexPath
+    path: ParseBlocksLexPath,
+    align: Alignment
 ): BlockToken[] => {
     cache?.observeLex?.(path, markdown.length, markdown);
-    return new Lexer(getBlockOptions(extensions)).blockTokens(markdown, []);
+    const lexer = new Lexer(getBlockOptions(extensions));
+    lexer.align = align;
+    return lexer.blockTokens(markdown, []);
 };
+/** `alignStart` is the alignment in force before `markdown` (a volatile
+ * tail inside an open `[center]` block). */
 export const parseBlocks = (
     markdown: string,
     extensions: Extension[] = [],
     cache?: ParseBlocksCache,
-    provenAppend?: ProvenAppend
+    provenAppend?: ProvenAppend,
+    alignStart: Alignment = null
 ): string[] => {
-    const blocks = parseBlocksCached(markdown, extensions, cache, provenAppend);
+    const blocks = parseBlocksCached(markdown, extensions, cache, provenAppend, alignStart);
     if (cache) {
         // Appending inside an established block cannot advance its source
         // boundary. In particular, never inspect a growing fence per reveal.
@@ -105,12 +115,20 @@ export const parseBlocks = (
 const parseBlocksCached = (
     markdown: string,
     extensions: Extension[] = [],
-    cache?: ParseBlocksCache,
-    provenAppend?: ProvenAppend
+    cache: ParseBlocksCache | undefined,
+    provenAppend: ProvenAppend | undefined,
+    alignStart: Alignment
 ): string[] => {
     if (cache) {
         cache.lastBlockAppend = undefined;
         cache.lastPath = 'none';
+        if (cache.alignStart !== alignStart) {
+            cache.alignStart = alignStart;
+            cache.content = '';
+            cache.source.reset('');
+            truncateParseBlocksCache(cache, 0);
+            cache.trailingBlock = null;
+        }
     }
     const blockExtensions = blockExtensionsOf(extensions);
     const extKey = cache && sameExtensionSequence(cache.extKey, blockExtensions)
@@ -230,7 +248,7 @@ const parseBlocksCached = (
             else if (t.kind === 'list') {
                 const sliceStart = t.blockStart + t.sealedLen;
                 if (blockStart === t.blockStart && sliceStart < markdown.length) {
-                    const sliceTokens = blockTokensOf(cache.source.slice(sliceStart), extensions, cache, 'list-descent');
+                    const sliceTokens = blockTokensOf(cache.source.slice(sliceStart), extensions, cache, 'list-descent', alignmentBefore(cache, t.rawIndex));
                     const first = sliceTokens[0];
                     let sliceLength = 0;
                     for (const token of sliceTokens)
@@ -285,7 +303,7 @@ const parseBlocksCached = (
                 // boundary decisions exactly the full parse's.
                 const prefix = cache.source.slice(t.blockStart, t.blockStart + t.prefixLen);
                 const volatileSrc = cache.source.slice(t.lastRowStart);
-                const miniTokens = blockTokensOf(prefix + volatileSrc, extensions, cache, 'table-descent');
+                const miniTokens = blockTokensOf(prefix + volatileSrc, extensions, cache, 'table-descent', alignmentBefore(cache, t.rawIndex));
                 const mini = miniTokens[0];
                 if (miniTokens.length === 1 &&
                     mini.type === 'table' &&
@@ -328,7 +346,7 @@ const parseBlocksCached = (
         const offset = cut < cache.rawStarts.length
             ? cache.rawStarts[cut]
             : cache.content.length;
-        const tailTokens = blockTokensOf(cache.source.slice(offset), extensions, cache, 'append-tail');
+        const tailTokens = blockTokensOf(cache.source.slice(offset), extensions, cache, 'append-tail', alignmentBefore(cache, cut));
         let tailLength = 0;
         for (const token of tailTokens)
             tailLength += token.raw.length;
@@ -358,7 +376,7 @@ const parseBlocksCached = (
     // transitions. This avoids constructing a Lexer for every newly committed
     // streaming block.
     if (cache && cache.raws.length === 0 && cache.content.length === 0) {
-        const token = initialBlockToken(markdown, extensions);
+        const token = initialBlockToken(markdown, extensions, alignStart);
         if (token) {
             appendParseBlockRaw(cache, token.raw, true, 0);
             cache.content = markdown;
@@ -370,7 +388,7 @@ const parseBlocksCached = (
     }
     // Full parse (first call, non-append update, or contiguity fallback).
     cache?.source.reset(markdown);
-    const tokens = blockTokensOf(markdown, extensions, cache, 'full');
+    const tokens = blockTokensOf(markdown, extensions, cache, 'full', alignStart);
     if (cache) {
         truncateParseBlocksCache(cache, 0);
         let total = 0;

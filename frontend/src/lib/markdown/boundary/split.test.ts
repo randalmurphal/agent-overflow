@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { splitAtBoundary } from './split';
-import { lex } from '../parser/lexer';
 
 describe('splitAtBoundary', () => {
   it('returns empty prefix and empty tail for empty input', () => {
@@ -145,27 +144,5 @@ describe('splitAtBoundary', () => {
     // Adding the trailing newline must not RETRACT the already-
     // committed prefix.
     expect(b.prefix.length).toBeGreaterThanOrEqual(a.prefix.length);
-  });
-
-  // Every committed prefix lexes with no alignment markup left as text: a
-  // block is committed whole, after its closer, never at a blank line,
-  // list or fence inside it.
-  it.each([
-    '[center]\nfirst\n\nsecond\n[/center]\n\nafter\n\nmore',
-    'Intro.\n\n[right]\n- a\n\n- b\n\n```\ncode\n\n```\n\n## Heading\n\n---\n[/right]\n\nafter\n\nmore',
-    '[center]\none\n\n[right]\ntwo\n\n[/right]\n\nafter\n\nmore',
-    '[center]\n```\nfence open\n\n[/center]\n\nafter\n\nmore',
-  ])('never commits part of an alignment block: %j', (source) => {
-    const markup = /\[\/?(?:center|right)\]/;
-    const leaked = (tokens: readonly { type: string; tokens?: unknown[]; text?: string }[]): boolean =>
-      tokens.some((token) => token.type !== 'align' && token.type !== 'code' &&
-        ((typeof token.text === 'string' && markup.test(token.text)) || leaked((token.tokens ?? []) as never)));
-    let committed = 0;
-    for (let end = 1; end <= source.length; end++) {
-      const { prefix } = splitAtBoundary(source.slice(0, end));
-      expect(leaked(lex(prefix) as never), JSON.stringify(prefix)).toBe(false);
-      committed = Math.max(committed, prefix.length);
-    }
-    expect(source.slice(0, committed)).toContain('after');
   });
 });

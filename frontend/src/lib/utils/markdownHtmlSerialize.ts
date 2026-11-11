@@ -192,9 +192,9 @@ function renderBlock(token: MdToken): string {
     case 'descriptionList':
       return renderDescriptionList(token);
     case 'align':
-      // Alignment needs a `style`/`align` attribute we deliberately do
-      // not emit, so the content is kept and the alignment is dropped.
-      return renderFlow(token.tokens ?? [], 'p');
+      // A marker; the blocks it aligns are their own tokens. Alignment
+      // needs a `style`/`align` attribute we deliberately do not emit.
+      return '';
     case 'html':
     case 'def':
     case 'space':
@@ -382,6 +382,8 @@ function renderLink(token: MdToken): string {
  */
 function safeHref(href: string | undefined): string | null {
   if (typeof href !== 'string') return null;
+  // Controls and spaces a browser strips from a URL before its scheme.
+  // eslint-disable-next-line no-control-regex
   const cleaned = href.replace(/[\x00-\x20\x7F]/g, '').trim();
   return /^https?:\/\//i.test(cleaned) ? cleaned : null;
 }

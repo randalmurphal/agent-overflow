@@ -84,12 +84,7 @@
 		</p>
 	</Slot>
 {:else if token.type === 'align'}
-	<div
-		data-streamdown-align={id}
-		class={token.align === 'right' ? streamdown.theme.align.right : streamdown.theme.align.center}
-	>
-		{@render children()}
-	</div>
+	<!-- A marker renders nothing; Block.svelte applies its alignment. -->
 {:else if token.type === 'blockquote'}
 	<Slot props={{ children, token }} render={streamdown.snippets.blockquote}>
 		<blockquote data-streamdown-blockquote={id} class={streamdown.theme.blockquote.base}>

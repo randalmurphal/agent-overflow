@@ -50,9 +50,13 @@ export {
 export type { ProvenAppend } from './provenAppend';
 export { parseBlocks } from './parseBlocks';
 export {
+  alignmentAtEnd,
+  blockAlignment,
   createParseBlocksCache,
   updateParseBlockStringMaterialization
 } from './parseBlocks.cache';
+export { alignmentAfter, isAlignmentMarkerBlock } from './extensions/align';
+export type { Alignment } from './extensions/align';
 export type {
   ParseBlocksCache,
   ParseBlocksLexPath,

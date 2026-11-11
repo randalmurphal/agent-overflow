@@ -20,10 +20,14 @@ import {
     tablePrefixLength
 } from './geometry';
 import type { BlockToken } from './geometry';
+import { alignmentAfter, isAlignmentMarkerBlock } from './extensions/align';
+import type { Alignment } from './extensions/align';
 export const createParseBlocksCache = (observeLex?: ParseBlocksLexObserver): ParseBlocksCache => ({
     content: '',
     source: new ParseBlockSource(),
     extKey: null,
+    alignStart: null,
+    alignAfter: [],
     raws: [],
     keep: [],
     rawStarts: [],
@@ -48,6 +52,7 @@ export const truncateParseBlocksCache = (cache: ParseBlocksCache, rawLength: num
         }
     }
     cache.raws.length = rawLength;
+    cache.alignAfter.length = rawLength;
     cache.keep.length = rawLength;
     cache.rawStarts.length = rawLength;
     cache.blockIndexes.length = rawLength;
@@ -59,6 +64,7 @@ export const appendParseBlockRaw = (cache: ParseBlocksCache, raw: string, keep: 
     const rawIndex = cache.raws.length;
     cache.rawStarts.push(start);
     cache.raws.push(raw);
+    cache.alignAfter.push(alignmentAfter(raw, alignmentBefore(cache, rawIndex)));
     cache.keep.push(keep);
     if (keep) {
         const blockIndex = cache.blocks.length;
@@ -75,6 +81,8 @@ export const appendParseBlockRaw = (cache: ParseBlocksCache, raw: string, keep: 
 export const replaceParseBlockRaw = (cache: ParseBlocksCache, rawIndex: number, raw: string): void => {
     const previous = cache.raws[rawIndex];
     cache.raws[rawIndex] = raw;
+    // Only the trailing raw is replaced, and never a marker's.
+    cache.alignAfter[rawIndex] = alignmentAfter(raw, alignmentBefore(cache, rawIndex));
     const blockIndex = cache.blockIndexes[rawIndex];
     if (blockIndex >= 0) {
         cache.blocks[blockIndex] = raw;
@@ -83,6 +91,22 @@ export const replaceParseBlockRaw = (cache: ParseBlocksCache, rawIndex: number, 
     const lengthDelta = raw.length - previous.length;
     for (let i = rawIndex + 1; i < cache.rawStarts.length; i++)
         cache.rawStarts[i] += lengthDelta;
+};
+/** The alignment in force at the end of the last parsed source. */
+export const alignmentAtEnd = (cache: ParseBlocksCache): Alignment =>
+    alignmentBefore(cache, cache.raws.length);
+/** The alignment in force where raw `rawIndex` starts. */
+export const alignmentBefore = (cache: ParseBlocksCache, rawIndex: number): Alignment =>
+    rawIndex > 0 ? cache.alignAfter[rawIndex - 1] : cache.alignStart;
+/**
+ * How rendered block `blockIndex` shows: a marker, which renders nothing, or
+ * a block aligned by the alignment in force before it.
+ */
+export const blockAlignment = (cache: ParseBlocksCache, blockIndex: number): Alignment | 'marker' => {
+    const rawIndex = cache.blockRawIndexes[blockIndex];
+    const before = alignmentBefore(cache, rawIndex);
+    const block = cache.raws[rawIndex];
+    return isAlignmentMarkerBlock(block, before) ? 'marker' : before;
 };
 /**
  * Detach every published block from marked's full-document input string.
@@ -290,6 +314,10 @@ export type ParseBlocksCache = {
     source: ParseBlockSource;
     /** block-level custom extensions used to build the cached block boundaries */
     extKey: Extension[] | null;
+    /** the alignment in force at offset 0 (extensions/align.ts) */
+    alignStart: Alignment;
+    /** parallel to raws: the alignment in force after each token */
+    alignAfter: Alignment[];
     /** every block token's raw (including space/footnote tokens) in document order */
     raws: string[];
     /** parallel to raws: whether the token is part of the rendered block list */
