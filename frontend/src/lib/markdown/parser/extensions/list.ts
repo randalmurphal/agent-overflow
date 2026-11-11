@@ -1,5 +1,6 @@
 import type { Lexer, LexerOptions } from '../engine';
 import type { Extension, GenericToken } from '../index';
+import { isAlignmentCloserLine, openAlignmentCloser } from './align';
 
 export function letterToInt(letter: string): number {
     return letter.toLowerCase().charCodeAt(0) - 96;
@@ -212,12 +213,15 @@ function listMarkerMayStart(source: string): boolean {
     const next = source.charCodeAt(end + 1);
     return end + 1 === source.length || next === 9 || next === 10 || next === 32;
 }
-export function parseListSource(src: string, options: LexerOptions, sourceOnly: true): ListBoundaryToken | undefined;
-export function parseListSource(src: string, options: LexerOptions, sourceOnly?: false): ListToken | undefined;
+// `closer` is the alignment closer line that ends a top-level list
+// (extensions/align.ts), when an alignment is in force.
+export function parseListSource(src: string, options: LexerOptions, sourceOnly: true, closer?: string): ListBoundaryToken | undefined;
+export function parseListSource(src: string, options: LexerOptions, sourceOnly?: false, closer?: string): ListToken | undefined;
 export function parseListSource(
     src: string,
     options: LexerOptions,
-    sourceOnly = false
+    sourceOnly = false,
+    closer?: string
 ): ListToken | ListBoundaryToken | undefined {
     if (!listMarkerMayStart(src))
         return undefined;
@@ -323,7 +327,8 @@ export function parseListSource(
                     : rawLine;
                 const isBlankLine = !nextLineWithoutTabs.trim();
                 const isIndented = nextLineWithoutTabs.search(/[^ ]/) >= indent;
-                if (fences.test(nextLineWithoutTabs) ||
+                if ((closer !== undefined && isAlignmentCloserLine(rawLine, closer)) ||
+                    fences.test(nextLineWithoutTabs) ||
                     heading.test(nextLineWithoutTabs) ||
                     html.test(nextLineWithoutTabs) ||
                     nextBullet.test(nextLineWithoutTabs) ||
@@ -437,7 +442,7 @@ export const markedListBlock: Extension = {
     name: 'list',
     level: 'block',
     tokenizer(src) {
-        const list = parseListSource(src, this.lexer.options, true);
+        const list = parseListSource(src, this.lexer.options, true, openAlignmentCloser(this.lexer));
         if (!list)
             return undefined;
         return list;
@@ -447,7 +452,7 @@ export const markedList: Extension = {
     name: 'list',
     level: 'block',
     tokenizer(src) {
-        const list = parseListSource(src, this.lexer.options);
+        const list = parseListSource(src, this.lexer.options, false, openAlignmentCloser(this.lexer));
         if (!list)
             return undefined;
         finalizeList(list, this.lexer);

@@ -21,6 +21,7 @@ import { markedMath } from './parser/extensions/math';
 import { parseMdxSource } from './parser/extensions/mdx';
 import { markedSub, markedSup } from './parser/extensions/subsup';
 import { markedTableBlock } from './parser/extensions/tableSource';
+import { alignmentAfter, alignmentMarker, isAlignmentMarkerBlock, type Alignment } from './parser/extensions/align';
 
 type ParseBlocksPath = ParseBlocksCache['lastPath'];
 
@@ -68,8 +69,17 @@ function expectAppendEquivalent(
   return { paragraphAppends, paths };
 }
 
+// A block lexes alone; a marker block is the marker the full lexer emits
+// with the alignment in force before it.
 function expectFullLexEquivalent(text: string): void {
-  const blockTokens = parseBlocks(text).flatMap((block) => lex(block));
+  let align: Alignment = null;
+  const blockTokens = parseBlocks(text).flatMap((block): unknown[] => {
+    const before = align;
+    align = alignmentAfter(block, before);
+    if (!isAlignmentMarkerBlock(block, before)) return lex(block);
+    const marker = alignmentMarker(block, before)!;
+    return [{ type: 'align', align: marker.align, open: marker.open }];
+  });
   expect(withoutRaw(blockTokens)).toEqualWithFirstDivergence(withoutRaw(lex(text)));
 }
 
@@ -148,7 +158,9 @@ describe('parseBlocks append differential', () => {
     try {
       expect(parseBlocks(':term: detail')).toEqual([':term: detail']);
       expect(parseBlocks('[center]\nCentered text\n[/center]')).toEqual([
-        '[center]\nCentered text\n[/center]',
+        '[center]\n',
+        'Centered text\n',
+        '[/center]',
       ]);
       expect(parseBlocks('<Component>body</Component>')).toEqual([
         '<Component>body</Component>',

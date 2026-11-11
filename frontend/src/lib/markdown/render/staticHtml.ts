@@ -1,5 +1,6 @@
 import type { StreamdownContext } from './context.svelte';
-import type { StreamdownToken } from '../parser/index';
+import type { Alignment, StreamdownToken } from '../parser/index';
+import { alignedTokens } from '../parser/extensions/align';
 import type { Tokens } from '../parser/engine';
 import { codespanClass } from './codespan';
 import { INCOMPLETE_LINK_HREF, classifyLinkHref, linkTagText, tableCellRenders } from './elements/url';
@@ -40,16 +41,22 @@ function childrenOf(token: StreamdownToken): StreamdownToken[] {
 		: [];
 }
 
+function extensionToken(_token: never): false {
+	return false;
+}
+
 /**
  * Serializes only Streamdown's fixed, synchronous default elements. Every
  * model-authored value is escaped and every tag/attribute name is owned here.
  * A custom renderer or component-bearing token returns null so the Svelte
- * renderer keeps full ownership of that block.
+ * renderer keeps full ownership of that block. `align` is the alignment in
+ * force before the tokens (parser/extensions/align.ts), as in Block.svelte.
  */
 export function renderStaticTokenHtml(
 	tokens: readonly StreamdownToken[],
 	streamdown: StreamdownContext,
 	id: string,
+	align: Alignment = null,
 ): string | null {
 	if (streamdown.children) return null;
 
@@ -104,6 +111,10 @@ export function renderStaticTokenHtml(
 					output.push(`<p data-streamdown-paragraph="${dataId}"${attribute('class', streamdown.theme.paragraph.base)}>`);
 					if (!render(children)) return false;
 					output.push('</p>');
+					break;
+
+				// A marker renders nothing; the top level applies its alignment.
+				case 'align':
 					break;
 
 				case 'blockquote':
@@ -348,12 +359,45 @@ export function renderStaticTokenHtml(
 				case 'space':
 					break;
 
-				default:
+				// Component-backed: Element.svelte renders these.
+				case 'image':
+				case 'math':
+				case 'alert':
+				case 'footnoteRef':
+				case 'inline-citations':
+				case 'details':
+				case 'detailsSummary':
+				case 'mdx':
 					return false;
+
+				default:
+					// A host extension's own token type; a StreamdownToken type
+					// with no case fails the type check here.
+					return extensionToken(token);
 			}
 		}
 		return true;
 	};
 
-	return render(tokens) ? output.join('') : null;
+	const aligned = alignedTokens([...tokens], align, {
+		mdxComponents: streamdown.mdxComponents,
+		mdxSnippet: streamdown.snippets.mdx,
+	});
+	if (aligned === null) return render(tokens) ? output.join('') : null;
+	for (const entry of aligned) {
+		// An MDX container is a component island unaligned; so are its blocks.
+		if (entry.nested) return null;
+		if (entry.align === null) {
+			if (!render([entry.token])) return null;
+			continue;
+		}
+		output.push(
+			`<div data-streamdown-align="${dataId}"` +
+			attribute('class', entry.align === 'right' ? streamdown.theme.align.right : streamdown.theme.align.center) +
+			'>',
+		);
+		if (!render([entry.token])) return null;
+		output.push('</div>');
+	}
+	return output.join('');
 }
