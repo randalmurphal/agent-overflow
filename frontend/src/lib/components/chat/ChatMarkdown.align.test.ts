@@ -2,7 +2,8 @@ import { render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { describe, expect, it, vi } from 'vitest';
 import ChatMarkdown from './ChatMarkdown.svelte';
-import { Lexer, Streamdown } from '../../markdown';
+import { Lexer, Streamdown, lex } from '../../markdown';
+import { renderedBlocks } from '../../utils/speakableText';
 import { chatMarkdownTheme } from './markdown/streamdownTheme';
 import { __setAlignmentEnabledForTest } from '../../markdown/parser/extensions/align';
 import { getSettings } from '../../stores/settings.svelte';
@@ -90,7 +91,81 @@ const STREAMED: [string, string[]][] = [
     ['center|P|A', 'right|P|B', '-|P|C']],
 ];
 
+// Tokens whose renderer emits several top-level children, or none.
+const MULTI_CHILD = [
+  '<Aside>\nOnly.\n</Aside>',
+  '<Aside>\nFirst paragraph.\n\nSecond paragraph.\n</Aside>',
+  '<Aside>\nInside.\n\n<Inner>\nDeep.\n</Inner>\n</Aside>',
+  '<Aside>inline only</Aside>',
+  'before\n\n<Aside>\n- a\n- b\n\n## heading\n\n```ts\nx\n```\n</Aside>\n\nafter',
+  '# Title\n\n[ref]: https://example.com\n\n<div>raw</div>\n\n<!-- note -->\n\n> [!NOTE]\n> heads up\n\n$$\ne\n$$\n\n| a |\n|---|\n| 1 |\n\nDone[^1].\n\n[^1]: note',
+];
+
+/** The tag of each direct child, an aligned wrapper by the one element it holds. */
+const childTags = (containers: Element[]): string[] =>
+  containers.flatMap((container) => Array.from(container.children)).map((el) => {
+    if (!el.hasAttribute('data-streamdown-align')) return el.tagName;
+    expect(el.children, el.outerHTML).toHaveLength(1);
+    return `aligned ${el.firstElementChild!.tagName}`;
+  });
+const unalignedTags = (tags: string[]) => tags.map((tag) => tag.replace(/^aligned /, ''));
+
 describe('<ChatMarkdown> alignment', () => {
+  describe.each(
+    [...NOT_ALIGNMENT_CORPUS, ...MULTI_CHILD].flatMap((body) =>
+      (['center', 'right'] as const)
+        // A closer of the alignment would close it early; that is no longer the same body.
+        .filter((align) => !new RegExp(`^\\[/${align}\\]`, 'm').test(body))
+        .flatMap((align) => [
+          [body, `[${align}]\n${body}\n[/${align}]`],
+          [body, `[${align}]\n${body}`],
+        ]),
+    ),
+  )('aligned %j as %j', (body, aligned) => {
+    it('renders the same direct children, settled, as unaligned and as read aloud counts', async () => {
+      const tags = async (source: string) => {
+        const view = render(ChatMarkdown, { props: { source, pathRefs: [] } });
+        await tick();
+        const found = childTags(Array.from(view.container.querySelectorAll('.md-committed')));
+        view.unmount();
+        return found;
+      };
+      const plain = await tags(body);
+      const shown = await tags(aligned);
+      expect(unalignedTags(shown)).toEqual(plain);
+      expect(shown).toHaveLength(renderedBlocks(lex(aligned)).length);
+    });
+
+    it('renders the same direct children live and static', async () => {
+      for (const variant of [
+        { parseIncompleteMarkdown: true },
+        { static: true, compactStaticHtml: true },
+        { static: true, compactStaticHtml: false },
+      ]) {
+        const tags = async (content: string) => {
+          const view = render(Streamdown, { props: { content, theme: chatMarkdownTheme, ...variant } });
+          await tick();
+          const found = childTags([view.container.firstElementChild!]);
+          view.unmount();
+          return found;
+        };
+        expect(unalignedTags(await tags(aligned)), JSON.stringify(variant)).toEqual(await tags(body));
+      }
+    });
+  });
+
+  it('renders the same direct children around a forge HTML fragment', async () => {
+    const tags = async (source: string) => {
+      const view = render(ChatMarkdown, { props: { source, pathRefs: [], embeddedHtml: true } });
+      await tick();
+      const found = childTags(Array.from(view.container.querySelectorAll('.md-committed')));
+      view.unmount();
+      return found;
+    };
+    const body = 'lead\n\n<div>one</div>\n<p>two</p>\n\ntail';
+    expect(unalignedTags(await tags(`[center]\n${body}`))).toEqual(await tags(body));
+  });
+
   it.each([
     ['center', 'text-center'],
     ['right', 'text-right'],
@@ -114,7 +189,7 @@ describe('<ChatMarkdown> alignment', () => {
       unmount();
       return markdown;
     };
-    const body = 'first **bold**\n\n- one\n- two\n\n## heading\n\nlast';
+    const body = 'first **bold**\n\n- one\n- two\n\n<Aside>\nFirst paragraph.\n\nSecond paragraph.\n</Aside>\n\n## heading\n\nlast';
     expect(await copied(`[center]\n${body}\n[/center]`)).toBe(await copied(body));
     expect(await copied(`[right]\n${body}`)).toBe(await copied(body));
   });

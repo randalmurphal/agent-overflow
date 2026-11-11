@@ -79,6 +79,7 @@ const CORPUS = [
   '[center]\naligned needle words\n[/center]\n\nafter the block',
   '[right]\nright needle\n\n- listed needle\n[/right]\n[center]\nnext needle\n[/center]',
   '[center]\nunclosed needle\n\n- listed needle\n\nlast needle',
+  '[center]\n<Aside>\nFirst needle paragraph.\n\nSecond needle paragraph.\n</Aside>\n[/center]',
   '[center]\nneedle\n[/right]\n\nstill centered needle\n\n[/center]\n[/center]',
   '[typed](streamdown:incomplete-link) and [label][ref]\n\n[ref]: https://example.com/ref',
   '- item\n\n  loose paragraph\n\n- next',

@@ -32,7 +32,10 @@
 // the elements a settled reply renders as the children of its Markdown
 // wrapper, in order.
 
-import { lex } from '../markdown';
+import { lex, topLevelShape } from '../markdown';
+
+// Chat registers no MDX component or snippet.
+const CHAT_RENDERERS = {};
 
 /** The longest piece handed to a device voice, as a spoken length. */
 export const MAX_PIECE_CHARS = 280;
@@ -109,27 +112,22 @@ type MdToken = {
   isInline?: boolean;
 };
 
-// Top-level tokens that render exactly one element in chat
-// (`markdown/render/Element.svelte`, `staticHtml.ts`).
-const ELEMENT_BLOCKS = new Set([
-  'paragraph', 'heading', 'code', 'blockquote', 'alert', 'list', 'table', 'hr', 'math', 'descriptionList', 'details',
-]);
-
 /**
  * The top-level tokens of a lexed reply that render one element each, in
  * order: index i is the i-th element child of the reply's Markdown wrapper.
- * An MDX container renders its blocks in place (chat registers no MDX
- * component), so it contributes its blocks. Everything else renders no
- * element: `space`, `def` and footnote definitions, raw HTML (chat renders
- * none), `[center]`/`[right]` markers (each aligned block renders in its
- * own wrapper element), and unknown extensions.
+ * The renderer's own rule (`topLevelShape`) decides, with chat's renderers:
+ * an MDX container renders its blocks in place (chat registers no MDX
+ * component), so it contributes its blocks; `space`, definitions, raw HTML
+ * (chat renders none), `[center]`/`[right]` markers and unknown extensions
+ * render no element. An aligned element is wrapped one to one.
  */
-export function renderedBlocks<T extends { type: string; tokens?: unknown }>(tokens: readonly T[]): T[] {
+export function renderedBlocks<T extends { type: string; tagName?: string; tokens?: unknown }>(tokens: readonly T[]): T[] {
   const out: T[] = [];
   const collect = (from: readonly T[]): void => {
     for (const token of from) {
-      if (ELEMENT_BLOCKS.has(token.type)) out.push(token);
-      else if (token.type === 'mdx' && Array.isArray(token.tokens)) collect(token.tokens as T[]);
+      const shape = topLevelShape(token, CHAT_RENDERERS);
+      if (shape === 'element') out.push(token);
+      else if (shape === 'children' && Array.isArray(token.tokens)) collect(token.tokens as T[]);
     }
   };
   collect(tokens);

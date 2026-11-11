@@ -137,31 +137,75 @@ export const withoutPartialAlignmentCloser = (
     return partial ? block.slice(0, block.length - line.length) : block;
 };
 
-// Top-level tokens with no element, which get no aligned wrapper either.
-const rendersNothing = (type: string, renderHtml: boolean): boolean =>
-    type === 'space' || type === 'def' || type === 'footnote' || (type === 'html' && !renderHtml);
+/** How a surface renders MDX: an MDX token with neither renders its blocks in place. */
+export type MdxRenderers = {
+    mdxComponents?: Record<string, unknown>;
+    mdxSnippet?: unknown;
+};
+
+// Top-level tokens that render exactly one element.
+const ELEMENT_TOKENS = new Set([
+    'paragraph', 'heading', 'code', 'blockquote', 'alert', 'list', 'table', 'hr', 'math', 'descriptionList', 'details',
+]);
 
 /**
- * The top-level tokens to render with the alignment each renders under,
- * markers removed; null when no alignment applies, so the caller renders
- * the tokens unchanged.
+ * What a top-level token renders: exactly one element; its child tokens in
+ * place (an MDX container with no host renderer); or no fixed element
+ * (nothing, loose inline text, an HTML fragment, a host MDX component).
+ * The one rule for the elements a reply's Markdown wrapper holds: alignment
+ * wraps each `element`, and read aloud indexes them.
  */
-export const alignedTokens = <T extends { type: string }>(
+export const topLevelShape = (
+    token: { type: string; tagName?: string },
+    renderers: MdxRenderers
+): 'element' | 'children' | 'other' => {
+    if (ELEMENT_TOKENS.has(token.type))
+        return 'element';
+    if (token.type === 'mdx' && !renderers.mdxSnippet && !renderers.mdxComponents?.[token.tagName ?? ''])
+        return 'children';
+    return 'other';
+};
+
+export type AlignedToken<T> = {
+    token: T;
+    /** The alignment it renders under; null for one with no fixed element,
+     * which renders as it would unaligned. */
+    align: Alignment;
+    /** A block of an MDX container rendered in place. */
+    nested: boolean;
+};
+
+/**
+ * The tokens to render, each with the alignment it renders under, markers
+ * removed; null when no alignment applies, so the caller renders the tokens
+ * unchanged. Each aligned element gets a wrapper of its own and an MDX
+ * container's blocks are aligned one by one, so the wrapper holds exactly
+ * the elements an unaligned render has, in the same order.
+ */
+export const alignedTokens = <T extends { type: string; tagName?: string; tokens?: unknown }>(
     tokens: T[],
     align: Alignment,
-    renderHtml: boolean
-): { token: T; align: Alignment }[] | null => {
+    renderers: MdxRenderers
+): AlignedToken<T>[] | null => {
     if (align === null && !tokens.some((token) => token.type === 'align'))
         return null;
-    const out: { token: T; align: Alignment }[] = [];
+    const out: AlignedToken<T>[] = [];
     let current = align;
-    for (const token of tokens) {
-        if (token.type === 'align') {
-            const marker = token as unknown as AlignToken;
-            current = marker.open ? marker.align : null;
-        } else
-            out.push({ token, align: rendersNothing(token.type, renderHtml) ? null : current });
-    }
+    const collect = (from: T[], nested: boolean): void => {
+        for (const token of from) {
+            if (token.type === 'align') {
+                const marker = token as unknown as AlignToken;
+                current = marker.open ? marker.align : null;
+                continue;
+            }
+            const shape = topLevelShape(token, renderers);
+            if (shape === 'children' && current !== null && Array.isArray(token.tokens))
+                collect(token.tokens as T[], true);
+            else
+                out.push({ token, align: shape === 'element' ? current : null, nested });
+        }
+    };
+    collect(tokens, false);
     return out;
 };
 

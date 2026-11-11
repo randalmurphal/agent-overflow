@@ -128,7 +128,12 @@
 	);
 	// Top-level tokens with the alignment each renders under; null when none
 	// is in force, so unaligned content renders exactly as before.
-	const aligned = $derived(alignedTokens(tokens, align, Boolean(streamdown.renderHtml)));
+	const aligned = $derived(
+		alignedTokens(tokens, align, {
+			mdxComponents: streamdown.mdxComponents,
+			mdxSnippet: streamdown.snippets.mdx
+		})
+	);
 
 </script>
 
@@ -349,10 +354,10 @@
 				data-streamdown-align={id}
 				class={entry.align === 'right' ? streamdown.theme.align.right : streamdown.theme.align.center}
 			>
-				{@render renderChildren([entry.token], directAppendTail && index === aligned.length - 1, true)}
+				{@render renderChildren([entry.token], !entry.nested && directAppendTail && index === aligned.length - 1, !entry.nested)}
 			</div>
 		{:else}
-			{@render renderChildren([entry.token], directAppendTail && index === aligned.length - 1, true)}
+			{@render renderChildren([entry.token], !entry.nested && directAppendTail && index === aligned.length - 1, !entry.nested)}
 		{/if}
 	{/each}
 {:else}

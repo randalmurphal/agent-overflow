@@ -25,6 +25,7 @@ export {
   alignmentAfter,
   alignmentAtEnd,
   isAlignmentMarkerBlock,
+  topLevelShape,
 } from './parser/index';
 export type {
   Alignment,

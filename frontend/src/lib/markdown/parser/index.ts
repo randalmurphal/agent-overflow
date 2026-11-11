@@ -55,7 +55,7 @@ export {
   createParseBlocksCache,
   updateParseBlockStringMaterialization
 } from './parseBlocks.cache';
-export { alignmentAfter, isAlignmentMarkerBlock } from './extensions/align';
+export { alignmentAfter, isAlignmentMarkerBlock, topLevelShape } from './extensions/align';
 export type { Alignment } from './extensions/align';
 export type {
   ParseBlocksCache,

@@ -379,9 +379,14 @@ export function renderStaticTokenHtml(
 		return true;
 	};
 
-	const aligned = alignedTokens([...tokens], align, Boolean(streamdown.renderHtml));
+	const aligned = alignedTokens([...tokens], align, {
+		mdxComponents: streamdown.mdxComponents,
+		mdxSnippet: streamdown.snippets.mdx,
+	});
 	if (aligned === null) return render(tokens) ? output.join('') : null;
 	for (const entry of aligned) {
+		// An MDX container is a component island unaligned; so are its blocks.
+		if (entry.nested) return null;
 		if (entry.align === null) {
 			if (!render([entry.token])) return null;
 			continue;
