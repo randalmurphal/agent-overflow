@@ -159,7 +159,7 @@ func TestSearchHidesWhatTheViewHides(t *testing.T) {
 	}
 	s, _, _ := newTestStore(t, CacheBytes)
 	for i, v := range shared.Vectors {
-		if got := hiddenEscapes.ReplaceAllString(v.Input, ""); got != v.Shown {
+		if got := string(stripHidden(nil, []byte(v.Input))); got != v.Shown {
 			t.Errorf("%s: shown %q, want %q", v.Name, got, v.Shown)
 		}
 		key := githubKey(fmt.Sprint(500 + i))

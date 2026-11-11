@@ -203,6 +203,111 @@
       "shown": "needle",
       "query": "needle",
       "count": 1
+    },
+    {
+      "name": "OSC inside OSC",
+      "input": "a\u001b]x\u001b]y\u0007b",
+      "shown": "a\u001b]xb",
+      "query": "]xb",
+      "count": 1
+    },
+    {
+      "name": "APC inside OSC",
+      "input": "a\u001b]x\u001b_y\u001b\\b",
+      "shown": "a\u001b]xb",
+      "query": "]xb",
+      "count": 1
+    },
+    {
+      "name": "SGR inside OSC",
+      "input": "a\u001b]x\u001b[31my\u0007b",
+      "shown": "a\u001b]xy\u0007b",
+      "query": "xy",
+      "count": 1
+    },
+    {
+      "name": "OSC inside APC",
+      "input": "a\u001b_x\u001b]y\u0007b\u001b\\c",
+      "shown": "a\u001b_xb\u001b\\c",
+      "query": "_xb",
+      "count": 1
+    },
+    {
+      "name": "APC inside APC",
+      "input": "a\u001b_x\u001b_y\u001b\\b",
+      "shown": "a\u001b_xb",
+      "query": "_xb",
+      "count": 1
+    },
+    {
+      "name": "SGR inside APC",
+      "input": "a\u001b_x\u001b[1my\u001b\\b",
+      "shown": "a\u001b_xy\u001b\\b",
+      "query": "xy",
+      "count": 1
+    },
+    {
+      "name": "OSC inside SGR",
+      "input": "\u001b[\u001b]t\u000731mneedle",
+      "shown": "\u001b[31mneedle",
+      "query": "needle",
+      "count": 1
+    },
+    {
+      "name": "APC inside SGR",
+      "input": "\u001b[3\u001b_t\u001b\\1mneedle",
+      "shown": "\u001b[31mneedle",
+      "query": "[31m",
+      "count": 1
+    },
+    {
+      "name": "SGR inside SGR",
+      "input": "\u001b[3\u001b[0m1mneedle",
+      "shown": "\u001b[31mneedle",
+      "query": "31mneedle",
+      "count": 1
+    },
+    {
+      "name": "OSC start at the end of a line",
+      "input": "needle\u001b]",
+      "shown": "needle\u001b]",
+      "query": "needle",
+      "count": 1
+    },
+    {
+      "name": "OSC body at the end of a line",
+      "input": "needle\u001b]0;title",
+      "shown": "needle\u001b]0;title",
+      "query": "title",
+      "count": 1
+    },
+    {
+      "name": "OSC ended by a lone ESC at the end of a line",
+      "input": "needle\u001b]0;t\u001b",
+      "shown": "needle\u001b]0;t\u001b",
+      "query": ";t",
+      "count": 1
+    },
+    {
+      "name": "APC at the end of a line",
+      "input": "needle\u001b_x",
+      "shown": "needle\u001b_x",
+      "query": "_x",
+      "count": 1
+    },
+    {
+      "name": "SGR parameters at the end of a line",
+      "input": "needle\u001b[31",
+      "shown": "needle\u001b[31",
+      "query": "[31",
+      "count": 1
+    },
+    {
+      "name": "SGR start at the end of a line",
+      "input": "needle\u001b[",
+      "shown": "needle\u001b[",
+      "query": "needle",
+      "count": 1
     }
   ]
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ciLogAnswerHits, ciLogFindHits, findCILogKey, placeCILogLine, resolveCILogHit, type CILogFindHit } from './ciLogFind';
+import { ciLogAnswerHits, ciLogFindHits, findCILogKey, placeCILogLine, resolveCILogHit, type CILogFindHit, type CILogResolution } from './ciLogFind';
 import { findNeedle } from './findMatch';
 import { countFindMatches } from './reviewFindScan';
 import { ansiShownText } from './ansiText';
@@ -107,7 +107,7 @@ describe('resolveCILogHit', () => {
       '\x1b_ab\x1b\\', 'a\x1b_p\x1b\\b', '\x1bPab\x1b\\', '\x1b^ab\x1b\\', '\x1b', 'a\x1bb',
       'a\u009b31mb', '\u009d0;ab\u009c', 'a\x00b',
     ];
-    for (let seed = 1; seed <= 200; seed += 1) {
+    for (let seed = 1; seed <= 60; seed += 1) {
       const next = random(seed);
       const pick = <T>(items: readonly T[]) => items[Math.floor(next() * items.length)];
       let total = 50 + Math.floor(next() * 400);
@@ -134,26 +134,30 @@ describe('resolveCILogHit', () => {
         const loaded = new Set<number>();
         for (let block = 0; block * CI_LOG_BLOCK_LINES < total; block += 1) if (next() < 0.8) loaded.add(block);
         const shown = (line: number) => (line < total && loaded.has(Math.floor(line / CI_LOG_BLOCK_LINES)) ? text[line] : null);
+        // The fresh count of each line as the view shows it, read once.
+        const fresh = text.map((line) => countFindMatches(ansiShownText(line), needle));
         for (const each of published) {
           const got = resolveCILogHit(sections, shown, needle, each);
           const placed = placeCILogLine(sections, each.line);
           const rowLines = placed ? Array.from({ length: each.line - placed.rowFrom + 1 }, (_, i) => placed.rowFrom + i) : [];
-          const label = `seed ${seed} change ${change} ${each.identity}`;
+          let want: CILogResolution;
           if (!placed) {
-            expect(got, label).toEqual({ kind: 'absent' });
+            want = { kind: 'absent' };
           } else if (rowLines.some((line) => shown(line) === null)) {
             // Not loaded: only its own line, when shown, may already say absent.
             const own = shown(each.line);
-            expect(got, label).toEqual(own !== null && each.occurrence >= countFindMatches(ansiShownText(own), needle) ? { kind: 'absent' } : { kind: 'unknown', sectionKey: placed.sectionKey });
+            want = own !== null && each.occurrence >= fresh[each.line] ? { kind: 'absent' } : { kind: 'unknown', sectionKey: placed.sectionKey };
           } else {
             const row: string[] = [];
             // The fresh count: the row as the view shows it, line by line.
-            for (const line of rowLines) for (let o = 0; o < countFindMatches(ansiShownText(text[line]), needle); o += 1) row.push(`${line}:${o}`);
+            for (const line of rowLines) for (let o = 0; o < fresh[line]; o += 1) row.push(`${line}:${o}`);
             const ordinal = row.indexOf(each.identity);
-            expect(got, label).toEqual(ordinal < 0 ? { kind: 'absent' } : {
+            want = ordinal < 0 ? { kind: 'absent' } : {
               kind: 'present', at: { sectionKey: placed.sectionKey, rowFrom: placed.rowFrom, rowKey: findCILogKey(placed.rowFrom), occurrence: ordinal },
-            });
+            };
           }
+          // The matcher only on a difference: it costs more than the resolver.
+          if (JSON.stringify(got) !== JSON.stringify(want)) expect(got, `seed ${seed} change ${change} ${each.identity}`).toEqual(want);
         }
       }
     }

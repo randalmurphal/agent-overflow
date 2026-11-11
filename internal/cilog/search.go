@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -37,9 +36,80 @@ const searchCheckLines = 1024
 
 // What the log view does not show of a line (frontend utils/ansiText.ts):
 // OSC and APC strings, SGR sequences, and NUL, which the HTML parser drops.
-// A search matches the text around them. The vectors in
+// A search matches the text around them. stripHidden is the view's one
+// left-to-right scan: at each ESC the next byte names the only form that
+// can start there, read forward to its end or to the first byte it cannot
+// hold; a form that does not end leaves its ESC as text and the scan goes
+// on after it. Every byte is read at most twice. The vectors in
 // frontend/src/test/fixtures/ansiShownVectors.json hold both sides to it.
-var hiddenEscapes = regexp.MustCompile(`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b_[^\x1b]*\x1b\\|\x1b\[[0-9;]*m|\x00`)
+
+// hiddenEnd is the end (exclusive) of the OSC, APC or SGR starting at the
+// ESC at at, else -1.
+func hiddenEnd(line []byte, at int) int {
+	if at+1 >= len(line) {
+		return -1
+	}
+	i := at + 2
+	switch line[at+1] {
+	case ']':
+		for ; i < len(line); i++ {
+			switch line[i] {
+			case 0x07:
+				return i + 1
+			case 0x1b:
+				if i+1 < len(line) && line[i+1] == '\\' {
+					return i + 2
+				}
+				return -1
+			case '\n':
+				return -1
+			}
+		}
+	case '_':
+		for ; i < len(line); i++ {
+			switch line[i] {
+			case 0x1b:
+				if i+1 < len(line) && line[i+1] == '\\' {
+					return i + 2
+				}
+				return -1
+			case '\n':
+				return -1
+			}
+		}
+	case '[':
+		for ; i < len(line); i++ {
+			c := line[i]
+			if (c >= '0' && c <= '9') || c == ';' {
+				continue
+			}
+			if c == 'm' {
+				return i + 1
+			}
+			return -1
+		}
+	}
+	return -1
+}
+
+// stripHidden appends what the view shows of line to dst.
+func stripHidden(dst, line []byte) []byte {
+	for i := 0; i < len(line); {
+		switch line[i] {
+		case 0:
+			i++
+			continue
+		case 0x1b:
+			if end := hiddenEnd(line, i); end >= 0 {
+				i = end
+				continue
+			}
+		}
+		dst = append(dst, line[i])
+		i++
+	}
+	return dst
+}
 
 // Search counts the matches of query in key's published log as the log
 // view shows each line: its first lineMax bytes, without the escapes the
@@ -66,6 +136,7 @@ func (s *Store) Search(ctx context.Context, key Key, query string, limit, lineMa
 		return Search{}, fmt.Errorf("search CI log: %w", err)
 	}
 	line := make([]byte, 0, min(lineMax, readBlock))
+	var stripped []byte
 	for i := 0; i < v.idx.lines; i++ {
 		if i%searchCheckLines == 0 {
 			if err := ctx.Err(); err != nil {
@@ -78,7 +149,8 @@ func (s *Store) Search(ctx context.Context, key Key, query string, limit, lineMa
 		}
 		text := line
 		if bytes.IndexByte(text, 0x1b) >= 0 || bytes.IndexByte(text, 0) >= 0 {
-			text = hiddenEscapes.ReplaceAll(text, nil)
+			stripped = stripHidden(stripped[:0], text)
+			text = stripped
 		}
 		shown := string(text)
 		if !utf8.Valid(text) {
