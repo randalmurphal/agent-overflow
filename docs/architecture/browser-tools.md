@@ -318,7 +318,10 @@ store's alone; the backend holds only what the engine holds.
   down and no frame can clear the page above or beside it; the top frame
   obeys none. The listener is a capture-phase listener added before any page
   script, so a page cannot swallow the message first, and the page never
-  sees the find's messages. Nothing waits for a frame, so a frame cannot
+  sees the find's messages. A document regenerated with `document.open`
+  runs the script again in the same window; each run replaces its listener
+  and announces again, so the window keeps one listener and its children.
+  The console capture is rerun-safe the same way. Nothing waits for a frame, so a frame cannot
   fail the stop, and a frame that runs no script (sandboxed without
   `allow-scripts`) keeps its selection. WebView2's own find bar has no
   selection housekeeping of AO's to fix.

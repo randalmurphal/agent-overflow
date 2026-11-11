@@ -524,7 +524,7 @@ func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 	// children answers how many frames the top frame's find script holds.
 	children := func(what string) int {
 		t.Helper()
-		raw, err := isolated.evalIn(ctx, webkitFindWorld, `return globalThis.aoFindChildCount();`)
+		raw, err := isolated.evalIn(ctx, webkitFindWorld, `return globalThis.aoFindState.count();`)
 		if err != nil {
 			t.Fatalf("%s: %v", what, err)
 		}
@@ -545,7 +545,7 @@ func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 	eval("build the frames", `(async () => {
 		const add = (doc, text) => { const f = doc.createElement("iframe"); doc.body.appendChild(f); f.contentDocument.body.innerHTML = "<p>" + text + "</p>"; return f.contentDocument; };
 		add(add(document, "alpha in a frame"), "alpha in a nested frame");
-		const responder = "<scr" + "ipt>let aoSeen = 0; addEventListener('message', (e) => { if (e.data && e.data['ao-find']) aoSeen++; }); addEventListener('message', (e) => { const d = e.data; if (!d || !d.probe) return; const reply = (v) => e.source.postMessage({ probeReply: d.id, value: v }, '*'); if (d.path && d.path.length) { const on = (r) => { if (r.data && r.data.probeReply === d.id) { removeEventListener('message', on, true); reply(r.data.value); } }; addEventListener('message', on, true); frames[d.path[0]].postMessage({ probe: d.probe, id: d.id, path: d.path.slice(1) }, '*'); return; } const s = Document.prototype.getSelection.call(document); if (d.probe === 'select') { s.selectAllChildren(document.body); reply(true); } else if (d.probe === 'override') { window.getSelection = () => { throw new Error('the page getSelection'); }; Selection.prototype.removeAllRanges = function () { throw new Error('the page removeAllRanges'); }; reply(true); } else if (d.probe === 'attack') { parent.postMessage({ 'ao-find': 'clear-selection' }, '*'); top.postMessage({ 'ao-find': 'clear-selection' }, '*'); reply(true); } else if (d.probe === 'seen') { reply(aoSeen); } else if (d.probe === 'flood') { for (let i = 0; i < 300; i++) parent.postMessage({ 'ao-find': 'child' }, '*'); reply(true); } else reply(s.rangeCount > 0 && !s.isCollapsed); }, true);</scr" + "ipt>";
+		const responder = "<scr" + "ipt>(() => { const aoMe = document.currentScript.outerHTML; let aoSeen = 0; addEventListener('message', (e) => { if (e.data && e.data['ao-find']) aoSeen++; }); addEventListener('message', (e) => { const d = e.data; if (!d || !d.probe) return; const reply = (v) => e.source.postMessage({ probeReply: d.id, value: v }, '*'); if (d.path && d.path.length) { const on = (r) => { if (r.data && r.data.probeReply === d.id) { removeEventListener('message', on, true); reply(r.data.value); } }; addEventListener('message', on, true); frames[d.path[0]].postMessage({ probe: d.probe, id: d.id, path: d.path.slice(1) }, '*'); return; } const s = Document.prototype.getSelection.call(document); if (d.probe === 'select') { s.selectAllChildren(document.body); reply(true); } else if (d.probe === 'override') { window.getSelection = () => { throw new Error('the page getSelection'); }; Selection.prototype.removeAllRanges = function () { throw new Error('the page removeAllRanges'); }; reply(true); } else if (d.probe === 'attack') { parent.postMessage({ 'ao-find': 'clear-selection' }, '*'); top.postMessage({ 'ao-find': 'clear-selection' }, '*'); reply(true); } else if (d.probe === 'seen') { reply(aoSeen); } else if (d.probe === 'regenerate') { const source = e.source; document.open(); document.write('<p>alpha in a regenerated frame</p>' + aoMe); document.close(); source.postMessage({ probeReply: d.id, value: true }, '*'); } else if (d.probe === 'flood') { for (let i = 0; i < 300; i++) parent.postMessage({ 'ao-find': 'child' }, '*'); reply(true); } else reply(s.rangeCount > 0 && !s.isCollapsed); }, true); })();</scr" + "ipt>";
 		const swallow = "<scr" + "ipt>addEventListener('message', (e) => { if (!e.data || !(e.data.probe || e.data.probeReply)) e.stopImmediatePropagation(); }, true);</scr" + "ipt>";
 		const data = (html) => "data:text/html," + encodeURIComponent(html);
 		const nested = (text, before) => data("<p>" + text + "</p>" + responder + (before || "") + "<iframe src=\"" + data("<p>alpha behind it</p>" + responder) + "\"></iframe>");
@@ -653,14 +653,49 @@ func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 	find(FindStop, "")
 	selected("stopped later", later, false)
 
+	// A frame that regenerates its document with document.open after load
+	// keeps its window and loses its listeners; the find's script runs again
+	// in it and keeps one listener. A same-origin blank frame written with
+	// document.write passes the clear on to the cross-origin frame inside.
+	eval("add a frame to regenerate", `aoFrame("regenerated", (f) => { f.src = aoData("<p>alpha before</p>" + aoResponder); })`)
+	probe("regenerate a frame", "regenerated", "regenerate")
+	eval("write a blank wrapper", `(async () => {
+		const f = document.createElement("iframe"); document.body.appendChild(f);
+		const inner = aoData("<p>alpha inside a written wrapper</p>" + aoResponder);
+		const ready = new Promise((resolve) => { f.onload = resolve; });
+		f.contentDocument.open(); f.contentDocument.write("<p>alpha in a written wrapper</p>" + aoResponder + "<iframe src=\"" + inner + "\"></iframe>"); f.contentDocument.close();
+		await ready; aoFrames.written = { element: f, window: f.contentWindow }; return 1; })()`)
+	written := []frame{{"the regenerated frame", "regenerated", nil}, {"the frame inside a written wrapper", "written", []int{0}}}
+	find(FindStart, "alpha")
+	each("select", written)
+	selected("selected in regenerated documents", written, true)
+	find(FindStop, "")
+	selected("stopped in regenerated documents", written, false)
+
+	// Run again in the same window, the script leaves one listener: each run
+	// takes the earlier one down before it adds its own.
+	raw, err := isolated.evalIn(ctx, webkitFindWorld, `let net = 0; const proto = EventTarget.prototype; const add = proto.addEventListener, remove = proto.removeEventListener;
+		proto.addEventListener = function (type, ...rest) { if (type === "message") net++; return add.call(this, type, ...rest); };
+		proto.removeEventListener = function (type, ...rest) { if (type === "message") net--; return remove.call(this, type, ...rest); };
+		try { (0, eval)(`+jsonString(webkitFindFrameScript)+`); (0, eval)(`+jsonString(webkitFindFrameScript)+`); } finally { proto.addEventListener = add; proto.removeEventListener = remove; }
+		return net;`)
+	if err != nil || string(raw) != "0" {
+		t.Fatalf("running the frame script twice more changed the message listeners by %s (%v), want 0", raw, err)
+	}
+	find(FindStart, "alpha")
+	each("select", frames[:1])
+	find(FindStop, "")
+	selected("stopped after the script ran again", frames[:1], false)
+
 	// A frame posting the find's own clear clears nothing above it: not its
 	// parent, not the top frame.
 	eval("select in every same-origin window", selectSameOrigin)
 	each("select", frames[:2])
+	selectedWindows := eval("count the selections", selections)
 	probe("the nested frame attacks", "cross", "attack", 0)
 	probe("the cross-origin frame attacks", "cross", "attack")
-	if n := eval("count the selections", selections); n != float64(3) {
-		t.Fatalf("a frame's own clear message left %v selected windows of 3", n)
+	if n := eval("count the selections", selections); n != selectedWindows {
+		t.Fatalf("a frame's own clear message left %v selected windows of %v", n, selectedWindows)
 	}
 	selected("after the frames' own clear messages", frames[:1], true)
 
@@ -702,6 +737,42 @@ func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 	// In the page's own world the overrides reach the clearing: it fails.
 	if _, _, err := manager.Evaluate(ctx, access, page.ID, "(async () => {"+webkitClearSelectionScript+"})()", nil); err == nil || !strings.Contains(err.Error(), "clear the selection") {
 		t.Fatalf("the clearing in the page's world under its overrides = %v, want a failure", err)
+	}
+
+	// The page regenerates its own document with document.open: the find's
+	// script runs again in the top frame, and the frame the new document
+	// holds is cleared. The console capture runs again too and reports an
+	// entry once.
+	eval("regenerate the page", `(async () => {
+		const inner = aoData("<p>alpha in a frame of the regenerated page</p>" + aoResponder);
+		document.open(); document.write("<p>alpha in the regenerated page</p><iframe src=\"" + inner + "\"></iframe>"); document.close();
+		const f = document.querySelector("iframe");
+		if (!f.contentWindow || f.contentWindow.location.href === "about:blank") await new Promise((resolve) => { f.onload = resolve; });
+		aoFrames = { regeneratedPage: { element: f, window: f.contentWindow } };
+		console.log("ao-console-once"); console.log("ao-console-fence");
+		return 1; })()`)
+	inRegenerated := []frame{{"the frame of the regenerated page", "regeneratedPage", nil}}
+	find(FindStart, "alpha")
+	each("select", inRegenerated)
+	find(FindStop, "")
+	selected("stopped in the regenerated page", inRegenerated, false)
+	count := func(text string) int {
+		logs, err := manager.ConsoleLogs(ctx, access, ConsoleOptions{PageID: page.ID, Filter: text, Limit: 100})
+		if err != nil {
+			t.Fatalf("read the console: %v", err)
+		}
+		return len(logs)
+	}
+	// The page reports its entries in order, so once the fence is in, so is
+	// every copy of the entry before it.
+	for round := 0; count("ao-console-fence") == 0; round++ {
+		if round == 200 {
+			t.Fatal("the console entries never arrived")
+		}
+		eval("wait a round trip", `1`)
+	}
+	if n := count("ao-console-once"); n != 1 {
+		t.Fatalf("a console entry in a regenerated page was reported %d times, want 1", n)
 	}
 }
 

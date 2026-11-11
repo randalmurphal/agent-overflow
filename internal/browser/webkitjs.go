@@ -218,7 +218,7 @@ const webkitFrameClearJS = `const aoFailures=[];const aoReachable=(e)=>{if(e&&e.
 // next start leaves to timing below a single task; the clears are not
 // ordered against it. Without the frame script (an engine that refused it)
 // such a frame keeps its selection.
-const webkitClearSelectionScript = webkitFrameClearJS + `aoClear(window);const aoTell=globalThis.aoFindTellChildren;if(typeof aoTell==="function")aoTell();if(aoFailures.length)throw new Error("browser: clear the selection: "+aoFailures.join("; "));return null;`
+const webkitClearSelectionScript = webkitFrameClearJS + `aoClear(window);const aoState=globalThis.aoFindState;if(aoState&&typeof aoState.tell==="function")aoState.tell();if(aoFailures.length)throw new Error("browser: clear the selection: "+aoFailures.join("; "));return null;`
 
 // webkitFindFrameScript is installed in every frame at document start, in
 // webkitFindWorld, so it exists in a frame added or navigated after the page
@@ -233,8 +233,16 @@ const webkitClearSelectionScript = webkitFrameClearJS + `aoClear(window);const a
 // parent: it clears itself and the frames it reaches (webkitFrameClearJS)
 // and passes the clear to its own announced children. The top frame obeys
 // no message; the stop script clears it and starts the chain
-// (aoFindTellChildren). A clear so only travels down and cannot cycle, and
-// a frame can clear nothing above or beside it.
+// (aoFindState.tell). A clear so only travels down and cannot cycle, and a
+// frame can clear nothing above or beside it.
+//
+// It runs again in a window whose document is regenerated with
+// document.open, which keeps the window and its globals but drops its
+// listeners. So every run installs its listener, first removing the one an
+// earlier run left if that survived, and announces to the parent again;
+// the window keeps exactly one listener. The child list lives on
+// aoFindState, the one global that outlasts a run, and carries over, each
+// entry still checked when used.
 //
 // The listener is in the capture phase and added before any page script in
 // the document runs, and WebKit calls a target's listeners in the order they
@@ -244,7 +252,7 @@ const webkitClearSelectionScript = webkitFrameClearJS + `aoClear(window);const a
 // window that the frame's first document then reuses. A frame that runs no
 // script (sandboxed without allow-scripts) cannot take part, and keeps its
 // selection.
-const webkitFindFrameScript = `(()=>{` + webkitFrameClearJS + `const aoMax=256;const aoKids=[];const aoMine=(w)=>{try{return !!w&&!w.closed&&w.parent===window;}catch(e){return false;}};const aoPrune=()=>{for(let i=aoKids.length-1;i>=0;i--)if(!aoMine(aoKids[i]))aoKids.splice(i,1);};const aoTell=()=>{aoPrune();for(const w of aoKids){try{w.postMessage({"ao-find":"clear-selection"},"*");}catch(e){}}};Object.defineProperty(globalThis,"aoFindTellChildren",{value:aoTell});Object.defineProperty(globalThis,"aoFindChildCount",{value:()=>{aoPrune();return aoKids.length;}});addEventListener("message",(e)=>{const d=e.data;if(!d||typeof d!=="object")return;const kind=d["ao-find"];if(kind!=="child"&&kind!=="clear-selection")return;e.stopImmediatePropagation();const w=e.source;if(kind==="child"){if(!aoMine(w)||aoKids.includes(w))return;aoPrune();if(aoKids.length<aoMax)aoKids.push(w);return;}if(window.parent===window||w!==window.parent)return;aoClear(window);aoTell();},true);if(window.parent!==window){try{window.parent.postMessage({"ao-find":"child"},"*");}catch(e){}}})();`
+const webkitFindFrameScript = `(()=>{` + webkitFrameClearJS + `const aoMax=256;let aoState=globalThis.aoFindState;if(!aoState){aoState={kids:[],listener:null,tell:null,count:null};Object.defineProperty(globalThis,"aoFindState",{value:aoState});}const aoKids=aoState.kids;const aoMine=(w)=>{try{return !!w&&!w.closed&&w.parent===window;}catch(e){return false;}};const aoPrune=()=>{for(let i=aoKids.length-1;i>=0;i--)if(!aoMine(aoKids[i]))aoKids.splice(i,1);};const aoTell=()=>{aoPrune();for(const w of aoKids){try{w.postMessage({"ao-find":"clear-selection"},"*");}catch(e){}}};aoState.tell=aoTell;aoState.count=()=>{aoPrune();return aoKids.length;};if(aoState.listener)removeEventListener("message",aoState.listener,true);aoState.listener=(e)=>{const d=e.data;if(!d||typeof d!=="object")return;const kind=d["ao-find"];if(kind!=="child"&&kind!=="clear-selection")return;e.stopImmediatePropagation();const w=e.source;if(kind==="child"){if(!aoMine(w)||aoKids.includes(w))return;aoPrune();if(aoKids.length<aoMax)aoKids.push(w);return;}if(window.parent===window||w!==window.parent)return;aoClear(window);aoTell();};addEventListener("message",aoState.listener,true);if(window.parent!==window){try{window.parent.postMessage({"ao-find":"child"},"*");}catch(e){}}})();`
 
 // webkitSelectionTextScript reads the page's current selection for the copy
 // chord, matching the CDP driver's expression exactly.
@@ -344,12 +352,18 @@ func webkitAssetFetchScript(url string, limit int64) string {
 }
 
 // webkitConsoleCaptureScript is injected at document start in every frame. It
-// is the WebKit half of what CDP's Runtime/Log domains report for free.
+// is the WebKit half of what CDP's Runtime/Log domains report for free. It
+// runs again in a window whose document is regenerated with document.open,
+// which keeps the window's console but drops its listeners, so the state it
+// keeps on the console (aoCapture) says which methods it already wrapped,
+// and each run replaces its own listeners: an entry is reported once
+// however many times it runs.
 func webkitConsoleCaptureScript(handler string) string {
-	return fmt.Sprintf(`(()=>{const post=window.webkit?.messageHandlers?.%s;if(!post)return;const send=(level,parts)=>{try{post.postMessage(JSON.stringify({level,message:parts.map(v=>{try{return typeof v==="string"?v:(v instanceof Error?(v.stack||v.message):JSON.stringify(v))}catch(_){return String(v)}}).join(" ").slice(0,%d),url:location.href}))}catch(_){}};
-for(const level of ["log","info","warning","warn","error","debug","trace"]){const original=console[level];if(typeof original!=="function")continue;console[level]=function(...args){send(level,args);return original.apply(this,args)}}
-addEventListener("error",e=>send("error",[e.message||String(e.error||"error")]));
-addEventListener("unhandledrejection",e=>send("error",["Unhandled promise rejection: "+String(e.reason)]));})();`, handler, maxConsoleMessageBytes)
+	return fmt.Sprintf(`(()=>{const post=window.webkit?.messageHandlers?.%s;if(!post)return;let st=console.aoCapture;if(!st){st={wrapped:{},error:null,rejection:null};Object.defineProperty(console,"aoCapture",{value:st});}const send=(level,parts)=>{try{post.postMessage(JSON.stringify({level,message:parts.map(v=>{try{return typeof v==="string"?v:(v instanceof Error?(v.stack||v.message):JSON.stringify(v))}catch(_){return String(v)}}).join(" ").slice(0,%d),url:location.href}))}catch(_){}};
+for(const level of ["log","info","warning","warn","error","debug","trace"]){const original=console[level];if(typeof original!=="function"||st.wrapped[level]===original)continue;const wrapped=function(...args){send(level,args);return original.apply(this,args)};st.wrapped[level]=wrapped;console[level]=wrapped}
+if(st.error)removeEventListener("error",st.error);if(st.rejection)removeEventListener("unhandledrejection",st.rejection);
+st.error=e=>send("error",[e.message||String(e.error||"error")]);st.rejection=e=>send("error",["Unhandled promise rejection: "+String(e.reason)]);
+addEventListener("error",st.error);addEventListener("unhandledrejection",st.rejection);})();`, handler, maxConsoleMessageBytes)
 }
 
 // webkitButtonsMask is MouseEvent.buttons for one pressed button. The
