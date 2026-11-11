@@ -11,11 +11,18 @@
 // textarea, nor a draft open in its editor (`editing`).
 //
 // A match is a logical identity, nothing that goes stale when the content
-// changes: its file's path, what in that file shows it (`ReviewFindAt`) and
-// its index among that element's matches. Where it is now (file index,
-// row, `data-find-key`, fold) is derived against the content shown at the
-// moment of use (reviewFindRows.ts#locateReviewFindHit); the scan hands
-// its own reading of that to `emit` so the owner can seed the resolver.
+// changes: its file's path, what in that file shows it (`ReviewFindAt`),
+// the run of that element's text it is in (a rendered comment's runs are
+// numbered in walk order, a closed <details> body's included, so a toggle
+// renumbers nothing) and its index among that run's matches. A change that
+// leaves the element and its source text alone leaves the identity alone;
+// a code line is its side and number, so an edit that renumbers lines
+// renames the matches below it. Whether it is present now, and where (file
+// index, row, `data-find-key`, the painter's index in the element), is
+// derived against the content shown at the moment of use
+// (reviewFindRows.ts#resolveReviewFindHit), by the same matching rule
+// (`findMatchChunk`); the scan hands its own reading of where each line
+// match is to `emit` so the owner can seed the resolver.
 //
 // The scan yields to the event loop between slices of work and stops
 // when its owner says it is no longer live. Every unit of work counts
@@ -23,8 +30,9 @@
 // text, and each `LONG_TEXT` characters of one long line. Text the patch
 // memory budget evicted is read back through `whenResident`.
 
-import type { DiffReviewComment, ReviewThread } from '../types/models';
+import type { DiffReviewComment, ReviewComment, ReviewThread } from '../types/models';
 import { findNeedle, foldFindText } from './findMatch';
+import type { FindRun } from './findHighlights';
 import { RowWalker } from './patchRows';
 import type { ReviewFile } from './patchStore';
 import { visibleBody } from './reviewComments';
@@ -58,9 +66,24 @@ export function findDraftKey(commentId: string): string {
   return `dc:${commentId}`;
 }
 
-/** `data-find-key` of a PR thread comment's body, by its index in the thread. */
-export function findThreadCommentKey(threadId: string, index: number): string {
-  return `pc:${index}:${threadId}`;
+/** A PR thread comment's forge id, which a refresh of the thread keeps.
+ * GitHub's GraphQL `databaseId` is nullable (the wire carries 0); such a
+ * comment is keyed by its creation time and author instead, which a
+ * refresh keeps as well. */
+export function reviewCommentKey(comment: ReviewComment): string {
+  return comment.databaseID > 0 ? String(comment.databaseID) : `@${comment.createdAt}@${comment.authorLogin}`;
+}
+
+/** `data-find-key` of a PR thread comment's body, by its thread and its
+ * `reviewCommentKey`. */
+export function findThreadCommentKey(threadId: string, comment: string): string {
+  return `pc:${encodeURIComponent(threadId)}:${encodeURIComponent(comment)}`;
+}
+
+/** The thread id and comment key a `findThreadCommentKey` names. */
+export function findThreadCommentOfKey(key: string): { threadId: string; comment: string } | null {
+  const match = /^pc:([^:]*):([^:]*)$/.exec(key);
+  return match ? { threadId: decodeURIComponent(match[1]), comment: decodeURIComponent(match[2]) } : null;
 }
 
 /** What in a file shows a match, by fields that survive a content change:
@@ -69,19 +92,23 @@ export function findThreadCommentKey(threadId: string, index: number): string {
  * line it becomes when the fold opens), or a conflict marker line,
  * `m<old>:<new>:<run>`, by the line numbers in effect and its place in a
  * run of markers (`line`); a draft by its id; a PR thread comment by its
- * thread and index in it. */
+ * thread and `reviewCommentKey`. */
 export type ReviewFindAt =
   | { kind: 'header' }
   | { kind: 'line'; tag: string }
   | { kind: 'draft'; commentId: string }
-  | { kind: 'thread'; threadId: string; comment: number };
+  | { kind: 'thread'; threadId: string; comment: string };
 
 export interface ReviewFindHit {
-  /** `path`, the element `at` names and `occurrence`, as one string. */
+  /** `path`, the element `at` names, `run` (a comment's) and `occurrence`,
+   * as one string. */
   readonly identity: string;
   readonly path: string;
   readonly at: ReviewFindAt;
-  /** Its index among that element's matches. */
+  /** The run of the element's text it is in: a rendered comment's, in walk
+   * order, shown or not; 0 for every other element, which is one run. */
+  readonly run: number;
+  /** Its index among that run's matches. */
   readonly occurrence: number;
 }
 
@@ -101,6 +128,8 @@ export interface ReviewFindFileSpot {
    * -2 for the header, -1 above the first row. */
   readonly line: number;
   readonly place: ReviewFindPlace;
+  /** A fold's hidden line: its index in the fold. */
+  readonly foldLine?: number;
 }
 
 /** The key of the element `at` names within its file. */
@@ -111,8 +140,51 @@ export function findElementKey(at: ReviewFindAt): string {
   return findThreadCommentKey(at.threadId, at.comment);
 }
 
-function makeHit(path: string, at: ReviewFindAt, occurrence: number): ReviewFindHit {
-  return { identity: `${path}\u0000${findElementKey(at)}\u0000${occurrence}`, path, at, occurrence };
+export function makeReviewFindHit(path: string, at: ReviewFindAt, run: number, occurrence: number): ReviewFindHit {
+  const index = at.kind === 'thread' ? `${run}:${occurrence}` : `${occurrence}`;
+  return { identity: `${path}\u0000${findElementKey(at)}\u0000${index}`, path, at, run, occurrence };
+}
+
+/** Characters of one text searched as one unit of work. */
+export const LONG_TEXT = 16_384;
+
+// `at`, moved past a low surrogate so a slice there keeps its pair.
+function codePointBoundary(text: string, at: number): number {
+  if (at <= 0 || at >= text.length) return at;
+  const low = text.charCodeAt(at);
+  const high = text.charCodeAt(at - 1);
+  return low >= 0xdc00 && low <= 0xdfff && high >= 0xd800 && high <= 0xdbff ? at + 1 : at;
+}
+
+/**
+ * The matching rule review find counts by, the scan and the resolver
+ * alike: the matches of `needle` (folded, `findNeedle`) in `run` from
+ * `from`, left to right without overlap, `LONG_TEXT` characters at a time.
+ * Answers how many start in this chunk, where the next chunk starts, and
+ * whether this one ended the run.
+ */
+export function findMatchChunk(run: string, from: number, needle: string): { count: number; next: number; last: boolean } {
+  const end = codePointBoundary(run, Math.min(run.length, from + LONG_TEXT));
+  const folded = foldFindText(run.slice(from, codePointBoundary(run, Math.min(run.length, end + needle.length - 1))));
+  let count = 0;
+  let next = end;
+  for (let at = folded.indexOf(needle); at >= 0 && from + at < end; at = folded.indexOf(needle, at + needle.length)) {
+    count += 1;
+    next = Math.max(next, from + at + needle.length);
+  }
+  return { count, next, last: end >= run.length };
+}
+
+/** The matches of `needle` in `run`, by `findMatchChunk`. */
+export function countFindMatches(run: string, needle: string): number {
+  let count = 0;
+  for (let from = 0; needle !== '' && from + needle.length <= run.length;) {
+    const chunk = findMatchChunk(run, from, needle);
+    count += chunk.count;
+    if (chunk.last) break;
+    from = chunk.next;
+  }
+  return count;
 }
 
 /** The tag of the code row a `RowWalker` is at (not a marker or gap). */
@@ -131,9 +203,10 @@ export interface ReviewFindContent {
   readonly files: readonly ReviewFile[];
   readonly drafts: readonly DiffReviewComment[];
   readonly prThreads: readonly ReviewThread[];
-  /** The runs of text a PR comment's shown body renders as in the element
-   * `rowKey` names (chat/markdown/markdownFindText.ts). */
-  commentText(body: string, rowKey: string): readonly string[];
+  /** Every run of text a PR comment's shown body renders, in walk order,
+   * with whether it shows now, in the element `rowKey` names
+   * (chat/markdown/markdownFindText.ts). */
+  commentText(body: string, rowKey: string): readonly FindRun[];
   /** The `data-find-key`s of the drafts open in their editor: not shown. */
   editing?: ReadonlySet<string>;
   /** The hidden lines of each collapsed fold of a conflict file, by fold id. */
@@ -159,19 +232,9 @@ export interface ReviewFindScanOptions {
 const LOAD_LINES = 512;
 /** Units of work between clock reads. */
 const CLOCK_ROWS = 256;
-/** Characters of one text searched as one unit of work. */
-export const LONG_TEXT = 16_384;
 const DEFAULT_SLICE_MS = 8;
 
 class StopScan extends Error {}
-
-// `at`, moved past a low surrogate so a slice there keeps its pair.
-function codePointBoundary(text: string, at: number): number {
-  if (at <= 0 || at >= text.length) return at;
-  const low = text.charCodeAt(at);
-  const high = text.charCodeAt(at - 1);
-  return low >= 0xdc00 && low <= 0xdfff && high >= 0xd800 && high <= 0xdbff ? at + 1 : at;
-}
 
 /**
  * Scans `content` for `query`. Resolves true when the matches stopped at
@@ -201,35 +264,30 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
     sliceEnd = now() + sliceMs;
   }
 
-  // A run's matches, left to right without overlap, `LONG_TEXT`
-  // characters of it at a time; a long run reads the clock after each.
-  // `each` answers true to stop.
+  // A run's matches by `findMatchChunk`; a long run reads the clock after
+  // each chunk. `each` answers true to stop.
   async function eachMatch(run: string, each: () => boolean): Promise<boolean> {
-    let from = 0;
-    while (from + needle.length <= run.length) {
-      const end = codePointBoundary(run, Math.min(run.length, from + LONG_TEXT));
-      const folded = foldFindText(run.slice(from, codePointBoundary(run, Math.min(run.length, end + needle.length - 1))));
-      let next = end;
-      for (let at = folded.indexOf(needle); at >= 0 && from + at < end; at = folded.indexOf(needle, at + needle.length)) {
-        if (each()) return true;
-        next = Math.max(next, from + at + needle.length);
-      }
-      from = next;
-      if (end < run.length) await tick(CLOCK_ROWS);
+    for (let from = 0; from + needle.length <= run.length;) {
+      const chunk = findMatchChunk(run, from, needle);
+      for (let i = 0; i < chunk.count; i += 1) if (each()) return true;
+      if (chunk.last) break;
+      from = chunk.next;
+      await tick(CLOCK_ROWS);
     }
     return false;
   }
 
-  // Emits the matches of one element's text, given whole or as the runs
-  // a match cannot cross; true once the limit is hit.
-  async function emitText(text: string | readonly string[], file: ReviewFile, at: ReviewFindAt, spot: ReviewFindFileSpot): Promise<boolean> {
-    let occurrence = 0;
-    const runs = typeof text === 'string' ? [text] : text;
+  // Emits the matches of one element's text, given whole or as its runs
+  // (a match cannot cross one), numbered within each run; a run not shown
+  // keeps its number and yields none. True once the limit is hit.
+  async function emitText(text: string | readonly FindRun[], file: ReviewFile, at: ReviewFindAt, spot: ReviewFindFileSpot): Promise<boolean> {
+    const runs = typeof text === 'string' ? [{ text, shown: true }] : text;
     for (let i = 0; i < runs.length; i += 1) {
-      const run = runs[i];
+      if (!runs[i].shown) continue;
       if (i > 0) await tick();
-      if (await eachMatch(run, () => {
-        options.emit(makeHit(file.path, at, occurrence), file, spot);
+      let occurrence = 0;
+      if (await eachMatch(runs[i].text, () => {
+        options.emit(makeReviewFindHit(file.path, at, i, occurrence), file, spot);
         occurrence += 1;
         emitted += 1;
         return emitted >= options.limit;
@@ -274,11 +332,12 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
         }
         if (insert.kind !== 'pr-thread') return false;
         const thread = insert.thread;
-        for (let index = 0; index < thread.comments.length; index += 1) {
-          const rowKey = findThreadCommentKey(thread.id, index);
+        for (const comment of thread.comments) {
+          const key = reviewCommentKey(comment);
+          const rowKey = findThreadCommentKey(thread.id, key);
           await tick();
-          const shown = visibleBody(thread.comments[index].body);
-          if (shown !== '' && await emitText(content.commentText(shown, rowKey), file, { kind: 'thread', threadId: thread.id, comment: index }, {
+          const shown = visibleBody(comment.body);
+          if (shown !== '' && await emitText(content.commentText(shown, rowKey), file, { kind: 'thread', threadId: thread.id, comment: key }, {
             rowKey, line, place: { kind: 'thread', threadId: thread.id },
           })) return true;
         }
@@ -305,10 +364,10 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
           if (fold) {
             markerRun = 0;
             const hidden = folds?.get(fold.id) ?? [];
-            const foldSpot: ReviewFindFileSpot = { rowKey: lineSpot.rowKey, line: lineIndex, place: { kind: 'fold', foldId: fold.id } };
+            const place: ReviewFindPlace = { kind: 'fold', foldId: fold.id };
             for (let h = 0; h < hidden.length; h += 1) {
               await tick();
-              if (await emitText(hidden[h], file, { kind: 'line', tag: `c${oldAt + h}:${newAt + h}` }, foldSpot)) return true;
+              if (await emitText(hidden[h], file, { kind: 'line', tag: `c${oldAt + h}:${newAt + h}` }, { rowKey: lineSpot.rowKey, line: lineIndex, place, foldLine: h })) return true;
             }
           } else {
             const tag = `m${oldAt}:${newAt}:${markerRun}`;

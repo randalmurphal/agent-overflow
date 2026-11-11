@@ -19,6 +19,13 @@
 import { createRefreshScheduler, type RefreshScheduler } from './refreshScheduler';
 import { findNeedle, foldFindText } from './findMatch';
 
+/** A run of text find matches within, and whether it shows now (a run
+ * inside a closed <details> does not). */
+export interface FindRun {
+  readonly text: string;
+  readonly shown: boolean;
+}
+
 export interface FindMatch {
   readonly range: Range;
   /** The `rowKeyAttribute` of the row holding the match, when rows are keyed. */
@@ -130,6 +137,8 @@ interface Segment {
   text: string;
   block: Element | null;
   row: Element | null;
+  /** In a closed <details>: kept only when asked for (`keepHidden`). */
+  hidden: boolean;
 }
 
 // A closed <details> shows only its summary.
@@ -142,7 +151,7 @@ function hiddenByDetails(element: Element): boolean {
   return false;
 }
 
-function collectSegments(root: Element, rowSelector: string | undefined, rowsOnly: boolean, laidOut = true): Segment[] {
+function collectSegments(root: Element, rowSelector: string | undefined, rowsOnly: boolean, laidOut = true, keepHidden = false): Segment[] {
   const visible = new Map<Element, boolean>();
   const isVisible = (element: Element): boolean => {
     let answer = visible.get(element);
@@ -161,12 +170,14 @@ function collectSegments(root: Element, rowSelector: string | undefined, rowsOnl
   for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
     const parent = node.parentElement;
     if (!parent || node.data.length === 0) continue;
-    if (parent.closest(SKIP_SELECTOR) || !isVisible(parent)) continue;
+    if (parent.closest(SKIP_SELECTOR)) continue;
+    const hidden = !isVisible(parent);
+    if (hidden && !keepHidden) continue;
     const row = rowsOnly && rowSelector ? parent.closest(rowSelector) : null;
     if (rowsOnly && (!row || !root.contains(row))) continue;
     const block = parent.closest(BLOCK_SELECTOR);
-    if (!current || current.block !== block || current.row !== row) {
-      current = { nodes: [], starts: [], text: '', block, row };
+    if (!current || current.block !== block || current.row !== row || current.hidden !== hidden) {
+      current = { nodes: [], starts: [], text: '', block, row, hidden };
       segments.push(current);
     }
     current.starts.push(current.text.length);
@@ -183,6 +194,16 @@ function collectSegments(root: Element, rowSelector: string | undefined, rowsOnl
  */
 export function findTextSegments(root: Element, laidOut = true): string[] {
   return collectSegments(root, undefined, false, laidOut).map((segment) => segment.text);
+}
+
+/**
+ * Every run of a tree with no layout (a parsed fragment), in walk order:
+ * the runs `findTextSegments(root, false)` gives, and the body of each
+ * closed <details> as runs of its own, not shown. Numbered this way a run
+ * keeps its place whichever <details> are open.
+ */
+export function findTextRuns(root: Element): FindRun[] {
+  return collectSegments(root, undefined, false, false, true).map((segment) => ({ text: segment.text, shown: !segment.hidden }));
 }
 
 function pointAt(segment: Segment, offset: number, end: boolean): [Text, number] {

@@ -150,7 +150,7 @@ async function counted(files: ReviewFile[], drafts: DiffReviewComment[], prThrea
   const texts = createMarkdownFindTextCache({ embeddedHtml: true });
   // Each hit with where the scan read it.
   const hits: (ReviewFindHit & ReviewFindFileSpot)[] = [];
-  await scanReviewFind({ files, drafts, prThreads, foldLines, commentText: (body) => texts(body).runs }, query, {
+  await scanReviewFind({ files, drafts, prThreads, foldLines, commentText: (body) => texts(body).all }, query, {
     limit: 1000, live: () => true, emit: (hit, _file, spot) => hits.push({ ...hit, ...spot }), pause: async () => {},
   });
   return hits.map((hit) => hit.rowKey);

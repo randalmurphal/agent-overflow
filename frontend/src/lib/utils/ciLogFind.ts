@@ -4,14 +4,16 @@
 // matches. An answer applies only to the job and log version it was read
 // from.
 //
-// A match is its line and its index on that line, which a log that grows
-// never changes. The section to open, the row that shows it (a row of
-// lines is at most one block of one section, ReviewCILogView) and its
-// index among that row's matches are derived against the sections shown
-// at the moment of use (`locateCILogHit`).
+// A match is its line and its index on that line. Whether it is present
+// now, the section to open, the row that shows it (a row of lines is at
+// most one block of one section, ReviewCILogView) and its index among that
+// row's matches are derived against the sections and the line text shown
+// at the moment of use (`resolveCILogHit`), by review find's matching rule
+// (reviewFindScan.ts#findMatchChunk), never from other published matches.
 
 import { CI_LOG_BLOCK_LINES } from '../stores/ciLogBlocks.svelte';
 import type { CILogSearch, CILogSection } from '../types/models';
+import { countFindMatches } from './reviewFindScan';
 
 /** `data-find-key` of a row of log lines, by its first line. */
 export function findCILogKey(from: number): string {
@@ -57,20 +59,41 @@ export function ciLogFindHits(search: CILogSearch, sections: readonly CILogSecti
   return out;
 }
 
-/** Where `hit` is against the sections shown now, or null when no section
- * lists its line. Its index in its row counts the matches `hits` (the
- * published matches, in line order) has on the row's earlier lines; a
- * log's earlier lines never change. */
-export function locateCILogHit(sections: readonly CILogSection[], hits: readonly CILogFindHit[], hit: CILogFindHit): CILogFindLocation | null {
-  const section = sections.find((each) => each.end > each.start && each.start <= hit.line && hit.line < each.end);
+/** The section that lists `line` now, and the first line of the row that
+ * shows it; null when no section lists it. */
+export function placeCILogLine(sections: readonly CILogSection[], line: number): { sectionKey: string; rowFrom: number } | null {
+  const section = sections.find((each) => each.end > each.start && each.start <= line && line < each.end);
   if (!section) return null;
-  const rowFrom = Math.max(section.start, Math.floor(hit.line / CI_LOG_BLOCK_LINES) * CI_LOG_BLOCK_LINES);
+  return { sectionKey: section.key, rowFrom: Math.max(section.start, Math.floor(line / CI_LOG_BLOCK_LINES) * CI_LOG_BLOCK_LINES) };
+}
+
+/** Whether a log match is present now: where; not (no section lists its
+ * line, or its line shows fewer matches); or its row's text is not loaded
+ * (`unknown`, with where it would be), which cannot be judged yet. */
+export type CILogResolution =
+  | { readonly kind: 'present'; readonly at: CILogFindLocation }
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'unknown'; readonly sectionKey: string };
+
+/**
+ * Whether `hit` is present for `needle` (folded, `findNeedle`) in the log
+ * shown now: `sections`, and `shownLine`, a line's text as the view shows
+ * it (null when its block is not loaded). Its index in its row counts the
+ * matches of the row's earlier lines in that text.
+ */
+export function resolveCILogHit(sections: readonly CILogSection[], shownLine: (line: number) => string | null, needle: string, hit: CILogFindHit): CILogResolution {
+  const placed = placeCILogLine(sections, hit.line);
+  if (!placed || needle === '') return { kind: 'absent' };
+  const own = shownLine(hit.line);
+  if (own === null) return { kind: 'unknown', sectionKey: placed.sectionKey };
+  if (hit.occurrence >= countFindMatches(own, needle)) return { kind: 'absent' };
   let before = 0;
-  for (const other of hits) {
-    if (other.line >= hit.line) break;
-    if (other.line >= rowFrom) before += 1;
+  for (let line = placed.rowFrom; line < hit.line; line += 1) {
+    const text = shownLine(line);
+    if (text === null) return { kind: 'unknown', sectionKey: placed.sectionKey };
+    before += countFindMatches(text, needle);
   }
-  return { sectionKey: section.key, rowFrom, rowKey: findCILogKey(rowFrom), occurrence: before + hit.occurrence };
+  return { kind: 'present', at: { sectionKey: placed.sectionKey, rowFrom: placed.rowFrom, rowKey: findCILogKey(placed.rowFrom), occurrence: before + hit.occurrence } };
 }
 
 /** The open job's log as the view shows it. */

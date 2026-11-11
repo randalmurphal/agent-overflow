@@ -536,7 +536,8 @@ function pushInsert(
   }, `d:${anchorKey(insert.anchor)}`, fileIndex);
 }
 
-function prThreadAnchor(thread: ReviewThread): CommentAnchor {
+/** Where a PR thread sits in the diff: its file and line, or its file. */
+export function prThreadAnchor(thread: ReviewThread): CommentAnchor {
   const line = thread.line ?? undefined;
   const side = thread.side === 'left' || thread.side === 'old' ? 'old' : 'new';
   if (!line) return { filePath: thread.path, side: 'file' };

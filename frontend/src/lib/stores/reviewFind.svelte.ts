@@ -30,7 +30,9 @@
 //     view. One owed reveal has at most one host call in flight, and a
 //     reveal that changes content to show its match is in flight until the
 //     host answers. Dropped by a newer query, step or close, or by its
-//     match disappearing.
+//     match disappearing, except a step's reveal the host has not shown
+//     and is not running: the reader asked to move and was shown nothing,
+//     so it passes to the match that takes the gone one's place.
 // (c) The line the host shifts sideways, derived by the host from (a).
 //
 // `hits` and the current index are a projection of the latest scan and
@@ -312,12 +314,14 @@ export function createReviewFind<H extends ReviewFindMatch>(host: ReviewFindHost
       return;
     }
     if (current < 0) {
-      // The current match is gone: its reveal with it, and the nearest
-      // survivor is current, painted where it is.
+      // The current match is gone, and the nearest survivor is current,
+      // painted where it is. Its reveal goes with it, unless a step asked
+      // for it and nothing has shown it yet.
       const gone = selected;
-      if (owedReveal?.identity === gone) owedReveal = null;
+      const owed = owedReveal?.identity === gone ? owedReveal : null;
       const near = nearestSurviving(before, before.findIndex((hit) => hit.identity === gone), found);
       selected = near >= 0 ? found[near].identity : null;
+      if (owed) owedReveal = owed.force && !owed.running && selected !== null ? owe(selected, true) : null;
     }
     paint();
     serve();

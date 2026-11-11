@@ -68,9 +68,3 @@ function sameLists<T>(a: ReadonlyMap<string, readonly T[]>, b: ReadonlyMap<strin
   }
   return true;
 }
-
-/** The thread id and comment index a `pc:` row key names. */
-export function commentOfRowKey(rowKey: string): { threadId: string; index: number } | null {
-  const match = /^pc:(\d+):(.+)$/.exec(rowKey);
-  return match ? { index: Number(match[1]), threadId: match[2] } : null;
-}

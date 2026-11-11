@@ -112,7 +112,9 @@ PR stores; components own presentation and interaction.
   [review diff streaming](../../../../../docs/architecture/review-diff-streaming.md).
   Do not mount hidden diff bodies.
 - Find paints only text inside a `data-find-key` element, keyed as
-  `utils/reviewFindScan.ts` and `utils/ciLogFind.ts` key their hits. A row
+  `utils/reviewFindScan.ts` and `utils/ciLogFind.ts` key their hits. A PR
+  thread comment is keyed by its thread and `reviewCommentKey` (its forge
+  id), never its position in the thread. A row
   that renders searched text carries the matching key; text the scanner
   skips (the +/- gutter, the log's clip note, any chrome inside a keyed
   element) carries `data-find-skip`. A split view keys a context line on

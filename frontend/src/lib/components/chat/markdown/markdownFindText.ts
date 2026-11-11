@@ -15,7 +15,9 @@
 // shows, this asks the same function (`tableCellRenders`, `linkTagText`).
 // One walk yields both the text and every <details> in render order: the
 // body of a closed <details> is walked for the elements it renders, with
-// its text held back, so a token the renderer drops hides both.
+// its text held back, so a token the renderer drops hides both. `all`
+// keeps the held-back runs too, marked not shown, so each run has the same
+// number in walk order whichever <details> are open.
 //
 // Not shown, so not searched: markup, image alt text, link targets and
 // titles, a table cell merged into the one above, an `[align]` block (no
@@ -35,7 +37,7 @@ import {
   type StreamdownToken,
 } from '../../../markdown';
 import { CHAT_LINK_PREFIXES } from './chatLinkPrefixes';
-import { findTextSegments } from '../../../utils/findHighlights';
+import { findTextRuns, type FindRun } from '../../../utils/findHighlights';
 import { buildForgeAttachmentExtension } from '../../../utils/forgeAttachmentExtension';
 import type { ForgeAttachmentSource } from '../../../utils/forgeAttachments';
 import { MarkdownFenceUnwrapper } from './unwrapMarkdownFence';
@@ -48,7 +50,10 @@ export interface MarkdownFindTextOptions {
 }
 
 export interface MarkdownFindText {
+  /** The runs shown. */
   readonly runs: readonly string[];
+  /** Every run in walk order, shown or held back in a closed <details>. */
+  readonly all: readonly FindRun[];
   /** Whether each <details>, in document order, renders open. */
   readonly details: readonly boolean[];
 }
@@ -106,20 +111,21 @@ function extensionsFor(options: MarkdownFindTextOptions): Extension[] {
 export function markdownFindText(source: string, options: MarkdownFindTextOptions, open?: readonly boolean[]): MarkdownFindText {
   const shown = new MarkdownFenceUnwrapper().render(source, false);
   const extensions = extensionsFor(options);
-  const runs: string[] = [];
+  const all: FindRun[] = [];
   const details: boolean[] = [];
   let run = '';
-  // How many closed <details> the walk is inside: rendered, not shown.
+  // How many closed <details> the walk is inside: rendered, not shown. A
+  // run never straddles one: the walk flushes at each <details> edge.
   let hidden = 0;
   const flush = () => {
-    if (run !== '') runs.push(run);
+    if (run !== '') all.push({ text: run, shown: hidden === 0 });
     run = '';
   };
   const add = (text: string) => {
-    if (hidden === 0) run += text;
+    run += text;
   };
   const push = (...texts: string[]) => {
-    if (hidden === 0) runs.push(...texts);
+    for (const text of texts) all.push({ text, shown: hidden === 0 });
   };
   // Records a <details> and answers whether it shows its body.
   const opened = (initial: boolean): boolean => {
@@ -139,7 +145,7 @@ export function markdownFindText(source: string, options: MarkdownFindTextOption
     const doc = new DOMParser().parseFromString(`<div>${out}</div>`, 'text/html');
     const fragment = doc.body.firstElementChild!;
     for (const element of fragment.querySelectorAll('details')) element.open = opened(element.open);
-    if (hidden === 0) runs.push(...findTextSegments(fragment, false));
+    for (const each of findTextRuns(fragment)) all.push({ text: each.text, shown: each.shown && hidden === 0 });
   };
   const walk = (tokens: readonly TokenLike[] | undefined) => {
     for (const token of tokens ?? []) visit(token);
@@ -219,7 +225,7 @@ export function markdownFindText(source: string, options: MarkdownFindTextOption
     walk(lex(block, extensions) as unknown as TokenLike[]);
     flush();
   }
-  return { runs, details };
+  return { runs: all.filter((each) => each.shown).map((each) => each.text), all, details };
 }
 
 /** Holds `markdownFindText` per source while the sources stay the same;

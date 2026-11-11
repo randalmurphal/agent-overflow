@@ -18,37 +18,48 @@
   // A match in a collapsed file, a settled thread or a closed log section
   // opens it; one in a collapsed conflict fold opens the fold first. After
   // the list scrolls to a match's row, the painted range corrects the
-  // landing (wrapped lines). A match is an identity: the painter, the shift,
-  // the reveal and the reading position each find it in the content shown
-  // at that moment (`locateDiff`, `locateLog`), and one not present now is
-  // neither painted, shifted nor shown.
+  // landing (wrapped lines). A match is an identity: the painter, the shift
+  // and the reveal each ask whether it is present in the content shown at
+  // that moment, and where (`resolveDiff`, `resolveLog`); one not present
+  // now is neither painted, shifted nor shown, and its reveal stays owed.
+  // The reading position places a scan's own fresh matches.
   import { getContext, tick, untrack } from 'svelte';
   import PaneFindBar from '../panes/PaneFindBar.svelte';
   import { registerPaneFindProvider } from '../../stores/paneFind.svelte';
   import { createReviewFind, REVIEW_FIND_LIMIT, type ReviewFindSource } from '../../stores/reviewFind.svelte';
   import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
-  import { ciLogAnswerHits, locateCILogHit, type CILogFindHit, type CILogFindLocation, type CILogFindShown } from '../../utils/ciLogFind';
+  import { ciLogAnswerHits, resolveCILogHit, type CILogFindHit, type CILogFindShown, type CILogResolution } from '../../utils/ciLogFind';
+  import { findNeedle } from '../../utils/findMatch';
   import { createFindHighlighter, findHighlightName, type FindCurrent, type FindHighlighter } from '../../utils/findHighlights';
   import type { ReviewFile } from '../../utils/patchStore';
   import { createRefreshScheduler } from '../../utils/refreshScheduler';
   import { createMarkdownFindTextCache, type MarkdownFindText } from '../chat/markdown/markdownFindText';
   import { FORGE_ATTACHMENT_SOURCE_CONTEXT, type ForgeAttachmentSourceReader } from '../chat/markdown/forgeAttachmentContext';
   import { visibleBody } from '../../utils/reviewComments';
-  import { commentOfRowKey, editingDrafts, readCommentDetails, sameCommentDetails, sameKeys, type MountedCommentDetails } from '../../utils/reviewFindDetails';
-  import { scanReviewFind, type ReviewFindHit } from '../../utils/reviewFindScan';
-  import { findHitAtOrBelow, locateReviewFindHit, seedReviewFindSpot, type ReviewFindLocation } from '../../utils/reviewFindRows';
+  import { editingDrafts, readCommentDetails, sameCommentDetails, sameKeys, type MountedCommentDetails } from '../../utils/reviewFindDetails';
+  import { findThreadCommentOfKey, reviewCommentKey, scanReviewFind, type ReviewFindHit, type ReviewFindPlace } from '../../utils/reviewFindScan';
+  import {
+    findHitAtOrBelow,
+    placeReviewFindHit,
+    resolveReviewFindHit,
+    seedReviewFindSpot,
+    type ReviewFindLocateContent,
+    type ReviewFindResolution,
+    type ReviewFindShown,
+  } from '../../utils/reviewFindRows';
   import { REVIEW_FILE_HEADER_BAR_PX } from '../../utils/reviewRows';
 
   type Hit = ReviewFindHit | CILogFindHit;
 
   interface DiffSurface {
     findReadingPosition(): { fileIndex: number; line: number } | null;
-    revealFindHit(hit: ReviewFindHit): boolean;
+    revealFindPlace(at: { fileIndex: number; place: ReviewFindPlace }): boolean;
     scrollFindBy(delta: number): void;
   }
 
   interface LogSurface {
     findReadingLine(): number;
+    findShownLine(line: number): string | null;
     revealFindLine(line: number, sectionKey: string): Promise<void>;
     scrollFindBy(delta: number): void;
   }
@@ -97,8 +108,8 @@
   function readDetails(): MountedCommentDetails {
     if (!root || untrack(() => view) !== 'diff') return NO_DETAILS;
     return readCommentDetails(root, (rowKey) => {
-      const at = commentOfRowKey(rowKey);
-      const comment = at ? review.prThreads.find((thread) => thread.id === at.threadId)?.comments[at.index] : undefined;
+      const at = findThreadCommentOfKey(rowKey);
+      const comment = at ? review.prThreads.find((thread) => thread.id === at.threadId)?.comments.find((each) => reviewCommentKey(each) === at.comment) : undefined;
       return comment ? commentTexts()(visibleBody(comment.body)).details : null;
     });
   }
@@ -108,38 +119,57 @@
   }
 
   // A <details> opened or closed by hand, a draft's editor opened or
-  // closed, or a row that remounted as written: rescan in place.
-  function reconcileMounted(): void {
+  // closed, or a row that remounted as written: rescan in place. True when
+  // it changed what shows.
+  function reconcileMounted(): boolean {
     const nextDetails = readDetails();
     const nextEditing = readEditing();
-    if (sameCommentDetails(nextDetails, details) && sameKeys(nextEditing, editing)) return;
+    if (sameCommentDetails(nextDetails, details) && sameKeys(nextEditing, editing)) return false;
     details = nextDetails;
     editing = nextEditing;
     find.refresh();
+    return true;
   }
 
-  // Where a match is in what the view shows now; null when it is not
-  // present (its file filtered out, its line or comment gone).
-  function locateDiff(hit: ReviewFindHit): ReviewFindLocation | null {
+  // The diff or conflict view's content: files and comments.
+  function diffContent(): ReviewFindLocateContent {
     return untrack(() => {
       const conflicts = view === 'conflicts';
-      return locateReviewFindHit({ files, drafts: conflicts ? [] : review.drafts, prThreads: conflicts ? [] : review.prThreads }, hit);
+      return { files, drafts: conflicts ? [] : review.drafts, prThreads: conflicts ? [] : review.prThreads };
     });
   }
 
-  function locateLog(hit: CILogFindHit): CILogFindLocation | null {
-    const sections = untrack(() => review.ciLog?.sections) ?? [];
-    return locateCILogHit(sections, find.hits as readonly CILogFindHit[], hit);
+  // What the scan reads, as shown now: the reader's <details> and editors.
+  function shownDiff(): ReviewFindShown {
+    const conflicts = untrack(() => view) === 'conflicts';
+    return {
+      ...diffContent(),
+      commentRuns: (body, rowKey) => details.recounted.get(rowKey)?.map((text) => ({ text, shown: true })) ?? commentTexts()(body, details.toggled.get(rowKey)).all,
+      editing,
+      foldLines: conflicts ? (path) => untrack(() => review.conflictFoldLines(path)) : undefined,
+    };
   }
 
-  // The element and index the highlighter paints as current for `hit`.
+  // Whether a match is present in what the view shows now, and where.
+  function resolveDiff(hit: ReviewFindHit): ReviewFindResolution {
+    return resolveReviewFindHit(shownDiff(), hit, findNeedle(paintedQuery));
+  }
+
+  function resolveLog(hit: CILogFindHit): CILogResolution {
+    const sections = untrack(() => review.ciLog?.sections) ?? [];
+    const surface = log();
+    return resolveCILogHit(sections, (line) => surface?.findShownLine(line) ?? null, findNeedle(paintedQuery), hit);
+  }
+
+  // The element and index the highlighter paints as current for `hit`;
+  // none for a match not present now, or one whose text is not loaded.
   function currentOf(hit: Hit): FindCurrent {
     if (isLogHit(hit)) {
-      const at = locateLog(hit);
-      return at ? { row: at.rowKey, occurrence: at.occurrence } : null;
+      const resolved = resolveLog(hit);
+      return resolved.kind === 'present' ? { row: resolved.at.rowKey, occurrence: resolved.at.occurrence } : null;
     }
-    const at = locateDiff(hit);
-    return at ? { row: at.rowKey, occurrence: hit.occurrence } : null;
+    const resolved = resolveDiff(hit);
+    return resolved.kind === 'present' ? { row: resolved.at.rowKey, occurrence: resolved.at.ordinal } : null;
   }
 
   // The painted match: re-found at every paint, including the recompute
@@ -267,9 +297,20 @@
   // Opens what hides the match (its file, its settled thread), then
   // scrolls once the rows are built, if its reveal is still wanted (a
   // rescan that restarts the query while the rows build keeps it).
+  // Whether `hit` is present now, judged with its line's text read back
+  // and held while it is judged when the patch budget evicted it.
+  async function presentDiff(hit: ReviewFindHit): Promise<ReviewFindResolution> {
+    const resolved = resolveDiff(hit);
+    if (resolved.kind !== 'evicted') return resolved;
+    const { file, lineIndex } = resolved;
+    return file.body.whenResident(() => resolveDiff(hit), lineIndex, lineIndex + 1);
+  }
+
   // One host call from asking to the answer: a fold it opens changes the
-  // content, and the reveal finds the match in what that shows.
+  // content, and the reveal finds the match in what that shows. A match
+  // not present now is not shown: the answer is false, and it stays owed.
   async function showDiffHit(hit: ReviewFindHit): Promise<boolean> {
+    if ((await presentDiff(hit)).kind !== 'present') return false;
     const conflicts = untrack(() => view) === 'conflicts';
     if (conflicts && review.conflictCollapsedPaths.has(hit.path)) await review.toggleConflictCollapsed(hit.path);
     else if (!conflicts && review.collapsedPaths.has(hit.path)) review.toggleCollapsed(hit.path);
@@ -279,16 +320,38 @@
       if (thread?.isResolved && !review.expandedPRThreadIds.has(thread.id)) review.togglePRThread(thread.id);
     }
     await tick();
-    const place = locateDiff(hit)?.place;
-    if (place?.kind === 'fold') {
+    let resolved = await presentDiff(hit);
+    if (resolved.kind === 'present' && resolved.at.place.kind === 'fold') {
       if (!find.wants(hit.identity)) return false;
-      review.expandConflictFold(hit.path, place.foldId);
+      review.expandConflictFold(hit.path, resolved.at.place.foldId);
       await tick();
+      resolved = await presentDiff(hit);
     }
-    if (!find.wants(hit.identity)) return false;
-    const shown = diff()?.revealFindHit(hit) ?? false;
+    if (resolved.kind !== 'present' || !find.wants(hit.identity)) return false;
+    const shown = diff()?.revealFindPlace(resolved.at) ?? false;
     if (shown) aim(hit);
     return shown;
+  }
+
+  // Frames a reveal waits for a scrolled-to log line's block to load.
+  const LOG_TEXT_FRAMES = 120;
+
+  // Opens and scrolls to a log match present now. A line whose block is not
+  // loaded is scrolled to first and judged once its text shows; one still
+  // not loaded after that is shown as its line, and painted when it loads.
+  async function showLogHit(hit: CILogFindHit, surface: LogSurface): Promise<boolean> {
+    const resolved = resolveLog(hit);
+    if (resolved.kind === 'absent') return false;
+    const sectionKey = resolved.kind === 'present' ? resolved.at.sectionKey : resolved.sectionKey;
+    await surface.revealFindLine(hit.line, sectionKey);
+    if (resolved.kind === 'unknown') {
+      for (let frame = 0; frame < LOG_TEXT_FRAMES && resolveLog(hit).kind === 'unknown'; frame += 1) {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+      if (resolveLog(hit).kind === 'absent') return false;
+    }
+    aim(hit);
+    return true;
   }
 
   // A revision, commit, filter or conflict tree change replaces `files`,
@@ -304,7 +367,7 @@
         drafts: conflicts ? [] : review.drafts,
         prThreads: conflicts ? [] : review.prThreads,
         foldLines: conflicts ? (path: string) => review.conflictFoldLines(path) : undefined,
-        commentText: (body: string, rowKey: string) => details.recounted.get(rowKey) ?? commentTexts()(body, details.toggled.get(rowKey)).runs,
+        commentText: (body: string, rowKey: string) => details.recounted.get(rowKey)?.map((text) => ({ text, shown: true })) ?? commentTexts()(body, details.toggled.get(rowKey)).all,
         editing,
       }));
       return scanReviewFind(content, query, {
@@ -358,18 +421,15 @@
         return (hit) => isLogHit(hit) && hit.line >= line;
       }
       const position = diff()?.findReadingPosition() ?? null;
-      return (hit) => !isLogHit(hit) && findHitAtOrBelow(locateDiff(hit), position);
+      const content = diffContent();
+      const memo = new Map<string, Map<string, number>>();
+      return (hit) => !isLogHit(hit) && findHitAtOrBelow(placeReviewFindHit(content, hit, memo), position);
     },
     reveal: (hit, force) => {
       if (!force && inView()) return true;
       if (isLogHit(hit)) {
         const surface = log();
-        const at = locateLog(hit);
-        if (!surface || !at) return false;
-        return surface.revealFindLine(hit.line, at.sectionKey).then(() => {
-          aim(hit);
-          return true;
-        });
+        return surface ? showLogHit(hit, surface) : false;
       }
       return showDiffHit(hit);
     },
@@ -389,9 +449,10 @@
           rowKeyAttribute: 'data-find-key',
           rowsOnly: true,
           onMatches: () => {
+            // What shows is read first, so the current match is found in it.
+            if (reconcileMounted()) highlighter?.setCurrent(paintedCurrent);
             land();
             syncShift();
-            reconcileMounted();
           },
         });
         highlighterRoot = at;

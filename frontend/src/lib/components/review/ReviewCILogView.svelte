@@ -246,6 +246,13 @@
     return within === null ? row.from : Math.min(row.to - 1, row.from + within);
   }
 
+  /** Find: a line's text as the view shows it (a stale block's while its
+   * reload runs); null while its block is not loaded. */
+  export function findShownLine(line: number): string | null {
+    const block = blocks.block(Math.floor(line / CI_LOG_BLOCK_LINES));
+    return block?.lines?.[line % CI_LOG_BLOCK_LINES] ?? null;
+  }
+
   /** Find: opens the line's section and scrolls the line a third down the
    * view, ending bottom-follow like any reading act. */
   export async function revealFindLine(line: number, sectionKey: string): Promise<void> {

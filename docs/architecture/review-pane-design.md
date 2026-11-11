@@ -293,15 +293,20 @@ polling.
   previous, painted where it is. Only a new query's count grows as it
   scans; a recount shows the matches it replaces, marked pending (in words
   for a screen reader), and swaps its result in whole when it ends. A
-  match is a logical identity: its file's path and its element (a line by
+  match is a logical identity: its file's path, its element (a line by
   side and number, a conflict marker by its place, a draft by id, a thread
-  comment by thread and index) and index there; its file index, row and
-  fold are found in the content shown at each paint, shift and reveal
-  (`utils/reviewFindRows.ts`, `utils/ciLogFind.ts` for a log line), so a
-  recount never paints, shifts or reveals from what the content was. Such
-  a recount never scrolls; only a new query's first match and a step bring
-  a match on screen, and that reveal is asked again at every publish, swap
-  and content change until it completes once. Mermaid, math and attachment chips
+  comment by thread and forge id), the run of the element's text it is in
+  (a comment's runs numbered in walk order, a closed `<details>` body's
+  included) and its index in that run. Whether it is present now, and its
+  file index, row, fold and index among the element's painted matches,
+  are found in the content shown at each paint, shift and reveal by the
+  scan's own matching rule (`utils/reviewFindRows.ts`, `utils/ciLogFind.ts`
+  for a log line, counted from the text shown), so a recount never paints,
+  shifts or reveals a match the content no longer has. Such a recount
+  never scrolls; only a new query's first match and a step bring a match
+  on screen, and that reveal is asked again at every publish, swap and
+  content change until it completes once. A step's reveal that nothing
+  has shown when its match goes at the swap passes to the survivor. Mermaid, math and attachment chips
   carry `data-find-skip`, so they are neither counted nor painted.
 
 ## Edge Cases

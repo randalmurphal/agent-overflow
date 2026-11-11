@@ -17,7 +17,9 @@ import { createReviewFind, type ReviewFind, type ReviewFindHost, type ReviewFind
 // reveal happened only for an ask, at most once per ask, never after
 // close, and did happen when its match survived, unless the host's last
 // answer was that it is not present now and no publish, swap or content
-// change came after. One ask never has two host calls in flight, and a
+// change came after. The host answers false for a match not in the content
+// shown. A step's reveal the host has not shown and is not running when its
+// match goes at a swap passes to the survivor; no other ask changes target. One ask never has two host calls in flight, and a
 // reveal that settles unshown while still wanted is asked again exactly
 // once if a publish, swap or content change came while it ran, else not
 // until the next one.
@@ -30,8 +32,8 @@ const OPS = [
 ] as const;
 type Op = typeof OPS[number];
 
-interface Ask { id: number; target: string | null; calls: number; done: number; lastCall: Call | null }
-interface Call { ask: Ask | null; identity: string; answer: 'true' | 'false' | 'deferred'; eventsAtCall: number }
+interface Ask { id: number; step: boolean; target: string | null; calls: number; done: number; lastCall: Call | null }
+interface Call { ask: Ask | null; identity: string; answer: 'true' | 'false' | 'deferred'; deferred: boolean; eventsAtCall: number }
 
 async function flush(): Promise<void> {
   for (let i = 0; i < 12; i += 1) await Promise.resolve();
@@ -109,7 +111,9 @@ function harness() {
     source: () => src,
     readingPosition: () => (hit) => below(hit.identity),
     reveal: (hit) => {
-      const call: Call = { ask, identity: hit.identity, answer: nextAnswer, eventsAtCall: events };
+      // Not present in the content shown now: the host cannot show it.
+      const call: Call = { ask, identity: hit.identity, answer: content().includes(hit.identity) ? nextAnswer : 'false', deferred: false, eventsAtCall: events };
+      call.deferred = call.answer === 'deferred';
       if (ask && running.some((each) => each.call.ask === ask)) violations.push(`reveal ${hit.identity}: ask ${ask.id} has a call in flight`);
       nextAnswer = 'true';
       if (!ask) violations.push(`reveal ${hit.identity} with no ask (after close)`);
@@ -117,6 +121,7 @@ function harness() {
         if (ask.done > 0) violations.push(`reveal ${hit.identity} after ask ${ask.id} completed`);
         if (find.selected !== hit.identity) violations.push(`reveal ${hit.identity} while ${find.selected} is selected`);
         if (ask.target === null) ask.target = hit.identity;
+        else if (ask.step && !content().includes(ask.target) && survivor(ask.target) === hit.identity) ask.target = hit.identity;
         else if (ask.target !== hit.identity) violations.push(`reveal ${hit.identity} for ask of ${ask.target}`);
         ask.calls += 1;
         ask.lastCall = call;
@@ -135,8 +140,8 @@ function harness() {
   };
   find = createReviewFind(host, () => 'diff');
 
-  function newAsk(): void {
-    ask = { id: asks.length, target: null, calls: 0, done: 0, lastCall: null };
+  function newAsk(step = false): void {
+    ask = { id: asks.length, step, target: null, calls: 0, done: 0, lastCall: null };
     asks.push(ask);
   }
 
@@ -226,7 +231,7 @@ function harness() {
         expected = stepped(op === 'next' ? 1 : -1);
         const moves = published.length > 0 && expected !== was;
         if (moves || (published.length > 0 && find.result.current < 0)) {
-          newAsk();
+          newAsk(true);
           stepAsk = true;
         }
         find[op === 'next' ? 'next' : 'previous']();
@@ -366,6 +371,12 @@ function harness() {
       const excused = last !== null && last.answer === 'false' && events === last.eventsAtCall;
       if (!excused) out.push(`ask ${ask.id} for ${ask.target} was never revealed`);
     }
+    // A step's reveal, never shown and not running, whose match went: it
+    // passed to the survivor now selected.
+    if (ask && ask.step && ask.done === 0 && ask.target !== null && !content().includes(ask.target) && find.selected !== null
+      && find.selected === survivor(ask.target) && ask.lastCall !== null && !ask.lastCall.deferred) {
+      out.push(`step ask ${ask.id} for ${ask.target} did not pass to its survivor ${find.selected}`);
+    }
     return out;
   }
 
@@ -416,6 +427,17 @@ for (const step of ['next', 'prev'] as const) {
 SEQUENCES.push(['complete', 'hide', 'hostFalse', 'next', 'complete']);
 SEQUENCES.push(['complete', 'next', 'refresh', 'move', 'complete']);
 SEQUENCES.push(['complete', 'reorder', 'hostFalse', 'next', 'complete']);
+
+// A reveal the host could not show, then its match removed: a step's
+// passes to the survivor at the swap; a new query's does not.
+for (const asked of ['next', 'prev', 'reopen'] as const) {
+  SEQUENCES.push(['complete', 'hostFalse', asked, 'remove', 'complete']);
+  SEQUENCES.push(['complete', 'hostFalse', asked, 'complete', 'remove', 'complete']);
+  SEQUENCES.push(['complete', 'refresh', 'hostFalse', asked, 'remove', 'complete']);
+}
+// A new query's first reveal unshown, then its match removed.
+SEQUENCES.push(['complete', 'reopen', 'hostFalse', 'publish', 'remove', 'complete']);
+SEQUENCES.push(['complete', 'reopen', 'hostFalse', 'publish', 'complete', 'remove', 'complete']);
 
 describe('review find transitions', () => {
   it.each(SEQUENCES.map((ops) => [ops.join(' > '), ops] as const))('%s', async (_name, ops) => {

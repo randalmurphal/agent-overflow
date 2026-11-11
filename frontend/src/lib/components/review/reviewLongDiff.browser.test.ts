@@ -14,8 +14,8 @@ import type { ReviewFind } from '../../stores/reviewFind.svelte';
 import type { CommentAnchor } from '../../utils/reviewRows';
 import type { DiffReviewComment } from '../../types/models';
 import { REVIEW_FILE_HEADER_BAR_PX } from '../../utils/reviewRows';
-import { findDraftKey, scanReviewFind, type ReviewFindHit } from '../../utils/reviewFindScan';
-import { locateReviewFindHit } from '../../utils/reviewFindRows';
+import { findDraftKey, findLineKey, scanReviewFind, type ReviewFindHit } from '../../utils/reviewFindScan';
+import { placeReviewFindHit } from '../../utils/reviewFindRows';
 import { findHighlightName } from '../../utils/findHighlights';
 import { parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from '../../utils/patchStore';
 import { conflictPatchFile } from '../../utils/conflictFile';
@@ -58,9 +58,10 @@ afterEach(() => {
   }
 });
 
-// The `data-find-key` of the element showing `hit` in `files`.
+// The `data-find-key` of the code line showing `hit` in `files`.
 function keyIn(files: readonly ReviewFile[], hit: ReviewFindHit): string {
-  return locateReviewFindHit({ files, drafts: [], prThreads: [] }, hit)?.rowKey ?? '';
+  const at = placeReviewFindHit({ files, drafts: [], prThreads: [] }, hit);
+  return at ? findLineKey(hit.path, at.line) : '';
 }
 
 function readFiles(source = patch): ReviewFile[] {
@@ -97,7 +98,7 @@ async function mountBody(source = patch, wordWrap = false) {
   entry.app = mount(ReviewDiffBody, { target: host, props });
   const scrollEl = host.querySelector('[data-testid="review-scroll"]') as HTMLElement;
   await settle(scrollEl);
-  return { props, scrollEl, topFiles, body: entry.app as { revealFindHit(hit: ReviewFindHit): boolean; findReadingPosition(): { fileIndex: number; line: number } | null }, files };
+  return { props, scrollEl, topFiles, body: entry.app as { revealFindPlace(at: { fileIndex: number; place: { kind: 'line'; lineIndex: number } }): boolean; findReadingPosition(): { fileIndex: number; line: number } | null }, files };
 }
 
 async function settle(scrollEl: HTMLElement): Promise<void> {
@@ -212,11 +213,12 @@ describe('a review diff past the held limit', () => {
   it('find reveals a scanned match outside the held rows a third down the view', async () => {
     const { scrollEl, body, files } = await mountBody();
     const hits: ReviewFindHit[] = [];
-    await scanReviewFind({ files, drafts: [], prThreads: [], commentText: (body) => [body] }, 'F650:700', {
+    await scanReviewFind({ files, drafts: [], prThreads: [], commentText: (body) => [{ text: body, shown: true }] }, 'F650:700', {
       limit: 10, live: () => true, emit: (hit) => hits.push(hit), pause: async () => {},
     });
     expect(hits.map((hit) => [hit.path, keyIn(files, hit)])).toEqual([['src/f650.ts', expect.stringMatching(/^l:/)]]);
-    expect(body.revealFindHit(hits[0])).toBe(true);
+    const at = placeReviewFindHit({ files, drafts: [], prThreads: [] }, hits[0])!;
+    expect(body.revealFindPlace({ fileIndex: at.fileIndex, place: { kind: 'line', lineIndex: at.line } })).toBe(true);
     await settle(scrollEl);
     const target = scrollEl.querySelector<HTMLElement>(`[data-find-key="${keyIn(files, hits[0])}"]`);
     expect(target?.textContent).toContain('f650:700');
@@ -863,6 +865,54 @@ describe('review find over the real list', () => {
       await settle(scrollEl);
       expect([find.result.count, find.result.current]).toEqual([1, 0]);
       expect(onScreen(scrollEl, 'zq deep in b')).toBe(true);
+    } finally {
+      unmount(finder);
+    }
+  });
+
+  it('a step during a recount onto a match its line lost does not scroll; at the swap the step reveals the survivor', async () => {
+    const fill = (from: number) => Array.from({ length: 300 }, (_, i) => `lead ${from + i}`);
+    const lines = (two: string) => ['zq one', ...fill(0), two, ...fill(300), 'zq three'];
+    const { props, scrollEl, body } = await mountBody(onePatch('x', '@@ -1 +1 @@', ['x']));
+    // The large file after: a recount runs for many frames past the matches.
+    let files = [...readFiles(onePatch('src/a.ts', '@@ -1,603 +1,603 @@', lines('zq two'))), ...bigFiles()];
+    props.files = files;
+    await settle(scrollEl);
+    const findProps = rawProps({
+      findKey: 'pane-lost', title: 'Review', view: 'diff' as const, files: files as readonly ReviewFile[], root: mounted.at(-1)!.host as HTMLElement | undefined,
+      review: { drafts: [], prThreads: [], collapsedPaths: new Set<string>(), expandedPRThreadIds: new Set<string>() } as unknown as ReviewPaneState,
+      diff: () => body as never, log: () => undefined,
+    });
+    const finder = mount(ReviewPaneFind, { target: document.body, props: findProps });
+    flushSync();
+    try {
+      const find = getPaneFindProvider('pane-lost') as ReviewFind<ReviewFindHit>;
+      scrollEl.scrollTop = 0;
+      await settle(scrollEl);
+      openPaneFind('pane-lost');
+      setPaneFindQuery('pane-lost', 'zq');
+      await waitFor(() => find.result.count === 3 && !find.result.pending, 'the scan', 1200);
+      await settle(scrollEl);
+      expect(currentRow('pane-lost')?.textContent).toContain('zq one');
+      // The second match's line keeps its number and loses its text.
+      files = [...readFiles(onePatch('src/a.ts', '@@ -1,603 +1,603 @@', lines('no match here'))), ...bigFiles()];
+      props.files = files;
+      findProps.files = files;
+      flushSync();
+      const top = scrollEl.scrollTop;
+      expect(find.result.pending).toBe(true);
+      // Enter during the recount: the published next match is not present.
+      find.next();
+      expect(find.hits[find.result.current].at).toEqual({ kind: 'line', tag: 'c302:302' });
+      for (let i = 0; i < 6; i += 1) await new Promise((resolve) => requestAnimationFrame(resolve));
+      expect(find.result.pending).toBe(true);
+      expect(scrollEl.scrollTop).toBe(top);
+      expect(currentRow('pane-lost')).toBeNull();
+      await waitFor(() => !find.result.pending, 'the recount', 1200);
+      // The step was never shown: its survivor is revealed and painted.
+      await waitFor(() => onScreen(scrollEl, 'zq three'), 'the survivor on screen', 600);
+      expect(find.hits[find.result.current].at).toEqual({ kind: 'line', tag: 'c603:603' });
+      await waitFor(() => currentRow('pane-lost')?.textContent?.includes('zq three') === true, 'the survivor painted', 600);
     } finally {
       unmount(finder);
     }

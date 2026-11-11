@@ -3,7 +3,7 @@ import { createReviewFind, REVIEW_FIND_REMOTE_DEBOUNCE_MS, type ReviewFindHost, 
 import { closePaneFind, openPaneFind, registerPaneFindProvider, resetPaneFindForTest, setPaneFindQuery } from './paneFind.svelte';
 import { setPatchTextBudgetForTest } from '../utils/patchMemory.svelte';
 import { scanReviewFind, type ReviewFindHit } from '../utils/reviewFindScan';
-import { locateReviewFindHit } from '../utils/reviewFindRows';
+import { placeReviewFindHit } from '../utils/reviewFindRows';
 import { streamPatch } from '../../test/helpers/streamedPatch';
 
 interface Hit { identity: string; at: number }
@@ -286,8 +286,50 @@ describe('review find', () => {
       expect([ids(find), find.selected]).toEqual([['b3'], 'b3']);
     });
 
-    it('a step during a recount walks the published matches; one gone at the swap gives way to its survivor', async () => {
+    it('a step during a recount walks the published matches; one gone at the swap gives way to its survivor, which its unshown reveal passes to', async () => {
       let items = ['c1', 'c2', 'c3'];
+      const s = source(() => items, { slice: 1 });
+      let present = (identity: string) => identity !== 'c2';
+      const { h, reveals } = host(() => s.src, {
+        reveal: (hit, force) => {
+          reveals.push([hit.identity, force]);
+          return present(hit.identity) && hit.identity !== 'c3';
+        },
+      });
+      const find = createReviewFind(h, () => 'diff');
+      find.search('c');
+      await flush();
+      await s.release();
+      // c2's match is replaced on its line; Next is pressed during the recount.
+      items = ['c1', 'c3'];
+      find.refresh();
+      await flush();
+      reveals.length = 0;
+      find.next();
+      expect([find.selected, find.wants('c2'), reveals]).toEqual(['c2', true, [['c2', true]]]);
+      await s.release();
+      // The reader asked to move and was shown nothing: the survivor is
+      // revealed, as a step's.
+      expect([ids(find), find.selected, find.wants('c2')]).toEqual([['c1', 'c3'], 'c3', false]);
+      expect(reveals).toEqual([['c2', true], ['c3', true]]);
+      expect(find.wants('c3')).toBe(true);
+      // Owed until shown, then never again.
+      present = () => true;
+      h.reveal = (hit, force) => {
+        reveals.push([hit.identity, force]);
+        return true;
+      };
+      find.refresh();
+      await s.release();
+      expect([find.wants('c3'), reveals.at(-1)]).toEqual([false, ['c3', true]]);
+      const asked = reveals.length;
+      find.refresh();
+      await s.release();
+      expect(reveals.length).toBe(asked);
+    });
+
+    it('a query\'s own reveal, gone at the swap, does not pass to the survivor: nothing scrolls', async () => {
+      let items = ['q1', 'q2'];
       const s = source(() => items, { slice: 1 });
       const { h, reveals } = host(() => s.src, {
         reveal: (hit, force) => {
@@ -296,16 +338,39 @@ describe('review find', () => {
         },
       });
       const find = createReviewFind(h, () => 'diff');
-      find.search('c');
-      await flush();
+      find.search('q');
       await s.release();
-      items = ['c1', 'c3'];
+      expect([find.selected, find.wants('q1'), find.result.pending]).toEqual(['q1', true, false]);
+      items = ['q2'];
       find.refresh();
-      await flush();
-      find.next();
-      expect([find.selected, find.wants('c2')]).toEqual(['c2', true]);
       await s.release();
-      expect([ids(find), find.selected, find.wants('c2'), find.wants('c3')]).toEqual([['c1', 'c3'], 'c3', false, false]);
+      expect([find.selected, find.wants('q1'), find.wants('q2')]).toEqual(['q2', false, false]);
+      expect(reveals.every(([identity]) => identity === 'q1')).toBe(true);
+    });
+
+    it('a step whose reveal is running when its match goes at the swap is dropped, with no second call in flight', async () => {
+      let items = ['r1', 'r2', 'r3'];
+      const s = source(() => items, { slice: 1 });
+      const running = deferred();
+      const { h, reveals } = host(() => s.src, {
+        reveal: (hit, force) => {
+          reveals.push([hit.identity, force]);
+          return force ? running.promise : true;
+        },
+      });
+      const find = createReviewFind(h, () => 'diff');
+      find.search('r');
+      await flush();
+      await s.release();
+      find.next();
+      expect(reveals.at(-1)).toEqual(['r2', true]);
+      items = ['r1', 'r3'];
+      find.refresh();
+      await s.release();
+      expect([find.selected, find.wants('r2'), find.wants('r3')]).toEqual(['r3', false, false]);
+      running.resolve(false);
+      await flush();
+      expect(reveals.at(-1)).toEqual(['r2', true]);
     });
 
     it('steps wrap during a recount of a completed set, and not over a new query prefix', async () => {
@@ -755,7 +820,7 @@ describe('review find over evicted diff text', () => {
   function scanning(files: ReturnType<typeof evictedFiles>['files']): ReviewFindSource<ReviewFindHit> {
     return {
       remote: false,
-      run: (query, context) => scanReviewFind({ files, drafts: [], prThreads: [], commentText: (body) => [body] }, query, {
+      run: (query, context) => scanReviewFind({ files, drafts: [], prThreads: [], commentText: (body) => [{ text: body, shown: true }] }, query, {
         limit: 1000, live: context.live, emit: context.emit, pause: () => new Promise((resolve) => setTimeout(resolve, 0)),
       }),
     };
@@ -805,7 +870,7 @@ describe('review find over evicted diff text', () => {
       find.search('line 1999');
       open();
       await vi.waitFor(() => expect(find.result.pending).toBe(false));
-      expect(find.hits.map((hit) => locateReviewFindHit({ files, drafts: [], prThreads: [] }, hit as unknown as ReviewFindHit)?.line)).toEqual([4 + 1999]);
+      expect(find.hits.map((hit) => placeReviewFindHit({ files, drafts: [], prThreads: [] }, hit as unknown as ReviewFindHit)?.line)).toEqual([4 + 1999]);
     } finally {
       parser.store.dispose();
     }
