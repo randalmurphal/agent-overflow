@@ -59,8 +59,10 @@ Synchronizing one project's tree must not remove another project's state.
 
 `ToolsRow.svelte` lists `panes/toolPaneMeta.ts` in order and opens through
 `toolPanes.svelte#openTool`; the Workflows count comes from its own store.
-A tool button drags its kind under `TOOL_PANE_DRAG_MIME` with the same
-in-flight record pattern, so no thread drop target reads it.
+Each tool is a `role="button"` element styled by
+`primitives/buttonClasses.ts`, never a native `<button>`, because Firefox
+starts no drag from one. It drags its kind under `TOOL_PANE_DRAG_MIME` with
+the same in-flight record pattern, so no thread drop target reads it.
 
 Compact rows expose a visible menu button and use the shared long-press bridge.
 Do not add row-specific touch handlers or enable dragging in compact mode.

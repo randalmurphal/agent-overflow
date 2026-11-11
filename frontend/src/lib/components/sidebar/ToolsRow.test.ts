@@ -5,6 +5,7 @@ import ToolsRow from './ToolsRow.svelte';
 import { hydrateWorkflowAttention, resetWorkflowRunsForTest } from '../../stores/workflowRuns.svelte';
 import { resetWorkflowsOverlayForTest } from '../../stores/workflowsOverlay.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
+import { buttonClasses } from '../primitives/buttonClasses';
 import {
   decodeToolDragPayload,
   endToolPaneDrag,
@@ -78,11 +79,20 @@ describe('ToolsRow', () => {
   it('lists Pull requests then Workflows, labelling only the active tool', async () => {
     await hydrate([]);
     const view = render(ToolsRow);
-    const buttons = view.getByTestId('sidebar-tools-row').querySelectorAll('button');
-    expect([...buttons].map((button) => button.dataset.testid)).toEqual([
+    const row = view.getByTestId('sidebar-tools-row');
+    const tools = row.querySelectorAll<HTMLElement>('[role="button"]');
+    expect([...tools].map((tool) => tool.dataset.testid)).toEqual([
       'sidebar-tool-pulls',
       'sidebar-tool-workflows',
     ]);
+    // No native button and nothing interactive inside: Firefox starts no
+    // drag from a <button>, and a nested control would steal the press.
+    expect(row.querySelector('button, a, input, [tabindex]:not([role="button"])')).toBeNull();
+    for (const tool of tools) {
+      expect(tool.tagName).not.toBe('BUTTON');
+      expect(tool).toHaveAttribute('tabindex', '0');
+      expect(tool.querySelector('[role="button"], [tabindex]')).toBeNull();
+    }
     // Nothing used yet: the first tool is the labelled one.
     expect(view.getByTestId('sidebar-tool-pulls')).toHaveTextContent('Pull requests');
     expect(view.getByTestId('sidebar-tool-workflows')).not.toHaveTextContent('Workflows');
@@ -152,6 +162,48 @@ describe('ToolsRow', () => {
     expect(toolDragPayloadForEvent(silent)).toBeNull();
     // A drag opens nothing by itself.
     expect(layoutIds()).toEqual(['main']);
+  });
+
+  it('starts the drag from the icon and the label as from the control itself', async () => {
+    await hydrate([]);
+    const view = render(ToolsRow);
+    const pulls = view.getByTestId('sidebar-tool-pulls');
+    for (const part of [pulls.firstElementChild as HTMLElement, view.getByTestId('sidebar-tool-label')]) {
+      expect(part).not.toBe(pulls);
+      endToolPaneDrag();
+      const dataTransfer = toolDataTransfer();
+      await fireEvent.dragStart(part, { dataTransfer });
+      expect(decodeToolDragPayload(dataTransfer.getData(TOOL_PANE_DRAG_MIME))).toEqual({ kind: 'pulls' });
+    }
+  });
+
+  it('opens on Enter and Space like a click, and in a new pane with ctrl or cmd', async () => {
+    await hydrate([]);
+    const view = render(ToolsRow);
+    const workflows = view.getByTestId('sidebar-tool-workflows');
+    expect(workflows).toHaveAttribute('aria-pressed', 'false');
+    await fireEvent.keyDown(workflows, { key: 'Enter' });
+    expect(layoutIds()).toEqual(['tool-workflows']);
+    expect(workflows).toHaveAttribute('aria-pressed', 'true');
+    expect(workflows.className).toContain('ring-inset');
+
+    await fireEvent.keyDown(view.getByTestId('sidebar-tool-pulls'), { key: ' ' });
+    expect(layoutIds()).toEqual(['tool-pulls']);
+    expect(workflows).toHaveAttribute('aria-pressed', 'false');
+
+    await fireEvent.keyDown(workflows, { key: 'Enter', ctrlKey: true });
+    expect(layoutIds()).toEqual(['tool-pulls', 'tool-workflows']);
+    // Other keys do nothing.
+    await fireEvent.keyDown(view.getByTestId('sidebar-tool-pulls'), { key: 'a' });
+    expect(layoutIds()).toEqual(['tool-pulls', 'tool-workflows']);
+  });
+
+  it('wears the Button primitive\'s ghost look, focus ring and compact hit target', async () => {
+    await hydrate([]);
+    const view = render(ToolsRow);
+    const classes = view.getByTestId('sidebar-tool-pulls').className.split(' ');
+    for (const cls of buttonClasses({ variant: 'ghost', size: 'sm' }).split(' ').filter(Boolean)) expect(classes).toContain(cls);
+    expect(classes).toEqual(expect.arrayContaining(['compact:h-9', 'focus-visible:ring-2', 'compact:select-none']));
   });
 
   it('is no drag source on compact', async () => {

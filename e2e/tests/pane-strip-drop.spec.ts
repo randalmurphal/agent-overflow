@@ -4,7 +4,9 @@
 // hovers and opens as a new pane at the slot; a tools-row button shows the
 // same preview and places its tool at the slot, between two panes or at the
 // end, replacing nothing; an open tool dragged elsewhere moves there, with
-// no preview over its own slot, and is focused.
+// no preview over its own slot, and is focused; a press on a tool's icon,
+// its label or its padding starts the drag alike (the control is a
+// role="button" element, since Firefox starts no drag from a <button>).
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 
@@ -30,16 +32,16 @@ async function center(locator: Locator): Promise<{ x: number; y: number }> {
   return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
 }
 
-/** Press on `source`, move to `fraction` across `target`, run `whileOver`
- * with the drag in flight, and drop. */
+/** Press on `source` (an element's center, or a point), move to `fraction`
+ * across `target`, run `whileOver` with the drag in flight, and drop. */
 async function dragInto(
   page: Page,
-  source: Locator,
+  source: Locator | { x: number; y: number },
   target: Locator,
   fraction: number,
   whileOver: () => Promise<void>,
 ): Promise<void> {
-  const from = await center(source);
+  const from = 'x' in source ? source : await center(source);
   await page.mouse.move(from.x, from.y);
   await page.mouse.down();
   const box = await target.boundingBox();
@@ -143,4 +145,27 @@ test('an open tool dragged elsewhere moves there, with no preview over its own s
   await expect.poll(() => stripKinds(page)).toEqual(['pulls', 'thread', 'thread']);
   expect(await focusedKind(page)).toBe('pulls');
   await expect(page.getByTestId('pulls-pane')).toHaveCount(1);
+});
+
+test('a press on a tool\'s icon, label or padding starts the drag', async ({ harness, page }) => {
+  await seedThreads(harness);
+  await harness.open(page);
+  await twoThreads(page);
+  const tool = page.getByTestId('sidebar-tool-pulls');
+  // Pull requests is the labelled tool: nothing was used yet, then it is.
+  await expect(tool.getByTestId('sidebar-tool-label')).toBeVisible();
+  const box = (await tool.boundingBox())!;
+  // The padding point lies left of the icon, on the control itself.
+  expect((await tool.locator(':scope > :first-child').boundingBox())!.x).toBeGreaterThan(box.x + 4);
+  const parts: Array<[string, { x: number; y: number }, Locator, number, string[]]> = [
+    ['icon', await center(tool.locator(':scope > :first-child')), sections(page).nth(1), 0.25, ['thread', 'pulls', 'thread']],
+    ['label', await center(tool.getByTestId('sidebar-tool-label')), sections(page).nth(0), 0.25, ['pulls', 'thread', 'thread']],
+    ['padding', { x: box.x + 4, y: box.y + box.height / 2 }, sections(page).nth(2), 0.9, ['thread', 'thread', 'pulls']],
+  ];
+  for (const [part, at, target, fraction, kinds] of parts) {
+    await dragInto(page, at, target, fraction, async () => {
+      await expect(preview(page), `a drag from the ${part}`).toBeVisible();
+    });
+    await expect.poll(() => stripKinds(page), `a drop from the ${part}`).toEqual(kinds);
+  }
 });
