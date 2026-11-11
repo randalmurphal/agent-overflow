@@ -87,13 +87,17 @@
     tailWatch.observe(root, { childList: true });
   }
 
-  // The first line box of `block`: its first text's first fragment.
+  // The first line box of `block`: the box of its first character, so a
+  // long block's other lines are not laid out into rectangles.
   function firstLine(block: Element, fallbackTop: number): { top: number; height: number } {
     const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      if (!/\S/.test(node.textContent ?? '')) continue;
+      const text = node.textContent ?? '';
+      const at = text.search(/\S/);
+      if (at < 0) continue;
       const range = document.createRange();
-      range.selectNodeContents(node);
+      range.setStart(node, at);
+      range.setEnd(node, at + (text.codePointAt(at)! > 0xffff ? 2 : 1));
       const rect = typeof range.getClientRects === 'function' ? range.getClientRects()[0] : undefined;
       if (rect && rect.height > 0) return { top: rect.top, height: rect.height };
       break;
@@ -119,15 +123,29 @@
     }
     const origin = layer.getBoundingClientRect().top;
     const map = new Map<Element, number>();
+    // Each block is read once, however many sections share it.
+    const rects = new Map<number, DOMRect>();
+    const rectOf = (block: number): DOMRect => {
+      let rect = rects.get(block);
+      if (!rect) {
+        rect = blocks[block].getBoundingClientRect();
+        rects.set(block, rect);
+      }
+      return rect;
+    };
+    // The first line of the block the section starts in; the later parts
+    // of a split block keep the first part's.
+    let line = { top: 0, height: 0 };
     bands = sections.map((section, index) => {
       const opens = index === 0 || sections[index - 1].first !== section.first;
-      if (opens) for (let i = section.first; i <= section.last; i += 1) map.set(blocks[i], index);
-      const first = blocks[section.first].getBoundingClientRect();
-      const last = blocks[section.last].getBoundingClientRect();
-      const line = firstLine(blocks[section.first], first.top);
+      const first = rectOf(section.first);
+      if (opens) {
+        for (let i = section.first; i <= section.last; i += 1) map.set(blocks[i], index);
+        line = firstLine(blocks[section.first], first.top);
+      }
       return {
         top: first.top - origin,
-        bottom: last.bottom - origin,
+        bottom: rectOf(section.last).bottom - origin,
         lineTop: line.top - origin,
         lineHeight: line.height,
         opens,
@@ -171,6 +189,15 @@
   });
 
   const current = $derived(bands && position ? bands[position.section] : undefined);
+  // The sections with a button: each block's first, except the current one.
+  const offers = $derived.by(() => {
+    const out: Array<{ band: Band; section: number }> = [];
+    if (!bands || !position) return out;
+    bands.forEach((band, section) => {
+      if (band.opens && section !== position.section) out.push({ band, section });
+    });
+    return out;
+  });
 </script>
 
 <div
@@ -187,28 +214,24 @@
       data-section={position.section}
     ></div>
   {/if}
-  {#if bands && position}
-    {#each bands as band, index (index)}
-      {#if band.opens && index !== position.section}
-        <div
-          class="pointer-events-auto absolute left-full flex w-[26px] items-center justify-center transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100 compact:opacity-100 {hovered === index ? 'opacity-100' : 'opacity-0'}"
-          style="top: {band.lineTop}px; height: {band.lineHeight}px"
-          data-section={index}
-        >
-          <!-- Not IconButton: its sizes do not fit the gutter left of the
-               overlay scrollbar's strip on either layout. -->
-          <button
-            type="button"
-            aria-label="Read from here"
-            title="Read from here"
-            class="inline-flex h-6 w-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-surface-2/60 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 compact:h-9 compact:w-[26px]"
-            data-testid="assistant-message-read-aloud-from"
-            onclick={() => readAloudFromSection(index)}
-          >
-            <Icon icon={Play} size={12} />
-          </button>
-        </div>
-      {/if}
-    {/each}
-  {/if}
+  {#each offers as { band, section } (section)}
+    <div
+      class="pointer-events-auto absolute left-full flex w-[26px] items-center justify-center transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100 compact:opacity-100 {hovered === section ? 'opacity-100' : 'opacity-0'}"
+      style="top: {band.lineTop}px; height: {band.lineHeight}px"
+      data-section={section}
+    >
+      <!-- Not IconButton: its sizes do not fit the gutter left of the
+           overlay scrollbar's strip on either layout. -->
+      <button
+        type="button"
+        aria-label="Read from here"
+        title="Read from here"
+        class="inline-flex h-6 w-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-surface-2/60 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 compact:h-9 compact:w-[26px]"
+        data-testid="assistant-message-read-aloud-from"
+        onclick={() => readAloudFromSection(section)}
+      >
+        <Icon icon={Play} size={12} />
+      </button>
+    </div>
+  {/each}
 </div>

@@ -233,6 +233,47 @@ describe('<ReadAloudSections>', () => {
     // Reading its first part, the block has no button.
     expect(marker()!.dataset.section).toBe('1');
     expect(fromSections()).toEqual([0, 4]);
+
+    // One pass reads each block once, not once per section sharing it.
+    let rects = 0;
+    blocks().forEach((el) => {
+      const rect = el.getBoundingClientRect.bind(el);
+      el.getBoundingClientRect = () => {
+        rects += 1;
+        return rect();
+      };
+    });
+    const walks = vi.spyOn(document, 'createTreeWalker');
+    const [observer] = FakeResizeObserver.live;
+    observer.fire();
+    expect(rects).toBe(3);
+    expect(walks).toHaveBeenCalledTimes(3);
+  });
+
+  it('finds a section’s first line from its first character alone', async () => {
+    const { play, fromSections, reveal } = await mount('## 🎉 One\n\nBody one.\n\n## Two\n\nBody two.', 4);
+    const ranges: Array<{ text: string; start: number; end: number }> = [];
+    vi.spyOn(document, 'createRange').mockImplementation(() => {
+      const range = { text: '', start: -1, end: -1 };
+      ranges.push(range);
+      return {
+        setStart: (node: Node, at: number) => {
+          range.text = node.textContent ?? '';
+          range.start = at;
+        },
+        setEnd: (_node: Node, at: number) => {
+          range.end = at;
+        },
+        getClientRects: () => [{ top: 40 + 100 * ranges.length, height: 20 }],
+      } as unknown as Range;
+    });
+    await fireEvent.click(play);
+    await settle();
+    expect(fromSections()).toEqual([1]);
+    // The pair that makes one character is taken whole.
+    expect(ranges).toEqual([{ text: '🎉 One', start: 0, end: 2 }, { text: 'Two', start: 0, end: 1 }]);
+    expect(reveal(1).style.top).toBe('240px');
+    expect(reveal(1).style.height).toBe('20px');
   });
 
   it('draws nothing and reports once when the rendered blocks do not match', async () => {
