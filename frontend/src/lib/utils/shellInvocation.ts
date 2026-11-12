@@ -178,3 +178,14 @@ export function shellOutputTail(output: string, maxLines: number): string {
   const lines = text.split('\n');
   return shellDisplayText(lines.slice(Math.max(0, lines.length - maxLines)).join('\n'));
 }
+
+/**
+ * The prompt a command's terminal is waiting on, as its last `maxLines`
+ * lines, or empty when it is not waiting. A prompt leaves its line open
+ * ("Password: "); text that ends its line is something the command printed
+ * and moved past, or the line break that follows an answer.
+ */
+export function shellTerminalPrompt(terminal: string, maxLines: number): string {
+  if (terminal.endsWith('\n')) return '';
+  return shellOutputTail(terminal, maxLines);
+}

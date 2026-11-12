@@ -700,17 +700,21 @@ export interface WorktreeSetupEvent {
  * ShellCommandEvent is one frame on the `shell:command` channel: a command
  * the person ran from a thread's composer (app_shell_command.go). `started`
  * carries `command` and `startedAt`; `output` carries `seq` and `chunk`;
- * `finished` carries `state` (sent | stopped | failed), `exitCode`, and
- * `error` when it failed. `seq` is a per-run counter from 1, reconciled with
- * the snapshot's `outputSeq` in stores/shellCommands.svelte.ts.
+ * `terminal` carries the whole retained text of the command's own terminal
+ * (a prompt) and `terminalSeq`; `finished` carries `state` (sent | stopped |
+ * failed), `exitCode`, and `error` when it failed. `seq` and `terminalSeq`
+ * are independent per-run counters from 1, reconciled with the snapshot's
+ * `outputSeq` and `terminalSeq` in stores/shellCommands.svelte.ts.
  */
 export interface ShellCommandEvent {
-  phase: 'started' | 'output' | 'finished';
+  phase: 'started' | 'output' | 'terminal' | 'finished';
   threadId: string;
   runId: string;
   command?: string;
   seq?: number;
   chunk?: string;
+  terminal?: string;
+  terminalSeq?: number;
   state?: string;
   error?: string;
   exitCode?: number;

@@ -304,6 +304,7 @@ export const SetProjectWorktreeSetup = dispatch('SetProjectWorktreeSetup');
 export const DismissThreadWorktreeSetup = dispatch('DismissThreadWorktreeSetup');
 export const GetThreadWorktreeSetup = dispatch('GetThreadWorktreeSetup');
 export const RetryThreadWorktreeSetup = dispatch('RetryThreadWorktreeSetup');
+export const AnswerThreadShellCommand = dispatch('AnswerThreadShellCommand');
 export const RunThreadShellCommand = dispatch('RunThreadShellCommand');
 export const StopThreadShellCommand = dispatch('StopThreadShellCommand');
 export const GetThreadShellCommands = dispatch('GetThreadShellCommands');
