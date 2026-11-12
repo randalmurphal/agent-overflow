@@ -58,10 +58,11 @@ export const TERMINAL_FIND_MATCH_LIMIT = 1000;
 export const TERMINAL_FIND_REFRESH_DELAY_MS = 200;
 /** The longest sustained output defers a re-search. */
 export const TERMINAL_FIND_REFRESH_MAX_WAIT_MS = 1000;
-/** The find bar's place over a terminal surface's grid: top right on
- * desktop, the full width under compact. Empty while the bar is closed, so
- * it takes no pointer events then. */
-export const TERMINAL_FIND_OVERLAY_CLASS = 'absolute top-1 right-2 z-10 w-[min(26rem,calc(100%-1rem))] compact:left-1 compact:right-1 compact:w-auto';
+/** The find bar's place on a terminal surface: over the grid's top right on
+ * desktop; under compact, full width over the surface's header row (its
+ * host is static there, so the bar places against the surface). Empty while
+ * the bar is closed, so it takes no pointer events then. */
+export const TERMINAL_FIND_OVERLAY_CLASS = 'absolute top-1 right-2 z-10 w-[min(26rem,calc(100%-1rem))] compact:top-0.5 compact:left-1 compact:right-1 compact:w-auto';
 /** The slice of the xterm the provider uses. No selection member: find
  * leaves the selection alone; no decoration member: find paints on its
  * own layer. */

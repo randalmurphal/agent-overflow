@@ -1,4 +1,5 @@
-// The take-control mirror's find bar over a real xterm in real Chromium: the
+// The take-control mirror's find bar over a real xterm in real Chromium, on
+// desktop (compact: TakeControlTerminal.compactFind.browser.test.ts): the
 // bar floats over the grid, so opening and closing it changes neither the
 // mirror's rows and columns nor the provider PTY's size, and leaves the
 // reader's selection alone.

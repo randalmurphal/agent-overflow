@@ -1,13 +1,14 @@
 // Find in the thread terminal under the compact layout: the tab strip's
-// find button has the compact hit target, the bar floats over the top of the
-// terminal with the on-screen key row still under it, and a query counts the shell's
-// lines. The browser's Back (the ladder utils/stepBack.ts runs) closes the
-// bar first and leaves the terminal open, whether focus is in the bar or
-// back in the terminal; the next Back closes the terminal. Desktop
+// find button has the compact hit target, the bar covers the tab strip, not
+// the grid, with the on-screen key row still visible, and a query counts the
+// shell's lines. The browser's Back (the ladder utils/stepBack.ts runs)
+// closes the bar first and leaves the terminal open, whether focus is in the
+// bar or back in the terminal; the next Back closes the terminal. Desktop
 // coverage: terminal-find.spec.ts. The key row while find has focus is the
-// second test; its Paste, through the real clipboard, the third.
+// second test; its Paste, through the real clipboard, the third; a tap on a
+// tab under the bar, the fourth.
 import { expect, test } from './fixtures.js';
-import { terminalInput } from './terminal-thread-lifetime-flow.js';
+import { terminalInput, terminalTabs } from './terminal-thread-lifetime-flow.js';
 import { QUERY, drawer, openDrawerThread, printTangos, replayOf } from './terminal-find-flow.js';
 
 test('Back closes the terminal\'s find before the terminal', async ({ page }) => {
@@ -32,7 +33,10 @@ test('Back closes the terminal\'s find before the terminal', async ({ page }) =>
     await page.keyboard.type(QUERY);
     await expect(bar.getByTestId('pane-find-count')).toHaveText('3/3');
     await expect(keyRow).toBeVisible();
+    // Over the strip: the grid's first row stays in view.
     const barBox = (await bar.boundingBox())!;
+    const grid = (await drawer(page).locator('.xterm-screen').boundingBox())!;
+    expect(barBox.y + barBox.height).toBeLessThanOrEqual(grid.y);
     expect((await keyRow.boundingBox())!.y).toBeGreaterThan(barBox.y + barBox.height);
 
     await page.goBack();
@@ -134,6 +138,37 @@ test('the key row pastes into the find query, never the shell, while find has fo
     // clipboard is real, so the query's paste is a routing result.
     await paste.click();
     await expect.poll(after).toContain('tango-');
+  } finally {
+    await setup.host.close();
+  }
+});
+
+// The bar covers the strip; a tap where a tab or its close button lies
+// under it switches and closes nothing.
+test('a tap on a tab under the bar neither switches nor closes it', async ({ page }) => {
+  test.setTimeout(120_000);
+  const setup = await openDrawerThread(page, 'Phone terminal find tabs');
+  try {
+    await page.getByTestId('terminal-open').click();
+    await expect(terminalTabs(page)).toHaveCount(2);
+    const first = terminalTabs(page).first();
+    await expect(terminalTabs(page).last()).toHaveAttribute('aria-selected', 'true');
+    const tabBox = (await first.boundingBox())!;
+    const closeBox = (await first.locator('[data-testid^="terminal-tab-close-"]').boundingBox())!;
+    await page.getByTestId('terminal-find').click();
+    const bar = drawer(page).getByTestId('pane-find-bar');
+    await expect(bar).toBeVisible();
+    for (const box of [tabBox, closeBox]) {
+      await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+    }
+    await expect(bar).toBeVisible();
+    await expect(terminalTabs(page)).toHaveCount(2);
+    await expect(terminalTabs(page).last()).toHaveAttribute('aria-selected', 'true');
+    // Closed, the strip is the reader's again.
+    await page.getByTestId('pane-find-close').click();
+    await expect(bar).toHaveCount(0);
+    await first.click();
+    await expect(first).toHaveAttribute('aria-selected', 'true');
   } finally {
     await setup.host.close();
   }

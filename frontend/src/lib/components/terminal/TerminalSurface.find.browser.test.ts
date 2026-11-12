@@ -1,5 +1,6 @@
 // The thread terminal surface's find bar over a real TerminalBody and xterm
-// in real Chromium: the bar floats over the grid, so opening and closing it
+// in real Chromium, on desktop (compact: TerminalSurface.compactFind
+// .browser.test.ts): the bar floats over the grid, so opening and closing it
 // changes neither the terminal's rows and columns nor the PTY's size, and
 // leaves the reader's selection alone; a match under the bar is scrolled
 // clear of it.

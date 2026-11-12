@@ -53,14 +53,17 @@ view, and takes no pointer events. The active match is drawn once, in the
 current ground.
 
 Find never reads or writes the terminal selection; it is the reader's. Both
-surfaces float the bar over the grid (`TERMINAL_FIND_OVERLAY_CLASS` inside
-`data-terminal-find-host`), so opening and closing it changes neither the
-rows nor the PTY size, either of which would drop the selection or signal
-the program. A query change and a step scroll the active match clear of the
-cells the bar covers (`obscured`), and so does a change to the bar's size
-(`onObscuredChange`), since the bar mounts after a reopen's search. With a
-buffer too short to scroll, a match on the rows under the bar stays under
-it. The active match is anchored twice, by its line's first row plus its
+surfaces float the bar (`TERMINAL_FIND_OVERLAY_CLASS` inside
+`data-terminal-find-host`) over the grid's top right on desktop and, under
+compact, over the header row above the grid (the tab strip, the mirror's
+control row), which is `inert` while the bar is open there. Opening and
+closing it changes neither the rows nor the PTY size, either of which would
+drop the selection or signal the program. A query change and a step scroll
+the active match clear of the cells the bar covers (`obscured`, measured
+from geometry, so none under compact), and so does a change to the bar's
+size (`onObscuredChange`), since the bar mounts after a reopen's search. On
+desktop, with a buffer too short to scroll, a match on the top two rows from
+the bar's left column stays under it. The active match is anchored twice, by its line's first row plus its
 offset and by the next line's first row plus its distance from the line's
 end, so it survives reflow and trimming of its line's first rows.
 Re-searches run from `onBufferChange`, the one notification `buildTerminal`

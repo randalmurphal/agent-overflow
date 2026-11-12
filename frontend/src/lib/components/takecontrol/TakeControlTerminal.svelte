@@ -48,7 +48,8 @@
   import IconButton from '../primitives/IconButton.svelte';
   import PaneFindBar from '../panes/PaneFindBar.svelte';
   import { TERMINAL_FIND_OVERLAY_CLASS, registerTerminalFind, type TerminalFindRegistration } from '../terminal/terminalFind.svelte';
-  import { isPaneFindBarFocused, openPaneFind } from '../../stores/paneFind.svelte';
+  import { isPaneFindBarFocused, isPaneFindOpen, openPaneFind } from '../../stores/paneFind.svelte';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
 
   let { paneId, threadId }: { paneId: string; threadId: string } = $props();
 
@@ -313,6 +314,9 @@
     openPaneFind(paneId);
   }
 
+  // Under compact the open bar sits over the header row.
+  const headerCovered = $derived(isCompactLayout() && isPaneFindOpen(paneId));
+
   onMount(() => {
     void hydrate();
   });
@@ -341,10 +345,14 @@
   });
 </script>
 
-<div class="flex h-full min-h-0 flex-col bg-terminal-bg" data-testid={`take-control-terminal-${paneId}`}>
+<div class="relative flex h-full min-h-0 flex-col bg-terminal-bg" data-testid={`take-control-terminal-${paneId}`}>
+  <!-- Under compact the open find bar covers this row, which takes no taps
+       or focus until it closes. -->
   <div
     class="flex items-center gap-2 px-2 py-1 border-b border-border-subtle/70 shrink-0"
     data-thread-id={threadId}
+    data-testid="take-control-header"
+    inert={headerCovered}
   >
     <Button
       variant={controlHeld ? 'primary' : 'secondary'}
@@ -380,16 +388,18 @@
       Could not attach to the Claude TUI session: {attachError}
     </div>
   {:else}
-    <div class="relative flex flex-1 min-h-0 min-w-0 flex-col" data-terminal-find-host>
+    <!-- Static under compact, so the bar places against the root and covers
+         the header row there. -->
+    <div class="relative compact:static flex flex-1 min-h-0 min-w-0 flex-col" data-terminal-find-host>
       <div
         bind:this={mountEl}
         class="relative flex-1 min-h-0 bg-terminal-bg"
         data-testid="take-control-mount"
         {@attach terminalFocusRegion(paneId)}
       ></div>
-      <!-- The bar floats over the grid, so opening it changes neither the
-           mirror's rows nor the PTY's size. Focus in it is focus in the
-           terminal (terminalFocusRegion). -->
+      <!-- The bar floats over the grid (over the header row under compact),
+           so opening it changes neither the mirror's rows nor the PTY's
+           size. Focus in it is focus in the terminal (terminalFocusRegion). -->
       <div class={TERMINAL_FIND_OVERLAY_CLASS} data-terminal-find-overlay {@attach terminalFocusRegion(paneId)}>
         <PaneFindBar {paneId} title="Claude TUI terminal" floating fallbackFocus={() => term?.textarea ?? null} />
       </div>

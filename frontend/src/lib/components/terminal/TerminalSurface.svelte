@@ -32,7 +32,8 @@
   import { TERMINAL_FIND_OVERLAY_CLASS, terminalFindKey } from './terminalFind.svelte';
   import PaneFindBar from '../panes/PaneFindBar.svelte';
   import { paneFindSurface } from '../panes/paneFindRegion';
-  import { dropPaneFind, hasPaneFindProvider, openPaneFind } from '../../stores/paneFind.svelte';
+  import { dropPaneFind, hasPaneFindProvider, isPaneFindOpen, openPaneFind } from '../../stores/paneFind.svelte';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
 
   interface Props {
     surface: ThreadTerminalSurfaceContext;
@@ -207,6 +208,12 @@
     if (key) openPaneFind(key);
   }
 
+  // Under compact the open bar sits over the tab strip.
+  const stripCovered = $derived.by(() => {
+    const key = activeFindKey();
+    return isCompactLayout() && key !== null && isPaneFindOpen(key);
+  });
+
   // A closed tab's find state goes with it.
   let listedTerminals = new Set(handle.tabs.map((t) => t.terminalID));
   $effect(() => {
@@ -287,25 +294,31 @@
 </script>
 
 <div
-  class="flex flex-1 min-h-0 min-w-0 flex-col"
+  class="relative flex flex-1 min-h-0 min-w-0 flex-col"
   data-testid="terminal-surface"
   {@attach paneFindSurface(surface.paneId, activeFindKey)}
 >
-  <TerminalTabStrip backend={threadMachine(surface.threadId ?? '', null)}
-    {handle}
-    onOpen={() => void openTerminal({ focus: true })}
-    onClose={closeTerminal}
-    onSelect={selectTerminal}
-    onRefresh={refreshActiveTerminal}
-    onFind={hasPaneFindProvider(activeFindKey()) ? openFind : undefined}
-    onCollapse={collapsible ? collapseDrawer : undefined}
-    workspacePath={surface.workspacePath}
-  />
+  <!-- Under compact the open find bar covers the strip, which takes no
+       taps or focus until it closes. -->
+  <div class="contents" inert={stripCovered}>
+    <TerminalTabStrip backend={threadMachine(surface.threadId ?? '', null)}
+      {handle}
+      onOpen={() => void openTerminal({ focus: true })}
+      onClose={closeTerminal}
+      onSelect={selectTerminal}
+      onRefresh={refreshActiveTerminal}
+      onFind={hasPaneFindProvider(activeFindKey()) ? openFind : undefined}
+      onCollapse={collapsible ? collapseDrawer : undefined}
+      workspacePath={surface.workspacePath}
+    />
+  </div>
 
   {#if handle.activeTerminalID}
     {@const findKey = terminalFindKey(surface.paneId, handle.activeTerminalID)}
     {#key handle.activeTerminalID}
-      <div class="relative flex flex-1 min-h-0 min-w-0 flex-col" data-terminal-find-host>
+      <!-- Static under compact, so the bar places against the surface and
+           covers the strip there. -->
+      <div class="relative compact:static flex flex-1 min-h-0 min-w-0 flex-col" data-terminal-find-host>
         <TerminalBody
           bind:this={bodyEl}
           {handle}
@@ -313,9 +326,9 @@
           paneId={surface.paneId}
           {findKey}
         />
-        <!-- The bar floats over the grid, so opening it changes neither the
-             terminal's rows nor the PTY's size. Focus in it is focus in the
-             terminal (terminalFocusRegion). -->
+        <!-- The bar floats over the grid (over the strip under compact), so
+             opening it changes neither the terminal's rows nor the PTY's
+             size. Focus in it is focus in the terminal (terminalFocusRegion). -->
         <div class={TERMINAL_FIND_OVERLAY_CLASS} data-terminal-find-overlay {@attach terminalFocusRegion(surface.paneId)}>
           <PaneFindBar paneId={findKey} title="Terminal" floating fallbackFocus={() => bodyEl?.focusTarget() ?? null} />
         </div>
