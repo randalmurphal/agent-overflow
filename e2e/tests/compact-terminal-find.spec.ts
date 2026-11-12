@@ -1,6 +1,6 @@
 // Find in the thread terminal under the compact layout: the tab strip's
-// find button has the compact hit target, the bar opens above the terminal
-// with the on-screen key row still under it, and a query counts the shell's
+// find button has the compact hit target, the bar floats over the top of the
+// terminal with the on-screen key row still under it, and a query counts the shell's
 // lines. The browser's Back (the ladder utils/stepBack.ts runs) closes the
 // bar first and leaves the terminal open, whether focus is in the bar or
 // back in the terminal; the next Back closes the terminal. Desktop
@@ -65,9 +65,8 @@ test('the key row types into the find query, never the shell, while find has foc
   try {
     await printTangos(page, setup);
     const key = (id: string) => page.getByTestId(`terminal-key-${id}`);
-    // What the shell printed after the tangos, without its prompts. The bar
-    // resizes the terminal, so the shell may redraw its prompt; anything
-    // typed echoes after it (Up recalls the printf line).
+    // What the shell printed after the tangos, without its prompt, whose
+    // `sh-5.2$` would match the dash below (Up would recall the printf line).
     const after = async () => (await replayOf(setup.host, setup.threadId))
       .split('tango-z').at(-1)!
       .replace(/sh-[\d.]+\$/g, '');

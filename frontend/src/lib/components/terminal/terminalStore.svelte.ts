@@ -482,7 +482,7 @@ function evictEmptyTerminalStates(): void {
 
 // Module-level terminal-focus registry, keyed by paneId. A pane's terminal has
 // focus while keyboard focus is inside its surface: the xterm, or the find
-// bar above it. Every element of the surface that can hold focus is a region
+// bar over it. Every element of the surface that can hold focus is a region
 // (`terminalFocusRegion`) that reports through `notifyTerminalFocus(paneId,
 // focused)`; the per-pane count tolerates several regions and keyed remounts
 // (swapping the active tab) without flipping the flag prematurely. Keying by

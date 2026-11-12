@@ -3,8 +3,8 @@
 // surface while it holds the pane's focus, and a closed tab, a switched tab
 // and a hidden-and-reopened drawer leave no provider or open bar on the
 // wrong terminal. The body is the stub, whose find provider records each
-// call by terminal; the provider over the real addon is
-// terminalFind.svelte.test.ts and terminalFind.browser.test.ts.
+// call by terminal; the provider itself is terminalFind.svelte.test.ts and,
+// over a real xterm, terminalFind.browser.test.ts.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
