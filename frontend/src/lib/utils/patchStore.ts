@@ -117,6 +117,11 @@ export function ownText(text: string): string {
   return (' ' + text).slice(1);
 }
 
+/** Copies (ownText) the text a parsed file or an open editor keeps from a
+ * store's chunks. An object so a test can see each kept string pass
+ * through it. */
+export const keptText = { own: ownText };
+
 /**
  * The lines of one patch, stored as the chunks they arrived in.
  *
@@ -813,6 +818,12 @@ export class PatchBody {
     return store.text(line);
   }
 
+  /** A line's length in UTF-16 units, known without its text. */
+  lineLength(index: number): number {
+    const { store, line } = this.locate(index);
+    return store.lineEnd(line) - store.lineStart(line);
+  }
+
   /** Whether a line's text is resident. */
   residentLine(index: number): boolean {
     const { store, line } = this.locate(index);
@@ -1039,12 +1050,12 @@ function emptyHeader(): PatchHeader {
 /** Records one leading metadata line in `header`. */
 function readHeaderLine(header: PatchHeader, text: string): void {
   if (text.startsWith('diff --git ')) header.sections += 1;
-  else if (text.startsWith('rename from ')) header.oldPath = text.slice('rename from '.length);
+  else if (text.startsWith('rename from ')) header.oldPath = keptText.own(text.slice('rename from '.length));
   const index = INDEX_LINE.exec(text);
   if (index) {
     header.indexed = true;
-    header.oldBlob = ZERO_ID.test(index[1]) ? null : index[1];
-    header.newBlob = ZERO_ID.test(index[2]) ? null : index[2];
+    header.oldBlob = ZERO_ID.test(index[1]) ? null : keptText.own(index[1]);
+    header.newBlob = ZERO_ID.test(index[2]) ? null : keptText.own(index[2]);
     if (index[3] === SUBMODULE_MODE) header.submodule = true;
   }
   if (MODE_LINE.exec(text)?.[1] === SUBMODULE_MODE) header.submodule = true;
@@ -1253,7 +1264,7 @@ export class PatchParser {
 
   private sectionFile(section: Section): ReviewFile {
     return {
-      path: section.path,
+      path: keptText.own(section.path),
       kind: section.kind,
       additions: section.additions,
       deletions: section.deletions,
@@ -1269,7 +1280,7 @@ export class PatchParser {
     const segments: BodySegment[] = [{ store: this.store, start: deleted.start, end: deleted.end }];
     if (added.firstHunk >= 0) segments.push({ store: this.store, start: added.firstHunk, end: added.end });
     return {
-      path: deleted.path,
+      path: keptText.own(deleted.path),
       kind: 'modified',
       additions: deleted.additions + added.additions,
       deletions: deleted.deletions + added.deletions,

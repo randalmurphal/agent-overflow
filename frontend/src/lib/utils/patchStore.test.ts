@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { conflictPatchFile } from './conflictFile';
 import { diffSourceKey } from './diffSourceKey';
 import { contentKey } from './fnv1a';
@@ -23,7 +23,7 @@ import {
   rowStartAt,
   splitRowCount,
 } from './patchRows';
-import { PatchParser, parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from './patchStore';
+import { keptText, PatchParser, parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from './patchStore';
 
 // The compact store must describe every patch exactly as parsePatchFiles +
 // buildPatchDisplayRows do: same files, same lines, same rows, same row ids,
@@ -320,6 +320,46 @@ describe('PatchParser', () => {
     ];
     for (const size of [1, 7, 64, 10_000]) expect(parseInChunks(patch, () => size).files.map((file) => file.header)).toEqual(expected);
     expect(parsePatchFiles(patch).map((file) => reviewFileFromPatchFile(file).header)).toEqual(expected);
+  });
+
+  // A tripwire: JS cannot see whether a string is a slice holding its
+  // chunk alive, only whether it went through the copy.
+  it('copies every string a file keeps from the patch\'s chunks', () => {
+    const own = vi.spyOn(keptText, 'own').mockImplementation((text) => `owned:${text}`);
+    try {
+      const files = parseReviewFiles([
+        'diff --git a/src/old.ts b/src/new.ts',
+        'rename from src/old.ts',
+        'rename to src/new.ts',
+        'index 1111111..2222222 100644',
+        '--- a/src/old.ts',
+        '+++ b/src/new.ts',
+        '@@ -1 +1 @@',
+        '-a',
+        '+b',
+        'diff --git a/link b/link',
+        'deleted file mode 120000',
+        'index 3333333..0000000',
+        '--- a/link',
+        '+++ /dev/null',
+        '@@ -1 +0,0 @@',
+        '-target',
+        'diff --git a/link b/link',
+        'new file mode 100644',
+        'index 0000000..4444444',
+        '--- /dev/null',
+        '+++ b/link',
+        '@@ -0,0 +1 @@',
+        '+file',
+      ].join('\n'));
+      expect(files.map((file) => [file.path, file.header?.oldPath ?? null, file.header?.oldBlob ?? null, file.header?.newBlob ?? null])).toEqual([
+        ['owned:src/new.ts', 'owned:src/old.ts', 'owned:1111111', 'owned:2222222'],
+        // A type change: one file, its deleted section's header.
+        ['owned:link', null, 'owned:3333333', null],
+      ]);
+    } finally {
+      own.mockRestore();
+    }
   });
 
   it('holds one copy of the text and a few bytes per line', () => {

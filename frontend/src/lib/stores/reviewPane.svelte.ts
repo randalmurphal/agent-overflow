@@ -142,7 +142,7 @@ import {
   type ExpandDirection,
 } from '../utils/diffContextExpansion';
 import type { DiffGap } from '../utils/patchFiles';
-import { PatchTextLost, reviewFileFromPatchFile, whenResident, type PatchParser, type ReviewFile } from '../utils/patchStore';
+import { keptText, PatchTextLost, reviewFileFromPatchFile, whenResident, type PatchParser, type ReviewFile } from '../utils/patchStore';
 import { anchorRows, completeAnchor, namesOneRow } from '../utils/patchRows';
 import { anchorKey, type CommentAnchor, type EditorRow, type EditorState } from '../utils/reviewRows';
 import {
@@ -2282,7 +2282,8 @@ export function createReviewPaneState(
     const anchor = completeAnchor(shownFile, given);
     const rows = anchorRows(shownFile, anchor, lineIndex);
     if (anchor.side !== 'file' && rows.count === 0) return null;
-    const quote = anchor.selectedText ?? '';
+    // The record outlives the chunk its quote may have been read from.
+    const quote = keptText.own(anchor.selectedText ?? '');
     const quoteTooLong = utf8Bytes(quote) > EDITOR_QUOTE_MAX_BYTES;
     return {
       id,

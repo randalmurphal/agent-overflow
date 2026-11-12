@@ -43,7 +43,7 @@ import type { GitStatus, WorkspaceRef } from '../types/git';
 import { diffSourceKey } from '../utils/diffSourceKey';
 import { PATCH_PARSE_CACHE_MAX_ENTRY_CHARS, type PatchDisplayRow, type PatchLine } from '../utils/patchFiles';
 import { displayRowCount, FILE_START, materializeRows } from '../utils/patchRows';
-import { parseReviewFiles, type ReviewFile } from '../utils/patchStore';
+import { keptText, parseReviewFiles, type ReviewFile } from '../utils/patchStore';
 import { buildReviewRows } from '../utils/reviewRows';
 import {
   getSpansForReviewLine,
@@ -4902,6 +4902,37 @@ describe('reviewPane store — open new-comment editors', () => {
         } finally {
           restore();
         }
+      }
+    });
+
+    it('detaches an editor whose line is longer than the byte allowance and still shows the diff', async () => {
+      const restore = __setRelocationBudgetForTest(1_000_000, 100_000);
+      try {
+        const long = `b${'x'.repeat(200_000)}`;
+        const patch = ['diff --git a/src/app.ts b/src/app.ts', 'new file mode 100644', 'index 0000000..1111111', '--- /dev/null', '+++ b/src/app.ts', '@@ -0,0 +1,3 @@', '+a', `+${long}`, '+c'].join('\n');
+        const { state } = await workspaceWith(() => patch);
+        const id = state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 2, selectedText: long })!;
+        await state.reload();
+        await waitLoaded(state);
+        expect(state.files.map((file) => file.path)).toEqual(['src/app.ts']);
+        expect(state.openEditors).toMatchObject([{ id, filePath: 'src/app.ts', state: 'detached', anchor: null }]);
+        expect(state.error).toBeNull();
+      } finally {
+        restore();
+      }
+    });
+
+    // A tripwire: JS cannot see whether a string is a slice holding its
+    // chunk alive, only whether it went through the copy.
+    it('copies the quote an editor keeps', async () => {
+      const { state, create } = await workspaceWith(() => patchFor('src/app.ts', 2));
+      const own = vi.spyOn(keptText, 'own').mockImplementation((text) => `owned:${text}`);
+      try {
+        const id = state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 1, selectedText: 'line 1' })!;
+        await state.createComment(id, 'Kept.');
+        expect(create.mock.calls[0]?.[1]).toMatchObject({ selectedText: 'owned:line 1' });
+      } finally {
+        own.mockRestore();
       }
     });
 

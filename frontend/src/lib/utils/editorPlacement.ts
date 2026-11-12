@@ -1,5 +1,5 @@
 import { namesOneRow, rowMatchesAnchor, RowWalker, type RowType } from './patchRows';
-import { LINE_HUNK, LINE_META, whenResident, type ReviewFile } from './patchStore';
+import { keptText, LINE_HUNK, LINE_META, whenResident, type ReviewFile } from './patchStore';
 import type { CommentAnchor } from './reviewRows';
 
 // Which line of a reloaded diff an open new-comment editor is on. A line
@@ -514,7 +514,8 @@ export async function relocateEditors<K>(
       const requests = keys.map((targetKey) => targetRequest(proofs.get(targetKey)!, targets.get(targetKey)!.side, identity, key));
       const table = findRows(file, requests.filter((request) => request !== null), budget, true)!;
       const located = requests.flatMap((request) => (request?.row ? [request.row.lineIndex] : []));
-      budget.spend(located.length);
+      // Spent before the read, by the lengths the rows' metadata gives.
+      budget.spend(located.length, located.reduce((bytes, index) => bytes + file.body.lineLength(index), 0));
       const ranges = located.flatMap((index) => file.body.slice(index, index + 1));
       const texts = await whenResident(ranges, () => new Map(located.map((index) => [index, file.body.text(index)])));
       check();
@@ -567,7 +568,7 @@ async function suggest<K>(
     ? await body.whenResident(() => suggestRows(table, list, (lineIndex) => body.text(lineIndex)))
     : suggestRows(table, list, null);
   const found = rows.filter((at) => at >= 0);
-  budget.spend(found.length);
+  budget.spend(found.length, found.reduce((bytes, at) => bytes + body.lineLength(table.lineIndex[at]), 0));
   const ranges = found.flatMap((at) => body.slice(table.lineIndex[at], table.lineIndex[at] + 1));
   const quotes = await whenResident(ranges, () => new Map(found.map((at) => [at, body.text(table.lineIndex[at])])));
   keys.forEach((key, index) => {
@@ -575,6 +576,7 @@ async function suggest<K>(
     const outcome = out.get(key)!;
     if (at < 0) return;
     const row = tableRow(table, at);
-    out.set(key, { ...outcome, suggested: anchorAt(file.path, targets.get(key)!.side, rowText(row, quotes.get(at) ?? ''), row) });
+    // The editor keeps the quote after the chunk it was read from goes.
+    out.set(key, { ...outcome, suggested: anchorAt(file.path, targets.get(key)!.side, keptText.own(rowText(row, quotes.get(at) ?? '')), row) });
   });
 }

@@ -8,7 +8,7 @@ import {
   type EditorProof,
   type RelocationTarget,
 } from './editorPlacement';
-import { parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from './patchStore';
+import { keptText, parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from './patchStore';
 import { mergePatchFilesByPath, parsePatchFiles } from './patchFiles';
 import type { CommentAnchor } from './reviewRows';
 
@@ -335,6 +335,32 @@ describe('relocateEditors', () => {
       expect(text.mock.calls.length).toBeLessThanOrEqual(5);
     });
 
+    // A tripwire: JS cannot see whether a string is a slice holding its
+    // chunk alive, only whether it went through the copy.
+    it('copies the quote it suggests, which the editor keeps', async () => {
+      const target = placedOn(fileOf(BASE_TO_A), report, '  report();');
+      const next = fileOf(moved);
+      const own = vi.spyOn(keptText, 'own').mockImplementation((text) => `owned:${text}`);
+      try {
+        const outcome = await placeOne(target, [next]);
+        expect(outcome.suggested?.selectedText).toBe('owned:  report();');
+      } finally {
+        own.mockRestore();
+      }
+    });
+
+    it('reads no suggested row its byte allowance does not cover, however few the rows', async () => {
+      const long = (tag: string) => `${tag}${'x'.repeat(200_000)}`;
+      const after = fileOf(section({ index: '0000000..1111111', meta: ['new file mode 100644'], hunk: '@@ -0,0 +1,3 @@', lines: [`+${long('a')}`, `+${long('b')}`, `+${long('c')}`] }));
+      const text = vi.spyOn(after.body, 'text');
+      // Proven in another version: detached, with a row suggested.
+      const proof: EditorProof = { kind: 'blob', oldBlob: null, newBlob: '2222222', oldLine: 0, newLine: 2, context: false };
+      const target: RelocationTarget = { filePath: PATH, side: 'new', selectedText: 'b', guard: lineGuard('b'), source: null, proof, line: 2 };
+      const out = await relocateEditors(new Map([['e', target]]), [after], new RelocationBudget(1_000_000, 100_000), never);
+      expect(out.get('e')).toMatchObject({ anchor: null, reason: 'line-changed', suggested: null });
+      expect(text).not.toHaveBeenCalled();
+    });
+
     it('spends only what fits', () => {
       const budget = new RelocationBudget(10, 100);
       expect(budget.trySpend(11)).toBe(false);
@@ -438,6 +464,19 @@ describe('relocateEditors', () => {
       const out = await relocateEditors(new Map([['e', placedOn(fileOf(BASE_TO_A), report, '  report();')]]), next, new RelocationBudget(1, 1), never);
       expect(out.get('e')).toMatchObject({ filePath: 'src/moved.ts', anchor: null, reason: 'line-changed', suggested: null });
       for (const spy of reads) expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('reads no line its byte allowance does not cover, however few the rows', async () => {
+      const long = (tag: string) => `${tag}${'x'.repeat(200_000)}`;
+      const patch = section({ index: '0000000..1111111', meta: ['new file mode 100644'], hunk: '@@ -0,0 +1,3 @@', lines: [`+${long('a')}`, `+${long('b')}`, `+${long('c')}`] });
+      const after = fileOf(patch);
+      const text = vi.spyOn(after.body, 'text');
+      const resident = vi.spyOn(after.body, 'whenResident');
+      const target = placedOn(fileOf(patch), { filePath: PATH, side: 'new', newLine: 2 }, long('b'));
+      const out = await relocateEditors(new Map([['e', target]]), [after], new RelocationBudget(1_000_000, 100_000), never);
+      expect(out.get('e')).toMatchObject({ filePath: PATH, anchor: null, reason: 'line-changed' });
+      expect(text).not.toHaveBeenCalled();
+      expect(resident).not.toHaveBeenCalled();
     });
 
     it('is in the diff when its file is, even with the budget spent', async () => {
