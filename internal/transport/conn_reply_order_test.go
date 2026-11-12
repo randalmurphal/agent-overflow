@@ -139,6 +139,9 @@ func TestReplyFlushKeepsEventOrder(t *testing.T) {
 func TestEventBurstWithoutRPCStillBatches(t *testing.T) {
 	f := newReplyOrderFixture(t, 200*time.Millisecond)
 	conn := f.dial(t)
+	// The upgrade completes before the connection subscribes; an emit in
+	// between reaches no subscriber.
+	barrier(t, conn, "connected")
 	app := &replyOrderApp{bus: f.bus}
 
 	if _, err := app.EmitThenReturn(10); err != nil {
