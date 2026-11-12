@@ -394,9 +394,10 @@ func extractAccountInfoFromInitResponse(payload json.RawMessage) (provider.Accou
 		SubscriptionType: inner.Account.SubscriptionType,
 		TokenSource:      inner.Account.TokenSource,
 		APIProvider:      inner.Account.APIProvider,
-		// The wire carries the organization's display NAME only; the
-		// stable uuid lives in ~/.claude.json's oauthAccount and is
-		// enriched at adoption time (see provider.AccountInfo.OrgID).
+		// The wire carries the organization's display NAME only, and the
+		// CLI reads all of this from ~/.claude.json's oauthAccount. Account
+		// adoption replaces it with ProbeProfile's answer for the
+		// credential (see provider.AccountInfo.OrgID).
 		OrgName: inner.Account.Organization,
 	}, nil
 }

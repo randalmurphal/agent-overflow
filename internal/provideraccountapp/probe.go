@@ -64,7 +64,11 @@ func (m *Manager) RunAccountProbe(r ProbeRequest) (provider.AccountInfo, error) 
 		reconcileMu.Unlock()
 		return provider.AccountInfo{}, err
 	}
-	info, credential, err := m.runStableAccountProbe(r.ProviderName, r.Probe)
+	info, credential, err := m.runStableAccountProbe(
+		r.ProviderName,
+		r.Probe,
+		m.identifyCanonicalClaudeCredential,
+	)
 	if err != nil {
 		reconcileMu.Unlock()
 		return provider.AccountInfo{}, err
@@ -140,6 +144,11 @@ func (m *Manager) emitUnauthenticatedIfNoLogin(r ProbeRequest, info provider.Acc
 	r.EmitUnauth()
 }
 
+// claudeIdentifier replaces a Claude probe's reported identity with the one
+// that belongs to credential: identifyClaudeCredential, or for a caller not
+// holding mu, identifyCanonicalClaudeCredential.
+type claudeIdentifier func(info provider.AccountInfo, credential []byte) (provider.AccountInfo, error)
+
 // runStableAccountProbe pairs provider identity with one stable canonical
 // credential value. A provider may legitimately rotate credentials while its
 // probe initializes, so one changed read retries the probe. A second change is
@@ -147,6 +156,7 @@ func (m *Manager) emitUnauthenticatedIfNoLogin(r ProbeRequest, info provider.Acc
 func (m *Manager) runStableAccountProbe(
 	providerName string,
 	probe func(context.Context) (provider.AccountInfo, error),
+	identifyClaude claudeIdentifier,
 ) (provider.AccountInfo, *provideraccounts.CredentialSnapshot, error) {
 	if m.credentials == nil {
 		info, err := probe(m.context())
@@ -177,24 +187,25 @@ func (m *Manager) runStableAccountProbe(
 		if err != nil {
 			return provider.AccountInfo{}, nil, err
 		}
-		// Claude's org uuid lives beside the credential (oauthAccount in the
-		// same home), not in the wire answer. Reading it HERE — before the
-		// after-read — keeps it inside the stability bracket: an external
-		// login landing between the probe and this read also rewrites the
-		// credential file, so the digest comparison below discards the
-		// attempt instead of pairing one account's org with another's tokens.
-		info = m.enrichClaudeObservedIdentity(providerName, info)
 		after, afterPresent, err := m.readCanonicalCredentialIfPresent(providerName)
 		if err != nil {
 			return provider.AccountInfo{}, nil, err
 		}
 		if beforePresent == afterPresent &&
 			(!beforePresent || sha256.Sum256(before.Bytes()) == sha256.Sum256(after.Bytes())) {
+			// Identity is derived from the verified after-snapshot itself, so
+			// it describes exactly the bytes returned with it: Codex carries
+			// its workspace id in the credential, and Claude's comes from the
+			// API for the credential's own access token.
+			if providerName == string(provider.Claude) {
+				info, err = identifyClaude(info, after.Bytes())
+				if err != nil {
+					return provider.AccountInfo{}, nil, err
+				}
+			}
 			if !afterPresent {
 				return info, nil, nil
 			}
-			// Codex's workspace id is IN the credential bytes; parsing the
-			// verified after-snapshot pairs identity and org by construction.
 			return EnrichCodexIdentity(providerName, info, after.Bytes()), &after, nil
 		}
 	}

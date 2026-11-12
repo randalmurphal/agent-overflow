@@ -103,6 +103,16 @@ our own code.
 - On macOS the canonical credential lives in the keychain rather than
   the file, and all three locks still apply: they are named from the
   config home either way.
+- **Identity comes from the profile endpoint (source and 2.1.321
+  strings).** `GET https://api.anthropic.com/api/oauth/profile` with
+  `Authorization: Bearer <accessToken>` answers
+  `{"account":{"uuid","email",...},"organization":{"uuid","name",...}}`;
+  the CLI validates `account.email` and `organization.uuid` and fills
+  `oauthAccount` from the answer. It asks only when the credential's
+  `scopes` include `user:profile`. The initialize wire's `account`
+  object is read from `oauthAccount`, not from the token, so AO
+  identifies a credential with the endpoint
+  (`claude.ProbeProfile`).
 
 ## Version-gated behaviors worth knowing
 

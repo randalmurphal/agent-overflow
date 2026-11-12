@@ -106,6 +106,7 @@ func (m *Manager) reconcileExternalProviderAccountWithMutexHeld(
 	info, credential, err := m.runStableAccountProbe(
 		providerName,
 		m.canonicalProviderAccountProbe(providerName, binary),
+		m.identifyClaudeCredential,
 	)
 	if err != nil {
 		return fmt.Errorf("identify externally selected %s account: %w", providerName, err)

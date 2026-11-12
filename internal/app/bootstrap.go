@@ -18,6 +18,7 @@ import (
 	"agent-overflow/internal/dictation"
 	"agent-overflow/internal/network"
 	"agent-overflow/internal/openai/openaifake"
+	"agent-overflow/internal/provider/claude/claudefake"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/windowgeom"
@@ -124,9 +125,10 @@ var errIsolatedNetwork = errors.New("isolated boot: outbound provider requests a
 
 var isolatedHTTPClient = &http.Client{Transport: isolatedProviderTransport{}}
 
-// isolatedProviderTransport refuses every request except the two
-// transcriptions and OpenAI speech, which it answers in-process so
-// dictation and read aloud run end to end through the real clients. Codex
+// isolatedProviderTransport refuses every request except Claude's OAuth
+// profile, the two transcriptions and OpenAI speech, which it answers
+// in-process so account identification, dictation and read aloud run end to
+// end through the real clients. The profile is claudefake's. Codex
 // transcription names the bytes and type it received, and an access token
 // of "refused" is answered as an expired login; OpenAI live transcription
 // and speech are openaifake's.
@@ -139,6 +141,9 @@ func (isolatedProviderTransport) RoundTrip(req *http.Request) (resp *http.Respon
 				resp, err = nil, fmt.Errorf("isolated boot: close request body: %w", closeErr)
 			}
 		}()
+	}
+	if claudefake.IsProfile(req) {
+		return claudefake.ServeProfile(req)
 	}
 	if req.Method == http.MethodPost && req.URL.String() == codex.TranscribeURL {
 		return fakeTranscription(req)

@@ -1,11 +1,8 @@
 package provideraccountapp
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
-	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/provider"
 )
 
@@ -38,23 +35,6 @@ func TestAccountProjectionTrimsObservedIdentity(t *testing.T) {
 	}
 	if got := AccountInfo(account); got.Email != account.Email || got.OrgID != account.OrgID {
 		t.Fatalf("round-trip info = %+v", got)
-	}
-}
-
-func TestEnrichClaudeIdentityRequiresMatchingEmail(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".claude.json")
-	body := `{"oauthAccount":{"emailAddress":"user@example.com","organizationUuid":"org-1","organizationName":"Org"}}`
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	config := claudeconfig.New(path)
-	matched := EnrichClaudeIdentity(provider.AccountInfo{Email: "USER@example.com"}, config)
-	if matched.OrgID != "org-1" || matched.OrgName != "Org" {
-		t.Fatalf("matched identity = %+v", matched)
-	}
-	mismatched := EnrichClaudeIdentity(provider.AccountInfo{Email: "other@example.com"}, config)
-	if mismatched.OrgID != "" {
-		t.Fatalf("mismatched identity adopted org: %+v", mismatched)
 	}
 }
 

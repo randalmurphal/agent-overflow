@@ -578,9 +578,12 @@ func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary strin
 		)
 		return SignIn{}, nil
 	}
+	// mu is held here, and nothing is selected to attribute the credential
+	// to, so it is asked about directly.
 	info, credential, err := m.runStableAccountProbe(
 		providerName,
 		m.canonicalProviderAccountProbe(providerName, binary),
+		m.identifyClaudeCredential,
 	)
 	if err != nil {
 		return SignIn{}, err

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 )
@@ -17,22 +16,6 @@ func EnrichCodexIdentity(providerName string, info provider.AccountInfo, credent
 	}
 	if orgID, ok := codex.CredentialOrgID(credential); ok {
 		info.OrgID = orgID
-	}
-	return info
-}
-
-// EnrichClaudeIdentity applies an email-matched oauthAccount record without
-// overwriting identity fields already known from the probe.
-func EnrichClaudeIdentity(info provider.AccountInfo, config *claudeconfig.Store) provider.AccountInfo {
-	record, ok := config.ReadOAuthAccount()
-	if !ok || !record.EmailMatches(info.Email) {
-		return info
-	}
-	if strings.TrimSpace(info.OrgID) == "" {
-		info.OrgID = strings.TrimSpace(record.OrganizationUUID)
-	}
-	if strings.TrimSpace(info.OrgName) == "" {
-		info.OrgName = strings.TrimSpace(record.OrganizationName)
 	}
 	return info
 }

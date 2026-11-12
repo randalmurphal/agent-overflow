@@ -65,6 +65,11 @@ func isolateE2EProviderSpawns(t *testing.T, app *App) {
 	// resolved to the developer's installed native binary. Tests of that
 	// resolution install their own lookup over this.
 	app.codexLookPathFn = func(string) (string, error) { return "", exec.ErrNotFound }
+	// Claude account identification and usage send a credential's bearer to
+	// the API. The isolated boot's transport answers the profile from the
+	// token (claudefake) and refuses the rest; a test asserting usage
+	// installs its own client over this.
+	app.rateLimitProbeClientOverride = isolatedHTTPClient
 
 	// The live Codex model catalog spawns `codex app-server` for `model/list`
 	// as a side effect of ordinary thread creation. Disable it the same way

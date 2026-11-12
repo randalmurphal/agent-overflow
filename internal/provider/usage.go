@@ -160,9 +160,10 @@ type MCPServer struct {
 // OrgID / OrgName carry the organization (Claude) or ChatGPT workspace
 // (Codex) behind the login. One email can hold a separate login per
 // organization, so email alone cannot key an account. Neither field is
-// guaranteed: Claude's probe wire carries only the display name (the
-// uuid lives in `~/.claude.json`'s oauthAccount and is enriched at
-// adoption time), Codex's `account/read` carries neither (the id is
+// guaranteed: a Claude identity is replaced at adoption by the OAuth
+// profile answer for the credential's own token (the probe wire carries
+// only the display name, read from a shared config record that can
+// describe another login), Codex's `account/read` carries neither (the id is
 // parsed out of `auth.json` where the caller holds those bytes), and
 // API-key auth has no organization at all. Blank means UNKNOWN, never
 // "no organization" — matching must treat it as compatible with any.

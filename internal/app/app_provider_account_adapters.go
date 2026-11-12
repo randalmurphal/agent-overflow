@@ -1,7 +1,6 @@
 package app
 
 import (
-	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
@@ -64,14 +63,6 @@ func (a *App) accountIDForObservedIdentity(
 	info provider.AccountInfo,
 ) (string, *provideraccounts.Account, error) {
 	return a.providerAccounts.ResolveObservedAccount(providerName, expectedAccountID, info)
-}
-
-func enrichCodexObservedIdentity(providerName string, info provider.AccountInfo, credential []byte) provider.AccountInfo {
-	return provideraccountapp.EnrichCodexIdentity(providerName, info, credential)
-}
-
-func enrichClaudeInfoFromOAuthRecord(info provider.AccountInfo, store *claudeconfig.Store) provider.AccountInfo {
-	return provideraccountapp.EnrichClaudeIdentity(info, store)
 }
 
 func describeObservedAccount(info provider.AccountInfo) string {

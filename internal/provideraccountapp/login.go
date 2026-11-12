@@ -3,10 +3,8 @@ package provideraccountapp
 import (
 	"errors"
 	"fmt"
-	"path/filepath"
 	"time"
 
-	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/providerstatus"
@@ -95,18 +93,15 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 	if err != nil {
 		return ManagedAccount{}, fmt.Errorf("capture %s login credentials: %w", providerName, err)
 	}
-	// Organization capture, from material the login home pairs with this
-	// exact credential: Codex carries the workspace id inside the
-	// credential bytes; Claude's login just wrote the oauthAccount record
-	// (org uuid + name) into the home's own .claude.json. Read it before
-	// the home is cleaned up. The email-paired acceptance rule applies as
-	// everywhere: a record describing a different email is discarded.
+	// Identity is read from the captured credential itself: Codex carries
+	// the workspace id inside the bytes, and Claude's comes from the API for
+	// the credential's own access token.
 	info = EnrichCodexIdentity(providerName, info, loginCredential.Bytes())
 	if providerName == string(provider.Claude) {
-		info = EnrichClaudeIdentity(
-			info,
-			claudeconfig.New(filepath.Join(loginHome.Path, ".claude.json")),
-		)
+		info, err = m.identifyClaudeCredential(info, loginCredential.Bytes())
+		if err != nil {
+			return ManagedAccount{}, fmt.Errorf("verify %s login: %w", providerName, err)
+		}
 	}
 	if err := attempt.cleanup(); err != nil {
 		return ManagedAccount{}, err
